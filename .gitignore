@@ -1,0 +1,37 @@
+node_modules
+dist
+.DS_Store
+*.log
+backend/backend/wallet/
+backend/backed/wallet/keypair.json
+backend/.env
+backend/.env.local
+frontend/.env
+frontend/.env.local
+.env
+.env.local
+frontend/node_modules
+backend/node_modules
+coverage
+**/.vite
+**/.turbo
+**/.cache
+
+# Backend runtime/config artifacts
+backend/backend/config/strategies.json
+backend/backend/config/watchlist.json
+backend/backend/config/walletTokens.json
+backend/backend/config/walletHistory.json
+backend/backend/logs/
+# Default singleton strategy file if present
+backend/backend/config/strategy.json
+
+# Build outputs
+backend/dist
+frontend/dist
+
+# Common key material patterns
+**/*.pem
+**/*.key
+**/*_key.json
+

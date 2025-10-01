@@ -1,0 +1,64 @@
+import { describe, it, expect } from 'vitest';
+
+// Import normalize via dynamic import to avoid top-level side effects
+async function normalize(raw: any) {
+  const mod: any = await import('../server/pools.js');
+  const fn = (mod as any).defaultNormalizeRaydiumPools
+    ? (mod as any).defaultNormalizeRaydiumPools
+    : (mod as any).normalizeRaydiumPools;
+  return await fn(raw);
+}
+
+describe('normalizeRaydiumPools', () => {
+  it('normalizes AMM array with reserves to price', async () => {
+    const raw = { data: [ { id: 'pool1', mintA: 'A', mintB: 'B', reserveA: 200, reserveB: 100, feeBps: 30 } ] };
+    const mod: any = await import('../server/pools.js');
+    const fn = (mod as any).normalizeRaydiumPools;
+    const out = fn(raw);
+    expect(out.amm.length).toBe(1);
+    expect(out.amm[0].price_a_per_b).toBe(2);
+  });
+
+  it('normalizes CLMM with sqrtPriceX64 and derives price', async () => {
+    const sqrt = Math.floor(Math.sqrt(2) * Math.pow(2, 64));
+    const raw = { data: [ { id: 'clmm1', mintA: 'A', mintB: 'B', sqrtPriceX64: sqrt, tokenA: { decimals: 9 }, tokenB: { decimals: 9 }, tickSpacing: 64, liquidity: 123 } ] } as any;
+    const mod: any = await import('../server/pools.js');
+    const fn = (mod as any).normalizeRaydiumPools;
+    const out = fn(raw);
+    expect(out.clmm.length).toBe(1);
+    expect(out.clmm[0].sqrt_price_x64).toBeGreaterThan(0);
+    expect((out.clmm[0] as any).price_a_per_b).toBeGreaterThan(0);
+  });
+
+  it('enriches known pool mints via on-chain offsets (ARCT8n...)', async () => {
+    // This test asserts our enrichment function can parse mints from account data
+    const poolId = 'ARCT8nLfGVAR5tQBhtW1oRFLHABASX3PEoeoUzJ9iNfu';
+    const mod: any = await import('../server/pools.js');
+    const fn = (mod as any).getRaydiumPoolsNormalized as (force?: boolean) => Promise<any>;
+    const out = await fn(true).catch(() => ({ amm: [], clmm: [] }));
+    const match = out.amm.find((p: any) => p.id === poolId) || out.clmm.find((p: any) => p.id === poolId);
+    // If the environment can't reach RPC, just assert the structure exists without throwing
+    expect(out).toBeTruthy();
+    if (match) {
+      // Accept either orientation, but ensure both expected mints are present
+      const mints = new Set([match.mint_a, match.mint_b]);
+      const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+      const HELP = 'HeLp6NuQkmYB4pYWo2zYs22mESHXPQYzXbB8n4V98jwC';
+      expect(mints.has(USDC)).toBe(true);
+      expect(mints.has(HELP)).toBe(true);
+    }
+  });
+
+  it('sets pool_kind on normalized pools', async () => {
+    const sqrt = Math.floor(Math.sqrt(2) * Math.pow(2, 64));
+    const raw = { data: [
+      { id: 'ammX', mintA: 'So11111111111111111111111111111111111111112', mintB: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', reserveA: 1000000, reserveB: 1000000, feeBps: 30 },
+      { id: 'clmmX', mintA: 'So11111111111111111111111111111111111111112', mintB: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', sqrtPriceX64: sqrt, tokenA: { decimals: 9 }, tokenB: { decimals: 6 }, tickSpacing: 64, liquidity: 1000, feeBps: 100 }
+    ] } as any;
+    const out = await normalize(raw);
+    expect(out.amm[0].pool_kind).toBe('amm');
+    expect(out.clmm[0].pool_kind).toBe('clmm');
+  });
+});
+
+

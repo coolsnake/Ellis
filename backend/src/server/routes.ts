@@ -1,0 +1,2194 @@
+import type { Express, Request, Response } from 'express';
+import { Router } from 'express';
+import type { Server as SocketIOServer } from 'socket.io';
+import { logger, setLogLevel, setLoggingEnabled, setFileLogging } from '../utils/logger.js';
+import { CONFIG } from '../utils/config.js';
+import { ensureWallet, getBalances, getPublicKey, generateAndSaveWallet, signAndSendSerializedTransaction, getConnection } from '../wallet/wallet.js';
+import { getPriceByMint } from './priceStore.js';
+import { readJson, writeJson } from '../utils/fs.js';
+import { searchTokens } from '../jupiter/tokenApi.js';
+import { tradingController } from './tradingController.js';
+import { systemStatus } from './status.js';
+import { emit } from './realtime.js';
+import { getStrategies, upsertStrategy, removeStrategy, migrateSingleStrategy, STRATEGY_LIST_PATH } from '../utils/strategies.js';
+import { resolveMint } from '../utils/tokens.js';
+import { executeSwap } from '../jupiter/jupiter.js';
+import { enablePriceFeed, setPriceFeedInterval, pollPriceFeedNow } from './feedRegistry.js';
+import { addWalletHistory, getWalletHistory } from './walletHistory.js';
+import { apiStart, apiStop, apiReset, setTargetTickTimeMs } from '../jupiter/rateLimiter.js';
+// priceFeed is started in index.ts and broadcasts via websocket
+import { getRaydiumPoolsNormalized, getOrcaPoolsCached, startRaydiumRefreshLoop, getPoolsMetrics } from './pools.js';
+import { getGraphSnapshot, findPath } from './graph.js';
+import { writeSessionLogAndClear } from '../utils/sessionLogs.js';
+
+export function registerRoutes(app: Express, io: SocketIOServer): void {
+  const api = Router();
+  // Optionally auto-start periodic pool refresh loop (controlled by config)
+  try { if ((CONFIG as any)?.system?.autoStartPools) { startRaydiumRefreshLoop(); } } catch {}
+  // Arb service observability state
+  let lastArbHealthStatus: string | null = null;
+  const arbLatency: { metrics: number[]; opps: number[]; lastSummaryAt: number } = { metrics: [], opps: [], lastSummaryAt: 0 };
+
+  api.get('/system', async (_req, res) => {
+    const { getAppInfo } = await import('../utils/appInfo.js');
+    const info = await getAppInfo();
+    res.json({
+      version: info.version,
+      name: info.name,
+      status: 'ok',
+      uptimeMs: Date.now() - systemStatus.startTimeMs,
+      lastPriceUpdateMs: systemStatus.lastPriceUpdateMs,
+      rateLimitActive: systemStatus.rateLimitActive,
+      cooldownUntilMs: systemStatus.cooldownUntilMs,
+      botName: info.name,
+      bot: systemStatus.bot,
+      targetTickTimeMs: systemStatus.targetTickTimeMs,
+      rpcUrl: CONFIG.rpcUrl,
+      fees: CONFIG.fees,
+      system: CONFIG.system,
+      logCategories: CONFIG.system.logCategories,
+    });
+  });
+
+  // Token map (mint -> symbol) combining local tokens and cached Jupiter list
+  api.get('/tokens/map', async (_req, res) => {
+    try {
+      const tokensMod: any = await import('../utils/tokens.js');
+      const loadTokenMap = (tokensMod as any).loadTokenMap as () => Promise<Record<string, { mint: string; decimals: number }>>;
+      const loadJupiterTokenMap = (tokensMod as any).loadJupiterTokenMap as () => Promise<Record<string, { symbol: string; decimals: number }>>;
+      const local = await loadTokenMap();
+      const jmap = await loadJupiterTokenMap();
+      const out: Record<string, string> = {};
+      for (const [sym, info] of Object.entries(local || {})) { if (info?.mint) out[info.mint] = sym; }
+      for (const [mint, meta] of Object.entries(jmap || {})) { if (mint && meta?.symbol && !out[mint]) out[mint] = meta.symbol; }
+      res.json({ map: out });
+    } catch (e: any) {
+      res.status(500).json({ map: {} });
+    }
+  });
+
+  api.get('/system/config', async (_req, res) => {
+    try {
+      res.json({
+        rpcUrl: CONFIG.rpcUrl,
+        system: CONFIG.system,
+        fees: CONFIG.fees,
+        raydium: CONFIG.raydium,
+        orca: CONFIG.orca,
+        sanity: (CONFIG as any).sanity,
+      });
+    } catch (e: any) {
+      logger.error('server: failed to get system config', { error: String(e?.message || e), cat: 'server' });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.post('/system/config', async (req, res) => {
+    try {
+      const { rpcUrl, system, fees, raydium, orca, sanity } = req.body as {
+        rpcUrl?: string;
+        system?: any;
+        fees?: any;
+        raydium?: { enableOnChain?: boolean; ammV4Program?: string; clmmProgram?: string; cacheTtlMs?: number; sdkConcurrency?: number; sdkProbeMintsLimit?: number; sdkClmmPageSize?: number; filterToOrcaTokens?: boolean };
+        orca?: { mode?: string; apiUrl?: string; programId?: string; configPubkey?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; pageSize?: number; maxPages?: number; minAmmLiqBase?: number; minClmmLiquidity?: number };
+        sanity?: { enabled?: boolean; maxPriceDeviation?: number; feeMin?: number; feeMax?: number; writeSamples?: boolean; sampleRate?: number };
+      };
+      
+      // Update CONFIG with new values
+      if (rpcUrl) CONFIG.rpcUrl = rpcUrl;
+      if (system) {
+        const nextSystem = { ...CONFIG.system, ...system } as any;
+        // Validate category inputs if present
+        try {
+          if (Array.isArray(system.enabledLogCategories)) {
+            nextSystem.enabledLogCategories = (system.enabledLogCategories as string[]).map((s) => String(s).toLowerCase());
+          }
+          if (Array.isArray(system.frontendEnabledLogCategories)) {
+            nextSystem.frontendEnabledLogCategories = (system.frontendEnabledLogCategories as string[]).map((s) => String(s).toLowerCase());
+          }
+        } catch {}
+        CONFIG.system = nextSystem;
+      }
+      if (fees) CONFIG.fees = { ...CONFIG.fees, ...fees };
+      if (raydium) CONFIG.raydium = { ...CONFIG.raydium, ...raydium } as any;
+      if (orca) CONFIG.orca = { ...CONFIG.orca, ...orca } as any;
+      if (sanity) (CONFIG as any).sanity = { ...(CONFIG as any).sanity, ...sanity } as any;
+      // Apply runtime logger changes if provided
+      try {
+        if (system && Object.prototype.hasOwnProperty.call(system, 'enableLogging')) {
+          setLoggingEnabled(system.enableLogging !== false);
+        }
+        if (system && typeof system.logLevel === 'string') {
+          setLogLevel((system.logLevel as string) as any);
+        }
+        if (system && (Object.prototype.hasOwnProperty.call(system, 'logToFile') || typeof system.logFilePath === 'string')) {
+          setFileLogging(!!system.logToFile, system.logFilePath);
+        }
+      } catch {}
+      
+      res.json({ success: true, message: 'System configuration updated' });
+      emit('log', { 
+        level: 'info', 
+        message: 'System configuration updated', 
+        timestamp: new Date().toISOString() 
+      });
+    } catch (e: any) {
+      logger.error('server: failed to update system config', { error: String(e?.message || e), cat: 'server' });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Shutdown all services (best-effort). This will terminate the backend process; scripts should clean up others.
+  api.post('/system/shutdown', async (_req, res) => {
+    try {
+      emit('log', { level: 'warn', message: 'terminal: shutdown requested from UI', timestamp: new Date().toISOString() });
+      res.json({ ok: true });
+      setTimeout(() => {
+        try { emit('log', { level: 'warn', message: 'terminal: shutting down now', timestamp: new Date().toISOString() }); } catch {}
+        try { writeSessionLogAndClear().catch(() => null); } catch {}
+        process.exit(0);
+      }, 250);
+    } catch (e: any) {
+      logger.error('server: shutdown failed', { error: String(e?.message || e), cat: 'server' });
+      res.status(500).json({ ok: false, error: String(e?.message || e) });
+    }
+  });
+
+  api.get('/wallet', async (_req, res) => {
+    try {
+      const kp = await ensureWallet(CONFIG.walletPath);
+      const balances = await getBalances(kp.publicKey);
+      const list = await readJson<any[]>(CONFIG.walletTokensPath, []);
+      const aliases: Record<string, string> = {};
+      // map existing wallet token aliases
+      for (const item of list) {
+        if (item?.id && item?.symbol) aliases[item.id] = item.symbol;
+      }
+      // resolve missing mints via Token API (best-effort)
+      const mints = Object.keys(balances.tokens || {});
+      let updated = false;
+      for (const mint of mints) {
+        if (!aliases[mint]) {
+          try {
+            const results = await searchTokens(mint, true);
+            const first = results[0];
+            if (first?.id === mint && first?.symbol) {
+              aliases[mint] = first.symbol;
+              if (!list.find((t) => t.id === mint)) {
+                list.push(first);
+                updated = true;
+              }
+            }
+          } catch {
+            // ignore (API paused or network error)
+          }
+        }
+      }
+      if (updated) await writeJson(CONFIG.walletTokensPath, list);
+      res.json({ address: kp.publicKey.toBase58(), balances, aliases });
+      io.emit('wallet-update', { address: kp.publicKey.toBase58(), balances, aliases });
+    } catch (e: any) {
+      const msg = String(e?.message || e);
+      if (msg === 'WALLET_NOT_FOUND') {
+        return res.status(404).json({ error: 'Wallet not found. Generate one via /api/wallet/generate or terminal: wallet generate' });
+      }
+      logger.error('wallet: fetch failed', { error: msg, cat: 'wallet' });
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  api.post('/wallet/generate', async (_req, res) => {
+    try {
+      const kp = await generateAndSaveWallet(CONFIG.walletPath);
+      res.json({ address: kp.publicKey.toBase58() });
+      io.emit('wallet-update', { address: kp.publicKey.toBase58() });
+    } catch (e: any) {
+      logger.error('wallet: generate failed', { error: String(e), cat: 'wallet' });
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
+  api.post('/wallet/send', async (req, res) => {
+    try {
+      const { token, destination, amount } = req.body as { token: string; destination: string; amount: number };
+      const kp = await ensureWallet(CONFIG.walletPath);
+      if (!token || token.toUpperCase() === 'SOL') {
+        // Send SOL
+        const connection = new (await import('@solana/web3.js')).Connection(CONFIG.rpcUrl, 'confirmed');
+        const { LAMPORTS_PER_SOL, SystemProgram, Transaction } = await import('@solana/web3.js');
+        const tx = new Transaction().add(
+          SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: new (await import('@solana/web3.js')).PublicKey(destination), lamports: Math.round(amount * LAMPORTS_PER_SOL) })
+        );
+        
+        // Add fee configuration for SOL sends
+        const { getFeeCalculator } = await import('../utils/feeCalculator.js');
+        const feeCalculator = getFeeCalculator(connection);
+        const recommendation = feeCalculator.getFeeRecommendation('send');
+        const calculatedFees = await feeCalculator.calculateFees({ ...CONFIG.fees, ...recommendation });
+        
+        // Add compute budget instructions
+        const { ComputeBudgetProgram } = await import('@solana/web3.js');
+        tx.add(
+          ComputeBudgetProgram.setComputeUnitLimit({ units: 200000 }),
+          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: calculatedFees.priorityFee })
+        );
+        
+        const sig = await connection.sendTransaction(tx, [kp]);
+        await connection.confirmTransaction(sig, 'confirmed');
+        res.json({ signature: sig });
+        addWalletHistory({ type: 'send', time: new Date().toISOString(), token: 'SOL', amount, destination, signature: sig });
+        emit('log', { level: 'info', message: `terminal: send SOL ${amount} to ${destination} -> ${sig}`, timestamp: new Date().toISOString() });
+        // Trigger wallet refresh after send operation
+        try {
+          const { createWalletFeed } = await import('./walletFeed.js');
+          const walletFeed = createWalletFeed(io);
+          await walletFeed.refresh();
+        } catch {}
+      } else {
+        // Send SPL by mint or symbol
+        const { PublicKey } = await import('@solana/web3.js');
+        const { sendSplToken } = await import('../wallet/wallet.js');
+        const tokensMod: any = await import('../utils/tokens.js');
+        const tokenMap = await tokensMod.loadTokenMap();
+        const mintResolved = token.length > 30 ? token : (tokenMap[token.toUpperCase()]?.mint || token);
+        const sig = await sendSplToken({ from: kp, destination: new PublicKey(destination), mint: new PublicKey(mintResolved), amount });
+        res.json({ signature: sig });
+        addWalletHistory({ type: 'send', time: new Date().toISOString(), token, amount, destination, signature: sig });
+        emit('log', { level: 'info', message: `terminal: send SPL ${token} ${amount} to ${destination} -> ${sig}`, timestamp: new Date().toISOString() });
+        // Trigger wallet refresh after send operation
+        try {
+          const { createWalletFeed } = await import('./walletFeed.js');
+          const walletFeed = createWalletFeed(io);
+          await walletFeed.refresh();
+        } catch {}
+      }
+    } catch (e: any) {
+      const msg = String(e?.message || e);
+      if (msg === 'WALLET_NOT_FOUND') {
+        return res.status(404).json({ error: 'Wallet not found. Generate one via /api/wallet/generate or terminal: wallet generate' });
+      }
+      logger.error('wallet: send failed', { error: msg, cat: 'wallet' });
+      res.status(500).json({ error: msg });
+      emit('log', { level: 'error', message: `terminal: send failed ${msg}` , timestamp: new Date().toISOString() });
+    }
+  });
+
+  api.post('/wallet/refresh', async (_req, res) => {
+    try {
+      const kp = await ensureWallet(CONFIG.walletPath);
+      const balances = await getBalances(kp.publicKey, { force: true });
+      const list = await readJson<any[]>(CONFIG.walletTokensPath, []);
+      const aliases: Record<string, string> = {};
+      for (const item of list) {
+        if (item?.id && item?.symbol) aliases[item.id] = item.symbol;
+      }
+      const mints = Object.keys(balances.tokens || {});
+      let updated = false;
+      for (const mint of mints) {
+        if (!aliases[mint]) {
+          try {
+            const results = await (await import('../jupiter/tokenApi.js')).searchTokens(mint, true);
+            const first: any = results[0];
+            if (first?.id === mint && first?.symbol) {
+              aliases[mint] = first.symbol;
+              if (!list.find((t) => t.id === mint)) {
+                list.push(first);
+                updated = true;
+              }
+            }
+          } catch {
+            // ignore
+          }
+        }
+      }
+      if (updated) await writeJson(CONFIG.walletTokensPath, list);
+      res.json({ address: kp.publicKey.toBase58(), balances, aliases });
+      io.emit('wallet-update', { address: kp.publicKey.toBase58(), balances, aliases });
+      emit('log', { level: 'info', message: 'Wallet refreshed', timestamp: new Date().toISOString() });
+    } catch (e: any) {
+      const msg = String(e?.message || e);
+      if (msg === 'WALLET_NOT_FOUND') {
+        return res.status(404).json({ error: 'Wallet not found. Generate one via /api/wallet/generate or terminal: wallet generate' });
+      }
+      logger.error('wallet refresh failed', { error: msg });
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  // Wallet token alias list (for displaying SPL balances with symbols)
+  api.get('/wallet/tokens', async (_req, res) => {
+    const list = await readJson<any[]>(CONFIG.walletTokensPath, []);
+    res.json({ walletTokens: list });
+  });
+
+  // Token account management endpoints
+  api.get('/wallet/token-accounts', async (_req, res) => {
+    try {
+      const { getTokenAccountManager } = await import('../wallet/tokenAccountManager.js');
+      const { getConnection } = await import('../wallet/wallet.js');
+      const connection = getConnection();
+      const manager = getTokenAccountManager(connection);
+      const accounts = manager.getTokenAccounts();
+      res.json({ tokenAccounts: accounts });
+    } catch (e: any) {
+      logger.error('wallet: failed to get token accounts', { error: String(e), cat: 'wallet' });
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
+  api.delete('/wallet/token-accounts/:address', async (req, res) => {
+    try {
+      const { address } = req.params;
+      const { getTokenAccountManager } = await import('../wallet/tokenAccountManager.js');
+      const { getConnection } = await import('../wallet/wallet.js');
+      const { PublicKey } = await import('@solana/web3.js');
+      const connection = getConnection();
+      const manager = getTokenAccountManager(connection);
+      await manager.removeTokenAccount(new PublicKey(address));
+      res.json({ ok: true });
+      emit('log', { level: 'info', message: `Token account removed: ${address}`, timestamp: new Date().toISOString() });
+    } catch (e: any) {
+      logger.error('wallet: failed to remove token account', { error: String(e), cat: 'wallet' });
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
+  api.post('/wallet/token-accounts/cleanup', async (req, res) => {
+    try {
+      const { maxAgeMs } = req.body as { maxAgeMs?: number };
+      const { getTokenAccountManager } = await import('../wallet/tokenAccountManager.js');
+      const { getConnection } = await import('../wallet/wallet.js');
+      const connection = getConnection();
+      const manager = getTokenAccountManager(connection);
+      await manager.cleanupUnusedAccounts(maxAgeMs);
+      res.json({ ok: true });
+      emit('log', { level: 'info', message: 'Token account cleanup completed', timestamp: new Date().toISOString() });
+    } catch (e: any) {
+      logger.error('wallet: cleanup token accounts failed', { error: String(e), cat: 'wallet' });
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
+  // Drift: status and subaccounts
+  api.get('/drift/status', async (_req: Request, res: Response) => {
+    try {
+      const { DriftService } = await import('../drift/client.js');
+      const svc = DriftService.getInstance();
+      const status = await svc.getStatus();
+      res.json(status);
+    } catch (e: any) {
+      logger.error('drift: status failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.post('/drift/subaccount/switch', async (req: Request, res: Response) => {
+    try {
+      const { id } = req.body as { id: number };
+      const { DriftService } = await import('../drift/client.js');
+      const svc = DriftService.getInstance();
+      const ok = await svc.switchSubaccount(Number(id));
+      res.json({ ok });
+    } catch (e: any) {
+      logger.error('drift: switch subaccount failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Drift: L2 orderbook proxy (DLOB)
+  api.get('/drift/l2', async (req: Request, res: Response) => {
+    try {
+      const q = req.query as any;
+      const marketIndex = Number(q.marketIndex ?? q.marketindex ?? q.index);
+      if (!Number.isFinite(marketIndex)) return res.status(400).json({ error: 'marketIndex required' });
+      const { fetchDlobL2 } = await import('../drift/marketdata.js');
+      const l2 = await fetchDlobL2(marketIndex);
+      res.json(l2 || { bid: [], ask: [] });
+    } catch (e: any) {
+      logger.error('drift: l2 failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.get('/drift/funding', async (req: Request, res: Response) => {
+    try {
+      const q = req.query as any;
+      const marketIndex = Number(q.marketIndex ?? q.marketindex ?? q.index);
+      if (!Number.isFinite(marketIndex)) return res.status(400).json({ error: 'marketIndex required' });
+      const { DriftService } = await import('../drift/client.js');
+      const svc = DriftService.getInstance();
+      const fr = await svc.getFundingRate(marketIndex);
+      res.json(fr || { lastFundingRate: 0, cumulativeFunding: 0 });
+    } catch (e: any) {
+      logger.error('drift: funding failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Leveraged Grid (Drift) strategy control
+  api.get('/strategies/leveraged-grid/status', async (_req: Request, res: Response) => {
+    try {
+      const { DriftGridRegistry } = await import('../drift/execution.js');
+      const list = DriftGridRegistry.list();
+      res.json({ strategies: list });
+    } catch (e: any) {
+      logger.error('drift-grid: status failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.post('/strategies/leveraged-grid/start', async (req: Request, res: Response) => {
+    try {
+      const cfg = req.body as any; // validated on frontend; add backend zod later
+      const { DriftGridRegistry } = await import('../drift/execution.js');
+      const runner = DriftGridRegistry.upsert(cfg);
+      const key = (DriftGridRegistry as any).keyOf(cfg);
+      await DriftGridRegistry.start(key, (CONFIG as any).system?.targetTickTimeMs || 1500);
+      emit('log', { level: 'info', message: `drift-grid: started ${cfg?.name || key}`, timestamp: new Date().toISOString(), context: { cat: 'strategy' } });
+      res.json({ ok: true, key });
+    } catch (e: any) {
+      logger.error('drift-grid: start failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.post('/strategies/leveraged-grid/stop', async (req: Request, res: Response) => {
+    try {
+      const { key } = req.body as { key: string };
+      const { DriftGridRegistry } = await import('../drift/execution.js');
+      const ok = DriftGridRegistry.stop(key);
+      if (ok) emit('log', { level: 'info', message: `drift-grid: stopped ${key}`, timestamp: new Date().toISOString(), context: { cat: 'strategy' } });
+      res.json({ ok });
+    } catch (e: any) {
+      logger.error('drift-grid: stop failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.post('/strategies/leveraged-grid/update', async (req: Request, res: Response) => {
+    try {
+      const cfg = req.body as any;
+      const { DriftGridRegistry } = await import('../drift/execution.js');
+      const key = (DriftGridRegistry as any).keyOf(cfg);
+      const runner = DriftGridRegistry.upsert(cfg);
+      await DriftGridRegistry.start(key, (CONFIG as any).system?.targetTickTimeMs || 1500);
+      emit('log', { level: 'info', message: `drift-grid: updated ${cfg?.name || key}`, timestamp: new Date().toISOString(), context: { cat: 'strategy' } });
+      res.json({ ok: true, key });
+    } catch (e: any) {
+      logger.error('drift-grid: update failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Fee configuration endpoints
+  api.get('/fees/config', async (_req, res) => {
+    try {
+      const { CONFIG } = await import('../utils/config.js');
+      res.json({ fees: CONFIG.fees });
+    } catch (e: any) {
+      logger.error('Failed to get fee config', { error: String(e) });
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
+  api.post('/fees/config', async (req, res) => {
+    try {
+      const { 
+        baseFee, priorityFee, maxFee, dynamicFees, feeMultiplier, minFee, maxFeeMultiplier,
+        feeUpdateInterval, networkCongestionThreshold, jupiterPriorityFee, jupiterMaxAccounts,
+        jupiterDynamicCompute, jupiterLegacyTransaction, jupiterSlippageBps, jupiterMaxSlippageBps
+      } = req.body as {
+        baseFee?: number;
+        priorityFee?: number;
+        maxFee?: number;
+        dynamicFees?: boolean;
+        feeMultiplier?: number;
+        minFee?: number;
+        maxFeeMultiplier?: number;
+        feeUpdateInterval?: number;
+        networkCongestionThreshold?: number;
+        jupiterPriorityFee?: number;
+        jupiterMaxAccounts?: number;
+        jupiterDynamicCompute?: boolean;
+        jupiterLegacyTransaction?: boolean;
+        jupiterSlippageBps?: number;
+        jupiterMaxSlippageBps?: number;
+      };
+      
+      // Update CONFIG.fees
+      if (baseFee !== undefined) CONFIG.fees.baseFee = Math.max(0, baseFee);
+      if (priorityFee !== undefined) CONFIG.fees.priorityFee = Math.max(0, priorityFee);
+      if (maxFee !== undefined) CONFIG.fees.maxFee = Math.max(0, maxFee);
+      if (dynamicFees !== undefined) CONFIG.fees.dynamicFees = dynamicFees;
+      if (feeMultiplier !== undefined) CONFIG.fees.feeMultiplier = Math.max(0.1, Math.min(10, feeMultiplier));
+      if (minFee !== undefined) CONFIG.fees.minFee = Math.max(0, minFee);
+      if (maxFeeMultiplier !== undefined) CONFIG.fees.maxFeeMultiplier = Math.max(1, Math.min(100, maxFeeMultiplier));
+      if (feeUpdateInterval !== undefined) CONFIG.fees.feeUpdateInterval = Math.max(5000, Math.min(300000, feeUpdateInterval));
+      if (networkCongestionThreshold !== undefined) CONFIG.fees.networkCongestionThreshold = Math.max(0.1, Math.min(1.0, networkCongestionThreshold));
+      
+      // Update Jupiter-specific settings
+      if (jupiterPriorityFee !== undefined) CONFIG.fees.jupiterPriorityFee = Math.max(0, jupiterPriorityFee);
+      if (jupiterMaxAccounts !== undefined) CONFIG.fees.jupiterMaxAccounts = Math.max(1, Math.min(256, jupiterMaxAccounts));
+      if (jupiterDynamicCompute !== undefined) CONFIG.fees.jupiterDynamicCompute = jupiterDynamicCompute;
+      if (jupiterLegacyTransaction !== undefined) CONFIG.fees.jupiterLegacyTransaction = jupiterLegacyTransaction;
+      if (jupiterSlippageBps !== undefined) CONFIG.fees.jupiterSlippageBps = Math.max(1, Math.min(1000, jupiterSlippageBps));
+      if (jupiterMaxSlippageBps !== undefined) CONFIG.fees.jupiterMaxSlippageBps = Math.max(1, Math.min(10000, jupiterMaxSlippageBps));
+      
+      res.json({ fees: CONFIG.fees });
+      emit('log', { level: 'info', message: 'Fee configuration updated', timestamp: new Date().toISOString(), context: CONFIG.fees, cat: 'server' });
+    } catch (e: any) {
+      logger.error('server: failed to update fee config', { error: String(e), cat: 'server' });
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
+  api.get('/fees/calculate', async (req, res) => {
+    try {
+      const { transactionType } = req.query as { transactionType?: 'swap' | 'send' | 'strategy' };
+      const { getFeeCalculator } = await import('../utils/feeCalculator.js');
+      const { getConnection } = await import('../wallet/wallet.js');
+      const connection = getConnection();
+      const calculator = getFeeCalculator(connection);
+      
+      const fees = await calculator.calculateFees();
+      const recommendation = calculator.getFeeRecommendation(transactionType || 'strategy');
+      
+      res.json({ 
+        current: fees, 
+        recommendation,
+        transactionType: transactionType || 'strategy'
+      });
+    } catch (e: any) {
+      logger.error('server: failed to calculate fees', { error: String(e), cat: 'server' });
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
+  api.post('/wallet/tokens', async (req, res) => {
+    const { query } = req.body as { query: string };
+    if (!query) return res.status(400).json({ error: 'query required' });
+    const list = await readJson<any[]>(process.env.WALLET_TOKENS_PATH || 'backend/config/walletTokens.json', []);
+    // Resolve using Token API V2
+    try {
+      const results = await (await import('../jupiter/tokenApi.js')).searchTokens(query, true);
+      const entry = results[0];
+      if (!entry) return res.status(404).json({ error: 'Token not found' });
+      if (!list.find((t) => t.id === entry.id)) list.push(entry);
+      await writeJson(CONFIG.walletTokensPath, list);
+      res.json({ walletTokens: list, added: entry });
+      emit('log', { level: 'info', message: `Wallet token added: ${entry.symbol}`, timestamp: new Date().toISOString(), context: entry, cat: 'wallet' });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
+  // In-flight swap tracking
+  const inflightSwaps = new Map<string, number>();
+  const INFLIGHT_TIMEOUT_MS = 20000; // 20 seconds
+
+  api.post('/swap', async (req, res) => {
+    let swapKey: string | undefined;
+    try {
+      const { amount, from, to } = req.body as { amount: number | string; from: string; to: string };
+      const amt = Number(amount);
+      if (!from || !to || !isFinite(amt) || amt <= 0) {
+        return res.status(400).json({ error: 'Invalid parameters. Usage: amount>0, from, to' });
+      }
+      const kp = await ensureWallet(CONFIG.walletPath);
+      swapKey = `${kp.publicKey.toBase58()}:${from}:${to}`;
+      
+      // Check if swap is already in flight
+      const now = Date.now();
+      const lastSwap = inflightSwaps.get(swapKey);
+      if (lastSwap && (now - lastSwap) < INFLIGHT_TIMEOUT_MS) {
+        return res.status(429).json({ error: 'Swap already in progress for this pair. Please wait.' });
+      }
+      
+      // Set in-flight flag
+      inflightSwaps.set(swapKey, now);
+      
+      try {
+        const fromInfo = await resolveMint(from);
+        const toInfo = await resolveMint(to);
+      const raw = Math.round(amt * Math.pow(10, fromInfo.decimals));
+      // Fetch quote to compute expected outAmount for history
+      const { getQuote } = await import('../jupiter/jupiter.js');
+      const quote: any = await getQuote({ inputMint: fromInfo.mint, outputMint: toInfo.mint, amount: raw }, true);
+      // Priority path: execute swap immediately (high-priority limiter lane)
+      const swapResult = await executeSwap(
+        { inputMint: fromInfo.mint, outputMint: toInfo.mint, amount: raw, userPublicKey: kp.publicKey.toBase58(), slippageBps: 100 },
+        (serialized) => signAndSendSerializedTransaction(serialized, kp, undefined, 'swap'),
+        true, // priority
+        toInfo.decimals // output decimals for received amount
+      );
+      const sig = swapResult.signature;
+      const outAmountRaw = Number(quote?.outAmount || 0);
+      const lastPlan = Array.isArray(quote?.routePlan) && quote.routePlan.length > 0 ? quote.routePlan[quote.routePlan.length - 1] : null;
+      const outDec = Number(lastPlan?.swapInfo?.outDecimals ?? toInfo.decimals ?? 6);
+      const toAmount = outAmountRaw / Math.pow(10, outDec);
+      res.json({ signature: sig });
+      addWalletHistory({ type: 'swap', time: new Date().toISOString(), fromToken: from, fromAmount: amt, toToken: to, toAmount, signature: sig });
+      emit('log', { level: 'info', message: `Swap executed: ${amt} ${from} -> ${to} (${sig})`, timestamp: new Date().toISOString() });
+      emit('log', { level: 'info', message: `terminal: swap success ${amt} ${from}->${to} sig=${sig}`, timestamp: new Date().toISOString() });
+      // Trigger wallet refresh after swap operation
+      try {
+        const { createWalletFeed } = await import('./walletFeed.js');
+        const walletFeed = createWalletFeed(io);
+        await walletFeed.refresh();
+      } catch {}
+      } finally {
+        // Clear in-flight flag
+        inflightSwaps.delete(swapKey);
+      }
+    } catch (e: any) {
+      const msg = String(e?.message || e);
+      if (msg === 'WALLET_NOT_FOUND') {
+        return res.status(404).json({ error: 'Wallet not found. Generate one via /api/wallet/generate or terminal: wallet generate' });
+      }
+      logger.error('swap failed', { error: msg });
+      res.status(500).json({ error: msg });
+      emit('log', { level: 'error', message: `Swap failed: ${msg}`, timestamp: new Date().toISOString() });
+      // Clear in-flight flag on error
+      if (swapKey) {
+        inflightSwaps.delete(swapKey);
+      }
+    }
+  });
+
+  // Wrap / Unwrap SOL
+  api.post('/wallet/wrap', async (req, res) => {
+    try {
+      const { amount } = req.body as { amount: number };
+      if (!amount || amount <= 0) return res.status(400).json({ error: 'amount > 0 required' });
+      const { wrapSol } = await import('../wallet/wallet.js');
+      const sig = await wrapSol(Number(amount));
+      emit('log', { level: 'info', message: `terminal: wrap SOL success ${amount} sig=${sig}`, timestamp: new Date().toLocaleTimeString() });
+      res.json({ signature: sig });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+  api.post('/wallet/unwrap', async (_req, res) => {
+    try {
+      const { unwrapSol } = await import('../wallet/wallet.js');
+      const sig = await unwrapSol();
+      emit('log', { level: 'info', message: `terminal: unwrap SOL success sig=${sig}`, timestamp: new Date().toLocaleTimeString() });
+      res.json({ signature: sig });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.get('/watchlist', async (_req, res) => {
+    const watchlist = await readJson<any[]>(CONFIG.watchlistPath, []);
+    res.json({ watchlist, walletHistory: getWalletHistory() });
+  });
+
+  api.post('/watchlist', async (req, res) => {
+    try {
+      const { query } = req.body as { query: string };
+      const list = await readJson<any[]>(CONFIG.watchlistPath, []);
+      let entry: any | null = null;
+      if (query && query.length > 30) {
+        const results = await searchTokens(query, true).catch(() => []);
+        entry = results[0] || { id: query, symbol: query.slice(0, 4).toUpperCase(), name: query, decimals: 6 };
+      } else {
+        try {
+          const results = await searchTokens(query, true);
+          entry = results[0] || null;
+        } catch (e: any) {
+          // Fallback to local token resolver when API is paused/unavailable
+          try {
+            const r = await resolveMint(query);
+            if (r?.mint) entry = { id: r.mint, symbol: query.toUpperCase(), name: query, decimals: (r as any).decimals ?? 6 };
+          } catch {}
+          if (!entry) {
+            const msg = String(e?.message || e);
+            if (msg.includes('API paused')) {
+              emit('log', { level: 'warn', message: 'terminal: watchlist add blocked: API paused (run apistart or provide a mint address)', timestamp: new Date().toISOString() });
+              return res.status(503).json({ error: 'API paused; run apistart or provide a mint address' });
+            }
+            throw e;
+          }
+        }
+      }
+      if (!entry) return res.status(404).json({ error: 'Token not found' });
+      if (!list.find((t) => t.id === entry.id)) list.push(entry);
+      await writeJson(CONFIG.watchlistPath, list);
+      res.json({ watchlist: list, added: entry });
+      io.emit('watchlist-update', list);
+      emit('log', { level: 'info', message: `Added to watchlist: ${entry.symbol || entry.id}`, timestamp: new Date().toISOString(), context: entry });
+      enablePriceFeed(true);
+      try { await pollPriceFeedNow(); } catch {}
+    } catch (e: any) {
+      logger.error('watchlist add failed', { error: String(e) });
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
+  api.delete('/watchlist', async (req, res) => {
+    const { idOrSymbol } = req.body as { idOrSymbol: string };
+    const list = await readJson<any[]>(CONFIG.watchlistPath, []);
+    const upper = idOrSymbol?.toUpperCase?.() || '';
+    const updated = list.filter((t) => {
+      if (typeof t === 'string') {
+        // legacy string entries (symbol or mint)
+        return t !== idOrSymbol && t.toUpperCase() !== upper;
+      }
+      return t.id !== idOrSymbol && (t.symbol?.toUpperCase?.() || '') !== upper;
+    });
+    await writeJson(CONFIG.watchlistPath, updated);
+    res.json({ watchlist: updated, removed: idOrSymbol });
+    io.emit('watchlist-update', updated);
+    emit('log', { level: 'info', message: `Removed from watchlist: ${idOrSymbol}` , timestamp: new Date().toISOString()});
+    if (updated.length === 0) enablePriceFeed(false);
+    else { try { await pollPriceFeedNow(); } catch {} }
+  });
+
+  // Token search endpoint
+  api.get('/tokens/search', async (req, res) => {
+    try {
+      const { query } = req.query as { query: string };
+      if (!query) return res.status(400).json({ error: 'query required' });
+      
+      const results = await searchTokens(query, true);
+      res.json(results);
+    } catch (e: any) {
+      logger.error('token search failed', { error: String(e) });
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
+  api.get('/prices', async (_req, res) => {
+    // Simple in-memory; in a more robust design we'd inject a singleton feed
+    res.json({ message: 'Use websocket for live prices' });
+  });
+
+  // Graph snapshot for frontend visualization
+  api.get('/graph', async (_req, res) => {
+    try {
+      const snap = await getGraphSnapshot(false);
+      res.json(snap);
+    } catch (e: any) {
+      logger.error('graph snapshot failed', { error: String(e?.message || e) });
+      res.status(500).json({ version: 0, timestamp: Date.now(), nodes: [], edges: [] });
+    }
+  });
+
+  // Simple path endpoint for highlighting routes
+  api.get('/graph/path', async (req, res) => {
+    try {
+      const { from, to } = req.query as { from?: string; to?: string };
+      if (!from || !to) return res.status(400).json({ error: 'from and to required' });
+      const { path } = await findPath(from, to);
+      res.json({ path });
+    } catch (e: any) {
+      res.status(500).json({ path: [] });
+    }
+  });
+
+  // Raydium pools (normalized) for arb-rs bridge
+  api.get('/arb/pools/raydium', async (req, res) => {
+    try {
+      // Optional per-request TVL overrides
+      const q = (req.query || {}) as { minUsd?: string; minAmm?: string; minClmm?: string; unknown?: string; anchor?: string };
+      const prevAmm = Number((CONFIG.raydium as any)?.minAmmLiqBase || 0);
+      const prevClmm = Number((CONFIG.raydium as any)?.minClmmLiquidity || 0);
+      const prevAnchors = Array.isArray((CONFIG.raydium as any)?.anchorMints) ? ([...((CONFIG.raydium as any).anchorMints as string[])]) : undefined;
+      const prevUseAnchor = (CONFIG.raydium as any)?.useAnchorDiscovery;
+      let restore = false;
+      try {
+        if (q.minAmm != null) { (CONFIG.raydium as any).minAmmLiqBase = Math.max(0, Number(q.minAmm)); restore = true; }
+        if (q.minClmm != null) { (CONFIG.raydium as any).minClmmLiquidity = Math.max(0, Number(q.minClmm)); restore = true; }
+        if (typeof q.anchor === 'string' && q.anchor.trim()) {
+          const list = q.anchor.split(',').map(s => s.trim()).filter(Boolean);
+          if (list.length) { (CONFIG.raydium as any).anchorMints = list; (CONFIG.raydium as any).useAnchorDiscovery = true; restore = true; }
+        }
+      } catch {}
+      const pools = await getRaydiumPoolsNormalized(false);
+      // Restore config if overridden for this request
+      try { if (restore) { (CONFIG.raydium as any).minAmmLiqBase = prevAmm; (CONFIG.raydium as any).minClmmLiquidity = prevClmm; if (prevAnchors) (CONFIG.raydium as any).anchorMints = prevAnchors; if (prevUseAnchor !== undefined) (CONFIG.raydium as any).useAnchorDiscovery = prevUseAnchor; } } catch {}
+      // Scope pools per configured mode
+      const mode = String((CONFIG.system as any)?.scopePoolsMode || 'jupiter');
+      const scoped = CONFIG.system.scopePools !== false && mode !== 'none';
+      let out = pools;
+      if (scoped) {
+        const set = new Set<string>();
+        if (mode === 'watchlist') {
+          const wl = await readJson<any[]>(CONFIG.watchlistPath, []);
+          for (const t of wl) set.add(typeof t === 'string' ? t : String(t?.id || ''));
+        } else if (mode === 'jupiter') {
+          try {
+            const { loadJupiterTokenMap } = await import('../utils/tokens.js');
+            const jmap = await loadJupiterTokenMap();
+            for (const k of Object.keys(jmap)) set.add(k);
+          } catch {}
+        }
+        const scopedAmm = pools.amm.filter(p => set.size === 0 || set.has(p.mint_a) || set.has(p.mint_b));
+        const scopedClmm = pools.clmm.filter(p => set.size === 0 || set.has(p.mint_a) || set.has(p.mint_b));
+        // If scoping drops everything but upstream has pools, fall back to unscoped to avoid empty graph
+        const upstreamCount = (pools.amm?.length || 0) + (pools.clmm?.length || 0);
+        const scopedCount = (scopedAmm.length || 0) + (scopedClmm.length || 0);
+        out = (upstreamCount > 0 && scopedCount === 0) ? pools : { amm: scopedAmm, clmm: scopedClmm };
+      }
+      res.json(out);
+    } catch (e: any) {
+      logger.error('raydium pools fetch failed', { error: String(e?.message || e) });
+      res.status(503).json({ amm: [], clmm: [] });
+    }
+  });
+
+  // Debug endpoint: compare mints from different sources for a given pool id
+  api.get('/debug/pool/:id', async (req, res) => {
+    try {
+      const id = String(req.params.id || '');
+      if (!id) return res.status(400).json({ error: 'id required' });
+      const { Connection, PublicKey } = await import('@solana/web3.js');
+      const conn = new Connection(CONFIG.rpcUrl, 'confirmed');
+      const pk = new PublicKey(id);
+      const info = await conn.getAccountInfo(pk, { commitment: 'confirmed' } as any);
+      const onchain: any = {};
+      try {
+        if (info?.data && info.data.length >= 72) {
+          const buf = Buffer.from(info.data);
+          const hexA = buf.subarray(8, 40).toString('hex');
+          const hexB = buf.subarray(40, 72).toString('hex');
+          try { onchain.mintA = new PublicKey(Buffer.from(hexA, 'hex')).toBase58(); } catch {}
+          try { onchain.mintB = new PublicKey(Buffer.from(hexB, 'hex')).toBase58(); } catch {}
+        }
+      } catch {}
+      let sdk: any = {};
+      try {
+        const sdkMod = await import('@raydium-io/raydium-sdk-v2').catch(() => null);
+        if (sdkMod && (sdkMod as any).Raydium) {
+          const { Raydium } = sdkMod as any;
+          const owner = (await import('@solana/web3.js')).Keypair.generate();
+          const raydium = await Raydium.load({ connection: conn, owner, disableLoadToken: true });
+          const r = await (raydium as any).api.fetchPoolById({ ids: id }).catch(() => null);
+          const it = Array.isArray(r?.data) ? r.data[0] : (Array.isArray(r) ? r[0] : null);
+          const toB58 = (v: any) => (v?.toBase58?.() || v?.toString?.()?.replace(/^PublicKey\(([^)]+)\)$/, '$1') || (typeof v === 'string' ? v : ''));
+          if (it) sdk = { mintA: toB58(it?.mintA?.address || it?.mintA || it?.tokenMintA), mintB: toB58(it?.mintB?.address || it?.mintB || it?.tokenMintB), programId: String(it?.programId || it?.programID || '') };
+        }
+      } catch {}
+      const pools = await getRaydiumPoolsNormalized(false);
+      const norm = { amm: pools.amm.find(p => p.id === id), clmm: pools.clmm.find(p => p.id === id) };
+      res.json({ id, onchain, sdk, norm });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.get('/arb/pools/orca', async (_req, res) => {
+    try {
+      const pools = await getOrcaPoolsCached(false);
+      // Scope pools per configured mode
+      const mode = String((CONFIG.system as any)?.scopePoolsMode || 'jupiter');
+      const scoped = CONFIG.system.scopePools !== false && mode !== 'none';
+      let out = pools;
+      if (scoped) {
+        const set = new Set<string>();
+        if (mode === 'watchlist') {
+          const wl = await readJson<any[]>(CONFIG.watchlistPath, []);
+          for (const t of wl) set.add(typeof t === 'string' ? t : String(t?.id || ''));
+        } else if (mode === 'jupiter') {
+          try {
+            const { loadJupiterTokenMap } = await import('../utils/tokens.js');
+            const jmap = await loadJupiterTokenMap();
+            for (const k of Object.keys(jmap)) set.add(k);
+          } catch {}
+        }
+        out = {
+          amm: pools.amm.filter(p => set.size === 0 || set.has(p.mint_a) || set.has(p.mint_b)),
+          clmm: pools.clmm.filter(p => set.size === 0 || set.has(p.mint_a) || set.has(p.mint_b)),
+        };
+      }
+      res.json(out);
+    } catch (e: any) {
+      logger.error('orca pools fetch failed', { error: String(e?.message || e) });
+      res.status(503).json({ amm: [], clmm: [] });
+    }
+  });
+
+  // Force refresh pools (Raydium and/or Orca)
+  // Simple debounce to prevent spammed refreshes
+  const lastRefresh: { raydium: number; orca: number } = { raydium: 0, orca: 0 };
+  api.post('/arb/pools/refresh', async (req, res) => {
+    try {
+      const { source } = (req.body || {}) as { source?: 'raydium' | 'orca' | 'all' };
+      const wantRay = !source || source === 'all' || source === 'raydium';
+      const wantOrc = !source || source === 'all' || source === 'orca';
+      const t0 = Date.now();
+      const minGap = Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000);
+      const now = Date.now();
+      const tasks: Array<Promise<any>> = [];
+      let ray: any = null; let orc: any = null;
+      if (wantRay && now - lastRefresh.raydium >= minGap) {
+        lastRefresh.raydium = now;
+        tasks.push(getRaydiumPoolsNormalized(true).then(r => { ray = r; }).catch(() => { ray = { amm: [], clmm: [] }; }));
+      }
+      if (wantOrc && now - lastRefresh.orca >= minGap) {
+        lastRefresh.orca = now;
+        tasks.push(getOrcaPoolsCached(true).then(o => { orc = o; }).catch(() => { orc = { amm: [], clmm: [] }; }));
+      }
+      await Promise.all(tasks);
+      // After pools refresh, build a fresh graph snapshot and emit to clients
+      let graph: any = null;
+      try {
+        const snap = await (await import('./graph.js')).getGraphSnapshot(true);
+        graph = { version: snap.version, nodes: snap.nodes.length, edges: snap.edges.length };
+        try { io.emit('graph-snapshot', snap); } catch {}
+      } catch {}
+      const ms = Date.now() - t0;
+      res.json({ ok: true, ms, raydium: ray ? { amm: ray.amm.length, clmm: ray.clmm.length } : null, orca: orc ? { amm: orc.amm.length, clmm: orc.clmm.length } : null, graph });
+      try { emit('log', { level: 'info', message: `arb:pools refresh ${source||'all'} ok ms=${ms}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+    } catch (e: any) {
+      logger.error('pools refresh failed', { error: String(e?.message || e) });
+      res.status(500).json({ ok: false, error: String(e?.message || e) });
+    }
+  });
+
+  // Arbitrage opportunities proxy to Rust service (MVP)
+  api.get('/arb/opportunities', async (_req, res) => {
+    try {
+      const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
+      const started = Date.now();
+      logger.info(`api.request GET /arb-service/opportunities`, { url: `${host}/opportunities`, cat: 'api' });
+      const r = await (async () => { const ac = new AbortController(); const t = setTimeout(() => ac.abort('timeout'), 7000); try { return await fetch(`${host}/opportunities`, { headers: { 'accept': 'application/json' }, signal: ac.signal }); } finally { clearTimeout(t); } })();
+      logger.info(`api.response GET /arb-service/opportunities ${r.status} ${Date.now()-started}ms`, { status: r.status, cat: 'api' });
+      if (!r.ok) return res.status(502).json({ error: `arb service ${r.status}` });
+      const json = await r.json();
+      res.json(json);
+    } catch (e: any) {
+      logger.error('arb opportunities proxy failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: 'arb service unreachable' });
+    }
+  });
+
+  // Optional: Arbitrage service health passthrough
+  api.get('/arb/health', async (_req, res) => {
+    try {
+      const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
+      logger.info(`api.request GET /arb-service/health`, { url: `${host}/health`, cat: 'api' });
+      const started = Date.now();
+      const r = await fetch(`${host}/health`, { headers: { 'accept': 'application/json' } });
+      logger.info(`api.response GET /arb-service/health ${r.status} ${Date.now()-started}ms`, { status: r.status, cat: 'api' });
+      const json: any = await r.json();
+      // Health up/down transition logging
+      const status = (json?.status || (r.ok ? 'up' : 'down')).toString();
+      if (status !== lastArbHealthStatus) {
+        lastArbHealthStatus = status;
+        emit('log', { level: status === 'up' ? 'info' : 'warn', message: `arb:health ${status}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } });
+      }
+      res.status(r.status).json(json);
+    } catch (e: any) {
+      res.status(503).json({ status: 'down' });
+    }
+  });
+
+  // Arbitrage config GET passthrough
+  api.get('/arb/config', async (_req, res) => {
+    try {
+      const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
+      logger.info(`api.request GET /arb-service/config`, { url: `${host}/config`, cat: 'api' });
+      const started = Date.now();
+      const r = await (async () => { const ac = new AbortController(); const t = setTimeout(() => ac.abort('timeout'), 7000); try { return await fetch(`${host}/config`, { headers: { 'accept': 'application/json' }, signal: ac.signal }); } finally { clearTimeout(t); } })();
+      logger.info(`api.response GET /arb-service/config ${r.status} ${Date.now()-started}ms`, { status: r.status, cat: 'api' });
+      let json: any = {};
+      try {
+        const ct = r.headers.get('content-type') || '';
+        if (ct.includes('application/json')) json = await r.json();
+        else json = { ok: r.ok, text: await r.text().catch(() => '') };
+      } catch { json = {}; }
+      // Persist a local copy for durability
+      try { await writeJson('backend/config/arbConfig.json', json); } catch {}
+      try {
+        const mode = (json?.execution_mode || 'unknown').toString();
+        const minBps = typeof json?.min_profit_bps === 'number' ? json.min_profit_bps : undefined;
+        const allowLen = Array.isArray(json?.dex_allowlist) ? json.dex_allowlist.length : undefined;
+        const denyLen = Array.isArray(json?.dex_denylist) ? json.dex_denylist.length : undefined;
+        emit('log', { level: 'info', message: `arb:config mode=${mode}${minBps!==undefined?` minBps=${minBps}`:''}${allowLen!==undefined?` allow=${allowLen}`:''}${denyLen!==undefined?` deny=${denyLen}`:''}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } });
+      } catch {}
+      res.status(r.status).json(json);
+    } catch (e: any) {
+      // Fallback to locally persisted config, if any
+      try {
+        const local = await readJson<any>('backend/config/arbConfig.json', {} as any);
+        if (local && Object.keys(local).length > 0) return res.status(200).json(local);
+      } catch {}
+      res.status(503).json({ ok: false, error: 'arb service unreachable' });
+    }
+  });
+
+  // Arbitrage metrics passthroughs
+  api.get('/arb/metrics', async (_req, res) => {
+    try {
+      const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
+      logger.info(`api.request GET /arb-service/metrics`, { url: `${host}/metrics`, cat: 'api' });
+      const started = Date.now();
+      const r = await (async () => { const ac = new AbortController(); const t = setTimeout(() => ac.abort('timeout'), 3000); try { return await fetch(`${host}/metrics`, { signal: ac.signal }); } finally { clearTimeout(t); } })();
+      const dur = Date.now()-started;
+      logger.info(`api.response GET /arb-service/metrics ${r.status} ${dur}ms`, { status: r.status, cat: 'api' });
+      try { arbLatency.metrics.push(dur); if (arbLatency.metrics.length > 200) arbLatency.metrics.shift(); } catch {}
+      const text = await r.text();
+      res.status(r.status).type('text/plain').send(text);
+    } catch (e: any) {
+      res.status(503).type('text/plain').send('');
+    }
+  });
+
+  api.get('/arb/metrics/json', async (_req, res) => {
+    try {
+      const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
+      logger.info(`api.request GET /arb-service/metrics/json`, { url: `${host}/metrics/json`, cat: 'api' });
+      const started = Date.now();
+      const r = await (async () => { const ac = new AbortController(); const t = setTimeout(() => ac.abort('timeout'), 3000); try { return await fetch(`${host}/metrics/json`, { headers: { 'accept': 'application/json' }, signal: ac.signal }); } finally { clearTimeout(t); } })();
+      const dur = Date.now()-started;
+      logger.info(`api.response GET /arb-service/metrics/json ${r.status} ${dur}ms`, { status: r.status, cat: 'api' });
+      try { arbLatency.metrics.push(dur); if (arbLatency.metrics.length > 200) arbLatency.metrics.shift(); } catch {}
+      let json: any = {};
+      try { json = await r.json(); } catch { json = {}; }
+      try {
+        const pools = getPoolsMetrics();
+        json = { ...json, pools };
+      } catch {}
+      try {
+        const snap = await getGraphSnapshot(false);
+        json = { ...json, backend_graph_nodes: snap.nodes.length, backend_graph_edges: snap.edges.length, backend_graph_timestamp: snap.timestamp };
+      } catch {}
+      try {
+        json = { ...json, sanity: (CONFIG as any).sanity };
+      } catch {}
+      res.status(r.status).json(json);
+    } catch (e: any) {
+      try {
+        const pools = getPoolsMetrics();
+        try {
+          const snap = await getGraphSnapshot(false);
+          return res.status(200).json({ pools, backend_graph_nodes: snap.nodes.length, backend_graph_edges: snap.edges.length, backend_graph_timestamp: snap.timestamp });
+        } catch {}
+        return res.status(200).json({ pools });
+      } catch {}
+      res.status(503).json({});
+    }
+  });
+
+  // Simulate arbitrage route with Jupiter v6 quotes
+  api.post('/arb/simulate', async (req, res) => {
+    try {
+      const { path, sizeInMint, size, slippageBps = 100 } = req.body as { path: string[]; sizeInMint?: string; size?: number; slippageBps?: number };
+      if (!Array.isArray(path) || path.length < 2) return res.status(400).json({ error: 'path length >= 2 required' });
+      const { getV6Quote } = await import('../jupiter/v6.js');
+      const cid = `arb-${Date.now().toString(36)}-${Math.floor(Math.random()*1e6).toString(36)}`;
+      emit('log', { level: 'info', message: `pretrade:arb simulate start cid=${cid} hops=${path.length-1} size=${size}${sizeInMint?` sizeInMint=${sizeInMint}`:''} slippageBps=${slippageBps}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+      const legs: any[] = [];
+      const tStartAll = Date.now();
+      for (let i = 0; i < path.length - 1; i += 1) {
+        const inputMint = path[i];
+        const outputMint = path[i + 1];
+        const amt = (i === 0) ? Math.max(1, Math.floor(Number(size) || 0)) : 0; // first hop amount provided; later we could chain outputs
+        const t0 = Date.now();
+        const quote = await getV6Quote(inputMint, outputMint, amt, slippageBps);
+        const qDur = Date.now() - t0;
+        legs.push({ inputMint, outputMint, quote });
+        const outAmt = Number(quote?.outAmount || 0);
+        const inAmt = Number(quote?.inAmount || 0) || amt;
+        const outDec = Number(quote?.routePlan?.[quote?.routePlan?.length - 1]?.swapInfo?.outDecimals ?? '');
+        emit('log', { level: 'info', message: `pretrade:arb leg${i+1} cid=${cid} ${inputMint.slice(0,4)}->${outputMint.slice(0,4)} in=${inAmt} out=${outAmt}${outDec?` outDec=${outDec}`:''} durMs=${qDur}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+      }
+      // compute rough net bps (placeholder, better from quotes)
+      let rateProd = 1.0;
+      for (let i = 0; i < legs.length; i += 1) {
+        const l = legs[i];
+        const outRaw = Number(l.quote?.outAmount || 0);
+        const inRaw = Number(l.quote?.inAmount || 0) || (i === 0 ? Number(size) || 0 : 0);
+        if (outRaw > 0 && inRaw > 0) rateProd *= (outRaw / inRaw);
+      }
+      const netBps = Math.floor((rateProd - 1.0) * 10_000);
+      emit('log', { level: 'info', message: `pretrade:arb simulate result cid=${cid} hops=${legs.length} netBps=${netBps} totalMs=${Date.now()-tStartAll}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+      res.json({ legs, netBps });
+    } catch (e: any) {
+      logger.error('arb simulate failed', { error: String(e?.message || e) });
+      emit('log', { level: 'error', message: `terminal: arb simulate failed ${String(e?.message || e)}`, timestamp: new Date().toISOString() });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Execute arbitrage route: compose single v0 transaction with all hops
+  api.post('/arb/execute', async (req, res) => {
+    try {
+      const { path, size, sizeUsd, slippageBps = 100, priorityFeeMicroLamports = 0 } = req.body as { path: string[]; size?: number; sizeUsd?: number; slippageBps?: number; priorityFeeMicroLamports?: number };
+      if (!Array.isArray(path) || path.length < 2) return res.status(400).json({ error: 'path length >= 2 required' });
+      const kp = await ensureWallet(CONFIG.walletPath);
+      const { getV6Quote, getSwapInstructions, buildCombinedTransaction } = await import('../jupiter/v6.js');
+      const { getAssociatedTokenAddress, createAssociatedTokenAccountIdempotentInstruction, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } = await import('@solana/spl-token');
+      const connection = getConnection();
+      // Type-safe read of arb service config
+      type ArbServiceConfig = { execution_mode?: string };
+      let execMode = 'simulate';
+      try {
+        const cfgResp = await fetch((process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010') + '/config', { headers: { 'accept': 'application/json' } })
+          .then(r => r.json() as Promise<unknown>)
+          .catch(() => ({} as unknown));
+        const cfg = (cfgResp as Partial<ArbServiceConfig>) || {};
+        execMode = String(cfg.execution_mode || 'simulate');
+      } catch {}
+      const cid = `arb-${Date.now().toString(36)}-${Math.floor(Math.random()*1e6).toString(36)}`;
+      emit('log', { level: 'info', message: `pretrade:arb execute start cid=${cid} hops=${path.length-1} size=${size??'-'} sizeUsd=${sizeUsd??'-'} mode=${execMode} slipBps=${slippageBps} cuPrice=${priorityFeeMicroLamports}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+      const legs: any[] = [];
+      // Build legs
+      for (let i = 0; i < path.length - 1; i += 1) {
+        const inputMint = path[i];
+        const outputMint = path[i + 1];
+        // Compute first hop amount in smallest units. If sizeUsd provided and first output is USDC, convert.
+        let amt = 0;
+        if (i === 0) {
+          if (typeof size === 'number' && size > 0) {
+            // Convert tokens -> smallest by resolving decimals when possible
+            const inInfo = await resolveMint(inputMint);
+            amt = Math.max(1, Math.floor(size * Math.pow(10, inInfo.decimals || 9)));
+          } else if (typeof sizeUsd === 'number' && sizeUsd > 0) {
+            const inInfo = await resolveMint(inputMint);
+            const price = getPriceByMint(inputMint)?.usdc || null;
+            if (!price) return res.status(400).json({ error: `no price for ${inputMint}` });
+            const tokens = sizeUsd / price;
+            amt = Math.max(1, Math.floor(tokens * Math.pow(10, inInfo.decimals || 9)));
+          } else {
+            return res.status(400).json({ error: 'size or sizeUsd required' });
+          }
+        } else {
+          amt = Number(legs[i - 1]?.quote?.outAmount || 0);
+        }
+        const t0 = Date.now();
+        const quote = await getV6Quote(inputMint, outputMint, amt, slippageBps);
+        const qDur = Date.now() - t0;
+        const instructions: any = await getSwapInstructions(quote, kp.publicKey.toBase58(), true);
+        legs.push({ inputMint, outputMint, quote, instructions });
+        const outAmt = Number(quote?.outAmount || 0);
+        const inAmt = Number(quote?.inAmount || 0) || amt;
+        const ixCount = ((instructions && instructions.setupInstructions?.length) || 0) + ((instructions && instructions.cleanupInstructions?.length) || 0) + ((instructions && instructions.swapInstruction) ? 1 : 0);
+        emit('log', { level: 'info', message: `pretrade:arb leg${i+1} cid=${cid} ${inputMint.slice(0,4)}->${outputMint.slice(0,4)} in=${inAmt} out=${outAmt} ixs=${ixCount} qMs=${qDur}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+      }
+      if (execMode === 'simulate') {
+        emit('log', { level: 'info', message: `pretrade:arb decision skip execute (simulate mode)`, timestamp: new Date().toISOString() });
+        return res.json({ simulated: true, legs });
+      }
+      // Ensure ATAs for all path mints (both input and output of each hop), and any fee/intermediate recipient mints, excluding native SOL
+      const extraSetup: any[] = [];
+      try {
+        const { PublicKey } = await import('@solana/web3.js');
+        const SOL = 'So11111111111111111111111111111111111111112';
+        const mintSet = new Set<string>();
+        for (let i = 0; i < path.length; i += 1) { const m = String(path[i] || ''); if (m && m !== SOL) mintSet.add(m); }
+        // Extract mints from routePlan (output mints, fee mints)
+        try {
+          const outMints: string[] = [];
+          for (const leg of legs) {
+            const rp = (leg?.quote?.routePlan || []) as any[];
+            for (const step of rp) {
+              const out = String(step?.swapInfo?.outputMint || '');
+              if (out && out !== SOL) outMints.push(out);
+              const fee = String(step?.swapInfo?.feeMint || '');
+              if (fee && fee !== SOL) outMints.push(fee);
+            }
+          }
+          for (const m of outMints) mintSet.add(m);
+        } catch {}
+        for (const m of mintSet) {
+          try {
+            const mintPk = new PublicKey(m);
+            const info = await connection.getAccountInfo(mintPk);
+            const isToken2022 = info?.owner?.toBase58?.() === TOKEN_2022_PROGRAM_ID.toBase58();
+            const tokenProgramId = isToken2022 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+            const ata = await getAssociatedTokenAddress(mintPk, kp.publicKey, false, tokenProgramId);
+            extraSetup.push(createAssociatedTokenAccountIdempotentInstruction(kp.publicKey, ata, kp.publicKey, mintPk, tokenProgramId));
+            emit('log', { level: 'info', message: `pretrade:arb ata precreate mint=${m} prog=${tokenProgramId.toBase58()}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+          } catch {}
+        }
+      } catch {}
+      const tx = await buildCombinedTransaction(connection, kp.publicKey, legs, priorityFeeMicroLamports, extraSetup);
+      try {
+        // Log a concise summary of ATA-related instructions for diagnostics
+        const { ASSOCIATED_TOKEN_PROGRAM_ID } = await import('@solana/spl-token');
+        const msgAny: any = tx.message as any;
+        const keysDump: string[] = [];
+        const programDump: string[] = [];
+        const compiled: any[] = (msgAny.compiledInstructions || []);
+        const acctKeys: string[] = ((msgAny.staticAccountKeys || msgAny.accountKeys || []).map((k: any) => (k?.toBase58 ? k.toBase58() : String(k))));
+        for (const ci of compiled) {
+          const pid = acctKeys[ci.programIdIndex] || '';
+          if (pid === ASSOCIATED_TOKEN_PROGRAM_ID.toBase58()) {
+            programDump.push(pid);
+            const ixKeys = (ci.accounts || []).map((i: number) => acctKeys[i] || '').join(',');
+            keysDump.push(ixKeys);
+          }
+        }
+        if (programDump.length) {
+          emit('log', { level: 'info', message: `pretrade:arb ata ix summary count=${programDump.length}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+          for (const k of keysDump.slice(0, 5)) {
+            emit('log', { level: 'info', message: `pretrade:arb ata ix keys ${k}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+          }
+        }
+      } catch {}
+      const ixLen = (tx.message as any).compiledInstructions?.length || 'n/a';
+      emit('log', { level: 'info', message: `pretrade:arb tx built cid=${cid} ixs=${ixLen} alts=unknown`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+      tx.sign([kp]);
+      let msgSize = 0;
+      try { msgSize = tx.serialize().length; } catch {}
+      if (msgSize) emit('log', { level: 'info', message: `pretrade:arb tx size bytes=${msgSize}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+      // Preflight simulate to capture logs before submission
+      try {
+        const sim = await connection.simulateTransaction(tx, { replaceRecentBlockhash: true, sigVerify: true } as any);
+        const logs = (sim as any)?.value?.logs || [];
+        if (Array.isArray(logs) && logs.length) {
+          emit('log', { level: 'info', message: `pretrade:arb simulate logs cid=${cid} lines=${logs.length}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+          for (const line of logs.slice(0, 50)) {
+            emit('log', { level: 'info', message: `pretrade:arb log ${line}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+          }
+        }
+      } catch {}
+      let sig: string = '';
+      try {
+        sig = await connection.sendTransaction(tx, { skipPreflight: false, maxRetries: 3 });
+        await connection.confirmTransaction(sig, 'finalized');
+      } catch (e: any) {
+        // Attempt to extract logs from SendTransactionError
+        try {
+          // Some versions expose logs directly
+          const logs = (e?.logs && Array.isArray(e.logs)) ? e.logs : [];
+          if (logs.length) {
+            emit('log', { level: 'error', message: `pretrade:arb send logs cid=${cid} lines=${logs.length}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+            for (const line of logs.slice(0, 50)) {
+              emit('log', { level: 'error', message: `pretrade:arb log ${line}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+            }
+          }
+        } catch {}
+        try {
+          if (typeof e?.getLogs === 'function') {
+            const logs = await e.getLogs(connection);
+            if (Array.isArray(logs) && logs.length) {
+              emit('log', { level: 'error', message: `pretrade:arb send logs(cid=${cid}) lines=${logs.length}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+              for (const line of logs.slice(0, 50)) {
+                emit('log', { level: 'error', message: `pretrade:arb log ${line}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+              }
+            }
+          }
+        } catch {}
+        // Parse failing instruction index and dump the failing ix program/keys using in-scope tx
+        try {
+          const msg = String(e?.message || '');
+          const m = /Instruction\s+(\d+)/i.exec(msg);
+          if (m) {
+            const idx = Number(m[1]);
+            emit('log', { level: 'error', message: `pretrade:arb failing instruction index=${idx}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+            const { ASSOCIATED_TOKEN_PROGRAM_ID } = await import('@solana/spl-token');
+            const { PublicKey } = await import('@solana/web3.js');
+            const msgAny: any = tx.message as any;
+            const compiled: any[] = (msgAny.compiledInstructions || []);
+            let acctKeys: string[] = ((msgAny.staticAccountKeys || msgAny.accountKeys || []).map((k: any) => (k?.toBase58 ? k.toBase58() : String(k))));
+            // Resolve address lookup tables to get full key list for v0 messages
+            try {
+              const lookups: any[] = Array.isArray(msgAny.addressTableLookups) ? msgAny.addressTableLookups : [];
+              if (lookups.length) {
+                const writableFromLookups: string[] = [];
+                const readonlyFromLookups: string[] = [];
+                for (const l of lookups) {
+                  try {
+                    const { value } = await connection.getAddressLookupTable(new PublicKey(l.accountKey));
+                    const addrs: any[] = (value?.state?.addresses || []);
+                    for (const wi of (l.writableIndexes || [])) {
+                      const a = addrs[wi];
+                      writableFromLookups.push(a?.toBase58 ? a.toBase58() : String(a));
+                    }
+                    for (const ri of (l.readonlyIndexes || [])) {
+                      const a = addrs[ri];
+                      readonlyFromLookups.push(a?.toBase58 ? a.toBase58() : String(a));
+                    }
+                  } catch {}
+                }
+                acctKeys = [...acctKeys, ...writableFromLookups, ...readonlyFromLookups];
+              }
+            } catch {}
+            const ci = compiled[idx];
+            if (ci) {
+              const pid = acctKeys[ci.programIdIndex] || '';
+              const ixKeyIdx: number[] = (ci.accounts || []).map((i: number) => i);
+              const ixKeys = ixKeyIdx.map((i: number) => acctKeys[i] || '');
+              emit('log', { level: 'error', message: `pretrade:arb ix${idx} program=${pid}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+              emit('log', { level: 'error', message: `pretrade:arb ix${idx} keys=${ixKeys.join(',')}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+              if (pid === ASSOCIATED_TOKEN_PROGRAM_ID.toBase58()) {
+                emit('log', { level: 'error', message: `pretrade:arb ix${idx} keyIdx=${ixKeyIdx.join(',')} progIdx=${ci.programIdIndex}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+                if (ixKeys.length >= 4) {
+                  emit('log', { level: 'error', message: `pretrade:arb ix${idx} owner=${ixKeys[2]} mint=${ixKeys[3]}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+                }
+              }
+            }
+          }
+        } catch {}
+        throw e;
+      }
+      emit('log', { level: 'info', message: `trade:arb submitted cid=${cid} sig=${sig}`, timestamp: new Date().toISOString(), context: { cat: 'trade' } });
+      res.json({ signature: sig });
+    } catch (e: any) {
+      // Capture logs where possible
+      try {
+        const msg = String(e?.message || e);
+        // Try immediate logs
+        const logs = (e?.logs && Array.isArray(e.logs)) ? e.logs : [];
+        if (logs.length) {
+          emit('log', { level: 'error', message: `pretrade:arb send logs (caught) lines=${logs.length}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+          for (const line of logs.slice(0, 50)) {
+            emit('log', { level: 'error', message: `pretrade:arb log ${line}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+          }
+        }
+        // Try getLogs() API for SendTransactionError
+        try {
+          if (typeof e?.getLogs === 'function') {
+            const connection = getConnection();
+            const more = await e.getLogs(connection);
+            if (Array.isArray(more) && more.length) {
+              emit('log', { level: 'error', message: `pretrade:arb send logs (getLogs) lines=${more.length}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+              for (const line of more.slice(0, 50)) {
+                emit('log', { level: 'error', message: `pretrade:arb log ${line}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+              }
+            }
+          }
+        } catch {}
+        // Note: failing instruction index and key dump is already logged in the inner send catch where tx is in scope
+      } catch {}
+      logger.error('arb execute failed', { error: String(e?.message || e) });
+      emit('log', { level: 'error', message: `terminal: arb execute failed ${String(e?.message || e)}`, timestamp: new Date().toISOString() });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Background: poll arb metrics and emit log snapshots
+  try {
+    let lastActive = -1;
+    let lastDet = -1;
+    let lastOppSig = '';
+    let lastDetWarnAt = 0;
+    const stallThresholdMs = 30_000;
+    let lastHeartbeatAt = 0;
+    let lastConfigAt = 0;
+    let zeroDetWarnedAt = 0;
+    setInterval(async () => {
+      try {
+        const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
+        const t0 = Date.now();
+        const r = await (async () => { const ac = new AbortController(); const t = setTimeout(() => ac.abort('timeout'), 3000); try { return await fetch(`${host}/metrics/json`, { headers: { 'accept': 'application/json' }, signal: ac.signal }); } finally { clearTimeout(t); } })();
+        const dur = Date.now() - t0;
+        if (!r.ok) {
+          emit('log', { level: 'warn', message: `pretrade:arb metrics http ${r.status} durMs=${dur}`, timestamp: new Date().toISOString() });
+          return;
+        }
+        let m: any = {};
+        try { m = await r.json(); } catch (e: any) {
+          emit('log', { level: 'warn', message: `pretrade:arb metrics json parse error: ${String(e?.message || e)}`, timestamp: new Date().toISOString() });
+          return;
+        }
+        try { arbLatency.metrics.push(dur); if (arbLatency.metrics.length > 200) arbLatency.metrics.shift(); } catch {}
+        if (typeof m?.opportunities_active === 'number' && m.opportunities_active !== lastActive) {
+          lastActive = m.opportunities_active;
+          emit('log', { level: 'info', message: `pretrade:arb opps=${lastActive} maxBps=${m?.max_profit_bps ?? 0} nodes=${m?.graph_nodes ?? 0} edges=${m?.graph_edges ?? 0}`, timestamp: new Date().toISOString() });
+        }
+        if (typeof m?.last_detection_ms === 'number') {
+          if (m.last_detection_ms !== lastDet) {
+            lastDet = m.last_detection_ms;
+            emit('log', { level: 'info', message: `pretrade:arb lastDetection=${new Date(m.last_detection_ms).toLocaleTimeString()}`, timestamp: new Date().toISOString() });
+            lastDetWarnAt = 0; // reset stall warning on fresh detection
+          }
+          const age = Date.now() - m.last_detection_ms;
+          if (age > stallThresholdMs && Date.now() - lastDetWarnAt > stallThresholdMs) {
+            lastDetWarnAt = Date.now();
+            emit('log', { level: 'warn', message: `pretrade:arb stalled ageMs=${age}`, timestamp: new Date().toISOString() });
+          }
+          if ((m.last_detection_ms === 0) && (Date.now() - zeroDetWarnedAt > 20000)) {
+            zeroDetWarnedAt = Date.now();
+            emit('log', { level: 'warn', message: `pretrade:arb no detections yet (last_detection_ms=0). Verify arb service is enabled and pools available.`, timestamp: new Date().toISOString() });
+          }
+          if (Date.now() - lastHeartbeatAt > 15000) {
+            lastHeartbeatAt = Date.now();
+            emit('log', { level: 'info', message: `pretrade:arb heartbeat ageMs=${age} active=${m?.opportunities_active ?? 0}`, timestamp: new Date().toISOString() });
+          }
+        }
+        // Poll opportunities and emit summary if changed
+        try {
+          const o0 = Date.now();
+          const or = await (async () => { const ac = new AbortController(); const t = setTimeout(() => ac.abort('timeout'), 4000); try { return await fetch(`${host}/opportunities`, { headers: { 'accept': 'application/json' }, signal: ac.signal }); } finally { clearTimeout(t); } })();
+          const odur = Date.now() - o0;
+          if (or.ok) {
+            const payload: unknown = await or.json();
+            type ArbOpportunity = { profit_bps?: number; net_bps?: number; path?: string[] };
+            const items: ArbOpportunity[] = Array.isArray((payload as any)?.items)
+              ? ((payload as any).items as ArbOpportunity[])
+              : (Array.isArray(payload) ? (payload as ArbOpportunity[]) : []);
+            const top: ArbOpportunity[] = items.slice(0, 3);
+            const sig = top.map((o: ArbOpportunity) => `${Math.round((o.profit_bps ?? o.net_bps ?? 0))}:${(o.path || []).join('>')}`).join('|');
+            if (sig !== lastOppSig) {
+              lastOppSig = sig;
+              const lines = top.map((o: ArbOpportunity, i: number) => `#${i+1} bps=${Math.round((o.profit_bps ?? o.net_bps ?? 0))} hops=${(o.path || []).length-1} path=${(o.path || []).join('->')}`);
+              emit('log', { level: 'info', message: `pretrade:arb opps:update ${top.length} top=${lines.join(' | ')} oMs=${odur}`, timestamp: new Date().toISOString() });
+              try { arbLatency.opps.push(odur); if (arbLatency.opps.length > 200) arbLatency.opps.shift(); } catch {}
+              const topBps = Math.round((top?.[0]?.profit_bps ?? top?.[0]?.net_bps ?? 0));
+              if (topBps >= 30) {
+                emit('log', { level: 'info', message: `pretrade:arb top>=30bps bps=${topBps} hops=${(top?.[0]?.path||[]).length-1}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+              }
+            }
+          }
+        } catch {}
+        // Periodic latency summary (once per 60s)
+        if (Date.now() - arbLatency.lastSummaryAt > 60000) {
+          arbLatency.lastSummaryAt = Date.now();
+          const summarize = (arr: number[]) => {
+            if (!arr.length) return { n: 0 } as any;
+            const sorted = [...arr].sort((a, b) => a - b);
+            const p = (q: number) => sorted[Math.min(sorted.length - 1, Math.floor(q * (sorted.length - 1)))];
+            const sum = arr.reduce((a, b) => a + b, 0);
+            return { n: arr.length, min: sorted[0], p50: p(0.5), p95: p(0.95), max: sorted[sorted.length - 1], avg: Math.round((sum / arr.length) * 10) / 10 };
+          };
+          const m = summarize(arbLatency.metrics);
+          const o = summarize(arbLatency.opps);
+          emit('log', { level: 'info', message: `arb:latency metrics n=${m.n||0}${m.n?` min=${m.min} p50=${m.p50} p95=${m.p95} max=${m.max} avg=${m.avg}`:''} | opps n=${o.n||0}${o.n?` min=${o.min} p50=${o.p50} p95=${o.p95} max=${o.max} avg=${o.avg}`:''}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } });
+        }
+        // Sample arb config occasionally to report enabled state
+        try {
+          if (Date.now() - lastConfigAt > 30000) {
+            lastConfigAt = Date.now();
+            const rc = await (async () => { const ac = new AbortController(); const t = setTimeout(() => ac.abort('timeout'), 3000); try { return await fetch(`${host}/config`, { headers: { 'accept': 'application/json' }, signal: ac.signal }); } finally { clearTimeout(t); } })();
+            if (rc.ok) {
+              const cj: any = await rc.json().catch(() => ({}));
+              if (typeof cj?.enabled === 'boolean') emit('log', { level: 'info', message: `pretrade:arb config enabled=${cj.enabled}`, timestamp: new Date().toISOString() });
+            }
+          }
+        } catch {}
+      } catch {}
+    }, 3000);
+  } catch {}
+
+  // Arbitrage config passthrough (min profit bps, DEX allowlist)
+  api.post('/arb/config', async (req, res) => {
+    try {
+      const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
+      logger.info(`api.request POST /arb-service/config`, { url: `${host}/config`, cat: 'api' });
+      const started = Date.now();
+      const r = await (async () => { const ac = new AbortController(); const t = setTimeout(() => ac.abort('timeout'), 7000); try { return await fetch(`${host}/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(req.body || {}), signal: ac.signal }); } finally { clearTimeout(t); } })();
+      logger.info(`api.response POST /arb-service/config ${r.status} ${Date.now()-started}ms`, { status: r.status, cat: 'api' });
+      let json: any = {};
+      try { json = await r.json(); } catch { json = {}; }
+      try {
+        const changedKeys = Object.keys(req.body || {});
+        emit('log', { level: r.ok ? 'info' : 'warn', message: `arb:config update keys=[${changedKeys.join(',')}] status=${r.status}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } });
+        emit('log', { level: r.ok ? 'info' : 'warn', message: `terminal: Arbitrage configuration ${r.ok ? 'updated' : 'update failed'} (${r.status})`, timestamp: new Date().toISOString() });
+      } catch {}
+      // Persist last requested config locally regardless of remote status
+      try { await writeJson('backend/config/arbConfig.json', { ...(req.body || {}), _savedAt: new Date().toISOString() }); } catch {}
+      res.status(r.status).json(json);
+    } catch (e: any) {
+      // Save locally even if arb service is unreachable
+      try { await writeJson('backend/config/arbConfig.json', { ...(req.body || {}), _savedAt: new Date().toISOString() }); } catch {}
+      res.status(503).json({ ok: false, error: 'arb service unreachable; config saved locally' });
+    }
+  });
+
+  api.post('/bot/start', async (_req, res) => {
+    try {
+      // Resume API and price feed (if watchlist has items)
+      apiStart();
+      try {
+        const wl = await readJson<any[]>(CONFIG.watchlistPath, []);
+        enablePriceFeed(Array.isArray(wl) && wl.length > 0);
+      } catch {}
+      await tradingController.start();
+      res.json({ status: 'started' });
+      io.emit('system', { bot: 'started' });
+      emit('log', { level: 'info', message: 'Bot started', timestamp: new Date().toISOString() });
+    } catch (e: any) {
+      logger.error('failed to start bot', { error: String(e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.post('/bot/stop', async (_req, res) => {
+    try {
+      tradingController.stop();
+      // Pause API and stop price feed
+      apiStop();
+      enablePriceFeed(false);
+      res.json({ status: 'stopped' });
+      io.emit('system', { bot: 'stopped' });
+      emit('log', { level: 'info', message: 'Bot stopped', timestamp: new Date().toISOString() });
+    } catch (e: any) {
+      logger.error('failed to stop bot', { error: String(e) });
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
+  // Strategy endpoints (multi)
+  api.get('/strategy', async (_req, res) => {
+    await migrateSingleStrategy();
+    const list = await getStrategies();
+    res.json({ strategies: list });
+    emit('log', { level: 'info', message: `Strategies: ${list.map(s => s.name).join(', ') || '(none)'}`, timestamp: new Date().toISOString() });
+  });
+
+  api.post('/strategy', async (req, res) => {
+    const item = req.body as any;
+    if (!item?.name) return res.status(400).json({ error: 'name required' });
+    const name = String(item.name);
+    const list = await getStrategies();
+    const idx = list.findIndex((s) => s.name === name);
+    const existing: any = idx >= 0 ? list[idx] : {};
+    const updated: any = { ...existing, name };
+    // Map and merge only provided keys
+    const has = (k: string) => Object.prototype.hasOwnProperty.call(item, k);
+    if (has('token') || has('toToken')) updated.token = String(item.toToken ?? item.token ?? updated.token ?? '');
+    if (has('fromToken')) updated.fromToken = item.fromToken ? String(item.fromToken) : undefined;
+    if (has('toToken')) updated.toToken = item.toToken ? String(item.toToken) : undefined;
+    const toNum = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : undefined);
+    if (has('buyPct')) { const n = toNum(item.buyPct); if (n === undefined) return res.status(400).json({ error: 'buyPct must be a number' }); updated.buyPct = n; }
+    if (has('sellPct')) { const n = toNum(item.sellPct); if (n === undefined) return res.status(400).json({ error: 'sellPct must be a number' }); updated.sellPct = n; }
+    // Accept BPS for thresholds as well (converted to fractions)
+    if (has('buyBps')) { const n = toNum(item.buyBps); if (n === undefined) return res.status(400).json({ error: 'buyBps must be a number' }); updated.buyPct = Number(n) / 10000; }
+    if (has('sellBps')) { const n = toNum(item.sellBps); if (n === undefined) return res.status(400).json({ error: 'sellBps must be a number' }); updated.sellPct = Number(n) / 10000; }
+    if (has('amount')) { const n = toNum(item.amount); if (n === undefined || n <= 0) return res.status(400).json({ error: 'amount must be > 0' }); updated.amount = n; }
+    if (has('testMode')) updated.testMode = !!item.testMode;
+    if (has('inputMintUSDC')) updated.inputMintUSDC = item.inputMintUSDC;
+    if (has('tokenMint')) updated.tokenMint = item.tokenMint;
+    if (has('active')) updated.active = item.active !== false;
+    if (has('marketEnter')) updated.marketEnter = (item.marketEnter === 'long' || item.marketEnter === 'short') ? item.marketEnter : null;
+    if (has('fixedAnchor')) updated.fixedAnchor = item.fixedAnchor === true;
+    if (has('anchorPairAtSetup')) updated.anchorPairAtSetup = (typeof item.anchorPairAtSetup === 'number') ? item.anchorPairAtSetup : updated.anchorPairAtSetup;
+    if (has('scaleAggressiveness')) { const n = toNum(item.scaleAggressiveness); if (n === undefined || n < 0) return res.status(400).json({ error: 'scaleAggressiveness must be >= 0' }); updated.scaleAggressiveness = n; }
+    if (has('scaleStepPct')) { const n = toNum(item.scaleStepPct); if (n === undefined || n < 0) return res.status(400).json({ error: 'scaleStepPct must be >= 0' }); updated.scaleStepPct = n; }
+    if (has('slippageBps')) { const n = toNum(item.slippageBps); if (n === undefined || n < 0) return res.status(400).json({ error: 'slippageBps must be >= 0' }); updated.slippageBps = n; }
+    if (has('maxOpenPositions')) { const n = toNum(item.maxOpenPositions); if (n === undefined || n < 0) return res.status(400).json({ error: 'maxOpenPositions must be >= 0' }); updated.maxOpenPositions = n; }
+    if (has('maxPositionSize')) { const n = toNum(item.maxPositionSize); if (n === undefined || n < 0) return res.status(400).json({ error: 'maxPositionSize must be >= 0' }); updated.maxPositionSize = n; }
+    if (has('lst')) updated.lst = item.lst === true;
+    if (has('navSource')) updated.navSource = (item.navSource === 'protocol' || item.navSource === 'ema') ? item.navSource : updated.navSource;
+    if (has('hysteresisBps')) { const n = toNum(item.hysteresisBps); if (n === undefined || n < 0) return res.status(400).json({ error: 'hysteresisBps must be >= 0' }); updated.hysteresisBps = n; }
+    if (has('cooldownMs')) { const n = toNum(item.cooldownMs); if (n === undefined || n < 0) return res.status(400).json({ error: 'cooldownMs must be >= 0' }); updated.cooldownMs = n; }
+    if (has('feeBps')) { const n = toNum(item.feeBps); if (n === undefined || n < 0) return res.status(400).json({ error: 'feeBps must be >= 0' }); updated.feeBps = n; }
+    if (has('extraSlippageBps')) { const n = toNum(item.extraSlippageBps); if (n === undefined || n < 0) return res.status(400).json({ error: 'extraSlippageBps must be >= 0' }); updated.extraSlippageBps = n; }
+    if (has('minEdgeBps')) { const n = toNum(item.minEdgeBps); if (n === undefined || n < 0) return res.status(400).json({ error: 'minEdgeBps must be >= 0' }); (updated as any).minEdgeBps = n; }
+    // Sliding anchor
+    if (has('slidingAnchor')) updated.slidingAnchor = !!item.slidingAnchor;
+    if (has('slideRateBpsPerSec')) { const n = toNum(item.slideRateBpsPerSec); if (n === undefined || n < 0) return res.status(400).json({ error: 'slideRateBpsPerSec must be >= 0' }); (updated as any).slideRateBpsPerSec = n; }
+    if (has('slideMaxPct')) { const n = toNum(item.slideMaxPct); if (n === undefined || n < 0) return res.status(400).json({ error: 'slideMaxPct must be >= 0' }); (updated as any).slideMaxPct = n; }
+
+    // Grid strategy parameters
+    if (has('gridType')) updated.gridType = String(item.gridType);
+    if (has('gridSpacing')) { const n = toNum(item.gridSpacing); if (n === undefined) return res.status(400).json({ error: 'gridSpacing must be a number' }); updated.gridSpacing = n; }
+    if (has('gridLevels')) { const n = toNum(item.gridLevels); if (n === undefined) return res.status(400).json({ error: 'gridLevels must be a number' }); updated.gridLevels = n; }
+    if (has('centerPrice')) { const n = toNum(item.centerPrice); if (n !== undefined) updated.centerPrice = n; }
+    if (has('totalAmount')) { const n = toNum(item.totalAmount); if (n === undefined) return res.status(400).json({ error: 'totalAmount must be a number' }); updated.totalAmount = n; }
+    if (has('levelAmount')) { const n = toNum(item.levelAmount); if (n === undefined) return res.status(400).json({ error: 'levelAmount must be a number' }); updated.levelAmount = n; }
+    if (has('initialBuyRange')) { const n = toNum(item.initialBuyRange); if (n !== undefined) updated.initialBuyRange = n; }
+    if (has('initialSellRange')) { const n = toNum(item.initialSellRange); if (n !== undefined) updated.initialSellRange = n; }
+    if (has('maxPositions')) { const n = toNum(item.maxPositions); if (n !== undefined) updated.maxPositions = n; }
+    if (has('stopLoss')) { const n = toNum(item.stopLoss); if (n !== undefined) updated.stopLoss = n; }
+    if (has('takeProfit')) { const n = toNum(item.takeProfit); if (n !== undefined) updated.takeProfit = n; }
+    if (has('rebalanceThreshold')) { const n = toNum(item.rebalanceThreshold); if (n !== undefined) updated.rebalanceThreshold = n; }
+    if (has('adaptiveSpacing')) updated.adaptiveSpacing = !!item.adaptiveSpacing;
+    if (has('volatilityPeriod')) { const n = toNum(item.volatilityPeriod); if (n !== undefined) updated.volatilityPeriod = n; }
+    if (has('minLevelSpacing')) { const n = toNum(item.minLevelSpacing); if (n !== undefined) updated.minLevelSpacing = n; }
+    if (has('maxLevelSpacing')) { const n = toNum(item.maxLevelSpacing); if (n !== undefined) updated.maxLevelSpacing = n; }
+    // Grid bias parameters
+    if (has('bias')) {
+      const v = String(item.bias);
+      if (v === 'neutral' || v === 'long' || v === 'short') updated.bias = v;
+    }
+    if (has('biasStrength')) {
+      const n = toNum(item.biasStrength);
+      if (n !== undefined) updated.biasStrength = Math.max(0, Math.min(1, n));
+    }
+    
+    // Sliding center price parameters
+    if (has('slidingCenter')) updated.slidingCenter = !!item.slidingCenter;
+    if (has('slideRate')) { const n = toNum(item.slideRate); if (n !== undefined) updated.slideRate = n; }
+    if (has('slideMaxDistance')) { const n = toNum(item.slideMaxDistance); if (n !== undefined) updated.slideMaxDistance = n; }
+
+    // If fixedAnchor newly requested and no anchor set, capture current pair at setup
+    if (has('fixedAnchor') && updated.fixedAnchor && typeof updated.anchorPairAtSetup !== 'number') {
+      try {
+        if (updated.fromToken && updated.toToken) {
+          const fromInfo = await resolveMint(updated.fromToken);
+          const toInfo = await resolveMint(updated.toToken);
+          const prices = await (await import('../jupiter/jupiter.js')).fetchPricesByMints([fromInfo.mint, toInfo.mint]);
+          const fromUsd = prices[fromInfo.mint]?.usdc || null;
+          const toUsd = prices[toInfo.mint]?.usdc || null;
+          if (fromUsd && toUsd) updated.anchorPairAtSetup = toUsd / fromUsd;
+        }
+      } catch {}
+    }
+
+    // Write back
+    if (idx >= 0) list[idx] = updated; else list.push(updated);
+    await writeJson(STRATEGY_LIST_PATH, list);
+    
+    // Process the strategy in trading controller
+    try {
+      await tradingController.addOrUpdateStrategy();
+    } catch (e: any) {
+      logger.error('Failed to process strategy in trading controller', { error: String(e) });
+    }
+    
+    res.json({ ok: true, strategies: list });
+    emit('log', { level: 'info', message: `Strategy upserted: ${name}`, timestamp: new Date().toISOString(), context: updated });
+    io.emit('strategies-update', list);
+    // Optimistically emit activity stub for UI immediacy
+    emit('activity', { strategy: name, status: 'waiting', pair: `${updated.fromToken || 'USDC'}/${updated.toToken || updated.token || 'SOL'}`, trades: [] });
+    // Auto-add fromToken/toToken to watchlist
+    try {
+      const wl = await readJson(CONFIG.watchlistPath, [] as any[]);
+      const toAdd: string[] = [];
+      if (updated.fromToken) toAdd.push(updated.fromToken);
+      if (updated.toToken) toAdd.push(updated.toToken);
+      const existingIds = new Set((wl.map((t: any) => (typeof t === 'string' ? t : t.id)) as string[]));
+      for (const q of toAdd) {
+        if (!q) continue;
+        let entry: any | null = null;
+        if (q.length > 30) {
+          entry = { id: q, symbol: q.slice(0, 4).toUpperCase(), name: q, decimals: 6 };
+        } else {
+          let r: any[] = [];
+          try { r = await searchTokens(q, true); } catch {}
+          entry = r[0] || null;
+          if (!entry) {
+            try {
+              const rm = await resolveMint(q);
+              if (rm?.mint) entry = { id: rm.mint, symbol: q.toUpperCase(), name: q, decimals: (rm as any).decimals ?? 6 };
+            } catch {}
+          }
+        }
+        if (entry && !existingIds.has(entry.id)) {
+          wl.push(entry);
+          existingIds.add(entry.id);
+        }
+      }
+      await writeJson(CONFIG.watchlistPath, wl);
+      io.emit('watchlist-update', wl);
+      enablePriceFeed(wl.length > 0);
+    } catch {}
+
+    // Incremental trader add/update for immediacy
+    try {
+      await tradingController.addOrUpdateStrategy();
+    } catch {}
+  });
+
+  api.delete('/strategy', async (req, res) => {
+    const { name } = req.body as { name: string };
+    if (!name) return res.status(400).json({ error: 'name required' });
+    const list = await removeStrategy(name);
+    res.json({ ok: true, strategies: list });
+    emit('log', { level: 'info', message: `Strategy removed: ${name}`, timestamp: new Date().toISOString() });
+    io.emit('strategies-update', list);
+    // Clear positions and activity for removed strategy
+    try {
+      const { ThresholdTrader } = await import('../trading/thresholdStrategy.js');
+      const walletMod: any = await import('../wallet/wallet.js');
+      let walletKey: string | null = null;
+      try {
+        walletKey = (await walletMod.ensureWallet(CONFIG.walletPath)).publicKey.toBase58();
+      } catch {}
+      const instanceKey = `${walletKey}:${name}`;
+      // Clear open positions for this strategy
+      if (walletKey && (ThresholdTrader as any).positionsFor?.[instanceKey]) {
+        (ThresholdTrader as any).positionsFor[instanceKey] = [];
+        emit('positions', []);
+      }
+      // Clear last entry for PnL tracking
+      if (walletKey && (ThresholdTrader as any).lastEntryPair?.[instanceKey]) {
+        delete (ThresholdTrader as any).lastEntryPair[instanceKey];
+      }
+      // Clear state (anchor/holding and scale levels)
+      if (walletKey && (ThresholdTrader as any).stateFor?.[instanceKey]) {
+        delete (ThresholdTrader as any).stateFor[instanceKey];
+      }
+      // Clear inflight locks for safety
+      const inflight = (ThresholdTrader as any).inflightByWallet;
+      if (walletKey && inflight && inflight[walletKey]) {
+        for (const pairKey of Object.keys(inflight[walletKey] || {})) {
+          // delete specific kinds to be safe
+          const kinds = inflight[walletKey][pairKey];
+          delete kinds.openLong; delete kinds.openShort; delete kinds.closeLong; delete kinds.closeShort; delete kinds.scaleLong; delete kinds.scaleShort;
+        }
+      }
+      emit('activity', { strategy: name, status: 'idle', trades: [] });
+      tradingController.removeStrategy(name);
+    } catch {}
+
+    // Refresh traders if bot is running
+    try {
+      const { ThresholdTrader } = await import('../trading/thresholdStrategy.js');
+      if (!(ThresholdTrader as any).globalHalt) {
+        tradingController.stop();
+        await tradingController.init();
+        await tradingController.start();
+      }
+    } catch {}
+  });
+
+  // Activate/deactivate strategy
+  api.post('/strategy/status', async (req, res) => {
+    const { name, active } = req.body as { name: string; active: boolean };
+    if (!name || typeof active !== 'boolean') return res.status(400).json({ error: 'name and active required' });
+    const list = await getStrategies();
+    const idx = list.findIndex((s) => s.name === name);
+    if (idx < 0) return res.status(404).json({ error: 'strategy not found' });
+    (list[idx] as any).active = active;
+    await writeJson(STRATEGY_LIST_PATH, list);
+    res.json({ ok: true, strategies: list });
+    io.emit('strategies-update', list);
+    emit('log', { level: 'info', message: `Strategy ${active ? 'activated' : 'deactivated'}: ${name}`, timestamp: new Date().toISOString() });
+  });
+
+  // Grid strategy specific routes
+  api.get('/grid/levels/:strategyName', async (req, res) => {
+    try {
+      const { strategyName } = req.params;
+      const { GridTrader } = await import('../trading/gridStrategy.js');
+      const walletMod: any = await import('../wallet/wallet.js');
+      const walletKey = (await walletMod.ensureWallet(CONFIG.walletPath)).publicKey.toBase58();
+      const instanceKey = `${walletKey}:${strategyName}`;
+      
+      // Clean up closed positions and their corresponding levels
+      GridTrader.cleanupClosedPositions(instanceKey);
+      
+      // Update grid level statuses based on active positions
+      GridTrader.updateGridLevelStatuses(instanceKey);
+      
+      const levels = GridTrader.getGridLevels(instanceKey);
+      let positions = GridTrader.getSuccessfulPositions(instanceKey);
+      let activePositions = GridTrader.getActivePositions(instanceKey);
+      let tradeHistory = GridTrader.getTradeHistory(instanceKey);
+      const state = GridTrader.getGridState(instanceKey);
+      
+      // Get token information for display using the strategy-specific config
+      const strategies = await getStrategies();
+      const strat = strategies.find((s) => s.name === strategyName);
+      const config = {
+        fromToken: (strat as any)?.fromToken || (await GridTrader.prototype.loadConfig.call({})).fromToken || 'USDC',
+        toToken: (strat as any)?.toToken || (await GridTrader.prototype.loadConfig.call({})).toToken || 'SOL',
+      } as any;
+      // Resolve USD prices for tokens (if available) with fetch fallback
+      let fromUsd: number | null = null;
+      let toUsd: number | null = null;
+      try {
+        const fromInfo = await resolveMint(config.fromToken || 'USDC');
+        const toInfo = await resolveMint(config.toToken || 'SOL');
+        fromUsd = getPriceByMint(fromInfo.mint)?.usdc || null;
+        toUsd = getPriceByMint(toInfo.mint)?.usdc || null;
+        if (!fromUsd || !toUsd) {
+          try {
+            const { fetchPricesByMints } = await import('../jupiter/jupiter.js');
+            const fresh = await fetchPricesByMints([fromInfo.mint, toInfo.mint]);
+            fromUsd = fromUsd ?? (fresh[fromInfo.mint]?.usdc ?? null);
+            toUsd = toUsd ?? (fresh[toInfo.mint]?.usdc ?? null);
+          } catch {}
+        }
+      } catch {}
+      
+      // Backfill missing USD fields using current prices as last resort to stabilize display for historical entries
+      const backfillUsd = (p: any) => {
+        try {
+          const from = (state?.fromToken || (p.strategyName ? undefined : undefined)) as string | undefined;
+          const entryPair = p.entryPrice;
+          if (typeof p.entryUsdPerTo !== 'number' && typeof entryPair === 'number' && typeof fromUsd === 'number' && entryPair > 0) {
+            p.entryUsdPerTo = fromUsd / entryPair;
+          }
+          const exitPair = p.exitPrice;
+          if (typeof p.exitUsdPerTo !== 'number' && typeof exitPair === 'number' && typeof fromUsd === 'number' && exitPair > 0) {
+            p.exitUsdPerTo = fromUsd / exitPair;
+          }
+          const plannedPair = p.plannedExitPrice;
+          if (typeof p.plannedExitUsdPerTo !== 'number' && typeof plannedPair === 'number' && typeof fromUsd === 'number' && plannedPair > 0) {
+            // pair is to per from; USD per to = fromUsd * (to/from)
+            p.plannedExitUsdPerTo = fromUsd * plannedPair;
+          }
+        } catch {}
+        return p;
+      };
+
+      // Expose stored USD fields transparently
+      const mapUsdFields = (p: any) => backfillUsd({
+        ...p,
+        entryUsdPerTo: p.entryUsdPerTo,
+        exitUsdPerTo: p.exitUsdPerTo,
+        plannedExitUsdPerTo: p.plannedExitUsdPerTo,
+      });
+
+      res.json({ 
+        levels, 
+        positions: (positions || []).map(mapUsdFields), 
+        activePositions: (activePositions || []).map(mapUsdFields),
+        tradeHistory: (tradeHistory || []).map(mapUsdFields),
+        state,
+        strategyName,
+        tokens: {
+          fromToken: config.fromToken || 'USDC',
+          toToken: config.toToken || 'SOL',
+          fromSymbol: config.fromToken || 'USDC',
+          toSymbol: config.toToken || 'SOL',
+          fromUsd,
+          toUsd
+        }
+      });
+    } catch (e: any) {
+      logger.error('Failed to get grid levels', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.post('/grid/rebalance/:strategyName', async (req, res) => {
+    try {
+      const { strategyName } = req.params;
+      const { centerPrice } = req.body as { centerPrice?: number };
+      
+      // Get the grid trader instance
+      const { GridTrader } = await import('../trading/gridStrategy.js');
+      const walletMod: any = await import('../wallet/wallet.js');
+      const walletKey = (await walletMod.ensureWallet(CONFIG.walletPath)).publicKey.toBase58();
+      const instanceKey = `${walletKey}:${strategyName}`;
+      
+      // Update center price if provided
+      if (centerPrice && GridTrader.getGridState(instanceKey)) {
+        GridTrader.getGridState(instanceKey).centerPrice = centerPrice;
+        GridTrader.getGridState(instanceKey).lastRebalance = Date.now();
+      }
+      
+      // Trigger rebalancing by clearing existing levels
+      GridTrader.getGridLevels(instanceKey).length = 0;
+      
+      res.json({ ok: true, message: 'Grid rebalancing triggered' });
+      emit('log', { 
+        level: 'info', 
+        message: `Grid rebalancing triggered for ${strategyName}`, 
+        timestamp: new Date().toISOString() 
+      });
+    } catch (e: any) {
+      logger.error('Failed to rebalance grid', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.post('/grid/close-position/:strategyName', async (req, res) => {
+    try {
+      const { strategyName } = req.params;
+      const { positionId } = req.body as { positionId: string };
+      
+      if (!positionId) {
+        return res.status(400).json({ error: 'Position ID is required' });
+      }
+      
+      // Get the grid trader instance
+      const { GridTrader } = await import('../trading/gridStrategy.js');
+      const walletMod: any = await import('../wallet/wallet.js');
+      const walletKey = (await walletMod.ensureWallet(CONFIG.walletPath)).publicKey.toBase58();
+      const instanceKey = `${walletKey}:${strategyName}`;
+      
+      // Find the position
+      const positions = GridTrader.getGridPositions(instanceKey);
+      const position = positions.find(p => p.id === positionId && !p.closedAt);
+      
+      if (!position) {
+        return res.status(404).json({ error: 'Position not found or already closed' });
+      }
+      
+      // Get the grid configuration for this specific strategy (not the prototype defaults)
+      const listForClose = await getStrategies();
+      const stratForClose = listForClose.find((s) => s.name === strategyName);
+      const protoCfgForClose = await GridTrader.prototype.loadConfig.call({});
+      const config = {
+        fromToken: (stratForClose as any)?.fromToken || protoCfgForClose.fromToken || 'USDC',
+        toToken: (stratForClose as any)?.toToken || protoCfgForClose.toToken || 'SOL',
+      } as any;
+      const fromInfo = await resolveMint(config.fromToken || 'USDC');
+      const toInfo = await resolveMint(config.toToken || 'SOL');
+      
+      // Determine swap parameters based on position side
+      let inputMint: string, outputMint: string, amount: number;
+      
+      if (position.side === 'buy') {
+        // If it's a buy position, sell the received toToken back to fromToken
+        inputMint = toInfo.mint; // sell toToken
+        outputMint = fromInfo.mint; // receive fromToken
+        // Prefer the actual received toToken amount from the buy fill; fallback to paired sell level amount; lastly to configured amount
+        let sellAmountTo = position.filledAmount || 0;
+        if (!(sellAmountTo > 0)) {
+          try {
+            const levels = GridTrader.getGridLevels(instanceKey) || [];
+            const pairedSell = levels.find((l: any) => l.side === 'sell' && l.pairedLevelId === (position as any).levelId);
+            if (pairedSell && typeof pairedSell.amount === 'number' && pairedSell.amount > 0) sellAmountTo = pairedSell.amount;
+          } catch {}
+        }
+        amount = sellAmountTo || position.amount; // still fallback if needed
+      } else {
+        // If it's a sell position, we need to buy back the tokens
+        inputMint = fromInfo.mint; // spend fromToken
+        outputMint = toInfo.mint; // receive toToken
+        // For closing a sell, we spend fromToken. Prefer using the intended spend amount from the UI (position.amount is the toToken size at entry),
+        // but the actual sent will be read from swap result; use amount here as a ceiling for quote build.
+        amount = position.amount || position.filledAmount || 0;
+      }
+      
+      // Get the wallet keypair for signing
+      const wallet = await ensureWallet(CONFIG.walletPath);
+      
+      // In-flight guard for manual close to avoid duplicates
+      const inflightKey = `close:${walletKey}:${strategyName}:${positionId}`;
+      const now = Date.now();
+      (global as any).__inflightClose = (global as any).__inflightClose || new Map<string, number>();
+      const inflightMap: Map<string, number> = (global as any).__inflightClose;
+      const prev = inflightMap.get(inflightKey);
+      if (prev && (now - prev) < 20000) {
+        return res.status(429).json({ error: 'Close already in-flight' });
+      }
+      inflightMap.set(inflightKey, now);
+
+      // Execute the swap to close the position (use high slippage and priority to ensure fill)
+      const slippageForClose = Math.max(Number(CONFIG.fees?.jupiterMaxSlippageBps || 500), Number(config.slippageBps || 0));
+      const swapResult = await executeSwap(
+        {
+          inputMint,
+          outputMint,
+          amount: Math.round(amount * Math.pow(10, position.side === 'buy' ? toInfo.decimals : fromInfo.decimals)),
+          userPublicKey: walletKey,
+          slippageBps: slippageForClose,
+          prioritizationFeeLamports: CONFIG.fees.jupiterPriorityFee,
+          maxAccounts: CONFIG.fees.jupiterMaxAccounts,
+          dynamicComputeUnitLimit: CONFIG.fees.jupiterDynamicCompute,
+          asLegacyTransaction: CONFIG.fees.jupiterLegacyTransaction
+        },
+        (serialized) => signAndSendSerializedTransaction(serialized, wallet, undefined, 'swap'),
+        true, // priority: manual closes should be sent ASAP
+        position.side === 'buy' ? fromInfo.decimals : toInfo.decimals // output decimals
+      );
+      
+      // Compute actual exit price from actual amounts when available
+      const actualOut = swapResult.receivedAmountActual ?? swapResult.receivedAmount;
+      const actualSent = swapResult.sentAmountActual; // prefer on-chain sent amount when available
+      let exitPrice: number | undefined;
+      if (position.side === 'buy') {
+        // Sold toToken back to fromToken: maintain to per from orientation
+        // to per from = soldTo / receivedFrom
+        const soldTo = (typeof actualSent === 'number' && actualSent > 0)
+          ? actualSent
+          : (position.filledAmount || 0);
+        const receivedFrom = actualOut;
+        if (soldTo > 0 && typeof receivedFrom === 'number' && receivedFrom > 0) exitPrice = soldTo / receivedFrom;
+      } else {
+        // Bought toToken using fromToken: to per from = receivedTo / spentFrom
+        const spentFrom = (typeof actualSent === 'number' && actualSent > 0)
+          ? actualSent
+          : (position.filledAmount || position.amount || 0);
+        const receivedTo = actualOut;
+        if (spentFrom > 0 && typeof receivedTo === 'number' && receivedTo > 0) exitPrice = receivedTo / spentFrom;
+      }
+
+      // Update the position as closed
+      position.closedAt = Date.now();
+      position.exitPrice = Math.abs(exitPrice ?? position.entryPrice);
+      position.exitTransactionSignature = swapResult.signature;
+      position.status = 'closed';
+      position.timeSinceOpen = Date.now() - (position.openedAt || Date.now());
+      
+      // Calculate PNL if we have an exitPrice
+      if (position.exitPrice !== undefined) {
+        const qty = position.side === 'buy' ? (position.filledAmount || 0) : (position.amount || 0);
+        const priceDiff = (position.side === 'buy') ? (position.exitPrice - position.entryPrice) : (position.entryPrice - position.exitPrice);
+        position.pnl = priceDiff * qty;
+      } else {
+        position.pnl = 0;
+      }
+      
+      // Update Grid state and levels to reflect manual close
+      try {
+        GridTrader.manualClosePosition(
+          instanceKey,
+          position.id,
+          exitPrice,
+          swapResult.signature,
+          actualOut,
+          amount
+        );
+        GridTrader.cleanupClosedPositions(instanceKey);
+        GridTrader.updateGridLevelStatuses(instanceKey);
+      } catch {}
+
+      // Emit user-facing trade log for manual close (User Log)
+      try {
+        const fromSym = config.fromToken || 'FROM';
+        const toSym = config.toToken || 'TO';
+        const inputAmt = amount; // amount of input token spent/sold
+        const outputAmt = swapResult.receivedAmountActual ?? swapResult.receivedAmount;
+        const msg = position.side === 'buy'
+          // we sold toToken back to fromToken
+          ? `trade: manual-close ${strategyName} sell ${inputAmt} ${toSym} -> ${outputAmt} ${fromSym}${exitPrice ? ` @ ${exitPrice}` : ''}`
+          // we bought toToken back using fromToken
+          : `trade: manual-close ${strategyName} buy ${inputAmt} ${fromSym} -> ${outputAmt} ${toSym}${exitPrice ? ` @ ${exitPrice}` : ''}`;
+        emit('log', { level: 'info', message: msg, timestamp: new Date().toLocaleTimeString(), context: { cat: 'trade', strategy: strategyName } });
+      } catch {}
+
+      res.json({ 
+        ok: true, 
+        message: 'Position closed successfully',
+        signature: swapResult.signature,
+        receivedAmount: swapResult.receivedAmount,
+        receivedAmountActual: swapResult.receivedAmountActual,
+        sentAmountActual: swapResult.sentAmountActual
+      });
+      
+      emit('log', { 
+        level: 'info', 
+        message: `Position ${positionId} closed manually`, 
+        timestamp: new Date().toISOString() 
+      });
+      
+    } catch (e: any) {
+      logger.error('Failed to close position', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    } finally {
+      try {
+        const { strategyName } = req.params as any;
+        const { positionId } = (req.body || {}) as any;
+        const wallet = await ensureWallet(CONFIG.walletPath);
+        const walletKey = wallet.publicKey.toBase58();
+        const inflightKey = `close:${walletKey}:${strategyName}:${positionId}`;
+        (global as any).__inflightClose?.delete?.(inflightKey);
+      } catch {}
+    }
+  });
+
+  api.get('/grid/performance/:strategyName', async (req, res) => {
+    try {
+      const { strategyName } = req.params;
+      const { GridTrader } = await import('../trading/gridStrategy.js');
+      const walletMod: any = await import('../wallet/wallet.js');
+      const walletKey = (await walletMod.ensureWallet(CONFIG.walletPath)).publicKey.toBase58();
+      const instanceKey = `${walletKey}:${strategyName}`;
+      
+      const levels = GridTrader.getGridLevels(instanceKey);
+      const positions = GridTrader.getGridPositions(instanceKey);
+      const state = GridTrader.getGridState(instanceKey);
+      
+      // Calculate performance metrics
+      const totalLevels = levels.length;
+      const filledLevels = levels.filter(l => l.filled).length;
+      const activePositions = positions.filter(p => !p.closedAt).length;
+      const totalPnl = positions.reduce((sum, p) => sum + (p.pnl || 0), 0);
+      const winRate = positions.length > 0 ? 
+        positions.filter(p => (p.pnl || 0) > 0).length / positions.length : 0;
+      
+      res.json({
+        strategyName,
+        totalLevels,
+        filledLevels,
+        activePositions,
+        totalPnl,
+        winRate,
+        state,
+        recentTrades: positions.slice(-10)
+      });
+    } catch (e: any) {
+      logger.error('Failed to get grid performance', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.post('/terminal/log', async (req, res) => {
+    const { level = 'info', message, cat } = req.body as { level?: string; message: string; cat?: string };
+    const normalizedCat = typeof cat === 'string' && cat.trim() ? String(cat).toLowerCase() : undefined;
+    emit('log', { level, message, timestamp: new Date().toISOString(), cat: normalizedCat, context: normalizedCat ? { cat: normalizedCat } : undefined });
+    res.json({ ok: true });
+  });
+
+  api.post('/api/stop', async (_req, res) => {
+    apiStop();
+    enablePriceFeed(false);
+    res.json({ ok: true });
+    emit('log', { level: 'info', message: 'API paused', timestamp: new Date().toISOString() });
+  });
+
+  api.post('/api/start', async (_req, res) => {
+    apiStart();
+    // do not auto-enable price feed; user must add watchlist or run apistart + enable watchlist
+    res.json({ ok: true });
+    emit('log', { level: 'info', message: 'API resumed', timestamp: new Date().toISOString() });
+  });
+
+  api.post('/api/reset', async (_req, res) => {
+    apiReset();
+    res.json({ ok: true });
+    emit('log', { level: 'info', message: 'API window reset', timestamp: new Date().toISOString() });
+  });
+
+  // Configure Target Tick Time (TTT) in ms; updates rate limiter, price feed, and traders
+  api.post('/ticktime', async (req, res) => {
+    try {
+      const { ms } = req.body as { ms: number };
+      const value = Math.max(200, Math.floor(Number(ms) || 0));
+      setTargetTickTimeMs(value);
+      setPriceFeedInterval(value);
+      tradingController.setTickTimeMs(value);
+      res.json({ ok: true, targetTickTimeMs: value });
+      emit('log', { level: 'info', message: `terminal: ticktime set to ${value} ms`, timestamp: new Date().toISOString() });
+    } catch (e: any) {
+      res.status(400).json({ error: 'invalid ms' });
+    }
+  });
+
+	// Reset configurable parameters (watchlist, strategies, wallet tokens), preserving wallet key
+	api.post('/config/reset', async (_req, res) => {
+		try {
+			// Halt trading and clear traders first
+			try { tradingController.stop(); } catch {}
+            await writeJson(CONFIG.watchlistPath, []);
+            await writeJson(STRATEGY_LIST_PATH, []);
+            await writeJson(CONFIG.walletTokensPath, []);
+			io.emit('watchlist-update', []);
+			io.emit('strategies-update', []);
+			// Stop trading and clear all in-memory strategy/position state
+			try {
+				const { ThresholdTrader } = await import('../trading/thresholdStrategy.js');
+				// Clear all positions/state/entries for every instance key
+				for (const key of Object.keys((ThresholdTrader as any).positionsFor || {})) {
+					(ThresholdTrader as any).positionsFor[key] = [];
+				}
+				for (const key of Object.keys((ThresholdTrader as any).stateFor || {})) {
+					delete (ThresholdTrader as any).stateFor[key];
+				}
+				for (const key of Object.keys((ThresholdTrader as any).lastEntryPair || {})) {
+					delete (ThresholdTrader as any).lastEntryPair[key];
+				}
+				// Clear inflight locks
+				const inflight = (ThresholdTrader as any).inflightByWallet || {};
+				for (const w of Object.keys(inflight)) {
+					for (const pairKey of Object.keys(inflight[w] || {})) {
+						delete inflight[w][pairKey].openLong;
+						delete inflight[w][pairKey].openShort;
+						delete inflight[w][pairKey].closeLong;
+						delete inflight[w][pairKey].closeShort;
+						delete inflight[w][pairKey].scaleLong;
+						delete inflight[w][pairKey].scaleShort;
+					}
+				}
+				// Broadcast cleared positions and stopped bot status
+				emit('positions', []);
+				io.emit('system', { bot: 'stopped' });
+			} catch {}
+			enablePriceFeed(false);
+			res.json({ ok: true });
+			emit('log', { level: 'info', message: 'Config reset (watchlist, strategies, wallet tokens) — trading halted and positions cleared', timestamp: new Date().toISOString() });
+		} catch (e: any) {
+			logger.error('config reset failed', { error: String(e) });
+			res.status(500).json({ error: String(e) });
+		}
+	});
+
+  app.use('/api', api);
+
+  logger.info('API routes registered');
+}
+
+

@@ -1,0 +1,10 @@
+D:\LawProjects\Bots\LockStone\Lockstone - Copy\arb-rs\target\debug\deps\tokio_tungstenite-c68aaf9820cabe95.d: C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-tungstenite-0.24.0\src\lib.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-tungstenite-0.24.0\src\compat.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-tungstenite-0.24.0\src\connect.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-tungstenite-0.24.0\src\handshake.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-tungstenite-0.24.0\src\stream.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-tungstenite-0.24.0\src\tls.rs
+
+D:\LawProjects\Bots\LockStone\Lockstone - Copy\arb-rs\target\debug\deps\libtokio_tungstenite-c68aaf9820cabe95.rmeta: C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-tungstenite-0.24.0\src\lib.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-tungstenite-0.24.0\src\compat.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-tungstenite-0.24.0\src\connect.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-tungstenite-0.24.0\src\handshake.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-tungstenite-0.24.0\src\stream.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-tungstenite-0.24.0\src\tls.rs
+
+C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-tungstenite-0.24.0\src\lib.rs:
+C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-tungstenite-0.24.0\src\compat.rs:
+C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-tungstenite-0.24.0\src\connect.rs:
+C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-tungstenite-0.24.0\src\handshake.rs:
+C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-tungstenite-0.24.0\src\stream.rs:
+C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-tungstenite-0.24.0\src\tls.rs:

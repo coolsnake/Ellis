@@ -1,0 +1,12 @@
+D:\LawProjects\Bots\LockStone\Lockstone - Copy\arb-rs\target\debug\deps\tinystr-825f8597b9f404b9.d: C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tinystr-0.8.1\src\lib.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tinystr-0.8.1\src\macros.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tinystr-0.8.1\src\ascii.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tinystr-0.8.1\src\asciibyte.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tinystr-0.8.1\src\error.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tinystr-0.8.1\src\int_ops.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tinystr-0.8.1\src\unvalidated.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tinystr-0.8.1\src\ule.rs
+
+D:\LawProjects\Bots\LockStone\Lockstone - Copy\arb-rs\target\debug\deps\libtinystr-825f8597b9f404b9.rmeta: C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tinystr-0.8.1\src\lib.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tinystr-0.8.1\src\macros.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tinystr-0.8.1\src\ascii.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tinystr-0.8.1\src\asciibyte.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tinystr-0.8.1\src\error.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tinystr-0.8.1\src\int_ops.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tinystr-0.8.1\src\unvalidated.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tinystr-0.8.1\src\ule.rs
+
+C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tinystr-0.8.1\src\lib.rs:
+C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tinystr-0.8.1\src\macros.rs:
+C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tinystr-0.8.1\src\ascii.rs:
+C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tinystr-0.8.1\src\asciibyte.rs:
+C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tinystr-0.8.1\src\error.rs:
+C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tinystr-0.8.1\src\int_ops.rs:
+C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tinystr-0.8.1\src\unvalidated.rs:
+C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tinystr-0.8.1\src\ule.rs:

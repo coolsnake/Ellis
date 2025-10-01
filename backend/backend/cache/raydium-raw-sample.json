@@ -1,0 +1,58 @@
+{
+  "ts": "2025-09-17T11:16:22.603Z",
+  "total": 532,
+  "sample": [
+    {
+      "id": "3ucNos4NbumPLZNWztqGHNFFgkHeRMBQAVemeeomsUxv",
+      "keys": [
+        "type",
+        "programId",
+        "id",
+        "mintA",
+        "mintB",
+        "rewardDefaultPoolInfos",
+        "rewardDefaultInfos",
+        "price",
+        "mintAmountA",
+        "mintAmountB",
+        "feeRate",
+        "openTime"
+      ],
+      "has": {
+        "tokenA_mint": false,
+        "tokenB_mint": false,
+        "mintA": true,
+        "mintB": true,
+        "baseMint": false,
+        "quoteMint": false,
+        "state": false
+      }
+    },
+    {
+      "id": "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2",
+      "keys": [
+        "type",
+        "programId",
+        "id",
+        "mintA",
+        "mintB",
+        "price",
+        "mintAmountA",
+        "mintAmountB",
+        "feeRate",
+        "openTime",
+        "tvl",
+        "day"
+      ],
+      "has": {
+        "tokenA_mint": false,
+        "tokenB_mint": false,
+        "mintA": true,
+        "mintB": true,
+        "baseMint": false,
+        "quoteMint": false,
+        "state": false
+      }
+    }
+  ]
+}

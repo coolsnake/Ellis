@@ -1,0 +1,9 @@
+D:\LawProjects\Bots\LockStone\Lockstone - Copy\arb-rs\target\release\deps\thiserror-8a74745150b44511.d: C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-1.0.69\src\lib.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-1.0.69\src\aserror.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-1.0.69\src\display.rs
+
+D:\LawProjects\Bots\LockStone\Lockstone - Copy\arb-rs\target\release\deps\libthiserror-8a74745150b44511.rlib: C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-1.0.69\src\lib.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-1.0.69\src\aserror.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-1.0.69\src\display.rs
+
+D:\LawProjects\Bots\LockStone\Lockstone - Copy\arb-rs\target\release\deps\libthiserror-8a74745150b44511.rmeta: C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-1.0.69\src\lib.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-1.0.69\src\aserror.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-1.0.69\src\display.rs
+
+C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-1.0.69\src\lib.rs:
+C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-1.0.69\src\aserror.rs:
+C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\thiserror-1.0.69\src\display.rs:

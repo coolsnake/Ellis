@@ -1,0 +1,18 @@
+{
+  "name": "solana-threshold-bot",
+  "private": true,
+  "scripts": {
+    "postinstall": "npm --prefix backend install && npm --prefix frontend install",
+    "dev": "concurrently -k -n backend,frontend -c green,cyan \"npm:dev:backend\" \"npm:dev:frontend\"",
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "build": "npm run build:backend && npm run build:frontend",
+    "build:backend": "npm --prefix backend run build",
+    "build:frontend": "npm --prefix frontend run build",
+    "test": "npm --prefix backend run test"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
+

@@ -1,0 +1,28 @@
+{
+  "enabled": true,
+  "min_profit_bps": 30,
+  "min_notional_usd": 50.0,
+  "max_hops": 3,
+  "max_paths_per_cycle": 10,
+  "poll_interval_ms": 2000,
+  "dex_allow": [
+    "Raydium",
+    "Orca"
+  ],
+  "priority_fee_tier": "h",
+  "sources": {
+    "jupiter": false,
+    "raydium": true,
+    "orca": true
+  },
+  "max_slippage_bps": 100,
+  "execution_mode": "simulate",
+  "quote_size_usd": 50.0,
+  "fee_bps": 30,
+  "link_penalty_bps": 2,
+  "debug_emit_subthreshold": false,
+  "debug_top_n": 5,
+  "near_miss_enable": true,
+  "near_miss_epsilon": 0.0005,
+  "min_pool_liquidity": 0.0
+}

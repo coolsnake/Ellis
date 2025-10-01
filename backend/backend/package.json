@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.29.0",
+    "@orca-so/whirlpools-sdk": "^0.16.0"
+  }
+}

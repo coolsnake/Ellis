@@ -1,0 +1,11 @@
+D:\LawProjects\Bots\LockStone\Lockstone - Copy\arb-rs\target\release\deps\socket2-441d2663eab491a0.d: C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\socket2-0.6.0\src\lib.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\socket2-0.6.0\src\sockaddr.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\socket2-0.6.0\src\socket.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\socket2-0.6.0\src\sockref.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\socket2-0.6.0\src\sys\windows.rs
+
+D:\LawProjects\Bots\LockStone\Lockstone - Copy\arb-rs\target\release\deps\libsocket2-441d2663eab491a0.rlib: C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\socket2-0.6.0\src\lib.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\socket2-0.6.0\src\sockaddr.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\socket2-0.6.0\src\socket.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\socket2-0.6.0\src\sockref.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\socket2-0.6.0\src\sys\windows.rs
+
+D:\LawProjects\Bots\LockStone\Lockstone - Copy\arb-rs\target\release\deps\libsocket2-441d2663eab491a0.rmeta: C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\socket2-0.6.0\src\lib.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\socket2-0.6.0\src\sockaddr.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\socket2-0.6.0\src\socket.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\socket2-0.6.0\src\sockref.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\socket2-0.6.0\src\sys\windows.rs
+
+C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\socket2-0.6.0\src\lib.rs:
+C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\socket2-0.6.0\src\sockaddr.rs:
+C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\socket2-0.6.0\src\socket.rs:
+C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\socket2-0.6.0\src\sockref.rs:
+C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\socket2-0.6.0\src\sys\windows.rs:

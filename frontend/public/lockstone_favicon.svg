@@ -1,0 +1,47 @@
+<svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Stone texture gradient -->
+    <radialGradient id="stoneGrad" cx="0.4" cy="0.3" r="1.2">
+      <stop offset="0%" stop-color="#8a92a5"/>
+      <stop offset="50%" stop-color="#5a6478"/>
+      <stop offset="100%" stop-color="#2d3748"/>
+    </radialGradient>
+    <!-- Lock gradient -->
+    <linearGradient id="lockGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffed4e"/>
+      <stop offset="100%" stop-color="#d69e2e"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- Rocky stone shape -->
+  <path d="M4 8 C2 6, 6 2, 10 3 C14 1, 18 2, 22 4 C26 2, 30 4, 29 8 C31 12, 29 16, 28 20 C30 24, 28 28, 24 29 C20 31, 16 30, 12 28 C8 30, 4 28, 3 24 C1 20, 2 16, 4 12 Z" 
+        fill="url(#stoneGrad)" 
+        stroke="#1a202c" 
+        stroke-width="0.5"/>
+  
+  <!-- Lock body (larger) -->
+  <rect x="10" y="17" width="12" height="9" rx="1.5" fill="url(#lockGrad)" stroke="#b7791f" stroke-width="0.5"/>
+  
+  <!-- Lock shackle (larger and clearer) -->
+  <path d="M12.5 17 V13 A3.5 3.5 0 0 1 19.5 13 V17" 
+        fill="none" 
+        stroke="url(#lockGrad)" 
+        stroke-width="2.5" 
+        stroke-linecap="round"/>
+  
+  <!-- Keyhole (larger) -->
+  <circle cx="16" cy="20.5" r="1.8" fill="#2d3748"/>
+  <rect x="15.3" y="20.5" width="1.4" height="2.5" rx="0.3" fill="#2d3748"/>
+  
+  <!-- Stone texture details -->
+  <circle cx="8" cy="7" r="1.2" fill="#2d3748" opacity="0.4"/>
+  <circle cx="24" cy="9" r="0.9" fill="#2d3748" opacity="0.3"/>
+  <circle cx="25" cy="24" r="1.4" fill="#2d3748" opacity="0.35"/>
+  <circle cx="7" cy="25" r="1.1" fill="#2d3748" opacity="0.4"/>
+  <circle cx="6" cy="16" r="0.8" fill="#2d3748" opacity="0.25"/>
+  <circle cx="26" cy="15" r="0.7" fill="#2d3748" opacity="0.2"/>
+  
+  <!-- Rock cracks/lines -->
+  <path d="M5 12 Q8 14, 12 11" fill="none" stroke="#1a202c" stroke-width="0.8" opacity="0.6"/>
+  <path d="M20 8 Q24 10, 27 7" fill="none" stroke="#1a202c" stroke-width="0.6" opacity="0.5"/>
+</svg>

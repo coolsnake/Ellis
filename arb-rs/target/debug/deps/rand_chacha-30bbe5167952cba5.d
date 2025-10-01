@@ -1,0 +1,9 @@
+D:\LawProjects\Bots\LockStone\Lockstone - Copy\arb-rs\target\debug\deps\rand_chacha-30bbe5167952cba5.d: C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_chacha-0.3.1\src\lib.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_chacha-0.3.1\src\chacha.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_chacha-0.3.1\src\guts.rs
+
+D:\LawProjects\Bots\LockStone\Lockstone - Copy\arb-rs\target\debug\deps\librand_chacha-30bbe5167952cba5.rlib: C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_chacha-0.3.1\src\lib.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_chacha-0.3.1\src\chacha.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_chacha-0.3.1\src\guts.rs
+
+D:\LawProjects\Bots\LockStone\Lockstone - Copy\arb-rs\target\debug\deps\librand_chacha-30bbe5167952cba5.rmeta: C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_chacha-0.3.1\src\lib.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_chacha-0.3.1\src\chacha.rs C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_chacha-0.3.1\src\guts.rs
+
+C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_chacha-0.3.1\src\lib.rs:
+C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_chacha-0.3.1\src\chacha.rs:
+C:\Users\thela\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\rand_chacha-0.3.1\src\guts.rs:
