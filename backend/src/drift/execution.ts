@@ -58,12 +58,15 @@ export class DriftGridRunner {
       // Fetch L2 for price context
       const l2 = await fetchDlobL2(this.config.market.marketIndex);
       const mid = l2 && l2.bid[0] && l2.ask[0] ? (l2.bid[0].price + l2.ask[0].price) / 2 : undefined;
+      const oracle = (typeof l2?.oracle === 'number' && isFinite(l2.oracle)) ? l2.oracle : undefined;
       if (typeof mid === 'number' && isFinite(mid)) {
         // broadcast lightweight snapshot
         emit('activity', {
           strategy: this.config.name,
           status: this.state.running ? 'active' : 'idle',
           current: mid,
+          currentPairPrice: (typeof oracle === 'number' ? oracle : mid),
+          oracle,
           openOrders: this.state.openOrders,
           effLev: this.state.effectiveLeverage,
           liqBuf: this.state.liquidationBuffer,

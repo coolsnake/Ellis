@@ -32,6 +32,9 @@ export const App: React.FC = () => {
   const [driftOpBusy, setDriftOpBusy] = useState<boolean>(false);
   const [driftAmount, setDriftAmount] = useState<number>(0);
   const [driftSpotIndex, setDriftSpotIndex] = useState<number>(0);
+  const [driftSubBalances, setDriftSubBalances] = useState<any[]>([]);
+  const [driftSpotMarkets, setDriftSpotMarkets] = useState<any[]>([]);
+  const [driftAction, setDriftAction] = useState<'deposit' | 'withdraw'>('deposit');
   const [tradeLogs, setTradeLogs] = useState<LogEvent[]>([]);
   const [strategyLogs, setStrategyLogs] = useState<LogEvent[]>([]);
   const [arbLogs, setArbLogs] = useState<LogEvent[]>([]);
@@ -158,9 +161,24 @@ export const App: React.FC = () => {
           setDriftSubaccounts(subs);
           if (Array.isArray(subs) && subs.length > 0) setDriftSelectedSubId(Number(subs[0].id));
         } catch {}
+        try {
+          const markets = await fetch(`${apiBase}/drift/spot-markets`).then(r => r.json());
+          setDriftSpotMarkets(Array.isArray(markets?.markets) ? markets.markets : []);
+        } catch {}
       } catch {}
     })();
   }, [apiBase, authHeaders, creds]);
+
+  useEffect(() => {
+    if (!creds) return;
+    (async () => {
+      try {
+        if (!Number.isFinite(Number(driftSelectedSubId))) return;
+        const b = await fetch(`${apiBase}/drift/subaccount/balances?subaccountId=${Number(driftSelectedSubId)}`).then(r => r.json());
+        setDriftSubBalances(Array.isArray(b?.balances) ? b.balances : []);
+      } catch {}
+    })();
+  }, [apiBase, authHeaders, creds, driftSelectedSubId]);
 
   useEffect(() => {
     if (!creds) return;
@@ -1417,14 +1435,98 @@ export const App: React.FC = () => {
           </div>
           <div className="mt-3 p-3 bg-gray-800 rounded">
             <div className="text-white font-semibold mb-2">Manage Funds</div>
-            <div className="grid grid-cols-3 gap-2">
-              <input type="number" min={0} step={0.000001} className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={driftAmount} onChange={e => setDriftAmount(Number(e.target.value))} placeholder="Amount (e.g. USDC)" />
-              <input type="number" min={0} step={1} className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={driftSpotIndex} onChange={e => setDriftSpotIndex(Number(e.target.value))} placeholder="Spot Market Index (0=USDC)" />
+            <div className="grid grid-cols-3 gap-2 items-center">
               <div className="flex space-x-2">
-                <button disabled={driftOpBusy} onClick={async () => { try { setDriftOpBusy(true); await fetch(`${apiBase}/drift/subaccount/deposit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subaccountId: Number(driftSelectedSubId), amount: Number(driftAmount), spotMarketIndex: Number(driftSpotIndex) }) }); const subsResp = await fetch(`${apiBase}/drift/subaccounts`).then(r => r.json()); setDriftSubaccounts(subsResp?.subaccounts || []); } catch {} finally { setDriftOpBusy(false); } }} className="flex-1 px-3 py-2 bg-green-700 text-white rounded hover:bg-green-800 disabled:opacity-60">Deposit</button>
-                <button disabled={driftOpBusy} onClick={async () => { try { setDriftOpBusy(true); await fetch(`${apiBase}/drift/subaccount/withdraw`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subaccountId: Number(driftSelectedSubId), amount: Number(driftAmount), spotMarketIndex: Number(driftSpotIndex) }) }); const subsResp = await fetch(`${apiBase}/drift/subaccounts`).then(r => r.json()); setDriftSubaccounts(subsResp?.subaccounts || []); } catch {} finally { setDriftOpBusy(false); } }} className="flex-1 px-3 py-2 bg-red-700 text-white rounded hover:bg-red-800 disabled:opacity-60">Withdraw</button>
+                <button onClick={() => setDriftAction('deposit')} className={`px-3 py-2 rounded text-white text-sm ${driftAction === 'deposit' ? 'bg-green-700' : 'bg-gray-700 hover:bg-gray-600'}`}>Deposit</button>
+                <button onClick={() => setDriftAction('withdraw')} className={`px-3 py-2 rounded text-white text-sm ${driftAction === 'withdraw' ? 'bg-red-700' : 'bg-gray-700 hover:bg-gray-600'}`}>Withdraw</button>
               </div>
+              <input type="number" min={0} step={0.000001} className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={driftAmount} onChange={e => setDriftAmount(Number(e.target.value))} placeholder="Amount" />
+              <select className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={driftSpotIndex} onChange={e => setDriftSpotIndex(Number(e.target.value))}>
+                {(() => {
+                  // Build token options based on selected action
+                  const marketsByMint = new Map<string, any>();
+                  for (const m of (driftSpotMarkets || [])) {
+                    const mint = String(m?.mint || '').toLowerCase();
+                    if (mint) marketsByMint.set(mint, m);
+                  }
+                  if (driftAction === 'deposit') {
+                    const opts: Array<{ idx: number; label: string }> = [];
+                    for (const t of (walletTokens || [])) {
+                      try {
+                        const bal = Number((t as any)?.uiAmount ?? (t as any)?.amount ?? (t as any)?.balance ?? 0);
+                        const mint = String((t as any)?.mint || (t as any)?.id || '').toLowerCase();
+                        if (bal > 0 && mint && marketsByMint.has(mint)) {
+                          const m = marketsByMint.get(mint);
+                          const sym = (t as any)?.symbol || m?.symbol || mint.slice(0,4) + '…';
+                          opts.push({ idx: Number(m.marketIndex), label: `${sym} (${bal.toLocaleString(undefined, { maximumFractionDigits: 6 })})` });
+                        }
+                      } catch {}
+                    }
+                    if (opts.length === 0) {
+                      // Fallback: list all markets if no wallet balances matched
+                      for (const m of (driftSpotMarkets || [])) {
+                        opts.push({ idx: Number(m.marketIndex), label: `${m.symbol || m.mint || `Index ${m.marketIndex}`} (${m.marketIndex})` });
+                      }
+                    }
+                    // Ensure current selection exists; otherwise pick first
+                    const has = opts.some(o => o.idx === Number(driftSpotIndex));
+                    if (!has && opts[0]) setDriftSpotIndex(opts[0].idx);
+                    return opts.map(o => (<option key={o.idx} value={o.idx}>{o.label}</option>));
+                  } else {
+                    const opts: Array<{ idx: number; label: string }> = [];
+                    for (const b of (driftSubBalances || [])) {
+                      try {
+                        const bal = Number((b as any)?.balance || 0);
+                        if (bal > 0 && Number.isFinite(Number(b.marketIndex))) {
+                          const idx = Number(b.marketIndex);
+                          const sym = (b as any)?.symbol || (driftSpotMarkets.find((m: any) => Number(m.marketIndex) === idx)?.symbol) || `Index ${idx}`;
+                          opts.push({ idx, label: `${sym} (${bal.toLocaleString(undefined, { maximumFractionDigits: 6 })})` });
+                        }
+                      } catch {}
+                    }
+                    if (opts.length === 0) {
+                      // Fallback to all markets
+                      for (const m of (driftSpotMarkets || [])) {
+                        opts.push({ idx: Number(m.marketIndex), label: `${m.symbol || m.mint || `Index ${m.marketIndex}`} (${m.marketIndex})` });
+                      }
+                    }
+                    const has = opts.some(o => o.idx === Number(driftSpotIndex));
+                    if (!has && opts[0]) setDriftSpotIndex(opts[0].idx);
+                    return opts.map(o => (<option key={o.idx} value={o.idx}>{o.label}</option>));
+                  }
+                })()}
+              </select>
             </div>
+            <div className="grid grid-cols-3 gap-2 items-center mt-2">
+              <div />
+              <button disabled={driftOpBusy} onClick={async () => { try { setDriftOpBusy(true); await fetch(`${apiBase}/drift/subaccount/deposit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subaccountId: Number(driftSelectedSubId), amount: Number(driftAmount), spotMarketIndex: Number(driftSpotIndex) }) }); const subsResp = await fetch(`${apiBase}/drift/subaccounts`).then(r => r.json()); setDriftSubaccounts(subsResp?.subaccounts || []); } catch {} finally { setDriftOpBusy(false); } }} className="px-3 py-2 bg-green-700 text-white rounded hover:bg-green-800 disabled:opacity-60">Deposit</button>
+              <button disabled={driftOpBusy} onClick={async () => { try { setDriftOpBusy(true); await fetch(`${apiBase}/drift/subaccount/withdraw`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subaccountId: Number(driftSelectedSubId), amount: Number(driftAmount), spotMarketIndex: Number(driftSpotIndex) }) }); const subsResp = await fetch(`${apiBase}/drift/subaccounts`).then(r => r.json()); setDriftSubaccounts(subsResp?.subaccounts || []); } catch {} finally { setDriftOpBusy(false); } }} className="px-3 py-2 bg-red-700 text-white rounded hover:bg-red-800 disabled:opacity-60">Withdraw</button>
+            </div>
+          </div>
+          <div className="mt-3 p-3 bg-gray-800 rounded">
+            <div className="text-white font-semibold mb-2">Subaccount Balances</div>
+            {driftSubBalances.length === 0 ? (
+              <div className="text-gray-400 text-sm">No balances</div>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-gray-400">
+                    <th className="text-left">Token</th>
+                    <th className="text-left">Market</th>
+                    <th className="text-left">Balance</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {driftSubBalances.map((b: any, i: number) => (
+                    <tr key={i} className="text-gray-300">
+                      <td>{b.symbol || b.mint || '-'}</td>
+                      <td>{b.marketIndex}</td>
+                      <td>{Number(b.balance || 0).toLocaleString(undefined, { maximumFractionDigits: 6 })}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
         </CollapsibleSection>
         <CollapsibleSection title={"Positions"} storageKey="panel:positions">
@@ -1718,7 +1820,8 @@ export const App: React.FC = () => {
                 <div key={i} className="border border-gray-800 rounded p-3 text-base">
                   <div className="font-semibold mb-1 flex items-center">
                     {name} — <span className="uppercase text-gray-300">{a.status}</span>
-                    {isGrid && <span className="ml-2 px-2 py-1 bg-blue-600 text-white text-xs rounded">GRID</span>}
+                    {isGrid && s?.gridType === 'drift' && <span className="ml-2 px-2 py-1 bg-purple-600 text-white text-xs rounded">LEVERED GRID</span>}
+                    {isGrid && (!s?.gridType || s?.gridType !== 'drift') && <span className="ml-2 px-2 py-1 bg-blue-600 text-white text-xs rounded">GRID</span>}
                   </div>
                   {waitingInfo}
                   
@@ -1840,13 +1943,16 @@ export const App: React.FC = () => {
                 })();
                 const usdFrom = upperFrom === 'USDC' ? 1 : (upperFrom === 'SOL' ? solUsdFromMap : (mintFrom ? (prices as any)?.[mintFrom]?.usdc : null));
                 const usdTo = upperTo === 'USDC' ? 1 : (upperTo === 'SOL' ? solUsdFromMap : (mintTo ? (prices as any)?.[mintTo]?.usdc : null));
-                const pair = (usdFrom && usdTo) ? (usdTo / usdFrom) : null;
+                // For levered grid (Drift), prefer oracle/currentPairPrice from activity; otherwise fallback to Jupiter-derived pair
+                const activityForStrategy = activitiesByStrategy[s.name || 'default'] as any;
+                const oracleOrCurrent = typeof activityForStrategy?.currentPairPrice === 'number' ? activityForStrategy.currentPairPrice : (typeof activityForStrategy?.current === 'number' ? activityForStrategy.current : null);
+                const pair = (s?.gridType === 'drift' && typeof oracleOrCurrent === 'number') ? oracleOrCurrent : ((usdFrom && usdTo) ? (usdTo / usdFrom) : null);
                 const buyPct = s.buyPct ?? 0.05;
                 const sellPct = s.sellPct ?? 0.05;
                 const isActive = s.active !== false;
                 const statusColor = isActive ? 'text-green-400' : 'text-red-400';
                 const stratActivity = activitiesByStrategy[s.name || 'default'] || { status: 'idle', trades: [] };
-                const anchor = (stratActivity as any)?.anchor ?? pair;
+                const anchor = (s?.gridType === 'drift') ? (typeof (stratActivity as any)?.currentPairPrice === 'number' ? (stratActivity as any).currentPairPrice : pair) : ((stratActivity as any)?.anchor ?? pair);
                 const buyTrigger = (stratActivity as any)?.buyTrigger ?? (anchor ? anchor * (1 - buyPct) : null);
                 const sellTrigger = (stratActivity as any)?.sellTrigger ?? (anchor ? anchor * (1 + sellPct) : null);
                 const expectedPnlPct = sellPct * 100;

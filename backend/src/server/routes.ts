@@ -481,6 +481,70 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     }
   });
 
+  // Drift: list spot markets map (index/mint/symbol/decimals) - best-effort via SDK constants
+  api.get('/drift/spot-markets', async (_req: Request, res: Response) => {
+    try {
+      const sdk: any = await import('@drift-labs/sdk');
+      const constants: any = (sdk as any).constants || (sdk as any);
+      const cluster = (CONFIG as any)?.drift?.cluster || 'mainnet-beta';
+      const byCluster = (obj: any) => obj?.[cluster] || obj?.[cluster.replace('-', '_')];
+      const list = byCluster(constants?.SPOT_MARKETS) || byCluster(constants?.SpotMarkets) || constants?.SPOT_MARKETS || constants?.SpotMarkets || [];
+      const out = Array.isArray(list) ? list.map((m: any) => ({
+        marketIndex: Number(m?.marketIndex ?? m?.index ?? m?.market_index),
+        symbol: String(m?.symbol || m?.name || '').trim() || undefined,
+        mint: String(m?.mint || m?.mintAddress || m?.address || ''),
+        decimals: Number(m?.decimals ?? m?.precision ?? 6),
+      })).filter((m: any) => Number.isFinite(m.marketIndex)) : [];
+      res.json({ markets: out });
+    } catch (e: any) {
+      logger.error('drift: spot-markets failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Drift: subaccount token balances (best-effort from SDK User state)
+  api.get('/drift/subaccount/balances', async (req: Request, res: Response) => {
+    try {
+      const q = req.query as any;
+      const subId = Number(q?.subaccountId ?? q?.id ?? 0);
+      const { DriftService } = await import('../drift/client.js');
+      const svc = DriftService.getInstance();
+      await svc.init();
+      const client: any = (svc as any)?.client;
+      const user = client?.user;
+      const spotPositions = user?.getSpotPositions?.() || [];
+      const out: Array<{ marketIndex: number; balance: number; symbol?: string; mint?: string; decimals?: number }> = [];
+      for (const p of spotPositions) {
+        try {
+          const idx = Number(p?.marketIndex ?? p?.market_index ?? 0);
+          const bal = Number(p?.scaledBalance?.toString?.() || 0) || Number(p?.balance || 0);
+          // Attempt to enrich with market info from constants
+          let symbol: string | undefined = undefined;
+          let mint: string | undefined = undefined;
+          let decimals: number | undefined = undefined;
+          try {
+            const sdk: any = await import('@drift-labs/sdk');
+            const constants: any = (sdk as any).constants || (sdk as any);
+            const cluster = (CONFIG as any)?.drift?.cluster || 'mainnet-beta';
+            const byCluster = (obj: any) => obj?.[cluster] || obj?.[cluster.replace('-', '_')];
+            const list = byCluster(constants?.SPOT_MARKETS) || byCluster(constants?.SpotMarkets) || constants?.SPOT_MARKETS || constants?.SpotMarkets || [];
+            const found = Array.isArray(list) ? list.find((m: any) => Number(m?.marketIndex ?? m?.index ?? m?.market_index) === idx) : null;
+            if (found) {
+              symbol = String(found?.symbol || found?.name || '').trim() || undefined;
+              mint = String(found?.mint || found?.mintAddress || found?.address || '');
+              decimals = Number(found?.decimals ?? found?.precision ?? 6);
+            }
+          } catch {}
+          out.push({ marketIndex: idx, balance: bal, symbol, mint, decimals });
+        } catch {}
+      }
+      res.json({ balances: out });
+    } catch (e: any) {
+      logger.error('drift: subaccount balances failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   // Drift: L2 orderbook proxy (DLOB)
   api.get('/drift/l2', async (req: Request, res: Response) => {
     try {
