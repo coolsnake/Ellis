@@ -481,6 +481,70 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     }
   });
 
+  // Grid Monitor adapter: expose grid endpoints for both classic and drift levered grids
+  // Levels/positions/state snapshot
+  api.get('/grid/levels/:name', async (req: Request, res: Response) => {
+    try {
+      const name = String(req.params?.name || '');
+      // Attempt to resolve a drift levered grid by strategy name
+      const { DriftGridRegistry } = await import('../drift/execution.js');
+      const { DriftPriceService } = await import('../drift/price.js');
+      const { generatePriceLadder } = await import('../drift/orders.js');
+
+      const all = DriftGridRegistry.list();
+      const hit = all.find((x: any) => String(x?.status?.config?.name || '') === name);
+      if (!hit) {
+        // TODO: map classic grid strategy here when available; return empty for now
+        return res.json({ levels: [], positions: [], activePositions: [], tradeHistory: [], state: null, tokens: null });
+      }
+      const cfg: any = hit.status?.config || {};
+      const marketIndex = Number(cfg?.market?.marketIndex || 0);
+      const ps = DriftPriceService.getInstance().getPrice(marketIndex);
+      const anchor = (ps && typeof ps?.oracle === 'number') ? ps.oracle : (ps?.mid || undefined);
+      const ladder = (typeof anchor === 'number' && isFinite(anchor)) ? generatePriceLadder(cfg, anchor) : [];
+      const levels = ladder.map((l: any, i: number) => ({ id: `${l.side}-${i}-${Number(l.price).toFixed(6)}`, price: Number(l.price), side: l.side, amount: Number(l.size || 0), filled: false }));
+
+      const state = {
+        centerPrice: (typeof anchor === 'number' ? anchor : null),
+        originalCenterPrice: (typeof anchor === 'number' ? anchor : null),
+        lastRebalance: Date.now(),
+        volatility: 0,
+        totalFilled: 0,
+        totalPnl: 0,
+        completedCycles: 0,
+        totalTrades: 0,
+      };
+      const tokens = { fromToken: 'USDC', toToken: ps?.symbol || `PERP-${marketIndex}`, fromSymbol: 'USDC', toSymbol: ps?.symbol || `PERP-${marketIndex}`, fromUsd: 1, toUsd: undefined as any };
+      res.json({ levels, positions: [], activePositions: [], tradeHistory: [], state, tokens });
+    } catch (e: any) {
+      logger.error('grid.levels adapter failed', { error: String(e?.message || e) });
+      res.json({ levels: [], positions: [], activePositions: [], tradeHistory: [], state: null, tokens: null });
+    }
+  });
+
+  // Performance
+  api.get('/grid/performance/:name', async (req: Request, res: Response) => {
+    try {
+      const name = String(req.params?.name || '');
+      // Minimal placeholder performance for drift grids for now
+      const data = { totalPnl: 0, totalTrades: 0, completedCycles: 0 };
+      res.json(data);
+    } catch (e: any) {
+      logger.error('grid.performance adapter failed', { error: String(e?.message || e) });
+      res.json({ totalPnl: 0, totalTrades: 0, completedCycles: 0 });
+    }
+  });
+
+  // Rebalance (no-op for drift adapter)
+  api.post('/grid/rebalance/:name', async (_req: Request, res: Response) => {
+    try { res.json({ ok: true }); } catch { res.json({ ok: true }); }
+  });
+
+  // Close position (not supported yet for drift adapter)
+  api.post('/grid/close-position/:name', async (_req: Request, res: Response) => {
+    res.status(400).json({ error: 'not supported' });
+  });
+
   // Drift: list spot markets map (index/mint/symbol/decimals) - best-effort via SDK constants
   api.get('/drift/spot-markets', async (_req: Request, res: Response) => {
     try {
