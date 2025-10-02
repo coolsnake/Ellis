@@ -112,6 +112,29 @@ export class DriftService {
 
   private async discoverMarkets(): Promise<DriftMarketRef[]> {
     await this.init();
+    const decodeMarketName = (raw: any): string | undefined => {
+      try {
+        if (!raw) return undefined;
+        if (typeof raw === 'string') return raw.replace(/\0+$/g, '').trim() || undefined;
+        // Handle Buffer, Uint8Array, number[]
+        if (typeof Buffer !== 'undefined') {
+          if (Array.isArray(raw)) {
+            const s = Buffer.from(raw).toString('utf8').replace(/\0+$/g, '').trim();
+            return s || undefined;
+          }
+          if (raw?.data && Array.isArray(raw.data)) {
+            const s = Buffer.from(raw.data).toString('utf8').replace(/\0+$/g, '').trim();
+            return s || undefined;
+          }
+          if (raw?.byteLength && typeof raw?.slice === 'function') {
+            const arr = Buffer.from(Uint8Array.from(raw as Uint8Array));
+            const s = arr.toString('utf8').replace(/\0+$/g, '').trim();
+            return s || undefined;
+          }
+        }
+      } catch {}
+      return undefined;
+    };
     // Try SDK discovery first
     try {
       const sdk: any = await import('@drift-labs/sdk');
@@ -143,7 +166,8 @@ export class DriftService {
       }
       const markets: DriftMarketRef[] = Array.isArray(accounts) ? accounts.map((a: any) => {
         const idx = Number(a?.marketIndex ?? a?.market_index ?? a?.market?.index ?? a?.idx ?? 0);
-        const name = String(a?.name || a?.symbol || '').trim() || undefined;
+        const nameRaw = a?.name || a?.symbol || a?.marketName;
+        const name = decodeMarketName(nameRaw);
         return { marketIndex: idx, symbol: name };
       }).filter(m => Number.isFinite(m.marketIndex)) : [];
       // If empty, fallback to allowlist
@@ -161,14 +185,14 @@ export class DriftService {
         if (Array.isArray(list)) {
           for (const m of list) {
             const idx = Number(m?.marketIndex ?? m?.market_index ?? m?.index ?? m?.idx);
-            const name = String(m?.name || m?.symbol || m?.marketName || '').trim() || undefined;
+            const name = decodeMarketName(m?.name || m?.symbol || m?.marketName) || undefined;
             if (Number.isFinite(idx)) out.push({ marketIndex: idx, symbol: name });
           }
         } else if (list && typeof list === 'object') {
           for (const k of Object.keys(list)) {
             const m = (list as any)[k];
             const idx = Number(m?.marketIndex ?? m?.market_index ?? k);
-            const name = String(m?.name || m?.symbol || m?.marketName || k).trim() || undefined;
+            const name = decodeMarketName(m?.name || m?.symbol || m?.marketName || k) || undefined;
             if (Number.isFinite(idx)) out.push({ marketIndex: idx, symbol: name });
           }
         }
@@ -180,7 +204,7 @@ export class DriftService {
           const out2: DriftMarketRef[] = [];
           for (const k of Object.keys(nameMap)) {
             const idx = Number(k);
-            const name = String((nameMap as any)[k]).trim() || undefined;
+            const name = decodeMarketName((nameMap as any)[k]) || undefined;
             if (Number.isFinite(idx)) out2.push({ marketIndex: idx, symbol: name });
           }
           if (out2.length > 0) return out2.sort((a, b) => a.marketIndex - b.marketIndex);
