@@ -395,6 +395,70 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     }
   });
 
+  // Drift: subaccount list
+  api.get('/drift/subaccounts', async (_req: Request, res: Response) => {
+    try {
+      const { DriftService } = await import('../drift/client.js');
+      const svc = DriftService.getInstance();
+      const subs = await svc.getSubaccounts();
+      res.json({ subaccounts: subs });
+    } catch (e: any) {
+      logger.error('drift: subaccounts failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Drift: create subaccount
+  api.post('/drift/subaccount/create', async (_req: Request, res: Response) => {
+    try {
+      const { DriftService } = await import('../drift/client.js');
+      const svc = DriftService.getInstance();
+      const created = await svc.createSubaccount();
+      res.json(created || { id: Number((CONFIG as any).drift?.defaultSubaccountId || 0) });
+    } catch (e: any) {
+      logger.error('drift: create subaccount failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Drift: deposit to subaccount
+  api.post('/drift/subaccount/deposit', async (req: Request, res: Response) => {
+    try {
+      const body = req.body as { subaccountId: number; amount: number; spotMarketIndex?: number };
+      const subaccountId = Number(body?.subaccountId);
+      const amount = Number(body?.amount);
+      const spotMarketIndex = body?.spotMarketIndex;
+      if (!Number.isFinite(subaccountId) || subaccountId < 0) return res.status(400).json({ error: 'invalid subaccountId' });
+      if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: 'invalid amount' });
+      const { DriftService } = await import('../drift/client.js');
+      const svc = DriftService.getInstance();
+      const out = await svc.depositToSubaccount({ subaccountId, amount, spotMarketIndex });
+      res.json(out);
+    } catch (e: any) {
+      logger.error('drift: deposit failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Drift: withdraw from subaccount
+  api.post('/drift/subaccount/withdraw', async (req: Request, res: Response) => {
+    try {
+      const body = req.body as { subaccountId: number; amount: number; spotMarketIndex?: number };
+      const subaccountId = Number(body?.subaccountId);
+      const amount = Number(body?.amount);
+      const spotMarketIndex = body?.spotMarketIndex;
+      if (!Number.isFinite(subaccountId) || subaccountId < 0) return res.status(400).json({ error: 'invalid subaccountId' });
+      if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: 'invalid amount' });
+      const { DriftService } = await import('../drift/client.js');
+      const svc = DriftService.getInstance();
+      const out = await svc.withdrawFromSubaccount({ subaccountId, amount, spotMarketIndex });
+      res.json(out);
+    } catch (e: any) {
+      logger.error('drift: withdraw failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   // Drift: L2 orderbook proxy (DLOB)
   api.get('/drift/l2', async (req: Request, res: Response) => {
     try {

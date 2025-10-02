@@ -16,6 +16,7 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
   const [loading, setLoading] = useState<boolean>(false);
   const [saving, setSaving] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [opBusy, setOpBusy] = useState<boolean>(false);
 
   const [form, setForm] = useState<any>({
     name: '',
@@ -36,22 +37,30 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
 
   useEffect(() => {
     let alive = true;
-    (async () => {
+    const load = async () => {
       try {
         setLoading(true);
         const res = await fetch('/api/drift/status');
         const data = await res.json();
         if (!alive) return;
         setStatus(data);
-        if (typeof data?.subaccounts?.[0]?.id === 'number') {
+        if (Array.isArray(data?.subaccounts) && typeof data?.subaccounts?.[0]?.id === 'number') {
           setForm((prev: any) => ({ ...prev, subaccountId: data.subaccounts[0].id }));
+        }
+        // If markets exist and current is invalid, default to first
+        if (Array.isArray(data?.markets) && data.markets.length > 0) {
+          const currentIdx = Number(form.marketIndex);
+          if (!Number.isFinite(currentIdx) || currentIdx < 0) {
+            setForm((prev: any) => ({ ...prev, marketIndex: Number(data.markets[0].marketIndex) }));
+          }
         }
       } catch (e: any) {
         setError(String(e?.message || e));
       } finally {
         setLoading(false);
       }
-    })();
+    };
+    load();
     return () => { alive = false; };
   }, []);
 
@@ -134,7 +143,63 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
   const handleSwitchSub = async (id: number) => {
     try {
       await fetch('/api/drift/subaccount/switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+      // refresh status to pick up subaccount details
+      try {
+        const res = await fetch('/api/drift/status');
+        const data = await res.json();
+        setStatus(data);
+      } catch {}
     } catch {}
+  };
+
+  const refreshSubaccounts = async () => {
+    try {
+      const res = await fetch('/api/drift/subaccounts');
+      const data = await res.json();
+      if (data && Array.isArray(data.subaccounts)) {
+        setStatus((prev) => prev ? { ...prev, subaccounts: data.subaccounts } : prev);
+      }
+    } catch {}
+  };
+
+  const handleCreateSub = async () => {
+    try {
+      setOpBusy(true);
+      setError(null);
+      const res = await fetch('/api/drift/subaccount/create', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+      if (!res.ok) throw new Error(await res.text());
+      const created = await res.json();
+      await refreshSubaccounts();
+      if (created && typeof created.id === 'number') {
+        setForm((prev: any) => ({ ...prev, subaccountId: Number(created.id) }));
+      }
+    } catch (e: any) {
+      setError(String(e?.message || e));
+    } finally {
+      setOpBusy(false);
+    }
+  };
+
+  const [amount, setAmount] = useState<number>(0);
+  const [spotMarketIndex, setSpotMarketIndex] = useState<number>(0);
+
+  const doSubaccountOp = async (kind: 'deposit' | 'withdraw') => {
+    try {
+      setOpBusy(true);
+      setError(null);
+      const body = { subaccountId: Number(form.subaccountId), amount: Number(amount), spotMarketIndex: Number(spotMarketIndex) };
+      if (!Number.isFinite(body.subaccountId)) throw new Error('Invalid subaccount');
+      if (!Number.isFinite(body.amount) || body.amount <= 0) throw new Error('Enter a positive amount');
+      const res = await fetch(`/api/drift/subaccount/${kind}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (!res.ok) throw new Error(await res.text());
+      const out = await res.json();
+      if (!out?.ok) throw new Error(`${kind} failed`);
+      await refreshSubaccounts();
+    } catch (e: any) {
+      setError(String(e?.message || e));
+    } finally {
+      setOpBusy(false);
+    }
   };
 
   return (
@@ -169,7 +234,19 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
                 <select className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.subaccountId} onChange={e => { const id = Number(e.target.value); setForm({ ...form, subaccountId: id }); handleSwitchSub(id); }}>
                   {(subaccounts || []).map(s => (<option key={s.id} value={s.id}>Sub {s.id}</option>))}
                 </select>
-                <button className="px-3 py-2 bg-gray-700 text-white rounded opacity-50 cursor-not-allowed" title="Create subaccount (coming soon)" disabled>Create</button>
+                <button disabled={opBusy} onClick={handleCreateSub} className="px-3 py-2 bg-gray-700 text-white rounded hover:bg-gray-600 disabled:opacity-60" title="Create subaccount">{opBusy ? 'Working...' : 'Create'}</button>
+              </div>
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-300 mb-2">Subaccount Funds</label>
+              <div className="grid grid-cols-3 gap-2">
+                <input type="number" min={0} step={0.000001} className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={amount} onChange={e => setAmount(Number(e.target.value))} placeholder="Amount (e.g. USDC)" />
+                <input type="number" min={0} step={1} className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={spotMarketIndex} onChange={e => setSpotMarketIndex(Number(e.target.value))} placeholder="Spot Market Index (0=USDC)" />
+                <div className="flex space-x-2">
+                  <button disabled={opBusy} onClick={() => doSubaccountOp('deposit')} className="flex-1 px-3 py-2 bg-green-700 text-white rounded hover:bg-green-800 disabled:opacity-60">Deposit</button>
+                  <button disabled={opBusy} onClick={() => doSubaccountOp('withdraw')} className="flex-1 px-3 py-2 bg-red-700 text-white rounded hover:bg-red-800 disabled:opacity-60">Withdraw</button>
+                </div>
               </div>
             </div>
 

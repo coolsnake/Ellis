@@ -62,8 +62,7 @@ export class DriftService {
 
   async getStatus(): Promise<DriftStatus> {
     await this.init();
-    // For initial scaffolding, return placeholder markets and subaccounts derived from SDK when possible
-    const markets: DriftMarketRef[] = (((CONFIG as any).drift?.marketsAllowlist || []) as string[]).map((s, i) => ({ marketIndex: i, symbol: s }));
+    const markets: DriftMarketRef[] = await this.discoverMarkets();
     const subs = await this.getSubaccounts();
     logger.debug('drift.status', { markets: markets.length, subaccounts: subs.length, cat: 'drift' });
     return {
@@ -72,6 +71,86 @@ export class DriftService {
       subaccounts: subs,
       markets,
     };
+  }
+
+  private parseAllowlistMarkets(): DriftMarketRef[] {
+    try {
+      const raw: string[] = (((CONFIG as any).drift?.marketsAllowlist || []) as string[]);
+      const out: DriftMarketRef[] = [];
+      for (const entry of raw) {
+        const s = String(entry || '').trim();
+        if (!s) continue;
+        // Support formats: "0:SOL-PERP", "1=BTC-PERP", "2", "ETH-PERP"
+        let marketIndex: number | null = null;
+        let symbol: string | undefined = undefined;
+        if (/^\d+\s*[:=]\s*[^:]+$/.test(s)) {
+          const parts = s.split(/[:=]/);
+          marketIndex = Number(parts[0].trim());
+          symbol = String(parts[1]).trim();
+        } else if (/^\d+$/.test(s)) {
+          marketIndex = Number(s);
+        } else {
+          // Symbol only; keep without index
+          symbol = s;
+        }
+        if (Number.isFinite(marketIndex as number)) out.push({ marketIndex: Number(marketIndex), symbol });
+      }
+      // Deduplicate by marketIndex
+      const seen = new Set<number>();
+      return out.filter(m => {
+        if (seen.has(m.marketIndex)) return false;
+        seen.add(m.marketIndex);
+        return true;
+      }).sort((a, b) => a.marketIndex - b.marketIndex);
+    } catch {
+      return [];
+    }
+  }
+
+  private async discoverMarkets(): Promise<DriftMarketRef[]> {
+    await this.init();
+    // Try SDK discovery first
+    try {
+      const sdk: any = await import('@drift-labs/sdk');
+      const client: any = this.client;
+      // Preferred: client.getPerpMarketAccounts?.()
+      let accounts: any[] | null = null;
+      try {
+        if (typeof client?.getPerpMarketAccounts === 'function') {
+          accounts = await client.getPerpMarketAccounts();
+        }
+      } catch {}
+      // Anchor path: client.program?.account?.perpMarket?.all?.()
+      if (!accounts) {
+        try {
+          const maybe = await client?.program?.account?.perpMarket?.all?.();
+          if (Array.isArray(maybe)) accounts = maybe.map((x: any) => x?.account || x).filter(Boolean);
+        } catch {}
+      }
+      // Fallback: probe first 16 indices via getPerpMarketAccount
+      if (!accounts) {
+        const temp: any[] = [];
+        for (let i = 0; i < 16; i += 1) {
+          try {
+            const a = await client?.getPerpMarketAccount?.(i);
+            if (a) temp.push(a);
+          } catch {}
+        }
+        accounts = temp;
+      }
+      const markets: DriftMarketRef[] = Array.isArray(accounts) ? accounts.map((a: any) => {
+        const idx = Number(a?.marketIndex ?? a?.market_index ?? a?.market?.index ?? a?.idx ?? 0);
+        const name = String(a?.name || a?.symbol || '').trim() || undefined;
+        return { marketIndex: idx, symbol: name };
+      }).filter(m => Number.isFinite(m.marketIndex)) : [];
+      // If empty, fallback to allowlist
+      if (markets.length > 0) {
+        return markets.sort((a, b) => a.marketIndex - b.marketIndex);
+      }
+    } catch {}
+    // Config-based fallback
+    const fromCfg = this.parseAllowlistMarkets();
+    return fromCfg;
   }
 
   async getSubaccounts(): Promise<SubaccountInfo[]> {
@@ -112,6 +191,73 @@ export class DriftService {
     // Implement via SDK when wiring; OK to no-op for scaffold
     logger.info('drift.subaccount.switch', { id: _id, cat: 'drift' });
     return true;
+  }
+
+  async createSubaccount(): Promise<{ id: number } | null> {
+    await this.init();
+    try {
+      const client: any = this.client;
+      // Try add subaccount via SDK if available
+      if (typeof client?.addSubAccount === 'function') {
+        const res = await client.addSubAccount();
+        const fallbackId = Number((CONFIG as any).drift?.defaultSubaccountId || 0);
+        const id = Number((res?.subAccountId ?? res?.id) ?? fallbackId);
+        logger.info('drift.subaccount.created', { id, cat: 'drift' });
+        return { id };
+      }
+    } catch (e: any) {
+      logger.error('drift.subaccount.create_failed', { error: String(e?.message || e), cat: 'drift' });
+      return null;
+    }
+    // Fallback: return default id without on-chain action (scaffold)
+    const id = Number((CONFIG as any).drift?.defaultSubaccountId || 0);
+    logger.warn('drift.subaccount.create_fallback', { id, cat: 'drift' });
+    return { id };
+  }
+
+  async depositToSubaccount(params: { subaccountId: number; amount: number; spotMarketIndex?: number }): Promise<{ ok: boolean }> {
+    await this.init();
+    const { subaccountId, amount } = params;
+    const spotMarketIndex = Number(params.spotMarketIndex ?? 0);
+    try {
+      const client: any = this.client;
+      const sdk: any = await import('@drift-labs/sdk');
+      const BN = (sdk as any).BN || (sdk as any).anchor?.BN || (sdk as any).web3?.BN;
+      if (typeof client?.deposit === 'function' && BN) {
+        // Assume USDC decimals 6 for UI amount -> native
+        const native = new BN(Math.round(Number(amount) * 1_000_000));
+        const res = await client.deposit(native, spotMarketIndex, subaccountId);
+        logger.info('drift.subaccount.deposit_ok', { subaccountId, amount, spotMarketIndex, cat: 'drift' });
+        return { ok: true };
+      }
+    } catch (e: any) {
+      logger.error('drift.subaccount.deposit_failed', { error: String(e?.message || e), subaccountId, amount, spotMarketIndex, cat: 'drift' });
+      return { ok: false };
+    }
+    logger.warn('drift.subaccount.deposit_unavailable', { subaccountId, amount, spotMarketIndex, cat: 'drift' });
+    return { ok: false };
+  }
+
+  async withdrawFromSubaccount(params: { subaccountId: number; amount: number; spotMarketIndex?: number }): Promise<{ ok: boolean }> {
+    await this.init();
+    const { subaccountId, amount } = params;
+    const spotMarketIndex = Number(params.spotMarketIndex ?? 0);
+    try {
+      const client: any = this.client;
+      const sdk: any = await import('@drift-labs/sdk');
+      const BN = (sdk as any).BN || (sdk as any).anchor?.BN || (sdk as any).web3?.BN;
+      if (typeof client?.withdraw === 'function' && BN) {
+        const native = new BN(Math.round(Number(amount) * 1_000_000));
+        const res = await client.withdraw(native, spotMarketIndex, subaccountId);
+        logger.info('drift.subaccount.withdraw_ok', { subaccountId, amount, spotMarketIndex, cat: 'drift' });
+        return { ok: true };
+      }
+    } catch (e: any) {
+      logger.error('drift.subaccount.withdraw_failed', { error: String(e?.message || e), subaccountId, amount, spotMarketIndex, cat: 'drift' });
+      return { ok: false };
+    }
+    logger.warn('drift.subaccount.withdraw_unavailable', { subaccountId, amount, spotMarketIndex, cat: 'drift' });
+    return { ok: false };
   }
 }
 
