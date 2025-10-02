@@ -199,6 +199,15 @@ export const CONFIG = {
     // Public Drift program IDs per cluster can be derived inside the SDK; allow override via env
     programId: process.env.DRIFT_PROGRAM_ID,
     dlobUrl: process.env.DRIFT_DLOB_URL || 'https://dlob.drift.trade',
+    // Optional DLOB websocket for real-time L2 updates
+    dlobWsUrl: process.env.DRIFT_DLOB_WS_URL || 'wss://dlob.drift.trade',
+    // Gate using websocket-driven prices (fallback to HTTP when disabled or stale)
+    enableWsPrices: (process.env.DRIFT_ENABLE_WS_PRICES || 'true') !== 'false',
+    // Consider WS prices fresh within this window
+    priceStaleMs: Number(process.env.DRIFT_PRICE_STALE_MS || 3000),
+    // WS connection heartbeat/reconnect tuning
+    wsHeartbeatMs: Number(process.env.DRIFT_WS_HEARTBEAT_MS || 15000),
+    wsReconnectMinMs: Number(process.env.DRIFT_WS_RECONNECT_MIN_MS || 1000),
     // Optional preselected markets (by market index or symbol) for the UI
     marketsAllowlist: (process.env.DRIFT_MARKETS || '').split(',').map(s => s.trim()).filter(Boolean),
     defaultSubaccountId: Number(process.env.DRIFT_DEFAULT_SUBACCOUNT_ID || 0),

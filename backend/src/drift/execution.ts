@@ -11,6 +11,8 @@ import { CONFIG } from '../utils/config.js';
 export class DriftGridRunner {
   private timer: any | null = null;
   private state: GridRuntimeState = { running: false, openOrders: 0, netExposure: 0, effectiveLeverage: 0, liquidationBuffer: Infinity };
+  private tickScheduledAt: number = 0;
+  private lastTickAt: number = 0;
 
   constructor(private config: LeveragedGridConfig) {}
 
@@ -23,7 +25,29 @@ export class DriftGridRunner {
     this.state.running = true;
     logger.info('drift.grid.start', { name: this.config.name, marketIndex: this.config.market.marketIndex, subaccountId: this.config.subaccountId, levels: this.config.levels, notionalPerLevel: this.config.notionalPerLevel, cat: 'drift' });
     // Subscribe shared price service for this market
-    try { DriftPriceService.getInstance().trackMarket(this.config.market.marketIndex, 400); } catch {}
+    try {
+      const svc = DriftPriceService.getInstance();
+      svc.trackMarket(this.config.market.marketIndex, 400);
+      // Debounced event-driven tick on price updates
+      const debounceMs = Math.max(250, Math.min(600, Number(((CONFIG as any)?.websocketIntervalMs) || 400)));
+      const onPrice = (_p: any) => {
+        const now = Date.now();
+        if ((now - this.lastTickAt) < debounceMs) {
+          // schedule one-shot if not already scheduled
+          if (!this.tickScheduledAt) {
+            this.tickScheduledAt = now;
+            (globalThis as any).setTimeout(() => {
+              this.tickScheduledAt = 0;
+              this.tick().catch(() => {});
+            }, debounceMs - (now - this.lastTickAt));
+          }
+          return;
+        }
+        this.tick().catch(() => {});
+      };
+      (this as any)._onPrice = onPrice;
+      svc.onPrice(this.config.market.marketIndex, onPrice);
+    } catch {}
     // Initialize order engine once
     try {
       const drift = DriftService.getInstance();
@@ -41,10 +65,15 @@ export class DriftGridRunner {
     this.timer = null;
     this.state.running = false;
     logger.info('drift.grid.stop', { name: this.config.name, marketIndex: this.config.market.marketIndex, subaccountId: this.config.subaccountId, cat: 'drift' });
+    try {
+      const svc = DriftPriceService.getInstance();
+      if ((this as any)._onPrice) svc.offPrice(this.config.market.marketIndex, (this as any)._onPrice);
+    } catch {}
   }
 
   async tick(): Promise<void> {
     try {
+      this.lastTickAt = Date.now();
       const drift = DriftService.getInstance();
       await drift.init();
       const subs = await drift.getSubaccounts();

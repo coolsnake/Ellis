@@ -9,9 +9,10 @@ type DriftStatus = {
 
 interface LeveragedGridConfigProps {
   onClose: () => void;
+  onSaved?: () => void;
 }
 
-export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClose }) => {
+export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClose, onSaved }) => {
   const [status, setStatus] = useState<DriftStatus | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [saving, setSaving] = useState<boolean>(false);
@@ -132,6 +133,7 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
       };
       const res = await fetch('/api/strategies/leveraged-grid/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) });
       if (!res.ok) throw new Error(await res.text());
+      try { onSaved && onSaved(); } catch {}
       onClose();
     } catch (e: any) {
       setError(String(e?.message || e));

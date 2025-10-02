@@ -74,7 +74,10 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
 
   const formatPrice = (n: number | undefined | null) => {
     const v = Math.abs(Number(n || 0));
-    return v.toLocaleString(undefined, { minimumFractionDigits: 5, maximumFractionDigits: 5 });
+    // Heuristic: fewer decimals for large prices, more for small
+    const maxFrac = v >= 100 ? 2 : v >= 10 ? 3 : v >= 1 ? 4 : 6;
+    const minFrac = v >= 100 ? 2 : v >= 10 ? 3 : v >= 1 ? 4 : 6;
+    return v.toLocaleString(undefined, { minimumFractionDigits: minFrac, maximumFractionDigits: maxFrac });
   };
 
   const formatUsd = (n: number | undefined | null) => {
@@ -222,11 +225,11 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
           <div>
             <div className="text-gray-400">Center Price</div>
-            <div className="text-white font-mono">{state?.centerPrice?.toFixed(6) || 'N/A'}</div>
+            <div className="text-white font-mono">{typeof state?.centerPrice === 'number' ? formatPrice(state?.centerPrice) : 'N/A'}</div>
           </div>
           <div>
             <div className="text-gray-400">Current Price</div>
-            <div className="text-white font-mono">{currentPrice?.toFixed(6) || 'N/A'}</div>
+            <div className="text-white font-mono">{typeof currentPrice === 'number' ? formatPrice(currentPrice) : 'N/A'}</div>
           </div>
           <div>
             <div className="text-gray-400">Total Levels</div>

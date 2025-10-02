@@ -132,9 +132,18 @@ export const App: React.FC = () => {
         const mapped = Array.isArray(lg?.strategies) ? (lg.strategies as any[]).map((s: any, i: number) => {
           const cfg = (s?.status?.config || {}) as any;
           const market = cfg?.market || {};
-          const toSym = market?.symbol || `PERP-${market?.marketIndex ?? '?'}`;
+          const idx = Number(market?.marketIndex ?? i);
+          const driftMarketSym = (() => {
+            try {
+              const list = (driftStatus?.markets || []) as Array<{ marketIndex: number; symbol?: string }>;
+              const hit = list.find(m => Number(m.marketIndex) === idx);
+              return hit?.symbol;
+            } catch {}
+            return undefined;
+          })();
+          const toSym = driftMarketSym || market?.symbol || `PERP-${idx ?? '?'}`;
           return {
-            name: cfg?.name || `lev-grid-${market?.marketIndex ?? i}`,
+            name: cfg?.name || `lev-grid-${idx}`,
             type: 'drift-grid',
             fromToken: 'USDC',
             toToken: toSym,
@@ -242,9 +251,18 @@ export const App: React.FC = () => {
         const mapped = Array.isArray(lg?.strategies) ? (lg.strategies as any[]).map((s: any, i: number) => {
           const cfg = (s?.status?.config || {}) as any;
           const market = cfg?.market || {};
-          const toSym = market?.symbol || `PERP-${market?.marketIndex ?? '?'}`;
+          const idx = Number(market?.marketIndex ?? i);
+          const driftMarketSym = (() => {
+            try {
+              const list = (driftStatus?.markets || []) as Array<{ marketIndex: number; symbol?: string }>;
+              const hit = list.find(m => Number(m.marketIndex) === idx);
+              return hit?.symbol;
+            } catch {}
+            return undefined;
+          })();
+          const toSym = driftMarketSym || market?.symbol || `PERP-${idx ?? '?'}`;
           return {
-            name: cfg?.name || `lev-grid-${market?.marketIndex ?? i}`,
+            name: cfg?.name || `lev-grid-${idx}`,
             type: 'drift-grid',
             fromToken: 'USDC',
             toToken: toSym,
@@ -302,6 +320,16 @@ export const App: React.FC = () => {
           completedCycles: (a as any)?.completedCycles,
           realizedPnlFrom: (a as any)?.realizedPnlFrom,
           unrealizedPnlFrom: (a as any)?.unrealizedPnlFrom,
+          marketSymbol: (() => {
+            try {
+              const idx = Number((a as any)?.marketIndex);
+              if (Number.isFinite(idx)) {
+                const hit = (driftStatus?.markets || []).find((m: any) => Number(m.marketIndex) === idx);
+                return hit?.symbol;
+              }
+            } catch {}
+            return undefined;
+          })(),
         }
       }));
       // Ensure leveraged grid strategies appear in the Strategy panel when activity starts
@@ -316,6 +344,14 @@ export const App: React.FC = () => {
             const parts = pair.split('/');
             toSym = parts[1] || toSym;
           }
+          // Try resolve market symbol from drift markets via activity hint (if present)
+          try {
+            const idx = Number((a as any)?.marketIndex);
+            if (Number.isFinite(idx)) {
+              const hit = (driftStatus?.markets || []).find((m: any) => Number(m.marketIndex) === idx);
+              if (hit?.symbol) toSym = hit.symbol;
+            }
+          } catch {}
           const add: any = { name, type: 'drift-grid', fromToken: 'USDC', toToken: toSym, gridType: 'drift', gridLevels: [], active: ((a as any)?.status === 'active') };
           return [...arr, add];
         });
@@ -1958,7 +1994,16 @@ export const App: React.FC = () => {
                 const wl = watchlist.find(w => (typeof w === 'string' ? false : (w.symbol?.toUpperCase?.() === s.token?.toUpperCase?.())));
                 const mint = (s.token && s.token.length > 30) ? s.token : (wl?.id || '');
                 const from = s.fromToken || 'USDC';
-                const to = s.toToken || s.token || 'SOL';
+                const to = (() => {
+                  if (s?.gridType === 'drift') {
+                    const name = s?.name || 'default';
+                    const a = activitiesByStrategy[name] as any;
+                    const mSym = a?.marketSymbol;
+                    if (mSym) return mSym;
+                    return s.toToken || s.token || 'PERP';
+                  }
+                  return s.toToken || s.token || 'SOL';
+                })();
                 // try to map to watchlist mint ids for both
                 const wlFrom = watchlist.find(w => (typeof w === 'string' ? false : (w.symbol?.toUpperCase?.() === from?.toUpperCase?.())));
                 const wlTo = watchlist.find(w => (typeof w === 'string' ? false : (w.symbol?.toUpperCase?.() === to?.toUpperCase?.())));
@@ -2039,12 +2084,20 @@ export const App: React.FC = () => {
                           )}
                           
                           {isGrid && s?.gridType === 'drift' && (
-                            <button 
-                              className="text-sm bg-purple-600 px-3 py-1.5 rounded hover:bg-purple-700"
-                              onClick={() => setShowLevGridConfig(true)}
-                            >
-                              Edit
-                            </button>
+                            <>
+                              <button 
+                                className="text-sm bg-purple-600 px-3 py-1.5 rounded hover:bg-purple-700"
+                                onClick={() => setShowLevGridConfig(true)}
+                              >
+                                Edit
+                              </button>
+                              <button 
+                                className="ml-2 text-sm bg-blue-600 px-3 py-1.5 rounded hover:bg-blue-700"
+                                onClick={() => toggleGridStrategyMonitor(s.name)}
+                              >
+                                {selectedGridStrategies.has(s.name) ? 'Hide Monitor' : 'Show Monitor'}
+                              </button>
+                            </>
                           )}
                           {isGrid && (!s?.gridType || s?.gridType !== 'drift') && (
                             <button 
@@ -2205,7 +2258,41 @@ export const App: React.FC = () => {
 
       {/* Leveraged Grid Configuration Modal */}
       {showLevGridConfig && (
-        <LeveragedGridConfig onClose={() => setShowLevGridConfig(false)} />
+        <LeveragedGridConfig 
+          onClose={() => setShowLevGridConfig(false)} 
+          onSaved={async () => {
+            try {
+              const base = await (await fetch(`${apiBase}/strategy`)).json();
+              const baseList = base?.strategies || [];
+              const resp = await fetch(`${apiBase}/strategies/leveraged-grid/status`);
+              const lg = await resp.json();
+              const mapped = Array.isArray(lg?.strategies) ? (lg.strategies as any[]).map((s: any, i: number) => {
+                const cfg = (s?.status?.config || {}) as any;
+                const market = cfg?.market || {};
+                const idx = Number(market?.marketIndex ?? i);
+                const driftMarketSym = (() => {
+                  try {
+                    const list = (driftStatus?.markets || []) as Array<{ marketIndex: number; symbol?: string }>;
+                    const hit = list.find(m => Number(m.marketIndex) === idx);
+                    return hit?.symbol;
+                  } catch {}
+                  return undefined;
+                })();
+                const toSym = driftMarketSym || market?.symbol || `PERP-${idx ?? '?'}`;
+                return {
+                  name: cfg?.name || `lev-grid-${idx}`,
+                  type: 'drift-grid',
+                  fromToken: 'USDC',
+                  toToken: toSym,
+                  gridType: 'drift',
+                  gridLevels: [],
+                  active: !!(s?.status?.running),
+                } as any;
+              }) : [];
+              setStrategies([...(baseList || []), ...mapped]);
+            } catch {}
+          }}
+        />
       )}
 
       {/* Threshold Strategy Configuration Modal */}
