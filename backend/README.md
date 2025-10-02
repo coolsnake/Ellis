@@ -6,6 +6,9 @@ This backend adds a Drift-based leveraged grid strategy alongside spot strategie
 - Solana RPC URL set in `CONFIG.rpcUrl` or env `SOLANA_RPC_URL`.
 - Wallet keypair at `backend/wallet/keypair.json` (or override `WALLET_PATH`).
 - Optional: `CONFIG.drift` for cluster, DLOB URL, defaults.
+- Node.js 20 LTS recommended. Known-good backend pins:
+  - `@solana/web3.js`: 1.98.0
+  - `rpc-websockets`: 9.1.3 (via `overrides`)
 
 ### Core Endpoints
 - `GET /api/drift/status` — Drift cluster, markets, subaccounts, collateral snapshots.

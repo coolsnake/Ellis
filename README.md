@@ -36,7 +36,7 @@
 ## Installation & Requirements
 
 ### Prerequisites
-- Node.js 18+ and npm 9+
+- Node.js 20 LTS and npm 9+
 - A Solana RPC endpoint (HTTPS). Default is `https://api.mainnet-beta.solana.com` (set `SOLANA_RPC_URL` to override)
 - Internet access to Jupiter Lite API
 
@@ -52,6 +52,16 @@ npm install
 ```
 
 This installs root dependencies and workspaces (frontend and backend).
+
+### Known-good dependency pins (backend)
+- @solana/web3.js: 1.98.0
+- rpc-websockets: 9.1.3 (enforced via overrides)
+
+If you see websocket/CommonClient or exports errors, do a clean install:
+```
+rm -rf backend/node_modules backend/package-lock.json
+npm -C backend ci --no-audit --no-fund
+```
 
 ### Environment Variables (optional)
 - Backend:
