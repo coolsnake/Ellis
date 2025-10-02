@@ -200,7 +200,7 @@ export const CONFIG = {
     programId: process.env.DRIFT_PROGRAM_ID,
     dlobUrl: process.env.DRIFT_DLOB_URL || 'https://dlob.drift.trade',
     // Optional DLOB websocket for real-time L2 updates
-    dlobWsUrl: process.env.DRIFT_DLOB_WS_URL || 'wss://dlob.drift.trade',
+    dlobWsUrl: process.env.DRIFT_DLOB_WS_URL || 'wss://dlob.drift.trade/ws',
     // Gate using websocket-driven prices (fallback to HTTP when disabled or stale)
     enableWsPrices: (process.env.DRIFT_ENABLE_WS_PRICES || 'true') !== 'false',
     // Consider WS prices fresh within this window

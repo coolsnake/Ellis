@@ -34,11 +34,20 @@ export async function fetchDlobL2(marketIndex: number): Promise<DlobL2 | null> {
       }
       const data = (await res.json()) as RawDlobL2;
       // best-effort normalization
-      const out: DlobL2 = { bid: [], ask: [], oracle: data?.oracle, symbol: data?.symbol };
+      const scaleIfNeeded = (v: number | undefined): number | undefined => {
+        if (typeof v !== 'number' || !isFinite(v)) return undefined;
+        // DLOB often returns micro-price (1e6). Detect and scale down.
+        return Math.abs(v) > 1e6 ? v / 1e6 : v;
+      };
+      const out: DlobL2 = { bid: [], ask: [], oracle: scaleIfNeeded(data?.oracle), symbol: data?.symbol };
       const b = Array.isArray(data?.bids) ? data.bids : (Array.isArray(data?.bid) ? data.bid : []);
       const a = Array.isArray(data?.asks) ? data.asks : (Array.isArray(data?.ask) ? data.ask : []);
-      out.bid = (b || []).map((x: any) => ({ price: Number(x[0] ?? x.price), size: Number(x[1] ?? x.size) })).filter((v: Dl2Level) => isFinite(v.price) && isFinite(v.size));
-      out.ask = (a || []).map((x: any) => ({ price: Number(x[0] ?? x.price), size: Number(x[1] ?? x.size) })).filter((v: Dl2Level) => isFinite(v.price) && isFinite(v.size));
+      out.bid = (b || [])
+        .map((x: any) => ({ price: scaleIfNeeded(Number(x[0] ?? x.price)), size: Number(x[1] ?? x.size) }))
+        .filter((v: Dl2Level) => isFinite(v.price) && isFinite(v.size));
+      out.ask = (a || [])
+        .map((x: any) => ({ price: scaleIfNeeded(Number(x[0] ?? x.price)), size: Number(x[1] ?? x.size) }))
+        .filter((v: Dl2Level) => isFinite(v.price) && isFinite(v.size));
       logger.debug('drift.dlob.l2_ready', { marketIndex, bid: out.bid.length, ask: out.ask.length, oracle: out.oracle, cat: 'drift' });
       return out;
     } catch (e: any) {

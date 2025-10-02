@@ -514,7 +514,21 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
         completedCycles: 0,
         totalTrades: 0,
       };
-      const tokens = { fromToken: 'USDC', toToken: ps?.symbol || `PERP-${marketIndex}`, fromSymbol: 'USDC', toSymbol: ps?.symbol || `PERP-${marketIndex}`, fromUsd: 1, toUsd: undefined as any };
+      // Resolve perp market symbol via SDK constants if not present
+      let marketSymbol: string | undefined = ps?.symbol;
+      try {
+        if (!marketSymbol) {
+          const sdk: any = await import('@drift-labs/sdk');
+          const constants: any = (sdk as any).constants || (sdk as any);
+          const cluster = (CONFIG as any)?.drift?.cluster || 'mainnet-beta';
+          const byCluster = (obj: any) => obj?.[cluster] || obj?.[cluster.replace('-', '_')];
+          const list = byCluster(constants?.PERP_MARKETS) || byCluster(constants?.PerpMarkets) || constants?.PERP_MARKETS || constants?.PerpMarkets || [];
+          const found = Array.isArray(list) ? list.find((m: any) => Number(m?.marketIndex ?? m?.index ?? m?.market_index) === marketIndex) : null;
+          if (found) marketSymbol = String(found?.symbol || found?.name || '').trim() || undefined;
+        }
+      } catch {}
+      const sym = marketSymbol || `PERP-${marketIndex}`;
+      const tokens = { fromToken: 'USDC', toToken: sym, fromSymbol: 'USDC', toSymbol: sym, fromUsd: 1, toUsd: undefined as any };
       res.json({ levels, positions: [], activePositions: [], tradeHistory: [], state, tokens });
     } catch (e: any) {
       logger.error('grid.levels adapter failed', { error: String(e?.message || e) });

@@ -246,7 +246,12 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
             <div>
               <div className="text-gray-400">Pair</div>
-              <div className="text-white">{tokens?.fromSymbol || tokens?.fromToken || 'FROM'} → {tokens?.toSymbol || tokens?.toToken || 'TO'}</div>
+              <div className="text-white">{(() => {
+                // For perps, show the market symbol only (e.g., SOL-PERP)
+                const to = tokens?.toSymbol || tokens?.toToken;
+                if (to && /-PERP/i.test(to)) return to;
+                return `${tokens?.fromSymbol || tokens?.fromToken || 'FROM'} → ${tokens?.toSymbol || tokens?.toToken || 'TO'}`;
+              })()}</div>
             </div>
             <div>
               <div className="text-gray-400">Amount / Level</div>

@@ -2130,9 +2130,9 @@ export const App: React.FC = () => {
                                 <div className="text-gray-300">{typeof v === 'boolean' ? (v ? 'true' : 'false') : String(v)}</div>
                               </React.Fragment>
                             ))}
-                            {anchor && (<><div>anchor</div><div className="text-gray-300">{`${anchor.toFixed(6)} ${from}->${to}`}</div></>)}
-                            {buyTrigger && (<><div>buyTrigger</div><div className="text-gray-300">{`${buyTrigger.toFixed(6)} ${from}->${to}`}</div></>)}
-                            {sellTrigger && (<><div>sellTrigger</div><div className="text-gray-300">{`${sellTrigger.toFixed(6)} ${from}->${to}`}</div></>)}
+                            {anchor && (<><div>anchor</div><div className="text-gray-300">{`${anchor.toFixed(6)} ${s?.gridType === 'drift' ? (activitiesByStrategy[s.name || 'default'] as any)?.marketSymbol || to : `${from}->${to}`}`}</div></>)}
+                            {buyTrigger && (<><div>buyTrigger</div><div className="text-gray-300">{`${buyTrigger.toFixed(6)} ${s?.gridType === 'drift' ? (activitiesByStrategy[s.name || 'default'] as any)?.marketSymbol || to : `${from}->${to}`}`}</div></>)}
+                            {sellTrigger && (<><div>sellTrigger</div><div className="text-gray-300">{`${sellTrigger.toFixed(6)} ${s?.gridType === 'drift' ? (activitiesByStrategy[s.name || 'default'] as any)?.marketSymbol || to : `${from}->${to}`}`}</div></>)}
                             {expectedPnlAbs && (<><div>expectedPnL</div><div className="text-gray-300">{`$${expectedPnlAbs} (${expectedPnlPct.toFixed(2)}%)`}</div></>)}
                             {(() => {
                               const a = activitiesByStrategy[s.name || 'default'];

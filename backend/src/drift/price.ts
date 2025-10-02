@@ -54,7 +54,7 @@ export class DriftPriceService {
             try { emit('drift-price', { marketIndex: idx, mid: sample.mid, bid: sample.bid, ask: sample.ask, oracle: sample.oracle, symbol: sample.symbol, source: 'ws' }); } catch {}
           } catch {}
         });
-        this.ws.start();
+        this.ws.start().catch(() => {});
       }
     } catch {}
   }

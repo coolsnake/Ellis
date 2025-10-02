@@ -1,6 +1,23 @@
 import { CONFIG } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 
+function getWebSocketCtor(): any {
+  const g: any = (globalThis as any);
+  return g.WebSocket || g.webkitWebSocket || g.MozWebSocket || g.ws || null;
+}
+
+async function ensureWsCtor(): Promise<any> {
+  let WS = getWebSocketCtor();
+  if (WS) return WS;
+  try {
+    // Dynamically import 'ws' for Node runtime
+    const mod: any = await import('ws');
+    WS = mod?.WebSocket || mod?.default || mod;
+    if (WS) return WS;
+  } catch {}
+  return null;
+}
+
 type Listener<T> = (payload: T) => void;
 
 export type L2Update = {
@@ -33,12 +50,11 @@ export class DriftDlobWs {
   private reconnectTimer: any | null = null;
   private heartbeatTimer: any | null = null;
 
-  start(): void {
+  async start(): Promise<void> {
     if (this.connected || this.socket) return;
-    const url = String(((CONFIG as any)?.drift?.dlobWsUrl) || 'wss://dlob.drift.trade');
+    const url = String(((CONFIG as any)?.drift?.dlobWsUrl) || 'wss://dlob.drift.trade/ws');
     try {
-      // Use global WebSocket if available (undici in Node 20 provides it)
-      const WS: any = (globalThis as any).WebSocket || (globalThis as any).webkitWebSocket || (globalThis as any).MozWebSocket || (globalThis as any).ws || null;
+      const WS: any = await ensureWsCtor();
       if (!WS) {
         logger.warn('drift.ws.unavailable_env', { url, cat: 'drift' });
         return;
@@ -123,12 +139,13 @@ export class DriftDlobWs {
     s.onmessage = (ev: any) => {
       try {
         const data = typeof ev?.data === 'string' ? JSON.parse(ev.data) : (ev?.data || {});
-        // Expected formats may vary. Support basic messages carrying L2 book for a specific market.
-        const mkt = Number(data?.marketIndex ?? data?.market_index ?? data?.market);
-        if (!Number.isFinite(mkt)) return;
-        const norm = this.normalizeL2(mkt, data as any);
+        // DLOB WS messages structure: { channel: 'orderbook', market: 'SOL-PERP', bids: [], asks: [], oracle, ... }
+        const marketName: string | undefined = String(data?.market || data?.symbol || '').trim() || undefined;
+        const mktIdx = this.resolveMarketIndex(marketName, data);
+        if (!Number.isFinite(mktIdx)) return;
+        const norm = this.normalizeL2(Number(mktIdx), data as any);
         if (!norm) return;
-        this.lastUpdateByMarket.set(mkt, norm.updatedAt);
+        this.lastUpdateByMarket.set(Number(mktIdx), norm.updatedAt);
         this.emit('l2', norm);
       } catch (e: any) {
         logger.warn('drift.ws.message_parse_failed', { error: String(e?.message || e), cat: 'drift' });
@@ -140,7 +157,9 @@ export class DriftDlobWs {
     try {
       if (!this.socket || !this.connected) return;
       if (!Array.isArray(indices) || indices.length === 0) return;
-      const msg = { type, channel: 'l2', markets: indices };
+      // Drift DLOB expects market names for orderbook channel; keep numeric index for our state
+      const markets = indices.map(i => this.mapMarketIndexToName(i)).filter(Boolean);
+      const msg = { type, channel: 'orderbook', markets };
       (this.socket as any).send(JSON.stringify(msg));
     } catch {}
   }
@@ -176,6 +195,61 @@ export class DriftDlobWs {
     } catch {
       return null;
     }
+  }
+
+  // Map helpers: we need to translate between index and name when talking to DLOB
+  private mapMarketIndexToName(idx: number): string | undefined {
+    try {
+      const allow: string[] = ((CONFIG as any)?.drift?.marketsAllowlist || []) as any;
+      // Support entries like "0:SOL-PERP", "1=BTC-PERP", "2", "ETH-PERP"
+      for (const entry of allow) {
+        const s = String(entry || '').trim();
+        if (!s) continue;
+        if (/^\d+\s*[:=]\s*[^:]+$/.test(s)) {
+          const parts = s.split(/[:=]/);
+          const marketIndex = Number(parts[0].trim());
+          const symbol = String(parts[1]).trim();
+          if (marketIndex === Number(idx)) return symbol;
+        }
+      }
+    } catch {}
+    // Fallback common names for popular markets
+    const fallback: Record<number, string> = { 0: 'SOL-PERP', 1: 'BTC-PERP', 2: 'ETH-PERP' };
+    return fallback[Number(idx)];
+  }
+
+  private resolveMarketIndex(marketName: string | undefined, raw: any): number | undefined {
+    try {
+      // If message carried numeric index, use it
+      const idx = Number(raw?.marketIndex ?? raw?.market_index ?? raw?.market?.index);
+      if (Number.isFinite(idx)) return idx;
+    } catch {}
+    if (!marketName) return undefined;
+    try {
+      const allow: string[] = ((CONFIG as any)?.drift?.marketsAllowlist || []) as any;
+      for (const entry of allow) {
+        const s = String(entry || '').trim();
+        if (!s) continue;
+        if (/^\d+\s*[:=]\s*[^:]+$/.test(s)) {
+          const parts = s.split(/[:=]/);
+          const marketIndex = Number(parts[0].trim());
+          const symbol = String(parts[1]).trim();
+          if (symbol.toUpperCase() === marketName.toUpperCase()) return marketIndex;
+        } else if (/^\d+$/.test(s)) {
+          // index without symbol; cannot match by name
+          continue;
+        } else {
+          // symbol-only; best-effort mapping by known common indices
+          if (s.toUpperCase() === marketName.toUpperCase()) {
+            // assume SOL->0, BTC->1, ETH->2
+            if (/^sol/i.test(s)) return 0;
+            if (/^btc/i.test(s)) return 1;
+            if (/^eth/i.test(s)) return 2;
+          }
+        }
+      }
+    } catch {}
+    return undefined;
   }
 }
 
