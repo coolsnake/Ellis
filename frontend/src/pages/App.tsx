@@ -501,30 +501,39 @@ export const App: React.FC = () => {
     setShowThresholdConfig(true);
   };
 
-  const handleRemoveStrategy = async (strategyName: string) => {
+  const handleRemoveStrategy = async (strategy: any) => {
+    const strategyName = strategy?.name || 'default';
     if (!confirm(`Are you sure you want to remove strategy "${strategyName}"? This will also close any associated positions.`)) {
       return;
     }
 
     try {
-      const response = await fetch(`${apiBase}/strategy`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: strategyName })
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        setStrategies(data.strategies || []);
+      if (strategy?.gridType === 'drift') {
+        // Stop levered grid runner and update local state
+        const key = strategy?.driftKey || `${strategyName}#${strategy?.marketIndex ?? ''}#${strategy?.subaccountId ?? ''}`;
+        await fetch(`${apiBase}/strategies/leveraged-grid/stop`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key }) });
+        setStrategies(prev => (prev || []).filter((s: any) => (s?.name || 'default') !== strategyName));
+        setPositions(prev => (prev || []).filter((p: any) => (p?.strategy || 'default') !== strategyName));
+        setActivitiesByStrategy(prev => { const next = { ...(prev || {}) } as any; delete next[strategyName]; return next; });
+      } else {
+        const response = await fetch(`${apiBase}/strategy`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: strategyName })
+        });
+        if (response.ok) {
+          const data = await response.json();
+          setStrategies(data.strategies || []);
+        } else {
+          const error = await response.json();
+          throw new Error(error.error || 'Failed to remove strategy');
+        }
+      }
         await fetch(`${apiBase}/terminal/log`, { 
           method: 'POST', 
           headers: { 'Content-Type': 'application/json' }, 
           body: JSON.stringify({ level: 'info', message: `terminal: Strategy removed: ${strategyName}` }) 
         });
-      } else {
-        const error = await response.json();
-        throw new Error(error.error || 'Failed to remove strategy');
-      }
     } catch (error: any) {
       await fetch(`${apiBase}/terminal/log`, { 
         method: 'POST', 
@@ -2000,7 +2009,8 @@ export const App: React.FC = () => {
                         </button>
                         <span className="flex items-center">
                           {s.name || 'unnamed'}
-                          {isGrid && <span className="ml-2 px-2 py-1 bg-blue-600 text-white text-xs rounded">GRID</span>}
+                          {isGrid && s?.gridType === 'drift' && <span className="ml-2 px-2 py-1 bg-purple-600 text-white text-xs rounded">LEVERED GRID</span>}
+                          {isGrid && (!s?.gridType || s?.gridType !== 'drift') && <span className="ml-2 px-2 py-1 bg-blue-600 text-white text-xs rounded">GRID</span>}
                         </span>
                       </div>
                       <span className={`text-sm font-semibold ${statusColor}`}>{isActive ? 'ACTIVE' : 'INACTIVE'}</span>
@@ -2019,7 +2029,7 @@ export const App: React.FC = () => {
                             </button>
                           )}
                           
-                          {isGrid && (
+                          {isGrid && (!s?.gridType || s?.gridType !== 'drift') && (
                             <button 
                               className="text-sm bg-blue-600 px-3 py-1.5 rounded hover:bg-blue-700"
                               onClick={() => toggleGridStrategyMonitor(s.name)}
@@ -2028,7 +2038,15 @@ export const App: React.FC = () => {
                             </button>
                           )}
                           
-                          {isGrid && (
+                          {isGrid && s?.gridType === 'drift' && (
+                            <button 
+                              className="text-sm bg-purple-600 px-3 py-1.5 rounded hover:bg-purple-700"
+                              onClick={() => setShowLevGridConfig(true)}
+                            >
+                              Edit
+                            </button>
+                          )}
+                          {isGrid && (!s?.gridType || s?.gridType !== 'drift') && (
                             <button 
                               className="text-sm bg-green-600 px-3 py-1.5 rounded hover:bg-green-700"
                               onClick={() => handleEditGridStrategy(s)}
@@ -2039,7 +2057,7 @@ export const App: React.FC = () => {
                           
                           <button 
                             className="text-sm bg-red-600 px-3 py-1.5 rounded hover:bg-red-700"
-                            onClick={() => handleRemoveStrategy(s.name)}
+                            onClick={() => handleRemoveStrategy(s)}
                           >
                             Remove
                           </button>
