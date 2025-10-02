@@ -38,5 +38,8 @@
     "tsx": "^4.15.7",
     "typescript": "^5.5.4",
     "vitest": "^1.6.0"
+  },
+  "overrides": {
+    "rpc-websockets": "7.10.0"
   }
 }
