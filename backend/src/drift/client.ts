@@ -50,6 +50,30 @@ export class DriftService {
     }
   }
 
+  async getUnrealizedPerpPnl(marketIndex: number): Promise<number | null> {
+    await this.init();
+    try {
+      const user: any = this.client?.user || null;
+      const val = await (user?.getUnrealizedPerpPnl?.(marketIndex));
+      const n = Number(val?.toString?.() || val || 0);
+      return isFinite(n) ? n : 0;
+    } catch {
+      return null;
+    }
+  }
+
+  async getUnrealizedFundingPnl(marketIndex: number): Promise<number | null> {
+    await this.init();
+    try {
+      const user: any = this.client?.user || null;
+      const val = await (user?.getUnrealizedFundingPnl?.(marketIndex));
+      const n = Number(val?.toString?.() || val || 0);
+      return isFinite(n) ? n : 0;
+    } catch {
+      return null;
+    }
+  }
+
   async init(): Promise<void> {
     if (this.client) return;
     this.walletKp = await ensureWallet(CONFIG.walletPath);

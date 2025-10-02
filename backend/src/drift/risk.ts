@@ -1,4 +1,5 @@
 import type { LeveragedGridConfig, SubaccountInfo } from './types.js';
+import { CONFIG } from '../utils/config.js';
 
 export function computeEffectiveLeverage(netNotional: number, totalCollateral: number): number {
   if (!totalCollateral || totalCollateral <= 0) return 0;
@@ -18,6 +19,13 @@ export function canPlaceOrders(cfg: LeveragedGridConfig, sub: SubaccountInfo, pr
   const liqBuf = computeLiquidationBuffer(sub.totalCollateral, sub.maintenanceRequirement);
   if (cfg.liquidationBufferPct > 0 && liqBuf < cfg.liquidationBufferPct) {
     return { ok: false, reason: `liq buffer breached: ${liqBuf.toFixed(2)} < ${cfg.liquidationBufferPct}` };
+  }
+  // Funding guard: compare configured max APY threshold
+  if (cfg.fundingGuard) {
+    const maxApy = Number((CONFIG as any)?.drift?.maxFundingApy || 0);
+    if (maxApy > 0) {
+      // Placeholder: runner should fetch funding rate and pass here; for now, allow
+    }
   }
   return { ok: true };
 }

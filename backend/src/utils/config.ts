@@ -206,6 +206,8 @@ export const CONFIG = {
     maxLeverage: Number(process.env.DRIFT_MAX_LEVERAGE || 3),
     liquidationBufferPct: Number(process.env.DRIFT_LIQ_BUFFER_PCT || 0.25),
     maxFundingApy: Number(process.env.DRIFT_MAX_FUNDING_APY || 50),
+    feeMakerBps: Number(process.env.DRIFT_FEE_MAKER_BPS || 0),
+    feeTakerBps: Number(process.env.DRIFT_FEE_TAKER_BPS || 5),
   }, 
 };
 

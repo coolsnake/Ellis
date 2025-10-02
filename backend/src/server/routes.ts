@@ -517,7 +517,8 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       for (const p of spotPositions) {
         try {
           const idx = Number(p?.marketIndex ?? p?.market_index ?? 0);
-          const bal = Number(p?.scaledBalance?.toString?.() || 0) || Number(p?.balance || 0);
+          // Prefer UI amount via market precision conversion if available
+          let bal = Number(p?.scaledBalance?.toString?.() || 0) || Number(p?.balance || 0);
           // Attempt to enrich with market info from constants
           let symbol: string | undefined = undefined;
           let mint: string | undefined = undefined;
@@ -533,6 +534,13 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
               symbol = String(found?.symbol || found?.name || '').trim() || undefined;
               mint = String(found?.mint || found?.mintAddress || found?.address || '');
               decimals = Number(found?.decimals ?? found?.precision ?? 6);
+              if (typeof decimals === 'number' && decimals >= 0) {
+                // Convert native balance estimate to UI units when plausible
+                const scale = Math.pow(10, decimals);
+                if (scale > 0 && isFinite(scale)) {
+                  bal = bal / scale;
+                }
+              }
             }
           } catch {}
           out.push({ marketIndex: idx, balance: bal, symbol, mint, decimals });

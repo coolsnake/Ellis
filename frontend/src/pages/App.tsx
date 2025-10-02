@@ -1823,6 +1823,31 @@ export const App: React.FC = () => {
                     {isGrid && s?.gridType === 'drift' && <span className="ml-2 px-2 py-1 bg-purple-600 text-white text-xs rounded">LEVERED GRID</span>}
                     {isGrid && (!s?.gridType || s?.gridType !== 'drift') && <span className="ml-2 px-2 py-1 bg-blue-600 text-white text-xs rounded">GRID</span>}
                   </div>
+                  {s?.gridType === 'drift' && (
+                    <div className="text-xs text-gray-400">
+                      {(() => {
+                        const cur = (a as any)?.currentPairPrice ?? (a as any)?.current;
+                        const mid = (a as any)?.mid;
+                        const spr = (a as any)?.spread;
+                        const src = (typeof (a as any)?.oracle === 'number') ? 'oracle' : (typeof mid === 'number' ? 'mid' : 'n/a');
+                        const sprStr = typeof spr === 'number' ? spr.toFixed(6) : '-';
+                        const curStr = typeof cur === 'number' ? cur.toFixed(6) : '-';
+                        const midStr = typeof mid === 'number' ? mid.toFixed(6) : '-';
+                        const feeBps = (a as any)?.feeBps;
+                        const feeEst = (a as any)?.feeEstRoundTrip;
+                        const fApy = (a as any)?.fundingApy;
+                        const uPnl = (a as any)?.unrealizedPnl;
+                        const uFund = (a as any)?.unrealizedFunding;
+                        const net = (a as any)?.netApprox;
+                        const feeStr = typeof feeEst === 'number' ? `${feeEst.toFixed(4)} (${feeBps ?? 0}bps)` : '-';
+                        const apyStr = typeof fApy === 'number' ? `${(fApy*100).toFixed(2)}%` : '-';
+                        const uStr = typeof uPnl === 'number' ? uPnl.toFixed(4) : '-';
+                        const ufStr = typeof uFund === 'number' ? uFund.toFixed(4) : '-';
+                        const netStr = typeof net === 'number' ? net.toFixed(4) : '-';
+                        return `Price (${src}): ${curStr} — Mid: ${midStr} — Spread: ${sprStr} | Fees: ${feeStr} | Funding APY: ${apyStr} | U-PnL: ${uStr} | U-Funding: ${ufStr} | Net≈: ${netStr}`;
+                      })()}
+                    </div>
+                  )}
                   {waitingInfo}
                   
                   {/* Grid Levels Display for Grid Strategies */}

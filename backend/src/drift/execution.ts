@@ -4,9 +4,12 @@ import { DriftService } from './client.js';
 import { canPlaceOrders } from './risk.js';
 import { fetchDlobL2 } from './marketdata.js';
 import { emit } from '../server/realtime.js';
+import { DriftPriceService } from './price.js';
+import { generatePriceLadder, DriftOrderEngine } from './orders.js';
+import { CONFIG } from '../utils/config.js';
 
 export class DriftGridRunner {
-  private timer: NodeJS.Timeout | null = null;
+  private timer: any | null = null;
   private state: GridRuntimeState = { running: false, openOrders: 0, netExposure: 0, effectiveLeverage: 0, liquidationBuffer: Infinity };
 
   constructor(private config: LeveragedGridConfig) {}
@@ -19,13 +22,22 @@ export class DriftGridRunner {
     if (this.timer) return;
     this.state.running = true;
     logger.info('drift.grid.start', { name: this.config.name, marketIndex: this.config.market.marketIndex, subaccountId: this.config.subaccountId, levels: this.config.levels, notionalPerLevel: this.config.notionalPerLevel, cat: 'drift' });
-    this.timer = setInterval(() => {
+    // Subscribe shared price service for this market
+    try { DriftPriceService.getInstance().trackMarket(this.config.market.marketIndex, 400); } catch {}
+    // Initialize order engine once
+    try {
+      const drift = DriftService.getInstance();
+      await drift.init();
+      const engine = new DriftOrderEngine((drift as any)?.client);
+      (this as any)._engine = engine;
+    } catch {}
+    this.timer = (globalThis as any).setInterval(() => {
       this.tick().catch((e) => logger.error('drift.grid.tick_error', { error: String(e), cat: 'drift' }));
     }, Math.max(500, pollMs));
   }
 
   stop(): void {
-    if (this.timer) clearInterval(this.timer);
+    if (this.timer) (globalThis as any).clearInterval(this.timer);
     this.timer = null;
     this.state.running = false;
     logger.info('drift.grid.stop', { name: this.config.name, marketIndex: this.config.market.marketIndex, subaccountId: this.config.subaccountId, cat: 'drift' });
@@ -50,16 +62,67 @@ export class DriftGridRunner {
         logger.warn('drift.grid.risk_gate_block', { reason: gate.reason, proposedNotional, freeCollateral: sub.freeCollateral, cat: 'drift' });
         return;
       }
+      // Funding guard (best-effort): drop placement if funding exceeds threshold
+      if (this.config.fundingGuard) {
+        try {
+          const { DriftService } = await import('./client.js');
+          const svc = DriftService.getInstance();
+          const fr = await svc.getFundingRate(this.config.market.marketIndex);
+          if (fr && typeof fr.lastFundingRate === 'number') {
+            const apy = fr.lastFundingRate * 365 * 24; // hourly to annualized approximation
+            const maxApy = Number(((await import('../utils/config.js')) as any).CONFIG?.drift?.maxFundingApy || 0);
+            if (maxApy > 0 && Math.abs(apy) > maxApy) {
+              logger.warn('drift.grid.funding_guard_block', { apy, maxApy, marketIndex: this.config.market.marketIndex, cat: 'drift' });
+              return;
+            }
+          }
+        } catch {}
+      }
       // Placeholder: no real orders yet; update state snapshot
       this.state.openOrders = perSide * 2;
       this.state.effectiveLeverage = 0; // unknown until positions; keep zero for scaffold
       this.state.liquidationBuffer = Infinity; // unknown; will come from subaccount when wired
 
       // Fetch L2 for price context
-      const l2 = await fetchDlobL2(this.config.market.marketIndex);
-      const mid = l2 && l2.bid[0] && l2.ask[0] ? (l2.bid[0].price + l2.ask[0].price) / 2 : undefined;
-      const oracle = (typeof l2?.oracle === 'number' && isFinite(l2.oracle)) ? l2.oracle : undefined;
+      const shared = DriftPriceService.getInstance().getPrice(this.config.market.marketIndex);
+      const l2 = shared || (await fetchDlobL2(this.config.market.marketIndex));
+      const mid = l2 && (l2 as any).bid && (l2 as any).ask && (l2 as any).bid[0] && (l2 as any).ask[0] ? ((l2 as any).bid[0].price + (l2 as any).ask[0].price) / 2 : (shared?.mid);
+      const oracle = (typeof (l2 as any)?.oracle === 'number' && isFinite((l2 as any).oracle)) ? (l2 as any).oracle : (shared?.oracle);
       if (typeof mid === 'number' && isFinite(mid)) {
+        // Ladder generation (anchor on oracle if present, else mid)
+        const anchor = (typeof oracle === 'number' ? oracle : mid);
+        const ladder = generatePriceLadder(this.config, anchor);
+        // Order refresh lifecycle (maker-only optional)
+        try {
+          const engine: DriftOrderEngine | undefined = (this as any)._engine;
+          if (engine) {
+            await engine.refreshLadder(this.config.market.marketIndex, ladder, !!this.config.makerOnly, anchor, Number(this.config.stepPct || 0.01));
+          }
+        } catch {}
+        // Fetch PnL metrics (best-effort)
+        let unrealizedPnl: number | undefined = undefined;
+        let unrealizedFunding: number | undefined = undefined;
+        try {
+          const pnl = await DriftService.getInstance().getUnrealizedPerpPnl(this.config.market.marketIndex);
+          if (typeof pnl === 'number') unrealizedPnl = pnl;
+        } catch {}
+        try {
+          const f = await DriftService.getInstance().getUnrealizedFundingPnl(this.config.market.marketIndex);
+          if (typeof f === 'number') unrealizedFunding = f;
+        } catch {}
+        // Estimate fees and funding
+        let fundingApy: number | undefined = undefined;
+        try {
+          const fr = await DriftService.getInstance().getFundingRate(this.config.market.marketIndex);
+          if (fr && typeof fr.lastFundingRate === 'number') fundingApy = fr.lastFundingRate * 365 * 24;
+        } catch {}
+        const feeMakerBps = Number((CONFIG as any)?.drift?.feeMakerBps || 0);
+        const feeTakerBps = Number((CONFIG as any)?.drift?.feeTakerBps || 5);
+        const feeBps = this.config.makerOnly ? feeMakerBps : feeTakerBps;
+        const perSide = Math.max(0, Number(this.config.levels || 0));
+        const proposedNotional = perSide * (this.config.notionalPerLevel || 0);
+        const feeEstRoundTrip = (feeBps / 10000) * proposedNotional * 2;
+        const netApprox = (typeof unrealizedPnl === 'number' ? unrealizedPnl : 0) - (typeof unrealizedFunding === 'number' ? Math.abs(unrealizedFunding) : 0) - feeEstRoundTrip;
         // broadcast lightweight snapshot
         emit('activity', {
           strategy: this.config.name,
@@ -67,12 +130,21 @@ export class DriftGridRunner {
           current: mid,
           currentPairPrice: (typeof oracle === 'number' ? oracle : mid),
           oracle,
+          mid,
+          spread: (typeof shared?.bid === 'number' && typeof shared?.ask === 'number') ? (shared.ask - shared.bid) : undefined,
           openOrders: this.state.openOrders,
           effLev: this.state.effectiveLeverage,
           liqBuf: this.state.liquidationBuffer,
           marketIndex: this.config.market.marketIndex,
-          symbol: l2?.symbol,
-          pair: l2?.symbol ? `USDC/${l2.symbol}` : undefined,
+          symbol: (l2 as any)?.symbol || shared?.symbol,
+          pair: ((l2 as any)?.symbol || shared?.symbol) ? `USDC/${(l2 as any)?.symbol || shared?.symbol}` : undefined,
+          gridLevels: ladder,
+          unrealizedPnl,
+          unrealizedFunding,
+          fundingApy,
+          feeBps,
+          feeEstRoundTrip,
+          netApprox,
         });
         logger.debug('drift.grid.snapshot', { mid, openOrders: this.state.openOrders, effLev: this.state.effectiveLeverage, liqBuf: this.state.liquidationBuffer, marketIndex: this.config.market.marketIndex, cat: 'drift' });
       }
