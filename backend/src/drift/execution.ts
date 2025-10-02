@@ -68,6 +68,8 @@ export class DriftGridRunner {
           effLev: this.state.effectiveLeverage,
           liqBuf: this.state.liquidationBuffer,
           marketIndex: this.config.market.marketIndex,
+          symbol: l2?.symbol,
+          pair: l2?.symbol ? `USDC/${l2.symbol}` : undefined,
         });
         logger.debug('drift.grid.snapshot', { mid, openOrders: this.state.openOrders, effLev: this.state.effectiveLeverage, liqBuf: this.state.liquidationBuffer, marketIndex: this.config.market.marketIndex, cat: 'drift' });
       }

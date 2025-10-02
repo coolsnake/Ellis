@@ -26,6 +26,12 @@ export const App: React.FC = () => {
   const [wallet, setWallet] = useState<any>(null);
   const [watchlist, setWatchlist] = useState<any[]>([]);
   const [strategies, setStrategies] = useState<any[]>([]);
+  const [driftStatus, setDriftStatus] = useState<any>(null);
+  const [driftSubaccounts, setDriftSubaccounts] = useState<any[]>([]);
+  const [driftSelectedSubId, setDriftSelectedSubId] = useState<number>(0);
+  const [driftOpBusy, setDriftOpBusy] = useState<boolean>(false);
+  const [driftAmount, setDriftAmount] = useState<number>(0);
+  const [driftSpotIndex, setDriftSpotIndex] = useState<number>(0);
   const [tradeLogs, setTradeLogs] = useState<LogEvent[]>([]);
   const [strategyLogs, setStrategyLogs] = useState<LogEvent[]>([]);
   const [arbLogs, setArbLogs] = useState<LogEvent[]>([]);
@@ -113,9 +119,47 @@ export const App: React.FC = () => {
     fetch(`${apiBase}/system`).then(r => r.json()).then(setSystem);
     fetch(`${apiBase}/wallet`).then(r => r.json()).then(setWallet);
     fetch(`${apiBase}/watchlist`).then(r => r.json()).then(d => setWatchlist(d.watchlist));
-    fetch(`${apiBase}/strategy`).then(r => r.json()).then(d => setStrategies(d.strategies || []));
+    // Load base (spot) strategies first
+    fetch(`${apiBase}/strategy`).then(r => r.json()).then(async (d) => {
+      const baseList = d.strategies || [];
+      // Load Drift leveraged grid strategies and merge into the same list for display
+      try {
+        const resp = await fetch(`${apiBase}/strategies/leveraged-grid/status`);
+        const lg = await resp.json();
+        const mapped = Array.isArray(lg?.strategies) ? (lg.strategies as any[]).map((s: any, i: number) => {
+          const cfg = (s?.status?.config || {}) as any;
+          const market = cfg?.market || {};
+          const toSym = market?.symbol || `PERP-${market?.marketIndex ?? '?'}`;
+          return {
+            name: cfg?.name || `lev-grid-${market?.marketIndex ?? i}`,
+            type: 'drift-grid',
+            fromToken: 'USDC',
+            toToken: toSym,
+            gridType: 'drift',
+            gridLevels: [],
+            active: !!(s?.status?.running),
+          } as any;
+        }) : [];
+        setStrategies([...(baseList || []), ...mapped]);
+      } catch {
+        setStrategies(baseList || []);
+      }
+    });
     fetch(`${apiBase}/wallet/tokens`).then(r => r.json()).then(d => setWalletTokens(d.walletTokens || []));
     fetch(`${apiBase}/arb/config`).then(r => r.json()).then(setArbConfig).catch(() => {});
+    // Load Drift status/subaccounts for Drift panel
+    (async () => {
+      try {
+        const st = await fetch(`${apiBase}/drift/status`).then(r => r.json());
+        setDriftStatus(st);
+        try {
+          const subsResp = await fetch(`${apiBase}/drift/subaccounts`).then(r => r.json());
+          const subs = subsResp?.subaccounts || [];
+          setDriftSubaccounts(subs);
+          if (Array.isArray(subs) && subs.length > 0) setDriftSelectedSubId(Number(subs[0].id));
+        } catch {}
+      } catch {}
+    })();
   }, [apiBase, authHeaders, creds]);
 
   useEffect(() => {
@@ -1292,6 +1336,57 @@ export const App: React.FC = () => {
             <input value={terminalInput} onChange={(e) => setTerminalInput(e.target.value)} className="w-full bg-gray-800 rounded px-3 py-2 outline-none text-base" placeholder="Type command..." />
           </form>
         </section>
+        {/* Drift Panel: subaccounts and management */}
+        <CollapsibleSection title={"Drift"} storageKey="panel:drift">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="p-3 bg-gray-800 rounded">
+              <div className="text-white font-semibold mb-2">Status</div>
+              <div className="text-sm text-gray-300 space-y-1">
+                <div>Cluster: <span className="text-white">{driftStatus?.cluster || '-'}</span></div>
+                <div>Program: <span className="text-white">{driftStatus?.programId || '-'}</span></div>
+                <div>Markets: <span className="text-white">{Array.isArray(driftStatus?.markets) ? driftStatus.markets.length : 0}</span></div>
+              </div>
+            </div>
+            <div className="p-3 bg-gray-800 rounded">
+              <div className="text-white font-semibold mb-2">Subaccounts</div>
+              {driftSubaccounts.length === 0 ? (
+                <div className="text-gray-400 text-sm">No subaccounts detected.</div>
+              ) : (
+                <div className="space-y-2 text-sm">
+                  <div className="flex items-center space-x-2">
+                    <select className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={driftSelectedSubId} onChange={e => setDriftSelectedSubId(Number(e.target.value))}>
+                      {driftSubaccounts.map((s: any) => (<option key={s.id} value={s.id}>Sub {s.id}</option>))}
+                    </select>
+                    <button disabled={driftOpBusy} onClick={async () => { try { setDriftOpBusy(true); await fetch(`${apiBase}/drift/subaccount/create`, { method: 'POST', headers: { 'Content-Type': 'application/json' } }); const subsResp = await fetch(`${apiBase}/drift/subaccounts`).then(r => r.json()); const subs = subsResp?.subaccounts || []; setDriftSubaccounts(subs); if (subs[0]) setDriftSelectedSubId(Number(subs[0].id)); } catch {} finally { setDriftOpBusy(false); } }} className="px-3 py-2 bg-gray-700 text-white rounded hover:bg-gray-600 disabled:opacity-60">{driftOpBusy ? 'Working...' : 'Create'}</button>
+                  </div>
+                  {driftSubaccounts.map((s: any) => (
+                    <div key={s.id} className={`p-2 rounded ${Number(s.id) === Number(driftSelectedSubId) ? 'bg-gray-900' : 'bg-gray-750'}`}>
+                      <div className="text-gray-200">Sub {s.id}</div>
+                      <div className="grid grid-cols-2 gap-2 text-sm text-gray-300 mt-1">
+                        <div>Free Collateral: <span className="text-white">{Number(s.freeCollateral || 0).toFixed(2)}</span></div>
+                        <div>Total Collateral: <span className="text-white">{Number(s.totalCollateral || 0).toFixed(2)}</span></div>
+                        <div>Initial Req: <span className="text-white">{Number(s.initialRequirement || 0).toFixed(2)}</span></div>
+                        <div>Maintenance: <span className="text-white">{Number(s.maintenanceRequirement || 0).toFixed(2)}</span></div>
+                        <div>Eff. Leverage: <span className="text-white">{Number(s.effectiveLeverage || 0).toFixed(2)}</span></div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="mt-3 p-3 bg-gray-800 rounded">
+            <div className="text-white font-semibold mb-2">Manage Funds</div>
+            <div className="grid grid-cols-3 gap-2">
+              <input type="number" min={0} step={0.000001} className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={driftAmount} onChange={e => setDriftAmount(Number(e.target.value))} placeholder="Amount (e.g. USDC)" />
+              <input type="number" min={0} step={1} className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={driftSpotIndex} onChange={e => setDriftSpotIndex(Number(e.target.value))} placeholder="Spot Market Index (0=USDC)" />
+              <div className="flex space-x-2">
+                <button disabled={driftOpBusy} onClick={async () => { try { setDriftOpBusy(true); await fetch(`${apiBase}/drift/subaccount/deposit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subaccountId: Number(driftSelectedSubId), amount: Number(driftAmount), spotMarketIndex: Number(driftSpotIndex) }) }); const subsResp = await fetch(`${apiBase}/drift/subaccounts`).then(r => r.json()); setDriftSubaccounts(subsResp?.subaccounts || []); } catch {} finally { setDriftOpBusy(false); } }} className="flex-1 px-3 py-2 bg-green-700 text-white rounded hover:bg-green-800 disabled:opacity-60">Deposit</button>
+                <button disabled={driftOpBusy} onClick={async () => { try { setDriftOpBusy(true); await fetch(`${apiBase}/drift/subaccount/withdraw`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subaccountId: Number(driftSelectedSubId), amount: Number(driftAmount), spotMarketIndex: Number(driftSpotIndex) }) }); const subsResp = await fetch(`${apiBase}/drift/subaccounts`).then(r => r.json()); setDriftSubaccounts(subsResp?.subaccounts || []); } catch {} finally { setDriftOpBusy(false); } }} className="flex-1 px-3 py-2 bg-red-700 text-white rounded hover:bg-red-800 disabled:opacity-60">Withdraw</button>
+              </div>
+            </div>
+          </div>
+        </CollapsibleSection>
         <CollapsibleSection title={"Positions"} storageKey="panel:positions">
           {/* Grid summary per strategy */}
           {gridPositionsSummary.length > 0 && (
