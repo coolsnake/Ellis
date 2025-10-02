@@ -18,8 +18,9 @@ export class DriftGridRunner {
   async start(pollMs = 1500): Promise<void> {
     if (this.timer) return;
     this.state.running = true;
+    logger.info('drift.grid.start', { name: this.config.name, marketIndex: this.config.market.marketIndex, subaccountId: this.config.subaccountId, levels: this.config.levels, notionalPerLevel: this.config.notionalPerLevel, cat: 'drift' });
     this.timer = setInterval(() => {
-      this.tick().catch((e) => logger.error('drift-grid: tick error', { error: String(e) }));
+      this.tick().catch((e) => logger.error('drift.grid.tick_error', { error: String(e), cat: 'drift' }));
     }, Math.max(500, pollMs));
   }
 
@@ -27,6 +28,7 @@ export class DriftGridRunner {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     this.state.running = false;
+    logger.info('drift.grid.stop', { name: this.config.name, marketIndex: this.config.market.marketIndex, subaccountId: this.config.subaccountId, cat: 'drift' });
   }
 
   async tick(): Promise<void> {
@@ -35,14 +37,17 @@ export class DriftGridRunner {
       await drift.init();
       const subs = await drift.getSubaccounts();
       const sub = subs.find(s => s.id === this.config.subaccountId) || subs[0];
-      if (!sub) return;
+      if (!sub) {
+        logger.warn('drift.grid.no_subaccount', { requested: this.config.subaccountId, cat: 'drift' });
+        return;
+      }
 
       // For scaffold: compute proposed notional as sum of per-level notionals
       const perSide = Math.max(0, Number(this.config.levels || 0));
       const proposedNotional = perSide * (this.config.notionalPerLevel || 0);
       const gate = canPlaceOrders(this.config, sub, proposedNotional);
       if (!gate.ok) {
-        logger.warn('drift-grid: risk gate blocked placement', { reason: gate.reason });
+        logger.warn('drift.grid.risk_gate_block', { reason: gate.reason, proposedNotional, freeCollateral: sub.freeCollateral, cat: 'drift' });
         return;
       }
       // Placeholder: no real orders yet; update state snapshot
@@ -64,9 +69,10 @@ export class DriftGridRunner {
           liqBuf: this.state.liquidationBuffer,
           marketIndex: this.config.market.marketIndex,
         });
+        logger.debug('drift.grid.snapshot', { mid, openOrders: this.state.openOrders, effLev: this.state.effectiveLeverage, liqBuf: this.state.liquidationBuffer, marketIndex: this.config.market.marketIndex, cat: 'drift' });
       }
     } catch (e: any) {
-      logger.error('drift-grid: tick failed', { error: String(e?.message || e) });
+      logger.error('drift.grid.tick_failed', { error: String(e?.message || e), cat: 'drift' });
     }
   }
 }

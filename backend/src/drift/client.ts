@@ -2,6 +2,7 @@ import { Keypair, PublicKey, Connection } from '@solana/web3.js';
 import { CONFIG } from '../utils/config.js';
 import { ensureWallet } from '../wallet/wallet.js';
 import type { DriftStatus, SubaccountInfo, DriftMarketRef, DriftCluster } from './types.js';
+import { logger } from '../utils/logger.js';
 
 // Lazy import SDK to keep startup fast and optional
 type DriftEnv = {
@@ -52,9 +53,11 @@ export class DriftService {
     if (this.client) return;
     this.walletKp = await ensureWallet(CONFIG.walletPath);
     this.connection = new Connection(CONFIG.rpcUrl, 'confirmed');
+    logger.info('drift.sdk.init', { rpcUrl: CONFIG.rpcUrl, cluster: this.cluster, cat: 'drift' });
     const { initialize } = await loadSdk();
     // Minimal client; real opts can include program ID, env, etc.
     this.client = await initialize({ connection: this.connection, wallet: { publicKey: this.walletKp.publicKey } });
+    logger.info('drift.sdk.ready', { pubkey: this.walletKp.publicKey?.toBase58?.(), cat: 'drift' });
   }
 
   async getStatus(): Promise<DriftStatus> {
@@ -62,6 +65,7 @@ export class DriftService {
     // For initial scaffolding, return placeholder markets and subaccounts derived from SDK when possible
     const markets: DriftMarketRef[] = (((CONFIG as any).drift?.marketsAllowlist || []) as string[]).map((s, i) => ({ marketIndex: i, symbol: s }));
     const subs = await this.getSubaccounts();
+    logger.debug('drift.status', { markets: markets.length, subaccounts: subs.length, cat: 'drift' });
     return {
       cluster: this.cluster,
       programId: (CONFIG as any).drift?.programId,
@@ -91,17 +95,22 @@ export class DriftService {
           positions.push({ marketIndex: idx, base, entryPrice: undefined });
         }
       } catch {}
-      return [{ id, freeCollateral: free, totalCollateral, maintenanceRequirement: maint, initialRequirement: initReq, effectiveLeverage: lev, positions }];
+      const out = [{ id, freeCollateral: free, totalCollateral, maintenanceRequirement: maint, initialRequirement: initReq, effectiveLeverage: lev, positions }];
+      logger.debug('drift.subaccounts', { count: out.length, id, freeCollateral: free, effectiveLeverage: lev, cat: 'drift' });
+      return out;
     } catch {
       // Fallback scaffold when SDK calls are unavailable
       const id = Number((CONFIG as any).drift?.defaultSubaccountId || 0);
-      return [{ id, freeCollateral: 0, totalCollateral: 0, maintenanceRequirement: 0, initialRequirement: 0, effectiveLeverage: 0, positions: [] }];
+      const out = [{ id, freeCollateral: 0, totalCollateral: 0, maintenanceRequirement: 0, initialRequirement: 0, effectiveLeverage: 0, positions: [] }];
+      logger.warn('drift.subaccounts.fallback', { id, cat: 'drift' });
+      return out;
     }
   }
 
   async switchSubaccount(_id: number): Promise<boolean> {
     await this.init();
     // Implement via SDK when wiring; OK to no-op for scaffold
+    logger.info('drift.subaccount.switch', { id: _id, cat: 'drift' });
     return true;
   }
 }

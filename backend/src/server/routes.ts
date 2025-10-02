@@ -444,7 +444,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       const runner = DriftGridRegistry.upsert(cfg);
       const key = (DriftGridRegistry as any).keyOf(cfg);
       await DriftGridRegistry.start(key, (CONFIG as any).system?.targetTickTimeMs || 1500);
-      emit('log', { level: 'info', message: `drift-grid: started ${cfg?.name || key}`, timestamp: new Date().toISOString(), context: { cat: 'strategy' } });
+      emit('log', { level: 'info', message: `drift: grid started ${cfg?.name || key}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } });
       res.json({ ok: true, key });
     } catch (e: any) {
       logger.error('drift-grid: start failed', { error: String(e?.message || e) });
@@ -457,7 +457,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       const { key } = req.body as { key: string };
       const { DriftGridRegistry } = await import('../drift/execution.js');
       const ok = DriftGridRegistry.stop(key);
-      if (ok) emit('log', { level: 'info', message: `drift-grid: stopped ${key}`, timestamp: new Date().toISOString(), context: { cat: 'strategy' } });
+      if (ok) emit('log', { level: 'info', message: `drift: grid stopped ${key}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } });
       res.json({ ok });
     } catch (e: any) {
       logger.error('drift-grid: stop failed', { error: String(e?.message || e) });

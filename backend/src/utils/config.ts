@@ -91,6 +91,7 @@ export const CONFIG = {
       'raydium',
       'orca',
       'arb',
+      'drift',
       'strategy',
       'pretrade',
       'trade',

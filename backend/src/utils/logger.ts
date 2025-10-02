@@ -48,6 +48,7 @@ class RealtimeLogger extends EventEmitter {
     if (/^raydium[.:]\b|^raydium\b/i.test(msg)) return 'raydium';
     if (/^orca[.:]\b|^orca\b/i.test(msg)) return 'orca';
     if (/^arb[.:]\b|\barb\b/i.test(msg)) return 'arb';
+    if (/^drift[.:]\b|^drift\b/i.test(msg)) return 'drift';
     if (/^strategy[.:]\b|^strategy\b/i.test(msg)) return 'strategy';
     if (/^pretrade[.:]\b|^pretrade\b/i.test(msg)) return 'pretrade';
     if (/^trade[.:]\b|^trade\b/i.test(msg)) return 'trade';
@@ -62,6 +63,7 @@ class RealtimeLogger extends EventEmitter {
     if (/pools?/i.test(msg)) return 'pools';
     if (/price/i.test(msg)) return 'price';
     if (/swap|trade/i.test(msg)) return 'trade';
+    if (/drift|dlob|perp|subaccount|funding/i.test(msg)) return 'drift';
     if (/grid|strategy/i.test(msg)) return 'strategy';
     if (/server|backend|routes registered|listening on/i.test(msg)) return 'server';
     return 'other';
