@@ -11,7 +11,7 @@ async function main() {
   while (Date.now() - start < durationMs) {
     try {
       const res = await fetch(`${API_BASE}/strategies/leveraged-grid/status`);
-      const data = await res.json();
+      const data = (await res.json()) as { strategies?: Array<{ key: string; status: any }> };
       const list = (data?.strategies || []) as Array<{ key: string; status: any }>;
       const summary = list.map((s) => ({ key: s.key, running: s.status?.running, openOrders: s.status?.openOrders, effLev: s.status?.effectiveLeverage, liqBuf: s.status?.liquidationBuffer }));
       console.log(new Date().toISOString(), 'runner', summary);
