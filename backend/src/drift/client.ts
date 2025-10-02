@@ -188,8 +188,18 @@ export class DriftService {
 
   async switchSubaccount(_id: number): Promise<boolean> {
     await this.init();
-    // Implement via SDK when wiring; OK to no-op for scaffold
-    logger.info('drift.subaccount.switch', { id: _id, cat: 'drift' });
+    try {
+      const client: any = this.client;
+      if (typeof client?.switchActiveUser === 'function') {
+        await client.switchActiveUser(Number(_id));
+        logger.info('drift.subaccount.switch_ok', { id: _id, cat: 'drift' });
+        return true;
+      }
+    } catch (e: any) {
+      logger.error('drift.subaccount.switch_failed', { error: String(e?.message || e), id: _id, cat: 'drift' });
+      return false;
+    }
+    logger.warn('drift.subaccount.switch_unavailable', { id: _id, cat: 'drift' });
     return true;
   }
 
@@ -221,12 +231,19 @@ export class DriftService {
     const spotMarketIndex = Number(params.spotMarketIndex ?? 0);
     try {
       const client: any = this.client;
-      const sdk: any = await import('@drift-labs/sdk');
-      const BN = (sdk as any).BN || (sdk as any).anchor?.BN || (sdk as any).web3?.BN;
-      if (typeof client?.deposit === 'function' && BN) {
-        // Assume USDC decimals 6 for UI amount -> native
-        const native = new BN(Math.round(Number(amount) * 1_000_000));
-        const res = await client.deposit(native, spotMarketIndex, subaccountId);
+      if (typeof client?.deposit === 'function') {
+        // Convert UI amount to native using SDK precision utilities
+        const toNative = typeof client?.convertToSpotPrecision === 'function'
+          ? await client.convertToSpotPrecision(spotMarketIndex, Number(amount))
+          : null;
+        const nativeAmount = toNative ?? Number(Math.round(Number(amount) * 1_000_000));
+        const ata = typeof client?.getAssociatedTokenAccount === 'function'
+          ? await client.getAssociatedTokenAccount(spotMarketIndex)
+          : undefined;
+        // Prefer full signature (amount, spotIndex, ata, subId)
+        const res = (ata !== undefined)
+          ? await client.deposit(nativeAmount, spotMarketIndex, ata, Number(subaccountId))
+          : await client.deposit(nativeAmount, spotMarketIndex, Number(subaccountId));
         logger.info('drift.subaccount.deposit_ok', { subaccountId, amount, spotMarketIndex, cat: 'drift' });
         return { ok: true };
       }
@@ -244,11 +261,17 @@ export class DriftService {
     const spotMarketIndex = Number(params.spotMarketIndex ?? 0);
     try {
       const client: any = this.client;
-      const sdk: any = await import('@drift-labs/sdk');
-      const BN = (sdk as any).BN || (sdk as any).anchor?.BN || (sdk as any).web3?.BN;
-      if (typeof client?.withdraw === 'function' && BN) {
-        const native = new BN(Math.round(Number(amount) * 1_000_000));
-        const res = await client.withdraw(native, spotMarketIndex, subaccountId);
+      if (typeof client?.withdraw === 'function') {
+        const toNative = typeof client?.convertToSpotPrecision === 'function'
+          ? await client.convertToSpotPrecision(spotMarketIndex, Number(amount))
+          : null;
+        const nativeAmount = toNative ?? Number(Math.round(Number(amount) * 1_000_000));
+        const ata = typeof client?.getAssociatedTokenAccount === 'function'
+          ? await client.getAssociatedTokenAccount(spotMarketIndex)
+          : undefined;
+        const res = (ata !== undefined)
+          ? await client.withdraw(nativeAmount, spotMarketIndex, ata, Number(subaccountId))
+          : await client.withdraw(nativeAmount, spotMarketIndex, Number(subaccountId));
         logger.info('drift.subaccount.withdraw_ok', { subaccountId, amount, spotMarketIndex, cat: 'drift' });
         return { ok: true };
       }
@@ -257,6 +280,28 @@ export class DriftService {
       return { ok: false };
     }
     logger.warn('drift.subaccount.withdraw_unavailable', { subaccountId, amount, spotMarketIndex, cat: 'drift' });
+    return { ok: false };
+  }
+
+  async transferBetweenSubaccounts(params: { amount: number; spotMarketIndex: number; fromSubaccountId: number; toSubaccountId: number }): Promise<{ ok: boolean }> {
+    await this.init();
+    const { amount, spotMarketIndex, fromSubaccountId, toSubaccountId } = params;
+    try {
+      const client: any = this.client;
+      if (typeof client?.transferDeposit === 'function') {
+        const toNative = typeof client?.convertToSpotPrecision === 'function'
+          ? await client.convertToSpotPrecision(spotMarketIndex, Number(amount))
+          : null;
+        const nativeAmount = toNative ?? Number(Math.round(Number(amount) * 1_000_000));
+        await client.transferDeposit(nativeAmount, Number(spotMarketIndex), Number(fromSubaccountId), Number(toSubaccountId));
+        logger.info('drift.subaccount.transfer_ok', { amount, spotMarketIndex, fromSubaccountId, toSubaccountId, cat: 'drift' });
+        return { ok: true };
+      }
+    } catch (e: any) {
+      logger.error('drift.subaccount.transfer_failed', { error: String(e?.message || e), amount, spotMarketIndex, fromSubaccountId, toSubaccountId, cat: 'drift' });
+      return { ok: false };
+    }
+    logger.warn('drift.subaccount.transfer_unavailable', { amount, spotMarketIndex, fromSubaccountId, toSubaccountId, cat: 'drift' });
     return { ok: false };
   }
 }

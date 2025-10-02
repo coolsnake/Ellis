@@ -459,6 +459,28 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     }
   });
 
+  // Drift: transfer deposit between subaccounts
+  api.post('/drift/subaccount/transfer', async (req: Request, res: Response) => {
+    try {
+      const body = req.body as { amount: number; spotMarketIndex: number; fromSubaccountId: number; toSubaccountId: number };
+      const amount = Number(body?.amount);
+      const spotMarketIndex = Number(body?.spotMarketIndex);
+      const fromSubaccountId = Number(body?.fromSubaccountId);
+      const toSubaccountId = Number(body?.toSubaccountId);
+      if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: 'invalid amount' });
+      if (!Number.isFinite(spotMarketIndex)) return res.status(400).json({ error: 'invalid spotMarketIndex' });
+      if (!Number.isFinite(fromSubaccountId) || fromSubaccountId < 0) return res.status(400).json({ error: 'invalid fromSubaccountId' });
+      if (!Number.isFinite(toSubaccountId) || toSubaccountId < 0) return res.status(400).json({ error: 'invalid toSubaccountId' });
+      const { DriftService } = await import('../drift/client.js');
+      const svc = DriftService.getInstance();
+      const out = await svc.transferBetweenSubaccounts({ amount, spotMarketIndex, fromSubaccountId, toSubaccountId });
+      res.json(out);
+    } catch (e: any) {
+      logger.error('drift: transfer failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   // Drift: L2 orderbook proxy (DLOB)
   api.get('/drift/l2', async (req: Request, res: Response) => {
     try {
