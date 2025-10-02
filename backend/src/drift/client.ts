@@ -18,7 +18,8 @@ async function loadSdk(): Promise<DriftEnv> {
   const sdk = await import('@drift-labs/sdk');
   driftEnv = {
     DriftClient: (sdk as any).DriftClient,
-    initialize: async ({ connection, wallet, opts }: any) => new (sdk as any).DriftClient({ connection, wallet, opts })
+    // Ensure options are spread at top-level per SDK constructor shape
+    initialize: async ({ connection, wallet, opts }: any) => new (sdk as any).DriftClient({ connection, wallet, ...(opts || {}) })
   };
   return driftEnv;
 }
@@ -55,8 +56,10 @@ export class DriftService {
     this.connection = new Connection(CONFIG.rpcUrl, 'confirmed');
     logger.info('drift.sdk.init', { rpcUrl: CONFIG.rpcUrl, cluster: this.cluster, cat: 'drift' });
     const { initialize } = await loadSdk();
-    // Minimal client; real opts can include program ID, env, etc.
-    this.client = await initialize({ connection: this.connection, wallet: { publicKey: this.walletKp.publicKey } });
+    // Provide env so SDK can derive markets/oracles automatically
+    this.client = await initialize({ connection: this.connection, wallet: { publicKey: this.walletKp.publicKey }, opts: { env: this.cluster } });
+    // Subscribe to populate internal caches for markets/users/oracles
+    try { if (typeof (this.client as any)?.subscribe === 'function') { await (this.client as any).subscribe(); } } catch {}
     logger.info('drift.sdk.ready', { pubkey: this.walletKp.publicKey?.toBase58?.(), cat: 'drift' });
   }
 
@@ -147,6 +150,42 @@ export class DriftService {
       if (markets.length > 0) {
         return markets.sort((a, b) => a.marketIndex - b.marketIndex);
       }
+      // Constants-based fallback from SDK when RPC queries return empty
+      try {
+        const constants: any = (sdk as any).constants || (sdk as any);
+        const byClusterKey = (key: string) => (constants?.PERP_MARKETS?.[key] || constants?.PerpMarkets?.[key] || constants?.perpMarkets?.[key]);
+        const clusterKey1 = this.cluster; // 'mainnet-beta' | 'devnet'
+        const clusterKey2 = this.cluster.replace('-', '_'); // 'mainnet_beta'
+        const list = byClusterKey(clusterKey1) || byClusterKey(clusterKey2) || constants?.PERP_MARKETS || constants?.PerpMarkets || constants?.perpMarkets;
+        const out: DriftMarketRef[] = [];
+        if (Array.isArray(list)) {
+          for (const m of list) {
+            const idx = Number(m?.marketIndex ?? m?.market_index ?? m?.index ?? m?.idx);
+            const name = String(m?.name || m?.symbol || m?.marketName || '').trim() || undefined;
+            if (Number.isFinite(idx)) out.push({ marketIndex: idx, symbol: name });
+          }
+        } else if (list && typeof list === 'object') {
+          for (const k of Object.keys(list)) {
+            const m = (list as any)[k];
+            const idx = Number(m?.marketIndex ?? m?.market_index ?? k);
+            const name = String(m?.name || m?.symbol || m?.marketName || k).trim() || undefined;
+            if (Number.isFinite(idx)) out.push({ marketIndex: idx, symbol: name });
+          }
+        }
+        if (out.length > 0) {
+          return out.sort((a, b) => a.marketIndex - b.marketIndex);
+        }
+        const nameMap = constants?.MARKET_INDEX_TO_PERP_MARKET_NAME || constants?.PERP_MARKET_INDEX_TO_MARKET_NAME || null;
+        if (nameMap && typeof nameMap === 'object') {
+          const out2: DriftMarketRef[] = [];
+          for (const k of Object.keys(nameMap)) {
+            const idx = Number(k);
+            const name = String((nameMap as any)[k]).trim() || undefined;
+            if (Number.isFinite(idx)) out2.push({ marketIndex: idx, symbol: name });
+          }
+          if (out2.length > 0) return out2.sort((a, b) => a.marketIndex - b.marketIndex);
+        }
+      } catch {}
     } catch {}
     // Config-based fallback
     const fromCfg = this.parseAllowlistMarkets();
