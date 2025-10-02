@@ -216,14 +216,38 @@ export const App: React.FC = () => {
       }
     });
     socket.on('prices-update', (p) => setPrices(p));
-    socket.on('strategies-update', (list) => {
-      const next = Array.isArray(list) ? list : [];
-      setStrategies(next);
-      // Remove grid summaries for strategies that no longer exist
+    socket.on('strategies-update', async (list) => {
+      const base = Array.isArray(list) ? list : [];
       try {
-        const valid = new Set((next || []).map((s: any) => s?.name).filter(Boolean));
-        setGridPositionsSummary((prev) => (prev || []).filter((x) => valid.has(x.strategy)));
-      } catch {}
+        const resp = await fetch(`${apiBase}/strategies/leveraged-grid/status`);
+        const lg = await resp.json();
+        const mapped = Array.isArray(lg?.strategies) ? (lg.strategies as any[]).map((s: any, i: number) => {
+          const cfg = (s?.status?.config || {}) as any;
+          const market = cfg?.market || {};
+          const toSym = market?.symbol || `PERP-${market?.marketIndex ?? '?'}`;
+          return {
+            name: cfg?.name || `lev-grid-${market?.marketIndex ?? i}`,
+            type: 'drift-grid',
+            fromToken: 'USDC',
+            toToken: toSym,
+            gridType: 'drift',
+            gridLevels: [],
+            active: !!(s?.status?.running),
+          } as any;
+        }) : [];
+        const merged = [...base, ...mapped];
+        setStrategies(merged);
+        try {
+          const valid = new Set((merged || []).map((s: any) => s?.name).filter(Boolean));
+          setGridPositionsSummary((prev) => (prev || []).filter((x) => valid.has(x.strategy)));
+        } catch {}
+      } catch {
+        setStrategies(base);
+        try {
+          const valid = new Set((base || []).map((s: any) => s?.name).filter(Boolean));
+          setGridPositionsSummary((prev) => (prev || []).filter((x) => valid.has(x.strategy)));
+        } catch {}
+      }
     });
     socket.on('positions', (p) => setPositions(p || []));
     socket.on('grid-positions', (payload: any) => {
@@ -262,6 +286,22 @@ export const App: React.FC = () => {
           unrealizedPnlFrom: (a as any)?.unrealizedPnlFrom,
         }
       }));
+      // Ensure leveraged grid strategies appear in the Strategy panel when activity starts
+      try {
+        setStrategies((prev) => {
+          const arr = Array.isArray(prev) ? prev : [];
+          const exists = arr.some((s: any) => (s?.name || 'default') === name);
+          if (exists) return arr;
+          const pair = (a as any)?.pair as string | undefined;
+          let toSym = 'SOL';
+          if (typeof pair === 'string' && pair.includes('/')) {
+            const parts = pair.split('/');
+            toSym = parts[1] || toSym;
+          }
+          const add: any = { name, type: 'drift-grid', fromToken: 'USDC', toToken: toSym, gridType: 'drift', gridLevels: [], active: ((a as any)?.status === 'active') };
+          return [...arr, add];
+        });
+      } catch {}
     });
     return () => { socket.disconnect(); };
   }, [wsUrl, creds, authHeaders]);
