@@ -2,6 +2,7 @@
 import { logger } from '../utils/logger.js';
 import { DriftService } from './client.js';
 import { DriftPriceService } from './price.js';
+import { getAllowlistIndices } from './marketMapping.js';
 import { CONFIG } from '../utils/config.js';
 import { emit } from '../server/realtime.js';
 import { RunnerRegistry } from '../utils/runnerRegistry.js';
@@ -241,7 +242,6 @@ export class DriftLiquidator {
     try {
       const liqCfg: any = (CONFIG as any)?.drift?.liquidator || {};
       if (liqCfg.usePriceTriggers === false) return;
-      const { getAllowlistIndices } = await import('./marketMapping.js');
       const indices: number[] = getAllowlistIndices();
       // Default to first few common markets
       if (indices.length === 0) indices.push(0, 1, 2);
