@@ -896,6 +896,80 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     }
   });
 
+  // Liquidator configuration endpoints
+  api.get('/strategies/liquidator/config', async (_req: Request, res: Response) => {
+    try {
+      const { CONFIG } = await import('../utils/config.js');
+      const cfg = ((CONFIG as any)?.drift?.liquidator) || {};
+      const marketsAllowlist = ((CONFIG as any)?.drift?.marketsAllowlist) || [];
+      res.json({ config: cfg, marketsAllowlist });
+    } catch (e: any) {
+      logger.error('drift-liq: get-config failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.post('/strategies/liquidator/config', async (req: Request, res: Response) => {
+    try {
+      const body = req.body as any;
+      const { CONFIG } = await import('../utils/config.js');
+      (CONFIG as any).drift = (CONFIG as any).drift || {};
+      (CONFIG as any).drift.liquidator = (CONFIG as any).drift.liquidator || {};
+      const lc = (CONFIG as any).drift.liquidator as any;
+      const assignBool = (k: string) => { if (body[k] !== undefined) lc[k] = !!body[k]; };
+      const assignNum = (k: string, min?: number, max?: number) => {
+        if (body[k] !== undefined) {
+          let v = Number(body[k]);
+          if (Number.isFinite(v)) {
+            if (min !== undefined) v = Math.max(min, v);
+            if (max !== undefined) v = Math.min(max, v);
+            lc[k] = v;
+          }
+        }
+      };
+      const assignArrStr = (k: string) => {
+        const val = body[k];
+        if (val !== undefined) {
+          if (Array.isArray(val)) lc[k] = val.map((s: any) => String(s || '').trim()).filter(Boolean);
+          else if (typeof val === 'string') lc[k] = val.split(',').map(s => s.trim()).filter(Boolean);
+        }
+      };
+      // Apply known keys
+      assignNum('riskHealthThreshold', -1, 1);
+      assignBool('usePriceTriggers');
+      assignNum('priceTriggerDebounceMs', 200, 10000);
+      assignNum('httpPollMs', 200, 10000);
+      assignNum('maxUsersPerPriceTick', 1, 1000);
+      assignBool('discoverAllUsers');
+      assignNum('maxDiscoveredUsers', 1, 100000);
+      assignArrStr('usersAllowlist');
+      // marketsAllowlist lives under drift root
+      if (body.marketsAllowlist !== undefined) {
+        const arr = Array.isArray(body.marketsAllowlist)
+          ? (body.marketsAllowlist as any[]).map((s: any) => String(s || '').trim()).filter(Boolean)
+          : (typeof body.marketsAllowlist === 'string' ? String(body.marketsAllowlist).split(',').map(s => s.trim()).filter(Boolean) : undefined);
+        if (arr) (CONFIG as any).drift.marketsAllowlist = arr;
+      }
+
+      // Optionally restart runner to apply trigger changes
+      if (body.restart === true) {
+        try {
+          const { DriftLiquidatorRegistry } = await import('../drift/liquidator.js');
+          const list = DriftLiquidatorRegistry.list();
+          for (const r of list) {
+            try { DriftLiquidatorRegistry.stop(r.key); } catch {}
+            try { await DriftLiquidatorRegistry.start(r.key); } catch {}
+          }
+        } catch {}
+      }
+
+      res.json({ ok: true, config: (CONFIG as any).drift.liquidator, marketsAllowlist: (CONFIG as any).drift.marketsAllowlist || [] });
+    } catch (e: any) {
+      logger.error('drift-liq: set-config failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   // Drift Liquidator queue snapshot and markets
   api.get('/strategies/liquidator/queue', async (req: Request, res: Response) => {
     try {

@@ -84,6 +84,64 @@ export const App: React.FC = () => {
   const [liqMaxConc, setLiqMaxConc] = useState<number | undefined>(undefined);
   const [liqDryRun, setLiqDryRun] = useState<boolean>(true);
   const [liqStatus, setLiqStatus] = useState<any>(null);
+  const [liqCfg, setLiqCfg] = useState<any>({
+    usePriceTriggers: true,
+    priceTriggerDebounceMs: 800,
+    httpPollMs: 1200,
+    maxUsersPerPriceTick: 40,
+    discoverAllUsers: true,
+    maxDiscoveredUsers: 500,
+    riskHealthThreshold: 0,
+    marketsAllowlistCsv: '',
+    usersAllowlistCsv: '',
+    restartOnSave: false,
+  });
+  const [liqCfgLoading, setLiqCfgLoading] = useState<boolean>(false);
+  const [liqCfgSaving, setLiqCfgSaving] = useState<boolean>(false);
+
+  const loadLiquidatorConfig = async () => {
+    try {
+      setLiqCfgLoading(true);
+      const res = await fetch(`${apiBase}/strategies/liquidator/config`).then(r => r.json());
+      const cfg = (res?.config || {}) as any;
+      const markets = Array.isArray(res?.marketsAllowlist) ? res.marketsAllowlist : [];
+      setLiqCfg((prev: any) => ({
+        ...prev,
+        usePriceTriggers: cfg.usePriceTriggers !== false,
+        priceTriggerDebounceMs: Number(cfg.priceTriggerDebounceMs ?? prev.priceTriggerDebounceMs),
+        httpPollMs: Number(cfg.httpPollMs ?? prev.httpPollMs),
+        maxUsersPerPriceTick: Number(cfg.maxUsersPerPriceTick ?? prev.maxUsersPerPriceTick),
+        discoverAllUsers: cfg.discoverAllUsers !== false,
+        maxDiscoveredUsers: Number(cfg.maxDiscoveredUsers ?? prev.maxDiscoveredUsers),
+        riskHealthThreshold: Number(cfg.riskHealthThreshold ?? prev.riskHealthThreshold),
+        marketsAllowlistCsv: Array.isArray(markets) ? markets.join(',') : '',
+        usersAllowlistCsv: Array.isArray(cfg.usersAllowlist) ? (cfg.usersAllowlist as any[]).join(',') : '',
+      }));
+    } catch {}
+    finally { setLiqCfgLoading(false); }
+  };
+
+  const saveLiquidatorConfig = async () => {
+    try {
+      setLiqCfgSaving(true);
+      const body: any = {
+        usePriceTriggers: !!liqCfg.usePriceTriggers,
+        priceTriggerDebounceMs: Math.max(200, Number(liqCfg.priceTriggerDebounceMs || 0)),
+        httpPollMs: Math.max(200, Number(liqCfg.httpPollMs || 0)),
+        maxUsersPerPriceTick: Math.max(1, Number(liqCfg.maxUsersPerPriceTick || 1)),
+        discoverAllUsers: !!liqCfg.discoverAllUsers,
+        maxDiscoveredUsers: Math.max(1, Number(liqCfg.maxDiscoveredUsers || 1)),
+        riskHealthThreshold: Number(liqCfg.riskHealthThreshold || 0),
+        usersAllowlist: String(liqCfg.usersAllowlistCsv || '').split(',').map((s) => s.trim()).filter(Boolean),
+        marketsAllowlist: String(liqCfg.marketsAllowlistCsv || '').split(',').map((s) => s.trim()).filter(Boolean),
+        restart: !!liqCfg.restartOnSave,
+      };
+      await fetch(`${apiBase}/strategies/liquidator/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      // Reload after save
+      await loadLiquidatorConfig();
+    } catch {}
+    finally { setLiqCfgSaving(false); }
+  };
 
   // Default to same-origin behind nginx; allow overrides via env
   const apiBase = useMemo(() => (import.meta as any).env?.VITE_API_BASE ?? '/api', []);
@@ -379,7 +437,21 @@ export const App: React.FC = () => {
               if (hit?.symbol) toSym = hit.symbol;
             }
           } catch {}
-          const add: any = { name, type: 'drift-grid', fromToken: 'USDC', toToken: toSym, gridType: 'drift', gridLevels: [], active: ((a as any)?.status === 'active') };
+          const marketIndex = Number((a as any)?.marketIndex ?? NaN);
+          const subaccountId = Number((a as any)?.subaccountId ?? NaN);
+          const driftKey = (Number.isFinite(marketIndex) && Number.isFinite(subaccountId)) ? `${name}#${marketIndex}#${subaccountId}` : undefined;
+          const add: any = {
+            name,
+            type: 'drift-grid',
+            fromToken: 'USDC',
+            toToken: toSym,
+            gridType: 'drift',
+            gridLevels: [],
+            active: ((a as any)?.status === 'active'),
+            driftKey,
+            marketIndex: Number.isFinite(marketIndex) ? marketIndex : undefined,
+            subaccountId: Number.isFinite(subaccountId) ? subaccountId : undefined,
+          };
           return [...arr, add];
         });
       } catch {}
@@ -1762,6 +1834,73 @@ export const App: React.FC = () => {
               )}
               <div className="mt-3">
                 <LiquidationMonitor apiBase={apiBase} socket={socketRef.current} liquidatorKey={`liq#${liqName || 'default'}`} />
+              </div>
+              {/* Liquidator Config */}
+              <div className="mt-4 p-3 bg-gray-800 rounded">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-white font-semibold">Config</div>
+                  <div className="flex gap-2">
+                    <button
+                      className={`px-3 py-1 rounded text-sm ${liqCfgLoading ? 'bg-gray-600' : 'bg-gray-700 hover:bg-gray-600'} text-white`}
+                      disabled={liqCfgLoading}
+                      onClick={loadLiquidatorConfig}
+                    >{liqCfgLoading ? 'Loading…' : 'Load'}</button>
+                    <button
+                      className={`px-3 py-1 rounded text-sm ${liqCfgSaving ? 'bg-blue-900' : 'bg-blue-700 hover:bg-blue-600'} text-white`}
+                      disabled={liqCfgSaving}
+                      onClick={saveLiquidatorConfig}
+                    >{liqCfgSaving ? 'Saving…' : 'Save'}</button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+                  <label className="flex items-center gap-2">
+                    <input type="checkbox" className="h-4 w-4" checked={!!liqCfg.usePriceTriggers} onChange={(e) => setLiqCfg((p: any) => ({ ...p, usePriceTriggers: e.target.checked }))} />
+                    <span className="text-gray-300">Enable Price Triggers</span>
+                  </label>
+                  <div>
+                    <div className="text-gray-400 mb-1">Price Trigger Debounce (ms)</div>
+                    <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={liqCfg.priceTriggerDebounceMs}
+                      onChange={(e) => setLiqCfg((p: any) => ({ ...p, priceTriggerDebounceMs: Number(e.target.value) }))} />
+                  </div>
+                  <div>
+                    <div className="text-gray-400 mb-1">HTTP Poll Interval (ms)</div>
+                    <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={liqCfg.httpPollMs}
+                      onChange={(e) => setLiqCfg((p: any) => ({ ...p, httpPollMs: Number(e.target.value) }))} />
+                  </div>
+                  <div>
+                    <div className="text-gray-400 mb-1">Max Users Per Price Tick</div>
+                    <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={liqCfg.maxUsersPerPriceTick}
+                      onChange={(e) => setLiqCfg((p: any) => ({ ...p, maxUsersPerPriceTick: Number(e.target.value) }))} />
+                  </div>
+                  <label className="flex items-center gap-2">
+                    <input type="checkbox" className="h-4 w-4" checked={!!liqCfg.discoverAllUsers} onChange={(e) => setLiqCfg((p: any) => ({ ...p, discoverAllUsers: e.target.checked }))} />
+                    <span className="text-gray-300">Discover All Users</span>
+                  </label>
+                  <div>
+                    <div className="text-gray-400 mb-1">Max Discovered Users</div>
+                    <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={liqCfg.maxDiscoveredUsers}
+                      onChange={(e) => setLiqCfg((p: any) => ({ ...p, maxDiscoveredUsers: Number(e.target.value) }))} />
+                  </div>
+                  <div>
+                    <div className="text-gray-400 mb-1">Risk Health Threshold</div>
+                    <input type="number" step={0.01} className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={liqCfg.riskHealthThreshold}
+                      onChange={(e) => setLiqCfg((p: any) => ({ ...p, riskHealthThreshold: Number(e.target.value) }))} />
+                  </div>
+                  <div className="md:col-span-3">
+                    <div className="text-gray-400 mb-1">Markets Allowlist (CSV)</div>
+                    <input type="text" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" placeholder="0:SOL-PERP,1:BTC-PERP,2:ETH-PERP"
+                      value={liqCfg.marketsAllowlistCsv} onChange={(e) => setLiqCfg((p: any) => ({ ...p, marketsAllowlistCsv: e.target.value }))} />
+                  </div>
+                  <div className="md:col-span-3">
+                    <div className="text-gray-400 mb-1">Users Allowlist (CSV of base58)</div>
+                    <input type="text" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" placeholder="User PKs…"
+                      value={liqCfg.usersAllowlistCsv} onChange={(e) => setLiqCfg((p: any) => ({ ...p, usersAllowlistCsv: e.target.value }))} />
+                  </div>
+                  <label className="flex items-center gap-2">
+                    <input type="checkbox" className="h-4 w-4" checked={!!liqCfg.restartOnSave} onChange={(e) => setLiqCfg((p: any) => ({ ...p, restartOnSave: e.target.checked }))} />
+                    <span className="text-gray-300">Restart Liquidators on Save</span>
+                  </label>
+                </div>
               </div>
               {/* Inline validation for inputs */}
               <div className="mt-2 text-xs text-gray-400">
