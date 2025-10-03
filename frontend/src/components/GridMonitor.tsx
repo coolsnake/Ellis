@@ -229,7 +229,7 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
           </div>
           <div>
             <div className="text-gray-400">Current Price</div>
-            <div className="text-white font-mono">{typeof currentPrice === 'number' ? formatPrice(currentPrice) : 'N/A'}</div>
+            <div className="text-white font-mono">{typeof currentPrice === 'number' ? formatPrice(currentPrice) : (typeof state?.centerPrice === 'number' ? formatPrice(state?.centerPrice) : 'N/A')}</div>
           </div>
           <div>
             <div className="text-gray-400">Total Levels</div>

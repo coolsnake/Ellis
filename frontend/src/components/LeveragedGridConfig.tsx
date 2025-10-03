@@ -25,9 +25,36 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
     subaccountId: 0,
     leverage: 2,
     liquidationBufferPct: 0.25,
+    // Grid-style params mirroring classic grid
+    gridType: 'arithmetic',
+    gridSpacing: 0.01,
+    levels: 5,
+    centerPrice: 0,
+    totalAmount: 1,
+    levelAmount: 0.1,
+    bias: 'neutral',
+    biasStrength: 0,
+    initialBuyRange: 0.05,
+    initialSellRange: 0.05,
+    maxPositions: 10,
+    stopLoss: 0,
+    takeProfit: 0,
+    rebalanceThreshold: 0.05,
+    adaptiveSpacing: false,
+    volatilityPeriod: 20,
+    minLevelSpacing: 0.005,
+    maxLevelSpacing: 0.02,
+    slidingCenter: false,
+    slideRate: 10,
+    slideMaxDistance: 5,
+    slippageBps: 100,
+    cooldownMs: 1000,
+    feeBps: 30,
+    extraSlippageBps: 50,
+    minEdgeBps: 60,
+    // Drift execution specifics
     gridLower: 0,
     gridUpper: 0,
-    levels: 5,
     stepPct: 0.01,
     notionalPerLevel: 100,
     makerOnly: true,
@@ -120,6 +147,33 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
         subaccountId: Number(form.subaccountId),
         leverage: Number(form.leverage),
         liquidationBufferPct: Number(form.liquidationBufferPct),
+        // Mirrored grid params (best-effort passthrough for backend reference/analytics)
+        gridType: form.gridType,
+        gridSpacing: Number(form.gridSpacing),
+        centerPrice: Number(form.centerPrice),
+        totalAmount: Number(form.totalAmount),
+        levelAmount: Number(form.levelAmount),
+        bias: form.bias,
+        biasStrength: Number(form.biasStrength),
+        initialBuyRange: Number(form.initialBuyRange),
+        initialSellRange: Number(form.initialSellRange),
+        maxPositions: Number(form.maxPositions),
+        stopLoss: Number(form.stopLoss),
+        takeProfit: Number(form.takeProfit),
+        rebalanceThreshold: Number(form.rebalanceThreshold),
+        adaptiveSpacing: !!form.adaptiveSpacing,
+        volatilityPeriod: Number(form.volatilityPeriod),
+        minLevelSpacing: Number(form.minLevelSpacing),
+        maxLevelSpacing: Number(form.maxLevelSpacing),
+        slidingCenter: !!form.slidingCenter,
+        slideRate: Number(form.slideRate),
+        slideMaxDistance: Number(form.slideMaxDistance),
+        slippageBps: Number(form.slippageBps),
+        cooldownMs: Number(form.cooldownMs),
+        feeBps: Number(form.feeBps),
+        extraSlippageBps: Number(form.extraSlippageBps),
+        minEdgeBps: Number(form.minEdgeBps),
+        // Drift execution essentials
         gridLower: Number(form.gridLower),
         gridUpper: Number(form.gridUpper),
         levels: Number(form.levels),
@@ -230,27 +284,7 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
               </select>
             </div>
 
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-300 mb-2">Subaccount</label>
-              <div className="flex space-x-2">
-                <select className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.subaccountId} onChange={e => { const id = Number(e.target.value); setForm({ ...form, subaccountId: id }); handleSwitchSub(id); }}>
-                  {(subaccounts || []).map(s => (<option key={s.id} value={s.id}>Sub {s.id}</option>))}
-                </select>
-                <button disabled={opBusy} onClick={handleCreateSub} className="px-3 py-2 bg-gray-700 text-white rounded hover:bg-gray-600 disabled:opacity-60" title="Create subaccount">{opBusy ? 'Working...' : 'Create'}</button>
-              </div>
-            </div>
-
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-300 mb-2">Subaccount Funds</label>
-              <div className="grid grid-cols-3 gap-2">
-                <input type="number" min={0} step={0.000001} className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={amount} onChange={e => setAmount(Number(e.target.value))} placeholder="Amount (e.g. USDC)" />
-                <input type="number" min={0} step={1} className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={spotMarketIndex} onChange={e => setSpotMarketIndex(Number(e.target.value))} placeholder="Spot Market Index (0=USDC)" />
-                <div className="flex space-x-2">
-                  <button disabled={opBusy} onClick={() => doSubaccountOp('deposit')} className="flex-1 px-3 py-2 bg-green-700 text-white rounded hover:bg-green-800 disabled:opacity-60">Deposit</button>
-                  <button disabled={opBusy} onClick={() => doSubaccountOp('withdraw')} className="flex-1 px-3 py-2 bg-red-700 text-white rounded hover:bg-red-800 disabled:opacity-60">Withdraw</button>
-                </div>
-              </div>
-            </div>
+            {/* Subaccount management removed for streamlined config */}
 
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -294,41 +328,6 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
           </div>
 
           <div>
-            <div className="mb-4 p-3 rounded bg-gray-700 border border-gray-600">
-              <div className="text-white font-semibold mb-2">Subaccount Overview</div>
-              {loading && <div className="text-gray-300 text-sm">Loading Drift status...</div>}
-              {!loading && (!subaccounts || subaccounts.length === 0) && <div className="text-gray-400 text-sm">No subaccounts detected.</div>}
-              {!loading && subaccounts && subaccounts.length > 0 && (
-                <div className="space-y-2">
-                  {subaccounts.map(s => (
-                    <div key={s.id} className={`p-2 rounded ${s.id === form.subaccountId ? 'bg-gray-800' : 'bg-gray-750'}`}>
-                      <div className="text-gray-200">Sub {s.id}</div>
-                      <div className="grid grid-cols-2 gap-2 text-sm text-gray-300 mt-1">
-                        <div>Free Collateral: <span className="text-white">{s.freeCollateral.toFixed(2)}</span></div>
-                        <div>Total Collateral: <span className="text-white">{s.totalCollateral.toFixed(2)}</span></div>
-                        <div>Initial Req: <span className="text-white">{s.initialRequirement.toFixed(2)}</span></div>
-                        <div>Maintenance: <span className="text-white">{s.maintenanceRequirement.toFixed(2)}</span></div>
-                        <div>Eff. Leverage: <span className="text-white">{s.effectiveLeverage.toFixed(2)}</span></div>
-                      </div>
-                      {(s as any).positions && (s as any).positions.length > 0 && (
-                        <div className="mt-2 text-sm text-gray-300">
-                          <div className="mb-1">Perp Positions:</div>
-                          <div className="space-y-1 max-h-24 overflow-y-auto">
-                            {(s as any).positions.map((p: any, i: number) => (
-                              <div key={i} className="flex justify-between">
-                                <span>Market {p.marketIndex}</span>
-                                <span className="text-white">Base: {Number(p.base || 0)}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
             <div className="mb-4 p-3 rounded bg-gray-700 border border-gray-600">
               <div className="text-white font-semibold mb-2">Market Preview</div>
               {l2 ? (

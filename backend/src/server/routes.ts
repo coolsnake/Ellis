@@ -500,7 +500,8 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       const cfg: any = hit.status?.config || {};
       const marketIndex = Number(cfg?.market?.marketIndex || 0);
       const ps = DriftPriceService.getInstance().getPrice(marketIndex);
-      const anchor = (ps && typeof ps?.oracle === 'number') ? ps.oracle : (ps?.mid || undefined);
+      // Prefer mid for center price; fallback to oracle if mid is unavailable
+      const anchor = (ps && typeof ps?.mid === 'number') ? ps.mid : (ps?.oracle || undefined);
       const ladder = (typeof anchor === 'number' && isFinite(anchor)) ? generatePriceLadder(cfg, anchor) : [];
       const levels = ladder.map((l: any, i: number) => ({ id: `${l.side}-${i}-${Number(l.price).toFixed(6)}`, price: Number(l.price), side: l.side, amount: Number(l.size || 0), filled: false }));
 

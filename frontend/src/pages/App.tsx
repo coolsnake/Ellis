@@ -2022,10 +2022,13 @@ export const App: React.FC = () => {
                 })();
                 const usdFrom = upperFrom === 'USDC' ? 1 : (upperFrom === 'SOL' ? solUsdFromMap : (mintFrom ? (prices as any)?.[mintFrom]?.usdc : null));
                 const usdTo = upperTo === 'USDC' ? 1 : (upperTo === 'SOL' ? solUsdFromMap : (mintTo ? (prices as any)?.[mintTo]?.usdc : null));
-                // For levered grid (Drift), prefer oracle/currentPairPrice from activity; otherwise fallback to Jupiter-derived pair
+                // For levered grid (Drift), prefer mid/current from activity; fallback to oracle; else Jupiter-derived pair
                 const activityForStrategy = activitiesByStrategy[s.name || 'default'] as any;
-                const oracleOrCurrent = typeof activityForStrategy?.currentPairPrice === 'number' ? activityForStrategy.currentPairPrice : (typeof activityForStrategy?.current === 'number' ? activityForStrategy.current : null);
-                const pair = (s?.gridType === 'drift' && typeof oracleOrCurrent === 'number') ? oracleOrCurrent : ((usdFrom && usdTo) ? (usdTo / usdFrom) : null);
+                const currentMid = typeof activityForStrategy?.current === 'number' ? activityForStrategy.current : null;
+                const oracleOrCurrent = typeof activityForStrategy?.currentPairPrice === 'number' ? activityForStrategy.currentPairPrice : null;
+                const pair = (s?.gridType === 'drift' && (typeof currentMid === 'number' || typeof oracleOrCurrent === 'number'))
+                  ? (typeof currentMid === 'number' ? currentMid : oracleOrCurrent)
+                  : ((usdFrom && usdTo) ? (usdTo / usdFrom) : null);
                 const buyPct = s.buyPct ?? 0.05;
                 const sellPct = s.sellPct ?? 0.05;
                 const isActive = s.active !== false;
