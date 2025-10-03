@@ -296,12 +296,60 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
                 <input type="number" min={0} step={0.01} className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.liquidationBufferPct} onChange={e => setForm({ ...form, liquidationBufferPct: Number(e.target.value) })} />
               </div>
               <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Grid Type</label>
+                <select className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.gridType} onChange={e => setForm({ ...form, gridType: e.target.value })}>
+                  <option value="arithmetic">Arithmetic</option>
+                  <option value="geometric">Geometric</option>
+                  <option value="fibonacci">Fibonacci</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Grid Spacing (%)</label>
+                <input type="number" step={0.001} className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.gridSpacing} onChange={e => setForm({ ...form, gridSpacing: Number(e.target.value) })} />
+              </div>
+              <div>
                 <label className="block text-sm font-medium text-gray-300 mb-2">Levels per side</label>
                 <input type="number" min={1} max={50} className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.levels} onChange={e => setForm({ ...form, levels: Number(e.target.value) })} />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-2">Step (%)</label>
                 <input type="number" min={0.001} step={0.001} className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.stepPct} onChange={e => setForm({ ...form, stepPct: Number(e.target.value) })} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Center Price (0 = auto)</label>
+                <input type="number" step={0.000001} className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.centerPrice} onChange={e => setForm({ ...form, centerPrice: Number(e.target.value) })} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Total Amount</label>
+                <input type="number" step={0.001} className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.totalAmount} onChange={e => setForm({ ...form, totalAmount: Number(e.target.value) })} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Level Amount</label>
+                <input type="number" step={0.001} className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.levelAmount} onChange={e => setForm({ ...form, levelAmount: Number(e.target.value) })} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Initial Buy Range (%)</label>
+                <input type="number" step={0.001} className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.initialBuyRange} onChange={e => setForm({ ...form, initialBuyRange: Number(e.target.value) })} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Initial Sell Range (%)</label>
+                <input type="number" step={0.001} className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.initialSellRange} onChange={e => setForm({ ...form, initialSellRange: Number(e.target.value) })} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Max Positions</label>
+                <input type="number" min={1} className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.maxPositions} onChange={e => setForm({ ...form, maxPositions: Number(e.target.value) })} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Stop Loss (%)</label>
+                <input type="number" step={0.01} className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.stopLoss} onChange={e => setForm({ ...form, stopLoss: Number(e.target.value) })} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Take Profit (%)</label>
+                <input type="number" step={0.01} className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.takeProfit} onChange={e => setForm({ ...form, takeProfit: Number(e.target.value) })} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Rebalance Threshold (%)</label>
+                <input type="number" step={0.01} className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.rebalanceThreshold} onChange={e => setForm({ ...form, rebalanceThreshold: Number(e.target.value) })} />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-2">Lower Bound (0 = auto)</label>
@@ -360,6 +408,54 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
             <div className="mb-4 p-3 rounded bg-gray-700 border border-gray-600">
               <div className="text-white font-semibold mb-2">Run</div>
               <button disabled={saving} onClick={handleSave} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-60">{saving ? 'Starting...' : 'Start Leveraged Grid'}</button>
+            </div>
+
+            <div className="mb-4 p-3 rounded bg-gray-700 border border-gray-600">
+              <div className="text-white font-semibold mb-2">Advanced</div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <label className="flex items-center space-x-2"><input type="checkbox" checked={form.adaptiveSpacing} onChange={e => setForm({ ...form, adaptiveSpacing: e.target.checked })} /><span className="text-gray-300">Adaptive Spacing</span></label>
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">Volatility Period</label>
+                  <input type="number" min={5} max={100} className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.volatilityPeriod} onChange={e => setForm({ ...form, volatilityPeriod: Number(e.target.value) })} />
+                </div>
+                <div>
+                  <label className="block text sm font-medium text-gray-300 mb-2">Min Level Spacing (%)</label>
+                  <input type="number" step={0.001} className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.minLevelSpacing} onChange={e => setForm({ ...form, minLevelSpacing: Number(e.target.value) })} />
+                </div>
+                <div>
+                  <label className="block text sm font-medium text-gray-300 mb-2">Max Level Spacing (%)</label>
+                  <input type="number" step={0.001} className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.maxLevelSpacing} onChange={e => setForm({ ...form, maxLevelSpacing: Number(e.target.value) })} />
+                </div>
+                <label className="flex items-center space-x-2"><input type="checkbox" checked={form.slidingCenter} onChange={e => setForm({ ...form, slidingCenter: e.target.checked })} /><span className="text-gray-300">Sliding Center</span></label>
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">Slide Rate (bps/sec)</label>
+                  <input type="number" min={1} max={1000} className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.slideRate} onChange={e => setForm({ ...form, slideRate: Number(e.target.value) })} disabled={!form.slidingCenter} />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">Max Slide Distance (%)</label>
+                  <input type="number" step={0.1} min={0.1} max={50} className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.slideMaxDistance} onChange={e => setForm({ ...form, slideMaxDistance: Number(e.target.value) })} disabled={!form.slidingCenter} />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">Slippage (bps)</label>
+                  <input type="number" min={1} max={1000} className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.slippageBps} onChange={e => setForm({ ...form, slippageBps: Number(e.target.value) })} />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">Cooldown (ms)</label>
+                  <input type="number" min={0} className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.cooldownMs} onChange={e => setForm({ ...form, cooldownMs: Number(e.target.value) })} />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">Fee (bps)</label>
+                  <input type="number" min={0} className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.feeBps} onChange={e => setForm({ ...form, feeBps: Number(e.target.value) })} />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">Extra Slippage (bps)</label>
+                  <input type="number" min={0} className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.extraSlippageBps} onChange={e => setForm({ ...form, extraSlippageBps: Number(e.target.value) })} />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">Min Edge (bps)</label>
+                  <input type="number" min={0} className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.minEdgeBps} onChange={e => setForm({ ...form, minEdgeBps: Number(e.target.value) })} />
+                </div>
+              </div>
             </div>
           </div>
         </div>

@@ -2154,6 +2154,7 @@ export const App: React.FC = () => {
                               apiBase={apiBase} 
                               currentPrice={pair || undefined}
                               showDetails={selectedGridStrategies.has(s.name)}
+                              isDrift={s?.gridType === 'drift'}
                             />
                           </div>
                         )}

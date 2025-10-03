@@ -55,9 +55,10 @@ interface GridMonitorProps {
   apiBase: string;
   currentPrice?: number;
   showDetails?: boolean;
+  isDrift?: boolean;
 }
 
-export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase, currentPrice, showDetails = false }) => {
+export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase, currentPrice, showDetails = false, isDrift = false }) => {
   const [levels, setLevels] = useState<GridLevel[]>([]);
   const [positions, setPositions] = useState<GridPosition[]>([]);
   const [activePositions, setActivePositions] = useState<GridPosition[]>([]);
@@ -252,9 +253,8 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
             <div>
               <div className="text-gray-400">Pair</div>
               <div className="text-white">{(() => {
-                // For perps, show the market symbol only (e.g., SOL-PERP)
                 const to = tokens?.toSymbol || tokens?.toToken;
-                if (to && /-PERP/i.test(to)) return to;
+                if (isDrift && to && /-PERP/i.test(to)) return to;
                 return `${tokens?.fromSymbol || tokens?.fromToken || 'FROM'} → ${tokens?.toSymbol || tokens?.toToken || 'TO'}`;
               })()}</div>
             </div>
@@ -268,6 +268,7 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
             </div>
           </div>
           {/* Drift-specific metrics */}
+          {isDrift && (
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm mt-3">
             <div>
               <div className="text-gray-400">Spread</div>
@@ -286,6 +287,8 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
               <div className="text-white font-mono">{typeof driftInfo?.feeEstRoundTrip === 'number' ? `${formatAmount(driftInfo.feeEstRoundTrip)}` : 'N/A'}</div>
             </div>
           </div>
+          )}
+          {isDrift && (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm mt-3">
             <div>
               <div className="text-gray-400">Open Orders</div>
@@ -300,6 +303,7 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
               <div className="text-white font-mono">{typeof driftInfo?.liquidationBuffer === 'number' && isFinite(driftInfo.liquidationBuffer) ? `${(driftInfo.liquidationBuffer * 100).toFixed(2)}%` : (driftInfo?.liquidationBuffer === Infinity ? '∞' : 'N/A')}</div>
             </div>
           </div>
+          )}
         </div>
       </div>
 
