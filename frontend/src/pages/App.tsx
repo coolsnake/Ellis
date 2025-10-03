@@ -77,6 +77,13 @@ export const App: React.FC = () => {
     } catch { return null; }
   });
 
+  // Liquidator panel state
+  const [liqName, setLiqName] = useState<string>('');
+  const [liqPollMs, setLiqPollMs] = useState<number | undefined>(undefined);
+  const [liqMaxConc, setLiqMaxConc] = useState<number | undefined>(undefined);
+  const [liqDryRun, setLiqDryRun] = useState<boolean>(true);
+  const [liqStatus, setLiqStatus] = useState<any>(null);
+
   // Default to same-origin behind nginx; allow overrides via env
   const apiBase = useMemo(() => (import.meta as any).env?.VITE_API_BASE ?? '/api', []);
   const wsUrl = useMemo(() => (import.meta as any).env?.VITE_WS_URL ?? (typeof window !== 'undefined' ? `${window.location.origin}` : ''), []);
@@ -1611,8 +1618,8 @@ export const App: React.FC = () => {
                   <input
                     className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white"
                     placeholder="default"
-                    value={(state as any)?.liqName || ''}
-                    onChange={(e) => setState((s: any) => ({ ...(s||{}), liqName: e.target.value }))}
+                    value={liqName}
+                    onChange={(e) => setLiqName(e.target.value)}
                   />
                 </div>
                 <div>
@@ -1623,8 +1630,8 @@ export const App: React.FC = () => {
                     step={100}
                     className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white"
                     placeholder="1500"
-                    value={(state as any)?.liqPollMs ?? ''}
-                    onChange={(e) => setState((s: any) => ({ ...(s||{}), liqPollMs: Number(e.target.value) }))}
+                    value={liqPollMs ?? ''}
+                    onChange={(e) => setLiqPollMs(Number(e.target.value))}
                   />
                 </div>
                 <div>
@@ -1635,8 +1642,8 @@ export const App: React.FC = () => {
                     max={8}
                     className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white"
                     placeholder="2"
-                    value={(state as any)?.liqMaxConc ?? ''}
-                    onChange={(e) => setState((s: any) => ({ ...(s||{}), liqMaxConc: Number(e.target.value) }))}
+                    value={liqMaxConc ?? ''}
+                    onChange={(e) => setLiqMaxConc(Number(e.target.value))}
                   />
                 </div>
                 <div className="flex items-center gap-2">
@@ -1644,8 +1651,8 @@ export const App: React.FC = () => {
                   <input
                     type="checkbox"
                     className="h-5 w-5"
-                    checked={(state as any)?.liqDryRun ?? true}
-                    onChange={(e) => setState((s: any) => ({ ...(s||{}), liqDryRun: e.target.checked }))}
+                    checked={liqDryRun}
+                    onChange={(e) => setLiqDryRun(e.target.checked)}
                   />
                 </div>
               </div>
@@ -1654,12 +1661,12 @@ export const App: React.FC = () => {
                   className="px-3 py-2 bg-green-700 text-white rounded hover:bg-green-800"
                   onClick={async () => {
                     try {
-                      const name = ((state as any)?.liqName || 'default');
+                      const name = (liqName || 'default');
                       const body = {
                         name,
-                        pollMs: Number((state as any)?.liqPollMs || undefined),
-                        maxConcurrentTargets: Number((state as any)?.liqMaxConc || undefined),
-                        dryRun: (state as any)?.liqDryRun !== false,
+                        pollMs: Number(liqPollMs || undefined),
+                        maxConcurrentTargets: Number(liqMaxConc || undefined),
+                        dryRun: liqDryRun !== false,
                       };
                       await fetch(`${apiBase}/strategies/liquidator/start`, {
                         method: 'POST',
@@ -1708,16 +1715,16 @@ export const App: React.FC = () => {
                   onClick={async () => {
                     try {
                       const r = await fetch(`${apiBase}/strategies/liquidator/status`).then(r => r.json());
-                      setState((s: any) => ({ ...(s||{}), liqStatus: r }));
+                      setLiqStatus(r);
                     } catch {}
                   }}
                 >Refresh Status</button>
               </div>
-              {Boolean((state as any)?.liqStatus) && (
+              {Boolean(liqStatus) && (
                 <div className="mt-3 bg-gray-800 rounded p-3 text-sm text-gray-300">
                   <div className="text-white font-semibold mb-2">Liquidator Status</div>
                   {(() => {
-                    const ls = (state as any)?.liqStatus?.liquidators || [];
+                    const ls = liqStatus?.liquidators || [];
                     if (!Array.isArray(ls) || ls.length === 0) return (<div className="text-gray-500">No liquidators</div>);
                     return (
                       <table className="w-full text-sm">
@@ -1750,10 +1757,10 @@ export const App: React.FC = () => {
               <div className="mt-2 text-xs text-gray-400">
                 {(() => {
                   const errs: string[] = [];
-                  const poll = Number((state as any)?.liqPollMs);
-                  if ((state as any)?.liqPollMs !== undefined && (!Number.isFinite(poll) || poll < 200)) errs.push('Poll must be >= 200ms');
-                  const conc = Number((state as any)?.liqMaxConc);
-                  if ((state as any)?.liqMaxConc !== undefined && (!Number.isFinite(conc) || conc < 1 || conc > 8)) errs.push('Max Concurrent must be 1..8');
+                  const poll = Number(liqPollMs);
+                  if (liqPollMs !== undefined && (!Number.isFinite(poll) || poll < 200)) errs.push('Poll must be >= 200ms');
+                  const conc = Number(liqMaxConc);
+                  if (liqMaxConc !== undefined && (!Number.isFinite(conc) || conc < 1 || conc > 8)) errs.push('Max Concurrent must be 1..8');
                   return errs.length > 0 ? (<div className="text-red-400">{errs.join(' · ')}</div>) : null;
                 })()}
               </div>
