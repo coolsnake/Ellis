@@ -350,6 +350,16 @@ export class DriftService {
         }
         throw lastErr;
       };
+
+      // Preflight: ensure wallet has SOL for fees
+      try {
+        const balLamports = await this.connection!.getBalance(this.walletKp!.publicKey, 'confirmed');
+        const minLamports = 0.01 * 1_000_000_000; // ~0.01 SOL
+        if (balLamports < minLamports) {
+          logger.error('drift.subaccount.create_failed', { error: `INSUFFICIENT_SOL balance=${(balLamports/1_000_000_000).toFixed(6)} required>=0.01`, cat: 'drift' });
+          return null;
+        }
+      } catch {}
       // Try add subaccount via SDK if available
       if (typeof client?.addSubAccount === 'function') {
         const res = await withBackoff(async () => client.addSubAccount());
@@ -360,34 +370,47 @@ export class DriftService {
         return { id };
       }
       // Fallback: attempt creating at a candidate id range without relying on userStats
-      if (typeof client?.initializeUserAccount === 'function') {
-        const tryIds: number[] = [];
+      // Preferred creation path: initializeUserAccount using next id
+      let candidateIds: number[] = [];
+      try {
+        if (typeof client?.getNextSubAccountId === 'function') {
+          const next = await withBackoff(async () => client.getNextSubAccountId());
+          const n = Number(next);
+          if (Number.isFinite(n)) candidateIds.push(n);
+        }
+      } catch (e: any) {
+        logger.warn('drift.subaccount.next_id_failed', { error: String(e?.message || e), cat: 'drift' });
+      }
+      // Safety net probe if next id unavailable
+      for (let i = 0; i < 8; i += 1) candidateIds.push(i);
+      // Dedup and try in order
+      const seenIds = new Set<number>();
+      candidateIds = candidateIds.filter((x) => (Number.isFinite(x) && !seenIds.has((seenIds.add(Number(x)), Number(x)))));
+      for (const id of candidateIds) {
         try {
-          if (typeof client?.getNextSubAccountId === 'function') {
-            const next = await withBackoff(async () => client.getNextSubAccountId());
-            const n = Number(next);
-            if (Number.isFinite(n)) tryIds.push(n);
+          if (typeof client?.initializeUserAccount === 'function') {
+            await withBackoff(async () => client.initializeUserAccount(Number(id), name || undefined));
+          } else if (typeof client?.initializeUserIfNotExists === 'function') {
+            await withBackoff(async () => client.initializeUserIfNotExists(Number(id), name || undefined));
+          } else if (typeof client?.initializeUser === 'function') {
+            try { await withBackoff(async () => client.initializeUser(Number(id), name || undefined)); }
+            catch { await withBackoff(async () => client.initializeUser()); }
+          } else {
+            break;
           }
-        } catch {}
-        // Probe a small range as a safety net
-        for (let i = 0; i < 8; i += 1) tryIds.push(i);
-        // Deduplicate while preserving order
-        const seen = new Set<number>();
-        for (const id of tryIds) {
-          if (seen.has(id)) continue;
-          seen.add(id);
-          try {
-            await withBackoff(async () => client.initializeUserAccount(id, name || undefined));
-            try { await this.ensureUserReady(id); } catch {}
-            logger.info('drift.subaccount.created', { id, cat: 'drift' });
-            return { id };
-          } catch (e: any) {
-            const msg = String(e?.message || e || '');
-            // Skip if already exists; continue to next id
-            if (/exist|initialized|already/i.test(msg)) continue;
-            // Other errors: try next id as well
-            continue;
+          try { await this.ensureUserReady(Number(id)); } catch {}
+          logger.info('drift.subaccount.created', { id: Number(id), cat: 'drift' });
+          return { id: Number(id) };
+        } catch (e: any) {
+          const msg = String(e?.message || e || '');
+          logger.warn('drift.subaccount.create_attempt_failed', { id: Number(id), error: msg, cat: 'drift' });
+          if (/exist|initialized|already/i.test(msg)) {
+            // If it already exists, treat as success by switching to it
+            try { await this.ensureUserReady(Number(id)); } catch {}
+            logger.info('drift.subaccount.created_existing', { id: Number(id), cat: 'drift' });
+            return { id: Number(id) };
           }
+          continue;
         }
       }
     } catch (e: any) {
