@@ -2,7 +2,7 @@
 import { logger } from '../utils/logger.js';
 import { DriftService } from './client.js';
 import { DriftPriceService } from './price.js';
-import { getAllowlistIndices } from './marketMapping.js';
+import { getAllowlistIndices, indexToSymbol, symbolToIndex, parseAllowlistMarkets } from './marketMapping.js';
 import { CONFIG } from '../utils/config.js';
 import { emit } from '../server/realtime.js';
 import { RunnerRegistry } from '../utils/runnerRegistry.js';
@@ -273,7 +273,6 @@ export class DriftLiquidator {
       } catch {}
       try {
         if (indices.length === 0 && Array.isArray(this.config.marketsAllowlist) && this.config.marketsAllowlist.length > 0) {
-          const { symbolToIndex, parseAllowlistMarkets } = await import('./marketMapping.js');
           const parsed = parseAllowlistMarkets();
           const mapFromCfg = (this.config.marketsAllowlist as any[])
             .map((s: any) => String(s || '').trim()).filter(Boolean)
@@ -622,7 +621,6 @@ export class DriftLiquidator {
       const exposuresCounts = Array.from(this.marketToUsers.entries()).map(([m, set]) => ({ marketIndex: Number(m), users: (set?.size || 0) }));
       let exposuresWithSymbols: Array<{ marketIndex: number; users: number; symbol?: string }> = exposuresCounts;
       try {
-        const { indexToSymbol } = await import('./marketMapping.js');
         exposuresWithSymbols = exposuresCounts.map((e) => ({ ...e, symbol: indexToSymbol(Number(e.marketIndex)) }));
       } catch {}
       emit('drift-liquidation', {
@@ -648,7 +646,6 @@ export class DriftLiquidator {
     const exposuresCounts = Array.from(this.marketToUsers.entries()).map(([m, set]) => ({ marketIndex: Number(m), users: (set?.size || 0) }));
     let exposuresWithSymbols: Array<{ marketIndex: number; users: number; symbol?: string }> = exposuresCounts;
     try {
-      const { indexToSymbol } = require('./marketMapping.js');
       exposuresWithSymbols = exposuresCounts.map((e) => ({ ...e, symbol: indexToSymbol(Number(e.marketIndex)) }));
     } catch {}
     return {

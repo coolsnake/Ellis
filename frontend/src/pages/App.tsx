@@ -82,10 +82,7 @@ export const App: React.FC = () => {
   });
 
   // Liquidator panel state
-  const [liqName, setLiqName] = useState<string>('');
-  const [liqPollMs, setLiqPollMs] = useState<number | undefined>(undefined);
-  const [liqMaxConc, setLiqMaxConc] = useState<number | undefined>(undefined);
-  const [liqDryRun, setLiqDryRun] = useState<boolean>(true);
+  // removed legacy inline liquidator fields (use +Liquidator modal instead)
   const [liqStatus, setLiqStatus] = useState<any>(null);
   const [showLiqRunnerConfig, setShowLiqRunnerConfig] = useState<boolean>(false);
 
@@ -1646,114 +1643,7 @@ export const App: React.FC = () => {
                 </button>
               </div>
             )}>
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-2 items-end">
-                <div>
-                  <label className="block text-sm text-gray-400 mb-1">Name</label>
-                  <input
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white"
-                    placeholder="default"
-                    value={liqName}
-                    onChange={(e) => setLiqName(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm text-gray-400 mb-1">Poll (ms)</label>
-                  <input
-                    type="number"
-                    min={200}
-                    step={100}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white"
-                    placeholder="1500"
-                    value={liqPollMs ?? ''}
-                    onChange={(e) => setLiqPollMs(Number(e.target.value))}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm text-gray-400 mb-1">Max Concurrent</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={8}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white"
-                    placeholder="2"
-                    value={liqMaxConc ?? ''}
-                    onChange={(e) => setLiqMaxConc(Number(e.target.value))}
-                  />
-                </div>
-                <div className="flex items-center gap-2">
-                  <label className="text-sm text-gray-400">Dry Run</label>
-                  <input
-                    type="checkbox"
-                    className="h-5 w-5"
-                    checked={liqDryRun}
-                    onChange={(e) => setLiqDryRun(e.target.checked)}
-                  />
-                </div>
-              </div>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  className="px-3 py-2 bg-green-700 text-white rounded hover:bg-green-800"
-                  onClick={async () => {
-                    try {
-                      const name = (liqName || 'default');
-                      const body = {
-                        name,
-                        pollMs: Number(liqPollMs || undefined),
-                        maxConcurrentTargets: Number(liqMaxConc || undefined),
-                        dryRun: liqDryRun !== false,
-                      };
-                      await fetch(`${apiBase}/strategies/liquidator/start`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(body),
-                      });
-                      // Optionally refresh status panel later
-                    } catch {}
-                  }}
-                >Start</button>
-                <button
-                  className="px-3 py-2 bg-yellow-700 text-white rounded hover:bg-yellow-800"
-                  onClick={async () => {
-                    try {
-                      const name = ((state as any)?.liqName || 'default');
-                      const key = `liq#${name}`;
-                      await fetch(`${apiBase}/strategies/liquidator/stop`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ key }),
-                      });
-                    } catch {}
-                  }}
-                >Stop</button>
-                <button
-                  className="px-3 py-2 bg-indigo-700 text-white rounded hover:bg-indigo-800"
-                  onClick={async () => {
-                    try {
-                      const name = ((state as any)?.liqName || 'default');
-                      const body = {
-                        name,
-                        pollMs: Number((state as any)?.liqPollMs || undefined),
-                        maxConcurrentTargets: Number((state as any)?.liqMaxConc || undefined),
-                        dryRun: (state as any)?.liqDryRun !== false,
-                      };
-                      await fetch(`${apiBase}/strategies/liquidator/update`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(body),
-                      });
-                    } catch {}
-                  }}
-                >Update</button>
-                <button
-                  className="px-3 py-2 bg-gray-700 text-white rounded hover:bg-gray-600"
-                  onClick={async () => {
-                    try {
-                      const r = await fetch(`${apiBase}/strategies/liquidator/status`).then(r => r.json());
-                      setLiqStatus(r);
-                    } catch {}
-                  }}
-                >Refresh Status</button>
-              </div>
+              {/* Inline legacy form and controls removed; use +Liquidator and per-runner controls below */}
               {Boolean(liqStatus) && (
                 <div className="mt-3 bg-gray-800 rounded p-3 text-sm text-gray-300">
                   <div className="text-white font-semibold mb-2">Liquidator Status</div>
@@ -1827,16 +1717,7 @@ export const App: React.FC = () => {
                 );
               })()}
               {/* Inline validation for inputs */}
-              <div className="mt-2 text-xs text-gray-400">
-                {(() => {
-                  const errs: string[] = [];
-                  const poll = Number(liqPollMs);
-                  if (liqPollMs !== undefined && (!Number.isFinite(poll) || poll < 200)) errs.push('Poll must be >= 200ms');
-                  const conc = Number(liqMaxConc);
-                  if (liqMaxConc !== undefined && (!Number.isFinite(conc) || conc < 1 || conc > 8)) errs.push('Max Concurrent must be 1..8');
-                  return errs.length > 0 ? (<div className="text-red-400">{errs.join(' · ')}</div>) : null;
-                })()}
-              </div>
+              {/* Inline validation removed with legacy form */}
             </CollapsibleSection>
           </div>
           {/* Legacy system-level liquidator config removed in favor of per-runner +Liquidator */}
