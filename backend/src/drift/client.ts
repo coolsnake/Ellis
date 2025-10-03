@@ -330,9 +330,29 @@ export class DriftService {
     await this.init();
     try {
       const client: any = this.client;
+      // Simple retry helper for rate limits
+      const withBackoff = async <T>(fn: () => Promise<T>): Promise<T> => {
+        let lastErr: any;
+        for (let i = 0; i < 5; i += 1) {
+          try {
+            return await fn();
+          } catch (e: any) {
+            lastErr = e;
+            const msg = String(e?.message || e || '').toLowerCase();
+            if (msg.includes('429') || msg.includes('too many requests') || msg.includes('rate') || msg.includes('fetch failed')) {
+              const delay = 500 * Math.pow(2, i) + Math.floor(Math.random() * 250);
+              try { logger.warn(`Server responded with 429 Too Many Requests.  Retrying after ${delay}ms delay...`); } catch {}
+              await new Promise(r => setTimeout(r, delay));
+              continue;
+            }
+            break;
+          }
+        }
+        throw lastErr;
+      };
       // Try add subaccount via SDK if available
       if (typeof client?.addSubAccount === 'function') {
-        const res = await client.addSubAccount();
+        const res = await withBackoff(async () => client.addSubAccount());
         const fallbackId = Number((CONFIG as any).drift?.defaultSubaccountId || 0);
         const id = Number((res?.subAccountId ?? res?.id) ?? fallbackId);
         try { await this.ensureUserReady(id); } catch {}
@@ -344,7 +364,7 @@ export class DriftService {
         const tryIds: number[] = [];
         try {
           if (typeof client?.getNextSubAccountId === 'function') {
-            const next = await client.getNextSubAccountId();
+            const next = await withBackoff(async () => client.getNextSubAccountId());
             const n = Number(next);
             if (Number.isFinite(n)) tryIds.push(n);
           }
@@ -357,7 +377,7 @@ export class DriftService {
           if (seen.has(id)) continue;
           seen.add(id);
           try {
-            await client.initializeUserAccount(id, name || undefined);
+            await withBackoff(async () => client.initializeUserAccount(id, name || undefined));
             try { await this.ensureUserReady(id); } catch {}
             logger.info('drift.subaccount.created', { id, cat: 'drift' });
             return { id };
@@ -372,12 +392,9 @@ export class DriftService {
       }
     } catch (e: any) {
       logger.error('drift.subaccount.create_failed', { error: String(e?.message || e), cat: 'drift' });
-      return null;
     }
-    // Fallback: return default id without on-chain action (scaffold)
-    const id = Number((CONFIG as any).drift?.defaultSubaccountId || 0);
-    logger.warn('drift.subaccount.create_fallback', { id, cat: 'drift' });
-    return { id };
+    logger.error('drift.subaccount.create_unavailable', { cat: 'drift' });
+    return null;
   }
 
   async depositToSubaccount(params: { subaccountId: number; amount: number; spotMarketIndex?: number }): Promise<{ ok: boolean }> {
