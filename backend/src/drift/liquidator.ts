@@ -118,7 +118,7 @@ export class DriftLiquidator {
     } catch {}
     // Initialize discovery and price triggers once
     try { await this.initDiscovery(); this.initialized = true; } catch {}
-    try { this.initPriceTriggers(); } catch {}
+    try { await this.initPriceTriggers(); } catch {}
     this.timer = (globalThis as any).setInterval(() => {
       this.tick().catch((e) => logger.warn('drift.liquidator.tick_error', { error: String(e?.message || e), cat: 'drift' }));
     }, pollMs);
@@ -237,7 +237,7 @@ export class DriftLiquidator {
     } catch {}
   }
 
-  private initPriceTriggers(): void {
+  private async initPriceTriggers(): Promise<void> {
     try {
       const liqCfg: any = (CONFIG as any)?.drift?.liquidator || {};
       if (liqCfg.usePriceTriggers === false) return;
