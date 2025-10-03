@@ -1,4 +1,5 @@
 import { getDriftConfig } from '../utils/driftConfig.js';
+import { indexToSymbol, symbolToIndex } from './marketMapping.js';
 import { logger } from '../utils/logger.js';
 
 function getWebSocketCtor(): any {
@@ -204,10 +205,7 @@ export class DriftDlobWs {
 
   // Map helpers: we need to translate between index and name when talking to DLOB
   private mapMarketIndexToName(idx: number): string | undefined {
-    try {
-      const { indexToSymbol } = require('./marketMapping.js');
-      return indexToSymbol(Number(idx));
-    } catch { return undefined; }
+    try { return indexToSymbol(Number(idx)); } catch { return undefined; }
   }
 
   private resolveMarketIndex(marketName: string | undefined, raw: any): number | undefined {
@@ -217,10 +215,7 @@ export class DriftDlobWs {
       if (Number.isFinite(idx)) return idx;
     } catch {}
     if (!marketName) return undefined;
-    try {
-      const { symbolToIndex } = require('./marketMapping.js');
-      return symbolToIndex(String(marketName));
-    } catch { return undefined; }
+    try { return symbolToIndex(String(marketName)); } catch { return undefined; }
   }
 }
 
