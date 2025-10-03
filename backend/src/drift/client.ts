@@ -58,6 +58,20 @@ export class DriftService {
     return Number(Math.round(Number(uiAmount) * 1_000_000));
   }
 
+  private async toBN(n: number): Promise<any> {
+    try {
+      const sdk: any = await import('@drift-labs/sdk');
+      const BN = (sdk as any).BN || (sdk as any).AnchorsBN || undefined;
+      if (BN) return new BN(Number(n));
+    } catch {}
+    try {
+      const mod: any = await import('bn.js');
+      const BN = mod?.BN || mod?.default?.BN || mod?.default;
+      if (BN) return new BN(Number(n));
+    } catch {}
+    return Number(n);
+  }
+
   async getFundingRate(marketIndex: number): Promise<{ lastFundingRate: number; cumulativeFunding: number } | null> {
     await this.init();
     try {
@@ -455,7 +469,8 @@ export class DriftService {
         const { resolveAtaForSpotMarketIndex } = await import('../wallet/ata.js');
         const ata = await resolveAtaForSpotMarketIndex(client, this.walletKp!, spotMarketIndex, this.cluster);
         // Prefer full signature (amount, spotIndex, ata, subId)
-        const res = await client.deposit(nativeAmount, spotMarketIndex, ata, Number(subaccountId));
+        const amt = await this.toBN(nativeAmount);
+        const res = await client.deposit(amt, spotMarketIndex, ata, Number(subaccountId));
         logger.info('drift.subaccount.deposit_ok', { subaccountId, amount, spotMarketIndex, cat: 'drift' });
         this.invalidateSubaccountsCache();
         return { ok: true };
@@ -479,7 +494,8 @@ export class DriftService {
         const nativeAmount = await this.toSpotNativeAmount(client, spotMarketIndex, Number(amount));
         const { resolveAtaForSpotMarketIndex } = await import('../wallet/ata.js');
         const ata = await resolveAtaForSpotMarketIndex(client, this.walletKp!, spotMarketIndex, this.cluster);
-        const res = await client.withdraw(nativeAmount, spotMarketIndex, ata, Number(subaccountId));
+        const amt = await this.toBN(nativeAmount);
+        const res = await client.withdraw(amt, spotMarketIndex, ata, Number(subaccountId));
         logger.info('drift.subaccount.withdraw_ok', { subaccountId, amount, spotMarketIndex, cat: 'drift' });
         this.invalidateSubaccountsCache();
         return { ok: true };

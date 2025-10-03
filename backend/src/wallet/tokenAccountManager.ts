@@ -21,7 +21,7 @@ export class TokenAccountManager {
 
   constructor(connection: Connection) {
     this.connection = connection;
-    this.configPath = path.join(process.cwd(), 'backend/config/tokenAccounts.json');
+    this.configPath = CONFIG.tokenAccountsPath;
     this.loadTokenAccounts();
   }
 

@@ -25,6 +25,8 @@ export const CONFIG = {
   walletTokensPath: (process.env.WALLET_TOKENS_PATH as any) || resolve(CONFIG_DIR, 'walletTokens.json'),
   walletHistoryPath: (process.env.WALLET_HISTORY_PATH as any) || resolve(CONFIG_DIR, 'walletHistory.json'),
   appInfoPath: (process.env.APP_INFO_PATH as any) || resolve(CONFIG_DIR, 'appInfo.json'),
+  // Centralized wallet token accounts path (for Linux deployments)
+  tokenAccountsPath: (process.env.TOKEN_ACCOUNTS_PATH as any) || resolve(CONFIG_DIR, 'tokenAccounts.json'),
   logDir: LOG_DIR,
   socketIoPath: process.env.SOCKETIO_PATH || '/socket.io',
   // Orca configuration
