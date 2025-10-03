@@ -165,10 +165,44 @@ export class DriftService {
     try { if (typeof client?.switchActiveUser === 'function') { await client.switchActiveUser(Number(subaccountId)); } } catch {}
   }
 
+  async getActiveSubaccountSnapshot(): Promise<SubaccountInfo | null> {
+    await this.init();
+    try {
+      const client: any = this.client;
+      const user = client?.user || null;
+      if (!user) return null;
+      const id = Number((client?.getUserAccount?.()?.subAccountId) ?? (client?.activeUserId) ?? (CONFIG as any).drift?.defaultSubaccountId ?? 0);
+      const totalCollateral = Number(user?.getTotalCollateral?.() || 0);
+      const maint = Number(user?.getMaintenanceMarginRequirement?.() || 0);
+      const initReq = Number(user?.getInitialMarginRequirement?.() || 0);
+      const free = Number(user?.getFreeCollateral?.() || 0);
+      const lev = totalCollateral > 0 ? (Number(user?.getLeverage?.() || 0)) : 0;
+      const positions: Array<{ marketIndex: number; base: number; entryPrice?: number }> = [];
+      try {
+        const pos = user?.getPerpPositions?.() || [];
+        for (const p of pos) {
+          const base = Number(p?.baseAssetAmount?.toString?.() || 0);
+          const idx = Number(p?.marketIndex || 0);
+          positions.push({ marketIndex: idx, base, entryPrice: undefined });
+        }
+      } catch {}
+      return { id, freeCollateral: free, totalCollateral, maintenanceRequirement: maint, initialRequirement: initReq, effectiveLeverage: lev, positions };
+    } catch {
+      return null;
+    }
+  }
+
   async getStatus(): Promise<DriftStatus> {
     await this.init();
     const markets: DriftMarketRef[] = await this.discoverMarkets();
-    const subs = await this.getSubaccounts();
+    let subs: SubaccountInfo[] = [];
+    try {
+      const snap = await this.getActiveSubaccountSnapshot();
+      if (snap) subs = [snap];
+    } catch {}
+    if (subs.length === 0) {
+      try { subs = await this.getSubaccounts(); } catch { subs = []; }
+    }
     logger.debug('drift.status', { markets: markets.length, subaccounts: subs.length, cat: 'drift' });
     return {
       cluster: this.cluster,

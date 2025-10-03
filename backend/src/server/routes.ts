@@ -857,7 +857,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       const list = DriftLiquidatorRegistry.list();
       res.json({ liquidators: list });
     } catch (e: any) {
-      logger.error('drift-liq: status failed', { error: String(e?.message || e) });
+      logger.error('drift-liq: status failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
       res.status(500).json({ error: String(e?.message || e) });
     }
   });
@@ -878,7 +878,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       emit('log', { level: 'info', message: `drift: liquidator started ${cfg?.name || key}` , timestamp: new Date().toISOString(), context: { cat: 'drift' } });
       res.json({ ok: true, key });
     } catch (e: any) {
-      logger.error('drift-liq: start failed', { error: String(e?.message || e) });
+      logger.error('drift-liq: start failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
       res.status(500).json({ error: String(e?.message || e) });
     }
   });
@@ -891,7 +891,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       if (ok) emit('log', { level: 'info', message: `drift: liquidator stopped ${key}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } });
       res.json({ ok });
     } catch (e: any) {
-      logger.error('drift-liq: stop failed', { error: String(e?.message || e) });
+      logger.error('drift-liq: stop failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
       res.status(500).json({ error: String(e?.message || e) });
     }
   });
@@ -912,7 +912,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       emit('log', { level: 'info', message: `drift-liq: updated ${cfg?.name || key}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } });
       res.json({ ok: true, key });
     } catch (e: any) {
-      logger.error('drift-liq: update failed', { error: String(e?.message || e) });
+      logger.error('drift-liq: update failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
       res.status(500).json({ error: String(e?.message || e) });
     }
   });
@@ -1002,7 +1002,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       const queue = (r as any).getQueueSnapshot?.(limit) || { candidatesQueued: 0, top: [], markets: [], actionsLastMin: 0, errorsLastMin: 0 };
       res.json({ key, queue });
     } catch (e: any) {
-      logger.error('drift-liq: queue failed', { error: String(e?.message || e) });
+      logger.error('drift-liq: queue failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
       res.status(500).json({ error: String(e?.message || e) });
     }
   });
