@@ -812,6 +812,73 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     }
   });
 
+  // Drift Liquidator control
+  api.get('/strategies/liquidator/status', async (_req: Request, res: Response) => {
+    try {
+      const { DriftLiquidatorRegistry } = await import('../drift/liquidator.js');
+      const list = DriftLiquidatorRegistry.list();
+      res.json({ liquidators: list });
+    } catch (e: any) {
+      logger.error('drift-liq: status failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.post('/strategies/liquidator/start', async (req: Request, res: Response) => {
+    try {
+      const cfg = req.body as any;
+      const { DriftLiquidatorRegistry } = await import('../drift/liquidator.js');
+      const runner = DriftLiquidatorRegistry.upsert({
+        name: cfg?.name || 'default',
+        enabled: true,
+        pollMs: cfg?.pollMs,
+        maxConcurrentTargets: cfg?.maxConcurrentTargets,
+        dryRun: cfg?.dryRun,
+      });
+      const key = (DriftLiquidatorRegistry as any).keyOf(cfg?.name ? { name: cfg.name } : { name: 'default' });
+      await DriftLiquidatorRegistry.start(key);
+      emit('log', { level: 'info', message: `drift: liquidator started ${cfg?.name || key}` , timestamp: new Date().toISOString(), context: { cat: 'drift' } });
+      res.json({ ok: true, key });
+    } catch (e: any) {
+      logger.error('drift-liq: start failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.post('/strategies/liquidator/stop', async (req: Request, res: Response) => {
+    try {
+      const { key } = req.body as { key: string };
+      const { DriftLiquidatorRegistry } = await import('../drift/liquidator.js');
+      const ok = DriftLiquidatorRegistry.stop(key);
+      if (ok) emit('log', { level: 'info', message: `drift: liquidator stopped ${key}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } });
+      res.json({ ok });
+    } catch (e: any) {
+      logger.error('drift-liq: stop failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.post('/strategies/liquidator/update', async (req: Request, res: Response) => {
+    try {
+      const cfg = req.body as any;
+      const { DriftLiquidatorRegistry } = await import('../drift/liquidator.js');
+      const runner = DriftLiquidatorRegistry.upsert({
+        name: cfg?.name || 'default',
+        enabled: true,
+        pollMs: cfg?.pollMs,
+        maxConcurrentTargets: cfg?.maxConcurrentTargets,
+        dryRun: cfg?.dryRun,
+      });
+      const key = (DriftLiquidatorRegistry as any).keyOf({ name: cfg?.name || 'default' });
+      await DriftLiquidatorRegistry.start(key);
+      emit('log', { level: 'info', message: `drift-liq: updated ${cfg?.name || key}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } });
+      res.json({ ok: true, key });
+    } catch (e: any) {
+      logger.error('drift-liq: update failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   // Fee configuration endpoints
   api.get('/fees/config', async (_req, res) => {
     try {

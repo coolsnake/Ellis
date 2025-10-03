@@ -1462,7 +1462,16 @@ export const App: React.FC = () => {
                 <div className="space-y-2 text-sm">
                   <div className="flex items-center space-x-2">
                     <select className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={driftSelectedSubId} onChange={async e => { const id = Number(e.target.value); setDriftSelectedSubId(id); try { await fetch(`${apiBase}/drift/subaccount/switch`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) }); } catch {} try { const subsResp = await fetch(`${apiBase}/drift/subaccounts`).then(r => r.json()); setDriftSubaccounts(subsResp?.subaccounts || []); } catch {} }}>
-                      {driftSubaccounts.map((s: any) => (<option key={s.id} value={s.id}>{s.name ? `${s.name} (Sub ${s.id})` : `Sub ${s.id}`}</option>))}
+                      {driftSubaccounts.map((s: any) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name ? `${s.name} (Sub ${s.id})` : `Sub ${s.id}`}
+                          {(() => {
+                            // Mark already-initialized subs
+                            const init = Number(s.totalCollateral || 0) > 0 || Number(s.freeCollateral || 0) > 0 || (Array.isArray(s.positions) && s.positions.length > 0);
+                            return init ? ' ✓' : '';
+                          })()}
+                        </option>
+                      ))}
                     </select>
                     <input className="px-2 py-2 bg-gray-700 border border-gray-600 rounded-md text-white w-40" placeholder="Name (optional)" value={driftNewSubName} onChange={e => setDriftNewSubName(e.target.value)} />
                     <button disabled={driftOpBusy} onClick={async () => { try { setDriftOpBusy(true); const body = driftNewSubName.trim() ? { name: driftNewSubName.trim() } : undefined; await fetch(`${apiBase}/drift/subaccount/create`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }); const subsResp = await fetch(`${apiBase}/drift/subaccounts`).then(r => r.json()); const subs = subsResp?.subaccounts || []; setDriftSubaccounts(subs); const sel = Number(subsResp?.selectedId ?? (subs[0]?.id ?? 0)); if (Number.isFinite(sel)) setDriftSelectedSubId(sel); setDriftNewSubName(''); } catch {} finally { setDriftOpBusy(false); } }} className="px-3 py-2 bg-gray-700 text-white rounded hover:bg-gray-600 disabled:opacity-60">{driftOpBusy ? 'Working...' : 'Create'}</button>
@@ -1592,6 +1601,163 @@ export const App: React.FC = () => {
                 </tbody>
               </table>
             )}
+          </div>
+          {/* Liquidator Panel */}
+          <div className="mt-3">
+            <CollapsibleSection title={"Liquidator"} storageKey="panel:drift:liquidator">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-2 items-end">
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1">Name</label>
+                  <input
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white"
+                    placeholder="default"
+                    value={(state as any)?.liqName || ''}
+                    onChange={(e) => setState((s: any) => ({ ...(s||{}), liqName: e.target.value }))}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1">Poll (ms)</label>
+                  <input
+                    type="number"
+                    min={200}
+                    step={100}
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white"
+                    placeholder="1500"
+                    value={(state as any)?.liqPollMs ?? ''}
+                    onChange={(e) => setState((s: any) => ({ ...(s||{}), liqPollMs: Number(e.target.value) }))}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1">Max Concurrent</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={8}
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white"
+                    placeholder="2"
+                    value={(state as any)?.liqMaxConc ?? ''}
+                    onChange={(e) => setState((s: any) => ({ ...(s||{}), liqMaxConc: Number(e.target.value) }))}
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-sm text-gray-400">Dry Run</label>
+                  <input
+                    type="checkbox"
+                    className="h-5 w-5"
+                    checked={(state as any)?.liqDryRun ?? true}
+                    onChange={(e) => setState((s: any) => ({ ...(s||{}), liqDryRun: e.target.checked }))}
+                  />
+                </div>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  className="px-3 py-2 bg-green-700 text-white rounded hover:bg-green-800"
+                  onClick={async () => {
+                    try {
+                      const name = ((state as any)?.liqName || 'default');
+                      const body = {
+                        name,
+                        pollMs: Number((state as any)?.liqPollMs || undefined),
+                        maxConcurrentTargets: Number((state as any)?.liqMaxConc || undefined),
+                        dryRun: (state as any)?.liqDryRun !== false,
+                      };
+                      await fetch(`${apiBase}/strategies/liquidator/start`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
+                      });
+                      // Optionally refresh status panel later
+                    } catch {}
+                  }}
+                >Start</button>
+                <button
+                  className="px-3 py-2 bg-yellow-700 text-white rounded hover:bg-yellow-800"
+                  onClick={async () => {
+                    try {
+                      const name = ((state as any)?.liqName || 'default');
+                      const key = `liq#${name}`;
+                      await fetch(`${apiBase}/strategies/liquidator/stop`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ key }),
+                      });
+                    } catch {}
+                  }}
+                >Stop</button>
+                <button
+                  className="px-3 py-2 bg-indigo-700 text-white rounded hover:bg-indigo-800"
+                  onClick={async () => {
+                    try {
+                      const name = ((state as any)?.liqName || 'default');
+                      const body = {
+                        name,
+                        pollMs: Number((state as any)?.liqPollMs || undefined),
+                        maxConcurrentTargets: Number((state as any)?.liqMaxConc || undefined),
+                        dryRun: (state as any)?.liqDryRun !== false,
+                      };
+                      await fetch(`${apiBase}/strategies/liquidator/update`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
+                      });
+                    } catch {}
+                  }}
+                >Update</button>
+                <button
+                  className="px-3 py-2 bg-gray-700 text-white rounded hover:bg-gray-600"
+                  onClick={async () => {
+                    try {
+                      const r = await fetch(`${apiBase}/strategies/liquidator/status`).then(r => r.json());
+                      setState((s: any) => ({ ...(s||{}), liqStatus: r }));
+                    } catch {}
+                  }}
+                >Refresh Status</button>
+              </div>
+              {Boolean((state as any)?.liqStatus) && (
+                <div className="mt-3 bg-gray-800 rounded p-3 text-sm text-gray-300">
+                  <div className="text-white font-semibold mb-2">Liquidator Status</div>
+                  {(() => {
+                    const ls = (state as any)?.liqStatus?.liquidators || [];
+                    if (!Array.isArray(ls) || ls.length === 0) return (<div className="text-gray-500">No liquidators</div>);
+                    return (
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="text-gray-400">
+                            <th className="text-left">Key</th>
+                            <th className="text-left">Running</th>
+                            <th className="text-left">Queued</th>
+                            <th className="text-left">Actions (1m)</th>
+                            <th className="text-left">Errors (1m)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {ls.map((x: any) => (
+                            <tr key={x.key} className="text-gray-300">
+                              <td className="pr-2">{x.key}</td>
+                              <td className="pr-2">{String(x?.status?.running)}</td>
+                              <td className="pr-2">{Number(x?.status?.candidatesQueued || 0)}</td>
+                              <td className="pr-2">{Number(x?.status?.actionsLastMin || 0)}</td>
+                              <td className="pr-2">{Number(x?.status?.errorsLastMin || 0)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    );
+                  })()}
+                </div>
+              )}
+              {/* Inline validation for inputs */}
+              <div className="mt-2 text-xs text-gray-400">
+                {(() => {
+                  const errs: string[] = [];
+                  const poll = Number((state as any)?.liqPollMs);
+                  if ((state as any)?.liqPollMs !== undefined && (!Number.isFinite(poll) || poll < 200)) errs.push('Poll must be >= 200ms');
+                  const conc = Number((state as any)?.liqMaxConc);
+                  if ((state as any)?.liqMaxConc !== undefined && (!Number.isFinite(conc) || conc < 1 || conc > 8)) errs.push('Max Concurrent must be 1..8');
+                  return errs.length > 0 ? (<div className="text-red-400">{errs.join(' · ')}</div>) : null;
+                })()}
+              </div>
+            </CollapsibleSection>
           </div>
         </CollapsibleSection>
         <CollapsibleSection title={"Positions"} storageKey="panel:positions">

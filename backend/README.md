@@ -18,6 +18,32 @@ This backend adds a Drift-based leveraged grid strategy alongside spot strategie
 - `POST /api/strategies/leveraged-grid/stop` — Stop (body: { key }).
 - `GET /api/strategies/leveraged-grid/status` — Runner statuses.
 
+### Liquidator (Drift)
+
+- Start (dry-run by default via config):
+  - `POST /api/strategies/liquidator/start` body: `{ name?: string, pollMs?: number, maxConcurrentTargets?: number, dryRun?: boolean }`
+- Update:
+  - `POST /api/strategies/liquidator/update` body: same as start
+- Stop:
+  - `POST /api/strategies/liquidator/stop` body: `{ key: string }` where key is `liq#<name>` (default `liq#default`)
+- Status:
+  - `GET /api/strategies/liquidator/status`
+
+Config defaults under `CONFIG.drift.liquidator`:
+```json
+{
+  "enabled": false,
+  "pollMs": 1500,
+  "maxConcurrentTargets": 2,
+  "dryRun": true
+}
+```
+
+Notes:
+- Liquidator runs best-effort with conservative caps and dry-run preflight to avoid failed transactions when SOL is low.
+- Price-triggered ticks leverage the DLOB websocket/HTTP price service already in the backend.
+- Extend `marketsAllowlist` to focus updates to specific perp markets.
+
 ### Risk Controls
 - Effective leverage guard: blocks placements exceeding `config.leverage`.
 - Liquidation buffer: `(collateral - maintenance)/maintenance >= config.liquidationBufferPct`.

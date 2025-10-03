@@ -1,0 +1,303 @@
+// @ts-nocheck
+import { logger } from '../utils/logger.js';
+import { DriftService } from './client.js';
+import { DriftPriceService } from './price.js';
+import { CONFIG } from '../utils/config.js';
+
+export type LiquidatorConfig = {
+  name: string;
+  enabled: boolean;
+  pollMs?: number;
+  maxConcurrentTargets?: number;
+  dryRun?: boolean;
+};
+
+export type LiquidatorRuntimeState = {
+  running: boolean;
+  config?: LiquidatorConfig;
+  candidatesQueued: number;
+  actionsLastMin: number;
+  errorsLastMin: number;
+};
+
+export class DriftLiquidator {
+  private timer: any | null = null;
+  private state: LiquidatorRuntimeState = { running: false, candidatesQueued: 0, actionsLastMin: 0, errorsLastMin: 0 };
+  private initialized = false;
+  private priceTriggerTimers: Map<number, any> = new Map();
+  private actionsLog: number[] = [];
+  private errorsLog: number[] = [];
+  private inFlightTargets: Set<string> = new Set();
+  private userKeys: string[] = [];
+  private abort = false;
+
+  constructor(private config: LiquidatorConfig) {}
+
+  getStatus(): LiquidatorRuntimeState {
+    return { ...this.state, config: this.config };
+  }
+
+  async start(): Promise<void> {
+    if (this.timer) return;
+    this.state.running = true;
+    const pollMs = Math.max(500, Number(this.config.pollMs || 1500));
+    logger.info('drift.liquidator.start', { name: this.config.name, pollMs, dryRun: !!this.config.dryRun, cat: 'drift' });
+    // Ensure Drift client is initialized
+    try {
+      await DriftService.getInstance().init();
+    } catch {}
+    // Preflight: ensure wallet has some SOL for fees unless dryRun
+    try {
+      if (!this.config.dryRun) {
+        const driftSvc: any = DriftService.getInstance();
+        const conn: any = driftSvc?.connection || driftSvc?.client?.connection;
+        const kp: any = driftSvc?.walletKp;
+        if (conn && kp?.publicKey) {
+          const bal = await conn.getBalance(kp.publicKey, (CONFIG as any)?.system?.txCommitment || 'confirmed');
+          if (bal < 0.001 * 1_000_000_000) {
+            logger.warn('drift.liquidator.preflight_insufficient_sol', { lamports: bal, cat: 'drift' });
+            // Force dryRun to avoid tx failures
+            this.config.dryRun = true;
+          }
+        }
+      }
+    } catch {}
+    // Initialize discovery and price triggers once
+    try { await this.initDiscovery(); this.initialized = true; } catch {}
+    try { this.initPriceTriggers(); } catch {}
+    this.timer = (globalThis as any).setInterval(() => {
+      this.tick().catch((e) => logger.warn('drift.liquidator.tick_error', { error: String(e?.message || e), cat: 'drift' }));
+    }, pollMs);
+  }
+
+  stop(): void {
+    if (this.timer) (globalThis as any).clearInterval(this.timer);
+    this.timer = null;
+    this.state.running = false;
+    logger.info('drift.liquidator.stop', { name: this.config.name, cat: 'drift' });
+  }
+
+  async tick(): Promise<void> {
+    try {
+      if (!this.initialized) { try { await this.initDiscovery(); this.initialized = true; } catch {} }
+      const candidates = await this.findUnhealthyCandidates();
+      this.state.candidatesQueued = candidates.length;
+      const maxConc = Math.max(1, Number(this.config.maxConcurrentTargets || 2));
+      let inProgress = 0;
+      for (const c of candidates) {
+        if (inProgress >= maxConc) break;
+        const key = String(c.userPk);
+        if (this.inFlightTargets.has(key)) continue;
+        this.inFlightTargets.add(key);
+        inProgress += 1;
+        this.handleTarget(c)
+          .catch((e) => this.recordError(e))
+          .finally(() => this.inFlightTargets.delete(key));
+      }
+    } catch (e: any) {
+      logger.warn('drift.liquidator.tick_failed', { error: String(e?.message || e), cat: 'drift' });
+    }
+  }
+
+  private async initDiscovery(): Promise<void> {
+    try {
+      const drift: any = (DriftService.getInstance() as any).client;
+      // Preferred: Anchor account scan for users
+      let list: any[] | null = null;
+      try { list = await drift?.program?.account?.user?.all?.(); } catch {}
+      if (Array.isArray(list) && list.length > 0) {
+        this.userKeys = list.map((x: any) => String(x?.publicKey?.toBase58?.() || x?.publicKey || '')).filter(Boolean);
+      }
+      // Fallback: include our own user only
+      if (this.userKeys.length === 0) {
+        try {
+          const pk = await drift?.getUserAccountPublicKey?.();
+          if (pk) this.userKeys = [String(pk?.toBase58?.() || pk)];
+        } catch {}
+      }
+      logger.info('drift.liquidator.discovery_ready', { users: this.userKeys.length, cat: 'drift' });
+    } catch {}
+  }
+
+  private initPriceTriggers(): void {
+    try {
+      const allow: string[] = ((CONFIG as any)?.drift?.marketsAllowlist || []) as any;
+      const indices: number[] = [];
+      for (const entry of allow) {
+        const s = String(entry || '').trim();
+        if (!s) continue;
+        const m = s.match(/^(\d+)/);
+        if (m) indices.push(Number(m[1]));
+      }
+      // Default to first few common markets
+      if (indices.length === 0) indices.push(0, 1, 2);
+      const svc = DriftPriceService.getInstance();
+      const debounceMs = Math.max(250, Math.min(600, Number(((CONFIG as any)?.websocketIntervalMs) || 400)));
+      for (const idx of indices) {
+        try { svc.trackMarket(idx, 400); } catch {}
+        const onPrice = () => {
+          const prev: any = this.priceTriggerTimers.get(idx);
+          if (prev) { try { (globalThis as any).clearTimeout(prev); } catch {} }
+          const t: any = (globalThis as any).setTimeout(() => { this.tick().catch(() => {}); }, debounceMs);
+          this.priceTriggerTimers.set(idx, t);
+        };
+        (this as any)[`_onPrice_liq_${idx}`] = onPrice;
+        try { svc.onPrice(idx, onPrice as any); } catch {}
+      }
+    } catch {}
+  }
+
+  private async findUnhealthyCandidates(): Promise<Array<{ userPk: string; health: number }>> {
+    const out: Array<{ userPk: string; health: number }> = [];
+    try {
+      const drift: any = (DriftService.getInstance() as any).client;
+      const sdk: any = await import('@drift-labs/sdk');
+      const { User, BulkAccountLoader } = (sdk as any);
+      const conn: any = (DriftService.getInstance() as any).connection;
+      const loader = new BulkAccountLoader(conn, 'confirmed', 1000);
+      for (const pkStr of this.userKeys) {
+        try {
+          const user = new User({ driftClient: drift, userAccountPublicKey: pkStr, accountSubscription: { type: 'polling', accountLoader: loader } });
+          const exists = await (user as any).exists?.();
+          if (!exists) continue;
+          const total = Number((user as any)?.getTotalCollateral?.() || 0);
+          const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
+          if (!isFinite(total) || !isFinite(maint)) continue;
+          const health = maint > 0 ? (total - maint) / maint : Infinity;
+          if (health < 0) out.push({ userPk: pkStr, health });
+        } catch {}
+      }
+      out.sort((a, b) => a.health - b.health);
+    } catch {}
+    return out;
+  }
+
+  private async handleTarget(target: { userPk: string; health: number }): Promise<void> {
+    try {
+      const dry = !!this.config.dryRun;
+      if (dry) {
+        this.recordAction();
+        logger.info('drift.liquidator.dryrun_target', { user: target.userPk, health: target.health, cat: 'drift' });
+        return;
+      }
+      const drift: any = (DriftService.getInstance() as any).client;
+      // Step 1: force-cancel orders (best-effort, capped)
+      try {
+        const maxCancels = Math.max(5, Math.min(50, Number(((CONFIG as any)?.drift?.liquidator?.maxCancels) || 20)));
+        const batch = Math.min(maxCancels, 10);
+        if (typeof drift?.forceCancelOrders === 'function') {
+          let remaining = maxCancels;
+          while (remaining > 0) {
+            try { await drift.forceCancelOrders({ userPublicKey: target.userPk, marketType: 0, limit: batch }); } catch {}
+            remaining -= batch;
+            if (remaining > 0) { try { await new Promise(r => setTimeout(r, 250)); } catch {} }
+          }
+        }
+      } catch (e: any) {
+        this.recordError(e);
+      }
+      // Step 2: attempt perp liquidation (best-effort, capped)
+      try {
+        if (typeof drift?.liquidatePerp === 'function') {
+          const maxPerp = Math.max(1, Math.min(10, Number(((CONFIG as any)?.drift?.liquidator?.maxPerpAttempts) || 3)));
+          const sizeFrac = Math.max(0.001, Math.min(0.25, Number(((CONFIG as any)?.drift?.liquidator?.perpSizeFraction) || 0.05)));
+          const markets = [0, 1, 2];
+          let attempts = 0;
+          for (const idx of markets) {
+            if (attempts >= maxPerp) break;
+            try {
+              await drift.liquidatePerp(target.userPk, Number(idx), sizeFrac);
+              attempts += 1;
+            } catch {}
+          }
+        }
+      } catch (e: any) {
+        this.recordError(e);
+      }
+      // Step 3: attempt spot liquidation (best-effort, capped)
+      try {
+        if (typeof drift?.liquidateSpot === 'function') {
+          const maxSpot = Math.max(1, Math.min(10, Number(((CONFIG as any)?.drift?.liquidator?.maxSpotAttempts) || 2)));
+          const sizeFrac = Math.max(0.001, Math.min(0.25, Number(((CONFIG as any)?.drift?.liquidator?.spotSizeFraction) || 0.05)));
+          const spots = [0];
+          let attempts = 0;
+          for (const s of spots) {
+            if (attempts >= maxSpot) break;
+            try {
+              await drift.liquidateSpot(target.userPk, Number(s), sizeFrac);
+              attempts += 1;
+            } catch {}
+          }
+        }
+      } catch (e: any) {
+        this.recordError(e);
+      }
+      this.recordAction();
+      logger.info('drift.liquidator.action_complete', { user: target.userPk, cat: 'drift' });
+    } catch (e: any) {
+      this.recordError(e);
+    }
+  }
+
+  private recordAction(): void {
+    try {
+      const now = Date.now();
+      this.actionsLog.push(now);
+      // Drop entries older than 60s
+      while (this.actionsLog.length > 0 && (now - this.actionsLog[0]) > 60000) this.actionsLog.shift();
+      this.state.actionsLastMin = this.actionsLog.length;
+    } catch {}
+  }
+
+  private recordError(e: any): void {
+    try {
+      const now = Date.now();
+      this.errorsLog.push(now);
+      while (this.errorsLog.length > 0 && (now - this.errorsLog[0]) > 60000) this.errorsLog.shift();
+      this.state.errorsLastMin = this.errorsLog.length;
+      logger.warn('drift.liquidator.error', { error: String(e?.message || e), cat: 'drift' });
+    } catch {}
+  }
+}
+
+export class DriftLiquidatorRegistry {
+  private static runners: Map<string, DriftLiquidator> = new Map();
+
+  static keyOf(cfg: LiquidatorConfig): string {
+    return cfg?.name ? `liq#${cfg.name}` : 'liq#default';
+  }
+
+  static upsert(cfg: LiquidatorConfig): DriftLiquidator {
+    const key = this.keyOf(cfg);
+    let r = this.runners.get(key);
+    if (!r) {
+      r = new DriftLiquidator(cfg);
+      this.runners.set(key, r);
+    }
+    return r;
+  }
+
+  static get(key: string): DriftLiquidator | undefined {
+    return this.runners.get(key);
+  }
+
+  static list(): Array<{ key: string; status: LiquidatorRuntimeState }> {
+    return Array.from(this.runners.entries()).map(([key, r]) => ({ key, status: r.getStatus() }));
+  }
+
+  static async start(key: string): Promise<boolean> {
+    const r = this.runners.get(key);
+    if (!r) return false;
+    await r.start();
+    return true;
+  }
+
+  static stop(key: string): boolean {
+    const r = this.runners.get(key);
+    if (!r) return false;
+    r.stop();
+    return true;
+  }
+}
+
+

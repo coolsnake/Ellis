@@ -56,4 +56,24 @@ describe.skip('Drift leveraged grid integration (devnet scaffolding)', () => {
   });
 });
 
+describe.skip('Drift liquidator integration (devnet scaffolding)', () => {
+  it('should start and stop liquidator', async () => {
+    const start = await fetch(`${API_BASE}/strategies/liquidator/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: `liq-${Date.now()}`, pollMs: 1200, dryRun: true })
+    });
+    expect(start.ok).toBe(true);
+    const status = await fetch(`${API_BASE}/strategies/liquidator/status`);
+    expect(status.ok).toBe(true);
+    const payload = await status.json();
+    expect(payload).toHaveProperty('liquidators');
+    const firstKey = (payload.liquidators?.[0]?.key);
+    if (firstKey) {
+      const stop = await fetch(`${API_BASE}/strategies/liquidator/stop`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: firstKey }) });
+      expect(stop.ok).toBe(true);
+    }
+  });
+});
+
 

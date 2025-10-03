@@ -295,34 +295,55 @@ export class DriftService {
 
   async getSubaccounts(): Promise<SubaccountInfo[]> {
     await this.init();
+    const out: SubaccountInfo[] = [];
     try {
-      // Best-effort SDK calls (to be refined with exact SDK APIs)
-      const sdk: any = await import('@drift-labs/sdk');
-      const user = this.client?.user || null;
-      const id = Number((CONFIG as any).drift?.defaultSubaccountId || 0);
-      const totalCollateral = Number(user?.getTotalCollateral?.() || 0);
-      const maint = Number(user?.getMaintenanceMarginRequirement?.() || 0);
-      const initReq = Number(user?.getInitialMarginRequirement?.() || 0);
-      const free = Number(user?.getFreeCollateral?.() || 0);
-      const lev = totalCollateral > 0 ? (Number(user?.getLeverage?.() || 0)) : 0;
-      const positions: Array<{ marketIndex: number; base: number; entryPrice?: number }> = [];
+      const client: any = this.client;
+      // Enumerate possible subaccounts and include those that exist on-chain
+      const ids: number[] = [];
       try {
-        const pos = user?.getPerpPositions?.() || [];
-        for (const p of pos) {
-          const base = Number(p?.baseAssetAmount?.toString?.() || 0);
-          const idx = Number(p?.marketIndex || 0);
-          positions.push({ marketIndex: idx, base, entryPrice: undefined });
-        }
-      } catch {}
-      const out = [{ id, freeCollateral: free, totalCollateral, maintenanceRequirement: maint, initialRequirement: initReq, effectiveLeverage: lev, positions }];
-      logger.debug('drift.subaccounts', { count: out.length, id, freeCollateral: free, effectiveLeverage: lev, cat: 'drift' });
+        const { getMaxNumberOfSubAccounts } = await loadSdk();
+        const max = typeof getMaxNumberOfSubAccounts === 'function' ? Number(await getMaxNumberOfSubAccounts()) : 8;
+        const cap = Number.isFinite(max) && max > 0 && max < 16 ? max : 8;
+        for (let i = 0; i < cap; i += 1) ids.push(i);
+      } catch { for (let i = 0; i < 8; i += 1) ids.push(i); }
+      for (const id of ids) {
+        try {
+          const pk = await client.getUserAccountPublicKey?.(Number(id));
+          if (!pk) continue;
+          const info = await this.connection!.getAccountInfo(pk, 'confirmed');
+          if (!info) continue;
+          // Switch to the subaccount to fetch metrics
+          try { if (typeof client?.addUser === 'function') await client.addUser(Number(id)); } catch {}
+          try { if (typeof client?.switchActiveUser === 'function') await client.switchActiveUser(Number(id)); } catch {}
+          const user = client?.user || null;
+          const totalCollateral = Number(user?.getTotalCollateral?.() || 0);
+          const maint = Number(user?.getMaintenanceMarginRequirement?.() || 0);
+          const initReq = Number(user?.getInitialMarginRequirement?.() || 0);
+          const free = Number(user?.getFreeCollateral?.() || 0);
+          const lev = totalCollateral > 0 ? (Number(user?.getLeverage?.() || 0)) : 0;
+          const positions: Array<{ marketIndex: number; base: number; entryPrice?: number }> = [];
+          try {
+            const pos = user?.getPerpPositions?.() || [];
+            for (const p of pos) {
+              const base = Number(p?.baseAssetAmount?.toString?.() || 0);
+              const idx = Number(p?.marketIndex || 0);
+              positions.push({ marketIndex: idx, base, entryPrice: undefined });
+            }
+          } catch {}
+          out.push({ id: Number(id), freeCollateral: free, totalCollateral, maintenanceRequirement: maint, initialRequirement: initReq, effectiveLeverage: lev, positions });
+        } catch {}
+      }
+      if (out.length === 0) {
+        const id = Number((CONFIG as any).drift?.defaultSubaccountId || 0);
+        out.push({ id, freeCollateral: 0, totalCollateral: 0, maintenanceRequirement: 0, initialRequirement: 0, effectiveLeverage: 0, positions: [] });
+        logger.warn('drift.subaccounts.fallback', { id, cat: 'drift' });
+      } else {
+        logger.info('drift.subaccounts.enumerated', { count: out.length, ids: out.map(s => s.id), cat: 'drift' });
+      }
       return out;
     } catch {
-      // Fallback scaffold when SDK calls are unavailable
       const id = Number((CONFIG as any).drift?.defaultSubaccountId || 0);
-      const out = [{ id, freeCollateral: 0, totalCollateral: 0, maintenanceRequirement: 0, initialRequirement: 0, effectiveLeverage: 0, positions: [] }];
-      logger.warn('drift.subaccounts.fallback', { id, cat: 'drift' });
-      return out;
+      return [{ id, freeCollateral: 0, totalCollateral: 0, maintenanceRequirement: 0, initialRequirement: 0, effectiveLeverage: 0, positions: [] }];
     }
   }
 

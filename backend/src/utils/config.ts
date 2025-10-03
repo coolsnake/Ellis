@@ -217,6 +217,13 @@ export const CONFIG = {
     maxFundingApy: Number(process.env.DRIFT_MAX_FUNDING_APY || 50),
     feeMakerBps: Number(process.env.DRIFT_FEE_MAKER_BPS || 0),
     feeTakerBps: Number(process.env.DRIFT_FEE_TAKER_BPS || 5),
+    // Liquidator defaults
+    liquidator: {
+      enabled: (process.env.DRIFT_LIQUIDATOR_ENABLED || 'false') === 'true',
+      pollMs: Number(process.env.DRIFT_LIQUIDATOR_POLL_MS || 1500),
+      maxConcurrentTargets: Number(process.env.DRIFT_LIQUIDATOR_MAX_CONCURRENT || 2),
+      dryRun: (process.env.DRIFT_LIQUIDATOR_DRY_RUN || 'true') === 'true',
+    },
   }, 
 };
 
