@@ -378,8 +378,6 @@ export class DriftService {
       candidateIds = candidateIds.filter((x) => (Number.isFinite(x) && !seenIds.has((seenIds.add(Number(x)), Number(x)))));
       for (const id of candidateIds) {
         try {
-          // Ensure the client has a user slot for this subaccount before initialize
-          try { if (typeof client?.addUser === 'function') { await withBackoff(async () => client.addUser(Number(id))); } } catch {}
           if (typeof client?.initializeUserAccount === 'function') {
             await withBackoff(async () => client.initializeUserAccount(Number(id), name || undefined));
           } else if (typeof client?.initializeUserIfNotExists === 'function') {
@@ -390,6 +388,9 @@ export class DriftService {
           } else {
             break;
           }
+          // After init, add/switch user for local mapping and active selection
+          try { if (typeof client?.addUser === 'function') { await withBackoff(async () => client.addUser(Number(id))); } } catch {}
+          try { if (typeof client?.switchActiveUser === 'function') { await withBackoff(async () => client.switchActiveUser(Number(id))); } } catch {}
           try { await this.ensureUserReady(Number(id)); } catch {}
           logger.info('drift.subaccount.created', { id: Number(id), cat: 'drift' });
           return { id: Number(id) };
