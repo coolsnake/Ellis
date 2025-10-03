@@ -93,8 +93,11 @@ export class DriftService {
     const { initialize, Wallet, BulkAccountLoader, getMarketsAndOraclesForSubscription } = await loadSdk();
     // Use SDK Wallet wrapper per docs
     const wallet = new Wallet(this.walletKp);
-    // Provide env so SDK can derive markets/oracles automatically and use polling subscription per docs
-    const subscription = { type: 'polling', accountLoader: new BulkAccountLoader(this.connection, 'confirmed', 1000) };
+    // Choose subscription type. Default to websocket to avoid RPC batch limitations on some providers
+    const subType = ((CONFIG as any).drift?.subscriptionType || 'websocket').toLowerCase();
+    const subscription = subType === 'polling'
+      ? { type: 'polling', accountLoader: new BulkAccountLoader(this.connection, 'confirmed', 1000) }
+      : { type: 'websocket' };
     const programIdOpt = (CONFIG as any).drift?.programId ? { programID: new PublicKey((CONFIG as any).drift.programId) } : {};
     const marketOpts = typeof getMarketsAndOraclesForSubscription === 'function' ? (getMarketsAndOraclesForSubscription as any)(this.cluster) : {};
     this.client = await initialize({ connection: this.connection, wallet, opts: { env: this.cluster, accountSubscription: subscription, ...programIdOpt, ...marketOpts } });
