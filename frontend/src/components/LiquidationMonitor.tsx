@@ -27,7 +27,7 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
 
   useEffect(() => {
     fetchQueue();
-    const id = setInterval(fetchQueue, 1500);
+    const id = setInterval(fetchQueue, 3000);
     return () => clearInterval(id);
   }, [apiBase, liquidatorKey]);
 
@@ -37,6 +37,9 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
       try {
         if (!evt || typeof evt !== 'object') return;
         if (evt.type === 'queue') {
+          // Debounce UI updates to at most ~1 Hz
+          const now = Date.now();
+          if (lastUpdate && (now - lastUpdate) < 750) return;
           setQueue({
             candidatesQueued: Number(evt.candidatesQueued || 0),
             top: Array.isArray(evt.top) ? evt.top : [],
@@ -44,7 +47,7 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
             actionsLastMin: Number(evt.actionsLastMin || 0),
             errorsLastMin: Number(evt.errorsLastMin || 0),
           });
-          setLastUpdate(Date.now());
+          setLastUpdate(now);
         }
       } catch {}
     };

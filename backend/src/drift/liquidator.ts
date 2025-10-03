@@ -132,6 +132,7 @@ export class DriftLiquidator {
       const candidates = await this.findUnhealthyCandidates();
       // Rebuild the heap from current candidates
       this.heap.clear();
+      this.inHeap.clear();
       for (const c of candidates) this.heap.push({ ...c, updatedAt: Date.now() });
       this.state.candidatesQueued = this.heap.size();
       this.maybeEmitQueue();
@@ -159,10 +160,22 @@ export class DriftLiquidator {
       const drift: any = (DriftService.getInstance() as any).client;
       // Preferred: Anchor account scan for users
       let list: any[] | null = null;
-      try { list = await drift?.program?.account?.user?.all?.(); } catch {}
-      if (Array.isArray(list) && list.length > 0) {
-        this.userKeys = list.map((x: any) => String(x?.publicKey?.toBase58?.() || x?.publicKey || '')).filter(Boolean);
+      const cfg: any = (CONFIG as any)?.drift?.liquidator || {};
+      const discoverAll = !!cfg.discoverAllUsers;
+      if (discoverAll) {
+        try { list = await drift?.program?.account?.user?.all?.(); } catch {}
+        if (Array.isArray(list) && list.length > 0) {
+          this.userKeys = list.map((x: any) => String(x?.publicKey?.toBase58?.() || x?.publicKey || '')).filter(Boolean);
+        }
       }
+      // Allow explicit allowlist override
+      try {
+        const allow: string[] = Array.isArray(cfg.usersAllowlist) ? cfg.usersAllowlist : [];
+        if (allow.length > 0) {
+          const ks = allow.map((s) => String(s || '').trim()).filter(Boolean);
+          if (ks.length > 0) this.userKeys = ks;
+        }
+      } catch {}
       // Fallback: include our own user only
       if (this.userKeys.length === 0) {
         try {
@@ -176,6 +189,8 @@ export class DriftLiquidator {
 
   private initPriceTriggers(): void {
     try {
+      const liqCfg: any = (CONFIG as any)?.drift?.liquidator || {};
+      if (liqCfg.usePriceTriggers === false) return;
       const allow: string[] = ((CONFIG as any)?.drift?.marketsAllowlist || []) as any;
       const indices: number[] = [];
       for (const entry of allow) {
@@ -187,9 +202,9 @@ export class DriftLiquidator {
       // Default to first few common markets
       if (indices.length === 0) indices.push(0, 1, 2);
       const svc = DriftPriceService.getInstance();
-      const debounceMs = Math.max(250, Math.min(600, Number(((CONFIG as any)?.websocketIntervalMs) || 400)));
+      const debounceMs = Math.max(600, Math.min(1500, Number(liqCfg.priceTriggerDebounceMs || ((CONFIG as any)?.websocketIntervalMs) || 800)));
       for (const idx of indices) {
-        try { svc.trackMarket(idx, 400); } catch {}
+        try { svc.trackMarket(idx, Math.max(800, Number(liqCfg.httpPollMs || 1200))); } catch {}
         this.trackedMarkets.add(Number(idx));
         const onPrice = () => {
           const prev: any = this.priceTriggerTimers.get(idx);
@@ -297,8 +312,10 @@ export class DriftLiquidator {
       }
       this.state.candidatesQueued = this.heap.size();
       this.maybeEmitQueue();
-      this.marketScanInFlight.delete(idx);
-    } catch {}
+    } catch {
+    } finally {
+      try { this.marketScanInFlight.delete(Number(marketIndex)); } catch {}
+    }
   }
 
   private addOrQueueCandidate(c: Candidate): void {
@@ -444,11 +461,12 @@ export class DriftLiquidator {
 
   getQueueSnapshot(limit = 20): { candidatesQueued: number; top: Array<{ userPk: string; health: number; updatedAt: number }>; markets: number[]; actionsLastMin: number; errorsLastMin: number } {
     const top: Candidate[] = [];
-    const copy = new MinHeap<Candidate>((a, b) => a.health - b.health);
-    for (const c of this.heap.toArray()) copy.push(c);
-    for (let i = 0; i < Math.max(1, Math.min(100, Number(limit))); i += 1) {
-      const c = copy.pop(); if (!c) break; top.push(c);
-    }
+    const arr = this.heap.toArray();
+    const cap = Math.min(arr.length, Math.max(25, Number(limit) * 8));
+    const small = new MinHeap<Candidate>((a, b) => a.health - b.health);
+    for (let i = 0; i < cap; i += 1) small.push(arr[i]);
+    const howMany = Math.max(1, Math.min(100, Number(limit)));
+    for (let i = 0; i < howMany; i += 1) { const c = small.pop(); if (!c) break; top.push(c); }
     return {
       candidatesQueued: this.state.candidatesQueued,
       top: top.map(t => ({ userPk: t.userPk, health: t.health, updatedAt: t.updatedAt })),
