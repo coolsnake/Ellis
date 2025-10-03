@@ -161,11 +161,13 @@ export class DriftLiquidator {
       // Preferred: Anchor account scan for users
       let list: any[] | null = null;
       const cfg: any = (CONFIG as any)?.drift?.liquidator || {};
-      const discoverAll = !!cfg.discoverAllUsers;
+      const discoverAll = (cfg.discoverAllUsers !== false); // default true
       if (discoverAll) {
         try { list = await drift?.program?.account?.user?.all?.(); } catch {}
         if (Array.isArray(list) && list.length > 0) {
-          this.userKeys = list.map((x: any) => String(x?.publicKey?.toBase58?.() || x?.publicKey || '')).filter(Boolean);
+          const maxDiscover = Math.max(10, Math.min(5000, Number(cfg.maxDiscoveredUsers || 500)));
+          const keys = list.map((x: any) => String(x?.publicKey?.toBase58?.() || x?.publicKey || '')).filter(Boolean);
+          this.userKeys = keys.slice(0, maxDiscover);
         }
       }
       // Allow explicit allowlist override
@@ -233,6 +235,7 @@ export class DriftLiquidator {
       const { User, BulkAccountLoader } = (sdk as any);
       const conn: any = (DriftService.getInstance() as any).connection;
       if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', 1000);
+      const riskThresh = Number(((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0);
       for (const pkStr of this.userKeys) {
         try {
           const user = new User({ driftClient: drift, userAccountPublicKey: pkStr, accountSubscription: { type: 'polling', accountLoader: this.accountLoader } });
@@ -242,7 +245,7 @@ export class DriftLiquidator {
           const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
           if (!isFinite(total) || !isFinite(maint)) continue;
           const health = maint > 0 ? (total - maint) / maint : Infinity;
-          if (health < 0) out.push({ userPk: pkStr, health });
+          if (health < riskThresh) out.push({ userPk: pkStr, health });
           try { await this.refreshIndexForUser(user, pkStr); } catch {}
         } catch {}
       }
@@ -297,6 +300,7 @@ export class DriftLiquidator {
       // Cap per event to avoid long stalls
       const maxUsersPerTick = Math.max(10, Math.min(100, Number(((CONFIG as any)?.drift?.liquidator?.maxUsersPerPriceTick) || 40)));
       const slice = users.slice(0, maxUsersPerTick);
+      const riskThresh = Number(((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0);
       for (const pkStr of slice) {
         try {
           const user = new User({ driftClient: drift, userAccountPublicKey: pkStr, accountSubscription: { type: 'polling', accountLoader: this.accountLoader } });
@@ -306,7 +310,7 @@ export class DriftLiquidator {
           const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
           if (!isFinite(total) || !isFinite(maint)) continue;
           const health = maint > 0 ? (total - maint) / maint : Infinity;
-          if (health < 0) this.addOrQueueCandidate({ userPk: pkStr, health, updatedAt: Date.now() });
+          if (health < riskThresh) this.addOrQueueCandidate({ userPk: pkStr, health, updatedAt: Date.now() });
           try { await this.refreshIndexForUser(user, pkStr); } catch {}
         } catch {}
       }
@@ -448,18 +452,20 @@ export class DriftLiquidator {
       const small = new MinHeap<Candidate>((a, b) => a.health - b.health);
       for (let i = 0; i < cap; i += 1) small.push(arr[i]);
       for (let i = 0; i < 10; i += 1) { const c = small.pop(); if (!c) break; top.push(c); }
+      const exposuresCounts = Array.from(this.marketToUsers.entries()).map(([m, set]) => ({ marketIndex: Number(m), users: (set?.size || 0) }));
       emit('drift-liquidation', {
         type: 'queue',
         candidatesQueued: this.state.candidatesQueued,
         top: top.map(t => ({ userPk: t.userPk, health: t.health, updatedAt: t.updatedAt })),
         markets: Array.from(this.trackedMarkets),
+        exposures: exposuresCounts,
         actionsLastMin: this.state.actionsLastMin,
         errorsLastMin: this.state.errorsLastMin,
       }).catch(() => {});
     } catch {}
   }
 
-  getQueueSnapshot(limit = 20): { candidatesQueued: number; top: Array<{ userPk: string; health: number; updatedAt: number }>; markets: number[]; actionsLastMin: number; errorsLastMin: number } {
+  getQueueSnapshot(limit = 20): { candidatesQueued: number; top: Array<{ userPk: string; health: number; updatedAt: number }>; markets: number[]; exposures: Array<{ marketIndex: number; users: number }>; actionsLastMin: number; errorsLastMin: number } {
     const top: Candidate[] = [];
     const arr = this.heap.toArray();
     const cap = Math.min(arr.length, Math.max(25, Number(limit) * 8));
@@ -467,10 +473,12 @@ export class DriftLiquidator {
     for (let i = 0; i < cap; i += 1) small.push(arr[i]);
     const howMany = Math.max(1, Math.min(100, Number(limit)));
     for (let i = 0; i < howMany; i += 1) { const c = small.pop(); if (!c) break; top.push(c); }
+    const exposuresCounts = Array.from(this.marketToUsers.entries()).map(([m, set]) => ({ marketIndex: Number(m), users: (set?.size || 0) }));
     return {
       candidatesQueued: this.state.candidatesQueued,
       top: top.map(t => ({ userPk: t.userPk, health: t.health, updatedAt: t.updatedAt })),
       markets: Array.from(this.trackedMarkets),
+      exposures: exposuresCounts,
       actionsLastMin: this.state.actionsLastMin,
       errorsLastMin: this.state.errorsLastMin,
     };

@@ -9,7 +9,7 @@ interface Props {
 }
 
 export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidatorKey = 'liq#default' }) => {
-  const [queue, setQueue] = useState<{ candidatesQueued: number; top: QueueItem[]; markets: number[]; actionsLastMin: number; errorsLastMin: number } | null>(null);
+  const [queue, setQueue] = useState<{ candidatesQueued: number; top: QueueItem[]; markets: number[]; exposures?: Array<{ marketIndex: number; users: number }>; actionsLastMin: number; errorsLastMin: number } | null>(null);
   const [lastUpdate, setLastUpdate] = useState<number>(0);
 
   const fetchQueue = async () => {
@@ -44,6 +44,7 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
             candidatesQueued: Number(evt.candidatesQueued || 0),
             top: Array.isArray(evt.top) ? evt.top : [],
             markets: Array.isArray(evt.markets) ? evt.markets : [],
+            exposures: Array.isArray(evt.exposures) ? evt.exposures : [],
             actionsLastMin: Number(evt.actionsLastMin || 0),
             errorsLastMin: Number(evt.errorsLastMin || 0),
           });
@@ -88,8 +89,22 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
         </div>
       </div>
 
+      {Array.isArray(queue?.exposures) && (queue!.exposures!.length > 0) && (
+        <div className="mb-3">
+          <div className="text-gray-300 mb-1 text-sm">Market Exposures (users with open perp positions)</div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+            {queue!.exposures!.map((e) => (
+              <div key={`exp-${e.marketIndex}`} className="p-2 bg-gray-700 rounded flex items-center justify-between">
+                <span className="text-gray-300">{e.marketIndex}</span>
+                <span className="text-white font-mono">{e.users}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="mt-2">
-        <div className="text-gray-300 mb-2 text-sm">Top At-Risk Accounts</div>
+        <div className="text-gray-300 mb-2 text-sm">Top At-Risk Accounts (health < 0)</div>
         <div className="space-y-1 max-h-56 overflow-auto">
           {(queue?.top || []).map((c) => (
             <div key={`${c.userPk}`} className="flex items-center justify-between p-2 bg-gray-700 rounded text-xs">
