@@ -221,6 +221,13 @@ export class DriftGridRegistry {
     r.stop();
     return true;
   }
+
+  static remove(key: string): boolean {
+    const r = this.runners.get(key);
+    if (!r) return false;
+    try { r.stop(); } catch {}
+    return this.runners.delete(key);
+  }
 }
 
 

@@ -104,7 +104,7 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
       )}
 
       <div className="mt-2">
-        <div className="text-gray-300 mb-2 text-sm">Top At-Risk Accounts (health < 0)</div>
+        <div className="text-gray-300 mb-2 text-sm">Top At-Risk Accounts (health &lt; 0)</div>
         <div className="space-y-1 max-h-56 overflow-auto">
           {(queue?.top || []).map((c) => (
             <div key={`${c.userPk}`} className="flex items-center justify-between p-2 bg-gray-700 rounded text-xs">

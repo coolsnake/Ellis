@@ -1,5 +1,5 @@
 // @ts-nocheck
-import type { Express, Request, Response } from 'express';
+import type { Express, Request, Response, NextFunction } from 'express';
 import { Router } from 'express';
 import type { Server as SocketIOServer } from 'socket.io';
 import { logger, setLogLevel, setLoggingEnabled, setFileLogging } from '../utils/logger.js';
@@ -530,7 +530,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
 
   // Grid Monitor adapter: expose grid endpoints for both classic and drift levered grids
   // Levels/positions/state snapshot
-  api.get('/grid/levels/:name', async (req: Request, res: Response) => {
+  api.get('/grid/levels/:name', async (req: Request, res: Response, next: NextFunction) => {
     try {
       const name = String(req.params?.name || '');
       // Attempt to resolve a drift levered grid by strategy name
@@ -540,10 +540,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
 
       const all = DriftGridRegistry.list();
       const hit = all.find((x: any) => String(x?.status?.config?.name || '') === name);
-      if (!hit) {
-        // TODO: map classic grid strategy here when available; return empty for now
-        return res.json({ levels: [], positions: [], activePositions: [], tradeHistory: [], state: null, tokens: null });
-      }
+      if (!hit) return next();
       const cfg: any = hit.status?.config || {};
       const marketIndex = Number(cfg?.market?.marketIndex || 0);
       const ps = DriftPriceService.getInstance().getPrice(marketIndex);
@@ -628,31 +625,50 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       res.json({ levels, positions: [], activePositions: [], tradeHistory: [], state, tokens, spread, feeBps, feeEstRoundTrip, fundingApy });
     } catch (e: any) {
       logger.error('grid.levels adapter failed', { error: String(e?.message || e) });
-      res.json({ levels: [], positions: [], activePositions: [], tradeHistory: [], state: null, tokens: null });
+      return next();
     }
   });
 
   // Performance
-  api.get('/grid/performance/:name', async (req: Request, res: Response) => {
+  api.get('/grid/performance/:name', async (req: Request, res: Response, next: NextFunction) => {
     try {
       const name = String(req.params?.name || '');
+      const { DriftGridRegistry } = await import('../drift/execution.js');
+      const hit = DriftGridRegistry.list().find((x: any) => String(x?.status?.config?.name || '') === name);
+      if (!hit) return next();
       // Minimal placeholder performance for drift grids for now
       const data = { totalPnl: 0, totalTrades: 0, completedCycles: 0 };
       res.json(data);
     } catch (e: any) {
       logger.error('grid.performance adapter failed', { error: String(e?.message || e) });
-      res.json({ totalPnl: 0, totalTrades: 0, completedCycles: 0 });
+      return next();
     }
   });
 
   // Rebalance (no-op for drift adapter)
-  api.post('/grid/rebalance/:name', async (_req: Request, res: Response) => {
-    try { res.json({ ok: true }); } catch { res.json({ ok: true }); }
+  api.post('/grid/rebalance/:name', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const name = String(req.params?.name || '');
+      const { DriftGridRegistry } = await import('../drift/execution.js');
+      const hit = DriftGridRegistry.list().find((x: any) => String(x?.status?.config?.name || '') === name);
+      if (!hit) return next();
+      res.json({ ok: true });
+    } catch {
+      return next();
+    }
   });
 
   // Close position (not supported yet for drift adapter)
-  api.post('/grid/close-position/:name', async (_req: Request, res: Response) => {
-    res.status(400).json({ error: 'not supported' });
+  api.post('/grid/close-position/:name', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const name = String(req.params?.name || '');
+      const { DriftGridRegistry } = await import('../drift/execution.js');
+      const hit = DriftGridRegistry.list().find((x: any) => String(x?.status?.config?.name || '') === name);
+      if (!hit) return next();
+      res.status(400).json({ error: 'not supported' });
+    } catch {
+      return next();
+    }
   });
 
   // Drift: list spot markets map (index/mint/symbol/decimals) - best-effort via SDK constants
@@ -788,8 +804,9 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     try {
       const { key } = req.body as { key: string };
       const { DriftGridRegistry } = await import('../drift/execution.js');
-      const ok = DriftGridRegistry.stop(key);
-      if (ok) emit('log', { level: 'info', message: `drift: grid stopped ${key}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } });
+      // Remove the runner completely so it doesn't reappear on next status
+      const ok = DriftGridRegistry.remove(key);
+      if (ok) emit('log', { level: 'info', message: `drift: grid removed ${key}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } });
       res.json({ ok });
     } catch (e: any) {
       logger.error('drift-grid: stop failed', { error: String(e?.message || e) });

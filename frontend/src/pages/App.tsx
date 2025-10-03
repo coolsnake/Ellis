@@ -161,6 +161,9 @@ export const App: React.FC = () => {
             gridType: 'drift',
             gridLevels: [],
             active: !!(s?.status?.running),
+            driftKey: String(s?.key || `${cfg?.name || `lev-grid-${idx}`}#${idx}#${cfg?.subaccountId ?? ''}`),
+            marketIndex: idx,
+            subaccountId: Number(cfg?.subaccountId ?? 0),
           } as any;
         }) : [];
         setStrategies([...(baseList || []), ...mapped]);
@@ -290,6 +293,9 @@ export const App: React.FC = () => {
             gridType: 'drift',
             gridLevels: [],
             active: !!(s?.status?.running),
+            driftKey: String(s?.key || `${cfg?.name || `lev-grid-${idx}`}#${idx}#${cfg?.subaccountId ?? ''}`),
+            marketIndex: idx,
+            subaccountId: Number(cfg?.subaccountId ?? 0),
           } as any;
         }) : [];
         const merged = [...base, ...mapped];
