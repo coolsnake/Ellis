@@ -32,7 +32,6 @@ export const App: React.FC = () => {
   const [driftSelectedSubId, setDriftSelectedSubId] = useState<number>(0);
   const [driftNewSubName, setDriftNewSubName] = useState<string>('');
   const [driftRenameSubName, setDriftRenameSubName] = useState<string>('');
-  const [driftNewSubName, setDriftNewSubName] = useState<string>('');
   const [driftOpBusy, setDriftOpBusy] = useState<boolean>(false);
   const [driftAmount, setDriftAmount] = useState<number>(0);
   const [driftSpotIndex, setDriftSpotIndex] = useState<number>(0);
