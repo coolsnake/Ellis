@@ -15,8 +15,6 @@ declare namespace NodeJS {
   type Timer = any;
 }
 
-declare module '@solana/web3.js';
-declare module '@orca-so/whirlpools';
-declare module '@orca-so/whirlpools-sdk';
+// Do not declare modules for installed packages; rely on their own type defs
 
 
