@@ -9,6 +9,10 @@ import { logger } from '../utils/logger.js';
 type DriftEnv = {
   DriftClient: any;
   Wallet: any;
+  User: any;
+  BulkAccountLoader: any;
+  getMarketsAndOraclesForSubscription?: (env: string) => any;
+  getMaxNumberOfSubAccounts?: () => number | Promise<number>;
   initialize: (args: { connection: Connection; wallet: any; opts?: any }) => Promise<any>;
 };
 
@@ -21,6 +25,10 @@ async function loadSdk(): Promise<DriftEnv> {
   driftEnv = {
     DriftClient: (sdk as any).DriftClient,
     Wallet: (sdk as any).Wallet,
+    User: (sdk as any).User,
+    BulkAccountLoader: (sdk as any).BulkAccountLoader,
+    getMarketsAndOraclesForSubscription: (sdk as any).getMarketsAndOraclesForSubscription,
+    getMaxNumberOfSubAccounts: (sdk as any).getMaxNumberOfSubAccounts,
     // Ensure options are spread at top-level per SDK constructor shape
     initialize: async ({ connection, wallet, opts }: any) => new (sdk as any).DriftClient({ connection, wallet, ...(opts || {}) })
   };
@@ -82,11 +90,14 @@ export class DriftService {
     this.walletKp = await ensureWallet(CONFIG.walletPath);
     this.connection = new Connection(CONFIG.rpcUrl, 'confirmed');
     logger.info('drift.sdk.init', { rpcUrl: CONFIG.rpcUrl, cluster: this.cluster, cat: 'drift' });
-    const { initialize, Wallet } = await loadSdk();
+    const { initialize, Wallet, BulkAccountLoader, getMarketsAndOraclesForSubscription } = await loadSdk();
     // Use SDK Wallet wrapper per docs
     const wallet = new Wallet(this.walletKp);
-    // Provide env so SDK can derive markets/oracles automatically
-    this.client = await initialize({ connection: this.connection, wallet, opts: { env: this.cluster } });
+    // Provide env so SDK can derive markets/oracles automatically and use polling subscription per docs
+    const subscription = { type: 'polling', accountLoader: new BulkAccountLoader(this.connection, 'confirmed', 1000) };
+    const programIdOpt = (CONFIG as any).drift?.programId ? { programID: new PublicKey((CONFIG as any).drift.programId) } : {};
+    const marketOpts = typeof getMarketsAndOraclesForSubscription === 'function' ? (getMarketsAndOraclesForSubscription as any)(this.cluster) : {};
+    this.client = await initialize({ connection: this.connection, wallet, opts: { env: this.cluster, accountSubscription: subscription, ...programIdOpt, ...marketOpts } });
     // Subscribe to populate internal caches for markets/users/oracles
     try { if (typeof (this.client as any)?.subscribe === 'function') { await (this.client as any).subscribe(); } } catch {}
     // Ensure default user is initialized and registered with the client
@@ -108,15 +119,22 @@ export class DriftService {
   private async ensureUserReady(subaccountId: number): Promise<void> {
     await this.init();
     const client: any = this.client;
-    try { if (typeof client?.addUser === 'function') { await client.addUser(Number(subaccountId)); } } catch {}
-    try { if (typeof client?.switchActiveUser === 'function') { await client.switchActiveUser(Number(subaccountId)); } } catch {}
     try {
-      if (typeof client?.initializeUserIfNotExists === 'function') {
-        await client.initializeUserIfNotExists(Number(subaccountId));
-      } else if (typeof client?.initializeUser === 'function') {
-        try { await client.initializeUser(Number(subaccountId)); } catch { try { await client.initializeUser(); } catch {} }
+      const { User, BulkAccountLoader } = await loadSdk();
+      const loader = new BulkAccountLoader(this.connection!, 'confirmed', 1000);
+      const userPk = await client.getUserAccountPublicKey?.(Number(subaccountId));
+      if (userPk) {
+        try {
+          const u = new User({ driftClient: client, userAccountPublicKey: userPk, accountSubscription: { type: 'polling', accountLoader: loader } });
+          const exists = await (u as any).exists?.();
+          if (!exists && typeof client?.initializeUserAccount === 'function') {
+            await client.initializeUserAccount(Number(subaccountId));
+          }
+        } catch {}
       }
     } catch {}
+    try { if (typeof client?.addUser === 'function') { await client.addUser(Number(subaccountId)); } } catch {}
+    try { if (typeof client?.switchActiveUser === 'function') { await client.switchActiveUser(Number(subaccountId)); } } catch {}
   }
 
   async getStatus(): Promise<DriftStatus> {
@@ -371,8 +389,12 @@ export class DriftService {
       // Preferred creation path: initializeUserAccount using next id
       // Derive candidate ids without relying on internal user stats APIs
       let candidateIds: number[] = [];
-      // Safety net probe if next id unavailable
-      for (let i = 0; i < 8; i += 1) candidateIds.push(i);
+      try {
+        const { getMaxNumberOfSubAccounts } = await loadSdk();
+        const max = typeof getMaxNumberOfSubAccounts === 'function' ? Number(await getMaxNumberOfSubAccounts()) : 8;
+        const cap = Number.isFinite(max) && max > 0 && max < 16 ? max : 8;
+        for (let i = 0; i < cap; i += 1) candidateIds.push(i);
+      } catch { for (let i = 0; i < 8; i += 1) candidateIds.push(i); }
       // Dedup and try in order
       const seenIds = new Set<number>();
       candidateIds = candidateIds.filter((x) => (Number.isFinite(x) && !seenIds.has((seenIds.add(Number(x)), Number(x)))));

@@ -1425,6 +1425,12 @@ export const App: React.FC = () => {
             </div>
           </section>
         </div>
+        <section className="bg-gray-900 rounded p-4">
+          <h2 className="text-2xl font-semibold mb-3">Terminal</h2>
+          <form onSubmit={(e) => { e.preventDefault(); handleTerminal(terminalInput.trim()); setTerminalInput(''); }}>
+            <input value={terminalInput} onChange={(e) => setTerminalInput(e.target.value)} className="w-full bg-gray-800 rounded px-3 py-2 outline-none text-base" placeholder="Type command or type 'help'...." />
+          </form>
+        </section>
         <CollapsibleSection
           title={"Arbitrage"}
           storageKey="panel:arbitrage"
@@ -1445,13 +1451,6 @@ export const App: React.FC = () => {
             </div>
           ) : null}
         </CollapsibleSection>
-        <section className="bg-gray-900 rounded p-4">
-          <h2 className="text-2xl font-semibold mb-3">Terminal</h2>
-          <div className="text-sm text-gray-400 mb-3">Type 'help' to list available commands.</div>
-          <form onSubmit={(e) => { e.preventDefault(); handleTerminal(terminalInput.trim()); setTerminalInput(''); }}>
-            <input value={terminalInput} onChange={(e) => setTerminalInput(e.target.value)} className="w-full bg-gray-800 rounded px-3 py-2 outline-none text-base" placeholder="Type command..." />
-          </form>
-        </section>
         {/* Drift Panel: subaccounts and management */}
         <CollapsibleSection title={"Drift"} storageKey="panel:drift">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
