@@ -370,12 +370,15 @@ export class DriftService {
         throw lastErr;
       };
 
+      let lastReason: string | null = null;
+
       // Preflight: ensure wallet has SOL for fees
       try {
         const balLamports = await this.connection!.getBalance(this.walletKp!.publicKey, 'confirmed');
         const minLamports = 0.01 * 1_000_000_000; // ~0.01 SOL
         if (balLamports < minLamports) {
-          logger.error('drift.subaccount.create_failed', { error: `INSUFFICIENT_SOL balance=${(balLamports/1_000_000_000).toFixed(6)} required>=0.01`, cat: 'drift' });
+          lastReason = `INSUFFICIENT_SOL balance=${(balLamports/1_000_000_000).toFixed(6)} required>=0.01`;
+          logger.error('drift.subaccount.create_failed', { error: lastReason, cat: 'drift' });
           return null;
         }
       } catch {}
@@ -411,6 +414,7 @@ export class DriftService {
             try { await withBackoff(async () => client.initializeUser(Number(id), name || undefined)); }
             catch { await withBackoff(async () => client.initializeUser()); }
           } else {
+            lastReason = 'INIT_METHODS_UNAVAILABLE';
             break;
           }
           // After init, add/switch user for local mapping and active selection
@@ -428,13 +432,14 @@ export class DriftService {
             logger.info('drift.subaccount.created_existing', { id: Number(id), cat: 'drift' });
             return { id: Number(id) };
           }
+          lastReason = msg || lastReason;
           continue;
         }
       }
     } catch (e: any) {
       logger.error('drift.subaccount.create_failed', { error: String(e?.message || e), cat: 'drift' });
     }
-    logger.error('drift.subaccount.create_unavailable', { cat: 'drift' });
+    logger.error('drift.subaccount.create_unavailable', { reason: lastReason || 'UNKNOWN', cat: 'drift' });
     return null;
   }
 
