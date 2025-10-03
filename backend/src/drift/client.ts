@@ -8,6 +8,7 @@ import { logger } from '../utils/logger.js';
 // Lazy import SDK to keep startup fast and optional
 type DriftEnv = {
   DriftClient: any;
+  Wallet: any;
   initialize: (args: { connection: Connection; wallet: any; opts?: any }) => Promise<any>;
 };
 
@@ -19,6 +20,7 @@ async function loadSdk(): Promise<DriftEnv> {
   const sdk = await import('@drift-labs/sdk');
   driftEnv = {
     DriftClient: (sdk as any).DriftClient,
+    Wallet: (sdk as any).Wallet,
     // Ensure options are spread at top-level per SDK constructor shape
     initialize: async ({ connection, wallet, opts }: any) => new (sdk as any).DriftClient({ connection, wallet, ...(opts || {}) })
   };
@@ -80,13 +82,9 @@ export class DriftService {
     this.walletKp = await ensureWallet(CONFIG.walletPath);
     this.connection = new Connection(CONFIG.rpcUrl, 'confirmed');
     logger.info('drift.sdk.init', { rpcUrl: CONFIG.rpcUrl, cluster: this.cluster, cat: 'drift' });
-    const { initialize } = await loadSdk();
-    // Provide a signing wallet compatible with Anchor/Drift
-    const wallet = {
-      publicKey: this.walletKp.publicKey,
-      signTransaction: async (tx: any) => { try { if (typeof tx.partialSign === 'function') tx.partialSign(this.walletKp); else tx.sign(this.walletKp); } catch {} return tx; },
-      signAllTransactions: async (txs: any[]) => { try { for (const tx of txs) { if (typeof tx.partialSign === 'function') tx.partialSign(this.walletKp); else tx.sign(this.walletKp); } } catch {} return txs; }
-    };
+    const { initialize, Wallet } = await loadSdk();
+    // Use SDK Wallet wrapper per docs
+    const wallet = new Wallet(this.walletKp);
     // Provide env so SDK can derive markets/oracles automatically
     this.client = await initialize({ connection: this.connection, wallet, opts: { env: this.cluster } });
     // Subscribe to populate internal caches for markets/users/oracles
@@ -371,16 +369,8 @@ export class DriftService {
       }
       // Fallback: attempt creating at a candidate id range without relying on userStats
       // Preferred creation path: initializeUserAccount using next id
+      // Derive candidate ids without relying on internal user stats APIs
       let candidateIds: number[] = [];
-      try {
-        if (typeof client?.getNextSubAccountId === 'function') {
-          const next = await withBackoff(async () => client.getNextSubAccountId());
-          const n = Number(next);
-          if (Number.isFinite(n)) candidateIds.push(n);
-        }
-      } catch (e: any) {
-        logger.warn('drift.subaccount.next_id_failed', { error: String(e?.message || e), cat: 'drift' });
-      }
       // Safety net probe if next id unavailable
       for (let i = 0; i < 8; i += 1) candidateIds.push(i);
       // Dedup and try in order
@@ -388,6 +378,8 @@ export class DriftService {
       candidateIds = candidateIds.filter((x) => (Number.isFinite(x) && !seenIds.has((seenIds.add(Number(x)), Number(x)))));
       for (const id of candidateIds) {
         try {
+          // Ensure the client has a user slot for this subaccount before initialize
+          try { if (typeof client?.addUser === 'function') { await withBackoff(async () => client.addUser(Number(id))); } } catch {}
           if (typeof client?.initializeUserAccount === 'function') {
             await withBackoff(async () => client.initializeUserAccount(Number(id), name || undefined));
           } else if (typeof client?.initializeUserIfNotExists === 'function') {
