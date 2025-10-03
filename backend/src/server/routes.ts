@@ -853,7 +853,8 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   // Drift Liquidator control
   api.get('/strategies/liquidator/status', async (_req: Request, res: Response) => {
     try {
-      const { DriftLiquidatorRegistry } = await import('../drift/liquidator.js');
+      const mod: any = await (async () => { try { return await import('../drift/liquidator.js'); } catch { return await import('../drift/liquidator.ts'); } })();
+      const { DriftLiquidatorRegistry } = mod;
       const list = DriftLiquidatorRegistry.list();
       res.json({ liquidators: list });
     } catch (e: any) {
@@ -865,7 +866,8 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   api.post('/strategies/liquidator/start', async (req: Request, res: Response) => {
     try {
       const cfg = req.body as any;
-      const { DriftLiquidatorRegistry } = await import('../drift/liquidator.js');
+      const mod: any = await (async () => { try { return await import('../drift/liquidator.js'); } catch { return await import('../drift/liquidator.ts'); } })();
+      const { DriftLiquidatorRegistry } = mod;
       const runner = DriftLiquidatorRegistry.upsert({
         name: cfg?.name || 'default',
         enabled: true,
@@ -886,7 +888,8 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   api.post('/strategies/liquidator/stop', async (req: Request, res: Response) => {
     try {
       const { key } = req.body as { key: string };
-      const { DriftLiquidatorRegistry } = await import('../drift/liquidator.js');
+      const mod: any = await (async () => { try { return await import('../drift/liquidator.js'); } catch { return await import('../drift/liquidator.ts'); } })();
+      const { DriftLiquidatorRegistry } = mod;
       const ok = DriftLiquidatorRegistry.stop(key);
       if (ok) emit('log', { level: 'info', message: `drift: liquidator stopped ${key}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } });
       res.json({ ok });
@@ -899,7 +902,8 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   api.post('/strategies/liquidator/update', async (req: Request, res: Response) => {
     try {
       const cfg = req.body as any;
-      const { DriftLiquidatorRegistry } = await import('../drift/liquidator.js');
+      const mod: any = await (async () => { try { return await import('../drift/liquidator.js'); } catch { return await import('../drift/liquidator.ts'); } })();
+      const { DriftLiquidatorRegistry } = mod;
       const runner = DriftLiquidatorRegistry.upsert({
         name: cfg?.name || 'default',
         enabled: true,
@@ -996,7 +1000,8 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     try {
       const limit = Number((req.query?.limit as string) || 20);
       const key = String((req.query?.key as string) || 'liq#default');
-      const { DriftLiquidatorRegistry } = await import('../drift/liquidator.js');
+      const mod: any = await (async () => { try { return await import('../drift/liquidator.js'); } catch { return await import('../drift/liquidator.ts'); } })();
+      const { DriftLiquidatorRegistry } = mod;
       const r = DriftLiquidatorRegistry.get(key);
       if (!r) return res.json({ key, queue: { candidatesQueued: 0, top: [], markets: [], actionsLastMin: 0, errorsLastMin: 0 } });
       const queue = (r as any).getQueueSnapshot?.(limit) || { candidatesQueued: 0, top: [], markets: [], actionsLastMin: 0, errorsLastMin: 0 };
