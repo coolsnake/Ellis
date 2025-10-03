@@ -515,6 +515,30 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
         completedCycles: 0,
         totalTrades: 0,
       };
+      // Best-effort drift extras
+      let spread: number | undefined = undefined;
+      let feeBps: number | undefined = undefined;
+      let feeEstRoundTrip: number | undefined = undefined;
+      let fundingApy: number | undefined = undefined;
+      try {
+        const bid = (ps && typeof (ps as any)?.bid === 'number') ? (ps as any).bid : undefined;
+        const ask = (ps && typeof (ps as any)?.ask === 'number') ? (ps as any).ask : undefined;
+        if (typeof bid === 'number' && typeof ask === 'number') spread = ask - bid;
+      } catch {}
+      try {
+        const feeMakerBps = Number((CONFIG as any)?.drift?.feeMakerBps || 0);
+        const feeTakerBps = Number((CONFIG as any)?.drift?.feeTakerBps || 5);
+        const cfgAny: any = cfg || {};
+        feeBps = cfgAny?.makerOnly ? feeMakerBps : feeTakerBps;
+        const perSide = Math.max(0, Number(cfgAny?.levels || 0));
+        const proposedNotional = perSide * (cfgAny?.notionalPerLevel || 0);
+        feeEstRoundTrip = (feeBps / 10000) * proposedNotional * 2;
+      } catch {}
+      try {
+        const { DriftService } = await import('../drift/client.js');
+        const fr = await DriftService.getInstance().getFundingRate(marketIndex);
+        if (fr && typeof fr.lastFundingRate === 'number') fundingApy = fr.lastFundingRate * 365 * 24;
+      } catch {}
       // Resolve perp market symbol via SDK constants if not present
       let marketSymbol: string | undefined = ps?.symbol;
       try {
@@ -530,7 +554,31 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       } catch {}
       const sym = marketSymbol || `PERP-${marketIndex}`;
       const tokens = { fromToken: 'USDC', toToken: sym, fromSymbol: 'USDC', toSymbol: sym, fromUsd: 1, toUsd: undefined as any };
-      res.json({ levels, positions: [], activePositions: [], tradeHistory: [], state, tokens });
+      // Include runtime state from runner for extras
+      try {
+        const { DriftGridRegistry } = await import('../drift/execution.js');
+        const list = DriftGridRegistry.list();
+        const found = list.find((x: any) => String(x?.status?.config?.name || '') === name);
+        if (found && found.status) {
+          const st: any = found.status;
+          return res.json({
+            levels,
+            positions: [],
+            activePositions: [],
+            tradeHistory: [],
+            state,
+            tokens,
+            spread,
+            feeBps,
+            feeEstRoundTrip,
+            fundingApy,
+            openOrders: st.openOrders,
+            effectiveLeverage: st.effectiveLeverage,
+            liquidationBuffer: st.liquidationBuffer,
+          });
+        }
+      } catch {}
+      res.json({ levels, positions: [], activePositions: [], tradeHistory: [], state, tokens, spread, feeBps, feeEstRoundTrip, fundingApy });
     } catch (e: any) {
       logger.error('grid.levels adapter failed', { error: String(e?.message || e) });
       res.json({ levels: [], positions: [], activePositions: [], tradeHistory: [], state: null, tokens: null });

@@ -66,6 +66,7 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
   const [performance, setPerformance] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [tokens, setTokens] = useState<{fromToken: string, toToken: string, fromSymbol: string, toSymbol: string, fromUsd?: number | null, toUsd?: number | null} | null>(null);
+  const [driftInfo, setDriftInfo] = useState<{ spread?: number; fundingApy?: number; feeBps?: number; feeEstRoundTrip?: number; openOrders?: number; effectiveLeverage?: number; liquidationBuffer?: number } | null>(null);
 
   const formatAmount = (n: number | undefined | null) => {
     const v = Number(n || 0);
@@ -111,6 +112,10 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
       setTradeHistory(data.tradeHistory || []);
       setState(data.state || null);
       setTokens(data.tokens || null);
+      // Optional drift extras if provided by backend adapter later
+      if (data && (data.spread !== undefined || data.fundingApy !== undefined || data.feeBps !== undefined || data.feeEstRoundTrip !== undefined || data.openOrders !== undefined || data.effectiveLeverage !== undefined || data.liquidationBuffer !== undefined)) {
+        setDriftInfo({ spread: data.spread, fundingApy: data.fundingApy, feeBps: data.feeBps, feeEstRoundTrip: data.feeEstRoundTrip, openOrders: data.openOrders, effectiveLeverage: data.effectiveLeverage, liquidationBuffer: data.liquidationBuffer });
+      }
     } catch (error) {
       logger.error('Failed to fetch grid data:', error);
     }
@@ -260,6 +265,39 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
             <div>
               <div className="text-gray-400">Grid Range</div>
               <div className="text-white font-mono">{minPrice !== undefined && maxPrice !== undefined ? `${formatPrice(minPrice)} → ${formatPrice(maxPrice)}` : 'N/A'}</div>
+            </div>
+          </div>
+          {/* Drift-specific metrics */}
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm mt-3">
+            <div>
+              <div className="text-gray-400">Spread</div>
+              <div className="text-white font-mono">{typeof driftInfo?.spread === 'number' ? `${formatPrice(driftInfo.spread)}` : 'N/A'}</div>
+            </div>
+            <div>
+              <div className="text-gray-400">Funding APY</div>
+              <div className="text-white font-mono">{typeof driftInfo?.fundingApy === 'number' ? `${(driftInfo.fundingApy * 100).toFixed(2)}%` : 'N/A'}</div>
+            </div>
+            <div>
+              <div className="text-gray-400">Fees (bps)</div>
+              <div className="text-white font-mono">{typeof driftInfo?.feeBps === 'number' ? `${driftInfo.feeBps}` : 'N/A'}</div>
+            </div>
+            <div>
+              <div className="text-gray-400">Est. Round Trip Fees</div>
+              <div className="text-white font-mono">{typeof driftInfo?.feeEstRoundTrip === 'number' ? `${formatAmount(driftInfo.feeEstRoundTrip)}` : 'N/A'}</div>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm mt-3">
+            <div>
+              <div className="text-gray-400">Open Orders</div>
+              <div className="text-white font-mono">{typeof driftInfo?.openOrders === 'number' ? driftInfo.openOrders : 'N/A'}</div>
+            </div>
+            <div>
+              <div className="text-gray-400">Effective Leverage</div>
+              <div className="text-white font-mono">{typeof driftInfo?.effectiveLeverage === 'number' ? driftInfo.effectiveLeverage.toFixed(2) : 'N/A'}</div>
+            </div>
+            <div>
+              <div className="text-gray-400">Liquidation Buffer</div>
+              <div className="text-white font-mono">{typeof driftInfo?.liquidationBuffer === 'number' && isFinite(driftInfo.liquidationBuffer) ? `${(driftInfo.liquidationBuffer * 100).toFixed(2)}%` : (driftInfo?.liquidationBuffer === Infinity ? '∞' : 'N/A')}</div>
             </div>
           </div>
         </div>

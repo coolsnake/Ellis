@@ -309,6 +309,7 @@ export const App: React.FC = () => {
         [name]: {
           status: a?.status || 'idle',
           trades: a?.trades || [],
+          // Remove drift-specific metrics from Activity (moved into GridMonitor)
           pair: (a as any)?.pair,
           anchor: (a as any)?.anchor,
           buyTrigger: (a as any)?.buyTrigger,
@@ -318,8 +319,7 @@ export const App: React.FC = () => {
           nextAction: (a as any)?.nextAction,
           holding: (a as any)?.holding,
           completedCycles: (a as any)?.completedCycles,
-          realizedPnlFrom: (a as any)?.realizedPnlFrom,
-          unrealizedPnlFrom: (a as any)?.unrealizedPnlFrom,
+          // omit realized/unrealized drift PnL from activity card summary now
           marketSymbol: (() => {
             try {
               const idx = Number((a as any)?.marketIndex);
