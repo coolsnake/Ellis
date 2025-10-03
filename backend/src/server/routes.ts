@@ -872,7 +872,29 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
         pollMs: cfg?.pollMs,
         maxConcurrentTargets: cfg?.maxConcurrentTargets,
         dryRun: cfg?.dryRun,
-      });
+        // discovery & scanning
+        discoverAllUsers: cfg?.discoverAllUsers,
+        maxDiscoveredUsers: cfg?.maxDiscoveredUsers,
+        usersAllowlist: Array.isArray(cfg?.usersAllowlist) ? cfg?.usersAllowlist : (typeof cfg?.usersAllowlistCsv === 'string' ? String(cfg?.usersAllowlistCsv).split(',').map((s: string) => s.trim()).filter(Boolean) : undefined),
+        scanConcurrency: cfg?.scanConcurrency,
+        userCacheMax: cfg?.userCacheMax,
+        riskHealthThreshold: cfg?.riskHealthThreshold,
+        // triggers & markets
+        usePriceTriggers: cfg?.usePriceTriggers,
+        priceTriggerDebounceMs: cfg?.priceTriggerDebounceMs,
+        httpPollMs: cfg?.httpPollMs,
+        maxUsersPerPriceTick: cfg?.maxUsersPerPriceTick,
+        marketsAllowlist: Array.isArray(cfg?.marketsAllowlist) ? cfg?.marketsAllowlist : (typeof cfg?.marketsAllowlistCsv === 'string' ? String(cfg?.marketsAllowlistCsv).split(',').map((s: string) => s.trim()).filter(Boolean) : undefined),
+        marketIndices: Array.isArray(cfg?.marketIndices) ? cfg?.marketIndices : (typeof cfg?.marketIndicesCsv === 'string' ? String(cfg?.marketIndicesCsv).split(',').map((s: string) => Number(s.trim())).filter((n: any) => Number.isFinite(n)) : undefined),
+        // execution tuning
+        maxCancels: cfg?.maxCancels,
+        maxPerpAttempts: cfg?.maxPerpAttempts,
+        perpSizeFraction: cfg?.perpSizeFraction,
+        maxSpotAttempts: cfg?.maxSpotAttempts,
+        spotSizeFraction: cfg?.spotSizeFraction,
+        targetCooldownMs: cfg?.targetCooldownMs,
+        statsIntervalMs: cfg?.statsIntervalMs,
+      } as any);
       const key = (DriftLiquidatorRegistry as any).keyOf(cfg?.name ? { name: cfg.name } : { name: 'default' });
       await DriftLiquidatorRegistry.start(key);
       emit('log', { level: 'info', message: `drift: liquidator started ${cfg?.name || key}` , timestamp: new Date().toISOString(), context: { cat: 'drift' } });
@@ -906,7 +928,29 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
         pollMs: cfg?.pollMs,
         maxConcurrentTargets: cfg?.maxConcurrentTargets,
         dryRun: cfg?.dryRun,
-      });
+        // discovery & scanning
+        discoverAllUsers: cfg?.discoverAllUsers,
+        maxDiscoveredUsers: cfg?.maxDiscoveredUsers,
+        usersAllowlist: Array.isArray(cfg?.usersAllowlist) ? cfg?.usersAllowlist : (typeof cfg?.usersAllowlistCsv === 'string' ? String(cfg?.usersAllowlistCsv).split(',').map((s: string) => s.trim()).filter(Boolean) : undefined),
+        scanConcurrency: cfg?.scanConcurrency,
+        userCacheMax: cfg?.userCacheMax,
+        riskHealthThreshold: cfg?.riskHealthThreshold,
+        // triggers & markets
+        usePriceTriggers: cfg?.usePriceTriggers,
+        priceTriggerDebounceMs: cfg?.priceTriggerDebounceMs,
+        httpPollMs: cfg?.httpPollMs,
+        maxUsersPerPriceTick: cfg?.maxUsersPerPriceTick,
+        marketsAllowlist: Array.isArray(cfg?.marketsAllowlist) ? cfg?.marketsAllowlist : (typeof cfg?.marketsAllowlistCsv === 'string' ? String(cfg?.marketsAllowlistCsv).split(',').map((s: string) => s.trim()).filter(Boolean) : undefined),
+        marketIndices: Array.isArray(cfg?.marketIndices) ? cfg?.marketIndices : (typeof cfg?.marketIndicesCsv === 'string' ? String(cfg?.marketIndicesCsv).split(',').map((s: string) => Number(s.trim())).filter((n: any) => Number.isFinite(n)) : undefined),
+        // execution tuning
+        maxCancels: cfg?.maxCancels,
+        maxPerpAttempts: cfg?.maxPerpAttempts,
+        perpSizeFraction: cfg?.perpSizeFraction,
+        maxSpotAttempts: cfg?.maxSpotAttempts,
+        spotSizeFraction: cfg?.spotSizeFraction,
+        targetCooldownMs: cfg?.targetCooldownMs,
+        statsIntervalMs: cfg?.statsIntervalMs,
+      } as any);
       const key = (DriftLiquidatorRegistry as any).keyOf({ name: cfg?.name || 'default' });
       await DriftLiquidatorRegistry.start(key);
       emit('log', { level: 'info', message: `drift-liq: updated ${cfg?.name || key}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } });

@@ -13,6 +13,28 @@ export type LiquidatorConfig = {
   pollMs?: number;
   maxConcurrentTargets?: number;
   dryRun?: boolean;
+  // Discovery & scanning
+  discoverAllUsers?: boolean;
+  maxDiscoveredUsers?: number;
+  usersAllowlist?: string[];
+  scanConcurrency?: number;
+  userCacheMax?: number;
+  riskHealthThreshold?: number; // health < threshold considered at-risk
+  // Price triggers & markets
+  usePriceTriggers?: boolean;
+  priceTriggerDebounceMs?: number;
+  httpPollMs?: number;
+  maxUsersPerPriceTick?: number;
+  marketsAllowlist?: Array<string>; // e.g. ["0:SOL-PERP", "1:BTC-PERP"] or symbols
+  marketIndices?: Array<number>; // explicit indices to track
+  // Execution tuning
+  maxCancels?: number;
+  maxPerpAttempts?: number;
+  perpSizeFraction?: number;
+  maxSpotAttempts?: number;
+  spotSizeFraction?: number;
+  targetCooldownMs?: number;
+  statsIntervalMs?: number;
 };
 
 export type LiquidatorRuntimeState = {
@@ -126,7 +148,7 @@ export class DriftLiquidator {
     // Periodic stats emission
     try {
       if (this.statsTimer) { try { (globalThis as any).clearInterval(this.statsTimer); } catch {} }
-      const everyMs = Math.max(5000, Number(((CONFIG as any)?.drift?.liquidator?.statsIntervalMs) || 15000));
+      const everyMs = Math.max(5000, Number(this.config.statsIntervalMs ?? ((CONFIG as any)?.drift?.liquidator?.statsIntervalMs) ?? 15000));
       this.statsTimer = (globalThis as any).setInterval(() => {
         try {
           const snapshot = this.getQueueSnapshot(20);
@@ -210,18 +232,18 @@ export class DriftLiquidator {
       // Preferred: Anchor account scan for users
       let list: any[] | null = null;
       const cfg: any = (CONFIG as any)?.drift?.liquidator || {};
-      const discoverAll = (cfg.discoverAllUsers !== false); // default true
+      const discoverAll = (this.config.discoverAllUsers !== undefined) ? !!this.config.discoverAllUsers : (cfg.discoverAllUsers !== false); // default true
       if (discoverAll) {
         try { list = await drift?.program?.account?.user?.all?.(); } catch {}
         if (Array.isArray(list) && list.length > 0) {
-          const maxDiscover = Math.max(10, Math.min(5000, Number(cfg.maxDiscoveredUsers || 500)));
+          const maxDiscover = Math.max(10, Math.min(5000, Number((this.config.maxDiscoveredUsers ?? cfg.maxDiscoveredUsers ?? 500))));
           const keys = list.map((x: any) => String(x?.publicKey?.toBase58?.() || x?.publicKey || '')).filter(Boolean);
           this.userKeys = keys.slice(0, maxDiscover);
         }
       }
       // Allow explicit allowlist override
       try {
-        const allow: string[] = Array.isArray(cfg.usersAllowlist) ? cfg.usersAllowlist : [];
+        const allow: string[] = Array.isArray(this.config.usersAllowlist) ? (this.config.usersAllowlist as any) : (Array.isArray(cfg.usersAllowlist) ? cfg.usersAllowlist : []);
         if (allow.length > 0) {
           const ks = allow.map((s) => String(s || '').trim()).filter(Boolean);
           if (ks.length > 0) this.userKeys = ks;
@@ -241,14 +263,37 @@ export class DriftLiquidator {
   private async initPriceTriggers(): Promise<void> {
     try {
       const liqCfg: any = (CONFIG as any)?.drift?.liquidator || {};
-      if (liqCfg.usePriceTriggers === false) return;
-      const indices: number[] = getAllowlistIndices();
+      if (this.config.usePriceTriggers === false || (this.config.usePriceTriggers === undefined && liqCfg.usePriceTriggers === false)) return;
+      // Resolve markets to track: prefer explicit marketIndices, then marketsAllowlist, else global allowlist
+      let indices: number[] = [];
+      try {
+        if (Array.isArray(this.config.marketIndices) && this.config.marketIndices.length > 0) {
+          indices = (this.config.marketIndices as any[]).map((n: any) => Number(n)).filter((n) => Number.isFinite(n));
+        }
+      } catch {}
+      try {
+        if (indices.length === 0 && Array.isArray(this.config.marketsAllowlist) && this.config.marketsAllowlist.length > 0) {
+          const { symbolToIndex, parseAllowlistMarkets } = await import('./marketMapping.js');
+          const parsed = parseAllowlistMarkets();
+          const mapFromCfg = (this.config.marketsAllowlist as any[])
+            .map((s: any) => String(s || '').trim()).filter(Boolean)
+            .map((s: string) => {
+              if (/^\d+\s*[:=]/.test(s)) return Number(s.split(/[:=]/)[0].trim());
+              if (/^\d+$/.test(s)) return Number(s.trim());
+              const idx = symbolToIndex(s);
+              return typeof idx === 'number' ? idx : undefined;
+            })
+            .filter((x: any) => Number.isFinite(x)) as number[];
+          indices = mapFromCfg.length > 0 ? mapFromCfg : parsed.map((m: any) => Number(m.marketIndex));
+        }
+      } catch {}
+      if (indices.length === 0) indices = getAllowlistIndices();
       // Default to first few common markets
       if (indices.length === 0) indices.push(0, 1, 2);
       const svc = DriftPriceService.getInstance();
-      const debounceMs = Math.max(600, Math.min(1500, Number(liqCfg.priceTriggerDebounceMs || ((CONFIG as any)?.websocketIntervalMs) || 800)));
+      const debounceMs = Math.max(600, Math.min(5000, Number((this.config.priceTriggerDebounceMs ?? liqCfg.priceTriggerDebounceMs ?? ((CONFIG as any)?.websocketIntervalMs) ?? 800))));
       for (const idx of indices) {
-        try { svc.trackMarket(idx, Math.max(800, Number(liqCfg.httpPollMs || 1200))); } catch {}
+        try { svc.trackMarket(idx, Math.max(800, Number((this.config.httpPollMs ?? liqCfg.httpPollMs ?? 1200)))); } catch {}
         this.trackedMarkets.add(Number(idx));
         const onPrice = () => {
           const prev: any = this.priceTriggerTimers.get(idx);
@@ -277,9 +322,9 @@ export class DriftLiquidator {
       const { User, BulkAccountLoader } = (sdk as any);
       const conn: any = (DriftService.getInstance() as any).connection;
       if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', 1000);
-      const riskThresh = Number(((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0);
+      const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
       const keys = this.userKeys.slice();
-      const maxConc = Math.max(2, Math.min(24, Number(((CONFIG as any)?.drift?.liquidator?.scanConcurrency) || 10)));
+      const maxConc = Math.max(2, Math.min(24, Number((this.config.scanConcurrency ?? ((CONFIG as any)?.drift?.liquidator?.scanConcurrency) ?? 10))));
       let cursor = 0;
       const self = this;
       const getOrCreateUser = async (pkStr: string): Promise<any> => {
@@ -293,7 +338,7 @@ export class DriftLiquidator {
         }
         u = new User({ driftClient: drift, userAccountPublicKey: key, accountSubscription: { type: 'polling', accountLoader: self.accountLoader } });
         self.userCache.set(key, u);
-        const maxSize = Math.max(50, Math.min(2000, Number(((CONFIG as any)?.drift?.liquidator?.userCacheMax) || 500)));
+        const maxSize = Math.max(50, Math.min(5000, Number((this.config.userCacheMax ?? ((CONFIG as any)?.drift?.liquidator?.userCacheMax) ?? 500))));
         if (self.userCache.size > maxSize) {
           // evict oldest (first inserted)
           const firstKey = self.userCache.keys().next().value;
@@ -372,7 +417,7 @@ export class DriftLiquidator {
       const conn: any = (DriftService.getInstance() as any).connection;
       if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', 1000);
       // Cap per event to avoid long stalls
-      const maxUsersPerTick = Math.max(10, Math.min(100, Number(((CONFIG as any)?.drift?.liquidator?.maxUsersPerPriceTick) || 40)));
+      const maxUsersPerTick = Math.max(5, Math.min(500, Number((this.config.maxUsersPerPriceTick ?? ((CONFIG as any)?.drift?.liquidator?.maxUsersPerPriceTick) ?? 40))));
       // Round-robin pagination per market
       const prevOff = this.lastMarketPagination.get(idx) || 0;
       const start = prevOff % users.length;
@@ -381,7 +426,7 @@ export class DriftLiquidator {
         slice.push(users[(start + i) % users.length]);
       }
       this.lastMarketPagination.set(idx, (start + slice.length) % users.length);
-      const riskThresh = Number(((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0);
+      const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
       for (const pkStr of slice) {
         try {
           let user = this.userCache.get(String(pkStr));
@@ -457,7 +502,7 @@ export class DriftLiquidator {
       const perpMarkets = marketsForUser.length > 0 ? marketsForUser : [0, 1, 2];
       // Step 1: force-cancel orders (best-effort, capped)
       try {
-        const maxCancels = Math.max(5, Math.min(50, Number(((CONFIG as any)?.drift?.liquidator?.maxCancels) || 20)));
+        const maxCancels = Math.max(1, Math.min(200, Number((this.config.maxCancels ?? ((CONFIG as any)?.drift?.liquidator?.maxCancels) ?? 20))));
         const batch = Math.min(maxCancels, 10);
         if (typeof drift?.forceCancelOrders === 'function') {
           let remaining = maxCancels;
@@ -481,8 +526,8 @@ export class DriftLiquidator {
       // Step 2: attempt perp liquidation (best-effort, capped)
       try {
         if (typeof drift?.liquidatePerp === 'function') {
-          const maxPerp = Math.max(1, Math.min(10, Number(((CONFIG as any)?.drift?.liquidator?.maxPerpAttempts) || 3)));
-          const sizeFrac = Math.max(0.001, Math.min(0.25, Number(((CONFIG as any)?.drift?.liquidator?.perpSizeFraction) || 0.05)));
+          const maxPerp = Math.max(1, Math.min(50, Number((this.config.maxPerpAttempts ?? ((CONFIG as any)?.drift?.liquidator?.maxPerpAttempts) ?? 3))));
+          const sizeFrac = Math.max(0.001, Math.min(0.5, Number((this.config.perpSizeFraction ?? ((CONFIG as any)?.drift?.liquidator?.perpSizeFraction) ?? 0.05))));
           let attempts = 0;
           for (const idx of perpMarkets) {
             if (attempts >= maxPerp) break;
@@ -496,7 +541,7 @@ export class DriftLiquidator {
             await drift.liquidatePerpBatch({
               users: [target.userPk],
               markets: perpMarkets,
-              sizeFraction: Math.max(0.001, Math.min(0.25, Number(((CONFIG as any)?.drift?.liquidator?.perpSizeFraction) || 0.05))),
+              sizeFraction: Math.max(0.001, Math.min(0.5, Number((this.config.perpSizeFraction ?? ((CONFIG as any)?.drift?.liquidator?.perpSizeFraction) ?? 0.05)))),
             });
           } catch {}
         }
@@ -507,8 +552,8 @@ export class DriftLiquidator {
       // Step 3: attempt spot liquidation (best-effort, capped)
       try {
         if (typeof drift?.liquidateSpot === 'function') {
-          const maxSpot = Math.max(1, Math.min(10, Number(((CONFIG as any)?.drift?.liquidator?.maxSpotAttempts) || 2)));
-          const sizeFrac = Math.max(0.001, Math.min(0.25, Number(((CONFIG as any)?.drift?.liquidator?.spotSizeFraction) || 0.05)));
+          const maxSpot = Math.max(1, Math.min(50, Number((this.config.maxSpotAttempts ?? ((CONFIG as any)?.drift?.liquidator?.maxSpotAttempts) ?? 2))));
+          const sizeFrac = Math.max(0.001, Math.min(0.5, Number((this.config.spotSizeFraction ?? ((CONFIG as any)?.drift?.liquidator?.spotSizeFraction) ?? 0.05))));
           const spots = [0];
           let attempts = 0;
           for (const s of spots) {
@@ -555,7 +600,7 @@ export class DriftLiquidator {
 
   private applyCooldownForTarget(userPk: string): void {
     try {
-      const baseMs = Math.max(3000, Math.min(30000, Number(((CONFIG as any)?.drift?.liquidator?.targetCooldownMs) || 7000)));
+      const baseMs = Math.max(1000, Math.min(60000, Number((this.config.targetCooldownMs ?? ((CONFIG as any)?.drift?.liquidator?.targetCooldownMs) ?? 7000))));
       const jitter = Math.floor(Math.random() * Math.min(1000, Math.max(250, baseMs * 0.15)));
       const until = Date.now() + baseMs + jitter;
       this.targetCooldownUntil.set(String(userPk), until);
@@ -575,19 +620,24 @@ export class DriftLiquidator {
       for (let i = 0; i < cap; i += 1) small.push(arr[i]);
       for (let i = 0; i < 10; i += 1) { const c = small.pop(); if (!c) break; top.push(c); }
       const exposuresCounts = Array.from(this.marketToUsers.entries()).map(([m, set]) => ({ marketIndex: Number(m), users: (set?.size || 0) }));
+      let exposuresWithSymbols: Array<{ marketIndex: number; users: number; symbol?: string }> = exposuresCounts;
+      try {
+        const { indexToSymbol } = await import('./marketMapping.js');
+        exposuresWithSymbols = exposuresCounts.map((e) => ({ ...e, symbol: indexToSymbol(Number(e.marketIndex)) }));
+      } catch {}
       emit('drift-liquidation', {
         type: 'queue',
         candidatesQueued: this.state.candidatesQueued,
         top: top.map(t => ({ userPk: t.userPk, health: t.health, updatedAt: t.updatedAt })),
         markets: Array.from(this.trackedMarkets),
-        exposures: exposuresCounts,
+        exposures: exposuresWithSymbols,
         actionsLastMin: this.state.actionsLastMin,
         errorsLastMin: this.state.errorsLastMin,
       }).catch(() => {});
     } catch {}
   }
 
-  getQueueSnapshot(limit = 20): { candidatesQueued: number; top: Array<{ userPk: string; health: number; updatedAt: number }>; markets: number[]; exposures: Array<{ marketIndex: number; users: number }>; actionsLastMin: number; errorsLastMin: number } {
+  getQueueSnapshot(limit = 20): { candidatesQueued: number; top: Array<{ userPk: string; health: number; updatedAt: number }>; markets: number[]; exposures: Array<{ marketIndex: number; users: number; symbol?: string }>; actionsLastMin: number; errorsLastMin: number } {
     const top: Candidate[] = [];
     const arr = this.heap.toArray();
     const cap = Math.min(arr.length, Math.max(25, Number(limit) * 8));
@@ -596,11 +646,16 @@ export class DriftLiquidator {
     const howMany = Math.max(1, Math.min(100, Number(limit)));
     for (let i = 0; i < howMany; i += 1) { const c = small.pop(); if (!c) break; top.push(c); }
     const exposuresCounts = Array.from(this.marketToUsers.entries()).map(([m, set]) => ({ marketIndex: Number(m), users: (set?.size || 0) }));
+    let exposuresWithSymbols: Array<{ marketIndex: number; users: number; symbol?: string }> = exposuresCounts;
+    try {
+      const { indexToSymbol } = require('./marketMapping.js');
+      exposuresWithSymbols = exposuresCounts.map((e) => ({ ...e, symbol: indexToSymbol(Number(e.marketIndex)) }));
+    } catch {}
     return {
       candidatesQueued: this.state.candidatesQueued,
       top: top.map(t => ({ userPk: t.userPk, health: t.health, updatedAt: t.updatedAt })),
       markets: Array.from(this.trackedMarkets),
-      exposures: exposuresCounts,
+      exposures: exposuresWithSymbols,
       actionsLastMin: this.state.actionsLastMin,
       errorsLastMin: this.state.errorsLastMin,
     };

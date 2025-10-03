@@ -7,7 +7,8 @@ import { GridStrategyConfig } from '../components/GridStrategyConfig';
 import { LeveragedGridConfig } from '../components/LeveragedGridConfig';
 import { GridMonitor } from '../components/GridMonitor';
 import { LiquidationMonitor } from '../components/LiquidationMonitor';
-import { LiquidatorConfig } from '../components/LiquidatorConfig';
+// removed legacy LiquidatorConfig modal
+import { LiquidatorRunnerConfig } from '../components/LiquidatorRunnerConfig';
 import { ThresholdStrategyConfig } from '../components/ThresholdStrategyConfig';
 import { AddTokenForm } from '../components/AddTokenForm';
 import { FeeConfig } from '../components/FeeConfig';
@@ -86,6 +87,7 @@ export const App: React.FC = () => {
   const [liqMaxConc, setLiqMaxConc] = useState<number | undefined>(undefined);
   const [liqDryRun, setLiqDryRun] = useState<boolean>(true);
   const [liqStatus, setLiqStatus] = useState<any>(null);
+  const [showLiqRunnerConfig, setShowLiqRunnerConfig] = useState<boolean>(false);
 
   // Default to same-origin behind nginx; allow overrides via env
   const apiBase = useMemo(() => (import.meta as any).env?.VITE_API_BASE ?? '/api', []);
@@ -1634,7 +1636,16 @@ export const App: React.FC = () => {
           </div>
           {/* Liquidator Panel */}
           <div className="mt-3">
-            <CollapsibleSection title={"Liquidator"} storageKey="panel:drift:liquidator">
+            <CollapsibleSection title={"Liquidator"} storageKey="panel:drift:liquidator" rightActions={(
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowLiqRunnerConfig(true)}
+                  className="px-3 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700"
+                >
+                  + Liquidator
+                </button>
+              </div>
+            )}>
               <div className="grid grid-cols-1 md:grid-cols-4 gap-2 items-end">
                 <div>
                   <label className="block text-sm text-gray-400 mb-1">Name</label>
@@ -1758,6 +1769,7 @@ export const App: React.FC = () => {
                             <th className="text-left">Queued</th>
                             <th className="text-left">Actions (1m)</th>
                             <th className="text-left">Errors (1m)</th>
+                            <th className="text-left">Controls</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1768,6 +1780,33 @@ export const App: React.FC = () => {
                               <td className="pr-2">{Number(x?.status?.candidatesQueued || 0)}</td>
                               <td className="pr-2">{Number(x?.status?.actionsLastMin || 0)}</td>
                               <td className="pr-2">{Number(x?.status?.errorsLastMin || 0)}</td>
+                              <td className="pr-2">
+                                <div className="flex gap-2">
+                                  <button
+                                    className="px-2 py-1 bg-yellow-700 text-white rounded hover:bg-yellow-800 text-xs"
+                                    onClick={async () => {
+                                      try {
+                                        await fetch(`${apiBase}/strategies/liquidator/stop`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: x.key }) });
+                                        const r = await fetch(`${apiBase}/strategies/liquidator/status`).then(r => r.json());
+                                        setLiqStatus(r);
+                                      } catch {}
+                                    }}
+                                  >Stop</button>
+                                  <button
+                                    className="px-2 py-1 bg-indigo-700 text-white rounded hover:bg-indigo-800 text-xs"
+                                    onClick={async () => {
+                                      try {
+                                        // Minimal inline Update: keeps same name, allows quick refresh
+                                        const name = String(x?.key || '').split('#')[1] || 'default';
+                                        const body = { name };
+                                        await fetch(`${apiBase}/strategies/liquidator/update`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                                        const r = await fetch(`${apiBase}/strategies/liquidator/status`).then(r => r.json());
+                                        setLiqStatus(r);
+                                      } catch {}
+                                    }}
+                                  >Update</button>
+                                </div>
+                              </td>
                             </tr>
                           ))}
                         </tbody>
@@ -1776,12 +1815,17 @@ export const App: React.FC = () => {
                   })()}
                 </div>
               )}
-              <div className="mt-3">
-                <LiquidationMonitor apiBase={apiBase} socket={socketRef.current} liquidatorKey={`liq#${liqName || 'default'}`} />
-              </div>
-              <div className="mt-2">
-                <button className="px-3 py-2 bg-gray-700 text-white rounded hover:bg-gray-600" onClick={() => setShowLiqConfig(true)}>Open Liquidator Config</button>
-              </div>
+              {(() => {
+                const ls = liqStatus?.liquidators || [];
+                if (!Array.isArray(ls) || ls.length === 0) return null;
+                return (
+                  <div className="mt-3 grid grid-cols-1 gap-3">
+                    {ls.map((x: any) => (
+                      <LiquidationMonitor key={x.key} apiBase={apiBase} socket={socketRef.current} liquidatorKey={x.key} />
+                    ))}
+                  </div>
+                );
+              })()}
               {/* Inline validation for inputs */}
               <div className="mt-2 text-xs text-gray-400">
                 {(() => {
@@ -1795,8 +1839,18 @@ export const App: React.FC = () => {
               </div>
             </CollapsibleSection>
           </div>
-          {showLiqConfig && (
-            <LiquidatorConfig apiBase={apiBase} onClose={() => setShowLiqConfig(false)} onSaved={() => setShowLiqConfig(false)} />
+          {/* Legacy system-level liquidator config removed in favor of per-runner +Liquidator */}
+          {showLiqRunnerConfig && (
+            <LiquidatorRunnerConfig
+              apiBase={apiBase}
+              onClose={() => setShowLiqRunnerConfig(false)}
+              onSaved={async () => {
+                try {
+                  const r = await fetch(`${apiBase}/strategies/liquidator/status`).then(r => r.json());
+                  setLiqStatus(r);
+                } catch {}
+              }}
+            />
           )}
         </CollapsibleSection>
         <CollapsibleSection title={"Positions"} storageKey="panel:positions">
