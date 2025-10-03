@@ -4,6 +4,7 @@ import { DriftService } from './client.js';
 import { DriftPriceService } from './price.js';
 import { CONFIG } from '../utils/config.js';
 import { emit } from '../server/realtime.js';
+import { RunnerRegistry } from '../utils/runnerRegistry.js';
 
 export type LiquidatorConfig = {
   name: string;
@@ -607,7 +608,7 @@ export class DriftLiquidator {
 }
 
 export class DriftLiquidatorRegistry {
-  private static reg = new (require('../utils/runnerRegistry.js').RunnerRegistry)<DriftLiquidator>();
+  private static reg = new RunnerRegistry<DriftLiquidator>();
 
   static keyOf(cfg: LiquidatorConfig): string {
     return cfg?.name ? `liq#${cfg.name}` : 'liq#default';

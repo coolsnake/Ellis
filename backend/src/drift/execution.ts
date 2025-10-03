@@ -7,6 +7,7 @@ import { emit } from '../server/realtime.js';
 import { DriftPriceService } from './price.js';
 import { generatePriceLadder, DriftOrderEngine } from './orders.js';
 import { CONFIG } from '../utils/config.js';
+import { RunnerRegistry } from '../utils/runnerRegistry.js';
 
 export class DriftGridRunner {
   private timer: any | null = null;
@@ -195,7 +196,7 @@ export class DriftGridRunner {
 }
 
 export class DriftGridRegistry {
-  private static reg: any = new (require('../utils/runnerRegistry.js').RunnerRegistry)();
+  private static reg = new RunnerRegistry<DriftGridRunner>();
 
   static keyOf(cfg: LeveragedGridConfig): string {
     return `${cfg.name}#${cfg.market.marketIndex}#${cfg.subaccountId}`;
