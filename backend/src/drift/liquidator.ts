@@ -3,6 +3,7 @@ import { logger } from '../utils/logger.js';
 import { DriftService } from './client.js';
 import { DriftPriceService } from './price.js';
 import { CONFIG } from '../utils/config.js';
+import { emit } from '../server/realtime.js';
 
 export type LiquidatorConfig = {
   name: string;
@@ -20,6 +21,46 @@ export type LiquidatorRuntimeState = {
   errorsLastMin: number;
 };
 
+type Candidate = { userPk: string; health: number; updatedAt: number };
+
+class MinHeap<T> {
+  private data: T[] = [];
+  constructor(private compare: (a: T, b: T) => number) {}
+  size(): number { return this.data.length; }
+  peek(): T | undefined { return this.data[0]; }
+  push(item: T): void { this.data.push(item); this.bubbleUp(this.data.length - 1); }
+  pop(): T | undefined {
+    if (this.data.length === 0) return undefined;
+    const top = this.data[0];
+    const last = this.data.pop() as T;
+    if (this.data.length > 0) { this.data[0] = last; this.bubbleDown(0); }
+    return top;
+  }
+  toArray(): T[] { return this.data.slice(); }
+  clear(): void { this.data = []; }
+  private bubbleUp(i: number): void {
+    while (i > 0) {
+      const p = Math.floor((i - 1) / 2);
+      if (this.compare(this.data[i], this.data[p]) >= 0) break;
+      [this.data[i], this.data[p]] = [this.data[p], this.data[i]];
+      i = p;
+    }
+  }
+  private bubbleDown(i: number): void {
+    const n = this.data.length;
+    while (true) {
+      let smallest = i;
+      const l = 2 * i + 1;
+      const r = 2 * i + 2;
+      if (l < n && this.compare(this.data[l], this.data[smallest]) < 0) smallest = l;
+      if (r < n && this.compare(this.data[r], this.data[smallest]) < 0) smallest = r;
+      if (smallest === i) break;
+      [this.data[i], this.data[smallest]] = [this.data[smallest], this.data[i]];
+      i = smallest;
+    }
+  }
+}
+
 export class DriftLiquidator {
   private timer: any | null = null;
   private state: LiquidatorRuntimeState = { running: false, candidatesQueued: 0, actionsLastMin: 0, errorsLastMin: 0 };
@@ -30,6 +71,12 @@ export class DriftLiquidator {
   private inFlightTargets: Set<string> = new Set();
   private userKeys: string[] = [];
   private abort = false;
+  private heap: MinHeap<Candidate> = new MinHeap<Candidate>((a, b) => a.health - b.health);
+  private lastQueueEmitTs = 0;
+  private trackedMarkets: Set<number> = new Set();
+  private marketToUsers: Map<number, Set<string>> = new Map();
+  private userToMarkets: Map<string, Set<number>> = new Map();
+  private inHeap: Set<string> = new Set();
 
   constructor(private config: LiquidatorConfig) {}
 
@@ -81,16 +128,22 @@ export class DriftLiquidator {
     try {
       if (!this.initialized) { try { await this.initDiscovery(); this.initialized = true; } catch {} }
       const candidates = await this.findUnhealthyCandidates();
-      this.state.candidatesQueued = candidates.length;
+      // Rebuild the heap from current candidates
+      this.heap.clear();
+      for (const c of candidates) this.heap.push({ ...c, updatedAt: Date.now() });
+      this.state.candidatesQueued = this.heap.size();
+      this.maybeEmitQueue();
       const maxConc = Math.max(1, Number(this.config.maxConcurrentTargets || 2));
       let inProgress = 0;
-      for (const c of candidates) {
+      while (inProgress < maxConc) {
+        const c = this.heap.pop();
+        if (!c) break;
         if (inProgress >= maxConc) break;
         const key = String(c.userPk);
         if (this.inFlightTargets.has(key)) continue;
         this.inFlightTargets.add(key);
         inProgress += 1;
-        this.handleTarget(c)
+        this.handleTarget({ userPk: c.userPk, health: c.health })
           .catch((e) => this.recordError(e))
           .finally(() => this.inFlightTargets.delete(key));
       }
@@ -135,10 +188,18 @@ export class DriftLiquidator {
       const debounceMs = Math.max(250, Math.min(600, Number(((CONFIG as any)?.websocketIntervalMs) || 400)));
       for (const idx of indices) {
         try { svc.trackMarket(idx, 400); } catch {}
+        this.trackedMarkets.add(Number(idx));
         const onPrice = () => {
           const prev: any = this.priceTriggerTimers.get(idx);
           if (prev) { try { (globalThis as any).clearTimeout(prev); } catch {} }
-          const t: any = (globalThis as any).setTimeout(() => { this.tick().catch(() => {}); }, debounceMs);
+          const t: any = (globalThis as any).setTimeout(() => {
+            this.partialUpdateForMarket(Number(idx))
+              .then(() => {
+                this.state.candidatesQueued = this.heap.size();
+                this.drainQueue(Math.max(1, Number(this.config.maxConcurrentTargets || 2)));
+              })
+              .catch(() => {});
+          }, debounceMs);
           this.priceTriggerTimers.set(idx, t);
         };
         (this as any)[`_onPrice_liq_${idx}`] = onPrice;
@@ -165,11 +226,100 @@ export class DriftLiquidator {
           if (!isFinite(total) || !isFinite(maint)) continue;
           const health = maint > 0 ? (total - maint) / maint : Infinity;
           if (health < 0) out.push({ userPk: pkStr, health });
+          try { await this.refreshIndexForUser(user, pkStr); } catch {}
         } catch {}
       }
-      out.sort((a, b) => a.health - b.health);
     } catch {}
     return out;
+  }
+
+  private async refreshIndexForUser(sdkUser: any, userPk: string): Promise<void> {
+    try {
+      const positions = sdkUser?.getPerpPositions?.() || [];
+      const active: number[] = [];
+      for (const p of positions) {
+        try {
+          const base = Number(p?.baseAssetAmount?.toString?.() || p?.baseAssetAmount || 0);
+          const idx = Number(p?.marketIndex ?? p?.market_index ?? p?.market?.index);
+          if (Number.isFinite(idx) && Math.abs(base) > 0) active.push(Number(idx));
+        } catch {}
+      }
+      const newSet = new Set<number>(active);
+      const prev = this.userToMarkets.get(userPk) || new Set<number>();
+      for (const m of Array.from(prev)) {
+        if (!newSet.has(m)) {
+          const s = this.marketToUsers.get(m);
+          if (s) { s.delete(userPk); if (s.size === 0) this.marketToUsers.delete(m); }
+          prev.delete(m);
+        }
+      }
+      for (const m of Array.from(newSet)) {
+        if (!prev.has(m)) {
+          if (!this.marketToUsers.has(m)) this.marketToUsers.set(m, new Set());
+          this.marketToUsers.get(m)!.add(userPk);
+          prev.add(m);
+        }
+      }
+      this.userToMarkets.set(userPk, prev);
+    } catch {}
+  }
+
+  private async partialUpdateForMarket(marketIndex: number): Promise<void> {
+    try {
+      const idx = Number(marketIndex);
+      if (!Number.isFinite(idx)) return;
+      const users = Array.from(this.marketToUsers.get(idx) || []);
+      if (users.length === 0) return;
+      const drift: any = (DriftService.getInstance() as any).client;
+      const sdk: any = await import('@drift-labs/sdk');
+      const { User, BulkAccountLoader } = (sdk as any);
+      const conn: any = (DriftService.getInstance() as any).connection;
+      const loader = new BulkAccountLoader(conn, 'confirmed', 1000);
+      for (const pkStr of users) {
+        try {
+          const user = new User({ driftClient: drift, userAccountPublicKey: pkStr, accountSubscription: { type: 'polling', accountLoader: loader } });
+          const exists = await (user as any).exists?.();
+          if (!exists) continue;
+          const total = Number((user as any)?.getTotalCollateral?.() || 0);
+          const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
+          if (!isFinite(total) || !isFinite(maint)) continue;
+          const health = maint > 0 ? (total - maint) / maint : Infinity;
+          if (health < 0) this.addOrQueueCandidate({ userPk: pkStr, health, updatedAt: Date.now() });
+          try { await this.refreshIndexForUser(user, pkStr); } catch {}
+        } catch {}
+      }
+      this.state.candidatesQueued = this.heap.size();
+      this.maybeEmitQueue();
+    } catch {}
+  }
+
+  private addOrQueueCandidate(c: Candidate): void {
+    try {
+      const key = String(c.userPk);
+      if (this.inFlightTargets.has(key)) return;
+      if (this.inHeap.has(key)) return;
+      this.heap.push(c);
+      this.inHeap.add(key);
+    } catch {}
+  }
+
+  private drainQueue(maxConc: number): void {
+    try {
+      const cap = Math.max(1, Number(maxConc || 1));
+      let inProgress = 0;
+      while (inProgress < cap) {
+        const c = this.heap.pop();
+        if (!c) break;
+        const key = String(c.userPk);
+        this.inHeap.delete(key);
+        if (this.inFlightTargets.has(key)) continue;
+        this.inFlightTargets.add(key);
+        inProgress += 1;
+        this.handleTarget({ userPk: c.userPk, health: c.health })
+          .catch((e) => this.recordError(e))
+          .finally(() => this.inFlightTargets.delete(key));
+      }
+    } catch {}
   }
 
   private async handleTarget(target: { userPk: string; health: number }): Promise<void> {
@@ -246,6 +396,7 @@ export class DriftLiquidator {
       // Drop entries older than 60s
       while (this.actionsLog.length > 0 && (now - this.actionsLog[0]) > 60000) this.actionsLog.shift();
       this.state.actionsLastMin = this.actionsLog.length;
+      try { emit('drift-liquidation', { type: 'action', actionsLastMin: this.state.actionsLastMin }); } catch {}
     } catch {}
   }
 
@@ -256,7 +407,46 @@ export class DriftLiquidator {
       while (this.errorsLog.length > 0 && (now - this.errorsLog[0]) > 60000) this.errorsLog.shift();
       this.state.errorsLastMin = this.errorsLog.length;
       logger.warn('drift.liquidator.error', { error: String(e?.message || e), cat: 'drift' });
+      try { emit('drift-liquidation', { type: 'error', error: String(e?.message || e), errorsLastMin: this.state.errorsLastMin }); } catch {}
     } catch {}
+  }
+
+  private maybeEmitQueue(): void {
+    try {
+      const now = Date.now();
+      if (now - this.lastQueueEmitTs < 1000) return;
+      this.lastQueueEmitTs = now;
+      const top: Candidate[] = [];
+      const copy = new MinHeap<Candidate>((a, b) => a.health - b.health);
+      for (const c of this.heap.toArray()) copy.push(c);
+      for (let i = 0; i < 10; i += 1) {
+        const c = copy.pop(); if (!c) break; top.push(c);
+      }
+      emit('drift-liquidation', {
+        type: 'queue',
+        candidatesQueued: this.state.candidatesQueued,
+        top: top.map(t => ({ userPk: t.userPk, health: t.health, updatedAt: t.updatedAt })),
+        markets: Array.from(this.trackedMarkets),
+        actionsLastMin: this.state.actionsLastMin,
+        errorsLastMin: this.state.errorsLastMin,
+      }).catch(() => {});
+    } catch {}
+  }
+
+  getQueueSnapshot(limit = 20): { candidatesQueued: number; top: Array<{ userPk: string; health: number; updatedAt: number }>; markets: number[]; actionsLastMin: number; errorsLastMin: number } {
+    const top: Candidate[] = [];
+    const copy = new MinHeap<Candidate>((a, b) => a.health - b.health);
+    for (const c of this.heap.toArray()) copy.push(c);
+    for (let i = 0; i < Math.max(1, Math.min(100, Number(limit))); i += 1) {
+      const c = copy.pop(); if (!c) break; top.push(c);
+    }
+    return {
+      candidatesQueued: this.state.candidatesQueued,
+      top: top.map(t => ({ userPk: t.userPk, health: t.health, updatedAt: t.updatedAt })),
+      markets: Array.from(this.trackedMarkets),
+      actionsLastMin: this.state.actionsLastMin,
+      errorsLastMin: this.state.errorsLastMin,
+    };
   }
 }
 

@@ -6,6 +6,7 @@ import { io, Socket } from 'socket.io-client';
 import { GridStrategyConfig } from '../components/GridStrategyConfig';
 import { LeveragedGridConfig } from '../components/LeveragedGridConfig';
 import { GridMonitor } from '../components/GridMonitor';
+import { LiquidationMonitor } from '../components/LiquidationMonitor';
 import { ThresholdStrategyConfig } from '../components/ThresholdStrategyConfig';
 import { AddTokenForm } from '../components/AddTokenForm';
 import { FeeConfig } from '../components/FeeConfig';
@@ -1753,6 +1754,9 @@ export const App: React.FC = () => {
                   })()}
                 </div>
               )}
+              <div className="mt-3">
+                <LiquidationMonitor apiBase={apiBase} socket={socketRef.current} liquidatorKey={`liq#${liqName || 'default'}`} />
+              </div>
               {/* Inline validation for inputs */}
               <div className="mt-2 text-xs text-gray-400">
                 {(() => {

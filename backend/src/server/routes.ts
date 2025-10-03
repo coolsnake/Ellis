@@ -879,6 +879,22 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     }
   });
 
+  // Drift Liquidator queue snapshot and markets
+  api.get('/strategies/liquidator/queue', async (req: Request, res: Response) => {
+    try {
+      const limit = Number((req.query?.limit as string) || 20);
+      const key = String((req.query?.key as string) || 'liq#default');
+      const { DriftLiquidatorRegistry } = await import('../drift/liquidator.js');
+      const r = DriftLiquidatorRegistry.get(key);
+      if (!r) return res.json({ key, queue: { candidatesQueued: 0, top: [], markets: [], actionsLastMin: 0, errorsLastMin: 0 } });
+      const queue = (r as any).getQueueSnapshot?.(limit) || { candidatesQueued: 0, top: [], markets: [], actionsLastMin: 0, errorsLastMin: 0 };
+      res.json({ key, queue });
+    } catch (e: any) {
+      logger.error('drift-liq: queue failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   // Fee configuration endpoints
   api.get('/fees/config', async (_req, res) => {
     try {
