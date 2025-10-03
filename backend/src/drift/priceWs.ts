@@ -1,4 +1,4 @@
-import { CONFIG } from '../utils/config.js';
+import { getDriftConfig } from '../utils/driftConfig.js';
 import { logger } from '../utils/logger.js';
 
 function getWebSocketCtor(): any {
@@ -52,7 +52,7 @@ export class DriftDlobWs {
 
   async start(): Promise<void> {
     if (this.connected || this.socket) return;
-    const url = String(((CONFIG as any)?.drift?.dlobWsUrl) || 'wss://dlob.drift.trade/ws');
+    const url = String(getDriftConfig().dlobWsUrl || 'wss://dlob.drift.trade/ws');
     try {
       const WS: any = await ensureWsCtor();
       if (!WS) {
@@ -117,11 +117,11 @@ export class DriftDlobWs {
     if (!s) return;
     s.onopen = () => {
       this.connected = true;
-      logger.info('drift.ws.open', { url: (s?.url || (CONFIG as any)?.drift?.dlobWsUrl), cat: 'drift' });
+      logger.info('drift.ws.open', { url: (s?.url || getDriftConfig().dlobWsUrl), cat: 'drift' });
       // Resubscribe desired markets
       if (this.wantMarkets.size > 0) this.flushSubscription('subscribe', Array.from(this.wantMarkets));
       // Heartbeat
-      const hbMs = Math.max(5000, Number(((CONFIG as any)?.drift?.wsHeartbeatMs) || 15000));
+      const hbMs = Math.max(5000, Number(getDriftConfig().wsHeartbeatMs || 15000));
       if (this.heartbeatTimer) { try { (globalThis as any).clearInterval(this.heartbeatTimer); } catch {} }
       this.heartbeatTimer = (globalThis as any).setInterval(() => {
         try { s.send(JSON.stringify({ type: 'ping', ts: Date.now() })); } catch {}
@@ -158,15 +158,20 @@ export class DriftDlobWs {
       if (!this.socket || !this.connected) return;
       if (!Array.isArray(indices) || indices.length === 0) return;
       // Drift DLOB expects market names for orderbook channel; keep numeric index for our state
-      const markets = indices.map(i => this.mapMarketIndexToName(i)).filter(Boolean);
-      const msg = { type, channel: 'orderbook', markets };
-      (this.socket as any).send(JSON.stringify(msg));
+      const names = indices.map(i => this.mapMarketIndexToName(i)).filter(Boolean) as string[];
+      // Chunk to avoid throttling
+      const chunkSize = Math.max(10, Math.min(50, Number(getDriftConfig().wsResubChunkSize || 25)));
+      for (let i = 0; i < names.length; i += chunkSize) {
+        const markets = names.slice(i, i + chunkSize);
+        const msg = { type, channel: 'orderbook', markets };
+        (this.socket as any).send(JSON.stringify(msg));
+      }
     } catch {}
   }
 
   private scheduleReconnect(): void {
     if (this.reconnectTimer) return;
-    const minMs = Math.max(500, Number(((CONFIG as any)?.drift?.wsReconnectMinMs) || 1000));
+    const minMs = Math.max(500, Number(getDriftConfig().wsReconnectMinMs || 1000));
     const jitter = Math.floor(Math.random() * 500);
     this.reconnectTimer = (globalThis as any).setTimeout(() => {
       this.reconnectTimer = null;
@@ -200,22 +205,9 @@ export class DriftDlobWs {
   // Map helpers: we need to translate between index and name when talking to DLOB
   private mapMarketIndexToName(idx: number): string | undefined {
     try {
-      const allow: string[] = ((CONFIG as any)?.drift?.marketsAllowlist || []) as any;
-      // Support entries like "0:SOL-PERP", "1=BTC-PERP", "2", "ETH-PERP"
-      for (const entry of allow) {
-        const s = String(entry || '').trim();
-        if (!s) continue;
-        if (/^\d+\s*[:=]\s*[^:]+$/.test(s)) {
-          const parts = s.split(/[:=]/);
-          const marketIndex = Number(parts[0].trim());
-          const symbol = String(parts[1]).trim();
-          if (marketIndex === Number(idx)) return symbol;
-        }
-      }
-    } catch {}
-    // Fallback common names for popular markets
-    const fallback: Record<number, string> = { 0: 'SOL-PERP', 1: 'BTC-PERP', 2: 'ETH-PERP' };
-    return fallback[Number(idx)];
+      const { indexToSymbol } = require('./marketMapping.js');
+      return indexToSymbol(Number(idx));
+    } catch { return undefined; }
   }
 
   private resolveMarketIndex(marketName: string | undefined, raw: any): number | undefined {
@@ -226,30 +218,9 @@ export class DriftDlobWs {
     } catch {}
     if (!marketName) return undefined;
     try {
-      const allow: string[] = ((CONFIG as any)?.drift?.marketsAllowlist || []) as any;
-      for (const entry of allow) {
-        const s = String(entry || '').trim();
-        if (!s) continue;
-        if (/^\d+\s*[:=]\s*[^:]+$/.test(s)) {
-          const parts = s.split(/[:=]/);
-          const marketIndex = Number(parts[0].trim());
-          const symbol = String(parts[1]).trim();
-          if (symbol.toUpperCase() === marketName.toUpperCase()) return marketIndex;
-        } else if (/^\d+$/.test(s)) {
-          // index without symbol; cannot match by name
-          continue;
-        } else {
-          // symbol-only; best-effort mapping by known common indices
-          if (s.toUpperCase() === marketName.toUpperCase()) {
-            // assume SOL->0, BTC->1, ETH->2
-            if (/^sol/i.test(s)) return 0;
-            if (/^btc/i.test(s)) return 1;
-            if (/^eth/i.test(s)) return 2;
-          }
-        }
-      }
-    } catch {}
-    return undefined;
+      const { symbolToIndex } = require('./marketMapping.js');
+      return symbolToIndex(String(marketName));
+    } catch { return undefined; }
   }
 }
 

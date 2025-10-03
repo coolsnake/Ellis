@@ -13,6 +13,7 @@ export class DriftGridRunner {
   private state: GridRuntimeState = { running: false, openOrders: 0, netExposure: 0, effectiveLeverage: 0, liquidationBuffer: Infinity };
   private tickScheduledAt: number = 0;
   private lastTickAt: number = 0;
+  private lastSubaccountSnapshot: { ts: number; sub?: any } = { ts: 0 };
 
   constructor(private config: LeveragedGridConfig) {}
 
@@ -76,8 +77,15 @@ export class DriftGridRunner {
       this.lastTickAt = Date.now();
       const drift = DriftService.getInstance();
       await drift.init();
-      const subs = await drift.getSubaccounts();
-      const sub = subs.find(s => s.id === this.config.subaccountId) || subs[0];
+      let sub: any | undefined = undefined;
+      const cacheMs = Math.max(800, Math.min(5000, Number(((CONFIG as any)?.drift?.gridSubSnapshotMs) || 1500)));
+      if (this.lastSubaccountSnapshot.sub && (Date.now() - this.lastSubaccountSnapshot.ts) < cacheMs) {
+        sub = this.lastSubaccountSnapshot.sub;
+      } else {
+        const subs = await drift.getSubaccounts();
+        sub = subs.find(s => s.id === this.config.subaccountId) || subs[0];
+        this.lastSubaccountSnapshot = { ts: Date.now(), sub };
+      }
       if (!sub) {
         logger.warn('drift.grid.no_subaccount', { requested: this.config.subaccountId, cat: 'drift' });
         return;
@@ -86,26 +94,20 @@ export class DriftGridRunner {
       // For scaffold: compute proposed notional as sum of per-level notionals
       const perSide = Math.max(0, Number(this.config.levels || 0));
       const proposedNotional = perSide * (this.config.notionalPerLevel || 0);
-      const gate = canPlaceOrders(this.config, sub, proposedNotional);
+      // Funding APY (best-effort) for risk gate
+      let fundingApy: number | undefined = undefined;
+      if (this.config.fundingGuard) {
+        try {
+          const fr = await DriftService.getInstance().getFundingRate(this.config.market.marketIndex);
+          if (fr && typeof fr.lastFundingRate === 'number') {
+            fundingApy = fr.lastFundingRate * 365 * 24;
+          }
+        } catch {}
+      }
+      const gate = canPlaceOrders(this.config, sub, proposedNotional, fundingApy);
       if (!gate.ok) {
         logger.warn('drift.grid.risk_gate_block', { reason: gate.reason, proposedNotional, freeCollateral: sub.freeCollateral, cat: 'drift' });
         return;
-      }
-      // Funding guard (best-effort): drop placement if funding exceeds threshold
-      if (this.config.fundingGuard) {
-        try {
-          const { DriftService } = await import('./client.js');
-          const svc = DriftService.getInstance();
-          const fr = await svc.getFundingRate(this.config.market.marketIndex);
-          if (fr && typeof fr.lastFundingRate === 'number') {
-            const apy = fr.lastFundingRate * 365 * 24; // hourly to annualized approximation
-            const maxApy = Number(((await import('../utils/config.js')) as any).CONFIG?.drift?.maxFundingApy || 0);
-            if (maxApy > 0 && Math.abs(apy) > maxApy) {
-              logger.warn('drift.grid.funding_guard_block', { apy, maxApy, marketIndex: this.config.market.marketIndex, cat: 'drift' });
-              return;
-            }
-          }
-        } catch {}
       }
       // Placeholder: no real orders yet; update state snapshot
       this.state.openOrders = perSide * 2;
@@ -125,7 +127,14 @@ export class DriftGridRunner {
         try {
           const engine: DriftOrderEngine | undefined = (this as any)._engine;
           if (engine) {
-            await engine.refreshLadder(this.config.market.marketIndex, ladder, !!this.config.makerOnly, anchor, Number(this.config.stepPct || 0.01));
+            await engine.refreshLadder(
+              this.config.market.marketIndex,
+              ladder,
+              !!this.config.makerOnly,
+              anchor,
+              Number(this.config.stepPct || 0.01),
+              Number(this.config.maxOpenOrders || 0)
+            );
           }
         } catch {}
         // Fetch PnL metrics (best-effort)
@@ -186,7 +195,7 @@ export class DriftGridRunner {
 }
 
 export class DriftGridRegistry {
-  private static runners: Map<string, DriftGridRunner> = new Map();
+  private static reg = new (require('../utils/runnerRegistry.js').RunnerRegistry)<DriftGridRunner>();
 
   static keyOf(cfg: LeveragedGridConfig): string {
     return `${cfg.name}#${cfg.market.marketIndex}#${cfg.subaccountId}`;
@@ -194,41 +203,27 @@ export class DriftGridRegistry {
 
   static upsert(cfg: LeveragedGridConfig): DriftGridRunner {
     const key = this.keyOf(cfg);
-    let r = this.runners.get(key);
-    if (!r) {
-      r = new DriftGridRunner(cfg);
-      this.runners.set(key, r);
-    }
-    return r;
+    return this.reg.upsert(key, () => new DriftGridRunner(cfg));
   }
 
   static get(key: string): DriftGridRunner | undefined {
-    return this.runners.get(key);
+    return this.reg.get(key);
   }
 
   static list(): Array<{ key: string; status: GridRuntimeState }> {
-    return Array.from(this.runners.entries()).map(([key, r]) => ({ key, status: r.getStatus() }));
+    return this.reg.list();
   }
 
   static async start(key: string, pollMs?: number): Promise<boolean> {
-    const r = this.runners.get(key);
-    if (!r) return false;
-    await r.start(pollMs);
-    return true;
+    return this.reg.start(key, pollMs);
   }
 
   static stop(key: string): boolean {
-    const r = this.runners.get(key);
-    if (!r) return false;
-    r.stop();
-    return true;
+    return this.reg.stop(key);
   }
 
   static remove(key: string): boolean {
-    const r = this.runners.get(key);
-    if (!r) return false;
-    try { r.stop(); } catch {}
-    return this.runners.delete(key);
+    return this.reg.remove(key);
   }
 }
 

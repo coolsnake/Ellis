@@ -1,6 +1,6 @@
 import { logger } from '../utils/logger.js';
 import { fetchDlobL2 } from './marketdata.js';
-import { CONFIG } from '../utils/config.js';
+import { getDriftConfig } from '../utils/driftConfig.js';
 import { DriftDlobWs } from './priceWs.js';
 import { emit } from '../server/realtime.js';
 
@@ -25,10 +25,12 @@ export class DriftPriceService {
   private ws: DriftDlobWs | null = null;
   private priceListeners: Map<number, Set<(p: PriceSample) => void>> = new Map();
   private staleTimers: Map<number, any> = new Map();
+  private scheduler: any | null = null;
+  private nextPollAt: Map<number, number> = new Map();
 
   private constructor() {
     try {
-      const enableWs = !!((CONFIG as any)?.drift?.enableWsPrices);
+      const enableWs = !!getDriftConfig().enableWsPrices;
       if (enableWs) {
         this.ws = new DriftDlobWs();
         this.ws.on('l2', (u: any) => {
@@ -68,11 +70,11 @@ export class DriftPriceService {
     const idx = Number(marketIndex);
     if (!Number.isFinite(idx)) return;
     // Prefer WS when enabled
-    const enableWs = !!((CONFIG as any)?.drift?.enableWsPrices);
+    const enableWs = !!getDriftConfig().enableWsPrices;
     if (enableWs && this.ws) {
       try { this.ws.subscribeMarket(idx); } catch {}
       // Staleness watchdog: if WS stalls, ensure HTTP fallback polling
-      const staleMs = Math.max(1000, Number(((CONFIG as any)?.drift?.priceStaleMs) || 3000));
+      const staleMs = Math.max(1000, Number(getDriftConfig().priceStaleMs || 3000));
       const watchdog = () => {
         try {
           const last = (this.ws as any)?.getLastUpdateTs?.(idx);
@@ -96,7 +98,7 @@ export class DriftPriceService {
       this.ensureHttpPolling(idx, intervalMs);
       return;
     }
-    // Fallback: HTTP-only polling
+    // Fallback: HTTP-only polling via single scheduler
     this.ensureHttpPolling(idx, intervalMs);
   }
 
@@ -121,7 +123,15 @@ export class DriftPriceService {
     this.inFlight.add(idx);
     const start = Date.now();
     try {
+      // Add timeout via AbortController
+      const ac = new (globalThis as any).AbortController?.() || undefined;
+      const timeoutMs = Math.max(400, Math.min(2000, Number(getDriftConfig().httpTimeoutMs || 1200)));
+      let to: any = null;
+      if (ac) {
+        try { to = (globalThis as any).setTimeout(() => { try { ac.abort(); } catch {} }, timeoutMs); } catch {}
+      }
       const l2 = await fetchDlobL2(idx);
+      if (to) { try { (globalThis as any).clearTimeout(to); } catch {} }
       if (!l2) throw new Error('no l2');
       const bid = l2.bid?.[0]?.price;
       const ask = l2.ask?.[0]?.price;
@@ -139,10 +149,8 @@ export class DriftPriceService {
       const cur = this.backoffMs.get(idx) || 500;
       const next = Math.min(cur * 2, 8000);
       this.backoffMs.set(idx, next);
-      const t: any = this.timers.get(idx);
-      if (t) { try { (globalThis as any).clearInterval(t); } catch {} }
-      const nt: any = (globalThis as any).setInterval(() => { this.refresh(idx).catch(() => {}); }, next);
-      this.timers.set(idx, nt);
+      // Single-scheduler will respect nextPollAt
+      this.nextPollAt.set(idx, Date.now() + next);
       logger.warn('drift.price.refresh_failed', { marketIndex: idx, backoffMs: next, error: String(e?.message || e), cat: 'drift' });
     } finally {
       this.inFlight.delete(idx);
@@ -150,18 +158,20 @@ export class DriftPriceService {
   }
 
   private ensureHttpPolling(idx: number, intervalMs: number): void {
-    if (this.timers.has(idx)) return;
-    const poll = async () => { await this.refresh(idx); };
-    const t: any = (globalThis as any).setInterval(poll, Math.max(200, intervalMs));
-    this.timers.set(idx, t);
+    // Record initial backoff and schedule; start global scheduler if not running
+    if (!this.backoffMs.has(idx)) this.backoffMs.set(idx, Math.max(200, intervalMs));
+    if (!this.nextPollAt.has(idx)) this.nextPollAt.set(idx, 0);
+    if (!this.scheduler) this.startScheduler();
     // immediate warmup
-    poll().catch(() => {});
+    this.refresh(idx).catch(() => {});
   }
 
   private stopHttpPolling(idx: number): void {
     const t: any = this.timers.get(idx);
     if (t) { try { (globalThis as any).clearInterval(t); } catch {} }
     this.timers.delete(idx);
+    this.nextPollAt.delete(idx);
+    this.backoffMs.delete(idx);
   }
 
   onPrice(marketIndex: number, listener: (p: PriceSample) => void): void {
@@ -173,6 +183,11 @@ export class DriftPriceService {
   offPrice(marketIndex: number, listener: (p: PriceSample) => void): void {
     const idx = Number(marketIndex);
     (this.priceListeners.get(idx) as Set<(p: PriceSample) => void>)?.delete(listener);
+    // Auto-untrack when last listener removed and WS not tracking
+    const set = this.priceListeners.get(idx);
+    if (!set || set.size === 0) {
+      try { this.untrackMarket(idx); } catch {}
+    }
   }
 
   private notify(idx: number, sample: PriceSample): void {
@@ -181,6 +196,23 @@ export class DriftPriceService {
     for (const fn of Array.from(ls)) {
       try { fn(sample); } catch {}
     }
+  }
+
+  private startScheduler(): void {
+    if (this.scheduler) return;
+    const tick = async () => {
+      try {
+        const now = Date.now();
+        for (const idx of Array.from(this.nextPollAt.keys())) {
+          const due = (this.nextPollAt.get(idx) || 0) <= now;
+          if (due && !this.inFlight.has(idx)) {
+            this.nextPollAt.set(idx, now + (this.backoffMs.get(idx) || 500));
+            this.refresh(idx).catch(() => {});
+          }
+        }
+      } catch {}
+    };
+    this.scheduler = (globalThis as any).setInterval(tick, 150);
   }
 }
 

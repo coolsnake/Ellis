@@ -79,6 +79,10 @@ export class DriftLiquidator {
   private inHeap: Set<string> = new Set();
   private accountLoader: any | null = null;
   private marketScanInFlight: Set<number> = new Set();
+  private userCache: Map<string, any> = new Map();
+  private lastMarketPagination: Map<number, number> = new Map();
+  private statsTimer: any | null = null;
+  private targetCooldownUntil: Map<string, number> = new Map();
 
   constructor(private config: LiquidatorConfig) {}
 
@@ -117,23 +121,66 @@ export class DriftLiquidator {
     this.timer = (globalThis as any).setInterval(() => {
       this.tick().catch((e) => logger.warn('drift.liquidator.tick_error', { error: String(e?.message || e), cat: 'drift' }));
     }, pollMs);
+    // Periodic stats emission
+    try {
+      if (this.statsTimer) { try { (globalThis as any).clearInterval(this.statsTimer); } catch {} }
+      const everyMs = Math.max(5000, Number(((CONFIG as any)?.drift?.liquidator?.statsIntervalMs) || 15000));
+      this.statsTimer = (globalThis as any).setInterval(() => {
+        try {
+          const snapshot = this.getQueueSnapshot(20);
+          logger.info('drift.liquidator.stats', {
+            queued: snapshot.candidatesQueued,
+            actionsLastMin: snapshot.actionsLastMin,
+            errorsLastMin: snapshot.errorsLastMin,
+            markets: snapshot.markets?.length || 0,
+            cat: 'drift'
+          });
+          emit('drift-liquidation', { type: 'stats', ...snapshot }).catch(() => {});
+        } catch {}
+      }, everyMs);
+    } catch {}
   }
 
   stop(): void {
     if (this.timer) (globalThis as any).clearInterval(this.timer);
     this.timer = null;
+    if (this.statsTimer) { try { (globalThis as any).clearInterval(this.statsTimer); } catch {} this.statsTimer = null; }
     this.state.running = false;
     logger.info('drift.liquidator.stop', { name: this.config.name, cat: 'drift' });
+    // Cleanup price triggers and timers
+    try {
+      const svc = DriftPriceService.getInstance();
+      for (const idx of Array.from(this.trackedMarkets)) {
+        try {
+          const t: any = this.priceTriggerTimers.get(Number(idx));
+          if (t) { try { (globalThis as any).clearTimeout(t); } catch {} }
+          this.priceTriggerTimers.delete(Number(idx));
+        } catch {}
+        try {
+          const handler = (this as any)[`_onPrice_liq_${idx}`];
+          if (handler) {
+            try { svc.offPrice(Number(idx), handler); } catch {}
+            try { svc.untrackMarket(Number(idx)); } catch {}
+            try { delete (this as any)[`_onPrice_liq_${idx}`]; } catch {}
+          }
+        } catch {}
+      }
+      this.trackedMarkets.clear();
+    } catch {}
+    // Clear internal state to avoid leaks
+    try { this.heap.clear(); } catch {}
+    try { this.inHeap.clear(); } catch {}
+    try { this.inFlightTargets.clear(); } catch {}
+    try { this.marketScanInFlight.clear(); } catch {}
+    try { this.userToMarkets.clear(); this.marketToUsers.clear(); } catch {}
   }
 
   async tick(): Promise<void> {
     try {
       if (!this.initialized) { try { await this.initDiscovery(); this.initialized = true; } catch {} }
       const candidates = await this.findUnhealthyCandidates();
-      // Rebuild the heap from current candidates
-      this.heap.clear();
-      this.inHeap.clear();
-      for (const c of candidates) this.heap.push({ ...c, updatedAt: Date.now() });
+      // Incremental updates: add candidates, avoid rebuilding entire heap
+      for (const c of candidates) this.addOrQueueCandidate({ userPk: c.userPk, health: c.health, updatedAt: Date.now() } as any);
       this.state.candidatesQueued = this.heap.size();
       this.maybeEmitQueue();
       const maxConc = Math.max(1, Number(this.config.maxConcurrentTargets || 2));
@@ -193,14 +240,8 @@ export class DriftLiquidator {
     try {
       const liqCfg: any = (CONFIG as any)?.drift?.liquidator || {};
       if (liqCfg.usePriceTriggers === false) return;
-      const allow: string[] = ((CONFIG as any)?.drift?.marketsAllowlist || []) as any;
-      const indices: number[] = [];
-      for (const entry of allow) {
-        const s = String(entry || '').trim();
-        if (!s) continue;
-        const m = s.match(/^(\d+)/);
-        if (m) indices.push(Number(m[1]));
-      }
+      const { getAllowlistIndices } = await import('./marketMapping.js');
+      const indices: number[] = getAllowlistIndices();
       // Default to first few common markets
       if (indices.length === 0) indices.push(0, 1, 2);
       const svc = DriftPriceService.getInstance();
@@ -236,19 +277,51 @@ export class DriftLiquidator {
       const conn: any = (DriftService.getInstance() as any).connection;
       if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', 1000);
       const riskThresh = Number(((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0);
-      for (const pkStr of this.userKeys) {
-        try {
-          const user = new User({ driftClient: drift, userAccountPublicKey: pkStr, accountSubscription: { type: 'polling', accountLoader: this.accountLoader } });
-          const exists = await (user as any).exists?.();
-          if (!exists) continue;
-          const total = Number((user as any)?.getTotalCollateral?.() || 0);
-          const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
-          if (!isFinite(total) || !isFinite(maint)) continue;
-          const health = maint > 0 ? (total - maint) / maint : Infinity;
-          if (health < riskThresh) out.push({ userPk: pkStr, health });
-          try { await this.refreshIndexForUser(user, pkStr); } catch {}
-        } catch {}
-      }
+      const keys = this.userKeys.slice();
+      const maxConc = Math.max(2, Math.min(24, Number(((CONFIG as any)?.drift?.liquidator?.scanConcurrency) || 10)));
+      let cursor = 0;
+      const self = this;
+      const getOrCreateUser = async (pkStr: string): Promise<any> => {
+        const key = String(pkStr);
+        let u = self.userCache.get(key);
+        if (u) {
+          // touch LRU
+          self.userCache.delete(key);
+          self.userCache.set(key, u);
+          return u;
+        }
+        u = new User({ driftClient: drift, userAccountPublicKey: key, accountSubscription: { type: 'polling', accountLoader: self.accountLoader } });
+        self.userCache.set(key, u);
+        const maxSize = Math.max(50, Math.min(2000, Number(((CONFIG as any)?.drift?.liquidator?.userCacheMax) || 500)));
+        if (self.userCache.size > maxSize) {
+          // evict oldest (first inserted)
+          const firstKey = self.userCache.keys().next().value;
+          if (firstKey) self.userCache.delete(firstKey);
+        }
+        return u;
+      };
+      const worker = async () => {
+        while (true) {
+          const i = cursor;
+          cursor += 1;
+          if (i >= keys.length) break;
+          const pkStr = keys[i];
+          try {
+            const user = await getOrCreateUser(pkStr);
+            const exists = await (user as any).exists?.();
+            if (!exists) continue;
+            const total = Number((user as any)?.getTotalCollateral?.() || 0);
+            const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
+            if (!isFinite(total) || !isFinite(maint)) continue;
+            const health = maint > 0 ? (total - maint) / maint : Infinity;
+            if (health < riskThresh) out.push({ userPk: pkStr, health });
+            try { await self.refreshIndexForUser(user, pkStr); } catch {}
+          } catch {}
+        }
+      };
+      const runners: Promise<void>[] = [];
+      for (let k = 0; k < maxConc; k += 1) runners.push(worker());
+      await Promise.all(runners);
     } catch {}
     return out;
   }
@@ -299,11 +372,22 @@ export class DriftLiquidator {
       if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', 1000);
       // Cap per event to avoid long stalls
       const maxUsersPerTick = Math.max(10, Math.min(100, Number(((CONFIG as any)?.drift?.liquidator?.maxUsersPerPriceTick) || 40)));
-      const slice = users.slice(0, maxUsersPerTick);
+      // Round-robin pagination per market
+      const prevOff = this.lastMarketPagination.get(idx) || 0;
+      const start = prevOff % users.length;
+      const slice: string[] = [];
+      for (let i = 0; i < Math.min(maxUsersPerTick, users.length); i += 1) {
+        slice.push(users[(start + i) % users.length]);
+      }
+      this.lastMarketPagination.set(idx, (start + slice.length) % users.length);
       const riskThresh = Number(((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0);
       for (const pkStr of slice) {
         try {
-          const user = new User({ driftClient: drift, userAccountPublicKey: pkStr, accountSubscription: { type: 'polling', accountLoader: this.accountLoader } });
+          let user = this.userCache.get(String(pkStr));
+          if (!user) {
+            user = new User({ driftClient: drift, userAccountPublicKey: pkStr, accountSubscription: { type: 'polling', accountLoader: this.accountLoader } });
+            this.userCache.set(String(pkStr), user);
+          }
           const exists = await (user as any).exists?.();
           if (!exists) continue;
           const total = Number((user as any)?.getTotalCollateral?.() || 0);
@@ -325,6 +409,9 @@ export class DriftLiquidator {
   private addOrQueueCandidate(c: Candidate): void {
     try {
       const key = String(c.userPk);
+      // Skip if target is cooling down
+      const until = this.targetCooldownUntil.get(key);
+      if (typeof until === 'number' && Date.now() < until) return;
       if (this.inFlightTargets.has(key)) return;
       if (this.inHeap.has(key)) return;
       this.heap.push(c);
@@ -341,6 +428,11 @@ export class DriftLiquidator {
         if (!c) break;
         const key = String(c.userPk);
         this.inHeap.delete(key);
+        // Honor cooldowns
+        const until = this.targetCooldownUntil.get(key);
+        if (typeof until === 'number' && Date.now() < until) {
+          continue;
+        }
         if (this.inFlightTargets.has(key)) continue;
         this.inFlightTargets.add(key);
         inProgress += 1;
@@ -360,6 +452,8 @@ export class DriftLiquidator {
         return;
       }
       const drift: any = (DriftService.getInstance() as any).client;
+      const marketsForUser = Array.from(this.userToMarkets.get(String(target.userPk)) || []);
+      const perpMarkets = marketsForUser.length > 0 ? marketsForUser : [0, 1, 2];
       // Step 1: force-cancel orders (best-effort, capped)
       try {
         const maxCancels = Math.max(5, Math.min(50, Number(((CONFIG as any)?.drift?.liquidator?.maxCancels) || 20)));
@@ -371,6 +465,14 @@ export class DriftLiquidator {
             remaining -= batch;
             if (remaining > 0) { try { await new Promise(r => setTimeout(r, 250)); } catch {} }
           }
+        } else if (typeof drift?.forceCancelOrdersForUsers === 'function') {
+          try {
+            await drift.forceCancelOrdersForUsers({
+              users: [target.userPk],
+              marketType: 0,
+              maxCancels: maxCancels,
+            });
+          } catch {}
         }
       } catch (e: any) {
         this.recordError(e);
@@ -380,18 +482,26 @@ export class DriftLiquidator {
         if (typeof drift?.liquidatePerp === 'function') {
           const maxPerp = Math.max(1, Math.min(10, Number(((CONFIG as any)?.drift?.liquidator?.maxPerpAttempts) || 3)));
           const sizeFrac = Math.max(0.001, Math.min(0.25, Number(((CONFIG as any)?.drift?.liquidator?.perpSizeFraction) || 0.05)));
-          const markets = [0, 1, 2];
           let attempts = 0;
-          for (const idx of markets) {
+          for (const idx of perpMarkets) {
             if (attempts >= maxPerp) break;
             try {
               await drift.liquidatePerp(target.userPk, Number(idx), sizeFrac);
               attempts += 1;
             } catch {}
           }
+        } else if (typeof drift?.liquidatePerpBatch === 'function') {
+          try {
+            await drift.liquidatePerpBatch({
+              users: [target.userPk],
+              markets: perpMarkets,
+              sizeFraction: Math.max(0.001, Math.min(0.25, Number(((CONFIG as any)?.drift?.liquidator?.perpSizeFraction) || 0.05))),
+            });
+          } catch {}
         }
       } catch (e: any) {
         this.recordError(e);
+        this.applyCooldownForTarget(target.userPk);
       }
       // Step 3: attempt spot liquidation (best-effort, capped)
       try {
@@ -410,11 +520,13 @@ export class DriftLiquidator {
         }
       } catch (e: any) {
         this.recordError(e);
+        this.applyCooldownForTarget(target.userPk);
       }
       this.recordAction();
       logger.info('drift.liquidator.action_complete', { user: target.userPk, cat: 'drift' });
     } catch (e: any) {
       this.recordError(e);
+      this.applyCooldownForTarget(target.userPk);
     }
   }
 
@@ -437,6 +549,15 @@ export class DriftLiquidator {
       this.state.errorsLastMin = this.errorsLog.length;
       logger.warn('drift.liquidator.error', { error: String(e?.message || e), cat: 'drift' });
       try { emit('drift-liquidation', { type: 'error', error: String(e?.message || e), errorsLastMin: this.state.errorsLastMin }); } catch {}
+    } catch {}
+  }
+
+  private applyCooldownForTarget(userPk: string): void {
+    try {
+      const baseMs = Math.max(3000, Math.min(30000, Number(((CONFIG as any)?.drift?.liquidator?.targetCooldownMs) || 7000)));
+      const jitter = Math.floor(Math.random() * Math.min(1000, Math.max(250, baseMs * 0.15)));
+      const until = Date.now() + baseMs + jitter;
+      this.targetCooldownUntil.set(String(userPk), until);
     } catch {}
   }
 
@@ -486,7 +607,7 @@ export class DriftLiquidator {
 }
 
 export class DriftLiquidatorRegistry {
-  private static runners: Map<string, DriftLiquidator> = new Map();
+  private static reg = new (require('../utils/runnerRegistry.js').RunnerRegistry)<DriftLiquidator>();
 
   static keyOf(cfg: LiquidatorConfig): string {
     return cfg?.name ? `liq#${cfg.name}` : 'liq#default';
@@ -494,34 +615,23 @@ export class DriftLiquidatorRegistry {
 
   static upsert(cfg: LiquidatorConfig): DriftLiquidator {
     const key = this.keyOf(cfg);
-    let r = this.runners.get(key);
-    if (!r) {
-      r = new DriftLiquidator(cfg);
-      this.runners.set(key, r);
-    }
-    return r;
+    return this.reg.upsert(key, () => new DriftLiquidator(cfg));
   }
 
   static get(key: string): DriftLiquidator | undefined {
-    return this.runners.get(key);
+    return this.reg.get(key);
   }
 
   static list(): Array<{ key: string; status: LiquidatorRuntimeState }> {
-    return Array.from(this.runners.entries()).map(([key, r]) => ({ key, status: r.getStatus() }));
+    return this.reg.list();
   }
 
   static async start(key: string): Promise<boolean> {
-    const r = this.runners.get(key);
-    if (!r) return false;
-    await r.start();
-    return true;
+    return this.reg.start(key);
   }
 
   static stop(key: string): boolean {
-    const r = this.runners.get(key);
-    if (!r) return false;
-    r.stop();
-    return true;
+    return this.reg.stop(key);
   }
 }
 

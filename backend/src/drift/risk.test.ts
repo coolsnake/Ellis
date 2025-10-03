@@ -14,8 +14,11 @@ describe('risk math', () => {
   it('placement gates', () => {
     const cfg: any = { leverage: 2, liquidationBufferPct: 0.2 };
     const sub: any = { totalCollateral: 500, maintenanceRequirement: 300 };
-    expect(canPlaceOrders(cfg, sub, 900).ok).toBe(false); // lev 1.8 ok, buf (100/300)=0.33 ok -> but proposed notional 900 => lev=1.8 (should be ok)
+    // lev(900/500)=1.8 <= 2, liqBuf=(500-300)/300=0.67 >= 0.2 -> ok
+    expect(canPlaceOrders(cfg, sub, 900).ok).toBe(true);
+    // lev(1100/500)=2.2 > 2 -> blocked
     expect(canPlaceOrders(cfg, sub, 1100).ok).toBe(false);
+    // lev(800/500)=1.6 <= 2, liqBuf ok -> ok
     expect(canPlaceOrders(cfg, sub, 800).ok).toBe(true);
   });
 });
