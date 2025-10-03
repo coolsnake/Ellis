@@ -77,6 +77,8 @@ export class DriftLiquidator {
   private marketToUsers: Map<number, Set<string>> = new Map();
   private userToMarkets: Map<string, Set<number>> = new Map();
   private inHeap: Set<string> = new Set();
+  private accountLoader: any | null = null;
+  private marketScanInFlight: Set<number> = new Set();
 
   constructor(private config: LiquidatorConfig) {}
 
@@ -215,10 +217,10 @@ export class DriftLiquidator {
       const sdk: any = await import('@drift-labs/sdk');
       const { User, BulkAccountLoader } = (sdk as any);
       const conn: any = (DriftService.getInstance() as any).connection;
-      const loader = new BulkAccountLoader(conn, 'confirmed', 1000);
+      if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', 1000);
       for (const pkStr of this.userKeys) {
         try {
-          const user = new User({ driftClient: drift, userAccountPublicKey: pkStr, accountSubscription: { type: 'polling', accountLoader: loader } });
+          const user = new User({ driftClient: drift, userAccountPublicKey: pkStr, accountSubscription: { type: 'polling', accountLoader: this.accountLoader } });
           const exists = await (user as any).exists?.();
           if (!exists) continue;
           const total = Number((user as any)?.getTotalCollateral?.() || 0);
@@ -268,16 +270,21 @@ export class DriftLiquidator {
     try {
       const idx = Number(marketIndex);
       if (!Number.isFinite(idx)) return;
+      if (this.marketScanInFlight.has(idx)) return;
+      this.marketScanInFlight.add(idx);
       const users = Array.from(this.marketToUsers.get(idx) || []);
-      if (users.length === 0) return;
+      if (users.length === 0) { this.marketScanInFlight.delete(idx); return; }
       const drift: any = (DriftService.getInstance() as any).client;
       const sdk: any = await import('@drift-labs/sdk');
       const { User, BulkAccountLoader } = (sdk as any);
       const conn: any = (DriftService.getInstance() as any).connection;
-      const loader = new BulkAccountLoader(conn, 'confirmed', 1000);
-      for (const pkStr of users) {
+      if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', 1000);
+      // Cap per event to avoid long stalls
+      const maxUsersPerTick = Math.max(10, Math.min(100, Number(((CONFIG as any)?.drift?.liquidator?.maxUsersPerPriceTick) || 40)));
+      const slice = users.slice(0, maxUsersPerTick);
+      for (const pkStr of slice) {
         try {
-          const user = new User({ driftClient: drift, userAccountPublicKey: pkStr, accountSubscription: { type: 'polling', accountLoader: loader } });
+          const user = new User({ driftClient: drift, userAccountPublicKey: pkStr, accountSubscription: { type: 'polling', accountLoader: this.accountLoader } });
           const exists = await (user as any).exists?.();
           if (!exists) continue;
           const total = Number((user as any)?.getTotalCollateral?.() || 0);
@@ -290,6 +297,7 @@ export class DriftLiquidator {
       }
       this.state.candidatesQueued = this.heap.size();
       this.maybeEmitQueue();
+      this.marketScanInFlight.delete(idx);
     } catch {}
   }
 
@@ -417,11 +425,12 @@ export class DriftLiquidator {
       if (now - this.lastQueueEmitTs < 1000) return;
       this.lastQueueEmitTs = now;
       const top: Candidate[] = [];
-      const copy = new MinHeap<Candidate>((a, b) => a.health - b.health);
-      for (const c of this.heap.toArray()) copy.push(c);
-      for (let i = 0; i < 10; i += 1) {
-        const c = copy.pop(); if (!c) break; top.push(c);
-      }
+      const arr = this.heap.toArray();
+      const cap = Math.min(arr.length, 200);
+      // Build a small heap from a capped copy to avoid O(n) copies when large
+      const small = new MinHeap<Candidate>((a, b) => a.health - b.health);
+      for (let i = 0; i < cap; i += 1) small.push(arr[i]);
+      for (let i = 0; i < 10; i += 1) { const c = small.pop(); if (!c) break; top.push(c); }
       emit('drift-liquidation', {
         type: 'queue',
         candidatesQueued: this.state.candidatesQueued,
