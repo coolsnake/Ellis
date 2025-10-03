@@ -123,8 +123,9 @@ export class DriftPriceService {
     this.inFlight.add(idx);
     const start = Date.now();
     try {
-      // Add timeout via AbortController
-      const ac = new (globalThis as any).AbortController?.() || undefined;
+      // Add timeout via AbortController (guarded for environments without it)
+      const AC: any = (globalThis as any).AbortController;
+      const ac = typeof AC === 'function' ? new AC() : undefined;
       const timeoutMs = Math.max(400, Math.min(2000, Number(getDriftConfig().httpTimeoutMs || 1200)));
       let to: any = null;
       if (ac) {
