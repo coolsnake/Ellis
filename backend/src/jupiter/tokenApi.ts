@@ -7,6 +7,8 @@ export type TokenInfo = {
 
 const TOKEN_SEARCH_URL = 'https://lite-api.jup.ag/tokens/v2/search';
 import { jupiterLimiter } from './rateLimiter.js';
+import { emit } from '../server/realtime.js';
+import { logger } from '../utils/logger.js';
 
 const cache = new Map<string, { data: TokenInfo[]; ts: number }>();
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -19,6 +21,11 @@ export async function searchTokens(query: string, priority: boolean = false): Pr
   if (cached && now - cached.ts < CACHE_TTL_MS) return cached.data;
   await jupiterLimiter.acquire(priority);
   const res = await fetch(url.toString(), { headers: { accept: 'application/json' } });
+  if (res.status === 429) {
+    try { emit('log', { level: 'warn', message: `arb:429 source=jupiter kind=token_search q=${query}` , timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+    logger.warn('jup.token_search 429', { query, cat: 'jupiter' });
+    throw new Error('429');
+  }
   if (!res.ok) throw new Error(`token search failed ${res.status}`);
   const data = (await res.json()) as any[];
   // Normalize

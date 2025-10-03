@@ -1,4 +1,3 @@
-import { Connection, PublicKey, TransactionInstruction, AddressLookupTableAccount, TransactionMessage, VersionedTransaction, ComputeBudgetProgram } from '@solana/web3.js';
 import { logger } from '../utils/logger.js';
 
 export type V6Quote = any;
@@ -15,6 +14,11 @@ export async function getV6Quote(inputMint: string, outputMint: string, amount: 
   const res = await fetch(url.toString(), { headers: { accept: 'application/json' } });
   const dur = Date.now() - started;
   logger.info(`api.response GET ${url.pathname} ${res.status} ${dur}ms`, { status: res.status, durationMs: dur, url: url.toString(), cat: 'api' });
+  if (res.status === 429) {
+    try { const { emit } = await import('../server/realtime.js'); emit('log', { level: 'warn', message: `arb:429 source=jupiter kind=v6_quote in=${inputMint} out=${outputMint}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+    logger.warn('jup.v6.quote 429', { in: inputMint, out: outputMint });
+    throw new Error('429');
+  }
   if (!res.ok) throw new Error(`v6 quote failed ${res.status}`);
   return await res.json();
 }
@@ -38,51 +42,62 @@ export async function getSwapInstructions(quoteResponse: any, userPublicKey: str
   });
   const dur = Date.now() - started;
   logger.info(`api.response POST /v6/swap-instructions ${res.status} ${dur}ms`, { status: res.status, durationMs: dur, url, cat: 'api' });
+  if (res.status === 429) {
+    try { const { emit } = await import('../server/realtime.js'); emit('log', { level: 'warn', message: 'arb:429 source=jupiter kind=v6_swap_instructions', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+    logger.warn('jup.v6.swap_instructions 429');
+    throw new Error('429');
+  }
   if (!res.ok) throw new Error(`v6 swap-instructions failed ${res.status}`);
   return await res.json();
 }
 
-function decodeInstruction(ix: any): TransactionInstruction | null {
-  const programId = new PublicKey(ix.programId);
-  const keyList = (ix.keys || ix.accounts || []) as any[];
-  const keys = keyList.map((k: any) => ({ pubkey: new PublicKey(k.pubkey), isSigner: !!k.isSigner, isWritable: !!k.isWritable }));
-  return new TransactionInstruction({ programId, keys, data: Buffer.from(ix.data, 'base64') });
-}
-
 export async function buildCombinedTransaction(
-  connection: Connection,
-  payer: PublicKey,
+  connection: any,
+  payer: any,
   legs: Array<{ instructions: any }>,
   computeUnitPriceMicroLamports?: number,
-  extraSetupIxs: TransactionInstruction[] = []
-): Promise<VersionedTransaction> {
-  const allIxs: TransactionInstruction[] = [];
+  extraSetupIxs: any[] = []
+): Promise<any> {
+  const modName = '@solana/web3.js';
+  const web3: any = await import(modName);
+  const allIxs: any[] = [];
   const altAddresses = new Set<string>();
   // Optional: compute budget first
   if (computeUnitPriceMicroLamports && computeUnitPriceMicroLamports > 0) {
-    allIxs.push(ComputeBudgetProgram.setComputeUnitLimit({ units: 800000 }));
-    allIxs.push(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: computeUnitPriceMicroLamports }));
+    allIxs.push(web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 800000 }));
+    allIxs.push(web3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: computeUnitPriceMicroLamports }));
   }
   // Proactive setup (e.g., ATAs)
   for (const ix of extraSetupIxs) allIxs.push(ix);
+  const toIx = (ix: any): any | null => {
+    try {
+      const programId = new web3.PublicKey(ix.programId);
+      const keyList = (ix.keys || ix.accounts || []) as any[];
+      const keys = keyList.map((k: any) => ({ pubkey: new web3.PublicKey(k.pubkey), isSigner: !!k.isSigner, isWritable: !!k.isWritable }));
+      const data: any = ((globalThis as any).Buffer?.from(ix.data, 'base64')) || new Uint8Array();
+      return new web3.TransactionInstruction({ programId, keys, data });
+    } catch {
+      return null;
+    }
+  };
   for (const leg of legs) {
     const obj = leg.instructions;
     // setup
-    for (const s of (obj.setupInstructions || [])) { const ix = decodeInstruction(s); if (ix) allIxs.push(ix); }
+    for (const s of (obj.setupInstructions || [])) { const ix = toIx(s); if (ix) allIxs.push(ix); }
     // swap
-    if (obj.swapInstruction) { const ix = decodeInstruction(obj.swapInstruction); if (ix) allIxs.push(ix); }
+    if (obj.swapInstruction) { const ix = toIx(obj.swapInstruction); if (ix) allIxs.push(ix); }
     // cleanup
-    for (const c of (obj.cleanupInstructions || [])) { const ix = decodeInstruction(c); if (ix) allIxs.push(ix); }
+    for (const c of (obj.cleanupInstructions || [])) { const ix = toIx(c); if (ix) allIxs.push(ix); }
     for (const addr of (obj.addressLookupTableAddresses || [])) altAddresses.add(String(addr));
   }
-  const alts: AddressLookupTableAccount[] = [];
+  const alts: any[] = [];
   for (const addr of altAddresses) {
-    const { value } = await connection.getAddressLookupTable(new PublicKey(addr));
+    const { value } = await connection.getAddressLookupTable(new web3.PublicKey(addr));
     if (value) alts.push(value);
   }
   const { blockhash } = await connection.getLatestBlockhash('finalized');
-  const msg = new TransactionMessage({ payerKey: payer, recentBlockhash: blockhash, instructions: allIxs }).compileToV0Message(alts);
-  return new VersionedTransaction(msg);
+  const msg = new web3.TransactionMessage({ payerKey: payer, recentBlockhash: blockhash, instructions: allIxs }).compileToV0Message(alts);
+  return new web3.VersionedTransaction(msg);
 }
 
 

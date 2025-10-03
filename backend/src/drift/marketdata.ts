@@ -28,6 +28,11 @@ export async function fetchDlobL2(marketIndex: number): Promise<DlobL2 | null> {
     try {
       logger.debug('drift.dlob.fetch_l2', { url, marketIndex, cat: 'drift' });
       const res = await fetchAny(url as any, { headers: { Accept: 'application/json' } } as any);
+      if (res && typeof res.status === 'number' && res.status === 429) {
+        try { const { emit } = await import('../server/realtime.js'); emit('log', { level: 'warn', message: `arb:429 source=drift kind=dlob_l2 marketIndex=${marketIndex}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+        logger.warn('drift.dlob 429', { marketIndex, url, cat: 'drift' });
+        throw new Error('HTTP 429');
+      }
       if (!res.ok) {
         const bodyText = await res.text().catch(() => '');
         throw new Error(`HTTP ${res.status}${bodyText ? `: ${bodyText}` : ''}`);

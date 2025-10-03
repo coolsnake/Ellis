@@ -229,7 +229,7 @@ export const App: React.FC = () => {
       const push = (setter: React.Dispatch<React.SetStateAction<LogEvent[]>>) => setter((prev) => [evt, ...prev].slice(0, 500));
       const isApiCat = cat === 'api' || cat === 'jupiter' || cat === 'raydium' || cat === 'orca';
       // Categorize without duplication
-      // User Log: user-facing
+      // User Log: user-facing (terminal)
       if (!isApiCat && (
         cat === 'terminal' || msg.startsWith('terminal:') ||
         cat === 'trade' && /executed|submitted|filled|success|fail|error/i.test(msg) ||
@@ -242,16 +242,16 @@ export const App: React.FC = () => {
       if (cat === 'trade' || cat === 'pretrade' || /^pretrade:|^trade:/i.test(msg)) {
         push(setTradeLogs);
       }
-      // Strategy Log: strategy computations and triggers
-      if (cat === 'strategy' || /^strategy:/i.test(msg)) {
+      // Strategy Log: strategy computations, Drift, Jupiter strategy fetchers
+      if (cat === 'strategy' || cat === 'drift' || /^strategy:/i.test(msg)) {
         push(setStrategyLogs);
       }
-      // Arbitrage Log: arb engine activity
-      if (cat === 'arb' || /^arb\b|^pretrade:arb|^trade:arb/i.test(msg)) {
+      // Arbitrage Log: arb engine activity, Raydium/Orca pool data fetchers
+      if (cat === 'arb' || cat === 'pools' || cat === 'raydium' || cat === 'orca' || /^arb\b|^pretrade:arb|^trade:arb/i.test(msg)) {
         push(setArbLogs);
       }
-      // API Log: internal/external API requests
-      if (cat === 'api' || cat === 'jupiter' || cat === 'raydium' || cat === 'orca' || /^api:|^jup\.|^raydium:|^orca:/i.test(msg)) {
+      // API Log: internal/external API requests (exclude pools/arb/strategy-related fetchers)
+      if (cat === 'api' || cat === 'jupiter' || /^api:|^jup\./i.test(msg)) {
         push(setApiLogs);
       }
     });
@@ -1454,16 +1454,8 @@ export const App: React.FC = () => {
         </section>
         {/* Drift Panel: subaccounts and management */}
         <CollapsibleSection title={"Drift"} storageKey="panel:drift">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="p-3 bg-gray-800 rounded">
-              <div className="text-white font-semibold mb-2">Status</div>
-              <div className="text-sm text-gray-300 space-y-1">
-                <div>Cluster: <span className="text-white">{driftStatus?.cluster || '-'}</span></div>
-                <div>Program: <span className="text-white">{driftStatus?.programId || '-'}</span></div>
-                <div>Markets: <span className="text-white">{Array.isArray(driftStatus?.markets) ? driftStatus.markets.length : 0}</span></div>
-              </div>
-            </div>
-            <div className="p-3 bg-gray-800 rounded">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="p-3 bg-gray-800 rounded md:col-span-2">
               <div className="text-white font-semibold mb-2">Subaccounts</div>
               {driftSubaccounts.length === 0 ? (
                 <div className="text-gray-400 text-sm">No subaccounts detected.</div>
@@ -1553,6 +1545,14 @@ export const App: React.FC = () => {
                   </div>
                 </div>
               )}
+            </div>
+            <div className="p-3 bg-gray-800 rounded">
+              <div className="text-white font-semibold mb-2">Status</div>
+              <div className="text-sm text-gray-300 space-y-1">
+                <div>Cluster: <span className="text-white">{driftStatus?.cluster || '-'}</span></div>
+                <div>Program: <span className="text-white">{driftStatus?.programId || '-'}</span></div>
+                <div>Markets: <span className="text-white">{Array.isArray(driftStatus?.markets) ? driftStatus.markets.length : 0}</span></div>
+              </div>
             </div>
           </div>
           {/* Manage Funds moved above into Subaccounts card; removed duplicate buttons */}

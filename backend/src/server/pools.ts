@@ -2,7 +2,8 @@ import { logger } from '../utils/logger.js';
 import { emit } from './realtime.js';
 import { CONFIG } from '../utils/config.js';
 import { readJson } from '../utils/fs.js';
-import { PublicKey } from '@solana/web3.js';
+// Defer web3 imports to runtime to prevent type issues in environments without types
+// import { PublicKey } from '@solana/web3.js';
 
 type AmmPool = {
   id: string;
@@ -158,6 +159,8 @@ async function fetchRaydiumPoolsRaw(): Promise<any> {
             if (res?.status === 429) {
               poolsMetrics.raydium.http429++;
               poolsMetrics.raydium.backoffMs = Math.min(5000, Math.max(1500, poolsMetrics.raydium.backoffMs * 2 || 1500));
+              try { emit('log', { level: 'warn', message: 'arb:429 source=raydium kind=http surface=pools.info', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+              try { logger.warn('raydium.http 429', { mint, page, cat: 'raydium' }); } catch {}
               // Backoff then continue to next loop iteration
               continue;
             }
@@ -175,7 +178,7 @@ async function fetchRaydiumPoolsRaw(): Promise<any> {
           } catch (e: any) {
             const msg = String(e?.message || e);
             logger.warn('raydium.http fetch failed', { error: msg, cat: 'raydium' });
-            if (/429/.test(msg)) { poolsMetrics.raydium.http429++; poolsMetrics.raydium.backoffMs = Math.min(5000, Math.max(1500, poolsMetrics.raydium.backoffMs * 2 || 1500)); }
+            if (/429/.test(msg)) { poolsMetrics.raydium.http429++; poolsMetrics.raydium.backoffMs = Math.min(5000, Math.max(1500, poolsMetrics.raydium.backoffMs * 2 || 1500)); try { emit('log', { level: 'warn', message: 'arb:429 source=raydium kind=http surface=pools.info.catch', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {} }
             break;
           }
         }
@@ -308,8 +311,8 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
   return { amm, clmm };
 }
 
-let rayTimer: NodeJS.Timeout | undefined;
-let orcaTimer: NodeJS.Timeout | undefined;
+let rayTimer: any | undefined;
+let orcaTimer: any | undefined;
 let wsUnsubscribe: (() => void) | undefined;
 
 export function startRaydiumRefreshLoop(): void {
@@ -359,16 +362,16 @@ export function startRaydiumRefreshLoop(): void {
     }
     try {
       const setup = async () => {
-        const { Connection, PublicKey } = await import('@solana/web3.js');
-        const conn = new Connection(CONFIG.rpcUrl, CONFIG.system.txCommitment as any);
-        const rayAmm = new PublicKey(String(CONFIG.raydium?.ammV4Program));
-        const rayClmm = new PublicKey(String(CONFIG.raydium?.clmmProgram));
-        const orcaProg = new PublicKey(String(CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc'));
+        const web3: any = await import('@solana/web3.js');
+        const conn = new web3.Connection(CONFIG.rpcUrl, CONFIG.system.txCommitment as any);
+        const rayAmm = new web3.PublicKey(String(CONFIG.raydium?.ammV4Program));
+        const rayClmm = new web3.PublicKey(String(CONFIG.raydium?.clmmProgram));
+        const orcaProg = new web3.PublicKey(String(CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc'));
         const subs: number[] = [];
         // Debounce frequent program change bursts to at most one refresh per source per min gap
         const minGap = Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000);
         let lastRay = 0; let lastOrc = 0;
-        const handle = async (pk: PublicKey, info: any) => {
+        const handle = async (pk: any, info: any) => {
           try {
             // Lightweight classify: owner indicates which decoder to attempt
             const owner = String(info?.owner?.toBase58?.() || '');
@@ -479,7 +482,7 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
       const t0 = Date.now();
       const mode = 'api';
       logger.info('raydium.fetch start', { mode, ttlMs, concurrency: Number(CONFIG.raydium?.sdkConcurrency || 8), cat: 'raydium' });
-      try { emit('log', { level: 'info', message: `arb:pools raydium.fetch start mode=${mode}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+        try { emit('log', { level: 'info', message: `arb:pools raydium.fetch start mode=${mode}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
 
       const raw: any = await fetchRaydiumPoolsRaw();
       let norm = await normalizeRaydiumPools(raw);
@@ -675,6 +678,11 @@ async function fetchOrcaHttp(): Promise<any> {
         try { logger.info('orca.http request', { page, params: { ...params, next: nextCursor || undefined } }); } catch {}
         // eslint-disable-next-line no-undef
         const res = await fetch(url);
+        if (res.status === 429) {
+          try { emit('log', { level: 'warn', message: `arb:429 source=orca kind=http surface=page page=${page}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+          try { logger.warn('orca.http 429 page', { page }); } catch {}
+          throw new Error('http 429');
+        }
         const ms = Date.now() - started;
         if (!res.ok) throw new Error(`http ${res.status}`);
         const json: any = await res.json();
@@ -717,6 +725,11 @@ async function fetchOrcaHttp(): Promise<any> {
     const started = Date.now();
     // eslint-disable-next-line no-undef
     const res = await fetch(buildUrl());
+    if (res.status === 429) {
+      try { emit('log', { level: 'warn', message: 'arb:429 source=orca kind=http surface=fallback', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+      try { logger.warn('orca.http 429 fallback'); } catch {}
+      throw new Error('http 429');
+    }
     const ms = Date.now() - started;
     if (!res.ok) throw new Error(`http ${res.status}`);
     const json: any = await res.json();
@@ -987,7 +1000,7 @@ async function fetchOrcaV4(): Promise<PoolsPayload> {
   for (const m of watchMints.slice(0, 50)) { if (m !== USDC) pairs.push([m, USDC]); if (m !== SOL) pairs.push([m, SOL]); }
   pairs.push([SOL, USDC]);
   const tickSpacings = [8, 16, 32, 64, 128, 256];
-  const addrs: PublicKey[] = [];
+  const addrs: any[] = [];
   const PDAUtil = (await import('@orca-so/whirlpools-sdk').catch(() => null))?.PDAUtil; // for PDA derivation only
   if (!PDAUtil) throw new Error('PDAUtil missing');
   const clmm: ClmmPool[] = [];
@@ -1000,7 +1013,7 @@ async function fetchOrcaV4(): Promise<PoolsPayload> {
       } catch {}
     }
   }
-  const unique = Array.from(new Set(addrs.map((p) => p.toBase58()))).map((s) => new PublicKey(s));
+  const unique = Array.from(new Set(addrs.map((p: any) => p.toBase58()))).map((s) => new PublicKey(s));
   const chunk = 50;
   for (let i = 0; i < unique.length; i += chunk) {
     const slice = unique.slice(i, i + chunk);
@@ -1049,7 +1062,7 @@ async function fetchOrcaLegacy(): Promise<PoolsPayload> {
   for (const m of watchMints.slice(0, 50)) { if (m !== USDC) pairs.push([m, USDC]); if (m !== SOL) pairs.push([m, SOL]); }
   pairs.push([SOL, USDC]);
   const tickSpacings = [8, 16, 32, 64, 128, 256];
-  const addrs: PublicKey[] = [];
+  const addrs: any[] = [];
   for (const [a, b] of pairs) {
     const [mintA, mintB] = String(a) < String(b) ? [a, b] : [b, a];
     for (const ts of tickSpacings) {
@@ -1059,7 +1072,7 @@ async function fetchOrcaLegacy(): Promise<PoolsPayload> {
       } catch {}
     }
   }
-  const unique = Array.from(new Set(addrs.map((p) => p.toBase58()))).map((s) => new PublicKey(s));
+  const unique = Array.from(new Set(addrs.map((p: any) => p.toBase58()))).map((s) => new PublicKey(s));
   const chunk = 50;
   for (let i = 0; i < unique.length; i += chunk) {
     const slice = unique.slice(i, i + chunk);

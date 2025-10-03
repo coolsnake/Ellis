@@ -131,7 +131,8 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       emit('log', { 
         level: 'info', 
         message: 'System configuration updated', 
-        timestamp: new Date().toISOString() 
+        timestamp: new Date().toISOString(),
+        context: { cat: 'terminal' }
       });
     } catch (e: any) {
       logger.error('server: failed to update system config', { error: String(e?.message || e), cat: 'server' });
@@ -866,7 +867,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       if (jupiterMaxSlippageBps !== undefined) CONFIG.fees.jupiterMaxSlippageBps = Math.max(1, Math.min(10000, jupiterMaxSlippageBps));
       
       res.json({ fees: CONFIG.fees });
-      emit('log', { level: 'info', message: 'Fee configuration updated', timestamp: new Date().toISOString(), context: CONFIG.fees, cat: 'server' });
+      emit('log', { level: 'info', message: 'Fee configuration updated', timestamp: new Date().toISOString(), context: { ...CONFIG.fees, cat: 'terminal' } });
     } catch (e: any) {
       logger.error('server: failed to update fee config', { error: String(e), cat: 'server' });
       res.status(500).json({ error: String(e) });
@@ -1964,7 +1965,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     }
     
     res.json({ ok: true, strategies: list });
-    emit('log', { level: 'info', message: `Strategy upserted: ${name}`, timestamp: new Date().toISOString(), context: updated });
+    emit('log', { level: 'info', message: `Strategy upserted: ${name}`, timestamp: new Date().toISOString(), context: { ...updated, cat: 'terminal' } });
     io.emit('strategies-update', list);
     // Optimistically emit activity stub for UI immediacy
     emit('activity', { strategy: name, status: 'waiting', pair: `${updated.fromToken || 'USDC'}/${updated.toToken || updated.token || 'SOL'}`, trades: [] });
@@ -2012,7 +2013,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     if (!name) return res.status(400).json({ error: 'name required' });
     const list = await removeStrategy(name);
     res.json({ ok: true, strategies: list });
-    emit('log', { level: 'info', message: `Strategy removed: ${name}`, timestamp: new Date().toISOString() });
+    emit('log', { level: 'info', message: `Strategy removed: ${name}`, timestamp: new Date().toISOString(), context: { cat: 'terminal' } });
     io.emit('strategies-update', list);
     // Clear positions and activity for removed strategy
     try {
@@ -2071,7 +2072,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     await writeJson(STRATEGY_LIST_PATH, list);
     res.json({ ok: true, strategies: list });
     io.emit('strategies-update', list);
-    emit('log', { level: 'info', message: `Strategy ${active ? 'activated' : 'deactivated'}: ${name}`, timestamp: new Date().toISOString() });
+    emit('log', { level: 'info', message: `Strategy ${active ? 'activated' : 'deactivated'}: ${name}`, timestamp: new Date().toISOString(), context: { cat: 'terminal' } });
   });
 
   // Grid strategy specific routes
@@ -2195,7 +2196,8 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       emit('log', { 
         level: 'info', 
         message: `Grid rebalancing triggered for ${strategyName}`, 
-        timestamp: new Date().toISOString() 
+        timestamp: new Date().toISOString(),
+        context: { cat: 'terminal' }
       });
     } catch (e: any) {
       logger.error('Failed to rebalance grid', { error: String(e?.message || e) });

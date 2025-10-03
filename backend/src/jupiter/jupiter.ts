@@ -16,7 +16,7 @@ const JUP_QUOTE_URL = 'https://lite-api.jup.ag/swap/v1/quote';
 const JUP_SWAP_URL = 'https://lite-api.jup.ag/swap/v1/swap';
 export const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
-export async function fetchTokenPrices(symbols: string[]): Promise<PriceQuote[]> {
+export async function fetchTokenPrices(symbols: string[], options?: { catOverride?: string }): Promise<PriceQuote[]> {
   if (isApiPaused()) return [];
   if (symbols.length === 0) return [];
 
@@ -29,20 +29,20 @@ export async function fetchTokenPrices(symbols: string[]): Promise<PriceQuote[]>
   url.searchParams.set('ids', ids.join(','));
 
   const attempt = async (attemptIndex: number) => {
-    logger.info(`jup.price.fetch ids=${ids.length} attempt=${attemptIndex + 1}`, { cat: 'jupiter' });
+    logger.info(`jup.price.fetch ids=${ids.length} attempt=${attemptIndex + 1}`, { cat: options?.catOverride || 'jupiter' });
     const t0 = Date.now();
     await jupiterLimiter.acquire(false);
     const res = await fetch(url.toString(), { headers: { accept: 'application/json' } });
     onApiResult(res.status, Date.now() - t0);
     if (res.status === 429) {
       const delay = 500 * Math.pow(2, attemptIndex);
-      logger.info(`jup.429 retry delay=${delay}ms`, { cat: 'jupiter' });
+      logger.info(`jup.429 retry delay=${delay}ms`, { cat: options?.catOverride || 'jupiter' });
       try { emit('log', { level: 'warn', message: 'arb:429 source=jupiter kind=price', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
       await new Promise((r) => setTimeout(r, delay));
       throw new Error('429');
     }
     if (!res.ok) throw new Error(`price fetch failed: ${res.status}`);
-    logger.info(`jup.price.ok status=${res.status} duration=${Date.now() - t0}ms`, { cat: 'jupiter' });
+    logger.info(`jup.price.ok status=${res.status} duration=${Date.now() - t0}ms`, { cat: options?.catOverride || 'jupiter' });
     return (await res.json()) as Record<string, { usdPrice: number; decimals: number; blockId: number; priceChange24h?: number }>;
   };
 
@@ -68,7 +68,7 @@ export async function fetchTokenPrices(symbols: string[]): Promise<PriceQuote[]>
     usdPrice: priceData.usdPrice
   }));
   logger.info(`jup.price.quote_received tokens=${symbols.length} sol_price=${solUsd}`, {
-    cat: 'jupiter',
+    cat: options?.catOverride || 'jupiter',
     prices: pricesReceived
   });
 
@@ -81,7 +81,7 @@ export async function fetchTokenPrices(symbols: string[]): Promise<PriceQuote[]>
   });
 }
 
-export async function fetchPricesByMints(mints: string[]): Promise<Record<string, { usdc: number | null; sol: number | null }>> {
+export async function fetchPricesByMints(mints: string[], options?: { catOverride?: string }): Promise<Record<string, { usdc: number | null; sol: number | null }>> {
   if (isApiPaused()) return {};
   if (mints.length === 0) return {};
   const ids = Array.from(new Set([...mints, SOL_MINT]));
@@ -89,14 +89,14 @@ export async function fetchPricesByMints(mints: string[]): Promise<Record<string
   url.searchParams.set('ids', ids.join(','));
 
   const attempt = async (attemptIndex: number) => {
-    logger.info(`jup.price.fetch ids=${ids.length} attempt=${attemptIndex + 1}`, { cat: 'jupiter' });
+    logger.info(`jup.price.fetch ids=${ids.length} attempt=${attemptIndex + 1}`, { cat: options?.catOverride || 'jupiter' });
     const t0 = Date.now();
     await jupiterLimiter.acquire(false);
     const res = await fetch(url.toString(), { headers: { accept: 'application/json' } });
     onApiResult(res.status, Date.now() - t0);
     if (res.status === 429) {
       const delay = 500 * Math.pow(2, attemptIndex);
-      logger.info(`[${new Date().toISOString()}] jup.429 retry delay=${delay}ms`);
+      logger.info(`[${new Date().toISOString()}] jup.429 retry delay=${delay}ms`, { cat: options?.catOverride || 'jupiter' });
       try { emit('log', { level: 'warn', message: `arb:429 source=jupiter kind=price ids=${ids.length}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
       await new Promise((r) => setTimeout(r, delay));
       throw new Error('429');
@@ -127,7 +127,7 @@ export async function fetchPricesByMints(mints: string[]): Promise<Record<string
     usdPrice: priceData.usdPrice
   }));
   logger.info(`jup.price.quote_received mints=${mints.length} sol_price=${solUsd}`, {
-    cat: 'jupiter',
+    cat: options?.catOverride || 'jupiter',
     prices: pricesReceived
   });
 
@@ -153,7 +153,7 @@ type SwapParams = {
   asLegacyTransaction?: boolean; // use legacy transaction format
 };
 
-export async function getQuote(params: Omit<SwapParams, 'userPublicKey'>, priority: boolean = false): Promise<any> {
+export async function getQuote(params: Omit<SwapParams, 'userPublicKey'>, priority: boolean = false, catOverride?: string): Promise<any> {
   // If input and output are same, short-circuit
   if (params.inputMint === params.outputMint) {
     return { inputMint: params.inputMint, outputMint: params.outputMint, inAmount: String(params.amount), outAmount: String(params.amount) } as any;
@@ -169,13 +169,20 @@ export async function getQuote(params: Omit<SwapParams, 'userPublicKey'>, priori
   url.searchParams.set('amount', String(params.amount));
   url.searchParams.set('slippageBps', String(params.slippageBps ?? 50));
   url.searchParams.set('restrictIntermediateTokens', 'true');
-  logger.info(`jup.quote.fetch in=${params.inputMint} out=${params.outputMint} amt=${params.amount}`);
+  logger.info(`jup.quote.fetch in=${params.inputMint} out=${params.outputMint} amt=${params.amount}`, { cat: catOverride || 'jupiter' });
   const t0 = Date.now();
   await jupiterLimiter.acquire(priority);
   const res = await fetch(url.toString(), { headers: { accept: 'application/json' } });
   onApiResult(res.status, Date.now() - t0);
+  if (res.status === 429) {
+    const inMint = params.inputMint;
+    const outMint = params.outputMint;
+    try { emit('log', { level: 'warn', message: `arb:429 source=jupiter kind=quote in=${inMint} out=${outMint}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+    logger.warn('jup.quote 429', { in: inMint, out: outMint, cat: catOverride || 'jupiter' });
+    throw new Error('429');
+  }
   if (!res.ok) throw new Error(`quote fetch failed ${res.status}`);
-  logger.info(`jup.quote.ok status=${res.status}`);
+  logger.info(`jup.quote.ok status=${res.status}`, { cat: catOverride || 'jupiter' });
   const json: any = await res.json();
   try {
     const inMint = params.inputMint;
@@ -203,10 +210,11 @@ export async function executeSwap(
   params: SwapParams,
   walletSignAndSend: (serializedTx: string) => Promise<string>,
   priority: boolean = false,
-  outputDecimals?: number
+  outputDecimals?: number,
+  catOverride?: string
 ): Promise<{ signature: string; receivedAmount: number; receivedAmountActual?: number; sentAmountActual?: number; receivedAmountRawActual?: string; sentAmountRawActual?: string }> {
-  const quote = await getQuote({ inputMint: params.inputMint, outputMint: params.outputMint, amount: params.amount, slippageBps: params.slippageBps }, priority);
-  logger.info(`jup.swap.build in=${params.inputMint} out=${params.outputMint}`);
+  const quote = await getQuote({ inputMint: params.inputMint, outputMint: params.outputMint, amount: params.amount, slippageBps: params.slippageBps }, priority, catOverride);
+  logger.info(`jup.swap.build in=${params.inputMint} out=${params.outputMint}`, { cat: catOverride || 'jupiter' });
   const t0 = Date.now();
   await jupiterLimiter.acquire(priority);
   const swapRes = await fetch(JUP_SWAP_URL, {
@@ -223,10 +231,15 @@ export async function executeSwap(
     }),
   });
   onApiResult(swapRes.status, Date.now() - t0);
+  if (swapRes.status === 429) {
+    try { emit('log', { level: 'warn', message: 'arb:429 source=jupiter kind=swap', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+    logger.warn('jup.swap 429', { cat: catOverride || 'jupiter' });
+    throw new Error('429');
+  }
   if (!swapRes.ok) throw new Error(`swap build failed ${swapRes.status}`);
   const swapJson: any = await swapRes.json();
   const serializedTx: string = swapJson.swapTransaction; // base64
-  logger.info(`jup.swap.tx ok`);
+  logger.info(`jup.swap.tx ok`, { cat: catOverride || 'jupiter' });
   try {
     const outRaw = Number(quote?.outAmount || 0);
     const outDec = Number(quote?.routePlan?.[quote?.routePlan?.length - 1]?.swapInfo?.outDecimals ?? 6);

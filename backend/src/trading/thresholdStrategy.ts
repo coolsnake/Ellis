@@ -289,7 +289,7 @@ export class ThresholdTrader {
           const bal = await getBalances(new PublicKey(this.walletPubkey));
           const haveBase = (fromSym.toUpperCase() === 'SOL') ? (bal.sol || 0) : (bal.tokens[fromInfo.mint] || 0);
           const haveSol = Number(bal.sol || 0);
-          const minSolForFees = Number(process.env.MIN_SOL_FOR_FEES || 0.02);
+          const minSolForFees = Number((globalThis as any).process?.env?.MIN_SOL_FOR_FEES || 0.02);
           emit('log', { level: 'info', message: `pretrade:balances base=${haveBase} ${fromSym} sol=${haveSol}`, timestamp: new Date().toLocaleTimeString() });
           if (haveBase < cfg.amount) {
             logger.warn('Insufficient base balance for buy', { token: fromSym, need: cfg.amount, have: haveBase });
@@ -327,7 +327,7 @@ export class ThresholdTrader {
           let realizedEntryPair = pairPrice;
           let routeLen: number | undefined;
           try {
-            const q: any = await getQuote({ inputMint, outputMint, amount: amountInSmallest, slippageBps: (cfg as any).slippageBps ?? 100 });
+          const q: any = await getQuote({ inputMint, outputMint, amount: amountInSmallest, slippageBps: (cfg as any).slippageBps ?? 100 }, false, 'strategy');
             const outRaw = Number(q?.outAmount || 0);
             const outDec = Number(q?.routePlan?.[q?.routePlan?.length - 1]?.swapInfo?.outDecimals ?? toInfo.decimals ?? 6);
             toAmount = outRaw / Math.pow(10, outDec);
@@ -375,7 +375,8 @@ export class ThresholdTrader {
             },
             this.walletSignAndSend,
             false, // priority
-            toInfo.decimals // output decimals for received amount
+            toInfo.decimals, // output decimals for received amount
+            'strategy'
           );
           
         const sigOpenLong = swapResultOpenLong.signature;
@@ -450,7 +451,7 @@ export class ThresholdTrader {
           const bal = await getBalances(new PublicKey(this.walletPubkey));
           const haveQuote = (fromSym.toUpperCase() === 'SOL') ? (bal.sol || 0) : (bal.tokens[fromInfo.mint] || 0);
           const haveSol = Number(bal.sol || 0);
-          const minSolForFees = Number(process.env.MIN_SOL_FOR_FEES || 0.02);
+          const minSolForFees = Number((globalThis as any).process?.env?.MIN_SOL_FOR_FEES || 0.02);
           emit('log', { level: 'info', message: `pretrade:balances quote=${haveQuote} ${toSym} sol=${haveSol}`, timestamp: new Date().toLocaleTimeString() });
           if (haveQuote < quoteAmount) {
             logger.warn('Insufficient quote balance for sell', { token: toSym, need: quoteAmount, have: haveQuote });
@@ -481,7 +482,7 @@ export class ThresholdTrader {
           let realizedEntryPairShort = pairPrice;
           let routeLen2: number | undefined;
           try {
-            const q: any = await getQuote({ inputMint, outputMint, amount: amountInSmallest, slippageBps: (cfg as any).slippageBps ?? 100 });
+          const q: any = await getQuote({ inputMint, outputMint, amount: amountInSmallest, slippageBps: (cfg as any).slippageBps ?? 100 }, false, 'strategy');
             const outRaw = Number(q?.outAmount || 0);
             const outDec = Number(q?.routePlan?.[q?.routePlan?.length - 1]?.swapInfo?.outDecimals ?? toInfo.decimals ?? 6);
             baseOut = outRaw / Math.pow(10, outDec);
@@ -529,7 +530,8 @@ export class ThresholdTrader {
             },
             this.walletSignAndSend,
             false, // priority
-            fromInfo.decimals // output decimals for received amount
+            fromInfo.decimals, // output decimals for received amount
+            'strategy'
           );
           
         const sigOpenShort = swapResultOpenShort.signature;
@@ -738,7 +740,7 @@ export class ThresholdTrader {
           const bal = await getBalances(new PublicKey(this.walletPubkey));
           const haveQuote = (toSym.toUpperCase() === 'SOL') ? (bal.sol || 0) : (bal.tokens[toInfo.mint] || 0);
           const haveSol = Number(bal.sol || 0);
-          const minSolForFees = Number(process.env.MIN_SOL_FOR_FEES || 0.02);
+          const minSolForFees = Number((globalThis as any).process?.env?.MIN_SOL_FOR_FEES || 0.02);
           emit('log', { level: 'info', message: `pretrade:balances (close-long) quote=${haveQuote} ${toSym} sol=${haveSol}`, timestamp: new Date().toLocaleTimeString() });
           if (haveQuote <= 0) {
             ThresholdTrader.clearInflight(this.walletPubkey, pairKey, 'closeLong');
@@ -770,7 +772,8 @@ export class ThresholdTrader {
             },
             this.walletSignAndSend,
             false, // priority
-            fromInfo.decimals // output decimals for received amount
+            fromInfo.decimals, // output decimals for received amount
+            'strategy'
           );
           
         const sigCloseLong = swapResultCloseLong.signature;
@@ -853,7 +856,7 @@ export class ThresholdTrader {
           const bal = await getBalances(new PublicKey(this.walletPubkey));
           const haveBase = (toSym.toUpperCase() === 'SOL') ? (bal.sol || 0) : (bal.tokens[toInfo.mint] || 0);
           const haveSol = Number(bal.sol || 0);
-          const minSolForFees = Number(process.env.MIN_SOL_FOR_FEES || 0.02);
+          const minSolForFees = Number((globalThis as any).process?.env?.MIN_SOL_FOR_FEES || 0.02);
           emit('log', { level: 'info', message: `pretrade:balances (close-short) base=${haveBase} ${toSym} sol=${haveSol}`, timestamp: new Date().toLocaleTimeString() });
           if (toSym.toUpperCase() !== 'SOL' && haveSol < minSolForFees) {
             logger.warn('Insufficient SOL for fees (close short)', { haveSol, minSolForFees });
@@ -886,7 +889,8 @@ export class ThresholdTrader {
             },
             this.walletSignAndSend,
             false, // priority
-            toInfo.decimals // output decimals for received amount
+            toInfo.decimals, // output decimals for received amount
+            'strategy'
           );
           
         const sigCloseShort = swapResultCloseShort.signature;

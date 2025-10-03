@@ -267,7 +267,7 @@ export class GridTrader {
       
       if (!fromUsd || !toUsd || !solUsd) {
         try {
-          const fresh = await fetchPricesByMints([fromInfo.mint, toInfo.mint, SOL_MINT]);
+          const fresh = await fetchPricesByMints([fromInfo.mint, toInfo.mint, SOL_MINT], { catOverride: 'strategy' });
           fromUsd = fromUsd ?? (fresh[fromInfo.mint]?.usdc ?? null);
           toUsd = toUsd ?? (fresh[toInfo.mint]?.usdc ?? null);
           solUsd = solUsd ?? (fresh[SOL_MINT]?.usdc ?? null);
@@ -972,7 +972,7 @@ export class GridTrader {
         
         // Pre-send price re-check: ensure the trigger condition still holds
         try {
-          const fresh = await fetchPricesByMints([fromInfo.mint, toInfo.mint, SOL_MINT]);
+          const fresh = await fetchPricesByMints([fromInfo.mint, toInfo.mint, SOL_MINT], { catOverride: 'strategy' });
           const freshFromUsd = fresh[fromInfo.mint]?.usdc ?? fromUsd;
           const freshToUsd = fresh[toInfo.mint]?.usdc ?? toUsd;
           const freshPairPrice = (freshFromUsd && freshToUsd) ? (freshToUsd / freshFromUsd) : undefined;
@@ -1006,7 +1006,8 @@ export class GridTrader {
           },
           this.walletSignAndSend,
           false, // priority
-          outputDecimals
+          outputDecimals,
+          'strategy'
         );
         
         const sig = swapResult.signature;
