@@ -428,7 +428,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       const { name } = (req.body || {}) as { name?: string };
       const { DriftService } = await import('../drift/client.js');
       const svc = DriftService.getInstance();
-      const created = await svc.createSubaccount();
+      const created = await svc.createSubaccount(name);
       const out = created || { id: Number((CONFIG as any).drift?.defaultSubaccountId || 0) };
       try {
         const { readJson, writeJson } = await import('../utils/fs.js');

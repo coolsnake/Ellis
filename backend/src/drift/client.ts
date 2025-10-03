@@ -326,7 +326,7 @@ export class DriftService {
     return true;
   }
 
-  async createSubaccount(): Promise<{ id: number } | null> {
+  async createSubaccount(name?: string): Promise<{ id: number } | null> {
     await this.init();
     try {
       const client: any = this.client;
@@ -338,6 +338,20 @@ export class DriftService {
         try { await this.ensureUserReady(id); } catch {}
         logger.info('drift.subaccount.created', { id, cat: 'drift' });
         return { id };
+      }
+      // Fallback: use SDK's initializeUserAccount path
+      try {
+        const nextId = typeof client?.getNextSubAccountId === 'function' ? await client.getNextSubAccountId() : Number((CONFIG as any).drift?.defaultSubaccountId || 0);
+        const targetId = Number(nextId ?? 0);
+        if (typeof client?.initializeUserAccount === 'function') {
+          await client.initializeUserAccount(targetId, name || undefined);
+          try { await this.ensureUserReady(targetId); } catch {}
+          logger.info('drift.subaccount.created', { id: targetId, cat: 'drift' });
+          return { id: targetId };
+        }
+      } catch (e: any) {
+        logger.error('drift.subaccount.create_failed', { error: String(e?.message || e), cat: 'drift' });
+        return null;
       }
     } catch (e: any) {
       logger.error('drift.subaccount.create_failed', { error: String(e?.message || e), cat: 'drift' });
@@ -362,13 +376,34 @@ export class DriftService {
           ? await client.convertToSpotPrecision(spotMarketIndex, Number(amount))
           : null;
         const nativeAmount = toNative ?? Number(Math.round(Number(amount) * 1_000_000));
-        const ata = typeof client?.getAssociatedTokenAccount === 'function'
-          ? await client.getAssociatedTokenAccount(spotMarketIndex)
-          : undefined;
+        let ata: any = undefined;
+        if (typeof client?.getAssociatedTokenAccount === 'function') {
+          try { ata = await client.getAssociatedTokenAccount(spotMarketIndex); } catch {}
+        }
+        if (ata === undefined) {
+          try {
+            // Derive or create user token account when SDK helper is unavailable
+            const sdk: any = await import('@drift-labs/sdk');
+            const constants: any = (sdk as any).constants || (sdk as any);
+            const cluster = (CONFIG as any)?.drift?.cluster || 'mainnet-beta';
+            const byCluster = (obj: any) => obj?.[cluster] || obj?.[cluster.replace('-', '_')];
+            const list = byCluster(constants?.SPOT_MARKETS) || byCluster(constants?.SpotMarkets) || constants?.SPOT_MARKETS || constants?.SpotMarkets || [];
+            const found = Array.isArray(list) ? list.find((m: any) => Number(m?.marketIndex ?? m?.index ?? m?.market_index) === Number(spotMarketIndex)) : null;
+            const mintStr = String(found?.mint || found?.mintAddress || found?.address || '');
+            if (mintStr) {
+              const { getOrCreateTokenAccount } = await import('../wallet/wallet.js');
+              const mintPk = new PublicKey(mintStr);
+              const ataRes = await getOrCreateTokenAccount(mintPk, this.walletKp!.publicKey, this.walletKp!);
+              ata = ataRes.address;
+            } else {
+              ata = this.walletKp!.publicKey;
+            }
+          } catch {
+            ata = this.walletKp!.publicKey;
+          }
+        }
         // Prefer full signature (amount, spotIndex, ata, subId)
-        const res = (ata !== undefined)
-          ? await client.deposit(nativeAmount, spotMarketIndex, ata, Number(subaccountId))
-          : await client.deposit(nativeAmount, spotMarketIndex, Number(subaccountId));
+        const res = await client.deposit(nativeAmount, spotMarketIndex, ata, Number(subaccountId));
         logger.info('drift.subaccount.deposit_ok', { subaccountId, amount, spotMarketIndex, cat: 'drift' });
         return { ok: true };
       }
@@ -392,12 +427,32 @@ export class DriftService {
           ? await client.convertToSpotPrecision(spotMarketIndex, Number(amount))
           : null;
         const nativeAmount = toNative ?? Number(Math.round(Number(amount) * 1_000_000));
-        const ata = typeof client?.getAssociatedTokenAccount === 'function'
-          ? await client.getAssociatedTokenAccount(spotMarketIndex)
-          : undefined;
-        const res = (ata !== undefined)
-          ? await client.withdraw(nativeAmount, spotMarketIndex, ata, Number(subaccountId))
-          : await client.withdraw(nativeAmount, spotMarketIndex, Number(subaccountId));
+        let ata: any = undefined;
+        if (typeof client?.getAssociatedTokenAccount === 'function') {
+          try { ata = await client.getAssociatedTokenAccount(spotMarketIndex); } catch {}
+        }
+        if (ata === undefined) {
+          try {
+            const sdk: any = await import('@drift-labs/sdk');
+            const constants: any = (sdk as any).constants || (sdk as any);
+            const cluster = (CONFIG as any)?.drift?.cluster || 'mainnet-beta';
+            const byCluster = (obj: any) => obj?.[cluster] || obj?.[cluster.replace('-', '_')];
+            const list = byCluster(constants?.SPOT_MARKETS) || byCluster(constants?.SpotMarkets) || constants?.SPOT_MARKETS || constants?.SpotMarkets || [];
+            const found = Array.isArray(list) ? list.find((m: any) => Number(m?.marketIndex ?? m?.index ?? m?.market_index) === Number(spotMarketIndex)) : null;
+            const mintStr = String(found?.mint || found?.mintAddress || found?.address || '');
+            if (mintStr) {
+              const { getOrCreateTokenAccount } = await import('../wallet/wallet.js');
+              const mintPk = new PublicKey(mintStr);
+              const ataRes = await getOrCreateTokenAccount(mintPk, this.walletKp!.publicKey, this.walletKp!);
+              ata = ataRes.address;
+            } else {
+              ata = this.walletKp!.publicKey;
+            }
+          } catch {
+            ata = this.walletKp!.publicKey;
+          }
+        }
+        const res = await client.withdraw(nativeAmount, spotMarketIndex, ata, Number(subaccountId));
         logger.info('drift.subaccount.withdraw_ok', { subaccountId, amount, spotMarketIndex, cat: 'drift' });
         return { ok: true };
       }
