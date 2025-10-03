@@ -41,6 +41,7 @@ export class DriftService {
   private walletKp: Keypair | null = null;
   private client: any | null = null;
   private cluster: DriftCluster = (CONFIG as any).drift?.cluster || 'mainnet-beta';
+  private subaccountsCache: { data: SubaccountInfo[]; ts: number } | null = null;
 
   static getInstance(): DriftService {
     if (!this.instance) this.instance = new DriftService();
@@ -294,6 +295,10 @@ export class DriftService {
   }
 
   async getSubaccounts(): Promise<SubaccountInfo[]> {
+    // Return cached if available
+    if (this.subaccountsCache && Array.isArray(this.subaccountsCache.data) && this.subaccountsCache.data.length > 0) {
+      return this.subaccountsCache.data;
+    }
     await this.init();
     const out: SubaccountInfo[] = [];
     try {
@@ -340,11 +345,16 @@ export class DriftService {
       } else {
         logger.info('drift.subaccounts.enumerated', { count: out.length, ids: out.map(s => s.id), cat: 'drift' });
       }
-      return out;
+      this.subaccountsCache = { data: out, ts: Date.now() };
+      return this.subaccountsCache.data;
     } catch {
       const id = Number((CONFIG as any).drift?.defaultSubaccountId || 0);
       return [{ id, freeCollateral: 0, totalCollateral: 0, maintenanceRequirement: 0, initialRequirement: 0, effectiveLeverage: 0, positions: [] }];
     }
+  }
+
+  invalidateSubaccountsCache(): void {
+    this.subaccountsCache = null;
   }
 
   async switchSubaccount(_id: number): Promise<boolean> {
@@ -356,6 +366,7 @@ export class DriftService {
         try { if (typeof client?.addUser === 'function') await client.addUser(Number(_id)); } catch {}
         try { if (typeof client?.initializeUserIfNotExists === 'function') await client.initializeUserIfNotExists(Number(_id)); } catch {}
         logger.info('drift.subaccount.switch_ok', { id: _id, cat: 'drift' });
+        this.invalidateSubaccountsCache();
         return true;
       }
     } catch (e: any) {
@@ -410,6 +421,7 @@ export class DriftService {
         const id = Number((res?.subAccountId ?? res?.id) ?? fallbackId);
         try { await this.ensureUserReady(id); } catch {}
         logger.info('drift.subaccount.created', { id, cat: 'drift' });
+        this.invalidateSubaccountsCache();
         return { id };
       }
       // Fallback: attempt creating at a candidate id range without relying on userStats
@@ -443,6 +455,7 @@ export class DriftService {
           try { if (typeof client?.switchActiveUser === 'function') { await withBackoff(async () => client.switchActiveUser(Number(id))); } } catch {}
           try { await this.ensureUserReady(Number(id)); } catch {}
           logger.info('drift.subaccount.created', { id: Number(id), cat: 'drift' });
+          this.invalidateSubaccountsCache();
           return { id: Number(id) };
         } catch (e: any) {
           const msg = String(e?.message || e || '');
@@ -451,6 +464,7 @@ export class DriftService {
             // If it already exists, treat as success by switching to it
             try { await this.ensureUserReady(Number(id)); } catch {}
             logger.info('drift.subaccount.created_existing', { id: Number(id), cat: 'drift' });
+            this.invalidateSubaccountsCache();
             return { id: Number(id) };
           }
           lastReason = msg || lastReason;
@@ -506,6 +520,7 @@ export class DriftService {
         // Prefer full signature (amount, spotIndex, ata, subId)
         const res = await client.deposit(nativeAmount, spotMarketIndex, ata, Number(subaccountId));
         logger.info('drift.subaccount.deposit_ok', { subaccountId, amount, spotMarketIndex, cat: 'drift' });
+        this.invalidateSubaccountsCache();
         return { ok: true };
       }
     } catch (e: any) {
@@ -555,6 +570,7 @@ export class DriftService {
         }
         const res = await client.withdraw(nativeAmount, spotMarketIndex, ata, Number(subaccountId));
         logger.info('drift.subaccount.withdraw_ok', { subaccountId, amount, spotMarketIndex, cat: 'drift' });
+        this.invalidateSubaccountsCache();
         return { ok: true };
       }
     } catch (e: any) {
@@ -579,6 +595,7 @@ export class DriftService {
         const nativeAmount = toNative ?? Number(Math.round(Number(amount) * 1_000_000));
         await client.transferDeposit(nativeAmount, Number(spotMarketIndex), Number(fromSubaccountId), Number(toSubaccountId));
         logger.info('drift.subaccount.transfer_ok', { amount, spotMarketIndex, fromSubaccountId, toSubaccountId, cat: 'drift' });
+        this.invalidateSubaccountsCache();
         return { ok: true };
       }
     } catch (e: any) {

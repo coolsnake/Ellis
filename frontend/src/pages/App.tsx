@@ -7,6 +7,7 @@ import { GridStrategyConfig } from '../components/GridStrategyConfig';
 import { LeveragedGridConfig } from '../components/LeveragedGridConfig';
 import { GridMonitor } from '../components/GridMonitor';
 import { LiquidationMonitor } from '../components/LiquidationMonitor';
+import { LiquidatorConfig } from '../components/LiquidatorConfig';
 import { ThresholdStrategyConfig } from '../components/ThresholdStrategyConfig';
 import { AddTokenForm } from '../components/AddTokenForm';
 import { FeeConfig } from '../components/FeeConfig';
@@ -65,6 +66,7 @@ export const App: React.FC = () => {
   const [showArbConfig, setShowArbConfig] = useState(false);
   const [showDataFetchConfig, setShowDataFetchConfig] = useState(false);
   const [showEngineConfig, setShowEngineConfig] = useState(false);
+  const [showLiqConfig, setShowLiqConfig] = useState(false);
   const [showGraph, setShowGraph] = useState(false);
   const socketRef = useRef<Socket | null>(null);
   const lastSystemRef = useRef<number>(Date.now());
@@ -1835,6 +1837,9 @@ export const App: React.FC = () => {
               <div className="mt-3">
                 <LiquidationMonitor apiBase={apiBase} socket={socketRef.current} liquidatorKey={`liq#${liqName || 'default'}`} />
               </div>
+              <div className="mt-2">
+                <button className="px-3 py-2 bg-gray-700 text-white rounded hover:bg-gray-600" onClick={() => setShowLiqConfig(true)}>Open Liquidator Config</button>
+              </div>
               {/* Liquidator Config */}
               <div className="mt-4 p-3 bg-gray-800 rounded">
                 <div className="flex items-center justify-between mb-2">
@@ -1915,6 +1920,9 @@ export const App: React.FC = () => {
               </div>
             </CollapsibleSection>
           </div>
+          {showLiqConfig && (
+            <LiquidatorConfig apiBase={apiBase} onClose={() => setShowLiqConfig(false)} onSaved={() => setShowLiqConfig(false)} />
+          )}
         </CollapsibleSection>
         <CollapsibleSection title={"Positions"} storageKey="panel:positions">
           {/* Grid summary per strategy */}

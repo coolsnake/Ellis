@@ -410,6 +410,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     try {
       const { DriftService } = await import('../drift/client.js');
       const svc = DriftService.getInstance();
+      const refresh = false;
       const subs = await svc.getSubaccounts();
       const { readJson } = await import('../utils/fs.js');
       const pathMod = await import('path');
@@ -419,6 +420,26 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       res.json({ subaccounts, selectedId: store.selectedId });
     } catch (e: any) {
       logger.error('drift: subaccounts failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Drift: refresh subaccount list (invalidate cache)
+  api.post('/drift/subaccounts', async (req: Request, res: Response) => {
+    try {
+      const refresh = !!(req.body?.refresh) || String(req.query?.refresh || '') === '1';
+      const { DriftService } = await import('../drift/client.js');
+      const svc = DriftService.getInstance();
+      if (refresh) svc.invalidateSubaccountsCache();
+      const subs = await svc.getSubaccounts();
+      const { readJson } = await import('../utils/fs.js');
+      const pathMod = await import('path');
+      const storePath = pathMod.resolve(process.cwd(), 'backend', 'config', 'driftSubaccounts.json');
+      const store = await readJson<any>(storePath, { names: {}, selectedId: subs?.[0]?.id ?? 0 });
+      const subaccounts = subs.map((s: any) => ({ ...s, name: (store.names?.[String(s.id)] || null) }));
+      res.json({ subaccounts, selectedId: store.selectedId, refreshed: refresh });
+    } catch (e: any) {
+      logger.error('drift: subaccounts refresh failed', { error: String(e?.message || e) });
       res.status(500).json({ error: String(e?.message || e) });
     }
   });
