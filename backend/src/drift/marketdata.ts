@@ -42,12 +42,11 @@ export async function fetchDlobL2(marketIndex: number): Promise<DlobL2 | null> {
       const out: DlobL2 = { bid: [], ask: [], oracle: scaleIfNeeded(data?.oracle), symbol: data?.symbol };
       const b = Array.isArray(data?.bids) ? data.bids : (Array.isArray(data?.bid) ? data.bid : []);
       const a = Array.isArray(data?.asks) ? data.asks : (Array.isArray(data?.ask) ? data.ask : []);
-      out.bid = (b || [])
-        .map((x: any) => ({ price: scaleIfNeeded(Number(x[0] ?? x.price)), size: Number(x[1] ?? x.size) }))
-        .filter((v: Dl2Level) => isFinite(v.price) && isFinite(v.size));
-      out.ask = (a || [])
-        .map((x: any) => ({ price: scaleIfNeeded(Number(x[0] ?? x.price)), size: Number(x[1] ?? x.size) }))
-        .filter((v: Dl2Level) => isFinite(v.price) && isFinite(v.size));
+      const toLevel = (x: any) => ({ price: scaleIfNeeded(Number(x[0] ?? x.price)), size: Number(x[1] ?? x.size) });
+      const isLevel = (v: { price: number | undefined; size: number }): v is Dl2Level =>
+        typeof v.price === 'number' && isFinite(v.price) && isFinite(v.size);
+      out.bid = (b || []).map(toLevel).filter(isLevel);
+      out.ask = (a || []).map(toLevel).filter(isLevel);
       logger.debug('drift.dlob.l2_ready', { marketIndex, bid: out.bid.length, ask: out.ask.length, oracle: out.oracle, cat: 'drift' });
       return out;
     } catch (e: any) {
