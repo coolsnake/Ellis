@@ -1480,94 +1480,97 @@ export const App: React.FC = () => {
                     <input className="flex-1 px-2 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" placeholder="Rename selected" value={driftRenameSubName} onChange={e => setDriftRenameSubName(e.target.value)} />
                     <button disabled={driftOpBusy || !driftSelectedSubId} onClick={async () => { try { setDriftOpBusy(true); const name = driftRenameSubName.trim(); if (name) { await fetch(`${apiBase}/drift/subaccount/name`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: Number(driftSelectedSubId), name }) }); const subsResp = await fetch(`${apiBase}/drift/subaccounts`).then(r => r.json()); const subs = subsResp?.subaccounts || []; setDriftSubaccounts(subs); } } catch {} finally { setDriftOpBusy(false); } }} className="px-3 py-2 bg-gray-700 text-white rounded hover:bg-gray-600 disabled:opacity-60">Rename</button>
                   </div>
-                  {driftSubaccounts.map((s: any) => (
-                    <div key={s.id} className={`p-2 rounded ${Number(s.id) === Number(driftSelectedSubId) ? 'bg-gray-900' : 'bg-gray-750'}`}>
-                      <div className="text-gray-200">{s.name ? `${s.name} (Sub ${s.id})` : `Sub ${s.id}`}</div>
-                      <div className="grid grid-cols-2 gap-2 text-sm text-gray-300 mt-1">
-                        <div>Free Collateral: <span className="text-white">{Number(s.freeCollateral || 0).toFixed(2)}</span></div>
-                        <div>Total Collateral: <span className="text-white">{Number(s.totalCollateral || 0).toFixed(2)}</span></div>
-                        <div>Initial Req: <span className="text-white">{Number(s.initialRequirement || 0).toFixed(2)}</span></div>
-                        <div>Maintenance: <span className="text-white">{Number(s.maintenanceRequirement || 0).toFixed(2)}</span></div>
-                        <div>Eff. Leverage: <span className="text-white">{Number(s.effectiveLeverage || 0).toFixed(2)}</span></div>
-                      </div>
+                  {/* Funds controls moved here */}
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-2 items-center mt-2">
+                    <div className="flex space-x-2">
+                      <button onClick={() => setDriftAction('deposit')} className={`px-3 py-2 rounded text-white text-sm ${driftAction === 'deposit' ? 'bg-green-700' : 'bg-gray-700 hover:bg-gray-600'}`}>Deposit</button>
+                      <button onClick={() => setDriftAction('withdraw')} className={`px-3 py-2 rounded text-white text-sm ${driftAction === 'withdraw' ? 'bg-red-700' : 'bg-gray-700 hover:bg-gray-600'}`}>Withdraw</button>
                     </div>
-                  ))}
+                    <input type="number" min={0} step={0.000001} className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white text-base" value={driftAmount} onChange={e => setDriftAmount(Number(e.target.value))} placeholder="Amount" />
+                    <select className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white text-base" value={driftSpotIndex} onChange={e => setDriftSpotIndex(Number(e.target.value))}>
+                      {(() => {
+                        const marketsByMint = new Map<string, any>();
+                        for (const m of (driftSpotMarkets || [])) {
+                          const mint = String(m?.mint || '').toLowerCase();
+                          if (mint) marketsByMint.set(mint, m);
+                        }
+                        if (driftAction === 'deposit') {
+                          const opts: Array<{ idx: number; label: string }> = [];
+                          for (const t of (walletTokens || [])) {
+                            try {
+                              const bal = Number((t as any)?.uiAmount ?? (t as any)?.amount ?? (t as any)?.balance ?? 0);
+                              const mint = String((t as any)?.mint || (t as any)?.id || '').toLowerCase();
+                              if (bal > 0 && mint && marketsByMint.has(mint)) {
+                                const m = marketsByMint.get(mint);
+                                const sym = (t as any)?.symbol || m?.symbol || mint.slice(0,4) + '…';
+                                opts.push({ idx: Number(m.marketIndex), label: `${sym} (${bal.toLocaleString(undefined, { maximumFractionDigits: 6 })})` });
+                              }
+                            } catch {}
+                          }
+                          if (opts.length === 0) {
+                            for (const m of (driftSpotMarkets || [])) {
+                              opts.push({ idx: Number(m.marketIndex), label: `${m.symbol || m.mint || `Index ${m.marketIndex}`} (${m.marketIndex})` });
+                            }
+                          }
+                          const has = opts.some(o => o.idx === Number(driftSpotIndex));
+                          if (!has && opts[0]) setDriftSpotIndex(opts[0].idx);
+                          return opts.map(o => (<option key={o.idx} value={o.idx}>{o.label}</option>));
+                        } else {
+                          const opts: Array<{ idx: number; label: string }> = [];
+                          for (const b of (driftSubBalances || [])) {
+                            try {
+                              const bal = Number((b as any)?.balance || 0);
+                              if (bal > 0 && Number.isFinite(Number(b.marketIndex))) {
+                                const idx = Number(b.marketIndex);
+                                const sym = (b as any)?.symbol || (driftSpotMarkets.find((m: any) => Number(m.marketIndex) === idx)?.symbol) || `Index ${idx}`;
+                                opts.push({ idx, label: `${sym} (${bal.toLocaleString(undefined, { maximumFractionDigits: 6 })})` });
+                              }
+                            } catch {}
+                          }
+                          if (opts.length === 0) {
+                            for (const m of (driftSpotMarkets || [])) {
+                              opts.push({ idx: Number(m.marketIndex), label: `${m.symbol || m.mint || `Index ${m.marketIndex}`} (${m.marketIndex})` });
+                            }
+                          }
+                          const has = opts.some(o => o.idx === Number(driftSpotIndex));
+                          if (!has && opts[0]) setDriftSpotIndex(opts[0].idx);
+                          return opts.map(o => (<option key={o.idx} value={o.idx}>{o.label}</option>));
+                        }
+                      })()}
+                    </select>
+                    <button disabled={driftOpBusy || !Number.isFinite(Number(driftSelectedSubId)) || Number(driftAmount) <= 0} onClick={async () => {
+                      try {
+                        setDriftOpBusy(true);
+                        const body = { subaccountId: Number(driftSelectedSubId), amount: Number(driftAmount), spotMarketIndex: Number(driftSpotIndex) };
+                        const kind = driftAction === 'withdraw' ? 'withdraw' : 'deposit';
+                        await fetch(`${apiBase}/drift/subaccount/${kind}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                        const subsResp = await fetch(`${apiBase}/drift/subaccounts`).then(r => r.json());
+                        setDriftSubaccounts(subsResp?.subaccounts || []);
+                        const b = await fetch(`${apiBase}/drift/subaccount/balances?subaccountId=${Number(driftSelectedSubId)}`).then(r => r.json());
+                        setDriftSubBalances(Array.isArray(b?.balances) ? b.balances : []);
+                      } catch {} finally { setDriftOpBusy(false); }
+                    }} className="px-3 py-2 bg-indigo-700 text-white rounded hover:bg-indigo-800 disabled:opacity-60">{driftAction === 'withdraw' ? 'Withdraw' : 'Deposit'}</button>
+                  </div>
                 </div>
               )}
             </div>
           </div>
-          <div className="mt-3 p-3 bg-gray-800 rounded">
-            <div className="text-white font-semibold mb-2">Manage Funds</div>
-            <div className="grid grid-cols-3 gap-2 items-center">
-              <div className="flex space-x-2">
-                <button onClick={() => setDriftAction('deposit')} className={`px-3 py-2 rounded text-white text-sm ${driftAction === 'deposit' ? 'bg-green-700' : 'bg-gray-700 hover:bg-gray-600'}`}>Deposit</button>
-                <button onClick={() => setDriftAction('withdraw')} className={`px-3 py-2 rounded text-white text-sm ${driftAction === 'withdraw' ? 'bg-red-700' : 'bg-gray-700 hover:bg-gray-600'}`}>Withdraw</button>
-              </div>
-              <input type="number" min={0} step={0.000001} className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={driftAmount} onChange={e => setDriftAmount(Number(e.target.value))} placeholder="Amount" />
-              <select className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={driftSpotIndex} onChange={e => setDriftSpotIndex(Number(e.target.value))}>
-                {(() => {
-                  // Build token options based on selected action
-                  const marketsByMint = new Map<string, any>();
-                  for (const m of (driftSpotMarkets || [])) {
-                    const mint = String(m?.mint || '').toLowerCase();
-                    if (mint) marketsByMint.set(mint, m);
-                  }
-                  if (driftAction === 'deposit') {
-                    const opts: Array<{ idx: number; label: string }> = [];
-                    for (const t of (walletTokens || [])) {
-                      try {
-                        const bal = Number((t as any)?.uiAmount ?? (t as any)?.amount ?? (t as any)?.balance ?? 0);
-                        const mint = String((t as any)?.mint || (t as any)?.id || '').toLowerCase();
-                        if (bal > 0 && mint && marketsByMint.has(mint)) {
-                          const m = marketsByMint.get(mint);
-                          const sym = (t as any)?.symbol || m?.symbol || mint.slice(0,4) + '…';
-                          opts.push({ idx: Number(m.marketIndex), label: `${sym} (${bal.toLocaleString(undefined, { maximumFractionDigits: 6 })})` });
-                        }
-                      } catch {}
-                    }
-                    if (opts.length === 0) {
-                      // Fallback: list all markets if no wallet balances matched
-                      for (const m of (driftSpotMarkets || [])) {
-                        opts.push({ idx: Number(m.marketIndex), label: `${m.symbol || m.mint || `Index ${m.marketIndex}`} (${m.marketIndex})` });
-                      }
-                    }
-                    // Ensure current selection exists; otherwise pick first
-                    const has = opts.some(o => o.idx === Number(driftSpotIndex));
-                    if (!has && opts[0]) setDriftSpotIndex(opts[0].idx);
-                    return opts.map(o => (<option key={o.idx} value={o.idx}>{o.label}</option>));
-                  } else {
-                    const opts: Array<{ idx: number; label: string }> = [];
-                    for (const b of (driftSubBalances || [])) {
-                      try {
-                        const bal = Number((b as any)?.balance || 0);
-                        if (bal > 0 && Number.isFinite(Number(b.marketIndex))) {
-                          const idx = Number(b.marketIndex);
-                          const sym = (b as any)?.symbol || (driftSpotMarkets.find((m: any) => Number(m.marketIndex) === idx)?.symbol) || `Index ${idx}`;
-                          opts.push({ idx, label: `${sym} (${bal.toLocaleString(undefined, { maximumFractionDigits: 6 })})` });
-                        }
-                      } catch {}
-                    }
-                    if (opts.length === 0) {
-                      // Fallback to all markets
-                      for (const m of (driftSpotMarkets || [])) {
-                        opts.push({ idx: Number(m.marketIndex), label: `${m.symbol || m.mint || `Index ${m.marketIndex}`} (${m.marketIndex})` });
-                      }
-                    }
-                    const has = opts.some(o => o.idx === Number(driftSpotIndex));
-                    if (!has && opts[0]) setDriftSpotIndex(opts[0].idx);
-                    return opts.map(o => (<option key={o.idx} value={o.idx}>{o.label}</option>));
-                  }
-                })()}
-              </select>
-            </div>
-            <div className="grid grid-cols-3 gap-2 items-center mt-2">
-              <div />
-              <button disabled={driftOpBusy} onClick={async () => { try { setDriftOpBusy(true); await fetch(`${apiBase}/drift/subaccount/deposit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subaccountId: Number(driftSelectedSubId), amount: Number(driftAmount), spotMarketIndex: Number(driftSpotIndex) }) }); const subsResp = await fetch(`${apiBase}/drift/subaccounts`).then(r => r.json()); setDriftSubaccounts(subsResp?.subaccounts || []); } catch {} finally { setDriftOpBusy(false); } }} className="px-3 py-2 bg-green-700 text-white rounded hover:bg-green-800 disabled:opacity-60">Deposit</button>
-              <button disabled={driftOpBusy} onClick={async () => { try { setDriftOpBusy(true); await fetch(`${apiBase}/drift/subaccount/withdraw`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subaccountId: Number(driftSelectedSubId), amount: Number(driftAmount), spotMarketIndex: Number(driftSpotIndex) }) }); const subsResp = await fetch(`${apiBase}/drift/subaccounts`).then(r => r.json()); setDriftSubaccounts(subsResp?.subaccounts || []); } catch {} finally { setDriftOpBusy(false); } }} className="px-3 py-2 bg-red-700 text-white rounded hover:bg-red-800 disabled:opacity-60">Withdraw</button>
-            </div>
-          </div>
+          {/* Manage Funds moved above into Subaccounts card; removed duplicate buttons */}
           <div className="mt-3 p-3 bg-gray-800 rounded">
             <div className="text-white font-semibold mb-2">Subaccount Balances</div>
+            {(() => {
+              const sel = driftSubaccounts.find((s: any) => Number(s.id) === Number(driftSelectedSubId));
+              if (!sel) return null;
+              return (
+                <div className="mb-2 grid grid-cols-2 gap-2 text-sm text-gray-300">
+                  <div>Free Collateral: <span className="text-white">{Number(sel.freeCollateral || 0).toFixed(2)}</span></div>
+                  <div>Total Collateral: <span className="text-white">{Number(sel.totalCollateral || 0).toFixed(2)}</span></div>
+                  <div>Initial Req: <span className="text-white">{Number(sel.initialRequirement || 0).toFixed(2)}</span></div>
+                  <div>Maintenance: <span className="text-white">{Number(sel.maintenanceRequirement || 0).toFixed(2)}</span></div>
+                  <div>Eff. Leverage: <span className="text-white">{Number(sel.effectiveLeverage || 0).toFixed(2)}</span></div>
+                </div>
+              );
+            })()}
             {driftSubBalances.length === 0 ? (
               <div className="text-gray-400 text-sm">No balances</div>
             ) : (

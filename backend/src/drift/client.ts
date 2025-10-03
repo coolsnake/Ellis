@@ -339,19 +339,36 @@ export class DriftService {
         logger.info('drift.subaccount.created', { id, cat: 'drift' });
         return { id };
       }
-      // Fallback: use SDK's initializeUserAccount path
-      try {
-        const nextId = typeof client?.getNextSubAccountId === 'function' ? await client.getNextSubAccountId() : Number((CONFIG as any).drift?.defaultSubaccountId || 0);
-        const targetId = Number(nextId ?? 0);
-        if (typeof client?.initializeUserAccount === 'function') {
-          await client.initializeUserAccount(targetId, name || undefined);
-          try { await this.ensureUserReady(targetId); } catch {}
-          logger.info('drift.subaccount.created', { id: targetId, cat: 'drift' });
-          return { id: targetId };
+      // Fallback: attempt creating at a candidate id range without relying on userStats
+      if (typeof client?.initializeUserAccount === 'function') {
+        const tryIds: number[] = [];
+        try {
+          if (typeof client?.getNextSubAccountId === 'function') {
+            const next = await client.getNextSubAccountId();
+            const n = Number(next);
+            if (Number.isFinite(n)) tryIds.push(n);
+          }
+        } catch {}
+        // Probe a small range as a safety net
+        for (let i = 0; i < 8; i += 1) tryIds.push(i);
+        // Deduplicate while preserving order
+        const seen = new Set<number>();
+        for (const id of tryIds) {
+          if (seen.has(id)) continue;
+          seen.add(id);
+          try {
+            await client.initializeUserAccount(id, name || undefined);
+            try { await this.ensureUserReady(id); } catch {}
+            logger.info('drift.subaccount.created', { id, cat: 'drift' });
+            return { id };
+          } catch (e: any) {
+            const msg = String(e?.message || e || '');
+            // Skip if already exists; continue to next id
+            if (/exist|initialized|already/i.test(msg)) continue;
+            // Other errors: try next id as well
+            continue;
+          }
         }
-      } catch (e: any) {
-        logger.error('drift.subaccount.create_failed', { error: String(e?.message || e), cat: 'drift' });
-        return null;
       }
     } catch (e: any) {
       logger.error('drift.subaccount.create_failed', { error: String(e?.message || e), cat: 'drift' });
