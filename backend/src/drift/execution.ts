@@ -195,7 +195,7 @@ export class DriftGridRunner {
 }
 
 export class DriftGridRegistry {
-  private static reg = new (require('../utils/runnerRegistry.js').RunnerRegistry)<DriftGridRunner>();
+  private static reg: any = new (require('../utils/runnerRegistry.js').RunnerRegistry)();
 
   static keyOf(cfg: LeveragedGridConfig): string {
     return `${cfg.name}#${cfg.market.marketIndex}#${cfg.subaccountId}`;

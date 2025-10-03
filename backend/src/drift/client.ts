@@ -360,13 +360,13 @@ export class DriftService {
 
   async createSubaccount(name?: string): Promise<{ id: number } | null> {
     await this.init();
+    let lastReason: string | null = null;
     try {
       const client: any = this.client;
       // Simple retry helper for rate limits
       const { retryWithBackoff } = await import('../utils/retry.js');
       const withBackoff = async <T>(fn: () => Promise<T>): Promise<T> => retryWithBackoff(fn, { maxRetries: 5, baseMs: 500, maxMs: 8000, jitter: true });
 
-      let lastReason: string | null = null;
 
       // Preflight: ensure wallet has SOL for fees
       try {
