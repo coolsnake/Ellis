@@ -108,6 +108,7 @@ export class DriftLiquidator {
   private statsTimer: any | null = null;
   private targetCooldownUntil: Map<string, number> = new Map();
   private eventSub: any | null = null;
+  private lastDiscoveryUsedGpaV2 = false;
 
   constructor(private config: LiquidatorConfig) {}
 
@@ -246,11 +247,24 @@ export class DriftLiquidator {
       const cfg: any = (CONFIG as any)?.drift?.liquidator || {};
       const discoverAll = (this.config.discoverAllUsers !== undefined) ? !!this.config.discoverAllUsers : (cfg.discoverAllUsers !== false); // default true
       if (discoverAll) {
-        try { list = await drift?.program?.account?.user?.all?.(); } catch {}
-        if (Array.isArray(list) && list.length > 0) {
-          const maxDiscover = Math.max(10, Math.min(5000, Number((this.config.maxDiscoveredUsers ?? cfg.maxDiscoveredUsers ?? 500))));
-          const keys = list.map((x: any) => String(x?.publicKey?.toBase58?.() || x?.publicKey || '')).filter(Boolean);
-          this.userKeys = keys.slice(0, maxDiscover);
+        const maxDiscover = Math.max(10, Math.min(10000, Number((this.config.maxDiscoveredUsers ?? cfg.maxDiscoveredUsers ?? 500))));
+        // Try Helius getProgramAccountsV2 with pagination and anchor discriminator filter (fast & lightweight)
+        let discovered: string[] | null = null;
+        try {
+          discovered = await this.discoverUsersViaHeliusGpaV2(maxDiscover);
+          if (Array.isArray(discovered) && discovered.length > 0) {
+            this.userKeys = discovered.slice(0, maxDiscover);
+            this.lastDiscoveryUsedGpaV2 = true;
+          }
+        } catch {}
+        // Fallback to Anchor .all() if V2 failed or no results
+        if (!Array.isArray(discovered) || discovered.length === 0) {
+          try { list = await drift?.program?.account?.user?.all?.(); } catch {}
+          if (Array.isArray(list) && list.length > 0) {
+            const keys = list.map((x: any) => String(x?.publicKey?.toBase58?.() || x?.publicKey || '')).filter(Boolean);
+            this.userKeys = keys.slice(0, maxDiscover);
+            this.lastDiscoveryUsedGpaV2 = false;
+          }
         }
       }
       // Seed with active/liquidatable users via event subscriber (if present)
@@ -281,6 +295,55 @@ export class DriftLiquidator {
       }
       logger.info('drift.liquidator.discovery_ready', { users: this.userKeys.length, cat: 'drift' });
     } catch {}
+  }
+
+  private computeAnchorDiscriminatorB58(name: string): string | null {
+    try {
+      const label = `account:${name}`;
+      const crypto = await import('crypto');
+      const hash = (crypto as any).createHash('sha256').update(label).digest();
+      const first8 = hash.slice(0, 8);
+      const bs58 = (await import('bs58')).default as any;
+      return bs58.encode(first8);
+    } catch {
+      return null;
+    }
+  }
+
+  private async discoverUsersViaHeliusGpaV2(maxDiscover: number): Promise<string[]> {
+    const out: string[] = [];
+    try {
+      const drift: any = (DriftService.getInstance() as any).client;
+      const conn: any = (DriftService.getInstance() as any).connection;
+      const endpoint: string = String(conn?._rpcEndpoint || conn?.rpcEndpoint || '');
+      if (!endpoint || !/helius/i.test(endpoint)) return out;
+      const programId: string = String(drift?.program?.programId?.toBase58?.() || drift?.program?.programId || '');
+      if (!programId) return out;
+      const discr = this.computeAnchorDiscriminatorB58('User');
+      const filters: any[] = discr ? [{ memcmp: { offset: 0, bytes: discr } }] : [];
+      let paginationKey: any = undefined;
+      while (out.length < maxDiscover) {
+        const body: any = {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'getProgramAccountsV2',
+          params: [programId, { encoding: 'base64', filters, dataSlice: { offset: 0, length: 0 }, limit: Math.min(10000, Math.max(1000, maxDiscover)) }]
+        };
+        if (paginationKey) (body.params[1] as any).paginationKey = paginationKey;
+        const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const json = await res.json();
+        const accounts = json?.result?.accounts || json?.result || [];
+        if (!Array.isArray(accounts) || accounts.length === 0) break;
+        for (const a of accounts) {
+          const pk = String(a?.pubkey || a?.account || '');
+          if (pk && !out.includes(pk)) out.push(pk);
+          if (out.length >= maxDiscover) break;
+        }
+        paginationKey = json?.result?.paginationKey || null;
+        if (!paginationKey) break;
+      }
+    } catch {}
+    return out;
   }
 
   private async initPriceTriggers(): Promise<void> {
