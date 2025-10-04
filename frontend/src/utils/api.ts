@@ -4,14 +4,22 @@
 const apiBase: string = (typeof window !== 'undefined' && (import.meta as any)?.env?.VITE_API_BASE) || '/api';
 
 type Credentials = { user: string; pass: string } | null;
+type StoredCreds = { user: string; pass: string; expiresAt?: number } | null;
 
 function getStoredCreds(): Credentials {
-	try {
-		const s = typeof window !== 'undefined' ? window.localStorage.getItem('authCreds') : null;
-		return s ? JSON.parse(s) as Credentials : null;
-	} catch {
-		return null;
-	}
+    try {
+        const s = typeof window !== 'undefined' ? window.localStorage.getItem('authCreds') : null;
+        const obj = s ? JSON.parse(s) as any : null;
+        if (!obj || typeof obj.user !== 'string' || typeof obj.pass !== 'string') return null;
+        const exp = Number(obj?.expiresAt ?? NaN);
+        if (!Number.isFinite(exp) || exp <= Date.now()) {
+            try { window.localStorage.removeItem('authCreds'); } catch {}
+            return null;
+        }
+        return { user: obj.user, pass: obj.pass };
+    } catch {
+        return null;
+    }
 }
 
 function buildAuthHeader(creds: Credentials): Record<string, string> {

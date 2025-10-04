@@ -14,7 +14,12 @@ export const LoginPage: React.FC = () => {
     fetch(`${apiBase}/system`, { headers: { Authorization: `Basic ${token}` } })
       .then(r => { if (!r.ok) throw new Error('Invalid credentials'); return r.json(); })
       .then(() => {
-        try { localStorage.setItem('authCreds', JSON.stringify(creds)) } catch {}
+        try {
+          const ttlMin = Number((import.meta as any).env?.VITE_AUTH_TTL_MINUTES ?? 480)
+          const ttlMs = Math.max(1, ttlMin) * 60 * 1000
+          const expiresAt = Date.now() + ttlMs
+          localStorage.setItem('authCreds', JSON.stringify({ ...creds, expiresAt }))
+        } catch {}
         navigate('/', { replace: true })
       })
       .catch(() => setError('Invalid username or password'))

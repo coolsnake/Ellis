@@ -6,7 +6,14 @@ export const RequireAuth: React.FC<{ children: React.ReactNode }> = ({ children 
   let creds: { user: string; pass: string } | null = null
   try {
     const s = localStorage.getItem('authCreds')
-    creds = s ? JSON.parse(s) : null
+    const obj = s ? JSON.parse(s) : null
+    const exp = Number(obj?.expiresAt ?? NaN)
+    if (!obj || !Number.isFinite(exp) || exp <= Date.now()) {
+      try { localStorage.removeItem('authCreds') } catch {}
+      creds = null
+    } else {
+      creds = obj
+    }
   } catch {}
 
   if (!creds) {

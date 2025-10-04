@@ -74,10 +74,16 @@ export const App: React.FC = () => {
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [arbConfig, setArbConfig] = useState<any>(null);
   const [authError, setAuthError] = useState<string | null>(null);
-  const [creds, setCreds] = useState<{ user: string; pass: string } | null>(() => {
+  const [creds, setCreds] = useState<{ user: string; pass: string; expiresAt?: number } | null>(() => {
     try {
       const s = localStorage.getItem('authCreds');
-      return s ? JSON.parse(s) : null;
+      const obj = s ? JSON.parse(s) : null;
+      const exp = Number(obj?.expiresAt ?? NaN);
+      if (!obj || !Number.isFinite(exp) || exp <= Date.now()) {
+        try { localStorage.removeItem('authCreds'); } catch {}
+        return null;
+      }
+      return obj;
     } catch { return null; }
   });
 
@@ -127,6 +133,25 @@ export const App: React.FC = () => {
     if (!creds) return {};
     const token = btoa(`${creds.user}:${creds.pass}`);
     return { Authorization: `Basic ${token}` } as Record<string, string>;
+  }, [creds]);
+
+  // Auto-logout when local credential TTL expires
+  useEffect(() => {
+    if (!creds) return;
+    let exp = 0;
+    try {
+      const s = localStorage.getItem('authCreds');
+      const obj = s ? JSON.parse(s) : null;
+      exp = Number(obj?.expiresAt ?? 0);
+    } catch {}
+    if (!exp) return;
+    const ms = Math.max(0, exp - Date.now());
+    const timer = window.setTimeout(() => {
+      try { localStorage.removeItem('authCreds'); } catch {}
+      try { socketRef.current?.disconnect(); } catch {}
+      setCreds(null);
+    }, ms);
+    return () => { window.clearTimeout(timer); };
   }, [creds]);
 
   useEffect(() => {
@@ -409,8 +434,16 @@ export const App: React.FC = () => {
     fetch(`${apiBase}/system`, { headers: { Authorization: `Basic ${token}` } })
       .then(r => { if (!r.ok) throw new Error('Invalid credentials'); return r.json(); })
       .then((sys) => {
-        setCreds(c);
-        try { localStorage.setItem('authCreds', JSON.stringify(c)); } catch {}
+        try {
+          const ttlMin = Number((import.meta as any).env?.VITE_AUTH_TTL_MINUTES ?? 480);
+          const ttlMs = Math.max(1, ttlMin) * 60 * 1000;
+          const expiresAt = Date.now() + ttlMs;
+          const stored = { ...c, expiresAt } as any;
+          setCreds(stored);
+          try { localStorage.setItem('authCreds', JSON.stringify(stored)); } catch {}
+        } catch {
+          setCreds(c);
+        }
         setSystem(sys);
       })
       .catch(() => setAuthError('Invalid username or password'));
