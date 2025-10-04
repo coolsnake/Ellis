@@ -6,7 +6,7 @@ import { getAllowlistIndices, indexToSymbol, symbolToIndex, parseAllowlistMarket
 import { CONFIG } from '../utils/config.js';
 import { emit } from '../server/realtime.js';
 import { RunnerRegistry } from '../utils/runnerRegistry.js';
-import { User, BulkAccountLoader, EventSubscriber } from '@drift-labs/sdk';
+import { User, EventSubscriber } from '@drift-labs/sdk';
 import bs58 from 'bs58';
 import { PublicKey } from '@solana/web3.js';
 import { createHash } from 'crypto';
@@ -127,7 +127,7 @@ export class DriftLiquidator {
   private marketToUsers: Map<number, Set<string>> = new Map();
   private userToMarkets: Map<string, Set<number>> = new Map();
   private inHeap: Set<string> = new Set();
-  private accountLoader: any | null = null;
+  private accountLoader: any | null = null; // deprecated (no longer used)
   private marketScanInFlight: Set<number> = new Set();
   private userCache: Map<string, any> = new Map();
   private subscribedUsers: Set<string> = new Set();
@@ -183,6 +183,8 @@ export class DriftLiquidator {
     } catch {}
     // Initialize discovery and price triggers once
     try { await this.initDiscovery(); this.initialized = true; } catch {}
+    // Seed from on-chain orderbook (DLOB/UserMap) if available via SDK (websocket-based)
+    try { await this.seedFromDlobUserMap(); } catch {}
     try { await this.initPriceTriggers(); } catch {}
     try { await this.initEventSubscriptions(); } catch {}
     this.timer = (globalThis as any).setInterval(() => {
@@ -539,13 +541,11 @@ export class DriftLiquidator {
   private async enqueueIfUnhealthy(pkStr: string): Promise<void> {
     try {
       const drift: any = (DriftService.getInstance() as any).client;
-      const conn: any = (DriftService.getInstance() as any).connection;
-      if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', Math.max(500, Number((this.config.accountLoaderMs ?? ((CONFIG as any)?.drift?.liquidator?.accountLoaderMs) ?? 1000))));
       let user = this.userCache.get(String(pkStr));
       if (!user) {
         let pk: any = pkStr;
         try { if (typeof pkStr === 'string') pk = new PublicKey(pkStr); } catch {}
-        user = new User({ driftClient: drift, userAccountPublicKey: pk, accountSubscription: { type: 'polling', accountLoader: this.accountLoader } });
+        user = new User({ driftClient: drift, userAccountPublicKey: pk, accountSubscription: { type: 'websocket' } });
         this.userCache.set(String(pkStr), user);
       }
       // Ensure subscription before reads
@@ -575,8 +575,6 @@ export class DriftLiquidator {
     const out: Array<{ userPk: string; health: number }> = [];
     try {
       const drift: any = (DriftService.getInstance() as any).client;
-      const conn: any = (DriftService.getInstance() as any).connection;
-      if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', Math.max(500, Number((this.config.accountLoaderMs ?? ((CONFIG as any)?.drift?.liquidator?.accountLoaderMs) ?? 1000))));
       const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
       // Build scan order: recent -> remaining (round-robin with persistent cursor) to avoid rescanning same heads
       const recentArr = Array.from(this.discoveredRecentUsers);
@@ -608,7 +606,7 @@ export class DriftLiquidator {
         if (newUsersAdded >= maxNewUsers) return null;
         let pk: any = key;
         try { if (typeof key === 'string') pk = new PublicKey(key); } catch {}
-        u = new User({ driftClient: drift, userAccountPublicKey: pk, accountSubscription: { type: 'polling', accountLoader: self.accountLoader } });
+        u = new User({ driftClient: drift, userAccountPublicKey: pk, accountSubscription: { type: 'websocket' } });
         self.userCache.set(key, u);
         const maxSize = Math.max(50, Math.min(5000, Number((this.config.userCacheMax ?? ((CONFIG as any)?.drift?.liquidator?.userCacheMax) ?? 500))));
         if (self.userCache.size > maxSize) {
@@ -734,8 +732,6 @@ export class DriftLiquidator {
       const users = Array.from(this.marketToUsers.get(idx) || []);
       if (users.length === 0) { this.marketScanInFlight.delete(idx); return; }
       const drift: any = (DriftService.getInstance() as any).client;
-      const conn: any = (DriftService.getInstance() as any).connection;
-      if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', Math.max(500, Number((this.config.accountLoaderMs ?? ((CONFIG as any)?.drift?.liquidator?.accountLoaderMs) ?? 1000))));
       // Cap per event to avoid long stalls
       const maxUsersPerTick = Math.max(5, Math.min(500, Number((this.config.maxUsersPerPriceTick ?? ((CONFIG as any)?.drift?.liquidator?.maxUsersPerPriceTick) ?? 40))));
       // Round-robin pagination per market
@@ -999,6 +995,34 @@ export class DriftLiquidator {
     }
   }
 
+  private async seedFromDlobUserMap(): Promise<void> {
+    try {
+      const drift: any = (DriftService.getInstance() as any).client;
+      // Try to access DLOB/UserMap sources if exposed by SDK client
+      // This avoids RPC scans by using websocket-fed order streams
+      let userPks: string[] = [];
+      try {
+        if (typeof (drift as any)?.getUserMap === 'function') {
+          const um = await (drift as any).getUserMap();
+          const entries = (typeof um?.keys === 'function') ? Array.from(um.keys()) : [];
+          userPks = entries.map((k: any) => String(k?.toBase58?.() || k)).filter(Boolean);
+        }
+      } catch {}
+      try {
+        if (userPks.length === 0 && (drift as any)?.dlob?._userMap) {
+          const um = (drift as any).dlob._userMap;
+          const entries = (typeof um?.keys === 'function') ? Array.from(um.keys()) : [];
+          userPks = entries.map((k: any) => String(k?.toBase58?.() || k)).filter(Boolean);
+        }
+      } catch {}
+      if (Array.isArray(userPks) && userPks.length > 0) {
+        const max = Math.max(50, Math.min(10000, Number((this.config.maxDiscoveredUsers ?? ((CONFIG as any)?.drift?.liquidator?.maxDiscoveredUsers) ?? 5000))));
+        for (const pk of userPks.slice(0, max)) this.enqueueProbe(pk);
+        try { logger.info('drift.liquidator.dlob_seed', { users: Math.min(userPks.length, max), cat: 'drift' }); } catch {}
+      }
+    } catch {}
+  }
+
   private enqueueProbe(pkStr: string): void {
     try {
       const key = String(pkStr);
@@ -1018,8 +1042,6 @@ export class DriftLiquidator {
     try {
       const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
       const drift: any = (DriftService.getInstance() as any).client;
-      const conn: any = (DriftService.getInstance() as any).connection;
-      if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', Math.max(500, Number((this.config.accountLoaderMs ?? ((CONFIG as any)?.drift?.liquidator?.accountLoaderMs) ?? 1000))));
       const cap = Math.max(1, Math.min(200, Number((this.config.maxProbesPerTick ?? ((CONFIG as any)?.drift?.liquidator?.maxProbesPerTick) ?? 40))));
       const slice = this.pendingProbeQueue.splice(0, cap);
       let probed = 0;
