@@ -172,7 +172,15 @@ export class DriftLiquidator {
     this.timer = null;
     if (this.statsTimer) { try { (globalThis as any).clearInterval(this.statsTimer); } catch {} this.statsTimer = null; }
     // Cleanup event subscriptions
-    try { if (this.eventSub) { try { await this.eventSub.unsubscribe(); } catch {} this.eventSub = null; } } catch {}
+    try {
+      if (this.eventSub) {
+        try {
+          const maybe = (this.eventSub as any).unsubscribe?.();
+          if (maybe && typeof (maybe as any).then === 'function') { (maybe as Promise<any>).catch(() => {}); }
+        } catch {}
+        this.eventSub = null;
+      }
+    } catch {}
     this.state.running = false;
     logger.info('drift.liquidator.stop', { name: this.config.name, cat: 'drift' });
     // Cleanup price triggers and timers
