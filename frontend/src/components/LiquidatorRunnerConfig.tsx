@@ -49,8 +49,9 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
     recentBatchPerTick: initialConfig?.recentBatchPerTick ?? 200,
 
     // Probing/subscription tuning
-    accountLoaderMs: initialConfig?.accountLoaderMs ?? 1000,
     maxProbesPerTick: initialConfig?.maxProbesPerTick ?? 40,
+    wsOnlyDiscovery: initialConfig?.wsOnlyDiscovery ?? true,
+    limitedHttpDiscovery: initialConfig?.limitedHttpDiscovery ?? false,
     // Position filters
     probeMarketIndicesCsv: Array.isArray(initialConfig?.probeMarketIndices) ? (initialConfig.probeMarketIndices as any[]).join(',') : '',
     positionMinAbsBase: initialConfig?.positionMinAbsBase ?? 0,
@@ -109,8 +110,9 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
         discoveryBatchSize: Math.max(100, Number(form.discoveryBatchSize || 0)),
         scanBatchSize: Math.max(100, Number(form.scanBatchSize || 0)),
         recentBatchPerTick: Math.max(10, Number(form.recentBatchPerTick || 0)),
+        wsOnlyDiscovery: !!form.wsOnlyDiscovery,
+        limitedHttpDiscovery: !!form.limitedHttpDiscovery,
 
-        accountLoaderMs: Math.max(200, Number(form.accountLoaderMs || 0)),
         maxProbesPerTick: Math.max(1, Number(form.maxProbesPerTick || 1)),
         probeMarketIndices: String(form.probeMarketIndicesCsv || '').split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n)),
         positionMinAbsBase: Math.max(0, Number(form.positionMinAbsBase || 0)),
@@ -284,10 +286,14 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
           </div>
 
           <div className="md:col-span-2 border-t border-gray-700 pt-3 font-semibold text-gray-200">Probing & Filters</div>
-          <div>
-            <div className="text-gray-400 mb-1">Account Loader Interval (ms)</div>
-            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.accountLoaderMs} onChange={(e) => setForm((p: any) => ({ ...p, accountLoaderMs: Number(e.target.value) }))} />
-          </div>
+          <label className="flex items-center gap-2">
+            <input type="checkbox" className="h-4 w-4" checked={!!form.wsOnlyDiscovery} onChange={(e) => setForm((p: any) => ({ ...p, wsOnlyDiscovery: e.target.checked }))} />
+            <span className="text-gray-300">WS-only Discovery (disable HTTP scans)</span>
+          </label>
+          <label className="flex items-center gap-2">
+            <input type="checkbox" className="h-4 w-4" checked={!!form.limitedHttpDiscovery} onChange={(e) => setForm((p: any) => ({ ...p, limitedHttpDiscovery: e.target.checked }))} />
+            <span className="text-gray-300">Allow Limited HTTP Seeding</span>
+          </label>
           <div>
             <div className="text-gray-400 mb-1">Max Probes per Tick</div>
             <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.maxProbesPerTick} onChange={(e) => setForm((p: any) => ({ ...p, maxProbesPerTick: Number(e.target.value) }))} />

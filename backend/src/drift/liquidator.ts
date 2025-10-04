@@ -56,6 +56,9 @@ export type LiquidatorConfig = {
   discoveryBatchSize?: number;
   scanBatchSize?: number;
   recentBatchPerTick?: number;
+  // Discovery modes
+  wsOnlyDiscovery?: boolean; // if true, disable HTTP discovery entirely
+  limitedHttpDiscovery?: boolean; // if true, allow tiny HTTP discovery for initial seeding
 };
 
 export type LiquidatorRuntimeState = {
@@ -213,11 +216,12 @@ export class DriftLiquidator {
       }, everyMs);
     } catch {}
 
-    // Periodic recent discovery (Helius GPA v2) — only if HTTP discovery is enabled
+    // Periodic recent discovery (Helius GPA v2) — only if HTTP discovery is enabled and not ws-only
     try {
       if (this.discoveryTimer) { try { (globalThis as any).clearInterval(this.discoveryTimer); } catch {} }
       const cfg: any = (CONFIG as any)?.drift?.liquidator || {};
-      const discoverAll = (this.config.discoverAllUsers !== undefined) ? !!this.config.discoverAllUsers : (cfg.discoverAllUsers !== false);
+      const wsOnly = this.config.wsOnlyDiscovery === true;
+      const discoverAll = !wsOnly && ((this.config.discoverAllUsers !== undefined) ? !!this.config.discoverAllUsers : (cfg.discoverAllUsers !== false));
       const discMs = Math.max(10000, Number(this.config?.discoveryRefreshMs ?? cfg.discoveryRefreshMs ?? 45000));
       this.scanBatchSize = Math.max(100, Math.min(5000, Number(this.config?.scanBatchSize ?? cfg.scanBatchSize ?? 2000)));
       if (discoverAll) {
@@ -308,15 +312,16 @@ export class DriftLiquidator {
       // Preferred: Anchor account scan for users
       let list: any[] | null = null;
       const cfg: any = (CONFIG as any)?.drift?.liquidator || {};
-      const discoverAll = (this.config.discoverAllUsers !== undefined) ? !!this.config.discoverAllUsers : (cfg.discoverAllUsers !== false); // default true
+      const wsOnly = this.config.wsOnlyDiscovery === true;
+      const limited = this.config.limitedHttpDiscovery === true;
+      const discoverAll = !wsOnly && ((this.config.discoverAllUsers !== undefined) ? !!this.config.discoverAllUsers : (cfg.discoverAllUsers !== false));
       if (discoverAll) {
-        const maxDiscover = Math.max(10, Math.min(10000, Number((this.config.maxDiscoveredUsers ?? cfg.maxDiscoveredUsers ?? 500))));
+        const defaultCap = limited ? 100 : 500;
+        const maxDiscover = Math.max(10, Math.min(10000, Number((this.config.maxDiscoveredUsers ?? cfg.maxDiscoveredUsers ?? defaultCap))));
         // Prefer DLOB/UserMap seeding; avoid heavy HTTP discovery on limited RPC plans
-        try {
-          await this.seedFromDlobUserMap();
-        } catch {}
-        // Only use HTTP/Anchor discovery if we have room and intend to broaden the set
-        if (this.userKeys.length === 0) {
+        try { await this.seedFromDlobUserMap(); } catch {}
+        // Only use HTTP/Anchor discovery if allowed and we still have nothing
+        if (!wsOnly && this.userKeys.length === 0) {
           // Try Helius getProgramAccountsV2 with pagination and anchor discriminator filter (fast & lightweight)
           let discovered: string[] | null = null;
           try {
@@ -1029,6 +1034,50 @@ export class DriftLiquidator {
         const max = Math.max(50, Math.min(10000, Number((this.config.maxDiscoveredUsers ?? ((CONFIG as any)?.drift?.liquidator?.maxDiscoveredUsers) ?? 5000))));
         for (const pk of userPks.slice(0, max)) this.enqueueProbe(pk);
         try { logger.info('drift.liquidator.dlob_seed', { users: Math.min(userPks.length, max), cat: 'drift' }); } catch {}
+      }
+    } catch {}
+  }
+
+  private async initDlobSources(): Promise<void> {
+    try {
+      const drift: any = (DriftService.getInstance() as any).client;
+      if (!drift) return;
+      let sdk: any = null;
+      try { sdk = await import('@drift-labs/sdk'); } catch {}
+      // Initialize UserMap if constructable
+      try {
+        const Ctor = (sdk as any)?.UserMap || null;
+        if (Ctor && !(this as any)._dlobUserMap) {
+          try { (this as any)._dlobUserMap = new (Ctor as any)(drift.connection, drift.program); }
+          catch { try { (this as any)._dlobUserMap = new (Ctor as any)({ connection: drift.connection, program: drift.program }); } catch {} }
+          try { await ((this as any)._dlobUserMap?.subscribe?.()); } catch {}
+        }
+      } catch {}
+      // Initialize OrderSubscriber if constructable
+      try {
+        const Ctor = (sdk as any)?.OrderSubscriber || null;
+        if (Ctor && !(this as any)._dlobOrderSub) {
+          try { (this as any)._dlobOrderSub = new (Ctor as any)(drift.connection, drift.program); }
+          catch { try { (this as any)._dlobOrderSub = new (Ctor as any)({ connection: drift.connection, program: drift.program }); } catch {} }
+          try { await ((this as any)._dlobOrderSub?.subscribe?.()); } catch {}
+        }
+      } catch {}
+      // Periodically seed from user map keys if present
+      if ((this as any)._dlobUserMap && !(this as any)._dlobSeedTimer) {
+        (this as any)._dlobSeedTimer = (globalThis as any).setInterval(() => {
+          try {
+            const um = (this as any)._dlobUserMap;
+            const entries = (typeof um?.keys === 'function') ? Array.from(um.keys()) : [];
+            if (Array.isArray(entries)) {
+              const max = Math.min(500, entries.length);
+              for (let i = 0; i < max; i += 1) {
+                const k = entries[i];
+                const pk = String(k?.toBase58?.() || k || '');
+                if (pk) this.enqueueProbe(pk);
+              }
+            }
+          } catch {}
+        }, 30000);
       }
     } catch {}
   }
