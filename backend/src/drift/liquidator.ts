@@ -956,19 +956,29 @@ export class DriftLiquidator {
           const um = await (drift as any).getUserMap();
           const entries = (typeof um?.keys === 'function') ? Array.from(um.keys()) : [];
           userPks = entries.map((k: any) => String(k?.toBase58?.() || k)).filter(Boolean);
+          try { logger.info('drift.liquidator.usermap_get_keys', { keys: entries.length, cat: 'drift' }); } catch {}
+        } else {
+          try { logger.info('drift.liquidator.usermap_get_unavailable', { cat: 'drift' }); } catch {}
         }
-      } catch {}
+      } catch (e: any) {
+        try { logger.warn('drift.liquidator.usermap_get_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+      }
       try {
         if (userPks.length === 0 && (drift as any)?.dlob?._userMap) {
           const um = (drift as any).dlob._userMap;
           const entries = (typeof um?.keys === 'function') ? Array.from(um.keys()) : [];
           userPks = entries.map((k: any) => String(k?.toBase58?.() || k)).filter(Boolean);
+          try { logger.info('drift.liquidator.usermap_dlob_keys', { keys: entries.length, cat: 'drift' }); } catch {}
         }
-      } catch {}
+      } catch (e: any) {
+        try { logger.warn('drift.liquidator.usermap_dlob_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+      }
       if (Array.isArray(userPks) && userPks.length > 0) {
         const max = 1000;
         for (const pk of userPks.slice(0, max)) this.enqueueProbe(pk);
         try { logger.info('drift.liquidator.dlob_seed', { users: Math.min(userPks.length, max), cat: 'drift' }); } catch {}
+      } else {
+        try { logger.info('drift.liquidator.dlob_seed_skipped', { reason: 'no_keys', cat: 'drift' }); } catch {}
       }
     } catch {}
   }
@@ -997,7 +1007,12 @@ export class DriftLiquidator {
           } catch {
             try { (this as any)._dlobUserMap = new (Ctor as any)(drift.connection, drift.program); } catch {}
           }
-          try { await ((this as any)._dlobUserMap?.subscribe?.()); } catch {}
+          try {
+            await ((this as any)._dlobUserMap?.subscribe?.());
+            try { logger.info('drift.liquidator.usermap_subscribed', { withEventSubscriber: !!evSub, cat: 'drift' }); } catch {}
+          } catch (e: any) {
+            try { logger.warn('drift.liquidator.usermap_subscribe_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+          }
         }
       } catch {}
       // Initialize OrderSubscriber if constructable
@@ -1010,7 +1025,7 @@ export class DriftLiquidator {
         }
       } catch {}
       // Immediately seed from user map keys if present
-      if ((this as any)._dlobUserMap) {
+      if ( (this as any)._dlobUserMap ) {
         try {
           const um = (this as any)._dlobUserMap;
           const entries = (typeof um?.keys === 'function') ? Array.from(um.keys()) : [];
@@ -1022,6 +1037,8 @@ export class DriftLiquidator {
               if (pk) this.enqueueProbe(pk);
             }
             try { logger.info('drift.liquidator.dlob_seed', { users: Math.min(entries.length, max), cat: 'drift' }); } catch {}
+          } else {
+            try { logger.info('drift.liquidator.usermap_empty', { keys: 0, cat: 'drift' }); } catch {}
           }
         } catch {}
       }
@@ -1038,6 +1055,7 @@ export class DriftLiquidator {
                 const pk = String(k?.toBase58?.() || k || '');
                 if (pk) this.enqueueProbe(pk);
               }
+              try { logger.info('drift.liquidator.usermap_refresh', { keys: entries.length, enqueued: max, cat: 'drift' }); } catch {}
             }
           } catch {}
         }, 30000);

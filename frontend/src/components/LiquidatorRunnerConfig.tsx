@@ -46,7 +46,6 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
     wsOnlyDiscovery: initialConfig?.wsOnlyDiscovery ?? true,
     limitedHttpDiscovery: initialConfig?.limitedHttpDiscovery ?? false,
     // Position filters
-    probeMarketIndicesCsv: Array.isArray(initialConfig?.probeMarketIndices) ? (initialConfig.probeMarketIndices as any[]).join(',') : '',
     positionMinAbsBase: initialConfig?.positionMinAbsBase ?? 0,
     positionMaxAbsBase: initialConfig?.positionMaxAbsBase ?? '',
     idleCooldownMs: initialConfig?.idleCooldownMs ?? 60000,
@@ -100,7 +99,8 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
         limitedHttpDiscovery: !!form.limitedHttpDiscovery,
 
         maxProbesPerTick: Math.max(1, Number(form.maxProbesPerTick || 1)),
-        probeMarketIndices: String(form.probeMarketIndicesCsv || '').split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n)),
+        // Always probe the same markets we track
+        probeMarketIndices: (Array.isArray(form.selectedMarketIndices) ? form.selectedMarketIndices : []).map((n: any) => Number(n)).filter((n) => Number.isFinite(n)),
         positionMinAbsBase: Math.max(0, Number(form.positionMinAbsBase || 0)),
         positionMaxAbsBase: String(form.positionMaxAbsBase ?? '').trim() === '' ? undefined : Math.max(0, Number(form.positionMaxAbsBase)),
         idleCooldownMs: Math.max(1000, Number(form.idleCooldownMs || 0)),
@@ -178,7 +178,7 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
             <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.maxUsersPerPriceTick} onChange={(e) => setForm((p: any) => ({ ...p, maxUsersPerPriceTick: Number(e.target.value) }))} />
           </div>
           <div className="md:col-span-2">
-            <div className="text-gray-400 mb-1">Markets to Track</div>
+            <div className="text-gray-400 mb-1">Markets to Track (also used for probing)</div>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-48 overflow-auto p-2 bg-gray-700 rounded">
               {(markets || []).map((m) => {
                 const idx = Number(m.marketIndex);
@@ -256,11 +256,7 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
             <div className="text-gray-400 mb-1">Max Probes per Tick</div>
             <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.maxProbesPerTick} onChange={(e) => setForm((p: any) => ({ ...p, maxProbesPerTick: Number(e.target.value) }))} />
           </div>
-          <div className="md:col-span-2">
-            <div className="text-gray-400 mb-1">Probe Market Indices (CSV)</div>
-            <input type="text" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" placeholder="0,1,2" value={form.probeMarketIndicesCsv}
-              onChange={(e) => setForm((p: any) => ({ ...p, probeMarketIndicesCsv: e.target.value }))} />
-          </div>
+           
           <div>
             <div className="text-gray-400 mb-1">Min |Base| to Consider Active</div>
             <input type="number" step={0.0001} className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.positionMinAbsBase}
