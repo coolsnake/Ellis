@@ -2003,6 +2003,18 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
           if (or.ok) {
             const payload: unknown = await or.json();
             type ArbOpportunity = { profit_bps?: number; net_bps?: number; path?: string[] };
+            type ArbOpportunityFull = ArbOpportunity & {
+              est_profit_usd?: number;
+              hop_rates?: number[];
+              hop_outs?: number[];
+              hop_pool_ids?: string[];
+              hop_fee_bps?: number[];
+              hop_liquidity_display?: number[];
+              hop_dexes?: string[];
+              dexes?: string[];
+              est_capacity?: number;
+              bottleneck?: { from?: string; to?: string; dex?: string; rate?: number; liquidity?: number; fee_bps?: number };
+            };
             const items: ArbOpportunity[] = Array.isArray((payload as any)?.items)
               ? ((payload as any).items as ArbOpportunity[])
               : (Array.isArray(payload) ? (payload as ArbOpportunity[]) : []);
@@ -2017,7 +2029,51 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
               if (topBps >= 30) {
                 emit('log', { level: 'info', message: `pretrade:arb top>=30bps bps=${topBps} hops=${(top?.[0]?.path||[]).length-1}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
               }
+              // Emit detailed logs for identified opportunities (top N)
+              try {
+                const detailed: ArbOpportunityFull[] = (Array.isArray((payload as any)?.items) ? (payload as any).items : []).slice(0, 3);
+                for (const [i, o] of detailed.entries()) {
+                  const bps = Math.round((o.profit_bps ?? o.net_bps ?? 0));
+                  const path = (o.path || []).join('->');
+                  const dexes = (o.hop_dexes || o.dexes || []).join('>');
+                  const rates = (o.hop_rates || []).map(v => Number.isFinite(v) ? Number(v).toFixed(8) : String(v)).join(',');
+                  const outs = (o.hop_outs || []).map(v => Number.isFinite(v) ? Number(v).toFixed(6) : String(v)).join(',');
+                  const fees = (o.hop_fee_bps || []).join(',');
+                  const pools = (o.hop_pool_ids || []).join(',');
+                  const liqs = (o.hop_liquidity_display || []).map(v => Number.isFinite(v) ? Number(v).toFixed(2) : String(v)).join(',');
+                  const cap = (o.est_capacity ?? undefined);
+                  const bn = o.bottleneck ? ` from=${o.bottleneck.from} to=${o.bottleneck.to} dex=${o.bottleneck.dex} rate=${o.bottleneck.rate} liq=${o.bottleneck.liquidity} fee_bps=${o.bottleneck.fee_bps}` : '';
+                  const msg = `opportunity:detected #${i+1} bps=${bps} usd=${o.est_profit_usd ?? '-'} hops=${(o.path||[]).length-1} path=${path} dexes=${dexes} rates=[${rates}] outs=[${outs}] fees=[${fees}] pools=[${pools}] liq=[${liqs}] est_capacity=${cap ?? '-'} bottleneck{${bn.trim()}}`;
+                  emit('log', { level: 'info', message: msg, timestamp: new Date().toISOString(), context: { cat: 'opportunity' } });
+                }
+              } catch {}
             }
+            // Emit detailed log for near-miss opportunities when present
+            try {
+              const summary: any = (payload as any)?.summary || {};
+              const near: ArbOpportunityFull | undefined = summary?.near_miss;
+              const shortfallBps: number | undefined = summary?.near_miss_shortfall_bps;
+              // Keep a signature to avoid spamming identical near-miss logs
+              (registerRoutes as any)._lastNearSig = (registerRoutes as any)._lastNearSig || '';
+              if (near && typeof shortfallBps === 'number') {
+                const nearSig = `${Math.round(shortfallBps)}:${(near.path||[]).join('>')}`;
+                if ((registerRoutes as any)._lastNearSig !== nearSig) {
+                  (registerRoutes as any)._lastNearSig = nearSig;
+                  const bps = Math.round((near.profit_bps ?? near.net_bps ?? 0));
+                  const path = (near.path || []).join('->');
+                  const dexes = (near.hop_dexes || near.dexes || []).join('>');
+                  const rates = (near.hop_rates || []).map(v => Number.isFinite(v) ? Number(v).toFixed(8) : String(v)).join(',');
+                  const outs = (near.hop_outs || []).map(v => Number.isFinite(v) ? Number(v).toFixed(6) : String(v)).join(',');
+                  const fees = (near.hop_fee_bps || []).join(',');
+                  const pools = (near.hop_pool_ids || []).join(',');
+                  const liqs = (near.hop_liquidity_display || []).map(v => Number.isFinite(v) ? Number(v).toFixed(2) : String(v)).join(',');
+                  const cap = (near.est_capacity ?? undefined);
+                  const bn = near.bottleneck ? ` from=${near.bottleneck.from} to=${near.bottleneck.to} dex=${near.bottleneck.dex} rate=${near.bottleneck.rate} liq=${near.bottleneck.liquidity} fee_bps=${near.bottleneck.fee_bps}` : '';
+                  const msg = `opportunity:near_miss shortfall_bps=${Math.round(shortfallBps)} bps=${bps} hops=${(near.path||[]).length-1} path=${path} dexes=${dexes} rates=[${rates}] outs=[${outs}] fees=[${fees}] pools=[${pools}] liq=[${liqs}] est_capacity=${cap ?? '-'} bottleneck{${bn.trim()}}`;
+                  emit('log', { level: 'info', message: msg, timestamp: new Date().toISOString(), context: { cat: 'opportunity' } });
+                }
+              }
+            } catch {}
           }
         } catch {}
         // Periodic latency summary (once per 60s)
