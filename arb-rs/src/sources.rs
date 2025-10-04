@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::time::Duration;
+use base64::Engine as _;
 
 pub struct Sources {
     client: reqwest::Client,
