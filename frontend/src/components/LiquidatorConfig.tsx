@@ -19,6 +19,14 @@ export const LiquidatorConfig: React.FC<Props> = ({ apiBase = '/api', onClose, o
     marketsAllowlistCsv: '',
     usersAllowlistCsv: '',
     restartOnSave: false,
+    // New staged-probe options
+    accountLoaderMs: 1000,
+    maxProbesPerTick: 40,
+    probeMarketIndicesCsv: '',
+    positionMinAbsBase: 0,
+    positionMaxAbsBase: '',
+    idleCooldownMs: 60000,
+    outOfScopeCooldownMs: 60000,
   });
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -45,6 +53,13 @@ export const LiquidatorConfig: React.FC<Props> = ({ apiBase = '/api', onClose, o
           riskHealthThreshold: Number(cfg.riskHealthThreshold ?? prev.riskHealthThreshold),
           marketsAllowlistCsv: Array.isArray(markets) ? markets.join(',') : '',
           usersAllowlistCsv: Array.isArray(cfg.usersAllowlist) ? (cfg.usersAllowlist as any[]).join(',') : '',
+          accountLoaderMs: Number(cfg.accountLoaderMs ?? prev.accountLoaderMs),
+          maxProbesPerTick: Number(cfg.maxProbesPerTick ?? prev.maxProbesPerTick),
+          probeMarketIndicesCsv: Array.isArray(cfg.probeMarketIndices) ? (cfg.probeMarketIndices as any[]).join(',') : '',
+          positionMinAbsBase: Number(cfg.positionMinAbsBase ?? prev.positionMinAbsBase),
+          positionMaxAbsBase: (cfg.positionMaxAbsBase ?? prev.positionMaxAbsBase),
+          idleCooldownMs: Number(cfg.idleCooldownMs ?? prev.idleCooldownMs),
+          outOfScopeCooldownMs: Number(cfg.outOfScopeCooldownMs ?? prev.outOfScopeCooldownMs),
         }));
       } catch (e: any) {
         setError(String(e?.message || e));
@@ -69,6 +84,13 @@ export const LiquidatorConfig: React.FC<Props> = ({ apiBase = '/api', onClose, o
         riskHealthThreshold: Number(form.riskHealthThreshold || 0),
         usersAllowlist: String(form.usersAllowlistCsv || '').split(',').map((s) => s.trim()).filter(Boolean),
         marketsAllowlist: String(form.marketsAllowlistCsv || '').split(',').map((s) => s.trim()).filter(Boolean),
+        accountLoaderMs: Math.max(200, Number(form.accountLoaderMs || 0)),
+        maxProbesPerTick: Math.max(1, Number(form.maxProbesPerTick || 1)),
+        probeMarketIndices: String(form.probeMarketIndicesCsv || '').split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n)),
+        positionMinAbsBase: Math.max(0, Number(form.positionMinAbsBase || 0)),
+        positionMaxAbsBase: String(form.positionMaxAbsBase ?? '').trim() === '' ? undefined : Math.max(0, Number(form.positionMaxAbsBase)),
+        idleCooldownMs: Math.max(1000, Number(form.idleCooldownMs || 0)),
+        outOfScopeCooldownMs: Math.max(1000, Number(form.outOfScopeCooldownMs || 0)),
         restart: !!form.restartOnSave,
       };
       const res = await fetch(`${apiBase}/strategies/liquidator/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -135,6 +157,42 @@ export const LiquidatorConfig: React.FC<Props> = ({ apiBase = '/api', onClose, o
             <div className="text-gray-400 mb-1">Users Allowlist (CSV of base58)</div>
             <input type="text" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" placeholder="User PKs…"
               value={form.usersAllowlistCsv} onChange={(e) => setForm((p: any) => ({ ...p, usersAllowlistCsv: e.target.value }))} />
+          </div>
+          <div className="md:col-span-3 border-t border-gray-700 pt-3 font-semibold text-gray-200">Probing & Filters</div>
+          <div>
+            <div className="text-gray-400 mb-1">Account Loader Interval (ms)</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.accountLoaderMs}
+              onChange={(e) => setForm((p: any) => ({ ...p, accountLoaderMs: Number(e.target.value) }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Max Probes per Tick</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.maxProbesPerTick}
+              onChange={(e) => setForm((p: any) => ({ ...p, maxProbesPerTick: Number(e.target.value) }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Probe Market Indices (CSV)</div>
+            <input type="text" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" placeholder="0,1,2" value={form.probeMarketIndicesCsv}
+              onChange={(e) => setForm((p: any) => ({ ...p, probeMarketIndicesCsv: e.target.value }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Min |Base| to Consider Active</div>
+            <input type="number" step={0.0001} className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.positionMinAbsBase}
+              onChange={(e) => setForm((p: any) => ({ ...p, positionMinAbsBase: Number(e.target.value) }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Max |Base| (optional)</div>
+            <input type="text" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.positionMaxAbsBase}
+              onChange={(e) => setForm((p: any) => ({ ...p, positionMaxAbsBase: e.target.value }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Idle Cooldown (ms)</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.idleCooldownMs}
+              onChange={(e) => setForm((p: any) => ({ ...p, idleCooldownMs: Number(e.target.value) }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Out-of-Scope Cooldown (ms)</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.outOfScopeCooldownMs}
+              onChange={(e) => setForm((p: any) => ({ ...p, outOfScopeCooldownMs: Number(e.target.value) }))} />
           </div>
           <label className="flex items-center gap-2">
             <input type="checkbox" className="h-4 w-4" checked={!!form.restartOnSave} onChange={(e) => setForm((p: any) => ({ ...p, restartOnSave: e.target.checked }))} />

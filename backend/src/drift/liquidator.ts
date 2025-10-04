@@ -27,6 +27,13 @@ export type LiquidatorConfig = {
   accountLoaderMs?: number; // polling cadence for BulkAccountLoader
   maxNewUsersPerTick?: number; // cap number of new User() + subscribe per scan
   maxProbesPerTick?: number; // cap number of subscribe+evaluate per tick
+  // Position filters
+  probeMarketIndices?: Array<number>; // only evaluate users with exposure in these markets
+  positionMinAbsBase?: number; // min |base| to consider active (in base units)
+  positionMaxAbsBase?: number; // max |base| to consider (in base units)
+  // Cooldowns
+  idleCooldownMs?: number; // cooldown for users with no active positions
+  outOfScopeCooldownMs?: number; // cooldown for users filtered out by market/size
   // Price triggers & markets
   usePriceTriggers?: boolean;
   priceTriggerDebounceMs?: number;
@@ -129,6 +136,8 @@ export class DriftLiquidator {
   private lastMarketPagination: Map<number, number> = new Map();
   private statsTimer: any | null = null;
   private targetCooldownUntil: Map<string, number> = new Map();
+  private idleUntil: Map<string, number> = new Map();
+  private outOfScopeUntil: Map<string, number> = new Map();
   private eventSub: any | null = null;
   private lastDiscoveryUsedGpaV2 = false;
   private discoveryTimer: any | null = null;
@@ -993,6 +1002,12 @@ export class DriftLiquidator {
   private enqueueProbe(pkStr: string): void {
     try {
       const key = String(pkStr);
+      // Respect idle/out-of-scope cooldowns
+      const now = Date.now();
+      const idleUntil = this.idleUntil.get(key);
+      if (typeof idleUntil === 'number' && now < idleUntil) return;
+      const oosUntil = this.outOfScopeUntil.get(key);
+      if (typeof oosUntil === 'number' && now < oosUntil) return;
       if (this.inProbeQueue.has(key)) return;
       this.pendingProbeQueue.push(key);
       this.inProbeQueue.add(key);
@@ -1027,6 +1042,42 @@ export class DriftLiquidator {
           } catch {}
           const exists = await (user as any).exists?.();
           if (!exists) { this.inProbeQueue.delete(key); continue; }
+          // Read positions and apply filters BEFORE collateral reads to short-circuit idle/out-of-scope users
+          const positions = (user as any)?.getPerpPositions?.() || [];
+          let hasActive = false;
+          let inScope = false;
+          const allowedMarkets: Set<number> | null = Array.isArray(this.config.probeMarketIndices) && this.config.probeMarketIndices.length > 0
+            ? new Set<number>((this.config.probeMarketIndices as any[]).map((n: any) => Number(n)).filter((n) => Number.isFinite(n)))
+            : null;
+          const minAbs = Number((this.config.positionMinAbsBase ?? ((CONFIG as any)?.drift?.liquidator?.positionMinAbsBase) ?? 0));
+          const maxAbsCfg = this.config.positionMaxAbsBase ?? ((CONFIG as any)?.drift?.liquidator?.positionMaxAbsBase);
+          const maxAbs = (maxAbsCfg === undefined || maxAbsCfg === null) ? Infinity : Number(maxAbsCfg);
+          for (const p of positions) {
+            try {
+              const base = Math.abs(Number(p?.baseAssetAmount?.toString?.() || p?.baseAssetAmount || 0));
+              const m = Number(p?.marketIndex ?? p?.market_index ?? p?.market?.index);
+              if (!Number.isFinite(base) || base === 0) continue;
+              hasActive = true;
+              const marketOk = allowedMarkets ? allowedMarkets.has(Number(m)) : true;
+              const sizeOk = base >= minAbs && base <= maxAbs;
+              if (marketOk && sizeOk) { inScope = true; break; }
+            } catch {}
+          }
+          if (!hasActive) {
+            const ms = Math.max(15000, Number((this.config.idleCooldownMs ?? ((CONFIG as any)?.drift?.liquidator?.idleCooldownMs) ?? 60000)));
+            this.idleUntil.set(key, Date.now() + ms);
+            // Unsubscribe immediately to reduce load
+            try { if (this.subscribedUsers.has(key)) { await (user as any)?.unsubscribe?.(); this.subscribedUsers.delete(key); } } catch {}
+            this.inProbeQueue.delete(key);
+            continue;
+          }
+          if (!inScope) {
+            const ms = Math.max(15000, Number((this.config.outOfScopeCooldownMs ?? ((CONFIG as any)?.drift?.liquidator?.outOfScopeCooldownMs) ?? 60000)));
+            this.outOfScopeUntil.set(key, Date.now() + ms);
+            try { if (this.subscribedUsers.has(key)) { await (user as any)?.unsubscribe?.(); this.subscribedUsers.delete(key); } } catch {}
+            this.inProbeQueue.delete(key);
+            continue;
+          }
           const total = Number((user as any)?.getTotalCollateral?.() || 0);
           const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
           if (!isFinite(total) || !isFinite(maint)) { this.inProbeQueue.delete(key); continue; }

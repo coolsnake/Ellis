@@ -47,6 +47,16 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
     discoveryBatchSize: initialConfig?.discoveryBatchSize ?? 2000,
     scanBatchSize: initialConfig?.scanBatchSize ?? 2000,
     recentBatchPerTick: initialConfig?.recentBatchPerTick ?? 200,
+
+    // Probing/subscription tuning
+    accountLoaderMs: initialConfig?.accountLoaderMs ?? 1000,
+    maxProbesPerTick: initialConfig?.maxProbesPerTick ?? 40,
+    // Position filters
+    probeMarketIndicesCsv: Array.isArray(initialConfig?.probeMarketIndices) ? (initialConfig.probeMarketIndices as any[]).join(',') : '',
+    positionMinAbsBase: initialConfig?.positionMinAbsBase ?? 0,
+    positionMaxAbsBase: initialConfig?.positionMaxAbsBase ?? '',
+    idleCooldownMs: initialConfig?.idleCooldownMs ?? 60000,
+    outOfScopeCooldownMs: initialConfig?.outOfScopeCooldownMs ?? 60000,
   });
 
   useEffect(() => {
@@ -99,6 +109,14 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
         discoveryBatchSize: Math.max(100, Number(form.discoveryBatchSize || 0)),
         scanBatchSize: Math.max(100, Number(form.scanBatchSize || 0)),
         recentBatchPerTick: Math.max(10, Number(form.recentBatchPerTick || 0)),
+
+        accountLoaderMs: Math.max(200, Number(form.accountLoaderMs || 0)),
+        maxProbesPerTick: Math.max(1, Number(form.maxProbesPerTick || 1)),
+        probeMarketIndices: String(form.probeMarketIndicesCsv || '').split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n)),
+        positionMinAbsBase: Math.max(0, Number(form.positionMinAbsBase || 0)),
+        positionMaxAbsBase: String(form.positionMaxAbsBase ?? '').trim() === '' ? undefined : Math.max(0, Number(form.positionMaxAbsBase)),
+        idleCooldownMs: Math.max(1000, Number(form.idleCooldownMs || 0)),
+        outOfScopeCooldownMs: Math.max(1000, Number(form.outOfScopeCooldownMs || 0)),
       };
       const res = await fetch(`${apiBase}/strategies/liquidator/start`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       if (!res.ok) throw new Error(await res.text());
@@ -263,6 +281,41 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
           <div>
             <div className="text-gray-400 mb-1">Recent Batch per Tick</div>
             <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.recentBatchPerTick} onChange={(e) => setForm((p: any) => ({ ...p, recentBatchPerTick: Number(e.target.value) }))} />
+          </div>
+
+          <div className="md:col-span-2 border-t border-gray-700 pt-3 font-semibold text-gray-200">Probing & Filters</div>
+          <div>
+            <div className="text-gray-400 mb-1">Account Loader Interval (ms)</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.accountLoaderMs} onChange={(e) => setForm((p: any) => ({ ...p, accountLoaderMs: Number(e.target.value) }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Max Probes per Tick</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.maxProbesPerTick} onChange={(e) => setForm((p: any) => ({ ...p, maxProbesPerTick: Number(e.target.value) }))} />
+          </div>
+          <div className="md:col-span-2">
+            <div className="text-gray-400 mb-1">Probe Market Indices (CSV)</div>
+            <input type="text" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" placeholder="0,1,2" value={form.probeMarketIndicesCsv}
+              onChange={(e) => setForm((p: any) => ({ ...p, probeMarketIndicesCsv: e.target.value }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Min |Base| to Consider Active</div>
+            <input type="number" step={0.0001} className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.positionMinAbsBase}
+              onChange={(e) => setForm((p: any) => ({ ...p, positionMinAbsBase: Number(e.target.value) }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Max |Base| (optional)</div>
+            <input type="text" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.positionMaxAbsBase}
+              onChange={(e) => setForm((p: any) => ({ ...p, positionMaxAbsBase: e.target.value }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Idle Cooldown (ms)</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.idleCooldownMs}
+              onChange={(e) => setForm((p: any) => ({ ...p, idleCooldownMs: Number(e.target.value) }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Out-of-Scope Cooldown (ms)</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.outOfScopeCooldownMs}
+              onChange={(e) => setForm((p: any) => ({ ...p, outOfScopeCooldownMs: Number(e.target.value) }))} />
           </div>
         </div>
 
