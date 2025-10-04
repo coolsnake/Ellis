@@ -48,7 +48,7 @@ export type LiquidatorRuntimeState = {
   errorsLastMin: number;
 };
 
-type Candidate = { userPk: string; health: number; updatedAt: number };
+type Candidate = { userPk: string; health: number; updatedAt: number; distance?: number };
 
 class MinHeap<T> {
   private data: T[] = [];
@@ -98,7 +98,12 @@ export class DriftLiquidator {
   private inFlightTargets: Set<string> = new Set();
   private userKeys: string[] = [];
   private abort = false;
-  private heap: MinHeap<Candidate> = new MinHeap<Candidate>((a, b) => a.health - b.health);
+  private heap: MinHeap<Candidate> = new MinHeap<Candidate>((a, b) => {
+    const da = (typeof a.distance === 'number') ? a.distance : Infinity;
+    const db = (typeof b.distance === 'number') ? b.distance : Infinity;
+    if (da !== db) return da - db;
+    return a.health - b.health;
+  });
   private lastQueueEmitTs = 0;
   private trackedMarkets: Set<number> = new Set();
   private marketToUsers: Map<number, Set<string>> = new Map();
@@ -272,6 +277,7 @@ export class DriftLiquidator {
           if (Array.isArray(discovered) && discovered.length > 0) {
             this.userKeys = discovered.slice(0, maxDiscover);
             this.lastDiscoveryUsedGpaV2 = true;
+            try { logger.info('drift.liquidator.discovery_mode', { mode: 'helius_v2', users: this.userKeys.length, cat: 'drift' }); } catch {}
           }
         } catch {}
         // Fallback to Anchor .all() if V2 failed or no results
@@ -281,6 +287,7 @@ export class DriftLiquidator {
             const keys = list.map((x: any) => String(x?.publicKey?.toBase58?.() || x?.publicKey || '')).filter(Boolean);
             this.userKeys = keys.slice(0, maxDiscover);
             this.lastDiscoveryUsedGpaV2 = false;
+            try { logger.info('drift.liquidator.discovery_mode', { mode: 'anchor_all', users: this.userKeys.length, cat: 'drift' }); } catch {}
           }
         }
       }
@@ -380,6 +387,7 @@ export class DriftLiquidator {
       const json = await res.json();
       const accounts = json?.result?.accounts || json?.result || [];
       if (Array.isArray(accounts) && accounts.length > 0) {
+        try { logger.info('drift.liquidator.discovery_recent', { fetched: accounts.length, lastSlot: this.lastDiscoverySlot, cat: 'drift' }); } catch {}
         for (const a of accounts) {
           const pk = String(a?.pubkey || a?.account || '');
           if (pk) this.discoveredRecentUsers.add(pk);
@@ -678,6 +686,22 @@ export class DriftLiquidator {
       if (typeof until === 'number' && Date.now() < until) return;
       if (this.inFlightTargets.has(key)) return;
       if (this.inHeap.has(key)) return;
+      // Compute distance-to-liquidation if possible (min across tracked/active markets)
+      try {
+        const tracked = Array.from(this.trackedMarkets);
+        if (tracked.length > 0) {
+          let best: number | null = null;
+          for (const idx of tracked) {
+            try {
+              const dist = this.computeDistanceToLiquidation(key, idx);
+              if (typeof dist === 'number') {
+                if (best === null || dist < best) best = dist;
+              }
+            } catch {}
+          }
+          if (best !== null) (c as any).distance = best;
+        }
+      } catch {}
       this.heap.push(c);
       this.inHeap.add(key);
     } catch {}
@@ -803,6 +827,39 @@ export class DriftLiquidator {
       this.state.actionsLastMin = this.actionsLog.length;
       try { emit('drift-liquidation', { type: 'action', actionsLastMin: this.state.actionsLastMin }); } catch {}
     } catch {}
+  }
+
+  private computeDistanceToLiquidation(userPk: string, marketIndex: number): number | null {
+    try {
+      const drift: any = (DriftService.getInstance() as any).client;
+      const sdkUser = this.userCache.get(String(userPk));
+      if (!sdkUser) return null;
+      // Try to get user’s position for this market
+      const positions = sdkUser?.getPerpPositions?.() || [];
+      const pos = positions.find((p: any) => Number(p?.marketIndex ?? p?.market_index ?? p?.market?.index) === Number(marketIndex));
+      if (!pos) return null;
+      const base = Number(pos?.baseAssetAmount?.toString?.() || pos?.baseAssetAmount || 0);
+      if (!isFinite(base) || Math.abs(base) === 0) return null;
+      // Estimate liquidation price if available on SDK; else approximate from collateral & maintenance
+      // Placeholder: derive from health proxy if SDK doesn’t expose directly
+      const priceSample = DriftPriceService.getInstance().getPrice(Number(marketIndex));
+      const cur = (priceSample?.mid ?? priceSample?.oracle ?? priceSample?.bid ?? priceSample?.ask);
+      if (typeof cur !== 'number' || cur <= 0) return null;
+      // Approximation: smaller (collateral - maint)/maint => closer to zero health; translate to price move needed
+      const total = Number((sdkUser as any)?.getTotalCollateral?.() || 0);
+      const maint = Number((sdkUser as any)?.getMaintenanceMarginRequirement?.() || 0);
+      if (!isFinite(total) || !isFinite(maint) || maint <= 0) return null;
+      const health = (total - maint) / maint; // 0 => liquidation threshold
+      // Assume linear relation of PnL to price for small deltas: deltaPnL ≈ qty * deltaPrice
+      // Solve for deltaPrice to push health to 0. This is a rough priority metric, not exact liq price.
+      const qty = Math.abs(base);
+      if (!qty || !isFinite(qty)) return null;
+      const estDeltaPrice = Math.abs((health * maint) / qty);
+      const distance = estDeltaPrice / cur; // normalized distance
+      return isFinite(distance) ? Math.max(0, distance) : null;
+    } catch {
+      return null;
+    }
   }
 
   private recordError(e: any): void {
