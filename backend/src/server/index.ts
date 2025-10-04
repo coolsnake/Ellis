@@ -71,6 +71,63 @@ try {
   }
 } catch {}
 
+// Also wrap undici.fetch and undici.request to capture 429s from direct undici usage
+try {
+  const und: any = await import('undici');
+  if (und && !und.__wrappedFor429) {
+    und.__wrappedFor429 = true;
+    // Wrap undici.fetch
+    if (typeof und.fetch === 'function') {
+      const origUndFetch = und.fetch.bind(und);
+      und.fetch = async function(input: any, init?: any) {
+        let urlStr = '';
+        try { urlStr = typeof input === 'string' ? input : (input?.url || ''); } catch {}
+        const res: any = await origUndFetch(input, init);
+        try {
+          if (res && typeof res.status === 'number' && res.status === 429) {
+            const method = (init && (init as any).method) || ((input && (input as any).method) || 'GET');
+            logger.warn('http.429', { url: urlStr, method, cat: 'server' });
+            try { const { emit } = await import('./realtime.js'); emit('log', { level: 'warn', message: `http.429 ${method} ${urlStr}`, timestamp: new Date().toISOString(), context: { cat: 'server' } }); } catch {}
+          }
+        } catch {}
+        return res;
+      };
+    }
+    // Wrap undici.request
+    if (typeof und.request === 'function') {
+      const origRequest = und.request.bind(und);
+      und.request = async function(url: any, opts?: any) {
+        const res: any = await origRequest(url, opts);
+        try {
+          const status = Number(res?.statusCode || res?.status || 0);
+          if (status === 429) {
+            const method = (opts && opts.method) || 'GET';
+            const href = (typeof url === 'string') ? url : (url?.href || url?.origin ? `${url.origin}${url.pathname || ''}` : String(url || ''));
+            logger.warn('http.429', { url: href, method, cat: 'server' });
+            try { const { emit } = await import('./realtime.js'); emit('log', { level: 'warn', message: `http.429 ${method} ${href}`, timestamp: new Date().toISOString(), context: { cat: 'server' } }); } catch {}
+          }
+        } catch {}
+        return res;
+      };
+    }
+  }
+} catch {}
+
+// As a last resort, surface 429 console warnings with stack to locate source
+try {
+  const origWarn = console.warn.bind(console);
+  console.warn = (...args: any[]) => {
+    try {
+      const text = (args || []).map((a: any) => (typeof a === 'string' ? a : (typeof a?.message === 'string' ? a.message : ''))).join(' ');
+      if (/429|Too\s+Many\s+Requests/i.test(text)) {
+        const err = new Error('console.warn 429');
+        logger.warn('console.429', { message: text, stack: err.stack, cat: 'server' });
+      }
+    } catch {}
+    origWarn(...args as any);
+  };
+} catch {}
+
 // Optional Basic Auth for API
 function unauthorized(res: Response) {
   // Do not set WWW-Authenticate to avoid triggering browser credential popups
