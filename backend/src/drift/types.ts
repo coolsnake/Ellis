@@ -21,10 +21,6 @@ export type LeveragedGridConfig = {
   rebalanceHysteresisPct?: number;
   maxOpenOrders?: number;
   enabled: boolean;
-  // Sliding center behavior (mirror classic grid)
-  slidingCenter?: boolean; // enable sliding center price
-  slideRate?: number; // bps per second toward current
-  slideMaxDistance?: number; // percent cap from original center
 };
 
 export type SubaccountInfo = {
@@ -52,10 +48,6 @@ export type GridRuntimeState = {
   effectiveLeverage: number;
   liquidationBuffer: number; // (collateral - maint) / maint
   fundingRateApy?: number;
-  // Sliding center tracking for UI/reporting
-  centerPrice?: number;
-  originalCenterPrice?: number;
-  lastSlideUpdate?: number;
 };
 
 

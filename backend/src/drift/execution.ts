@@ -121,39 +121,8 @@ export class DriftGridRunner {
       const mid = l2 && (l2 as any).bid && (l2 as any).ask && (l2 as any).bid[0] && (l2 as any).ask[0] ? ((l2 as any).bid[0].price + (l2 as any).ask[0].price) / 2 : (shared?.mid);
       const oracle = (typeof (l2 as any)?.oracle === 'number' && isFinite((l2 as any).oracle)) ? (l2 as any).oracle : (shared?.oracle);
       if (typeof mid === 'number' && isFinite(mid)) {
-        // Determine anchor and sliding center similar to classic grid
-        let anchor = (typeof oracle === 'number' ? oracle : mid);
-        // Initialize center state if missing
-        if (!this.state.centerPrice || !Number.isFinite(this.state.centerPrice)) {
-          this.state.centerPrice = anchor;
-          this.state.originalCenterPrice = anchor;
-          this.state.lastSlideUpdate = Date.now();
-        }
-        // Sliding center toward current anchor
-        if (this.config.slidingCenter && Number(this.config.slideRate) > 0) {
-          const now = Date.now();
-          const last = this.state.lastSlideUpdate || now;
-          const dtSec = Math.max(0, (now - last) / 1000);
-          const rate = Number(this.config.slideRate) / 10000; // fraction/sec
-          const maxDist = Math.max(0, Number(this.config.slideMaxDistance || 0)) / 100; // fraction
-          const currentCenter = Number(this.state.centerPrice || anchor);
-          const delta = (anchor - currentCenter) * rate * dtSec;
-          let nextCenter = currentCenter + delta;
-          const orig = Number(this.state.originalCenterPrice || anchor);
-          const cap = Math.abs(orig) * maxDist;
-          nextCenter = Math.max(orig - cap, Math.min(orig + cap, nextCenter));
-          if (Number.isFinite(nextCenter) && Math.abs(nextCenter - currentCenter) / Math.max(1e-9, Math.abs(currentCenter)) > 0.0001) {
-            this.state.centerPrice = nextCenter;
-            this.state.lastSlideUpdate = now;
-          }
-          anchor = this.state.centerPrice || anchor;
-        } else {
-          // Keep anchor synced when sliding disabled
-          this.state.centerPrice = anchor;
-          this.state.originalCenterPrice = this.state.originalCenterPrice ?? anchor;
-          this.state.lastSlideUpdate = this.state.lastSlideUpdate ?? Date.now();
-        }
-
+        // Ladder generation (anchor on oracle if present, else mid)
+        const anchor = (typeof oracle === 'number' ? oracle : mid);
         const ladder = generatePriceLadder(this.config, anchor);
         // Order refresh lifecycle (maker-only optional)
         try {
@@ -216,7 +185,6 @@ export class DriftGridRunner {
           feeBps,
           feeEstRoundTrip,
           netApprox,
-          centerPrice: this.state.centerPrice,
           driftKey: `${this.config.name}#${this.config.market.marketIndex}#${this.config.subaccountId}`,
         });
         logger.debug('drift.grid.snapshot', { mid, openOrders: this.state.openOrders, effLev: this.state.effectiveLeverage, liqBuf: this.state.liquidationBuffer, marketIndex: this.config.market.marketIndex, cat: 'drift' });
