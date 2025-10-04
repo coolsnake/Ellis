@@ -120,6 +120,8 @@ export class DriftLiquidator {
   private discoveryTimer: any | null = null;
   private lastDiscoverySlot: number = 0;
   private discoveredRecentUsers: Set<string> = new Set();
+  private scanCursor: number = 0;
+  private scanBatchSize: number = 2000;
 
   constructor(private config: LiquidatorConfig) {}
 
@@ -183,6 +185,7 @@ export class DriftLiquidator {
       if (this.discoveryTimer) { try { (globalThis as any).clearInterval(this.discoveryTimer); } catch {} }
       const cfg: any = (CONFIG as any)?.drift?.liquidator || {};
       const discMs = Math.max(10000, Number(this.config?.discoveryRefreshMs ?? cfg.discoveryRefreshMs ?? 45000));
+      this.scanBatchSize = Math.max(100, Math.min(5000, Number(this.config?.scanBatchSize ?? cfg.scanBatchSize ?? 2000)));
       this.discoveryTimer = (globalThis as any).setInterval(() => {
         this.tryRecentDiscovery().catch(() => {});
       }, discMs);
@@ -515,10 +518,15 @@ export class DriftLiquidator {
       const conn: any = (DriftService.getInstance() as any).connection;
       if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', 1000);
       const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
-      // Prioritize recently changed and users with active perp positions in tracked markets
+      // Build scan order: recent -> remaining (round-robin with persistent cursor) to avoid rescanning same heads
       const prioritized: string[] = Array.from(this.discoveredRecentUsers);
-      const others = this.userKeys.filter((k) => !this.discoveredRecentUsers.has(k));
-      const keys = prioritized.concat(others);
+      const remaining = this.userKeys.filter((k) => !this.discoveredRecentUsers.has(k));
+      // Round-robin window into remaining using scanCursor
+      if (this.scanCursor >= remaining.length) this.scanCursor = 0;
+      const window = remaining.slice(this.scanCursor, this.scanCursor + this.scanBatchSize);
+      const tail = (window.length < this.scanBatchSize) ? remaining.slice(0, Math.max(0, this.scanBatchSize - window.length)) : [];
+      const keys = prioritized.concat(window).concat(tail);
+      this.scanCursor = (this.scanCursor + this.scanBatchSize) % Math.max(1, remaining.length);
       const maxConc = Math.max(2, Math.min(24, Number((this.config.scanConcurrency ?? ((CONFIG as any)?.drift?.liquidator?.scanConcurrency) ?? 10))));
       let cursor = 0;
       const self = this;
@@ -571,6 +579,7 @@ export class DriftLiquidator {
           candidatesFound: out.length,
           minHealth: Number.isFinite(minHealth) ? minHealth : null,
           threshold: riskThresh,
+          sampledUsers: keys.slice(0, Math.min(5, keys.length)),
           cat: 'drift',
         });
       } catch {}
