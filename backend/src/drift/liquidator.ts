@@ -175,6 +175,7 @@ export class DriftLiquidator {
     try { await this.initEventSubscriptions(); } catch {}
     try { await this.initDlobSources(); } catch {}
     try { await this.seedFromDlobUserMap(); } catch {}
+    try { await this.seedFromDlobHttp(); } catch {}
     try { await this.initPriceTriggers(); } catch {}
     this.timer = (globalThis as any).setInterval(() => {
       this.tick().catch((e) => logger.warn('drift.liquidator.tick_error', { error: String(e?.message || e), cat: 'drift' }));
@@ -981,6 +982,42 @@ export class DriftLiquidator {
         try { logger.info('drift.liquidator.dlob_seed_skipped', { reason: 'no_keys', cat: 'drift' }); } catch {}
       }
     } catch {}
+  }
+
+  private async seedFromDlobHttp(): Promise<void> {
+    try {
+      // Determine markets to seed from (tracked or allowlist)
+      let indices: number[] = Array.from(this.trackedMarkets);
+      if (indices.length === 0) {
+        try { indices = getAllowlistIndices(); } catch {}
+      }
+      if (indices.length === 0) indices = [0, 1, 2];
+      const seen: Set<string> = new Set();
+      const makers: string[] = [];
+      // Lazy import helpers to avoid cycles
+      const mod: any = await import('./marketdata.js');
+      for (const idx of indices) {
+        try {
+          // Prefer topMakers (cheaper); fallback to L3 if empty
+          const top = await mod.fetchDlobTopMakers(Number(idx)).catch(() => null);
+          if (top && Array.isArray(top.makers) && top.makers.length > 0) {
+            for (const m of top.makers) { const k = String(m.maker || ''); if (k && !seen.has(k)) { seen.add(k); makers.push(k); } }
+          } else {
+            const l3Keys: string[] = await mod.fetchDlobL3Makers(Number(idx)).catch(() => []);
+            for (const k of l3Keys) { if (k && !seen.has(k)) { seen.add(k); makers.push(k); } }
+          }
+        } catch {}
+      }
+      if (makers.length > 0) {
+        const max = Math.min(2000, makers.length);
+        for (const pk of makers.slice(0, max)) this.enqueueProbe(pk);
+        try { logger.info('drift.liquidator.dlob_http_seed', { users: max, markets: indices.length, cat: 'drift' }); } catch {}
+      } else {
+        try { logger.info('drift.liquidator.dlob_http_seed_skipped', { reason: 'no_makers', cat: 'drift' }); } catch {}
+      }
+    } catch (e: any) {
+      try { logger.warn('drift.liquidator.dlob_http_seed_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+    }
   }
 
   private async initDlobSources(): Promise<void> {
