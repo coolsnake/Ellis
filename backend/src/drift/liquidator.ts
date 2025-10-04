@@ -24,6 +24,8 @@ export type LiquidatorConfig = {
   scanConcurrency?: number;
   userCacheMax?: number;
   riskHealthThreshold?: number; // health < threshold considered at-risk
+  accountLoaderMs?: number; // polling cadence for BulkAccountLoader
+  maxNewUsersPerTick?: number; // cap new User() creations per scan tick
   // Price triggers & markets
   usePriceTriggers?: boolean;
   priceTriggerDebounceMs?: number;
@@ -239,6 +241,21 @@ export class DriftLiquidator {
       }
       this.trackedMarkets.clear();
     } catch {}
+    // Unsubscribe users and stop account loader
+    try {
+      for (const [k, u] of Array.from(this.userCache.entries())) {
+        try {
+          const maybe = (u as any)?.unsubscribe?.();
+          if (maybe && typeof (maybe as any).then === 'function') { (maybe as Promise<any>).catch(() => {}); }
+        } catch {}
+        try { this.userCache.delete(k); } catch {}
+      }
+    } catch {}
+    try {
+      const maybe = (this.accountLoader as any)?.stop?.();
+      if (maybe && typeof (maybe as any).then === 'function') { (maybe as Promise<any>).catch(() => {}); }
+    } catch {}
+    try { this.accountLoader = null; } catch {}
     // Clear internal state to avoid leaks
     try { this.heap.clear(); } catch {}
     try { this.inHeap.clear(); } catch {}
@@ -547,7 +564,7 @@ export class DriftLiquidator {
     try {
       const drift: any = (DriftService.getInstance() as any).client;
       const conn: any = (DriftService.getInstance() as any).connection;
-      if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', 1000);
+      if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', Math.max(500, Number((this.config.accountLoaderMs ?? ((CONFIG as any)?.drift?.liquidator?.accountLoaderMs) ?? 1000))));
       const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
       // Build scan order: recent -> remaining (round-robin with persistent cursor) to avoid rescanning same heads
       const recentArr = Array.from(this.discoveredRecentUsers);
@@ -567,6 +584,8 @@ export class DriftLiquidator {
       const sampleCap = 5;
       let cursor = 0;
       const self = this;
+      let newUsersAdded = 0;
+      const maxNewUsers = Math.max(0, Math.min(2000, Number((this.config.maxNewUsersPerTick ?? ((CONFIG as any)?.drift?.liquidator?.maxNewUsersPerTick) ?? 250))));
       const getOrCreateUser = async (pkStr: string): Promise<any> => {
         const key = String(pkStr);
         let u = self.userCache.get(key);
@@ -576,6 +595,7 @@ export class DriftLiquidator {
           self.userCache.set(key, u);
           return u;
         }
+        if (newUsersAdded >= maxNewUsers) return null;
         let pkObj: any = null;
         try { pkObj = new PublicKey(String(key)); } catch {}
         u = new User({ driftClient: drift, userAccountPublicKey: pkObj || key, accountSubscription: { type: 'polling', accountLoader: self.accountLoader } });
@@ -584,8 +604,12 @@ export class DriftLiquidator {
         if (self.userCache.size > maxSize) {
           // evict oldest (first inserted)
           const firstKey = self.userCache.keys().next().value;
-          if (firstKey) self.userCache.delete(firstKey);
+          if (firstKey) {
+            try { await (self.userCache.get(firstKey) as any)?.unsubscribe?.(); } catch {}
+            self.userCache.delete(firstKey);
+          }
         }
+        newUsersAdded += 1;
         return u;
       };
       const worker = async () => {
@@ -596,6 +620,7 @@ export class DriftLiquidator {
           const pkStr = keys[i];
           try {
             const user = await getOrCreateUser(pkStr);
+            if (!user) continue;
             const exists = await (user as any).exists?.();
             if (!exists) continue;
             const total = Number((user as any)?.getTotalCollateral?.() || 0);
@@ -699,7 +724,7 @@ export class DriftLiquidator {
       if (users.length === 0) { this.marketScanInFlight.delete(idx); return; }
       const drift: any = (DriftService.getInstance() as any).client;
       const conn: any = (DriftService.getInstance() as any).connection;
-      if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', 1000);
+      if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', Math.max(500, Number((this.config.accountLoaderMs ?? ((CONFIG as any)?.drift?.liquidator?.accountLoaderMs) ?? 1000))));
       // Cap per event to avoid long stalls
       const maxUsersPerTick = Math.max(5, Math.min(500, Number((this.config.maxUsersPerPriceTick ?? ((CONFIG as any)?.drift?.liquidator?.maxUsersPerPriceTick) ?? 40))));
       // Round-robin pagination per market
@@ -713,13 +738,8 @@ export class DriftLiquidator {
       const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
       for (const pkStr of slice) {
         try {
-          let user = this.userCache.get(String(pkStr));
-          if (!user) {
-            let pkObj: any = null;
-            try { pkObj = new PublicKey(String(pkStr)); } catch {}
-            user = new User({ driftClient: drift, userAccountPublicKey: pkObj || pkStr, accountSubscription: { type: 'polling', accountLoader: this.accountLoader } });
-            this.userCache.set(String(pkStr), user);
-          }
+          const user = this.userCache.get(String(pkStr));
+          if (!user) continue;
           const exists = await (user as any).exists?.();
           if (!exists) continue;
           const total = Number((user as any)?.getTotalCollateral?.() || 0);
