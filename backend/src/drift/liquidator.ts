@@ -253,6 +253,17 @@ export class DriftLiquidator {
           this.userKeys = keys.slice(0, maxDiscover);
         }
       }
+      // Seed with active/liquidatable users via event subscriber (if present)
+      try {
+        const set = new Set<string>(this.userKeys);
+        const maybe = (this.eventSub as any)?.eventEmitter;
+        // If we have any cached user events, fold them in (best-effort)
+        // Note: EventSubscriber may not expose history; this is a placeholder for future optimization hooks
+        if (maybe && typeof (maybe as any).listeners === 'function') {
+          // no-op: listeners are live only
+        }
+        this.userKeys = Array.from(set);
+      } catch {}
       // Allow explicit allowlist override
       try {
         const allow: string[] = Array.isArray(this.config.usersAllowlist) ? (this.config.usersAllowlist as any) : (Array.isArray(cfg.usersAllowlist) ? cfg.usersAllowlist : []);
@@ -430,6 +441,17 @@ export class DriftLiquidator {
       const runners: Promise<void>[] = [];
       for (let k = 0; k < maxConc; k += 1) runners.push(worker());
       await Promise.all(runners);
+      try {
+        let minHealth = Infinity;
+        for (const c of out) { if (typeof c.health === 'number' && c.health < minHealth) minHealth = c.health; }
+        logger.info('drift.liquidator.scan_summary', {
+          scanned: keys.length,
+          candidatesFound: out.length,
+          minHealth: Number.isFinite(minHealth) ? minHealth : null,
+          threshold: riskThresh,
+          cat: 'drift',
+        });
+      } catch {}
     } catch {}
     return out;
   }
