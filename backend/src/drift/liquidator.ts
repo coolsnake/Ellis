@@ -7,6 +7,7 @@ import { CONFIG } from '../utils/config.js';
 import { emit } from '../server/realtime.js';
 import { RunnerRegistry } from '../utils/runnerRegistry.js';
 import { User, BulkAccountLoader, EventSubscriber } from '@drift-labs/sdk';
+import { PublicKey } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { createHash } from 'crypto';
 
@@ -519,7 +520,9 @@ export class DriftLiquidator {
       if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', 1000);
       let user = this.userCache.get(String(pkStr));
       if (!user) {
-        user = new User({ driftClient: drift, userAccountPublicKey: pkStr, accountSubscription: { type: 'polling', accountLoader: this.accountLoader } });
+        let pkObj: any = null;
+        try { pkObj = new PublicKey(String(pkStr)); } catch {}
+        user = new User({ driftClient: drift, userAccountPublicKey: pkObj || pkStr, accountSubscription: { type: 'polling', accountLoader: this.accountLoader } });
         this.userCache.set(String(pkStr), user);
       }
       const exists = await (user as any).exists?.();
@@ -570,7 +573,9 @@ export class DriftLiquidator {
           self.userCache.set(key, u);
           return u;
         }
-        u = new User({ driftClient: drift, userAccountPublicKey: key, accountSubscription: { type: 'polling', accountLoader: self.accountLoader } });
+        let pkObj: any = null;
+        try { pkObj = new PublicKey(String(key)); } catch {}
+        u = new User({ driftClient: drift, userAccountPublicKey: pkObj || key, accountSubscription: { type: 'polling', accountLoader: self.accountLoader } });
         self.userCache.set(key, u);
         const maxSize = Math.max(50, Math.min(5000, Number((this.config.userCacheMax ?? ((CONFIG as any)?.drift?.liquidator?.userCacheMax) ?? 500))));
         if (self.userCache.size > maxSize) {
@@ -720,7 +725,9 @@ export class DriftLiquidator {
         try {
           let user = this.userCache.get(String(pkStr));
           if (!user) {
-            user = new User({ driftClient: drift, userAccountPublicKey: pkStr, accountSubscription: { type: 'polling', accountLoader: this.accountLoader } });
+            let pkObj: any = null;
+            try { pkObj = new PublicKey(String(pkStr)); } catch {}
+            user = new User({ driftClient: drift, userAccountPublicKey: pkObj || pkStr, accountSubscription: { type: 'polling', accountLoader: this.accountLoader } });
             this.userCache.set(String(pkStr), user);
           }
           const exists = await (user as any).exists?.();
