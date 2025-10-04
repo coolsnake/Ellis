@@ -284,7 +284,7 @@ export const App: React.FC = () => {
         push(setStrategyLogs);
       }
       // Arbitrage Log: arb engine activity, Raydium/Orca pool data fetchers, and opportunity details
-      if (cat === 'arb' || cat === 'opportunity' || cat === 'pools' || cat === 'raydium' || cat === 'orca' || /^arb\b|^pretrade:arb|^trade:arb/i.test(msg)) {
+      if (cat === 'arb' || cat === 'opportunity' || cat === 'pools' || cat === 'raydium' || cat === 'orca' || /^arb\b|^pretrade:arb|^trade:arb|^opportunity:/i.test(msg)) {
         push(setArbLogs);
       }
       // API Log: internal/external API requests (exclude pools/arb/strategy-related fetchers)

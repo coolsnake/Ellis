@@ -223,7 +223,8 @@ logger.on('log', (event: any) => {
   // Category filtering: if disabled, drop entirely at backend
   try {
     const enabled: string[] | undefined = (CONFIG as any)?.system?.enabledLogCategories;
-    if (Array.isArray(enabled)) {
+    // Only enforce filtering when list is non-empty
+    if (Array.isArray(enabled) && enabled.length > 0) {
       const name = String(enriched.cat || 'other').toLowerCase();
       if (!enabled.includes(name)) {
         return; // muted at backend

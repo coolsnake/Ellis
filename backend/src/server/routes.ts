@@ -567,12 +567,16 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       const ps = DriftPriceService.getInstance().getPrice(marketIndex);
       // Prefer mid for center price; fallback to oracle if mid is unavailable
       const anchor = (ps && typeof ps?.mid === 'number') ? ps.mid : (ps?.oracle || undefined);
-      const ladder = (typeof anchor === 'number' && isFinite(anchor)) ? generatePriceLadder(cfg, anchor) : [];
+      // Honor sliding center if runner has it; fall back to anchor
+      const stList = DriftGridRegistry.list();
+      const stFound = stList.find((x: any) => String(x?.status?.config?.name || '') === name);
+      const center = (stFound?.status?.centerPrice && isFinite(stFound.status.centerPrice)) ? Number(stFound.status.centerPrice) : anchor;
+      const ladder = (typeof center === 'number' && isFinite(center)) ? generatePriceLadder(cfg, center) : [];
       const levels = ladder.map((l: any, i: number) => ({ id: `${l.side}-${i}-${Number(l.price).toFixed(6)}`, price: Number(l.price), side: l.side, amount: Number(l.size || 0), filled: false }));
 
       const state = {
-        centerPrice: (typeof anchor === 'number' ? anchor : null),
-        originalCenterPrice: (typeof anchor === 'number' ? anchor : null),
+        centerPrice: (typeof center === 'number' ? center : null),
+        originalCenterPrice: (typeof center === 'number' ? center : null),
         lastRebalance: Date.now(),
         volatility: 0,
         totalFilled: 0,
@@ -621,11 +625,8 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       const tokens = { fromToken: 'USDC', toToken: sym, fromSymbol: 'USDC', toSymbol: sym, fromUsd: 1, toUsd: undefined as any };
       // Include runtime state from runner for extras
       try {
-        const { DriftGridRegistry } = await import('../drift/execution.js');
-        const list = DriftGridRegistry.list();
-        const found = list.find((x: any) => String(x?.status?.config?.name || '') === name);
-        if (found && found.status) {
-          const st: any = found.status;
+        if (stFound && stFound.status) {
+          const st: any = stFound.status;
           return res.json({
             levels,
             positions: [],
