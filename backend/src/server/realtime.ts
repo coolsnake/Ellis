@@ -20,7 +20,8 @@ export async function emit(event: string, payload: any) {
       try {
         const { CONFIG } = await import('../utils/config.js');
         const enabled = (CONFIG as any)?.system?.enabledLogCategories as string[] | undefined;
-        if (Array.isArray(enabled)) {
+        // Only filter when the list is non-empty; empty means no filtering
+        if (Array.isArray(enabled) && enabled.length > 0) {
           if (!enabled.includes(cat)) return;
         }
       } catch {}
