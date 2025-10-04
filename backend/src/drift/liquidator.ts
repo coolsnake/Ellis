@@ -301,8 +301,11 @@ export class DriftLiquidator {
       } catch {}
       // Allow explicit allowlist override
       try {
-        const allow: string[] = Array.isArray(this.config.usersAllowlist) ? (this.config.usersAllowlist as any) : (Array.isArray(cfg.usersAllowlist) ? cfg.usersAllowlist : []);
-        if (allow.length > 0) {
+        const cfg = ((CONFIG as any)?.drift?.liquidator) || {};
+        const allow: string[] = Array.isArray(this.config.usersAllowlist)
+          ? (this.config.usersAllowlist as any)
+          : (Array.isArray(cfg.usersAllowlist) ? cfg.usersAllowlist : []);
+        if (Array.isArray(allow) && allow.length > 0) {
           const ks = allow.map((s) => String(s || '').trim()).filter(Boolean);
           if (ks.length > 0) this.userKeys = ks;
         }
@@ -310,6 +313,7 @@ export class DriftLiquidator {
       // Fallback: include our own user only
       if (this.userKeys.length === 0) {
         try {
+          const drift = (DriftService.getInstance() as any).client;
           const pk = await drift?.getUserAccountPublicKey?.();
           if (pk) this.userKeys = [String(pk?.toBase58?.() || pk)];
         } catch {}
@@ -530,11 +534,22 @@ export class DriftLiquidator {
       const prioritized: string[] = [];
       const remaining = this.userKeys.filter((k) => !this.discoveredRecentUsers.has(k));
       // Round-robin window into remaining using scanCursor
-      if (this.scanCursor >= remaining.length) this.scanCursor = 0;
-      const window = remaining.slice(this.scanCursor, this.scanCursor + 0);
+      const batchSize = Math.max(1, Math.min(200, Number(((CONFIG as any)?.drift?.liquidator?.scanBatchSize) ?? 200)));
+      if (remaining.length > 0) {
+        if (this.scanCursor >= remaining.length) this.scanCursor = 0;
+      } else {
+        this.scanCursor = 0;
+      }
+      const end = Math.min(this.scanCursor + batchSize, Math.max(0, remaining.length));
+      const window = remaining.slice(this.scanCursor, end);
       const tail: string[] = [];
       const keys = prioritized.concat(window).concat(tail);
-      this.scanCursor = 0;
+      // advance cursor modulo remaining length for next tick
+      if (remaining.length > 0) {
+        this.scanCursor = (end % remaining.length);
+      } else {
+        this.scanCursor = 0;
+      }
       const maxConc = 2;
       const maxNewUsers = Math.max(0, Math.min(2000, Number((this.config.maxNewUsersPerTick ?? ((CONFIG as any)?.drift?.liquidator?.maxNewUsersPerTick) ?? 250))));
       let newUsersAdded = 0;
@@ -994,7 +1009,23 @@ export class DriftLiquidator {
           try { await ((this as any)._dlobOrderSub?.subscribe?.()); } catch {}
         }
       } catch {}
-      // Periodically seed from user map keys if present
+      // Immediately seed from user map keys if present
+      if ((this as any)._dlobUserMap) {
+        try {
+          const um = (this as any)._dlobUserMap;
+          const entries = (typeof um?.keys === 'function') ? Array.from(um.keys()) : [];
+          if (Array.isArray(entries) && entries.length > 0) {
+            const max = Math.min(1000, entries.length);
+            for (let i = 0; i < max; i += 1) {
+              const k = entries[i];
+              const pk = String(k?.toBase58?.() || k || '');
+              if (pk) this.enqueueProbe(pk);
+            }
+            try { logger.info('drift.liquidator.dlob_seed', { users: Math.min(entries.length, max), cat: 'drift' }); } catch {}
+          }
+        } catch {}
+      }
+      // Periodically seed from user map keys as a refresh
       if ((this as any)._dlobUserMap && !(this as any)._dlobSeedTimer) {
         (this as any)._dlobSeedTimer = (globalThis as any).setInterval(() => {
           try {
