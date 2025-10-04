@@ -70,10 +70,11 @@ export class DriftPriceService {
     const idx = Number(marketIndex);
     if (!Number.isFinite(idx)) return;
     // Prefer WS when enabled
-    const enableWs = !!getDriftConfig().enableWsPrices;
+    const cfg = getDriftConfig();
+    const enableWs = !!cfg.enableWsPrices;
     if (enableWs && this.ws) {
       try { this.ws.subscribeMarket(idx); } catch {}
-      // Staleness watchdog: if WS stalls, ensure HTTP fallback polling
+      // Staleness watchdog: if WS stalls, ensure HTTP fallback polling (unless wsOnlyPrices)
       const staleMs = Math.max(1000, Number(getDriftConfig().priceStaleMs || 3000));
       const watchdog = () => {
         try {
@@ -82,7 +83,8 @@ export class DriftPriceService {
             // Mark stale and ensure HTTP polling is active
             const current = this.prices.get(idx);
             if (current) this.prices.set(idx, { ...current, stale: true });
-            this.ensureHttpPolling(idx, intervalMs);
+            const cfg2 = getDriftConfig();
+            if (!cfg2.wsOnlyPrices) this.ensureHttpPolling(idx, intervalMs);
           } else {
             // WS is fresh; stop HTTP polling if any
             this.stopHttpPolling(idx);
@@ -94,8 +96,8 @@ export class DriftPriceService {
       if (prev) { try { (globalThis as any).clearInterval(prev); } catch {} }
       const st: any = (globalThis as any).setInterval(watchdog, Math.max(500, Math.min(staleMs, 2000)));
       this.staleTimers.set(idx, st);
-      // Also warmup via HTTP immediately until first WS arrives
-      this.ensureHttpPolling(idx, intervalMs);
+      // Also warmup via HTTP immediately until first WS arrives (unless wsOnlyPrices)
+      if (!cfg.wsOnlyPrices) this.ensureHttpPolling(idx, intervalMs);
       return;
     }
     // Fallback: HTTP-only polling via single scheduler

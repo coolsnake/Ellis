@@ -28,6 +28,7 @@ export type DriftConfig = {
   feeTakerBps?: number;
   maxFundingApy?: number;
   enableWsPrices?: boolean;
+  wsOnlyPrices?: boolean;
   priceStaleMs?: number;
   websocketIntervalMs?: number;
   dlobUrl?: string;
@@ -50,6 +51,7 @@ export function getDriftConfig(): DriftConfig {
     feeTakerBps: Number(d.feeTakerBps || 5),
     maxFundingApy: typeof d.maxFundingApy === 'number' ? d.maxFundingApy : undefined,
     enableWsPrices: !!d.enableWsPrices,
+    wsOnlyPrices: (d.wsOnlyPrices !== undefined ? !!d.wsOnlyPrices : true),
     priceStaleMs: Number(d.priceStaleMs || 3000),
     websocketIntervalMs: Number(d.websocketIntervalMs || 400),
     dlobUrl: d.dlobUrl || 'https://dlob.drift.trade',
