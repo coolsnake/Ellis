@@ -353,6 +353,8 @@ let wsUnsubscribe: (() => void) | undefined;
 let healthTimer: any | undefined;
 let lastWsEventMs: number = 0;
 let wsHealthy: boolean = false;
+export let userSubscribed: boolean = false;
+export function setUserSubscribed(v: boolean): void { userSubscribed = !!v; }
 
 export function startRaydiumRefreshLoop(): void {
   // Clear existing timers if any, to allow dynamic TTL updates
@@ -390,9 +392,12 @@ export function startRaydiumRefreshLoop(): void {
     }, orcaPeriod);
   }
 
-  // Kick immediately once activated (after graph ready) so data is available without waiting
-  getRaydiumPoolsNormalized(true).catch(() => {});
-  getOrcaPoolsCached(true).catch(() => {});
+  // If user explicitly subscribed, avoid automatic HTTP seed/refresh; only manual refresh will fetch
+  if (!userSubscribed) {
+    // Kick immediately once activated so data is available without waiting
+    getRaydiumPoolsNormalized(true).catch(() => {});
+    getOrcaPoolsCached(true).catch(() => {});
+  }
 
   // Optional: subscribe to on-chain account changes to push updates into caches
   if (wsEnabled) {
@@ -430,14 +435,9 @@ export function startRaydiumRefreshLoop(): void {
             } catch {}
             const now = Date.now();
             if (owner === String(CONFIG.raydium?.ammV4Program) || owner === String(CONFIG.raydium?.clmmProgram)) {
-              if (now - lastRay < minGap) return;
-              lastRay = now;
-              // Trigger a targeted refresh (debounced by TTL): let normalizer repair from accounts batch in next tick
-              try {
-                logger.info('pools.refresh ws raydium', { cat: 'pools' });
-                emit('log', { level: 'info', message: 'pools:refresh ws source=raydium', timestamp: new Date().toISOString(), context: { cat: 'pools' } });
-              } catch {}
-              getRaydiumPoolsNormalized(true).catch(() => {});
+              // With subscriptions enabled, do not auto-refresh Raydium via HTTP; rely on manual refresh
+              // Future: implement Raydium account decoding and upsert here
+              return;
             } else if (owner === String(CONFIG.orca?.programId)) {
               // Attempt to parse and upsert single Whirlpool from account data; fallback to full refresh on failure
               let ok = false;
@@ -471,43 +471,57 @@ export function startRaydiumRefreshLoop(): void {
               } catch (e:any) {
                 try { logger.warn('orca.ws.parse failed', { error: String(e?.message || e) }); } catch {}
               }
-              if (!ok) {
-                const now2 = Date.now();
-                if (now2 - lastOrc >= minGap) {
-                  lastOrc = now2;
-                  try {
-                    logger.info('pools.refresh ws orca', { cat: 'pools' });
-                    emit('log', { level: 'info', message: 'pools:refresh ws source=orca', timestamp: new Date().toISOString(), context: { cat: 'pools' } });
-                  } catch {}
-                  getOrcaPoolsCached(true).catch(() => {});
-                }
-              }
+              // Do not fallback to HTTP refresh when user subscribed; leave updates to manual refresh
             } else if (pk) {
               // Fallback: if account belongs to any known program, refresh both
-              if (now - lastRay >= minGap) {
-                lastRay = now;
-                try {
-                  logger.info('pools.refresh ws fallback raydium', { cat: 'pools' });
-                } catch {}
-                getRaydiumPoolsNormalized(true).catch(() => {});
-              }
-              if (now - lastOrc >= minGap) {
-                lastOrc = now;
-                try {
-                  logger.info('pools.refresh ws fallback orca', { cat: 'pools' });
-                } catch {}
-                getOrcaPoolsCached(true).catch(() => {});
-              }
+              // Disabled while subscribed
             }
           } catch {}
         };
-        // Subscribe to program account changes (broad, but debounced by cache TTL)
-        try { logger.info('pools.ws subscribe program raydium.amm', { program: String(CONFIG.raydium?.ammV4Program), cat: 'pools' }); } catch {}
-        subs.push(conn.onProgramAccountChange(rayAmm, (ch) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
-        try { logger.info('pools.ws subscribe program raydium.clmm', { program: String(CONFIG.raydium?.clmmProgram), cat: 'pools' }); } catch {}
-        subs.push(conn.onProgramAccountChange(rayClmm, (ch) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
-        try { logger.info('pools.ws subscribe program orca', { program: String(CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc'), cat: 'pools' }); } catch {}
-        subs.push(conn.onProgramAccountChange(orcaProg, (ch) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
+        // Subscribe to Orca Whirlpool POOL accounts only: derive PDAs from watchlist and subscribe per-address
+        try {
+          const { PublicKey } = web3;
+          const sdkAny: any = await import('@orca-so/whirlpools-sdk').catch(() => null);
+          const PDAUtil = sdkAny?.PDAUtil;
+          const programId = new PublicKey(String(CONFIG.orca?.programId));
+          const configPk = new PublicKey(String(CONFIG.orca?.configPubkey));
+          const wl = await readJson<any[]>(CONFIG.watchlistPath, []);
+          const SOL = 'So11111111111111111111111111111111111111112';
+          const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+          const tickSpacings = [8, 16, 32, 64, 128, 256];
+          const pairs: Array<[string, string]> = [];
+          const watchMints: string[] = Array.from(new Set(wl.map((t: any) => (typeof t === 'string' ? t : t?.id)).filter(Boolean)));
+          for (const m of watchMints.slice(0, 100)) { if (m !== USDC) pairs.push([m, USDC]); if (m !== SOL) pairs.push([m, SOL]); }
+          pairs.push([SOL, USDC]);
+          const poolAddrs: string[] = [];
+          if (PDAUtil) {
+            for (const [a, b] of pairs) {
+              const [mintA, mintB] = String(a) < String(b) ? [a, b] : [b, a];
+              for (const ts of tickSpacings) {
+                try {
+                  const pda = PDAUtil.getWhirlpool(programId, configPk, new PublicKey(mintA), new PublicKey(mintB), ts);
+                  poolAddrs.push(pda.publicKey.toBase58());
+                } catch {}
+              }
+            }
+          }
+          const uniq = Array.from(new Set(poolAddrs));
+          let attached = 0;
+          for (const addr of uniq) {
+            try {
+              const pk = new PublicKey(addr);
+              const id = await conn.onAccountChange(pk, (info: any) => { handle(pk as any, info); });
+              subs.push(id as any); attached++;
+            } catch {}
+          }
+          logger.info('pools.ws subscribe orca.pools', { attached });
+        } catch (e:any) {
+          logger.warn('pools.ws orca address subscribe failed', { error: String(e?.message || e) });
+          // Fallback to program-level subscription (may include non-pool accounts)
+          try { logger.info('pools.ws subscribe program orca(fallback)', { program: String(CONFIG.orca?.programId), cat: 'pools' }); } catch {}
+          subs.push(conn.onProgramAccountChange(orcaProg, (ch) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
+        }
+        // Raydium subscriptions left as future: avoid non-pool spam for now
         wsUnsubscribe = () => { try { for (const id of subs) conn.removeAccountChangeListener(id as any).catch(() => {}); } catch {} };
         logger.info('pools.ws subscriptions active');
 
@@ -520,10 +534,8 @@ export function startRaydiumRefreshLoop(): void {
             const idle = now - (lastWsEventMs || 0);
             const healthy = wsHealthy && idle < timeoutMs * 2;
             if (!healthy) {
-              // Consider WS unhealthy -> perform background refreshes
-              try { logger.warn('pools.ws unhealthy — triggering fallback refresh', { idleMs: idle, timeoutMs }); } catch {}
-              getRaydiumPoolsNormalized(true).catch(() => {});
-              getOrcaPoolsCached(true).catch(() => {});
+              // WS unhealthy; when user subscribed, do not trigger HTTP refresh automatically
+              try { logger.warn('pools.ws unhealthy', { idleMs: idle, timeoutMs }); } catch {}
               wsHealthy = false;
             }
           } catch {}

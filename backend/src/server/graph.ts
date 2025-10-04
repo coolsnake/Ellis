@@ -54,6 +54,7 @@ let inflight: Promise<GraphSnapshot> | null = null;
 const SNAPSHOT_TTL_MS = 30_000;
 let lastAt = 0;
 let rebuildTimer: any | null = null;
+let pendingUpdates = 0;
 
 export function getGraphVersion(): { version: number; timestamp: number } {
   const version = lastSnapshot?.version || 0;
@@ -80,7 +81,9 @@ export async function rebuildGraphNow(io?: SocketIOServer): Promise<void> {
 
 export function scheduleGraphRebuild(io?: SocketIOServer, debounceMs = 200): void {
   if (rebuildTimer) { clearTimeout(rebuildTimer); rebuildTimer = null; }
-  rebuildTimer = setTimeout(() => { rebuildTimer = null; rebuildGraphNow(io).catch(() => {}); }, Math.max(50, debounceMs));
+  pendingUpdates += 1;
+  const wait = Math.max(50, debounceMs);
+  rebuildTimer = setTimeout(() => { rebuildTimer = null; const pending = pendingUpdates; pendingUpdates = 0; try { logger.info('graph.rebuild.batch', { pending }); } catch {}; rebuildGraphNow(io).catch(() => {}); }, wait);
   try { logger.info('graph.rebuild.scheduled', { debounceMs }); } catch {}
 }
 

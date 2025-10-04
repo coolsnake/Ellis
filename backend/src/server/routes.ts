@@ -1543,6 +1543,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       try { (await import('./pools.js')).enablePoolWebsocketRefreshes(); } catch {}
       // Also kick refresh loop if allowed by config
       try { (await import('./pools.js')).startRaydiumRefreshLoop(); } catch {}
+      try { (await import('./pools.js')).setUserSubscribed(true); } catch {}
       res.json({ ok: true });
       try { emit('log', { level: 'info', message: 'pools:subscribe ok', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
       // Schedule a graph rebuild shortly after subscription to propagate any immediate changes
@@ -1561,6 +1562,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       // Best-effort: disable websockets and keep periodic refresh
       try { (await import('./pools.js')).disablePoolWebsocketRefreshes(); } catch {}
       try { (await import('./pools.js')).startRaydiumRefreshLoop(); } catch {}
+      try { (await import('./pools.js')).setUserSubscribed(false); } catch {}
       res.json({ ok: true });
       try { emit('log', { level: 'info', message: 'pools:unsubscribe ok', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
     } catch (e: any) {
