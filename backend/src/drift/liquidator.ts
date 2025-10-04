@@ -303,10 +303,8 @@ export class DriftLiquidator {
   private computeAnchorDiscriminatorB58(name: string): string | null {
     try {
       const label = `account:${name}`;
-      const crypto = await import('crypto');
-      const hash = (crypto as any).createHash('sha256').update(label).digest();
+      const hash = createHash('sha256').update(label).digest();
       const first8 = hash.slice(0, 8);
-      const bs58 = (await import('bs58')).default as any;
       return bs58.encode(first8);
     } catch {
       return null;
@@ -556,8 +554,6 @@ export class DriftLiquidator {
       const users = Array.from(this.marketToUsers.get(idx) || []);
       if (users.length === 0) { this.marketScanInFlight.delete(idx); return; }
       const drift: any = (DriftService.getInstance() as any).client;
-      const sdk: any = await import('@drift-labs/sdk');
-      const { User, BulkAccountLoader } = (sdk as any);
       const conn: any = (DriftService.getInstance() as any).connection;
       if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', 1000);
       // Cap per event to avoid long stalls
