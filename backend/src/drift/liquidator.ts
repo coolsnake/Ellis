@@ -184,12 +184,12 @@ export class DriftLiquidator {
         }
       }
     } catch {}
-    // Initialize discovery and price triggers once
+    // Initialize discovery and subscriptions (WS-only sources first)
     try { await this.initDiscovery(); this.initialized = true; } catch {}
-    // Seed from on-chain orderbook (DLOB/UserMap) if available via SDK (websocket-based)
+    try { await this.initEventSubscriptions(); } catch {}
+    try { await this.initDlobSources(); } catch {}
     try { await this.seedFromDlobUserMap(); } catch {}
     try { await this.initPriceTriggers(); } catch {}
-    try { await this.initEventSubscriptions(); } catch {}
     this.timer = (globalThis as any).setInterval(() => {
       this.tick().catch((e) => logger.warn('drift.liquidator.tick_error', { error: String(e?.message || e), cat: 'drift' }));
     }, pollMs);
@@ -1044,12 +1044,24 @@ export class DriftLiquidator {
       if (!drift) return;
       let sdk: any = null;
       try { sdk = await import('@drift-labs/sdk'); } catch {}
-      // Initialize UserMap if constructable
+      // Initialize UserMap using SDK pattern (ws accounts + event subscriber)
       try {
         const Ctor = (sdk as any)?.UserMap || null;
+        const EventSubscriberCtor = (sdk as any)?.EventSubscriber || null;
         if (Ctor && !(this as any)._dlobUserMap) {
-          try { (this as any)._dlobUserMap = new (Ctor as any)(drift.connection, drift.program); }
-          catch { try { (this as any)._dlobUserMap = new (Ctor as any)({ connection: drift.connection, program: drift.program }); } catch {} }
+          // Prefer SDK-style event subscriber wiring if available
+          let evSub: any = this.eventSub;
+          try {
+            if (!evSub && EventSubscriberCtor) {
+              evSub = new (EventSubscriberCtor as any)(drift.connection, drift.program);
+              try { await evSub.subscribe?.(); } catch {}
+            }
+          } catch {}
+          try {
+            (this as any)._dlobUserMap = new (Ctor as any)({ connection: drift.connection, program: drift.program, eventSubscriber: evSub });
+          } catch {
+            try { (this as any)._dlobUserMap = new (Ctor as any)(drift.connection, drift.program); } catch {}
+          }
           try { await ((this as any)._dlobUserMap?.subscribe?.()); } catch {}
         }
       } catch {}
