@@ -40,6 +40,11 @@ export type LiquidatorConfig = {
   statsIntervalMs?: number;
   // Subscriptions
   useEventSubscriptions?: boolean;
+  // Discovery scheduling & batching
+  discoveryRefreshMs?: number;
+  discoveryBatchSize?: number;
+  scanBatchSize?: number;
+  recentBatchPerTick?: number;
 };
 
 export type LiquidatorRuntimeState = {
@@ -124,6 +129,8 @@ export class DriftLiquidator {
   private discoveredRecentUsers: Set<string> = new Set();
   private scanCursor: number = 0;
   private scanBatchSize: number = 2000;
+  private recentCursor: number = 0;
+  private recentBatchPerTick: number = 200;
 
   constructor(private config: LiquidatorConfig) {}
 
@@ -393,10 +400,9 @@ export class DriftLiquidator {
       const accounts = json?.result?.accounts || json?.result || [];
       if (Array.isArray(accounts) && accounts.length > 0) {
         try { logger.info('drift.liquidator.discovery_recent', { fetched: accounts.length, lastSlot: this.lastDiscoverySlot, cat: 'drift' }); } catch {}
-        for (const a of accounts) {
-          const pk = String(a?.pubkey || a?.account || '');
-          if (pk) this.discoveredRecentUsers.add(pk);
-        }
+        // Further narrow recent users to those with activity in tracked markets by sampling a small subset immediately
+        const sample = accounts.slice(0, Math.min(200, accounts.length));
+        for (const a of sample) { const pk = String(a?.pubkey || a?.account || ''); if (pk) this.discoveredRecentUsers.add(pk); }
         // Cap recent set size
         const cap = Math.max(1000, Math.min(50000, Number((this.config?.maxDiscoveredUsers ?? ((CONFIG as any)?.drift?.liquidator?.maxDiscoveredUsers) ?? 5000))));
         if (this.discoveredRecentUsers.size > cap) {
@@ -540,7 +546,11 @@ export class DriftLiquidator {
       if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', 1000);
       const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
       // Build scan order: recent -> remaining (round-robin with persistent cursor) to avoid rescanning same heads
-      const prioritized: string[] = Array.from(this.discoveredRecentUsers);
+      const recentArr = Array.from(this.discoveredRecentUsers);
+      // Rotate recent slice to avoid always scanning same heads
+      if (this.recentCursor >= recentArr.length) this.recentCursor = 0;
+      const prioritized = recentArr.slice(this.recentCursor, this.recentCursor + this.recentBatchPerTick);
+      this.recentCursor = (this.recentCursor + this.recentBatchPerTick) % Math.max(1, Math.max(1, recentArr.length || 1));
       const remaining = this.userKeys.filter((k) => !this.discoveredRecentUsers.has(k));
       // Round-robin window into remaining using scanCursor
       if (this.scanCursor >= remaining.length) this.scanCursor = 0;
@@ -600,7 +610,7 @@ export class DriftLiquidator {
           candidatesFound: out.length,
           minHealth: Number.isFinite(minHealth) ? minHealth : null,
           threshold: riskThresh,
-          sampledUsers: keys.slice(0, Math.min(5, keys.length)),
+          sampledUsers: (window.length > 0 ? window : prioritized).slice(0, Math.min(5, (window.length > 0 ? window : prioritized).length)),
           cat: 'drift',
         });
       } catch {}

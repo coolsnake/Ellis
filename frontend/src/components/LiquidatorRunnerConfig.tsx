@@ -41,6 +41,12 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
     spotSizeFraction: initialConfig?.spotSizeFraction ?? 0.05,
     targetCooldownMs: initialConfig?.targetCooldownMs ?? 7000,
     statsIntervalMs: initialConfig?.statsIntervalMs ?? 15000,
+    // Subscriptions & discovery tuning
+    useEventSubscriptions: initialConfig?.useEventSubscriptions ?? true,
+    discoveryRefreshMs: initialConfig?.discoveryRefreshMs ?? 45000,
+    discoveryBatchSize: initialConfig?.discoveryBatchSize ?? 2000,
+    scanBatchSize: initialConfig?.scanBatchSize ?? 2000,
+    recentBatchPerTick: initialConfig?.recentBatchPerTick ?? 200,
   });
 
   useEffect(() => {
@@ -88,6 +94,11 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
         spotSizeFraction: Math.max(0.001, Math.min(0.5, Number(form.spotSizeFraction || 0))),
         targetCooldownMs: Math.max(500, Number(form.targetCooldownMs || 0)),
         statsIntervalMs: Math.max(1000, Number(form.statsIntervalMs || 0)),
+        useEventSubscriptions: !!form.useEventSubscriptions,
+        discoveryRefreshMs: Math.max(5000, Number(form.discoveryRefreshMs || 0)),
+        discoveryBatchSize: Math.max(100, Number(form.discoveryBatchSize || 0)),
+        scanBatchSize: Math.max(100, Number(form.scanBatchSize || 0)),
+        recentBatchPerTick: Math.max(10, Number(form.recentBatchPerTick || 0)),
       };
       const res = await fetch(`${apiBase}/strategies/liquidator/start`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       if (!res.ok) throw new Error(await res.text());
@@ -230,6 +241,28 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
           <div>
             <div className="text-gray-400 mb-1">Stats Interval (ms)</div>
             <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.statsIntervalMs} onChange={(e) => setForm((p: any) => ({ ...p, statsIntervalMs: Number(e.target.value) }))} />
+          </div>
+
+          <div className="md:col-span-2 border-t border-gray-700 pt-3 font-semibold text-gray-200">Subscriptions & Discovery</div>
+          <label className="flex items-center gap-2">
+            <input type="checkbox" className="h-4 w-4" checked={!!form.useEventSubscriptions} onChange={(e) => setForm((p: any) => ({ ...p, useEventSubscriptions: e.target.checked }))} />
+            <span className="text-gray-300">Use Event Subscriptions (Drift)</span>
+          </label>
+          <div>
+            <div className="text-gray-400 mb-1">Discovery Refresh (ms)</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.discoveryRefreshMs} onChange={(e) => setForm((p: any) => ({ ...p, discoveryRefreshMs: Number(e.target.value) }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Discovery Batch Size (users)</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.discoveryBatchSize} onChange={(e) => setForm((p: any) => ({ ...p, discoveryBatchSize: Number(e.target.value) }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Scan Batch Size (users per tick)</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.scanBatchSize} onChange={(e) => setForm((p: any) => ({ ...p, scanBatchSize: Number(e.target.value) }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Recent Batch per Tick</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.recentBatchPerTick} onChange={(e) => setForm((p: any) => ({ ...p, recentBatchPerTick: Number(e.target.value) }))} />
           </div>
         </div>
 
