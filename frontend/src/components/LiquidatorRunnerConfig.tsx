@@ -18,11 +18,8 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
     pollMs: initialConfig?.pollMs ?? 1500,
     maxConcurrentTargets: initialConfig?.maxConcurrentTargets ?? 2,
 
-    // Discovery & scanning
-    discoverAllUsers: initialConfig?.discoverAllUsers ?? true,
-    maxDiscoveredUsers: initialConfig?.maxDiscoveredUsers ?? 500,
+    // Discovery (WS)
     usersAllowlistCsv: Array.isArray(initialConfig?.usersAllowlist) ? initialConfig.usersAllowlist.join(',') : '',
-    scanConcurrency: initialConfig?.scanConcurrency ?? 10,
     userCacheMax: initialConfig?.userCacheMax ?? 500,
     riskHealthThreshold: initialConfig?.riskHealthThreshold ?? 0,
 
@@ -41,12 +38,8 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
     spotSizeFraction: initialConfig?.spotSizeFraction ?? 0.05,
     targetCooldownMs: initialConfig?.targetCooldownMs ?? 7000,
     statsIntervalMs: initialConfig?.statsIntervalMs ?? 15000,
-    // Subscriptions & discovery tuning
+    // Subscriptions
     useEventSubscriptions: initialConfig?.useEventSubscriptions ?? true,
-    discoveryRefreshMs: initialConfig?.discoveryRefreshMs ?? 45000,
-    discoveryBatchSize: initialConfig?.discoveryBatchSize ?? 2000,
-    scanBatchSize: initialConfig?.scanBatchSize ?? 2000,
-    recentBatchPerTick: initialConfig?.recentBatchPerTick ?? 200,
 
     // Probing/subscription tuning
     maxProbesPerTick: initialConfig?.maxProbesPerTick ?? 40,
@@ -85,10 +78,7 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
         pollMs: Math.max(200, Number(form.pollMs || 0)),
         maxConcurrentTargets: Math.max(1, Number(form.maxConcurrentTargets || 1)),
 
-        discoverAllUsers: !!form.discoverAllUsers,
-        maxDiscoveredUsers: Math.max(1, Number(form.maxDiscoveredUsers || 1)),
         usersAllowlist: String(form.usersAllowlistCsv || '').split(',').map((s) => s.trim()).filter(Boolean),
-        scanConcurrency: Math.max(1, Number(form.scanConcurrency || 1)),
         userCacheMax: Math.max(50, Number(form.userCacheMax || 50)),
         riskHealthThreshold: Number(form.riskHealthThreshold || 0),
 
@@ -106,10 +96,6 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
         targetCooldownMs: Math.max(500, Number(form.targetCooldownMs || 0)),
         statsIntervalMs: Math.max(1000, Number(form.statsIntervalMs || 0)),
         useEventSubscriptions: !!form.useEventSubscriptions,
-        discoveryRefreshMs: Math.max(5000, Number(form.discoveryRefreshMs || 0)),
-        discoveryBatchSize: Math.max(100, Number(form.discoveryBatchSize || 0)),
-        scanBatchSize: Math.max(100, Number(form.scanBatchSize || 0)),
-        recentBatchPerTick: Math.max(10, Number(form.recentBatchPerTick || 0)),
         wsOnlyDiscovery: !!form.wsOnlyDiscovery,
         limitedHttpDiscovery: !!form.limitedHttpDiscovery,
 
@@ -160,22 +146,10 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
             <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.maxConcurrentTargets} onChange={(e) => setForm((p: any) => ({ ...p, maxConcurrentTargets: Number(e.target.value) }))} />
           </div>
 
-          <div className="md:col-span-2 border-t border-gray-700 pt-3 font-semibold text-gray-200">Discovery & Scanning</div>
-          <label className="flex items-center gap-2">
-            <input type="checkbox" className="h-4 w-4" checked={!!form.discoverAllUsers} onChange={(e) => setForm((p: any) => ({ ...p, discoverAllUsers: e.target.checked }))} />
-            <span className="text-gray-300">Discover All Users</span>
-          </label>
-          <div>
-            <div className="text-gray-400 mb-1">Max Discovered Users</div>
-            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.maxDiscoveredUsers} onChange={(e) => setForm((p: any) => ({ ...p, maxDiscoveredUsers: Number(e.target.value) }))} />
-          </div>
+          <div className="md:col-span-2 border-t border-gray-700 pt-3 font-semibold text-gray-200">General</div>
           <div className="md:col-span-2">
             <div className="text-gray-400 mb-1">Users Allowlist (CSV base58)</div>
             <input type="text" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.usersAllowlistCsv} onChange={(e) => setForm((p: any) => ({ ...p, usersAllowlistCsv: e.target.value }))} />
-          </div>
-          <div>
-            <div className="text-gray-400 mb-1">Scan Concurrency</div>
-            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.scanConcurrency} onChange={(e) => setForm((p: any) => ({ ...p, scanConcurrency: Number(e.target.value) }))} />
           </div>
           <div>
             <div className="text-gray-400 mb-1">User Cache Max</div>
@@ -263,27 +237,11 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
             <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.statsIntervalMs} onChange={(e) => setForm((p: any) => ({ ...p, statsIntervalMs: Number(e.target.value) }))} />
           </div>
 
-          <div className="md:col-span-2 border-t border-gray-700 pt-3 font-semibold text-gray-200">Subscriptions & Discovery</div>
+          <div className="md:col-span-2 border-t border-gray-700 pt-3 font-semibold text-gray-200">Subscriptions</div>
           <label className="flex items-center gap-2">
             <input type="checkbox" className="h-4 w-4" checked={!!form.useEventSubscriptions} onChange={(e) => setForm((p: any) => ({ ...p, useEventSubscriptions: e.target.checked }))} />
             <span className="text-gray-300">Use Event Subscriptions (Drift)</span>
           </label>
-          <div>
-            <div className="text-gray-400 mb-1">Discovery Refresh (ms)</div>
-            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.discoveryRefreshMs} onChange={(e) => setForm((p: any) => ({ ...p, discoveryRefreshMs: Number(e.target.value) }))} />
-          </div>
-          <div>
-            <div className="text-gray-400 mb-1">Discovery Batch Size (users)</div>
-            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.discoveryBatchSize} onChange={(e) => setForm((p: any) => ({ ...p, discoveryBatchSize: Number(e.target.value) }))} />
-          </div>
-          <div>
-            <div className="text-gray-400 mb-1">Scan Batch Size (users per tick)</div>
-            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.scanBatchSize} onChange={(e) => setForm((p: any) => ({ ...p, scanBatchSize: Number(e.target.value) }))} />
-          </div>
-          <div>
-            <div className="text-gray-400 mb-1">Recent Batch per Tick</div>
-            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.recentBatchPerTick} onChange={(e) => setForm((p: any) => ({ ...p, recentBatchPerTick: Number(e.target.value) }))} />
-          </div>
 
           <div className="md:col-span-2 border-t border-gray-700 pt-3 font-semibold text-gray-200">Probing & Filters</div>
           <label className="flex items-center gap-2">
