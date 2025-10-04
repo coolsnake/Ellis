@@ -622,8 +622,36 @@ export const App: React.FC = () => {
 
     try {
       if (strategy?.gridType === 'drift') {
-        // Stop levered grid runner and update local state
-        const key = strategy?.driftKey || `${strategyName}#${Number(strategy?.marketIndex) ?? ''}#${Number(strategy?.subaccountId) ?? ''}`;
+        // Resolve exact runner key for leveraged grid and stop it
+        const resolveDriftKey = async (): Promise<string | null> => {
+          const byProp = typeof strategy?.driftKey === 'string' ? strategy.driftKey as string : null;
+          if (byProp && byProp.includes('#')) return byProp;
+          const mi = Number(strategy?.marketIndex);
+          const sa = Number(strategy?.subaccountId);
+          if (Number.isFinite(mi) && Number.isFinite(sa)) return `${strategyName}#${mi}#${sa}`;
+          try {
+            const statusResp = await fetch(`${apiBase}/strategies/leveraged-grid/status`);
+            const lg = await statusResp.json();
+            const items = Array.isArray(lg?.strategies) ? lg.strategies : [];
+            // Prefer exact name match
+            let candidates = items.filter((x: any) => {
+              const cfg = (x?.status?.config || {}) as any;
+              const key = String(x?.key || '');
+              const keyName = key.includes('#') ? key.split('#')[0] : key;
+              return (cfg?.name === strategyName) || (keyName === strategyName);
+            });
+            // Narrow by marketIndex if provided
+            if (Number.isFinite(mi)) {
+              candidates = candidates.filter((x: any) => Number((x?.status?.config as any)?.market?.marketIndex) === mi);
+            }
+            if (candidates.length > 0) return String(candidates[0].key);
+          } catch {}
+          return null;
+        };
+
+        const key = await resolveDriftKey();
+        if (!key) throw new Error('Unable to determine leveraged grid key to remove');
+
         const resp = await fetch(`${apiBase}/strategies/leveraged-grid/stop`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key }) });
         if (!resp.ok) {
           const txt = await resp.text();
@@ -632,7 +660,12 @@ export const App: React.FC = () => {
         const out = await resp.json().catch(() => ({ ok: true }));
         if (!out?.ok) throw new Error('Leveraged grid not found or could not be removed');
         // Optimistically remove from local state
-        setStrategies(prev => (prev || []).filter((s: any) => (s?.driftKey || `${s?.name}#${s?.marketIndex ?? ''}#${s?.subaccountId ?? ''}`) !== key));
+        setStrategies(prev => (prev || []).filter((s: any) => {
+          const sMi = Number(s?.marketIndex);
+          const sSa = Number(s?.subaccountId);
+          const sKey = typeof s?.driftKey === 'string' && s.driftKey.includes('#') ? s.driftKey : (Number.isFinite(sMi) && Number.isFinite(sSa) ? `${s?.name}#${sMi}#${sSa}` : null);
+          return sKey !== key;
+        }));
         setPositions(prev => (prev || []).filter((p: any) => (p?.strategy || 'default') !== strategyName));
         setActivitiesByStrategy(prev => { const next = { ...(prev || {}) } as any; delete next[strategyName]; return next; });
         // Refresh from server to avoid reappearing due to stale merges
