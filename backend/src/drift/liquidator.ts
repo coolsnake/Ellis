@@ -112,6 +112,9 @@ export class DriftLiquidator {
   private targetCooldownUntil: Map<string, number> = new Map();
   private eventSub: any | null = null;
   private lastDiscoveryUsedGpaV2 = false;
+  private discoveryTimer: any | null = null;
+  private lastDiscoverySlot: number = 0;
+  private discoveredRecentUsers: Set<string> = new Set();
 
   constructor(private config: LiquidatorConfig) {}
 
@@ -169,12 +172,23 @@ export class DriftLiquidator {
         } catch {}
       }, everyMs);
     } catch {}
+
+    // Periodic recent discovery (Helius getProgramAccountsV2 changedSinceSlot)
+    try {
+      if (this.discoveryTimer) { try { (globalThis as any).clearInterval(this.discoveryTimer); } catch {} }
+      const cfg: any = (CONFIG as any)?.drift?.liquidator || {};
+      const discMs = Math.max(10000, Number(this.config?.discoveryRefreshMs ?? cfg.discoveryRefreshMs ?? 45000));
+      this.discoveryTimer = (globalThis as any).setInterval(() => {
+        this.tryRecentDiscovery().catch(() => {});
+      }, discMs);
+    } catch {}
   }
 
   stop(): void {
     if (this.timer) (globalThis as any).clearInterval(this.timer);
     this.timer = null;
     if (this.statsTimer) { try { (globalThis as any).clearInterval(this.statsTimer); } catch {} this.statsTimer = null; }
+    if (this.discoveryTimer) { try { (globalThis as any).clearInterval(this.discoveryTimer); } catch {} this.discoveryTimer = null; }
     // Cleanup event subscriptions
     try {
       if (this.eventSub) {
@@ -347,6 +361,45 @@ export class DriftLiquidator {
     return out;
   }
 
+  private async tryRecentDiscovery(): Promise<void> {
+    try {
+      const drift: any = (DriftService.getInstance() as any).client;
+      const conn: any = (DriftService.getInstance() as any).connection;
+      const endpoint: string = String(conn?._rpcEndpoint || conn?.rpcEndpoint || '');
+      if (!endpoint || !/helius/i.test(endpoint)) return;
+      const programId: string = String(drift?.program?.programId?.toBase58?.() || drift?.program?.programId || '');
+      if (!programId) return;
+      const maxBatch = Math.max(100, Math.min(5000, Number((this.config?.discoveryBatchSize ?? ((CONFIG as any)?.drift?.liquidator?.discoveryBatchSize) ?? 2000))));
+      const discr = this.computeAnchorDiscriminatorB58('User');
+      const filters: any[] = discr ? [{ memcmp: { offset: 0, bytes: discr } }] : [];
+      const body: any = {
+        jsonrpc: '2.0', id: 1, method: 'getProgramAccountsV2',
+        params: [programId, { encoding: 'base64', filters, dataSlice: { offset: 0, length: 0 }, limit: maxBatch, changedSinceSlot: Number(this.lastDiscoverySlot || 0) }]
+      };
+      const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const json = await res.json();
+      const accounts = json?.result?.accounts || json?.result || [];
+      if (Array.isArray(accounts) && accounts.length > 0) {
+        for (const a of accounts) {
+          const pk = String(a?.pubkey || a?.account || '');
+          if (pk) this.discoveredRecentUsers.add(pk);
+        }
+        // Cap recent set size
+        const cap = Math.max(1000, Math.min(50000, Number((this.config?.maxDiscoveredUsers ?? ((CONFIG as any)?.drift?.liquidator?.maxDiscoveredUsers) ?? 5000))));
+        if (this.discoveredRecentUsers.size > cap) {
+          const trim = this.discoveredRecentUsers.size - cap;
+          let i = 0;
+          for (const v of Array.from(this.discoveredRecentUsers)) { this.discoveredRecentUsers.delete(v); i += 1; if (i >= trim) break; }
+        }
+        // Merge into userKeys (dedup)
+        const set = new Set<string>(this.userKeys);
+        for (const v of this.discoveredRecentUsers) set.add(v);
+        this.userKeys = Array.from(set);
+      }
+      try { this.lastDiscoverySlot = Number(await conn.getSlot('processed')); } catch {}
+    } catch {}
+  }
+
   private async initPriceTriggers(): Promise<void> {
     try {
       const liqCfg: any = (CONFIG as any)?.drift?.liquidator || {};
@@ -454,7 +507,10 @@ export class DriftLiquidator {
       const conn: any = (DriftService.getInstance() as any).connection;
       if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', 1000);
       const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
-      const keys = this.userKeys.slice();
+      // Prioritize recently changed and users with active perp positions in tracked markets
+      const prioritized: string[] = Array.from(this.discoveredRecentUsers);
+      const others = this.userKeys.filter((k) => !this.discoveredRecentUsers.has(k));
+      const keys = prioritized.concat(others);
       const maxConc = Math.max(2, Math.min(24, Number((this.config.scanConcurrency ?? ((CONFIG as any)?.drift?.liquidator?.scanConcurrency) ?? 10))));
       let cursor = 0;
       const self = this;
@@ -525,6 +581,28 @@ export class DriftLiquidator {
           if (Number.isFinite(idx) && Math.abs(base) > 0) active.push(Number(idx));
         } catch {}
       }
+      // If markets are specified in config, filter to those
+      try {
+        const conf = this.config;
+        let allowed: Set<number> | null = null;
+        if (Array.isArray(conf.marketIndices) && conf.marketIndices.length > 0) {
+          allowed = new Set<number>((conf.marketIndices as any[]).map((n: any) => Number(n)).filter((n) => Number.isFinite(n)));
+        } else if (Array.isArray(conf.marketsAllowlist) && conf.marketsAllowlist.length > 0) {
+          const parsed = parseAllowlistMarkets();
+          const map = new Map<string, number>();
+          for (const m of parsed) { map.set(String(m.symbol || m.marketIndex), Number(m.marketIndex)); }
+          allowed = new Set<number>((conf.marketsAllowlist as any[]).map((s: any) => {
+            const str = String(s || '').trim();
+            if (/^\d+\s*[:=]/.test(str)) return Number(str.split(/[:=]/)[0].trim());
+            if (/^\d+$/.test(str)) return Number(str);
+            const idx = symbolToIndex(str);
+            return typeof idx === 'number' ? idx : NaN;
+          }).filter((n) => Number.isFinite(n)) as number[]);
+        }
+        if (allowed) {
+          for (const v of Array.from(active)) { if (!allowed.has(v)) active.splice(active.indexOf(v), 1); }
+        }
+      } catch {}
       const newSet = new Set<number>(active);
       const prev = this.userToMarkets.get(userPk) || new Set<number>();
       for (const m of Array.from(prev)) {
