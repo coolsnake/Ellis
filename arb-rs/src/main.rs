@@ -173,9 +173,13 @@ async fn main() -> anyhow::Result<()> {
                 // Ensure we have the most recent backend graph version before detection
                 let api_base = std::env::var("BACKEND_API_BASE").unwrap_or_else(|_| "http://127.0.0.1:3001/api".into());
                 let gv_url = format!("{}/arb/graph/version", api_base.trim_end_matches('/'));
-                let gv = reqwest::Client::new().get(&gv_url).send().await
-                    .and_then(|r| async move { r.json::<serde_json::Value>().await }.await)
-                    .unwrap_or_else(|_| serde_json::json!({"version":0,"timestamp":0}));
+                let gv = match reqwest::Client::new().get(&gv_url).send().await {
+                    Ok(resp) => match resp.json::<serde_json::Value>().await {
+                        Ok(j) => j,
+                        Err(_) => serde_json::json!({"version":0,"timestamp":0}),
+                    },
+                    Err(_) => serde_json::json!({"version":0,"timestamp":0}),
+                };
                 let incoming_ver = gv.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
                 let incoming_ts = gv.get("timestamp").and_then(|v| v.as_u64()).unwrap_or(0);
                 {
