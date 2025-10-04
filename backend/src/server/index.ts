@@ -46,6 +46,31 @@ const corsOrigin = (CONFIG as any)?.system?.corsOrigin || process.env.CORS_ORIGI
 app.use(cors({ origin: corsOrigin === '*' ? true : corsOrigin, credentials: true } as any));
 app.use(express.json());
 
+// Global 429 capture: wrap fetch to log URL and method on HTTP 429
+try {
+  const g: any = (globalThis as any);
+  const origFetch: any = g.fetch;
+  if (typeof origFetch === 'function' && !g.__fetchWrappedFor429) {
+    g.__fetchWrappedFor429 = true;
+    g.fetch = async function(input: any, init?: any) {
+      let urlStr = '';
+      try {
+        if (typeof input === 'string') urlStr = input;
+        else if (input && typeof input.url === 'string') urlStr = input.url;
+      } catch {}
+      const res: any = await origFetch(input as any, init as any);
+      try {
+        if (res && typeof res.status === 'number' && res.status === 429) {
+          const method = (init && (init as any).method) || ((input && (input as any).method) || 'GET');
+          logger.warn('http.429', { url: urlStr, method, cat: 'server' });
+          try { const { emit } = await import('./realtime.js'); emit('log', { level: 'warn', message: `http.429 ${method} ${urlStr}`, timestamp: new Date().toISOString(), context: { cat: 'server' } }); } catch {}
+        }
+      } catch {}
+      return res;
+    };
+  }
+} catch {}
+
 // Optional Basic Auth for API
 function unauthorized(res: Response) {
   // Do not set WWW-Authenticate to avoid triggering browser credential popups

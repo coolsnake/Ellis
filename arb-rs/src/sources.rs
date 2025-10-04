@@ -8,10 +8,19 @@ pub struct Sources {
 impl Sources {
     pub fn new() -> Self {
         // Apply a reasonable default timeout so arb loop proceeds on slow endpoints
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+        // Optionally attach Basic Auth for backend calls via env BACKEND_AUTH_USER/PASS
+        let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(5));
+        let user = std::env::var("BACKEND_AUTH_USER").ok();
+        let pass = std::env::var("BACKEND_AUTH_PASS").ok();
+        if let (Some(u), Some(p)) = (user, pass) {
+            let token = base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", u, p));
+            let mut headers = reqwest::header::HeaderMap::new();
+            if let Ok(val) = reqwest::header::HeaderValue::from_str(&format!("Basic {}", token)) {
+                headers.insert(reqwest::header::AUTHORIZATION, val);
+                builder = builder.default_headers(headers);
+            }
+        }
+        let client = builder.build().unwrap_or_else(|_| reqwest::Client::new());
         Self { client }
     }
 
