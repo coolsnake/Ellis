@@ -2,7 +2,7 @@
 import { logger } from '../utils/logger.js';
 import { DriftService } from './client.js';
 import { DriftPriceService } from './price.js';
-import { getAllowlistIndices, indexToSymbol, symbolToIndex, parseAllowlistMarkets } from './marketMapping.js';
+import { getAllowlistIndices, indexToSymbol } from './marketMapping.js';
 import { CONFIG } from '../utils/config.js';
 import { emit } from '../server/realtime.js';
 import { RunnerRegistry } from '../utils/runnerRegistry.js';
@@ -17,15 +17,10 @@ export type LiquidatorConfig = {
   pollMs?: number;
   maxConcurrentTargets?: number;
   dryRun?: boolean;
-  // Discovery & scanning
-  discoverAllUsers?: boolean;
-  maxDiscoveredUsers?: number;
+  // Discovery
   usersAllowlist?: string[];
-  scanConcurrency?: number;
   userCacheMax?: number;
   riskHealthThreshold?: number; // health < threshold considered at-risk
-  accountLoaderMs?: number; // polling cadence for BulkAccountLoader
-  maxNewUsersPerTick?: number; // cap number of new User() + subscribe per scan
   maxProbesPerTick?: number; // cap number of subscribe+evaluate per tick
   // Position filters
   probeMarketIndices?: Array<number>; // only evaluate users with exposure in these markets
@@ -39,7 +34,6 @@ export type LiquidatorConfig = {
   priceTriggerDebounceMs?: number;
   httpPollMs?: number;
   maxUsersPerPriceTick?: number;
-  marketsAllowlist?: Array<string>; // e.g. ["0:SOL-PERP", "1:BTC-PERP"] or symbols
   marketIndices?: Array<number>; // explicit indices to track
   // Execution tuning
   maxCancels?: number;
@@ -51,11 +45,6 @@ export type LiquidatorConfig = {
   statsIntervalMs?: number;
   // Subscriptions
   useEventSubscriptions?: boolean;
-  // Discovery scheduling & batching
-  discoveryRefreshMs?: number;
-  discoveryBatchSize?: number;
-  scanBatchSize?: number;
-  recentBatchPerTick?: number;
   // Discovery modes
   wsOnlyDiscovery?: boolean; // if true, disable HTTP discovery entirely
   limitedHttpDiscovery?: boolean; // if true, allow tiny HTTP discovery for initial seeding
@@ -146,10 +135,7 @@ export class DriftLiquidator {
   private discoveryTimer: any | null = null;
   private lastDiscoverySlot: number = 0;
   private discoveredRecentUsers: Set<string> = new Set();
-  private scanCursor: number = 0;
-  private scanBatchSize: number = 2000;
-  private recentCursor: number = 0;
-  private recentBatchPerTick: number = 200;
+  private scanCursor: number = 0; // deprecated; retained for minimal impact
   private pendingProbeQueue: string[] = [];
   private inProbeQueue: Set<string> = new Set();
 
@@ -216,19 +202,11 @@ export class DriftLiquidator {
       }, everyMs);
     } catch {}
 
-    // Periodic recent discovery (Helius GPA v2) — only if HTTP discovery is enabled and not ws-only
+    // HTTP discovery disabled (WS-only). Do not schedule any GPA/Anchor discovery timers.
     try {
       if (this.discoveryTimer) { try { (globalThis as any).clearInterval(this.discoveryTimer); } catch {} }
-      const cfg: any = (CONFIG as any)?.drift?.liquidator || {};
-      const wsOnly = this.config.wsOnlyDiscovery === true;
-      const discoverAll = !wsOnly && ((this.config.discoverAllUsers !== undefined) ? !!this.config.discoverAllUsers : (cfg.discoverAllUsers !== false));
-      const discMs = Math.max(10000, Number(this.config?.discoveryRefreshMs ?? cfg.discoveryRefreshMs ?? 45000));
-      this.scanBatchSize = Math.max(100, Math.min(5000, Number(this.config?.scanBatchSize ?? cfg.scanBatchSize ?? 2000)));
-      if (discoverAll) {
-        this.discoveryTimer = (globalThis as any).setInterval(() => {
-          this.tryRecentDiscovery().catch(() => {});
-        }, discMs);
-      }
+      this.discoveryTimer = null;
+      try { logger.info('drift.liquidator.discovery_http_disabled', { cat: 'drift' }); } catch {}
     } catch {}
   }
 
@@ -308,42 +286,8 @@ export class DriftLiquidator {
 
   private async initDiscovery(): Promise<void> {
     try {
-      const drift: any = (DriftService.getInstance() as any).client;
-      // Preferred: Anchor account scan for users
-      let list: any[] | null = null;
-      const cfg: any = (CONFIG as any)?.drift?.liquidator || {};
-      const wsOnly = this.config.wsOnlyDiscovery === true;
-      const limited = this.config.limitedHttpDiscovery === true;
-      const discoverAll = !wsOnly && ((this.config.discoverAllUsers !== undefined) ? !!this.config.discoverAllUsers : (cfg.discoverAllUsers !== false));
-      if (discoverAll) {
-        const defaultCap = limited ? 100 : 500;
-        const maxDiscover = Math.max(10, Math.min(10000, Number((this.config.maxDiscoveredUsers ?? cfg.maxDiscoveredUsers ?? defaultCap))));
-        // Prefer DLOB/UserMap seeding; avoid heavy HTTP discovery on limited RPC plans
-        try { await this.seedFromDlobUserMap(); } catch {}
-        // Only use HTTP/Anchor discovery if allowed and we still have nothing
-        if (!wsOnly && this.userKeys.length === 0) {
-          // Try Helius getProgramAccountsV2 with pagination and anchor discriminator filter (fast & lightweight)
-          let discovered: string[] | null = null;
-          try {
-            discovered = await this.discoverUsersViaHeliusGpaV2(maxDiscover);
-            if (Array.isArray(discovered) && discovered.length > 0) {
-              this.userKeys = discovered.slice(0, maxDiscover);
-              this.lastDiscoveryUsedGpaV2 = true;
-              try { logger.info('drift.liquidator.discovery_mode', { mode: 'helius_v2', users: this.userKeys.length, cat: 'drift' }); } catch {}
-            }
-          } catch {}
-          // Fallback to Anchor .all() if V2 failed or no results
-          if (!Array.isArray(discovered) || discovered.length === 0) {
-            try { list = await drift?.program?.account?.user?.all?.(); } catch {}
-            if (Array.isArray(list) && list.length > 0) {
-              const keys = list.map((x: any) => String(x?.publicKey?.toBase58?.() || x?.publicKey || '')).filter(Boolean);
-              this.userKeys = keys.slice(0, maxDiscover);
-              this.lastDiscoveryUsedGpaV2 = false;
-              try { logger.info('drift.liquidator.discovery_mode', { mode: 'anchor_all', users: this.userKeys.length, cat: 'drift' }); } catch {}
-            }
-          }
-        }
-      }
+      // WS-only discovery: seed from DLOB/UserMap and events. Do not do HTTP discovery here.
+      try { await this.seedFromDlobUserMap(); } catch {}
       // Seed with active/liquidatable users via event subscriber (if present)
       try {
         const set = new Set<string>(this.userKeys);
@@ -429,7 +373,7 @@ export class DriftLiquidator {
       if (!endpoint || !/helius/i.test(endpoint)) return;
       const programId: string = String(drift?.program?.programId?.toBase58?.() || drift?.program?.programId || '');
       if (!programId) return;
-      const maxBatch = Math.max(100, Math.min(5000, Number((this.config?.discoveryBatchSize ?? ((CONFIG as any)?.drift?.liquidator?.discoveryBatchSize) ?? 2000))));
+      const maxBatch = 0;
       const discr = this.computeAnchorDiscriminatorB58('User');
       const filters: any[] = discr ? [{ memcmp: { offset: 0, bytes: discr } }] : [];
       const body: any = {
@@ -445,7 +389,7 @@ export class DriftLiquidator {
         const sample = accounts.slice(0, Math.min(200, accounts.length));
         for (const a of sample) { const pk = String(a?.pubkey || a?.account || ''); if (pk) this.discoveredRecentUsers.add(pk); }
         // Cap recent set size
-        const cap = Math.max(1000, Math.min(50000, Number((this.config?.maxDiscoveredUsers ?? ((CONFIG as any)?.drift?.liquidator?.maxDiscoveredUsers) ?? 5000))));
+        const cap = 0;
         if (this.discoveredRecentUsers.size > cap) {
           const trim = this.discoveredRecentUsers.size - cap;
           let i = 0;
@@ -464,7 +408,7 @@ export class DriftLiquidator {
     try {
       const liqCfg: any = (CONFIG as any)?.drift?.liquidator || {};
       if (this.config.usePriceTriggers === false || (this.config.usePriceTriggers === undefined && liqCfg.usePriceTriggers === false)) return;
-      // Resolve markets to track: prefer explicit marketIndices, then marketsAllowlist, else global allowlist
+      // Resolve markets to track: prefer explicit marketIndices; drop marketsAllowlist
       let indices: number[] = [];
       try {
         if (Array.isArray(this.config.marketIndices) && this.config.marketIndices.length > 0) {
@@ -472,19 +416,7 @@ export class DriftLiquidator {
         }
       } catch {}
       try {
-        if (indices.length === 0 && Array.isArray(this.config.marketsAllowlist) && this.config.marketsAllowlist.length > 0) {
-          const parsed = parseAllowlistMarkets();
-          const mapFromCfg = (this.config.marketsAllowlist as any[])
-            .map((s: any) => String(s || '').trim()).filter(Boolean)
-            .map((s: string) => {
-              if (/^\d+\s*[:=]/.test(s)) return Number(s.split(/[:=]/)[0].trim());
-              if (/^\d+$/.test(s)) return Number(s.trim());
-              const idx = symbolToIndex(s);
-              return typeof idx === 'number' ? idx : undefined;
-            })
-            .filter((x: any) => Number.isFinite(x)) as number[];
-          indices = mapFromCfg.length > 0 ? mapFromCfg : parsed.map((m: any) => Number(m.marketIndex));
-        }
+        // no-op: keep indices as configured or default allowlist
       } catch {}
       if (indices.length === 0) indices = getAllowlistIndices();
       // Default to first few common markets
@@ -595,16 +527,15 @@ export class DriftLiquidator {
       const recentArr = Array.from(this.discoveredRecentUsers);
       // Rotate recent slice to avoid always scanning same heads
       if (this.recentCursor >= recentArr.length) this.recentCursor = 0;
-      const prioritized = recentArr.slice(this.recentCursor, this.recentCursor + this.recentBatchPerTick);
-      this.recentCursor = (this.recentCursor + this.recentBatchPerTick) % Math.max(1, Math.max(1, recentArr.length || 1));
+      const prioritized: string[] = [];
       const remaining = this.userKeys.filter((k) => !this.discoveredRecentUsers.has(k));
       // Round-robin window into remaining using scanCursor
       if (this.scanCursor >= remaining.length) this.scanCursor = 0;
-      const window = remaining.slice(this.scanCursor, this.scanCursor + this.scanBatchSize);
-      const tail = (window.length < this.scanBatchSize) ? remaining.slice(0, Math.max(0, this.scanBatchSize - window.length)) : [];
+      const window = remaining.slice(this.scanCursor, this.scanCursor + 0);
+      const tail: string[] = [];
       const keys = prioritized.concat(window).concat(tail);
-      this.scanCursor = (this.scanCursor + this.scanBatchSize) % Math.max(1, remaining.length);
-      const maxConc = Math.max(2, Math.min(24, Number((this.config.scanConcurrency ?? ((CONFIG as any)?.drift?.liquidator?.scanConcurrency) ?? 10))));
+      this.scanCursor = 0;
+      const maxConc = 2;
       const maxNewUsers = Math.max(0, Math.min(2000, Number((this.config.maxNewUsersPerTick ?? ((CONFIG as any)?.drift?.liquidator?.maxNewUsersPerTick) ?? 250))));
       let newUsersAdded = 0;
       let cursor = 0;
@@ -702,17 +633,6 @@ export class DriftLiquidator {
         let allowed: Set<number> | null = null;
         if (Array.isArray(conf.marketIndices) && conf.marketIndices.length > 0) {
           allowed = new Set<number>((conf.marketIndices as any[]).map((n: any) => Number(n)).filter((n) => Number.isFinite(n)));
-        } else if (Array.isArray(conf.marketsAllowlist) && conf.marketsAllowlist.length > 0) {
-          const parsed = parseAllowlistMarkets();
-          const map = new Map<string, number>();
-          for (const m of parsed) { map.set(String(m.symbol || m.marketIndex), Number(m.marketIndex)); }
-          allowed = new Set<number>((conf.marketsAllowlist as any[]).map((s: any) => {
-            const str = String(s || '').trim();
-            if (/^\d+\s*[:=]/.test(str)) return Number(str.split(/[:=]/)[0].trim());
-            if (/^\d+$/.test(str)) return Number(str);
-            const idx = symbolToIndex(str);
-            return typeof idx === 'number' ? idx : NaN;
-          }).filter((n) => Number.isFinite(n)) as number[]);
         }
         if (allowed) {
           for (const v of Array.from(active)) { if (!allowed.has(v)) active.splice(active.indexOf(v), 1); }
@@ -1031,7 +951,7 @@ export class DriftLiquidator {
         }
       } catch {}
       if (Array.isArray(userPks) && userPks.length > 0) {
-        const max = Math.max(50, Math.min(10000, Number((this.config.maxDiscoveredUsers ?? ((CONFIG as any)?.drift?.liquidator?.maxDiscoveredUsers) ?? 5000))));
+        const max = 1000;
         for (const pk of userPks.slice(0, max)) this.enqueueProbe(pk);
         try { logger.info('drift.liquidator.dlob_seed', { users: Math.min(userPks.length, max), cat: 'drift' }); } catch {}
       }
