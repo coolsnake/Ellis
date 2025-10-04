@@ -1129,7 +1129,8 @@ export class DriftLiquidator {
           if (!user) {
             let pk: any = key;
             try { if (typeof key === 'string') pk = new PublicKey(key); } catch {}
-            user = new User({ driftClient: drift, userAccountPublicKey: pk, accountSubscription: { type: 'polling', accountLoader: this.accountLoader } });
+            // Use websocket subscription to avoid HTTP RPC polling that can trigger 429s
+            user = new User({ driftClient: drift, userAccountPublicKey: pk, accountSubscription: { type: 'websocket' } });
             this.userCache.set(key, user);
           }
           // Subscribe only during probe
