@@ -918,6 +918,19 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     }
   });
 
+  api.post('/strategies/liquidator/remove', async (req: Request, res: Response) => {
+    try {
+      const { key } = req.body as { key: string };
+      const { DriftLiquidatorRegistry } = await import('../drift/liquidator.js');
+      const ok = DriftLiquidatorRegistry.remove(key);
+      if (ok) emit('log', { level: 'info', message: `drift: liquidator removed ${key}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } });
+      res.json({ ok });
+    } catch (e: any) {
+      logger.error('drift-liq: remove failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   api.post('/strategies/liquidator/update', async (req: Request, res: Response) => {
     try {
       const cfg = req.body as any;

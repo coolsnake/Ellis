@@ -1002,6 +1002,10 @@ export class DriftLiquidatorRegistry {
   static stop(key: string): boolean {
     return this.reg.stop(key);
   }
+
+  static remove(key: string): boolean {
+    return this.reg.remove(key);
+  }
 }
 
 

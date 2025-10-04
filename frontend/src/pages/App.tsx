@@ -1716,6 +1716,16 @@ export const App: React.FC = () => {
                                       } catch {}
                                     }}
                                   >Update</button>
+                                  <button
+                                    className="px-2 py-1 bg-red-700 text-white rounded hover:bg-red-800 text-xs"
+                                    onClick={async () => {
+                                      try {
+                                        await fetch(`${apiBase}/strategies/liquidator/remove`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: x.key }) });
+                                        const r = await fetch(`${apiBase}/strategies/liquidator/status`).then(r => r.json());
+                                        setLiqStatus(r);
+                                      } catch {}
+                                    }}
+                                  >Remove</button>
                                 </div>
                               </td>
                             </tr>
