@@ -113,19 +113,23 @@ try {
   }
 } catch {}
 
-// As a last resort, surface 429 console warnings with stack to locate source
+// As a last resort, surface 429 console logs/warns/errors with stack to locate source
 try {
+  const origLog = console.log.bind(console);
   const origWarn = console.warn.bind(console);
-  console.warn = (...args: any[]) => {
+  const origErr = console.error.bind(console);
+  const detect = (level: 'log' | 'warn' | 'error', args: any[]) => {
     try {
       const text = (args || []).map((a: any) => (typeof a === 'string' ? a : (typeof a?.message === 'string' ? a.message : ''))).join(' ');
       if (/429|Too\s+Many\s+Requests/i.test(text)) {
-        const err = new Error('console.warn 429');
-        logger.warn('console.429', { message: text, stack: err.stack, cat: 'server' });
+        const err = new Error(`console.${level} 429`);
+        logger.warn('console.429', { level, message: text, stack: err.stack, cat: 'server' });
       }
     } catch {}
-    origWarn(...args as any);
   };
+  console.log = (...args: any[]) => { detect('log', args); origLog(...args as any); };
+  console.warn = (...args: any[]) => { detect('warn', args); origWarn(...args as any); };
+  console.error = (...args: any[]) => { detect('error', args); origErr(...args as any); };
 } catch {}
 
 // Optional Basic Auth for API
