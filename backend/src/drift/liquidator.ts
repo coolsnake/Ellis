@@ -107,6 +107,7 @@ export class DriftLiquidator {
   private lastMarketPagination: Map<number, number> = new Map();
   private statsTimer: any | null = null;
   private targetCooldownUntil: Map<string, number> = new Map();
+  private eventSub: any | null = null;
 
   constructor(private config: LiquidatorConfig) {}
 
@@ -142,6 +143,7 @@ export class DriftLiquidator {
     // Initialize discovery and price triggers once
     try { await this.initDiscovery(); this.initialized = true; } catch {}
     try { await this.initPriceTriggers(); } catch {}
+    try { await this.initEventSubscriptions(); } catch {}
     this.timer = (globalThis as any).setInterval(() => {
       this.tick().catch((e) => logger.warn('drift.liquidator.tick_error', { error: String(e?.message || e), cat: 'drift' }));
     }, pollMs);
@@ -169,6 +171,8 @@ export class DriftLiquidator {
     if (this.timer) (globalThis as any).clearInterval(this.timer);
     this.timer = null;
     if (this.statsTimer) { try { (globalThis as any).clearInterval(this.statsTimer); } catch {} this.statsTimer = null; }
+    // Cleanup event subscriptions
+    try { if (this.eventSub) { try { await this.eventSub.unsubscribe(); } catch {} this.eventSub = null; } } catch {}
     this.state.running = false;
     logger.info('drift.liquidator.stop', { name: this.config.name, cat: 'drift' });
     // Cleanup price triggers and timers
@@ -309,6 +313,57 @@ export class DriftLiquidator {
         };
         (this as any)[`_onPrice_liq_${idx}`] = onPrice;
         try { svc.onPrice(idx, onPrice as any); } catch {}
+      }
+    } catch {}
+  }
+
+  private async initEventSubscriptions(): Promise<void> {
+    try {
+      const drift: any = (DriftService.getInstance() as any).client;
+      const sdk: any = await import('@drift-labs/sdk');
+      const { EventSubscriber } = (sdk as any);
+      if (!EventSubscriber || !drift?.program || !drift?.connection) return;
+      const sub = new EventSubscriber(drift.connection, drift.program);
+      await sub.subscribe();
+      this.eventSub = sub;
+      // Listen for position updates and order events to prioritize scanning affected users
+      const onUserEvent = async (ev: any) => {
+        try {
+          const userPk: string = String(ev?.user?.toBase58?.() || ev?.user || '');
+          if (!userPk) return;
+          await this.enqueueIfUnhealthy(userPk);
+        } catch {}
+      };
+      try { sub.eventEmitter?.on?.('UserPositionUpdateRecord', onUserEvent); } catch {}
+      try { sub.eventEmitter?.on?.('OrderRecord', onUserEvent); } catch {}
+      try { sub.eventEmitter?.on?.('LiquidationRecord', onUserEvent); } catch {}
+    } catch {}
+  }
+
+  private async enqueueIfUnhealthy(pkStr: string): Promise<void> {
+    try {
+      const drift: any = (DriftService.getInstance() as any).client;
+      const sdk: any = await import('@drift-labs/sdk');
+      const { User, BulkAccountLoader } = (sdk as any);
+      const conn: any = (DriftService.getInstance() as any).connection;
+      if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', 1000);
+      let user = this.userCache.get(String(pkStr));
+      if (!user) {
+        user = new User({ driftClient: drift, userAccountPublicKey: pkStr, accountSubscription: { type: 'polling', accountLoader: this.accountLoader } });
+        this.userCache.set(String(pkStr), user);
+      }
+      const exists = await (user as any).exists?.();
+      if (!exists) return;
+      const total = Number((user as any)?.getTotalCollateral?.() || 0);
+      const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
+      if (!isFinite(total) || !isFinite(maint)) return;
+      const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
+      const health = maint > 0 ? (total - maint) / maint : Infinity;
+      if (health < riskThresh) {
+        this.addOrQueueCandidate({ userPk: pkStr, health, updatedAt: Date.now() } as any);
+        try { await this.refreshIndexForUser(user, pkStr); } catch {}
+        this.state.candidatesQueued = this.heap.size();
+        this.maybeEmitQueue();
       }
     } catch {}
   }

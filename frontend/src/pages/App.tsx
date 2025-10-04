@@ -1672,16 +1672,37 @@ export const App: React.FC = () => {
                               <td className="pr-2">{Number(x?.status?.errorsLastMin || 0)}</td>
                               <td className="pr-2">
                                 <div className="flex gap-2">
-                                  <button
-                                    className="px-2 py-1 bg-yellow-700 text-white rounded hover:bg-yellow-800 text-xs"
-                                    onClick={async () => {
-                                      try {
-                                        await fetch(`${apiBase}/strategies/liquidator/stop`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: x.key }) });
-                                        const r = await fetch(`${apiBase}/strategies/liquidator/status`).then(r => r.json());
-                                        setLiqStatus(r);
-                                      } catch {}
-                                    }}
-                                  >Stop</button>
+                                  {(() => {
+                                    const isRunning = !!(x?.status?.running);
+                                    if (isRunning) {
+                                      return (
+                                        <button
+                                          className="px-2 py-1 bg-yellow-700 text-white rounded hover:bg-yellow-800 text-xs"
+                                          onClick={async () => {
+                                            try {
+                                              await fetch(`${apiBase}/strategies/liquidator/stop`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: x.key }) });
+                                              const r = await fetch(`${apiBase}/strategies/liquidator/status`).then(r => r.json());
+                                              setLiqStatus(r);
+                                            } catch {}
+                                          }}
+                                        >Stop</button>
+                                      );
+                                    } else {
+                                      return (
+                                        <button
+                                          className="px-2 py-1 bg-green-700 text-white rounded hover:bg-green-800 text-xs"
+                                          onClick={async () => {
+                                            try {
+                                              const name = String(x?.key || '').split('#')[1] || 'default';
+                                              await fetch(`${apiBase}/strategies/liquidator/start`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+                                              const r = await fetch(`${apiBase}/strategies/liquidator/status`).then(r => r.json());
+                                              setLiqStatus(r);
+                                            } catch {}
+                                          }}
+                                        >Start</button>
+                                      );
+                                    }
+                                  })()}
                                   <button
                                     className="px-2 py-1 bg-indigo-700 text-white rounded hover:bg-indigo-800 text-xs"
                                     onClick={async () => {

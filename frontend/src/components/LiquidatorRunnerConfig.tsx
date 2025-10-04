@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 
 interface Props {
   apiBase?: string;
@@ -11,6 +11,7 @@ interface Props {
 export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onClose, onSaved, initialConfig }) => {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<{ markets: Array<{ marketIndex: number; symbol?: string }> } | null>(null);
   const [form, setForm] = useState<any>({
     name: initialConfig?.name || '',
     dryRun: initialConfig?.dryRun ?? true,
@@ -30,8 +31,7 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
     priceTriggerDebounceMs: initialConfig?.priceTriggerDebounceMs ?? 800,
     httpPollMs: initialConfig?.httpPollMs ?? 1200,
     maxUsersPerPriceTick: initialConfig?.maxUsersPerPriceTick ?? 40,
-    marketsAllowlistCsv: Array.isArray(initialConfig?.marketsAllowlist) ? initialConfig.marketsAllowlist.join(',') : '',
-    marketIndicesCsv: Array.isArray(initialConfig?.marketIndices) ? (initialConfig.marketIndices as any[]).join(',') : '',
+    selectedMarketIndices: Array.isArray(initialConfig?.marketIndices) ? (initialConfig.marketIndices as any[]) : [],
 
     // Execution tuning
     maxCancels: initialConfig?.maxCancels ?? 20,
@@ -42,6 +42,21 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
     targetCooldownMs: initialConfig?.targetCooldownMs ?? 7000,
     statsIntervalMs: initialConfig?.statsIntervalMs ?? 15000,
   });
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch(`${apiBase}/drift/status`);
+        const data = await res.json();
+        if (!alive) return;
+        setStatus({ markets: Array.isArray(data?.markets) ? data.markets : [] });
+      } catch {}
+    })();
+    return () => { alive = false; };
+  }, [apiBase]);
+
+  const markets = useMemo(() => status?.markets || [], [status]);
 
   const handleSave = async () => {
     try {
@@ -64,8 +79,7 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
         priceTriggerDebounceMs: Math.max(200, Number(form.priceTriggerDebounceMs || 0)),
         httpPollMs: Math.max(200, Number(form.httpPollMs || 0)),
         maxUsersPerPriceTick: Math.max(1, Number(form.maxUsersPerPriceTick || 1)),
-        marketsAllowlist: String(form.marketsAllowlistCsv || '').split(',').map((s) => s.trim()).filter(Boolean),
-        marketIndices: String(form.marketIndicesCsv || '').split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n)),
+        marketIndices: (Array.isArray(form.selectedMarketIndices) ? form.selectedMarketIndices : []).map((n: any) => Number(n)).filter((n) => Number.isFinite(n)),
 
         maxCancels: Math.max(1, Number(form.maxCancels || 1)),
         maxPerpAttempts: Math.max(1, Number(form.maxPerpAttempts || 1)),
@@ -159,12 +173,33 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
             <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.maxUsersPerPriceTick} onChange={(e) => setForm((p: any) => ({ ...p, maxUsersPerPriceTick: Number(e.target.value) }))} />
           </div>
           <div className="md:col-span-2">
-            <div className="text-gray-400 mb-1">Markets Allowlist (CSV of index:symbol or symbol)</div>
-            <input type="text" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.marketsAllowlistCsv} onChange={(e) => setForm((p: any) => ({ ...p, marketsAllowlistCsv: e.target.value }))} />
-          </div>
-          <div className="md:col-span-2">
-            <div className="text-gray-400 mb-1">Market Indices (CSV)</div>
-            <input type="text" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.marketIndicesCsv} onChange={(e) => setForm((p: any) => ({ ...p, marketIndicesCsv: e.target.value }))} />
+            <div className="text-gray-400 mb-1">Markets to Track</div>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-48 overflow-auto p-2 bg-gray-700 rounded">
+              {(markets || []).map((m) => {
+                const idx = Number(m.marketIndex);
+                const sym = m.symbol || `PERP-${idx}`;
+                const selected = Array.isArray(form.selectedMarketIndices) && form.selectedMarketIndices.includes(idx);
+                return (
+                  <label key={`m-${idx}`} className={`flex items-center gap-2 text-sm ${selected ? 'text-white' : 'text-gray-300'}`}>
+                    <input
+                      type="checkbox"
+                      checked={!!selected}
+                      onChange={(e) => {
+                        setForm((p: any) => {
+                          const set = new Set<number>(Array.isArray(p.selectedMarketIndices) ? p.selectedMarketIndices : []);
+                          if (e.target.checked) set.add(idx); else set.delete(idx);
+                          return { ...p, selectedMarketIndices: Array.from(set) };
+                        });
+                      }}
+                    />
+                    <span>{sym} ({idx})</span>
+                  </label>
+                );
+              })}
+              {(markets || []).length === 0 && (
+                <div className="text-gray-300 text-xs col-span-2">No markets found. Ensure Drift status is available.</div>
+              )}
+            </div>
           </div>
 
           <div className="md:col-span-2 border-t border-gray-700 pt-3 font-semibold text-gray-200">Execution Tuning</div>
