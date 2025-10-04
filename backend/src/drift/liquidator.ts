@@ -608,16 +608,19 @@ export class DriftLiquidator {
         // Build a small sample and compute relevant risk metrics
         const sampleKeys = (window.length > 0 ? window : prioritized).slice(0, Math.min(5, (window.length > 0 ? window : prioritized).length));
         const samples: Array<{ userPk: string; totalCollateral: number; maintenanceRequirement: number; freeCollateral: number; healthMaint: number | null; healthTotal: number | null }> = [];
+        let sampleFailures = 0;
         for (const s of sampleKeys) {
           try {
             const u = await getOrCreateUser(s);
+            const exists = await (u as any)?.exists?.();
+            if (!exists) { sampleFailures += 1; continue; }
             const total = Number((u as any)?.getTotalCollateral?.() || 0);
             const maint = Number((u as any)?.getMaintenanceMarginRequirement?.() || 0);
             const free = Number((u as any)?.getFreeCollateral?.() || 0);
             const healthMaint = maint > 0 ? (total - maint) / maint : null;
             const healthTotal = total > 0 ? (total - maint) / total : null;
             samples.push({ userPk: s, totalCollateral: total, maintenanceRequirement: maint, freeCollateral: free, healthMaint, healthTotal });
-          } catch {}
+          } catch { sampleFailures += 1; }
         }
         logger.info('drift.liquidator.scan_summary', {
           scanned: keys.length,
@@ -626,6 +629,8 @@ export class DriftLiquidator {
           threshold: riskThresh,
           sampledUsers: sampleKeys,
           sampleCalcs: samples,
+          sampleAttempts: sampleKeys.length,
+          sampleFailures,
           cat: 'drift',
         });
       } catch {}
