@@ -10,9 +10,10 @@ type DriftStatus = {
 interface LeveragedGridConfigProps {
   onClose: () => void;
   onSaved?: () => void;
+  initialConfig?: any;
 }
 
-export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClose, onSaved }) => {
+export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClose, onSaved, initialConfig }) => {
   const [status, setStatus] = useState<DriftStatus | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [saving, setSaving] = useState<boolean>(false);
@@ -20,9 +21,9 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
   const [opBusy, setOpBusy] = useState<boolean>(false);
 
   const [form, setForm] = useState<any>({
-    name: '',
-    marketIndex: 0,
-    subaccountId: 0,
+    name: initialConfig?.name || '',
+    marketIndex: initialConfig?.marketIndex ?? 0,
+    subaccountId: initialConfig?.subaccountId ?? 0,
     leverage: 2,
     liquidationBufferPct: 0.25,
     // Grid-style params mirroring classic grid
@@ -63,6 +64,8 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
     maxOpenOrders: 20,
   });
 
+  const isEdit = !!(initialConfig && (initialConfig.driftKey || (initialConfig.name && Number.isFinite(Number(initialConfig.marketIndex)) && Number.isFinite(Number(initialConfig.subaccountId)))));
+
   useEffect(() => {
     let alive = true;
     const load = async () => {
@@ -73,7 +76,7 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
         if (!alive) return;
         setStatus(data);
         if (Array.isArray(data?.subaccounts) && typeof data?.subaccounts?.[0]?.id === 'number') {
-          setForm((prev: any) => ({ ...prev, subaccountId: data.subaccounts[0].id }));
+          setForm((prev: any) => ({ ...prev, subaccountId: prev.subaccountId ?? data.subaccounts[0].id }));
         }
         // If markets exist and current is invalid, default to first
         if (Array.isArray(data?.markets) && data.markets.length > 0) {
@@ -81,6 +84,61 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
           if (!Number.isFinite(currentIdx) || currentIdx < 0) {
             setForm((prev: any) => ({ ...prev, marketIndex: Number(data.markets[0].marketIndex) }));
           }
+        }
+        // If editing, try to prefill from current runner status for full fidelity
+        if (isEdit) {
+          try {
+            const statusRes = await fetch('/api/strategies/leveraged-grid/status');
+            const statusJson = await statusRes.json();
+            const list = Array.isArray(statusJson?.strategies) ? statusJson.strategies : [];
+            const key = String(initialConfig?.driftKey || `${initialConfig?.name}#${initialConfig?.marketIndex}#${initialConfig?.subaccountId}`);
+            const match = list.find((x: any) => String(x?.key) === key);
+            const cfg = match?.status?.config || null;
+            if (cfg) {
+              setForm((prev: any) => ({
+                ...prev,
+                name: cfg.name ?? prev.name,
+                marketIndex: Number(cfg?.market?.marketIndex ?? prev.marketIndex),
+                subaccountId: Number(cfg?.subaccountId ?? prev.subaccountId),
+                leverage: Number(cfg?.leverage ?? prev.leverage),
+                liquidationBufferPct: Number(cfg?.liquidationBufferPct ?? prev.liquidationBufferPct),
+                gridType: cfg?.gridType ?? prev.gridType,
+                gridSpacing: Number(cfg?.gridSpacing ?? prev.gridSpacing),
+                centerPrice: Number(cfg?.centerPrice ?? prev.centerPrice),
+                totalAmount: Number(cfg?.totalAmount ?? prev.totalAmount),
+                levelAmount: Number(cfg?.levelAmount ?? prev.levelAmount),
+                bias: cfg?.bias ?? prev.bias,
+                biasStrength: Number(cfg?.biasStrength ?? prev.biasStrength),
+                initialBuyRange: Number(cfg?.initialBuyRange ?? prev.initialBuyRange),
+                initialSellRange: Number(cfg?.initialSellRange ?? prev.initialSellRange),
+                maxPositions: Number(cfg?.maxPositions ?? prev.maxPositions),
+                stopLoss: Number(cfg?.stopLoss ?? prev.stopLoss),
+                takeProfit: Number(cfg?.takeProfit ?? prev.takeProfit),
+                rebalanceThreshold: Number(cfg?.rebalanceThreshold ?? prev.rebalanceThreshold),
+                adaptiveSpacing: !!(cfg?.adaptiveSpacing ?? prev.adaptiveSpacing),
+                volatilityPeriod: Number(cfg?.volatilityPeriod ?? prev.volatilityPeriod),
+                minLevelSpacing: Number(cfg?.minLevelSpacing ?? prev.minLevelSpacing),
+                maxLevelSpacing: Number(cfg?.maxLevelSpacing ?? prev.maxLevelSpacing),
+                slidingCenter: !!(cfg?.slidingCenter ?? prev.slidingCenter),
+                slideRate: Number(cfg?.slideRate ?? prev.slideRate),
+                slideMaxDistance: Number(cfg?.slideMaxDistance ?? prev.slideMaxDistance),
+                slippageBps: Number(cfg?.slippageBps ?? prev.slippageBps),
+                cooldownMs: Number(cfg?.cooldownMs ?? prev.cooldownMs),
+                feeBps: Number(cfg?.feeBps ?? prev.feeBps),
+                extraSlippageBps: Number(cfg?.extraSlippageBps ?? prev.extraSlippageBps),
+                minEdgeBps: Number(cfg?.minEdgeBps ?? prev.minEdgeBps),
+                gridLower: Number(cfg?.gridLower ?? prev.gridLower),
+                gridUpper: Number(cfg?.gridUpper ?? prev.gridUpper),
+                levels: Number(cfg?.levels ?? prev.levels),
+                stepPct: Number(cfg?.stepPct ?? prev.stepPct),
+                notionalPerLevel: Number(cfg?.notionalPerLevel ?? prev.notionalPerLevel),
+                makerOnly: !!(cfg?.makerOnly ?? prev.makerOnly),
+                fundingGuard: !!(cfg?.fundingGuard ?? prev.fundingGuard),
+                rebalanceHysteresisPct: Number(cfg?.rebalanceHysteresisPct ?? prev.rebalanceHysteresisPct),
+                maxOpenOrders: Number(cfg?.maxOpenOrders ?? prev.maxOpenOrders),
+              }));
+            }
+          } catch {}
         }
       } catch (e: any) {
         setError(String(e?.message || e));
@@ -90,7 +148,7 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
     };
     load();
     return () => { alive = false; };
-  }, []);
+  }, [isEdit, initialConfig]);
 
   const markets = useMemo(() => status?.markets || [], [status]);
   const subaccounts = useMemo(() => status?.subaccounts || [], [status]);
@@ -185,7 +243,15 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
         maxOpenOrders: Number(form.maxOpenOrders),
         enabled: true,
       };
-      const res = await fetch('/api/strategies/leveraged-grid/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) });
+      // In edit mode, lock identity fields and call update endpoint
+      const body = isEdit ? {
+        ...cfg,
+        name: initialConfig?.name ?? cfg.name,
+        market: { marketIndex: Number(initialConfig?.marketIndex ?? cfg.market.marketIndex) },
+        subaccountId: Number(initialConfig?.subaccountId ?? cfg.subaccountId),
+      } : cfg;
+      const endpoint = isEdit ? '/api/strategies/leveraged-grid/update' : '/api/strategies/leveraged-grid/start';
+      const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       if (!res.ok) throw new Error(await res.text());
       try { onSaved && onSaved(); } catch {}
       onClose();
@@ -262,7 +328,7 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
       <div className="bg-gray-800 rounded-lg p-6 w-full max-w-5xl max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-2xl font-bold text-white">Leveraged Grid (Drift)</h2>
+          <h2 className="text-2xl font-bold text-white">{isEdit ? 'Edit Leveraged Grid' : 'Leveraged Grid (Drift)'}</h2>
           <button onClick={onClose} className="px-3 py-1 bg-gray-600 text-white rounded hover:bg-gray-700">Close</button>
         </div>
 
@@ -272,12 +338,12 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
           <div>
             <div className="mb-4">
               <label className="block text-sm font-medium text-gray-300 mb-2">Strategy Name</label>
-              <input className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="e.g. SOL-PERP Lev Grid" />
+              <input className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="e.g. SOL-PERP Lev Grid" disabled={isEdit} />
             </div>
 
             <div className="mb-4">
               <label className="block text-sm font-medium text-gray-300 mb-2">Market</label>
-              <select className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.marketIndex} onChange={e => setForm({ ...form, marketIndex: Number(e.target.value) })}>
+              <select className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={form.marketIndex} onChange={e => setForm({ ...form, marketIndex: Number(e.target.value) })} disabled={isEdit}>
                 {(markets || []).map(m => (
                   <option key={m.marketIndex} value={m.marketIndex}>{m.symbol ? `${m.symbol} (${m.marketIndex})` : `Market ${m.marketIndex}`}</option>
                 ))}
@@ -407,7 +473,7 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
 
             <div className="mb-4 p-3 rounded bg-gray-700 border border-gray-600">
               <div className="text-white font-semibold mb-2">Run</div>
-              <button disabled={saving} onClick={handleSave} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-60">{saving ? 'Starting...' : 'Start Leveraged Grid'}</button>
+              <button disabled={saving} onClick={handleSave} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-60">{saving ? (isEdit ? 'Saving...' : 'Starting...') : (isEdit ? 'Save Changes' : 'Start Leveraged Grid')}</button>
             </div>
 
             <div className="mb-4 p-3 rounded bg-gray-700 border border-gray-600">

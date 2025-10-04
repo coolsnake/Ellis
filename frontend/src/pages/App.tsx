@@ -59,6 +59,7 @@ export const App: React.FC = () => {
   const [showThresholdConfig, setShowThresholdConfig] = useState(false);
   const [showAddToken, setShowAddToken] = useState(false);
   const [editingStrategy, setEditingStrategy] = useState<any>(null);
+  const [editingLevGrid, setEditingLevGrid] = useState<any>(null);
   const [selectedGridStrategies, setSelectedGridStrategies] = useState<Set<string>>(new Set());
   const [collapsedStrategies, setCollapsedStrategies] = useState<Record<string, boolean>>({});
   const [collapsedStrategyParams, setCollapsedStrategyParams] = useState<Record<string, boolean>>({});
@@ -568,6 +569,7 @@ export const App: React.FC = () => {
     setShowGridConfig(true);
   };
   const handleCreateLeveragedGrid = () => {
+    setEditingLevGrid(null);
     setShowLevGridConfig(true);
   };
 
@@ -621,11 +623,52 @@ export const App: React.FC = () => {
     try {
       if (strategy?.gridType === 'drift') {
         // Stop levered grid runner and update local state
-        const key = strategy?.driftKey || `${strategyName}#${strategy?.marketIndex ?? ''}#${strategy?.subaccountId ?? ''}`;
-        await fetch(`${apiBase}/strategies/leveraged-grid/stop`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key }) });
-        setStrategies(prev => (prev || []).filter((s: any) => (s?.name || 'default') !== strategyName));
+        const key = strategy?.driftKey || `${strategyName}#${Number(strategy?.marketIndex) ?? ''}#${Number(strategy?.subaccountId) ?? ''}`;
+        const resp = await fetch(`${apiBase}/strategies/leveraged-grid/stop`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key }) });
+        if (!resp.ok) {
+          const txt = await resp.text();
+          throw new Error(txt || 'Failed to stop leveraged grid');
+        }
+        const out = await resp.json().catch(() => ({ ok: true }));
+        if (!out?.ok) throw new Error('Leveraged grid not found or could not be removed');
+        // Optimistically remove from local state
+        setStrategies(prev => (prev || []).filter((s: any) => (s?.driftKey || `${s?.name}#${s?.marketIndex ?? ''}#${s?.subaccountId ?? ''}`) !== key));
         setPositions(prev => (prev || []).filter((p: any) => (p?.strategy || 'default') !== strategyName));
         setActivitiesByStrategy(prev => { const next = { ...(prev || {}) } as any; delete next[strategyName]; return next; });
+        // Refresh from server to avoid reappearing due to stale merges
+        try {
+          const base = await (await fetch(`${apiBase}/strategy`)).json();
+          const baseList = base?.strategies || [];
+          const statusResp = await fetch(`${apiBase}/strategies/leveraged-grid/status`);
+          const lg = await statusResp.json();
+          const mapped = Array.isArray(lg?.strategies) ? (lg.strategies as any[]).map((s: any, i: number) => {
+            const cfg = (s?.status?.config || {}) as any;
+            const market = cfg?.market || {};
+            const idx = Number(market?.marketIndex ?? i);
+            const driftMarketSym = (() => {
+              try {
+                const list = (driftStatus?.markets || []) as Array<{ marketIndex: number; symbol?: string }>;
+                const hit = list.find(m => Number(m.marketIndex) === idx);
+                return hit?.symbol;
+              } catch {}
+              return undefined;
+            })();
+            const toSym = driftMarketSym || market?.symbol || `PERP-${idx ?? '?'}`;
+            return {
+              name: cfg?.name || `lev-grid-${idx}`,
+              type: 'drift-grid',
+              fromToken: 'USDC',
+              toToken: toSym,
+              gridType: 'drift',
+              gridLevels: [],
+              active: !!(s?.status?.running),
+              driftKey: String(s?.key || `${cfg?.name || `lev-grid-${idx}`}#${idx}#${cfg?.subaccountId ?? ''}`),
+              marketIndex: idx,
+              subaccountId: Number(cfg?.subaccountId ?? 0),
+            } as any;
+          }) : [];
+          setStrategies([...(baseList || []), ...mapped]);
+        } catch {}
       } else {
         const response = await fetch(`${apiBase}/strategy`, {
           method: 'DELETE',
@@ -2314,7 +2357,7 @@ export const App: React.FC = () => {
                             <>
                               <button 
                                 className="text-sm bg-purple-600 px-3 py-1.5 rounded hover:bg-purple-700"
-                                onClick={() => setShowLevGridConfig(true)}
+                                onClick={() => { setEditingLevGrid(s); setShowLevGridConfig(true); }}
                               >
                                 Edit
                               </button>
@@ -2487,7 +2530,8 @@ export const App: React.FC = () => {
       {/* Leveraged Grid Configuration Modal */}
       {showLevGridConfig && (
         <LeveragedGridConfig 
-          onClose={() => setShowLevGridConfig(false)} 
+          onClose={() => { setShowLevGridConfig(false); setEditingLevGrid(null); }} 
+          initialConfig={editingLevGrid}
           onSaved={async () => {
             try {
               const base = await (await fetch(`${apiBase}/strategy`)).json();
