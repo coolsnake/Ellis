@@ -9,20 +9,22 @@ pub struct Sources {
 impl Sources {
     pub fn new() -> Self {
         // Apply a reasonable default timeout so arb loop proceeds on slow endpoints
-        // Optionally attach Basic Auth for backend calls via env BACKEND_AUTH_USER/PASS
-        let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(5));
-        let user = std::env::var("BACKEND_AUTH_USER").ok();
-        let pass = std::env::var("BACKEND_AUTH_PASS").ok();
-        if let (Some(u), Some(p)) = (user, pass) {
-            let token = base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", u, p));
-            let mut headers = reqwest::header::HeaderMap::new();
-            if let Ok(val) = reqwest::header::HeaderValue::from_str(&format!("Basic {}", token)) {
-                headers.insert(reqwest::header::AUTHORIZATION, val);
-                builder = builder.default_headers(headers);
-            }
-        }
-        let client = builder.build().unwrap_or_else(|_| reqwest::Client::new());
+        // Note: Do NOT set default Authorization headers at construction time.
+        // We attach Basic Auth per request so updated credentials (via env)
+        // are picked up without restarting the process.
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self { client }
+    }
+
+    // Build Authorization header dynamically from env for each backend request
+    fn backend_auth_header() -> Option<reqwest::header::HeaderValue> {
+        let user = std::env::var("BACKEND_AUTH_USER").ok()?;
+        let pass = std::env::var("BACKEND_AUTH_PASS").ok()?;
+        let token = base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", user, pass));
+        reqwest::header::HeaderValue::from_str(&format!("Basic {}", token)).ok()
     }
 
     #[allow(dead_code)]
@@ -72,7 +74,9 @@ impl Sources {
 
     pub async fn backend_orca_pools(&self, api_base: &str) -> Result<serde_json::Value> {
         let url = format!("{}/arb/pools/orca", api_base.trim_end_matches('/'));
-        let r = self.client.get(&url).send().await?;
+        let mut req = self.client.get(&url);
+        if let Some(h) = Self::backend_auth_header() { req = req.header(reqwest::header::AUTHORIZATION, h); }
+        let r = req.send().await?;
         let j = r.json().await?;
         Ok(j)
     }
@@ -124,7 +128,9 @@ impl Sources {
 
     pub async fn backend_watchlist(&self, api_base: &str) -> Result<Vec<String>> {
         let url = format!("{}/watchlist", api_base.trim_end_matches('/'));
-        let r = self.client.get(url).send().await?;
+        let mut req = self.client.get(url);
+        if let Some(h) = Self::backend_auth_header() { req = req.header(reqwest::header::AUTHORIZATION, h); }
+        let r = req.send().await?;
         let j = r.json::<serde_json::Value>().await?;
         let mut out = Vec::new();
         if let Some(arr) = j.get("watchlist").and_then(|x| x.as_array()) {
@@ -138,7 +144,9 @@ impl Sources {
 
     pub async fn backend_raydium_pools(&self, api_base: &str) -> Result<serde_json::Value> {
         let url = format!("{}/arb/pools/raydium", api_base.trim_end_matches('/'));
-        let r = self.client.get(url).send().await?;
+        let mut req = self.client.get(url);
+        if let Some(h) = Self::backend_auth_header() { req = req.header(reqwest::header::AUTHORIZATION, h); }
+        let r = req.send().await?;
         let j = r.json().await?;
         Ok(j)
     }
@@ -146,7 +154,9 @@ impl Sources {
     pub async fn backend_refresh_pools(&self, api_base: &str, source: Option<&str>) -> Result<serde_json::Value> {
         let url = format!("{}/arb/pools/refresh", api_base.trim_end_matches('/'));
         let body = if let Some(s) = source { serde_json::json!({ "source": s }) } else { serde_json::json!({}) };
-        let r = self.client.post(url).json(&body).send().await?;
+        let mut req = self.client.post(url).json(&body);
+        if let Some(h) = Self::backend_auth_header() { req = req.header(reqwest::header::AUTHORIZATION, h); }
+        let r = req.send().await?;
         let j = r.json().await?;
         Ok(j)
     }
