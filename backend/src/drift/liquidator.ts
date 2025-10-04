@@ -6,6 +6,9 @@ import { getAllowlistIndices, indexToSymbol, symbolToIndex, parseAllowlistMarket
 import { CONFIG } from '../utils/config.js';
 import { emit } from '../server/realtime.js';
 import { RunnerRegistry } from '../utils/runnerRegistry.js';
+import { User, BulkAccountLoader, EventSubscriber } from '@drift-labs/sdk';
+import bs58 from 'bs58';
+import { createHash } from 'crypto';
 
 export type LiquidatorConfig = {
   name: string;
@@ -402,8 +405,6 @@ export class DriftLiquidator {
   private async initEventSubscriptions(): Promise<void> {
     try {
       const drift: any = (DriftService.getInstance() as any).client;
-      const sdk: any = await import('@drift-labs/sdk');
-      const { EventSubscriber } = (sdk as any);
       if (!EventSubscriber || !drift?.program || !drift?.connection) return;
       const sub = new EventSubscriber(drift.connection, drift.program);
       await sub.subscribe();
@@ -425,8 +426,6 @@ export class DriftLiquidator {
   private async enqueueIfUnhealthy(pkStr: string): Promise<void> {
     try {
       const drift: any = (DriftService.getInstance() as any).client;
-      const sdk: any = await import('@drift-labs/sdk');
-      const { User, BulkAccountLoader } = (sdk as any);
       const conn: any = (DriftService.getInstance() as any).connection;
       if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', 1000);
       let user = this.userCache.get(String(pkStr));
@@ -454,8 +453,6 @@ export class DriftLiquidator {
     const out: Array<{ userPk: string; health: number }> = [];
     try {
       const drift: any = (DriftService.getInstance() as any).client;
-      const sdk: any = await import('@drift-labs/sdk');
-      const { User, BulkAccountLoader } = (sdk as any);
       const conn: any = (DriftService.getInstance() as any).connection;
       if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', 1000);
       const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
