@@ -26,6 +26,7 @@ export type LiquidatorConfig = {
   riskHealthThreshold?: number; // health < threshold considered at-risk
   accountLoaderMs?: number; // polling cadence for BulkAccountLoader
   maxNewUsersPerTick?: number; // cap number of new User() + subscribe per scan
+  maxProbesPerTick?: number; // cap number of subscribe+evaluate per tick
   // Price triggers & markets
   usePriceTriggers?: boolean;
   priceTriggerDebounceMs?: number;
@@ -123,6 +124,8 @@ export class DriftLiquidator {
   private marketScanInFlight: Set<number> = new Set();
   private userCache: Map<string, any> = new Map();
   private subscribedUsers: Set<string> = new Set();
+  private pendingProbeQueue: string[] = [];
+  private inProbeQueue: Set<string> = new Set();
   private lastMarketPagination: Map<number, number> = new Map();
   private statsTimer: any | null = null;
   private targetCooldownUntil: Map<string, number> = new Map();
@@ -135,6 +138,8 @@ export class DriftLiquidator {
   private scanBatchSize: number = 2000;
   private recentCursor: number = 0;
   private recentBatchPerTick: number = 200;
+  private pendingProbeQueue: string[] = [];
+  private inProbeQueue: Set<string> = new Set();
 
   constructor(private config: LiquidatorConfig) {}
 
@@ -252,12 +257,14 @@ export class DriftLiquidator {
     try { this.inFlightTargets.clear(); } catch {}
     try { this.marketScanInFlight.clear(); } catch {}
     try { this.userToMarkets.clear(); this.marketToUsers.clear(); } catch {}
+    try { this.pendingProbeQueue = []; this.inProbeQueue.clear(); } catch {}
   }
 
   async tick(): Promise<void> {
     try {
       if (!this.initialized) { try { await this.initDiscovery(); this.initialized = true; } catch {} }
       const candidates = await this.findUnhealthyCandidates();
+      try { await this.processProbeQueue(); } catch {}
       // Incremental updates: add candidates, avoid rebuilding entire heap
       for (const c of candidates) this.addOrQueueCandidate({ userPk: c.userPk, health: c.health, updatedAt: Date.now() } as any);
       this.state.candidatesQueued = this.heap.size();
@@ -498,7 +505,7 @@ export class DriftLiquidator {
         try {
           const userPk: string = String(ev?.user?.toBase58?.() || ev?.user || '');
           if (!userPk) return;
-          await this.enqueueIfUnhealthy(userPk);
+          this.enqueueProbe(userPk);
         } catch {}
       };
       try { sub.eventEmitter?.on?.('UserPositionUpdateRecord', onUserEvent); } catch {}
@@ -607,8 +614,7 @@ export class DriftLiquidator {
         // subscribe before returning to ensure reads are live
         try {
           if (!self.subscribedUsers.has(key) && typeof (u as any)?.subscribe === 'function') {
-            await (u as any).subscribe();
-            self.subscribedUsers.add(key);
+            // Defer subscription to probe stage; we only stage keys here
           }
         } catch {}
         newUsersAdded += 1;
@@ -621,16 +627,8 @@ export class DriftLiquidator {
           if (i >= keys.length) break;
           const pkStr = keys[i];
           try {
-            const user = await getOrCreateUser(pkStr);
-            if (!user) continue;
-            const exists = await (user as any).exists?.();
-            if (!exists) continue;
-            const total = Number((user as any)?.getTotalCollateral?.() || 0);
-            const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
-            if (!isFinite(total) || !isFinite(maint)) continue;
-            const health = maint > 0 ? (total - maint) / maint : Infinity;
-            if (health < riskThresh) out.push({ userPk: pkStr, health });
-            try { await self.refreshIndexForUser(user, pkStr); } catch {}
+            // Don't subscribe or compute here; enqueue for probing
+            this.enqueueProbe(pkStr);
           } catch {}
         }
       };
@@ -644,19 +642,8 @@ export class DriftLiquidator {
         const sampleKeys = (window.length > 0 ? window : prioritized).slice(0, Math.min(5, (window.length > 0 ? window : prioritized).length));
         const samples: Array<{ userPk: string; totalCollateral: number; maintenanceRequirement: number; freeCollateral: number; healthMaint: number | null; healthTotal: number | null }> = [];
         let sampleFailures = 0;
-        for (const s of sampleKeys) {
-          try {
-            const u = await getOrCreateUser(s);
-            const exists = await (u as any)?.exists?.();
-            if (!exists) { sampleFailures += 1; continue; }
-            const total = Number((u as any)?.getTotalCollateral?.() || 0);
-            const maint = Number((u as any)?.getMaintenanceMarginRequirement?.() || 0);
-            const free = Number((u as any)?.getFreeCollateral?.() || 0);
-            const healthMaint = maint > 0 ? (total - maint) / maint : null;
-            const healthTotal = total > 0 ? (total - maint) / total : null;
-            samples.push({ userPk: s, totalCollateral: total, maintenanceRequirement: maint, freeCollateral: free, healthMaint, healthTotal });
-          } catch { sampleFailures += 1; }
-        }
+        // Sampling without subscription: just echo keys so we avoid extra load
+        // Detailed sampleCalcs will be populated by probe logs instead
         const exposure = this.computeExposureStats();
         logger.info('drift.liquidator.scan_summary', {
           scanned: keys.length,
@@ -664,9 +651,9 @@ export class DriftLiquidator {
           minHealth: Number.isFinite(minHealth) ? minHealth : null,
           threshold: riskThresh,
           sampledUsers: sampleKeys,
-          sampleCalcs: samples,
-          sampleAttempts: sampleKeys.length,
-          sampleFailures,
+          sampleCalcs: [],
+          sampleAttempts: 0,
+          sampleFailures: 0,
           exposureUsers: exposure.exposureUsers,
           exposureMarkets: exposure.exposureMarkets,
           cat: 'drift',
@@ -750,40 +737,10 @@ export class DriftLiquidator {
         slice.push(users[(start + i) % users.length]);
       }
       this.lastMarketPagination.set(idx, (start + slice.length) % users.length);
-      const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
-      let scanned = 0;
-      let enqueued = 0;
-      for (const pkStr of slice) {
-        try {
-          let user = this.userCache.get(String(pkStr));
-          if (!user) {
-            // respect new-user subscription cap for this tick
-            // partialUpdateForMarket is called on price ticks; avoid heavy user creation
-            let pk: any = pkStr;
-            try { if (typeof pkStr === 'string') pk = new PublicKey(pkStr); } catch {}
-            user = new User({ driftClient: drift, userAccountPublicKey: pk, accountSubscription: { type: 'polling', accountLoader: this.accountLoader } });
-            this.userCache.set(String(pkStr), user);
-          }
-          try {
-            if (!this.subscribedUsers.has(String(pkStr)) && typeof (user as any)?.subscribe === 'function') {
-              await (user as any).subscribe();
-              this.subscribedUsers.add(String(pkStr));
-            }
-          } catch {}
-          const exists = await (user as any).exists?.();
-          if (!exists) continue;
-          const total = Number((user as any)?.getTotalCollateral?.() || 0);
-          const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
-          if (!isFinite(total) || !isFinite(maint)) continue;
-          const health = maint > 0 ? (total - maint) / maint : Infinity;
-          scanned += 1;
-          if (health < riskThresh) { this.addOrQueueCandidate({ userPk: pkStr, health, updatedAt: Date.now() }); enqueued += 1; }
-          try { await this.refreshIndexForUser(user, pkStr); } catch {}
-        } catch {}
-      }
+      for (const pkStr of slice) { this.enqueueProbe(pkStr); }
       this.state.candidatesQueued = this.heap.size();
       this.maybeEmitQueue();
-      try { logger.info('drift.liquidator.market_scan', { marketIndex: idx, trackedUsers: users.length, sampled: slice.length, scanned, enqueued, cat: 'drift' }); } catch {}
+      try { logger.info('drift.liquidator.market_scan', { marketIndex: idx, trackedUsers: users.length, sampled: slice.length, cat: 'drift' }); } catch {}
     } catch {
     } finally {
       try { this.marketScanInFlight.delete(Number(marketIndex)); } catch {}
@@ -1031,6 +988,69 @@ export class DriftLiquidator {
     } catch {
       return { exposureMarkets: 0, exposureUsers: 0 };
     }
+  }
+
+  private enqueueProbe(pkStr: string): void {
+    try {
+      const key = String(pkStr);
+      if (this.inProbeQueue.has(key)) return;
+      this.pendingProbeQueue.push(key);
+      this.inProbeQueue.add(key);
+    } catch {}
+  }
+
+  private async processProbeQueue(): Promise<void> {
+    try {
+      const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
+      const drift: any = (DriftService.getInstance() as any).client;
+      const conn: any = (DriftService.getInstance() as any).connection;
+      if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', Math.max(500, Number((this.config.accountLoaderMs ?? ((CONFIG as any)?.drift?.liquidator?.accountLoaderMs) ?? 1000))));
+      const cap = Math.max(1, Math.min(200, Number((this.config.maxProbesPerTick ?? ((CONFIG as any)?.drift?.liquidator?.maxProbesPerTick) ?? 40))));
+      const slice = this.pendingProbeQueue.splice(0, cap);
+      let probed = 0;
+      let flagged = 0;
+      for (const key of slice) {
+        try {
+          let user = this.userCache.get(key);
+          if (!user) {
+            let pk: any = key;
+            try { if (typeof key === 'string') pk = new PublicKey(key); } catch {}
+            user = new User({ driftClient: drift, userAccountPublicKey: pk, accountSubscription: { type: 'polling', accountLoader: this.accountLoader } });
+            this.userCache.set(key, user);
+          }
+          // Subscribe only during probe
+          try {
+            if (!this.subscribedUsers.has(key) && typeof (user as any)?.subscribe === 'function') {
+              await (user as any).subscribe();
+              this.subscribedUsers.add(key);
+            }
+          } catch {}
+          const exists = await (user as any).exists?.();
+          if (!exists) { this.inProbeQueue.delete(key); continue; }
+          const total = Number((user as any)?.getTotalCollateral?.() || 0);
+          const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
+          if (!isFinite(total) || !isFinite(maint)) { this.inProbeQueue.delete(key); continue; }
+          const health = maint > 0 ? (total - maint) / maint : Infinity;
+          probed += 1;
+          if (health < riskThresh) {
+            this.addOrQueueCandidate({ userPk: key, health, updatedAt: Date.now() });
+            flagged += 1;
+            try { await this.refreshIndexForUser(user, key); } catch {}
+          } else {
+            // Not at risk: optionally unsubscribe to minimize load
+            try {
+              if (this.subscribedUsers.has(key) && typeof (user as any)?.unsubscribe === 'function') {
+                await (user as any).unsubscribe();
+                this.subscribedUsers.delete(key);
+              }
+            } catch {}
+          }
+        } catch {} finally {
+          this.inProbeQueue.delete(key);
+        }
+      }
+      try { logger.info('drift.liquidator.probe_result', { attempted: slice.length, probed, flagged, pending: this.pendingProbeQueue.length, cat: 'drift' }); } catch {}
+    } catch {}
   }
 
   getQueueSnapshot(limit = 20): { candidatesQueued: number; top: Array<{ userPk: string; health: number; updatedAt: number }>; markets: number[]; exposures: Array<{ marketIndex: number; users: number; symbol?: string }>; actionsLastMin: number; errorsLastMin: number } {
