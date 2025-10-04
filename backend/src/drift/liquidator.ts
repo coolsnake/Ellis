@@ -213,15 +213,18 @@ export class DriftLiquidator {
       }, everyMs);
     } catch {}
 
-    // Periodic recent discovery (Helius getProgramAccountsV2 changedSinceSlot)
+    // Periodic recent discovery (Helius GPA v2) — only if HTTP discovery is enabled
     try {
       if (this.discoveryTimer) { try { (globalThis as any).clearInterval(this.discoveryTimer); } catch {} }
       const cfg: any = (CONFIG as any)?.drift?.liquidator || {};
+      const discoverAll = (this.config.discoverAllUsers !== undefined) ? !!this.config.discoverAllUsers : (cfg.discoverAllUsers !== false);
       const discMs = Math.max(10000, Number(this.config?.discoveryRefreshMs ?? cfg.discoveryRefreshMs ?? 45000));
       this.scanBatchSize = Math.max(100, Math.min(5000, Number(this.config?.scanBatchSize ?? cfg.scanBatchSize ?? 2000)));
-      this.discoveryTimer = (globalThis as any).setInterval(() => {
-        this.tryRecentDiscovery().catch(() => {});
-      }, discMs);
+      if (discoverAll) {
+        this.discoveryTimer = (globalThis as any).setInterval(() => {
+          this.tryRecentDiscovery().catch(() => {});
+        }, discMs);
+      }
     } catch {}
   }
 
@@ -308,24 +311,31 @@ export class DriftLiquidator {
       const discoverAll = (this.config.discoverAllUsers !== undefined) ? !!this.config.discoverAllUsers : (cfg.discoverAllUsers !== false); // default true
       if (discoverAll) {
         const maxDiscover = Math.max(10, Math.min(10000, Number((this.config.maxDiscoveredUsers ?? cfg.maxDiscoveredUsers ?? 500))));
-        // Try Helius getProgramAccountsV2 with pagination and anchor discriminator filter (fast & lightweight)
-        let discovered: string[] | null = null;
+        // Prefer DLOB/UserMap seeding; avoid heavy HTTP discovery on limited RPC plans
         try {
-          discovered = await this.discoverUsersViaHeliusGpaV2(maxDiscover);
-          if (Array.isArray(discovered) && discovered.length > 0) {
-            this.userKeys = discovered.slice(0, maxDiscover);
-            this.lastDiscoveryUsedGpaV2 = true;
-            try { logger.info('drift.liquidator.discovery_mode', { mode: 'helius_v2', users: this.userKeys.length, cat: 'drift' }); } catch {}
-          }
+          await this.seedFromDlobUserMap();
         } catch {}
-        // Fallback to Anchor .all() if V2 failed or no results
-        if (!Array.isArray(discovered) || discovered.length === 0) {
-          try { list = await drift?.program?.account?.user?.all?.(); } catch {}
-          if (Array.isArray(list) && list.length > 0) {
-            const keys = list.map((x: any) => String(x?.publicKey?.toBase58?.() || x?.publicKey || '')).filter(Boolean);
-            this.userKeys = keys.slice(0, maxDiscover);
-            this.lastDiscoveryUsedGpaV2 = false;
-            try { logger.info('drift.liquidator.discovery_mode', { mode: 'anchor_all', users: this.userKeys.length, cat: 'drift' }); } catch {}
+        // Only use HTTP/Anchor discovery if we have room and intend to broaden the set
+        if (this.userKeys.length === 0) {
+          // Try Helius getProgramAccountsV2 with pagination and anchor discriminator filter (fast & lightweight)
+          let discovered: string[] | null = null;
+          try {
+            discovered = await this.discoverUsersViaHeliusGpaV2(maxDiscover);
+            if (Array.isArray(discovered) && discovered.length > 0) {
+              this.userKeys = discovered.slice(0, maxDiscover);
+              this.lastDiscoveryUsedGpaV2 = true;
+              try { logger.info('drift.liquidator.discovery_mode', { mode: 'helius_v2', users: this.userKeys.length, cat: 'drift' }); } catch {}
+            }
+          } catch {}
+          // Fallback to Anchor .all() if V2 failed or no results
+          if (!Array.isArray(discovered) || discovered.length === 0) {
+            try { list = await drift?.program?.account?.user?.all?.(); } catch {}
+            if (Array.isArray(list) && list.length > 0) {
+              const keys = list.map((x: any) => String(x?.publicKey?.toBase58?.() || x?.publicKey || '')).filter(Boolean);
+              this.userKeys = keys.slice(0, maxDiscover);
+              this.lastDiscoveryUsedGpaV2 = false;
+              try { logger.info('drift.liquidator.discovery_mode', { mode: 'anchor_all', users: this.userKeys.length, cat: 'drift' }); } catch {}
+            }
           }
         }
       }
