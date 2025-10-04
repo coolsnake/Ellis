@@ -815,6 +815,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       const key = (DriftGridRegistry as any).keyOf(cfg);
       await DriftGridRegistry.start(key, (CONFIG as any).system?.targetTickTimeMs || 1500);
       emit('log', { level: 'info', message: `drift: grid started ${cfg?.name || key}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } });
+      try { const list = await getStrategies(); io.emit('strategies-update', list); } catch {}
       res.json({ ok: true, key });
     } catch (e: any) {
       logger.error('drift-grid: start failed', { error: String(e?.message || e) });
@@ -829,6 +830,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       // Remove the runner completely so it doesn't reappear on next status
       const ok = DriftGridRegistry.remove(key);
       if (ok) emit('log', { level: 'info', message: `drift: grid removed ${key}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } });
+      try { const list = await getStrategies(); io.emit('strategies-update', list); } catch {}
       res.json({ ok });
     } catch (e: any) {
       logger.error('drift-grid: stop failed', { error: String(e?.message || e) });
@@ -841,9 +843,12 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       const cfg = req.body as any;
       const { DriftGridRegistry } = await import('../drift/execution.js');
       const key = (DriftGridRegistry as any).keyOf(cfg);
+      // Replace existing runner with new config to ensure updates take effect
+      try { DriftGridRegistry.remove(key); } catch {}
       const runner = DriftGridRegistry.upsert(cfg);
       await DriftGridRegistry.start(key, (CONFIG as any).system?.targetTickTimeMs || 1500);
       emit('log', { level: 'info', message: `drift-grid: updated ${cfg?.name || key}`, timestamp: new Date().toISOString(), context: { cat: 'strategy' } });
+      try { const list = await getStrategies(); io.emit('strategies-update', list); } catch {}
       res.json({ ok: true, key });
     } catch (e: any) {
       logger.error('drift-grid: update failed', { error: String(e?.message || e) });
