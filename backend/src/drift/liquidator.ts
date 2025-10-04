@@ -8,6 +8,7 @@ import { emit } from '../server/realtime.js';
 import { RunnerRegistry } from '../utils/runnerRegistry.js';
 import { User, BulkAccountLoader, EventSubscriber } from '@drift-labs/sdk';
 import bs58 from 'bs58';
+import { PublicKey } from '@solana/web3.js';
 import { createHash } from 'crypto';
 
 export type LiquidatorConfig = {
@@ -526,7 +527,9 @@ export class DriftLiquidator {
       if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', Math.max(500, Number((this.config.accountLoaderMs ?? ((CONFIG as any)?.drift?.liquidator?.accountLoaderMs) ?? 1000))));
       let user = this.userCache.get(String(pkStr));
       if (!user) {
-        user = new User({ driftClient: drift, userAccountPublicKey: pkStr, accountSubscription: { type: 'polling', accountLoader: this.accountLoader } });
+        let pk: any = pkStr;
+        try { if (typeof pkStr === 'string') pk = new PublicKey(pkStr); } catch {}
+        user = new User({ driftClient: drift, userAccountPublicKey: pk, accountSubscription: { type: 'polling', accountLoader: this.accountLoader } });
         this.userCache.set(String(pkStr), user);
       }
       // Ensure subscription before reads
@@ -587,7 +590,9 @@ export class DriftLiquidator {
           return u;
         }
         if (newUsersAdded >= maxNewUsers) return null;
-        u = new User({ driftClient: drift, userAccountPublicKey: key, accountSubscription: { type: 'polling', accountLoader: self.accountLoader } });
+        let pk: any = key;
+        try { if (typeof key === 'string') pk = new PublicKey(key); } catch {}
+        u = new User({ driftClient: drift, userAccountPublicKey: pk, accountSubscription: { type: 'polling', accountLoader: self.accountLoader } });
         self.userCache.set(key, u);
         const maxSize = Math.max(50, Math.min(5000, Number((this.config.userCacheMax ?? ((CONFIG as any)?.drift?.liquidator?.userCacheMax) ?? 500))));
         if (self.userCache.size > maxSize) {
@@ -754,7 +759,9 @@ export class DriftLiquidator {
           if (!user) {
             // respect new-user subscription cap for this tick
             // partialUpdateForMarket is called on price ticks; avoid heavy user creation
-            user = new User({ driftClient: drift, userAccountPublicKey: pkStr, accountSubscription: { type: 'polling', accountLoader: this.accountLoader } });
+            let pk: any = pkStr;
+            try { if (typeof pkStr === 'string') pk = new PublicKey(pkStr); } catch {}
+            user = new User({ driftClient: drift, userAccountPublicKey: pk, accountSubscription: { type: 'polling', accountLoader: this.accountLoader } });
             this.userCache.set(String(pkStr), user);
           }
           try {
