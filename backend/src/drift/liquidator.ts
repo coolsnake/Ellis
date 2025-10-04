@@ -612,6 +612,9 @@ export class DriftLiquidator {
         for (const s of sampleKeys) {
           try {
             const u = await getOrCreateUser(s);
+            // Ensure account data is loaded for sampling
+            try { if (typeof (u as any)?.subscribe === 'function') { await (u as any).subscribe(); } } catch {}
+            try { if (typeof (u as any)?.fetchAccounts === 'function') { await (u as any).fetchAccounts(); } } catch {}
             const exists = await (u as any)?.exists?.();
             if (!exists) { sampleFailures += 1; continue; }
             const total = Number((u as any)?.getTotalCollateral?.() || 0);
