@@ -46,91 +46,11 @@ const corsOrigin = (CONFIG as any)?.system?.corsOrigin || process.env.CORS_ORIGI
 app.use(cors({ origin: corsOrigin === '*' ? true : corsOrigin, credentials: true } as any));
 app.use(express.json());
 
-// Global 429 capture: wrap fetch to log URL and method on HTTP 429
-try {
-  const g: any = (globalThis as any);
-  const origFetch: any = g.fetch;
-  if (typeof origFetch === 'function' && !g.__fetchWrappedFor429) {
-    g.__fetchWrappedFor429 = true;
-    g.fetch = async function(input: any, init?: any) {
-      let urlStr = '';
-      try {
-        if (typeof input === 'string') urlStr = input;
-        else if (input && typeof input.url === 'string') urlStr = input.url;
-      } catch {}
-      const res: any = await origFetch(input as any, init as any);
-      try {
-        if (res && typeof res.status === 'number' && res.status === 429) {
-          const method = (init && (init as any).method) || ((input && (input as any).method) || 'GET');
-          logger.warn('http.429', { url: urlStr, method, cat: 'server' });
-          try { const { emit } = await import('./realtime.js'); emit('log', { level: 'warn', message: `http.429 ${method} ${urlStr}`, timestamp: new Date().toISOString(), context: { cat: 'server' } }); } catch {}
-        }
-      } catch {}
-      return res;
-    };
-  }
-} catch {}
+//
 
-// Also wrap undici.fetch and undici.request to capture 429s from direct undici usage
-try {
-  const und: any = await import('undici');
-  if (und && !und.__wrappedFor429) {
-    und.__wrappedFor429 = true;
-    // Wrap undici.fetch
-    if (typeof und.fetch === 'function') {
-      const origUndFetch = und.fetch.bind(und);
-      und.fetch = async function(input: any, init?: any) {
-        let urlStr = '';
-        try { urlStr = typeof input === 'string' ? input : (input?.url || ''); } catch {}
-        const res: any = await origUndFetch(input, init);
-        try {
-          if (res && typeof res.status === 'number' && res.status === 429) {
-            const method = (init && (init as any).method) || ((input && (input as any).method) || 'GET');
-            logger.warn('http.429', { url: urlStr, method, cat: 'server' });
-            try { const { emit } = await import('./realtime.js'); emit('log', { level: 'warn', message: `http.429 ${method} ${urlStr}`, timestamp: new Date().toISOString(), context: { cat: 'server' } }); } catch {}
-          }
-        } catch {}
-        return res;
-      };
-    }
-    // Wrap undici.request
-    if (typeof und.request === 'function') {
-      const origRequest = und.request.bind(und);
-      und.request = async function(url: any, opts?: any) {
-        const res: any = await origRequest(url, opts);
-        try {
-          const status = Number(res?.statusCode || res?.status || 0);
-          if (status === 429) {
-            const method = (opts && opts.method) || 'GET';
-            const href = (typeof url === 'string') ? url : (url?.href || url?.origin ? `${url.origin}${url.pathname || ''}` : String(url || ''));
-            logger.warn('http.429', { url: href, method, cat: 'server' });
-            try { const { emit } = await import('./realtime.js'); emit('log', { level: 'warn', message: `http.429 ${method} ${href}`, timestamp: new Date().toISOString(), context: { cat: 'server' } }); } catch {}
-          }
-        } catch {}
-        return res;
-      };
-    }
-  }
-} catch {}
+//
 
-// As a last resort, surface 429 console logs/warns/errors with stack to locate source
-try {
-  const origLog = console.log.bind(console);
-  const origWarn = console.warn.bind(console);
-  const origErr = console.error.bind(console);
-  const detect = (level: 'log' | 'warn' | 'error', args: any[]) => {
-    try {
-      const text = (args || []).map((a: any) => (typeof a === 'string' ? a : (typeof a?.message === 'string' ? a.message : ''))).join(' ');
-      if (/429|Too\s+Many\s+Requests/i.test(text)) {
-        const err = new Error(`console.${level} 429`);
-        logger.warn('console.429', { level, message: text, stack: err.stack, cat: 'server' });
-      }
-    } catch {}
-  };
-  console.log = (...args: any[]) => { detect('log', args); origLog(...args as any); };
-  console.warn = (...args: any[]) => { detect('warn', args); origWarn(...args as any); };
-  console.error = (...args: any[]) => { detect('error', args); origErr(...args as any); };
-} catch {}
+//
 
 // Optional Basic Auth for API
 function unauthorized(res: Response) {
@@ -278,6 +198,7 @@ logger.on('log', (event: any) => {
     else if (/^raydium[.:]\b|^raydium\b/i.test(msg)) cat = 'raydium';
     else if (/^orca[.:]\b|^orca\b/i.test(msg)) cat = 'orca';
     else if (/^arb[.:]\b|\barb\b/i.test(msg)) cat = 'arb';
+    else if (/^opportunity[.:]\b|^opportunity\b|opps?:update|near[_-]?miss|arb\.opportunity|arb\.near_miss/i.test(msg)) cat = 'opportunity';
     else if (/^drift[.:]\b|^drift\b/i.test(msg)) cat = 'drift';
     else if (/^strategy[.:]\b|^strategy\b/i.test(msg)) cat = 'strategy';
     else if (/^pretrade[.:]\b|^pretrade\b/i.test(msg)) cat = 'pretrade';
@@ -302,7 +223,8 @@ logger.on('log', (event: any) => {
   // Category filtering: if disabled, drop entirely at backend
   try {
     const enabled: string[] | undefined = (CONFIG as any)?.system?.enabledLogCategories;
-    if (Array.isArray(enabled)) {
+    // Only enforce filtering when list is non-empty
+    if (Array.isArray(enabled) && enabled.length > 0) {
       const name = String(enriched.cat || 'other').toLowerCase();
       if (!enabled.includes(name)) {
         return; // muted at backend
