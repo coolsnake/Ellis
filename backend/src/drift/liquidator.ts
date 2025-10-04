@@ -38,6 +38,8 @@ export type LiquidatorConfig = {
   spotSizeFraction?: number;
   targetCooldownMs?: number;
   statsIntervalMs?: number;
+  // Subscriptions
+  useEventSubscriptions?: boolean;
 };
 
 export type LiquidatorRuntimeState = {
@@ -466,10 +468,16 @@ export class DriftLiquidator {
 
   private async initEventSubscriptions(): Promise<void> {
     try {
+      if (this.config?.useEventSubscriptions === false) return;
       const drift: any = (DriftService.getInstance() as any).client;
       if (!EventSubscriber || !drift?.program || !drift?.connection) return;
       const sub = new EventSubscriber(drift.connection, drift.program);
-      await sub.subscribe();
+      try {
+        await sub.subscribe();
+      } catch (e: any) {
+        logger.warn('drift.liquidator.event_sub_error', { error: String(e?.message || e), cat: 'drift' });
+        return;
+      }
       this.eventSub = sub;
       // Listen for position updates and order events to prioritize scanning affected users
       const onUserEvent = async (ev: any) => {
@@ -482,6 +490,19 @@ export class DriftLiquidator {
       try { sub.eventEmitter?.on?.('UserPositionUpdateRecord', onUserEvent); } catch {}
       try { sub.eventEmitter?.on?.('OrderRecord', onUserEvent); } catch {}
       try { sub.eventEmitter?.on?.('LiquidationRecord', onUserEvent); } catch {}
+      // Basic resilience: best-effort resubscribe on emitter error/close
+      const tryResub = async () => {
+        try {
+          await sub.unsubscribe();
+        } catch {}
+        try {
+          await sub.subscribe();
+        } catch (e: any) {
+          logger.warn('drift.liquidator.event_sub_resub_failed', { error: String(e?.message || e), cat: 'drift' });
+        }
+      };
+      try { sub.eventEmitter?.on?.('error', tryResub as any); } catch {}
+      try { sub.eventEmitter?.on?.('close', tryResub as any); } catch {}
     } catch {}
   }
 
