@@ -517,7 +517,8 @@ export class DriftLiquidator {
     try {
       const drift: any = (DriftService.getInstance() as any).client;
       const conn: any = (DriftService.getInstance() as any).connection;
-      if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', 1000);
+      const loaderMs = Math.max(500, Number(((this as any)?.config?.accountLoaderMs ?? ((CONFIG as any)?.drift?.liquidator?.accountLoaderMs) ?? 1000)));
+      if (!this.accountLoader) this.accountLoader = new BulkAccountLoader(conn, 'confirmed', loaderMs);
       let user = this.userCache.get(String(pkStr));
       if (!user) {
         let pkObj: any = null;
@@ -562,6 +563,8 @@ export class DriftLiquidator {
       const keys = prioritized.concat(window).concat(tail);
       this.scanCursor = (this.scanCursor + this.scanBatchSize) % Math.max(1, remaining.length);
       const maxConc = Math.max(2, Math.min(24, Number((this.config.scanConcurrency ?? ((CONFIG as any)?.drift?.liquidator?.scanConcurrency) ?? 10))));
+      const sampleCalcs: Array<{ userPk: string; totalCollateral: number; maintenanceRequirement: number; freeCollateral: number; healthMaint: number | null; healthTotal: number | null }> = [];
+      const sampleCap = 5;
       let cursor = 0;
       const self = this;
       const getOrCreateUser = async (pkStr: string): Promise<any> => {
@@ -599,6 +602,15 @@ export class DriftLiquidator {
             const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
             if (!isFinite(total) || !isFinite(maint)) continue;
             const health = maint > 0 ? (total - maint) / maint : Infinity;
+            // Opportunistically capture sample metrics without extra RPC
+            try {
+              if (sampleCalcs.length < sampleCap) {
+                const free = Number((user as any)?.getFreeCollateral?.() || 0);
+                const healthMaint = maint > 0 ? (total - maint) / maint : null;
+                const healthTotal = total > 0 ? (total - maint) / total : null;
+                sampleCalcs.push({ userPk: pkStr, totalCollateral: total, maintenanceRequirement: maint, freeCollateral: free, healthMaint, healthTotal });
+              }
+            } catch {}
             if (health < riskThresh) out.push({ userPk: pkStr, health });
             try { await self.refreshIndexForUser(user, pkStr); } catch {}
           } catch {}
@@ -610,35 +622,13 @@ export class DriftLiquidator {
       try {
         let minHealth = Infinity;
         for (const c of out) { if (typeof c.health === 'number' && c.health < minHealth) minHealth = c.health; }
-        // Build a small sample and compute relevant risk metrics
-        const sampleKeys = (window.length > 0 ? window : prioritized).slice(0, Math.min(5, (window.length > 0 ? window : prioritized).length));
-        const samples: Array<{ userPk: string; totalCollateral: number; maintenanceRequirement: number; freeCollateral: number; healthMaint: number | null; healthTotal: number | null }> = [];
-        let sampleFailures = 0;
-        for (const s of sampleKeys) {
-          try {
-            const u = await getOrCreateUser(s);
-            // Ensure account data is loaded for sampling
-            try { if (typeof (u as any)?.subscribe === 'function') { await (u as any).subscribe(); } } catch {}
-            try { if (typeof (u as any)?.fetchAccounts === 'function') { await (u as any).fetchAccounts(); } } catch {}
-            const exists = await (u as any)?.exists?.();
-            if (!exists) { sampleFailures += 1; continue; }
-            const total = Number((u as any)?.getTotalCollateral?.() || 0);
-            const maint = Number((u as any)?.getMaintenanceMarginRequirement?.() || 0);
-            const free = Number((u as any)?.getFreeCollateral?.() || 0);
-            const healthMaint = maint > 0 ? (total - maint) / maint : null;
-            const healthTotal = total > 0 ? (total - maint) / total : null;
-            samples.push({ userPk: s, totalCollateral: total, maintenanceRequirement: maint, freeCollateral: free, healthMaint, healthTotal });
-          } catch { sampleFailures += 1; }
-        }
         logger.info('drift.liquidator.scan_summary', {
           scanned: keys.length,
           candidatesFound: out.length,
           minHealth: Number.isFinite(minHealth) ? minHealth : null,
           threshold: riskThresh,
-          sampledUsers: sampleKeys,
-          sampleCalcs: samples,
-          sampleAttempts: sampleKeys.length,
-          sampleFailures,
+          sampledUsers: sampleCalcs.map(s => s.userPk),
+          sampleCalcs: sampleCalcs,
           cat: 'drift',
         });
       } catch {}
