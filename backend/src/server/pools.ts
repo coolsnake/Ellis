@@ -211,6 +211,42 @@ function num(v: any): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+// Compute normalized pool deltas (updated entries only) based on id and key fields
+export function diffNormalizedPools(prev: PoolsPayload | null | undefined, next: PoolsPayload): { amm: AmmPool[]; clmm: ClmmPool[]; addedAmm: number; removedAmm: number; addedClmm: number; removedClmm: number } {
+  const byId = <T extends { id: string }>(arr: T[] | undefined | null) => {
+    const m = new Map<string, T>();
+    for (const it of (arr || [])) { if (it && it.id) m.set(String(it.id), it); }
+    return m;
+  };
+  const pA = byId(prev?.amm); const pC = byId(prev?.clmm);
+  const nA = byId(next.amm); const nC = byId(next.clmm);
+  const updatedAmm: AmmPool[] = [];
+  const updatedClmm: ClmmPool[] = [];
+  const eps = 1e-9;
+  const changedAmm = (a?: AmmPool, b?: AmmPool): boolean => {
+    if (!a || !b) return true;
+    if (Math.abs((a.price_a_per_b || 0) - (b.price_a_per_b || 0)) > eps) return true;
+    if (Math.abs((a.liquidity_base || 0) - (b.liquidity_base || 0)) > eps) return true;
+    if ((a.tvl_usd || 0) !== (b.tvl_usd || 0)) return true;
+    return false;
+  };
+  const changedClmm = (a?: ClmmPool, b?: ClmmPool): boolean => {
+    if (!a || !b) return true;
+    if (Math.abs((a.sqrt_price_x64 || 0) - (b.sqrt_price_x64 || 0)) > 0) return true;
+    if (Math.abs((a.liquidity || 0) - (b.liquidity || 0)) > 0) return true;
+    if ((a.tvl_usd || 0) !== (b.tvl_usd || 0)) return true;
+    if (Math.abs((a.price_a_per_b || 0) - (b.price_a_per_b || 0)) > eps) return true;
+    return false;
+  };
+  for (const [id, nx] of nA) { const pv = pA.get(id); if (!pv || changedAmm(pv, nx)) updatedAmm.push(nx); }
+  for (const [id, nx] of nC) { const pv = pC.get(id); if (!pv || changedClmm(pv, nx)) updatedClmm.push(nx); }
+  const addedAmm = Math.max(0, nA.size - pA.size);
+  const addedClmm = Math.max(0, nC.size - pC.size);
+  const removedAmm = Math.max(0, pA.size - nA.size);
+  const removedClmm = Math.max(0, pC.size - nC.size);
+  return { amm: updatedAmm, clmm: updatedClmm, addedAmm, removedAmm, addedClmm, removedClmm };
+}
+
 export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
   const now = Date.now();
   const amm: AmmPool[] = [];
@@ -314,12 +350,16 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
 let rayTimer: any | undefined;
 let orcaTimer: any | undefined;
 let wsUnsubscribe: (() => void) | undefined;
+let healthTimer: any | undefined;
+let lastWsEventMs: number = 0;
+let wsHealthy: boolean = false;
 
 export function startRaydiumRefreshLoop(): void {
   // Clear existing timers if any, to allow dynamic TTL updates
   if (rayTimer) { clearInterval(rayTimer); rayTimer = undefined; }
   if (orcaTimer) { clearInterval(orcaTimer); orcaTimer = undefined; }
   try { if (wsUnsubscribe) { wsUnsubscribe(); wsUnsubscribe = undefined; } } catch {}
+  if (healthTimer) { clearInterval(healthTimer); healthTimer = undefined; }
 
   const rayPeriod = Math.max(1000, Number(CONFIG.raydium?.cacheTtlMs || 300_000));
   const orcaPeriod = Math.max(1000, Number(CONFIG.orca?.cacheTtlMs || 300_000));
@@ -373,6 +413,8 @@ export function startRaydiumRefreshLoop(): void {
         let lastRay = 0; let lastOrc = 0;
         const handle = async (pk: any, info: any) => {
           try {
+            lastWsEventMs = Date.now();
+            wsHealthy = true;
             // Lightweight classify: owner indicates which decoder to attempt
             const owner = String(info?.owner?.toBase58?.() || '');
             try {
@@ -397,13 +439,49 @@ export function startRaydiumRefreshLoop(): void {
               } catch {}
               getRaydiumPoolsNormalized(true).catch(() => {});
             } else if (owner === String(CONFIG.orca?.programId)) {
-              if (now - lastOrc < minGap) return;
-              lastOrc = now;
+              // Attempt to parse and upsert single Whirlpool from account data; fallback to full refresh on failure
+              let ok = false;
               try {
-                logger.info('pools.refresh ws orca', { cat: 'pools' });
-                emit('log', { level: 'info', message: 'pools:refresh ws source=orca', timestamp: new Date().toISOString(), context: { cat: 'pools' } });
-              } catch {}
-              getOrcaPoolsCached(true).catch(() => {});
+                const pk58 = toB58Any(pk);
+                const sdk = await import('@orca-so/whirlpools-sdk');
+                const { ParsableWhirlpool } = sdk as any;
+                const parsed = ParsableWhirlpool.parse(pk, info);
+                if (parsed) {
+                  const id = pk58;
+                  const mint_a = parsed.tokenMintA.toBase58();
+                  const mint_b = parsed.tokenMintB.toBase58();
+                  const sqrt_price_x64 = Number(parsed.sqrtPrice);
+                  const liquidity = Number(parsed.liquidity);
+                  const tick_spacing = Number(parsed.tickSpacing);
+                  const fee_bps = Number((parsed as any)?.feeRate ?? 0);
+                  const clmmItem: ClmmPool = { id, dex: 'Orca', mint_a, mint_b, fee_bps, sqrt_price_x64, liquidity, tick_spacing, updated_ms: Date.now(), pool_kind: 'clmm', liquidity_display: liquidity } as any;
+                  const prev = orcaCache.data || { amm: [], clmm: [] };
+                  const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
+                  const idx = next.clmm.findIndex(p => p.id === id);
+                  if (idx >= 0) { next.clmm[idx] = { ...next.clmm[idx], ...clmmItem }; } else { next.clmm.push(clmmItem); }
+                  orcaCache.data = next; orcaCache.ts = Date.now();
+                  const d = diffNormalizedPools(prev, next);
+                  const sample = { amm: [], clmm: d.clmm.slice(0, 20) };
+                  emit('pool-updates', { source: 'orca', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now() });
+                  try { logger.info('pools.delta orca.ws', { id: pk58.slice(0,6)+'…', updatedClmm: d.clmm.length, cat: 'pools' }); } catch {}
+                  // Debounced graph rebuild
+                  try { (await import('./graph.js')).scheduleGraphRebuild(undefined, 200); } catch {}
+                  ok = true;
+                }
+              } catch (e:any) {
+                try { logger.warn('orca.ws.parse failed', { error: String(e?.message || e) }); } catch {}
+              }
+              if (!ok) {
+                const now2 = Date.now();
+                if (now2 - lastOrc >= minGap) {
+                  lastOrc = now2;
+                  try {
+                    logger.info('pools.refresh ws orca', { cat: 'pools' });
+                    emit('log', { level: 'info', message: 'pools:refresh ws source=orca', timestamp: new Date().toISOString(), context: { cat: 'pools' } });
+                  } catch {}
+                  getOrcaPoolsCached(true).catch(() => {});
+                }
+              }
             } else if (pk) {
               // Fallback: if account belongs to any known program, refresh both
               if (now - lastRay >= minGap) {
@@ -432,6 +510,24 @@ export function startRaydiumRefreshLoop(): void {
         subs.push(conn.onProgramAccountChange(orcaProg, (ch) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
         wsUnsubscribe = () => { try { for (const id of subs) conn.removeAccountChangeListener(id as any).catch(() => {}); } catch {} };
         logger.info('pools.ws subscriptions active');
+
+        // Health monitor: if no WS events for timeoutMs, trigger periodic refresh as fallback
+        const timeoutMs = Math.max(5000, Number((CONFIG.system as any)?.wsHealthTimeoutMs || 15000));
+        if (healthTimer) { clearInterval(healthTimer); healthTimer = undefined; }
+        healthTimer = setInterval(() => {
+          try {
+            const now = Date.now();
+            const idle = now - (lastWsEventMs || 0);
+            const healthy = wsHealthy && idle < timeoutMs * 2;
+            if (!healthy) {
+              // Consider WS unhealthy -> perform background refreshes
+              try { logger.warn('pools.ws unhealthy — triggering fallback refresh', { idleMs: idle, timeoutMs }); } catch {}
+              getRaydiumPoolsNormalized(true).catch(() => {});
+              getOrcaPoolsCached(true).catch(() => {});
+              wsHealthy = false;
+            }
+          } catch {}
+        }, Math.max(2000, Math.floor((Number((CONFIG.system as any)?.wsHealthTimeoutMs || 15000)) / 3)));
       };
       setup().catch((e: any) => logger.warn('pools.ws setup failed', { error: String(e?.message || e) }));
     } catch (e: any) {
@@ -451,6 +547,20 @@ export function enablePoolWebsocketRefreshes(): void {
     const wsEnabled = !!(CONFIG.system as any)?.enablePoolWs;
     if (wsEnabled) { startRaydiumRefreshLoop(); }
   } catch {}
+}
+
+export function disablePoolWebsocketRefreshes(): void {
+  try {
+    if (wsUnsubscribe) { wsUnsubscribe(); wsUnsubscribe = undefined; }
+    if (healthTimer) { clearInterval(healthTimer); healthTimer = undefined; }
+    wsHealthy = false; lastWsEventMs = 0;
+    logger.info('pools.ws unsubscribed');
+  } catch {}
+}
+
+export function getPoolWsStatus(): { enabled: boolean; healthy: boolean; lastEventMs: number } {
+  const enabled = !!((CONFIG.system as any)?.enablePoolWs) && wsAllowed;
+  return { enabled, healthy: !!wsHealthy, lastEventMs: lastWsEventMs || 0 };
 }
 
 // Simple memo cache for per-pool enrichment results across cycles
@@ -523,6 +633,15 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
           emit('log', { level: 'info', message: `pools:update source=raydium amm=${nextAmm} clmm=${nextClmm}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } });
         }
       } catch {}
+      // Emit fine-grained pool-updates (deltas) for downstream debounced graph rebuild
+      try {
+        const d = diffNormalizedPools(prev || { amm: [], clmm: [] }, norm);
+        const sample = { amm: d.amm.slice(0, 100), clmm: d.clmm.slice(0, 100) };
+        emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now() });
+        try { logger.info('pools.delta raydium', { updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, cat: 'pools' }); } catch {}
+      } catch {}
+      // Schedule a debounced graph rebuild to propagate updated pool caches
+      try { (await import('./graph.js')).scheduleGraphRebuild(undefined, 250); } catch {}
 
       return norm;
     } finally {
@@ -565,6 +684,15 @@ export async function getOrcaPoolsCached(force = false): Promise<PoolsPayload> {
           emit('log', { level: 'info', message: `pools:update source=orca amm=${nextAmm} clmm=${nextClmm}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } });
         }
       } catch {}
+      // Emit fine-grained pool-updates (deltas) for downstream debounced graph rebuild
+      try {
+        const d = diffNormalizedPools(prev || { amm: [], clmm: [] }, data);
+        const sample = { amm: d.amm.slice(0, 100), clmm: d.clmm.slice(0, 100) };
+        emit('pool-updates', { source: 'orca', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now() });
+        try { logger.info('pools.delta orca', { updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, cat: 'pools' }); } catch {}
+      } catch {}
+      // Schedule a debounced graph rebuild to propagate updated pool caches
+      try { (await import('./graph.js')).scheduleGraphRebuild(undefined, 250); } catch {}
       return data;
     } finally {
       orcaCache.inflight = undefined;

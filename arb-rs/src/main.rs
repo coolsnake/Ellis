@@ -87,6 +87,8 @@ struct AppState {
     near_miss: Option<Opportunity>,
     near_miss_shortfall_bps: Option<i64>,
     force_refresh_next: bool,
+    last_graph_version: u64,
+    last_graph_ts: u64,
 }
 
 #[derive(Serialize)]
@@ -144,7 +146,7 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer().without_time().with_ansi(false).with_writer(move || BridgeWriter { tx: bridge_tx.clone() }))
         .init();
 
-    let state = Arc::new(RwLock::new(AppState { config: default_config(), opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), pool_cache: PoolCache::new(), near_miss: None, near_miss_shortfall_bps: None, force_refresh_next: false }));
+    let state = Arc::new(RwLock::new(AppState { config: default_config(), opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), pool_cache: PoolCache::new(), near_miss: None, near_miss_shortfall_bps: None, force_refresh_next: false, last_graph_version: 0, last_graph_ts: 0 }));
 
     // Kick off a background task to update opportunities using config interval (MVP placeholder)
     let loop_state = state.clone();
@@ -168,6 +170,24 @@ async fn main() -> anyhow::Result<()> {
             };
             let iter_start = Instant::now();
             if enabled {
+                // Ensure we have the most recent backend graph version before detection
+                let api_base = std::env::var("BACKEND_API_BASE").unwrap_or_else(|_| "http://127.0.0.1:3001/api".into());
+                let gv_url = format!("{}/arb/graph/version", api_base.trim_end_matches('/'));
+                let gv = reqwest::Client::new().get(&gv_url).send().await
+                    .and_then(|r| async move { r.json::<serde_json::Value>().await }.await)
+                    .unwrap_or_else(|_| serde_json::json!({"version":0,"timestamp":0}));
+                let incoming_ver = gv.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
+                let incoming_ts = gv.get("timestamp").and_then(|v| v.as_u64()).unwrap_or(0);
+                {
+                    let mut s = loop_state.write().await;
+                    if incoming_ver > s.last_graph_version {
+                        s.force_refresh_next = true;
+                        s.last_graph_version = incoming_ver;
+                        s.last_graph_ts = incoming_ts;
+                        s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.graph.version.update v={} ts={}", incoming_ver, incoming_ts) });
+                        let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
+                    }
+                }
                 let loop_start = Instant::now();
                 let ingest_start = Instant::now();
                 let sol = "So11111111111111111111111111111111111111112";
@@ -207,7 +227,6 @@ async fn main() -> anyhow::Result<()> {
                         s.force_refresh_next,
                     )
                 };
-                let api_base = std::env::var("BACKEND_API_BASE").unwrap_or_else(|_| "http://127.0.0.1:3001/api".into());
                 // Hint backend to refresh its normalized caches before we pull them, so Rust sees latest normalization
                 // Backend route is internally debounced; ignore errors
                 if need_orca || need_rayd || force_now {

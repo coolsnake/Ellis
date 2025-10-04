@@ -53,6 +53,36 @@ let lastSnapshot: GraphSnapshot | null = null;
 let inflight: Promise<GraphSnapshot> | null = null;
 const SNAPSHOT_TTL_MS = 30_000;
 let lastAt = 0;
+let rebuildTimer: any | null = null;
+
+export function getGraphVersion(): { version: number; timestamp: number } {
+  const version = lastSnapshot?.version || 0;
+  const timestamp = lastSnapshot?.timestamp || 0;
+  try { logger.info('graph.version.peek', { version, timestamp, cat: 'graph' }); } catch {}
+  return { version, timestamp };
+}
+
+export async function rebuildGraphNow(io?: SocketIOServer): Promise<void> {
+  try {
+    const prev = lastSnapshot;
+    const next = await getGraphSnapshot(true);
+    const diff = diffSnapshots(prev, next);
+    const changed = diff.addedNodes.length || diff.updatedNodes.length || diff.removedNodeIds.length || diff.addedEdges.length || diff.updatedEdges.length || diff.removedEdgeIds.length;
+    if (io) {
+      if (!prev) io.emit('graph-snapshot', next); else if (changed) io.emit('graph-update', diff);
+    }
+    if (!prev || changed) { try { await notifyArbServiceRefresh(); } catch {} }
+    try { logger.info('graph.rebuild.now', { nodes: next.nodes.length, edges: next.edges.length, changed }); } catch {}
+  } catch (e: any) {
+    logger.warn('graph.rebuild.now failed', { error: String(e?.message || e) });
+  }
+}
+
+export function scheduleGraphRebuild(io?: SocketIOServer, debounceMs = 200): void {
+  if (rebuildTimer) { clearTimeout(rebuildTimer); rebuildTimer = null; }
+  rebuildTimer = setTimeout(() => { rebuildTimer = null; rebuildGraphNow(io).catch(() => {}); }, Math.max(50, debounceMs));
+  try { logger.info('graph.rebuild.scheduled', { debounceMs }); } catch {}
+}
 
 export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
   const now = Date.now();

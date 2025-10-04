@@ -5,6 +5,8 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean }> =
   const [pools, setPools] = React.useState<any | null>(null);
   const [orcaPools, setOrcaPools] = React.useState<any | null>(null);
   const [poolsStats, setPoolsStats] = React.useState<any | null>(null);
+  const [subscribed, setSubscribed] = React.useState<boolean>(false);
+  const [wsHealthy, setWsHealthy] = React.useState<boolean>(false);
 
   const fetchMetrics = async () => {
     try {
@@ -70,6 +72,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean }> =
     fetch(`${apiBase}/arb/metrics/json`).catch(()=>{});
     fetch(`${apiBase}/arb/pools/raydium`).then(r=>r.json()).then(setPools).catch(()=>{});
     fetch(`${apiBase}/arb/pools/orca`).then(r=>r.json()).then(setOrcaPools).catch(()=>{});
+    fetch(`${apiBase}/arb/pools/subscriptions`).then(r=>r.json()).then((j)=>{ setSubscribed(!!j.enablePoolWs); setWsHealthy(!!j.healthy); }).catch(()=>{});
     const id = setInterval(fetchMetrics, 2000);
     return () => clearInterval(id);
   }, [paused]);
@@ -88,6 +91,23 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean }> =
         <div className="flex items-center gap-2">
           <button className="px-2 py-1 border rounded" onClick={fetchMetrics}>Refresh Metrics</button>
           <button className="px-2 py-1 border rounded" onClick={refreshPoolsAndMetrics}>Refresh Pools</button>
+          <button className="px-2 py-1 border rounded" onClick={async()=>{
+            try {
+              const headers: Record<string, string> = { 'content-type': 'application/json' };
+              try {
+                const s = localStorage.getItem('authCreds');
+                if (s) {
+                  const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
+                  if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
+                }
+              } catch {}
+              await fetch(`${apiBase}/arb/pools/subscribe`, { method: 'POST', headers }).catch(()=>{});
+              setSubscribed(true);
+            } catch {}
+          }}>Subscribe</button>
+          {subscribed ? (
+            <span className={`px-2 py-0.5 text-xs rounded border ${wsHealthy ? 'bg-green-700/50 border-green-600' : 'bg-yellow-700/50 border-yellow-600'}`}>{wsHealthy ? 'Subscribed (WS Healthy)' : 'Subscribed (WS Idle)'}</span>
+          ) : null}
         </div>
       </div>
       {!m ? <div className="text-sm opacity-70">Loading...</div> : (

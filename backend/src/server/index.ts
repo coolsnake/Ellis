@@ -159,6 +159,10 @@ io.on('connection', (socket) => {
     const hist = getWalletHistory();
     socket.emit('wallet-history', hist);
   } catch {}
+  try {
+    // Debounced graph rebuild on pool updates
+    socket.on('connect_ack', () => {});
+  } catch {}
 });
 
 // Bridge logger to websocket with local-time timestamp (no ms)

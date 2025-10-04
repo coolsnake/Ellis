@@ -1537,6 +1537,60 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     }
   });
 
+  // Pool websocket subscriptions control (idempotent)
+  api.post('/arb/pools/subscribe', async (_req, res) => {
+    try {
+      try { (await import('./pools.js')).enablePoolWebsocketRefreshes(); } catch {}
+      // Also kick refresh loop if allowed by config
+      try { (await import('./pools.js')).startRaydiumRefreshLoop(); } catch {}
+      res.json({ ok: true });
+      try { emit('log', { level: 'info', message: 'pools:subscribe ok', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
+      // Schedule a graph rebuild shortly after subscription to propagate any immediate changes
+      try {
+        const { scheduleGraphRebuild } = await import('./graph.js');
+        scheduleGraphRebuild(io, 250);
+      } catch {}
+    } catch (e: any) {
+      logger.error('pools subscribe failed', { error: String(e?.message || e) });
+      res.status(500).json({ ok: false, error: String(e?.message || e) });
+    }
+  });
+
+  api.post('/arb/pools/unsubscribe', async (_req, res) => {
+    try {
+      // Best-effort: disable websockets and keep periodic refresh
+      try { (await import('./pools.js')).disablePoolWebsocketRefreshes(); } catch {}
+      try { (await import('./pools.js')).startRaydiumRefreshLoop(); } catch {}
+      res.json({ ok: true });
+      try { emit('log', { level: 'info', message: 'pools:unsubscribe ok', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
+    } catch (e: any) {
+      logger.error('pools unsubscribe failed', { error: String(e?.message || e) });
+      res.status(500).json({ ok: false, error: String(e?.message || e) });
+    }
+  });
+
+  api.get('/arb/pools/subscriptions', async (_req, res) => {
+    try {
+      const cfg = (CONFIG as any)?.system || {};
+      const { getPoolWsStatus } = await import('./pools.js');
+      const st = getPoolWsStatus();
+      res.json({ enablePoolWs: !!cfg.enablePoolWs, healthy: !!st.healthy, lastEventMs: st.lastEventMs, wsAllowed: (await import('./pools.js') as any) && true });
+    } catch (e: any) {
+      res.status(200).json({ enablePoolWs: false, healthy: false, lastEventMs: 0 });
+    }
+  });
+
+  // Graph version endpoint for arb-rs freshness checks
+  api.get('/arb/graph/version', async (_req, res) => {
+    try {
+      const { getGraphVersion } = await import('./graph.js');
+      const v = getGraphVersion();
+      res.json(v);
+    } catch (e: any) {
+      res.status(200).json({ version: 0, timestamp: 0 });
+    }
+  });
+
   // Arbitrage opportunities proxy to Rust service (MVP)
   api.get('/arb/opportunities', async (_req, res) => {
     try {
