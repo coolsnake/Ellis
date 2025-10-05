@@ -1197,9 +1197,11 @@ async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
     const incomingPrice = Number(it?.price ?? it?.price_a_per_b ?? it?.priceAperB ?? 0);
     // If HTTP doesn't provide sqrtPrice, derive from incoming price and decimals when available
     if ((!sqrt_price_x64 || sqrt_price_x64 <= 0) && isWhirlpool) {
-      const price = incomingPrice;
+      const price = incomingPrice; // expected A per 1 B
       if (price > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
-        const adj = price * Math.pow(10, decB - decA);
+        // Orca sqrtPriceX64 encodes sqrt(B per A) in smallest units ratio
+        // ratio^2 = 10^(decB - decA) / (price_A_per_B)
+        const adj = Math.pow(10, decB - decA) / price;
         const sqrt = Math.sqrt(adj);
         const two64 = Math.pow(2, 64);
         sqrt_price_x64 = Math.floor(sqrt * two64);
@@ -1213,50 +1215,43 @@ async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
       if (sqrt_price_x64 > 0 && Number.isFinite(cDecA) && Number.isFinite(cDecB)) {
         const two64 = Math.pow(2, 64);
         const ratio = sqrt_price_x64 / two64;
-        // Derive four candidates to guard against decimal exponent sign mistakes:
-        // Base: price_B_per_A = (ratio^2) * 10^(decB - decA)
-        // Then price_A_per_B = 1 / price_B_per_A
-        const baseBperA = (ratio * ratio) * Math.pow(10, cDecB - cDecA);
-        const baseAperB = baseBperA > 0 ? (1 / baseBperA) : 0;
-        // Alt exponent: occasionally external metadata swaps decimals; try opposite exponent
-        const altBperA = (ratio * ratio) / Math.pow(10, cDecB - cDecA);
-        const altAperB = altBperA > 0 ? (1 / altBperA) : 0;
-        // Prefer the candidate closest to USD reference for A per B
+        // Two reciprocal candidates for A per 1 B:
+        // cand1 assumes sqrt encodes B per A: A/B = 10^(decB-decA) / (ratio^2)
+        // cand2 assumes sqrt encodes A per B: A/B = (ratio^2) * 10^(decA-decB)
+        const cand1 = Math.pow(10, cDecB - cDecA) / (ratio * ratio);
+        const cand2 = (ratio * ratio) * Math.pow(10, cDecA - cDecB);
+        const finiteCands = [cand1, cand2].filter((x) => Number.isFinite(x) && x > 0) as number[];
+        let chosen = finiteCands[0] || 0;
         try {
           const { getPriceByMint } = await import('./priceStore.js');
           const pa = getPriceByMint(cA)?.usdc ?? null;
           const pb = getPriceByMint(cB)?.usdc ?? null;
-          if (pa && pb && (pa as number) > 0 && (pb as number) > 0) {
-            const ref = (pa as number) / (pb as number); // expected A per B
-            const cands = [baseAperB, altAperB].filter((x) => Number.isFinite(x) && x > 0) as number[];
-            if (cands.length > 0) {
-              let best = cands[0];
-              let bestDev = Math.max(best / ref, ref / best);
-              for (let k = 1; k < cands.length; k += 1) {
-                const dev = Math.max(cands[k] / ref, ref / cands[k]);
-                if (dev + 1e-12 < bestDev) { bestDev = dev; best = cands[k]; }
-              }
-              priceFromSqrt = best;
-            } else {
-              priceFromSqrt = baseAperB;
+          const refUsd = (pa && pb && (pa as number) > 0 && (pb as number) > 0) ? ((pa as number) / (pb as number)) : null;
+          const refIncoming = (incomingPrice && incomingPrice > 0) ? incomingPrice : null;
+          const ref = refUsd ?? refIncoming;
+          if (ref && finiteCands.length) {
+            let best = finiteCands[0];
+            let bestDev = Math.max(best / ref, ref / best);
+            for (let k = 1; k < finiteCands.length; k += 1) {
+              const dev = Math.max(finiteCands[k] / ref, ref / finiteCands[k]);
+              if (dev + 1e-12 < bestDev) { bestDev = dev; best = finiteCands[k]; }
             }
-          } else {
-            priceFromSqrt = baseAperB;
+            chosen = best;
           }
-        } catch {
-          priceFromSqrt = baseAperB;
-        }
+        } catch {}
+        priceFromSqrt = chosen;
       }
       // Incoming price is already in raw API orientation (A per 1 B)
       const incomingCanonical = (incomingPrice > 0) ? incomingPrice : 0;
-      // Prefer value closer to USD reference when both exist
+      // Prefer value closer to USD reference (fallback to incoming price if USD missing)
       let priceDerived = priceFromSqrt > 0 ? priceFromSqrt : incomingCanonical;
       try {
         const { getPriceByMint } = await import('./priceStore.js');
         const pa = getPriceByMint(cA)?.usdc ?? null;
         const pb = getPriceByMint(cB)?.usdc ?? null;
-        if (pa && pb && (pa as number) > 0 && (pb as number) > 0) {
-          const ref = (pa as number) / (pb as number);
+        const refUsd = (pa && pb && (pa as number) > 0 && (pb as number) > 0) ? ((pa as number) / (pb as number)) : null;
+        const ref = refUsd ?? (incomingCanonical > 0 ? incomingCanonical : null);
+        if (ref) {
           const candidates: number[] = [];
           if (priceFromSqrt > 0) candidates.push(priceFromSqrt);
           if (incomingCanonical > 0) candidates.push(incomingCanonical);
