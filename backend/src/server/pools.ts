@@ -417,9 +417,9 @@ export function startRaydiumRefreshLoop(): void {
       const setup = async () => {
         const web3: any = await import('@solana/web3.js');
         const conn = new web3.Connection(CONFIG.rpcUrl, CONFIG.system.txCommitment as any);
-        const rayAmm = new web3.PublicKey(String(CONFIG.raydium?.ammV4Program));
-        const rayClmm = new web3.PublicKey(String(CONFIG.raydium?.clmmProgram));
-        const orcaProg = new web3.PublicKey(String(CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc'));
+        const rayAmm = new web3.PublicKey(String(CONFIG.raydium?.ammV4Program).trim());
+        const rayClmm = new web3.PublicKey(String(CONFIG.raydium?.clmmProgram).trim());
+        const orcaProg = new web3.PublicKey(String(CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc').trim());
         const subs: number[] = [];
         // Debounce frequent program change bursts to at most one refresh per source per min gap
         const minGap = Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000);
@@ -429,12 +429,13 @@ export function startRaydiumRefreshLoop(): void {
             lastWsEventMs = Date.now();
             wsHealthy = true;
             // Lightweight classify: owner indicates which decoder to attempt
-            const owner = String(info?.owner?.toBase58?.() || '');
+            const owner = toB58Any((info as any)?.owner);
+            const ownerRayAmm = rayAmm.toBase58();
+            const ownerRayClmm = rayClmm.toBase58();
+            const ownerOrca = orcaProg.toBase58();
             try {
               const shortPk = pk ? `${toB58Any(pk).slice(0,6)}…` : '';
-              const src = (owner === String(CONFIG.raydium?.ammV4Program) || owner === String(CONFIG.raydium?.clmmProgram))
-                ? 'raydium'
-                : (owner === String(CONFIG.orca?.programId) ? 'orca' : 'unknown');
+              const src = (owner === ownerRayAmm || owner === ownerRayClmm) ? 'raydium' : (owner === ownerOrca ? 'orca' : 'unknown');
               logger.debug('pools.ws event', { source: src, account: shortPk, cat: 'pools' });
               // Emit raw event snapshot (truncated) for audit
               const raw = {
@@ -445,7 +446,7 @@ export function startRaydiumRefreshLoop(): void {
               emit('log', { level: 'debug', message: `pools:ws event source=${src} acct=${shortPk}`, timestamp: new Date().toISOString(), context: { cat: 'pools', raw, source: src } });
             } catch {}
             const now = Date.now();
-            if (owner === String(CONFIG.raydium?.ammV4Program) || owner === String(CONFIG.raydium?.clmmProgram)) {
+            if (owner === ownerRayAmm || owner === ownerRayClmm) {
               try { wsCounts.raydium += 1; } catch {}
               const pk58 = toB58Any(pk);
               let updated = false;
@@ -508,7 +509,7 @@ export function startRaydiumRefreshLoop(): void {
               }
               if (!updated) { try { logger.debug('pools.ws event (unparsed)', { source: 'raydium', id: pk58.slice(0,6)+'…' }); } catch {} }
               return;
-            } else if (owner === String(CONFIG.orca?.programId)) {
+            } else if (owner === ownerOrca) {
               try { wsCounts.orca += 1; } catch {}
               // Attempt to parse and upsert single Whirlpool from account data; fallback to full refresh on failure
               let ok = false;
