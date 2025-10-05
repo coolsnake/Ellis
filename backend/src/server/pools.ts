@@ -588,6 +588,9 @@ export function startRaydiumRefreshLoop(): void {
           }
           attachedOrcaPools = attached;
           logger.info('pools.ws subscribe orca.pools', { attached, source: 'orca' });
+          // Also subscribe at the program level to catch any pools we didn't derive
+          try { logger.info('pools.ws subscribe orca(program)', { source: 'orca', cat: 'pools' }); } catch {}
+          subs.push(conn.onProgramAccountChange(orcaProg, (ch) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
         } catch (e:any) {
           logger.warn('pools.ws orca address subscribe failed', { error: String(e?.message || e) });
           // Fallback to program-level subscription (may include non-pool accounts)
