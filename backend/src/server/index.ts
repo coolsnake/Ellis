@@ -386,6 +386,40 @@ server.listen(CONFIG.port, () => {
           }
         }
       } catch {}
+      // Graph highlight diagnostics: log CLMM/AMM pool math when requested from UI
+      try {
+        io.on('connection', (socket) => {
+          socket.on('graph-highlight', async (payload: any) => {
+            try {
+              const ids: string[] = (payload?.edgeIds || []).filter((x: any) => typeof x === 'string');
+              if (!ids.length) return;
+              const { peekOrcaPools, peekRaydiumPools } = await import('./pools.js');
+              const orc = peekOrcaPools();
+              const ray = peekRaydiumPools();
+              const all = [...(ray.amm||[]), ...(ray.clmm||[]), ...(orc.amm||[]), ...(orc.clmm||[])];
+              for (const id of ids) {
+                const base = String(id).replace(/-rev$/,'');
+                const p = all.find((x: any) => String(x?.id||'') === base);
+                if (!p) continue;
+                const mintA = String(p.mint_a); const mintB = String(p.mint_b);
+                const decA = Number((p as any)?.decimals_a ?? NaN);
+                const decB = Number((p as any)?.decimals_b ?? NaN);
+                const s64 = Number((p as any)?.sqrt_price_x64 ?? 0);
+                const ratio = s64 > 0 ? (s64 / Math.pow(2,64)) : 0;
+                let computed = Number((p as any)?.price_a_per_b || 0);
+                try {
+                  if (s64 > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
+                    computed = (ratio * ratio) * Math.pow(10, decA - decB);
+                  }
+                } catch {}
+                try {
+                  logger.info('graph.highlight.pool', { id: base, dex: p.dex, kind: p.pool_kind || 'unknown', mintA, mintB, decA, decB, sqrt_price_x64: s64, ratio, price_a_per_b: (p as any)?.price_a_per_b, computed });
+                } catch {}
+              }
+            } catch {}
+          });
+        });
+      } catch {}
       // Wallet keypair
       try {
         const oldWallet = resolve('backend', 'backend', 'wallet', 'keypair.json');
