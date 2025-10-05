@@ -599,7 +599,20 @@ async fn main() -> anyhow::Result<()> {
                             let outs_str = hop_outs.iter().map(|v| format!("{:.6}", v)).collect::<Vec<_>>().join(",");
                             let fees_str = hop_fee_bps.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
                             let pools_str = hop_pool_ids.join(",");
-                            tracing::info!(target = "arb_rs", "arb.opportunity path={} profit_bps={} net_bps={} hops={} rates=[{}] outs=[{}] fees=[{}] pools=[{}] product={:.8}", path_str, profit_bps, net_bps, nlen, rates_str, outs_str, fees_str, pools_str, rate_prod);
+                            // Include explicit edges with closing hop for sequence validation
+                            let edges_str = {
+                                let mut v: Vec<String> = Vec::new();
+                                let n = canon_labels.len();
+                                for k in 0..n {
+                                    let a = &canon_labels[k];
+                                    let b = &canon_labels[(k+1)%n];
+                                    let id = hop_pool_ids.get(k).cloned().unwrap_or_default();
+                                    let short = |m: &String| -> String { if m.len() > 8 { format!("{}…{}", &m[..4], &m[m.len()-4..]) } else { m.clone() } };
+                                    v.push(format!("{}->{}:{}", short(a), short(b), id));
+                                }
+                                v.join(",")
+                            };
+                            tracing::info!(target = "arb_rs", "arb.opportunity path={} profit_bps={} net_bps={} hops={} rates=[{}] outs=[{}] fees=[{}] pools=[{}] edges=[{}] product={:.8}", path_str, profit_bps, net_bps, nlen, rates_str, outs_str, fees_str, pools_str, edges_str, rate_prod);
                         }
                         curr.push(Opportunity {
                             path: canon_labels,
