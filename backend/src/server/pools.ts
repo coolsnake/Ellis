@@ -432,14 +432,17 @@ export function startRaydiumRefreshLoop(): void {
             const owner = String(info?.owner?.toBase58?.() || '');
             try {
               const shortPk = pk ? `${toB58Any(pk).slice(0,6)}…` : '';
-              logger.debug('pools.ws event', { owner, account: shortPk, cat: 'pools' });
+              const src = (owner === String(CONFIG.raydium?.ammV4Program) || owner === String(CONFIG.raydium?.clmmProgram))
+                ? 'raydium'
+                : (owner === String(CONFIG.orca?.programId) ? 'orca' : 'unknown');
+              logger.debug('pools.ws event', { source: src, account: shortPk, cat: 'pools' });
               // Emit raw event snapshot (truncated) for audit
               const raw = {
                 owner,
                 lamports: Number(info?.lamports ?? 0),
                 dataLen: Number(info?.data?.length ?? 0),
               };
-              emit('log', { level: 'debug', message: `pools:ws event owner=${owner.slice(0,6)}… acct=${shortPk}`, timestamp: new Date().toISOString(), context: { cat: 'pools', raw } });
+              emit('log', { level: 'debug', message: `pools:ws event source=${src} acct=${shortPk}`, timestamp: new Date().toISOString(), context: { cat: 'pools', raw, source: src } });
             } catch {}
             const now = Date.now();
             if (owner === String(CONFIG.raydium?.ammV4Program) || owner === String(CONFIG.raydium?.clmmProgram)) {
@@ -503,7 +506,7 @@ export function startRaydiumRefreshLoop(): void {
               } catch (e:any) {
                 try { logger.warn('raydium.ws.decode failed', { id: pk58.slice(0,6)+'…', error: String(e?.message || e) }); } catch {}
               }
-              if (!updated) { try { logger.debug('pools.ws raydium event (unparsed)', { id: pk58.slice(0,6)+'…' }); } catch {} }
+              if (!updated) { try { logger.debug('pools.ws event (unparsed)', { source: 'raydium', id: pk58.slice(0,6)+'…' }); } catch {} }
               return;
             } else if (owner === String(CONFIG.orca?.programId)) {
               try { wsCounts.orca += 1; } catch {}
@@ -583,11 +586,11 @@ export function startRaydiumRefreshLoop(): void {
             } catch {}
           }
           attachedOrcaPools = attached;
-          logger.info('pools.ws subscribe orca.pools', { attached, program: String(CONFIG.orca?.programId) });
+          logger.info('pools.ws subscribe orca.pools', { attached, source: 'orca' });
         } catch (e:any) {
           logger.warn('pools.ws orca address subscribe failed', { error: String(e?.message || e) });
           // Fallback to program-level subscription (may include non-pool accounts)
-          try { logger.info('pools.ws subscribe program orca(fallback)', { program: String(CONFIG.orca?.programId), cat: 'pools' }); } catch {}
+          try { logger.info('pools.ws subscribe orca(fallback)', { source: 'orca', cat: 'pools' }); } catch {}
           subs.push(conn.onProgramAccountChange(orcaProg, (ch) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
         }
         // Raydium address-level subscriptions when we have known pool ids (from prior refresh)
@@ -608,9 +611,9 @@ export function startRaydiumRefreshLoop(): void {
           logger.info('pools.ws subscribe raydium.pools', { attached: attachedRay });
           // Fallback to program-level if none attached
           if (attachedRay === 0) {
-            try { logger.info('pools.ws subscribe program raydium.amm(fallback)', { program: String(CONFIG.raydium?.ammV4Program), cat: 'pools' }); } catch {}
+            try { logger.info('pools.ws subscribe raydium.amm(fallback)', { source: 'raydium', cat: 'pools' }); } catch {}
             subs.push(conn.onProgramAccountChange(rayAmm, (ch) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
-            try { logger.info('pools.ws subscribe program raydium.clmm(fallback)', { program: String(CONFIG.raydium?.clmmProgram), cat: 'pools' }); } catch {}
+            try { logger.info('pools.ws subscribe raydium.clmm(fallback)', { source: 'raydium', cat: 'pools' }); } catch {}
             subs.push(conn.onProgramAccountChange(rayClmm, (ch) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
           }
         } catch {}
