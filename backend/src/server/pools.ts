@@ -532,12 +532,22 @@ export function startRaydiumRefreshLoop(): void {
                   const mint_a = parsed.tokenMintA.toBase58();
                   const mint_b = parsed.tokenMintB.toBase58();
                   const sqrt_price_x64 = Number(parsed.sqrtPrice);
-                  // Approximate A per 1 B from sqrtPriceX64 (Q64.64)
-                  const pxFromSqrt = (() => {
+                  // Derive A per 1 B using sqrtPrice and decimals: price_A_per_B = 10^(decA - decB) / (ratio^2)
+                  const pxFromSqrt = await (async () => {
                     try {
                       if (!Number.isFinite(sqrt_price_x64) || sqrt_price_x64 <= 0) return 0;
                       const ratio = sqrt_price_x64 / Math.pow(2, 64);
-                      const px = ratio * ratio;
+                      let decA: number | undefined; let decB: number | undefined;
+                      try {
+                        const tok = await import('../utils/tokens.js');
+                        const a = await (tok as any).resolveMint(mint_a);
+                        const b = await (tok as any).resolveMint(mint_b);
+                        decA = Number(a?.decimals);
+                        decB = Number(b?.decimals);
+                      } catch {}
+                      if (!Number.isFinite(decA as any) || !Number.isFinite(decB as any)) return 0;
+                      const scale = Math.pow(10, (decA as number) - (decB as number));
+                      const px = scale / (ratio * ratio);
                       return Number.isFinite(px) && px > 0 ? px : 0;
                     } catch { return 0; }
                   })();
