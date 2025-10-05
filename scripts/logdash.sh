@@ -12,6 +12,8 @@ ARB_UNIT="lockstone-arb"
 # Absolute path to this script for reliable re-exec
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 SELF_PATH="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]:-$0}")"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+LOCKCTL="${REPO_ROOT}/scripts/lockstone.sh"
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || { echo "Missing required command: $1" >&2; exit 1; }
@@ -49,12 +51,15 @@ tmux bind-key -n 2 select-pane -t 1
 tmux bind-key -n 3 select-pane -t 2
 tmux bind-key -n z resize-pane -Z
 
+# Bind Shift-Q to stop services and kill the dashboard
+tmux bind-key -n Q split-window -v "bash -lc '$LOCKCTL stop; read -p "Stopped. Press Enter to close dashboard..."; tmux kill-session -t $SESSION_NAME'"
+
 # Create an alternate window with less-follow for long scrollback & search
 tmux new-window -n "Full Logs" "bash -lc 'journalctl -u $BACKEND_UNIT -o short-iso -n 1000 | less -R +F'"
 tmux split-window -h "bash -lc 'journalctl -u $ARB_UNIT -o short-iso -n 1000 | less -R +F'"
 tmux select-layout even-horizontal
 
-echo "Controls: 1/2/3 switch panes, z zoom, PgUp/PgDn scroll, / search in less (Full Logs)"
+echo "Controls: 1/2/3 switch panes, z zoom, Q quit (stop & close), PgUp/PgDn scroll, / search in less (Full Logs)"
 
 exec tmux attach -t "$SESSION_NAME"
 
