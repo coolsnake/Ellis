@@ -32,18 +32,17 @@ if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
   exec tmux attach -t "$SESSION_NAME"
 fi
 
-# Create new session with three panes:
-#  - Pane 0: Combined follow of backend + arb
-#  - Pane 1: Backend only
-#  - Pane 2: Arb only
-
-tmux new-session -d -s "$SESSION_NAME" "bash -lc \"trap : INT; while :; do journalctl --no-pager -fu $BACKEND_UNIT -u $ARB_UNIT -o short-iso -n 200; echo '[combined log exited] restarting in 1s'; sleep 1; done\""
-
-tmux split-window -h "bash -lc \"trap : INT; while :; do journalctl --no-pager -fu $BACKEND_UNIT -o short-iso -n 200; echo '[backend log exited] restarting in 1s'; sleep 1; done\""
-tmux split-window -v "bash -lc \"trap : INT; while :; do journalctl --no-pager -fu $ARB_UNIT -o short-iso -n 200; echo '[arb log exited] restarting in 1s'; sleep 1; done\""
-
-tmux select-layout tiled
+# Create session with a Live window of two tails (backend | arb)
+tmux new-session -d -s "$SESSION_NAME" -n "Live" "bash -lc \"trap : INT; while :; do journalctl --no-pager -fu $BACKEND_UNIT -o short-iso -n 200; echo '[backend log exited] restarting in 1s'; sleep 1; done\""
+tmux split-window -h "bash -lc \"trap : INT; while :; do journalctl --no-pager -fu $ARB_UNIT -o short-iso -n 200; echo '[arb log exited] restarting in 1s'; sleep 1; done\""
+tmux select-layout even-horizontal
 tmux select-pane -t 0
+tmux select-pane -T "backend"
+tmux select-pane -t 1
+tmux select-pane -T "arb-rs"
+
+# Add a Combined window (both units in one tail)
+tmux new-window -n "Combined" "bash -lc \"trap : INT; while :; do journalctl --no-pager -fu $BACKEND_UNIT -u $ARB_UNIT -o short-iso -n 200; echo '[combined log exited] restarting in 1s'; sleep 1; done\""
 
 # Session-specific prefix: use Ctrl-a for easier access
 tmux set-option -t "$SESSION_NAME" -g prefix C-a
@@ -68,8 +67,9 @@ tmux bind-key -n F12 split-window -v "bash -lc 'echo \"Stopping services...\"; $
 tmux new-window -n "Full Logs" "bash -lc 'journalctl --no-pager -u $BACKEND_UNIT -o short-iso -n 1000 | less -R +F'"
 tmux split-window -h "bash -lc 'journalctl --no-pager -u $ARB_UNIT -o short-iso -n 1000 | less -R +F'"
 tmux select-layout even-horizontal
+tmux select-window -t "$SESSION_NAME":0
 
-echo "Controls: Ctrl-a 1/2/3 switch panes, Ctrl-a z zoom, Ctrl-a Q stop & close, Ctrl-a q pane numbers, F12 stop & close, PgUp/PgDn scroll, / search in less (Full Logs)"
+echo "Controls: Ctrl-a 1/2 switch panes, Ctrl-a z zoom, Ctrl-a Q stop & close, Ctrl-a q pane numbers, F12 stop & close, PgUp/PgDn scroll, / search in less (Full Logs)"
 
 exec tmux attach -t "$SESSION_NAME"
 
