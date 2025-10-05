@@ -1193,25 +1193,38 @@ async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
       if (sqrt_price_x64 > 0 && Number.isFinite(cDecA) && Number.isFinite(cDecB)) {
         const two64 = Math.pow(2, 64);
         const ratio = sqrt_price_x64 / two64;
-        // Uniswap/CLMM: price_B_per_A = (ratio^2) * 10^(decB - decA)
-        // We want price_A_per_B = 1 / price_B_per_A = 10^(decA - decB) / (ratio^2)
-        const priceBperA = (ratio * ratio) * Math.pow(10, cDecB - cDecA);
-        const cand = priceBperA > 0 ? (1 / priceBperA) : 0; // A per 1 B
+        // Derive four candidates to guard against decimal exponent sign mistakes:
+        // Base: price_B_per_A = (ratio^2) * 10^(decB - decA)
+        // Then price_A_per_B = 1 / price_B_per_A
+        const baseBperA = (ratio * ratio) * Math.pow(10, cDecB - cDecA);
+        const baseAperB = baseBperA > 0 ? (1 / baseBperA) : 0;
+        // Alt exponent: occasionally external metadata swaps decimals; try opposite exponent
+        const altBperA = (ratio * ratio) / Math.pow(10, cDecB - cDecA);
+        const altAperB = altBperA > 0 ? (1 / altBperA) : 0;
+        // Prefer the candidate closest to USD reference for A per B
         try {
           const { getPriceByMint } = await import('./priceStore.js');
           const pa = getPriceByMint(cA)?.usdc ?? null;
           const pb = getPriceByMint(cB)?.usdc ?? null;
-          if (pa && pb && (pa as number) > 0 && (pb as number) > 0 && cand > 0) {
+          if (pa && pb && (pa as number) > 0 && (pb as number) > 0) {
             const ref = (pa as number) / (pb as number); // expected A per B
-            const devCand = Math.max(cand / ref, ref / cand);
-            const inv = cand > 0 ? (1 / cand) : 0; // B per A
-            const devInv = inv > 0 ? Math.max(inv / ref, ref / inv) : Number.POSITIVE_INFINITY;
-            priceFromSqrt = devInv + 1e-12 < devCand ? inv : cand;
+            const cands = [baseAperB, altAperB].filter((x) => Number.isFinite(x) && x > 0) as number[];
+            if (cands.length > 0) {
+              let best = cands[0];
+              let bestDev = Math.max(best / ref, ref / best);
+              for (let k = 1; k < cands.length; k += 1) {
+                const dev = Math.max(cands[k] / ref, ref / cands[k]);
+                if (dev + 1e-12 < bestDev) { bestDev = dev; best = cands[k]; }
+              }
+              priceFromSqrt = best;
+            } else {
+              priceFromSqrt = baseAperB;
+            }
           } else {
-            priceFromSqrt = cand;
+            priceFromSqrt = baseAperB;
           }
         } catch {
-          priceFromSqrt = cand;
+          priceFromSqrt = baseAperB;
         }
       }
       // Incoming price is already in raw API orientation (A per 1 B)

@@ -284,6 +284,26 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
 
       // Helper for TVL using USD prices if available
       const { getPriceByMint } = await import('./priceStore.js');
+      const calibratePrice = (mintA: string, mintB: string, raw: number | undefined): number | undefined => {
+        const price = Number(raw);
+        if (!Number.isFinite(price) || price <= 0) return undefined;
+        try {
+          const pa = getPriceByMint(mintA)?.usdc ?? null;
+          const pb = getPriceByMint(mintB)?.usdc ?? null;
+          if (!(pa && pb) || !(pa > 0) || !(pb > 0)) return price;
+          const ref = (pa as number) / (pb as number);
+          const inv = 1 / price;
+          const cands: number[] = [price, inv, price * 10, price / 10, price * 100, price / 100, inv * 10, inv / 10, inv * 100, inv / 100].filter((x) => Number.isFinite(x) && x > 0) as number[];
+          let best = price; let bestDev = Number.POSITIVE_INFINITY;
+          for (const c of cands) {
+            const dev = Math.max(c / ref, ref / c);
+            if (dev + 1e-12 < bestDev) { bestDev = dev; best = c; }
+          }
+          return best;
+        } catch {
+          return price;
+        }
+      };
       const tvlUsd = (mintA: string, mintB: string, amountA?: number, amountB?: number): number | undefined => {
         try {
           const pa = getPriceByMint(mintA)?.usdc ?? null;
@@ -462,7 +482,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         if (Number.isFinite(usd as any) && (usd as number) > 0) clmmUsd++;
         const pidClmm = safePoolId(p);
         const liqDisplay = (p as any)?.liquidity_display ?? ((usd && usd > 0) ? usd : liqRaw);
-        // CLMM: same orientation rule as AMM
+        // CLMM: calibrate then apply orientation rule
+        price = calibratePrice(p.mint_a, p.mint_b, price);
         addEdge(p.mint_a, p.mint_b, 'Raydium', p.fee_bps, liqDisplay, (price && price > 0) ? (1 / price) : undefined, usd, pidClmm, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
         const pidClmmRev = pidClmm ? `${pidClmm}-rev` : undefined;
         addEdge(p.mint_b, p.mint_a, 'Raydium', p.fee_bps, liqDisplay, (price && price > 0) ? price : undefined, usd, pidClmmRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse');
@@ -477,10 +498,11 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       for (const p of (orcValid.amm || [])) {
         const pid = safePoolId(p);
         const liqParamOrcaAmm = (p as any)?.liquidity_display ?? (p as any).liquidity_base;
-        // Orca AMM: incoming price is A per 1 B. Apply orientation rule.
-        addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaAmm, (p.price_a_per_b && p.price_a_per_b > 0) ? (1 / p.price_a_per_b) : undefined, undefined, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
+        // Orca AMM: incoming price is A per 1 B. Calibrate then apply orientation rule.
+        const priceAmmOrca = calibratePrice(p.mint_a, p.mint_b, (p as any).price_a_per_b);
+        addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaAmm, (priceAmmOrca && priceAmmOrca > 0) ? (1 / priceAmmOrca) : undefined, undefined, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
         const pidAmmOrcaRev = pid ? `${pid}-rev` : undefined;
-        addEdge(p.mint_b, p.mint_a, 'Orca', p.fee_bps, liqParamOrcaAmm, (p.price_a_per_b && p.price_a_per_b > 0) ? p.price_a_per_b : undefined, undefined, pidAmmOrcaRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse');
+        addEdge(p.mint_b, p.mint_a, 'Orca', p.fee_bps, liqParamOrcaAmm, (priceAmmOrca && priceAmmOrca > 0) ? priceAmmOrca : undefined, undefined, pidAmmOrcaRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse');
       }
       for (const p of (orcValid.clmm || [])) {
         // amounts from HTTP (raw token units) need decimals to convert to whole tokens for USD TVL
@@ -496,10 +518,11 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         }
         const pid = safePoolId(p);
         const liqParamOrcaClmm = (p as any)?.liquidity_display ?? p.liquidity;
+        const priceClmmOrca = calibratePrice(p.mint_a, p.mint_b, (p as any).price_a_per_b);
         // Orca CLMM: orientation rule as above
-        addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaClmm, (p.price_a_per_b && p.price_a_per_b > 0) ? (1 / p.price_a_per_b) : undefined, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
+        addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaClmm, (priceClmmOrca && priceClmmOrca > 0) ? (1 / priceClmmOrca) : undefined, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
         const pidClmmOrcaRev = pid ? `${pid}-rev` : undefined;
-        addEdge(p.mint_b, p.mint_a, 'Orca', p.fee_bps, liqParamOrcaClmm, (p.price_a_per_b && p.price_a_per_b > 0) ? p.price_a_per_b : undefined, usd, pidClmmOrcaRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse');
+        addEdge(p.mint_b, p.mint_a, 'Orca', p.fee_bps, liqParamOrcaClmm, (priceClmmOrca && priceClmmOrca > 0) ? priceClmmOrca : undefined, usd, pidClmmOrcaRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse');
         try {
           const eid = pid || `${p.mint_a}->${p.mint_b}-Orca`;
           const rid = pid ? `${pid}-rev` : `${p.mint_b}->${p.mint_a}-Orca`;
