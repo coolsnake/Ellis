@@ -484,6 +484,18 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const liqDisplay = (p as any)?.liquidity_display ?? ((usd && usd > 0) ? usd : liqRaw);
         // CLMM: calibrate then apply orientation rule
         price = calibratePrice(p.mint_a, p.mint_b, price);
+        try {
+          const pa = getPriceByMint(p.mint_a)?.usdc ?? null;
+          const pb = getPriceByMint(p.mint_b)?.usdc ?? null;
+          const ref = (pa && pb && pb > 0) ? (pa as number) / (pb as number) : undefined;
+          if (price && ref) {
+            const dev = Math.max(price / ref, ref / price);
+            const fwd = 1 / price, rev = price;
+            if (dev > 5 || fwd > 1e4 || rev > 1e4) {
+              logger.warn('graph.calibrate.raydium.clmm outlier', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, calibrated: price, ref, dev, fwd, rev });
+            }
+          }
+        } catch {}
         addEdge(p.mint_a, p.mint_b, 'Raydium', p.fee_bps, liqDisplay, (price && price > 0) ? (1 / price) : undefined, usd, pidClmm, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
         const pidClmmRev = pidClmm ? `${pidClmm}-rev` : undefined;
         addEdge(p.mint_b, p.mint_a, 'Raydium', p.fee_bps, liqDisplay, (price && price > 0) ? price : undefined, usd, pidClmmRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse');
@@ -500,6 +512,18 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const liqParamOrcaAmm = (p as any)?.liquidity_display ?? (p as any).liquidity_base;
         // Orca AMM: incoming price is A per 1 B. Calibrate then apply orientation rule.
         const priceAmmOrca = calibratePrice(p.mint_a, p.mint_b, (p as any).price_a_per_b);
+        try {
+          const pa = getPriceByMint(p.mint_a)?.usdc ?? null;
+          const pb = getPriceByMint(p.mint_b)?.usdc ?? null;
+          const ref = (pa && pb && pb > 0) ? (pa as number) / (pb as number) : undefined;
+          if (priceAmmOrca && ref) {
+            const dev = Math.max(priceAmmOrca / ref, ref / priceAmmOrca);
+            const fwd = 1 / priceAmmOrca, rev = priceAmmOrca;
+            if (dev > 5 || fwd > 1e4 || rev > 1e4) {
+              logger.warn('graph.calibrate.orca.amm outlier', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, raw: (p as any)?.price_a_per_b, calibrated: priceAmmOrca, ref, dev, fwd, rev });
+            }
+          }
+        } catch {}
         addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaAmm, (priceAmmOrca && priceAmmOrca > 0) ? (1 / priceAmmOrca) : undefined, undefined, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
         const pidAmmOrcaRev = pid ? `${pid}-rev` : undefined;
         addEdge(p.mint_b, p.mint_a, 'Orca', p.fee_bps, liqParamOrcaAmm, (priceAmmOrca && priceAmmOrca > 0) ? priceAmmOrca : undefined, undefined, pidAmmOrcaRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse');
@@ -519,6 +543,18 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const pid = safePoolId(p);
         const liqParamOrcaClmm = (p as any)?.liquidity_display ?? p.liquidity;
         const priceClmmOrca = calibratePrice(p.mint_a, p.mint_b, (p as any).price_a_per_b);
+        try {
+          const pa = getPriceByMint(p.mint_a)?.usdc ?? null;
+          const pb = getPriceByMint(p.mint_b)?.usdc ?? null;
+          const ref = (pa && pb && pb > 0) ? (pa as number) / (pb as number) : undefined;
+          if (priceClmmOrca && ref) {
+            const dev = Math.max(priceClmmOrca / ref, ref / priceClmmOrca);
+            const fwd = 1 / priceClmmOrca, rev = priceClmmOrca;
+            if (dev > 5 || fwd > 1e4 || rev > 1e4) {
+              logger.warn('graph.calibrate.orca.clmm outlier', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, raw: (p as any)?.price_a_per_b, calibrated: priceClmmOrca, ref, dev, fwd, rev });
+            }
+          }
+        } catch {}
         // Orca CLMM: orientation rule as above
         addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaClmm, (priceClmmOrca && priceClmmOrca > 0) ? (1 / priceClmmOrca) : undefined, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
         const pidClmmOrcaRev = pid ? `${pid}-rev` : undefined;
