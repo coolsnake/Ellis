@@ -39,6 +39,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
   const [selection, setSelection] = useState<
     | { kind: 'node'; id: string; label?: string; degree?: number; neighbors?: number }
     | { kind: 'edge'; id: string; source: string; target: string; dex: string; fee_bps?: number; liquidity?: number; weight?: number; price_a_per_b?: number; tvl_usd?: number; pool_id?: string; source_account?: string; target_account?: string; combined_edges?: Array<{ dex: string; pool_id?: string; fee_bps?: number; liquidity?: number; price_a_per_b?: number; tvl_usd?: number; pool_kind?: string; direction?: string; pool_liquidity_raw?: number }> }
+    | { kind: 'path'; edges: Array<{ id: string; source: string; target: string; dex: string; fee_bps?: number; liquidity?: number; price_a_per_b?: number; tvl_usd?: number; pool_id?: string; pool_kind?: string; direction?: string; pool_liquidity_raw?: number }> }
     | null
   >(null);
 
@@ -290,6 +291,52 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
       } catch {}
       // Optionally focus view on highlighted selection
       try { if (sel && sel.length) { cy.fit(sel, 40); } } catch {}
+
+      // Build ordered path details and open the Path details panel
+      try {
+        const pathEdges: Array<{ id: string; source: string; target: string; dex: string; fee_bps?: number; liquidity?: number; price_a_per_b?: number; tvl_usd?: number; pool_id?: string; pool_kind?: string; direction?: string; pool_liquidity_raw?: number }> = [];
+        const seen = new Set<string>();
+        const pushEdge = (e: EdgeSingular | null) => {
+          if (!e || !e.length) return;
+          if (e.data('combined') === 1) return; // skip combined in details; show underlying hops
+          const id = String(e.id());
+          if (seen.has(id)) return;
+          seen.add(id);
+          pathEdges.push({
+            id,
+            source: String(e.data('source')),
+            target: String(e.data('target')),
+            dex: String(e.data('dex')),
+            fee_bps: e.data('fee_bps'),
+            liquidity: e.data('liquidity'),
+            price_a_per_b: e.data('price_a_per_b'),
+            tvl_usd: e.data('tvl_usd'),
+            pool_id: e.data('pool_id'),
+            pool_kind: e.data('pool_kind'),
+            direction: e.data('direction'),
+            pool_liquidity_raw: e.data('pool_liquidity_raw'),
+          });
+        };
+        if (ids.length) {
+          for (const rawId of ids) {
+            const e = cy.getElementById(String(rawId));
+            if (e && e.length && e.isEdge()) { pushEdge(e as any); continue; }
+            const rev = cy.getElementById(`${String(rawId)}-rev`);
+            if (rev && rev.length && rev.isEdge()) { pushEdge(rev as any); }
+          }
+        } else if (pairs.length) {
+          for (const p of pairs) {
+            const src = String(p.source);
+            const dst = String(p.target);
+            const dex = p.dex ? String(p.dex) : '';
+            const dexSel = dex ? `[dex = "${dex}"]` : '';
+            let cand = cy.$(`edge[source = "${src}"][target = "${dst}"]${dexSel}:not([combined = 1])`);
+            if (!cand || cand.length === 0) cand = cy.$(`edge[source = "${src}"][target = "${dst}"]${dexSel}`);
+            pushEdge((cand && cand.length) ? (cand[0] as any) : null);
+          }
+        }
+        if (pathEdges.length) setSelection({ kind: 'path', edges: pathEdges });
+      } catch {}
     } catch {}
   };
 
@@ -462,7 +509,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 			// Do not clear selection here to avoid UX reset
 			snapshotInitializedRef.current = true;
     };
-    const onHighlight = (payload: { edgeIds?: string[] }) => { applyHighlight(payload); };
+    const onHighlight = (payload: { edgeIds?: string[]; pairs?: Array<{ source: string; target: string; dex?: string }> }) => { applyHighlight(payload as any); };
     socket.on('graph-update', onDiff);
     socket.on('graph-snapshot', onSnapshot);
     socket.on('graph-highlight', onHighlight);
@@ -560,17 +607,17 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 				<div className="max-w-md text-xs pointer-events-auto">
             <div className="bg-black/60 text-gray-100 border border-white/10 rounded shadow-lg backdrop-blur p-2">
               <div className="flex items-center justify-between mb-1">
-                <div className="font-semibold">{selection.kind === 'node' ? 'Node' : 'Edge'} details</div>
+								<div className="font-semibold">{selection.kind === 'node' ? 'Node' : (selection.kind === 'edge' ? 'Edge' : 'Path')} details</div>
                 <button className="px-1 py-0.5 text-xs border rounded" onClick={() => setSelection(null)}>Close</button>
               </div>
-              {selection.kind === 'node' ? (
+							{selection.kind === 'node' ? (
                 <div className="grid grid-cols-2 gap-x-3 gap-y-1">
                   <div className="opacity-70">ID</div><div className="truncate" title={selection.id}>{selection.id}</div>
                   <div className="opacity-70">Label</div><div className="truncate" title={selection.label || ''}>{selection.label || '—'}</div>
                   <div className="opacity-70">Degree</div><div>{selection.degree ?? '—'}</div>
                   <div className="opacity-70">Neighbors</div><div>{selection.neighbors ?? '—'}</div>
                 </div>
-              ) : (
+							) : selection.kind === 'edge' ? (
                 <div className="grid grid-cols-2 gap-x-3 gap-y-1">
                   <div className="opacity-70">ID</div><div className="truncate" title={selection.id}>{selection.id}</div>
                   <div className="opacity-70">Source</div><div className="truncate" title={selection.source}>{selection.source}</div>
@@ -607,6 +654,28 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
                     </>
                   )}
                 </div>
+							) : (
+								// Path details panel: list each hop's edge details in order
+								<div className="grid grid-cols-2 gap-x-3 gap-y-1">
+									<div className="opacity-70">Hops</div><div>{(selection.edges || []).length}</div>
+									{(selection.edges || []).map((ed, i) => (
+										<React.Fragment key={ed.id || i}>
+											<div className="col-span-2 border-t border-white/10 my-1" />
+											<div className="opacity-70">Hop</div><div>{i + 1}</div>
+											<div className="opacity-70">Edge ID</div><div className="truncate" title={ed.id}>{ed.id}</div>
+											<div className="opacity-70">Source</div><div className="truncate" title={ed.source}>{ed.source}</div>
+											<div className="opacity-70">Target</div><div className="truncate" title={ed.target}>{ed.target}</div>
+											<div className="opacity-70">DEX</div><div>{ed.dex}</div>
+											<div className="opacity-70">Fee (bps)</div><div>{ed.fee_bps ?? '—'}</div>
+											<div className="opacity-70">Price A/B</div><div>{ed.price_a_per_b ?? '—'}</div>
+											<div className="opacity-70">Pool Liquidity (raw)</div><div>{ed.pool_liquidity_raw ?? '—'}</div>
+											<div className="opacity-70">Pool Kind</div><div>{ed.pool_kind ?? '—'}</div>
+											<div className="opacity-70">Direction</div><div>{ed.direction ?? '—'}</div>
+											<div className="opacity-70">TVL (USD)</div><div>{ed.tvl_usd ?? '—'}</div>
+											<div className="opacity-70">Pool ID</div><div className="truncate" title={ed.pool_id || ''}>{ed.pool_id || '—'}</div>
+										</React.Fragment>
+									))}
+								</div>
               )}
             </div>
           </div>
