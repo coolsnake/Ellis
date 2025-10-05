@@ -291,6 +291,9 @@ async fn main() -> anyhow::Result<()> {
                     if use_backend_graph {
                         // Apply any buffered diffs now (between detection runs)
                         if !s.pending_removed_edge_ids.is_empty() || !s.pending_added_edges.is_empty() || !s.pending_updated_edges.is_empty() {
+                            let rem_ct = s.pending_removed_edge_ids.len();
+                            let add_ct = s.pending_added_edges.len();
+                            let upd_ct = s.pending_updated_edges.len();
                             let removed = std::mem::take(&mut s.pending_removed_edge_ids);
                             let added = std::mem::take(&mut s.pending_added_edges);
                             let updated = std::mem::take(&mut s.pending_updated_edges);
@@ -314,6 +317,8 @@ async fn main() -> anyhow::Result<()> {
                             for e in added.iter() { upsert(e); }
                             for e in updated.iter() { upsert(e); }
                             s.metrics.graph_updates_applied = s.metrics.graph_updates_applied.saturating_add(1);
+                            s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.graph.diff: applied add={} upd={} rem={}", add_ct, upd_ct, rem_ct) });
+                            let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
                         }
                         if let Some(v) = s.pending_graph_version.take() { s.last_graph_version = v; }
                         if let Some(t) = s.pending_graph_ts.take() { s.last_graph_ts = t; }
@@ -1268,9 +1273,9 @@ async fn arb_graph_update(State(state): State<Arc<RwLock<AppState>>>, Json(req):
     // Buffer the diff to apply between loop iterations to avoid contention
     let mut s = state.write().await;
     if let Some(v) = req.version { if v <= s.last_graph_version { s.metrics.graph_updates_skipped = s.metrics.graph_updates_skipped.saturating_add(1); return Json(serde_json::json!({"ok": true, "skipped": true })); } }
-    if let Some(removed) = req.removedEdgeIds { s.pending_removed_edge_ids.extend(removed); }
-    if let Some(added) = req.addedEdges { s.pending_added_edges.extend(added); }
-    if let Some(updated) = req.updatedEdges { s.pending_updated_edges.extend(updated); }
+    if let Some(removed) = req.removedEdgeIds { let n = removed.len(); s.pending_removed_edge_ids.extend(removed); tracing::info!(removed=n, "arb.graph.diff: buffered removed edges"); }
+    if let Some(added) = req.addedEdges { let n = added.len(); s.pending_added_edges.extend(added); tracing::info!(added=n, "arb.graph.diff: buffered added edges"); }
+    if let Some(updated) = req.updatedEdges { let n = updated.len(); s.pending_updated_edges.extend(updated); tracing::info!(updated=n, "arb.graph.diff: buffered updated edges"); }
     if req.version.is_some() { s.pending_graph_version = req.version; }
     if req.timestamp.is_some() { s.pending_graph_ts = req.timestamp; }
     s.use_backend_graph = true;

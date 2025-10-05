@@ -5,6 +5,7 @@ import { notifyArbServiceRefresh, emit, pushArbGraphSnapshot, pushArbGraphDiff }
 import { CONFIG } from '../utils/config.js';
 import { getRaydiumPoolsNormalized, getOrcaPoolsCached, enablePoolWebsocketRefreshes } from './pools.js';
 import { loadTokenMap } from '../utils/tokens.js';
+import fetch from 'node-fetch';
 
 export type GraphNode = {
   id: string;            // mint address (base58)
