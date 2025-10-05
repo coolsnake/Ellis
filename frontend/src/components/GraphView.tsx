@@ -168,6 +168,62 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 		} catch {}
 	};
 
+	// Ensure combined edge exists (or is removed) for a directed pair, and originals are hidden/shown appropriately
+	const ensureCombinedForPair = (cy: cytoscape.Core, a: string, b: string) => {
+		try {
+			const bothDexVisible = !!(filterDex.Raydium && filterDex.Orca);
+			const originals = cy.$(`edge[source = "${a}"][target = "${b}"]:not([combined = 1])`);
+			if (!originals || originals.length === 0) {
+				// Nothing to do; remove any stale combined
+				const combinedId = `combined:${a}->${b}`;
+				const existing = cy.getElementById(combinedId);
+				if (existing && existing.length) { try { existing.remove(); } catch {} }
+				return;
+			}
+			const ray = originals.filter('[dex = "Raydium"]');
+			const orc = originals.filter('[dex = "Orca"]');
+			const hasRay = ray && ray.length > 0;
+			const hasOrc = orc && orc.length > 0;
+			const combinedId = `combined:${a}->${b}`;
+			const existing = cy.getElementById(combinedId);
+			if (bothDexVisible && hasRay && hasOrc) {
+				// Build combined details
+				const all = ray.union(orc);
+				const originalIds: string[] = [];
+				const details: any[] = [];
+				all.forEach((e) => {
+					try {
+						originalIds.push(String(e.id()));
+						details.push({
+							dex: String(e.data('dex')),
+							pool_id: e.data('pool_id'),
+							fee_bps: e.data('fee_bps'),
+							liquidity: e.data('liquidity'),
+							price_a_per_b: e.data('price_a_per_b'),
+							tvl_usd: e.data('tvl_usd'),
+							pool_kind: e.data('pool_kind'),
+							direction: e.data('direction'),
+							pool_liquidity_raw: e.data('pool_liquidity_raw'),
+						});
+					} catch {}
+				});
+				if (!existing || existing.length === 0) {
+					cy.add({ data: { id: combinedId, source: a, target: b, dex: 'Combined', combined: 1, combinedOriginalIds: originalIds, combinedEdgesDetails: details, cpd: 0 } } as any);
+				} else {
+					try { existing.data('combinedOriginalIds', originalIds); existing.data('combinedEdgesDetails', details); } catch {}
+				}
+				// Hide originals under combined
+				originals.forEach((e) => { try { e.data('hiddenEdge', 1); } catch {} });
+			} else {
+				// Remove combined and show originals
+				if (existing && existing.length) { try { existing.remove(); } catch {} }
+				originals.forEach((e) => { try { e.data('hiddenEdge', null); } catch {} });
+			}
+			// Recompute offsets for this pair
+			recomputeParallelOffsets(cy, a, b);
+		} catch {}
+	};
+
 	type FitMode = 'never' | 'first' | 'always';
 	const runLayout = (fitMode: FitMode = 'first') => {
     const cy = cyRef.current; if (!cy) return;
@@ -284,7 +340,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
     }
   };
 
-  useEffect(() => { loadSnapshot(); }, [apiBase]);
+	useEffect(() => { loadSnapshot(); }, [apiBase]);
   useEffect(() => { /* no periodic fit when layout changes to avoid jarring refits */ runLayout('never'); }, [layoutName]);
 	useEffect(() => {
 		// Changing filters can drastically change geometry; request a fresh layout
@@ -306,7 +362,9 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
     return () => { try { window.removeEventListener('graph-highlight' as any, handler as any); } catch {} };
   }, []);
 
-  useEffect(() => {
+	const snapshotInitializedRef = useRef(false);
+
+	useEffect(() => {
     // Handle container size changes and window resizes (including browser zoom) to keep renderer in sync
     const cy = cyRef.current;
     const el = containerRef.current;
@@ -334,13 +392,56 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 
   useEffect(() => {
     if (!socket) return;
-		const onDiff = (_diff: GraphDiff) => {
-      // Refresh from full snapshot to maintain grouping logic reliably
-      loadSnapshot();
+		const onDiff = (diff: GraphDiff) => {
+      const cy = cyRef.current; if (!cy) return;
+			snapshotInitializedRef.current = true; // prefer diffs after first reception
+      const touchedPairs = new Set<string>();
+      try {
+        const remIds = Array.isArray(diff.removedEdgeIds) ? diff.removedEdgeIds : [];
+        for (const id of remIds) {
+          const el = cy.getElementById(String(id));
+          if (el && el.length && el.isEdge()) {
+            const a = String(el.data('source'));
+            const b = String(el.data('target'));
+            touchedPairs.add(`${a}|${b}`);
+          }
+        }
+      } catch {}
+      if (diff.removedEdgeIds?.length) cy.remove(diff.removedEdgeIds.map((id) => `#${id}`).join(','));
+      if (diff.removedNodeIds?.length) cy.remove(diff.removedNodeIds.map((id) => `#${id}`).join(','));
+      const hideKind = new Set<string>();
+      if (!filterKind.AMM) hideKind.add('amm');
+      if (!filterKind.CLMM) hideKind.add('clmm');
+      const upserts: ElementDefinition[] = [];
+      for (const n of [...(diff.addedNodes||[]), ...(diff.updatedNodes||[])]) {
+        upserts.push({ data: { id: n.id, label: n.label || n.id.slice(0,4) } });
+      }
+      for (const e of [...(diff.addedEdges||[]), ...(diff.updatedEdges||[])]) {
+        const kind = (e as any).pool_kind;
+        if (kind === 'amm' || kind === 'clmm') {
+          if (hideKind.has(kind)) continue;
+        }
+        upserts.push({ data: { id: e.id, source: e.source, target: e.target, dex: e.dex, fee_bps: e.fee_bps, liquidity: e.liquidity, liquidity_display: (e as any).liquidity_display, weight: e.weight, price_a_per_b: (e as any).price_a_per_b, tvl_usd: (e as any).tvl_usd, pool_id: (e as any).pool_id, source_account: (e as any).source_account, target_account: (e as any).target_account, pool_kind: (e as any).pool_kind, direction: (e as any).direction, pool_liquidity_raw: (e as any).pool_liquidity_raw } });
+        try {
+          const a = String(e.source);
+          const b = String(e.target);
+          touchedPairs.add(`${a}|${b}`);
+        } catch {}
+      }
+      if (upserts.length) cy.add(upserts);
+      try {
+        touchedPairs.forEach((key) => {
+          const [a, b] = key.split('|');
+          ensureCombinedForPair(cy, a, b);
+        });
+      } catch {}
+      // no layout run
     };
     const onSnapshot = (snap: GraphSnapshot) => {
-      const cy = cyRef.current; if (!cy) return;
-      cy.elements().remove();
+			const cy = cyRef.current; if (!cy) return;
+			// If we already have content and have processed diffs, ignore periodic snapshots to avoid resets
+			if (snapshotInitializedRef.current && cy.nodes().length > 0) return;
+			cy.elements().remove();
 			cy.add(toElements(snap));
 			// Run initial layout once on the first snapshot when container is sized
 			if (!laidOutRef.current || forceLayoutRef.current) {
@@ -358,8 +459,8 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 				};
 				requestAnimationFrame(attemptLayout);
 			}
-			// Keep existing viewport; do not re-run layout on later snapshots
-      setSelection(null);
+			// Do not clear selection here to avoid UX reset
+			snapshotInitializedRef.current = true;
     };
     const onHighlight = (payload: { edgeIds?: string[] }) => { applyHighlight(payload); };
     socket.on('graph-update', onDiff);
