@@ -24,6 +24,7 @@ deploy: build ## Build and restart services + reload nginx
 start: ## Start backend, arb and nginx
 	sudo systemctl start lockstone-backend lockstone-arb
 	sudo systemctl start nginx
+	@if [ -t 1 ]; then bash scripts/logdash.sh; else echo "Services started. Run 'make logs' to open the dashboard."; fi
 
 stop: ## Stop backend, arb and nginx
 	sudo systemctl stop lockstone-backend lockstone-arb
