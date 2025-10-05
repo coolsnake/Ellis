@@ -25,7 +25,8 @@ export class DriftGridRunner {
   async start(pollMs = 1500): Promise<void> {
     if (this.timer) return;
     this.state.running = true;
-    logger.info('drift.grid.start', { name: this.config.name, marketIndex: this.config.market.marketIndex, subaccountId: this.config.subaccountId, levels: this.config.levels, notionalPerLevel: this.config.notionalPerLevel, cat: 'drift' });
+    const cid = `grid-${this.config.name}-${this.config.market.marketIndex}-${this.config.subaccountId}`;
+    logger.info('drift.grid.start', { name: this.config.name, marketIndex: this.config.market.marketIndex, subaccountId: this.config.subaccountId, levels: this.config.levels, notionalPerLevel: this.config.notionalPerLevel, cat: 'drift', code: 'DRIFT.GRID.START', cid, span: 'start' });
     // Subscribe shared price service for this market
     try {
       const svc = DriftPriceService.getInstance();
@@ -58,7 +59,7 @@ export class DriftGridRunner {
       (this as any)._engine = engine;
     } catch {}
     this.timer = (globalThis as any).setInterval(() => {
-      this.tick().catch((e) => logger.error('drift.grid.tick_error', { error: String(e), cat: 'drift' }));
+      this.tick().catch((e) => logger.error('drift.grid.tick_error', { error: String(e), cat: 'drift', code: 'DRIFT.GRID.TICK_ERROR' }));
     }, Math.max(500, pollMs));
   }
 
@@ -66,7 +67,7 @@ export class DriftGridRunner {
     if (this.timer) (globalThis as any).clearInterval(this.timer);
     this.timer = null;
     this.state.running = false;
-    logger.info('drift.grid.stop', { name: this.config.name, marketIndex: this.config.market.marketIndex, subaccountId: this.config.subaccountId, cat: 'drift' });
+    logger.info('drift.grid.stop', { name: this.config.name, marketIndex: this.config.market.marketIndex, subaccountId: this.config.subaccountId, cat: 'drift', code: 'DRIFT.GRID.STOP', span: 'end' });
     try {
       const svc = DriftPriceService.getInstance();
       if ((this as any)._onPrice) svc.offPrice(this.config.market.marketIndex, (this as any)._onPrice);

@@ -149,7 +149,8 @@ export class DriftLiquidator {
     if (this.timer) return;
     this.state.running = true;
     const pollMs = Math.max(500, Number(this.config.pollMs || 1500));
-    logger.info('drift.liquidator.start', { name: this.config.name, pollMs, dryRun: !!this.config.dryRun, cat: 'drift' });
+    const cid = `liq-${this.config.name}-${Date.now().toString(36).slice(-5)}`;
+    logger.info('drift.liquidator.start', { name: this.config.name, pollMs, dryRun: !!this.config.dryRun, cat: 'drift', code: 'DRIFT.LIQ.START', cid, span: 'start' });
     // Ensure Drift client is initialized
     try {
       await DriftService.getInstance().init();
@@ -178,7 +179,7 @@ export class DriftLiquidator {
     try { await this.seedFromDlobHttp(); } catch {}
     try { await this.initPriceTriggers(); } catch {}
     this.timer = (globalThis as any).setInterval(() => {
-      this.tick().catch((e) => logger.warn('drift.liquidator.tick_error', { error: String(e?.message || e), cat: 'drift' }));
+      this.tick().catch((e) => logger.warn('drift.liquidator.tick_error', { error: String(e?.message || e), cat: 'drift', code: 'DRIFT.LIQ.TICK_ERROR' }));
     }, pollMs);
     // Periodic stats emission
     try {
@@ -227,7 +228,7 @@ export class DriftLiquidator {
       }
     } catch {}
     this.state.running = false;
-    logger.info('drift.liquidator.stop', { name: this.config.name, cat: 'drift' });
+    logger.info('drift.liquidator.stop', { name: this.config.name, cat: 'drift', code: 'DRIFT.LIQ.STOP', span: 'end' });
     // Cleanup price triggers and timers
     try {
       const svc = DriftPriceService.getInstance();

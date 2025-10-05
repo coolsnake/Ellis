@@ -2453,6 +2453,32 @@ export const App: React.FC = () => {
       <div className="space-y-4">
         <section className="bg-gray-900 rounded p-4 h-[32vh] overflow-auto">
           <h2 className="text-2xl font-semibold mb-3">User Log</h2>
+          {/* Simple filters: level and code search */}
+          <div className="flex items-center gap-2 mb-2">
+            <select className="bg-gray-700 text-sm px-2 py-1 rounded" onChange={(e)=>{
+              const lvl = e.target.value;
+              // Filter locally by level by trimming arrays (dev-lightweight)
+              // Users can reset to show all via empty selection
+              if (!lvl) return;
+              setTerminalLogs(prev => prev.filter(l => l.level === lvl));
+            }}>
+              <option value="">Level: All</option>
+              <option value="error">Error</option>
+              <option value="warn">Warn</option>
+              <option value="info">Info</option>
+              <option value="debug">Debug</option>
+            </select>
+            <input className="bg-gray-700 text-sm px-2 py-1 rounded" placeholder="Filter by code (exact)" onChange={(e)=>{
+              const code = e.target.value.trim();
+              if (!code) return;
+              setTerminalLogs(prev => prev.filter(l => (l as any).code === code));
+            }}/>
+            <input className="bg-gray-700 text-sm px-2 py-1 rounded" placeholder="Filter by CID" onChange={(e)=>{
+              const cid = e.target.value.trim();
+              if (!cid) return;
+              setTerminalLogs(prev => prev.filter(l => (l as any).cid === cid));
+            }}/>
+          </div>
           <ul className="space-y-1">
             {terminalLogs.map((l, i) => {
               const colorByCat: Record<string,string> = {
@@ -2473,6 +2499,23 @@ export const App: React.FC = () => {
         </section>
         <section className="bg-gray-900 rounded p-4 h-[52vh] overflow-auto">
           <h2 className="text-2xl font-semibold mb-3">Trade Log</h2>
+          <div className="flex items-center gap-2 mb-2">
+            <select className="bg-gray-700 text-sm px-2 py-1 rounded" onChange={(e)=>{
+              const lvl = e.target.value; if (!lvl) return; setTradeLogs(prev => prev.filter(l => l.level === lvl));
+            }}>
+              <option value="">Level: All</option>
+              <option value="error">Error</option>
+              <option value="warn">Warn</option>
+              <option value="info">Info</option>
+              <option value="debug">Debug</option>
+            </select>
+            <input className="bg-gray-700 text-sm px-2 py-1 rounded" placeholder="Filter by code" onChange={(e)=>{
+              const code = e.target.value.trim(); if (!code) return; setTradeLogs(prev => prev.filter(l => (l as any).code === code));
+            }}/>
+            <input className="bg-gray-700 text-sm px-2 py-1 rounded" placeholder="Filter by CID" onChange={(e)=>{
+              const cid = e.target.value.trim(); if (!cid) return; setTradeLogs(prev => prev.filter(l => (l as any).cid === cid));
+            }}/>
+          </div>
           <ul className="space-y-1">
             {tradeLogs.map((l, i) => {
               const colorByCat: Record<string,string> = { api: 'text-blue-300', jupiter: 'text-blue-300', pretrade: 'text-purple-300', trade: 'text-cyan-300', arb: 'text-indigo-300', raydium: 'text-emerald-300', orca: 'text-amber-300' };
@@ -2487,6 +2530,23 @@ export const App: React.FC = () => {
         </section>
         <section className="bg-gray-900 rounded p-4 h-[40vh] overflow-auto">
           <h2 className="text-2xl font-semibold mb-3">Strategy Log</h2>
+          <div className="flex items-center gap-2 mb-2">
+            <select className="bg-gray-700 text-sm px-2 py-1 rounded" onChange={(e)=>{
+              const lvl = e.target.value; if (!lvl) return; setStrategyLogs(prev => prev.filter(l => l.level === lvl));
+            }}>
+              <option value="">Level: All</option>
+              <option value="error">Error</option>
+              <option value="warn">Warn</option>
+              <option value="info">Info</option>
+              <option value="debug">Debug</option>
+            </select>
+            <input className="bg-gray-700 text-sm px-2 py-1 rounded" placeholder="Filter by code" onChange={(e)=>{
+              const code = e.target.value.trim(); if (!code) return; setStrategyLogs(prev => prev.filter(l => (l as any).code === code));
+            }}/>
+            <input className="bg-gray-700 text-sm px-2 py-1 rounded" placeholder="Filter by CID" onChange={(e)=>{
+              const cid = e.target.value.trim(); if (!cid) return; setStrategyLogs(prev => prev.filter(l => (l as any).cid === cid));
+            }}/>
+          </div>
           <ul className="space-y-1">
             {strategyLogs.map((l, i) => {
               const colorByCat: Record<string,string> = { strategy: 'text-green-300', pretrade: 'text-purple-300', trade: 'text-cyan-300' };
@@ -2501,6 +2561,23 @@ export const App: React.FC = () => {
         </section>
         <section className="bg-gray-900 rounded p-4 h-[40vh] overflow-auto">
           <h2 className="text-2xl font-semibold mb-3">Arbitrage Log</h2>
+          <div className="flex items-center gap-2 mb-2">
+            <select className="bg-gray-700 text-sm px-2 py-1 rounded" onChange={(e)=>{
+              const lvl = e.target.value; if (!lvl) return; setArbLogs(prev => prev.filter(l => l.level === lvl));
+            }}>
+              <option value="">Level: All</option>
+              <option value="error">Error</option>
+              <option value="warn">Warn</option>
+              <option value="info">Info</option>
+              <option value="debug">Debug</option>
+            </select>
+            <input className="bg-gray-700 text-sm px-2 py-1 rounded" placeholder="Filter by code" onChange={(e)=>{
+              const code = e.target.value.trim(); if (!code) return; setArbLogs(prev => prev.filter(l => (l as any).code === code));
+            }}/>
+            <input className="bg-gray-700 text-sm px-2 py-1 rounded" placeholder="Filter by CID" onChange={(e)=>{
+              const cid = e.target.value.trim(); if (!cid) return; setArbLogs(prev => prev.filter(l => (l as any).cid === cid));
+            }}/>
+          </div>
           <ul className="space-y-1">
             {arbLogs.map((l, i) => {
               const colorByCat: Record<string,string> = { arb: 'text-indigo-300', graph: 'text-pink-300', pools: 'text-teal-300', raydium: 'text-emerald-300', orca: 'text-amber-300' };
@@ -2515,6 +2592,23 @@ export const App: React.FC = () => {
         </section>
         <section className="bg-gray-900 rounded p-4 h-[40vh] overflow-auto">
           <h2 className="text-2xl font-semibold mb-3">API Log</h2>
+          <div className="flex items-center gap-2 mb-2">
+            <select className="bg-gray-700 text-sm px-2 py-1 rounded" onChange={(e)=>{
+              const lvl = e.target.value; if (!lvl) return; setApiLogs(prev => prev.filter(l => l.level === lvl));
+            }}>
+              <option value="">Level: All</option>
+              <option value="error">Error</option>
+              <option value="warn">Warn</option>
+              <option value="info">Info</option>
+              <option value="debug">Debug</option>
+            </select>
+            <input className="bg-gray-700 text-sm px-2 py-1 rounded" placeholder="Filter by code" onChange={(e)=>{
+              const code = e.target.value.trim(); if (!code) return; setApiLogs(prev => prev.filter(l => (l as any).code === code));
+            }}/>
+            <input className="bg-gray-700 text-sm px-2 py-1 rounded" placeholder="Filter by CID" onChange={(e)=>{
+              const cid = e.target.value.trim(); if (!cid) return; setApiLogs(prev => prev.filter(l => (l as any).cid === cid));
+            }}/>
+          </div>
           <ul className="space-y-1">
             {apiLogs.map((l, i) => {
               const colorByCat: Record<string,string> = { api: 'text-blue-300', jupiter: 'text-blue-300', raydium: 'text-amber-300', orca: 'text-emerald-300' };

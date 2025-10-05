@@ -50,6 +50,7 @@ export class DriftDlobWs {
   private listeners: Map<string, Set<Listener<any>>> = new Map();
   private reconnectTimer: any | null = null;
   private heartbeatTimer: any | null = null;
+  private wsCid: string | null = null;
 
   async start(): Promise<void> {
     if (this.connected || this.socket) return;
@@ -57,13 +58,14 @@ export class DriftDlobWs {
     try {
       const WS: any = await ensureWsCtor();
       if (!WS) {
-        logger.warn('drift.ws.unavailable_env', { url, cat: 'drift' });
+        logger.warn('drift.ws.unavailable_env', { url, cat: 'drift', code: 'DRIFT.WS.ENV_UNAVAILABLE', cid: `ws:${url}` });
         return;
       }
+      this.wsCid = `ws-${Math.random().toString(36).slice(2, 8)}`;
       this.socket = new WS(url);
       this.wireSocket();
     } catch (e: any) {
-      logger.warn('drift.ws.connect_failed', { url, error: String(e?.message || e), cat: 'drift' });
+      logger.warn('drift.ws.connect_failed', { url, error: String(e?.message || e), cat: 'drift', code: 'DRIFT.WS.CONNECT_FAILED', cid: this.wsCid || `ws:${url}` });
       this.scheduleReconnect();
     }
   }
@@ -118,7 +120,7 @@ export class DriftDlobWs {
     if (!s) return;
     s.onopen = () => {
       this.connected = true;
-      logger.info('drift.ws.open', { url: (s?.url || getDriftConfig().dlobWsUrl), cat: 'drift' });
+      logger.info('drift.ws.open', { url: (s?.url || getDriftConfig().dlobWsUrl), cat: 'drift', code: 'DRIFT.WS.OPEN', cid: this.wsCid || `ws:${s?.url || getDriftConfig().dlobWsUrl}`, span: 'start' });
       // Resubscribe desired markets
       if (this.wantMarkets.size > 0) this.flushSubscription('subscribe', Array.from(this.wantMarkets));
       // Heartbeat
@@ -130,12 +132,12 @@ export class DriftDlobWs {
     };
     s.onclose = () => {
       this.connected = false;
-      logger.warn('drift.ws.close', { cat: 'drift' });
+      logger.warn('drift.ws.close', { cat: 'drift', code: 'DRIFT.WS.CLOSE', cid: this.wsCid || undefined, span: 'end' });
       if (this.heartbeatTimer) { try { (globalThis as any).clearInterval(this.heartbeatTimer); } catch {} this.heartbeatTimer = null; }
       this.scheduleReconnect();
     };
     s.onerror = (e: any) => {
-      logger.warn('drift.ws.error', { error: String(e?.message || e), cat: 'drift' });
+      logger.warn('drift.ws.error', { error: String(e?.message || e), cat: 'drift', code: 'DRIFT.WS.ERROR', cid: this.wsCid || undefined });
     };
     s.onmessage = (ev: any) => {
       try {

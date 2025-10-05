@@ -107,6 +107,19 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
           if (Array.isArray(system.frontendEnabledLogCategories)) {
             nextSystem.frontendEnabledLogCategories = (system.frontendEnabledLogCategories as string[]).map((s) => String(s).toLowerCase());
           }
+          // Map legacy category toggles to structured config if provided
+          if (Array.isArray(nextSystem.enabledLogCategories) && nextSystem.enabledLogCategories.length) {
+            nextSystem.log = nextSystem.log || {};
+            const cats: Record<string, 'error'|'warn'|'info'|'debug'> = { ...(nextSystem.log?.categories || {}) };
+            const on = new Set<string>(nextSystem.enabledLogCategories);
+            const all: string[] = Array.isArray(nextSystem.logCategories) ? nextSystem.logCategories : [];
+            for (const c of all) {
+              const name = String(c || '').toLowerCase();
+              if (!name) continue;
+              cats[name] = on.has(name) ? (cats[name] || 'info') : 'error';
+            }
+            nextSystem.log.categories = cats;
+          }
         } catch {}
         CONFIG.system = nextSystem;
       }

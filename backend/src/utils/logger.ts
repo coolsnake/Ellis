@@ -108,6 +108,32 @@ class RealtimeLogger extends EventEmitter {
     return false;
   }
 
+  private deriveCodeFromMessage(message: string): string | undefined {
+    try {
+      const m = String(message || '').toLowerCase();
+      if (/^api\.request\b/.test(m)) return 'API.REQUEST';
+      if (/^api\.response\b/.test(m)) return 'API.RESPONSE';
+      if (/^pretrade:arb simulate start\b/.test(m)) return 'PRETRADE.SIM.START';
+      if (/^pretrade:arb simulate result\b/.test(m)) return 'PRETRADE.SIM.END';
+      if (/^pretrade:arb execute start\b/.test(m)) return 'PRETRADE.EXEC.START';
+      if (/^pretrade:arb tx built\b/.test(m)) return 'PRETRADE.TX.BUILT';
+      if (/^pretrade:arb (send|simulate) logs\b/.test(m)) return 'PRETRADE.LOGS';
+      if (/^graph:push diff\b/.test(m)) return 'GRAPH.PUSH.DIFF';
+      if (/^graph:push snapshot\b/.test(m)) return 'GRAPH.PUSH.SNAPSHOT';
+      if (/^arb:push snapshot\b/.test(m)) return 'ARB.PUSH.SNAPSHOT';
+      if (/^pools:subscribe ok\b/.test(m)) return 'POOLS.SUBSCRIBE.OK';
+      if (/^pools:unsubscribe ok\b/.test(m)) return 'POOLS.UNSUBSCRIBE.OK';
+      // Drift/ws/jup/strategy generic mapping: take leading token and normalize
+      const first = m.split(/\s+/)[0] || '';
+      if (first) {
+        // Normalize separators ':' '::' ' - ' etc into dots, strip trailing punctuation
+        const norm = first.replace(/:+/g, '.').replace(/[^a-z0-9.]+/g, '_');
+        if (/[a-z0-9]/.test(norm)) return norm.toUpperCase();
+      }
+    } catch {}
+    return undefined;
+  }
+
   private deriveCategory(message: string, context?: Record<string, unknown>): string {
     const ctxCat = (context as any)?.cat as string | undefined;
     if (ctxCat && typeof ctxCat === 'string') return ctxCat.toLowerCase();
@@ -179,6 +205,7 @@ class RealtimeLogger extends EventEmitter {
     const cat = (catFromCtx && typeof catFromCtx === 'string') ? catFromCtx.toLowerCase() : this.deriveCategory(message, ctx);
     if (!this.isCategoryAllowed(cat)) return;
     if (!this.shouldLog(level, cat, code)) return;
+    const derivedCode = code || this.deriveCodeFromMessage(message);
     const event: LogEvent = {
       level,
       message,
@@ -187,7 +214,7 @@ class RealtimeLogger extends EventEmitter {
       timestamp: new Date().toLocaleTimeString(),
       cat,
       subcat,
-      code,
+      code: derivedCode,
       cid,
       span,
     };
