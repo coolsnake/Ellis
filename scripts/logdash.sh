@@ -45,21 +45,23 @@ tmux split-window -v "journalctl -fu $ARB_UNIT -o cat -n 200"
 tmux select-layout tiled
 tmux select-pane -t 0
 
-# Keybindings for quick navigation
-tmux bind-key -n 1 select-pane -t 0
-tmux bind-key -n 2 select-pane -t 1
-tmux bind-key -n 3 select-pane -t 2
-tmux bind-key -n z resize-pane -Z
+# Keybindings (use tmux prefix, default Ctrl-b)
+# Prefix + 1/2/3: switch panes in the current window
+tmux bind-key 1 select-pane -t 0
+tmux bind-key 2 select-pane -t 1
+tmux bind-key 3 select-pane -t 2
+# Prefix + z: zoom/unzoom (tmux default)
+# Prefix + q: show pane numbers (tmux default), then press number to select
 
-# Bind Shift-Q to stop services and kill the dashboard
-tmux bind-key -n Q split-window -v "bash -lc '$LOCKCTL stop; read -p "Stopped. Press Enter to close dashboard..."; tmux kill-session -t $SESSION_NAME'"
+# Prefix + Shift-Q: stop services and kill the dashboard (opens a pane for any sudo prompts)
+tmux bind-key Q split-window -v "bash -lc 'echo \"Stopping services...\"; ${LOCKCTL} stop; read -p \"Stopped. Press Enter to close dashboard...\"; tmux kill-session -t ${SESSION_NAME}'"
 
 # Create an alternate window with less-follow for long scrollback & search
 tmux new-window -n "Full Logs" "bash -lc 'journalctl -u $BACKEND_UNIT -o short-iso -n 1000 | less -R +F'"
 tmux split-window -h "bash -lc 'journalctl -u $ARB_UNIT -o short-iso -n 1000 | less -R +F'"
 tmux select-layout even-horizontal
 
-echo "Controls: 1/2/3 switch panes, z zoom, Q quit (stop & close), PgUp/PgDn scroll, / search in less (Full Logs)"
+echo "Controls: Ctrl-b 1/2/3 switch panes, Ctrl-b z zoom, Ctrl-b Q stop & close, Ctrl-b q pane numbers, PgUp/PgDn scroll, / search in less (Full Logs)"
 
 exec tmux attach -t "$SESSION_NAME"
 
