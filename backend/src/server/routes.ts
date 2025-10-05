@@ -1745,17 +1745,45 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   // Simulate arbitrage route with Jupiter v6 quotes
   api.post('/arb/simulate', async (req, res) => {
     try {
-      const { path, sizeInMint, size, slippageBps = 100 } = req.body as { path: string[]; sizeInMint?: string; size?: number; slippageBps?: number };
+      const { path, sizeInMint, size, sizeUi, sizeUsd, slippageBps = 100 } = req.body as { path: string[]; sizeInMint?: string; size?: number; sizeUi?: number; sizeUsd?: number; slippageBps?: number };
       if (!Array.isArray(path) || path.length < 2) return res.status(400).json({ error: 'path length >= 2 required' });
       const { getV6Quote } = await import('../jupiter/v6.js');
       const cid = `arb-${Date.now().toString(36)}-${Math.floor(Math.random()*1e6).toString(36)}`;
       emit('log', { level: 'info', message: `pretrade:arb simulate start cid=${cid} hops=${path.length-1} size=${size}${sizeInMint?` sizeInMint=${sizeInMint}`:''} slippageBps=${slippageBps}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
       const legs: any[] = [];
       const tStartAll = Date.now();
+      let prevOutAmt = 0;
       for (let i = 0; i < path.length - 1; i += 1) {
         const inputMint = path[i];
         const outputMint = path[i + 1];
-        const amt = (i === 0) ? Math.max(1, Math.floor(Number(size) || 0)) : 0; // first hop amount provided; later we could chain outputs
+        // Determine first hop amount (smallest units). Support multiple input styles:
+        // - sizeUsd: USD notional converted using input mint price and decimals
+        // - sizeUi: UI tokens converted using input mint decimals
+        // - size: raw smallest units (back-compat)
+        let amt = 0;
+        if (i === 0) {
+          try {
+            if (typeof sizeUsd === 'number' && sizeUsd > 0) {
+              const info = await resolveMint(inputMint);
+              const price = getPriceByMint(inputMint)?.usdc || null;
+              if (!price) throw new Error(`no price for ${inputMint}`);
+              const tokens = sizeUsd / price;
+              amt = Math.max(1, Math.floor(tokens * Math.pow(10, info.decimals || 9)));
+              emit('log', { level: 'info', message: `pretrade:arb simulate amount from USD in=${inputMint} usd=${sizeUsd} dec=${info.decimals} amt=${amt}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+            } else if (typeof sizeUi === 'number' && sizeUi > 0) {
+              const info = await resolveMint(inputMint);
+              amt = Math.max(1, Math.floor(sizeUi * Math.pow(10, info.decimals || 9)));
+              emit('log', { level: 'info', message: `pretrade:arb simulate amount from UI in=${inputMint} ui=${sizeUi} dec=${info.decimals} amt=${amt}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+            } else {
+              amt = Math.max(1, Math.floor(Number(size) || 0));
+              emit('log', { level: 'info', message: `pretrade:arb simulate amount raw in=${inputMint} raw=${size} amt=${amt}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+            }
+          } catch (e: any) {
+            return res.status(400).json({ error: `size conversion failed: ${String(e?.message || e)}` });
+          }
+        } else {
+          amt = Math.max(1, Math.floor(prevOutAmt));
+        }
         const t0 = Date.now();
         const quote = await getV6Quote(inputMint, outputMint, amt, slippageBps);
         const qDur = Date.now() - t0;
@@ -1764,13 +1792,14 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
         const inAmt = Number(quote?.inAmount || 0) || amt;
         const outDec = Number(quote?.routePlan?.[quote?.routePlan?.length - 1]?.swapInfo?.outDecimals ?? '');
         emit('log', { level: 'info', message: `pretrade:arb leg${i+1} cid=${cid} ${inputMint.slice(0,4)}->${outputMint.slice(0,4)} in=${inAmt} out=${outAmt}${outDec?` outDec=${outDec}`:''} durMs=${qDur}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+        prevOutAmt = outAmt;
       }
       // compute rough net bps (placeholder, better from quotes)
       let rateProd = 1.0;
       for (let i = 0; i < legs.length; i += 1) {
         const l = legs[i];
         const outRaw = Number(l.quote?.outAmount || 0);
-        const inRaw = Number(l.quote?.inAmount || 0) || (i === 0 ? Number(size) || 0 : 0);
+        const inRaw = Number(l.quote?.inAmount || 0);
         if (outRaw > 0 && inRaw > 0) rateProd *= (outRaw / inRaw);
       }
       const netBps = Math.floor((rateProd - 1.0) * 10_000);
