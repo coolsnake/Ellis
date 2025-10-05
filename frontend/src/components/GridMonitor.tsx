@@ -68,6 +68,7 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
   const [loading, setLoading] = useState(true);
   const [tokens, setTokens] = useState<{fromToken: string, toToken: string, fromSymbol: string, toSymbol: string, fromUsd?: number | null, toUsd?: number | null} | null>(null);
   const [driftInfo, setDriftInfo] = useState<{ spread?: number; fundingApy?: number; feeBps?: number; feeEstRoundTrip?: number; openOrders?: number; effectiveLeverage?: number; liquidationBuffer?: number } | null>(null);
+  const [onlyClose, setOnlyClose] = useState<boolean>(false);
 
   const formatAmount = (n: number | undefined | null) => {
     const v = Number(n || 0);
@@ -113,6 +114,7 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
       setTradeHistory(data.tradeHistory || []);
       setState(data.state || null);
       setTokens(data.tokens || null);
+      try { setOnlyClose(!!(data.controls?.onlyClose)); } catch {}
       // Optional drift extras if provided by backend adapter later
       if (data && (data.spread !== undefined || data.fundingApy !== undefined || data.feeBps !== undefined || data.feeEstRoundTrip !== undefined || data.openOrders !== undefined || data.effectiveLeverage !== undefined || data.liquidationBuffer !== undefined)) {
         setDriftInfo({ spread: data.spread, fundingApy: data.fundingApy, feeBps: data.feeBps, feeEstRoundTrip: data.feeEstRoundTrip, openOrders: data.openOrders, effectiveLeverage: data.effectiveLeverage, liquidationBuffer: data.liquidationBuffer });
@@ -142,6 +144,20 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
       await fetchGridData();
     } catch (error) {
       logger.error('Failed to rebalance grid:', error);
+    }
+  };
+
+  const toggleOnlyClose = async (next: boolean) => {
+    try {
+      await fetch(`${apiBase}/strategy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: strategyName, onlyClose: next })
+      });
+      setOnlyClose(next);
+      await fetchGridData();
+    } catch (error) {
+      logger.error('Failed to toggle only close:', error);
     }
   };
 
@@ -220,12 +236,23 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
       <div className="bg-gray-800 rounded-lg p-4">
         <div className="flex justify-between items-center mb-4">
           <h3 className="text-lg font-semibold text-white">Grid Overview</h3>
-          <button
-            onClick={rebalanceGrid}
-            className="px-3 py-1 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
-          >
-            Rebalance
-          </button>
+          <div className="flex items-center space-x-2">
+            <label className="flex items-center text-sm text-gray-200 mr-2">
+              <input
+                type="checkbox"
+                className="mr-2"
+                checked={!!onlyClose}
+                onChange={(e) => toggleOnlyClose(e.target.checked)}
+              />
+              Only close (no new buys)
+            </label>
+            <button
+              onClick={rebalanceGrid}
+              className="px-3 py-1 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
+            >
+              Rebalance
+            </button>
+          </div>
         </div>
         
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">

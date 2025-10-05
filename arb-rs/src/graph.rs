@@ -33,7 +33,23 @@ impl ArbGraph {
     pub fn upsert_edge(&mut self, dex: &str, mint_a: &str, mint_b: &str, data: EdgeData) {
         let a = self.upsert_node(dex, mint_a);
         let b = self.upsert_node(dex, mint_b);
-        // For MVP, just add parallel edges; later replace existing
+        // Replace-or-dedup behavior:
+        // - If pool_id is present, remove any existing edge with the same pool_id between (a,b)
+        // - Otherwise, remove existing edges between (a,b) with the same DEX and empty pool_id
+        let new_pool_id = data.pool_id.clone();
+        let new_dex = data.dex.clone();
+        let mut to_remove = Vec::new();
+        for e in self.g.edge_references() {
+            if e.source() == a && e.target() == b {
+                let w = e.weight();
+                if !new_pool_id.is_empty() {
+                    if w.pool_id == new_pool_id { to_remove.push(e.id()); }
+                } else {
+                    if w.pool_id.is_empty() && w.dex == new_dex { to_remove.push(e.id()); }
+                }
+            }
+        }
+        for id in to_remove { let _ = self.g.remove_edge(id); }
         self.g.add_edge(a, b, data);
     }
 

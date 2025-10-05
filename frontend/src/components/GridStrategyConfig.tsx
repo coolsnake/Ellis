@@ -53,6 +53,8 @@ export const GridStrategyConfig: React.FC<GridStrategyConfigProps> = ({ onSave, 
     feeBps: initialConfig?.feeBps || 30,
     extraSlippageBps: initialConfig?.extraSlippageBps || 50,
     minEdgeBps: initialConfig?.minEdgeBps || 60,
+    // Controls
+    onlyClose: initialConfig?.onlyClose ?? false,
   });
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -125,6 +127,15 @@ export const GridStrategyConfig: React.FC<GridStrategyConfigProps> = ({ onSave, 
                 />
                 <span className="text-gray-300">Test Mode</span>
               </label>
+            <label className="flex items-center">
+              <input
+                type="checkbox"
+                checked={config.onlyClose}
+                onChange={(e) => handleChange('onlyClose', e.target.checked)}
+                className="mr-2"
+              />
+              <span className="text-gray-300">Only Close (no new buys)</span>
+            </label>
             </div>
           </div>
 

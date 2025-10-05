@@ -49,6 +49,8 @@ export type StrategyItem = {
   volatilityPeriod?: number;
   minLevelSpacing?: number;
   maxLevelSpacing?: number;
+  // Control flags
+  onlyClose?: boolean; // if true, grid strategy should only close (sell) and not open new buys
 };
 
 export const STRATEGY_LIST_PATH = (CONFIG as any).strategyListPath || 'backend/config/strategies.json';

@@ -2318,6 +2318,8 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     if (has('volatilityPeriod')) { const n = toNum(item.volatilityPeriod); if (n !== undefined) updated.volatilityPeriod = n; }
     if (has('minLevelSpacing')) { const n = toNum(item.minLevelSpacing); if (n !== undefined) updated.minLevelSpacing = n; }
     if (has('maxLevelSpacing')) { const n = toNum(item.maxLevelSpacing); if (n !== undefined) updated.maxLevelSpacing = n; }
+    // Grid control flags
+    if (has('onlyClose')) updated.onlyClose = !!item.onlyClose;
     // Grid bias parameters
     if (has('bias')) {
       const v = String(item.bias);
@@ -2558,7 +2560,14 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
           toSymbol: config.toToken || 'SOL',
           fromUsd,
           toUsd
-        }
+        },
+        // include strategy controls for UI (if present)
+        controls: (() => {
+          try {
+            const item = (strategies || []).find((s) => (s as any)?.name === strategyName) as any;
+            return { onlyClose: !!item?.onlyClose };
+          } catch { return { onlyClose: false }; }
+        })()
       });
     } catch (e: any) {
       logger.error('Failed to get grid levels', { error: String(e?.message || e) });

@@ -62,6 +62,8 @@ export type GridStrategyConfig = {
   toToken?: string; // quote asset symbol/mint (e.g., SOL or dSOL)
   active?: boolean;
   testMode?: boolean;
+  // Control flags
+  onlyClose?: boolean; // if true, do not open new BUYs; allow only SELLs of existing inventory
   
   // Grid-specific parameters
   gridType: 'arithmetic' | 'geometric' | 'fibonacci';
@@ -716,7 +718,11 @@ export class GridTrader {
 
     // Sort levels by priority (closer to current price = higher priority)
     const prioritizedLevels = unfilledLevels
-      .filter(level => this.shouldExecuteLevel(level, currentPrice))
+      .filter(level => {
+        // When onlyClose is enabled, skip BUY levels entirely
+        if (cfg.onlyClose && level.side === 'buy') return false;
+        return this.shouldExecuteLevel(level, currentPrice);
+      })
       .map(level => ({
         level,
         priority: this.calculateLevelPriority(cfg, level, currentPrice)
