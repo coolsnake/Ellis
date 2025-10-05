@@ -406,12 +406,9 @@ async fn main() -> anyhow::Result<()> {
                         for p in clmm_pools.into_iter() {
                             if !wl_set.contains(&p.mint_a) && !wl_set.contains(&p.mint_b) { continue; }
                             if p.liquidity < min_pool_liquidity { continue; }
-                            // Prefer backend-provided price_a_per_b when available; fallback to sqrt-derived mid-price
+                            // Prefer sqrt-derived mid-price when available; fallback to backend-provided price
                             let mut price_b_per_a: f64 = 0.0;
-                            if let Some(px) = p.price_a_per_b {
-                                if px > 0.0 { price_b_per_a = 1.0 / px; }
-                            }
-                            if price_b_per_a <= 0.0 && p.sqrt_price_x64 > 0.0 {
+                            if p.sqrt_price_x64 > 0.0 {
                                 // Uniswap/CLMM convention:
                                 //   ratio = sqrt(price_B_per_A)
                                 //   price_B_per_A = ratio^2 * 10^(decA - decB)
@@ -426,6 +423,8 @@ async fn main() -> anyhow::Result<()> {
                                 } else {
                                     price_b_per_a_unscaled
                                 };
+                            } else if let Some(px) = p.price_a_per_b {
+                                if px > 0.0 { price_b_per_a = 1.0 / px; }
                             }
                             if price_b_per_a > 0.0 {
                                     // Size-based slippage haircut (conservative): scale by liquidity
