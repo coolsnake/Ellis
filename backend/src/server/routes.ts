@@ -1575,11 +1575,12 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   api.get('/arb/pools/subscriptions', async (_req, res) => {
     try {
       const cfg = (CONFIG as any)?.system || {};
-      const { getPoolWsStatus } = await import('./pools.js');
+      const { getPoolWsStatus, getWsActivity } = await import('./pools.js');
       const st = getPoolWsStatus();
-      res.json({ enablePoolWs: !!cfg.enablePoolWs, healthy: !!st.healthy, lastEventMs: st.lastEventMs, wsAllowed: (await import('./pools.js') as any) && true });
+      const act = getWsActivity();
+      res.json({ enablePoolWs: !!cfg.enablePoolWs, healthy: !!st.healthy, lastEventMs: st.lastEventMs, orca: act.orca, raydium: act.raydium });
     } catch (e: any) {
-      res.status(200).json({ enablePoolWs: false, healthy: false, lastEventMs: 0 });
+      res.status(200).json({ enablePoolWs: false, healthy: false, lastEventMs: 0, orca: { attached: 0, events: 0 }, raydium: { attached: 0, events: 0 } });
     }
   });
 
@@ -1716,6 +1717,26 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
         return res.status(200).json({ pools });
       } catch {}
       res.status(503).json({});
+    }
+  });
+
+  // Start arbitrage engine: build current graph snapshot and forward to arb-rs
+  api.post('/arb/start', async (_req, res) => {
+    try {
+      const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
+      const { getGraphSnapshot } = await import('./graph.js');
+      const snap = await getGraphSnapshot(true);
+      const payload = { graph: snap, enable: true } as any;
+      const started = Date.now();
+      const r = await (async () => { const ac = new AbortController(); const t = setTimeout(() => ac.abort('timeout'), 8000); try { return await fetch(`${host}/arb/start`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload), signal: ac.signal }); } finally { clearTimeout(t); } })();
+      const ms = Date.now() - started;
+      try { emit('log', { level: r.ok ? 'info' : 'warn', message: `arb:start forwarded ${r.status} ms=${ms} nodes=${snap.nodes.length} edges=${snap.edges.length}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+      if (!r.ok) return res.status(502).json({ ok: false, status: r.status });
+      let json: any = {}; try { json = await r.json(); } catch {}
+      res.json({ ok: true, forwarded: json, graph: { nodes: snap.nodes.length, edges: snap.edges.length } });
+    } catch (e: any) {
+      logger.error('arb start failed', { error: String(e?.message || e) });
+      res.status(500).json({ ok: false, error: String(e?.message || e) });
     }
   });
 

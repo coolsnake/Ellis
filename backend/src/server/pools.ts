@@ -357,6 +357,15 @@ export let userSubscribed: boolean = false;
 export function setUserSubscribed(v: boolean): void { userSubscribed = !!v; }
 let aggTimer: any | undefined;
 const wsCounts: { raydium: number; orca: number } = { raydium: 0, orca: 0 };
+let attachedOrcaPools: number = 0;
+let attachedRaydiumPools: number = 0;
+
+export function getWsActivity(): { orca: { attached: number; events: number }; raydium: { attached: number; events: number } } {
+  return {
+    orca: { attached: attachedOrcaPools, events: wsCounts.orca },
+    raydium: { attached: attachedRaydiumPools, events: wsCounts.raydium },
+  };
+}
 
 export function startRaydiumRefreshLoop(): void {
   // Clear existing timers if any, to allow dynamic TTL updates
@@ -584,6 +593,7 @@ export function startRaydiumRefreshLoop(): void {
               subs.push(id as any); attached++;
             } catch {}
           }
+          attachedOrcaPools = attached;
           logger.info('pools.ws subscribe orca.pools', { attached, program: String(CONFIG.orca?.programId) });
         } catch (e:any) {
           logger.warn('pools.ws orca address subscribe failed', { error: String(e?.message || e) });
@@ -605,6 +615,7 @@ export function startRaydiumRefreshLoop(): void {
               subs.push(id as any); attachedRay++;
             } catch {}
           }
+          attachedRaydiumPools = attachedRay;
           logger.info('pools.ws subscribe raydium.pools', { attached: attachedRay });
           // Fallback to program-level if none attached
           if (attachedRay === 0) {

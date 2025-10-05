@@ -8,6 +8,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean }> =
   const [subscribed, setSubscribed] = React.useState<boolean>(false);
   const [wsHealthy, setWsHealthy] = React.useState<boolean>(false);
   const [lastEventMs, setLastEventMs] = React.useState<number>(0);
+  const [wsDetails, setWsDetails] = React.useState<{ orca?: { attached?: number; events?: number }, raydium?: { attached?: number; events?: number } }>({});
 
   const fetchMetrics = async () => {
     try {
@@ -71,9 +72,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean }> =
     if (paused) return;
     fetchMetrics();
     fetch(`${apiBase}/arb/metrics/json`).catch(()=>{});
-    fetch(`${apiBase}/arb/pools/raydium`).then(r=>r.json()).then(setPools).catch(()=>{});
-    fetch(`${apiBase}/arb/pools/orca`).then(r=>r.json()).then(setOrcaPools).catch(()=>{});
-    fetch(`${apiBase}/arb/pools/subscriptions`).then(r=>r.json()).then((j)=>{ setSubscribed(!!j.enablePoolWs); setWsHealthy(!!j.healthy); setLastEventMs(Number(j.lastEventMs||0)); }).catch(()=>{});
+    fetch(`${apiBase}/arb/pools/subscriptions`).then(r=>r.json()).then((j)=>{ setSubscribed(!!j.enablePoolWs); setWsHealthy(!!j.healthy); setLastEventMs(Number(j.lastEventMs||0)); setWsDetails({ orca: j.orca, raydium: j.raydium }); }).catch(()=>{});
     const id = setInterval(fetchMetrics, 2000);
     return () => clearInterval(id);
   }, [paused]);
@@ -90,7 +89,19 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean }> =
       <div className="flex items-center justify-between mb-2">
         <h3 className="text-lg font-semibold">Arbitrage Metrics</h3>
         <div className="flex items-center gap-2">
-          <button className="px-2 py-1 border rounded" onClick={fetchMetrics}>Refresh Metrics</button>
+          <button className="px-2 py-1 border rounded bg-green-700/70" onClick={async()=>{
+            try {
+              const headers: Record<string, string> = { 'content-type': 'application/json' };
+              try {
+                const s = localStorage.getItem('authCreds');
+                if (s) {
+                  const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
+                  if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
+                }
+              } catch {}
+              await fetch(`${apiBase}/arb/start`, { method: 'POST', headers }).catch(()=>{});
+            } catch {}
+          }}>Start Arb</button>
           <button className="px-2 py-1 border rounded" onClick={refreshPoolsAndMetrics}>Refresh Pools</button>
           <button className="px-2 py-1 border rounded" onClick={async()=>{
             try {
@@ -112,7 +123,9 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean }> =
             } catch {}
           }}>{subscribed ? 'Unsubscribe' : 'Subscribe'}</button>
           {subscribed ? (
-            <span className={`px-2 py-0.5 text-xs rounded border ${wsHealthy ? 'bg-green-700/50 border-green-600' : 'bg-yellow-700/50 border-yellow-600'}`}>{wsHealthy ? 'Subscribed (WS Active)' : 'Subscribed (WS Idle)'}</span>
+            <span className={`px-2 py-0.5 text-xs rounded border ${wsHealthy ? 'bg-green-700/50 border-green-600' : 'bg-yellow-700/50 border-yellow-600'}`}>
+              {wsHealthy ? `Subscribed (WS Active: Ray ${wsDetails.raydium?.attached||0}/${wsDetails.raydium?.events||0}, Orca ${wsDetails.orca?.attached||0}/${wsDetails.orca?.events||0})` : 'Subscribed (WS Idle)'}
+            </span>
           ) : null}
         </div>
       </div>

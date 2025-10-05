@@ -149,6 +149,13 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
     <div className="p-2 border rounded bg-white/5">
       <div className="flex items-center justify-between mb-2">
         <h3 className="text-lg font-semibold">Arbitrage Opportunities</h3>
+        <div className="flex items-center gap-2">
+          <button className="px-2 py-1 border rounded" onClick={async()=>{
+            try { await fetch(`${apiBase}/arb/metrics/json`, { headers: { 'accept': 'application/json' } }); } catch {}
+            // Best-effort also refresh opportunities snapshot
+            try { await fetchOpps(); } catch {}
+          }}>Refresh Metrics</button>
+        </div>
       </div>
       {error && <div className="text-red-400 text-sm mb-2">{error}</div>}
       {loading && <div className="text-sm">Loading...</div>}

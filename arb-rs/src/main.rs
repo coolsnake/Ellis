@@ -8,6 +8,7 @@ use axum::extract::Query;
 use axum::extract::ws::{WebSocketUpgrade, Message};
 use axum::response::IntoResponse;
 use serde::Serialize;
+use serde::Deserialize;
 use tokio::sync::RwLock;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 mod opportunities;
@@ -89,6 +90,8 @@ struct AppState {
     force_refresh_next: bool,
     last_graph_version: u64,
     last_graph_ts: u64,
+    // When true, skip local ingestion and use graph provided externally by backend
+    use_backend_graph: bool,
 }
 
 #[derive(Serialize)]
@@ -146,7 +149,7 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer().without_time().with_ansi(false).with_writer(move || BridgeWriter { tx: bridge_tx.clone() }))
         .init();
 
-    let state = Arc::new(RwLock::new(AppState { config: default_config(), opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), pool_cache: PoolCache::new(), near_miss: None, near_miss_shortfall_bps: None, force_refresh_next: false, last_graph_version: 0, last_graph_ts: 0 }));
+    let state = Arc::new(RwLock::new(AppState { config: default_config(), opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), pool_cache: PoolCache::new(), near_miss: None, near_miss_shortfall_bps: None, force_refresh_next: false, last_graph_version: 0, last_graph_ts: 0, use_backend_graph: false }));
 
     // Kick off a background task to update opportunities using config interval (MVP placeholder)
     let loop_state = state.clone();
@@ -199,29 +202,33 @@ async fn main() -> anyhow::Result<()> {
                 let amt_sol_small: u64 = 100_000; // 0.0001 SOL for probing
                 let amt_usdc_small: u64 = 10_000; // 0.01 USDC for probing
 
-                // Pull watchlist from backend and build pair candidates (star topology to USDC)
-                let api_base = std::env::var("BACKEND_API_BASE").unwrap_or_else(|_| "http://127.0.0.1:3001/api".into());
-                let wl = sources.backend_watchlist(&api_base).await.unwrap_or_else(|e| { tracing::warn!(error=?e, "arb.watchlist fetch failed; falling back to defaults"); vec![usdc.to_string(), sol.to_string()] });
-                tracing::info!(enabled, min_bps, max_slip_bps, max_hops, watchlist_len = wl.len(), "arb.loop.start");
-                let mut pairs: Vec<(String,String,u64,u32,u32)> = Vec::new(); // (in,out,amount,in_dec,out_dec)
-                for mint in wl.iter() {
-                    if mint == usdc { continue; }
-                    // Assume unknown decimals default {USDC:6, others:9}; future: resolve decimals via token API
-                    pairs.push((mint.clone(), usdc.to_string(), amt_sol_small, 9, 6));
-                    pairs.push((usdc.to_string(), mint.clone(), amt_usdc_small, 6, 9));
-                }
-                {
-                    let mut s = loop_state.write().await;
-                    s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.detect.start pairs={}", pairs.len()) });
-                    let len = s.events.len();
-                    if len > 200 { s.events.drain(0..(len-200)); }
+                // If using backend-provided graph, skip local ingestion entirely
+                let use_backend_graph = { loop_state.read().await.use_backend_graph };
+                let (mut wl, mut pairs): (Vec<String>, Vec<(String,String,u64,u32,u32)>) = (Vec::new(), Vec::new());
+                if !use_backend_graph {
+                    // Pull watchlist from backend and build pair candidates (star topology to USDC)
+                    let api_base = std::env::var("BACKEND_API_BASE").unwrap_or_else(|_| "http://127.0.0.1:3001/api".into());
+                    wl = sources.backend_watchlist(&api_base).await.unwrap_or_else(|e| { tracing::warn!(error=?e, "arb.watchlist fetch failed; falling back to defaults"); vec![usdc.to_string(), sol.to_string()] });
+                    tracing::info!(enabled, min_bps, max_slip_bps, max_hops, watchlist_len = wl.len(), "arb.loop.start");
+                    for mint in wl.iter() {
+                        if mint == usdc { continue; }
+                        // Assume unknown decimals default {USDC:6, others:9}; future: resolve decimals via token API
+                        pairs.push((mint.clone(), usdc.to_string(), amt_sol_small, 9, 6));
+                        pairs.push((usdc.to_string(), mint.clone(), amt_usdc_small, 6, 9));
+                    }
+                    {
+                        let mut s = loop_state.write().await;
+                        s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.detect.start pairs={}", pairs.len()) });
+                        let len = s.events.len();
+                        if len > 200 { s.events.drain(0..(len-200)); }
+                    }
                 }
 
                 // Jupiter quotes disabled for arbitrage engine
                 // Raydium compute-quote is redundant when using pool edges; keep disabled by default
 
                 // Pools snapshot (rate-limited)
-                let (need_orca, need_rayd, force_now) = {
+                let (need_orca, need_rayd, force_now) = if use_backend_graph { (false, false, false) } else {
                     let s = loop_state.read().await;
                     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
                     // Refresh windows aligned with backend cache TTLs: 5 minutes
@@ -237,10 +244,10 @@ async fn main() -> anyhow::Result<()> {
                     let _ = sources.backend_refresh_pools(&api_base, Some("all")).await;
                 }
                 let t_orca = Instant::now();
-                let orca = if need_orca || { let s = loop_state.read().await; s.pool_cache.last_refresh_orca_ms == 0 } { sources.backend_orca_pools(&api_base).await } else { Ok(serde_json::json!({ "amm": [], "clmm": [] })) };
+                let orca = if use_backend_graph { Ok(serde_json::json!({ "amm": [], "clmm": [] })) } else if need_orca || { let s = loop_state.read().await; s.pool_cache.last_refresh_orca_ms == 0 } { sources.backend_orca_pools(&api_base).await } else { Ok(serde_json::json!({ "amm": [], "clmm": [] })) };
                 let orca_ms = t_orca.elapsed().as_millis();
                 let t_rayd = Instant::now();
-                let rayd = if need_rayd || { let s = loop_state.read().await; s.pool_cache.last_refresh_raydium_ms == 0 } { sources.backend_raydium_pools(&api_base).await } else { Ok(serde_json::json!({ "amm": [], "clmm": [] })) };
+                let rayd = if use_backend_graph { Ok(serde_json::json!({ "amm": [], "clmm": [] })) } else if need_rayd || { let s = loop_state.read().await; s.pool_cache.last_refresh_raydium_ms == 0 } { sources.backend_raydium_pools(&api_base).await } else { Ok(serde_json::json!({ "amm": [], "clmm": [] })) };
                 let rayd_ms = t_rayd.elapsed().as_millis();
                 let (mut orca_amm_len, mut orca_clmm_len, mut ray_amm_len, mut ray_clmm_len) = (0usize,0usize,0usize,0usize);
                 if let Ok(ref j) = orca { orca_amm_len = j.get("amm").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0); orca_clmm_len = j.get("clmm").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0); }
@@ -1053,6 +1060,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/quote", get(get_quote))
         .route("/ws/opportunities", get(ws_opportunities))
         .route("/config", post(set_config).get(get_config))
+        .route("/arb/start", post(arb_start))
         .route("/metrics", get(metrics_prom))
         .route("/metrics/json", get(metrics_json))
         .route("/graph/trigger-refresh", post(trigger_refresh))
@@ -1125,6 +1133,60 @@ async fn get_opportunities(
         near_miss_shortfall_bps: s.near_miss_shortfall_bps,
     };
     Json(OpportunitiesResponse { items, summary: Some(summary) })
+}
+
+#[derive(Deserialize)]
+struct StartReqNode { id: String }
+#[derive(Deserialize)]
+struct StartReqEdge {
+    source: String,
+    target: String,
+    dex: Option<String>,
+    fee_bps: Option<i64>,
+    liquidity: Option<f64>,
+    pool_id: Option<String>,
+    liquidity_display: Option<f64>,
+    price_a_per_b: Option<f64>,
+}
+#[derive(Deserialize)]
+struct StartReqGraph { version: Option<u64>, timestamp: Option<u64>, nodes: Vec<StartReqNode>, edges: Vec<StartReqEdge> }
+
+#[derive(Deserialize)]
+struct StartReq { graph: Option<StartReqGraph>, enable: Option<bool> }
+
+async fn arb_start(State(state): State<Arc<RwLock<AppState>>>, Json(req): Json<StartReq>) -> Json<serde_json::Value> {
+    let mut s = state.write().await;
+    // If a graph is provided, replace the internal graph and switch to external mode
+    if let Some(g) = req.graph {
+        let mut new_graph = ArbGraph::new();
+        for e in g.edges.into_iter() {
+            let dex = e.dex.unwrap_or_else(|| "Unknown".to_string());
+            let fee = e.fee_bps.unwrap_or(0);
+            let liq = e.liquidity.unwrap_or(0.0);
+            let pool_id = e.pool_id.unwrap_or_else(|| "".to_string());
+            let liq_disp = e.liquidity_display.unwrap_or(0.0);
+            let rate = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
+            new_graph.upsert_edge(&dex, &e.source, &e.target, EdgeData {
+                rate_effective: if rate > 0.0 { rate } else { 0.0 },
+                fee_bps: fee,
+                liquidity: liq,
+                dex: dex.clone(),
+                pool_id,
+                liquidity_display: liq_disp,
+            });
+        }
+        s.graph = new_graph;
+        s.metrics.graph_nodes = s.graph.g.node_count() as u64;
+        s.metrics.graph_edges = s.graph.g.edge_count() as u64;
+        s.last_graph_version = g.version.unwrap_or(s.last_graph_version);
+        s.last_graph_ts = g.timestamp.unwrap_or(s.last_graph_ts);
+        s.use_backend_graph = true;
+        s.force_refresh_next = false;
+        s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: "arb.start: graph accepted".into() });
+        let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
+    }
+    if req.enable.unwrap_or(true) { s.config.enabled = true; }
+    Json(serde_json::json!({ "ok": true, "enabled": s.config.enabled, "graph_nodes": s.metrics.graph_nodes, "graph_edges": s.metrics.graph_edges }))
 }
 
 #[derive(Serialize)]
@@ -1265,7 +1327,7 @@ async fn get_config(State(state): State<Arc<RwLock<AppState>>>) -> Json<ArbConfi
 
 fn default_config() -> ArbConfig {
     ArbConfig {
-        enabled: true,
+        enabled: false,
         min_profit_bps: 30,
         min_notional_usd: 50.0,
         max_hops: 3,

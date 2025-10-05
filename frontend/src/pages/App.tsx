@@ -1326,27 +1326,7 @@ export const App: React.FC = () => {
                   </button>
                 );
               })()}
-              {(() => {
-                const enabled = !!arbConfig?.enabled;
-                return (
-                  <button
-                    onClick={async () => {
-                      try {
-                        const r = await fetch(`${apiBase}/arb/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !enabled }) });
-                        if (r.ok) {
-                          const j = await r.json();
-                          setArbConfig(j?.config || { enabled: !enabled });
-                          await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: arb ${!enabled ? 'enabled' : 'disabled'}` }) });
-                        }
-                      } catch {}
-                    }}
-                    className={`px-4 py-2 rounded text-sm font-medium ${enabled ? 'bg-yellow-600 hover:bg-yellow-700 text-white' : 'bg-gray-600 hover:bg-gray-700 text-white'}`}
-                    title="Toggle arbitrage detection/execution loop"
-                  >
-                    {enabled ? 'Pause Arbitrage' : 'Resume Arbitrage'}
-                  </button>
-                );
-              })()}
+              {/* Replaced Pause/Resume with Start Arb handled in ArbitrageMetrics */}
               <button
                 onClick={async () => {
                   if (!confirm('Shutdown all services? This will stop the backend and related processes.')) return;
