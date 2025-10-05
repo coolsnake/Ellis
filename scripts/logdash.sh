@@ -9,13 +9,17 @@ SESSION_NAME="lockstone-logs"
 BACKEND_UNIT="lockstone-backend"
 ARB_UNIT="lockstone-arb"
 
+# Absolute path to this script for reliable re-exec
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+SELF_PATH="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]:-$0}")"
+
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || { echo "Missing required command: $1" >&2; exit 1; }
 }
 
 # If running via sudo, re-exec as original user to avoid creating a root-owned tmux session
 if [[ "${SUDO_USER-}" != "" && "${USER}" == "root" ]]; then
-  exec sudo -u "$SUDO_USER" -H -- "$0" "$@"
+  exec sudo -u "$SUDO_USER" -H -- bash "$SELF_PATH" "$@"
 fi
 
 need_cmd tmux
