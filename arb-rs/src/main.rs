@@ -1199,7 +1199,7 @@ struct StartReqEdge {
     liquidity_display: Option<f64>,
     price_a_per_b: Option<f64>,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct StartReqGraph { version: Option<u64>, timestamp: Option<u64>, nodes: Vec<StartReqNode>, edges: Vec<StartReqEdge> }
 
 #[derive(Deserialize)]
@@ -1246,7 +1246,7 @@ async fn arb_graph_snapshot(State(state): State<Arc<RwLock<AppState>>>, Json(req
         let pool_id = e.pool_id.unwrap_or_else(|| "".to_string());
         let liq_disp = e.liquidity_display.unwrap_or(0.0);
         let rate = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
-        let rate_eff = if rate > 0.0 { rate * (1.0 - (fee as f64)/10_000.0).max(0.0) } else { 0.0 };
+        let rate_eff = if rate > 0.0 { let f = 1.0 - (fee as f64)/10_000.0; rate * if f > 0.0 { f } else { 0.0 } } else { 0.0 };
         new_graph.upsert_edge(&dex, &e.source, &e.target, EdgeData {
             rate_effective: rate_eff,
             fee_bps: fee,
@@ -1295,7 +1295,7 @@ async fn arb_start(State(state): State<Arc<RwLock<AppState>>>, Json(req): Json<S
             let pool_id = e.pool_id.unwrap_or_else(|| "".to_string());
             let liq_disp = e.liquidity_display.unwrap_or(0.0);
             let rate = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
-            let rate_eff = if rate > 0.0 { rate * (1.0 - (fee as f64)/10_000.0).max(0.0) } else { 0.0 };
+            let rate_eff = if rate > 0.0 { let f = 1.0 - (fee as f64)/10_000.0; rate * if f > 0.0 { f } else { 0.0 } } else { 0.0 };
             new_graph.upsert_edge(&dex, &e.source, &e.target, EdgeData { rate_effective: rate_eff, fee_bps: fee, liquidity: liq, dex: dex.clone(), pool_id, liquidity_display: liq_disp });
         }
         Some((new_graph, g.version, g.timestamp, new_graph.g.node_count() as u64, new_graph.g.edge_count() as u64))
@@ -1351,7 +1351,11 @@ async fn get_quote(State(state): State<Arc<RwLock<AppState>>>, Query(q): Query<Q
     let s = state.read().await;
     let fee_dec = (s.config.fee_bps as f64) / 10_000.0;
     let slip_dec = (s.config.max_slippage_bps as f64) / 10_000.0;
-    let adj = |r: f64| r.max(1e-12) * (1.0 - fee_dec).max(0.0) * (1.0 - slip_dec).max(0.0);
+    let adj = |r: f64| {
+        let f1 = 1.0 - fee_dec;
+        let f2 = 1.0 - slip_dec;
+        r.max(1e-12) * (if f1 > 0.0 { f1 } else { 0.0 }) * (if f2 > 0.0 { f2 } else { 0.0 })
+    };
     // Try AMM first
     for p in s.pool_cache.amm.iter() {
         if (p.mint_a == q.input_mint && p.mint_b == q.output_mint) && p.price_a_per_b > 0.0 {
