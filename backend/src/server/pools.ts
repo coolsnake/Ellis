@@ -1193,17 +1193,20 @@ async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
       if (sqrt_price_x64 > 0 && Number.isFinite(cDecA) && Number.isFinite(cDecB)) {
         const two64 = Math.pow(2, 64);
         const ratio = sqrt_price_x64 / two64;
-        const cand = (ratio * ratio) / Math.pow(10, cDecB - cDecA);
+        // Uniswap/CLMM: price_B_per_A = (ratio^2) * 10^(decB - decA)
+        // We want price_A_per_B = 1 / price_B_per_A = 10^(decA - decB) / (ratio^2)
+        const priceBperA = (ratio * ratio) * Math.pow(10, cDecB - cDecA);
+        const cand = priceBperA > 0 ? (1 / priceBperA) : 0; // A per 1 B
         try {
           const { getPriceByMint } = await import('./priceStore.js');
           const pa = getPriceByMint(cA)?.usdc ?? null;
           const pb = getPriceByMint(cB)?.usdc ?? null;
           if (pa && pb && (pa as number) > 0 && (pb as number) > 0 && cand > 0) {
-            const ref = (pa as number) / (pb as number);
-            const dev1 = Math.max(cand / ref, ref / cand);
-            const inv = 1 / cand;
-            const dev2 = Math.max(inv / ref, ref / inv);
-            priceFromSqrt = dev2 + 1e-12 < dev1 ? inv : cand;
+            const ref = (pa as number) / (pb as number); // expected A per B
+            const devCand = Math.max(cand / ref, ref / cand);
+            const inv = cand > 0 ? (1 / cand) : 0; // B per A
+            const devInv = inv > 0 ? Math.max(inv / ref, ref / inv) : Number.POSITIVE_INFINITY;
+            priceFromSqrt = devInv + 1e-12 < devCand ? inv : cand;
           } else {
             priceFromSqrt = cand;
           }
