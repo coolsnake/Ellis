@@ -39,6 +39,15 @@ export const SystemConfig: React.FC<SystemConfigProps> = ({ onSave, onCancel, in
     logCategories: [] as string[],
     enabledLogCategories: [] as string[],
     frontendEnabledLogCategories: [] as string[],
+    // Structured logging (optional advanced): mirrored from backend CONFIG.system.log
+    log: undefined as undefined | {
+      level?: 'error'|'warn'|'info'|'debug';
+      categories?: Record<string,'error'|'warn'|'info'|'debug'>;
+      enableCodes?: string[];
+      disableCodes?: string[];
+      sample?: Record<string, number>;
+      rateLimit?: Record<string, { perSec?: number; minIntervalMs?: number }>;
+    },
   });
 
   useEffect(() => {
@@ -73,6 +82,7 @@ export const SystemConfig: React.FC<SystemConfigProps> = ({ onSave, onCancel, in
         jupiterLegacyTransaction: initialConfig.fees?.jupiterLegacyTransaction || false,
         jupiterSlippageBps: initialConfig.fees?.jupiterSlippageBps || 50,
         jupiterMaxSlippageBps: initialConfig.fees?.jupiterMaxSlippageBps || 500,
+        log: (initialConfig.system?.log || undefined),
       });
       initialized.current = true;
     }
@@ -95,6 +105,7 @@ export const SystemConfig: React.FC<SystemConfigProps> = ({ onSave, onCancel, in
         wrapAndUnwrapSol: config.wrapAndUnwrapSol,
         enabledLogCategories: config.enabledLogCategories,
         frontendEnabledLogCategories: config.frontendEnabledLogCategories,
+        log: config.log,
       },
       fees: {
         baseFee: config.baseFee,
@@ -314,6 +325,79 @@ export const SystemConfig: React.FC<SystemConfigProps> = ({ onSave, onCancel, in
                 <label htmlFor="wrapAndUnwrapSol" className="text-sm font-medium text-gray-300">
                   Wrap/Unwrap SOL automatically (disable for persistent WSOL)
                 </label>
+              </div>
+            </div>
+          </div>
+
+          {/* Advanced Logging (Structured) */}
+          <div className="bg-gray-700 rounded-lg p-4">
+            <h3 className="text-lg font-semibold text-white mb-2">Advanced Logging (Structured)</h3>
+            <p className="text-xs text-gray-300 mb-3">Configure per-category levels, enable/disable codes, sampling, and rate-limits. Leave empty to use defaults.</p>
+            <div className="grid grid-cols-1 gap-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Global Level</label>
+                <select
+                  value={(config.log?.level as any) || ''}
+                  onChange={(e) => handleChange('log', { ...(config.log || {}), level: e.target.value as any })}
+                  className="w-full px-3 py-2 bg-gray-600 border border-gray-500 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">(inherit)</option>
+                  <option value="debug">Debug</option>
+                  <option value="info">Info</option>
+                  <option value="warn">Warn</option>
+                  <option value="error">Error</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Per-Category Levels (JSON)</label>
+                <textarea
+                  rows={4}
+                  value={JSON.stringify(config.log?.categories || {}, null, 2)}
+                  onChange={(e) => {
+                    try { const v = JSON.parse(e.target.value || '{}'); handleChange('log', { ...(config.log || {}), categories: v }); } catch {}
+                  }}
+                  className="w-full px-3 py-2 font-mono text-xs bg-gray-600 border border-gray-500 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">Enable Codes (JSON array)</label>
+                  <textarea
+                    rows={3}
+                    value={JSON.stringify(config.log?.enableCodes || [])}
+                    onChange={(e) => { try { handleChange('log', { ...(config.log || {}), enableCodes: JSON.parse(e.target.value || '[]') }); } catch {} }}
+                    className="w-full px-3 py-2 font-mono text-xs bg-gray-600 border border-gray-500 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">Disable Codes (JSON array)</label>
+                  <textarea
+                    rows={3}
+                    value={JSON.stringify(config.log?.disableCodes || [])}
+                    onChange={(e) => { try { handleChange('log', { ...(config.log || {}), disableCodes: JSON.parse(e.target.value || '[]') }); } catch {} }}
+                    className="w-full px-3 py-2 font-mono text-xs bg-gray-600 border border-gray-500 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">Sampling (code->prob) JSON</label>
+                  <textarea
+                    rows={3}
+                    value={JSON.stringify(config.log?.sample || {}, null, 2)}
+                    onChange={(e) => { try { handleChange('log', { ...(config.log || {}), sample: JSON.parse(e.target.value || '{}') }); } catch {} }}
+                    className="w-full px-3 py-2 font-mono text-xs bg-gray-600 border border-gray-500 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">Rate Limit (code->spec) JSON</label>
+                  <textarea
+                    rows={3}
+                    value={JSON.stringify(config.log?.rateLimit || {}, null, 2)}
+                    onChange={(e) => { try { handleChange('log', { ...(config.log || {}), rateLimit: JSON.parse(e.target.value || '{}') }); } catch {} }}
+                    className="w-full px-3 py-2 font-mono text-xs bg-gray-600 border border-gray-500 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
               </div>
             </div>
           </div>

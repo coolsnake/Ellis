@@ -23,7 +23,7 @@ import { CollapsibleSection } from '../components/CollapsibleSection';
 import { setLogLevel as setFrontendLogLevel } from '../utils/logger';
 // Login page is now routed at /login; main app assumes authenticated state
 
-type LogEvent = { level: string; message: string; timestamp: string; context?: Record<string, unknown>; cat?: string; muted?: boolean };
+type LogEvent = { level: string; message: string; timestamp: string; context?: Record<string, unknown>; cat?: string; subcat?: string; code?: string; cid?: string; span?: 'start' | 'end'; muted?: boolean };
 
 export const App: React.FC = () => {
   const [system, setSystem] = useState<any>({});
@@ -257,6 +257,7 @@ export const App: React.FC = () => {
     socket.on('log', (evt: LogEvent & { cat?: string; muted?: boolean }) => {
       const cat = (evt?.cat || '').toLowerCase();
       const msg = (evt?.message || '').toString();
+      const code = (evt?.code || '').toString();
       // Frontend category filter: use server-provided defaults if present
       const serverCats: string[] | undefined = (system as any)?.system?.frontendEnabledLogCategories || (system as any)?.system?.enabledLogCategories;
       const localCatsJson = typeof window !== 'undefined' ? window.localStorage.getItem('frontendEnabledLogCategories') : null;
@@ -277,19 +278,19 @@ export const App: React.FC = () => {
         push(setTerminalLogs);
       }
       // Trade Log: trade lifecycle (quotes ok to show here if directly tied to a trade attempt)
-      if (cat === 'trade' || cat === 'pretrade' || /^pretrade:|^trade:/i.test(msg)) {
+      if (cat === 'trade' || cat === 'pretrade' || /^pretrade:|^trade:/i.test(msg) || /^PRETRADE\.|^TRADE\./i.test(code)) {
         push(setTradeLogs);
       }
       // Strategy Log: strategy computations, Drift, Jupiter strategy fetchers
-      if (cat === 'strategy' || cat === 'drift' || /^strategy:/i.test(msg)) {
+      if (cat === 'strategy' || cat === 'drift' || /^strategy:/i.test(msg) || /^STRATEGY\.|^DRIFT\./i.test(code)) {
         push(setStrategyLogs);
       }
       // Arbitrage Log: arb engine activity, Raydium/Orca pool data fetchers, and opportunity details
-      if (cat === 'arb' || cat === 'opportunity' || cat === 'pools' || cat === 'raydium' || cat === 'orca' || /^arb\b|^pretrade:arb|^trade:arb|^opportunity:/i.test(msg)) {
+      if (cat === 'arb' || cat === 'opportunity' || cat === 'pools' || cat === 'raydium' || cat === 'orca' || /^arb\b|^pretrade:arb|^trade:arb|^opportunity:/i.test(msg) || /^ARB\.|^GRAPH\.|^POOLS\./i.test(code)) {
         push(setArbLogs);
       }
       // API Log: internal/external API requests (exclude pools/arb/strategy-related fetchers)
-      if (cat === 'api' || cat === 'jupiter' || /^api:|^jup\./i.test(msg)) {
+      if (cat === 'api' || cat === 'jupiter' || /^api:|^jup\./i.test(msg) || /^API\.|^JUP\./i.test(code)) {
         push(setApiLogs);
       }
     });
@@ -2463,7 +2464,7 @@ export const App: React.FC = () => {
               const color = l.level === 'error' ? 'text-red-400' : l.level === 'warn' ? 'text-yellow-400' : (colorByCat as any)[(l as any).cat] || 'text-gray-300';
               return (
                 <li key={i} className={`text-sm ${color}`}>
-                  <span className="text-gray-500">[{l.timestamp}]</span> <span className="uppercase text-gray-400">{l.level}</span> {(l as any).cat ? <span className={`uppercase ${color}`}>[{(l as any).cat}]</span> : null} {l.message}
+                  <span className="text-gray-500">[{l.timestamp}]</span> <span className="uppercase text-gray-400">{l.level}</span> {(l as any).cat ? <span className={`uppercase ${color}`}>[{(l as any).cat}]</span> : null} {(l as any).code ? <span className="text-blue-300">[{(l as any).code}]</span> : null} {(l as any).cid ? <span className="text-gray-400">(cid={(l as any).cid})</span> : null} {l.message}
                 </li>
               );
             })}
@@ -2478,7 +2479,7 @@ export const App: React.FC = () => {
               const color = l.level === 'error' ? 'text-red-400' : l.level === 'warn' ? 'text-yellow-400' : (colorByCat as any)[(l as any).cat] || 'text-gray-300';
               return (
                 <li key={i} className={`text-sm ${color}`}>
-                  <span className="text-gray-500">[{l.timestamp}]</span> <span className="uppercase text-gray-400">{l.level}</span> {(l as any).cat ? <span className={`uppercase ${color}`}>[{(l as any).cat}]</span> : null} {l.message}
+                  <span className="text-gray-500">[{l.timestamp}]</span> <span className="uppercase text-gray-400">{l.level}</span> {(l as any).cat ? <span className={`uppercase ${color}`}>[{(l as any).cat}]</span> : null} {(l as any).code ? <span className="text-blue-300">[{(l as any).code}]</span> : null} {(l as any).cid ? <span className="text-gray-400">(cid={(l as any).cid})</span> : null} {l.message}
                 </li>
               );
             })}
@@ -2492,7 +2493,7 @@ export const App: React.FC = () => {
               const color = l.level === 'error' ? 'text-red-400' : l.level === 'warn' ? 'text-yellow-400' : (colorByCat as any)[(l as any).cat] || 'text-green-300';
               return (
                 <li key={i} className={`text-sm ${color}`}>
-                  <span className="text-gray-500">[{l.timestamp}]</span> <span className="uppercase text-gray-400">{l.level}</span> {(l as any).cat ? <span className={`uppercase ${color}`}>[{(l as any).cat}]</span> : null} {l.message}
+                  <span className="text-gray-500">[{l.timestamp}]</span> <span className="uppercase text-gray-400">{l.level}</span> {(l as any).cat ? <span className={`uppercase ${color}`}>[{(l as any).cat}]</span> : null} {(l as any).code ? <span className="text-blue-300">[{(l as any).code}]</span> : null} {(l as any).cid ? <span className="text-gray-400">(cid={(l as any).cid})</span> : null} {l.message}
                 </li>
               );
             })}
@@ -2506,7 +2507,7 @@ export const App: React.FC = () => {
               const color = l.level === 'error' ? 'text-red-400' : l.level === 'warn' ? 'text-yellow-400' : (colorByCat as any)[(l as any).cat] || 'text-indigo-300';
               return (
                 <li key={i} className={`text-sm ${color}`}>
-                  <span className="text-gray-500">[{l.timestamp}]</span> <span className="uppercase text-gray-400">{l.level}</span> {(l as any).cat ? <span className={`uppercase ${color}`}>[{(l as any).cat}]</span> : null} {l.message}
+                  <span className="text-gray-500">[{l.timestamp}]</span> <span className="uppercase text-gray-400">{l.level}</span> {(l as any).cat ? <span className={`uppercase ${color}`}>[{(l as any).cat}]</span> : null} {(l as any).code ? <span className="text-blue-300">[{(l as any).code}]</span> : null} {(l as any).cid ? <span className="text-gray-400">(cid={(l as any).cid})</span> : null} {l.message}
                 </li>
               );
             })}

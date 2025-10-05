@@ -132,10 +132,11 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
     };
     const onArbLog = (evt: any) => {
       const msg: string = (evt?.message || '').toString();
+      const code: string = String(evt?.code || '').toUpperCase();
       const cat: string = String(evt?.cat || evt?.context?.cat || '').toLowerCase();
-      const isPretradeArb = /\bpretrade:arb\b/.test(msg);
+      const isPretradeArb = /\bpretrade:arb\b/.test(msg) || /^PRETRADE\./.test(code);
       const isOpportunityCat = cat === 'opportunity';
-      const isOpportunityMsg = /^opportunity:/.test(msg) || /arb\.(opportunity|near_miss)/i.test(msg);
+      const isOpportunityMsg = /^opportunity:/.test(msg) || /arb\.(opportunity|near_miss)/i.test(msg) || /^ARB\.(OPPORTUNITY|NEAR_MISS)/.test(code);
       if (isPretradeArb || isOpportunityCat || isOpportunityMsg) {
         setLastDetectionTs(Date.now());
         fetchOpps();

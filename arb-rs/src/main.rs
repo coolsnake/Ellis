@@ -235,8 +235,16 @@ async fn main() -> anyhow::Result<()> {
                 let amt_sol_small: u64 = 100_000; // 0.0001 SOL for probing
                 let amt_usdc_small: u64 = 10_000; // 0.01 USDC for probing
 
-                // If using backend-provided graph, skip local ingestion entirely
-                let use_backend_graph = { loop_state.read().await.use_backend_graph };
+                // If using backend-provided graph, skip local ingestion entirely, unless backend graph is stale
+                let (use_backend_graph_raw, last_backend_ts) = { let s = loop_state.read().await; (s.use_backend_graph, s.last_graph_ts) };
+                let now_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+                // Fallback to local rebuild if backend graph appears stale
+                let stale_ms = now_ts.saturating_sub(last_backend_ts);
+                let backend_stale = use_backend_graph_raw && (last_backend_ts == 0 || stale_ms > 15_000);
+                let use_backend_graph = use_backend_graph_raw && !backend_stale;
+                if backend_stale {
+                    tracing::info!(stale_ms, "arb.graph.mode: backend stale → fallback to local rebuild this tick");
+                }
                 let (mut wl, mut pairs): (Vec<String>, Vec<(String,String,u64,u32,u32)>) = (Vec::new(), Vec::new());
                 if !use_backend_graph {
                     // Pull watchlist from backend and build pair candidates (star topology to USDC)
@@ -1153,8 +1161,10 @@ async fn main() -> anyhow::Result<()> {
                         let top_bps = top.profit_bps;
                         let path = top.path.join("->");
                         s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.detect.done ms={} opps={} top_bps={} path={}", det_ms, active, top_bps, path) });
+                        tracing::info!(det_ms, opps = active, top_bps, path = %path, "arb.detect.done");
                     } else {
                         s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.detect.done ms={} opps=0", det_ms) });
+                        tracing::info!(det_ms, opps = 0u64, "arb.detect.done");
                     }
                     let len = s.events.len();
                     if len > 200 { s.events.drain(0..(len-200)); }

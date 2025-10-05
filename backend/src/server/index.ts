@@ -108,10 +108,10 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   const startMs = Date.now();
   const reqId = Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-4);
   (req as any).reqId = reqId;
-  logger.info(`api.request ${req.method} ${req.path}`, { reqId, method: req.method, path: req.path, query: req.query, body: req.body, ip: req.ip, ua: req.headers['user-agent'], cat: 'api' });
+  logger.info(`api.request ${req.method} ${req.path}`, { reqId, cid: reqId, method: req.method, path: req.path, query: req.query, body: req.body, ip: req.ip, ua: req.headers['user-agent'], cat: 'api', subcat: 'http', code: 'API.REQUEST', span: 'start' });
   res.on('finish', () => {
     const durationMs = Date.now() - startMs;
-    logger.info(`api.response ${req.method} ${req.path} ${res.statusCode} ${durationMs}ms`, { reqId, method: req.method, path: req.path, status: res.statusCode, durationMs, cat: 'api' });
+    logger.info(`api.response ${req.method} ${req.path} ${res.statusCode} ${durationMs}ms`, { reqId, cid: reqId, method: req.method, path: req.path, status: res.statusCode, durationMs, cat: 'api', subcat: 'http', code: 'API.RESPONSE', span: 'end' });
   });
   next();
 });
@@ -204,12 +204,12 @@ try {
 
 logger.on('log', (event: any) => {
   const msg: string = event?.message || '';
+  const level = String(event?.level || 'info').toLowerCase();
   // Only suppress debug in non-debug mode; when system logLevel is debug, forward all
-  const isDebugLevel = String((event?.level || '')).toLowerCase() === 'debug';
-  const systemLevel = String((CONFIG as any)?.system?.logLevel || process.env.LOG_LEVEL || 'info').toLowerCase();
-  if (isDebugLevel && systemLevel !== 'debug') return;
-  // normalize categories for color-coding on UI
-  let cat: string | undefined = event?.context?.cat;
+  const systemLevel = String(((CONFIG as any)?.system?.log?.level || (CONFIG as any)?.system?.logLevel || process.env.LOG_LEVEL || 'info')).toLowerCase();
+  if (level === 'debug' && systemLevel !== 'debug') return;
+  // Prefer provided cat/subcat/code; compute cat only if missing
+  let cat: string | undefined = (event?.cat || event?.context?.cat);
   if (!cat) {
     if (/^api[.:]\b|^api\b/i.test(msg)) cat = 'api';
     else if (/^(jup|jupiter)[.:]\b|^(jup|jupiter)\b/i.test(msg)) cat = 'jupiter';
@@ -237,19 +237,16 @@ logger.on('log', (event: any) => {
   if (!cat && /drift|dlob|perp|subaccount|funding/i.test(msg)) cat = 'drift';
   if (!cat && /grid|strategy/i.test(msg)) cat = 'strategy';
   if (!cat && /server|backend|routes registered|listening on/i.test(msg)) cat = 'server';
-  const enriched = { ...event, timestamp: ts(), cat: cat || 'other' } as any;
-  // Category filtering: if disabled, drop entirely at backend
+  const enriched = { ...event, timestamp: ts(), cat: (cat || 'other').toLowerCase() } as any;
+  // Category filtering (legacy): if disabled, drop entirely at backend
   try {
     const enabled: string[] | undefined = (CONFIG as any)?.system?.enabledLogCategories;
-    // Only enforce filtering when list is non-empty
     if (Array.isArray(enabled) && enabled.length > 0) {
       const name = String(enriched.cat || 'other').toLowerCase();
-      if (!enabled.includes(name)) {
-        return; // muted at backend
-      }
+      if (!enabled.includes(name)) return;
     }
   } catch {}
-  try { recordSessionLog({ level: String(event?.level || 'info'), message: msg, timestamp: enriched.timestamp, context: event?.context, cat }); } catch {}
+  try { recordSessionLog({ level: String(event?.level || 'info'), message: msg, timestamp: enriched.timestamp, context: event?.context, cat: enriched.cat }); } catch {}
   // simple de-dup: drop identical consecutive messages within 800ms
   const now = Date.now();
   if (lastLogSig && lastLogSig.msg === msg && lastLogSig.level === (event?.level || 'info') && (now - lastLogSig.ts) < 800) {

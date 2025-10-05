@@ -3,12 +3,18 @@ import { promises as fsp } from 'fs';
 import { resolve } from 'path';
 import { CONFIG } from './config.js';
 
+export type LogSpan = 'start' | 'end' | undefined;
+
 export type LogEvent = {
   level: 'info' | 'error' | 'warn' | 'debug';
   message: string;
   context?: Record<string, unknown>;
   timestamp: string;
   cat?: string;
+  subcat?: string;
+  code?: string;
+  cid?: string;
+  span?: LogSpan;
 };
 
 class RealtimeLogger extends EventEmitter {
@@ -35,8 +41,71 @@ class RealtimeLogger extends EventEmitter {
     if (path) this.filePath = path;
   }
 
-  private shouldLog(level: LogEvent['level']): boolean {
-    return this.enabled && this.order[level] <= this.order[this.level];
+  private shouldLog(level: LogEvent['level'], cat?: string, code?: string): boolean {
+    if (!this.enabled) return false;
+    // Global level gate
+    if (this.order[level] > this.order[this.level]) return false;
+    try {
+      // Optional structured logging config
+      const logCfg = (CONFIG as any)?.system?.log as any | undefined;
+      if (!logCfg) return true;
+      const lvlOrder = this.order;
+      const name = String(cat || 'other').toLowerCase();
+      // Per-category minimum level
+      const catLevels = (logCfg.categories || {}) as Record<string, string>;
+      const keys = Object.keys(catLevels);
+      // Support nested cat.subcat overrides by longest match
+      let minLevel: LogEvent['level'] | undefined;
+      if (keys.length) {
+        let bestLen = -1;
+        for (const k of keys) {
+          const kl = String(k).toLowerCase();
+          if (name === kl || name.startsWith(kl + '.')) {
+            if (kl.length > bestLen) { bestLen = kl.length; minLevel = (String(catLevels[k]).toLowerCase() as any); }
+          }
+        }
+      }
+      if (minLevel && lvlOrder[level] > (lvlOrder[minLevel] ?? lvlOrder.info)) return false;
+      // Code enable/disable patterns
+      const enableCodes: string[] = Array.isArray(logCfg.enableCodes) ? logCfg.enableCodes : [];
+      const disableCodes: string[] = Array.isArray(logCfg.disableCodes) ? logCfg.disableCodes : [];
+      if (code && disableCodes.length && this.matchesAny(code, disableCodes)) return false;
+      if (enableCodes.length && code) {
+        // When enableCodes configured, only allow events that match these (unless level>=warn)
+        if (lvlOrder[level] > lvlOrder.warn && !this.matchesAny(code, enableCodes)) return false;
+      }
+      // Sampling
+      const sample: Record<string, number> = (logCfg.sample || {}) as any;
+      if (code && typeof sample[code] === 'number') {
+        const p = Number(sample[code]);
+        if (Number.isFinite(p) && p >= 0 && p < 1) { if (Math.random() > p) return false; }
+      }
+      // Rate limit (simple per-code interval)
+      const rate = (logCfg.rateLimit || {}) as Record<string, { perSec?: number; minIntervalMs?: number }>;
+      if (code && (rate[code]?.perSec || rate[code]?.minIntervalMs)) {
+        const now = Date.now();
+        const minMs = rate[code]?.minIntervalMs ?? (rate[code]?.perSec ? 1000 / Math.max(1, Number(rate[code]?.perSec)) : 0);
+        if (minMs > 0) {
+          const last = this.lastByCode.get(code) || 0;
+          if ((now - last) < minMs) return false;
+          this.lastByCode.set(code, now);
+        }
+      }
+      return true;
+    } catch {
+      return true;
+    }
+  }
+
+  private lastByCode: Map<string, number> = new Map();
+
+  private matchesAny(code: string, patterns: string[]): boolean {
+    const needle = String(code).toUpperCase();
+    for (const p of patterns) {
+      const pat = String(p || '').toUpperCase().replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+      try { if (new RegExp('^' + pat + '$').test(needle)) return true; } catch {}
+    }
+    return false;
   }
 
   private deriveCategory(message: string, context?: Record<string, unknown>): string {
@@ -100,24 +169,35 @@ class RealtimeLogger extends EventEmitter {
   }
 
   log(level: LogEvent['level'], message: string, context?: Record<string, unknown>): void {
-    if (!this.shouldLog(level)) return;
-    const cat = this.deriveCategory(message, context);
+    const ctx = context || undefined;
+    // Promote structured fields from context if provided
+    const catFromCtx = (ctx as any)?.cat as string | undefined;
+    const subcat = (ctx as any)?.subcat as string | undefined;
+    const code = (ctx as any)?.code as string | undefined;
+    const cid = (ctx as any)?.cid as string | undefined;
+    const span = (ctx as any)?.span as LogSpan | undefined;
+    const cat = (catFromCtx && typeof catFromCtx === 'string') ? catFromCtx.toLowerCase() : this.deriveCategory(message, ctx);
     if (!this.isCategoryAllowed(cat)) return;
+    if (!this.shouldLog(level, cat, code)) return;
     const event: LogEvent = {
       level,
       message,
-      context,
+      context: ctx,
       // Use short local time; backend websocket will also enforce
       timestamp: new Date().toLocaleTimeString(),
       cat,
+      subcat,
+      code,
+      cid,
+      span,
     };
     this.emit('log', event);
     const prefix = level.toUpperCase();
     // eslint-disable-next-line no-console
-    console.log(`[${prefix}]`, event.timestamp, `[${cat}]`, message, context ? JSON.stringify(context) : '');
+    console.log(`[${prefix}]`, event.timestamp, `[${cat}${subcat?'.'+subcat:''}]`, code ? code + ':' : '', message, ctx ? JSON.stringify(ctx) : '');
     if (this.logToFile) {
       try {
-        const payload = JSON.stringify({ ts: event.timestamp, level, cat, message, context: context || {} });
+        const payload = JSON.stringify({ ts: event.timestamp, level, cat, subcat, code, cid, span, message, context: ctx || {} });
         this.writeFileLine(payload);
       } catch {}
     }
@@ -144,5 +224,22 @@ export const logger = new RealtimeLogger();
 export const setLogLevel = (level: LogEvent['level']) => logger.setLevel(level);
 export const setLoggingEnabled = (val: boolean) => logger.setEnabled(val);
 export const setFileLogging = (toFile: boolean, path?: string) => logger.setFileLogging(toFile, path);
+
+export type StructuredLogArgs = {
+  level: LogEvent['level'];
+  cat: string;
+  subcat?: string;
+  code?: string;
+  cid?: string;
+  span?: LogSpan;
+  message: string;
+  ctx?: Record<string, unknown>;
+};
+
+export function logStructured(args: StructuredLogArgs): void {
+  const { level, cat, subcat, code, cid, span, message, ctx } = args;
+  const context = { ...(ctx || {}), cat, ...(subcat ? { subcat } : {}), ...(code ? { code } : {}), ...(cid ? { cid } : {}), ...(span ? { span } : {}) } as Record<string, unknown>;
+  logger.log(level, message, context);
+}
 
 

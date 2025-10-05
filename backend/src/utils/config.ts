@@ -86,7 +86,7 @@ export const CONFIG = {
     priceFeedTtlMs: Number(process.env.PRICE_FEED_TTL_MS || 15000),
     // Price feed responsiveness - if true, always fetch prices when older than targetTickTimeMs
     priceFeedResponsive: (process.env.PRICE_FEED_RESPONSIVE || 'false') === 'true',
-    // Log categories and filtering
+    // Log categories and filtering (legacy)
     logCategories: [
       'api',
       'jupiter',
@@ -110,6 +110,44 @@ export const CONFIG = {
     ],
     // If provided, backend will tag logs outside this set as muted
     enabledLogCategories: undefined as undefined | string[],
+    // New structured logging controls (optional). When present, these take precedence.
+    log: {
+      level: (process.env.LOG_LEVEL as any) || 'info',
+      // Per-category minimum levels. Keys can be nested like "pretrade.sim".
+      categories: {
+        api: 'debug',
+        pretrade: 'warn',
+        'pretrade.sim': 'info',
+        strategy: 'info',
+        'strategy.grid': 'info',
+        drift: 'warn',
+        jupiter: 'warn',
+        graph: 'info',
+        pools: 'info',
+        arb: 'info',
+        system: 'info',
+        wallet: 'info',
+      } as Record<string, 'error' | 'warn' | 'info' | 'debug'>,
+      // Force-include or exclude specific codes (supports * globs)
+      enableCodes: [] as string[],
+      disableCodes: [] as string[],
+      // Sampling probability per code (0..1)
+      sample: {} as Record<string, number>,
+      // Simple per-code rate limits
+      rateLimit: {} as Record<string, { perSec?: number; minIntervalMs?: number }>,
+      // Named presets the UI can apply (optional)
+      presets: {
+        dev: {
+          categories: { api: 'debug', 'pretrade.sim': 'info', strategy: 'info', drift: 'warn', jupiter: 'warn' }
+        },
+        ops: {
+          categories: { api: 'warn', pretrade: 'warn', 'strategy.grid': 'info', graph: 'info', pools: 'info', arb: 'info' }
+        },
+        research: {
+          categories: { arb: 'debug', graph: 'debug', pools: 'info', api: 'debug', 'drift.dlob': 'info' }
+        }
+      } as Record<string, any>,
+    },
     // Optional: CORS allowlist (comma-separated origins), '*' to allow all
     corsOrigin: process.env.CORS_ORIGIN,
     // Enforce HTTPS by redirecting non-secure requests (behind reverse proxy)
