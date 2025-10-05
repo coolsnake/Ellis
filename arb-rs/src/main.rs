@@ -813,6 +813,11 @@ async fn main() -> anyhow::Result<()> {
                                 bf_required_rate: None,
                                 bf_rate_delta_bps: None,
                             };
+                            // Prefer the closest-to-threshold near-miss between BF slack and cycle-based best_below
+                            let shortfall_nm = (min_bps - profit_bps).max(0);
+                            if near_pair.as_ref().map(|(_, sh)| shortfall_nm < *sh).unwrap_or(true) {
+                                near_pair = Some((near, shortfall_nm));
+                            }
                             // Attach BF slack debug for near-miss
                             near.bf_slack_log = Some(nmcy.slack);
                             // If we can estimate required closing-edge rate to hit threshold

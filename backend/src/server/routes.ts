@@ -1532,6 +1532,10 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
           const { pushArbGraphSnapshot, notifyArbServiceRefresh } = await import('./realtime.js');
           try { await pushArbGraphSnapshot(snap); } catch {}
           try { await notifyArbServiceRefresh(); } catch {}
+          try {
+            logger.info('arb.push snapshot forwarded', { version: snap.version, nodes: snap.nodes.length, edges: snap.edges.length, cat: 'arb' });
+            emit('log', { level: 'info', message: `arb:push snapshot v=${snap.version} nodes=${snap.nodes.length} edges=${snap.edges.length}` as any, timestamp: new Date().toISOString(), context: { cat: 'arb' } });
+          } catch {}
         } catch {}
       } catch {}
       const ms = Date.now() - t0;

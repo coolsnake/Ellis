@@ -116,15 +116,13 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       // When a forced snapshot is requested, ensure caches are warmed briefly to avoid empty graphs
       if (force) {
         try {
-          const { peekRaydiumPools, peekOrcaPools, getRaydiumPoolsNormalized, getOrcaPoolsCached, userSubscribed } = await import('./pools.js');
+          const { peekRaydiumPools, peekOrcaPools, getRaydiumPoolsNormalized, getOrcaPoolsCached } = await import('./pools.js');
           const hasAny = (p: any) => ((p?.amm?.length || 0) + (p?.clmm?.length || 0)) > 0;
           let rayPeek = peekRaydiumPools();
           let orcPeek = peekOrcaPools();
           if (!hasAny(rayPeek) || !hasAny(orcPeek)) {
-            // Do not auto-enable websockets or loops; only perform a one-shot fetch if user is subscribed
-            if (userSubscribed) {
-              try { await Promise.allSettled([getRaydiumPoolsNormalized(true), getOrcaPoolsCached(true)]); } catch {}
-            }
+            // Perform a one-shot fetch to warm caches regardless of subscription; functions enforce their own min-force gaps
+            try { await Promise.allSettled([getRaydiumPoolsNormalized(true), getOrcaPoolsCached(true)]); } catch {}
             const deadline = Date.now() + 1000;
             while (Date.now() < deadline) {
               rayPeek = peekRaydiumPools();
@@ -729,12 +727,14 @@ export function startGraphStream(io: SocketIOServer): void {
   const period = 30_000;
   const tick = async () => {
     try {
-      const snap = await getGraphSnapshot(false);
+      const snap = await getGraphSnapshot(true);
       if (!last) {
         io.emit('graph-snapshot', snap);
         // Push initial snapshot to arb-rs to enter backend-graph mode immediately
         try { await pushArbGraphSnapshot(snap); } catch {}
         try { await notifyArbServiceRefresh(); } catch {}
+        try { logger.info('graph.push initial snapshot', { version: snap.version, nodes: snap.nodes.length, edges: snap.edges.length, cat: 'graph' }); } catch {}
+        try { emit('log', { level: 'info', message: `graph:push snapshot v=${snap.version} nodes=${snap.nodes.length} edges=${snap.edges.length}`, timestamp: new Date().toISOString(), context: { cat: 'graph' } }); } catch {}
         try { enablePoolWebsocketRefreshes(); } catch {}
         last = snap;
         return;
@@ -750,9 +750,16 @@ export function startGraphStream(io: SocketIOServer): void {
           if (shouldRebase) {
             try { await pushArbGraphSnapshot(snap); } catch {}
             diffSinceRebase = 0; lastRebaseMs = nowMs;
+            try { logger.info('graph.push rebase snapshot', { version: snap.version, nodes: snap.nodes.length, edges: snap.edges.length, cat: 'graph' }); } catch {}
+            try { emit('log', { level: 'info', message: `graph:push rebase v=${snap.version} nodes=${snap.nodes.length} edges=${snap.edges.length}`, timestamp: new Date().toISOString(), context: { cat: 'graph' } }); } catch {}
           } else {
             try { await pushArbGraphDiff(diff); } catch {}
             diffSinceRebase += (diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length);
+            try {
+              const ch = diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length;
+              logger.info('graph.push diff', { version: diff.version, changes: ch, cat: 'graph' });
+              emit('log', { level: 'info', message: `graph:push diff v=${diff.version} changes=${ch}`, timestamp: new Date().toISOString(), context: { cat: 'graph' } });
+            } catch {}
           }
           try { await notifyArbServiceRefresh(); } catch {}
         } catch {}
