@@ -327,8 +327,10 @@ async fn main() -> anyhow::Result<()> {
                                 let fee = e.fee_bps.unwrap_or(0);
                                 let liq = e.liquidity.unwrap_or(0.0);
                                 let liq_disp = e.liquidity_display.unwrap_or(0.0);
-                                let rate = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
-                                let rate_eff = if rate > 0.0 { rate * (1.0 - (fee as f64)/10_000.0).max(0.0) } else { 0.0 };
+                                // e.price_a_per_b is A per 1 B for edge source=A -> target=B; invert to get B per 1 A
+                                let px = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
+                                let base = if px > 0.0 { 1.0 / px } else { 0.0 };
+                                let rate_eff = if base > 0.0 { base * (1.0 - (fee as f64)/10_000.0).max(0.0) } else { 0.0 };
                                 s.graph.upsert_edge(&dex, &e.source, &e.target, EdgeData {
                                     rate_effective: rate_eff,
                                     fee_bps: fee,
@@ -1305,8 +1307,11 @@ async fn arb_graph_snapshot(State(state): State<Arc<RwLock<AppState>>>, Json(req
         let liq = e.liquidity.unwrap_or(0.0);
         let pool_id = e.pool_id.unwrap_or_else(|| "".to_string());
         let liq_disp = e.liquidity_display.unwrap_or(0.0);
-        let rate = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
-        let rate_eff = if rate > 0.0 { let f = 1.0 - (fee as f64)/10_000.0; rate * if f > 0.0 { f } else { 0.0 } } else { 0.0 };
+        // Backend sends price_a_per_b (A per 1 B) for edge source=A -> target=B.
+        // Detector expects target-per-source (B per 1 A). Invert here.
+        let px = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
+        let base = if px > 0.0 { 1.0 / px } else { 0.0 };
+        let rate_eff = if base > 0.0 { let f = 1.0 - (fee as f64)/10_000.0; base * if f > 0.0 { f } else { 0.0 } } else { 0.0 };
         new_graph.upsert_edge(&dex, &e.source, &e.target, EdgeData {
             rate_effective: rate_eff,
             fee_bps: fee,
@@ -1354,8 +1359,10 @@ async fn arb_start(State(state): State<Arc<RwLock<AppState>>>, Json(req): Json<S
             let liq = e.liquidity.unwrap_or(0.0);
             let pool_id = e.pool_id.unwrap_or_else(|| "".to_string());
             let liq_disp = e.liquidity_display.unwrap_or(0.0);
-            let rate = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
-            let rate_eff = if rate > 0.0 { let f = 1.0 - (fee as f64)/10_000.0; rate * if f > 0.0 { f } else { 0.0 } } else { 0.0 };
+            // price_a_per_b is A per 1 B for edge source=A -> target=B; invert to B per 1 A
+            let px = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
+            let base = if px > 0.0 { 1.0 / px } else { 0.0 };
+            let rate_eff = if base > 0.0 { let f = 1.0 - (fee as f64)/10_000.0; base * if f > 0.0 { f } else { 0.0 } } else { 0.0 };
             new_graph.upsert_edge(&dex, &e.source, &e.target, EdgeData { rate_effective: rate_eff, fee_bps: fee, liquidity: liq, dex: dex.clone(), pool_id, liquidity_display: liq_disp });
         }
         let nodes_cnt = new_graph.g.node_count() as u64;
