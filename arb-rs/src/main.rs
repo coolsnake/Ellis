@@ -159,6 +159,30 @@ async fn main() -> anyhow::Result<()> {
 
     let state = Arc::new(RwLock::new(AppState { config: default_config(), opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), pool_cache: PoolCache::new(), near_miss: None, near_miss_shortfall_bps: None, force_refresh_next: false, last_graph_version: 0, last_graph_ts: 0, use_backend_graph: false, pending_added_edges: Vec::new(), pending_updated_edges: Vec::new(), pending_removed_edge_ids: Vec::new(), pending_graph_version: None, pending_graph_ts: None }));
 
+    // Install shutdown handler to clear in-memory state
+    {
+        use tokio::signal;
+        let state_for_shutdown = state.clone();
+        tokio::spawn(async move {
+            // SIGINT or SIGTERM
+            let _ = signal::ctrl_c().await;
+            let mut s = state_for_shutdown.write().await;
+            s.graph = ArbGraph::new();
+            s.opportunities.clear();
+            s.near_miss = None;
+            s.near_miss_shortfall_bps = None;
+            s.pending_added_edges.clear();
+            s.pending_updated_edges.clear();
+            s.pending_removed_edge_ids.clear();
+            s.pending_graph_version = None;
+            s.pending_graph_ts = None;
+            s.last_graph_version = 0;
+            s.last_graph_ts = 0;
+            s.use_backend_graph = false;
+            s.force_refresh_next = true;
+        });
+    }
+
     // Kick off a background task to update opportunities using config interval (MVP placeholder)
     let loop_state = state.clone();
     tokio::spawn(async move {

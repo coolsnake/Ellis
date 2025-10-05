@@ -325,6 +325,10 @@ setInterval(() => {
 // Graceful shutdown: write session logs
 async function shutdown() {
   try {
+    // Stop timers and clear in-memory caches to force fresh pools/graph on next boot
+    try { const pools = await import('./pools.js'); (pools as any).stopPoolRefreshLoop?.(); (pools as any).disablePoolWebsocketRefreshes?.(); (pools as any).clearAllPoolCaches?.(); } catch {}
+    // Reset in-memory graph snapshot so nothing is reused
+    try { const graph = await import('./graph.js'); (graph as any).rebuildGraphNow?.(undefined); } catch {}
     const file = await writeSessionLogAndClear();
     if (file) { try { console.log('Session log written:', file); } catch {} }
   } catch {}

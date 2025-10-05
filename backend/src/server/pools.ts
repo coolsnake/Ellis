@@ -754,6 +754,14 @@ export function getPoolWsStatus(): { enabled: boolean; healthy: boolean; lastEve
   return { enabled, healthy: !!wsHealthy, lastEventMs: lastWsEventMs || 0 };
 }
 
+// Clear all in-memory normalized caches to force a fresh rebuild next boot
+export function clearAllPoolCaches(): void {
+  try { raydiumCache.data = undefined as any; raydiumCache.ts = 0; raydiumCache.inflight = undefined; } catch {}
+  try { orcaCache.data = undefined as any; orcaCache.ts = 0; orcaCache.inflight = undefined; } catch {}
+  try { enrichMemo.clear(); } catch {}
+  try { logger.info('pools.caches cleared'); } catch {}
+}
+
 // Simple memo cache for per-pool enrichment results across cycles
 const enrichMemo: Map<string, { mint_a?: string; mint_b?: string; decimals_a?: number; decimals_b?: number; ts: number }> = new Map();
 
