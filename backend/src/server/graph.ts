@@ -590,9 +590,10 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             }
           }
         }
-        addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaAmm, (priceAmmOrca && priceAmmOrca > 0) ? priceAmmOrca : undefined, undefined, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
+        // Edge rate should be target per 1 source; incoming/calibrated price is A per 1 B
+        addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaAmm, (priceAmmOrca && priceAmmOrca > 0) ? (1 / priceAmmOrca) : undefined, undefined, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
         const pidAmmOrcaRev = pid ? `${pid}-rev` : undefined;
-        addEdge(p.mint_b, p.mint_a, 'Orca', p.fee_bps, liqParamOrcaAmm, (priceAmmOrca && priceAmmOrca > 0) ? (1 / priceAmmOrca) : undefined, undefined, pidAmmOrcaRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse');
+        addEdge(p.mint_b, p.mint_a, 'Orca', p.fee_bps, liqParamOrcaAmm, (priceAmmOrca && priceAmmOrca > 0) ? priceAmmOrca : undefined, undefined, pidAmmOrcaRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse');
       }
       for (const p of (orcValid.clmm || [])) {
         // amounts from HTTP (raw token units) need decimals to convert to whole tokens for USD TVL
@@ -655,9 +656,10 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           }
         }
         // Orca CLMM: orientation rule as above
-        addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaClmm, (priceClmmOrca && priceClmmOrca > 0) ? priceClmmOrca : undefined, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
+        // Edge rate should be target per 1 source; derived price is A per 1 B
+        addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaClmm, (priceClmmOrca && priceClmmOrca > 0) ? (1 / priceClmmOrca) : undefined, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
         const pidClmmOrcaRev = pid ? `${pid}-rev` : undefined;
-        addEdge(p.mint_b, p.mint_a, 'Orca', p.fee_bps, liqParamOrcaClmm, (priceClmmOrca && priceClmmOrca > 0) ? (1 / priceClmmOrca) : undefined, usd, pidClmmOrcaRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse');
+        addEdge(p.mint_b, p.mint_a, 'Orca', p.fee_bps, liqParamOrcaClmm, (priceClmmOrca && priceClmmOrca > 0) ? priceClmmOrca : undefined, usd, pidClmmOrcaRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse');
         try {
           const eid = pid || `${p.mint_a}->${p.mint_b}-Orca`;
           const rid = pid ? `${pid}-rev` : `${p.mint_b}->${p.mint_a}-Orca`;
