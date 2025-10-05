@@ -578,18 +578,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             }
           }
         } catch {}
-        // If no USD ref and magnitude extreme, try triangle-based scale correction
-        if (priceAmmOrca && !(getPriceByMint(p.mint_a)?.usdc && getPriceByMint(p.mint_b)?.usdc)) {
-          const fwd = 1 / priceAmmOrca, rev = priceAmmOrca;
-          if (fwd > 1e4 || rev > 1e4 || fwd < 1e-6 || rev < 1e-12) {
-            const implied = triangulateAPerB(p.mint_a, p.mint_b);
-            if (implied && implied > 0) {
-              const fixed = adjustByPowerOfTen(priceAmmOrca, implied);
-              try { logger.warn('graph.calibrate.orca.amm triangle-fix', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, prev: priceAmmOrca, implied, next: fixed }); } catch {}
-              priceAmmOrca = fixed;
-            }
-          }
-        }
+        // Triangle-based magnitude correction disabled to avoid rescaling under target-per-source edge rates
         // Edge rate should be target per 1 source; incoming/calibrated price is A per 1 B
         addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaAmm, (priceAmmOrca && priceAmmOrca > 0) ? (1 / priceAmmOrca) : undefined, undefined, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
         const pidAmmOrcaRev = pid ? `${pid}-rev` : undefined;
@@ -643,18 +632,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             }
           }
         } catch {}
-        // If no USD ref and magnitude extreme, try triangle-based scale correction
-        if (priceClmmOrca && !(getPriceByMint(p.mint_a)?.usdc && getPriceByMint(p.mint_b)?.usdc)) {
-          const fwd = 1 / priceClmmOrca, rev = priceClmmOrca;
-          if (fwd > 1e4 || rev > 1e4 || fwd < 1e-6 || rev < 1e-12) {
-            const implied = triangulateAPerB(p.mint_a, p.mint_b);
-            if (implied && implied > 0) {
-              const fixed = adjustByPowerOfTen(priceClmmOrca, implied);
-              try { logger.warn('graph.calibrate.orca.clmm triangle-fix', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, prev: priceClmmOrca, implied, next: fixed }); } catch {}
-              priceClmmOrca = fixed;
-            }
-          }
-        }
+        // Triangle-based magnitude correction disabled to avoid rescaling under target-per-source edge rates
         // Orca CLMM: orientation rule as above
         // Edge rate should be target per 1 source; derived price is A per 1 B
         addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaClmm, (priceClmmOrca && priceClmmOrca > 0) ? (1 / priceClmmOrca) : undefined, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
