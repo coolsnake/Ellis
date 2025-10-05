@@ -381,7 +381,7 @@ export const SystemConfig: React.FC<SystemConfigProps> = ({ onSave, onCancel, in
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-2">Sampling (code->prob) JSON</label>
+                <label className="block text-sm font-medium text-gray-300 mb-2">Sampling (code-&gt;prob) JSON</label>
                   <textarea
                     rows={3}
                     value={JSON.stringify(config.log?.sample || {}, null, 2)}
@@ -390,7 +390,7 @@ export const SystemConfig: React.FC<SystemConfigProps> = ({ onSave, onCancel, in
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-2">Rate Limit (code->spec) JSON</label>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">Rate Limit (code-&gt;spec) JSON</label>
                   <textarea
                     rows={3}
                     value={JSON.stringify(config.log?.rateLimit || {}, null, 2)}
