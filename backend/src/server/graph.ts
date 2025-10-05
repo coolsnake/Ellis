@@ -516,11 +516,17 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const pa = getPriceByMint(p.mint_a)?.usdc ?? null;
           const pb = getPriceByMint(p.mint_b)?.usdc ?? null;
           const ref = (pa && pb && pb > 0) ? (pa as number) / (pb as number) : undefined;
-          if (priceAmmOrca && ref) {
-            const dev = Math.max(priceAmmOrca / ref, ref / priceAmmOrca);
+          if (priceAmmOrca) {
             const fwd = 1 / priceAmmOrca, rev = priceAmmOrca;
-            if (dev > 5 || fwd > 1e4 || rev > 1e4) {
-              logger.warn('graph.calibrate.orca.amm outlier', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, raw: (p as any)?.price_a_per_b, calibrated: priceAmmOrca, ref, dev, fwd, rev });
+            if (ref) {
+              const dev = Math.max(priceAmmOrca / ref, ref / priceAmmOrca);
+              if (dev > 5 || fwd > 1e4 || rev > 1e4 || fwd < 1e-6 || rev < 1e-12) {
+                logger.warn('graph.calibrate.orca.amm outlier', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, raw: (p as any)?.price_a_per_b, calibrated: priceAmmOrca, ref, dev, fwd, rev });
+              }
+            } else {
+              if (fwd > 1e4 || rev > 1e4 || fwd < 1e-6 || rev < 1e-12) {
+                logger.warn('graph.calibrate.orca.amm magnitude', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, raw: (p as any)?.price_a_per_b, calibrated: priceAmmOrca, fwd, rev });
+              }
             }
           }
         } catch {}
@@ -547,11 +553,17 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const pa = getPriceByMint(p.mint_a)?.usdc ?? null;
           const pb = getPriceByMint(p.mint_b)?.usdc ?? null;
           const ref = (pa && pb && pb > 0) ? (pa as number) / (pb as number) : undefined;
-          if (priceClmmOrca && ref) {
-            const dev = Math.max(priceClmmOrca / ref, ref / priceClmmOrca);
+          if (priceClmmOrca) {
             const fwd = 1 / priceClmmOrca, rev = priceClmmOrca;
-            if (dev > 5 || fwd > 1e4 || rev > 1e4) {
-              logger.warn('graph.calibrate.orca.clmm outlier', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, raw: (p as any)?.price_a_per_b, calibrated: priceClmmOrca, ref, dev, fwd, rev });
+            if (ref) {
+              const dev = Math.max(priceClmmOrca / ref, ref / priceClmmOrca);
+              if (dev > 5 || fwd > 1e4 || rev > 1e4 || fwd < 1e-6 || rev < 1e-12) {
+                logger.warn('graph.calibrate.orca.clmm outlier', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, raw: (p as any)?.price_a_per_b, calibrated: priceClmmOrca, ref, dev, fwd, rev, decA: (p as any)?.decimals_a, decB: (p as any)?.decimals_b, sqrt_price_x64: (p as any)?.sqrt_price_x64 });
+              }
+            } else {
+              if (fwd > 1e4 || rev > 1e4 || fwd < 1e-6 || rev < 1e-12) {
+                logger.warn('graph.calibrate.orca.clmm magnitude', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, raw: (p as any)?.price_a_per_b, calibrated: priceClmmOrca, fwd, rev, decA: (p as any)?.decimals_a, decB: (p as any)?.decimals_b, sqrt_price_x64: (p as any)?.sqrt_price_x64 });
+              }
             }
           }
         } catch {}
