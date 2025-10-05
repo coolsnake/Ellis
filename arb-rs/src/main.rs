@@ -343,7 +343,9 @@ async fn main() -> anyhow::Result<()> {
                             for e in added.iter() { upsert(e); }
                             for e in updated.iter() { upsert(e); }
                             s.metrics.graph_updates_applied = s.metrics.graph_updates_applied.saturating_add(1);
+                            // Emit both event and stdout log for visibility
                             s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.graph.diff: applied add={} upd={} rem={}", add_ct, upd_ct, rem_ct) });
+                            tracing::info!(add=add_ct, upd=upd_ct, rem=rem_ct, "arb.graph.diff: applied");
                             let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
                         }
                         if let Some(v) = s.pending_graph_version.take() { s.last_graph_version = v; }
