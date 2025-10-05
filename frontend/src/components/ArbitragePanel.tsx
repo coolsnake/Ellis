@@ -145,6 +145,12 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
     };
   }, [socket, lastGraphVersion]);
 
+  // Opportunistic polling to keep UI fresh even if socket logs aren't bridged
+  useEffect(() => {
+    const id = setInterval(() => { try { fetchOpps(); } catch {} }, 2000);
+    return () => clearInterval(id);
+  }, []);
+
   return (
     <div className="p-2 border rounded bg-white/5">
       <div className="flex items-center justify-between mb-2">
