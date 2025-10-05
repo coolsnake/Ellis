@@ -1284,9 +1284,8 @@ async fn arb_graph_update(State(state): State<Arc<RwLock<AppState>>>, Json(req):
 }
 
 async fn arb_start(State(state): State<Arc<RwLock<AppState>>>, Json(req): Json<StartReq>) -> Json<serde_json::Value> {
-    let mut s = state.write().await;
-    // If a graph is provided, replace the internal graph and switch to external mode
-    if let Some(g) = req.graph {
+    // Build graph outside lock
+    let prebuilt: Option<(ArbGraph, Option<u64>, Option<u64>, u64, u64)> = if let Some(g) = req.graph.clone() {
         tracing::info!(version = ?g.version, ts = ?g.timestamp, nodes = g.nodes.len(), edges = g.edges.len(), "arb.start: graph received");
         let mut new_graph = ArbGraph::new();
         for e in g.edges.into_iter() {
@@ -1297,24 +1296,21 @@ async fn arb_start(State(state): State<Arc<RwLock<AppState>>>, Json(req): Json<S
             let liq_disp = e.liquidity_display.unwrap_or(0.0);
             let rate = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
             let rate_eff = if rate > 0.0 { rate * (1.0 - (fee as f64)/10_000.0).max(0.0) } else { 0.0 };
-            new_graph.upsert_edge(&dex, &e.source, &e.target, EdgeData {
-                rate_effective: rate_eff,
-                fee_bps: fee,
-                liquidity: liq,
-                dex: dex.clone(),
-                pool_id,
-                liquidity_display: liq_disp,
-            });
+            new_graph.upsert_edge(&dex, &e.source, &e.target, EdgeData { rate_effective: rate_eff, fee_bps: fee, liquidity: liq, dex: dex.clone(), pool_id, liquidity_display: liq_disp });
         }
+        Some((new_graph, g.version, g.timestamp, new_graph.g.node_count() as u64, new_graph.g.edge_count() as u64))
+    } else { None };
+
+    let mut s = state.write().await;
+    if let Some((new_graph, v, ts, nodes_cnt, edges_cnt)) = prebuilt {
         s.graph = new_graph;
-        s.metrics.graph_nodes = s.graph.g.node_count() as u64;
-        s.metrics.graph_edges = s.graph.g.edge_count() as u64;
-        s.last_graph_version = g.version.unwrap_or(s.last_graph_version);
-        s.last_graph_ts = g.timestamp.unwrap_or(s.last_graph_ts);
+        s.metrics.graph_nodes = nodes_cnt;
+        s.metrics.graph_edges = edges_cnt;
+        if let Some(vv) = v { s.last_graph_version = vv; }
+        if let Some(tt) = ts { s.last_graph_ts = tt; }
         s.use_backend_graph = true;
         s.force_refresh_next = false;
-        let nodes = s.metrics.graph_nodes; let edges = s.metrics.graph_edges;
-        s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.start: graph accepted nodes={} edges={}", nodes, edges) });
+        s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.start: graph accepted nodes={} edges={}", nodes_cnt, edges_cnt) });
         let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
     }
     if let Some(want) = req.enable {
