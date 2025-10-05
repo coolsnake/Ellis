@@ -373,12 +373,14 @@ export function startRaydiumRefreshLoop(): void {
   // Defer any polling/refresh work until graph is ready
   if (!wsAllowed) {
     logger.info('pools.init deferred until graph ready — performing one-shot warmup fetch');
-    try { getRaydiumPoolsNormalized(true).catch(() => {}); } catch {}
-    try { getOrcaPoolsCached(true).catch(() => {}); } catch {}
+    if (!userSubscribed) {
+      try { getRaydiumPoolsNormalized(true).catch(() => {}); } catch {}
+      try { getOrcaPoolsCached(true).catch(() => {}); } catch {}
+    }
     return;
   }
 
-  if (!wsEnabled) {
+    if (!wsEnabled) {
     rayTimer = setInterval(() => {
       try {
         logger.info('pools.refresh timer raydium', { cat: 'pools' });
@@ -394,6 +396,11 @@ export function startRaydiumRefreshLoop(): void {
       getOrcaPoolsCached(true).catch(() => {});
     }, orcaPeriod);
   }
+    // If WS is enabled but user has not subscribed (yet), we still allow timers until subscription
+    if (wsEnabled && !userSubscribed) {
+      rayTimer = setInterval(() => { getRaydiumPoolsNormalized(true).catch(() => {}); }, rayPeriod);
+      orcaTimer = setInterval(() => { getOrcaPoolsCached(true).catch(() => {}); }, orcaPeriod);
+    }
 
   // If user explicitly subscribed, avoid automatic HTTP seed/refresh; only manual refresh will fetch
   if (!userSubscribed) {

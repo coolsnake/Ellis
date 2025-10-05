@@ -1540,10 +1540,11 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   // Pool websocket subscriptions control (idempotent)
   api.post('/arb/pools/subscribe', async (_req, res) => {
     try {
-      try { (await import('./pools.js')).enablePoolWebsocketRefreshes(); } catch {}
-      // Also kick refresh loop if allowed by config
-      try { (await import('./pools.js')).startRaydiumRefreshLoop(); } catch {}
+      // Mark subscribed BEFORE starting any WS or loops to avoid initial HTTP warmup
       try { (await import('./pools.js')).setUserSubscribed(true); } catch {}
+      // Enable WS and start loop (no HTTP warmup will run because userSubscribed=true)
+      try { (await import('./pools.js')).enablePoolWebsocketRefreshes(); } catch {}
+      try { (await import('./pools.js')).startRaydiumRefreshLoop(); } catch {}
       res.json({ ok: true });
       try { emit('log', { level: 'info', message: 'pools:subscribe ok', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
       // Schedule a graph rebuild shortly after subscription to propagate any immediate changes
