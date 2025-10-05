@@ -1332,6 +1332,7 @@ async fn arb_graph_snapshot(State(state): State<Arc<RwLock<AppState>>>, Json(req
     s.force_refresh_next = false;
     let nodes = s.metrics.graph_nodes; let edges = s.metrics.graph_edges;
     s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.graph.snapshot: accepted nodes={} edges={}", nodes, edges) });
+    tracing::info!(nodes, edges, "arb.graph.snapshot: accepted");
     let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
     Json(serde_json::json!({"ok": true, "nodes": nodes, "edges": edges}))
 }
@@ -1382,6 +1383,7 @@ async fn arb_start(State(state): State<Arc<RwLock<AppState>>>, Json(req): Json<S
         s.use_backend_graph = true;
         s.force_refresh_next = false;
         s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.start: graph accepted nodes={} edges={}", nodes_cnt, edges_cnt) });
+        tracing::info!(nodes = nodes_cnt, edges = edges_cnt, "arb.start: graph accepted");
         let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
     }
     if let Some(want) = req.enable {
