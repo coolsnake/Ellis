@@ -173,6 +173,7 @@ async fn main() -> anyhow::Result<()> {
             };
             let iter_start = Instant::now();
             if enabled {
+                tracing::info!("arb.loop.tick start");
                 // Ensure we have the most recent backend graph version before detection
                 let api_base = std::env::var("BACKEND_API_BASE").unwrap_or_else(|_| "http://127.0.0.1:3001/api".into());
                 let gv_url = format!("{}/arb/graph/version", api_base.trim_end_matches('/'));
@@ -240,15 +241,14 @@ async fn main() -> anyhow::Result<()> {
                 };
                 // Hint backend to refresh its normalized caches before we pull them, so Rust sees latest normalization
                 // Backend route is internally debounced; ignore errors
-                if need_orca || need_rayd || force_now {
-                    let _ = sources.backend_refresh_pools(&api_base, Some("all")).await;
-                }
+                if need_orca || need_rayd || force_now { tracing::info!(need_orca, need_rayd, force_now, "arb.pools.refresh.hint"); let _ = sources.backend_refresh_pools(&api_base, Some("all")).await; }
                 let t_orca = Instant::now();
                 let orca = if use_backend_graph { Ok(serde_json::json!({ "amm": [], "clmm": [] })) } else if need_orca || { let s = loop_state.read().await; s.pool_cache.last_refresh_orca_ms == 0 } { sources.backend_orca_pools(&api_base).await } else { Ok(serde_json::json!({ "amm": [], "clmm": [] })) };
                 let orca_ms = t_orca.elapsed().as_millis();
                 let t_rayd = Instant::now();
                 let rayd = if use_backend_graph { Ok(serde_json::json!({ "amm": [], "clmm": [] })) } else if need_rayd || { let s = loop_state.read().await; s.pool_cache.last_refresh_raydium_ms == 0 } { sources.backend_raydium_pools(&api_base).await } else { Ok(serde_json::json!({ "amm": [], "clmm": [] })) };
                 let rayd_ms = t_rayd.elapsed().as_millis();
+                tracing::info!(orca_ms = orca_ms as u128, rayd_ms = rayd_ms as u128, "arb.pools.fetch.done");
                 let (mut orca_amm_len, mut orca_clmm_len, mut ray_amm_len, mut ray_clmm_len) = (0usize,0usize,0usize,0usize);
                 if let Ok(ref j) = orca { orca_amm_len = j.get("amm").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0); orca_clmm_len = j.get("clmm").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0); }
                 if let Ok(ref j) = rayd { ray_amm_len = j.get("amm").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0); ray_clmm_len = j.get("clmm").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0); }
@@ -1158,6 +1158,7 @@ async fn arb_start(State(state): State<Arc<RwLock<AppState>>>, Json(req): Json<S
     let mut s = state.write().await;
     // If a graph is provided, replace the internal graph and switch to external mode
     if let Some(g) = req.graph {
+        tracing::info!(version = ?g.version, ts = ?g.timestamp, nodes = g.nodes.len(), edges = g.edges.len(), "arb.start: graph received");
         let mut new_graph = ArbGraph::new();
         for e in g.edges.into_iter() {
             let dex = e.dex.unwrap_or_else(|| "Unknown".to_string());
@@ -1166,8 +1167,9 @@ async fn arb_start(State(state): State<Arc<RwLock<AppState>>>, Json(req): Json<S
             let pool_id = e.pool_id.unwrap_or_else(|| "".to_string());
             let liq_disp = e.liquidity_display.unwrap_or(0.0);
             let rate = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
+            let rate_eff = if rate > 0.0 { rate * (1.0 - (fee as f64)/10_000.0).max(0.0) } else { 0.0 };
             new_graph.upsert_edge(&dex, &e.source, &e.target, EdgeData {
-                rate_effective: if rate > 0.0 { rate } else { 0.0 },
+                rate_effective: rate_eff,
                 fee_bps: fee,
                 liquidity: liq,
                 dex: dex.clone(),
@@ -1182,10 +1184,21 @@ async fn arb_start(State(state): State<Arc<RwLock<AppState>>>, Json(req): Json<S
         s.last_graph_ts = g.timestamp.unwrap_or(s.last_graph_ts);
         s.use_backend_graph = true;
         s.force_refresh_next = false;
-        s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: "arb.start: graph accepted".into() });
+        s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.start: graph accepted nodes={} edges={}", s.metrics.graph_nodes, s.metrics.graph_edges) });
         let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
     }
-    if req.enable.unwrap_or(true) { s.config.enabled = true; }
+    if let Some(want) = req.enable {
+        if want && !s.config.enabled {
+            tracing::info!("arb.start: enabling loop");
+            s.config.enabled = true;
+        } else if !want && s.config.enabled {
+            tracing::info!("arb.stop: disabling loop");
+            s.config.enabled = false;
+        }
+    } else {
+        if !s.config.enabled { tracing::info!("arb.start: enabling loop"); }
+        s.config.enabled = true;
+    }
     Json(serde_json::json!({ "ok": true, "enabled": s.config.enabled, "graph_nodes": s.metrics.graph_nodes, "graph_edges": s.metrics.graph_edges }))
 }
 

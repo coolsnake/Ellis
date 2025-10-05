@@ -1721,16 +1721,18 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   });
 
   // Start arbitrage engine: build current graph snapshot and forward to arb-rs
-  api.post('/arb/start', async (_req, res) => {
+  api.post('/arb/start', async (req, res) => {
     try {
       const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
       const { getGraphSnapshot } = await import('./graph.js');
       const snap = await getGraphSnapshot(true);
-      const payload = { graph: snap, enable: true } as any;
+      // Optional toggle mode: if client sends { enable: false } then forward stop
+      const wantEnable = (req.body && typeof req.body.enable === 'boolean') ? !!req.body.enable : true;
+      const payload = wantEnable ? ({ graph: snap, enable: true } as any) : ({ enable: false } as any);
       const started = Date.now();
       const r = await (async () => { const ac = new AbortController(); const t = setTimeout(() => ac.abort('timeout'), 8000); try { return await fetch(`${host}/arb/start`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload), signal: ac.signal }); } finally { clearTimeout(t); } })();
       const ms = Date.now() - started;
-      try { emit('log', { level: r.ok ? 'info' : 'warn', message: `arb:start forwarded ${r.status} ms=${ms} nodes=${snap.nodes.length} edges=${snap.edges.length}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+      try { emit('log', { level: r.ok ? 'info' : 'warn', message: `arb:${wantEnable?'start':'stop'} forwarded ${r.status} ms=${ms} nodes=${snap.nodes.length} edges=${snap.edges.length}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
       if (!r.ok) return res.status(502).json({ ok: false, status: r.status });
       let json: any = {}; try { json = await r.json(); } catch {}
       res.json({ ok: true, forwarded: json, graph: { nodes: snap.nodes.length, edges: snap.edges.length } });

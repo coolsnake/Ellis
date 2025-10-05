@@ -8,6 +8,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean }> =
   const [subscribed, setSubscribed] = React.useState<boolean>(false);
   const [wsHealthy, setWsHealthy] = React.useState<boolean>(false);
   const [lastEventMs, setLastEventMs] = React.useState<number>(0);
+  const [arbEnabled, setArbEnabled] = React.useState<boolean>(false);
   const [wsDetails, setWsDetails] = React.useState<{ orca?: { attached?: number; events?: number }, raydium?: { attached?: number; events?: number } }>({});
 
   const fetchMetrics = async () => {
@@ -72,6 +73,8 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean }> =
     if (paused) return;
     fetchMetrics();
     fetch(`${apiBase}/arb/metrics/json`).catch(()=>{});
+    // Probe arb config to detect enabled state
+    fetch(`${apiBase}/arb/config`).then(r=>r.json()).then((j)=>{ if (j && typeof j.enabled === 'boolean') setArbEnabled(!!j.enabled); }).catch(()=>{});
     fetch(`${apiBase}/arb/pools/subscriptions`).then(r=>r.json()).then((j)=>{ setSubscribed(!!j.enablePoolWs); setWsHealthy(!!j.healthy); setLastEventMs(Number(j.lastEventMs||0)); setWsDetails({ orca: j.orca, raydium: j.raydium }); }).catch(()=>{});
     const id = setInterval(fetchMetrics, 2000);
     return () => clearInterval(id);
@@ -99,9 +102,10 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean }> =
                   if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
                 }
               } catch {}
-              await fetch(`${apiBase}/arb/start`, { method: 'POST', headers }).catch(()=>{});
+              await fetch(`${apiBase}/arb/start`, { method: 'POST', headers, body: JSON.stringify({ enable: !arbEnabled }) }).catch(()=>{});
+              setArbEnabled(v => !v);
             } catch {}
-          }}>Start Arb</button>
+          }}>{arbEnabled ? 'Stop Arb' : 'Start Arb'}</button>
           <button className="px-2 py-1 border rounded" onClick={refreshPoolsAndMetrics}>Refresh Pools</button>
           <button className="px-2 py-1 border rounded" onClick={async()=>{
             try {
