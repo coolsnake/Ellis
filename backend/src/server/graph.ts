@@ -507,11 +507,59 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         } catch {}
       }
       const orcValid = validatePoolsForGraph(orc as any);
+      // Helper: triangulate A per B using a pivot C present in pools (no USD refs needed)
+      const PIVOTS: string[] = [
+        'So11111111111111111111111111111111111111112', // SOL
+        'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+        '3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh', // WBTC (as seen in logs)
+      ];
+      const allPools: any[] = [
+        ...(rayValid.amm || []), ...(rayValid.clmm || []),
+        ...(orcValid.amm || []), ...(orcValid.clmm || []),
+      ];
+      const getPriceAPerBFromPools = (A: string, B: string): number | undefined => {
+        let best: { v: number; w: number } | null = null;
+        for (const p of allPools) {
+          const w = Number((p as any)?.liquidity_display || (p as any)?.tvl_usd || 0) || 1;
+          const px = Number((p as any)?.price_a_per_b || 0);
+          if (!(px > 0)) continue;
+          let cand: number | undefined;
+          if (p.mint_a === A && p.mint_b === B) cand = px; else if (p.mint_a === B && p.mint_b === A) cand = 1 / px;
+          if (cand && cand > 0) {
+            if (!best || w > best.w) best = { v: cand, w };
+          }
+        }
+        return best?.v;
+      };
+      const triangulateAPerB = (A: string, B: string): number | undefined => {
+        for (const C of PIVOTS) {
+          if (C === A || C === B) continue;
+          const aPerC = getPriceAPerBFromPools(A, C);
+          const bPerC = getPriceAPerBFromPools(B, C);
+          if (aPerC && bPerC && aPerC > 0 && bPerC > 0) {
+            const implied = aPerC / bPerC;
+            if (isFinite(implied) && implied > 0) return implied;
+          }
+        }
+        return undefined;
+      };
+      const adjustByPowerOfTen = (val: number, target: number): number => {
+        if (!(val > 0) || !(target > 0)) return val;
+        const ratio = target / val;
+        // choose k in [-8,8] minimizing |log10(val*10^k/target)|
+        let best = val; let bestErr = Number.POSITIVE_INFINITY;
+        for (let k = -8; k <= 8; k++) {
+          const cand = val * Math.pow(10, k);
+          const err = Math.abs(Math.log10(cand / target));
+          if (err < bestErr) { bestErr = err; best = cand; }
+        }
+        return best;
+      };
       for (const p of (orcValid.amm || [])) {
         const pid = safePoolId(p);
         const liqParamOrcaAmm = (p as any)?.liquidity_display ?? (p as any).liquidity_base;
         // Orca AMM: incoming price is A per 1 B. Calibrate then apply orientation rule.
-        const priceAmmOrca = calibratePrice(p.mint_a, p.mint_b, (p as any).price_a_per_b);
+        let priceAmmOrca = calibratePrice(p.mint_a, p.mint_b, (p as any).price_a_per_b);
         try {
           const pa = getPriceByMint(p.mint_a)?.usdc ?? null;
           const pb = getPriceByMint(p.mint_b)?.usdc ?? null;
@@ -530,6 +578,18 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             }
           }
         } catch {}
+        // If no USD ref and magnitude extreme, try triangle-based scale correction
+        if (priceAmmOrca && !(getPriceByMint(p.mint_a)?.usdc && getPriceByMint(p.mint_b)?.usdc)) {
+          const fwd = 1 / priceAmmOrca, rev = priceAmmOrca;
+          if (fwd > 1e4 || rev > 1e4 || fwd < 1e-6 || rev < 1e-12) {
+            const implied = triangulateAPerB(p.mint_a, p.mint_b);
+            if (implied && implied > 0) {
+              const fixed = adjustByPowerOfTen(priceAmmOrca, implied);
+              try { logger.warn('graph.calibrate.orca.amm triangle-fix', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, prev: priceAmmOrca, implied, next: fixed }); } catch {}
+              priceAmmOrca = fixed;
+            }
+          }
+        }
         addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaAmm, (priceAmmOrca && priceAmmOrca > 0) ? (1 / priceAmmOrca) : undefined, undefined, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
         const pidAmmOrcaRev = pid ? `${pid}-rev` : undefined;
         addEdge(p.mint_b, p.mint_a, 'Orca', p.fee_bps, liqParamOrcaAmm, (priceAmmOrca && priceAmmOrca > 0) ? priceAmmOrca : undefined, undefined, pidAmmOrcaRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse');
@@ -548,7 +608,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         }
         const pid = safePoolId(p);
         const liqParamOrcaClmm = (p as any)?.liquidity_display ?? p.liquidity;
-        const priceClmmOrca = calibratePrice(p.mint_a, p.mint_b, (p as any).price_a_per_b);
+        let priceClmmOrca = calibratePrice(p.mint_a, p.mint_b, (p as any).price_a_per_b);
         try {
           const pa = getPriceByMint(p.mint_a)?.usdc ?? null;
           const pb = getPriceByMint(p.mint_b)?.usdc ?? null;
@@ -567,6 +627,18 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             }
           }
         } catch {}
+        // If no USD ref and magnitude extreme, try triangle-based scale correction
+        if (priceClmmOrca && !(getPriceByMint(p.mint_a)?.usdc && getPriceByMint(p.mint_b)?.usdc)) {
+          const fwd = 1 / priceClmmOrca, rev = priceClmmOrca;
+          if (fwd > 1e4 || rev > 1e4 || fwd < 1e-6 || rev < 1e-12) {
+            const implied = triangulateAPerB(p.mint_a, p.mint_b);
+            if (implied && implied > 0) {
+              const fixed = adjustByPowerOfTen(priceClmmOrca, implied);
+              try { logger.warn('graph.calibrate.orca.clmm triangle-fix', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, prev: priceClmmOrca, implied, next: fixed }); } catch {}
+              priceClmmOrca = fixed;
+            }
+          }
+        }
         // Orca CLMM: orientation rule as above
         addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaClmm, (priceClmmOrca && priceClmmOrca > 0) ? (1 / priceClmmOrca) : undefined, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
         const pidClmmOrcaRev = pid ? `${pid}-rev` : undefined;
