@@ -169,7 +169,7 @@ io.on('connection', (socket) => {
 const ts = () => new Date().toLocaleTimeString();
 
 // Ensure WS subscriptions are cancelled on graceful shutdown
-const shutdown = async () => {
+const shutdownWs = async () => {
   try {
     const { disablePoolWebsocketRefreshes } = await import('./pools.js');
     disablePoolWebsocketRefreshes();
@@ -179,8 +179,8 @@ const shutdown = async () => {
   try { server.close(); } catch {}
   process.exit(0);
 };
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdownWs);
+process.on('SIGTERM', shutdownWs);
 let lastLogSig: { msg: string; level: string; ts: number } | null = null;
 
 // Capture selected third-party console logs (e.g., Raydium SDK) into session logs without looping
