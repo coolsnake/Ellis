@@ -1186,9 +1186,9 @@ async fn get_opportunities(
     Json(OpportunitiesResponse { items, summary: Some(summary) })
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct StartReqNode { id: String }
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct StartReqEdge {
     source: String,
     target: String,
@@ -1298,7 +1298,9 @@ async fn arb_start(State(state): State<Arc<RwLock<AppState>>>, Json(req): Json<S
             let rate_eff = if rate > 0.0 { let f = 1.0 - (fee as f64)/10_000.0; rate * if f > 0.0 { f } else { 0.0 } } else { 0.0 };
             new_graph.upsert_edge(&dex, &e.source, &e.target, EdgeData { rate_effective: rate_eff, fee_bps: fee, liquidity: liq, dex: dex.clone(), pool_id, liquidity_display: liq_disp });
         }
-        Some((new_graph, g.version, g.timestamp, new_graph.g.node_count() as u64, new_graph.g.edge_count() as u64))
+        let nodes_cnt = new_graph.g.node_count() as u64;
+        let edges_cnt = new_graph.g.edge_count() as u64;
+        Some((new_graph, g.version, g.timestamp, nodes_cnt, edges_cnt))
     } else { None };
 
     let mut s = state.write().await;
