@@ -115,14 +115,15 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       // When a forced snapshot is requested, ensure caches are warmed briefly to avoid empty graphs
       if (force) {
         try {
-          const { peekRaydiumPools, peekOrcaPools, enablePoolWebsocketRefreshes, startRaydiumRefreshLoop, getRaydiumPoolsNormalized, getOrcaPoolsCached } = await import('./pools.js');
+          const { peekRaydiumPools, peekOrcaPools, getRaydiumPoolsNormalized, getOrcaPoolsCached, userSubscribed } = await import('./pools.js');
           const hasAny = (p: any) => ((p?.amm?.length || 0) + (p?.clmm?.length || 0)) > 0;
           let rayPeek = peekRaydiumPools();
           let orcPeek = peekOrcaPools();
           if (!hasAny(rayPeek) || !hasAny(orcPeek)) {
-            try { enablePoolWebsocketRefreshes(); } catch {}
-            try { startRaydiumRefreshLoop(); } catch {}
-            try { await Promise.allSettled([getRaydiumPoolsNormalized(true), getOrcaPoolsCached(true)]); } catch {}
+            // Do not auto-enable websockets or loops; only perform a one-shot fetch if user is subscribed
+            if (userSubscribed) {
+              try { await Promise.allSettled([getRaydiumPoolsNormalized(true), getOrcaPoolsCached(true)]); } catch {}
+            }
             const deadline = Date.now() + 1000;
             while (Date.now() < deadline) {
               rayPeek = peekRaydiumPools();

@@ -379,15 +379,10 @@ export function startRaydiumRefreshLoop(): void {
   const orcaPeriod = Math.max(1000, Number(CONFIG.orca?.cacheTtlMs || 300_000));
 
   const wsEnabled = !!(CONFIG.system as any)?.enablePoolWs;
-  // Defer any polling/refresh work until graph is ready
-  if (!wsAllowed) {
-    logger.info('pools.init deferred until graph ready — performing one-shot warmup fetch');
-    if (!userSubscribed) {
-      try { getRaydiumPoolsNormalized(true).catch(() => {}); } catch {}
-      try { getOrcaPoolsCached(true).catch(() => {}); } catch {}
-    }
-    return;
-  }
+  // Defer any activity until graph is ready
+  if (!wsAllowed) { logger.info('pools.init deferred until graph ready'); return; }
+  // If user has not explicitly subscribed, do nothing (no timers, no WS)
+  if (!userSubscribed) { logger.info('pools.init skipped — user not subscribed'); return; }
 
     if (!wsEnabled) {
     rayTimer = setInterval(() => {
@@ -405,21 +400,15 @@ export function startRaydiumRefreshLoop(): void {
       getOrcaPoolsCached(true).catch(() => {});
     }, orcaPeriod);
   }
-    // If WS is enabled but user has not subscribed (yet), we still allow timers until subscription
-    if (wsEnabled && !userSubscribed) {
-      rayTimer = setInterval(() => { getRaydiumPoolsNormalized(true).catch(() => {}); }, rayPeriod);
-      orcaTimer = setInterval(() => { getOrcaPoolsCached(true).catch(() => {}); }, orcaPeriod);
-    }
+    // Proceed to initial fetch and optional WS
 
-  // If user explicitly subscribed, avoid automatic HTTP seed/refresh; only manual refresh will fetch
-  if (!userSubscribed) {
-    // Kick immediately once activated so data is available without waiting
-    getRaydiumPoolsNormalized(true).catch(() => {});
-    getOrcaPoolsCached(true).catch(() => {});
-  }
+  // Kick immediately once activated so data is available without waiting
+  try { getRaydiumPoolsNormalized(true).catch(() => {}); } catch {}
+  try { getOrcaPoolsCached(true).catch(() => {}); } catch {}
 
   // Optional: subscribe to on-chain account changes to push updates into caches
-  if (wsEnabled) {
+  // Only attach websockets when the user has explicitly subscribed
+  if (wsEnabled && userSubscribed) {
     if (!wsAllowed) {
       logger.info('pools.ws deferred until graph ready');
       return;
@@ -662,16 +651,24 @@ export function startRaydiumRefreshLoop(): void {
   }
 }
 
+// Stop all pool activity: timers and websocket subscriptions
+export function stopPoolRefreshLoop(): void {
+  try { if (rayTimer) { clearInterval(rayTimer); rayTimer = undefined; } } catch {}
+  try { if (orcaTimer) { clearInterval(orcaTimer); orcaTimer = undefined; } } catch {}
+  try { if (aggTimer) { clearInterval(aggTimer); aggTimer = undefined; } } catch {}
+  try { if (healthTimer) { clearInterval(healthTimer); healthTimer = undefined; } } catch {}
+  try { if (wsUnsubscribe) { wsUnsubscribe(); wsUnsubscribe = undefined; } } catch {}
+  wsHealthy = false; lastWsEventMs = 0;
+  try { logger.info('pools.stop all timers and ws unsubscribed'); } catch {}
+}
+
 // Allow external trigger (from graph start) to enable websocket-based refreshes
 export function enablePoolWebsocketRefreshes(): void {
   if (wsAllowed) return;
   wsAllowed = true;
   try {
-    // Respect autoStartPools; do not start any background fetching unless enabled
-    if (!((CONFIG.system as any)?.autoStartPools)) return;
-    // If config allows websockets, start the setup now
-    const wsEnabled = !!(CONFIG.system as any)?.enablePoolWs;
-    if (wsEnabled) { startRaydiumRefreshLoop(); }
+    // Only mark allowed; actual start is controlled by subscribe/unsubscribe routes
+    logger.info('pools.ws allowed');
   } catch {}
 }
 

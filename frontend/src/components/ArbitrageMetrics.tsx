@@ -138,8 +138,8 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean }> =
           <div><div className="text-gray-400">Active Opps</div><div>{fmt(m.opportunities_active)}</div></div>
           <div><div className="text-gray-400">Max Profit (bps)</div><div>{fmt(m.max_profit_bps)}</div></div>
           <div><div className="text-gray-400">Avg Profit (bps)</div><div>{typeof m.avg_profit_bps === 'number' ? m.avg_profit_bps.toFixed(2) : '-'}</div></div>
-          <div><div className="text-gray-400">Graph Nodes</div><div>{fmt(m.backend_graph_nodes ?? m.graph_nodes)}</div></div>
-          <div><div className="text-gray-400">Graph Edges</div><div>{fmt(m.backend_graph_edges ?? m.graph_edges)}</div></div>
+          <div><div className="text-gray-400">Graph Nodes</div><div>{fmt((typeof m.backend_graph_nodes === 'number' && m.backend_graph_nodes > 0) ? m.backend_graph_nodes : m.graph_nodes)}</div></div>
+          <div><div className="text-gray-400">Graph Edges</div><div>{fmt((typeof m.backend_graph_edges === 'number' && m.backend_graph_edges > 0) ? m.backend_graph_edges : m.graph_edges)}</div></div>
           <div><div className="text-gray-400">Last Detection</div><div>{ago(m.last_detection_ms)}</div></div>
           <div><div className="text-gray-400">Ingestion (ms)</div><div>{fmt(m.ingestion_duration_ms)}</div></div>
           <div><div className="text-gray-400">Detection (ms)</div><div>{fmt(m.detection_duration_ms)}</div></div>

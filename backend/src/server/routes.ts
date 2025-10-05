@@ -1560,10 +1560,9 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
 
   api.post('/arb/pools/unsubscribe', async (_req, res) => {
     try {
-      // Best-effort: disable websockets and keep periodic refresh
-      try { (await import('./pools.js')).disablePoolWebsocketRefreshes(); } catch {}
-      try { (await import('./pools.js')).startRaydiumRefreshLoop(); } catch {}
+      // Stop all pool activity and mark as unsubscribed
       try { (await import('./pools.js')).setUserSubscribed(false); } catch {}
+      try { (await import('./pools.js')).stopPoolRefreshLoop(); } catch {}
       res.json({ ok: true });
       try { emit('log', { level: 'info', message: 'pools:unsubscribe ok', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
     } catch (e: any) {
@@ -1725,10 +1724,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     try {
       const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
       const { getGraphSnapshot } = await import('./graph.js');
-      // Ensure pool websockets and refresh loops are active before building initial snapshot
-      try { (await import('./pools.js')).setUserSubscribed(true); } catch {}
-      try { (await import('./pools.js')).enablePoolWebsocketRefreshes(); } catch {}
-      try { (await import('./pools.js')).startRaydiumRefreshLoop(); } catch {}
+      // Do not auto-subscribe or start refresh loops here; respect explicit subscribe API
       const snap = await getGraphSnapshot(true);
       // Optional toggle mode: if client sends { enable: false } then forward stop
       const wantEnable = (req.body && typeof req.body.enable === 'boolean') ? !!req.body.enable : true;
