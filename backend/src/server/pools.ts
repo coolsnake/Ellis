@@ -355,6 +355,8 @@ let lastWsEventMs: number = 0;
 let wsHealthy: boolean = false;
 export let userSubscribed: boolean = false;
 export function setUserSubscribed(v: boolean): void { userSubscribed = !!v; }
+let aggTimer: any | undefined;
+const wsCounts: { raydium: number; orca: number } = { raydium: 0, orca: 0 };
 
 export function startRaydiumRefreshLoop(): void {
   // Clear existing timers if any, to allow dynamic TTL updates
@@ -362,6 +364,7 @@ export function startRaydiumRefreshLoop(): void {
   if (orcaTimer) { clearInterval(orcaTimer); orcaTimer = undefined; }
   try { if (wsUnsubscribe) { wsUnsubscribe(); wsUnsubscribe = undefined; } } catch {}
   if (healthTimer) { clearInterval(healthTimer); healthTimer = undefined; }
+  if (aggTimer) { clearInterval(aggTimer); aggTimer = undefined; }
 
   const rayPeriod = Math.max(1000, Number(CONFIG.raydium?.cacheTtlMs || 300_000));
   const orcaPeriod = Math.max(1000, Number(CONFIG.orca?.cacheTtlMs || 300_000));
@@ -435,10 +438,70 @@ export function startRaydiumRefreshLoop(): void {
             } catch {}
             const now = Date.now();
             if (owner === String(CONFIG.raydium?.ammV4Program) || owner === String(CONFIG.raydium?.clmmProgram)) {
-              // With subscriptions enabled, do not auto-refresh Raydium via HTTP; rely on manual refresh
-              // Future: implement Raydium account decoding and upsert here
+              try { wsCounts.raydium += 1; } catch {}
+              const pk58 = toB58Any(pk);
+              let updated = false;
+              try {
+                const rmod: any = await import('@raydium-io/raydium-sdk-v2').catch(() => null);
+                if (rmod && info?.data) {
+                  // Try CLMM pool decode first
+                  let state: any = null;
+                  const clmmLayout = (rmod as any)?.Clmm?.PoolStateLayout || (rmod as any)?.CLMM?.POOL_STATE_LAYOUT || (rmod as any)?.PoolStateLayout;
+                  if (clmmLayout && typeof clmmLayout.decode === 'function') {
+                    try { state = clmmLayout.decode(info.data); } catch {}
+                    if (state && (state as any).liquidity != null && ((state as any).mintA || (state as any).tokenMintA)) {
+                      const mintA = ((state as any).mintA || (state as any).tokenMintA)?.toBase58?.() || '';
+                      const mintB = ((state as any).mintB || (state as any).tokenMintB)?.toBase58?.() || '';
+                      const sqrt = Number((state as any).sqrtPriceX64 ?? (state as any).sqrt_price_x64 ?? (state as any).sqrtPrice ?? 0);
+                      const liq = Number((state as any).liquidity ?? 0);
+                      const tick = Number((state as any).tickSpacing ?? (state as any).tick_spacing ?? 0);
+                      const fee = Number((state as any).feeRate ?? (state as any).fee_rate ?? 0);
+                      const item: ClmmPool = { id: pk58, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps: fee, sqrt_price_x64: sqrt, liquidity: liq, tick_spacing: tick, updated_ms: Date.now(), pool_kind: 'clmm', liquidity_display: liq } as any;
+                      const prev = raydiumCache.data || { amm: [], clmm: [] };
+                      const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
+                      const idx = next.clmm.findIndex(p => p.id === item.id);
+                      if (idx >= 0) next.clmm[idx] = { ...next.clmm[idx], ...item }; else next.clmm.push(item);
+                      const d = diffNormalizedPools(prev, next);
+                      raydiumCache.data = next; raydiumCache.ts = Date.now();
+                      try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: [], clmm: d.clmm.slice(0, 20) }, ts: Date.now() }); } catch {}
+                      try { (await import('./graph.js')).scheduleGraphRebuild(undefined, 200); } catch {}
+                      updated = true;
+                    }
+                  }
+                  // Try AMM V4 decode
+                  if (!updated) {
+                    const ammLayout = (rmod as any)?.LiquidityStateLayoutV4 || (rmod as any)?.LIQUIDITY_STATE_LAYOUT_V4 || null;
+                    if (ammLayout && typeof ammLayout.decode === 'function') {
+                      try { state = ammLayout.decode(info.data); } catch { state = null; }
+                      if (state) {
+                        const mintA = (state.baseMint || state.mintA || state.mint_a)?.toBase58?.() || '';
+                        const mintB = (state.quoteMint || state.mintB || state.mint_b)?.toBase58?.() || '';
+                        // Reserves may be BN; best-effort convert to number
+                        const rA = Number((state.baseReserve || state.reserveA || state.vaultA || 0).toString ? (state.baseReserve.toString()) : (state.baseReserve || 0));
+                        const rB = Number((state.quoteReserve || state.reserveB || state.vaultB || 0).toString ? (state.quoteReserve.toString()) : (state.quoteReserve || 0));
+                        const price = (rB > 0 && rA > 0) ? (rA / rB) : 0;
+                        const liqBase = (rA > 0 && rB > 0) ? Math.min(rA, rB) : 0;
+                        const item: AmmPool = { id: pk58, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps: Number((state as any).tradeFeeRate || (state as any).feeRate || 0), price_a_per_b: price, liquidity_base: liqBase, updated_ms: Date.now(), pool_kind: 'amm', liquidity_display: liqBase } as any;
+                        const prev = raydiumCache.data || { amm: [], clmm: [] };
+                        const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
+                        const idx = next.amm.findIndex(p => p.id === item.id);
+                        if (idx >= 0) next.amm[idx] = { ...next.amm[idx], ...item }; else next.amm.push(item);
+                        const d = diffNormalizedPools(prev, next);
+                        raydiumCache.data = next; raydiumCache.ts = Date.now();
+                        try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: d.amm.slice(0, 20), clmm: [] }, ts: Date.now() }); } catch {}
+                        try { (await import('./graph.js')).scheduleGraphRebuild(undefined, 250); } catch {}
+                        updated = true;
+                      }
+                    }
+                  }
+                }
+              } catch (e:any) {
+                try { logger.warn('raydium.ws.decode failed', { id: pk58.slice(0,6)+'…', error: String(e?.message || e) }); } catch {}
+              }
+              if (!updated) { try { logger.debug('pools.ws raydium event (unparsed)', { id: pk58.slice(0,6)+'…' }); } catch {} }
               return;
             } else if (owner === String(CONFIG.orca?.programId)) {
+              try { wsCounts.orca += 1; } catch {}
               // Attempt to parse and upsert single Whirlpool from account data; fallback to full refresh on failure
               let ok = false;
               try {
@@ -514,14 +577,36 @@ export function startRaydiumRefreshLoop(): void {
               subs.push(id as any); attached++;
             } catch {}
           }
-          logger.info('pools.ws subscribe orca.pools', { attached });
+          logger.info('pools.ws subscribe orca.pools', { attached, program: String(CONFIG.orca?.programId) });
         } catch (e:any) {
           logger.warn('pools.ws orca address subscribe failed', { error: String(e?.message || e) });
           // Fallback to program-level subscription (may include non-pool accounts)
           try { logger.info('pools.ws subscribe program orca(fallback)', { program: String(CONFIG.orca?.programId), cat: 'pools' }); } catch {}
           subs.push(conn.onProgramAccountChange(orcaProg, (ch) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
         }
-        // Raydium subscriptions left as future: avoid non-pool spam for now
+        // Raydium address-level subscriptions when we have known pool ids (from prior refresh)
+        try {
+          const rayKnown: string[] = [];
+          try { for (const p of (raydiumCache.data?.amm || [])) if (p?.id) rayKnown.push(String(p.id)); } catch {}
+          try { for (const p of (raydiumCache.data?.clmm || [])) if (p?.id) rayKnown.push(String(p.id)); } catch {}
+          const uniqueRay = Array.from(new Set(rayKnown.filter(Boolean)));
+          let attachedRay = 0;
+          for (const addr of uniqueRay) {
+            try {
+              const pk = new web3.PublicKey(addr);
+              const id = await conn.onAccountChange(pk, (info: any) => { handle(pk as any, info); });
+              subs.push(id as any); attachedRay++;
+            } catch {}
+          }
+          logger.info('pools.ws subscribe raydium.pools', { attached: attachedRay });
+          // Fallback to program-level if none attached
+          if (attachedRay === 0) {
+            try { logger.info('pools.ws subscribe program raydium.amm(fallback)', { program: String(CONFIG.raydium?.ammV4Program), cat: 'pools' }); } catch {}
+            subs.push(conn.onProgramAccountChange(rayAmm, (ch) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
+            try { logger.info('pools.ws subscribe program raydium.clmm(fallback)', { program: String(CONFIG.raydium?.clmmProgram), cat: 'pools' }); } catch {}
+            subs.push(conn.onProgramAccountChange(rayClmm, (ch) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
+          }
+        } catch {}
         wsUnsubscribe = () => { try { for (const id of subs) conn.removeAccountChangeListener(id as any).catch(() => {}); } catch {} };
         logger.info('pools.ws subscriptions active');
 
@@ -540,6 +625,17 @@ export function startRaydiumRefreshLoop(): void {
             }
           } catch {}
         }, Math.max(2000, Math.floor((Number((CONFIG.system as any)?.wsHealthTimeoutMs || 15000)) / 3)));
+
+        // Periodic aggregate logs for WS activity
+        const aggPeriod = Math.max(5000, Number((CONFIG.system as any)?.wsAggLogPeriodMs || 15000));
+        aggTimer = setInterval(() => {
+          try {
+            const snapshot = { raydium: wsCounts.raydium, orca: wsCounts.orca };
+            wsCounts.raydium = 0; wsCounts.orca = 0;
+            logger.info('pools.ws aggregate', { events: snapshot, healthy: wsHealthy, lastEventMs: lastWsEventMs });
+            try { emit('log', { level: 'debug', message: `pools:ws aggregate ray=${snapshot.raydium} orca=${snapshot.orca}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
+          } catch {}
+        }, aggPeriod);
       };
       setup().catch((e: any) => logger.warn('pools.ws setup failed', { error: String(e?.message || e) }));
     } catch (e: any) {

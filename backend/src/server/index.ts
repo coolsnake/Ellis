@@ -167,6 +167,20 @@ io.on('connection', (socket) => {
 
 // Bridge logger to websocket with local-time timestamp (no ms)
 const ts = () => new Date().toLocaleTimeString();
+
+// Ensure WS subscriptions are cancelled on graceful shutdown
+const shutdown = async () => {
+  try {
+    const { disablePoolWebsocketRefreshes } = await import('./pools.js');
+    disablePoolWebsocketRefreshes();
+    try { (await import('./realtime.js')).emit('log', { level: 'info', message: 'pools:ws disabled on shutdown', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
+  } catch {}
+  try { io.close(); } catch {}
+  try { server.close(); } catch {}
+  process.exit(0);
+};
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
 let lastLogSig: { msg: string; level: string; ts: number } | null = null;
 
 // Capture selected third-party console logs (e.g., Raydium SDK) into session logs without looping
