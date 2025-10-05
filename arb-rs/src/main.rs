@@ -388,18 +388,19 @@ async fn main() -> anyhow::Result<()> {
                                 if px > 0.0 { price_b_per_a = 1.0 / px; }
                             }
                             if price_b_per_a <= 0.0 && p.sqrt_price_x64 > 0.0 {
-                                // Backend canonicalization defines price_a_per_b (A per 1 B) as:
-                                //   price_a_per_b = (sqrtPriceX64 / 2^64)^2 / 10^(decB - decA)
-                                // Therefore price_b_per_a (B per 1 A) must be the inverse:
-                                //   price_b_per_a = 1 / price_a_per_b = 10^(decB - decA) / (ratio^2)
+                                // Uniswap/CLMM convention:
+                                //   ratio = sqrt(price_B_per_A)
+                                //   price_B_per_A = ratio^2 * 10^(decA - decB)
+                                //   price_A_per_B = 1 / price_B_per_A
                                 let s64 = p.sqrt_price_x64;
                                 let ratio = s64 / (2f64.powi(64));
                                 let dec_a = (p.decimals_a.unwrap_or(0)) as i32;
                                 let dec_b = (p.decimals_b.unwrap_or(0)) as i32;
+                                let price_b_per_a_unscaled = (ratio * ratio).max(1e-24);
                                 price_b_per_a = if dec_a != 0 || dec_b != 0 {
-                                    10f64.powi(dec_b - dec_a) / (ratio * ratio).max(1e-24)
+                                    price_b_per_a_unscaled * 10f64.powi(dec_a - dec_b)
                                 } else {
-                                    1.0 / (ratio * ratio).max(1e-24)
+                                    price_b_per_a_unscaled
                                 };
                             }
                             if price_b_per_a > 0.0 {
