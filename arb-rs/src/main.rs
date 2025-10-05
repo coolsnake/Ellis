@@ -517,28 +517,51 @@ async fn main() -> anyhow::Result<()> {
                         }
                         let profit = rate_prod - 1.0;
                         let profit_bps = (profit * 10_000.0).floor() as i64;
-                        // Canonicalize cycle labels to avoid duplicates (rotation + direction)
+                        // Canonicalize cycle labels by rotation only (preserve direction to keep hop arrays aligned)
                         let canon = |v: &Vec<String>| -> Vec<String> {
                             if v.is_empty() { return v.clone(); }
                             let n = v.len();
-                            let mut best = None;
+                            let mut best_key: Option<String> = None;
+                            let mut best_vec: Option<Vec<String>> = None;
                             for i in 0..n {
                                 let mut r = Vec::with_capacity(n);
                                 for k in 0..n { r.push(v[(i+k)%n].clone()); }
                                 let key = r.join("->");
-                                if best.as_ref().map(|(s,_)| &key < s).unwrap_or(true) { best = Some((key, r)); }
+                                if best_key.as_ref().map(|s| &key < s).unwrap_or(true) { best_key = Some(key); best_vec = Some(r); }
                             }
-                            // compare with reversed
-                            let mut vrev = v.clone(); vrev.reverse();
-                            for i in 0..n {
-                                let mut r = Vec::with_capacity(n);
-                                for k in 0..n { r.push(vrev[(i+k)%n].clone()); }
-                                let key = r.join("->");
-                                if best.as_ref().map(|(s,_)| &key < s).unwrap_or(true) { best = Some((key, r)); }
+                            best_vec.unwrap()
+                        };
+                        // Rotate hop arrays to match canon_labels start (no reversal allowed above)
+                        let rotate_to_start = |labels_orig: &Vec<String>, labels_canon: &Vec<String>, arr: &mut Vec<String>| {
+                            if labels_orig.is_empty() || arr.is_empty() { return; }
+                            let n = labels_orig.len();
+                            if n == 0 { return; }
+                            // find offset i where labels_orig[i] == labels_canon[0]
+                            if let Some(i) = labels_orig.iter().position(|m| m == &labels_canon[0]) {
+                                if i % n != 0 {
+                                    let mut tmp = vec![String::new(); n];
+                                    for k in 0..n { tmp[k] = arr[(k + i) % n].clone(); }
+                                    *arr = tmp;
+                                }
                             }
-                            best.unwrap().1
+                        };
+                        let rotate_to_start_num = |labels_orig: &Vec<String>, labels_canon: &Vec<String>, arr: &mut Vec<f64>| {
+                            if labels_orig.is_empty() || arr.is_empty() { return; }
+                            let n = labels_orig.len();
+                            if n == 0 { return; }
+                            if let Some(i) = labels_orig.iter().position(|m| m == &labels_canon[0]) {
+                                if i % n != 0 {
+                                    let mut tmp = vec![0.0f64; n];
+                                    for k in 0..n { tmp[k] = arr[(k + i) % n]; }
+                                    *arr = tmp;
+                                }
+                            }
                         };
                         let canon_labels = canon(&labels);
+                        // Align hop arrays with the rotated labels (no reversal)
+                        rotate_to_start(&labels, &canon_labels, &mut hop_pool_ids);
+                        rotate_to_start(&labels, &canon_labels, &mut hop_dexes);
+                        rotate_to_start_num(&labels, &canon_labels, &mut hop_rates);
                         let key = canon_labels.join("->");
                         if seen.contains(&key) { continue; }
                         seen.insert(key);
