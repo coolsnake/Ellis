@@ -462,10 +462,19 @@ export function startRaydiumRefreshLoop(): void {
                       const mintA = ((state as any).mintA || (state as any).tokenMintA)?.toBase58?.() || '';
                       const mintB = ((state as any).mintB || (state as any).tokenMintB)?.toBase58?.() || '';
                       const sqrt = Number((state as any).sqrtPriceX64 ?? (state as any).sqrt_price_x64 ?? (state as any).sqrtPrice ?? 0);
+                      // Approximate A per 1 B from sqrtPriceX64 (Q64.64): price = (sqrt / 2^64)^2
+                      const pxFromSqrt = (() => {
+                        try {
+                          if (!Number.isFinite(sqrt) || sqrt <= 0) return 0;
+                          const ratio = sqrt / Math.pow(2, 64);
+                          const px = ratio * ratio;
+                          return Number.isFinite(px) && px > 0 ? px : 0;
+                        } catch { return 0; }
+                      })();
                       const liq = Number((state as any).liquidity ?? 0);
                       const tick = Number((state as any).tickSpacing ?? (state as any).tick_spacing ?? 0);
                       const fee = Number((state as any).feeRate ?? (state as any).fee_rate ?? 0);
-                      const item: ClmmPool = { id: pk58, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps: fee, sqrt_price_x64: sqrt, liquidity: liq, tick_spacing: tick, updated_ms: Date.now(), pool_kind: 'clmm', liquidity_display: liq } as any;
+                      const item: ClmmPool = { id: pk58, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps: fee, sqrt_price_x64: sqrt, liquidity: liq, tick_spacing: tick, updated_ms: Date.now(), pool_kind: 'clmm', liquidity_display: liq, price_a_per_b: pxFromSqrt } as any;
                       const prev = raydiumCache.data || { amm: [], clmm: [] };
                       const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
                       const idx = next.clmm.findIndex(p => p.id === item.id);
@@ -523,10 +532,19 @@ export function startRaydiumRefreshLoop(): void {
                   const mint_a = parsed.tokenMintA.toBase58();
                   const mint_b = parsed.tokenMintB.toBase58();
                   const sqrt_price_x64 = Number(parsed.sqrtPrice);
+                  // Approximate A per 1 B from sqrtPriceX64 (Q64.64)
+                  const pxFromSqrt = (() => {
+                    try {
+                      if (!Number.isFinite(sqrt_price_x64) || sqrt_price_x64 <= 0) return 0;
+                      const ratio = sqrt_price_x64 / Math.pow(2, 64);
+                      const px = ratio * ratio;
+                      return Number.isFinite(px) && px > 0 ? px : 0;
+                    } catch { return 0; }
+                  })();
                   const liquidity = Number(parsed.liquidity);
                   const tick_spacing = Number(parsed.tickSpacing);
                   const fee_bps = Number((parsed as any)?.feeRate ?? 0);
-                  const clmmItem: ClmmPool = { id, dex: 'Orca', mint_a, mint_b, fee_bps, sqrt_price_x64, liquidity, tick_spacing, updated_ms: Date.now(), pool_kind: 'clmm', liquidity_display: liquidity } as any;
+                  const clmmItem: ClmmPool = { id, dex: 'Orca', mint_a, mint_b, fee_bps, sqrt_price_x64, liquidity, tick_spacing, updated_ms: Date.now(), pool_kind: 'clmm', liquidity_display: liquidity, price_a_per_b: pxFromSqrt } as any;
                   const prev = orcaCache.data || { amm: [], clmm: [] };
                   const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
                   const idx = next.clmm.findIndex(p => p.id === id);
@@ -550,7 +568,7 @@ export function startRaydiumRefreshLoop(): void {
             }
           } catch {}
         };
-        // Subscribe to Orca Whirlpool POOL accounts only: derive PDAs from watchlist and subscribe per-address
+        // Subscribe to Orca Whirlpool POOL accounts only: prefer graph edge pool ids, else derive PDAs from watchlist
         try {
           const { PublicKey } = web3;
           const sdkAny: any = await import('@orca-so/whirlpools-sdk').catch(() => null);
@@ -558,26 +576,44 @@ export function startRaydiumRefreshLoop(): void {
           const programId = new PublicKey(String(CONFIG.orca?.programId));
           const configPk = new PublicKey(String(CONFIG.orca?.configPubkey));
           const wl = await readJson<any[]>(CONFIG.watchlistPath, []);
+          // Build target set from current graph snapshot edges
+          const edgePoolIds = new Set<string>();
+          try {
+            const gmod: any = await import('./graph.js');
+            const snap = await gmod.getGraphSnapshot(false);
+            for (const e of (snap?.edges || [])) {
+              const pid = String((e as any)?.pool_id || '');
+              if (pid) edgePoolIds.add(pid.replace(/-rev$/,''));
+            }
+          } catch {}
           const SOL = 'So11111111111111111111111111111111111111112';
           const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
           const tickSpacings = [8, 16, 32, 64, 128, 256];
-          const pairs: Array<[string, string]> = [];
-          const watchMints: string[] = Array.from(new Set(wl.map((t: any) => (typeof t === 'string' ? t : t?.id)).filter(Boolean)));
-          for (const m of watchMints.slice(0, 100)) { if (m !== USDC) pairs.push([m, USDC]); if (m !== SOL) pairs.push([m, SOL]); }
-          pairs.push([SOL, USDC]);
-          const poolAddrs: string[] = [];
-          if (PDAUtil) {
-            for (const [a, b] of pairs) {
-              const [mintA, mintB] = String(a) < String(b) ? [a, b] : [b, a];
-              for (const ts of tickSpacings) {
-                try {
-                  const pda = PDAUtil.getWhirlpool(programId, configPk, new PublicKey(mintA), new PublicKey(mintB), ts);
-                  poolAddrs.push(pda.publicKey.toBase58());
-                } catch {}
+          let uniq: string[] = [];
+          if (edgePoolIds.size > 0) {
+            uniq = Array.from(edgePoolIds);
+            targetedWsActive = true;
+            try { logger.info('pools.ws targets.orca from graph', { size: uniq.length }); } catch {}
+          } else {
+            // Fallback: derive from watchlist pairs (legacy behavior)
+            const pairs: Array<[string, string]> = [];
+            const watchMints: string[] = Array.from(new Set(wl.map((t: any) => (typeof t === 'string' ? t : t?.id)).filter(Boolean)));
+            for (const m of watchMints.slice(0, 100)) { if (m !== USDC) pairs.push([m, USDC]); if (m !== SOL) pairs.push([m, SOL]); }
+            pairs.push([SOL, USDC]);
+            const poolAddrs: string[] = [];
+            if (PDAUtil) {
+              for (const [a, b] of pairs) {
+                const [mintA, mintB] = String(a) < String(b) ? [a, b] : [b, a];
+                for (const ts of tickSpacings) {
+                  try {
+                    const pda = PDAUtil.getWhirlpool(programId, configPk, new PublicKey(mintA), new PublicKey(mintB), ts);
+                    poolAddrs.push(pda.publicKey.toBase58());
+                  } catch {}
+                }
               }
             }
+            uniq = Array.from(new Set(poolAddrs));
           }
-          const uniq = Array.from(new Set(poolAddrs));
           let attached = 0;
           for (const addr of uniq) {
             try {
@@ -588,9 +624,11 @@ export function startRaydiumRefreshLoop(): void {
           }
           attachedOrcaPools = attached;
           logger.info('pools.ws subscribe orca.pools', { attached, source: 'orca' });
-          // Also subscribe at the program level to catch any pools we didn't derive
-          try { logger.info('pools.ws subscribe orca(program)', { source: 'orca', cat: 'pools' }); } catch {}
-          subs.push(conn.onProgramAccountChange(orcaProg, (ch) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
+          // Subscribe at program level only if we had no targeted addresses
+          if (attached === 0) {
+            try { logger.info('pools.ws subscribe orca(program)', { source: 'orca', cat: 'pools' }); } catch {}
+            subs.push(conn.onProgramAccountChange(orcaProg, (ch) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
+          }
         } catch (e:any) {
           logger.warn('pools.ws orca address subscribe failed', { error: String(e?.message || e) });
           // Fallback to program-level subscription (may include non-pool accounts)
@@ -599,10 +637,21 @@ export function startRaydiumRefreshLoop(): void {
         }
         // Raydium address-level subscriptions when we have known pool ids (from prior refresh)
         try {
+          // Prefer graph edge pool ids if available
+          const edgePoolIds = new Set<string>();
+          try {
+            const gmod: any = await import('./graph.js');
+            const snap = await gmod.getGraphSnapshot(false);
+            for (const e of (snap?.edges || [])) {
+              const pid = String((e as any)?.pool_id || '');
+              if (pid) edgePoolIds.add(pid.replace(/-rev$/,''));
+            }
+          } catch {}
           const rayKnown: string[] = [];
           try { for (const p of (raydiumCache.data?.amm || [])) if (p?.id) rayKnown.push(String(p.id)); } catch {}
           try { for (const p of (raydiumCache.data?.clmm || [])) if (p?.id) rayKnown.push(String(p.id)); } catch {}
-          const uniqueRay = Array.from(new Set(rayKnown.filter(Boolean)));
+          const base = edgePoolIds.size > 0 ? Array.from(edgePoolIds) : rayKnown;
+          const uniqueRay = Array.from(new Set(base.filter(Boolean)));
           let attachedRay = 0;
           for (const addr of uniqueRay) {
             try {
