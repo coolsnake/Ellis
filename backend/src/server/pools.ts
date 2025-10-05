@@ -1226,7 +1226,8 @@ async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
           const { getPriceByMint } = await import('./priceStore.js');
           const pa = getPriceByMint(cA)?.usdc ?? null;
           const pb = getPriceByMint(cB)?.usdc ?? null;
-          const refUsd = (pa && pb && (pa as number) > 0 && (pb as number) > 0) ? ((pa as number) / (pb as number)) : null;
+          // For A-per-B, the USD reference should be price(B)/price(A)
+          const refUsd = (pa && pb && (pa as number) > 0 && (pb as number) > 0) ? ((pb as number) / (pa as number)) : null;
           const refIncoming = (incomingPrice && incomingPrice > 0) ? incomingPrice : null;
           const ref = refUsd ?? refIncoming;
           if (ref && finiteCands.length) {
@@ -1241,32 +1242,10 @@ async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
         } catch {}
         priceFromSqrt = chosen;
       }
-      // Incoming price is already in raw API orientation (A per 1 B)
+      // Incoming API price may be in the opposite orientation; when sqrt and decimals are available,
+      // we trust the sqrt-derived A-per-B. Only fall back to incoming when sqrt-derived is unavailable.
       const incomingCanonical = (incomingPrice > 0) ? incomingPrice : 0;
-      // Prefer value closer to USD reference (fallback to incoming price if USD missing)
       let priceDerived = priceFromSqrt > 0 ? priceFromSqrt : incomingCanonical;
-      try {
-        const { getPriceByMint } = await import('./priceStore.js');
-        const pa = getPriceByMint(cA)?.usdc ?? null;
-        const pb = getPriceByMint(cB)?.usdc ?? null;
-        const refUsd = (pa && pb && (pa as number) > 0 && (pb as number) > 0) ? ((pa as number) / (pb as number)) : null;
-        const ref = refUsd ?? (incomingCanonical > 0 ? incomingCanonical : null);
-        if (ref) {
-          const candidates: number[] = [];
-          if (priceFromSqrt > 0) candidates.push(priceFromSqrt);
-          if (incomingCanonical > 0) candidates.push(incomingCanonical);
-          if (candidates.length >= 2) {
-            let bestVal = candidates[0];
-            let bestDev = Math.max(bestVal / ref, ref / bestVal);
-            for (let k = 1; k < candidates.length; k++) {
-              const cur = candidates[k];
-              const dev = Math.max(cur / ref, ref / cur);
-              if (dev + 1e-12 < bestDev) { bestDev = dev; bestVal = cur; }
-            }
-            priceDerived = bestVal;
-          }
-        }
-      } catch {}
 		  // Compare against incoming price adjusted to canonical orientation if available; aggregate mismatches
 		  try {
 			if (incomingCanonical > 0 && priceFromSqrt > 0) {
