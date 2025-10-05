@@ -1,6 +1,6 @@
 # Lockstone Makefile
 
-.PHONY: build backend frontend arb deploy start stop restart status svc-backend svc-arb svc-nginx
+.PHONY: build backend frontend arb deploy start stop restart status svc-backend svc-arb svc-nginx logs start-logs
 
 WWW_DIR ?= /var/www/lockstone
 
@@ -44,5 +44,11 @@ svc-arb: ## Restart arb only
 
 svc-nginx: ## Reload nginx only
 	sudo systemctl reload nginx
+
+logs: ## Open tmux dashboard for backend and arb logs
+	bash scripts/logdash.sh
+
+start-logs: start ## Start services then open tmux dashboard
+	@if [ -t 1 ]; then bash scripts/logdash.sh; else echo "Non-interactive shell detected; skipping log dashboard"; fi
 
 
