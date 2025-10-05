@@ -1527,6 +1527,12 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
         const snap = await (await import('./graph.js')).getGraphSnapshot(true);
         graph = { version: snap.version, nodes: snap.nodes.length, edges: snap.edges.length };
         try { io.emit('graph-snapshot', snap); } catch {}
+        // Also push snapshot to arb-rs and trigger a refresh so backend-graph mode stays current
+        try {
+          const { pushArbGraphSnapshot, notifyArbServiceRefresh } = await import('./realtime.js');
+          try { await pushArbGraphSnapshot(snap); } catch {}
+          try { await notifyArbServiceRefresh(); } catch {}
+        } catch {}
       } catch {}
       const ms = Date.now() - t0;
       res.json({ ok: true, ms, raydium: ray ? { amm: ray.amm.length, clmm: ray.clmm.length } : null, orca: orc ? { amm: orc.amm.length, clmm: orc.clmm.length } : null, graph });

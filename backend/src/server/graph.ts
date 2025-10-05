@@ -732,6 +732,9 @@ export function startGraphStream(io: SocketIOServer): void {
       const snap = await getGraphSnapshot(false);
       if (!last) {
         io.emit('graph-snapshot', snap);
+        // Push initial snapshot to arb-rs to enter backend-graph mode immediately
+        try { await pushArbGraphSnapshot(snap); } catch {}
+        try { await notifyArbServiceRefresh(); } catch {}
         try { enablePoolWebsocketRefreshes(); } catch {}
         last = snap;
         return;
@@ -740,7 +743,19 @@ export function startGraphStream(io: SocketIOServer): void {
       const changed = diff.addedNodes.length || diff.updatedNodes.length || diff.removedNodeIds.length || diff.addedEdges.length || diff.updatedEdges.length || diff.removedEdgeIds.length;
       if (changed) {
         io.emit('graph-update', diff);
-        try { await notifyArbServiceRefresh(); } catch {}
+        // Push diff to arb-rs; occasionally rebase with full snapshot per rebase policy
+        try {
+          const nowMs = Date.now();
+          const shouldRebase = (diffSinceRebase >= REBASE_DIFF_THRESHOLD) || (nowMs - lastRebaseMs > REBASE_TIME_MS);
+          if (shouldRebase) {
+            try { await pushArbGraphSnapshot(snap); } catch {}
+            diffSinceRebase = 0; lastRebaseMs = nowMs;
+          } else {
+            try { await pushArbGraphDiff(diff); } catch {}
+            diffSinceRebase += (diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length);
+          }
+          try { await notifyArbServiceRefresh(); } catch {}
+        } catch {}
         last = snap;
       }
     } catch (e: any) {
