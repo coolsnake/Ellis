@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 type BottleneckEdge = { from: string; to: string; dex: string; rate: number; liquidity: number; fee_bps: number };
 type Opportunity = {
@@ -58,6 +58,8 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
   const [sending, setSending] = useState<boolean>(false);
   const [sendMode, setSendMode] = useState<'USD'|'TOKENS'>('USD');
   const [sendAmount, setSendAmount] = useState<number>(50);
+  const isFetchingRef = useRef(false);
+  const [firstLoad, setFirstLoad] = useState(true);
 
   const fmt = (n: number | undefined | null, digits = 0) => {
     if (n === undefined || n === null || isNaN(n as any)) return '—';
@@ -77,6 +79,8 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
   };
 
   const fetchOpps = async () => {
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
     setLoading(true);
     setError(null);
     try {
@@ -87,7 +91,9 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
     } catch (e: any) {
       setError(String(e?.message || e));
     } finally {
+      isFetchingRef.current = false;
       setLoading(false);
+      if (firstLoad) setFirstLoad(false);
     }
   };
 
@@ -161,10 +167,10 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
             // Best-effort also refresh opportunities snapshot
             try { await fetchOpps(); } catch {}
           }}>Refresh Metrics</button>
+          {loading ? <span className="text-xs opacity-70 animate-pulse">Refreshing…</span> : null}
         </div>
       </div>
       {error && <div className="text-red-400 text-sm mb-2">{error}</div>}
-      {loading && <div className="text-sm">Loading...</div>}
       {/* Summary block */}
       <div className="mb-3">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
@@ -211,7 +217,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
           <div>Raydium Refresh: {age(summary?.last_raydium_ms)}</div>
         </div>
       </div>
-      {!loading && items.length === 0 && summary?.near_miss && (
+      {items.length === 0 && summary?.near_miss && !firstLoad && (
         <div className="p-2 border rounded bg-yellow-900/20 text-xs mb-3">
           <div className="font-semibold mb-1">Closest Path (below threshold by {fmt(summary?.near_miss_shortfall_bps)} bps)</div>
           <div className="font-mono mb-1">
@@ -338,7 +344,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
           </div>
         </div>
       )}
-      {!loading && items.length === 0 && <div className="text-sm opacity-70">No opportunities</div>}
+      {items.length === 0 && !firstLoad && <div className="text-sm opacity-70">No opportunities</div>}
       {summary?.near_miss && typeof summary?.near_miss_shortfall_bps === 'number' && (summary.near_miss_shortfall_bps as number) > 0 && (summary.near_miss.hop_count ?? summary.near_miss.path.length) >= 3 && (
         <div className="p-2 border rounded bg-yellow-900/20 text-xs mb-3">
           <div className="font-semibold mb-1">Closest Path{summary?.near_miss_shortfall_bps !== undefined ? ` (below threshold by ${fmt(summary?.near_miss_shortfall_bps)} bps)` : ''}</div>

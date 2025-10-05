@@ -38,7 +38,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 	const forceLayoutRef = useRef(false);
   const [selection, setSelection] = useState<
     | { kind: 'node'; id: string; label?: string; degree?: number; neighbors?: number }
-    | { kind: 'edge'; id: string; source: string; target: string; dex: string; fee_bps?: number; liquidity?: number; weight?: number; price_a_per_b?: number; tvl_usd?: number; pool_id?: string; source_account?: string; target_account?: string }
+    | { kind: 'edge'; id: string; source: string; target: string; dex: string; fee_bps?: number; liquidity?: number; weight?: number; price_a_per_b?: number; tvl_usd?: number; pool_id?: string; source_account?: string; target_account?: string; combined_edges?: Array<{ dex: string; pool_id?: string; fee_bps?: number; liquidity?: number; price_a_per_b?: number; tvl_usd?: number; pool_kind?: string; direction?: string; pool_liquidity_raw?: number }> }
     | null
   >(null);
 
@@ -58,6 +58,10 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 		},
 		{ selector: 'edge[dex = "Raydium"]', style: { 'line-color': '#22c55e' } },
 		{ selector: 'edge[dex = "Orca"]', style: { 'line-color': '#f59e0b' } },
+		// Hide original edges when a combined edge is rendered
+		{ selector: 'edge[hiddenEdge = 1]', style: { 'display': 'none' } },
+		// Slightly emphasize combined edges
+		{ selector: 'edge[combined = 1]', style: { 'width': 2.5 } },
 		{ selector: 'edge.highlighted', style: { 'line-color': '#ef4444', 'width': 3.5, 'opacity': 1 } },
 		{ selector: ':selected', style: { 'line-color': '#ef4444', 'background-color': '#ef4444' } },
 	]), []);
@@ -70,31 +74,79 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 		if (!filterKind.AMM) hideKind.add('amm');
 		if (!filterKind.CLMM) hideKind.add('clmm');
 		const nodes: ElementDefinition[] = snap.nodes.map((n) => ({ data: { id: n.id, label: n.label || n.id.slice(0, 4) } }));
-		const edges: ElementDefinition[] = snap.edges
-			.filter((e) => !hideDex.has(e.dex))
+		// Build raw edge definitions (without DEX visibility filter yet for grouping)
+		const rawEdges: ElementDefinition[] = snap.edges
 			.filter((e) => {
 				const kind = (e as any).pool_kind;
 				return kind === 'amm' || kind === 'clmm' ? !hideKind.has(kind) : true;
 			})
 			.map((e) => ({ data: { id: e.id, source: e.source, target: e.target, dex: e.dex, fee_bps: e.fee_bps, liquidity: e.liquidity, liquidity_display: (e as any).liquidity_display, weight: e.weight, price_a_per_b: (e as any).price_a_per_b, tvl_usd: (e as any).tvl_usd, pool_id: (e as any).pool_id, source_account: (e as any).source_account, target_account: (e as any).target_account, pool_kind: (e as any).pool_kind, direction: (e as any).direction, pool_liquidity_raw: (e as any).pool_liquidity_raw, cpd: 0 } }));
-		// Assign per-pair control-point distances to fan out parallel edges
+
+		// Group by directed pair and create combined edges when both DEXes exist and both are enabled
+		const byPair = new Map<string, ElementDefinition[]>();
+		for (const ed of rawEdges) {
+			const a = String((ed.data as any).source);
+			const b = String((ed.data as any).target);
+			const key = `${a}->${b}`;
+			const arr = byPair.get(key) || [];
+			arr.push(ed);
+			byPair.set(key, arr);
+		}
+
+		const edges: ElementDefinition[] = [];
+		for (const [, arr] of byPair) {
+			const ray = arr.filter((e) => (e.data as any).dex === 'Raydium');
+			const orc = arr.filter((e) => (e.data as any).dex === 'Orca');
+			const bothDexVisible = !hideDex.has('Raydium') && !hideDex.has('Orca');
+			if (bothDexVisible && ray.length && orc.length) {
+				const anyEd = arr[0];
+				const source = String((anyEd.data as any).source);
+				const target = String((anyEd.data as any).target);
+				const combinedOriginalIds = [...ray, ...orc].map((ed) => String((ed.data as any).id));
+				const combinedEdgesDetails = [...ray, ...orc].map((ed) => ({
+					dex: String((ed.data as any).dex),
+					pool_id: (ed.data as any).pool_id,
+					fee_bps: (ed.data as any).fee_bps,
+					liquidity: (ed.data as any).liquidity,
+					price_a_per_b: (ed.data as any).price_a_per_b,
+					tvl_usd: (ed.data as any).tvl_usd,
+					pool_kind: (ed.data as any).pool_kind,
+					direction: (ed.data as any).direction,
+					pool_liquidity_raw: (ed.data as any).pool_liquidity_raw,
+				}));
+				edges.push({ data: { id: `combined:${source}->${target}`, source, target, dex: 'Combined', combined: 1, combinedOriginalIds, combinedEdgesDetails, cpd: 0 } } as ElementDefinition);
+				// Keep originals but mark hidden, so they can still be referenced by id for highlighting
+				for (const ed of arr) {
+					(ed.data as any).hiddenEdge = 1;
+					edges.push(ed);
+				}
+			} else {
+				// Render only those edges whose DEX is enabled
+				for (const ed of arr) {
+					if (!hideDex.has(String((ed.data as any).dex))) edges.push(ed);
+				}
+			}
+		}
+
+		// Assign per-pair control-point distances; ignore hidden originals
 		const group = new Map<string, ElementDefinition[]>();
 		for (const ed of edges) {
+			if ((ed.data as any).hiddenEdge === 1) continue;
 			const a = String((ed.data as any).source);
 			const b = String((ed.data as any).target);
 			const key = a < b ? `${a}|${b}` : `${b}|${a}`;
-			const arr = group.get(key) || [];
-			arr.push(ed);
-			group.set(key, arr);
+			const arr2 = group.get(key) || [];
+			arr2.push(ed);
+			group.set(key, arr2);
 		}
-		for (const [, arr] of group) {
-			arr.sort((x, y) => String((x.data as any).id).localeCompare(String((y.data as any).id)));
-			const count = arr.length;
+		for (const [, arr2] of group) {
+			arr2.sort((x, y) => String((x.data as any).id).localeCompare(String((y.data as any).id)));
+			const count = arr2.length;
 			if (count <= 1) continue;
 			const step = 24;
 			for (let i = 0; i < count; i++) {
 				const k = i - (count - 1) / 2;
-				(arr[i].data as any).cpd = Math.round(k * step);
+				(arr2[i].data as any).cpd = Math.round(k * step);
 			}
 		}
 		return [...nodes, ...edges];
@@ -103,7 +155,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 	// Recompute control-point distances to fan out parallel edges between two nodes
 	const recomputeParallelOffsets = (cy: cytoscape.Core, a: string, b: string, step: number = 24) => {
 		try {
-			const sel = cy.$(`edge[source = "${a}"][target = "${b}"], edge[source = "${b}"][target = "${a}"]`);
+			const sel = cy.$(`edge[source = "${a}"][target = "${b}"]:not([hiddenEdge = 1]), edge[source = "${b}"][target = "${a}"]:not([hiddenEdge = 1])`);
 			const arr = sel ? sel.toArray() : [];
 			if (!arr.length) return;
 			arr.sort((x, y) => String(x.id()).localeCompare(String(y.id())));
@@ -165,6 +217,21 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
       const selector = [idSelector, ...pairSelectors].filter(Boolean).join(',');
       const sel = selector ? cy.$(selector) : cy.collection();
       sel.addClass('highlighted');
+      // Highlight combined edges when originals are highlighted or when pair matches
+      try {
+        if (allIds.length) {
+          const combined = cy.edges('[combined = 1]');
+          combined.forEach((e) => {
+            const list: string[] = Array.isArray(e.data('combinedOriginalIds')) ? e.data('combinedOriginalIds') : [];
+            if (list.some((x) => allIds.includes(String(x)))) e.addClass('highlighted');
+          });
+        }
+        for (const p of pairs) {
+          const src = String(p.source);
+          const dst = String(p.target);
+          cy.$(`edge[source = "${src}"][target = "${dst}"][combined = 1]`).addClass('highlighted');
+        }
+      } catch {}
       // Optionally focus view on highlighted selection
       try { if (sel && sel.length) { cy.fit(sel, 40); } } catch {}
     } catch {}
@@ -267,46 +334,9 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 
   useEffect(() => {
     if (!socket) return;
-		const onDiff = (diff: GraphDiff) => {
-      const cy = cyRef.current; if (!cy) return;
-      // Apply removals first
-      if (diff.removedEdgeIds?.length) cy.remove(diff.removedEdgeIds.map((id) => `#${id}`).join(','));
-      if (diff.removedNodeIds?.length) cy.remove(diff.removedNodeIds.map((id) => `#${id}`).join(','));
-      // Apply adds/updates respecting filters
-      const hideDex = new Set<string>();
-      if (!filterDex.Raydium) hideDex.add('Raydium');
-      if (!filterDex.Orca) hideDex.add('Orca');
-			const hideKind = new Set<string>();
-			if (!filterKind.AMM) hideKind.add('amm');
-			if (!filterKind.CLMM) hideKind.add('clmm');
-      const upserts: ElementDefinition[] = [];
-      for (const n of [...(diff.addedNodes||[]), ...(diff.updatedNodes||[])]) {
-        upserts.push({ data: { id: n.id, label: n.label || n.id.slice(0,4) } });
-      }
-      for (const e of [...(diff.addedEdges||[]), ...(diff.updatedEdges||[])]) {
-				if (hideDex.has(e.dex)) continue;
-				const kind = (e as any).pool_kind;
-				if (kind === 'amm' || kind === 'clmm') {
-					if (hideKind.has(kind)) continue;
-				}
-        upserts.push({ data: { id: e.id, source: e.source, target: e.target, dex: e.dex, fee_bps: e.fee_bps, liquidity: e.liquidity, liquidity_display: (e as any).liquidity_display, weight: e.weight, price_a_per_b: (e as any).price_a_per_b, tvl_usd: (e as any).tvl_usd, pool_id: (e as any).pool_id, source_account: (e as any).source_account, target_account: (e as any).target_account, pool_kind: (e as any).pool_kind, direction: (e as any).direction, pool_liquidity_raw: (e as any).pool_liquidity_raw } });
-      }
-			cy.add(upserts);
-			// Recompute offsets for affected pairs only
-			try {
-				const touched = new Set<string>();
-				for (const e of [...(diff.addedEdges||[]), ...(diff.updatedEdges||[])]) {
-					const s = String(e.source);
-					const t = String(e.target);
-					const key = s < t ? `${s}|${t}` : `${t}|${s}`;
-					touched.add(key);
-				}
-				touched.forEach((key) => {
-					const [a, b] = key.split('|');
-					recomputeParallelOffsets(cy, a, b);
-				});
-			} catch {}
-      // Do not re-run layout on incremental diffs to avoid jarring refits
+		const onDiff = (_diff: GraphDiff) => {
+      // Refresh from full snapshot to maintain grouping logic reliably
+      loadSnapshot();
     };
     const onSnapshot = (snap: GraphSnapshot) => {
       const cy = cyRef.current; if (!cy) return;
@@ -367,6 +397,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
     });
     cy.on('tap', 'edge', (evt) => {
       const e = evt.target as EdgeSingular;
+      const combinedEdgesDetails = e.data('combinedEdgesDetails');
       setSelection({
         kind: 'edge',
         id: e.id(),
@@ -385,6 +416,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
         ...(e.data('pool_kind') ? { pool_kind: e.data('pool_kind') } : {}),
         ...(e.data('direction') ? { direction: e.data('direction') } : {}),
         ...(e.data('pool_liquidity_raw') != null ? { pool_liquidity_raw: e.data('pool_liquidity_raw') } : {}),
+        ...(Array.isArray(combinedEdgesDetails) ? { combined_edges: combinedEdgesDetails } : {}),
       });
     });
     cy.on('tap', (evt) => {
@@ -442,15 +474,37 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
                   <div className="opacity-70">ID</div><div className="truncate" title={selection.id}>{selection.id}</div>
                   <div className="opacity-70">Source</div><div className="truncate" title={selection.source}>{selection.source}</div>
                   <div className="opacity-70">Target</div><div className="truncate" title={selection.target}>{selection.target}</div>
-                  <div className="opacity-70">DEX</div><div>{selection.dex}</div>
-                  <div className="opacity-70">Fee (bps)</div><div>{selection.fee_bps ?? '—'}</div>
-                  <div className="opacity-70">Price A/B</div><div>{(selection as any).price_a_per_b ?? '—'}</div>
-                  <div className="opacity-70">Pool Liquidity (raw)</div><div>{(selection as any).pool_liquidity_raw ?? '—'}</div>
-                  <div className="opacity-70">Pool Kind</div><div>{(selection as any).pool_kind ?? '—'}</div>
-                  <div className="opacity-70">Direction</div><div>{(selection as any).direction ?? '—'}</div>
-                  <div className="opacity-70">TVL (USD)</div><div>{(selection as any).tvl_usd ?? '—'}</div>
-                  <div className="opacity-70">Weight</div><div>{selection.weight ?? '—'}</div>
-                  <div className="opacity-70">Pool ID</div><div className="truncate" title={(selection as any).pool_id || ''}>{(selection as any).pool_id || '—'}</div>
+                  {/* If this is a combined edge, render a compact comparison for each DEX */}
+                  {Array.isArray((selection as any).combined_edges) ? (
+                    <>
+                      <div className="col-span-2 mt-1 font-semibold">DEX comparison</div>
+                      {((selection as any).combined_edges as any[]).map((ed: any, i: number) => (
+                        <React.Fragment key={i}>
+                          <div className="opacity-70">DEX</div><div>{ed.dex}</div>
+                          <div className="opacity-70">Fee (bps)</div><div>{ed.fee_bps ?? '—'}</div>
+                          <div className="opacity-70">Price A/B</div><div>{ed.price_a_per_b ?? '—'}</div>
+                          <div className="opacity-70">Pool Liquidity (raw)</div><div>{ed.pool_liquidity_raw ?? '—'}</div>
+                          <div className="opacity-70">Pool Kind</div><div>{ed.pool_kind ?? '—'}</div>
+                          <div className="opacity-70">Direction</div><div>{ed.direction ?? '—'}</div>
+                          <div className="opacity-70">TVL (USD)</div><div>{ed.tvl_usd ?? '—'}</div>
+                          <div className="opacity-70">Pool ID</div><div className="truncate" title={ed.pool_id || ''}>{ed.pool_id || '—'}</div>
+                          {i < ((selection as any).combined_edges as any[]).length - 1 ? <div className="col-span-2 border-t border-white/10 my-1" /> : null}
+                        </React.Fragment>
+                      ))}
+                    </>
+                  ) : (
+                    <>
+                      <div className="opacity-70">DEX</div><div>{selection.dex}</div>
+                      <div className="opacity-70">Fee (bps)</div><div>{selection.fee_bps ?? '—'}</div>
+                      <div className="opacity-70">Price A/B</div><div>{(selection as any).price_a_per_b ?? '—'}</div>
+                      <div className="opacity-70">Pool Liquidity (raw)</div><div>{(selection as any).pool_liquidity_raw ?? '—'}</div>
+                      <div className="opacity-70">Pool Kind</div><div>{(selection as any).pool_kind ?? '—'}</div>
+                      <div className="opacity-70">Direction</div><div>{(selection as any).direction ?? '—'}</div>
+                      <div className="opacity-70">TVL (USD)</div><div>{(selection as any).tvl_usd ?? '—'}</div>
+                      <div className="opacity-70">Weight</div><div>{selection.weight ?? '—'}</div>
+                      <div className="opacity-70">Pool ID</div><div className="truncate" title={(selection as any).pool_id || ''}>{(selection as any).pool_id || '—'}</div>
+                    </>
+                  )}
                 </div>
               )}
             </div>
