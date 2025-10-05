@@ -37,10 +37,10 @@ fi
 #  - Pane 1: Backend only
 #  - Pane 2: Arb only
 
-tmux new-session -d -s "$SESSION_NAME" "journalctl -fu $BACKEND_UNIT -u $ARB_UNIT -o short-iso -n 200"
+tmux new-session -d -s "$SESSION_NAME" "bash -lc \"trap : INT; while :; do journalctl --no-pager -fu $BACKEND_UNIT -u $ARB_UNIT -o short-iso -n 200; echo '[combined log exited] restarting in 1s'; sleep 1; done\""
 
-tmux split-window -h "journalctl -fu $BACKEND_UNIT -o cat -n 200"
-tmux split-window -v "journalctl -fu $ARB_UNIT -o cat -n 200"
+tmux split-window -h "bash -lc \"trap : INT; while :; do journalctl --no-pager -fu $BACKEND_UNIT -o short-iso -n 200; echo '[backend log exited] restarting in 1s'; sleep 1; done\""
+tmux split-window -v "bash -lc \"trap : INT; while :; do journalctl --no-pager -fu $ARB_UNIT -o short-iso -n 200; echo '[arb log exited] restarting in 1s'; sleep 1; done\""
 
 tmux select-layout tiled
 tmux select-pane -t 0
@@ -57,8 +57,8 @@ tmux bind-key 3 select-pane -t 2
 tmux bind-key Q split-window -v "bash -lc 'echo \"Stopping services...\"; ${LOCKCTL} stop; read -p \"Stopped. Press Enter to close dashboard...\"; tmux kill-session -t ${SESSION_NAME}'"
 
 # Create an alternate window with less-follow for long scrollback & search
-tmux new-window -n "Full Logs" "bash -lc 'journalctl -u $BACKEND_UNIT -o short-iso -n 1000 | less -R +F'"
-tmux split-window -h "bash -lc 'journalctl -u $ARB_UNIT -o short-iso -n 1000 | less -R +F'"
+tmux new-window -n "Full Logs" "bash -lc 'journalctl --no-pager -u $BACKEND_UNIT -o short-iso -n 1000 | less -R +F'"
+tmux split-window -h "bash -lc 'journalctl --no-pager -u $ARB_UNIT -o short-iso -n 1000 | less -R +F'"
 tmux select-layout even-horizontal
 
 echo "Controls: Ctrl-b 1/2/3 switch panes, Ctrl-b z zoom, Ctrl-b Q stop & close, Ctrl-b q pane numbers, PgUp/PgDn scroll, / search in less (Full Logs)"
