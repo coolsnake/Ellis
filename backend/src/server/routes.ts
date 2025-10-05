@@ -1725,6 +1725,10 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     try {
       const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
       const { getGraphSnapshot } = await import('./graph.js');
+      // Ensure pool websockets and refresh loops are active before building initial snapshot
+      try { (await import('./pools.js')).setUserSubscribed(true); } catch {}
+      try { (await import('./pools.js')).enablePoolWebsocketRefreshes(); } catch {}
+      try { (await import('./pools.js')).startRaydiumRefreshLoop(); } catch {}
       const snap = await getGraphSnapshot(true);
       // Optional toggle mode: if client sends { enable: false } then forward stop
       const wantEnable = (req.body && typeof req.body.enable === 'boolean') ? !!req.body.enable : true;

@@ -1,5 +1,6 @@
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::collections::HashMap;
+use petgraph::visit::EdgeRef;
 
 #[derive(Clone, Debug)]
 pub struct EdgeData {
@@ -34,6 +35,38 @@ impl ArbGraph {
         let b = self.upsert_node(dex, mint_b);
         // For MVP, just add parallel edges; later replace existing
         self.g.add_edge(a, b, data);
+    }
+
+    // Compute a stable edge id consistent with backend snapshot logic
+    fn compute_edge_id(&self, src: NodeIndex, dst: NodeIndex, data: &EdgeData) -> String {
+        let a = self.g.node_weight(src).cloned().unwrap_or_default();
+        let b = self.g.node_weight(dst).cloned().unwrap_or_default();
+        let dex = data.dex.clone();
+        if !data.pool_id.is_empty() { return data.pool_id.clone(); }
+        format!("{}->{}-{}", a, b, dex)
+    }
+
+    pub fn remove_edge_by_id(&mut self, id: &str) -> usize {
+        let mut to_remove = Vec::new();
+        for e in self.g.edge_references() {
+            let eid = self.compute_edge_id(e.source(), e.target(), e.weight());
+            if eid == id { to_remove.push(e.id()); }
+        }
+        let n = to_remove.len();
+        for idx in to_remove { let _ = self.g.remove_edge(idx); }
+        n
+    }
+
+    pub fn remove_edges_by_ids(&mut self, ids: &[String]) -> usize {
+        let set: std::collections::HashSet<&String> = ids.iter().collect();
+        let mut to_remove = Vec::new();
+        for e in self.g.edge_references() {
+            let eid = self.compute_edge_id(e.source(), e.target(), e.weight());
+            if set.contains(&eid) { to_remove.push(e.id()); }
+        }
+        let n = to_remove.len();
+        for idx in to_remove { let _ = self.g.remove_edge(idx); }
+        n
     }
 }
 

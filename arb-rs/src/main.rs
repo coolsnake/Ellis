@@ -68,6 +68,8 @@ struct Metrics {
     ws_skipped_nochange_total: u64,
     max_profit_bps: i64,
     avg_profit_bps: f64,
+    graph_updates_applied: u64,
+    graph_updates_skipped: u64,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -1061,6 +1063,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/ws/opportunities", get(ws_opportunities))
         .route("/config", post(set_config).get(get_config))
         .route("/arb/start", post(arb_start))
+        .route("/arb/graph/snapshot", post(arb_graph_snapshot))
+        .route("/arb/graph/update", post(arb_graph_update))
         .route("/metrics", get(metrics_prom))
         .route("/metrics/json", get(metrics_json))
         .route("/graph/trigger-refresh", post(trigger_refresh))
@@ -1153,6 +1157,108 @@ struct StartReqGraph { version: Option<u64>, timestamp: Option<u64>, nodes: Vec<
 
 #[derive(Deserialize)]
 struct StartReq { graph: Option<StartReqGraph>, enable: Option<bool> }
+
+#[derive(Deserialize)]
+struct GraphSnapshotReq { graph: StartReqGraph }
+
+#[derive(Deserialize)]
+struct GraphDiffNode { id: String, label: Option<String>, degree: Option<i64> }
+#[derive(Deserialize)]
+struct GraphDiffEdge {
+    id: String,
+    source: String,
+    target: String,
+    dex: Option<String>,
+    pool_id: Option<String>,
+    fee_bps: Option<i64>,
+    liquidity: Option<f64>,
+    liquidity_display: Option<f64>,
+    price_a_per_b: Option<f64>,
+}
+#[derive(Deserialize)]
+struct GraphDiffReq {
+    version: Option<u64>,
+    timestamp: Option<u64>,
+    addedNodes: Option<Vec<GraphDiffNode>>,
+    updatedNodes: Option<Vec<GraphDiffNode>>,
+    removedNodeIds: Option<Vec<String>>,
+    addedEdges: Option<Vec<GraphDiffEdge>>,
+    updatedEdges: Option<Vec<GraphDiffEdge>>,
+    removedEdgeIds: Option<Vec<String>>,
+}
+
+async fn arb_graph_snapshot(State(state): State<Arc<RwLock<AppState>>>, Json(req): Json<GraphSnapshotReq>) -> Json<serde_json::Value> {
+    let mut s = state.write().await;
+    let g = req.graph;
+    tracing::info!(version = ?g.version, ts = ?g.timestamp, nodes = g.nodes.len(), edges = g.edges.len(), "arb.graph.snapshot: received");
+    let mut new_graph = ArbGraph::new();
+    for e in g.edges.into_iter() {
+        let dex = e.dex.unwrap_or_else(|| "Unknown".to_string());
+        let fee = e.fee_bps.unwrap_or(0);
+        let liq = e.liquidity.unwrap_or(0.0);
+        let pool_id = e.pool_id.unwrap_or_else(|| "".to_string());
+        let liq_disp = e.liquidity_display.unwrap_or(0.0);
+        let rate = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
+        let rate_eff = if rate > 0.0 { rate * (1.0 - (fee as f64)/10_000.0).max(0.0) } else { 0.0 };
+        new_graph.upsert_edge(&dex, &e.source, &e.target, EdgeData {
+            rate_effective: rate_eff,
+            fee_bps: fee,
+            liquidity: liq,
+            dex: dex.clone(),
+            pool_id,
+            liquidity_display: liq_disp,
+        });
+    }
+    s.graph = new_graph;
+    s.metrics.graph_nodes = s.graph.g.node_count() as u64;
+    s.metrics.graph_edges = s.graph.g.edge_count() as u64;
+    s.last_graph_version = g.version.unwrap_or(s.last_graph_version);
+    s.last_graph_ts = g.timestamp.unwrap_or(s.last_graph_ts);
+    s.use_backend_graph = true;
+    s.force_refresh_next = false;
+    let nodes = s.metrics.graph_nodes; let edges = s.metrics.graph_edges;
+    s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.graph.snapshot: accepted nodes={} edges={}", nodes, edges) });
+    let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
+    Json(serde_json::json!({"ok": true, "nodes": nodes, "edges": edges}))
+}
+
+async fn arb_graph_update(State(state): State<Arc<RwLock<AppState>>>, Json(req): Json<GraphDiffReq>) -> Json<serde_json::Value> {
+    let mut s = state.write().await;
+    // If version provided and not advancing, skip
+    if let Some(v) = req.version { if v <= s.last_graph_version { s.metrics.graph_updates_skipped = s.metrics.graph_updates_skipped.saturating_add(1); return Json(serde_json::json!({"ok": true, "skipped": true })); } }
+    // Apply removals first
+    if let Some(ref removed) = req.removedEdgeIds {
+        let _ = s.graph.remove_edges_by_ids(removed);
+    }
+    // Apply additions/updates (both treated as upserts)
+    let mut upsert = |e: &GraphDiffEdge| {
+        let dex = e.dex.clone().unwrap_or_else(|| "Unknown".to_string());
+        let fee = e.fee_bps.unwrap_or(0);
+        let liq = e.liquidity.unwrap_or(0.0);
+        let liq_disp = e.liquidity_display.unwrap_or(0.0);
+        let rate = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
+        let rate_eff = if rate > 0.0 { rate * (1.0 - (fee as f64)/10_000.0).max(0.0) } else { 0.0 };
+        s.graph.upsert_edge(&dex, &e.source, &e.target, EdgeData {
+            rate_effective: rate_eff,
+            fee_bps: fee,
+            liquidity: liq,
+            dex: dex.clone(),
+            pool_id: e.pool_id.clone().unwrap_or_default(),
+            liquidity_display: liq_disp,
+        });
+    };
+    if let Some(ref edges) = req.addedEdges { for e in edges { upsert(e); } }
+    if let Some(ref edges) = req.updatedEdges { for e in edges { upsert(e); } }
+    // Node adds/updates are implicit in edge upserts; removals are ignored here
+    s.metrics.graph_nodes = s.graph.g.node_count() as u64;
+    s.metrics.graph_edges = s.graph.g.edge_count() as u64;
+    if let Some(v) = req.version { s.last_graph_version = v; }
+    if let Some(t) = req.timestamp { s.last_graph_ts = t; }
+    s.use_backend_graph = true;
+    s.force_refresh_next = false;
+    s.metrics.graph_updates_applied = s.metrics.graph_updates_applied.saturating_add(1);
+    Json(serde_json::json!({"ok": true, "nodes": s.metrics.graph_nodes, "edges": s.metrics.graph_edges}))
+}
 
 async fn arb_start(State(state): State<Arc<RwLock<AppState>>>, Json(req): Json<StartReq>) -> Json<serde_json::Value> {
     let mut s = state.write().await;

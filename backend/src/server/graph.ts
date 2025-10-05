@@ -1,7 +1,7 @@
 import type { Server as SocketIOServer } from 'socket.io';
 import { logger } from '../utils/logger.js';
 import { readJson } from '../utils/fs.js';
-import { notifyArbServiceRefresh, emit } from './realtime.js';
+import { notifyArbServiceRefresh, emit, pushArbGraphSnapshot, pushArbGraphDiff } from './realtime.js';
 import { CONFIG } from '../utils/config.js';
 import { getRaydiumPoolsNormalized, getOrcaPoolsCached, enablePoolWebsocketRefreshes } from './pools.js';
 import { loadTokenMap } from '../utils/tokens.js';
@@ -55,6 +55,10 @@ const SNAPSHOT_TTL_MS = 30_000;
 let lastAt = 0;
 let rebuildTimer: any | null = null;
 let pendingUpdates = 0;
+let diffSinceRebase = 0;
+const REBASE_DIFF_THRESHOLD = 2000; // send full snapshot after many changes
+const REBASE_TIME_MS = 5 * 60 * 1000; // or after time window
+let lastRebaseMs = 0;
 
 export function getGraphVersion(): { version: number; timestamp: number } {
   const version = lastSnapshot?.version || 0;
@@ -72,7 +76,22 @@ export async function rebuildGraphNow(io?: SocketIOServer): Promise<void> {
     if (io) {
       if (!prev) io.emit('graph-snapshot', next); else if (changed) io.emit('graph-update', diff);
     }
-    if (!prev || changed) { try { await notifyArbServiceRefresh(); } catch {} }
+    if (!prev) {
+      try { await pushArbGraphSnapshot(next); } catch {}
+      try { await notifyArbServiceRefresh(); } catch {}
+      diffSinceRebase = 0; lastRebaseMs = Date.now();
+    } else if (changed) {
+      const nowMs = Date.now();
+      const shouldRebase = (diffSinceRebase >= REBASE_DIFF_THRESHOLD) || (nowMs - lastRebaseMs > REBASE_TIME_MS);
+      if (shouldRebase) {
+        try { await pushArbGraphSnapshot(next); } catch {}
+        diffSinceRebase = 0; lastRebaseMs = nowMs;
+      } else {
+        try { await pushArbGraphDiff(diff); } catch {}
+        diffSinceRebase += (diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length);
+      }
+      try { await notifyArbServiceRefresh(); } catch {}
+    }
     try { logger.info('graph.rebuild.now', { nodes: next.nodes.length, edges: next.edges.length, changed }); } catch {}
   } catch (e: any) {
     logger.warn('graph.rebuild.now failed', { error: String(e?.message || e) });
@@ -93,6 +112,27 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
   if (inflight) return inflight;
   inflight = (async () => {
     try {
+      // When a forced snapshot is requested, ensure caches are warmed briefly to avoid empty graphs
+      if (force) {
+        try {
+          const { peekRaydiumPools, peekOrcaPools, enablePoolWebsocketRefreshes, startRaydiumRefreshLoop, getRaydiumPoolsNormalized, getOrcaPoolsCached } = await import('./pools.js');
+          const hasAny = (p: any) => ((p?.amm?.length || 0) + (p?.clmm?.length || 0)) > 0;
+          let rayPeek = peekRaydiumPools();
+          let orcPeek = peekOrcaPools();
+          if (!hasAny(rayPeek) || !hasAny(orcPeek)) {
+            try { enablePoolWebsocketRefreshes(); } catch {}
+            try { startRaydiumRefreshLoop(); } catch {}
+            try { await Promise.allSettled([getRaydiumPoolsNormalized(true), getOrcaPoolsCached(true)]); } catch {}
+            const deadline = Date.now() + 1000;
+            while (Date.now() < deadline) {
+              rayPeek = peekRaydiumPools();
+              orcPeek = peekOrcaPools();
+              if (hasAny(rayPeek) || hasAny(orcPeek)) break;
+              await new Promise(r => setTimeout(r, 50));
+            }
+          }
+        } catch {}
+      }
       // Do not trigger background fetching unless explicitly requested by refresh API
       // Build graph from whatever is in caches right now
       const { peekRaydiumPools, peekOrcaPools } = await import('./pools.js');
