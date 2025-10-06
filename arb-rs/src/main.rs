@@ -1049,13 +1049,22 @@ async fn main() -> anyhow::Result<()> {
                                     hop_pool_ids.push(best_pid.unwrap_or_default());
                                     hop_fee_bps_vec.push(best_fee);
                                 }
-                                // Log triangle near-miss
+                                // Log triangle near-miss with units per hop
                                 {
                                     let path_str = labels.join("->");
-                                    let rates_str = hop_rates.iter().map(|v| format!("{:.6}", v)).collect::<Vec<_>>().join(",");
                                     let pools_str = hop_pool_ids.join(",");
                                     let fees_str = hop_fee_bps_vec.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
-                                    tracing::info!(target = "arb_rs", "arb.near_miss.triangle path={} profit_bps={} net_bps={} hops=3 rates=[{}] pools=[{}] fees=[{}] product={:.8}", path_str, profit_bps, net_bps, rates_str, pools_str, fees_str, prod);
+                                    // Build unit-annotated rates
+                                    let mut hop_units: Vec<String> = Vec::new();
+                                    for w in 0..3 {
+                                        let a = &labels[w];
+                                        let b = &labels[(w+1)%3];
+                                        let r = hop_rates.get(w).copied().unwrap_or(0.0);
+                                        let inv = if r>0.0 { 1.0/r } else { 0.0 };
+                                        hop_units.push(format!("{}->{}: {:.9} {} per 1 {} | inv {:.9} {} per 1 {}", a, b, r, b, a, inv, a, b));
+                                    }
+                                    let rates_units = hop_units.join("; ");
+                                    tracing::info!(target = "arb_rs", "arb.near_miss.triangle path={} profit_bps={} net_bps={} hops=3 rates_units={} pools=[{}] fees=[{}] product={:.8}", path_str, profit_bps, net_bps, rates_units, pools_str, fees_str, prod);
                                 }
                                 let near = Opportunity { path: labels, profit_bps, net_bps: Some(net_bps), est_profit_usd: 1.0, dexes, hop_dexes: Some(hop_dexes), hop_rates: Some(hop_rates), hop_outs: None, hop_pool_ids: Some(hop_pool_ids), hop_fee_bps: Some(hop_fee_bps_vec), hop_liquidity_display: None, hop_count: Some(3), rate_product: Some(prod), link_edges_used: Some(link_edges_used), link_penalty_bps_total: Some(link_penalty_bps_total), min_edge_liquidity: est_capacity, est_capacity, bottleneck: bottleneck_edge, detected_ms: Some(now_ts), first_seen_ms: None, detections: Some(0), bf_slack_log: None, bf_required_rate: None, bf_rate_delta_bps: None };
                                 near_pair = Some((near, shortfall));
