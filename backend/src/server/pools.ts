@@ -329,7 +329,7 @@ async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       const feeRaw = (it as any)?.feeRate ?? (it as any)?.fee_bps;
       if (typeof feeRaw === 'number') fee_bps = feeRaw <= 1 ? Math.round(feeRaw * 10_000) : Math.round(feeRaw);
     }
-    const incomingPrice = Number((it as any)?.current_price ?? (it as any)?.price ?? (it as any)?.price_a_per_b ?? 0);
+    let incomingPrice = Number((it as any)?.current_price ?? (it as any)?.price ?? (it as any)?.price_a_per_b ?? 0);
     const amtAraw = (it?.reserve_x_amount ?? it?.tokenBalanceA ?? it?.tokenAAmount ?? it?.amountA ?? it?.baseAmount ?? 0);
     const amtBraw = (it?.reserve_y_amount ?? it?.tokenBalanceB ?? it?.tokenBAmount ?? it?.amountB ?? it?.quoteAmount ?? 0);
     const amount_a = Number(typeof amtAraw === 'string' ? Number(amtAraw) : amtAraw || 0);
@@ -339,6 +339,33 @@ async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     const tvl_usd = Number.isFinite(tvlUsdcNum) && tvlUsdcNum > 0 ? tvlUsdcNum : undefined;
     const pool_liquidity_raw = (tvl_usd != null) ? tvl_usd : (Number.isFinite(decA) && Number.isFinite(decB) ? ((amount_a/Math.pow(10, decA as number)) + (amount_b/Math.pow(10, decB as number))) : undefined);
     const liquidity_display = (tvl_usd != null) ? tvl_usd : undefined;
+    // Calibrate orientation and magnitude to A-per-B using USD references when available
+    // Choose between incoming and its inverse, optionally scaled by powers of 10, minimizing deviation to ref = pa/pb
+    // If USD refs unavailable, leave incoming as-is
+    try {
+      const { getPriceByMint } = await import('./priceStore.js');
+      const pa = getPriceByMint(mint_a)?.usdc ?? null;
+      const pb = getPriceByMint(mint_b)?.usdc ?? null;
+      if (pa && pb && Number(pa) > 0 && Number(pb) > 0 && Number(incomingPrice) > 0) {
+        // For A per 1 B, compare against USD reference price(B)/price(A)
+        const ref = (pb as number) / (pa as number);
+        const base = Number(incomingPrice);
+        const inv = 1 / base;
+        const cands: number[] = [];
+        for (let k = -6; k <= 6; k++) {
+          const scale = Math.pow(10, k);
+          cands.push(base * scale);
+          cands.push(inv * scale);
+        }
+        let best = base; let bestDev = Number.POSITIVE_INFINITY;
+        for (const c of cands) {
+          if (!Number.isFinite(c) || !(c > 0)) continue;
+          const dev = Math.max(c / ref, ref / c);
+          if (dev + 1e-12 < bestDev) { bestDev = dev; best = c; }
+        }
+        incomingPrice = best;
+      }
+    } catch {}
     // Optional sanity: drop extreme deviations vs USD ref if both sides priced
     let price_ok = true;
     try {
@@ -351,7 +378,8 @@ async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
         const pb = getPriceByMint(mint_b)?.usdc ?? null;
         const px = (incomingPrice && incomingPrice > 0) ? incomingPrice : undefined;
         if (pa && pb && px && (px as number) > 0) {
-          const ref = (pa as number) / (pb as number);
+          // For A per 1 B, the USD reference is price(B)/price(A)
+          const ref = (pb as number) / (pa as number);
           const dev = Math.max((px as number) / ref, ref / (px as number));
           if (dev > maxDeviation) price_ok = false;
         }

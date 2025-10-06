@@ -267,7 +267,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const pa = getPriceByMint(mintA)?.usdc ?? null;
           const pb = getPriceByMint(mintB)?.usdc ?? null;
           if (!(pa && pb) || !(pa > 0) || !(pb > 0)) return price;
-          const ref = (pa as number) / (pb as number);
+          // For A per 1 B, the USD reference is price(B)/price(A)
+          const ref = (pb as number) / (pa as number);
           const cands: number[] = [price, price * 10, price / 10, price * 100, price / 100].filter((x) => Number.isFinite(x) && x > 0) as number[];
           let best = price; let bestDev = Number.POSITIVE_INFINITY;
           for (const c of cands) {
@@ -462,7 +463,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         try {
           const pa = getPriceByMint(p.mint_a)?.usdc ?? null;
           const pb = getPriceByMint(p.mint_b)?.usdc ?? null;
-          const ref = (pa && pb && pb > 0) ? (pa as number) / (pb as number) : undefined;
+          const ref = (pa && pb && pb > 0) ? ((pb as number) / (pa as number)) : undefined;
           if (price && ref) {
             const dev = Math.max(price / ref, ref / price);
             const fwd = 1 / price, rev = price;
@@ -539,7 +540,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         try {
           const pa = getPriceByMint(p.mint_a)?.usdc ?? null;
           const pb = getPriceByMint(p.mint_b)?.usdc ?? null;
-          const ref = (pa && pb && pb > 0) ? (pa as number) / (pb as number) : undefined;
+          const ref = (pa && pb && pb > 0) ? ((pb as number) / (pa as number)) : undefined;
           if (priceAmmOrca) {
             const fwd = 1 / priceAmmOrca, rev = priceAmmOrca;
             if (ref) {
@@ -592,7 +593,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         try {
           const pa = getPriceByMint(p.mint_a)?.usdc ?? null;
           const pb = getPriceByMint(p.mint_b)?.usdc ?? null;
-          const ref = (pa && pb && pb > 0) ? (pa as number) / (pb as number) : undefined;
+          const ref = (pa && pb && pb > 0) ? ((pb as number) / (pa as number)) : undefined;
           if (priceClmmOrca) {
             const fwd = 1 / priceClmmOrca, rev = priceClmmOrca;
             if (ref) {
