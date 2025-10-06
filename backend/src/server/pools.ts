@@ -239,54 +239,50 @@ async function fetchMeteoraHttp(): Promise<any> {
     const retries = Number(((CONFIG as any)?.meteora?.maxHttpRetries) || 2);
     const backoffMs = Number(((CONFIG as any)?.meteora?.httpBackoffMs) || 500);
     const maxPages = Number(((CONFIG as any)?.meteora?.maxPages) || 3);
-    const params: Record<string, string> = {};
-    if (Number.isFinite(size as any) && size > 0) params.limit = String(size);
-    const build = (extra: Record<string, string | undefined> = {}) => {
+    const build = (page: number, limit: number) => {
       const sp = new URLSearchParams();
-      for (const [k, v] of Object.entries(params)) if (v != null && v !== '') sp.append(k, v);
-      for (const [k, v] of Object.entries(extra)) if (v != null && v !== '') sp.append(k, String(v));
+      sp.append('page', String(Math.max(0, page)));
+      if (Number.isFinite(limit as any) && limit > 0) sp.append('limit', String(limit));
       const qs = sp.toString();
       return qs ? `${base}?${qs}` : base;
     };
     // eslint-disable-next-line no-undef
     const fetchFn: any = (globalThis as any).fetch || fetch;
     const out: any[] = [];
-    let cursor: string | null = '';
     let page = 0;
-    while (page < maxPages) {
-      page += 1;
+    for (let i = 0; i < maxPages; i++) {
       let ok = false;
       for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-          const url = build(cursor !== null ? (cursor ? { cursor } : { cursor: '' }) : {});
-          const res = await fetchFn(url, { headers: { accept: 'application/json' } });
-          if (res?.status === 429) { try { logger.warn('meteora.http 429', { page }); emit('log', { level: 'warn', message: `arb:429 source=meteora page=${page}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}; throw new Error('http 429'); }
+          const url = build(page, size);
+          const res = await fetchFn(url, { headers: { accept: 'application/json' }, method: 'GET' });
+          if (res?.status === 429) { try { logger.warn('meteora.http 429', { page, cat: 'meteora' }); emit('log', { level: 'warn', message: `arb:429 source=meteora page=${page}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}; throw new Error('http 429'); }
           if (!res?.ok) throw new Error(`http ${res?.status}`);
           const json: any = await res.json().catch(() => null);
-          const data: any[] = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : (Array.isArray(json?.pairs) ? json.pairs : []));
+          const data: any[] = Array.isArray(json?.pairs) ? json.pairs : (Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []));
           if (data.length) out.push(...data);
-          const nxt = (json as any)?.meta?.next ?? (json as any)?.meta?.cursor?.next;
-          cursor = (nxt === null || nxt === undefined) ? null : String(nxt);
           ok = true; break;
         } catch (e:any) {
-          try { logger.warn('meteora.http page failed', { page, attempt: attempt + 1, error: String(e?.message || e) }); } catch {}
+          try { logger.warn('meteora.http page failed', { page, attempt: attempt + 1, error: String(e?.message || e), cat: 'meteora' }); } catch {}
           if (attempt < retries) await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
         }
       }
       if (ok) {
-        try { logger.info('meteora.http page ok', { page, count: out.length, next: !!cursor }); } catch {}
+        try { logger.info('meteora.http page ok', { page, count: out.length, cat: 'meteora' }); } catch {}
       } else {
         break;
       }
-      if (!cursor) break;
+      // Stop when we get fewer than requested or when total is reached
+      if (out.length === 0) break;
+      page += 1;
     }
     if (out.length === 0) {
       // fallback single
-      const res = await fetchFn(build());
+      const res = await fetchFn(build(0, size), { headers: { accept: 'application/json' }, method: 'GET' });
       if (!res?.ok) throw new Error(`http ${res?.status}`);
       const json: any = await res.json().catch(() => null);
-      const single = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : (Array.isArray(json?.pairs) ? json.pairs : []));
-      try { logger.info('meteora.http single ok', { count: single.length }); } catch {}
+      const single = Array.isArray(json?.pairs) ? json.pairs : (Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []));
+      try { logger.info('meteora.http single ok', { count: single.length, cat: 'meteora' }); } catch {}
       return single;
     }
     return out;
@@ -301,29 +297,37 @@ async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
   let jupMap: Record<string, { symbol: string; decimals: number }> = {};
   try { const tok = await import('../utils/tokens.js'); if (typeof (tok as any).loadJupiterTokenMap === 'function') jupMap = await (tok as any).loadJupiterTokenMap(); } catch {}
   const arrCandidates: any[] = [];
+  if (Array.isArray(raw?.pairs)) arrCandidates.push(raw.pairs);
   if (Array.isArray(raw)) arrCandidates.push(raw);
   if (Array.isArray(raw?.data)) arrCandidates.push(raw.data);
-  if (Array.isArray(raw?.pairs)) arrCandidates.push(raw.pairs);
-  const arr: any[] = arrCandidates.find(a => Array.isArray(a) && a.length) || (Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : []));
+  const arr: any[] = arrCandidates.find(a => Array.isArray(a) && a.length) || (Array.isArray(raw?.pairs) ? raw.pairs : (Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : [])));
   for (const it of arr) {
     const id = String(it?.address || it?.id || it?.poolAddress || '');
     const tokenA = it?.tokenA || it?.tokenX || {};
     const tokenB = it?.tokenB || it?.tokenY || {};
-    const mint_a = String(tokenA?.mint || it?.mintA || it?.tokenXMint || '');
-    const mint_b = String(tokenB?.mint || it?.mintB || it?.tokenYMint || '');
+    const mint_a = String(it?.mint_x || tokenA?.mint || it?.mintA || it?.tokenXMint || '');
+    const mint_b = String(it?.mint_y || tokenB?.mint || it?.mintB || it?.tokenYMint || '');
     if (!id || !mint_a || !mint_b) continue;
     let decA = Number((tokenA?.decimals ?? it?.decimalsA));
     let decB = Number((tokenB?.decimals ?? it?.decimalsB));
     if (!Number.isFinite(decA) && jupMap[mint_a]?.decimals != null) decA = Number(jupMap[mint_a].decimals);
     if (!Number.isFinite(decB) && jupMap[mint_b]?.decimals != null) decB = Number(jupMap[mint_b].decimals);
-    const feeRaw = (it as any)?.feeRate ?? (it as any)?.fee_bps;
-    const fee_bps = typeof feeRaw === 'number' ? (feeRaw <= 1 ? Math.round(feeRaw * 10_000) : Math.round(feeRaw)) : 0;
-    const incomingPrice = Number((it as any)?.price ?? (it as any)?.price_a_per_b ?? 0);
-    const amtAraw = (it?.tokenBalanceA ?? it?.tokenAAmount ?? it?.amountA ?? it?.baseAmount ?? 0);
-    const amtBraw = (it?.tokenBalanceB ?? it?.tokenBAmount ?? it?.amountB ?? it?.quoteAmount ?? 0);
+    // Fee: prefer base_fee_percentage (percentage), fall back to fee_bps/feeRate
+    const feeBasePctRaw: any = (it as any)?.base_fee_percentage;
+    let fee_bps = 0;
+    if (feeBasePctRaw != null) {
+      const val = Number(feeBasePctRaw);
+      if (Number.isFinite(val)) fee_bps = val <= 1 ? Math.round(val * 10_000) : Math.round(val * 100);
+    } else {
+      const feeRaw = (it as any)?.feeRate ?? (it as any)?.fee_bps;
+      if (typeof feeRaw === 'number') fee_bps = feeRaw <= 1 ? Math.round(feeRaw * 10_000) : Math.round(feeRaw);
+    }
+    const incomingPrice = Number((it as any)?.current_price ?? (it as any)?.price ?? (it as any)?.price_a_per_b ?? 0);
+    const amtAraw = (it?.reserve_x_amount ?? it?.tokenBalanceA ?? it?.tokenAAmount ?? it?.amountA ?? it?.baseAmount ?? 0);
+    const amtBraw = (it?.reserve_y_amount ?? it?.tokenBalanceB ?? it?.tokenBAmount ?? it?.amountB ?? it?.quoteAmount ?? 0);
     const amount_a = Number(typeof amtAraw === 'string' ? Number(amtAraw) : amtAraw || 0);
     const amount_b = Number(typeof amtBraw === 'string' ? Number(amtBraw) : amtBraw || 0);
-    const tvlUsdcRaw = (it as any)?.tvlUsdc ?? (it as any)?.tvlUsd;
+    const tvlUsdcRaw = (it as any)?.tvlUsdc ?? (it as any)?.tvlUsd ?? (it as any)?.liquidity;
     const tvlUsdcNum = typeof tvlUsdcRaw === 'string' ? Number(tvlUsdcRaw) : (typeof tvlUsdcRaw === 'number' ? tvlUsdcRaw : 0);
     const tvl_usd = Number.isFinite(tvlUsdcNum) && tvlUsdcNum > 0 ? tvlUsdcNum : undefined;
     const pool_liquidity_raw = (tvl_usd != null) ? tvl_usd : (Number.isFinite(decA) && Number.isFinite(decB) ? ((amount_a/Math.pow(10, decA as number)) + (amount_b/Math.pow(10, decB as number))) : undefined);
@@ -347,7 +351,7 @@ async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       }
     } catch {}
     if (!price_ok) { try { logger.warn('meteora.clmm drop by sanity', { id, mint_a, mint_b, price_a_per_b: incomingPrice, cat: 'meteora' }); } catch {}; continue; }
-    clmm.push({ id, dex: 'Meteora', mint_a, mint_b, fee_bps, sqrt_price_x64: 0, liquidity: 0, tick_spacing: Number((it as any)?.binStep || 0), updated_ms: now, price_a_per_b: (incomingPrice && incomingPrice > 0) ? incomingPrice : undefined, amount_a, amount_b, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, pool_kind: 'clmm', pool_liquidity_raw, tvl_usd, liquidity_display } as any);
+    clmm.push({ id, dex: 'Meteora', mint_a, mint_b, fee_bps, sqrt_price_x64: 0, liquidity: 0, tick_spacing: Number((it as any)?.bin_step || (it as any)?.binStep || 0), updated_ms: now, price_a_per_b: (incomingPrice && incomingPrice > 0) ? incomingPrice : undefined, amount_a, amount_b, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, pool_kind: 'clmm', pool_liquidity_raw, tvl_usd, liquidity_display } as any);
   }
   // Optional canonicalization of pair order for consistency
   try {
