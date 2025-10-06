@@ -438,7 +438,8 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
         const a = String(p?.mint_a || '');
         const b = String(p?.mint_b || '');
         const px = Number(p?.price_a_per_b || 0);
-        if (!a || !b || !Number.isFinite(px) || px <= 0) return { forward: undefined, reverse: undefined };
+        if (!a || !b) return { forward: undefined, reverse: undefined };
+        if (!Number.isFinite(px) || px <= 0) return { forward: undefined, reverse: undefined };
         // forward = USDC per 1 SOL
         if (a === USDC && b === SOL) return { forward: px, reverse: 1 / px };
         if (a === SOL && b === USDC) return { forward: 1 / px, reverse: px };
@@ -459,19 +460,39 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
     const rayPick = pickOne(r);
     if (rayPick) {
       const { forward, reverse } = compute(rayPick);
-      try { logger.info('pools.pair_sol_usdc', { source: 'raydium', id: rayPick.id, kind: rayPick.pool_kind || (rayPick.sqrt_price_x64 != null ? 'clmm' : 'amm'), forward_usdc_per_sol: forward, reverse_sol_per_usdc: reverse }); } catch {}
+      if (forward && reverse) {
+        try { logger.info('pools.pair_sol_usdc', { source: 'raydium', id: rayPick.id, kind: rayPick.pool_kind || (rayPick.sqrt_price_x64 != null ? 'clmm' : 'amm'), forward_usdc_per_sol: forward, reverse_sol_per_usdc: reverse }); } catch {}
+      } else {
+        try { logger.debug('pools.pair_sol_usdc.skip', { source: 'raydium', reason: 'invalid_price_or_orientation', id: rayPick.id, a: rayPick.mint_a, b: rayPick.mint_b, px: rayPick.price_a_per_b }); } catch {}
+      }
+    } else {
+      try { logger.debug('pools.pair_sol_usdc.skip', { source: 'raydium', reason: 'no_sol_usdc' }); } catch {}
     }
     const orcPick = pickOne(o);
     if (orcPick) {
       const { forward, reverse } = compute(orcPick);
-      try { logger.info('pools.pair_sol_usdc', { source: 'orca', id: orcPick.id, kind: orcPick.pool_kind || (orcPick.sqrt_price_x64 != null ? 'clmm' : 'amm'), forward_usdc_per_sol: forward, reverse_sol_per_usdc: reverse }); } catch {}
+      if (forward && reverse) {
+        try { logger.info('pools.pair_sol_usdc', { source: 'orca', id: orcPick.id, kind: orcPick.pool_kind || (orcPick.sqrt_price_x64 != null ? 'clmm' : 'amm'), forward_usdc_per_sol: forward, reverse_sol_per_usdc: reverse }); } catch {}
+      } else {
+        try { logger.debug('pools.pair_sol_usdc.skip', { source: 'orca', reason: 'invalid_price_or_orientation', id: orcPick.id, a: orcPick.mint_a, b: orcPick.mint_b, px: orcPick.price_a_per_b }); } catch {}
+      }
+    } else {
+      try { logger.debug('pools.pair_sol_usdc.skip', { source: 'orca', reason: 'no_sol_usdc' }); } catch {}
     }
     const metPick = pickOne(m);
     if (metPick) {
       const { forward, reverse } = compute(metPick);
-      try { logger.info('pools.pair_sol_usdc', { source: 'meteora', id: metPick.id, kind: metPick.pool_kind || (metPick.sqrt_price_x64 != null ? 'clmm' : 'amm'), forward_usdc_per_sol: forward, reverse_sol_per_usdc: reverse }); } catch {}
+      if (forward && reverse) {
+        try { logger.info('pools.pair_sol_usdc', { source: 'meteora', id: metPick.id, kind: metPick.pool_kind || (metPick.sqrt_price_x64 != null ? 'clmm' : 'amm'), forward_usdc_per_sol: forward, reverse_sol_per_usdc: reverse }); } catch {}
+      } else {
+        try { logger.debug('pools.pair_sol_usdc.skip', { source: 'meteora', reason: 'invalid_price_or_orientation', id: metPick.id, a: metPick.mint_a, b: metPick.mint_b, px: metPick.price_a_per_b }); } catch {}
+      }
+    } else {
+      try { logger.debug('pools.pair_sol_usdc.skip', { source: 'meteora', reason: 'no_sol_usdc' }); } catch {}
     }
-  } catch {}
+  } catch (e:any) {
+    try { logger.warn('pools.pair_sol_usdc.failed', { error: String(e?.message || e) }); } catch {}
+  }
   if (subscribe) {
     try {
       enablePoolWebsocketRefreshes();
@@ -711,7 +732,7 @@ export function startRaydiumRefreshLoop(): void {
                   const d = diffNormalizedPools(prev, next);
                   const sample = { amm: [], clmm: d.clmm.slice(0, 20) };
                   emit('pool-updates', { source: 'orca', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now() });
-                  try { logger.info('pools.delta orca.ws', { id: pk58.slice(0,6)+'…', updatedClmm: d.clmm.length, cat: 'pools' }); } catch {}
+                  try { logger.debug('pools.delta orca.ws', { id: pk58.slice(0,6)+'…', updatedClmm: d.clmm.length, cat: 'pools' }); } catch {}
                   // Graph rebuilds now orchestrated by refresh endpoint; avoid redundant triggers here
                   ok = true;
                 }
@@ -1114,7 +1135,7 @@ export async function getOrcaPoolsCached(force = false): Promise<PoolsPayload> {
         const d = diffNormalizedPools(prev || { amm: [], clmm: [] }, data);
         const sample = { amm: d.amm.slice(0, 100), clmm: d.clmm.slice(0, 100) };
         emit('pool-updates', { source: 'orca', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now(), canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
-        try { logger.info('pools.delta orca', { updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, cat: 'pools' }); } catch {}
+        try { logger.debug('pools.delta orca', { updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, cat: 'pools' }); } catch {}
       } catch {}
       // Graph rebuilds now orchestrated by refresh endpoint; avoid redundant triggers here
       return data;
