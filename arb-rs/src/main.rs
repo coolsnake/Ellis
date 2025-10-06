@@ -9,7 +9,7 @@ use axum::extract::ws::{WebSocketUpgrade, Message};
 use axum::response::IntoResponse;
 use serde::Serialize;
 use serde::Deserialize;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Notify};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 mod opportunities;
 use opportunities::{OpportunitiesResponse, Opportunity, OpportunitiesSummary};
@@ -29,7 +29,7 @@ struct ArbConfig {
     min_notional_usd: f64,
     max_hops: usize,
     max_paths_per_cycle: usize,
-    poll_interval_ms: u64,
+    max_idle_ms: u64,
     dex_allow: Vec<String>,
     priority_fee_tier: String,
     sources: SourcesCfg,
@@ -79,7 +79,6 @@ struct EventItem {
     message: String,
 }
 
-#[derive(Default)]
 struct AppState {
     config: ArbConfig,
     opportunities: Vec<Opportunity>,
@@ -101,6 +100,8 @@ struct AppState {
     pending_removed_edge_ids: Vec<String>,
     pending_graph_version: Option<u64>,
     pending_graph_ts: Option<u64>,
+    // Event-driven wakeup for detection loop
+    wake: Arc<Notify>,
 }
 
 #[derive(Serialize)]
@@ -158,7 +159,7 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer().without_time().with_ansi(false).with_writer(move || BridgeWriter { tx: bridge_tx.clone() }))
         .init();
 
-    let state = Arc::new(RwLock::new(AppState { config: default_config(), opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), pool_cache: PoolCache::new(), near_miss: None, near_miss_shortfall_bps: None, near_misses: Vec::new(), force_refresh_next: false, last_graph_version: 0, last_graph_ts: 0, use_backend_graph: false, pending_added_edges: Vec::new(), pending_updated_edges: Vec::new(), pending_removed_edge_ids: Vec::new(), pending_graph_version: None, pending_graph_ts: None }));
+    let state = Arc::new(RwLock::new(AppState { config: default_config(), opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), pool_cache: PoolCache::new(), near_miss: None, near_miss_shortfall_bps: None, near_misses: Vec::new(), force_refresh_next: false, last_graph_version: 0, last_graph_ts: 0, use_backend_graph: false, pending_added_edges: Vec::new(), pending_updated_edges: Vec::new(), pending_removed_edge_ids: Vec::new(), pending_graph_version: None, pending_graph_ts: None, wake: Arc::new(Notify::new()) }));
 
     // Install shutdown handler to clear in-memory state
     {
@@ -189,11 +190,11 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async move {
         let sources = Sources::new();
         loop {
-            let (enabled, interval_ms, min_bps, max_slip_bps, _fee_bps, _link_penalty_bps, _quote_size_usd, max_hops, sources_cfg, min_pool_liquidity) = {
+            let (enabled, idle_ms, min_bps, max_slip_bps, _fee_bps, _link_penalty_bps, _quote_size_usd, max_hops, sources_cfg, min_pool_liquidity) = {
                 let s = loop_state.read().await;
                 (
                     s.config.enabled,
-                    s.config.poll_interval_ms,
+                    s.config.max_idle_ms,
                     s.config.min_profit_bps,
                     s.config.max_slippage_bps,
                     s.config.fee_bps,
@@ -1181,7 +1182,13 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             // Sleep respects configured interval even when disabled to avoid hot loop
-            tokio::time::sleep(std::time::Duration::from_millis(interval_ms)).await;
+            // Event-driven wait: wake on notify or after max idle interval
+            let wake = { let s = loop_state.read().await; s.wake.clone() };
+            let timeout = std::time::Duration::from_millis(idle_ms);
+            tokio::select! {
+                _ = wake.notified() => {},
+                _ = tokio::time::sleep(timeout) => {},
+            }
             tracing::debug!(iter_ms = iter_start.elapsed().as_millis() as u128, "arb.loop.end");
         }
     });
@@ -1355,6 +1362,8 @@ async fn arb_graph_snapshot(State(state): State<Arc<RwLock<AppState>>>, Json(req
     s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.graph.snapshot: accepted nodes={} edges={}", nodes, edges) });
     tracing::info!(nodes, edges, "arb.graph.snapshot: accepted");
     let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
+    // Wake detection loop immediately
+    s.wake.notify_one();
     Json(serde_json::json!({"ok": true, "nodes": nodes, "edges": edges}))
 }
 
@@ -1369,6 +1378,8 @@ async fn arb_graph_update(State(state): State<Arc<RwLock<AppState>>>, Json(req):
     if req.timestamp.is_some() { s.pending_graph_ts = req.timestamp; }
     s.use_backend_graph = true;
     s.force_refresh_next = false;
+    // Wake detection loop to apply diff promptly
+    s.wake.notify_one();
     Json(serde_json::json!({"ok": true}))
 }
 
@@ -1515,6 +1526,9 @@ struct ConfigReq {
     min_notional_usd: Option<f64>,
     max_hops: Option<usize>,
     max_paths_per_cycle: Option<usize>,
+    max_idle_ms: Option<u64>,
+    // deprecated: mapped to max_idle_ms
+    // deprecated: mapped to max_idle_ms
     poll_interval_ms: Option<u64>,
     dex_allow: Option<Vec<String>>,
     priority_fee_tier: Option<String>,
@@ -1540,7 +1554,8 @@ async fn set_config(
     if let Some(v) = cfg.min_notional_usd { s.config.min_notional_usd = v; }
     if let Some(v) = cfg.max_hops { s.config.max_hops = v; }
     if let Some(v) = cfg.max_paths_per_cycle { s.config.max_paths_per_cycle = v; }
-    if let Some(v) = cfg.poll_interval_ms { s.config.poll_interval_ms = v; }
+    if let Some(v) = cfg.max_idle_ms { s.config.max_idle_ms = v; }
+    if let Some(v) = cfg.poll_interval_ms { s.config.max_idle_ms = v; }
     if let Some(v) = cfg.dex_allow { s.config.dex_allow = v; }
     if let Some(v) = cfg.priority_fee_tier { s.config.priority_fee_tier = v; }
     if let Some(v) = cfg.sources { s.config.sources = v; }
@@ -1569,7 +1584,7 @@ fn default_config() -> ArbConfig {
         min_notional_usd: 50.0,
         max_hops: 3,
         max_paths_per_cycle: 10,
-        poll_interval_ms: 2000,
+        max_idle_ms: 2000,
         dex_allow: vec!["Raydium".into(), "Orca".into()],
         priority_fee_tier: "h".into(),
         sources: SourcesCfg { jupiter: false, raydium: true, orca: true },
@@ -1661,6 +1676,8 @@ async fn trigger_refresh(State(state): State<Arc<RwLock<AppState>>>, Json(_req):
         s.force_refresh_next = true;
         s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: "graph.trigger_refresh".into() });
         let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
+        // Wake detection loop immediately
+        s.wake.notify_one();
     }
     Json(serde_json::json!({"ok": true}))
 }
