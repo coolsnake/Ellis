@@ -82,19 +82,19 @@ export const CONFIG = {
     scopePoolsMode: (process.env.SCOPE_POOLS_MODE as any) || 'jupiter',
     // New: token-universe mode used to filter pools at source: 'jupiter' | 'watchlist' | 'intersection' | 'union'
     tokenUniverseMode: (process.env.TOKEN_UNIVERSE_MODE as any) || 'jupiter',
-    // Control whether anchors are injected into the universe set
-    includeAnchorsInUniverse: (process.env.INCLUDE_ANCHORS_IN_UNIVERSE || 'true') !== 'false',
+    // Control whether anchors are injected into the universe set (default: false)
+    includeAnchorsInUniverse: (process.env.INCLUDE_ANCHORS_IN_UNIVERSE || 'false') !== 'false',
     // Route-level scoping (disable to avoid double-scoping if sources already scoped)
     routeLevelScoping: (process.env.ROUTE_LEVEL_SCOPING || 'false') === 'true',
     // Whether to allow anchor-bridging when scoping (include pools if either side is an anchor mint)
     enableAnchorBridging: (process.env.ENABLE_ANCHOR_BRIDGING || 'false') === 'true',
     // Optional canonicalization of pair orientation for normalized outputs: 'none' | 'lex'
-    canonicalizePairs: (process.env.CANONICALIZE_PAIRS as any) || 'none',
+    canonicalizePairs: (process.env.CANONICALIZE_PAIRS as any) || 'lex',
     // System-wide TVL/liquidity thresholds (applied in addition to per-source thresholds)
-    minAmmLiqBase: process.env.MIN_AMM_LIQ_BASE ? Number(process.env.MIN_AMM_LIQ_BASE) : undefined,
-    minClmmLiquidity: process.env.MIN_CLMM_LIQUIDITY ? Number(process.env.MIN_CLMM_LIQUIDITY) : undefined,
+    minAmmLiqBase: process.env.MIN_AMM_LIQ_BASE ? Number(process.env.MIN_AMM_LIQ_BASE) : 100_000,
+    minClmmLiquidity: process.env.MIN_CLMM_LIQUIDITY ? Number(process.env.MIN_CLMM_LIQUIDITY) : 100_000,
     // Minimum number of distinct DEXes a token pair must appear on to include (1..3)
-    minDexOverlap: Number(process.env.MIN_DEX_OVERLAP || 1),
+    minDexOverlap: Number(process.env.MIN_DEX_OVERLAP || 2),
     // Optional: anchors always included in universe and bridging exceptions
     anchorMints: (process.env.ANCHOR_MINTS || 'So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')
       .split(',')
@@ -208,7 +208,7 @@ export const CONFIG = {
     // Keep cache TTL configurable; timers use unified poolsRefreshMs by default
     cacheTtlMs: Number(process.env.RAYDIUM_CACHE_TTL_MS || 60_000),
     sdkConcurrency: Number(process.env.RAYDIUM_SDK_CONCURRENCY || 8),
-    sdkProbeMintsLimit: Number(process.env.RAYDIUM_SDK_PROBE_MINTS_LIMIT || 50),
+    sdkProbeMintsLimit: Number(process.env.RAYDIUM_SDK_PROBE_MINTS_LIMIT || 200),
     sdkClmmPageSize: Number(process.env.RAYDIUM_SDK_CLMM_PAGE_SIZE || 5000),
     // Make token-universe filtering opt-in (default false)
     filterToOrcaTokens: process.env.RAYDIUM_FILTER_TO_ORCA_TOKENS === 'true',
