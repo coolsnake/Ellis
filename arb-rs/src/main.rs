@@ -268,10 +268,10 @@ async fn main() -> anyhow::Result<()> {
                 // Backend route is internally debounced; ignore errors
                 if need_orca || need_rayd || force_now { tracing::info!(need_orca, need_rayd, force_now, "arb.pools.refresh.hint"); let _ = sources.backend_refresh_pools(&api_base, Some("all")).await; }
                 let t_orca = Instant::now();
-                let orca = Ok(serde_json::json!({ "amm": [], "clmm": [] }));
+                let orca: anyhow::Result<serde_json::Value> = Ok(serde_json::json!({ "amm": [], "clmm": [] }));
                 let orca_ms = t_orca.elapsed().as_millis();
                 let t_rayd = Instant::now();
-                let rayd = Ok(serde_json::json!({ "amm": [], "clmm": [] }));
+                let rayd: anyhow::Result<serde_json::Value> = Ok(serde_json::json!({ "amm": [], "clmm": [] }));
                 let rayd_ms = t_rayd.elapsed().as_millis();
                 tracing::info!(orca_ms = orca_ms as u128, rayd_ms = rayd_ms as u128, "arb.pools.fetch.done");
                 let (mut orca_amm_len, mut orca_clmm_len, mut ray_amm_len, mut ray_clmm_len) = (0usize,0usize,0usize,0usize);
