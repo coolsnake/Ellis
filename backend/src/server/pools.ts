@@ -344,32 +344,25 @@ async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     const tvl_usd = Number.isFinite(tvlUsdcNum) && tvlUsdcNum > 0 ? tvlUsdcNum : undefined;
     const pool_liquidity_raw = (tvl_usd != null) ? tvl_usd : (Number.isFinite(decA) && Number.isFinite(decB) ? ((amount_a/Math.pow(10, decA as number)) + (amount_b/Math.pow(10, decB as number))) : undefined);
     const liquidity_display = (tvl_usd != null) ? tvl_usd : undefined;
-    // Calibrate orientation and magnitude to A-per-B using USD references when available
-    // Choose between incoming and its inverse, optionally scaled by powers of 10, minimizing deviation to ref = pa/pb
-    // If USD refs unavailable, leave incoming as-is
+    // Prefer deriving orientation from reserves when decimals and amounts are available
+    // price_a_per_b should be A per 1 B in whole-token units
+    let price_a_per_b = Number(incomingPrice) > 0 ? Number(incomingPrice) : 0;
+    try {
+      const haveDecs = Number.isFinite(decA) && Number.isFinite(decB);
+      const wholeA = haveDecs && Number.isFinite(amount_a) ? (amount_a / Math.pow(10, decA as number)) : NaN;
+      const wholeB = haveDecs && Number.isFinite(amount_b) ? (amount_b / Math.pow(10, decB as number)) : NaN;
+      if (Number.isFinite(wholeA) && Number.isFinite(wholeB) && (wholeB as number) > 0) {
+        const derived = (wholeA as number) / (wholeB as number);
+        if (derived > 0 && Number.isFinite(derived)) price_a_per_b = derived;
+      }
+    } catch {}
+    // Calibrate magnitude only (never invert orientation)
     try {
       const { getPriceByMint } = await import('./priceStore.js');
-      const pa = getPriceByMint(mint_a)?.usdc ?? null;
-      const pb = getPriceByMint(mint_b)?.usdc ?? null;
-      if (pa && pb && Number(pa) > 0 && Number(pb) > 0 && Number(incomingPrice) > 0) {
-        // For A per 1 B, compare against USD reference price(B)/price(A)
-        const ref = (pb as number) / (pa as number);
-        const base = Number(incomingPrice);
-        const inv = 1 / base;
-        const cands: number[] = [];
-        for (let k = -6; k <= 6; k++) {
-          const scale = Math.pow(10, k);
-          cands.push(base * scale);
-          cands.push(inv * scale);
-        }
-        let best = base; let bestDev = Number.POSITIVE_INFINITY;
-        for (const c of cands) {
-          if (!Number.isFinite(c) || !(c > 0)) continue;
-          const dev = Math.max(c / ref, ref / c);
-          if (dev + 1e-12 < bestDev) { bestDev = dev; best = c; }
-        }
-        incomingPrice = best;
-      }
+      const getUsd = (m: string) => { try { return getPriceByMint(m)?.usdc ?? undefined; } catch { return undefined; } };
+      const { calibrateMagnitude } = await import('./priceCalib.js');
+      const calibrated = calibrateMagnitude(mint_a, mint_b, price_a_per_b, getUsd);
+      if (calibrated && calibrated > 0) price_a_per_b = calibrated;
     } catch {}
     // Optional sanity: drop extreme deviations vs USD ref if both sides priced
     let price_ok = true;
@@ -381,7 +374,7 @@ async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
         const { getPriceByMint } = await import('./priceStore.js');
         const pa = getPriceByMint(mint_a)?.usdc ?? null;
         const pb = getPriceByMint(mint_b)?.usdc ?? null;
-        const px = (incomingPrice && incomingPrice > 0) ? incomingPrice : undefined;
+        const px = (price_a_per_b && price_a_per_b > 0) ? price_a_per_b : undefined;
         if (pa && pb && px && (px as number) > 0) {
           // For A per 1 B, the USD reference is price(B)/price(A)
           const ref = (pb as number) / (pa as number);
@@ -390,8 +383,8 @@ async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
         }
       }
     } catch {}
-    if (!price_ok) { try { logger.warn('meteora.clmm drop by sanity', { id, mint_a, mint_b, price_a_per_b: incomingPrice, cat: 'meteora' }); } catch {}; continue; }
-    clmm.push({ id, dex: 'Meteora', mint_a, mint_b, fee_bps, sqrt_price_x64: 0, liquidity: 0, tick_spacing: Number((it as any)?.bin_step || (it as any)?.binStep || 0), updated_ms: now, price_a_per_b: (incomingPrice && incomingPrice > 0) ? incomingPrice : undefined, amount_a, amount_b, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, pool_kind: 'clmm', pool_liquidity_raw, tvl_usd, liquidity_display } as any);
+    if (!price_ok) { try { logger.warn('meteora.clmm drop by sanity', { id, mint_a, mint_b, price_a_per_b, cat: 'meteora' }); } catch {}; continue; }
+    clmm.push({ id, dex: 'Meteora', mint_a, mint_b, fee_bps, sqrt_price_x64: 0, liquidity: 0, tick_spacing: Number((it as any)?.bin_step || (it as any)?.binStep || 0), updated_ms: now, price_a_per_b: (price_a_per_b && price_a_per_b > 0) ? price_a_per_b : undefined, amount_a, amount_b, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, pool_kind: 'clmm', pool_liquidity_raw, tvl_usd, liquidity_display } as any);
   }
   // Optional canonicalization of pair order for consistency
   try {
