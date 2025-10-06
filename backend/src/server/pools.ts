@@ -580,12 +580,37 @@ let attachedOrcaPools: number = 0;
 let attachedRaydiumPools: number = 0;
 let attachedMeteoraPools: number = 0;
 
+// When true, the next call to startRaydiumRefreshLoop will attach WS subscriptions
+// without starting timers or triggering an extra initial HTTP warmup fetch.
+let suppressInitialOnce: boolean = false;
+export function startPoolWebsocketsOnlyOnce(): void {
+  suppressInitialOnce = true;
+  try { enablePoolWebsocketRefreshes(); } catch {}
+  setUserSubscribed(true);
+  startRaydiumRefreshLoop();
+}
+
 export function getWsActivity(): { orca: { attached: number; events: number }; raydium: { attached: number; events: number }; meteora: { attached: number; events: number } } {
   return {
     orca: { attached: attachedOrcaPools, events: wsCounts.orca || 0 },
     raydium: { attached: attachedRaydiumPools, events: wsCounts.raydium || 0 },
     meteora: { attached: attachedMeteoraPools, events: (wsCounts.meteora || 0) as number },
   };
+}
+
+// Unified refresh orchestrator: fetch all sources and optionally (re)subscribe
+export async function refreshAllSources(force = true, subscribe = true): Promise<{ raydium: PoolsPayload; orca: PoolsPayload; meteora: PoolsPayload }> {
+  const r = await getRaydiumPoolsNormalized(!!force).catch(() => ({ amm: [], clmm: [] }));
+  const o = await getOrcaPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
+  const m = await getMeteoraPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
+  if (subscribe) {
+    try {
+      setUserSubscribed(true);
+      enablePoolWebsocketRefreshes();
+      startRaydiumRefreshLoop();
+    } catch {}
+  }
+  return { raydium: r, orca: o, meteora: m };
 }
 
 export function startRaydiumRefreshLoop(): void {
@@ -609,7 +634,7 @@ export function startRaydiumRefreshLoop(): void {
   // If user has not explicitly subscribed, do nothing (no timers, no WS)
   if (!userSubscribed) { logger.info('pools.init skipped — user not subscribed'); return; }
 
-    if (!wsEnabled) {
+    if (!wsEnabled && !suppressInitialOnce) {
     rayTimer = setInterval(() => {
       try {
         logger.info('pools.refresh timer raydium', { cat: 'pools' });
@@ -636,9 +661,11 @@ export function startRaydiumRefreshLoop(): void {
 
   // Kick immediately once activated so data is available without waiting
   // Kick immediately once, but respect min-force gap for subsequent calls
-  try { getRaydiumPoolsNormalized(true).catch(() => {}); } catch {}
-  try { getOrcaPoolsCached(true).catch(() => {}); } catch {}
-  try { getMeteoraPoolsCached(true).catch(() => {}); } catch {}
+  if (!suppressInitialOnce) {
+    try { getRaydiumPoolsNormalized(true).catch(() => {}); } catch {}
+    try { getOrcaPoolsCached(true).catch(() => {}); } catch {}
+    try { getMeteoraPoolsCached(true).catch(() => {}); } catch {}
+  }
 
   // Optional: subscribe to on-chain account changes to push updates into caches
   // Only attach websockets when the user has explicitly subscribed
@@ -717,7 +744,7 @@ export function startRaydiumRefreshLoop(): void {
                       const d = diffNormalizedPools(prev, next);
                       raydiumCache.data = next; raydiumCache.ts = Date.now();
                       try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: [], clmm: d.clmm.slice(0, 20) }, ts: Date.now() }); } catch {}
-                      try { (await import('./graph.js')).scheduleGraphRebuild(undefined, 200); } catch {}
+                      // Graph rebuilds now orchestrated by refresh endpoint; avoid redundant triggers here
                       updated = true;
                     }
                   }
@@ -742,7 +769,7 @@ export function startRaydiumRefreshLoop(): void {
                         const d = diffNormalizedPools(prev, next);
                         raydiumCache.data = next; raydiumCache.ts = Date.now();
                         try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: d.amm.slice(0, 20), clmm: [] }, ts: Date.now() }); } catch {}
-                        try { (await import('./graph.js')).scheduleGraphRebuild(undefined, 250); } catch {}
+                        // Graph rebuilds now orchestrated by refresh endpoint; avoid redundant triggers here
                         updated = true;
                       }
                     }
@@ -801,8 +828,7 @@ export function startRaydiumRefreshLoop(): void {
                   const sample = { amm: [], clmm: d.clmm.slice(0, 20) };
                   emit('pool-updates', { source: 'orca', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now() });
                   try { logger.info('pools.delta orca.ws', { id: pk58.slice(0,6)+'…', updatedClmm: d.clmm.length, cat: 'pools' }); } catch {}
-                  // Debounced graph rebuild
-                  try { (await import('./graph.js')).scheduleGraphRebuild(undefined, 200); } catch {}
+                  // Graph rebuilds now orchestrated by refresh endpoint; avoid redundant triggers here
                   ok = true;
                 }
               } catch (e:any) {
@@ -981,6 +1007,8 @@ export function startRaydiumRefreshLoop(): void {
       logger.warn('pools.ws unavailable', { error: String(e?.message || e) });
     }
   }
+  // Reset the one-shot suppression flag
+  suppressInitialOnce = false;
 }
 
 // Stop all pool activity: timers and websocket subscriptions
@@ -1132,8 +1160,7 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
         emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now(), canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
         try { logger.info('pools.delta raydium', { updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, cat: 'pools' }); } catch {}
       } catch {}
-      // Schedule a debounced graph rebuild to propagate updated pool caches
-      try { (await import('./graph.js')).scheduleGraphRebuild(undefined, 250); } catch {}
+      // Graph rebuilds now orchestrated by refresh endpoint; avoid redundant triggers here
 
       return norm;
     } finally {
@@ -1191,8 +1218,7 @@ export async function getOrcaPoolsCached(force = false): Promise<PoolsPayload> {
         emit('pool-updates', { source: 'orca', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now(), canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
         try { logger.info('pools.delta orca', { updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, cat: 'pools' }); } catch {}
       } catch {}
-      // Schedule a debounced graph rebuild to propagate updated pool caches
-      try { (await import('./graph.js')).scheduleGraphRebuild(undefined, 250); } catch {}
+      // Graph rebuilds now orchestrated by refresh endpoint; avoid redundant triggers here
       return data;
     } finally {
       orcaCache.inflight = undefined;
@@ -1312,7 +1338,7 @@ export async function getMeteoraPoolsCached(force = false): Promise<PoolsPayload
         emit('pools-update', { source: 'meteora', amm: 0, clmm: norm.clmm.length, ts: Date.now() });
         emit('pool-updates', { source: 'meteora', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now() });
       } catch {}
-      try { (await import('./graph.js')).scheduleGraphRebuild(undefined, 250); } catch {}
+      // Graph rebuilds now orchestrated by refresh endpoint; avoid redundant triggers here
       return meteoraCache.data!;
     } finally {
       meteoraCache.inflight = undefined;

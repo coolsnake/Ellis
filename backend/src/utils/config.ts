@@ -179,7 +179,7 @@ export const CONFIG = {
     requireHttps: process.env.REQUIRE_HTTPS === 'true',
     // Optional: frontend-only default categories; UI may override locally
     frontendEnabledLogCategories: undefined as undefined | string[],
-    // Gate whether pool refresh loops auto-start on server boot
+    // DEPRECATED: pool refresh loops are coordinated via /arb/pools/refresh (kept for compatibility)
     autoStartPools: (process.env.AUTO_START_POOLS || 'false') === 'true',
   },
   // Optional simple Basic Auth for API/WS (prefer Nginx for static site)

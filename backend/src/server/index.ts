@@ -437,7 +437,8 @@ server.listen(CONFIG.port, () => {
   });
 
   // Background: start periodic pool refresh (includes immediate warmup) if enabled
-  try { if ((CONFIG as any)?.system?.autoStartPools) { startRaydiumRefreshLoop(); } } catch {}
+  // DEPRECATED: avoid auto-starting loops; use /arb/pools/refresh to coordinate fetch+subscribe
+  // try { if ((CONFIG as any)?.system?.autoStartPools) { startRaydiumRefreshLoop(); } } catch {}
 
   // Background: fetch Jupiter token list now and daily refresh
   try {

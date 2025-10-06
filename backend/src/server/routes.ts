@@ -1558,7 +1558,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   const lastRefresh: { raydium: number; orca: number; meteora: number } = { raydium: 0, orca: 0, meteora: 0 };
   api.post('/arb/pools/refresh', async (req, res) => {
     try {
-      const { source } = (req.body || {}) as { source?: 'raydium' | 'orca' | 'meteora' | 'all' };
+      const { source, subscribe } = (req.body || {}) as { source?: 'raydium' | 'orca' | 'meteora' | 'all'; subscribe?: boolean };
       const wantRay = !source || source === 'all' || source === 'raydium';
       const wantOrc = !source || source === 'all' || source === 'orca';
       const wantMet = !source || source === 'all' || source === 'meteora';
@@ -1580,6 +1580,12 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
         tasks.push(getMeteoraPoolsCached(true).then(m => { met = m; }).catch(() => { met = { amm: [], clmm: [] }; }));
       }
       await Promise.all(tasks);
+      // Optional: idempotent subscribe step after refresh when all sources requested
+      if ((!source || source === 'all') && (subscribe !== false)) {
+        try { (await import('./pools.js')).setUserSubscribed(true); } catch {}
+        try { (await import('./pools.js')).enablePoolWebsocketRefreshes(); } catch {}
+        try { (await import('./pools.js')).startRaydiumRefreshLoop(); } catch {}
+      }
       // After pools refresh, build a fresh graph snapshot and emit to clients
       let graph: any = null;
       try {

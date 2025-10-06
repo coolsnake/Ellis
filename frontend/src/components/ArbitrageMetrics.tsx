@@ -42,7 +42,8 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
           if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
         }
       } catch {}
-      await fetch(`${apiBase}/arb/pools/refresh`, { method: 'POST', headers, body: JSON.stringify({ source: 'all' }) });
+      // Unified refresh also subscribes server-side by default
+      await fetch(`${apiBase}/arb/pools/refresh`, { method: 'POST', headers, body: JSON.stringify({ source: 'all', subscribe: true }) });
     } catch {}
     // Re-pull scoped pools and metrics
     try {
@@ -147,30 +148,9 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
             } catch {}
           }}>{arbEnabled ? 'Stop Arb' : 'Start Arb'}</button>
           <button className="px-2 py-1 border rounded" onClick={refreshPoolsAndMetrics}>Refresh Pools</button>
-          <button className="px-2 py-1 border rounded" onClick={async()=>{
-            try {
-              const headers: Record<string, string> = { 'content-type': 'application/json' };
-              try {
-                const s = localStorage.getItem('authCreds');
-                if (s) {
-                  const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
-                  if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
-                }
-              } catch {}
-              if (!subscribed) {
-                await fetch(`${apiBase}/arb/pools/subscribe`, { method: 'POST', headers }).catch(()=>{});
-                setSubscribed(true);
-              } else {
-                await fetch(`${apiBase}/arb/pools/unsubscribe`, { method: 'POST', headers }).catch(()=>{});
-                setSubscribed(false); setWsHealthy(false);
-              }
-            } catch {}
-          }}>{subscribed ? 'Unsubscribe' : 'Subscribe'}</button>
-          {subscribed ? (
-            <span className={`px-2 py-0.5 text-xs rounded border ${wsHealthy ? 'bg-green-700/50 border-green-600' : 'bg-yellow-700/50 border-yellow-600'}`}>
-              {wsHealthy ? `Subscribed (WS Active: Ray ${wsDetails.raydium?.attached||0}/${wsDetails.raydium?.events||0}, Orca ${wsDetails.orca?.attached||0}/${wsDetails.orca?.events||0}, Met ${wsDetails.meteora?.attached||0}/${wsDetails.meteora?.events||0})` : 'Subscribed (WS Idle)'}
-            </span>
-          ) : null}
+          <span className={`px-2 py-0.5 text-xs rounded border ${wsHealthy ? 'bg-green-700/50 border-green-600' : 'bg-yellow-700/50 border-yellow-600'}`}>
+            {wsHealthy ? `WS Active: Ray ${wsDetails.raydium?.attached||0}/${wsDetails.raydium?.events||0}, Orca ${wsDetails.orca?.attached||0}/${wsDetails.orca?.events||0}, Met ${wsDetails.meteora?.attached||0}/${wsDetails.meteora?.events||0}` : 'WS Idle'}
+          </span>
         </div>
       </div>
       {!m ? <div className="text-sm opacity-70">Loading...</div> : (
