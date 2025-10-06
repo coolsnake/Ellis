@@ -115,6 +115,26 @@ GET /api/arb/pools/raydium?minAmm=500&minClmm=1000
 If provided, the overrides apply only to that request.
 
 
+### Graph Module Layout
+
+The graph builder was partially modularized to improve maintainability without breaking the public API used by routes and the websocket layer.
+
+- Files:
+  - `server/graph.ts`: orchestrator (snapshot build, scheduling, streaming) and public API exports
+  - `server/graph.types.ts`: shared types (`GraphNode`, `GraphEdge`, `GraphSnapshot`, `GraphDiff`)
+  - `server/graph.diff.ts`: pure `diffSnapshots(prev, next)`
+  - `server/graph.path.ts`: pathfinding core (`findPathInSnapshot`); `graph.ts` wraps it as `findPath`
+
+- Public API (unchanged import path `./graph.js`):
+  - `getGraphSnapshot(force?: boolean)`
+  - `startGraphStream(io)`
+  - `scheduleGraphRebuild(io?, debounceMs?)`
+  - `rebuildGraphNow(io?)`
+  - `diffSnapshots(prev, next)`
+  - `findPath(fromMint, toMint)`
+
+- Interaction with pools: `graph.ts` reads from non-fetching peek helpers (`peekRaydiumPools`, `peekOrcaPools`, `peekMeteoraPools`), which remain available after the pools refactor. Refresh/subscription continues to be handled by `pools.ts` (`enablePoolWebsocketRefreshes`, timers) and is triggered when the graph stream starts.
+
 ## Meteora Pools (DLMM)
 
 - Endpoint: `GET /api/arb/pools/meteora`

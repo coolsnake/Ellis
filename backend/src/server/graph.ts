@@ -7,49 +7,12 @@ import { getRaydiumPoolsNormalized, getOrcaPoolsCached, enablePoolWebsocketRefre
 import { loadTokenMap } from '../utils/tokens.js';
 import { fetch } from 'undici';
 import { calibrateMagnitude } from './priceCalib.js';
+import type { GraphNode, GraphEdge, GraphSnapshot, GraphDiff } from './graph.types.js';
+export type { GraphNode, GraphEdge, GraphSnapshot, GraphDiff } from './graph.types.js';
+import { diffSnapshots } from './graph.diff.js';
+import { findPathInSnapshot } from './graph.path.js';
 
-export type GraphNode = {
-  id: string;            // mint address (base58)
-  label?: string;        // symbol if known
-  degree?: number;       // computed degree (optional)
-};
 
-export type GraphEdge = {
-  id: string;            // `${source}-${target}-${dex}` stable
-  source: string;        // mint
-  target: string;        // mint
-  dex: string;           // Raydium | Orca | ...
-  pool_id?: string;      // underlying pool address when available
-  source_account?: string; // token account/vault corresponding to source
-  target_account?: string; // token account/vault corresponding to target
-  fee_bps?: number;
-  liquidity?: number;    // normalized liquidity signal (used for layout/weight)
-  liquidity_display?: number; // display: prefer USD TVL, else raw pool liquidity
-  weight?: number;       // layout weight (derived from liquidity / fee)
-  price_a_per_b?: number; // A per 1 B
-  tvl_usd?: number;       // approximate TVL in USD for layout/inspection
-  pool_kind?: 'amm' | 'clmm'; // explicit pool kind
-  direction?: 'forward' | 'reverse'; // edge direction relative to pool orientation
-  pool_liquidity_raw?: number; // raw pool liquidity metric when provided by the source (e.g., CLMM liquidity)
-};
-
-export type GraphSnapshot = {
-  version: number;
-  timestamp: number;
-  nodes: GraphNode[];
-  edges: GraphEdge[];
-};
-
-export type GraphDiff = {
-  version: number;
-  timestamp: number;
-  addedNodes: GraphNode[];
-  updatedNodes: GraphNode[];
-  removedNodeIds: string[];
-  addedEdges: GraphEdge[];
-  updatedEdges: GraphEdge[];
-  removedEdgeIds: string[];
-};
 
 let lastSnapshot: GraphSnapshot | null = null;
 let inflight: Promise<GraphSnapshot> | null = null;
@@ -772,39 +735,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
   return inflight;
 }
 
-export function diffSnapshots(prev: GraphSnapshot | null, next: GraphSnapshot): GraphDiff {
-  const pNodes = new Map(prev?.nodes.map(n => [n.id, n]) || []);
-  const pEdges = new Map(prev?.edges.map(e => [e.id, e]) || []);
-  const nNodes = new Map(next.nodes.map(n => [n.id, n]));
-  const nEdges = new Map(next.edges.map(e => [e.id, e]));
-
-  const addedNodes: GraphNode[] = [];
-  const updatedNodes: GraphNode[] = [];
-  const removedNodeIds: string[] = [];
-  for (const [id, n] of nNodes) {
-    const p = pNodes.get(id);
-    if (!p) addedNodes.push(n);
-    else if (JSON.stringify(p) !== JSON.stringify(n)) updatedNodes.push(n);
-  }
-  for (const [id] of pNodes) if (!nNodes.has(id)) removedNodeIds.push(id);
-
-  const addedEdges: GraphEdge[] = [];
-  const updatedEdges: GraphEdge[] = [];
-  const removedEdgeIds: string[] = [];
-  for (const [id, e] of nEdges) {
-    const p = pEdges.get(id);
-    if (!p) addedEdges.push(e);
-    else if (JSON.stringify(p) !== JSON.stringify(e)) updatedEdges.push(e);
-  }
-  for (const [id] of pEdges) if (!nEdges.has(id)) removedEdgeIds.push(id);
-
-  return {
-    version: next.version,
-    timestamp: next.timestamp,
-    addedNodes, updatedNodes, removedNodeIds,
-    addedEdges, updatedEdges, removedEdgeIds,
-  };
-}
+export { diffSnapshots };
 
 export function startGraphStream(io: SocketIOServer): void {
   // Emit initial snapshot periodically and diffs when changed
@@ -861,30 +792,7 @@ export function startGraphStream(io: SocketIOServer): void {
 
 export async function findPath(fromMint: string, toMint: string): Promise<{ path: string[] }> {
   const snap = await getGraphSnapshot(false);
-  const adj = new Map<string, Set<string>>();
-  for (const n of snap.nodes) adj.set(n.id, new Set());
-  for (const e of snap.edges) {
-    adj.get(e.source)?.add(e.target);
-    adj.get(e.target)?.add(e.source);
-  }
-  const start = fromMint; const goal = toMint;
-  if (!adj.has(start) || !adj.has(goal)) return { path: [] };
-  const queue: string[] = [start];
-  const prev = new Map<string, string | null>();
-  prev.set(start, null);
-  while (queue.length) {
-    const cur = queue.shift()!;
-    if (cur === goal) break;
-    for (const nxt of (adj.get(cur) || [])) {
-      if (!prev.has(nxt)) { prev.set(nxt, cur); queue.push(nxt); }
-    }
-  }
-  if (!prev.has(goal)) return { path: [] };
-  const out: string[] = [];
-  let cur: string | null = goal;
-  while (cur) { out.push(cur); cur = prev.get(cur) || null; }
-  out.reverse();
-  return { path: out };
+  return findPathInSnapshot(snap, fromMint, toMint);
 }
 
 
