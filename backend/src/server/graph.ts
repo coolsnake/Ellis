@@ -331,7 +331,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       // Helper for TVL using USD prices if available
       const { getPriceByMint } = await import('./priceStore.js');
       const calibratePrice = (mintA: string, mintB: string, raw: number | undefined): number | undefined => {
-        // Preserve orientation: return A per 1 B. Only adjust magnitude by powers of 10.
+        // Preserve orientation: return A per 1 B. Adjust magnitude by powers of 10 and consider reciprocal if needed.
         const price = Number(raw);
         if (!Number.isFinite(price) || price <= 0) return undefined;
         try {
@@ -340,11 +340,17 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           if (!(pa && pb) || !(pa > 0) || !(pb > 0)) return price;
           // For A per 1 B, the USD reference is price(B)/price(A)
           const ref = (pb as number) / (pa as number);
-          const cands: number[] = [price, price * 10, price / 10, price * 100, price / 100].filter((x) => Number.isFinite(x) && x > 0) as number[];
+          const scaleCands = [1, 10, 0.1, 100, 0.01, 1000, 0.001];
+          const orientCands = [price, (1 / price)];
           let best = price; let bestDev = Number.POSITIVE_INFINITY;
-          for (const c of cands) {
-            const dev = Math.max(c / ref, ref / c);
-            if (dev + 1e-12 < bestDev) { bestDev = dev; best = c; }
+          for (const base of orientCands) {
+            if (!(base > 0) || !Number.isFinite(base)) continue;
+            for (const s of scaleCands) {
+              const c = base * s;
+              if (!(c > 0) || !Number.isFinite(c)) continue;
+              const dev = Math.max(c / ref, ref / c);
+              if (dev + 1e-12 < bestDev) { bestDev = dev; best = c; }
+            }
           }
           return best;
         } catch {
