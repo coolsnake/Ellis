@@ -1587,7 +1587,9 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
         lastRefresh.raydium = now;
         tasks.push(getRaydiumPoolsNormalized(true).then(r => { ray = r; }).catch(() => { ray = { amm: [], clmm: [] }; }));
       }
-      if (wantOrc && now - lastRefresh.orca >= minGap) {
+      // Always force Orca refresh on user request: bypass route-level debounce and internal minForceGap
+      if (wantOrc) {
+        try { (getOrcaPoolsCached as any).__lastForceAt = 0; } catch {}
         lastRefresh.orca = now;
         tasks.push(getOrcaPoolsCached(true).then(o => { orc = o; }).catch(() => { orc = { amm: [], clmm: [] }; }));
       }

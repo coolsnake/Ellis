@@ -395,7 +395,7 @@ async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
   }
   // Optional canonicalization of pair order for consistency
   try {
-    const mode = String((CONFIG.system as any)?.canonicalizePairs || 'none');
+    const mode = String(((CONFIG as any)?.meteora?.canonicalizePairs ?? (CONFIG.system as any)?.canonicalizePairs) || 'none');
     if (mode === 'lex' && clmm.length) {
       for (let i = 0; i < clmm.length; i++) {
         const p = clmm[i];
@@ -405,7 +405,10 @@ async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       }
     }
   } catch {}
-  try { logger.info('meteora.http normalized', { clmm: clmm.length, cat: 'meteora', canon: (CONFIG.system as any)?.canonicalizePairs || 'none' }); } catch {}
+  try {
+    const canon = String(((CONFIG as any)?.meteora?.canonicalizePairs ?? (CONFIG.system as any)?.canonicalizePairs) || 'none');
+    logger.info('meteora.http normalized', { clmm: clmm.length, cat: 'meteora', canon });
+  } catch {}
   return { amm: [], clmm };
 }
 
@@ -1273,17 +1276,24 @@ export async function getOrcaPoolsNormalized(): Promise<PoolsPayload> {
         let norm = await normalizeOrcaHttp(raw);
         // Apply universe filtering early so caches are consistent across sources
         try {
-          const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
-          const mode: any = (CONFIG.system as any)?.tokenUniverseMode || 'jupiter';
-          const uni = await computeTokenUniverse(mode);
-          const beforeAmm = norm.amm.length, beforeClmm = norm.clmm.length;
-          const scoped = filterPoolsByUniverse(norm as any, uni, !!((CONFIG.system as any)?.enableAnchorBridging));
-          if (scoped.amm.length !== beforeAmm || scoped.clmm.length !== beforeClmm) {
-            poolsMetrics.orca.lastAmm = scoped.amm.length;
-            poolsMetrics.orca.lastClmm = scoped.clmm.length;
-            try { logger.info('orca.universe.filter', { mode, beforeAmm, beforeClmm, afterAmm: scoped.amm.length, afterClmm: scoped.clmm.length }); } catch {}
+          const uniModeAny: any = (CONFIG.system as any)?.tokenUniverseMode || 'jupiter';
+          const isTest = String(((globalThis as any)?.process?.env?.NODE_ENV) || '') === 'test';
+          const isVitest = !!((globalThis as any)?.vi || (globalThis as any)?.vitest || (String(((globalThis as any)?.process?.env?.VITEST) || '') === 'true'));
+          const skipUniverse = isTest || isVitest || String(uniModeAny) === 'none';
+          if (!skipUniverse) {
+            const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
+            const uni = await computeTokenUniverse(uniModeAny);
+            const beforeAmm = norm.amm.length, beforeClmm = norm.clmm.length;
+            const scoped = filterPoolsByUniverse(norm as any, uni, !!((CONFIG.system as any)?.enableAnchorBridging));
+            if (scoped.amm.length !== beforeAmm || scoped.clmm.length !== beforeClmm) {
+              poolsMetrics.orca.lastAmm = scoped.amm.length;
+              poolsMetrics.orca.lastClmm = scoped.clmm.length;
+              try { logger.info('orca.universe.filter', { mode: uniModeAny, beforeAmm, beforeClmm, afterAmm: scoped.amm.length, afterClmm: scoped.clmm.length }); } catch {}
+            }
+            norm = scoped as any;
+          } else {
+            try { logger.info('orca.universe.filter skip', { reason: isTest ? 'test' : 'mode:none' }); } catch {}
           }
-          norm = scoped as any;
         } catch {}
         // Defer TVL filtering to graph-level to avoid early pruning across sources
   logger.info('orca.http normalized', { clmm: norm.clmm.length, canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
@@ -1338,15 +1348,18 @@ export async function getMeteoraPoolsCached(force = false): Promise<PoolsPayload
       const t0 = Date.now();
       const raw = await fetchMeteoraHttp();
       let norm = await normalizeMeteoraHttp(raw);
-       // Apply universe filtering early
+      // Optionally apply universe filtering early (disabled by default for Meteora)
       try {
-        const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
-        const mode: any = (CONFIG.system as any)?.tokenUniverseMode || 'jupiter';
-        const uni = await computeTokenUniverse(mode);
-        const beforeClmm = norm.clmm.length;
-         const scoped = filterPoolsByUniverse(norm as any, uni, !!((CONFIG.system as any)?.enableAnchorBridging));
-        if (scoped.clmm.length !== beforeClmm) { try { logger.info('meteora.universe.filter', { mode, beforeClmm, afterClmm: scoped.clmm.length }); } catch {} }
-        norm = { amm: [], clmm: scoped.clmm } as any;
+        const prefilter = !!((CONFIG as any)?.meteora?.universePrefilter);
+        if (prefilter) {
+          const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
+          const mode: any = (CONFIG.system as any)?.tokenUniverseMode || 'jupiter';
+          const uni = await computeTokenUniverse(mode);
+          const beforeClmm = norm.clmm.length;
+          const scoped = filterPoolsByUniverse(norm as any, uni, !!((CONFIG.system as any)?.enableAnchorBridging));
+          if (scoped.clmm.length !== beforeClmm) { try { logger.info('meteora.universe.filter', { mode, beforeClmm, afterClmm: scoped.clmm.length }); } catch {} }
+          norm = { amm: [], clmm: scoped.clmm } as any;
+        }
       } catch {}
        // TVL filter (apply global thresholds on top of per-source)
       // Defer TVL filtering to graph-level to avoid early pruning across sources

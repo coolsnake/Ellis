@@ -251,6 +251,8 @@ export const CONFIG = {
     cacheTtlMs: Number(process.env.METEORA_CACHE_TTL_MS || 60_000),
     maxHttpRetries: Number(process.env.METEORA_HTTP_MAX_RETRIES || 2),
     httpBackoffMs: Number(process.env.METEORA_HTTP_BACKOFF_MS || 500),
+    // Canonicalization policy for Meteora only (default: keep incoming orientation)
+    canonicalizePairs: (process.env.METEORA_CANONICALIZE_PAIRS as any) || 'none',
     // TVL filtering (raw liquidity proxies)
     minClmmLiquidity: Number(process.env.METEORA_MIN_CLMM_LIQUIDITY || 0),
     // Optional conservative prefiltering by universe
