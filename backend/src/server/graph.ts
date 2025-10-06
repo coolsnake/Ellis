@@ -549,9 +549,19 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             }
           }
         } catch {}
-        addEdge(p.mint_a, p.mint_b, 'Raydium', p.fee_bps, liqDisplay, (price && price > 0) ? price : undefined, usd, pidClmm, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
+        // Forward + reverse with strict reciprocal rule and consistency guard
+        const fwdR = (price && price > 0) ? price : undefined;
+        const revR = (fwdR && fwdR > 0) ? (1 / fwdR) : undefined;
+        addEdge(p.mint_a, p.mint_b, 'Raydium', p.fee_bps, liqDisplay, fwdR, usd, pidClmm, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
         const pidClmmRev = pidClmm ? `${pidClmm}-rev` : undefined;
-        addEdge(p.mint_b, p.mint_a, 'Raydium', p.fee_bps, liqDisplay, (price && price > 0) ? (1 / price) : undefined, usd, pidClmmRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse');
+        addEdge(p.mint_b, p.mint_a, 'Raydium', p.fee_bps, liqDisplay, revR, usd, pidClmmRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse');
+        try {
+          if (fwdR && revR) {
+            const prod = fwdR * revR;
+            const ok = prod > 1/1.02 && prod < 1.02;
+            if (!ok) logger.warn('graph.consistency.raydium.clmm', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, fwd: fwdR, rev: revR, prod });
+          }
+        } catch {}
         try {
           const eid = pidClmm || `${p.mint_a}->${p.mint_b}-Raydium`;
           const rid = pidClmm ? `${pidClmm}-rev` : `${p.mint_b}->${p.mint_a}-Raydium`;
@@ -632,10 +642,13 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             }
           }
         } catch {}
-        // Forward edge must carry A per 1 B; reverse is 1/price
-        addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaAmm, (priceAmmOrca && priceAmmOrca > 0) ? priceAmmOrca : undefined, undefined, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
+        // Forward + reverse with strict reciprocal rule and consistency guard
+        const fwdAmm = (priceAmmOrca && priceAmmOrca > 0) ? priceAmmOrca : undefined;
+        const revAmm = (fwdAmm && fwdAmm > 0) ? (1 / fwdAmm) : undefined;
+        addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaAmm, fwdAmm, undefined, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
         const pidAmmOrcaRev = pid ? `${pid}-rev` : undefined;
-        addEdge(p.mint_b, p.mint_a, 'Orca', p.fee_bps, liqParamOrcaAmm, (priceAmmOrca && priceAmmOrca > 0) ? (1 / priceAmmOrca) : undefined, undefined, pidAmmOrcaRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse');
+        addEdge(p.mint_b, p.mint_a, 'Orca', p.fee_bps, liqParamOrcaAmm, revAmm, undefined, pidAmmOrcaRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse');
+        try { if (fwdAmm && revAmm) { const prod = fwdAmm * revAmm; if (!(prod > 1/1.02 && prod < 1.02)) logger.warn('graph.consistency.orca.amm', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, fwd: fwdAmm, rev: revAmm, prod }); } } catch {}
       }
       for (const p of (orcValid.clmm || [])) {
         // amounts from HTTP (raw token units) need decimals to convert to whole tokens for USD TVL
@@ -685,10 +698,13 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             }
           }
         } catch {}
-        // Forward edge must carry A per 1 B; reverse is 1/price
-        addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaClmm, (priceClmmOrca && priceClmmOrca > 0) ? priceClmmOrca : undefined, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
+        // Forward + reverse with strict reciprocal rule and consistency guard
+        const fwdClmm = (priceClmmOrca && priceClmmOrca > 0) ? priceClmmOrca : undefined;
+        const revClmm = (fwdClmm && fwdClmm > 0) ? (1 / fwdClmm) : undefined;
+        addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaClmm, fwdClmm, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
         const pidClmmOrcaRev = pid ? `${pid}-rev` : undefined;
-        addEdge(p.mint_b, p.mint_a, 'Orca', p.fee_bps, liqParamOrcaClmm, (priceClmmOrca && priceClmmOrca > 0) ? (1 / priceClmmOrca) : undefined, usd, pidClmmOrcaRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse');
+        addEdge(p.mint_b, p.mint_a, 'Orca', p.fee_bps, liqParamOrcaClmm, revClmm, usd, pidClmmOrcaRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse');
+        try { if (fwdClmm && revClmm) { const prod = fwdClmm * revClmm; if (!(prod > 1/1.02 && prod < 1.02)) logger.warn('graph.consistency.orca.clmm', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, fwd: fwdClmm, rev: revClmm, prod }); } } catch {}
         try {
           const eid = pid || `${p.mint_a}->${p.mint_b}-Orca`;
           const rid = pid ? `${pid}-rev` : `${p.mint_b}->${p.mint_a}-Orca`;
@@ -711,13 +727,15 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         }
         // Calibrate price; for DLMM we only have price_a_per_b, no sqrt
         let priceMet: number | undefined = calibratePrice(p.mint_a, p.mint_b, (p as any).price_a_per_b);
-        // Forward edge must carry A per 1 B; reverse recalibrated separately so it carries B per 1 A
+        // Forward edge must carry A per 1 B; reverse is strict reciprocal
         const pid = String((p as any)?.id || undefined) || undefined;
         const liqParam = (p as any)?.liquidity_display ?? (usd && usd > 0 ? usd : (p as any)?.pool_liquidity_raw);
-        addEdge(p.mint_a, p.mint_b, 'Meteora', p.fee_bps, liqParam, (priceMet && priceMet > 0) ? priceMet : undefined, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
+        const fwdMet = (priceMet && priceMet > 0) ? priceMet : undefined;
+        const revMet = (fwdMet && fwdMet > 0) ? (1 / fwdMet) : undefined;
+        addEdge(p.mint_a, p.mint_b, 'Meteora', p.fee_bps, liqParam, fwdMet, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
         const pidRev = pid ? `${pid}-rev` : undefined;
-        const priceRev = (priceMet && priceMet > 0) ? calibratePrice(p.mint_b, p.mint_a, (1 / priceMet)) : undefined;
-        addEdge(p.mint_b, p.mint_a, 'Meteora', p.fee_bps, liqParam, priceRev, usd, pidRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse');
+        addEdge(p.mint_b, p.mint_a, 'Meteora', p.fee_bps, liqParam, revMet, usd, pidRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse');
+        try { if (fwdMet && revMet) { const prod = fwdMet * revMet; if (!(prod > 1/1.02 && prod < 1.02)) logger.warn('graph.consistency.meteora.clmm', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, fwd: fwdMet, rev: revMet, prod }); } } catch {}
         try {
           const eid = pid || `${p.mint_a}->${p.mint_b}-Meteora`;
           const rid = pid ? `${pid}-rev` : `${p.mint_b}->${p.mint_a}-Meteora`;
