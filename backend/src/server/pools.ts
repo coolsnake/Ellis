@@ -795,6 +795,21 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
 
       const raw: any = await fetchRaydiumPoolsRaw();
       let norm = await normalizeRaydiumPools(raw);
+      // Apply universe filtering early so caches are consistent across sources
+      try {
+        const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
+        const mode: any = (CONFIG.system as any)?.tokenUniverseMode || 'jupiter';
+        const uni = await computeTokenUniverse(mode);
+        const beforeAmm = norm.amm.length, beforeClmm = norm.clmm.length;
+        const scoped = filterPoolsByUniverse(norm as any, uni, true);
+        if (scoped.amm.length !== beforeAmm || scoped.clmm.length !== beforeClmm) {
+          poolsMetrics.raydium.filteredAmm += (beforeAmm - scoped.amm.length);
+          poolsMetrics.raydium.filteredClmm += (beforeClmm - scoped.clmm.length);
+          poolsMetrics.raydium.universe = String(mode);
+          try { logger.info('raydium.universe.filter', { mode, beforeAmm, beforeClmm, afterAmm: scoped.amm.length, afterClmm: scoped.clmm.length }); } catch {}
+        }
+        norm = scoped as any;
+      } catch {}
 
       // Optional: TVL-based filtering to drop dust pools (config-driven)
       try {
@@ -913,6 +928,20 @@ export async function getOrcaPoolsNormalized(): Promise<PoolsPayload> {
       if (mode === 'http') {
         const raw = await fetchOrcaHttp();
         let norm = await normalizeOrcaHttp(raw);
+        // Apply universe filtering early so caches are consistent across sources
+        try {
+          const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
+          const mode: any = (CONFIG.system as any)?.tokenUniverseMode || 'jupiter';
+          const uni = await computeTokenUniverse(mode);
+          const beforeAmm = norm.amm.length, beforeClmm = norm.clmm.length;
+          const scoped = filterPoolsByUniverse(norm as any, uni, true);
+          if (scoped.amm.length !== beforeAmm || scoped.clmm.length !== beforeClmm) {
+            poolsMetrics.orca.lastAmm = scoped.amm.length;
+            poolsMetrics.orca.lastClmm = scoped.clmm.length;
+            try { logger.info('orca.universe.filter', { mode, beforeAmm, beforeClmm, afterAmm: scoped.amm.length, afterClmm: scoped.clmm.length }); } catch {}
+          }
+          norm = scoped as any;
+        } catch {}
         // Apply Orca-specific TVL filters similar to Raydium
         try {
           const minAmmUsd = Number((CONFIG.orca as any)?.minAmmLiqBase || 0);
@@ -977,6 +1006,19 @@ async function fetchOrcaHttp(): Promise<any> {
   if (CONFIG.orca?.minLockedLiquidityPercent !== undefined) params.minLockedLiquidityPercent = String(CONFIG.orca.minLockedLiquidityPercent);
   if (CONFIG.orca?.token) params.token = String(CONFIG.orca.token);
   if (CONFIG.orca?.tokensBothOf) params.tokensBothOf = String(CONFIG.orca.tokensBothOf);
+  // Optional prefilter: use universe to set 'token' for conservative narrowing
+  try {
+    if ((CONFIG.system as any)?.universePrefilterOrca) {
+      const { computeTokenUniverse } = await import('./universe.js');
+      const uni = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
+      // Prefer anchoring to a popular pivot (USDC) if present; else SOL; else any
+      const pivots = ['EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', 'So11111111111111111111111111111111111111112'];
+      let chosen: string | undefined = undefined;
+      for (const p of pivots) { if (uni.has(p)) { chosen = p; break; } }
+      if (!chosen) chosen = Array.from(uni)[0];
+      if (chosen && !params.token) params.token = chosen;
+    }
+  } catch {}
   if (CONFIG.orca?.addresses) params.addresses = String(CONFIG.orca.addresses);
   if (CONFIG.orca?.includeBlocked !== undefined) params.includeBlocked = String(Boolean(CONFIG.orca.includeBlocked));
   if (Array.isArray(CONFIG.orca?.stats) && CONFIG.orca.stats.length) params.stats = CONFIG.orca.stats.join(',');

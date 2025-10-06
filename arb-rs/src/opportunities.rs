@@ -66,6 +66,7 @@ pub struct OpportunitiesSummary {
     pub last_raydium_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")] pub near_miss: Option<Opportunity>,
     #[serde(skip_serializing_if = "Option::is_none")] pub near_miss_shortfall_bps: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")] pub near_misses: Option<Vec<Opportunity>>,
 }
 
 

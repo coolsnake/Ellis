@@ -76,8 +76,17 @@ export const CONFIG = {
     txCommitment: (process.env.TX_COMMITMENT as any) || 'confirmed',
     wrapAndUnwrapSol: process.env.WRAP_AND_UNWRAP_SOL !== 'false',
     scopePools: process.env.SCOPE_POOLS !== 'false',
-    // New: scoping mode for /arb/pools endpoints: 'none' | 'watchlist' | 'jupiter'
+    // New: scoping mode for /arb/pools endpoints: 'none' | 'watchlist' | 'jupiter' | 'intersection' | 'union'
     scopePoolsMode: (process.env.SCOPE_POOLS_MODE as any) || 'jupiter',
+    // New: token-universe mode used to filter pools at source: 'jupiter' | 'watchlist' | 'intersection' | 'union'
+    tokenUniverseMode: (process.env.TOKEN_UNIVERSE_MODE as any) || 'jupiter',
+    // Optional: anchors always included in universe and bridging exceptions
+    anchorMints: (process.env.ANCHOR_MINTS || 'So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean),
+    // Optional: enable Orca HTTP prefiltering using config-only params (conservative)
+    universePrefilterOrca: (process.env.UNIVERSE_PREFILTER_ORCA || 'false') === 'true',
     // Enable websocket subscriptions for pool state changes
     enablePoolWs: process.env.ENABLE_POOL_WS !== 'false',
     // Minimum gap between forced pool refreshes per source (ms)

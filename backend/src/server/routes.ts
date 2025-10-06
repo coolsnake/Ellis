@@ -1411,28 +1411,19 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       const pools = await getRaydiumPoolsNormalized(false);
       // Restore config if overridden for this request
       try { if (restore) { (CONFIG.raydium as any).minAmmLiqBase = prevAmm; (CONFIG.raydium as any).minClmmLiquidity = prevClmm; if (prevAnchors) (CONFIG.raydium as any).anchorMints = prevAnchors; if (prevUseAnchor !== undefined) (CONFIG.raydium as any).useAnchorDiscovery = prevUseAnchor; } } catch {}
-      // Scope pools per configured mode
+      // Scope pools per configured mode using universe helper
       const mode = String((CONFIG.system as any)?.scopePoolsMode || 'jupiter');
-      const scoped = CONFIG.system.scopePools !== false && mode !== 'none';
+      const scopedEnabled = CONFIG.system.scopePools !== false && mode !== 'none';
       let out = pools;
-      if (scoped) {
-        const set = new Set<string>();
-        if (mode === 'watchlist') {
-          const wl = await readJson<any[]>(CONFIG.watchlistPath, []);
-          for (const t of wl) set.add(typeof t === 'string' ? t : String(t?.id || ''));
-        } else if (mode === 'jupiter') {
-          try {
-            const { loadJupiterTokenMap } = await import('../utils/tokens.js');
-            const jmap = await loadJupiterTokenMap();
-            for (const k of Object.keys(jmap)) set.add(k);
-          } catch {}
-        }
-        const scopedAmm = pools.amm.filter(p => set.size === 0 || set.has(p.mint_a) || set.has(p.mint_b));
-        const scopedClmm = pools.clmm.filter(p => set.size === 0 || set.has(p.mint_a) || set.has(p.mint_b));
-        // If scoping drops everything but upstream has pools, fall back to unscoped to avoid empty graph
-        const upstreamCount = (pools.amm?.length || 0) + (pools.clmm?.length || 0);
-        const scopedCount = (scopedAmm.length || 0) + (scopedClmm.length || 0);
-        out = (upstreamCount > 0 && scopedCount === 0) ? pools : { amm: scopedAmm, clmm: scopedClmm };
+      if (scopedEnabled) {
+        try {
+          const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
+          const universe = await computeTokenUniverse(mode as any);
+          const filtered = filterPoolsByUniverse(pools as any, universe, true);
+          const upstreamCount = (pools.amm?.length || 0) + (pools.clmm?.length || 0);
+          const scopedCount = (filtered.amm.length || 0) + (filtered.clmm.length || 0);
+          out = (upstreamCount > 0 && scopedCount === 0) ? pools : filtered as any;
+        } catch {}
       }
       res.json(out);
     } catch (e: any) {
@@ -1484,31 +1475,49 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   api.get('/arb/pools/orca', async (_req, res) => {
     try {
       const pools = await getOrcaPoolsCached(false);
-      // Scope pools per configured mode
+      // Scope pools per configured mode using universe helper
       const mode = String((CONFIG.system as any)?.scopePoolsMode || 'jupiter');
-      const scoped = CONFIG.system.scopePools !== false && mode !== 'none';
+      const scopedEnabled = CONFIG.system.scopePools !== false && mode !== 'none';
       let out = pools;
-      if (scoped) {
-        const set = new Set<string>();
-        if (mode === 'watchlist') {
-          const wl = await readJson<any[]>(CONFIG.watchlistPath, []);
-          for (const t of wl) set.add(typeof t === 'string' ? t : String(t?.id || ''));
-        } else if (mode === 'jupiter') {
-          try {
-            const { loadJupiterTokenMap } = await import('../utils/tokens.js');
-            const jmap = await loadJupiterTokenMap();
-            for (const k of Object.keys(jmap)) set.add(k);
-          } catch {}
-        }
-        out = {
-          amm: pools.amm.filter(p => set.size === 0 || set.has(p.mint_a) || set.has(p.mint_b)),
-          clmm: pools.clmm.filter(p => set.size === 0 || set.has(p.mint_a) || set.has(p.mint_b)),
-        };
+      if (scopedEnabled) {
+        try {
+          const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
+          const universe = await computeTokenUniverse(mode as any);
+          const filtered = filterPoolsByUniverse(pools as any, universe, true);
+          const upstreamCount = (pools.amm?.length || 0) + (pools.clmm?.length || 0);
+          const scopedCount = (filtered.amm.length || 0) + (filtered.clmm.length || 0);
+          out = (upstreamCount > 0 && scopedCount === 0) ? pools : filtered as any;
+        } catch {}
       }
       res.json(out);
     } catch (e: any) {
       logger.error('orca pools fetch failed', { error: String(e?.message || e) });
       res.status(503).json({ amm: [], clmm: [] });
+    }
+  });
+
+  // Diagnostics: token universe overlap and diffs
+  api.get('/arb/pools/universe/diagnostics', async (_req, res) => {
+    try {
+      const { computeTokenUniverse, getSourceTokenSet, getJupiterTokenSet, getWatchlistTokenSet } = await import('./universe.js');
+      const uni = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
+      const ray = await getSourceTokenSet('raydium');
+      const orc = await getSourceTokenSet('orca');
+      const jup = await getJupiterTokenSet();
+      const wli = await getWatchlistTokenSet();
+      const onlyRay: string[] = []; const onlyOrc: string[] = []; const overlap: string[] = [];
+      const all = new Set<string>([...ray, ...orc]);
+      for (const m of all) {
+        if (ray.has(m) && orc.has(m)) overlap.push(m);
+        else if (ray.has(m)) onlyRay.push(m); else onlyOrc.push(m);
+      }
+      res.json({
+        mode: (CONFIG.system as any)?.tokenUniverseMode,
+        sizes: { universe: uni.size, raydium: ray.size, orca: orc.size, jupiter: jup.size, watchlist: wli.size },
+        onlyRay, onlyOrc, overlapCount: overlap.length,
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
     }
   });
 

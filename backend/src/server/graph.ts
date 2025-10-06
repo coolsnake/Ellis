@@ -138,30 +138,23 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       const { peekRaydiumPools, peekOrcaPools } = await import('./pools.js');
       const rayRaw = peekRaydiumPools();
       const orcRaw = peekOrcaPools();
-      // Apply scoping according to CONFIG.system.scopePools and scopePoolsMode
+      // Apply scoping according to CONFIG.system.scopePools and scopePoolsMode via universe helper
       const mode = String((CONFIG.system as any)?.scopePoolsMode || 'jupiter');
       const scoped = CONFIG.system.scopePools !== false && mode !== 'none';
       let ray = rayRaw; let orc = orcRaw;
       if (scoped) {
-        const set = new Set<string>();
-        if (mode === 'watchlist') {
-          try { const wl = await readJson<any[]>(CONFIG.watchlistPath, []); for (const t of wl) set.add(typeof t === 'string' ? t : String(t?.id || '')); } catch {}
-        } else if (mode === 'jupiter') {
-          try { const { loadJupiterTokenMap } = await import('../utils/tokens.js'); const jmap = await loadJupiterTokenMap(); for (const k of Object.keys(jmap)) set.add(k); } catch {}
-        }
-        const scope = (p: any) => ({
-          amm: (p?.amm || []).filter((x: any) => set.size === 0 || set.has(x.mint_a) || set.has(x.mint_b)),
-          clmm: (p?.clmm || []).filter((x: any) => set.size === 0 || set.has(x.mint_a) || set.has(x.mint_b)),
-        });
-        const rScoped = scope(rayRaw);
-        const oScoped = scope(orcRaw);
-        // If scoping drops everything but upstream has pools, fall back to unscoped to avoid empty graph
-        const upstreamR = (rayRaw.amm?.length || 0) + (rayRaw.clmm?.length || 0);
-        const scopedR = (rScoped.amm.length || 0) + (rScoped.clmm.length || 0);
-        const upstreamO = (orcRaw.amm?.length || 0) + (orcRaw.clmm?.length || 0);
-        const scopedO = (oScoped.amm.length || 0) + (oScoped.clmm.length || 0);
-        ray = (upstreamR > 0 && scopedR === 0) ? rayRaw : rScoped;
-        orc = (upstreamO > 0 && scopedO === 0) ? orcRaw : oScoped;
+        try {
+          const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
+          const universe = await computeTokenUniverse(mode as any);
+          const rScoped = filterPoolsByUniverse(rayRaw as any, universe, true);
+          const oScoped = filterPoolsByUniverse(orcRaw as any, universe, true);
+          const upstreamR = (rayRaw.amm?.length || 0) + (rayRaw.clmm?.length || 0);
+          const scopedR = (rScoped.amm.length || 0) + (rScoped.clmm.length || 0);
+          const upstreamO = (orcRaw.amm?.length || 0) + (orcRaw.clmm?.length || 0);
+          const scopedO = (oScoped.amm.length || 0) + (oScoped.clmm.length || 0);
+          ray = (upstreamR > 0 && scopedR === 0) ? rayRaw : rScoped as any;
+          orc = (upstreamO > 0 && scopedO === 0) ? orcRaw : oScoped as any;
+        } catch {}
       }
       const tokenMap = await loadTokenMap().catch(() => ({} as Record<string, { mint: string; decimals: number }>));
       const labelByMint: Record<string, string> = {};

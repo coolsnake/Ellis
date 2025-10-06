@@ -89,6 +89,7 @@ struct AppState {
     pool_cache: PoolCache,
     near_miss: Option<Opportunity>,
     near_miss_shortfall_bps: Option<i64>,
+    near_misses: Vec<Opportunity>,
     force_refresh_next: bool,
     last_graph_version: u64,
     last_graph_ts: u64,
@@ -157,7 +158,7 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer().without_time().with_ansi(false).with_writer(move || BridgeWriter { tx: bridge_tx.clone() }))
         .init();
 
-    let state = Arc::new(RwLock::new(AppState { config: default_config(), opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), pool_cache: PoolCache::new(), near_miss: None, near_miss_shortfall_bps: None, force_refresh_next: false, last_graph_version: 0, last_graph_ts: 0, use_backend_graph: false, pending_added_edges: Vec::new(), pending_updated_edges: Vec::new(), pending_removed_edge_ids: Vec::new(), pending_graph_version: None, pending_graph_ts: None }));
+    let state = Arc::new(RwLock::new(AppState { config: default_config(), opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), pool_cache: PoolCache::new(), near_miss: None, near_miss_shortfall_bps: None, near_misses: Vec::new(), force_refresh_next: false, last_graph_version: 0, last_graph_ts: 0, use_backend_graph: false, pending_added_edges: Vec::new(), pending_updated_edges: Vec::new(), pending_removed_edge_ids: Vec::new(), pending_graph_version: None, pending_graph_ts: None }));
 
     // Install shutdown handler to clear in-memory state
     {
@@ -700,6 +701,7 @@ async fn main() -> anyhow::Result<()> {
                         });
                     }
                     let mut near_pair = best_below.map(|o| (o, best_below_shortfall));
+                    let mut near_list: Vec<(Opportunity,i64)> = Vec::new();
                     // Near-miss via Bellman-Ford final slack pass
                     if s.config.near_miss_enable {
                         let epsilon: f64 = if s.config.near_miss_epsilon.is_finite() && s.config.near_miss_epsilon > 0.0 { s.config.near_miss_epsilon } else { 5e-4 }; // log-space slack window
@@ -839,6 +841,8 @@ async fn main() -> anyhow::Result<()> {
                                 }
                                 None => { near_pair = Some((near, shortfall)); }
                             }
+                            // Collect for top-K list
+                            near_list.push((near.clone(), shortfall));
                         }
                     }
                     // Fallback: if no negative cycles at all (curr empty) and no near_below, enumerate simple cycles up to max_hops and pick best product
@@ -1111,7 +1115,7 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                     let prev_opps = s.opportunities.clone();
-                    (curr, prev_opps, near_pair)
+                    (curr, prev_opps, near_pair, near_list)
                 };
                 // Drop stale opps older than 10s if not re-detected
                 let now_ms_val = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
@@ -1148,6 +1152,11 @@ async fn main() -> anyhow::Result<()> {
                     s.opportunities = merged;
                     s.near_miss = near_pair.as_ref().map(|(o, _)| o.clone());
                     s.near_miss_shortfall_bps = near_pair.as_ref().map(|(_, sh)| *sh);
+                    // Build top-K near-misses list for UI
+                    let mut nlist = near_list;
+                    nlist.sort_by_key(|(_, sh)| *sh);
+                    let k = s.config.debug_top_n.max(1).min(10);
+                    s.near_misses = nlist.into_iter().take(k).map(|(o,_)| o).collect();
                     s.metrics.opportunities_active = s.opportunities.len() as u64;
                     s.metrics.max_profit_bps = s.opportunities.iter().map(|o| o.profit_bps).max().unwrap_or(0) as i64;
                     let total: i64 = s.opportunities.iter().map(|o| o.profit_bps).sum();
@@ -1256,6 +1265,7 @@ async fn get_opportunities(
         last_raydium_ms: s.pool_cache.last_refresh_raydium_ms,
         near_miss: s.near_miss.clone(),
         near_miss_shortfall_bps: s.near_miss_shortfall_bps,
+        near_misses: if s.near_misses.is_empty() { None } else { Some(s.near_misses.clone()) },
     };
     Json(OpportunitiesResponse { items, summary: Some(summary) })
 }

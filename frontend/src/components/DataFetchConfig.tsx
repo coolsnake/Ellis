@@ -11,6 +11,10 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
 		// System
 		enablePoolWs: true,
     poolRefreshMinGapMs: 3000,
+    tokenUniverseMode: 'jupiter',
+    scopePoolsMode: 'jupiter',
+    anchorMints: 'So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+    universePrefilterOrca: false,
 		// Raydium (HTTP)
 		ray_cacheTtlMs: 300000,
 		ray_httpConcurrency: 2,
@@ -52,6 +56,10 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             ...prev,
 					enablePoolWs: j?.system?.enablePoolWs !== false,
             poolRefreshMinGapMs: Number(j?.system?.poolRefreshMinGapMs ?? prev.poolRefreshMinGapMs),
+            tokenUniverseMode: j?.system?.tokenUniverseMode || prev.tokenUniverseMode,
+            scopePoolsMode: j?.system?.scopePoolsMode || prev.scopePoolsMode,
+            anchorMints: Array.isArray(j?.system?.anchorMints) ? j.system.anchorMints.join(',') : (prev.anchorMints || ''),
+            universePrefilterOrca: !!j?.system?.universePrefilterOrca,
             jupiterApiUrl: j?.system?.jupiterApiUrl || prev.jupiterApiUrl,
 				ray_cacheTtlMs: Number(j?.raydium?.cacheTtlMs ?? prev.ray_cacheTtlMs),
 				ray_httpConcurrency: Number(j?.raydium?.sdkConcurrency ?? prev.ray_httpConcurrency),
@@ -88,6 +96,10 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
       system: {
         enablePoolWs: !!cfg.enablePoolWs,
         poolRefreshMinGapMs: Number(cfg.poolRefreshMinGapMs),
+        tokenUniverseMode: cfg.tokenUniverseMode,
+        scopePoolsMode: cfg.scopePoolsMode,
+        anchorMints: String(cfg.anchorMints || '').split(',').map(s => s.trim()).filter(Boolean),
+        universePrefilterOrca: !!cfg.universePrefilterOrca,
         jupiterApiUrl: cfg.jupiterApiUrl,
       },
 			raydium: {
@@ -146,6 +158,36 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                 <label className="block text-sm mb-1">Min Gap Between Refreshes (ms)</label>
                 <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.poolRefreshMinGapMs} onChange={(e)=>set('poolRefreshMinGapMs', Number(e.target.value)||0)} />
               </div>
+            </div>
+          </div>
+
+          <div className="bg-gray-700 rounded p-4">
+            <h3 className="text-lg font-semibold mb-3">Token Universe & Scoping</h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm mb-1">Token Universe Mode</label>
+                <select className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.tokenUniverseMode} onChange={(e)=>set('tokenUniverseMode', e.target.value)}>
+                  <option value="jupiter">jupiter</option>
+                  <option value="watchlist">watchlist</option>
+                  <option value="intersection">intersection</option>
+                  <option value="union">union</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Scope Pools Mode</label>
+                <select className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.scopePoolsMode} onChange={(e)=>set('scopePoolsMode', e.target.value)}>
+                  <option value="none">none</option>
+                  <option value="watchlist">watchlist</option>
+                  <option value="jupiter">jupiter</option>
+                  <option value="intersection">intersection</option>
+                  <option value="union">union</option>
+                </select>
+              </div>
+              <div className="md:col-span-1">
+                <label className="block text-sm mb-1">Anchor Mints (CSV)</label>
+                <input type="text" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.anchorMints} onChange={(e)=>set('anchorMints', e.target.value)} placeholder="So111...,EPjF..." />
+              </div>
+              <label className="flex items-center gap-2 md:col-span-3"><input type="checkbox" checked={!!cfg.universePrefilterOrca} onChange={(e)=>set('universePrefilterOrca', e.target.checked)} />Prefilter Orca HTTP by universe (conservative)</label>
             </div>
           </div>
 

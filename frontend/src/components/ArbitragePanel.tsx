@@ -45,6 +45,7 @@ type OpportunitiesSummary = {
   last_raydium_ms: number;
   near_miss?: Opportunity;
   near_miss_shortfall_bps?: number;
+  near_misses?: Opportunity[];
 };
 
 export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ apiBase, socket }) => {
@@ -345,7 +346,20 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
           </div>
         </div>
       )}
-      {items.length === 0 && !firstLoad && <div className="text-sm opacity-70">No opportunities</div>}
+      {items.length === 0 && summary?.near_misses && summary.near_misses.length > 0 && (
+        <div className="p-2 border rounded bg-yellow-900/10 text-xs mb-3">
+          <div className="font-semibold mb-1">Near-misses this run</div>
+          <div className="space-y-1">
+            {summary.near_misses.slice(0, 10).map((nm, i) => (
+              <div key={i} className="font-mono">
+                <div className="mb-0.5">{nm.path.join(' → ')}</div>
+                <div>Profit: {fmtPctFromBps(nm.profit_bps)} · Net: {fmtPctFromBps((nm as any).net_bps || nm.profit_bps)} · Hops: {nm.hop_count ?? nm.path.length}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {items.length === 0 && !firstLoad && (!summary?.near_misses || summary.near_misses.length === 0) && <div className="text-sm opacity-70">No opportunities</div>}
       {summary?.near_miss && typeof summary?.near_miss_shortfall_bps === 'number' && (summary.near_miss_shortfall_bps as number) > 0 && (summary.near_miss.hop_count ?? summary.near_miss.path.length) >= 3 && (
         <div className="p-2 border rounded bg-yellow-900/20 text-xs mb-3">
           <div className="font-semibold mb-1">Closest Path{summary?.near_miss_shortfall_bps !== undefined ? ` (below threshold by ${fmt(summary?.near_miss_shortfall_bps)} bps)` : ''}</div>
