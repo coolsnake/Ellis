@@ -13,7 +13,7 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "sourceMap": true,
-    "types": ["node"]
+    "types": []
   },
   "include": ["src", "config/**/*.json"],
   "exclude": ["node_modules", "dist"]

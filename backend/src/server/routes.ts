@@ -51,7 +51,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     });
   });
 
-  // Token map (mint -> symbol) combining local tokens and cached Jupiter list
+  // Token map (mint -> symbol) combining Jupiter-verified tokens and local overrides (non-destructive)
   api.get('/tokens/map', async (_req, res) => {
     try {
       const tokensMod: any = await import('../utils/tokens.js');
@@ -60,8 +60,24 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       const local = await loadTokenMap();
       const jmap = await loadJupiterTokenMap();
       const out: Record<string, string> = {};
-      for (const [sym, info] of Object.entries(local || {})) { if (info?.mint) out[info.mint] = sym; }
-      for (const [mint, meta] of Object.entries(jmap || {})) { if (mint && meta?.symbol && !out[mint]) out[mint] = meta.symbol; }
+      // 1) Prefer Jupiter-verified symbols first
+      for (const [mint, meta] of Object.entries(jmap || {})) {
+        if (!mint) continue;
+        const sym = (meta?.symbol || '').toString().trim();
+        if (sym) out[mint] = sym.toUpperCase();
+      }
+      // 2) Merge local tokens without overriding existing mints (avoid bad aliases)
+      for (const [sym, info] of Object.entries(local || {})) {
+        const upperSym = (sym || '').toString().trim().toUpperCase();
+        const mint = info?.mint;
+        if (!mint) continue;
+        if (!out[mint]) out[mint] = upperSym;
+      }
+      // 3) Enforce canonical anchors for SOL and USDC
+      const SOL_MINT = 'So11111111111111111111111111111111111111112';
+      const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+      out[SOL_MINT] = 'SOL';
+      out[USDC_MINT] = 'USDC';
       res.json({ map: out });
     } catch (e: any) {
       res.status(500).json({ map: {} });

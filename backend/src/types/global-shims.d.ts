@@ -15,6 +15,21 @@ declare namespace NodeJS {
   type Timer = any;
 }
 
-// Do not declare modules for installed packages; rely on their own type defs
+// Ambient module shims to satisfy type resolution in constrained environments
+declare module 'socket.io' {
+  export class Server {
+    emit: (...args: any[]) => any;
+  }
+}
+
+declare module 'undici' {
+  export const fetch: any;
+}
+
+declare module 'vitest' {
+  export const describe: any;
+  export const it: any;
+  export const expect: any;
+}
 
 

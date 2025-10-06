@@ -348,7 +348,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
           <div className="space-y-1">
             {summary.near_misses.slice(0, 10).map((nm, i) => (
               <div key={i} className="font-mono">
-                <div className="mb-0.5">{nm.path.join(' → ')}</div>
+                <div className="mb-0.5">{(nm.path || []).map(m => tokenMap[m] || (m.length > 6 ? `${m.slice(0,4)}…${m.slice(-4)}` : m)).join(' → ')}</div>
                 <div>Profit: {fmtPctFromBps(nm.profit_bps)} · Net: {fmtPctFromBps((nm as any).net_bps || nm.profit_bps)} · Hops: {nm.hop_count ?? nm.path.length}</div>
               </div>
             ))}
@@ -359,7 +359,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
       {summary?.near_miss && typeof summary?.near_miss_shortfall_bps === 'number' && (summary.near_miss_shortfall_bps as number) > 0 && (summary.near_miss.hop_count ?? summary.near_miss.path.length) >= 3 && (
         <div className="p-2 border rounded bg-yellow-900/20 text-xs mb-3">
           <div className="font-semibold mb-1">Closest Path{summary?.near_miss_shortfall_bps !== undefined ? ` (below threshold by ${fmt(summary?.near_miss_shortfall_bps)} bps)` : ''}</div>
-          <div className="font-mono mb-1">{summary.near_miss.path.join(' → ')}</div>
+          <div className="font-mono mb-1">{(summary.near_miss.path || []).map(m => tokenMap[m] || (m.length > 6 ? `${m.slice(0,4)}…${m.slice(-4)}` : m)).join(' → ')}</div>
           <div>Profit: {fmtPctFromBps(summary.near_miss.profit_bps)} · Net: {fmtPctFromBps(summary.near_miss.net_bps || summary.near_miss.profit_bps)}</div>
           <div>Hops: {summary.near_miss.hop_count ?? summary.near_miss.path.length} · Links: {summary.near_miss.link_edges_used ?? 0} · Min Edge Liq: {fmt(summary.near_miss.min_edge_liquidity, 2)}</div>
           {summary.near_miss.bottleneck && (

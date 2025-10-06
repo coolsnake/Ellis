@@ -5,7 +5,8 @@ import { notifyArbServiceRefresh, emit, pushArbGraphSnapshot, pushArbGraphDiff }
 import { CONFIG } from '../utils/config.js';
 import { getRaydiumPoolsNormalized, getOrcaPoolsCached, enablePoolWebsocketRefreshes, peekMeteoraPools, getMeteoraPoolsCached } from './pools.js';
 import { loadTokenMap } from '../utils/tokens.js';
-import fetch from 'node-fetch';
+import { fetch } from 'undici';
+import { calibrateMagnitude } from './priceCalib.js';
 
 export type GraphNode = {
   id: string;            // mint address (base58)
@@ -296,7 +297,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       const sanityCfg = (CONFIG as any)?.sanity || {};
       const feeMin = Number.isFinite(Number(sanityCfg.feeMin)) ? Number(sanityCfg.feeMin) : 0;
       const feeMax = Number.isFinite(Number(sanityCfg.feeMax)) ? Number(sanityCfg.feeMax) : 10000;
-      const maxDeviation = Number.isFinite(Number(sanityCfg.maxPriceDeviation)) ? Number(sanityCfg.maxPriceDeviation) : 50;
+      const maxDeviation = Number.isFinite(Number(sanityCfg.maxPriceDeviation)) ? Number(sanityCfg.maxPriceDeviation) : 10;
       const sanityEnabled = sanityCfg.enabled !== false;
 
       type NormPools = { amm: any[]; clmm: any[] };
@@ -305,7 +306,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const out: NormPools = { amm: [], clmm: [] };
         const drop = { badFees: 0, priceOutliers: 0, nonFinitePrice: 0 } as any;
         const getUsd = (mint: string): number | undefined => {
-          try { return (require('./priceStore.js') as any).getPriceByMint(mint)?.usdc ?? undefined; } catch { return undefined; }
+          try { return priceStore.getPriceByMint(mint)?.usdc ?? undefined; } catch { return undefined; }
         };
         const isOk = (p: any): string | null => {
           const fb = Number(p?.fee_bps);
@@ -329,38 +330,20 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       };
 
       // Helper for TVL using USD prices if available
-      const { getPriceByMint } = await import('./priceStore.js');
+      const priceStore = await import('./priceStore.js');
+      const getPriceByMintVar = (m: string) => {
+        try { return priceStore.getPriceByMint(m); } catch { return undefined as any; }
+      };
       const calibratePrice = (mintA: string, mintB: string, raw: number | undefined): number | undefined => {
-        // Preserve orientation: return A per 1 B. Adjust magnitude by powers of 10 and consider reciprocal if needed.
-        const price = Number(raw);
-        if (!Number.isFinite(price) || price <= 0) return undefined;
-        try {
-          const pa = getPriceByMint(mintA)?.usdc ?? null;
-          const pb = getPriceByMint(mintB)?.usdc ?? null;
-          if (!(pa && pb) || !(pa > 0) || !(pb > 0)) return price;
-          // For A per 1 B, the USD reference is price(B)/price(A)
-          const ref = (pb as number) / (pa as number);
-          const scaleCands = [1, 10, 0.1, 100, 0.01, 1000, 0.001];
-          const orientCands = [price, (1 / price)];
-          let best = price; let bestDev = Number.POSITIVE_INFINITY;
-          for (const base of orientCands) {
-            if (!(base > 0) || !Number.isFinite(base)) continue;
-            for (const s of scaleCands) {
-              const c = base * s;
-              if (!(c > 0) || !Number.isFinite(c)) continue;
-              const dev = Math.max(c / ref, ref / c);
-              if (dev + 1e-12 < bestDev) { bestDev = dev; best = c; }
-            }
-          }
-          return best;
-        } catch {
-          return price;
-        }
+        const getUsd = (m: string) => {
+          try { return getPriceByMintVar(m)?.usdc ?? undefined; } catch { return undefined; }
+        };
+        return calibrateMagnitude(mintA, mintB, raw, getUsd);
       };
       const tvlUsd = (mintA: string, mintB: string, amountA?: number, amountB?: number): number | undefined => {
         try {
-          const pa = getPriceByMint(mintA)?.usdc ?? null;
-          const pb = getPriceByMint(mintB)?.usdc ?? null;
+          const pa = getPriceByMintVar(mintA)?.usdc ?? null;
+          const pb = getPriceByMintVar(mintB)?.usdc ?? null;
           const aUsd = (pa && amountA != null) ? pa * amountA : 0;
           const bUsd = (pb && amountB != null) ? pb * amountB : 0;
           const sum = aUsd + bUsd;
@@ -373,9 +356,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       // Helper: fallback price using USD quotes if pool price missing
       const priceFromUsd = (mintA: string, mintB: string): number | undefined => {
         try {
-          const { getPriceByMint } = require('./priceStore.js');
-          const pa = getPriceByMint(mintA)?.usdc ?? null;
-          const pb = getPriceByMint(mintB)?.usdc ?? null;
+          const pa = getPriceByMintVar(mintA)?.usdc ?? null;
+          const pb = getPriceByMintVar(mintB)?.usdc ?? null;
           if (pa && pb && pb > 0) return pa / pb;
         } catch {}
         return undefined;
@@ -418,8 +400,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           // If only one side has a USD price, infer the other using pool price
           if ((usd == null || !(usd > 0)) && price && price > 0) {
             try {
-              const pa = getPriceByMint(p.mint_a)?.usdc ?? null;
-              const pb = getPriceByMint(p.mint_b)?.usdc ?? null;
+              const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
+              const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
               if (Number.isFinite(wholeA) && Number.isFinite(wholeB)) {
                 if (pa && !pb) {
                   // price = A per 1 B => 1 B in USD = price * pa
@@ -467,10 +449,13 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const liqParamAmm = (p as any)?.liquidity_display ?? liqDisplayAmm;
         // Incoming price is A per 1 B.
         // Store display price consistently as A per 1 B for the edge direction.
-        addEdge(p.mint_a, p.mint_b, 'Raydium', p.fee_bps, liqParamAmm, (price && price > 0) ? price : undefined, usd, pidAmm, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
+        const fwdAmmRay = (price && price > 0) ? price : undefined;
+        const revAmmRay = (fwdAmmRay && fwdAmmRay > 0) ? (1 / fwdAmmRay) : undefined;
+        addEdge(p.mint_a, p.mint_b, 'Raydium', p.fee_bps, liqParamAmm, fwdAmmRay, usd, pidAmm, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
         // Use a distinct id for reverse edge when poolId exists to avoid overwriting forward
         const pidAmmRev = pidAmm ? `${pidAmm}-rev` : undefined;
-        addEdge(p.mint_b, p.mint_a, 'Raydium', p.fee_bps, liqParamAmm, (price && price > 0) ? (1 / price) : undefined, usd, pidAmmRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse');
+        addEdge(p.mint_b, p.mint_a, 'Raydium', p.fee_bps, liqParamAmm, revAmmRay, usd, pidAmmRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse');
+        try { if (fwdAmmRay && revAmmRay) { const prod = fwdAmmRay * revAmmRay; if (!(prod > 1/1.02 && prod < 1.02)) logger.warn('graph.consistency.raydium.amm', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, fwd: fwdAmmRay, rev: revAmmRay, prod }); } } catch {}
         try {
           const eid = pidAmm || `${p.mint_a}->${p.mint_b}-Raydium`;
           const rid = pidAmm ? `${pidAmm}-rev` : `${p.mint_b}->${p.mint_a}-Raydium`;
@@ -500,8 +485,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           if ((!usd || !(usd > 0)) && price && price > 0) {
             // General inference: if exactly one side has USD price, derive the other using pool price
             try {
-              const pa = getPriceByMint(p.mint_a)?.usdc ?? null;
-              const pb = getPriceByMint(p.mint_b)?.usdc ?? null;
+              const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
+              const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
               if (Number.isFinite(wholeA) && Number.isFinite(wholeB)) {
                 if (pa && !pb) {
                   const bUsdPx = price * pa; // 1 B = price A; A USD = pa
@@ -538,8 +523,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         // CLMM: calibrate then apply orientation rule
         price = calibratePrice(p.mint_a, p.mint_b, price);
         try {
-          const pa = getPriceByMint(p.mint_a)?.usdc ?? null;
-          const pb = getPriceByMint(p.mint_b)?.usdc ?? null;
+          const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
+          const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
           const ref = (pa && pb && pb > 0) ? ((pb as number) / (pa as number)) : undefined;
           if (price && ref) {
             const dev = Math.max(price / ref, ref / price);
@@ -625,8 +610,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         // Orca AMM: incoming price is A per 1 B. Calibrate then apply orientation rule.
         let priceAmmOrca = calibratePrice(p.mint_a, p.mint_b, (p as any).price_a_per_b);
         try {
-          const pa = getPriceByMint(p.mint_a)?.usdc ?? null;
-          const pb = getPriceByMint(p.mint_b)?.usdc ?? null;
+          const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
+          const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
           const ref = (pa && pb && pb > 0) ? ((pb as number) / (pa as number)) : undefined;
           if (priceAmmOrca) {
             const fwd = 1 / priceAmmOrca, rev = priceAmmOrca;
@@ -681,8 +666,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           priceClmmOrca = calibratePrice(p.mint_a, p.mint_b, (p as any).price_a_per_b);
         }
         try {
-          const pa = getPriceByMint(p.mint_a)?.usdc ?? null;
-          const pb = getPriceByMint(p.mint_b)?.usdc ?? null;
+          const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
+          const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
           const ref = (pa && pb && pb > 0) ? ((pb as number) / (pa as number)) : undefined;
           if (priceClmmOrca) {
             const fwd = 1 / priceClmmOrca, rev = priceClmmOrca;
@@ -761,8 +746,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const pick = (kind: 'amm'|'clmm') => {
           const list = allEdges.filter((e) => (e as any).pool_kind === kind);
           const pref = list.find(isSolUsdc);
-          const sample = pref ? [pref] : list.slice(0, 5);
-          return sample.map((e) => ({ id: e.id, dex: e.dex, source: e.source, target: e.target, pool_kind: (e as any).pool_kind, direction: (e as any).direction, fee_bps: e.fee_bps, price_a_per_b: e.price_a_per_b, tvl_usd: e.tvl_usd, liquidity_display: e.liquidity_display }));
+        const sample = pref ? [pref] : list.slice(0, 5);
+          return sample.map((e) => ({ id: e.id, dex: e.dex, source: e.source, target: e.target, pool_kind: (e as any).pool_kind, direction: (e as any).direction, fee_bps: e.fee_bps, price_a_per_b: e.price_a_per_b, inverse_per_source: (e as any)?.price_a_per_b && (e as any).price_a_per_b > 0 ? (1 / (e as any).price_a_per_b) : undefined, tvl_usd: e.tvl_usd, liquidity_display: e.liquidity_display }));
         };
         const sampleAmm = pick('amm');
         const sampleClmm = pick('clmm');
@@ -827,20 +812,7 @@ export function startGraphStream(io: SocketIOServer): void {
   const period = 30_000;
   const tick = async () => {
     try {
-      // Gate initial snapshot until pools are fetched and normalized at least once
-      if (!last) {
-        try {
-          const pools = await import('./pools.js');
-          const ray = (pools as any).peekRaydiumPools?.() || { amm: [], clmm: [] };
-          const orc = (pools as any).peekOrcaPools?.() || { amm: [], clmm: [] };
-          const met = (pools as any).peekMeteoraPools?.() || { amm: [], clmm: [] };
-          const total = (ray.amm.length + ray.clmm.length + orc.amm.length + orc.clmm.length + met.amm.length + met.clmm.length);
-          if (total === 0) {
-            try { logger.info('graph.initial gate: refreshing all sources'); } catch {}
-            try { await (pools as any).refreshAllSources?.(true, false); } catch {}
-          }
-        } catch {}
-      }
+      // Do not auto-refresh pool sources here; rely on explicit /arb/pools/refresh
       const snap = await getGraphSnapshot(true);
       if (!last) {
         io.emit('graph-snapshot', snap);
