@@ -38,6 +38,16 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     orca_maxPages: 3,
     orca_minAmmLiqBase: 0,
     orca_minClmmLiquidity: 0,
+    // Meteora (DLMM)
+    meteora_mode: 'http',
+    meteora_apiUrl: '',
+    meteora_cacheTtlMs: 300000,
+    meteora_maxHttpRetries: 2,
+    meteora_httpBackoffMs: 500,
+    meteora_pageSize: 200,
+    meteora_maxPages: 3,
+    meteora_minClmmLiquidity: 0,
+    meteora_universePrefilter: false,
     // Jupiter
     jupiterApiUrl: '',
     jupiterPauseApi: false,
@@ -75,6 +85,16 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             orca_maxPages: Number(j?.orca?.maxPages ?? prev.orca_maxPages),
             orca_minAmmLiqBase: Number(j?.orca?.minAmmLiqBase ?? prev.orca_minAmmLiqBase),
             orca_minClmmLiquidity: Number(j?.orca?.minClmmLiquidity ?? prev.orca_minClmmLiquidity),
+            // Meteora
+            meteora_mode: j?.meteora?.mode || prev.meteora_mode,
+            meteora_apiUrl: j?.meteora?.apiUrl || prev.meteora_apiUrl,
+            meteora_cacheTtlMs: Number(j?.meteora?.cacheTtlMs ?? prev.meteora_cacheTtlMs),
+            meteora_maxHttpRetries: Number(j?.meteora?.maxHttpRetries ?? prev.meteora_maxHttpRetries),
+            meteora_httpBackoffMs: Number(j?.meteora?.httpBackoffMs ?? prev.meteora_httpBackoffMs),
+            meteora_pageSize: Number(j?.meteora?.pageSize ?? prev.meteora_pageSize),
+            meteora_maxPages: Number(j?.meteora?.maxPages ?? prev.meteora_maxPages),
+            meteora_minClmmLiquidity: Number(j?.meteora?.minClmmLiquidity ?? prev.meteora_minClmmLiquidity),
+            meteora_universePrefilter: !!j?.meteora?.universePrefilter,
             // Sanity
             sanity_enabled: (j?.sanity?.enabled ?? true) !== false,
             sanity_maxPriceDeviation: Number(j?.sanity?.maxPriceDeviation ?? prev.sanity_maxPriceDeviation),
@@ -119,6 +139,17 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         maxPages: Number(cfg.orca_maxPages),
         minAmmLiqBase: Number(cfg.orca_minAmmLiqBase),
         minClmmLiquidity: Number(cfg.orca_minClmmLiquidity),
+      },
+      meteora: {
+        mode: cfg.meteora_mode,
+        apiUrl: cfg.meteora_apiUrl,
+        cacheTtlMs: Number(cfg.meteora_cacheTtlMs),
+        maxHttpRetries: Number(cfg.meteora_maxHttpRetries),
+        httpBackoffMs: Number(cfg.meteora_httpBackoffMs),
+        pageSize: Number(cfg.meteora_pageSize),
+        maxPages: Number(cfg.meteora_maxPages),
+        minClmmLiquidity: Number(cfg.meteora_minClmmLiquidity),
+        universePrefilter: !!cfg.meteora_universePrefilter,
       },
       sanity: {
         enabled: !!cfg.sanity_enabled,
@@ -289,6 +320,48 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                 <label className="block text-sm mb-1">Min CLMM TVL (USD)</label>
                 <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.orca_minClmmLiquidity} onChange={(e)=>set('orca_minClmmLiquidity', Number(e.target.value)||0)} />
               </div>
+            </div>
+          </div>
+
+          <div className="bg-gray-700 rounded p-4">
+            <h3 className="text-lg font-semibold mb-3">Meteora (DLMM)</h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm mb-1">Mode</label>
+                <select className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.meteora_mode} onChange={(e)=>set('meteora_mode', e.target.value)}>
+                  <option value="http">http</option>
+                  <option value="sdk">sdk</option>
+                </select>
+              </div>
+              <div className="md:col-span-2">
+                <label className="block text-sm mb-1">API URL</label>
+                <input type="url" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.meteora_apiUrl} onChange={(e)=>set('meteora_apiUrl', e.target.value)} placeholder="https://dlmm-api.meteora.ag/v1/pairs" />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Cache TTL (ms)</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.meteora_cacheTtlMs} onChange={(e)=>set('meteora_cacheTtlMs', Number(e.target.value)||0)} />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Max HTTP Retries</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.meteora_maxHttpRetries} onChange={(e)=>set('meteora_maxHttpRetries', Number(e.target.value)||0)} />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">HTTP Backoff (ms)</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.meteora_httpBackoffMs} onChange={(e)=>set('meteora_httpBackoffMs', Number(e.target.value)||0)} />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Page Size</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.meteora_pageSize} onChange={(e)=>set('meteora_pageSize', Number(e.target.value)||0)} />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Max Pages</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.meteora_maxPages} onChange={(e)=>set('meteora_maxPages', Number(e.target.value)||0)} />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Min CLMM TVL (USD)</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.meteora_minClmmLiquidity} onChange={(e)=>set('meteora_minClmmLiquidity', Number(e.target.value)||0)} />
+              </div>
+              <label className="flex items-center gap-2 md:col-span-3"><input type="checkbox" checked={!!cfg.meteora_universePrefilter} onChange={(e)=>set('meteora_universePrefilter', e.target.checked)} />Prefilter Meteora HTTP by universe (conservative)</label>
             </div>
           </div>
 

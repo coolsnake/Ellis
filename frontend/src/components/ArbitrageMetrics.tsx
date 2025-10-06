@@ -1,6 +1,8 @@
 import React from 'react';
 
-export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean }> = ({ apiBase, paused }) => {
+export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; socket?: any }> = (
+  { apiBase, paused, socket }: { apiBase: string; paused?: boolean; socket?: any }
+) => {
   const [m, setM] = React.useState<any | null>(null);
   const [pools, setPools] = React.useState<any | null>(null);
   const [orcaPools, setOrcaPools] = React.useState<any | null>(null);
@@ -76,9 +78,37 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean }> =
     // Probe arb config to detect enabled state
     fetch(`${apiBase}/arb/config`).then(r=>r.json()).then((j)=>{ if (j && typeof j.enabled === 'boolean') setArbEnabled(!!j.enabled); }).catch(()=>{});
     fetch(`${apiBase}/arb/pools/subscriptions`).then(r=>r.json()).then((j)=>{ setSubscribed(!!j.enablePoolWs); setWsHealthy(!!j.healthy); setLastEventMs(Number(j.lastEventMs||0)); setWsDetails({ orca: j.orca, raydium: j.raydium }); }).catch(()=>{});
-    const id = setInterval(fetchMetrics, 2000);
-    return () => clearInterval(id);
+    return () => {};
   }, [paused]);
+
+  // Subscribe to socket events to refresh metrics on push updates
+  React.useEffect(() => {
+    if (!socket || paused) return;
+    const onGraphSnapshot = () => { try { fetchMetrics(); } catch {} };
+    const onGraphUpdate = () => { try { fetchMetrics(); } catch {} };
+    const onArbLog = (evt: any) => {
+      try {
+        const msg: string = (evt?.message || '').toString();
+        const code: string = String(evt?.code || '').toUpperCase();
+        const cat: string = String(evt?.cat || evt?.context?.cat || '').toLowerCase();
+        const isPretradeArb = /\bpretrade:arb\b/i.test(msg) || /^PRETRADE\./.test(code);
+        const isOpportunityCat = cat === 'opportunity';
+        const isGraphPush = /^GRAPH\.PUSH\.(SNAPSHOT|DIFF)$/.test(code) || /^(graph:push (snapshot|diff))$/i.test(msg);
+        const isArbPush = /^ARB\.PUSH\.SNAPSHOT$/.test(code) || /^arb:push snapshot$/i.test(msg);
+        if (isPretradeArb || isOpportunityCat || isGraphPush || isArbPush) {
+          fetchMetrics();
+        }
+      } catch {}
+    };
+    try { socket.on('graph-snapshot', onGraphSnapshot); } catch {}
+    try { socket.on('graph-update', onGraphUpdate); } catch {}
+    try { socket.on('log', onArbLog); } catch {}
+    return () => {
+      try { socket.off('graph-snapshot', onGraphSnapshot); } catch {}
+      try { socket.off('graph-update', onGraphUpdate); } catch {}
+      try { socket.off('log', onArbLog); } catch {}
+    };
+  }, [socket, paused]);
 
   const fmt = (v: any) => typeof v === 'number' ? v.toLocaleString() : String(v || '-');
   const ago = (ms?: number) => {

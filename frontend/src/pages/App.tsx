@@ -1562,7 +1562,7 @@ export const App: React.FC = () => {
         >
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <ArbitragePanel apiBase={apiBase} socket={socketRef.current} />
-            <ArbitrageMetrics apiBase={apiBase} paused={showArbConfig || showSystemConfig || showFeeConfig} />
+            <ArbitrageMetrics apiBase={apiBase} paused={showArbConfig || showSystemConfig || showFeeConfig} socket={socketRef.current} />
           </div>
           {showGraph ? (
             <div className="mt-4">
