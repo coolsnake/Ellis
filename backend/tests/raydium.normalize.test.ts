@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 
 // Import normalize via dynamic import to avoid top-level side effects
 async function normalize(raw: any) {
-  const mod: any = await import('../server/pools.js');
+  const mod: any = await import('../src/server/pools.ts');
   const fn = (mod as any).defaultNormalizeRaydiumPools
     ? (mod as any).defaultNormalizeRaydiumPools
     : (mod as any).normalizeRaydiumPools;
@@ -12,7 +12,7 @@ async function normalize(raw: any) {
 describe('normalizeRaydiumPools', () => {
   it('normalizes AMM array with reserves to price', async () => {
     const raw = { data: [ { id: 'pool1', mintA: 'A', mintB: 'B', reserveA: 200, reserveB: 100, feeBps: 30 } ] };
-    const mod: any = await import('../server/pools.js');
+    const mod: any = await import('../src/server/pools.ts');
     const fn = (mod as any).normalizeRaydiumPools;
     const out = fn(raw);
     expect(out.amm.length).toBe(1);
@@ -22,7 +22,7 @@ describe('normalizeRaydiumPools', () => {
   it('normalizes CLMM with sqrtPriceX64 and derives price', async () => {
     const sqrt = Math.floor(Math.sqrt(2) * Math.pow(2, 64));
     const raw = { data: [ { id: 'clmm1', mintA: 'A', mintB: 'B', sqrtPriceX64: sqrt, tokenA: { decimals: 9 }, tokenB: { decimals: 9 }, tickSpacing: 64, liquidity: 123 } ] } as any;
-    const mod: any = await import('../server/pools.js');
+    const mod: any = await import('../src/server/pools.ts');
     const fn = (mod as any).normalizeRaydiumPools;
     const out = fn(raw);
     expect(out.clmm.length).toBe(1);
@@ -33,7 +33,7 @@ describe('normalizeRaydiumPools', () => {
   it('enriches known pool mints via on-chain offsets (ARCT8n...)', async () => {
     // This test asserts our enrichment function can parse mints from account data
     const poolId = 'ARCT8nLfGVAR5tQBhtW1oRFLHABASX3PEoeoUzJ9iNfu';
-    const mod: any = await import('../server/pools.js');
+    const mod: any = await import('../src/server/pools.ts');
     const fn = (mod as any).getRaydiumPoolsNormalized as (force?: boolean) => Promise<any>;
     const out = await fn(true).catch(() => ({ amm: [], clmm: [] }));
     const match = out.amm.find((p: any) => p.id === poolId) || out.clmm.find((p: any) => p.id === poolId);
