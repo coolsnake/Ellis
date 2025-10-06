@@ -93,6 +93,8 @@ export const CONFIG = {
     // System-wide TVL/liquidity thresholds (applied in addition to per-source thresholds)
     minAmmLiqBase: process.env.MIN_AMM_LIQ_BASE ? Number(process.env.MIN_AMM_LIQ_BASE) : undefined,
     minClmmLiquidity: process.env.MIN_CLMM_LIQUIDITY ? Number(process.env.MIN_CLMM_LIQUIDITY) : undefined,
+    // Minimum number of distinct DEXes a token pair must appear on to include (1..3)
+    minDexOverlap: Number(process.env.MIN_DEX_OVERLAP || 1),
     // Optional: anchors always included in universe and bridging exceptions
     anchorMints: (process.env.ANCHOR_MINTS || 'So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')
       .split(',')

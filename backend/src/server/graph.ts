@@ -126,9 +126,10 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         try {
           const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
           const universe = await computeTokenUniverse(mode as any);
-          const rScoped = filterPoolsByUniverse(rayRaw as any, universe, true);
-          const oScoped = filterPoolsByUniverse(orcRaw as any, universe, true);
-          const mScoped = filterPoolsByUniverse(metRaw as any, universe, true);
+          const anchorBridging = !!((CONFIG.system as any)?.enableAnchorBridging);
+          const rScoped = filterPoolsByUniverse(rayRaw as any, universe, anchorBridging);
+          const oScoped = filterPoolsByUniverse(orcRaw as any, universe, anchorBridging);
+          const mScoped = filterPoolsByUniverse(metRaw as any, universe, anchorBridging);
           const upstreamR = (rayRaw.amm?.length || 0) + (rayRaw.clmm?.length || 0);
           const scopedR = (rScoped.amm.length || 0) + (rScoped.clmm.length || 0);
           const upstreamO = (orcRaw.amm?.length || 0) + (orcRaw.clmm?.length || 0);
@@ -140,6 +141,31 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           met = (upstreamM > 0 && scopedM === 0) ? metRaw : mScoped as any;
         } catch {}
       }
+      // Optional DEX overlap filter (retain pairs present on at least N sources)
+      try {
+        const minOverlap = Math.max(1, Number(((CONFIG.system as any)?.minDexOverlap) || 1));
+        if (minOverlap > 1) {
+          const setRay = new Set<string>();
+          for (const p of (ray.amm || [])) setRay.add(`${p.mint_a}-${p.mint_b}`);
+          for (const p of (ray.clmm || [])) setRay.add(`${p.mint_a}-${p.mint_b}`);
+          const setOrc = new Set<string>();
+          for (const p of (orc.amm || [])) setOrc.add(`${p.mint_a}-${p.mint_b}`);
+          for (const p of (orc.clmm || [])) setOrc.add(`${p.mint_a}-${p.mint_b}`);
+          const setMet = new Set<string>();
+          for (const p of (met.amm || [])) setMet.add(`${p.mint_a}-${p.mint_b}`);
+          for (const p of (met.clmm || [])) setMet.add(`${p.mint_a}-${p.mint_b}`);
+          const counts = new Map<string, number>();
+          const bump = (k: string, has: boolean) => { if (!has) return; counts.set(k, (counts.get(k) || 0) + 1); };
+          const all = new Set<string>([...setRay, ...setOrc, ...setMet]);
+          for (const k of all) { bump(k, setRay.has(k)); bump(k, setOrc.has(k)); bump(k, setMet.has(k)); }
+          const allow = new Set<string>();
+          for (const [k, v] of counts.entries()) if (v >= minOverlap) allow.add(k);
+          const filt = <T extends { mint_a: string; mint_b: string }>(arr: T[]) => (arr || []).filter(p => allow.has(`${p.mint_a}-${p.mint_b}`));
+          ray = { amm: filt(ray.amm), clmm: filt(ray.clmm) } as any;
+          orc = { amm: filt(orc.amm), clmm: filt(orc.clmm) } as any;
+          met = { amm: filt(met.amm), clmm: filt(met.clmm) } as any;
+        }
+      } catch {}
       const tokenMap = await loadTokenMap().catch(() => ({} as Record<string, { mint: string; decimals: number }>));
       const labelByMint: Record<string, string> = {};
       const decimalsByMint: Record<string, number> = {};

@@ -21,6 +21,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     canonicalizePairs: 'none',
     minAmmLiqBase: 0,
     minClmmLiquidity: 0,
+    minDexOverlap: 1,
     universePrefilterOrca: false,
 		// Raydium (HTTP)
 		ray_cacheTtlMs: 300000,
@@ -83,6 +84,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             canonicalizePairs: j?.system?.canonicalizePairs || prev.canonicalizePairs,
             minAmmLiqBase: Number(j?.system?.minAmmLiqBase ?? prev.minAmmLiqBase),
             minClmmLiquidity: Number(j?.system?.minClmmLiquidity ?? prev.minClmmLiquidity),
+            minDexOverlap: Number(j?.system?.minDexOverlap ?? prev.minDexOverlap),
             universePrefilterOrca: !!j?.system?.universePrefilterOrca,
             jupiterApiUrl: j?.system?.jupiterApiUrl || prev.jupiterApiUrl,
 				ray_cacheTtlMs: Number(j?.raydium?.cacheTtlMs ?? prev.ray_cacheTtlMs),
@@ -140,6 +142,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         canonicalizePairs: cfg.canonicalizePairs,
         minAmmLiqBase: Number(cfg.minAmmLiqBase),
         minClmmLiquidity: Number(cfg.minClmmLiquidity),
+        minDexOverlap: Number(cfg.minDexOverlap),
         universePrefilterOrca: !!cfg.universePrefilterOrca,
         jupiterApiUrl: cfg.jupiterApiUrl,
       },
@@ -260,6 +263,14 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
               <div>
                 <label className="block text-sm mb-1">Global Min CLMM TVL (USD)</label>
                 <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.minClmmLiquidity} onChange={(e)=>set('minClmmLiquidity', Number(e.target.value)||0)} />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Minimum DEX Overlap (1-3)</label>
+                <select className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.minDexOverlap} onChange={(e)=>set('minDexOverlap', Number(e.target.value)||1)}>
+                  <option value={1}>1</option>
+                  <option value={2}>2</option>
+                  <option value={3}>3</option>
+                </select>
               </div>
               <label className="flex items-center gap-2 md:col-span-3"><input type="checkbox" checked={!!cfg.universePrefilterOrca} onChange={(e)=>set('universePrefilterOrca', e.target.checked)} />Prefilter Orca HTTP by universe (conservative)</label>
             </div>
