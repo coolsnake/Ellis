@@ -31,7 +31,7 @@ declare module 'vitest' {
   export const it: any;
   export const expect: any;
 }
-declare module '@solana/web3.js' { const anyExport: any; export = anyExport; }
+
 declare module '@raydium-io/raydium-sdk-v2' { const anyExport: any; export = anyExport; }
 declare module '@orca-so/whirlpools-sdk' { const anyExport: any; export = anyExport; }
 declare module '@orca-so/whirlpools' { const anyExport: any; export = anyExport; }
