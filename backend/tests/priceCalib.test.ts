@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { calibrateMagnitude } from '../server/priceCalib.js';
+import { calibrateMagnitude } from '../src/server/priceCalib.ts';
 
 describe('calibrateMagnitude', () => {
   it('returns undefined for non-finite or non-positive', () => {
