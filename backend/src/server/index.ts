@@ -3,7 +3,8 @@ import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import http from 'http';
-import { Server as SocketIOServer } from 'socket.io';
+import { Server as SocketIOClass } from 'socket.io';
+import type { Server as SocketIOServer } from 'socket.io';
 import { logger } from '../utils/logger.js';
 import { setLogLevel } from '../utils/logger.js';
 import { CONFIG } from '../utils/config.js';
@@ -117,9 +118,11 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 });
 
 const server = http.createServer(app);
-const io = new SocketIOServer(server, {
-  path: (CONFIG as any).socketIoPath || '/socket.io',
-  cors: { origin: corsOrigin === '*' ? true : corsOrigin }
+// Some TS environments model the Socket.IO constructor as zero-arg; attach explicitly to the HTTP server.
+const io: SocketIOServer = new (SocketIOClass as any)();
+(io as any).attach(server, {
+	path: (CONFIG as any).socketIoPath || '/socket.io',
+	cors: { origin: corsOrigin === '*' ? true : corsOrigin }
 });
 
 // Optional Basic Auth for Socket.IO (works when browser sends Authorization, e.g., via Nginx Basic Auth)
