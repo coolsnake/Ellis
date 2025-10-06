@@ -1,0 +1,158 @@
+import { logger } from '../../utils/logger.js';
+import { emit } from '../realtime.js';
+import { CONFIG } from '../../utils/config.js';
+import type { ClmmPool, PoolsPayload } from './types.js';
+
+export async function fetchMeteoraHttp(): Promise<any> {
+  try {
+    const base = (CONFIG as any)?.meteora?.apiUrl || 'https://dlmm-api.meteora.ag/v1/pairs';
+    const size = Number(((CONFIG as any)?.meteora?.pageSize) || 200);
+    const retries = Number(((CONFIG as any)?.meteora?.maxHttpRetries) || 2);
+    const backoffMs = Number(((CONFIG as any)?.meteora?.httpBackoffMs) || 500);
+    const maxPages = Number(((CONFIG as any)?.meteora?.maxPages) || 3);
+    const build = (page: number, limit: number) => {
+      const sp = new URLSearchParams();
+      sp.append('page', String(Math.max(0, page)));
+      if (Number.isFinite(limit as any) && limit > 0) sp.append('limit', String(limit));
+      const qs = sp.toString();
+      return qs ? `${base}?${qs}` : base;
+    };
+    // eslint-disable-next-line no-undef
+    const fetchFn: any = (globalThis as any).fetch || fetch;
+    const out: any[] = [];
+    let page = 0;
+    const pageLimit = (maxPages && maxPages > 0) ? maxPages : Number.POSITIVE_INFINITY;
+    for (let i = 0; i < pageLimit; i++) {
+      let ok = false;
+      for (let attempt = 0; attempt <= retries; attempt++) {
+        try {
+          const url = build(page, size);
+          try { logger.info('meteora.http request', { page, limit: size, cat: 'meteora' }); } catch {}
+          const res = await fetchFn(url, { headers: { accept: 'application/json' }, method: 'GET' });
+          if (res?.status === 429) { try { logger.warn('meteora.http 429', { page, cat: 'meteora' }); emit('log', { level: 'warn', message: `arb:429 source=meteora page=${page}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}; throw new Error('http 429'); }
+          if (!res?.ok) throw new Error(`http ${res?.status}`);
+          const json: any = await res.json().catch(() => null);
+          const arr: any[] = Array.isArray(json?.pairs) ? json.pairs : (Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []));
+          const more = Array.isArray(arr) && arr.length >= size;
+          out.push(...(arr || []));
+          page += 1;
+          ok = true;
+          if (!more) { i = pageLimit; break; }
+          break;
+        } catch (e: any) {
+          const msg = String(e?.message || e);
+          if (/429/.test(msg)) { await new Promise(r => setTimeout(r, backoffMs * (attempt + 1))); continue; }
+          if (attempt < retries) await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
+        }
+      }
+      if (!ok) break;
+    }
+    if (out.length === 0) {
+      const res = await fetchFn(build(0, size), { headers: { accept: 'application/json' }, method: 'GET' });
+      if (!res?.ok) throw new Error(`http ${res?.status}`);
+      const json: any = await res.json().catch(() => null);
+      const single = Array.isArray(json?.pairs) ? json.pairs : (Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []));
+      try { logger.info('meteora.http single ok', { count: single.length, cat: 'meteora' }); } catch {}
+      return single;
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
+  const now = Date.now();
+  const clmm: ClmmPool[] = [];
+  let jupMap: Record<string, { symbol: string; decimals: number }> = {};
+  try { const tok = await import('../../utils/tokens.js'); if (typeof (tok as any).loadJupiterTokenMap === 'function') jupMap = await (tok as any).loadJupiterTokenMap(); } catch {}
+  const arrCandidates: any[] = [];
+  if (Array.isArray(raw?.pairs)) arrCandidates.push(raw.pairs);
+  if (Array.isArray(raw)) arrCandidates.push(raw);
+  if (Array.isArray(raw?.data)) arrCandidates.push(raw.data);
+  const arr: any[] = arrCandidates.find(a => Array.isArray(a) && a.length) || (Array.isArray(raw?.pairs) ? raw.pairs : (Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : [])));
+  for (const it of arr) {
+    const id = String(it?.address || it?.id || it?.poolAddress || '');
+    const tokenA = it?.tokenA || it?.tokenX || {};
+    const tokenB = it?.tokenB || it?.tokenY || {};
+    const mint_a = String(it?.mint_x || tokenA?.mint || it?.mintA || it?.tokenXMint || '');
+    const mint_b = String(it?.mint_y || tokenB?.mint || it?.mintB || it?.tokenYMint || '');
+    if (!id || !mint_a || !mint_b) continue;
+    let decA = Number((tokenA?.decimals ?? it?.decimalsA));
+    let decB = Number((tokenB?.decimals ?? it?.decimalsB));
+    if (!Number.isFinite(decA) && jupMap[mint_a]?.decimals != null) decA = Number(jupMap[mint_a].decimals);
+    if (!Number.isFinite(decB) && jupMap[mint_b]?.decimals != null) decB = Number(jupMap[mint_b].decimals);
+    const feeBasePctRaw: any = (it as any)?.base_fee_percentage;
+    let fee_bps = 0;
+    if (feeBasePctRaw != null) {
+      const val = Number(feeBasePctRaw);
+      if (Number.isFinite(val)) fee_bps = val <= 1 ? Math.round(val * 10_000) : Math.round(val * 100);
+    } else {
+      const feeRaw = (it as any)?.feeRate ?? (it as any)?.fee_bps;
+      if (typeof feeRaw === 'number') fee_bps = feeRaw <= 1 ? Math.round(feeRaw * 10_000) : Math.round(feeRaw);
+    }
+    let price_a_per_b = Number((it as any)?.current_price ?? (it as any)?.price ?? (it as any)?.price_a_per_b ?? 0);
+    const amtAraw = (it?.reserve_x_amount ?? it?.tokenBalanceA ?? it?.tokenAAmount ?? it?.amountA ?? it?.baseAmount ?? 0);
+    const amtBraw = (it?.reserve_y_amount ?? it?.tokenBalanceB ?? it?.tokenBAmount ?? it?.amountB ?? it?.quoteAmount ?? 0);
+    const amount_a = Number(typeof amtAraw === 'string' ? Number(amtAraw) : amtAraw || 0);
+    const amount_b = Number(typeof amtBraw === 'string' ? Number(amtBraw) : amtBraw || 0);
+    const tvlUsdcRaw = (it as any)?.tvlUsdc ?? (it as any)?.tvlUsd ?? (it as any)?.liquidity;
+    const tvlUsdcNum = typeof tvlUsdcRaw === 'string' ? Number(tvlUsdcRaw) : (typeof tvlUsdcRaw === 'number' ? tvlUsdcRaw : 0);
+    const tvl_usd = Number.isFinite(tvlUsdcNum) && tvlUsdcNum > 0 ? tvlUsdcNum : undefined;
+    const pool_liquidity_raw = (tvl_usd != null) ? tvl_usd : (Number.isFinite(decA) && Number.isFinite(decB) ? ((amount_a/Math.pow(10, decA as number)) + (amount_b/Math.pow(10, decB as number))) : undefined);
+    const liquidity_display = (tvl_usd != null) ? tvl_usd : undefined;
+    try {
+      const haveDecs = Number.isFinite(decA) && Number.isFinite(decB);
+      const wholeA = haveDecs && Number.isFinite(amount_a) ? (amount_a / Math.pow(10, decA as number)) : NaN;
+      const wholeB = haveDecs && Number.isFinite(amount_b) ? (amount_b / Math.pow(10, decB as number)) : NaN;
+      if (Number.isFinite(wholeA) && Number.isFinite(wholeB) && (wholeB as number) > 0) {
+        const derived = (wholeA as number) / (wholeB as number);
+        if (derived > 0 && Number.isFinite(derived)) price_a_per_b = derived;
+      }
+    } catch {}
+    try {
+      const { getPriceByMint } = await import('../../server/priceStore.js');
+      const getUsd = (m: string) => { try { return getPriceByMint(m)?.usdc ?? undefined; } catch { return undefined; } };
+      const { calibrateMagnitude } = await import('../../server/priceCalib.js');
+      const calibrated = calibrateMagnitude(mint_a, mint_b, price_a_per_b, getUsd);
+      if (calibrated && calibrated > 0) price_a_per_b = calibrated;
+    } catch {}
+    let price_ok = true;
+    try {
+      const sanityCfg = (CONFIG as any)?.sanity || {};
+      const apply = (sanityCfg as any).sanity_applyMeteoraClmm ?? true;
+      if (apply !== false) {
+        const maxDeviation = Number.isFinite(Number(sanityCfg.maxPriceDeviation)) ? Number(sanityCfg.maxPriceDeviation) : 50;
+        const { getPriceByMint } = await import('../../server/priceStore.js');
+        const pa = getPriceByMint(mint_a)?.usdc ?? null;
+        const pb = getPriceByMint(mint_b)?.usdc ?? null;
+        const px = (price_a_per_b && price_a_per_b > 0) ? price_a_per_b : undefined;
+        if (pa && pb && px && (px as number) > 0) {
+          const ref = (pb as number) / (pa as number);
+          const dev = Math.max((px as number) / ref, ref / (px as number));
+          if (dev > maxDeviation) price_ok = false;
+        }
+      }
+    } catch {}
+    if (!price_ok) { try { logger.warn('meteora.clmm drop by sanity', { id, mint_a, mint_b, price_a_per_b, cat: 'meteora' }); } catch {}; continue; }
+    clmm.push({ id, dex: 'Meteora', mint_a, mint_b, fee_bps, sqrt_price_x64: 0, liquidity: 0, tick_spacing: Number((it as any)?.bin_step || (it as any)?.binStep || 0), updated_ms: now, price_a_per_b: (price_a_per_b && price_a_per_b > 0) ? price_a_per_b : undefined, amount_a, amount_b, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, pool_kind: 'clmm', pool_liquidity_raw, tvl_usd, liquidity_display } as any);
+  }
+  try {
+    const mode = String(((CONFIG as any)?.meteora?.canonicalizePairs ?? (CONFIG.system as any)?.canonicalizePairs) || 'none');
+    if (mode === 'lex' && clmm.length) {
+      for (let i = 0; i < clmm.length; i++) {
+        const p = clmm[i];
+        if (String(p.mint_a) <= String(p.mint_b)) continue;
+        const inv = (p.price_a_per_b && p.price_a_per_b > 0) ? (1 / (p.price_a_per_b as number)) : p.price_a_per_b;
+        clmm[i] = { ...p, mint_a: p.mint_b, mint_b: p.mint_a, price_a_per_b: inv as any };
+      }
+    }
+  } catch {}
+  try {
+    const canon = String(((CONFIG as any)?.meteora?.canonicalizePairs ?? (CONFIG.system as any)?.canonicalizePairs) || 'none');
+    logger.info('meteora.http normalized', { clmm: clmm.length, cat: 'meteora', canon });
+  } catch {}
+  return { amm: [], clmm };
+}
+
+

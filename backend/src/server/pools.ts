@@ -4,59 +4,10 @@ import { CONFIG } from '../utils/config.js';
 import { readJson } from '../utils/fs.js';
 // Defer web3 imports to runtime to prevent type issues in environments without types
 // import { PublicKey } from '@solana/web3.js';
-
-type AmmPool = {
-  id: string;
-  dex: string;
-  mint_a: string;
-  mint_b: string;
-  fee_bps: number;
-  price_a_per_b: number;
-  liquidity_base: number;
-  updated_ms: number;
-  // Optional vault accounts corresponding to mint_a and mint_b
-  account_a?: string;
-  account_b?: string;
-  pool_kind?: 'amm';
-  amount_a_whole?: number;
-  amount_b_whole?: number;
-  amounts_are_whole?: boolean;
-  tvl_usd?: number;
-  // Enrichments when known
-  decimals_a?: number;
-  decimals_b?: number;
-  pool_liquidity_raw?: number; // min(amount_a_whole, amount_b_whole) when available
-  liquidity_display?: number;  // prefer pool_liquidity_raw for display when available
-};
-
-type ClmmPool = {
-  id: string;
-  dex: string;
-  mint_a: string;
-  mint_b: string;
-  fee_bps: number;
-  sqrt_price_x64: number;
-  liquidity: number;
-  tick_spacing: number;
-  updated_ms: number;
-  // Optional enrichments for coherence across DEX feeds
-  price_a_per_b?: number;
-  amount_a?: number;
-  amount_b?: number;
-  decimals_a?: number;
-  decimals_b?: number;
-  // Optional token vault accounts for CLMM pool
-  account_a?: string;
-  account_b?: string;
-  pool_kind?: 'clmm';
-  pool_liquidity_raw?: number;
-  tvl_usd?: number;
-  amount_a_whole?: number;
-  amount_b_whole?: number;
-  liquidity_display?: number;  // prefer pool_liquidity_raw for display when available
-};
-
-type PoolsPayload = { amm: AmmPool[]; clmm: ClmmPool[] };
+import type { AmmPool, ClmmPool, PoolsPayload } from './pools/types.js';
+import { fetchRaydiumPoolsRaw as fetchRaydiumPoolsRawImpl, normalizeRaydiumPools as normalizeRaydiumPoolsImpl } from './pools/raydium.js';
+import { fetchOrcaHttp as fetchOrcaHttpImpl, normalizeOrcaHttp as normalizeOrcaHttpImpl, fetchOrcaV4 as fetchOrcaV4Impl, fetchOrcaLegacy as fetchOrcaLegacyImpl } from './pools/orca.js';
+import { fetchMeteoraHttp as fetchMeteoraHttpImpl, normalizeMeteoraHttp as normalizeMeteoraHttpImpl } from './pools/meteora.js';
 
 const raydiumCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 const orcaCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
@@ -441,126 +392,7 @@ export function diffNormalizedPools(prev: PoolsPayload | null | undefined, next:
   return { amm: updatedAmm, clmm: updatedClmm, addedAmm, removedAmm, addedClmm, removedClmm };
 }
 
-export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
-  const now = Date.now();
-  const amm: AmmPool[] = [];
-  const clmm: ClmmPool[] = [];
-
-  const arr: any[] = Array.isArray(raw?.data?.data)
-    ? raw.data.data
-    : (Array.isArray(raw?.data) ? raw.data : (Array.isArray(raw) ? raw : []));
-
-  const toMint = (v: any): string => {
-    if (!v) return '';
-    if (typeof v === 'string') return v;
-    if ((v as any)?.address) return String((v as any).address);
-    return '';
-  };
-  const toFeeBps = (v: any): number => {
-    const n = Number(v);
-    if (!Number.isFinite(n)) return 30;
-    return n <= 1 ? Math.round(n * 10_000) : Math.round(n);
-  };
-
-  for (const it of arr) {
-    if (!it) continue;
-    const id = String(it?.id || it?.address || it?.pool_id || it?.ammId || '');
-    const mintA = toMint(it?.mintA);
-    const mintB = toMint(it?.mintB);
-    if (!id || !mintA || !mintB) continue;
-    const typeStr = String(it?.type || it?.poolType || '').toLowerCase();
-    const pooltype = Array.isArray((it as any)?.pooltype) ? (it as any).pooltype : [];
-    const isClmm = typeStr.includes('concentrated') || pooltype.map((s: any) => String(s).toLowerCase()).includes('clmm');
-    const fee_bps = toFeeBps((it as any)?.feeRate ?? (it as any)?.tradeFeeRate ?? (it as any)?.feeBps ?? (it as any)?.tradeFeeBps);
-    const decA = Number((it?.mintA as any)?.decimals);
-    const decB = Number((it?.mintB as any)?.decimals);
-    const price = Number((it as any)?.price);
-    const tvl = Number((it as any)?.tvl);
-    const mintAmountA = Number((it as any)?.mintAmountA);
-    const mintAmountB = Number((it as any)?.mintAmountB);
-
-    if (isClmm) {
-      const tick = Number((it as any)?.tickSpacing ?? (it as any)?.config?.tickSpacing ?? 0);
-      const sqrt = Number((it as any)?.sqrtPriceX64 ?? (it as any)?.sqrtPrice ?? 0);
-      const liquidity = Number((it as any)?.liquidity ?? 0);
-      const tvl_usd = Number.isFinite(tvl) && tvl > 0 ? tvl : undefined;
-      const amount_a_whole = Number.isFinite(mintAmountA) ? mintAmountA : undefined;
-      const amount_b_whole = Number.isFinite(mintAmountB) ? mintAmountB : undefined;
-      clmm.push({ id, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps, sqrt_price_x64: Number.isFinite(sqrt) ? sqrt : 0, liquidity: Number.isFinite(liquidity) ? liquidity : 0, tick_spacing: Number.isFinite(tick) ? tick : 0, updated_ms: now, price_a_per_b: Number.isFinite(price) ? price : undefined, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, pool_kind: 'clmm', tvl_usd, amount_a_whole, amount_b_whole, liquidity_display: tvl_usd });
-    } else {
-      const tvl_usd = Number.isFinite(tvl) && tvl > 0 ? tvl : undefined;
-      const amount_a_whole = Number.isFinite(mintAmountA) ? mintAmountA : undefined;
-      const amount_b_whole = Number.isFinite(mintAmountB) ? mintAmountB : undefined;
-      const amounts_are_whole = Number.isFinite(amount_a_whole as any) || Number.isFinite(amount_b_whole as any) ? true : undefined;
-      const liquidity_base = Number.isFinite(amount_a_whole as any) && Number.isFinite(amount_b_whole as any)
-        ? Math.min(amount_a_whole as number, amount_b_whole as number)
-        : 0;
-      const liquidity_display = (tvl_usd != null) ? tvl_usd : (liquidity_base > 0 ? liquidity_base : undefined);
-      // Price sanity: choose between incoming price and its reciprocal, and reserves-implied price (and reciprocal), preferring closer to USD ref for A per 1 B
-      let price_in = Number.isFinite(price) && price > 0 ? Number(price) : 0;
-      const price_res = (Number.isFinite(amount_a_whole as any) && Number.isFinite(amount_b_whole as any) && (amount_b_whole as number) > 0)
-        ? ((amount_a_whole as number) / (amount_b_whole as number))
-        : 0;
-      let price_sane = price_in > 0 ? price_in : price_res;
-      try {
-        const sanityCfg = (CONFIG as any)?.sanity || {};
-        const apply = (sanityCfg as any).sanity_applyRaydiumAmm ?? true;
-        if (apply !== false) {
-          const maxDeviation = Number.isFinite(Number(sanityCfg.maxPriceDeviation)) ? Number(sanityCfg.maxPriceDeviation) : 50;
-          const { getPriceByMint } = await import('./priceStore.js');
-          const pa = getPriceByMint(mintA)?.usdc ?? null;
-          const pb = getPriceByMint(mintB)?.usdc ?? null;
-          if (pa && pb && (pa as number) > 0 && (pb as number) > 0) {
-            // For A per 1 B, the USD reference is price(B)/price(A)
-            const ref = (pb as number) / (pa as number);
-            const candidates: number[] = [];
-            if (price_in > 0) { candidates.push(price_in); candidates.push(1 / price_in); }
-            if (price_res > 0) { candidates.push(price_res); candidates.push(1 / price_res); }
-            if (candidates.length) {
-              let bestVal = candidates[0];
-              let bestDev = Math.max(bestVal / ref, ref / bestVal);
-              for (let k = 1; k < candidates.length; k++) {
-                const cur = candidates[k];
-                const dev = Math.max(cur / ref, ref / cur);
-                if (dev + 1e-12 < bestDev) { bestDev = dev; bestVal = cur; }
-              }
-              price_sane = bestVal;
-              // If still absurdly off, drop this pool by skipping push
-              if (bestDev > maxDeviation) {
-                try { logger.warn('raydium.amm drop by sanity', { id, mint_a: mintA, mint_b: mintB, price_in, price_res, ref, dev: bestDev, maxDeviation }); } catch {}
-                continue;
-              }
-            }
-          }
-        }
-      } catch {}
-      amm.push({ id, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps, price_a_per_b: Number.isFinite(price_sane) ? price_sane : 0, liquidity_base, updated_ms: now, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, pool_kind: 'amm', tvl_usd, amount_a_whole, amount_b_whole, amounts_are_whole, liquidity_display });
-    }
-  }
-
-  // Optional canonicalization of pair order for consistency
-  try {
-    const mode = String((CONFIG.system as any)?.canonicalizePairs || 'none');
-    if (mode === 'lex') {
-      const canonAmm: AmmPool[] = [];
-      for (const p of amm) {
-        const [a, b] = String(p.mint_a) <= String(p.mint_b) ? [p.mint_a, p.mint_b] : [p.mint_b, p.mint_a];
-        const price = (a === p.mint_a) ? p.price_a_per_b : (p.price_a_per_b > 0 ? (1 / p.price_a_per_b) : p.price_a_per_b);
-        canonAmm.push({ ...p, mint_a: a, mint_b: b, price_a_per_b: price });
-      }
-      const canonClmm: ClmmPool[] = [];
-      for (const p of clmm) {
-        const [a, b] = String(p.mint_a) <= String(p.mint_b) ? [p.mint_a, p.mint_b] : [p.mint_b, p.mint_a];
-        const price = (a === p.mint_a) ? p.price_a_per_b : (p.price_a_per_b && p.price_a_per_b > 0 ? (1 / (p.price_a_per_b as number)) : p.price_a_per_b);
-        canonClmm.push({ ...p, mint_a: a, mint_b: b, price_a_per_b: price as any });
-      }
-      logger.info('raydium.pools normalized (canon=lex)', { amm: canonAmm.length, clmm: canonClmm.length, cat: 'raydium' });
-      return { amm: canonAmm, clmm: canonClmm };
-    }
-  } catch {}
-  logger.info('raydium.pools normalized', { amm: amm.length, clmm: clmm.length, cat: 'raydium' });
-  return { amm, clmm };
-}
+export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> { return normalizeRaydiumPoolsImpl(raw); }
 
 let rayTimer: any | undefined;
 let orcaTimer: any | undefined;
@@ -597,6 +429,45 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
   const r = await getRaydiumPoolsNormalized(!!force).catch(() => ({ amm: [], clmm: [] }));
   const o = await getOrcaPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
   const m = await getMeteoraPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
+  // Pair diagnostics: compare forward and reverse prices for overlapping pairs across sources
+  try {
+    const map: Map<string, any> = new Map();
+    const add = (src: string, p: any) => {
+      if (!p) return;
+      const a = String(p.mint_a || '');
+      const b = String(p.mint_b || '');
+      if (!a || !b) return;
+      const key = `${a}|${b}`;
+      const price = Number((p as any).price_a_per_b || 0);
+      if (!(map as any).has(key)) (map as any).set(key, { a, b, bySrc: {} });
+      const ent = (map as any).get(key);
+      if (!ent.bySrc[src]) ent.bySrc[src] = [];
+      if (Number.isFinite(price) && price > 0) ent.bySrc[src].push(price);
+    };
+    for (const p of (r.amm || [])) add('raydium.amm', p);
+    for (const p of (r.clmm || [])) add('raydium.clmm', p);
+    for (const p of (o.amm || [])) add('orca.amm', p);
+    for (const p of (o.clmm || [])) add('orca.clmm', p);
+    for (const p of (m.amm || [])) add('meteora.amm', p);
+    for (const p of (m.clmm || [])) add('meteora.clmm', p);
+    const samples: any[] = [];
+    for (const [k, v] of map.entries()) {
+      const sources = Object.keys(v.bySrc || {});
+      if (sources.length < 2) continue; // require overlap
+      const fwd: Record<string, number> = {};
+      const rev: Record<string, number> = {};
+      for (const s of sources) {
+        const arr = v.bySrc[s] as number[];
+        if (!arr || !arr.length) continue;
+        const p = arr[0];
+        fwd[s] = p;
+        rev[s] = p > 0 ? (1 / p) : 0;
+      }
+      samples.push({ pair: k, fwd, rev });
+      if (samples.length >= 5) break;
+    }
+    if (samples.length) { try { logger.info('pools.pair_diagnostics', { samples }); } catch {} }
+  } catch {}
   if (subscribe) {
     try {
       enablePoolWebsocketRefreshes();
@@ -667,7 +538,9 @@ export function startRaydiumRefreshLoop(): void {
     }
     try {
       const setup = async () => {
-        const web3: any = await import('@solana/web3.js');
+        let web3: any = null;
+        try { web3 = await import('@solana/web3.js'); } catch {}
+        if (!web3) { logger.warn('pools.ws disabled: @solana/web3.js not available'); return; }
         const conn = new web3.Connection(CONFIG.rpcUrl, CONFIG.system.txCommitment as any);
         const rayAmm = new web3.PublicKey(String(CONFIG.raydium?.ammV4Program).trim());
         const rayClmm = new web3.PublicKey(String(CONFIG.raydium?.clmmProgram).trim());
@@ -721,64 +594,63 @@ export function startRaydiumRefreshLoop(): void {
               let updated = false;
               try {
                 const rmod: any = await import('@raydium-io/raydium-sdk-v2').catch(() => null);
-                if (rmod && info?.data) {
-                  // Try CLMM pool decode first
-                  let state: any = null;
-                  const clmmLayout = (rmod as any)?.Clmm?.PoolStateLayout || (rmod as any)?.CLMM?.POOL_STATE_LAYOUT || (rmod as any)?.PoolStateLayout;
-                  if (clmmLayout && typeof clmmLayout.decode === 'function') {
-                    try { state = clmmLayout.decode(info.data); } catch {}
-                    if (state && (state as any).liquidity != null && ((state as any).mintA || (state as any).tokenMintA)) {
-                      const mintA = ((state as any).mintA || (state as any).tokenMintA)?.toBase58?.() || '';
-                      const mintB = ((state as any).mintB || (state as any).tokenMintB)?.toBase58?.() || '';
-                      const sqrt = Number((state as any).sqrtPriceX64 ?? (state as any).sqrt_price_x64 ?? (state as any).sqrtPrice ?? 0);
-                      // Approximate A per 1 B from sqrtPriceX64 (Q64.64): price = (sqrt / 2^64)^2
-                      const pxFromSqrt = (() => {
-                        try {
-                          if (!Number.isFinite(sqrt) || sqrt <= 0) return 0;
-                          const ratio = sqrt / Math.pow(2, 64);
-                          const px = ratio * ratio;
-                          return Number.isFinite(px) && px > 0 ? px : 0;
-                        } catch { return 0; }
-                      })();
-                      const liq = Number((state as any).liquidity ?? 0);
-                      const tick = Number((state as any).tickSpacing ?? (state as any).tick_spacing ?? 0);
-                      const fee = Number((state as any).feeRate ?? (state as any).fee_rate ?? 0);
-                      const item: ClmmPool = { id: pk58, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps: fee, sqrt_price_x64: sqrt, liquidity: liq, tick_spacing: tick, updated_ms: Date.now(), pool_kind: 'clmm', liquidity_display: liq, price_a_per_b: pxFromSqrt } as any;
+                if (!rmod || !info?.data) { throw new Error('raydium sdk missing'); }
+                // Try CLMM pool decode first
+                let state: any = null;
+                const clmmLayout = (rmod as any)?.Clmm?.PoolStateLayout || (rmod as any)?.CLMM?.POOL_STATE_LAYOUT || (rmod as any)?.PoolStateLayout;
+                if (clmmLayout && typeof clmmLayout.decode === 'function') {
+                  try { state = clmmLayout.decode(info.data); } catch {}
+                  if (state && (state as any).liquidity != null && ((state as any).mintA || (state as any).tokenMintA)) {
+                    const mintA = ((state as any).mintA || (state as any).tokenMintA)?.toBase58?.() || '';
+                    const mintB = ((state as any).mintB || (state as any).tokenMintB)?.toBase58?.() || '';
+                    const sqrt = Number((state as any).sqrtPriceX64 ?? (state as any).sqrt_price_x64 ?? (state as any).sqrtPrice ?? 0);
+                    // Approximate A per 1 B from sqrtPriceX64 (Q64.64): price = (sqrt / 2^64)^2
+                    const pxFromSqrt = (() => {
+                      try {
+                        if (!Number.isFinite(sqrt) || sqrt <= 0) return 0;
+                        const ratio = sqrt / Math.pow(2, 64);
+                        const px = ratio * ratio;
+                        return Number.isFinite(px) && px > 0 ? px : 0;
+                      } catch { return 0; }
+                    })();
+                    const liq = Number((state as any).liquidity ?? 0);
+                    const tick = Number((state as any).tickSpacing ?? (state as any).tick_spacing ?? 0);
+                    const fee = Number((state as any).feeRate ?? (state as any).fee_rate ?? 0);
+                    const item: ClmmPool = { id: pk58, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps: fee, sqrt_price_x64: sqrt, liquidity: liq, tick_spacing: tick, updated_ms: Date.now(), pool_kind: 'clmm', liquidity_display: liq, price_a_per_b: pxFromSqrt } as any;
+                    const prev = raydiumCache.data || { amm: [], clmm: [] };
+                    const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
+                    const idx = next.clmm.findIndex(p => p.id === item.id);
+                    if (idx >= 0) next.clmm[idx] = { ...next.clmm[idx], ...item }; else next.clmm.push(item);
+                    const d = diffNormalizedPools(prev, next);
+                    raydiumCache.data = next; raydiumCache.ts = Date.now();
+                    try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: [], clmm: d.clmm.slice(0, 20) }, ts: Date.now() }); } catch {}
+                    // Graph rebuilds now orchestrated by refresh endpoint; avoid redundant triggers here
+                    updated = true;
+                  }
+                }
+                // Try AMM V4 decode
+                if (!updated) {
+                  const ammLayout = (rmod as any)?.LiquidityStateLayoutV4 || (rmod as any)?.LIQUIDITY_STATE_LAYOUT_V4 || null;
+                  if (ammLayout && typeof ammLayout.decode === 'function') {
+                    try { state = ammLayout.decode(info.data); } catch { state = null; }
+                    if (state) {
+                      const mintA = (state.baseMint || state.mintA || state.mint_a)?.toBase58?.() || '';
+                      const mintB = (state.quoteMint || state.mintB || state.mint_b)?.toBase58?.() || '';
+                      // Reserves may be BN; best-effort convert to number
+                      const rA = Number((state.baseReserve || state.reserveA || state.vaultA || 0).toString ? (state.baseReserve.toString()) : (state.baseReserve || 0));
+                      const rB = Number((state.quoteReserve || state.reserveB || state.vaultB || 0).toString ? (state.quoteReserve.toString()) : (state.quoteReserve || 0));
+                      const price = (rB > 0 && rA > 0) ? (rA / rB) : 0;
+                      const liqBase = (rA > 0 && rB > 0) ? Math.min(rA, rB) : 0;
+                      const item: AmmPool = { id: pk58, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps: Number((state as any).tradeFeeRate || (state as any).feeRate || 0), price_a_per_b: price, liquidity_base: liqBase, updated_ms: Date.now(), pool_kind: 'amm', liquidity_display: liqBase } as any;
                       const prev = raydiumCache.data || { amm: [], clmm: [] };
                       const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
-                      const idx = next.clmm.findIndex(p => p.id === item.id);
-                      if (idx >= 0) next.clmm[idx] = { ...next.clmm[idx], ...item }; else next.clmm.push(item);
+                      const idx = next.amm.findIndex(p => p.id === item.id);
+                      if (idx >= 0) next.amm[idx] = { ...next.amm[idx], ...item }; else next.amm.push(item);
                       const d = diffNormalizedPools(prev, next);
                       raydiumCache.data = next; raydiumCache.ts = Date.now();
-                      try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: [], clmm: d.clmm.slice(0, 20) }, ts: Date.now() }); } catch {}
+                      try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: d.amm.slice(0, 20), clmm: [] }, ts: Date.now() }); } catch {}
                       // Graph rebuilds now orchestrated by refresh endpoint; avoid redundant triggers here
                       updated = true;
-                    }
-                  }
-                  // Try AMM V4 decode
-                  if (!updated) {
-                    const ammLayout = (rmod as any)?.LiquidityStateLayoutV4 || (rmod as any)?.LIQUIDITY_STATE_LAYOUT_V4 || null;
-                    if (ammLayout && typeof ammLayout.decode === 'function') {
-                      try { state = ammLayout.decode(info.data); } catch { state = null; }
-                      if (state) {
-                        const mintA = (state.baseMint || state.mintA || state.mint_a)?.toBase58?.() || '';
-                        const mintB = (state.quoteMint || state.mintB || state.mint_b)?.toBase58?.() || '';
-                        // Reserves may be BN; best-effort convert to number
-                        const rA = Number((state.baseReserve || state.reserveA || state.vaultA || 0).toString ? (state.baseReserve.toString()) : (state.baseReserve || 0));
-                        const rB = Number((state.quoteReserve || state.reserveB || state.vaultB || 0).toString ? (state.quoteReserve.toString()) : (state.quoteReserve || 0));
-                        const price = (rB > 0 && rA > 0) ? (rA / rB) : 0;
-                        const liqBase = (rA > 0 && rB > 0) ? Math.min(rA, rB) : 0;
-                        const item: AmmPool = { id: pk58, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps: Number((state as any).tradeFeeRate || (state as any).feeRate || 0), price_a_per_b: price, liquidity_base: liqBase, updated_ms: Date.now(), pool_kind: 'amm', liquidity_display: liqBase } as any;
-                        const prev = raydiumCache.data || { amm: [], clmm: [] };
-                        const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
-                        const idx = next.amm.findIndex(p => p.id === item.id);
-                        if (idx >= 0) next.amm[idx] = { ...next.amm[idx], ...item }; else next.amm.push(item);
-                        const d = diffNormalizedPools(prev, next);
-                        raydiumCache.data = next; raydiumCache.ts = Date.now();
-                        try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: d.amm.slice(0, 20), clmm: [] }, ts: Date.now() }); } catch {}
-                        // Graph rebuilds now orchestrated by refresh endpoint; avoid redundant triggers here
-                        updated = true;
-                      }
                     }
                   }
                 }
@@ -793,7 +665,8 @@ export function startRaydiumRefreshLoop(): void {
               let ok = false;
               try {
                 const pk58 = toB58Any(pk);
-                const sdk = await import('@orca-so/whirlpools-sdk');
+                const sdk = await import('@orca-so/whirlpools-sdk').catch(() => null);
+                if (!sdk) { throw new Error('orca sdk missing'); }
                 const { ParsableWhirlpool } = sdk as any;
                 const parsed = ParsableWhirlpool.parse(pk, info);
                 if (parsed) {
@@ -1118,8 +991,8 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
       });
         try { emit('log', { level: 'info', message: `arb:pools raydium.fetch start mode=${mode}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
 
-      const raw: any = await fetchRaydiumPoolsRaw();
-      let norm = await normalizeRaydiumPools(raw);
+      const raw: any = await fetchRaydiumPoolsRawImpl();
+      let norm = await normalizeRaydiumPoolsImpl(raw);
       // Apply universe filtering early so caches are consistent across sources
       try {
         const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
@@ -1250,7 +1123,7 @@ export async function getOrcaPoolsCached(force = false): Promise<PoolsPayload> {
 
 export async function getOrcaPoolsNormalized(): Promise<PoolsPayload> {
   logger.info('orca.fetch start', {
-    mode: CONFIG.orca?.mode || 'http',
+    mode: 'http',
     uniMode: (CONFIG.system as any)?.tokenUniverseMode || 'jupiter',
     anchorBridging: !!((CONFIG.system as any)?.enableAnchorBridging),
     includeAnchors: (CONFIG.system as any)?.includeAnchorsInUniverse !== false,
@@ -1258,15 +1131,9 @@ export async function getOrcaPoolsNormalized(): Promise<PoolsPayload> {
   });
   // Try configured mode, then fallbacks to maximize robustness
   const tried: string[] = [];
-  const modes: string[] = [];
-  const configured = (CONFIG.orca?.mode || 'http') as string;
-  if (configured) modes.push(configured);
-  for (const m of ['http', 'v4', 'legacy']) { if (!modes.includes(m)) modes.push(m); }
-  for (const mode of modes) {
-    try {
-      if (mode === 'http') {
-        const raw = await fetchOrcaHttp();
-        let norm = await normalizeOrcaHttp(raw);
+  try {
+    const raw = await fetchOrcaHttpImpl();
+    let norm = await normalizeOrcaHttpImpl(raw);
         // Apply universe filtering early so caches are consistent across sources
         try {
           const uniModeAny: any = (CONFIG.system as any)?.tokenUniverseMode || 'jupiter';
@@ -1289,33 +1156,13 @@ export async function getOrcaPoolsNormalized(): Promise<PoolsPayload> {
           }
         } catch {}
         // Defer TVL filtering to graph-level to avoid early pruning across sources
-  logger.info('orca.http normalized', { clmm: norm.clmm.length, canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
-        return norm;
-      }
-      if (mode === 'v4') {
-        const norm = await fetchOrcaV4();
-        logger.info('orca.v4 normalized', { clmm: norm.clmm.length });
-        return norm;
-      }
-      if (mode === 'legacy') {
-        const norm = await fetchOrcaLegacy();
-        logger.info('orca.legacy normalized', { clmm: norm.clmm.length });
-        return norm;
-      }
-    } catch (e: any) {
-      tried.push(`${mode}:${String(e?.message || e)}`);
-      const msg = String(e?.message || e);
-      const adaptive = /AdaptiveFee/i.test(msg) || /AdaptiveFeeTier/i.test(msg);
-      // Simple exponential backoff for subsequent attempts in this process
-      const attempt = tried.length;
-      const backoff = Math.min(2000, 200 * Math.pow(2, attempt - 1));
-      logger.warn(`orca.${mode} failed`, { error: msg, adaptiveFee: adaptive, attempt, backoffMs: backoff });
-      await new Promise(r => setTimeout(r, backoff));
-      continue;
-    }
+    logger.info('orca.http normalized', { clmm: norm.clmm.length, canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
+    return norm;
+  } catch (e: any) {
+    tried.push(`http:${String(e?.message || e)}`);
+    logger.warn('orca.http failed', { tried });
+    return { amm: [], clmm: [] };
   }
-  logger.warn('orca all modes failed', { tried });
-  return { amm: [], clmm: [] };
 }
 
 export async function getMeteoraPoolsCached(force = false): Promise<PoolsPayload> {
@@ -1339,8 +1186,8 @@ export async function getMeteoraPoolsCached(force = false): Promise<PoolsPayload
       try { logger.info('meteora.fetch start', { mode, ttlMs, uniMode: (CONFIG.system as any)?.tokenUniverseMode || 'jupiter', anchorBridging: !!((CONFIG.system as any)?.enableAnchorBridging), includeAnchors: (CONFIG.system as any)?.includeAnchorsInUniverse !== false, canonicalizePairs: (CONFIG.system as any)?.canonicalizePairs || 'none', cat: 'meteora' }); } catch {}
       try { emit('log', { level: 'info', message: `arb:pools meteora.fetch start mode=${mode}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
       const t0 = Date.now();
-      const raw = await fetchMeteoraHttp();
-      let norm = await normalizeMeteoraHttp(raw);
+      const raw = await fetchMeteoraHttpImpl();
+      let norm = await normalizeMeteoraHttpImpl(raw);
       // Optionally apply universe filtering early (disabled by default for Meteora)
       try {
         const prefilter = !!((CONFIG as any)?.meteora?.universePrefilter);
@@ -1781,128 +1628,8 @@ async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
   return { amm: [], clmm };
 }
 
-async function fetchOrcaV4(): Promise<PoolsPayload> {
-  const { Connection, PublicKey, Keypair } = await import('@solana/web3.js');
-  // Use v4 client & parsers that understand AdaptiveFee tiers
-  const clientMod = await import('@orca-so/whirlpools').catch(() => null);
-  if (!clientMod) throw new Error('whirlpools v4 not installed');
-  const { buildWhirlpoolClient, WhirlpoolContext, ORCA_WHIRLPOOL_PROGRAM_ID } = clientMod as any;
-  const programId = new PublicKey(CONFIG.orca?.programId || ORCA_WHIRLPOOL_PROGRAM_ID);
-  const conn = new Connection(CONFIG.rpcUrl, CONFIG.system.txCommitment as any);
-  // Dummy wallet for context
-  const dummy = Keypair.generate();
-  const ctx = WhirlpoolContext.from(conn, { publicKey: dummy.publicKey, signTransaction: async (tx: any) => tx, signAllTransactions: async (txs: any) => txs }, programId);
-  const client = buildWhirlpoolClient(ctx);
+async function fetchOrcaV4(): Promise<PoolsPayload> { logger.info('orca.v4 deprecated'); return { amm: [], clmm: [] }; }
 
-  const wl = await readJson<any[]>(CONFIG.watchlistPath, []);
-  const watchMints: string[] = Array.from(new Set(wl.map((t: any) => (typeof t === 'string' ? t : t?.id)).filter(Boolean)));
-  const SOL = 'So11111111111111111111111111111111111111112';
-  const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-  const pairs: Array<[string, string]> = [];
-  for (const m of watchMints.slice(0, 50)) { if (m !== USDC) pairs.push([m, USDC]); if (m !== SOL) pairs.push([m, SOL]); }
-  pairs.push([SOL, USDC]);
-  const tickSpacings = [8, 16, 32, 64, 128, 256];
-  const addrs: any[] = [];
-  const PDAUtil = (await import('@orca-so/whirlpools-sdk').catch(() => null))?.PDAUtil; // for PDA derivation only
-  if (!PDAUtil) throw new Error('PDAUtil missing');
-  const clmm: ClmmPool[] = [];
-  for (const [a, b] of pairs) {
-    const [mintA, mintB] = String(a) < String(b) ? [a, b] : [b, a];
-    for (const ts of tickSpacings) {
-      try {
-        const pda = PDAUtil.getWhirlpool(programId, new PublicKey(CONFIG.orca?.configPubkey), new PublicKey(mintA), new PublicKey(mintB), ts);
-        addrs.push(pda.publicKey);
-      } catch {}
-    }
-  }
-  const unique = Array.from(new Set(addrs.map((p: any) => p.toBase58()))).map((s) => new PublicKey(s));
-  const chunk = 50;
-  for (let i = 0; i < unique.length; i += chunk) {
-    const slice = unique.slice(i, i + chunk);
-    try {
-      const pools = await client.getPools(slice);
-      for (const pool of pools) {
-        try {
-          const data = pool.getData();
-          const id = pool.getAddress().toBase58();
-          const mint_a = data.tokenMintA.toBase58();
-          const mint_b = data.tokenMintB.toBase58();
-          const sqrt_price_x64 = Number(data.sqrtPrice);
-          const liquidity = Number(data.liquidity);
-          const tick_spacing = Number(data.tickSpacing);
-          // feeRate may be undefined for adaptive; derive bps from feeRate or latest fee tier in state
-          const fee_bps = Number((data as any)?.feeRate ?? 0);
-          if (sqrt_price_x64 > 0) clmm.push({ id, dex: 'Orca', mint_a, mint_b, fee_bps, sqrt_price_x64, liquidity, tick_spacing, updated_ms: Date.now() });
-        } catch (e: any) {
-          const msg = String(e?.message || e);
-          logger.warn('orca.v4 pool parse failed', { error: msg });
-        }
-      }
-    } catch (e: any) {
-      const msg = String(e?.message || e);
-      logger.warn('orca.v4 batch failed', { error: msg });
-    }
-  }
-  return { amm: [], clmm };
-}
-
-async function fetchOrcaLegacy(): Promise<PoolsPayload> {
-  const now = Date.now();
-  const clmm: ClmmPool[] = [];
-  // Legacy parsers may fail on AdaptiveFee tiers; keep behind explicit mode/fallback
-  const legacy = await import('@orca-so/whirlpools-sdk');
-  const { Connection, PublicKey } = await import('@solana/web3.js');
-  const { PDAUtil, ParsableWhirlpool } = legacy as any;
-  const PROGRAM_ID = new PublicKey(CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
-  const CONFIG_PUBKEY = new PublicKey(CONFIG.orca?.configPubkey || '7cSHePZUPCXKmgkkCm1cW8XkyRjB6rQAtv6vZ9VJ4N8S');
-  const conn = new Connection(CONFIG.rpcUrl, CONFIG.system.txCommitment as any);
-  const wl = await readJson<any[]>(CONFIG.watchlistPath, []);
-  const watchMints: string[] = Array.from(new Set(wl.map((t: any) => (typeof t === 'string' ? t : t?.id)).filter(Boolean)));
-  const SOL = 'So11111111111111111111111111111111111111112';
-  const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-  const pairs: Array<[string, string]> = [];
-  for (const m of watchMints.slice(0, 50)) { if (m !== USDC) pairs.push([m, USDC]); if (m !== SOL) pairs.push([m, SOL]); }
-  pairs.push([SOL, USDC]);
-  const tickSpacings = [8, 16, 32, 64, 128, 256];
-  const addrs: any[] = [];
-  for (const [a, b] of pairs) {
-    const [mintA, mintB] = String(a) < String(b) ? [a, b] : [b, a];
-    for (const ts of tickSpacings) {
-      try {
-        const pda = PDAUtil.getWhirlpool(PROGRAM_ID, CONFIG_PUBKEY, new PublicKey(mintA), new PublicKey(mintB), ts);
-        addrs.push(pda.publicKey);
-      } catch {}
-    }
-  }
-  const unique = Array.from(new Set(addrs.map((p: any) => p.toBase58()))).map((s) => new PublicKey(s));
-  const chunk = 50;
-  for (let i = 0; i < unique.length; i += chunk) {
-    const slice = unique.slice(i, i + chunk);
-    const infos = await conn.getMultipleAccountsInfo(slice, { commitment: CONFIG.system.txCommitment as any } as any);
-    for (let j = 0; j < slice.length; j++) {
-      const pk = slice[j];
-      const info = infos[j];
-      if (!info) continue;
-      try {
-        const parsed = ParsableWhirlpool.parse(pk, info);
-        if (!parsed) continue;
-        const data = parsed;
-        const id = pk.toBase58();
-        const mint_a = data.tokenMintA.toBase58();
-        const mint_b = data.tokenMintB.toBase58();
-        const sqrt_price_x64 = Number(data.sqrtPrice);
-        const liquidity = Number(data.liquidity);
-        const tick_spacing = Number(data.tickSpacing);
-        const fee_bps = Number(data.feeRate);
-        if (sqrt_price_x64 > 0) clmm.push({ id, dex: 'Orca', mint_a, mint_b, fee_bps, sqrt_price_x64, liquidity, tick_spacing, updated_ms: now });
-      } catch (e: any) {
-        const msg = String(e?.message || e);
-        const adaptive = /AdaptiveFee/i.test(msg) || /AdaptiveFeeTier/i.test(msg);
-        logger.warn('orca.legacy parse failed', { error: msg, adaptiveFee: adaptive });
-      }
-    }
-  }
-  return { amm: [], clmm };
-}
+async function fetchOrcaLegacy(): Promise<PoolsPayload> { logger.info('orca.legacy deprecated'); return { amm: [], clmm: [] }; }
 
 

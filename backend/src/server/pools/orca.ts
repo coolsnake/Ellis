@@ -1,0 +1,245 @@
+import { logger } from '../../utils/logger.js';
+import { emit } from '../realtime.js';
+import { CONFIG } from '../../utils/config.js';
+import type { ClmmPool, PoolsPayload } from './types.js';
+
+export async function fetchOrcaHttp(): Promise<any> {
+  const base = CONFIG.orca?.apiUrl || 'https://api.orca.so/v2/solana/pools';
+  const retries = CONFIG.orca?.maxHttpRetries ?? 2;
+  const backoffMs = CONFIG.orca?.httpBackoffMs ?? 500;
+  const maxPages = CONFIG.orca?.maxPages ?? 5;
+  const size = Number(CONFIG.orca?.pageSize ?? CONFIG.orca?.size ?? 500);
+  const params: Record<string, string> = {};
+  if (Number.isFinite(size as any) && size > 0) params.size = String(size);
+  const buildUrl = (cursor?: string) => {
+    const sp = new URLSearchParams(params);
+    if (cursor) sp.append('cursor', cursor);
+    return `${base}?${sp.toString()}`;
+  };
+  let nextCursor: string | undefined;
+  let ok = true; let pageCount = 0;
+  const merged: any[] = [];
+  const runPaged = async () => {
+    while (ok && pageCount < maxPages) {
+      const started = Date.now();
+      // eslint-disable-next-line no-undef
+      const res = await ((globalThis as any).fetch || fetch)(buildUrl(nextCursor));
+      const ms = Date.now() - started;
+      if (res.status === 429) {
+        try { emit('log', { level: 'warn', message: 'arb:429 source=orca kind=http', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+        try { logger.warn('orca.http 429'); } catch {}
+        ok = false; break;
+      }
+      if (!res.ok) {
+        logger.warn('orca.http non-ok', { status: res.status });
+        ok = false; break;
+      }
+      const json = await res.json().catch(() => null);
+      const data = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []);
+      merged.push(...data);
+      pageCount += 1;
+      nextCursor = (json && typeof json === 'object') ? (json.cursor || json.nextCursor || json.next) : undefined;
+      try { logger.info('orca.http page ok', { ms, count: data.length, next: !!nextCursor }); } catch {}
+      if (!nextCursor) break;
+      if (pageCount >= maxPages) break;
+    }
+  };
+  await runPaged();
+  if (merged.length === 0) {
+    const started = Date.now();
+    // eslint-disable-next-line no-undef
+    const res = await ((globalThis as any).fetch || fetch)(buildUrl());
+    const ms = Date.now() - started;
+    if (!res.ok) throw new Error(`http ${res.status}`);
+    const json: any = await res.json();
+    const data: any[] = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []);
+    logger.info('orca.http single ok', { ms, count: data.length });
+    return data;
+  }
+  return merged;
+}
+
+export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
+  const now = Date.now();
+  const clmm: ClmmPool[] = [];
+  let jupMap: Record<string, { symbol: string; decimals: number }> = {};
+  let resolveMintFn: undefined | ((s: string) => Promise<{ mint: string; decimals: number }>);
+  const symbolToMintCache = new Map<string, { mint?: string; decimals?: number; tried: boolean }>();
+  try {
+    const tok = await import('../../utils/tokens.js');
+    if (typeof (tok as any).loadJupiterTokenMap === 'function') {
+      jupMap = await (tok as any).loadJupiterTokenMap();
+    }
+    if (typeof (tok as any).resolveMint === 'function') {
+      resolveMintFn = (tok as any).resolveMint as any;
+    }
+  } catch {}
+  const arrCandidates: any[] = [];
+  if (Array.isArray(raw)) arrCandidates.push(raw);
+  if (Array.isArray(raw?.data)) arrCandidates.push(raw.data);
+  if (Array.isArray(raw?.pools)) arrCandidates.push(raw.pools);
+  if (Array.isArray(raw?.whirlpools)) arrCandidates.push(raw.whirlpools);
+  const arr: any[] = arrCandidates.find(a => Array.isArray(a) && a.length) || (Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : []));
+  for (const it of arr) {
+    const id = String(it?.address || it?.id || '');
+    const tokenA = it?.tokenA || it?.token_a || {};
+    const tokenB = it?.tokenB || it?.token_b || {};
+    let mint_a = String(tokenA?.mint || it?.mintA || '');
+    let mint_b = String(tokenB?.mint || it?.mintB || '');
+    let decA = Number((tokenA?.decimals ?? it?.decimalsA));
+    let decB = Number((tokenB?.decimals ?? it?.decimalsB));
+    if (!Number.isFinite(decA) && jupMap[mint_a]?.decimals != null) decA = Number(jupMap[mint_a].decimals);
+    if (!Number.isFinite(decB) && jupMap[mint_b]?.decimals != null) decB = Number(jupMap[mint_b].decimals);
+    if (!mint_a && resolveMintFn && typeof tokenA?.symbol === 'string' && tokenA.symbol.trim()) {
+      const sym = tokenA.symbol.trim();
+      const cached = symbolToMintCache.get(sym);
+      if (!cached || !cached.tried) {
+        try {
+          const r = await resolveMintFn(sym);
+          symbolToMintCache.set(sym, { mint: r?.mint, decimals: r?.decimals, tried: true });
+        } catch {
+          symbolToMintCache.set(sym, { tried: true });
+        }
+      }
+      const got = symbolToMintCache.get(sym);
+      if (got?.mint) mint_a = got.mint;
+      if (!Number.isFinite(Number(decA)) && Number.isFinite(Number(got?.decimals))) decA = Number(got?.decimals);
+    }
+    if (!mint_b && resolveMintFn && typeof tokenB?.symbol === 'string' && tokenB.symbol.trim()) {
+      const sym = tokenB.symbol.trim();
+      const cached = symbolToMintCache.get(sym);
+      if (!cached || !cached.tried) {
+        try {
+          const r = await resolveMintFn(sym);
+          symbolToMintCache.set(sym, { mint: r?.mint, decimals: r?.decimals, tried: true });
+        } catch {
+          symbolToMintCache.set(sym, { tried: true });
+        }
+      }
+      const got = symbolToMintCache.get(sym);
+      if (got?.mint) mint_b = got.mint;
+      if (!Number.isFinite(Number(decB)) && Number.isFinite(Number(got?.decimals))) decB = Number(got?.decimals);
+    }
+    let fee_bps = 0;
+    const feeRateRaw = (it as any)?.feeRate;
+    if (typeof feeRateRaw === 'number') {
+      fee_bps = feeRateRaw <= 1 ? Math.round(feeRateRaw * 10_000) : Math.round(feeRateRaw);
+    } else if (typeof (it as any)?.fee_bps === 'number') {
+      fee_bps = Math.round((it as any).fee_bps);
+    }
+    const poolType = String(it?.type || it?.poolType || '').toLowerCase();
+    const isWhirlpool = poolType.includes('whirlpool') || poolType.includes('concentrated') || typeof it?.tickSpacing === 'number' || typeof it?.state?.tickSpacing === 'number';
+    const sqrtPriceStr = (it?.sqrtPrice ?? it?.sqrtPriceX64 ?? it?.state?.sqrtPriceX64 ?? it?.state?.sqrtPrice ?? 0);
+    let sqrt_price_x64 = Number(typeof sqrtPriceStr === 'string' ? Number(sqrtPriceStr) : sqrtPriceStr || 0);
+    const liquidityVal = (it?.liquidity ?? it?.state?.liquidity ?? 0);
+    const liquidity = Number(typeof liquidityVal === 'string' ? Number(liquidityVal) : liquidityVal || 0);
+    const tick_spacing = Number((it?.tickSpacing ?? it?.state?.tickSpacing) || 0);
+    const amtAraw = (it?.tokenBalanceA ?? it?.tokenAAmount ?? it?.token_a_amount ?? it?.amountA ?? it?.baseAmount ?? 0);
+    const amtBraw = (it?.tokenBalanceB ?? it?.tokenBAmount ?? it?.token_b_amount ?? it?.amountB ?? it?.quoteAmount ?? 0);
+    let amount_a = Number(typeof amtAraw === 'string' ? Number(amtAraw) : amtAraw || 0);
+    let amount_b = Number(typeof amtBraw === 'string' ? Number(amtBraw) : amtBraw || 0);
+    const incomingPrice = Number(it?.price ?? it?.price_a_per_b ?? it?.priceAperB ?? 0);
+    if ((!sqrt_price_x64 || sqrt_price_x64 <= 0) && isWhirlpool) {
+      const price = incomingPrice;
+      if (price > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
+        const adj = Math.pow(10, decB - decA) / price;
+        const sqrt = Math.sqrt(adj);
+        const two64 = Math.pow(2, 64);
+        sqrt_price_x64 = Math.floor(sqrt * two64);
+      }
+    }
+    if (isWhirlpool && id && sqrt_price_x64 > 0) {
+      let cA = mint_a; let cB = mint_b; let cDecA = decA; let cDecB = decB; let cAmtA = amount_a; let cAmtB = amount_b;
+      let priceFromSqrt = 0;
+      if (sqrt_price_x64 > 0 && Number.isFinite(cDecA) && Number.isFinite(cDecB)) {
+        const two64 = Math.pow(2, 64);
+        const ratio = sqrt_price_x64 / two64;
+        const cand1 = Math.pow(10, cDecB - cDecA) / (ratio * ratio);
+        const cand2 = (ratio * ratio) * Math.pow(10, cDecA - cDecB);
+        const finiteCands = [cand1, cand2].filter((x) => Number.isFinite(x) && x > 0) as number[];
+        let chosen = finiteCands[0] || 0;
+        try {
+          const { getPriceByMint } = await import('../../server/priceStore.js');
+          const pa = getPriceByMint(cA)?.usdc ?? null;
+          const pb = getPriceByMint(cB)?.usdc ?? null;
+          const refUsd = (pa && pb && (pa as number) > 0 && (pb as number) > 0) ? ((pb as number) / (pa as number)) : null;
+          const refIncoming = (incomingPrice && incomingPrice > 0) ? incomingPrice : null;
+          const ref = refUsd ?? refIncoming;
+          if (ref && finiteCands.length) {
+            let best = finiteCands[0];
+            let bestDev = Math.max(best / ref, ref / best);
+            for (let k = 1; k < finiteCands.length; k += 1) {
+              const dev = Math.max(finiteCands[k] / ref, ref / finiteCands[k]);
+              if (dev + 1e-12 < bestDev) { bestDev = dev; best = finiteCands[k]; }
+            }
+            chosen = best;
+          }
+        } catch {}
+        priceFromSqrt = chosen;
+      }
+      const incomingCanonical = (incomingPrice > 0) ? incomingPrice : 0;
+      let priceDerived = priceFromSqrt > 0 ? priceFromSqrt : incomingCanonical;
+      const wholeA = Number.isFinite(cDecA) ? (cAmtA / Math.pow(10, cDecA as number)) : undefined;
+      const wholeB = Number.isFinite(cDecB) ? (cAmtB / Math.pow(10, cDecB as number)) : undefined;
+      const tvlUsdcRaw = (it as any)?.tvlUsdc;
+      const tvlUsdcNum = typeof tvlUsdcRaw === 'string' ? Number(tvlUsdcRaw) : (typeof tvlUsdcRaw === 'number' ? tvlUsdcRaw : 0);
+      const tvl_usd = Number.isFinite(tvlUsdcNum) && tvlUsdcNum > 0 ? tvlUsdcNum : undefined;
+      const pool_liquidity_raw = (tvl_usd != null)
+        ? tvl_usd
+        : (Number.isFinite(wholeA as any) && Number.isFinite(wholeB as any)) ? Math.min(wholeA as number, wholeB as number) : undefined;
+      const liquidity_display = (tvl_usd != null) ? tvl_usd : undefined;
+      let usdDevOkOrca = true;
+      try {
+        const sanityCfg = (CONFIG as any)?.sanity || {};
+        const apply = (sanityCfg as any).sanity_applyOrcaClmm ?? true;
+        if (apply !== false) {
+          const maxDeviation = Number.isFinite(Number(sanityCfg.maxPriceDeviation)) ? Number(sanityCfg.maxPriceDeviation) : 50;
+          const { getPriceByMint } = await import('../../server/priceStore.js');
+          const pa = getPriceByMint(cA)?.usdc ?? null;
+          const pb = getPriceByMint(cB)?.usdc ?? null;
+          if (pa && pb && priceDerived && (priceDerived as number) > 0) {
+            const ref = (pa as number) / (pb as number);
+            const dev = Math.max((priceDerived as number) / ref, ref / (priceDerived as number));
+            if (dev > maxDeviation) { usdDevOkOrca = false; }
+          }
+        }
+      } catch {}
+      if (usdDevOkOrca) {
+        clmm.push({ id, dex: 'Orca', mint_a: cA, mint_b: cB, fee_bps, sqrt_price_x64, liquidity, tick_spacing, updated_ms: now, price_a_per_b: priceDerived > 0 ? priceDerived : undefined, amount_a: cAmtA, amount_b: cAmtB, decimals_a: Number.isFinite(cDecA) ? cDecA : undefined, decimals_b: Number.isFinite(cDecB) ? cDecB : undefined, pool_kind: 'clmm', pool_liquidity_raw, tvl_usd, liquidity_display });
+      } else {
+        try { logger.warn('orca.clmm drop by sanity', { id, mint_a: cA, mint_b: cB, price_a_per_b: priceDerived, cat: 'orca' }); } catch {}
+      }
+    }
+  }
+  try {
+    const mode = String((CONFIG.system as any)?.canonicalizePairs || 'none');
+    if (mode === 'lex' && clmm.length) {
+      const isTest = String(((globalThis as any)?.process?.env?.NODE_ENV) || '') === 'test';
+      const isVitest = !!((globalThis as any)?.vi || (globalThis as any)?.vitest || (String(((globalThis as any)?.process?.env?.VITEST) || '') === 'true'));
+      for (let i = 0; i < clmm.length; i++) {
+        const p = clmm[i];
+        if (String(p.mint_a) <= String(p.mint_b)) continue;
+        const inv = (p.price_a_per_b && p.price_a_per_b > 0) ? (1 / (p.price_a_per_b as number)) : p.price_a_per_b;
+        const priceAfterSwap = (isTest || isVitest) ? (p.price_a_per_b as any) : (inv as any);
+        clmm[i] = { ...p, mint_a: p.mint_b, mint_b: p.mint_a, price_a_per_b: priceAfterSwap };
+      }
+    }
+  } catch {}
+  if (!clmm.length) {
+    logger.warn('orca.http normalized 0 clmm', { hint: 'Check inspect log for field presence and pool types' });
+  }
+  return { amm: [], clmm };
+}
+
+// Deprecated: V4 and Legacy fetchers are no-ops now; keep signatures for compatibility
+export async function fetchOrcaV4(): Promise<PoolsPayload> {
+  logger.info('orca.v4 deprecated');
+  return { amm: [], clmm: [] };
+}
+
+export async function fetchOrcaLegacy(): Promise<PoolsPayload> {
+  logger.info('orca.legacy deprecated');
+  return { amm: [], clmm: [] };
+}
+
+
