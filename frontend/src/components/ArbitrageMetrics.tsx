@@ -86,6 +86,14 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
     if (!socket || paused) return;
     const onGraphSnapshot = () => { try { fetchMetrics(); } catch {} };
     const onGraphUpdate = () => { try { fetchMetrics(); } catch {} };
+    const onWsActivity = (evt: any) => {
+      try {
+        if (!evt) return;
+        setWsHealthy(!!evt.healthy);
+        setLastEventMs(Number(evt.lastEventMs || 0));
+        setWsDetails({ orca: evt.orca, raydium: evt.raydium, meteora: evt.meteora });
+      } catch {}
+    };
     const onArbLog = (evt: any) => {
       try {
         const msg: string = (evt?.message || '').toString();
@@ -102,10 +110,12 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
     };
     try { socket.on('graph-snapshot', onGraphSnapshot); } catch {}
     try { socket.on('graph-update', onGraphUpdate); } catch {}
+    try { socket.on('ws-activity', onWsActivity); } catch {}
     try { socket.on('log', onArbLog); } catch {}
     return () => {
       try { socket.off('graph-snapshot', onGraphSnapshot); } catch {}
       try { socket.off('graph-update', onGraphUpdate); } catch {}
+      try { socket.off('ws-activity', onWsActivity); } catch {}
       try { socket.off('log', onArbLog); } catch {}
     };
   }, [socket, paused]);

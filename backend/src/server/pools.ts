@@ -939,6 +939,8 @@ export function startRaydiumRefreshLoop(): void {
 
         wsUnsubscribe = () => { try { for (const id of subs) conn.removeAccountChangeListener(id as any).catch(() => {}); } catch {} };
         logger.info('pools.ws subscriptions active');
+        // Immediately emit a ws-activity snapshot so UI reflects attached counts without waiting for first aggregate tick
+        try { emit('ws-activity', { healthy: wsHealthy, lastEventMs: lastWsEventMs, orca: { attached: attachedOrcaPools, events: 0 }, raydium: { attached: attachedRaydiumPools, events: 0 }, meteora: { attached: attachedMeteoraPools, events: 0 } }); } catch {}
 
         // Health monitor: if no WS events for timeoutMs, trigger periodic refresh as fallback
         const timeoutMs = Math.max(5000, Number((CONFIG.system as any)?.wsHealthTimeoutMs || 15000));
@@ -963,6 +965,8 @@ export function startRaydiumRefreshLoop(): void {
             const snapshot = { raydium: wsCounts.raydium, orca: wsCounts.orca, meteora: wsCounts.meteora } as any;
             wsCounts.raydium = 0; wsCounts.orca = 0; wsCounts.meteora = 0;
             logger.info('pools.ws aggregate', { events: snapshot, healthy: wsHealthy, lastEventMs: lastWsEventMs });
+            // Emit a dedicated ws-activity event for UI regardless of log filtering
+            try { emit('ws-activity', { healthy: wsHealthy, lastEventMs: lastWsEventMs, orca: { attached: attachedOrcaPools, events: snapshot.orca || 0 }, raydium: { attached: attachedRaydiumPools, events: snapshot.raydium || 0 }, meteora: { attached: attachedMeteoraPools, events: snapshot.meteora || 0 } }); } catch {}
             try { emit('log', { level: 'debug', message: `pools:ws aggregate ray=${snapshot.raydium} orca=${snapshot.orca}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
           } catch {}
         }, aggPeriod);
