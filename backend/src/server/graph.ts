@@ -711,12 +711,12 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         }
         // Calibrate price; for DLMM we only have price_a_per_b, no sqrt
         let priceMet: number | undefined = calibratePrice(p.mint_a, p.mint_b, (p as any).price_a_per_b);
-        // Forward edge must carry A per 1 B; reverse is 1/price
+        // Forward edge must carry A per 1 B; reverse recalibrated separately so it carries B per 1 A
         const pid = String((p as any)?.id || undefined) || undefined;
         const liqParam = (p as any)?.liquidity_display ?? (usd && usd > 0 ? usd : (p as any)?.pool_liquidity_raw);
         addEdge(p.mint_a, p.mint_b, 'Meteora', p.fee_bps, liqParam, (priceMet && priceMet > 0) ? priceMet : undefined, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
         const pidRev = pid ? `${pid}-rev` : undefined;
-        const priceRev = (priceMet && priceMet > 0) ? calibratePrice(p.mint_b, p.mint_a, priceMet) : undefined;
+        const priceRev = (priceMet && priceMet > 0) ? calibratePrice(p.mint_b, p.mint_a, (1 / priceMet)) : undefined;
         addEdge(p.mint_b, p.mint_a, 'Meteora', p.fee_bps, liqParam, priceRev, usd, pidRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse');
         try {
           const eid = pid || `${p.mint_a}->${p.mint_b}-Meteora`;

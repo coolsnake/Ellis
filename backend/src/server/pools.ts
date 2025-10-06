@@ -500,7 +500,7 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         ? Math.min(amount_a_whole as number, amount_b_whole as number)
         : 0;
       const liquidity_display = (tvl_usd != null) ? tvl_usd : (liquidity_base > 0 ? liquidity_base : undefined);
-      // Price sanity: choose between incoming price and reserves-implied price, preferring closer to USD ref
+      // Price sanity: choose between incoming price and its reciprocal, and reserves-implied price (and reciprocal), preferring closer to USD ref for A per 1 B
       let price_in = Number.isFinite(price) && price > 0 ? Number(price) : 0;
       const price_res = (Number.isFinite(amount_a_whole as any) && Number.isFinite(amount_b_whole as any) && (amount_b_whole as number) > 0)
         ? ((amount_a_whole as number) / (amount_b_whole as number))
@@ -515,10 +515,11 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
           const pa = getPriceByMint(mintA)?.usdc ?? null;
           const pb = getPriceByMint(mintB)?.usdc ?? null;
           if (pa && pb && (pa as number) > 0 && (pb as number) > 0) {
-            const ref = (pa as number) / (pb as number);
+            // For A per 1 B, the USD reference is price(B)/price(A)
+            const ref = (pb as number) / (pa as number);
             const candidates: number[] = [];
-            if (price_in > 0) candidates.push(price_in);
-            if (price_res > 0) candidates.push(price_res);
+            if (price_in > 0) { candidates.push(price_in); candidates.push(1 / price_in); }
+            if (price_res > 0) { candidates.push(price_res); candidates.push(1 / price_res); }
             if (candidates.length) {
               let bestVal = candidates[0];
               let bestDev = Math.max(bestVal / ref, ref / bestVal);
