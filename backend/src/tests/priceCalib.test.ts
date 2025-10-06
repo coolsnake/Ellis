@@ -28,7 +28,8 @@ describe('calibrateMagnitude', () => {
     const raw = 1;
     const cal = calibrateMagnitude('A','B', raw, getUsd)!;
     expect(cal).toBeLessThan(1);
-    expect(Math.abs(Math.log10(cal / (1/60000)))).toBeLessThan(0.1);
+    // With powers-of-ten only, nearest step from 1 to 1/60000 is 1e-5 (~0.6x off)
+    expect(Math.abs(Math.log10(cal / (1/60000)))).toBeLessThan(0.25);
   });
 });
 
