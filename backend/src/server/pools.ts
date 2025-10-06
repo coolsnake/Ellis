@@ -175,6 +175,8 @@ async function fetchRaydiumPoolsRaw(): Promise<any> {
               page: String(page),
             });
             const url = `${baseUrl}?${qs.toString()}`;
+            const started = Date.now();
+            try { logger.info('raydium.http request', { mint, page, pageSize, cat: 'raydium' }); } catch {}
             const res = await fetchFn(url, { headers: { accept: 'application/json' } });
             if (res?.status === 429) {
               poolsMetrics.raydium.http429++;
@@ -195,6 +197,7 @@ async function fetchRaydiumPoolsRaw(): Promise<any> {
             hasNext = !!json?.data?.hasNextPage;
             page += 1;
             pagesFetched += 1;
+            try { logger.info('raydium.http page ok', { mint, page: page - 1, ms: Date.now() - started, count: arr.length, next: !!hasNext, cat: 'raydium' }); } catch {}
           } catch (e: any) {
             const msg = String(e?.message || e);
             logger.warn('raydium.http fetch failed', { error: msg, cat: 'raydium' });
@@ -1052,7 +1055,16 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
     try {
       const t0 = Date.now();
       const mode = 'api';
-      logger.info('raydium.fetch start', { mode, ttlMs, concurrency: Number(CONFIG.raydium?.sdkConcurrency || 8), cat: 'raydium' });
+      logger.info('raydium.fetch start', {
+        mode,
+        ttlMs,
+        concurrency: Number(CONFIG.raydium?.sdkConcurrency || 8),
+        uniMode: (CONFIG.system as any)?.tokenUniverseMode || 'jupiter',
+        anchorBridging: !!((CONFIG.system as any)?.enableAnchorBridging),
+        includeAnchors: (CONFIG.system as any)?.includeAnchorsInUniverse !== false,
+        canonicalizePairs: (CONFIG.system as any)?.canonicalizePairs || 'none',
+        cat: 'raydium'
+      });
         try { emit('log', { level: 'info', message: `arb:pools raydium.fetch start mode=${mode}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
 
       const raw: any = await fetchRaydiumPoolsRaw();
@@ -1188,7 +1200,13 @@ export async function getOrcaPoolsCached(force = false): Promise<PoolsPayload> {
 }
 
 export async function getOrcaPoolsNormalized(): Promise<PoolsPayload> {
-  logger.info('orca.fetch start', { mode: CONFIG.orca?.mode || 'http' });
+  logger.info('orca.fetch start', {
+    mode: CONFIG.orca?.mode || 'http',
+    uniMode: (CONFIG.system as any)?.tokenUniverseMode || 'jupiter',
+    anchorBridging: !!((CONFIG.system as any)?.enableAnchorBridging),
+    includeAnchors: (CONFIG.system as any)?.includeAnchorsInUniverse !== false,
+    canonicalizePairs: (CONFIG.system as any)?.canonicalizePairs || 'none',
+  });
   // Try configured mode, then fallbacks to maximize robustness
   const tried: string[] = [];
   const modes: string[] = [];
@@ -1277,7 +1295,7 @@ export async function getMeteoraPoolsCached(force = false): Promise<PoolsPayload
   meteoraCache.inflight = (async () => {
     try {
       const mode = 'http';
-      try { logger.info('meteora.fetch start', { mode, ttlMs, cat: 'meteora' }); } catch {}
+      try { logger.info('meteora.fetch start', { mode, ttlMs, uniMode: (CONFIG.system as any)?.tokenUniverseMode || 'jupiter', anchorBridging: !!((CONFIG.system as any)?.enableAnchorBridging), includeAnchors: (CONFIG.system as any)?.includeAnchorsInUniverse !== false, canonicalizePairs: (CONFIG.system as any)?.canonicalizePairs || 'none', cat: 'meteora' }); } catch {}
       try { emit('log', { level: 'info', message: `arb:pools meteora.fetch start mode=${mode}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
       const t0 = Date.now();
       const raw = await fetchMeteoraHttp();
