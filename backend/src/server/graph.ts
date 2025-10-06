@@ -113,30 +113,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
   if (inflight) return inflight;
   inflight = (async () => {
     try {
-      // When a forced snapshot is requested, ensure caches are warmed briefly to avoid empty graphs
-      if (force) {
-        try {
-          const { peekRaydiumPools, peekOrcaPools, peekMeteoraPools, getRaydiumPoolsNormalized, getOrcaPoolsCached, getMeteoraPoolsCached } = await import('./pools.js');
-          const hasAny = (p: any) => ((p?.amm?.length || 0) + (p?.clmm?.length || 0)) > 0;
-          let rayPeek = peekRaydiumPools();
-          let orcPeek = peekOrcaPools();
-          let metPeek = peekMeteoraPools();
-          if (!hasAny(rayPeek) || !hasAny(orcPeek) || !hasAny(metPeek)) {
-            // Perform a one-shot fetch to warm caches regardless of subscription; functions enforce their own min-force gaps
-            try { await Promise.allSettled([getRaydiumPoolsNormalized(true), getOrcaPoolsCached(true), getMeteoraPoolsCached(true)]); } catch {}
-            const deadline = Date.now() + 1000;
-            while (Date.now() < deadline) {
-              rayPeek = peekRaydiumPools();
-              orcPeek = peekOrcaPools();
-              metPeek = peekMeteoraPools();
-              if (hasAny(rayPeek) || hasAny(orcPeek) || hasAny(metPeek)) break;
-              await new Promise(r => setTimeout(r, 50));
-            }
-          }
-        } catch {}
-      }
-      // Do not trigger background fetching unless explicitly requested by refresh API
-      // Build graph from whatever is in caches right now
+      // Build graph from whatever is in caches right now; do not trigger source fetches here
       const { peekRaydiumPools, peekOrcaPools, peekMeteoraPools } = await import('./pools.js');
       const rayRaw = peekRaydiumPools();
       const orcRaw = peekOrcaPools();

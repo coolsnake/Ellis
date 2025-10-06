@@ -40,7 +40,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     orca_minClmmLiquidity: 0,
     // Meteora (DLMM)
     meteora_mode: 'http',
-    meteora_apiUrl: '',
+    meteora_apiUrl: 'https://dlmm-api.meteora.ag/pair/all_with_pagination',
     meteora_cacheTtlMs: 300000,
     meteora_maxHttpRetries: 2,
     meteora_httpBackoffMs: 500,

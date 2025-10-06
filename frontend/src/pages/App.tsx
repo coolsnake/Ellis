@@ -292,7 +292,7 @@ export const App: React.FC = () => {
       if (allowedCats && allowedCats.length && cat && !allowedCats.includes(cat)) return;
       if (evt.muted === true) return; // backend flagged as muted
       const push = (setter: React.Dispatch<React.SetStateAction<LogEvent[]>>) => setter((prev) => [evt, ...prev].slice(0, 500));
-      const isApiCat = cat === 'api' || cat === 'jupiter' || cat === 'raydium' || cat === 'orca';
+      const isApiCat = cat === 'api' || cat === 'jupiter' || cat === 'raydium' || cat === 'orca' || cat === 'meteora';
       // Categorize without duplication
       // User Log: user-facing (terminal)
       if (!isApiCat && (
@@ -312,7 +312,7 @@ export const App: React.FC = () => {
         push(setStrategyLogs);
       }
       // Arbitrage Log: arb engine activity, Raydium/Orca pool data fetchers, and opportunity details
-      if (cat === 'arb' || cat === 'opportunity' || cat === 'pools' || cat === 'raydium' || cat === 'orca' || /^arb\b|^pretrade:arb|^trade:arb|^opportunity:/i.test(msg) || /^ARB\.|^GRAPH\.|^POOLS\./i.test(code)) {
+      if (cat === 'arb' || cat === 'opportunity' || cat === 'pools' || cat === 'raydium' || cat === 'orca' || cat === 'meteora' || /^arb\b|^pretrade:arb|^trade:arb|^opportunity:/i.test(msg) || /^ARB\.|^GRAPH\.|^POOLS\./i.test(code)) {
         push(setArbLogs);
       }
       // API Log: internal/external API requests (exclude pools/arb/strategy-related fetchers)

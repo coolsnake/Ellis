@@ -589,6 +589,7 @@ export function startRaydiumRefreshLoop(): void {
     // Proceed to initial fetch and optional WS
 
   // Kick immediately once activated so data is available without waiting
+  // Kick immediately once, but respect min-force gap for subsequent calls
   try { getRaydiumPoolsNormalized(true).catch(() => {}); } catch {}
   try { getOrcaPoolsCached(true).catch(() => {}); } catch {}
   try { getMeteoraPoolsCached(true).catch(() => {}); } catch {}
@@ -1083,11 +1084,19 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
 
 export async function getOrcaPoolsCached(force = false): Promise<PoolsPayload> {
   const ttlMs = CONFIG.orca?.cacheTtlMs ?? 300_000; // 5 minutes default
+  const minForceGap = Math.max(1000, Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000));
+  (getOrcaPoolsCached as any).__lastForceAt = (getOrcaPoolsCached as any).__lastForceAt || 0;
   const now = Date.now();
   // In non-forced mode, never initiate a fetch. Only return cached data (even if stale) or empty.
   if (!force) {
     if (orcaCache.data && now - orcaCache.ts < ttlMs) return orcaCache.data;
     return orcaCache.data || { amm: [], clmm: [] };
+  }
+  // Debounce forced refreshes
+  if (force) {
+    const last = (getOrcaPoolsCached as any).__lastForceAt as number;
+    if (now - last < minForceGap && orcaCache.data) return orcaCache.data as any;
+    (getOrcaPoolsCached as any).__lastForceAt = now;
   }
   if (orcaCache.inflight) return orcaCache.inflight;
   orcaCache.inflight = (async () => {
@@ -1204,10 +1213,17 @@ export async function getOrcaPoolsNormalized(): Promise<PoolsPayload> {
 
 export async function getMeteoraPoolsCached(force = false): Promise<PoolsPayload> {
   const ttlMs = Number(((CONFIG as any)?.meteora?.cacheTtlMs) || 300_000);
+  const minForceGap = Math.max(1000, Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000));
+  (getMeteoraPoolsCached as any).__lastForceAt = (getMeteoraPoolsCached as any).__lastForceAt || 0;
   const now = Date.now();
   if (!force) {
     if (meteoraCache.data && now - meteoraCache.ts < ttlMs) return meteoraCache.data;
     return meteoraCache.data || { amm: [], clmm: [] };
+  }
+  if (force) {
+    const last = (getMeteoraPoolsCached as any).__lastForceAt as number;
+    if (now - last < minForceGap && meteoraCache.data) return meteoraCache.data as any;
+    (getMeteoraPoolsCached as any).__lastForceAt = now;
   }
   if (meteoraCache.inflight) return meteoraCache.inflight;
   meteoraCache.inflight = (async () => {

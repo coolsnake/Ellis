@@ -239,7 +239,7 @@ export const CONFIG = {
   // Meteora configuration (DLMM HTTP-first)
   meteora: {
     mode: (process.env.METEORA_MODE as any) || 'http', // 'http' | 'sdk'
-    apiUrl: process.env.METEORA_API_URL || 'https://dlmm-api.meteora.ag/v1/pairs',
+    apiUrl: process.env.METEORA_API_URL || 'https://dlmm-api.meteora.ag/pair/all_with_pagination',
     // Optional DLMM program id for websocket subscriptions
     programId: process.env.METEORA_PROGRAM_ID,
     pageSize: Number(process.env.METEORA_HTTP_PAGE_SIZE || 200),
