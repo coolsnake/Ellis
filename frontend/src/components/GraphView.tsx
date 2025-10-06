@@ -32,7 +32,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 	const [layoutName, setLayoutName] = useState<'fcose' | 'cose' | 'grid' | 'circle'>('circle');
-	const [filterDex, setFilterDex] = useState<{ Raydium: boolean; Orca: boolean }>({ Raydium: true, Orca: true });
+	const [filterDex, setFilterDex] = useState<{ Raydium: boolean; Orca: boolean; Meteora: boolean }>({ Raydium: true, Orca: true, Meteora: true });
 	const [filterKind, setFilterKind] = useState<{ AMM: boolean; CLMM: boolean }>({ AMM: true, CLMM: true });
   const laidOutRef = useRef(false);
 	const forceLayoutRef = useRef(false);
@@ -59,6 +59,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 		},
 		{ selector: 'edge[dex = "Raydium"]', style: { 'line-color': '#22c55e' } },
 		{ selector: 'edge[dex = "Orca"]', style: { 'line-color': '#f59e0b' } },
+		{ selector: 'edge[dex = "Meteora"]', style: { 'line-color': '#06b6d4' } },
 		// Hide original edges when a combined edge is rendered
 		{ selector: 'edge[hiddenEdge = 1]', style: { 'display': 'none' } },
 		// Slightly emphasize combined edges
@@ -68,9 +69,10 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 	]), []);
 
 	const toElements = (snap: GraphSnapshot): ElementDefinition[] => {
-    const hideDex = new Set<string>();
-    if (!filterDex.Raydium) hideDex.add('Raydium');
-    if (!filterDex.Orca) hideDex.add('Orca');
+		const hideDex = new Set<string>();
+		if (!filterDex.Raydium) hideDex.add('Raydium');
+		if (!filterDex.Orca) hideDex.add('Orca');
+		if (!filterDex.Meteora) hideDex.add('Meteora');
 		const hideKind = new Set<string>();
 		if (!filterKind.AMM) hideKind.add('amm');
 		if (!filterKind.CLMM) hideKind.add('clmm');
@@ -96,15 +98,17 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 
 		const edges: ElementDefinition[] = [];
 		for (const [, arr] of byPair) {
-			const ray = arr.filter((e) => (e.data as any).dex === 'Raydium');
-			const orc = arr.filter((e) => (e.data as any).dex === 'Orca');
-			const bothDexVisible = !hideDex.has('Raydium') && !hideDex.has('Orca');
-			if (bothDexVisible && ray.length && orc.length) {
-				const anyEd = arr[0];
+			// Consider only edges whose DEX is not hidden by filter
+			const visible = arr.filter((e) => !hideDex.has(String((e.data as any).dex)));
+			// Count distinct DEX among visible edges
+			const dexSet = new Set<string>();
+			for (const ed of visible) { dexSet.add(String((ed.data as any).dex)); }
+			if (dexSet.size >= 2) {
+				const anyEd = visible[0];
 				const source = String((anyEd.data as any).source);
 				const target = String((anyEd.data as any).target);
-				const combinedOriginalIds = [...ray, ...orc].map((ed) => String((ed.data as any).id));
-				const combinedEdgesDetails = [...ray, ...orc].map((ed) => ({
+				const combinedOriginalIds = visible.map((ed) => String((ed.data as any).id));
+				const combinedEdgesDetails = visible.map((ed) => ({
 					dex: String((ed.data as any).dex),
 					pool_id: (ed.data as any).pool_id,
 					fee_bps: (ed.data as any).fee_bps,
@@ -117,14 +121,14 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 				}));
 				edges.push({ data: { id: `combined:${source}->${target}`, source, target, dex: 'Combined', combined: 1, combinedOriginalIds, combinedEdgesDetails, cpd: 0 } } as ElementDefinition);
 				// Keep originals but mark hidden, so they can still be referenced by id for highlighting
-				for (const ed of arr) {
+				for (const ed of visible) {
 					(ed.data as any).hiddenEdge = 1;
 					edges.push(ed);
 				}
 			} else {
 				// Render only those edges whose DEX is enabled
-				for (const ed of arr) {
-					if (!hideDex.has(String((ed.data as any).dex))) edges.push(ed);
+				for (const ed of visible) {
+					edges.push(ed);
 				}
 			}
 		}
@@ -172,7 +176,6 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 	// Ensure combined edge exists (or is removed) for a directed pair, and originals are hidden/shown appropriately
 	const ensureCombinedForPair = (cy: cytoscape.Core, a: string, b: string) => {
 		try {
-			const bothDexVisible = !!(filterDex.Raydium && filterDex.Orca);
 			const originals = cy.$(`edge[source = "${a}"][target = "${b}"]:not([combined = 1])`);
 			if (!originals || originals.length === 0) {
 				// Nothing to do; remove any stale combined
@@ -181,15 +184,19 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 				if (existing && existing.length) { try { existing.remove(); } catch {} }
 				return;
 			}
-			const ray = originals.filter('[dex = "Raydium"]');
-			const orc = originals.filter('[dex = "Orca"]');
-			const hasRay = ray && ray.length > 0;
-			const hasOrc = orc && orc.length > 0;
+			// Filter by currently visible DEX
+			let vis = originals;
+			if (!filterDex.Raydium) vis = vis.not('[dex = "Raydium"]');
+			if (!filterDex.Orca) vis = vis.not('[dex = "Orca"]');
+			if (!filterDex.Meteora) vis = vis.not('[dex = "Meteora"]');
+			// Determine number of distinct DEX among visible originals
+			const dexSet = new Set<string>();
+			vis.forEach((e) => { try { dexSet.add(String(e.data('dex'))); } catch {} });
 			const combinedId = `combined:${a}->${b}`;
 			const existing = cy.getElementById(combinedId);
-			if (bothDexVisible && hasRay && hasOrc) {
+			if (dexSet.size >= 2) {
 				// Build combined details
-				const all = ray.union(orc);
+				const all = vis;
 				const originalIds: string[] = [];
 				const details: any[] = [];
 				all.forEach((e) => {
@@ -393,7 +400,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 		// Changing filters can drastically change geometry; request a fresh layout
 		forceLayoutRef.current = true;
 		loadSnapshot();
-	}, [filterDex.Raydium, filterDex.Orca, filterKind.AMM, filterKind.CLMM]);
+	}, [filterDex.Raydium, filterDex.Orca, filterDex.Meteora, filterKind.AMM, filterKind.CLMM]);
 
   // Listen for external refresh requests (e.g., from ArbitragePanel)
   useEffect(() => {
@@ -518,7 +525,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
       socket.off('graph-snapshot', onSnapshot);
       socket.off('graph-highlight', onHighlight);
     };
-  }, [socket, filterDex.Raydium, filterDex.Orca, layoutName]);
+	}, [socket, filterDex.Raydium, filterDex.Orca, filterDex.Meteora, layoutName]);
 
   // Initialize cy configuration when instance is available
 	const onCyReady = (cy: cytoscape.Core) => {
@@ -589,9 +596,12 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
             <label className="text-sm flex items-center gap-1">
               <input type="checkbox" checked={filterDex.Raydium} onChange={(e) => setFilterDex((p) => ({ ...p, Raydium: e.target.checked }))} /> Raydium
             </label>
-            <label className="text-sm flex items-center gap-1">
-              <input type="checkbox" checked={filterDex.Orca} onChange={(e) => setFilterDex((p) => ({ ...p, Orca: e.target.checked }))} /> Orca
-            </label>
+				<label className="text-sm flex items-center gap-1">
+					<input type="checkbox" checked={filterDex.Orca} onChange={(e) => setFilterDex((p) => ({ ...p, Orca: e.target.checked }))} /> Orca
+				</label>
+				<label className="text-sm flex items-center gap-1">
+					<input type="checkbox" checked={filterDex.Meteora} onChange={(e) => setFilterDex((p) => ({ ...p, Meteora: e.target.checked }))} /> Meteora
+				</label>
 					<label className="text-sm flex items-center gap-1">
 						<input type="checkbox" checked={filterKind.AMM} onChange={(e) => setFilterKind((p) => ({ ...p, AMM: e.target.checked }))} /> AMM
 					</label>

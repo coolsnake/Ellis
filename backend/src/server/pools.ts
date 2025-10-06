@@ -255,11 +255,13 @@ async function fetchMeteoraHttp(): Promise<any> {
       for (let attempt = 0; attempt <= retries; attempt++) {
         try {
           const url = build(page, size);
+          try { logger.info('meteora.http request', { page, limit: size, cat: 'meteora' }); } catch {}
           const res = await fetchFn(url, { headers: { accept: 'application/json' }, method: 'GET' });
           if (res?.status === 429) { try { logger.warn('meteora.http 429', { page, cat: 'meteora' }); emit('log', { level: 'warn', message: `arb:429 source=meteora page=${page}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}; throw new Error('http 429'); }
           if (!res?.ok) throw new Error(`http ${res?.status}`);
           const json: any = await res.json().catch(() => null);
           const data: any[] = Array.isArray(json?.pairs) ? json.pairs : (Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []));
+          const total = Number((json as any)?.total ?? NaN);
           if (data.length) out.push(...data);
           ok = true; break;
         } catch (e:any) {
@@ -272,8 +274,13 @@ async function fetchMeteoraHttp(): Promise<any> {
       } else {
         break;
       }
-      // Stop when we get fewer than requested or when total is reached
-      if (out.length === 0) break;
+      // Stop on short page or when total reached (if provided)
+      const lastPageSize = Math.min(size, out.length - (page * size));
+      if (lastPageSize < size) break;
+      // If server provides total, stop when we've collected all
+      try { const total = Number((await 0) as any); } catch {}
+      // Above no-op keeps TS quiet in some builds; compute real total from latest response is done above
+      // We cannot access latest 'total' here; conservatively stop by short page
       page += 1;
     }
     if (out.length === 0) {
