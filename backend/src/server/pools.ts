@@ -429,44 +429,48 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
   const r = await getRaydiumPoolsNormalized(!!force).catch(() => ({ amm: [], clmm: [] }));
   const o = await getOrcaPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
   const m = await getMeteoraPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
-  // Pair diagnostics: compare forward and reverse prices for overlapping pairs across sources
+  // Pair diagnostics: log a single SOL-USDC pool per fetcher
   try {
-    const map: Map<string, any> = new Map();
-    const add = (src: string, p: any) => {
-      if (!p) return;
-      const a = String(p.mint_a || '');
-      const b = String(p.mint_b || '');
-      if (!a || !b) return;
-      const key = `${a}|${b}`;
-      const price = Number((p as any).price_a_per_b || 0);
-      if (!(map as any).has(key)) (map as any).set(key, { a, b, bySrc: {} });
-      const ent = (map as any).get(key);
-      if (!ent.bySrc[src]) ent.bySrc[src] = [];
-      if (Number.isFinite(price) && price > 0) ent.bySrc[src].push(price);
+    const SOL = 'So11111111111111111111111111111111111111112';
+    const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+    const compute = (p: any): { forward: number | undefined; reverse: number | undefined } => {
+      try {
+        const a = String(p?.mint_a || '');
+        const b = String(p?.mint_b || '');
+        const px = Number(p?.price_a_per_b || 0);
+        if (!a || !b || !Number.isFinite(px) || px <= 0) return { forward: undefined, reverse: undefined };
+        // forward = USDC per 1 SOL
+        if (a === USDC && b === SOL) return { forward: px, reverse: 1 / px };
+        if (a === SOL && b === USDC) return { forward: 1 / px, reverse: px };
+        return { forward: undefined, reverse: undefined };
+      } catch { return { forward: undefined, reverse: undefined }; }
     };
-    for (const p of (r.amm || [])) add('raydium.amm', p);
-    for (const p of (r.clmm || [])) add('raydium.clmm', p);
-    for (const p of (o.amm || [])) add('orca.amm', p);
-    for (const p of (o.clmm || [])) add('orca.clmm', p);
-    for (const p of (m.amm || [])) add('meteora.amm', p);
-    for (const p of (m.clmm || [])) add('meteora.clmm', p);
-    const samples: any[] = [];
-    for (const [k, v] of map.entries()) {
-      const sources = Object.keys(v.bySrc || {});
-      if (sources.length < 2) continue; // require overlap
-      const fwd: Record<string, number> = {};
-      const rev: Record<string, number> = {};
-      for (const s of sources) {
-        const arr = v.bySrc[s] as number[];
-        if (!arr || !arr.length) continue;
-        const p = arr[0];
-        fwd[s] = p;
-        rev[s] = p > 0 ? (1 / p) : 0;
+    const pickOne = (pools: PoolsPayload): any => {
+      for (const p of (pools?.clmm || [])) {
+        const a = String(p?.mint_a || ''), b = String(p?.mint_b || '');
+        if ((a === SOL && b === USDC) || (a === USDC && b === SOL)) return p;
       }
-      samples.push({ pair: k, fwd, rev });
-      if (samples.length >= 5) break;
+      for (const p of (pools?.amm || [])) {
+        const a = String(p?.mint_a || ''), b = String(p?.mint_b || '');
+        if ((a === SOL && b === USDC) || (a === USDC && b === SOL)) return p;
+      }
+      return null;
+    };
+    const rayPick = pickOne(r);
+    if (rayPick) {
+      const { forward, reverse } = compute(rayPick);
+      try { logger.info('pools.pair_sol_usdc', { source: 'raydium', id: rayPick.id, kind: rayPick.pool_kind || (rayPick.sqrt_price_x64 != null ? 'clmm' : 'amm'), forward_usdc_per_sol: forward, reverse_sol_per_usdc: reverse }); } catch {}
     }
-    if (samples.length) { try { logger.info('pools.pair_diagnostics', { samples }); } catch {} }
+    const orcPick = pickOne(o);
+    if (orcPick) {
+      const { forward, reverse } = compute(orcPick);
+      try { logger.info('pools.pair_sol_usdc', { source: 'orca', id: orcPick.id, kind: orcPick.pool_kind || (orcPick.sqrt_price_x64 != null ? 'clmm' : 'amm'), forward_usdc_per_sol: forward, reverse_sol_per_usdc: reverse }); } catch {}
+    }
+    const metPick = pickOne(m);
+    if (metPick) {
+      const { forward, reverse } = compute(metPick);
+      try { logger.info('pools.pair_sol_usdc', { source: 'meteora', id: metPick.id, kind: metPick.pool_kind || (metPick.sqrt_price_x64 != null ? 'clmm' : 'amm'), forward_usdc_per_sol: forward, reverse_sol_per_usdc: reverse }); } catch {}
+    }
   } catch {}
   if (subscribe) {
     try {
