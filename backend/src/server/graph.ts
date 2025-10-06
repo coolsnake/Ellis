@@ -260,6 +260,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       // Helper for TVL using USD prices if available
       const { getPriceByMint } = await import('./priceStore.js');
       const calibratePrice = (mintA: string, mintB: string, raw: number | undefined): number | undefined => {
+        // Preserve orientation: return A per 1 B. Only adjust magnitude by powers of 10.
         const price = Number(raw);
         if (!Number.isFinite(price) || price <= 0) return undefined;
         try {
@@ -267,8 +268,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const pb = getPriceByMint(mintB)?.usdc ?? null;
           if (!(pa && pb) || !(pa > 0) || !(pb > 0)) return price;
           const ref = (pa as number) / (pb as number);
-          const inv = 1 / price;
-          const cands: number[] = [price, inv, price * 10, price / 10, price * 100, price / 100, inv * 10, inv / 10, inv * 100, inv / 100].filter((x) => Number.isFinite(x) && x > 0) as number[];
+          const cands: number[] = [price, price * 10, price / 10, price * 100, price / 100].filter((x) => Number.isFinite(x) && x > 0) as number[];
           let best = price; let bestDev = Number.POSITIVE_INFINITY;
           for (const c of cands) {
             const dev = Math.max(c / ref, ref / c);
@@ -554,11 +554,10 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             }
           }
         } catch {}
-        // Triangle-based magnitude correction disabled to avoid rescaling under target-per-source edge rates
-        // Edge rate should be target per 1 source; incoming/calibrated price is A per 1 B
-        addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaAmm, (priceAmmOrca && priceAmmOrca > 0) ? (1 / priceAmmOrca) : undefined, undefined, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
+        // Forward edge must carry A per 1 B; reverse is 1/price
+        addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaAmm, (priceAmmOrca && priceAmmOrca > 0) ? priceAmmOrca : undefined, undefined, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
         const pidAmmOrcaRev = pid ? `${pid}-rev` : undefined;
-        addEdge(p.mint_b, p.mint_a, 'Orca', p.fee_bps, liqParamOrcaAmm, (priceAmmOrca && priceAmmOrca > 0) ? priceAmmOrca : undefined, undefined, pidAmmOrcaRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse');
+        addEdge(p.mint_b, p.mint_a, 'Orca', p.fee_bps, liqParamOrcaAmm, (priceAmmOrca && priceAmmOrca > 0) ? (1 / priceAmmOrca) : undefined, undefined, pidAmmOrcaRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse');
       }
       for (const p of (orcValid.clmm || [])) {
         // amounts from HTTP (raw token units) need decimals to convert to whole tokens for USD TVL
@@ -608,12 +607,10 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             }
           }
         } catch {}
-        // Triangle-based magnitude correction disabled to avoid rescaling under target-per-source edge rates
-        // Orca CLMM: orientation rule as above
-        // Edge rate should be target per 1 source; derived price is A per 1 B
-        addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaClmm, (priceClmmOrca && priceClmmOrca > 0) ? (1 / priceClmmOrca) : undefined, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
+        // Forward edge must carry A per 1 B; reverse is 1/price
+        addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaClmm, (priceClmmOrca && priceClmmOrca > 0) ? priceClmmOrca : undefined, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
         const pidClmmOrcaRev = pid ? `${pid}-rev` : undefined;
-        addEdge(p.mint_b, p.mint_a, 'Orca', p.fee_bps, liqParamOrcaClmm, (priceClmmOrca && priceClmmOrca > 0) ? priceClmmOrca : undefined, usd, pidClmmOrcaRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse');
+        addEdge(p.mint_b, p.mint_a, 'Orca', p.fee_bps, liqParamOrcaClmm, (priceClmmOrca && priceClmmOrca > 0) ? (1 / priceClmmOrca) : undefined, usd, pidClmmOrcaRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse');
         try {
           const eid = pid || `${p.mint_a}->${p.mint_b}-Orca`;
           const rid = pid ? `${pid}-rev` : `${p.mint_b}->${p.mint_a}-Orca`;
@@ -636,12 +633,12 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         }
         // Calibrate price; for DLMM we only have price_a_per_b, no sqrt
         let priceMet: number | undefined = calibratePrice(p.mint_a, p.mint_b, (p as any).price_a_per_b);
-        // Orientation rule as with Orca: edges store target per 1 source, so invert
+        // Forward edge must carry A per 1 B; reverse is 1/price
         const pid = String((p as any)?.id || undefined) || undefined;
         const liqParam = (p as any)?.liquidity_display ?? (usd && usd > 0 ? usd : (p as any)?.pool_liquidity_raw);
-        addEdge(p.mint_a, p.mint_b, 'Meteora', p.fee_bps, liqParam, (priceMet && priceMet > 0) ? (1 / priceMet) : undefined, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
+        addEdge(p.mint_a, p.mint_b, 'Meteora', p.fee_bps, liqParam, (priceMet && priceMet > 0) ? priceMet : undefined, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
         const pidRev = pid ? `${pid}-rev` : undefined;
-        addEdge(p.mint_b, p.mint_a, 'Meteora', p.fee_bps, liqParam, (priceMet && priceMet > 0) ? priceMet : undefined, usd, pidRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse');
+        addEdge(p.mint_b, p.mint_a, 'Meteora', p.fee_bps, liqParam, (priceMet && priceMet > 0) ? (1 / priceMet) : undefined, usd, pidRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse');
         try {
           const eid = pid || `${p.mint_a}->${p.mint_b}-Meteora`;
           const rid = pid ? `${pid}-rev` : `${p.mint_b}->${p.mint_a}-Meteora`;
