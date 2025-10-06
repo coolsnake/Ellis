@@ -253,7 +253,9 @@ async function fetchMeteoraHttp(): Promise<any> {
     const fetchFn: any = (globalThis as any).fetch || fetch;
     const out: any[] = [];
     let page = 0;
-    for (let i = 0; i < maxPages; i++) {
+    // Treat maxPages=0 (or <0) as unlimited; stop when page is short
+    const pageLimit = (maxPages && maxPages > 0) ? maxPages : Number.POSITIVE_INFINITY;
+    for (let i = 0; i < pageLimit; i++) {
       let ok = false;
       for (let attempt = 0; attempt <= retries; attempt++) {
         try {
@@ -277,7 +279,7 @@ async function fetchMeteoraHttp(): Promise<any> {
       } else {
         break;
       }
-      // Stop on short page or when total reached (if provided)
+      // Stop on short page
       const lastPageSize = Math.min(size, out.length - (page * size));
       if (lastPageSize < size) break;
       // If server provides total, stop when we've collected all
@@ -1232,22 +1234,7 @@ export async function getOrcaPoolsNormalized(): Promise<PoolsPayload> {
           }
           norm = scoped as any;
         } catch {}
-        // Apply Orca-specific TVL filters similar to Raydium
-        try {
-          const globalAmm = Number(((CONFIG.system as any)?.minAmmLiqBase) ?? 0);
-          const globalClmm = Number(((CONFIG.system as any)?.minClmmLiquidity) ?? 0);
-          const minAmmUsd = Math.max(globalAmm, Number((CONFIG.orca as any)?.minAmmLiqBase || 0));
-          const minClmmUsd = Math.max(globalClmm, Number((CONFIG.orca as any)?.minClmmLiquidity || 0));
-          if (minAmmUsd > 0 || minClmmUsd > 0) {
-            const beforeAmm = norm.amm.length, beforeClmm = norm.clmm.length;
-            const amm = minAmmUsd > 0 ? norm.amm.filter(p => Number((p as any).tvl_usd || 0) >= minAmmUsd) : norm.amm;
-            const clmm = minClmmUsd > 0 ? norm.clmm.filter(p => Number((p as any).tvl_usd || 0) >= minClmmUsd) : norm.clmm;
-            const droppedAmm = beforeAmm - amm.length;
-            const droppedClmm = beforeClmm - clmm.length;
-            if (droppedAmm > 0 || droppedClmm > 0) { logger.info('orca.filter tvl', { minAmmUsd, minClmmUsd, beforeAmm, beforeClmm, afterAmm: amm.length, afterClmm: clmm.length }); }
-            norm = { amm, clmm };
-          }
-        } catch {}
+        // Defer TVL filtering to graph-level to avoid early pruning across sources
   logger.info('orca.http normalized', { clmm: norm.clmm.length, canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
         return norm;
       }
@@ -1311,16 +1298,7 @@ export async function getMeteoraPoolsCached(force = false): Promise<PoolsPayload
         norm = { amm: [], clmm: scoped.clmm } as any;
       } catch {}
        // TVL filter (apply global thresholds on top of per-source)
-      try {
-         const globalClmm = Number(((CONFIG.system as any)?.minClmmLiquidity) ?? 0);
-         const minClmmUsd = Math.max(globalClmm, Number(((CONFIG as any)?.meteora?.minClmmLiquidity) || 0));
-        if (minClmmUsd > 0) {
-          const before = norm.clmm.length;
-          const clmm = norm.clmm.filter(p => Number((p as any).tvl_usd || 0) >= minClmmUsd);
-          if (clmm.length !== before) { logger.info('meteora.filter tvl', { minClmmUsd, before, after: clmm.length }); }
-          norm = { amm: [], clmm } as any;
-        }
-      } catch {}
+      // Defer TVL filtering to graph-level to avoid early pruning across sources
       const prev = meteoraCache.data;
       meteoraCache.data = norm; meteoraCache.ts = Date.now();
       poolsMetrics.meteora.fetches += 1;
@@ -1390,62 +1368,94 @@ async function fetchOrcaHttp(): Promise<any> {
   }
 
   const merged: any[] = [];
-  // On first request, some APIs expect explicit next/previous empty params to enable cursoring
-  let nextCursor: string | null = '';
-  let page = 0;
-  let lastErr: any;
-
-  while (page < maxPages) {
-    page += 1;
-    let ok = false;
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      const started = Date.now();
-      try {
-        const url = buildUrl(nextCursor !== null ? (nextCursor ? { next: nextCursor } : { next: '', previous: '' }) : {});
-        try { logger.info('orca.http request', { page, params: { ...params, next: nextCursor || undefined } }); } catch {}
-        // eslint-disable-next-line no-undef
-        const res = await fetch(url);
-        if (res.status === 429) {
-          try { emit('log', { level: 'warn', message: `arb:429 source=orca kind=http surface=page page=${page}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
-          try { logger.warn('orca.http 429 page', { page }); } catch {}
-          throw new Error('http 429');
-        }
-        const ms = Date.now() - started;
-        if (!res.ok) throw new Error(`http ${res.status}`);
-        const json: any = await res.json();
-        const data: any[] = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []);
-        if (page === 1) { try { logger.info('orca.http meta', { meta: json?.meta }); } catch {} }
-        const count = data.length;
-        const metaNext = (json as any)?.meta?.next ?? (json as any)?.meta?.cursor?.next;
-        logger.info('orca.http page ok', { page, ms, count, next: !!metaNext });
-        if (count > 0) merged.push(...data);
-        // Normalize next cursor; keep '' on first hop if server requires explicit empty next
-        const rawMeta = (json as any)?.meta;
-        if (rawMeta && (Object.prototype.hasOwnProperty.call(rawMeta, 'next') || (rawMeta as any)?.cursor)) {
-          const nxt = (rawMeta as any)?.next ?? (rawMeta as any)?.cursor?.next;
-          nextCursor = (nxt === null || nxt === undefined) ? null : String(nxt);
-        } else {
-          nextCursor = null;
-        }
-        ok = true;
-        break;
-      } catch (e: any) {
-        lastErr = e;
-        const msg = String(e?.message || e);
-        logger.warn('orca.http page failed', { page, attempt: attempt + 1, error: msg });
-        // On first failure due to potential size limits, try a reduced size once
-        if (attempt === 0 && params.size) {
-          const original = params.size;
-          const reduced = String(Math.max(50, Math.floor(Number(original) / 2)));
-          params.size = reduced;
-          try { logger.warn('orca.http reducing size due to failure', { from: original, to: reduced }); } catch {}
-        }
-        if (attempt < retries) await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
-      }
+  const seenIds = new Set<string>();
+  const pushDedup = (arr: any[]) => {
+    for (const it of (arr || [])) {
+      const id = String(it?.address || it?.id || '');
+      if (!id) { merged.push(it); continue; }
+      if (!seenIds.has(id)) { seenIds.add(id); merged.push(it); }
     }
-    if (!ok) break;
-    if (!nextCursor) break; // no more pages
+  };
+  const runPaged = async (): Promise<void> => {
+    let nextCursor: string | null = '';
+    let page = 0;
+    let lastErr: any;
+    const pageLimit = (maxPages && maxPages > 0) ? maxPages : Number.POSITIVE_INFINITY;
+    while (page < pageLimit) {
+      page += 1;
+      let ok = false;
+      for (let attempt = 0; attempt <= retries; attempt++) {
+        const started = Date.now();
+        try {
+          const url = buildUrl(nextCursor !== null ? (nextCursor ? { next: nextCursor } : { next: '', previous: '' }) : {});
+          try { logger.info('orca.http request', { page, params: { ...params, next: nextCursor || undefined } }); } catch {}
+          // eslint-disable-next-line no-undef
+          const res = await fetch(url);
+          if (res.status === 429) {
+            try { emit('log', { level: 'warn', message: `arb:429 source=orca kind=http surface=page page=${page}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+            try { logger.warn('orca.http 429 page', { page }); } catch {}
+            throw new Error('http 429');
+          }
+          const ms = Date.now() - started;
+          if (!res.ok) throw new Error(`http ${res.status}`);
+          const json: any = await res.json();
+          const data: any[] = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []);
+          if (page === 1) { try { logger.info('orca.http meta', { meta: json?.meta }); } catch {} }
+          const count = data.length;
+          const metaNext = (json as any)?.meta?.next ?? (json as any)?.meta?.cursor?.next;
+          logger.info('orca.http page ok', { page, ms, count, next: !!metaNext });
+          if (count > 0) pushDedup(data);
+          const rawMeta = (json as any)?.meta;
+          if (rawMeta && (Object.prototype.hasOwnProperty.call(rawMeta, 'next') || (rawMeta as any)?.cursor)) {
+            const nxt = (rawMeta as any)?.next ?? (rawMeta as any)?.cursor?.next;
+            nextCursor = (nxt === null || nxt === undefined) ? null : String(nxt);
+          } else {
+            nextCursor = null;
+          }
+          ok = true;
+          break;
+        } catch (e: any) {
+          lastErr = e;
+          const msg = String(e?.message || e);
+          logger.warn('orca.http page failed', { page, attempt: attempt + 1, error: msg });
+          if (attempt === 0 && params.size) {
+            const original = params.size;
+            const reduced = String(Math.max(50, Math.floor(Number(original) / 2)));
+            params.size = reduced;
+            try { logger.warn('orca.http reducing size due to failure', { from: original, to: reduced }); } catch {}
+          }
+          if (attempt < retries) await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
+        }
+      }
+      if (!ok) break;
+      if (!nextCursor) break; // no more pages
+    }
+  };
+
+  const originalTokenParam = params.token;
+  const pivotMints = ['EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', 'So11111111111111111111111111111111111111112'];
+  for (const pivot of pivotMints) {
+    params.token = pivot;
+    const before = merged.length;
+    try { logger.info('orca.http pivot pass', { pivot, size: params.size, maxPages }); } catch {}
+    await runPaged();
+    try { logger.info('orca.http pivot added', { pivot, added: merged.length - before, total: merged.length }); } catch {}
   }
+  if (originalTokenParam && !pivotMints.includes(String(originalTokenParam))) {
+    params.token = String(originalTokenParam);
+    const before = merged.length;
+    try { logger.info('orca.http custom-token pass', { token: params.token, size: params.size, maxPages }); } catch {}
+    await runPaged();
+    try { logger.info('orca.http custom-token added', { token: params.token, added: merged.length - before, total: merged.length }); } catch {}
+  }
+  if (merged.length === 0) {
+    params.token = undefined as any;
+    const before = merged.length;
+    try { logger.info('orca.http generic pass', { size: params.size, maxPages }); } catch {}
+    await runPaged();
+    try { logger.info('orca.http generic added', { added: merged.length - before, total: merged.length }); } catch {}
+  }
+  try { logger.info('orca.http merged', { total: merged.length }); } catch {}
 
   if (merged.length === 0) {
     // fallback single fetch without cursor params
@@ -1534,6 +1544,9 @@ async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
     // Initialize decimals early so symbol-based resolution can update them
     let decA = Number((tokenA?.decimals ?? it?.decimalsA));
     let decB = Number((tokenB?.decimals ?? it?.decimalsB));
+    // If decimals missing but mints known, try Jupiter map
+    if (!Number.isFinite(decA) && jupMap[mint_a]?.decimals != null) decA = Number(jupMap[mint_a].decimals);
+    if (!Number.isFinite(decB) && jupMap[mint_b]?.decimals != null) decB = Number(jupMap[mint_b].decimals);
     // If mints missing, best-effort resolve via symbols using Jupiter token API/cache
     if (!mint_a && resolveMintFn && typeof tokenA?.symbol === 'string' && tokenA.symbol.trim()) {
       const sym = tokenA.symbol.trim();

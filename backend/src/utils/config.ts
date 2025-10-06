@@ -34,7 +34,7 @@ export const CONFIG = {
     mode: (process.env.ORCA_MODE as any) || 'http', // 'http' | 'v4' | 'legacy'
     apiUrl: process.env.ORCA_API_URL || 'https://api.orca.so/v2/solana/pools',
     pageSize: Number(process.env.ORCA_HTTP_PAGE_SIZE || 200),
-    maxPages: Number(process.env.ORCA_HTTP_MAX_PAGES || 3),
+    maxPages: Number(process.env.ORCA_HTTP_MAX_PAGES || 10),
     programId: process.env.ORCA_WHIRLPOOLS_PROGRAM_ID || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc',
     configPubkey: process.env.ORCA_WHIRLPOOLS_CONFIG || '7cSHePZUPCXKmgkkCm1cW8XkyRjB6rQAtv6vZ9VJ4N8S',
     cacheTtlMs: Number(process.env.ORCA_CACHE_TTL_MS || 60_000),
@@ -87,7 +87,7 @@ export const CONFIG = {
     // Route-level scoping (disable to avoid double-scoping if sources already scoped)
     routeLevelScoping: (process.env.ROUTE_LEVEL_SCOPING || 'false') === 'true',
     // Whether to allow anchor-bridging when scoping (include pools if either side is an anchor mint)
-    enableAnchorBridging: (process.env.ENABLE_ANCHOR_BRIDGING || 'false') === 'true',
+    enableAnchorBridging: (process.env.ENABLE_ANCHOR_BRIDGING || 'true') !== 'false',
     // Optional canonicalization of pair orientation for normalized outputs: 'none' | 'lex'
     canonicalizePairs: (process.env.CANONICALIZE_PAIRS as any) || 'lex',
     // System-wide TVL/liquidity thresholds (applied in addition to per-source thresholds)
@@ -247,7 +247,7 @@ export const CONFIG = {
     // Optional DLMM program id for websocket subscriptions
     programId: process.env.METEORA_PROGRAM_ID,
     pageSize: Number(process.env.METEORA_HTTP_PAGE_SIZE || 200),
-    maxPages: Number(process.env.METEORA_HTTP_MAX_PAGES || 3),
+    maxPages: Number(process.env.METEORA_HTTP_MAX_PAGES || 10),
     cacheTtlMs: Number(process.env.METEORA_CACHE_TTL_MS || 60_000),
     maxHttpRetries: Number(process.env.METEORA_HTTP_MAX_RETRIES || 2),
     httpBackoffMs: Number(process.env.METEORA_HTTP_BACKOFF_MS || 500),
