@@ -141,6 +141,51 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           met = (upstreamM > 0 && scopedM === 0) ? metRaw : mScoped as any;
         } catch {}
       }
+      // Apply global TVL/liquidity thresholds after scoping, before graph build
+      try {
+        const minAmm = Math.max(0, Number(((CONFIG.system as any)?.minAmmLiqBase) ?? 0));
+        const minClmm = Math.max(0, Number(((CONFIG.system as any)?.minClmmLiquidity) ?? 0));
+        if (minAmm > 0 || minClmm > 0) {
+          const valAmm = (p: any) => {
+            const tvl = Number((p as any)?.tvl_usd ?? 0);
+            if (Number.isFinite(tvl) && tvl > 0) return tvl;
+            const disp = Number((p as any)?.liquidity_display ?? 0);
+            if (Number.isFinite(disp) && disp > 0) return disp;
+            const base = Number((p as any)?.liquidity_base ?? 0);
+            return Number.isFinite(base) && base > 0 ? base : 0;
+          };
+          const valClmm = (p: any) => {
+            const tvl = Number((p as any)?.tvl_usd ?? 0);
+            if (Number.isFinite(tvl) && tvl > 0) return tvl;
+            const disp = Number((p as any)?.liquidity_display ?? 0);
+            if (Number.isFinite(disp) && disp > 0) return disp;
+            const liq = Number((p as any)?.liquidity ?? 0);
+            if (Number.isFinite(liq) && liq > 0) return liq;
+            const raw = Number((p as any)?.pool_liquidity_raw ?? 0);
+            return Number.isFinite(raw) && raw > 0 ? raw : 0;
+          };
+          const filt = (norm: { amm: any[]; clmm: any[] }) => ({
+            amm: minAmm > 0 ? (norm.amm || []).filter((p: any) => valAmm(p) >= minAmm) : (norm.amm || []),
+            clmm: minClmm > 0 ? (norm.clmm || []).filter((p: any) => valClmm(p) >= minClmm) : (norm.clmm || []),
+          });
+          const before = {
+            ray: { a: ray.amm?.length || 0, c: ray.clmm?.length || 0 },
+            orc: { a: orc.amm?.length || 0, c: orc.clmm?.length || 0 },
+            met: { a: met.amm?.length || 0, c: met.clmm?.length || 0 },
+          };
+          ray = filt(ray) as any;
+          orc = filt(orc) as any;
+          met = filt(met) as any;
+          const after = {
+            ray: { a: ray.amm?.length || 0, c: ray.clmm?.length || 0 },
+            orc: { a: orc.amm?.length || 0, c: orc.clmm?.length || 0 },
+            met: { a: met.amm?.length || 0, c: met.clmm?.length || 0 },
+          };
+          if (before.ray.a !== after.ray.a || before.ray.c !== after.ray.c || before.orc.a !== after.orc.a || before.orc.c !== after.orc.c || before.met.c !== after.met.c) {
+            try { logger.info('graph.filter tvl', { minAmm, minClmm, before, after }); } catch {}
+          }
+        }
+      } catch {}
       // Optional DEX overlap filter (retain pairs present on at least N sources)
       try {
         const minOverlap = Math.max(1, Number(((CONFIG.system as any)?.minDexOverlap) || 1));
@@ -757,6 +802,20 @@ export function startGraphStream(io: SocketIOServer): void {
   const period = 30_000;
   const tick = async () => {
     try {
+      // Gate initial snapshot until pools are fetched and normalized at least once
+      if (!last) {
+        try {
+          const pools = await import('./pools.js');
+          const ray = (pools as any).peekRaydiumPools?.() || { amm: [], clmm: [] };
+          const orc = (pools as any).peekOrcaPools?.() || { amm: [], clmm: [] };
+          const met = (pools as any).peekMeteoraPools?.() || { amm: [], clmm: [] };
+          const total = (ray.amm.length + ray.clmm.length + orc.amm.length + orc.clmm.length + met.amm.length + met.clmm.length);
+          if (total === 0) {
+            try { logger.info('graph.initial gate: refreshing all sources'); } catch {}
+            try { await (pools as any).refreshAllSources?.(true, false); } catch {}
+          }
+        } catch {}
+      }
       const snap = await getGraphSnapshot(true);
       if (!last) {
         io.emit('graph-snapshot', snap);

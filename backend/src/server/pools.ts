@@ -685,6 +685,20 @@ export function startRaydiumRefreshLoop(): void {
         // Debounce frequent program change bursts to at most one refresh per source per min gap
         const minGap = Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000);
         let lastRay = 0; let lastOrc = 0;
+        let meteoraTargets = new Set<string>();
+        try {
+          const gmod: any = await import('./graph.js');
+          const snap = await gmod.getGraphSnapshot(false);
+          const mset = new Set<string>();
+          for (const e of (snap?.edges || [])) {
+            const pid = String((e as any)?.pool_id || '');
+            if (!pid) continue;
+            const base = pid.replace(/-rev$/, '');
+            if ((e as any)?.dex === 'Meteora') mset.add(base);
+          }
+          meteoraTargets = mset;
+        } catch {}
+
         const handle = async (pk: any, info: any) => {
           try {
             lastWsEventMs = Date.now();
@@ -695,9 +709,11 @@ export function startRaydiumRefreshLoop(): void {
             const ownerRayClmm = rayClmm.toBase58();
             const ownerOrca = orcaProg.toBase58();
             const ownerMeteora = String((CONFIG as any)?.meteora?.programId || '').trim();
+            const pk58 = toB58Any(pk);
+            const isMeteoraTarget = meteoraTargets.has(pk58);
             try {
               const shortPk = pk ? `${toB58Any(pk).slice(0,6)}…` : '';
-              const src = (owner === ownerRayAmm || owner === ownerRayClmm) ? 'raydium' : (owner === ownerOrca ? 'orca' : (ownerMeteora && owner === ownerMeteora ? 'meteora' : 'unknown'));
+              const src = (owner === ownerRayAmm || owner === ownerRayClmm) ? 'raydium' : (owner === ownerOrca ? 'orca' : ((ownerMeteora && owner === ownerMeteora) || isMeteoraTarget ? 'meteora' : 'unknown'));
               logger.debug('pools.ws event', { source: src, account: shortPk, cat: 'pools' });
               // Emit raw event snapshot (truncated) for audit
               const raw = {
@@ -835,7 +851,7 @@ export function startRaydiumRefreshLoop(): void {
                 try { logger.warn('orca.ws.parse failed', { error: String(e?.message || e) }); } catch {}
               }
               // Do not fallback to HTTP refresh when user subscribed; leave updates to manual refresh
-            } else if (ownerMeteora && owner === ownerMeteora) {
+            } else if ((ownerMeteora && owner === ownerMeteora) || isMeteoraTarget) {
               try { wsCounts.meteora = (wsCounts.meteora || 0) + 1; } catch {}
               // Without on-chain parsers, fall back to a debounced full refresh for Meteora
               const minGap = Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000);
@@ -954,14 +970,28 @@ export function startRaydiumRefreshLoop(): void {
             subs.push(conn.onProgramAccountChange(rayClmm, (ch) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
           }
         } catch {}
-        // Meteora program-level subscription (DLMM) when program id configured
+        // Meteora targeted subscriptions from scoped graph edges; fallback to program-level when set
         try {
-          const meteoraProg = String((CONFIG as any)?.meteora?.programId || '').trim();
-          if (meteoraProg) {
-            try { logger.info('pools.ws subscribe meteora(program)', { source: 'meteora', cat: 'pools' }); } catch {}
-            subs.push(conn.onProgramAccountChange(new web3.PublicKey(meteoraProg), (ch: any) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
-            // Program-level: treat as a single attached subscription for display purposes
-            attachedMeteoraPools = 1;
+          const edgeIds: string[] = Array.from(meteoraTargets);
+          let attachedMet = 0;
+          for (const addr of edgeIds) {
+            try {
+              const pk = new web3.PublicKey(addr);
+              const id = await conn.onAccountChange(pk, (info: any) => { handle(pk as any, info); });
+              subs.push(id as any); attachedMet++;
+            } catch {}
+          }
+          attachedMeteoraPools = attachedMet;
+          if (attachedMet > 0) {
+            try { logger.info('pools.ws subscribe meteora.pools', { attached: attachedMet, source: 'meteora' }); } catch {}
+          } else {
+            // Program-level fallback
+            const meteoraProg = String((CONFIG as any)?.meteora?.programId || '').trim();
+            if (meteoraProg) {
+              try { logger.info('pools.ws subscribe meteora(program)', { source: 'meteora', cat: 'pools' }); } catch {}
+              subs.push(conn.onProgramAccountChange(new web3.PublicKey(meteoraProg), (ch: any) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
+              attachedMeteoraPools = 1;
+            }
           }
         } catch (e:any) {
           logger.warn('pools.ws meteora subscribe failed', { error: String(e?.message || e) });
