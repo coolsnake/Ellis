@@ -716,7 +716,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const liqParam = (p as any)?.liquidity_display ?? (usd && usd > 0 ? usd : (p as any)?.pool_liquidity_raw);
         addEdge(p.mint_a, p.mint_b, 'Meteora', p.fee_bps, liqParam, (priceMet && priceMet > 0) ? priceMet : undefined, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
         const pidRev = pid ? `${pid}-rev` : undefined;
-        addEdge(p.mint_b, p.mint_a, 'Meteora', p.fee_bps, liqParam, (priceMet && priceMet > 0) ? (1 / priceMet) : undefined, usd, pidRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse');
+        const priceRev = (priceMet && priceMet > 0) ? calibratePrice(p.mint_b, p.mint_a, priceMet) : undefined;
+        addEdge(p.mint_b, p.mint_a, 'Meteora', p.fee_bps, liqParam, priceRev, usd, pidRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse');
         try {
           const eid = pid || `${p.mint_a}->${p.mint_b}-Meteora`;
           const rid = pid ? `${pid}-rev` : `${p.mint_b}->${p.mint_a}-Meteora`;
