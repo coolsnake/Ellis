@@ -10,10 +10,17 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
   const [cfg, setCfg] = useState<any>({
 		// System
 		enablePoolWs: true,
+    poolsRefreshMs: 60000,
     poolRefreshMinGapMs: 3000,
     tokenUniverseMode: 'jupiter',
     scopePoolsMode: 'jupiter',
     anchorMints: 'So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+    includeAnchorsInUniverse: true,
+    enableAnchorBridging: false,
+    routeLevelScoping: false,
+    canonicalizePairs: 'none',
+    minAmmLiqBase: 0,
+    minClmmLiquidity: 0,
     universePrefilterOrca: false,
 		// Raydium (HTTP)
 		ray_cacheTtlMs: 300000,
@@ -65,10 +72,17 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
 				setCfg((prev: any) => ({
             ...prev,
 					enablePoolWs: j?.system?.enablePoolWs !== false,
+            poolsRefreshMs: Number(j?.system?.poolsRefreshMs ?? prev.poolsRefreshMs),
             poolRefreshMinGapMs: Number(j?.system?.poolRefreshMinGapMs ?? prev.poolRefreshMinGapMs),
             tokenUniverseMode: j?.system?.tokenUniverseMode || prev.tokenUniverseMode,
             scopePoolsMode: j?.system?.scopePoolsMode || prev.scopePoolsMode,
             anchorMints: Array.isArray(j?.system?.anchorMints) ? j.system.anchorMints.join(',') : (prev.anchorMints || ''),
+            includeAnchorsInUniverse: (j?.system?.includeAnchorsInUniverse ?? true) !== false,
+            enableAnchorBridging: !!j?.system?.enableAnchorBridging,
+            routeLevelScoping: !!j?.system?.routeLevelScoping,
+            canonicalizePairs: j?.system?.canonicalizePairs || prev.canonicalizePairs,
+            minAmmLiqBase: Number(j?.system?.minAmmLiqBase ?? prev.minAmmLiqBase),
+            minClmmLiquidity: Number(j?.system?.minClmmLiquidity ?? prev.minClmmLiquidity),
             universePrefilterOrca: !!j?.system?.universePrefilterOrca,
             jupiterApiUrl: j?.system?.jupiterApiUrl || prev.jupiterApiUrl,
 				ray_cacheTtlMs: Number(j?.raydium?.cacheTtlMs ?? prev.ray_cacheTtlMs),
@@ -115,10 +129,17 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
 		const body: any = {
       system: {
         enablePoolWs: !!cfg.enablePoolWs,
+        poolsRefreshMs: Number(cfg.poolsRefreshMs),
         poolRefreshMinGapMs: Number(cfg.poolRefreshMinGapMs),
         tokenUniverseMode: cfg.tokenUniverseMode,
         scopePoolsMode: cfg.scopePoolsMode,
         anchorMints: String(cfg.anchorMints || '').split(',').map(s => s.trim()).filter(Boolean),
+        includeAnchorsInUniverse: !!cfg.includeAnchorsInUniverse,
+        enableAnchorBridging: !!cfg.enableAnchorBridging,
+        routeLevelScoping: !!cfg.routeLevelScoping,
+        canonicalizePairs: cfg.canonicalizePairs,
+        minAmmLiqBase: Number(cfg.minAmmLiqBase),
+        minClmmLiquidity: Number(cfg.minClmmLiquidity),
         universePrefilterOrca: !!cfg.universePrefilterOrca,
         jupiterApiUrl: cfg.jupiterApiUrl,
       },
@@ -185,6 +206,10 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             <h3 className="text-lg font-semibold mb-3">System Refresh</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.enablePoolWs} onChange={(e)=>set('enablePoolWs', e.target.checked)} />Enable Pool Websocket</label>
+            <div>
+              <label className="block text-sm mb-1">Unified Refresh Period (ms)</label>
+              <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.poolsRefreshMs} onChange={(e)=>set('poolsRefreshMs', Number(e.target.value)||0)} />
+            </div>
               <div>
                 <label className="block text-sm mb-1">Min Gap Between Refreshes (ms)</label>
                 <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.poolRefreshMinGapMs} onChange={(e)=>set('poolRefreshMinGapMs', Number(e.target.value)||0)} />
@@ -217,6 +242,24 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
               <div className="md:col-span-1">
                 <label className="block text-sm mb-1">Anchor Mints (CSV)</label>
                 <input type="text" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.anchorMints} onChange={(e)=>set('anchorMints', e.target.value)} placeholder="So111...,EPjF..." />
+              </div>
+              <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.includeAnchorsInUniverse} onChange={(e)=>set('includeAnchorsInUniverse', e.target.checked)} />Include anchors in token universe</label>
+              <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.enableAnchorBridging} onChange={(e)=>set('enableAnchorBridging', e.target.checked)} />Enable anchor bridging during scoping</label>
+              <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.routeLevelScoping} onChange={(e)=>set('routeLevelScoping', e.target.checked)} />Apply scoping again in API routes</label>
+              <div>
+                <label className="block text-sm mb-1">Canonicalize Pairs</label>
+                <select className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.canonicalizePairs} onChange={(e)=>set('canonicalizePairs', e.target.value)}>
+                  <option value="none">none</option>
+                  <option value="lex">lex</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Global Min AMM TVL (USD)</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.minAmmLiqBase} onChange={(e)=>set('minAmmLiqBase', Number(e.target.value)||0)} />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Global Min CLMM TVL (USD)</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.minClmmLiquidity} onChange={(e)=>set('minClmmLiquidity', Number(e.target.value)||0)} />
               </div>
               <label className="flex items-center gap-2 md:col-span-3"><input type="checkbox" checked={!!cfg.universePrefilterOrca} onChange={(e)=>set('universePrefilterOrca', e.target.checked)} />Prefilter Orca HTTP by universe (conservative)</label>
             </div>

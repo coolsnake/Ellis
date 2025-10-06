@@ -82,6 +82,8 @@ export const CONFIG = {
     scopePoolsMode: (process.env.SCOPE_POOLS_MODE as any) || 'jupiter',
     // New: token-universe mode used to filter pools at source: 'jupiter' | 'watchlist' | 'intersection' | 'union'
     tokenUniverseMode: (process.env.TOKEN_UNIVERSE_MODE as any) || 'jupiter',
+    // Control whether anchors are injected into the universe set
+    includeAnchorsInUniverse: (process.env.INCLUDE_ANCHORS_IN_UNIVERSE || 'true') !== 'false',
     // Route-level scoping (disable to avoid double-scoping if sources already scoped)
     routeLevelScoping: (process.env.ROUTE_LEVEL_SCOPING || 'false') === 'true',
     // Whether to allow anchor-bridging when scoping (include pools if either side is an anchor mint)

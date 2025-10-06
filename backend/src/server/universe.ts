@@ -33,10 +33,12 @@ export async function getWatchlistTokenSet(): Promise<Set<string>> {
 }
 
 export function getAnchorSet(): Set<string> {
-  const anchors = (CONFIG.system as any)?.anchorMints as string[] | undefined;
+  const sysAnchors = (CONFIG.system as any)?.anchorMints as string[] | undefined;
   const rayAnchors = (CONFIG.raydium as any)?.anchorMints as string[] | undefined;
-  const arr = Array.isArray(anchors) && anchors.length ? anchors : (Array.isArray(rayAnchors) ? rayAnchors : [SOL, USDC]);
-  return new Set(arr.map(String));
+  // Respect explicit empty lists: if provided, do not fallback to defaults
+  if (Array.isArray(sysAnchors)) return new Set(sysAnchors.map(String));
+  if (Array.isArray(rayAnchors)) return new Set(rayAnchors.map(String));
+  return new Set([SOL, USDC]);
 }
 
 export function computeTokenUniverseFromSets(
@@ -73,18 +75,19 @@ export async function getSourceTokenSet(source: 'raydium' | 'orca'): Promise<Set
 export async function computeTokenUniverse(mode?: UniverseMode): Promise<Set<string>> {
   const selected = (mode || (CONFIG.system as any)?.tokenUniverseMode || 'jupiter') as UniverseMode;
   const anchors = getAnchorSet();
+  const includeAnchors = (CONFIG.system as any)?.includeAnchorsInUniverse !== false;
   if (selected === 'jupiter') {
-    const s = await getJupiterTokenSet(); for (const m of anchors) s.add(m); return s;
+    const s = await getJupiterTokenSet(); if (includeAnchors) { for (const m of anchors) s.add(m); } return s;
   }
   if (selected === 'watchlist') {
-    const s = await getWatchlistTokenSet(); for (const m of anchors) s.add(m); return s;
+    const s = await getWatchlistTokenSet(); if (includeAnchors) { for (const m of anchors) s.add(m); } return s;
   }
   const ray = await getSourceTokenSet('raydium');
   const orc = await getSourceTokenSet('orca');
   let set = computeTokenUniverseFromSets(ray, orc, selected, anchors);
   // Fallback: if empty, use Jupiter set to avoid emptying graph/routes
   if (set.size === 0) set = await getJupiterTokenSet();
-  for (const m of anchors) set.add(m);
+  if (includeAnchors) { for (const m of anchors) set.add(m); }
   return set;
 }
 
