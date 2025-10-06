@@ -1646,9 +1646,9 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       const { getPoolWsStatus, getWsActivity } = await import('./pools.js');
       const st = getPoolWsStatus();
       const act = getWsActivity();
-      res.json({ enablePoolWs: !!cfg.enablePoolWs, healthy: !!st.healthy, lastEventMs: st.lastEventMs, orca: act.orca, raydium: act.raydium });
+      res.json({ enablePoolWs: !!cfg.enablePoolWs, healthy: !!st.healthy, lastEventMs: st.lastEventMs, orca: act.orca, raydium: act.raydium, meteora: act.meteora });
     } catch (e: any) {
-      res.status(200).json({ enablePoolWs: false, healthy: false, lastEventMs: 0, orca: { attached: 0, events: 0 }, raydium: { attached: 0, events: 0 } });
+      res.status(200).json({ enablePoolWs: false, healthy: false, lastEventMs: 0, orca: { attached: 0, events: 0 }, raydium: { attached: 0, events: 0 }, meteora: { attached: 0, events: 0 } });
     }
   });
 

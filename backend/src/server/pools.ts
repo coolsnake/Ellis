@@ -573,11 +573,13 @@ let aggTimer: any | undefined;
 const wsCounts: { raydium: number; orca: number; meteora?: number } = { raydium: 0, orca: 0, meteora: 0 };
 let attachedOrcaPools: number = 0;
 let attachedRaydiumPools: number = 0;
+let attachedMeteoraPools: number = 0;
 
-export function getWsActivity(): { orca: { attached: number; events: number }; raydium: { attached: number; events: number } } {
+export function getWsActivity(): { orca: { attached: number; events: number }; raydium: { attached: number; events: number }; meteora: { attached: number; events: number } } {
   return {
     orca: { attached: attachedOrcaPools, events: wsCounts.orca || 0 },
     raydium: { attached: attachedRaydiumPools, events: wsCounts.raydium || 0 },
+    meteora: { attached: attachedMeteoraPools, events: (wsCounts.meteora || 0) as number },
   };
 }
 
@@ -927,9 +929,12 @@ export function startRaydiumRefreshLoop(): void {
           if (meteoraProg) {
             try { logger.info('pools.ws subscribe meteora(program)', { source: 'meteora', cat: 'pools' }); } catch {}
             subs.push(conn.onProgramAccountChange(new web3.PublicKey(meteoraProg), (ch: any) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
+            // Program-level: treat as a single attached subscription for display purposes
+            attachedMeteoraPools = 1;
           }
         } catch (e:any) {
           logger.warn('pools.ws meteora subscribe failed', { error: String(e?.message || e) });
+          attachedMeteoraPools = 0;
         }
 
         wsUnsubscribe = () => { try { for (const id of subs) conn.removeAccountChangeListener(id as any).catch(() => {}); } catch {} };
