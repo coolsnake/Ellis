@@ -481,7 +481,7 @@ async fn main() -> anyhow::Result<()> {
                 }
                 // Detect cycles (MVP -log weights)
                 // Compare with previous to only push WS updates on change
-                let (opps, prev, near_pair): (Vec<Opportunity>, Vec<Opportunity>, Option<(Opportunity,i64)>) = {
+                let (opps, prev, near_pair, near_list): (Vec<Opportunity>, Vec<Opportunity>, Option<(Opportunity,i64)>, Vec<(Opportunity,i64)>) = {
                     let s = loop_state.read().await;
                     let cycles = detect_negative_cycles(&s.graph);
                     // Deduplicate cycles and compute profit from edge rates
