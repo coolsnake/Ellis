@@ -461,37 +461,47 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
     if (rayPick) {
       const { forward, reverse } = compute(rayPick);
       if (forward && reverse) {
-        try { logger.info('pools.pair_sol_usdc', { source: 'raydium', id: rayPick.id, kind: rayPick.pool_kind || (rayPick.sqrt_price_x64 != null ? 'clmm' : 'amm'), forward_usdc_per_sol: forward, reverse_sol_per_usdc: reverse }); } catch {}
+        try { logger.info('pools.pair_sol_usdc', { source: 'raydium', id: rayPick.id, kind: rayPick.pool_kind || (rayPick.sqrt_price_x64 != null ? 'clmm' : 'amm'), forward_usdc_per_sol: forward, reverse_sol_per_usdc: reverse, cat: 'pools' }); } catch {}
+        try { emit('log', { level: 'info', message: `pools:pair_sol_usdc source=raydium id=${rayPick.id} kind=${rayPick.pool_kind || (rayPick.sqrt_price_x64 != null ? 'clmm' : 'amm')} fwd=${forward} rev=${reverse}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
       } else {
-        try { logger.debug('pools.pair_sol_usdc.skip', { source: 'raydium', reason: 'invalid_price_or_orientation', id: rayPick.id, a: rayPick.mint_a, b: rayPick.mint_b, px: rayPick.price_a_per_b }); } catch {}
+        try { logger.debug('pools.pair_sol_usdc.skip', { source: 'raydium', reason: 'invalid_price_or_orientation', id: rayPick.id, a: rayPick.mint_a, b: rayPick.mint_b, px: rayPick.price_a_per_b, cat: 'pools' }); } catch {}
+        try { emit('log', { level: 'debug', message: `pools:pair_sol_usdc.skip source=raydium reason=invalid_price_or_orientation id=${rayPick.id} a=${rayPick.mint_a} b=${rayPick.mint_b} px=${rayPick.price_a_per_b}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
       }
     } else {
-      try { logger.debug('pools.pair_sol_usdc.skip', { source: 'raydium', reason: 'no_sol_usdc' }); } catch {}
+      try { logger.debug('pools.pair_sol_usdc.skip', { source: 'raydium', reason: 'no_sol_usdc', cat: 'pools' }); } catch {}
+      try { emit('log', { level: 'debug', message: 'pools:pair_sol_usdc.skip source=raydium reason=no_sol_usdc', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
     }
     const orcPick = pickOne(o);
     if (orcPick) {
       const { forward, reverse } = compute(orcPick);
       if (forward && reverse) {
-        try { logger.info('pools.pair_sol_usdc', { source: 'orca', id: orcPick.id, kind: orcPick.pool_kind || (orcPick.sqrt_price_x64 != null ? 'clmm' : 'amm'), forward_usdc_per_sol: forward, reverse_sol_per_usdc: reverse }); } catch {}
+        try { logger.info('pools.pair_sol_usdc', { source: 'orca', id: orcPick.id, kind: orcPick.pool_kind || (orcPick.sqrt_price_x64 != null ? 'clmm' : 'amm'), forward_usdc_per_sol: forward, reverse_sol_per_usdc: reverse, cat: 'pools' }); } catch {}
+        try { emit('log', { level: 'info', message: `pools:pair_sol_usdc source=orca id=${orcPick.id} kind=${orcPick.pool_kind || (orcPick.sqrt_price_x64 != null ? 'clmm' : 'amm')} fwd=${forward} rev=${reverse}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
       } else {
-        try { logger.debug('pools.pair_sol_usdc.skip', { source: 'orca', reason: 'invalid_price_or_orientation', id: orcPick.id, a: orcPick.mint_a, b: orcPick.mint_b, px: orcPick.price_a_per_b }); } catch {}
+        try { logger.debug('pools.pair_sol_usdc.skip', { source: 'orca', reason: 'invalid_price_or_orientation', id: orcPick.id, a: orcPick.mint_a, b: orcPick.mint_b, px: orcPick.price_a_per_b, cat: 'pools' }); } catch {}
+        try { emit('log', { level: 'debug', message: `pools:pair_sol_usdc.skip source=orca reason=invalid_price_or_orientation id=${orcPick.id} a=${orcPick.mint_a} b=${orcPick.mint_b} px=${orcPick.price_a_per_b}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
       }
     } else {
-      try { logger.debug('pools.pair_sol_usdc.skip', { source: 'orca', reason: 'no_sol_usdc' }); } catch {}
+      try { logger.debug('pools.pair_sol_usdc.skip', { source: 'orca', reason: 'no_sol_usdc', cat: 'pools' }); } catch {}
+      try { emit('log', { level: 'debug', message: 'pools:pair_sol_usdc.skip source=orca reason=no_sol_usdc', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
     }
     const metPick = pickOne(m);
     if (metPick) {
       const { forward, reverse } = compute(metPick);
       if (forward && reverse) {
-        try { logger.info('pools.pair_sol_usdc', { source: 'meteora', id: metPick.id, kind: metPick.pool_kind || (metPick.sqrt_price_x64 != null ? 'clmm' : 'amm'), forward_usdc_per_sol: forward, reverse_sol_per_usdc: reverse }); } catch {}
+        try { logger.info('pools.pair_sol_usdc', { source: 'meteora', id: metPick.id, kind: metPick.pool_kind || (metPick.sqrt_price_x64 != null ? 'clmm' : 'amm'), forward_usdc_per_sol: forward, reverse_sol_per_usdc: reverse, cat: 'pools' }); } catch {}
+        try { emit('log', { level: 'info', message: `pools:pair_sol_usdc source=meteora id=${metPick.id} kind=${metPick.pool_kind || (metPick.sqrt_price_x64 != null ? 'clmm' : 'amm')} fwd=${forward} rev=${reverse}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
       } else {
-        try { logger.debug('pools.pair_sol_usdc.skip', { source: 'meteora', reason: 'invalid_price_or_orientation', id: metPick.id, a: metPick.mint_a, b: metPick.mint_b, px: metPick.price_a_per_b }); } catch {}
+        try { logger.debug('pools.pair_sol_usdc.skip', { source: 'meteora', reason: 'invalid_price_or_orientation', id: metPick.id, a: metPick.mint_a, b: metPick.mint_b, px: metPick.price_a_per_b, cat: 'pools' }); } catch {}
+        try { emit('log', { level: 'debug', message: `pools:pair_sol_usdc.skip source=meteora reason=invalid_price_or_orientation id=${metPick.id} a=${metPick.mint_a} b=${metPick.mint_b} px=${metPick.price_a_per_b}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
       }
     } else {
-      try { logger.debug('pools.pair_sol_usdc.skip', { source: 'meteora', reason: 'no_sol_usdc' }); } catch {}
+      try { logger.debug('pools.pair_sol_usdc.skip', { source: 'meteora', reason: 'no_sol_usdc', cat: 'pools' }); } catch {}
+      try { emit('log', { level: 'debug', message: 'pools:pair_sol_usdc.skip source=meteora reason=no_sol_usdc', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
     }
   } catch (e:any) {
-    try { logger.warn('pools.pair_sol_usdc.failed', { error: String(e?.message || e) }); } catch {}
+    try { logger.warn('pools.pair_sol_usdc.failed', { error: String(e?.message || e), cat: 'pools' }); } catch {}
+    try { emit('log', { level: 'warn', message: `pools:pair_sol_usdc.failed error=${String(e?.message || e)}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
   }
   if (subscribe) {
     try {
