@@ -60,6 +60,7 @@ type PoolsPayload = { amm: AmmPool[]; clmm: ClmmPool[] };
 
 const raydiumCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 const orcaCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
+const meteoraCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 
 // WS lifecycle flags: defer websocket subscriptions until graph signals readiness
 let wsAllowed: boolean = false;
@@ -81,6 +82,7 @@ const poolsMetrics: {
     ownerClmmCount: number; ownerAmmCount: number; http429: number; backoffMs: number; apiBatches: number; apiBatchSizeAvg: number;
   };
   orca: { fetches: number; lastMs: number; lastAmm: number; lastClmm: number };
+  meteora: { fetches: number; lastMs: number; lastClmm: number };
 } = {
   raydium: {
     fetches: 0, lastMs: 0, lastAmm: 0, lastClmm: 0,
@@ -89,6 +91,7 @@ const poolsMetrics: {
     ownerClmmCount: 0, ownerAmmCount: 0, http429: 0, backoffMs: 0, apiBatches: 0, apiBatchSizeAvg: 0,
   },
   orca: { fetches: 0, lastMs: 0, lastAmm: 0, lastClmm: 0 },
+  meteora: { fetches: 0, lastMs: 0, lastClmm: 0 },
 };
 
 export function getPoolsMetrics(): any {
@@ -96,6 +99,7 @@ export function getPoolsMetrics(): any {
 }
 
 // Removed raw on-chain scan: use SDK-only discovery to avoid brittle binary parsing
+let rayProbeOffset = 0; // rolling offset for rotating mint probes across cycles
 async function fetchRaydiumPoolsRaw(): Promise<any> {
   const mode = 'http';
   try {
@@ -106,13 +110,20 @@ async function fetchRaydiumPoolsRaw(): Promise<any> {
       return { data: [] };
     }
 
-    // Collect mint universe as before (Jupiter -> Orca -> Watchlist)
+    // Collect mint universe from configured tokenUniverseMode; fallback to previous heuristics
     let mints: string[] = [];
     try {
-      const { loadJupiterTokenMap } = await import('../utils/tokens.js');
-      const jmap = await loadJupiterTokenMap();
-      mints = Object.keys(jmap || {});
+      const { computeTokenUniverse } = await import('./universe.js');
+      const uni = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
+      mints = Array.from(uni);
     } catch {}
+    if (!mints.length) {
+      try {
+        const { loadJupiterTokenMap } = await import('../utils/tokens.js');
+        const jmap = await loadJupiterTokenMap();
+        mints = Object.keys(jmap || {});
+      } catch {}
+    }
     if (!mints.length) {
       try {
         const orca = await getOrcaPoolsCached(false);
@@ -127,8 +138,17 @@ async function fetchRaydiumPoolsRaw(): Promise<any> {
       mints = wl.map((t: any) => (typeof t === 'string' ? t : t?.id)).filter(Boolean);
     }
 
-    const limit = Number(CONFIG.raydium?.sdkProbeMintsLimit || 50);
-    const uniq = Array.from(new Set(mints)).slice(0, limit);
+    const limit = Math.max(1, Number(CONFIG.raydium?.sdkProbeMintsLimit || 50));
+    const uniqAll = Array.from(new Set(mints));
+    // Rotate window across full set to ensure full coverage over time
+    const start = uniqAll.length > 0 ? (rayProbeOffset % uniqAll.length) : 0;
+    const end = start + limit;
+    const uniq = uniqAll.length <= limit
+      ? uniqAll
+      : (end <= uniqAll.length
+          ? uniqAll.slice(start, end)
+          : uniqAll.slice(start).concat(uniqAll.slice(0, end - uniqAll.length)));
+    rayProbeOffset = (start + limit) % Math.max(uniqAll.length, 1);
 
     const baseUrl = 'https://api-v3.raydium.io/pools/info/mint';
     const pageSize = Math.max(20, Number((CONFIG.raydium as any)?.httpPageSize || 50));
@@ -209,6 +229,140 @@ async function fetchRaydiumPoolsRaw(): Promise<any> {
 function num(v: any): number {
   const n = typeof v === 'string' ? Number(v) : (typeof v === 'number' ? v : 0);
   return Number.isFinite(n) ? n : 0;
+}
+
+// Meteora DLMM HTTP fetcher
+async function fetchMeteoraHttp(): Promise<any> {
+  try {
+    const base = (CONFIG as any)?.meteora?.apiUrl || 'https://dlmm-api.meteora.ag/v1/pairs';
+    const size = Number(((CONFIG as any)?.meteora?.pageSize) || 200);
+    const retries = Number(((CONFIG as any)?.meteora?.maxHttpRetries) || 2);
+    const backoffMs = Number(((CONFIG as any)?.meteora?.httpBackoffMs) || 500);
+    const maxPages = Number(((CONFIG as any)?.meteora?.maxPages) || 3);
+    const params: Record<string, string> = {};
+    if (Number.isFinite(size as any) && size > 0) params.limit = String(size);
+    const build = (extra: Record<string, string | undefined> = {}) => {
+      const sp = new URLSearchParams();
+      for (const [k, v] of Object.entries(params)) if (v != null && v !== '') sp.append(k, v);
+      for (const [k, v] of Object.entries(extra)) if (v != null && v !== '') sp.append(k, String(v));
+      const qs = sp.toString();
+      return qs ? `${base}?${qs}` : base;
+    };
+    // eslint-disable-next-line no-undef
+    const fetchFn: any = (globalThis as any).fetch || fetch;
+    const out: any[] = [];
+    let cursor: string | null = '';
+    let page = 0;
+    while (page < maxPages) {
+      page += 1;
+      let ok = false;
+      for (let attempt = 0; attempt <= retries; attempt++) {
+        try {
+          const url = build(cursor !== null ? (cursor ? { cursor } : { cursor: '' }) : {});
+          const res = await fetchFn(url, { headers: { accept: 'application/json' } });
+          if (res?.status === 429) { try { logger.warn('meteora.http 429', { page }); emit('log', { level: 'warn', message: `arb:429 source=meteora page=${page}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}; throw new Error('http 429'); }
+          if (!res?.ok) throw new Error(`http ${res?.status}`);
+          const json: any = await res.json().catch(() => null);
+          const data: any[] = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : (Array.isArray(json?.pairs) ? json.pairs : []));
+          if (data.length) out.push(...data);
+          const nxt = (json as any)?.meta?.next ?? (json as any)?.meta?.cursor?.next;
+          cursor = (nxt === null || nxt === undefined) ? null : String(nxt);
+          ok = true; break;
+        } catch (e:any) {
+          try { logger.warn('meteora.http page failed', { page, attempt: attempt + 1, error: String(e?.message || e) }); } catch {}
+          if (attempt < retries) await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
+        }
+      }
+      if (ok) {
+        try { logger.info('meteora.http page ok', { page, count: out.length, next: !!cursor }); } catch {}
+      } else {
+        break;
+      }
+      if (!cursor) break;
+    }
+    if (out.length === 0) {
+      // fallback single
+      const res = await fetchFn(build());
+      if (!res?.ok) throw new Error(`http ${res?.status}`);
+      const json: any = await res.json().catch(() => null);
+      const single = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : (Array.isArray(json?.pairs) ? json.pairs : []));
+      try { logger.info('meteora.http single ok', { count: single.length }); } catch {}
+      return single;
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
+  const now = Date.now();
+  const clmm: ClmmPool[] = [];
+  let jupMap: Record<string, { symbol: string; decimals: number }> = {};
+  try { const tok = await import('../utils/tokens.js'); if (typeof (tok as any).loadJupiterTokenMap === 'function') jupMap = await (tok as any).loadJupiterTokenMap(); } catch {}
+  const arrCandidates: any[] = [];
+  if (Array.isArray(raw)) arrCandidates.push(raw);
+  if (Array.isArray(raw?.data)) arrCandidates.push(raw.data);
+  if (Array.isArray(raw?.pairs)) arrCandidates.push(raw.pairs);
+  const arr: any[] = arrCandidates.find(a => Array.isArray(a) && a.length) || (Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : []));
+  for (const it of arr) {
+    const id = String(it?.address || it?.id || it?.poolAddress || '');
+    const tokenA = it?.tokenA || it?.tokenX || {};
+    const tokenB = it?.tokenB || it?.tokenY || {};
+    const mint_a = String(tokenA?.mint || it?.mintA || it?.tokenXMint || '');
+    const mint_b = String(tokenB?.mint || it?.mintB || it?.tokenYMint || '');
+    if (!id || !mint_a || !mint_b) continue;
+    let decA = Number((tokenA?.decimals ?? it?.decimalsA));
+    let decB = Number((tokenB?.decimals ?? it?.decimalsB));
+    if (!Number.isFinite(decA) && jupMap[mint_a]?.decimals != null) decA = Number(jupMap[mint_a].decimals);
+    if (!Number.isFinite(decB) && jupMap[mint_b]?.decimals != null) decB = Number(jupMap[mint_b].decimals);
+    const feeRaw = (it as any)?.feeRate ?? (it as any)?.fee_bps;
+    const fee_bps = typeof feeRaw === 'number' ? (feeRaw <= 1 ? Math.round(feeRaw * 10_000) : Math.round(feeRaw)) : 0;
+    const incomingPrice = Number((it as any)?.price ?? (it as any)?.price_a_per_b ?? 0);
+    const amtAraw = (it?.tokenBalanceA ?? it?.tokenAAmount ?? it?.amountA ?? it?.baseAmount ?? 0);
+    const amtBraw = (it?.tokenBalanceB ?? it?.tokenBAmount ?? it?.amountB ?? it?.quoteAmount ?? 0);
+    const amount_a = Number(typeof amtAraw === 'string' ? Number(amtAraw) : amtAraw || 0);
+    const amount_b = Number(typeof amtBraw === 'string' ? Number(amtBraw) : amtBraw || 0);
+    const tvlUsdcRaw = (it as any)?.tvlUsdc ?? (it as any)?.tvlUsd;
+    const tvlUsdcNum = typeof tvlUsdcRaw === 'string' ? Number(tvlUsdcRaw) : (typeof tvlUsdcRaw === 'number' ? tvlUsdcRaw : 0);
+    const tvl_usd = Number.isFinite(tvlUsdcNum) && tvlUsdcNum > 0 ? tvlUsdcNum : undefined;
+    const pool_liquidity_raw = (tvl_usd != null) ? tvl_usd : (Number.isFinite(decA) && Number.isFinite(decB) ? ((amount_a/Math.pow(10, decA as number)) + (amount_b/Math.pow(10, decB as number))) : undefined);
+    const liquidity_display = (tvl_usd != null) ? tvl_usd : undefined;
+    // Optional sanity: drop extreme deviations vs USD ref if both sides priced
+    let price_ok = true;
+    try {
+      const sanityCfg = (CONFIG as any)?.sanity || {};
+      const apply = (sanityCfg as any).sanity_applyMeteoraClmm ?? true;
+      if (apply !== false) {
+        const maxDeviation = Number.isFinite(Number(sanityCfg.maxPriceDeviation)) ? Number(sanityCfg.maxPriceDeviation) : 50;
+        const { getPriceByMint } = await import('./priceStore.js');
+        const pa = getPriceByMint(mint_a)?.usdc ?? null;
+        const pb = getPriceByMint(mint_b)?.usdc ?? null;
+        const px = (incomingPrice && incomingPrice > 0) ? incomingPrice : undefined;
+        if (pa && pb && px && (px as number) > 0) {
+          const ref = (pa as number) / (pb as number);
+          const dev = Math.max((px as number) / ref, ref / (px as number));
+          if (dev > maxDeviation) price_ok = false;
+        }
+      }
+    } catch {}
+    if (!price_ok) { try { logger.warn('meteora.clmm drop by sanity', { id, mint_a, mint_b, price_a_per_b: incomingPrice, cat: 'meteora' }); } catch {}; continue; }
+    clmm.push({ id, dex: 'Meteora', mint_a, mint_b, fee_bps, sqrt_price_x64: 0, liquidity: 0, tick_spacing: Number((it as any)?.binStep || 0), updated_ms: now, price_a_per_b: (incomingPrice && incomingPrice > 0) ? incomingPrice : undefined, amount_a, amount_b, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, pool_kind: 'clmm', pool_liquidity_raw, tvl_usd, liquidity_display } as any);
+  }
+  // Optional canonicalization of pair order for consistency
+  try {
+    const mode = String((CONFIG.system as any)?.canonicalizePairs || 'none');
+    if (mode === 'lex' && clmm.length) {
+      for (let i = 0; i < clmm.length; i++) {
+        const p = clmm[i];
+        if (String(p.mint_a) <= String(p.mint_b)) continue;
+        const inv = (p.price_a_per_b && p.price_a_per_b > 0) ? (1 / (p.price_a_per_b as number)) : p.price_a_per_b;
+        clmm[i] = { ...p, mint_a: p.mint_b, mint_b: p.mint_a, price_a_per_b: inv as any };
+      }
+    }
+  } catch {}
+  try { logger.info('meteora.http normalized', { clmm: clmm.length, cat: 'meteora', canon: (CONFIG.system as any)?.canonicalizePairs || 'none' }); } catch {}
+  return { amm: [], clmm };
 }
 
 // Compute normalized pool deltas (updated entries only) based on id and key fields
@@ -343,12 +497,33 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
     }
   }
 
+  // Optional canonicalization of pair order for consistency
+  try {
+    const mode = String((CONFIG.system as any)?.canonicalizePairs || 'none');
+    if (mode === 'lex') {
+      const canonAmm: AmmPool[] = [];
+      for (const p of amm) {
+        const [a, b] = String(p.mint_a) <= String(p.mint_b) ? [p.mint_a, p.mint_b] : [p.mint_b, p.mint_a];
+        const price = (a === p.mint_a) ? p.price_a_per_b : (p.price_a_per_b > 0 ? (1 / p.price_a_per_b) : p.price_a_per_b);
+        canonAmm.push({ ...p, mint_a: a, mint_b: b, price_a_per_b: price });
+      }
+      const canonClmm: ClmmPool[] = [];
+      for (const p of clmm) {
+        const [a, b] = String(p.mint_a) <= String(p.mint_b) ? [p.mint_a, p.mint_b] : [p.mint_b, p.mint_a];
+        const price = (a === p.mint_a) ? p.price_a_per_b : (p.price_a_per_b && p.price_a_per_b > 0 ? (1 / (p.price_a_per_b as number)) : p.price_a_per_b);
+        canonClmm.push({ ...p, mint_a: a, mint_b: b, price_a_per_b: price as any });
+      }
+      logger.info('raydium.pools normalized (canon=lex)', { amm: canonAmm.length, clmm: canonClmm.length, cat: 'raydium' });
+      return { amm: canonAmm, clmm: canonClmm };
+    }
+  } catch {}
   logger.info('raydium.pools normalized', { amm: amm.length, clmm: clmm.length, cat: 'raydium' });
   return { amm, clmm };
 }
 
 let rayTimer: any | undefined;
 let orcaTimer: any | undefined;
+let meteoraTimer: any | undefined;
 let wsUnsubscribe: (() => void) | undefined;
 let healthTimer: any | undefined;
 let lastWsEventMs: number = 0;
@@ -371,12 +546,16 @@ export function startRaydiumRefreshLoop(): void {
   // Clear existing timers if any, to allow dynamic TTL updates
   if (rayTimer) { clearInterval(rayTimer); rayTimer = undefined; }
   if (orcaTimer) { clearInterval(orcaTimer); orcaTimer = undefined; }
+  if (meteoraTimer) { clearInterval(meteoraTimer); meteoraTimer = undefined; }
   try { if (wsUnsubscribe) { wsUnsubscribe(); wsUnsubscribe = undefined; } } catch {}
   if (healthTimer) { clearInterval(healthTimer); healthTimer = undefined; }
   if (aggTimer) { clearInterval(aggTimer); aggTimer = undefined; }
 
-  const rayPeriod = Math.max(1000, Number(CONFIG.raydium?.cacheTtlMs || 300_000));
-  const orcaPeriod = Math.max(1000, Number(CONFIG.orca?.cacheTtlMs || 300_000));
+  // Use unified cadence unless explicitly overridden per source
+  const unified = Math.max(1000, Number((CONFIG.system as any)?.poolsRefreshMs || 60_000));
+  const rayPeriod = unified;
+  const orcaPeriod = unified;
+  const meteoraPeriod = unified;
 
   const wsEnabled = !!(CONFIG.system as any)?.enablePoolWs;
   // Defer any activity until graph is ready
@@ -399,12 +578,20 @@ export function startRaydiumRefreshLoop(): void {
       } catch {}
       getOrcaPoolsCached(true).catch(() => {});
     }, orcaPeriod);
+    meteoraTimer = setInterval(() => {
+      try {
+        logger.info('pools.refresh timer meteora', { cat: 'pools' });
+        emit('log', { level: 'debug', message: 'pools:refresh timer source=meteora', timestamp: new Date().toISOString(), context: { cat: 'pools' } });
+      } catch {}
+      getMeteoraPoolsCached(true).catch(() => {});
+    }, meteoraPeriod);
   }
     // Proceed to initial fetch and optional WS
 
   // Kick immediately once activated so data is available without waiting
   try { getRaydiumPoolsNormalized(true).catch(() => {}); } catch {}
   try { getOrcaPoolsCached(true).catch(() => {}); } catch {}
+  try { getMeteoraPoolsCached(true).catch(() => {}); } catch {}
 
   // Optional: subscribe to on-chain account changes to push updates into caches
   // Only attach websockets when the user has explicitly subscribed
@@ -724,6 +911,7 @@ export function stopPoolRefreshLoop(): void {
   try { if (rayTimer) { clearInterval(rayTimer); rayTimer = undefined; } } catch {}
   try { if (orcaTimer) { clearInterval(orcaTimer); orcaTimer = undefined; } } catch {}
   try { if (aggTimer) { clearInterval(aggTimer); aggTimer = undefined; } } catch {}
+  try { if (meteoraTimer) { clearInterval(meteoraTimer); meteoraTimer = undefined; } } catch {}
   try { if (healthTimer) { clearInterval(healthTimer); healthTimer = undefined; } } catch {}
   try { if (wsUnsubscribe) { wsUnsubscribe(); wsUnsubscribe = undefined; } } catch {}
   wsHealthy = false; lastWsEventMs = 0;
@@ -758,6 +946,7 @@ export function getPoolWsStatus(): { enabled: boolean; healthy: boolean; lastEve
 export function clearAllPoolCaches(): void {
   try { raydiumCache.data = undefined as any; raydiumCache.ts = 0; raydiumCache.inflight = undefined; } catch {}
   try { orcaCache.data = undefined as any; orcaCache.ts = 0; orcaCache.inflight = undefined; } catch {}
+  try { meteoraCache.data = undefined as any; meteoraCache.ts = 0; meteoraCache.inflight = undefined; } catch {}
   try { enrichMemo.clear(); } catch {}
   try { logger.info('pools.caches cleared'); } catch {}
 }
@@ -768,6 +957,7 @@ const enrichMemo: Map<string, { mint_a?: string; mint_b?: string; decimals_a?: n
 // Non-fetching peek helpers so the graph can rebuild from current caches only
 export function peekRaydiumPools(): PoolsPayload { return raydiumCache.data || { amm: [], clmm: [] }; }
 export function peekOrcaPools(): PoolsPayload { return orcaCache.data || { amm: [], clmm: [] }; }
+export function peekMeteoraPools(): PoolsPayload { return meteoraCache.data || { amm: [], clmm: [] }; }
 
 export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPayload> {
   const ttlMs = Number(CONFIG.raydium?.cacheTtlMs || 300_000);
@@ -801,7 +991,7 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
         const mode: any = (CONFIG.system as any)?.tokenUniverseMode || 'jupiter';
         const uni = await computeTokenUniverse(mode);
         const beforeAmm = norm.amm.length, beforeClmm = norm.clmm.length;
-        const scoped = filterPoolsByUniverse(norm as any, uni, true);
+        const scoped = filterPoolsByUniverse(norm as any, uni, !!((CONFIG.system as any)?.enableAnchorBridging));
         if (scoped.amm.length !== beforeAmm || scoped.clmm.length !== beforeClmm) {
           poolsMetrics.raydium.filteredAmm += (beforeAmm - scoped.amm.length);
           poolsMetrics.raydium.filteredClmm += (beforeClmm - scoped.clmm.length);
@@ -813,8 +1003,10 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
 
       // Optional: TVL-based filtering to drop dust pools (config-driven)
       try {
-        const minAmmUsd = Number((CONFIG.raydium as any)?.minAmmLiqBase || 0);
-        const minClmmUsd = Number((CONFIG.raydium as any)?.minClmmLiquidity || 0);
+        const globalAmm = Number(((CONFIG.system as any)?.minAmmLiqBase) ?? 0);
+        const globalClmm = Number(((CONFIG.system as any)?.minClmmLiquidity) ?? 0);
+        const minAmmUsd = Math.max(globalAmm, Number((CONFIG.raydium as any)?.minAmmLiqBase || 0));
+        const minClmmUsd = Math.max(globalClmm, Number((CONFIG.raydium as any)?.minClmmLiquidity || 0));
         if (minAmmUsd > 0 || minClmmUsd > 0) {
           const beforeAmm = norm.amm.length, beforeClmm = norm.clmm.length;
           const amm = minAmmUsd > 0 ? norm.amm.filter(p => Number((p as any).tvl_usd || 0) >= minAmmUsd) : norm.amm;
@@ -828,7 +1020,7 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
       poolsMetrics.raydium.lastMs = Date.now() - t0;
       poolsMetrics.raydium.lastAmm = norm.amm.length;
       poolsMetrics.raydium.lastClmm = norm.clmm.length;
-      logger.info('raydium.fetch normalized', { amm: norm.amm.length, clmm: norm.clmm.length, ms: poolsMetrics.raydium.lastMs, cat: 'raydium' });
+      logger.info('raydium.fetch normalized', { amm: norm.amm.length, clmm: norm.clmm.length, ms: poolsMetrics.raydium.lastMs, cat: 'raydium', canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
       try { emit('log', { level: 'info', message: `arb:pools raydium.fetch ok amm=${norm.amm.length} clmm=${norm.clmm.length}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
 
       const prev = raydiumCache.data;
@@ -851,7 +1043,7 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
       try {
         const d = diffNormalizedPools(prev || { amm: [], clmm: [] }, norm);
         const sample = { amm: d.amm.slice(0, 100), clmm: d.clmm.slice(0, 100) };
-        emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now() });
+        emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now(), canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
         try { logger.info('pools.delta raydium', { updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, cat: 'pools' }); } catch {}
       } catch {}
       // Schedule a debounced graph rebuild to propagate updated pool caches
@@ -902,7 +1094,7 @@ export async function getOrcaPoolsCached(force = false): Promise<PoolsPayload> {
       try {
         const d = diffNormalizedPools(prev || { amm: [], clmm: [] }, data);
         const sample = { amm: d.amm.slice(0, 100), clmm: d.clmm.slice(0, 100) };
-        emit('pool-updates', { source: 'orca', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now() });
+        emit('pool-updates', { source: 'orca', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now(), canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
         try { logger.info('pools.delta orca', { updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, cat: 'pools' }); } catch {}
       } catch {}
       // Schedule a debounced graph rebuild to propagate updated pool caches
@@ -934,7 +1126,7 @@ export async function getOrcaPoolsNormalized(): Promise<PoolsPayload> {
           const mode: any = (CONFIG.system as any)?.tokenUniverseMode || 'jupiter';
           const uni = await computeTokenUniverse(mode);
           const beforeAmm = norm.amm.length, beforeClmm = norm.clmm.length;
-          const scoped = filterPoolsByUniverse(norm as any, uni, true);
+          const scoped = filterPoolsByUniverse(norm as any, uni, !!((CONFIG.system as any)?.enableAnchorBridging));
           if (scoped.amm.length !== beforeAmm || scoped.clmm.length !== beforeClmm) {
             poolsMetrics.orca.lastAmm = scoped.amm.length;
             poolsMetrics.orca.lastClmm = scoped.clmm.length;
@@ -944,8 +1136,10 @@ export async function getOrcaPoolsNormalized(): Promise<PoolsPayload> {
         } catch {}
         // Apply Orca-specific TVL filters similar to Raydium
         try {
-          const minAmmUsd = Number((CONFIG.orca as any)?.minAmmLiqBase || 0);
-          const minClmmUsd = Number((CONFIG.orca as any)?.minClmmLiquidity || 0);
+          const globalAmm = Number(((CONFIG.system as any)?.minAmmLiqBase) ?? 0);
+          const globalClmm = Number(((CONFIG.system as any)?.minClmmLiquidity) ?? 0);
+          const minAmmUsd = Math.max(globalAmm, Number((CONFIG.orca as any)?.minAmmLiqBase || 0));
+          const minClmmUsd = Math.max(globalClmm, Number((CONFIG.orca as any)?.minClmmLiquidity || 0));
           if (minAmmUsd > 0 || minClmmUsd > 0) {
             const beforeAmm = norm.amm.length, beforeClmm = norm.clmm.length;
             const amm = minAmmUsd > 0 ? norm.amm.filter(p => Number((p as any).tvl_usd || 0) >= minAmmUsd) : norm.amm;
@@ -956,7 +1150,7 @@ export async function getOrcaPoolsNormalized(): Promise<PoolsPayload> {
             norm = { amm, clmm };
           }
         } catch {}
-        logger.info('orca.http normalized', { clmm: norm.clmm.length });
+  logger.info('orca.http normalized', { clmm: norm.clmm.length, canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
         return norm;
       }
       if (mode === 'v4') {
@@ -983,6 +1177,65 @@ export async function getOrcaPoolsNormalized(): Promise<PoolsPayload> {
   }
   logger.warn('orca all modes failed', { tried });
   return { amm: [], clmm: [] };
+}
+
+export async function getMeteoraPoolsCached(force = false): Promise<PoolsPayload> {
+  const ttlMs = Number(((CONFIG as any)?.meteora?.cacheTtlMs) || 300_000);
+  const now = Date.now();
+  if (!force) {
+    if (meteoraCache.data && now - meteoraCache.ts < ttlMs) return meteoraCache.data;
+    return meteoraCache.data || { amm: [], clmm: [] };
+  }
+  if (meteoraCache.inflight) return meteoraCache.inflight;
+  meteoraCache.inflight = (async () => {
+    try {
+      const mode = 'http';
+      try { logger.info('meteora.fetch start', { mode, ttlMs, cat: 'meteora' }); } catch {}
+      try { emit('log', { level: 'info', message: `arb:pools meteora.fetch start mode=${mode}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+      const t0 = Date.now();
+      const raw = await fetchMeteoraHttp();
+      let norm = await normalizeMeteoraHttp(raw);
+       // Apply universe filtering early
+      try {
+        const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
+        const mode: any = (CONFIG.system as any)?.tokenUniverseMode || 'jupiter';
+        const uni = await computeTokenUniverse(mode);
+        const beforeClmm = norm.clmm.length;
+         const scoped = filterPoolsByUniverse(norm as any, uni, !!((CONFIG.system as any)?.enableAnchorBridging));
+        if (scoped.clmm.length !== beforeClmm) { try { logger.info('meteora.universe.filter', { mode, beforeClmm, afterClmm: scoped.clmm.length }); } catch {} }
+        norm = { amm: [], clmm: scoped.clmm } as any;
+      } catch {}
+       // TVL filter (apply global thresholds on top of per-source)
+      try {
+         const globalClmm = Number(((CONFIG.system as any)?.minClmmLiquidity) ?? 0);
+         const minClmmUsd = Math.max(globalClmm, Number(((CONFIG as any)?.meteora?.minClmmLiquidity) || 0));
+        if (minClmmUsd > 0) {
+          const before = norm.clmm.length;
+          const clmm = norm.clmm.filter(p => Number((p as any).tvl_usd || 0) >= minClmmUsd);
+          if (clmm.length !== before) { logger.info('meteora.filter tvl', { minClmmUsd, before, after: clmm.length }); }
+          norm = { amm: [], clmm } as any;
+        }
+      } catch {}
+      const prev = meteoraCache.data;
+      meteoraCache.data = norm; meteoraCache.ts = Date.now();
+      poolsMetrics.meteora.fetches += 1;
+      poolsMetrics.meteora.lastMs = Date.now() - t0;
+      poolsMetrics.meteora.lastClmm = norm.clmm.length;
+      try { logger.info('meteora.fetch normalized', { clmm: norm.clmm.length, ms: poolsMetrics.meteora.lastMs, cat: 'meteora' }); } catch {}
+      try { emit('log', { level: 'info', message: `arb:pools meteora.fetch ok clmm=${norm.clmm.length}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+      try {
+        const d = diffNormalizedPools(prev || { amm: [], clmm: [] }, norm);
+        const sample = { amm: [], clmm: d.clmm.slice(0, 100) };
+        emit('pools-update', { source: 'meteora', amm: 0, clmm: norm.clmm.length, ts: Date.now() });
+        emit('pool-updates', { source: 'meteora', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now() });
+      } catch {}
+      try { (await import('./graph.js')).scheduleGraphRebuild(undefined, 250); } catch {}
+      return meteoraCache.data!;
+    } finally {
+      meteoraCache.inflight = undefined;
+    }
+  })();
+  return meteoraCache.inflight;
 }
 
 async function fetchOrcaHttp(): Promise<any> {
@@ -1330,7 +1583,19 @@ async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
       }
     }
 	  }
-	  // Emit a single summary warning with the total count of mismatches
+  // Optional canonicalization of pair order for consistency
+  try {
+    const mode = String((CONFIG.system as any)?.canonicalizePairs || 'none');
+    if (mode === 'lex' && clmm.length) {
+      for (let i = 0; i < clmm.length; i++) {
+        const p = clmm[i];
+        if (String(p.mint_a) <= String(p.mint_b)) continue;
+        const inv = (p.price_a_per_b && p.price_a_per_b > 0) ? (1 / (p.price_a_per_b as number)) : p.price_a_per_b;
+        clmm[i] = { ...p, mint_a: p.mint_b, mint_b: p.mint_a, price_a_per_b: inv as any };
+      }
+    }
+  } catch {}
+  // Emit a single summary warning with the total count of mismatches
 	  try { if (orientationMismatchCount > 0) logger.warn('pools.price_orientation_mismatch', { count: orientationMismatchCount, source: 'Orca', cat: 'pools' }); } catch {}
   if (!clmm.length) {
     logger.warn('orca.http normalized 0 clmm', { hint: 'Check inspect log for field presence and pool types' });

@@ -18,7 +18,7 @@ import { enablePriceFeed, setPriceFeedInterval, pollPriceFeedNow } from './feedR
 import { addWalletHistory, getWalletHistory } from './walletHistory.js';
 import { apiStart, apiStop, apiReset, setTargetTickTimeMs } from '../jupiter/rateLimiter.js';
 // priceFeed is started in index.ts and broadcasts via websocket
-import { getRaydiumPoolsNormalized, getOrcaPoolsCached, startRaydiumRefreshLoop, getPoolsMetrics } from './pools.js';
+import { getRaydiumPoolsNormalized, getOrcaPoolsCached, startRaydiumRefreshLoop, getPoolsMetrics, getMeteoraPoolsCached } from './pools.js';
 import { getGraphSnapshot, findPath } from './graph.js';
 import { writeSessionLogAndClear } from '../utils/sessionLogs.js';
 
@@ -76,6 +76,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
         fees: CONFIG.fees,
         raydium: CONFIG.raydium,
         orca: CONFIG.orca,
+        meteora: (CONFIG as any).meteora,
         sanity: (CONFIG as any).sanity,
       });
     } catch (e: any) {
@@ -1411,18 +1412,20 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       const pools = await getRaydiumPoolsNormalized(false);
       // Restore config if overridden for this request
       try { if (restore) { (CONFIG.raydium as any).minAmmLiqBase = prevAmm; (CONFIG.raydium as any).minClmmLiquidity = prevClmm; if (prevAnchors) (CONFIG.raydium as any).anchorMints = prevAnchors; if (prevUseAnchor !== undefined) (CONFIG.raydium as any).useAnchorDiscovery = prevUseAnchor; } } catch {}
-      // Scope pools per configured mode using universe helper
-      const mode = String((CONFIG.system as any)?.scopePoolsMode || 'jupiter');
-      const scopedEnabled = CONFIG.system.scopePools !== false && mode !== 'none';
+      // Optional route-level scoping to avoid double filtering
       let out = pools;
-      if (scopedEnabled) {
+      const routeScope = !!((CONFIG.system as any)?.routeLevelScoping);
+      if (routeScope) {
         try {
-          const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
-          const universe = await computeTokenUniverse(mode as any);
-          const filtered = filterPoolsByUniverse(pools as any, universe, true);
-          const upstreamCount = (pools.amm?.length || 0) + (pools.clmm?.length || 0);
-          const scopedCount = (filtered.amm.length || 0) + (filtered.clmm.length || 0);
-          out = (upstreamCount > 0 && scopedCount === 0) ? pools : filtered as any;
+          const mode = String((CONFIG.system as any)?.scopePoolsMode || 'jupiter');
+          if (mode !== 'none') {
+            const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
+            const universe = await computeTokenUniverse(mode as any);
+            const filtered = filterPoolsByUniverse(pools as any, universe, !!((CONFIG.system as any)?.enableAnchorBridging));
+            const upstreamCount = (pools.amm?.length || 0) + (pools.clmm?.length || 0);
+            const scopedCount = (filtered.amm.length || 0) + (filtered.clmm.length || 0);
+            out = (upstreamCount > 0 && scopedCount === 0) ? pools : (filtered as any);
+          }
         } catch {}
       }
       res.json(out);
@@ -1475,23 +1478,52 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   api.get('/arb/pools/orca', async (_req, res) => {
     try {
       const pools = await getOrcaPoolsCached(false);
-      // Scope pools per configured mode using universe helper
-      const mode = String((CONFIG.system as any)?.scopePoolsMode || 'jupiter');
-      const scopedEnabled = CONFIG.system.scopePools !== false && mode !== 'none';
+      // Optional route-level scoping
       let out = pools;
-      if (scopedEnabled) {
+      const routeScope = !!((CONFIG.system as any)?.routeLevelScoping);
+      if (routeScope) {
         try {
-          const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
-          const universe = await computeTokenUniverse(mode as any);
-          const filtered = filterPoolsByUniverse(pools as any, universe, true);
-          const upstreamCount = (pools.amm?.length || 0) + (pools.clmm?.length || 0);
-          const scopedCount = (filtered.amm.length || 0) + (filtered.clmm.length || 0);
-          out = (upstreamCount > 0 && scopedCount === 0) ? pools : filtered as any;
+          const mode = String((CONFIG.system as any)?.scopePoolsMode || 'jupiter');
+          if (mode !== 'none') {
+            const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
+            const universe = await computeTokenUniverse(mode as any);
+            const filtered = filterPoolsByUniverse(pools as any, universe, !!((CONFIG.system as any)?.enableAnchorBridging));
+            const upstreamCount = (pools.amm?.length || 0) + (pools.clmm?.length || 0);
+            const scopedCount = (filtered.amm.length || 0) + (filtered.clmm.length || 0);
+            out = (upstreamCount > 0 && scopedCount === 0) ? pools : (filtered as any);
+          }
         } catch {}
       }
       res.json(out);
     } catch (e: any) {
       logger.error('orca pools fetch failed', { error: String(e?.message || e) });
+      res.status(503).json({ amm: [], clmm: [] });
+    }
+  });
+
+  // Meteora pools (normalized) for arb bridge
+  api.get('/arb/pools/meteora', async (_req, res) => {
+    try {
+      const pools = await getMeteoraPoolsCached(false);
+      // Optional route-level scoping
+      let out = pools;
+      const routeScope = !!((CONFIG.system as any)?.routeLevelScoping);
+      if (routeScope) {
+        try {
+          const mode = String((CONFIG.system as any)?.scopePoolsMode || 'jupiter');
+          if (mode !== 'none') {
+            const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
+            const universe = await computeTokenUniverse(mode as any);
+            const filtered = filterPoolsByUniverse(pools as any, universe, !!((CONFIG.system as any)?.enableAnchorBridging));
+            const upstreamCount = (pools.amm?.length || 0) + (pools.clmm?.length || 0);
+            const scopedCount = (filtered.amm.length || 0) + (filtered.clmm.length || 0);
+            out = (upstreamCount > 0 && scopedCount === 0) ? pools : (filtered as any);
+          }
+        } catch {}
+      }
+      res.json(out);
+    } catch (e: any) {
+      logger.error('meteora pools fetch failed', { error: String(e?.message || e) });
       res.status(503).json({ amm: [], clmm: [] });
     }
   });
@@ -1514,7 +1546,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       res.json({
         mode: (CONFIG.system as any)?.tokenUniverseMode,
         sizes: { universe: uni.size, raydium: ray.size, orca: orc.size, jupiter: jup.size, watchlist: wli.size },
-        onlyRay, onlyOrc, overlapCount: overlap.length,
+        onlyRay, onlyOrc, overlapCount: overlap.length, anchorBridging: !!((CONFIG.system as any)?.enableAnchorBridging), canon: (CONFIG.system as any)?.canonicalizePairs || 'none',
       });
     } catch (e: any) {
       res.status(500).json({ error: String(e?.message || e) });
@@ -1523,17 +1555,18 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
 
   // Force refresh pools (Raydium and/or Orca)
   // Simple debounce to prevent spammed refreshes
-  const lastRefresh: { raydium: number; orca: number } = { raydium: 0, orca: 0 };
+  const lastRefresh: { raydium: number; orca: number; meteora: number } = { raydium: 0, orca: 0, meteora: 0 };
   api.post('/arb/pools/refresh', async (req, res) => {
     try {
-      const { source } = (req.body || {}) as { source?: 'raydium' | 'orca' | 'all' };
+      const { source } = (req.body || {}) as { source?: 'raydium' | 'orca' | 'meteora' | 'all' };
       const wantRay = !source || source === 'all' || source === 'raydium';
       const wantOrc = !source || source === 'all' || source === 'orca';
+      const wantMet = !source || source === 'all' || source === 'meteora';
       const t0 = Date.now();
       const minGap = Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000);
       const now = Date.now();
       const tasks: Array<Promise<any>> = [];
-      let ray: any = null; let orc: any = null;
+      let ray: any = null; let orc: any = null; let met: any = null;
       if (wantRay && now - lastRefresh.raydium >= minGap) {
         lastRefresh.raydium = now;
         tasks.push(getRaydiumPoolsNormalized(true).then(r => { ray = r; }).catch(() => { ray = { amm: [], clmm: [] }; }));
@@ -1541,6 +1574,10 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       if (wantOrc && now - lastRefresh.orca >= minGap) {
         lastRefresh.orca = now;
         tasks.push(getOrcaPoolsCached(true).then(o => { orc = o; }).catch(() => { orc = { amm: [], clmm: [] }; }));
+      }
+      if (wantMet && now - lastRefresh.meteora >= minGap) {
+        lastRefresh.meteora = now;
+        tasks.push(getMeteoraPoolsCached(true).then(m => { met = m; }).catch(() => { met = { amm: [], clmm: [] }; }));
       }
       await Promise.all(tasks);
       // After pools refresh, build a fresh graph snapshot and emit to clients

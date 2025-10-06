@@ -3,7 +3,7 @@ import { logger } from '../utils/logger.js';
 import { readJson } from '../utils/fs.js';
 import { notifyArbServiceRefresh, emit, pushArbGraphSnapshot, pushArbGraphDiff } from './realtime.js';
 import { CONFIG } from '../utils/config.js';
-import { getRaydiumPoolsNormalized, getOrcaPoolsCached, enablePoolWebsocketRefreshes } from './pools.js';
+import { getRaydiumPoolsNormalized, getOrcaPoolsCached, enablePoolWebsocketRefreshes, peekMeteoraPools, getMeteoraPoolsCached } from './pools.js';
 import { loadTokenMap } from '../utils/tokens.js';
 import fetch from 'node-fetch';
 
@@ -116,18 +116,20 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       // When a forced snapshot is requested, ensure caches are warmed briefly to avoid empty graphs
       if (force) {
         try {
-          const { peekRaydiumPools, peekOrcaPools, getRaydiumPoolsNormalized, getOrcaPoolsCached } = await import('./pools.js');
+          const { peekRaydiumPools, peekOrcaPools, peekMeteoraPools, getRaydiumPoolsNormalized, getOrcaPoolsCached, getMeteoraPoolsCached } = await import('./pools.js');
           const hasAny = (p: any) => ((p?.amm?.length || 0) + (p?.clmm?.length || 0)) > 0;
           let rayPeek = peekRaydiumPools();
           let orcPeek = peekOrcaPools();
-          if (!hasAny(rayPeek) || !hasAny(orcPeek)) {
+          let metPeek = peekMeteoraPools();
+          if (!hasAny(rayPeek) || !hasAny(orcPeek) || !hasAny(metPeek)) {
             // Perform a one-shot fetch to warm caches regardless of subscription; functions enforce their own min-force gaps
-            try { await Promise.allSettled([getRaydiumPoolsNormalized(true), getOrcaPoolsCached(true)]); } catch {}
+            try { await Promise.allSettled([getRaydiumPoolsNormalized(true), getOrcaPoolsCached(true), getMeteoraPoolsCached(true)]); } catch {}
             const deadline = Date.now() + 1000;
             while (Date.now() < deadline) {
               rayPeek = peekRaydiumPools();
               orcPeek = peekOrcaPools();
-              if (hasAny(rayPeek) || hasAny(orcPeek)) break;
+              metPeek = peekMeteoraPools();
+              if (hasAny(rayPeek) || hasAny(orcPeek) || hasAny(metPeek)) break;
               await new Promise(r => setTimeout(r, 50));
             }
           }
@@ -135,25 +137,30 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       }
       // Do not trigger background fetching unless explicitly requested by refresh API
       // Build graph from whatever is in caches right now
-      const { peekRaydiumPools, peekOrcaPools } = await import('./pools.js');
+      const { peekRaydiumPools, peekOrcaPools, peekMeteoraPools } = await import('./pools.js');
       const rayRaw = peekRaydiumPools();
       const orcRaw = peekOrcaPools();
+      const metRaw = peekMeteoraPools();
       // Apply scoping according to CONFIG.system.scopePools and scopePoolsMode via universe helper
       const mode = String((CONFIG.system as any)?.scopePoolsMode || 'jupiter');
       const scoped = CONFIG.system.scopePools !== false && mode !== 'none';
-      let ray = rayRaw; let orc = orcRaw;
+      let ray = rayRaw; let orc = orcRaw; let met = metRaw;
       if (scoped) {
         try {
           const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
           const universe = await computeTokenUniverse(mode as any);
           const rScoped = filterPoolsByUniverse(rayRaw as any, universe, true);
           const oScoped = filterPoolsByUniverse(orcRaw as any, universe, true);
+          const mScoped = filterPoolsByUniverse(metRaw as any, universe, true);
           const upstreamR = (rayRaw.amm?.length || 0) + (rayRaw.clmm?.length || 0);
           const scopedR = (rScoped.amm.length || 0) + (rScoped.clmm.length || 0);
           const upstreamO = (orcRaw.amm?.length || 0) + (orcRaw.clmm?.length || 0);
           const scopedO = (oScoped.amm.length || 0) + (oScoped.clmm.length || 0);
+          const upstreamM = (metRaw.amm?.length || 0) + (metRaw.clmm?.length || 0);
+          const scopedM = (mScoped.amm.length || 0) + (mScoped.clmm.length || 0);
           ray = (upstreamR > 0 && scopedR === 0) ? rayRaw : rScoped as any;
           orc = (upstreamO > 0 && scopedO === 0) ? orcRaw : oScoped as any;
+          met = (upstreamM > 0 && scopedM === 0) ? metRaw : mScoped as any;
         } catch {}
       }
       const tokenMap = await loadTokenMap().catch(() => ({} as Record<string, { mint: string; decimals: number }>));
@@ -498,6 +505,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         } catch {}
       }
       const orcValid = validatePoolsForGraph(orc as any);
+      const metValid = validatePoolsForGraph(met as any);
       // Helper: triangulate A per B using a pivot C present in pools (no USD refs needed)
       const PIVOTS: string[] = [
         'So11111111111111111111111111111111111111112', // SOL
@@ -634,6 +642,34 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const rid = pid ? `${pid}-rev` : `${p.mint_b}->${p.mint_a}-Orca`;
           if (edgesMap[eid]) edgesMap[eid].pool_liquidity_raw = Number((p as any).liquidity || 0) || undefined;
           if (edgesMap[rid]) edgesMap[rid].pool_liquidity_raw = Number((p as any).liquidity || 0) || undefined;
+        } catch {}
+      }
+      // Meteora CLMM (DLMM) edges: treat like CLMM; incoming price is A per 1 B
+      for (const p of (metValid.clmm || [])) {
+        // Compute USD TVL if amounts/decimals present
+        const decA = Number((p as any)?.decimals_a ?? NaN);
+        const decB = Number((p as any)?.decimals_b ?? NaN);
+        const amtA = Number((p as any)?.amount_a ?? NaN);
+        const amtB = Number((p as any)?.amount_b ?? NaN);
+        let usd: number | undefined = (p as any)?.tvl_usd;
+        if ((!usd || !(usd > 0)) && Number.isFinite(decA) && Number.isFinite(decB) && Number.isFinite(amtA) && Number.isFinite(amtB)) {
+          const wholeA = amtA / Math.pow(10, decA);
+          const wholeB = amtB / Math.pow(10, decB);
+          usd = tvlUsd(p.mint_a, p.mint_b, wholeA, wholeB);
+        }
+        // Calibrate price; for DLMM we only have price_a_per_b, no sqrt
+        let priceMet: number | undefined = calibratePrice(p.mint_a, p.mint_b, (p as any).price_a_per_b);
+        // Orientation rule as with Orca: edges store target per 1 source, so invert
+        const pid = String((p as any)?.id || undefined) || undefined;
+        const liqParam = (p as any)?.liquidity_display ?? (usd && usd > 0 ? usd : (p as any)?.pool_liquidity_raw);
+        addEdge(p.mint_a, p.mint_b, 'Meteora', p.fee_bps, liqParam, (priceMet && priceMet > 0) ? (1 / priceMet) : undefined, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
+        const pidRev = pid ? `${pid}-rev` : undefined;
+        addEdge(p.mint_b, p.mint_a, 'Meteora', p.fee_bps, liqParam, (priceMet && priceMet > 0) ? priceMet : undefined, usd, pidRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse');
+        try {
+          const eid = pid || `${p.mint_a}->${p.mint_b}-Meteora`;
+          const rid = pid ? `${pid}-rev` : `${p.mint_b}->${p.mint_a}-Meteora`;
+          if (edgesMap[eid]) edgesMap[eid].pool_liquidity_raw = Number((p as any).pool_liquidity_raw || 0) || undefined;
+          if (edgesMap[rid]) edgesMap[rid].pool_liquidity_raw = Number((p as any).pool_liquidity_raw || 0) || undefined;
         } catch {}
       }
 

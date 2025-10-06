@@ -44,6 +44,12 @@ describe('orca normalize price math', () => {
     // Derived price should closely match desired
     expect(p.price_a_per_b).toBeGreaterThan(100_000);
     expect(Math.abs((p.price_a_per_b as number) - desiredAperB) / desiredAperB).toBeLessThan(1e-6);
+    // Canonicalization: if lex mode enabled, mints should be ordered lexicographically
+    const canon = (await import('../src/utils/config')).CONFIG.system.canonicalizePairs;
+    if (String(canon) === 'lex') {
+      const a = String(p.mint_a), b = String(p.mint_b);
+      expect(a <= b).toBe(true);
+    }
   });
 });
 

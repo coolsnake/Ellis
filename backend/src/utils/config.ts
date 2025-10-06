@@ -65,6 +65,8 @@ export const CONFIG = {
   
   // System configuration
   system: {
+    // Unified pools refresh cadence (drives both Raydium and Orca timers)
+    poolsRefreshMs: Number(process.env.POOLS_REFRESH_MS || 60_000),
     jupiterApiUrl: process.env.JUPITER_API_URL || 'https://quote-api.jup.ag/v6',
     targetTickTimeMs: Number(process.env.TARGET_TICK_TIME_MS || 2000),
     graphStartDelayMs: Number(process.env.GRAPH_START_DELAY_MS || 5000),
@@ -80,6 +82,15 @@ export const CONFIG = {
     scopePoolsMode: (process.env.SCOPE_POOLS_MODE as any) || 'jupiter',
     // New: token-universe mode used to filter pools at source: 'jupiter' | 'watchlist' | 'intersection' | 'union'
     tokenUniverseMode: (process.env.TOKEN_UNIVERSE_MODE as any) || 'jupiter',
+    // Route-level scoping (disable to avoid double-scoping if sources already scoped)
+    routeLevelScoping: (process.env.ROUTE_LEVEL_SCOPING || 'false') === 'true',
+    // Whether to allow anchor-bridging when scoping (include pools if either side is an anchor mint)
+    enableAnchorBridging: (process.env.ENABLE_ANCHOR_BRIDGING || 'false') === 'true',
+    // Optional canonicalization of pair orientation for normalized outputs: 'none' | 'lex'
+    canonicalizePairs: (process.env.CANONICALIZE_PAIRS as any) || 'none',
+    // System-wide TVL/liquidity thresholds (applied in addition to per-source thresholds)
+    minAmmLiqBase: process.env.MIN_AMM_LIQ_BASE ? Number(process.env.MIN_AMM_LIQ_BASE) : undefined,
+    minClmmLiquidity: process.env.MIN_CLMM_LIQUIDITY ? Number(process.env.MIN_CLMM_LIQUIDITY) : undefined,
     // Optional: anchors always included in universe and bridging exceptions
     anchorMints: (process.env.ANCHOR_MINTS || 'So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')
       .split(',')
@@ -101,6 +112,7 @@ export const CONFIG = {
       'jupiter',
       'raydium',
       'orca',
+      'meteora',
       'arb',
       'opportunity',
       'drift',
@@ -189,7 +201,8 @@ export const CONFIG = {
     ammV4Program: process.env.RAYDIUM_AMM_V4_PROGRAM || '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8',
     clmmProgram: process.env.RAYDIUM_CLMM_PROGRAM || 'CAMMCzo5nKXjotvLkGQ6r1N1C8QXr8iY6pYwWf3V8mGk',
     // Cache & SDK behavior
-    cacheTtlMs: Number(process.env.RAYDIUM_CACHE_TTL_MS || 300_000),
+    // Keep cache TTL configurable; timers use unified poolsRefreshMs by default
+    cacheTtlMs: Number(process.env.RAYDIUM_CACHE_TTL_MS || 60_000),
     sdkConcurrency: Number(process.env.RAYDIUM_SDK_CONCURRENCY || 8),
     sdkProbeMintsLimit: Number(process.env.RAYDIUM_SDK_PROBE_MINTS_LIMIT || 50),
     sdkClmmPageSize: Number(process.env.RAYDIUM_SDK_CLMM_PAGE_SIZE || 5000),
@@ -223,6 +236,21 @@ export const CONFIG = {
     // Force per-pool SDK enrichment when mints look suspect
     enforceEnrichment: process.env.RAYDIUM_ENFORCE_ENRICHMENT === 'true',
   }, 
+  // Meteora configuration (DLMM HTTP-first)
+  meteora: {
+    mode: (process.env.METEORA_MODE as any) || 'http', // 'http' | 'sdk'
+    apiUrl: process.env.METEORA_API_URL || 'https://dlmm-api.meteora.ag/v1/pairs',
+    pageSize: Number(process.env.METEORA_HTTP_PAGE_SIZE || 200),
+    maxPages: Number(process.env.METEORA_HTTP_MAX_PAGES || 3),
+    cacheTtlMs: Number(process.env.METEORA_CACHE_TTL_MS || 60_000),
+    maxHttpRetries: Number(process.env.METEORA_HTTP_MAX_RETRIES || 2),
+    httpBackoffMs: Number(process.env.METEORA_HTTP_BACKOFF_MS || 500),
+    // TVL filtering (raw liquidity proxies)
+    minClmmLiquidity: Number(process.env.METEORA_MIN_CLMM_LIQUIDITY || 0),
+    // Optional conservative prefiltering by universe
+    universePrefilter: (process.env.METEORA_UNIVERSE_PREFILTER || 'false') === 'true',
+  },
+  
   // Transaction fee configuration
   fees: {
     baseFee: Number(process.env.BASE_FEE_LAMPORTS || 5000), // 0.000005 SOL default

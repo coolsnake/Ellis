@@ -74,7 +74,8 @@ The backend fetches Raydium pools either via SDK or on-chain scanning.
 Environment/config:
 
 - `RAYDIUM_ONCHAIN` (default false): enable direct RPC scanning
-- `RAYDIUM_CACHE_TTL_MS` (default 300000): cache TTL for pools
+- `POOLS_REFRESH_MS` (default 60000): unified refresh cadence for Raydium/Orca timers
+- `RAYDIUM_CACHE_TTL_MS` (default 60000): cache TTL for pools (timers use POOLS_REFRESH_MS)
 - `RAYDIUM_SDK_CONCURRENCY` (default 8): parallelism for `fetchPoolByMints`
 - `RAYDIUM_SDK_PROBE_MINTS_LIMIT` (default 50): max unique mints probed
 - `RAYDIUM_SDK_CLMM_PAGE_SIZE` (default 5000): CLMM getPools page size
@@ -92,7 +93,20 @@ To reduce noisy pools with near-zero liquidity, the backend supports TVL-like fi
 - `RAYDIUM_MIN_AMM_LIQ_BASE` (default 0): minimum AMM `liquidity_base` required to include a pool.
 - `RAYDIUM_MIN_CLMM_LIQUIDITY` (default 0): minimum CLMM `liquidity` required to include a pool.
 
-These thresholds are applied during Raydium pool normalization. You can also temporarily override thresholds per-request:
+System-wide thresholds (applied to both Raydium and Orca) can be set too:
+
+- `MIN_AMM_LIQ_BASE` (default unset): minimum AMM liquidity proxy across all sources
+- `MIN_CLMM_LIQUIDITY` (default unset): minimum CLMM liquidity proxy across all sources
+
+These thresholds are applied during pool normalization. You can also temporarily override thresholds per-request:
+
+### Scoping and Canonicalization
+
+- `SCOPE_POOLS_MODE`: 'none' | 'watchlist' | 'jupiter' | 'intersection' | 'union'
+- `TOKEN_UNIVERSE_MODE`: same choices; used inside source fetchers for early scoping
+- `ROUTE_LEVEL_SCOPING` (default false): if true, apply scoping again in routes
+- `ENABLE_ANCHOR_BRIDGING` (default false): when scoping, include pools where either side is an anchor (SOL/USDC by default)
+- `CANONICALIZE_PAIRS` (default 'none'): set to 'lex' to store pools with lexicographic mint order and adjusted price orientation
 
 ```
 GET /api/arb/pools/raydium?minAmm=500&minClmm=1000
@@ -100,4 +114,22 @@ GET /api/arb/pools/raydium?minAmm=500&minClmm=1000
 
 If provided, the overrides apply only to that request.
 
+
+## Meteora Pools (DLMM)
+
+- Endpoint: `GET /api/arb/pools/meteora`
+- Normalized as CLMM entries with `dex: 'Meteora'` and `price_a_per_b` from API.
+
+Configuration (env overrides):
+
+- `METEORA_MODE` (default `http`)
+- `METEORA_API_URL` (default `https://dlmm-api.meteora.ag/v1/pairs`)
+- `METEORA_HTTP_PAGE_SIZE`, `METEORA_HTTP_MAX_PAGES`, `METEORA_HTTP_MAX_RETRIES`, `METEORA_HTTP_BACKOFF_MS`
+- `METEORA_CACHE_TTL_MS`
+- `METEORA_MIN_CLMM_LIQUIDITY`
+- `METEORA_UNIVERSE_PREFILTER`
+
+Refresh:
+
+- `POST /api/arb/pools/refresh` now accepts `{ source: 'meteora' }`
 
