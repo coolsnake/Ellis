@@ -835,6 +835,7 @@ async fn main() -> anyhow::Result<()> {
                                 near.bf_rate_delta_bps = Some(delta_bps);
                             }
                             let shortfall = (min_bps - profit_bps).max(0);
+                            let near_for_list = near.clone();
                             match &mut near_pair {
                                 Some((ref mut best, ref mut best_shortfall)) => {
                                     if shortfall < *best_shortfall { *best = near; *best_shortfall = shortfall; }
@@ -842,7 +843,7 @@ async fn main() -> anyhow::Result<()> {
                                 None => { near_pair = Some((near, shortfall)); }
                             }
                             // Collect for top-K list
-                            near_list.push((near.clone(), shortfall));
+                            near_list.push((near_for_list, shortfall));
                         }
                     }
                     // Fallback: if no negative cycles at all (curr empty) and no near_below, enumerate simple cycles up to max_hops and pick best product
