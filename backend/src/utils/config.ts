@@ -240,6 +240,8 @@ export const CONFIG = {
   meteora: {
     mode: (process.env.METEORA_MODE as any) || 'http', // 'http' | 'sdk'
     apiUrl: process.env.METEORA_API_URL || 'https://dlmm-api.meteora.ag/v1/pairs',
+    // Optional DLMM program id for websocket subscriptions
+    programId: process.env.METEORA_PROGRAM_ID,
     pageSize: Number(process.env.METEORA_HTTP_PAGE_SIZE || 200),
     maxPages: Number(process.env.METEORA_HTTP_MAX_PAGES || 3),
     cacheTtlMs: Number(process.env.METEORA_CACHE_TTL_MS || 60_000),

@@ -531,14 +531,14 @@ let wsHealthy: boolean = false;
 export let userSubscribed: boolean = false;
 export function setUserSubscribed(v: boolean): void { userSubscribed = !!v; }
 let aggTimer: any | undefined;
-const wsCounts: { raydium: number; orca: number } = { raydium: 0, orca: 0 };
+const wsCounts: { raydium: number; orca: number; meteora?: number } = { raydium: 0, orca: 0, meteora: 0 };
 let attachedOrcaPools: number = 0;
 let attachedRaydiumPools: number = 0;
 
 export function getWsActivity(): { orca: { attached: number; events: number }; raydium: { attached: number; events: number } } {
   return {
-    orca: { attached: attachedOrcaPools, events: wsCounts.orca },
-    raydium: { attached: attachedRaydiumPools, events: wsCounts.raydium },
+    orca: { attached: attachedOrcaPools, events: wsCounts.orca || 0 },
+    raydium: { attached: attachedRaydiumPools, events: wsCounts.raydium || 0 },
   };
 }
 
@@ -620,9 +620,10 @@ export function startRaydiumRefreshLoop(): void {
             const ownerRayAmm = rayAmm.toBase58();
             const ownerRayClmm = rayClmm.toBase58();
             const ownerOrca = orcaProg.toBase58();
+            const ownerMeteora = String((CONFIG as any)?.meteora?.programId || '').trim();
             try {
               const shortPk = pk ? `${toB58Any(pk).slice(0,6)}…` : '';
-              const src = (owner === ownerRayAmm || owner === ownerRayClmm) ? 'raydium' : (owner === ownerOrca ? 'orca' : 'unknown');
+              const src = (owner === ownerRayAmm || owner === ownerRayClmm) ? 'raydium' : (owner === ownerOrca ? 'orca' : (ownerMeteora && owner === ownerMeteora ? 'meteora' : 'unknown'));
               logger.debug('pools.ws event', { source: src, account: shortPk, cat: 'pools' });
               // Emit raw event snapshot (truncated) for audit
               const raw = {
@@ -761,6 +762,17 @@ export function startRaydiumRefreshLoop(): void {
                 try { logger.warn('orca.ws.parse failed', { error: String(e?.message || e) }); } catch {}
               }
               // Do not fallback to HTTP refresh when user subscribed; leave updates to manual refresh
+            } else if (ownerMeteora && owner === ownerMeteora) {
+              try { wsCounts.meteora = (wsCounts.meteora || 0) + 1; } catch {}
+              // Without on-chain parsers, fall back to a debounced full refresh for Meteora
+              const minGap = Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000);
+              const last = (getMeteoraPoolsCached as any).__lastForceAt || 0;
+              const nowMs = Date.now();
+              if (nowMs - last >= minGap) {
+                (getMeteoraPoolsCached as any).__lastForceAt = nowMs;
+                getMeteoraPoolsCached(true).catch(() => {});
+              }
+              return;
             } else if (pk) {
               // Fallback: if account belongs to any known program, refresh both
               // Disabled while subscribed
@@ -869,6 +881,17 @@ export function startRaydiumRefreshLoop(): void {
             subs.push(conn.onProgramAccountChange(rayClmm, (ch) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
           }
         } catch {}
+        // Meteora program-level subscription (DLMM) when program id configured
+        try {
+          const meteoraProg = String((CONFIG as any)?.meteora?.programId || '').trim();
+          if (meteoraProg) {
+            try { logger.info('pools.ws subscribe meteora(program)', { source: 'meteora', cat: 'pools' }); } catch {}
+            subs.push(conn.onProgramAccountChange(new web3.PublicKey(meteoraProg), (ch: any) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
+          }
+        } catch (e:any) {
+          logger.warn('pools.ws meteora subscribe failed', { error: String(e?.message || e) });
+        }
+
         wsUnsubscribe = () => { try { for (const id of subs) conn.removeAccountChangeListener(id as any).catch(() => {}); } catch {} };
         logger.info('pools.ws subscriptions active');
 
@@ -892,8 +915,8 @@ export function startRaydiumRefreshLoop(): void {
         const aggPeriod = Math.max(5000, Number((CONFIG.system as any)?.wsAggLogPeriodMs || 15000));
         aggTimer = setInterval(() => {
           try {
-            const snapshot = { raydium: wsCounts.raydium, orca: wsCounts.orca };
-            wsCounts.raydium = 0; wsCounts.orca = 0;
+            const snapshot = { raydium: wsCounts.raydium, orca: wsCounts.orca, meteora: wsCounts.meteora } as any;
+            wsCounts.raydium = 0; wsCounts.orca = 0; wsCounts.meteora = 0;
             logger.info('pools.ws aggregate', { events: snapshot, healthy: wsHealthy, lastEventMs: lastWsEventMs });
             try { emit('log', { level: 'debug', message: `pools:ws aggregate ray=${snapshot.raydium} orca=${snapshot.orca}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
           } catch {}

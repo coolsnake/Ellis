@@ -11,7 +11,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
   const [wsHealthy, setWsHealthy] = React.useState<boolean>(false);
   const [lastEventMs, setLastEventMs] = React.useState<number>(0);
   const [arbEnabled, setArbEnabled] = React.useState<boolean>(false);
-  const [wsDetails, setWsDetails] = React.useState<{ orca?: { attached?: number; events?: number }, raydium?: { attached?: number; events?: number } }>({});
+  const [wsDetails, setWsDetails] = React.useState<{ orca?: { attached?: number; events?: number }, raydium?: { attached?: number; events?: number }, meteora?: { attached?: number; events?: number } }>({});
 
   const fetchMetrics = async () => {
     try {
@@ -77,7 +77,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
     fetch(`${apiBase}/arb/metrics/json`).catch(()=>{});
     // Probe arb config to detect enabled state
     fetch(`${apiBase}/arb/config`).then(r=>r.json()).then((j)=>{ if (j && typeof j.enabled === 'boolean') setArbEnabled(!!j.enabled); }).catch(()=>{});
-    fetch(`${apiBase}/arb/pools/subscriptions`).then(r=>r.json()).then((j)=>{ setSubscribed(!!j.enablePoolWs); setWsHealthy(!!j.healthy); setLastEventMs(Number(j.lastEventMs||0)); setWsDetails({ orca: j.orca, raydium: j.raydium }); }).catch(()=>{});
+    fetch(`${apiBase}/arb/pools/subscriptions`).then(r=>r.json()).then((j)=>{ setSubscribed(!!j.enablePoolWs); setWsHealthy(!!j.healthy); setLastEventMs(Number(j.lastEventMs||0)); setWsDetails({ orca: j.orca, raydium: j.raydium, meteora: j.meteora }); }).catch(()=>{});
     return () => {};
   }, [paused]);
 
@@ -158,7 +158,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
           }}>{subscribed ? 'Unsubscribe' : 'Subscribe'}</button>
           {subscribed ? (
             <span className={`px-2 py-0.5 text-xs rounded border ${wsHealthy ? 'bg-green-700/50 border-green-600' : 'bg-yellow-700/50 border-yellow-600'}`}>
-              {wsHealthy ? `Subscribed (WS Active: Ray ${wsDetails.raydium?.attached||0}/${wsDetails.raydium?.events||0}, Orca ${wsDetails.orca?.attached||0}/${wsDetails.orca?.events||0})` : 'Subscribed (WS Idle)'}
+              {wsHealthy ? `Subscribed (WS Active: Ray ${wsDetails.raydium?.attached||0}/${wsDetails.raydium?.events||0}, Orca ${wsDetails.orca?.attached||0}/${wsDetails.orca?.events||0}, Met ${wsDetails.meteora?.attached||0}/${wsDetails.meteora?.events||0})` : 'Subscribed (WS Idle)'}
             </span>
           ) : null}
         </div>
@@ -212,6 +212,14 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
                 <div>
                   <div className="text-gray-400">Orca Last (AMM/CLMM)</div>
                   <div>{fmt(poolsStats.orca?.lastAmm)} / {fmt(poolsStats.orca?.lastClmm)}</div>
+                </div>
+                <div>
+                  <div className="text-gray-400">Meteora Fetches / Last Ms</div>
+                  <div>{fmt(poolsStats.meteora?.fetches)} / {fmt(poolsStats.meteora?.lastMs)}</div>
+                </div>
+                <div>
+                  <div className="text-gray-400">Meteora Last (CLMM)</div>
+                  <div>{fmt(poolsStats.meteora?.lastClmm)}</div>
                 </div>
               </div>
             </div>
