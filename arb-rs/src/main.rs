@@ -159,7 +159,7 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer().without_time().with_ansi(false).with_writer(move || BridgeWriter { tx: bridge_tx.clone() }))
         .init();
 
-    let state = Arc::new(RwLock::new(AppState { config: default_config(), opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), pool_cache: PoolCache::new(), near_miss: None, near_miss_shortfall_bps: None, near_misses: Vec::new(), force_refresh_next: false, last_graph_version: 0, last_graph_ts: 0, use_backend_graph: false, pending_added_edges: Vec::new(), pending_updated_edges: Vec::new(), pending_removed_edge_ids: Vec::new(), pending_graph_version: None, pending_graph_ts: None, wake: Arc::new(Notify::new()) }));
+    let state = Arc::new(RwLock::new(AppState { config: default_config(), opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), pool_cache: PoolCache::new(), near_miss: None, near_miss_shortfall_bps: None, near_misses: Vec::new(), force_refresh_next: false, last_graph_version: 0, last_graph_ts: 0, use_backend_graph: true, pending_added_edges: Vec::new(), pending_updated_edges: Vec::new(), pending_removed_edge_ids: Vec::new(), pending_graph_version: None, pending_graph_ts: None, wake: Arc::new(Notify::new()) }));
 
     // Install shutdown handler to clear in-memory state
     {
@@ -180,8 +180,8 @@ async fn main() -> anyhow::Result<()> {
             s.pending_graph_ts = None;
             s.last_graph_version = 0;
             s.last_graph_ts = 0;
-            s.use_backend_graph = false;
-            s.force_refresh_next = true;
+            s.use_backend_graph = true;
+            s.force_refresh_next = false;
         });
     }
 
@@ -237,16 +237,8 @@ async fn main() -> anyhow::Result<()> {
                 let amt_sol_small: u64 = 100_000; // 0.0001 SOL for probing
                 let amt_usdc_small: u64 = 10_000; // 0.01 USDC for probing
 
-                // If using backend-provided graph, skip local ingestion entirely, unless backend graph is stale
-                let (use_backend_graph_raw, last_backend_ts) = { let s = loop_state.read().await; (s.use_backend_graph, s.last_graph_ts) };
-                let now_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
-                // Fallback to local rebuild if backend graph appears stale
-                let stale_ms = now_ts.saturating_sub(last_backend_ts);
-                let backend_stale = use_backend_graph_raw && (last_backend_ts == 0 || stale_ms > 15_000);
-                let use_backend_graph = use_backend_graph_raw && !backend_stale;
-                if backend_stale {
-                    tracing::info!(stale_ms, "arb.graph.mode: backend stale → fallback to local rebuild this tick");
-                }
+                // Force backend-provided graph; no local ingestion fallback
+                let use_backend_graph = { let s = loop_state.read().await; s.use_backend_graph };
                 let (mut wl, mut pairs): (Vec<String>, Vec<(String,String,u64,u32,u32)>) = (Vec::new(), Vec::new());
                 if !use_backend_graph {
                     // Pull watchlist from backend and build pair candidates (star topology to USDC)
@@ -271,24 +263,15 @@ async fn main() -> anyhow::Result<()> {
                 // Raydium compute-quote is redundant when using pool edges; keep disabled by default
 
                 // Pools snapshot (rate-limited)
-                let (need_orca, need_rayd, force_now) = if use_backend_graph { (false, false, false) } else {
-                    let s = loop_state.read().await;
-                    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
-                    // Refresh windows aligned with backend cache TTLs: 5 minutes
-                    (
-                        sources_cfg.orca && (s.force_refresh_next || now.saturating_sub(s.pool_cache.last_refresh_orca_ms) > 60_000),
-                        sources_cfg.raydium && (s.force_refresh_next || now.saturating_sub(s.pool_cache.last_refresh_raydium_ms) > 60_000),
-                        s.force_refresh_next,
-                    )
-                };
+                let (need_orca, need_rayd, force_now) = (false, false, false);
                 // Hint backend to refresh its normalized caches before we pull them, so Rust sees latest normalization
                 // Backend route is internally debounced; ignore errors
                 if need_orca || need_rayd || force_now { tracing::info!(need_orca, need_rayd, force_now, "arb.pools.refresh.hint"); let _ = sources.backend_refresh_pools(&api_base, Some("all")).await; }
                 let t_orca = Instant::now();
-                let orca = if use_backend_graph { Ok(serde_json::json!({ "amm": [], "clmm": [] })) } else if need_orca || { let s = loop_state.read().await; s.pool_cache.last_refresh_orca_ms == 0 } { sources.backend_orca_pools(&api_base).await } else { Ok(serde_json::json!({ "amm": [], "clmm": [] })) };
+                let orca = Ok(serde_json::json!({ "amm": [], "clmm": [] }));
                 let orca_ms = t_orca.elapsed().as_millis();
                 let t_rayd = Instant::now();
-                let rayd = if use_backend_graph { Ok(serde_json::json!({ "amm": [], "clmm": [] })) } else if need_rayd || { let s = loop_state.read().await; s.pool_cache.last_refresh_raydium_ms == 0 } { sources.backend_raydium_pools(&api_base).await } else { Ok(serde_json::json!({ "amm": [], "clmm": [] })) };
+                let rayd = Ok(serde_json::json!({ "amm": [], "clmm": [] }));
                 let rayd_ms = t_rayd.elapsed().as_millis();
                 tracing::info!(orca_ms = orca_ms as u128, rayd_ms = rayd_ms as u128, "arb.pools.fetch.done");
                 let (mut orca_amm_len, mut orca_clmm_len, mut ray_amm_len, mut ray_clmm_len) = (0usize,0usize,0usize,0usize);
@@ -1587,7 +1570,7 @@ fn default_config() -> ArbConfig {
         max_idle_ms: 2000,
         dex_allow: vec!["Raydium".into(), "Orca".into()],
         priority_fee_tier: "h".into(),
-        sources: SourcesCfg { jupiter: false, raydium: true, orca: true },
+        sources: SourcesCfg { jupiter: false, raydium: false, orca: false },
         max_slippage_bps: 100,
         execution_mode: "simulate".into(),
         quote_size_usd: 50.0,
