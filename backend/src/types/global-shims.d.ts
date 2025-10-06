@@ -34,17 +34,7 @@ declare module 'vitest' {
 
 
 // Optional SDK shims for environments without these deps installed
-declare module '@solana/web3.js' {
-  export const Connection: any;
-  export const PublicKey: any;
-  export const Keypair: any;
-  export const clusterApiUrl: any;
-  export const LAMPORTS_PER_SOL: any;
-  export const VersionedTransaction: any;
-  export const Transaction: any;
-  export const ComputeBudgetProgram: any;
-  export const SystemProgram: any;
-}
+declare module '@solana/web3.js' { const anyExport: any; export = anyExport; }
 declare module '@raydium-io/raydium-sdk-v2' { const anyExport: any; export = anyExport; }
 declare module '@orca-so/whirlpools-sdk' { const anyExport: any; export = anyExport; }
 declare module '@orca-so/whirlpools' { const anyExport: any; export = anyExport; }

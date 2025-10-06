@@ -595,62 +595,62 @@ export function startRaydiumRefreshLoop(): void {
               try {
                 const rmod: any = await import('@raydium-io/raydium-sdk-v2').catch(() => null);
                 if (!rmod || !info?.data) { throw new Error('raydium sdk missing'); }
-                // Try CLMM pool decode first
-                let state: any = null;
-                const clmmLayout = (rmod as any)?.Clmm?.PoolStateLayout || (rmod as any)?.CLMM?.POOL_STATE_LAYOUT || (rmod as any)?.PoolStateLayout;
-                if (clmmLayout && typeof clmmLayout.decode === 'function') {
-                  try { state = clmmLayout.decode(info.data); } catch {}
-                  if (state && (state as any).liquidity != null && ((state as any).mintA || (state as any).tokenMintA)) {
-                    const mintA = ((state as any).mintA || (state as any).tokenMintA)?.toBase58?.() || '';
-                    const mintB = ((state as any).mintB || (state as any).tokenMintB)?.toBase58?.() || '';
-                    const sqrt = Number((state as any).sqrtPriceX64 ?? (state as any).sqrt_price_x64 ?? (state as any).sqrtPrice ?? 0);
-                    // Approximate A per 1 B from sqrtPriceX64 (Q64.64): price = (sqrt / 2^64)^2
-                    const pxFromSqrt = (() => {
-                      try {
-                        if (!Number.isFinite(sqrt) || sqrt <= 0) return 0;
-                        const ratio = sqrt / Math.pow(2, 64);
-                        const px = ratio * ratio;
-                        return Number.isFinite(px) && px > 0 ? px : 0;
-                      } catch { return 0; }
-                    })();
-                    const liq = Number((state as any).liquidity ?? 0);
-                    const tick = Number((state as any).tickSpacing ?? (state as any).tick_spacing ?? 0);
-                    const fee = Number((state as any).feeRate ?? (state as any).fee_rate ?? 0);
-                    const item: ClmmPool = { id: pk58, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps: fee, sqrt_price_x64: sqrt, liquidity: liq, tick_spacing: tick, updated_ms: Date.now(), pool_kind: 'clmm', liquidity_display: liq, price_a_per_b: pxFromSqrt } as any;
-                    const prev = raydiumCache.data || { amm: [], clmm: [] };
-                    const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
-                    const idx = next.clmm.findIndex(p => p.id === item.id);
-                    if (idx >= 0) next.clmm[idx] = { ...next.clmm[idx], ...item }; else next.clmm.push(item);
-                    const d = diffNormalizedPools(prev, next);
-                    raydiumCache.data = next; raydiumCache.ts = Date.now();
-                    try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: [], clmm: d.clmm.slice(0, 20) }, ts: Date.now() }); } catch {}
-                    // Graph rebuilds now orchestrated by refresh endpoint; avoid redundant triggers here
-                    updated = true;
-                  }
-                }
-                // Try AMM V4 decode
-                if (!updated) {
-                  const ammLayout = (rmod as any)?.LiquidityStateLayoutV4 || (rmod as any)?.LIQUIDITY_STATE_LAYOUT_V4 || null;
-                  if (ammLayout && typeof ammLayout.decode === 'function') {
-                    try { state = ammLayout.decode(info.data); } catch { state = null; }
-                    if (state) {
-                      const mintA = (state.baseMint || state.mintA || state.mint_a)?.toBase58?.() || '';
-                      const mintB = (state.quoteMint || state.mintB || state.mint_b)?.toBase58?.() || '';
-                      // Reserves may be BN; best-effort convert to number
-                      const rA = Number((state.baseReserve || state.reserveA || state.vaultA || 0).toString ? (state.baseReserve.toString()) : (state.baseReserve || 0));
-                      const rB = Number((state.quoteReserve || state.reserveB || state.vaultB || 0).toString ? (state.quoteReserve.toString()) : (state.quoteReserve || 0));
-                      const price = (rB > 0 && rA > 0) ? (rA / rB) : 0;
-                      const liqBase = (rA > 0 && rB > 0) ? Math.min(rA, rB) : 0;
-                      const item: AmmPool = { id: pk58, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps: Number((state as any).tradeFeeRate || (state as any).feeRate || 0), price_a_per_b: price, liquidity_base: liqBase, updated_ms: Date.now(), pool_kind: 'amm', liquidity_display: liqBase } as any;
+                  // Try CLMM pool decode first
+                  let state: any = null;
+                  const clmmLayout = (rmod as any)?.Clmm?.PoolStateLayout || (rmod as any)?.CLMM?.POOL_STATE_LAYOUT || (rmod as any)?.PoolStateLayout;
+                  if (clmmLayout && typeof clmmLayout.decode === 'function') {
+                    try { state = clmmLayout.decode(info.data); } catch {}
+                    if (state && (state as any).liquidity != null && ((state as any).mintA || (state as any).tokenMintA)) {
+                      const mintA = ((state as any).mintA || (state as any).tokenMintA)?.toBase58?.() || '';
+                      const mintB = ((state as any).mintB || (state as any).tokenMintB)?.toBase58?.() || '';
+                      const sqrt = Number((state as any).sqrtPriceX64 ?? (state as any).sqrt_price_x64 ?? (state as any).sqrtPrice ?? 0);
+                      // Approximate A per 1 B from sqrtPriceX64 (Q64.64): price = (sqrt / 2^64)^2
+                      const pxFromSqrt = (() => {
+                        try {
+                          if (!Number.isFinite(sqrt) || sqrt <= 0) return 0;
+                          const ratio = sqrt / Math.pow(2, 64);
+                          const px = ratio * ratio;
+                          return Number.isFinite(px) && px > 0 ? px : 0;
+                        } catch { return 0; }
+                      })();
+                      const liq = Number((state as any).liquidity ?? 0);
+                      const tick = Number((state as any).tickSpacing ?? (state as any).tick_spacing ?? 0);
+                      const fee = Number((state as any).feeRate ?? (state as any).fee_rate ?? 0);
+                      const item: ClmmPool = { id: pk58, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps: fee, sqrt_price_x64: sqrt, liquidity: liq, tick_spacing: tick, updated_ms: Date.now(), pool_kind: 'clmm', liquidity_display: liq, price_a_per_b: pxFromSqrt } as any;
                       const prev = raydiumCache.data || { amm: [], clmm: [] };
                       const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
-                      const idx = next.amm.findIndex(p => p.id === item.id);
-                      if (idx >= 0) next.amm[idx] = { ...next.amm[idx], ...item }; else next.amm.push(item);
+                      const idx = next.clmm.findIndex(p => p.id === item.id);
+                      if (idx >= 0) next.clmm[idx] = { ...next.clmm[idx], ...item }; else next.clmm.push(item);
                       const d = diffNormalizedPools(prev, next);
                       raydiumCache.data = next; raydiumCache.ts = Date.now();
-                      try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: d.amm.slice(0, 20), clmm: [] }, ts: Date.now() }); } catch {}
+                      try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: [], clmm: d.clmm.slice(0, 20) }, ts: Date.now() }); } catch {}
                       // Graph rebuilds now orchestrated by refresh endpoint; avoid redundant triggers here
                       updated = true;
+                    }
+                  }
+                  // Try AMM V4 decode
+                  if (!updated) {
+                    const ammLayout = (rmod as any)?.LiquidityStateLayoutV4 || (rmod as any)?.LIQUIDITY_STATE_LAYOUT_V4 || null;
+                    if (ammLayout && typeof ammLayout.decode === 'function') {
+                      try { state = ammLayout.decode(info.data); } catch { state = null; }
+                      if (state) {
+                        const mintA = (state.baseMint || state.mintA || state.mint_a)?.toBase58?.() || '';
+                        const mintB = (state.quoteMint || state.mintB || state.mint_b)?.toBase58?.() || '';
+                        // Reserves may be BN; best-effort convert to number
+                        const rA = Number((state.baseReserve || state.reserveA || state.vaultA || 0).toString ? (state.baseReserve.toString()) : (state.baseReserve || 0));
+                        const rB = Number((state.quoteReserve || state.reserveB || state.vaultB || 0).toString ? (state.quoteReserve.toString()) : (state.quoteReserve || 0));
+                        const price = (rB > 0 && rA > 0) ? (rA / rB) : 0;
+                        const liqBase = (rA > 0 && rB > 0) ? Math.min(rA, rB) : 0;
+                        const item: AmmPool = { id: pk58, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps: Number((state as any).tradeFeeRate || (state as any).feeRate || 0), price_a_per_b: price, liquidity_base: liqBase, updated_ms: Date.now(), pool_kind: 'amm', liquidity_display: liqBase } as any;
+                        const prev = raydiumCache.data || { amm: [], clmm: [] };
+                        const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
+                        const idx = next.amm.findIndex(p => p.id === item.id);
+                        if (idx >= 0) next.amm[idx] = { ...next.amm[idx], ...item }; else next.amm.push(item);
+                        const d = diffNormalizedPools(prev, next);
+                        raydiumCache.data = next; raydiumCache.ts = Date.now();
+                        try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: d.amm.slice(0, 20), clmm: [] }, ts: Date.now() }); } catch {}
+                        // Graph rebuilds now orchestrated by refresh endpoint; avoid redundant triggers here
+                        updated = true;
                     }
                   }
                 }
@@ -1131,7 +1131,7 @@ export async function getOrcaPoolsNormalized(): Promise<PoolsPayload> {
   });
   // Try configured mode, then fallbacks to maximize robustness
   const tried: string[] = [];
-  try {
+    try {
     const raw = await fetchOrcaHttpImpl();
     let norm = await normalizeOrcaHttpImpl(raw);
         // Apply universe filtering early so caches are consistent across sources
@@ -1156,12 +1156,12 @@ export async function getOrcaPoolsNormalized(): Promise<PoolsPayload> {
           }
         } catch {}
         // Defer TVL filtering to graph-level to avoid early pruning across sources
-    logger.info('orca.http normalized', { clmm: norm.clmm.length, canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
-    return norm;
-  } catch (e: any) {
+  logger.info('orca.http normalized', { clmm: norm.clmm.length, canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
+        return norm;
+    } catch (e: any) {
     tried.push(`http:${String(e?.message || e)}`);
     logger.warn('orca.http failed', { tried });
-    return { amm: [], clmm: [] };
+  return { amm: [], clmm: [] };
   }
 }
 
