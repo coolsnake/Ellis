@@ -119,7 +119,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
 const server = http.createServer(app);
 // Some TS environments model the Socket.IO constructor as zero-arg; attach explicitly to the HTTP server.
-const io: SocketIOServer = new (SocketIOClass as any)();
+const io: any = new (SocketIOClass as any)();
 (io as any).attach(server, {
 	path: (CONFIG as any).socketIoPath || '/socket.io',
 	cors: { origin: corsOrigin === '*' ? true : corsOrigin }
