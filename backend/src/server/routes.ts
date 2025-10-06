@@ -1582,7 +1582,6 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       await Promise.all(tasks);
       // Optional: idempotent subscribe step after refresh when all sources requested
       if ((!source || source === 'all') && (subscribe !== false)) {
-        try { (await import('./pools.js')).setUserSubscribed(true); } catch {}
         try { (await import('./pools.js')).enablePoolWebsocketRefreshes(); } catch {}
         try { (await import('./pools.js')).startRaydiumRefreshLoop(); } catch {}
       }
@@ -1615,9 +1614,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   // Pool websocket subscriptions control (idempotent)
   api.post('/arb/pools/subscribe', async (_req, res) => {
     try {
-      // Mark subscribed BEFORE starting any WS or loops to avoid initial HTTP warmup
-      try { (await import('./pools.js')).setUserSubscribed(true); } catch {}
-      // Enable WS and start loop (no HTTP warmup will run because userSubscribed=true)
+      // Enable WS and start loop (idempotent)
       try { (await import('./pools.js')).enablePoolWebsocketRefreshes(); } catch {}
       try { (await import('./pools.js')).startRaydiumRefreshLoop(); } catch {}
       res.json({ ok: true });
@@ -1635,8 +1632,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
 
   api.post('/arb/pools/unsubscribe', async (_req, res) => {
     try {
-      // Stop all pool activity and mark as unsubscribed
-      try { (await import('./pools.js')).setUserSubscribed(false); } catch {}
+      // Stop all pool activity
       try { (await import('./pools.js')).stopPoolRefreshLoop(); } catch {}
       res.json({ ok: true });
       try { emit('log', { level: 'info', message: 'pools:unsubscribe ok', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}

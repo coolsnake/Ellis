@@ -1005,17 +1005,18 @@ async fn main() -> anyhow::Result<()> {
                                 }
                             }}}
                             if let Some((a,b,c,prod)) = best {
-                                let nodes = vec![a,b,c];
+                                let mut nodes = vec![a,b,c];
                                 let mut labels: Vec<String> = nodes.iter().map(|&i| s.graph.g[NodeIndex::new(i)].clone()).collect();
-                                let rotate_preferred = |mut v: Vec<String>| -> Vec<String> {
-                                    let prefs = [
-                                        "So11111111111111111111111111111111111111112",
-                                        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-                                    ];
-                                    for p in prefs.iter() { if let Some(pos) = v.iter().position(|x| x == p) { v.rotate_left(pos); break; } }
-                                    v
-                                };
-                                labels = rotate_preferred(labels);
+                                // Rotate both nodes and labels so preferred mint (SOL or USDC) starts the cycle
+                                let prefs = [
+                                    "So11111111111111111111111111111111111111112",
+                                    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                                ];
+                                let mut rot: Option<usize> = None;
+                                for p in prefs.iter() {
+                                    if let Some(pos) = labels.iter().position(|x| x == p) { rot = Some(pos); break; }
+                                }
+                                if let Some(pos) = rot { nodes.rotate_left(pos); labels.rotate_left(pos); }
                                 // Build meta across the triangle
                                 let mut link_edges_used: usize = 0; let mut link_penalty_bps_total: i64 = 0; let mut min_edge_liquidity: f64 = f64::INFINITY; let mut bottleneck: Option<(usize,usize,String,f64,f64,i64)> = None; let mut dexes_set: std::collections::HashSet<String> = std::collections::HashSet::new();
                                 let mut hop_dexes: Vec<String> = Vec::new();

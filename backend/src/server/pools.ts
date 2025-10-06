@@ -572,8 +572,6 @@ let wsUnsubscribe: (() => void) | undefined;
 let healthTimer: any | undefined;
 let lastWsEventMs: number = 0;
 let wsHealthy: boolean = false;
-export let userSubscribed: boolean = false;
-export function setUserSubscribed(v: boolean): void { userSubscribed = !!v; }
 let aggTimer: any | undefined;
 const wsCounts: { raydium: number; orca: number; meteora?: number } = { raydium: 0, orca: 0, meteora: 0 };
 let attachedOrcaPools: number = 0;
@@ -586,7 +584,6 @@ let suppressInitialOnce: boolean = false;
 export function startPoolWebsocketsOnlyOnce(): void {
   suppressInitialOnce = true;
   try { enablePoolWebsocketRefreshes(); } catch {}
-  setUserSubscribed(true);
   startRaydiumRefreshLoop();
 }
 
@@ -605,7 +602,6 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
   const m = await getMeteoraPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
   if (subscribe) {
     try {
-      setUserSubscribed(true);
       enablePoolWebsocketRefreshes();
       startRaydiumRefreshLoop();
     } catch {}
@@ -631,8 +627,7 @@ export function startRaydiumRefreshLoop(): void {
   const wsEnabled = !!(CONFIG.system as any)?.enablePoolWs;
   // Defer any activity until graph is ready
   if (!wsAllowed) { logger.info('pools.init deferred until graph ready'); return; }
-  // If user has not explicitly subscribed, do nothing (no timers, no WS)
-  if (!userSubscribed) { logger.info('pools.init skipped — user not subscribed'); return; }
+  // Auto-start timers/WS when allowed by config and graph readiness
 
     if (!wsEnabled && !suppressInitialOnce) {
     rayTimer = setInterval(() => {
@@ -667,9 +662,8 @@ export function startRaydiumRefreshLoop(): void {
     try { getMeteoraPoolsCached(true).catch(() => {}); } catch {}
   }
 
-  // Optional: subscribe to on-chain account changes to push updates into caches
-  // Only attach websockets when the user has explicitly subscribed
-  if (wsEnabled && userSubscribed) {
+  // Optional: subscribe to on-chain account changes to push updates into caches (auto-enabled)
+  if (wsEnabled) {
     if (!wsAllowed) {
       logger.info('pools.ws deferred until graph ready');
       return;

@@ -440,15 +440,11 @@ server.listen(CONFIG.port, () => {
   // DEPRECATED: avoid auto-starting loops; use /arb/pools/refresh to coordinate fetch+subscribe
   // try { if ((CONFIG as any)?.system?.autoStartPools) { startRaydiumRefreshLoop(); } } catch {}
 
-  // Background: fetch Jupiter token list now and daily refresh
+  // Background: fetch Jupiter token list once at startup
   try {
     import('../utils/tokens.js')
       .then(({ fetchAndCacheJupiterTokens }) => {
-        // initial warmup
         try { fetchAndCacheJupiterTokens().catch(() => {}); } catch {}
-        // daily refresh
-        const dayMs = 24 * 60 * 60 * 1000;
-        setInterval(() => { try { fetchAndCacheJupiterTokens().catch(() => {}); } catch {} }, dayMs);
       })
       .catch(() => {});
   } catch {}
