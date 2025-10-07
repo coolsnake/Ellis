@@ -352,13 +352,26 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
               if (!summary?.near_miss?.path?.length) return;
               setSending(true);
               try {
-                const body: any = { path: summary.near_miss.path, hop_pool_ids: (summary.near_miss as any)?.hop_pool_ids };
+                const nm: any = summary.near_miss as any;
+                const body: any = { path: nm.path, hopPoolIds: nm.hop_pool_ids || [], dexes: nm.hop_dexes || [] };
                 if (sendMode === 'USD') body.sizeUsd = Number(sendAmount)||0; else body.size = Number(sendAmount)||0;
-                const r = await fetch(`${apiBase}/arb/execute`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                const r = await fetch(`${apiBase}/arb/resolve-direct`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
                 await r.json().catch(()=>({}));
               } catch {}
               setSending(false);
-            }}>Send</button>
+            }}>Simulate Direct</button>
+            <button className={`px-2 py-1 border rounded ${sending?'opacity-60':''}`} disabled={sending} onClick={async ()=>{
+              if (!summary?.near_miss?.path?.length) return;
+              setSending(true);
+              try {
+                const nm: any = summary.near_miss as any;
+                const body: any = { path: nm.path, hopPoolIds: nm.hop_pool_ids || [], dexes: nm.hop_dexes || [] };
+                if (sendMode === 'USD') body.sizeUsd = Number(sendAmount)||0; else body.size = Number(sendAmount)||0;
+                const r = await fetch(`${apiBase}/arb/execute-direct`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                await r.json().catch(()=>({}));
+              } catch {}
+              setSending(false);
+            }}>Execute Direct</button>
           </div>
         </div>
       )}
