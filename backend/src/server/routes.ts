@@ -100,24 +100,43 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   api.post('/arb/execute-direct', async (req: Request, res: Response) => {
     try {
       const { resolveDirectPlan } = await import('../execution/resolver/index.js');
-      const { buildDirectArbTx } = await import('../execution/builder/tx.js');
+      const { buildDirectArbTx, chunkRoute } = await import('../execution/builder/tx.js');
       const { addTxRecord } = await import('./txHistory.js');
+      const { parseSimLogs } = await import('../execution/sim.js');
+      const { sendWithRetry } = await import('../execution/send.js');
       const input = req.body || {};
       const cfgRes = await (async () => { const r = await fetch(`${req.protocol}://${req.get('host')}/api/arb/config`); try { return await r.json(); } catch { return {}; } })();
       const plan = input?.plan && Array.isArray(input.plan?.hops) ? input.plan : await resolveDirectPlan(ResolveDirectSchema.parse(input), cfgRes);
       io.emit('tx:start', { plan });
       try { logger.info('tx.start', { cat: 'tx', code: 'TX.START', ctx: { hops: plan.hops.length } as any }); } catch {}
-      const built = buildDirectArbTx(plan, []);
-      // Simulate path only in placeholder
+      const built = buildDirectArbTx(plan, [], { computeUnitPriceMicroLamports: plan.computeUnitPriceMicroLamports, computeUnitLimit: (cfgRes?.computeUnitLimit || 0) });
+      // Simulate placeholder with diagnostics parsing
       io.emit('tx:sim.ok', { plan, ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
       try { logger.info('tx.sim.ok', { cat: 'tx', code: 'TX.SIM.OK', ctx: { ixCount: built.ixCount, sizeBytes: built.sizeBytes } as any }); } catch {}
+      try {
+        const anyWeb3: any = await import('@solana/web3.js').catch(() => null);
+        if (anyWeb3) {
+          const connection = new anyWeb3.Connection(String((cfgRes?.rpcUrl || process.env.RPC_URL || 'https://api.mainnet-beta.solana.com')), String(cfgRes?.txCommitment || 'confirmed'));
+          const blank = new anyWeb3.Transaction();
+          const sim = await connection.simulateTransaction(blank, { replaceRecentBlockhash: true, sigVerify: false } as any);
+          const diag = parseSimLogs(sim as any);
+          if (diag && (diag.logs?.length || diag.err)) io.emit('tx:sim.diag', { diag });
+        }
+      } catch {}
       const legs = plan.hops.map(h => ({ dex: h.dex, variant: h.variant, poolId: h.poolId }));
       await addTxRecord({ id: Math.random().toString(36).slice(2,10), timeMs: Date.now(), path: plan.path, hops: legs, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature: null, status: 'sim_ok' });
       // If mode is direct, this is where we would send; placeholder keeps simulate-only behavior
       const mode = String((cfgRes?.mode || 'simulate')).toLowerCase();
       if (mode === 'direct') {
-        // TODO: integrate signer and send, then emit 'tx:send.ok' / 'tx:send.err'
-        try { logger.info('tx.send.skipped_placeholder', { cat: 'tx', code: 'TX.SEND.SKIP' }); } catch {}
+        try {
+          // Placeholder: chunk route and send in sequence (wire encoding omitted)
+          const chunks = chunkRoute(plan, [], { computeUnitPriceMicroLamports: plan.computeUnitPriceMicroLamports, computeUnitLimit: (cfgRes?.computeUnitLimit || 0) }, Number(cfgRes?.maxTxSizeBytes || 1100));
+          for (const [i, c] of chunks.txs.entries()) {
+            io.emit('tx:chunk', { index: i, approxSizeBytes: c.approxSizeBytes });
+            try { logger.info('tx.chunk', { cat: 'tx', code: 'TX.CHUNK', ctx: { index: i, approxSizeBytes: c.approxSizeBytes } as any }); } catch {}
+          }
+          try { logger.info('tx.send.skipped_placeholder', { cat: 'tx', code: 'TX.SEND.SKIP' }); } catch {}
+        } catch {}
       }
       res.json({ signature: null, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, legsSummary: legs });
     } catch (e: any) {
@@ -1752,12 +1771,25 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   api.get('/arb/pools/subscriptions', async (_req, res) => {
     try {
       const cfg = (CONFIG as any)?.system || {};
-      const { getPoolWsStatus, getWsActivity } = await import('./pools.js');
+      const { getPoolWsStatus, getWsActivity, getWsTargets } = await import('./pools.js');
       const st = getPoolWsStatus();
       const act = getWsActivity();
-      res.json({ enablePoolWs: !!cfg.enablePoolWs, healthy: !!st.healthy, lastEventMs: st.lastEventMs, orca: act.orca, raydium: act.raydium, meteora: act.meteora });
+      const tgt = await getWsTargets();
+      res.json({ enablePoolWs: !!cfg.enablePoolWs, healthy: !!st.healthy, lastEventMs: st.lastEventMs, orca: { ...act.orca, ...tgt.orca }, raydium: { ...act.raydium, ...tgt.raydium }, meteora: { ...act.meteora, ...tgt.meteora } });
     } catch (e: any) {
-      res.status(200).json({ enablePoolWs: false, healthy: false, lastEventMs: 0, orca: { attached: 0, events: 0 }, raydium: { attached: 0, events: 0 }, meteora: { attached: 0, events: 0 } });
+      res.status(200).json({ enablePoolWs: false, healthy: false, lastEventMs: 0, orca: { attached: 0, events: 0, target: 0 }, raydium: { attached: 0, events: 0, target: 0 }, meteora: { attached: 0, events: 0, target: 0 } });
+    }
+  });
+
+  // Retarget WS subscriptions to match current graph edges
+  api.post('/arb/pools/retarget', async (_req, res) => {
+    try {
+      const { retargetPoolWebsockets } = await import('./pools.js');
+      const r = await retargetPoolWebsockets();
+      emit('log', { level: 'info', message: `pools:retarget orc=${r.attached.orca} ray=${r.attached.raydium} met=${r.attached.meteora}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } });
+      res.json({ ok: true, ...r });
+    } catch (e: any) {
+      res.status(500).json({ ok: false, error: String(e?.message || e) });
     }
   });
 
@@ -1846,7 +1878,25 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       } catch {}
       try {
         const snap = await getGraphSnapshot(false);
-        json = { ...json, backend_graph_nodes: snap.nodes.length, backend_graph_edges: snap.edges.length, backend_graph_timestamp: snap.timestamp };
+        const timings = await (async () => { try { const g = await import('./graph.js'); return (g as any).getGraphTimings?.() || {}; } catch { return {}; } })();
+        json = { ...json, backend_graph_nodes: snap.nodes.length, backend_graph_edges: snap.edges.length, backend_graph_timestamp: snap.timestamp, ...timings };
+      } catch {}
+      // Append WS status, targets, and pool cache age
+      try {
+        const { getPoolWsStatus, getWsActivity, getWsTargets, getPoolCacheAges } = await import('./pools.js');
+        const st = getPoolWsStatus();
+        const act = getWsActivity();
+        const tgt = await getWsTargets();
+        const ages = getPoolCacheAges();
+        json = { ...json, ws: { healthy: st.healthy, lastEventMs: st.lastEventMs, orca: { ...act.orca, ...tgt.orca }, raydium: { ...act.raydium, ...tgt.raydium }, meteora: { ...act.meteora, ...tgt.meteora } }, pools_age_ms: ages };
+      } catch {}
+      // Backend↔arb-rs graph version delta
+      try {
+        const be = await (async () => { try { const { getGraphVersion } = await import('./graph.js'); return getGraphVersion(); } catch { return { version: 0, timestamp: 0 }; } })();
+        const cached = await (async () => { try { const { getCachedArbVersion } = await import('./realtime.js'); return getCachedArbVersion(); } catch { return { version: 0, timestamp: 0, ageMs: 0 }; } })();
+        const delta = Math.max(0, Number(be.version || 0) - Number(cached.version || 0));
+        const ageMs = Math.max(0, cached.ageMs || 0);
+        json = { ...json, backend_graph_version: be.version, backend_graph_timestamp: be.timestamp, arb_graph_version: Number(cached.version || 0), arb_graph_timestamp: Number(cached.timestamp || 0), arb_graph_version_delta: delta, arb_graph_age_ms: ageMs };
       } catch {}
       try {
         json = { ...json, sanity: (CONFIG as any).sanity };
@@ -2216,6 +2266,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     let lastHeartbeatAt = 0;
     let lastConfigAt = 0;
     let zeroDetWarnedAt = 0;
+    let lastDeltaWarnAt = 0;
     setInterval(async () => {
       try {
         const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
@@ -2236,6 +2287,17 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
           lastActive = m.opportunities_active;
           emit('log', { level: 'info', message: `pretrade:arb opps=${lastActive} maxBps=${m?.max_profit_bps ?? 0} nodes=${m?.graph_nodes ?? 0} edges=${m?.graph_edges ?? 0}`, timestamp: new Date().toISOString() });
         }
+        // Version delta monitoring
+        try {
+          const be = await (async () => { try { const { getGraphVersion } = await import('./graph.js'); return getGraphVersion(); } catch { return { version: 0, timestamp: 0 }; } })();
+          const arb = { version: Number(m?.arb_graph_version || 0), timestamp: Number(m?.arb_graph_timestamp || 0) };
+          const delta = Math.max(0, Number(be.version || 0) - Number(arb.version || 0));
+          const ageMs = Math.max(0, Date.now() - Number(arb.timestamp || 0));
+          if ((delta > 1 || ageMs > 200) && (Date.now() - lastDeltaWarnAt > 200)) {
+            lastDeltaWarnAt = Date.now();
+            emit('log', { level: 'warn', message: `graph:version delta=${delta} arbAgeMs=${ageMs}`, timestamp: new Date().toISOString(), context: { cat: 'graph' } });
+          }
+        } catch {}
         if (typeof m?.last_detection_ms === 'number') {
           if (m.last_detection_ms !== lastDet) {
             lastDet = m.last_detection_ms;

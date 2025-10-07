@@ -71,6 +71,17 @@ export function scheduleGraphRebuild(io?: SocketIOServer, debounceMs = 200): voi
   try { logger.info('graph.rebuild.scheduled', { debounceMs }); } catch {}
 }
 
+// Lightweight timing gauges for build and push latencies
+let lastBuildStart = 0;
+let lastPushStart = 0;
+export function markGraphBuildStart(): void { lastBuildStart = Date.now(); }
+export function markGraphPushStart(): void { lastPushStart = Date.now(); }
+export function getGraphTimings(): { graph_build_ms?: number; graph_push_latency_ms?: number } {
+  const build = lastBuildStart ? (Date.now() - lastBuildStart) : undefined;
+  const push = lastPushStart ? (Date.now() - lastPushStart) : undefined;
+  return { graph_build_ms: build, graph_push_latency_ms: push };
+}
+
 export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
   const now = Date.now();
   if (!force && lastSnapshot && now - lastAt < SNAPSHOT_TTL_MS) return lastSnapshot;

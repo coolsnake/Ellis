@@ -62,6 +62,10 @@ export type ExecutionPlan = {
   computeUnitPriceMicroLamports?: number;
 };
 
+export type ChunkedPlan = { txs: Array<{ instructions: any[]; approxSizeBytes: number }>; totalIxs: number; totalBytes: number };
+
+export type VersionInfo = { version: number; timestamp: number };
+
 export type ExecConfig = {
   mode: 'direct' | 'simulate';
   slippageBpsDefault: number;

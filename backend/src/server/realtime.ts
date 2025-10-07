@@ -122,4 +122,25 @@ export async function checkArbServiceReady(timeoutMs = 4000): Promise<boolean> {
   }
 }
 
+let arbVersionCache: { version: number; timestamp: number; ts: number } = { version: 0, timestamp: 0, ts: 0 };
+export function getCachedArbVersion(): { version: number; timestamp: number; ageMs: number } {
+  const age = Math.max(0, Date.now() - (arbVersionCache.ts || 0));
+  return { version: arbVersionCache.version || 0, timestamp: arbVersionCache.timestamp || 0, ageMs: age };
+}
+(async function pollArbVersionLoop(){
+  try {
+    const host = ((globalThis as any)?.process?.env?.ARB_SERVICE_URL) || 'http://127.0.0.1:4010';
+    setInterval(async () => {
+      try {
+        // eslint-disable-next-line no-undef
+        const r = await fetch(`${host}/arb/graph/version`, { headers: { 'accept': 'application/json' } });
+        if (r?.ok) {
+          const j: any = await r.json().catch(() => ({}));
+          arbVersionCache = { version: Number(j?.version || 0), timestamp: Number(j?.timestamp || 0), ts: Date.now() };
+        }
+      } catch {}
+    }, 1000);
+  } catch {}
+})();
+
 

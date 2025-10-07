@@ -12,6 +12,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
   const [lastEventMs, setLastEventMs] = React.useState<number>(0);
   const [arbEnabled, setArbEnabled] = React.useState<boolean>(false);
   const [wsDetails, setWsDetails] = React.useState<{ orca?: { attached?: number; events?: number }, raydium?: { attached?: number; events?: number }, meteora?: { attached?: number; events?: number } }>({});
+  const [poolAges, setPoolAges] = React.useState<any | null>(null);
 
   const fetchMetrics = async () => {
     try {
@@ -28,6 +29,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
         const j = await r.json();
         setM(j);
         if (j?.pools) setPoolsStats(j.pools);
+        if (j?.pools_age_ms) setPoolAges(j.pools_age_ms);
       }
     } catch {}
   };
@@ -148,8 +150,22 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
             } catch {}
           }}>{arbEnabled ? 'Stop Arb' : 'Start Arb'}</button>
           <button className="px-2 py-1 border rounded" onClick={refreshPoolsAndMetrics}>Refresh Pools</button>
+          <button className="px-2 py-1 border rounded" onClick={async ()=>{
+            try {
+              const headers: Record<string, string> = { 'content-type': 'application/json' };
+              try {
+                const s = localStorage.getItem('authCreds');
+                if (s) {
+                  const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
+                  if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
+                }
+              } catch {}
+              await fetch(`${apiBase}/arb/pools/retarget`, { method: 'POST', headers }).catch(()=>{});
+              fetchMetrics();
+            } catch {}
+          }}>Retarget WS</button>
           <span className={`px-2 py-0.5 text-xs rounded border ${wsHealthy ? 'bg-green-700/50 border-green-600' : 'bg-yellow-700/50 border-yellow-600'}`}>
-            {wsHealthy ? `WS Active: Ray ${wsDetails.raydium?.attached||0}/${wsDetails.raydium?.events||0}, Orca ${wsDetails.orca?.attached||0}/${wsDetails.orca?.events||0}, Met ${wsDetails.meteora?.attached||0}/${wsDetails.meteora?.events||0}` : 'WS Idle'}
+            {wsHealthy ? `WS Active: Ray ${wsDetails.raydium?.attached||0}/${(wsDetails as any)?.raydium?.target||0} ev=${wsDetails.raydium?.events||0}, Orca ${wsDetails.orca?.attached||0}/${(wsDetails as any)?.orca?.target||0} ev=${wsDetails.orca?.events||0}, Met ${wsDetails.meteora?.attached||0}/${(wsDetails as any)?.meteora?.target||0} ev=${wsDetails.meteora?.events||0} · idle ${ago(lastEventMs)}` : `WS Idle · idle ${ago(lastEventMs)}`}
           </span>
         </div>
       </div>
@@ -163,6 +179,10 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
           <div><div className="text-gray-400">Last Detection</div><div>{ago(m.last_detection_ms)}</div></div>
           <div><div className="text-gray-400">Ingestion (ms)</div><div>{fmt(m.ingestion_duration_ms)}</div></div>
           <div><div className="text-gray-400">Detection (ms)</div><div>{fmt(m.detection_duration_ms)}</div></div>
+          {typeof m?.diff_to_detect_ms === 'number' ? (<div><div className="text-gray-400">Arb diff→detect (ms)</div><div>{fmt(m.diff_to_detect_ms)}</div></div>) : null}
+          {typeof m?.arb_graph_version_delta === 'number' || typeof m?.arb_graph_age_ms === 'number' ? (
+            <div><div className="text-gray-400">Backend↔arb-rs Graph</div><div>Δv={fmt(m.arb_graph_version_delta)} age={fmt(m.arb_graph_age_ms)}ms</div></div>
+          ) : null}
           <div className="col-span-2"><div className="text-gray-400">Requests (Jup/Ray/Orca)</div><div>{fmt(m.ingestion_requests_total_jupiter)} / {fmt(m.ingestion_requests_total_raydium)} / {fmt(m.ingestion_requests_total_orca)}</div></div>
           <div className="col-span-2"><div className="text-gray-400">Errors (Jup/Ray/Orca)</div><div>{fmt(m.ingestion_errors_total_jupiter)} / {fmt(m.ingestion_errors_total_raydium)} / {fmt(m.ingestion_errors_total_orca)}</div></div>
           <div><div className="text-gray-400">WS Pushes</div><div>{fmt(m.ws_push_total)}</div></div>
@@ -179,6 +199,16 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
               <div>AMM: {fmt(orcaPools.amm?.length)} CLMM: {fmt(orcaPools.clmm?.length)}</div>
             )}
           </div>
+          {poolAges ? (
+            <div className="col-span-2">
+              <div className="text-gray-400">Pool Cache Age</div>
+              <div className="flex gap-2 text-xs">
+                <span className={`px-1 rounded border ${Number(poolAges.raydium) > Number(poolAges.ttl?.raydium) ? 'bg-yellow-800/50 border-yellow-700' : 'bg-green-800/40 border-green-700'}`}>Ray {fmt(poolAges.raydium)}ms / TTL {fmt(poolAges.ttl?.raydium)}ms</span>
+                <span className={`px-1 rounded border ${Number(poolAges.orca) > Number(poolAges.ttl?.orca) ? 'bg-yellow-800/50 border-yellow-700' : 'bg-green-800/40 border-green-700'}`}>Orc {fmt(poolAges.orca)}ms / TTL {fmt(poolAges.ttl?.orca)}ms</span>
+                <span className={`px-1 rounded border ${Number(poolAges.meteora) > Number(poolAges.ttl?.meteora) ? 'bg-yellow-800/50 border-yellow-700' : 'bg-green-800/40 border-green-700'}`}>Met {fmt(poolAges.meteora)}ms / TTL {fmt(poolAges.ttl?.meteora)}ms</span>
+              </div>
+            </div>
+          ) : null}
           {poolsStats ? (
             <div className="col-span-2 border-t border-gray-700 pt-2">
               <div className="text-gray-400">Pool Fetch Stats</div>

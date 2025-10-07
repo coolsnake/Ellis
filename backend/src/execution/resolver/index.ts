@@ -45,11 +45,54 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       const slippage = typeof input.slippageBps === 'number' ? input.slippageBps : cfg.slippageBpsDefault;
       hop.minOutRaw = applySlippage(hop.amountInRaw, slippage, 'minOut');
     }
-    return hop;
+    // Per-DEX refinement hooks (populate program accounts/ticks)
+    try {
+      if (hop.dex === 'raydium' && hop.variant === 'amm') {
+        const { resolveRaydiumAmm } = await import('./raydiumAmm.js');
+        return await resolveRaydiumAmm(hop);
+      } else if (hop.dex === 'raydium' && hop.variant === 'clmm') {
+        const { resolveRaydiumClmm } = await import('./raydiumClmm.js');
+        return await resolveRaydiumClmm(hop);
+      } else if (hop.dex === 'orca') {
+        const { resolveOrca } = await import('./orca.js');
+        return await resolveOrca(hop);
+      } else {
+        const { resolveMeteoraDlmm } = await import('./meteora.js');
+        return await resolveMeteoraDlmm(hop);
+      }
+    } catch {
+      return hop;
+    }
   }));
 
+  // Dynamic sizing from bottleneck: naive proportional to min vault liquidity across hops
+  try {
+    const caps = hops.map(h => Number((h as any)?.liquidity_display || 0)).filter(v => Number.isFinite(v) && v > 0);
+    if (caps.length) {
+      const minCap = Math.min(...caps);
+      const usd = Math.max(1, Math.floor(minCap * 0.02));
+      const dec = hops[0]?.inputDecimals || 9;
+      const priceUsd = 1; // placeholder: assume $1 units for input mint
+      const tokens = usd / priceUsd;
+      const raw = BigInt(Math.max(1, Math.floor(tokens * Math.pow(10, dec))));
+      // Apply to first hop only for now
+      if (raw > 0n) hopAdjustAmount(hops, raw);
+    }
+  } catch {}
   logger.info('tx.resolve.ok', { cat: 'tx', code: 'TX.RESOLVE.OK', ctx: { ms: Date.now() - t0, hops: hops.length } as any });
   return { path, hops, computeUnitPriceMicroLamports: cfg.computeUnitPriceMicroLamports };
+}
+
+function hopAdjustAmount(hops: DirectHop[], raw: bigint): void {
+  try {
+    const h0 = hops[0];
+    if (h0) {
+      h0.amountInRaw = raw;
+      const slippageBps = 100;
+      const one = 10_000n;
+      h0.minOutRaw = (raw * (one - BigInt(slippageBps))) / one;
+    }
+  } catch {}
 }
 
 

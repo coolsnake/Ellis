@@ -254,6 +254,56 @@ export function getWsActivity(): { orca: { attached: number; events: number }; r
   };
 }
 
+// Compute target counts for WS subscriptions based on current graph edges per source
+export async function getWsTargets(): Promise<{ orca: { target: number }; raydium: { target: number }; meteora: { target: number } }> {
+  try {
+    const { getGraphSnapshot } = await import('./graph.js');
+    const snap = await getGraphSnapshot(false);
+    const ray = new Set<string>();
+    const orc = new Set<string>();
+    const met = new Set<string>();
+    for (const e of (snap?.edges || [])) {
+      const pid = String((e as any)?.pool_id || '');
+      if (!pid) continue;
+      const base = pid.replace(/-rev$/, '');
+      const dex = String((e as any)?.dex || '');
+      if (dex === 'Raydium') ray.add(base);
+      else if (dex === 'Orca') orc.add(base);
+      else if (dex === 'Meteora') met.add(base);
+    }
+    return { orca: { target: orc.size }, raydium: { target: ray.size }, meteora: { target: met.size } };
+  } catch {
+    return { orca: { target: 0 }, raydium: { target: 0 }, meteora: { target: 0 } };
+  }
+}
+
+// Expose cache ages for observability (ms since last fetch)
+export function getPoolCacheAges(): { raydium: number; orca: number; meteora: number; ttl: { raydium: number; orca: number; meteora: number } } {
+  const now = Date.now();
+  const rayTtl = Number((CONFIG as any)?.raydium?.cacheTtlMs || 300_000);
+  const orcTtl = Number((CONFIG as any)?.orca?.cacheTtlMs || 300_000);
+  const metTtl = Number(((CONFIG as any)?.meteora?.cacheTtlMs) || 300_000);
+  const rayAge = raydiumCache.ts ? (now - raydiumCache.ts) : Number.POSITIVE_INFINITY;
+  const orcAge = orcaCache.ts ? (now - orcaCache.ts) : Number.POSITIVE_INFINITY;
+  const metAge = meteoraCache.ts ? (now - meteoraCache.ts) : Number.POSITIVE_INFINITY;
+  return { raydium: rayAge, orca: orcAge, meteora: metAge, ttl: { raydium: rayTtl, orca: orcTtl, meteora: metTtl } };
+}
+
+// Retarget WS: unsubscribe and re-subscribe to current graph-derived targets
+export async function retargetPoolWebsockets(): Promise<{ attached: { orca: number; raydium: number; meteora: number } }> {
+  try { disablePoolWebsocketRefreshes(); } catch {}
+  try { startPoolWebsocketsOnlyOnce(); } catch {}
+  // Give subscriptions a brief moment to attach
+  await new Promise((r) => setTimeout(r, 250));
+  try {
+    const st = getPoolWsStatus();
+    if (!st.healthy) {
+      try { emit('log', { level: 'warn', message: 'pools:ws unhealthy after retarget', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
+    }
+  } catch {}
+  return { attached: { orca: attachedOrcaPools, raydium: attachedRaydiumPools, meteora: attachedMeteoraPools } };
+}
+
 // Unified refresh orchestrator: fetch all sources and optionally (re)subscribe
 export async function refreshAllSources(force = true, subscribe = true): Promise<{ raydium: PoolsPayload; orca: PoolsPayload; meteora: PoolsPayload }> {
   const r = await getRaydiumPoolsNormalized(!!force).catch(() => ({ amm: [], clmm: [] }));
@@ -785,6 +835,20 @@ export function startRaydiumRefreshLoop(): void {
             // Emit a dedicated ws-activity event for UI regardless of log filtering
             try { emit('ws-activity', { healthy: wsHealthy, lastEventMs: lastWsEventMs, orca: { attached: attachedOrcaPools, events: snapshot.orca || 0 }, raydium: { attached: attachedRaydiumPools, events: snapshot.raydium || 0 }, meteora: { attached: attachedMeteoraPools, events: snapshot.meteora || 0 } }); } catch {}
             try { emit('log', { level: 'debug', message: `pools:ws aggregate ray=${snapshot.raydium} orca=${snapshot.orca}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
+            // Reconcile targets vs attached (debounced): if attached << targets, trigger retarget
+            (async () => {
+              try {
+                const tgt = await getWsTargets();
+                const needRay = Math.max(0, (tgt.raydium.target || 0) - (attachedRaydiumPools || 0));
+                const needOrc = Math.max(0, (tgt.orca.target || 0) - (attachedOrcaPools || 0));
+                const needMet = Math.max(0, (tgt.meteora.target || 0) - (attachedMeteoraPools || 0));
+                const sumNeed = needRay + needOrc + needMet;
+                if (sumNeed > 0) {
+                  const last = (reconcileNow as any)._last || 0;
+                  if (Date.now() - last > 5000) { await reconcileNow(); }
+                }
+              } catch {}
+            })();
           } catch {}
         }, aggPeriod);
       };
@@ -795,6 +859,13 @@ export function startRaydiumRefreshLoop(): void {
   }
   // Reset the one-shot suppression flag
   suppressInitialOnce = false;
+}
+
+async function reconcileNow(): Promise<void> {
+  try {
+    (reconcileNow as any)._last = Date.now();
+    await retargetPoolWebsockets();
+  } catch {}
 }
 
 // Stop all pool activity: timers and websocket subscriptions

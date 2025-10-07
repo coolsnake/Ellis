@@ -46,6 +46,8 @@ struct ArbConfig {
     near_miss_epsilon: f64,
     // Skip adding pool edges when pool liquidity below this threshold (applies to AMM liquidity_base and CLMM liquidity)
     min_pool_liquidity: f64,
+    // Estimate per-hop priority fee in lamports to include in net profit heuristics (rough)
+    est_priority_fee_per_hop_lamports: Option<u64>,
 }
 
 #[derive(Default, serde::Serialize, serde::Deserialize, Clone)]
@@ -72,6 +74,10 @@ struct Metrics {
     avg_profit_bps: f64,
     graph_updates_applied: u64,
     graph_updates_skipped: u64,
+    // Time between receiving a backend graph diff/snapshot and start of a detection iteration
+    diff_to_detect_ms: u64,
+    // Last time a backend graph diff/snapshot was received (server wall time)
+    last_graph_push_rx_ms: u64,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -210,6 +216,17 @@ async fn main() -> anyhow::Result<()> {
             let iter_start = Instant::now();
             if enabled {
                 tracing::info!("arb.loop.tick start");
+                // Capture diff_to_detect latency if we have a recent graph push timestamp
+                {
+                    let mut s = loop_state.write().await;
+                    if s.metrics.last_graph_push_rx_ms > 0 {
+                        let now = now_ms();
+                        let delta = now.saturating_sub(s.metrics.last_graph_push_rx_ms);
+                        s.metrics.diff_to_detect_ms = delta;
+                        // Clear the marker so only the first iteration after push records the latency
+                        s.metrics.last_graph_push_rx_ms = 0;
+                    }
+                }
                 // Ensure we have the most recent backend graph version before detection
                 let api_base = std::env::var("BACKEND_API_BASE").unwrap_or_else(|_| "http://127.0.0.1:3001/api".into());
                 let gv_url = format!("{}/arb/graph/version", api_base.trim_end_matches('/'));
@@ -771,6 +788,12 @@ async fn main() -> anyhow::Result<()> {
                             let mut net_bps = profit_bps - link_penalty_bps_total.max(0);
                             if net_bps > 1_000_000 { net_bps = 1_000_000; }
                             if net_bps < -1_000_000 { net_bps = -1_000_000; }
+                            let net_bps = {
+                                let hops = nlen as i64;
+                                let est_lam = s.config.est_priority_fee_per_hop_lamports.unwrap_or(0) as f64;
+                                let total_est = (est_lam * hops as f64) / 1_000_000.0 * 10_000.0; // approx: 1 SOL baseline => bps rough
+                                (net_bps as f64 - total_est).round() as i64
+                            };
                             let bottleneck_edge = bottleneck.as_ref().map(|(ui,vi,dex,rate,liq,fee)| {
                                 let from = s.graph.g[NodeIndex::new(*ui)].clone();
                                 let to = s.graph.g[NodeIndex::new(*vi)].clone();
@@ -1039,6 +1062,12 @@ async fn main() -> anyhow::Result<()> {
                                 let mut net_bps = profit_bps - link_penalty_bps_total.max(0);
                                 if net_bps > 1_000_000 { net_bps = 1_000_000; }
                                 if net_bps < -1_000_000 { net_bps = -1_000_000; }
+                                let net_bps = {
+                                    let hops = 3i64;
+                                    let est_lam = s.config.est_priority_fee_per_hop_lamports.unwrap_or(0) as f64;
+                                    let total_est = (est_lam * hops as f64) / 1_000_000.0 * 10_000.0;
+                                    (net_bps as f64 - total_est).round() as i64
+                                };
                                 let shortfall = (min_bps - profit_bps).max(1); // ensure >0 so UI shows
                                 let est_capacity = if min_edge_liquidity.is_finite() { Some(min_edge_liquidity.max(0.0)) } else { None };
                                 let now_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
@@ -1353,6 +1382,8 @@ async fn arb_graph_snapshot(State(state): State<Arc<RwLock<AppState>>>, Json(req
     s.metrics.graph_edges = s.graph.g.edge_count() as u64;
     s.last_graph_version = g.version.unwrap_or(s.last_graph_version);
     s.last_graph_ts = g.timestamp.unwrap_or(s.last_graph_ts);
+    // Record time of receipt for diff_to_detect tracking
+    s.metrics.last_graph_push_rx_ms = now_ms();
     s.use_backend_graph = true;
     s.force_refresh_next = false;
     let nodes = s.metrics.graph_nodes; let edges = s.metrics.graph_edges;
@@ -1373,6 +1404,8 @@ async fn arb_graph_update(State(state): State<Arc<RwLock<AppState>>>, Json(req):
     if let Some(updated) = req.updatedEdges { let n = updated.len(); s.pending_updated_edges.extend(updated); tracing::info!(updated=n, "arb.graph.diff: buffered updated edges"); }
     if req.version.is_some() { s.pending_graph_version = req.version; }
     if req.timestamp.is_some() { s.pending_graph_ts = req.timestamp; }
+    // Record time of receipt for diff_to_detect tracking
+    s.metrics.last_graph_push_rx_ms = now_ms();
     s.use_backend_graph = true;
     s.force_refresh_next = false;
     // Wake detection loop to apply diff promptly
@@ -1598,6 +1631,7 @@ fn default_config() -> ArbConfig {
         near_miss_enable: true,
         near_miss_epsilon: 5e-4,
         min_pool_liquidity: 0.0,
+        est_priority_fee_per_hop_lamports: Some(50_000),
     }
 }
 
@@ -1633,7 +1667,8 @@ async fn metrics_prom(State(state): State<Arc<RwLock<AppState>>>) -> String {
             "arb_ws_push_total {}\n",
             "arb_ws_skipped_nochange_total {}\n",
             "arb_max_profit_bps {}\n",
-            "arb_avg_profit_bps {}\n"
+            "arb_avg_profit_bps {}\n",
+            "arb_diff_to_detect_ms {}\n"
         ),
         m.detection_cycles_total,
         m.opportunities_active,
@@ -1651,7 +1686,8 @@ async fn metrics_prom(State(state): State<Arc<RwLock<AppState>>>) -> String {
         m.ws_push_total,
         m.ws_skipped_nochange_total,
         m.max_profit_bps,
-        m.avg_profit_bps
+        m.avg_profit_bps,
+        m.diff_to_detect_ms
     )
 }
 
