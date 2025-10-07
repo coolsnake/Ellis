@@ -2,6 +2,7 @@ import { logger } from '../../utils/logger.js';
 import { emit } from '../realtime.js';
 import { CONFIG } from '../../utils/config.js';
 import type { ClmmPool, PoolsPayload } from './types.js';
+import { canonicalizePairsLex } from './common.js';
 
 export async function fetchMeteoraHttp(): Promise<any> {
   try {
@@ -99,7 +100,11 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     const tvlUsdcRaw = (it as any)?.tvlUsdc ?? (it as any)?.tvlUsd ?? (it as any)?.liquidity;
     const tvlUsdcNum = typeof tvlUsdcRaw === 'string' ? Number(tvlUsdcRaw) : (typeof tvlUsdcRaw === 'number' ? tvlUsdcRaw : 0);
     const tvl_usd = Number.isFinite(tvlUsdcNum) && tvlUsdcNum > 0 ? tvlUsdcNum : undefined;
-    const pool_liquidity_raw = (tvl_usd != null) ? tvl_usd : (Number.isFinite(decA) && Number.isFinite(decB) ? ((amount_a/Math.pow(10, decA as number)) + (amount_b/Math.pow(10, decB as number))) : undefined);
+    const pool_liquidity_raw = (tvl_usd != null)
+      ? tvl_usd
+      : (Number.isFinite(decA) && Number.isFinite(decB)
+          ? Math.min((amount_a/Math.pow(10, decA as number)), (amount_b/Math.pow(10, decB as number)))
+          : undefined);
     const liquidity_display = (tvl_usd != null) ? tvl_usd : undefined;
     try {
       const haveDecs = Number.isFinite(decA) && Number.isFinite(decB);
@@ -137,22 +142,12 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     if (!price_ok) { try { logger.warn('meteora.clmm drop by sanity', { id, mint_a, mint_b, price_a_per_b, cat: 'meteora' }); } catch {}; continue; }
     clmm.push({ id, dex: 'Meteora', mint_a, mint_b, fee_bps, sqrt_price_x64: 0, liquidity: 0, tick_spacing: Number((it as any)?.bin_step || (it as any)?.binStep || 0), updated_ms: now, price_a_per_b: (price_a_per_b && price_a_per_b > 0) ? price_a_per_b : undefined, amount_a, amount_b, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, pool_kind: 'clmm', pool_liquidity_raw, tvl_usd, liquidity_display } as any);
   }
-  try {
-    const mode = String(((CONFIG as any)?.meteora?.canonicalizePairs ?? (CONFIG.system as any)?.canonicalizePairs) || 'none');
-    if (mode === 'lex' && clmm.length) {
-      for (let i = 0; i < clmm.length; i++) {
-        const p = clmm[i];
-        if (String(p.mint_a) <= String(p.mint_b)) continue;
-        const inv = (p.price_a_per_b && p.price_a_per_b > 0) ? (1 / (p.price_a_per_b as number)) : p.price_a_per_b;
-        clmm[i] = { ...p, mint_a: p.mint_b, mint_b: p.mint_a, price_a_per_b: inv as any };
-      }
-    }
-  } catch {}
+  const clmmCanon = canonicalizePairsLex(clmm);
   try {
     const canon = String(((CONFIG as any)?.meteora?.canonicalizePairs ?? (CONFIG.system as any)?.canonicalizePairs) || 'none');
-    logger.info('meteora.http normalized', { clmm: clmm.length, cat: 'meteora', canon });
+    logger.info('meteora.http normalized', { clmm: clmmCanon.length, cat: 'meteora', canon });
   } catch {}
-  return { amm: [], clmm };
+  return { amm: [], clmm: clmmCanon };
 }
 
 

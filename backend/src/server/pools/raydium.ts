@@ -3,6 +3,7 @@ import { emit } from '../realtime.js';
 import { CONFIG } from '../../utils/config.js';
 import { readJson } from '../../utils/fs.js';
 import type { AmmPool, ClmmPool, PoolsPayload } from './types.js';
+import { canonicalizePairsLex } from './common.js';
 
 let rayProbeOffset = 0;
 
@@ -163,7 +164,57 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
       const tvl_usd = Number.isFinite(tvl) && tvl > 0 ? tvl : undefined;
       const amount_a_whole = Number.isFinite(mintAmountA) ? mintAmountA : undefined;
       const amount_b_whole = Number.isFinite(mintAmountB) ? mintAmountB : undefined;
-      clmm.push({ id, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps, sqrt_price_x64: Number.isFinite(sqrt) ? sqrt : 0, liquidity: Number.isFinite(liquidity) ? liquidity : 0, tick_spacing: Number.isFinite(tick) ? tick : 0, updated_ms: now, price_a_per_b: Number.isFinite(price) ? price : undefined, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, pool_kind: 'clmm', tvl_usd, amount_a_whole, amount_b_whole, liquidity_display: tvl_usd });
+      let price_from_sqrt = 0;
+      try {
+        if (sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
+          const two64 = Math.pow(2, 64);
+          const ratio = sqrt / two64;
+          const cand1 = Math.pow(10, (decB as number) - (decA as number)) / (ratio * ratio);
+          const cand2 = (ratio * ratio) * Math.pow(10, (decA as number) - (decB as number));
+          const finite = [cand1, cand2].filter((x) => Number.isFinite(x) && x > 0) as number[];
+          let chosen = finite[0] || 0;
+          try {
+            const { getPriceByMint } = await import('../priceStore.js');
+            const pa = getPriceByMint(mintA)?.usdc ?? null;
+            const pb = getPriceByMint(mintB)?.usdc ?? null;
+            const incoming = Number(price) > 0 ? Number(price) : undefined;
+            const refUsd = (pa && pb && (pa as number) > 0 && (pb as number) > 0) ? ((pb as number) / (pa as number)) : undefined;
+            const refs = [refUsd, incoming].filter((v) => Number.isFinite(v as any) && (v as number) > 0) as number[];
+            if (refs.length && finite.length) {
+              let best = finite[0];
+              let bestDev = Number.POSITIVE_INFINITY;
+              for (const cand of finite) {
+                for (const ref of refs) {
+                  const dev = Math.max(cand / ref, ref / cand);
+                  if (dev + 1e-12 < bestDev) { bestDev = dev; best = cand; }
+                }
+              }
+              chosen = best;
+            }
+          } catch {}
+          price_from_sqrt = chosen;
+        }
+      } catch {}
+      let px = price_from_sqrt > 0 ? price_from_sqrt : (Number(price) > 0 ? Number(price) : 0);
+      let ok = true;
+      try {
+        const sanityCfg = (CONFIG as any)?.sanity || {};
+        const apply = (sanityCfg as any).sanity_applyRaydiumClmm ?? true;
+        if (apply !== false && px > 0) {
+          const maxDeviation = Number.isFinite(Number(sanityCfg.maxPriceDeviation)) ? Number(sanityCfg.maxPriceDeviation) : 50;
+          const { getPriceByMint } = await import('../priceStore.js');
+          const pa = getPriceByMint(mintA)?.usdc ?? null;
+          const pb = getPriceByMint(mintB)?.usdc ?? null;
+          if (pa && pb && (pa as number) > 0 && (pb as number) > 0) {
+            const ref = (pb as number) / (pa as number);
+            const dev = Math.max(px / ref, ref / px);
+            if (dev > maxDeviation) ok = false;
+          }
+        }
+      } catch {}
+      if (!ok) { try { logger.warn('raydium.clmm drop by sanity', { id, mint_a: mintA, mint_b: mintB, price_in: price, price_from_sqrt }); } catch {} } else {
+        clmm.push({ id, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps, sqrt_price_x64: Number.isFinite(sqrt) ? sqrt : 0, liquidity: Number.isFinite(liquidity) ? liquidity : 0, tick_spacing: Number.isFinite(tick) ? tick : 0, updated_ms: now, price_a_per_b: px > 0 ? px : undefined, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, pool_kind: 'clmm', tvl_usd, amount_a_whole, amount_b_whole, liquidity_display: tvl_usd });
+      }
     } else {
       const tvl_usd = Number.isFinite(tvl) && tvl > 0 ? tvl : undefined;
       const amount_a_whole = Number.isFinite(mintAmountA) ? mintAmountA : undefined;
@@ -177,7 +228,11 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
       const price_res = (Number.isFinite(amount_a_whole as any) && Number.isFinite(amount_b_whole as any) && (amount_b_whole as number) > 0)
         ? ((amount_a_whole as number) / (amount_b_whole as number))
         : 0;
-      let price_sane = price_in > 0 ? price_in : price_res;
+      // Derive from decimals when available (treat raw amounts as atomic)
+      const price_res_decs = (Number.isFinite(decA) && Number.isFinite(decB) && Number.isFinite(mintAmountA) && Number.isFinite(mintAmountB) && (mintAmountB as number) > 0)
+        ? ((mintAmountA as number) / Math.pow(10, decA as number)) / ((mintAmountB as number) / Math.pow(10, decB as number))
+        : 0;
+      let price_sane = price_in > 0 ? price_in : (price_res > 0 ? price_res : price_res_decs);
       try {
         const sanityCfg = (CONFIG as any)?.sanity || {};
         const apply = (sanityCfg as any).sanity_applyRaydiumAmm ?? true;
@@ -191,6 +246,7 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
             const candidates: number[] = [];
             if (price_in > 0) { candidates.push(price_in); candidates.push(1 / price_in); }
             if (price_res > 0) { candidates.push(price_res); candidates.push(1 / price_res); }
+            if (price_res_decs > 0) { candidates.push(price_res_decs); candidates.push(1 / price_res_decs); }
             if (candidates.length) {
               let bestVal = candidates[0];
               let bestDev = Math.max(bestVal / ref, ref / bestVal);
@@ -212,27 +268,10 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
     }
   }
 
-  try {
-    const mode = String((CONFIG.system as any)?.canonicalizePairs || 'none');
-    if (mode === 'lex') {
-      const canonAmm: AmmPool[] = [];
-      for (const p of amm) {
-        const [a, b] = String(p.mint_a) <= String(p.mint_b) ? [p.mint_a, p.mint_b] : [p.mint_b, p.mint_a];
-        const price = (a === p.mint_a) ? p.price_a_per_b : (p.price_a_per_b > 0 ? (1 / p.price_a_per_b) : p.price_a_per_b);
-        canonAmm.push({ ...p, mint_a: a, mint_b: b, price_a_per_b: price });
-      }
-      const canonClmm: ClmmPool[] = [];
-      for (const p of clmm) {
-        const [a, b] = String(p.mint_a) <= String(p.mint_b) ? [p.mint_a, p.mint_b] : [p.mint_b, p.mint_a];
-        const price = (a === p.mint_a) ? p.price_a_per_b : (p.price_a_per_b && p.price_a_per_b > 0 ? (1 / (p.price_a_per_b as number)) : p.price_a_per_b);
-        canonClmm.push({ ...p, mint_a: a, mint_b: b, price_a_per_b: price as any });
-      }
-      logger.info('raydium.pools normalized (canon=lex)', { amm: canonAmm.length, clmm: canonClmm.length, cat: 'raydium' });
-      return { amm: canonAmm, clmm: canonClmm };
-    }
-  } catch {}
-  logger.info('raydium.pools normalized', { amm: amm.length, clmm: clmm.length, cat: 'raydium' });
-  return { amm, clmm };
+  const ammCanon = canonicalizePairsLex(amm);
+  const clmmCanon = canonicalizePairsLex(clmm);
+  logger.info('raydium.pools normalized', { amm: ammCanon.length, clmm: clmmCanon.length, cat: 'raydium' });
+  return { amm: ammCanon, clmm: clmmCanon };
 }
 
 

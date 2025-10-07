@@ -6,7 +6,7 @@ import { readJson } from '../utils/fs.js';
 // import { PublicKey } from '@solana/web3.js';
 import type { AmmPool, ClmmPool, PoolsPayload } from './pools/types.js';
 import { fetchRaydiumPoolsRaw as fetchRaydiumPoolsRawImpl, normalizeRaydiumPools as normalizeRaydiumPoolsImpl } from './pools/raydium.js';
-import { fetchOrcaHttp as fetchOrcaHttpImpl, normalizeOrcaHttp as normalizeOrcaHttpImpl, fetchOrcaV4 as fetchOrcaV4Impl, fetchOrcaLegacy as fetchOrcaLegacyImpl } from './pools/orca.js';
+import { fetchOrcaHttp as fetchOrcaHttpImpl, normalizeOrcaHttp as normalizeOrcaHttpImpl } from './pools/orca.js';
 import { fetchMeteoraHttp as fetchMeteoraHttpImpl, normalizeMeteoraHttp as normalizeMeteoraHttpImpl } from './pools/meteora.js';
 
 const raydiumCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };

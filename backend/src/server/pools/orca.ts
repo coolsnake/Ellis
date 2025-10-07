@@ -2,6 +2,7 @@ import { logger } from '../../utils/logger.js';
 import { emit } from '../realtime.js';
 import { CONFIG } from '../../utils/config.js';
 import type { ClmmPool, PoolsPayload } from './types.js';
+import { canonicalizePairsLex } from './common.js';
 
 export async function fetchOrcaHttp(): Promise<any> {
   const base = CONFIG.orca?.apiUrl || 'https://api.orca.so/v2/solana/pools';
@@ -142,10 +143,10 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
     if ((!sqrt_price_x64 || sqrt_price_x64 <= 0) && isWhirlpool) {
       const price = incomingPrice;
       if (price > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
-        const adj = Math.pow(10, decB - decA) / price;
-        const sqrt = Math.sqrt(adj);
+        const ratioSquared = price * Math.pow(10, (decB as number) - (decA as number));
+        const ratio = Math.sqrt(ratioSquared);
         const two64 = Math.pow(2, 64);
-        sqrt_price_x64 = Math.floor(sqrt * two64);
+        sqrt_price_x64 = Math.floor(ratio * two64);
       }
     }
     if (isWhirlpool && id && sqrt_price_x64 > 0) {
@@ -198,7 +199,7 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
           const pa = getPriceByMint(cA)?.usdc ?? null;
           const pb = getPriceByMint(cB)?.usdc ?? null;
           if (pa && pb && priceDerived && (priceDerived as number) > 0) {
-            const ref = (pa as number) / (pb as number);
+            const ref = (pb as number) / (pa as number);
             const dev = Math.max((priceDerived as number) / ref, ref / (priceDerived as number));
             if (dev > maxDeviation) { usdDevOkOrca = false; }
           }
@@ -211,35 +212,12 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
       }
     }
   }
-  try {
-    const mode = String((CONFIG.system as any)?.canonicalizePairs || 'none');
-    if (mode === 'lex' && clmm.length) {
-      const isTest = String(((globalThis as any)?.process?.env?.NODE_ENV) || '') === 'test';
-      const isVitest = !!((globalThis as any)?.vi || (globalThis as any)?.vitest || (String(((globalThis as any)?.process?.env?.VITEST) || '') === 'true'));
-      for (let i = 0; i < clmm.length; i++) {
-        const p = clmm[i];
-        if (String(p.mint_a) <= String(p.mint_b)) continue;
-        const inv = (p.price_a_per_b && p.price_a_per_b > 0) ? (1 / (p.price_a_per_b as number)) : p.price_a_per_b;
-        const priceAfterSwap = (isTest || isVitest) ? (p.price_a_per_b as any) : (inv as any);
-        clmm[i] = { ...p, mint_a: p.mint_b, mint_b: p.mint_a, price_a_per_b: priceAfterSwap };
-      }
-    }
-  } catch {}
+  // Canonicalize pair ordering consistently across sources (A<=B lex), inverting price when needed
+  const clmmCanon = canonicalizePairsLex(clmm);
   if (!clmm.length) {
     logger.warn('orca.http normalized 0 clmm', { hint: 'Check inspect log for field presence and pool types' });
   }
-  return { amm: [], clmm };
-}
-
-// Deprecated: V4 and Legacy fetchers are no-ops now; keep signatures for compatibility
-export async function fetchOrcaV4(): Promise<PoolsPayload> {
-  logger.info('orca.v4 deprecated');
-  return { amm: [], clmm: [] };
-}
-
-export async function fetchOrcaLegacy(): Promise<PoolsPayload> {
-  logger.info('orca.legacy deprecated');
-  return { amm: [], clmm: [] };
+  return { amm: [], clmm: clmmCanon };
 }
 
 
