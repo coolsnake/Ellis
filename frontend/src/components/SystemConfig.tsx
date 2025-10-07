@@ -259,7 +259,7 @@ export const SystemConfig: React.FC<SystemConfigProps> = ({ onSave, onCancel, in
               <div className="md:col-span-2">
                 <label className="block text-sm font-medium text-gray-300 mb-2">Backend Log Categories</label>
                 <div className="flex flex-wrap gap-2 bg-gray-600 p-3 rounded-md border border-gray-500">
-                  {(config.logCategories || []).map((cat) => {
+                  {([...(config.logCategories || []), 'tx'] as string[]).filter((v, i, a) => a.indexOf(v) === i).map((cat) => {
                     const checked = (config.enabledLogCategories || []).includes(cat);
                     return (
                       <label key={cat} className="inline-flex items-center space-x-2 bg-gray-700 rounded px-2 py-1">
@@ -282,7 +282,7 @@ export const SystemConfig: React.FC<SystemConfigProps> = ({ onSave, onCancel, in
               <div className="md:col-span-2">
                 <label className="block text-sm font-medium text-gray-300 mb-2">Frontend Log Categories</label>
                 <div className="flex flex-wrap gap-2 bg-gray-600 p-3 rounded-md border border-gray-500">
-                  {(config.logCategories || []).map((cat) => {
+                  {([...(config.logCategories || []), 'tx'] as string[]).filter((v, i, a) => a.indexOf(v) === i).map((cat) => {
                     const checked = (config.frontendEnabledLogCategories || []).includes(cat);
                     return (
                       <label key={cat} className="inline-flex items-center space-x-2 bg-gray-700 rounded px-2 py-1">

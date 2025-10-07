@@ -90,6 +90,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       const cfgRes = await (async () => { const r = await fetch(`${req.protocol}://${req.get('host')}/api/arb/config`); try { return await r.json(); } catch { return {}; } })();
       const plan = await resolveDirectPlan({ path, hopPoolIds, dexes, size, sizeUsd, slippageBps }, cfgRes);
       io.emit('tx:resolved', { plan });
+      try { logger.info('tx.resolved', { cat: 'tx', code: 'TX.RESOLVED', ctx: { hops: plan.hops.length } as any }); } catch {}
       res.json({ plan });
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
@@ -105,14 +106,23 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       const cfgRes = await (async () => { const r = await fetch(`${req.protocol}://${req.get('host')}/api/arb/config`); try { return await r.json(); } catch { return {}; } })();
       const plan = input?.plan && Array.isArray(input.plan?.hops) ? input.plan : await resolveDirectPlan(ResolveDirectSchema.parse(input), cfgRes);
       io.emit('tx:start', { plan });
+      try { logger.info('tx.start', { cat: 'tx', code: 'TX.START', ctx: { hops: plan.hops.length } as any }); } catch {}
       const built = buildDirectArbTx(plan, []);
       // Simulate path only in placeholder
       io.emit('tx:sim.ok', { plan, ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
+      try { logger.info('tx.sim.ok', { cat: 'tx', code: 'TX.SIM.OK', ctx: { ixCount: built.ixCount, sizeBytes: built.sizeBytes } as any }); } catch {}
       const legs = plan.hops.map(h => ({ dex: h.dex, variant: h.variant, poolId: h.poolId }));
       await addTxRecord({ id: Math.random().toString(36).slice(2,10), timeMs: Date.now(), path: plan.path, hops: legs, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature: null, status: 'sim_ok' });
+      // If mode is direct, this is where we would send; placeholder keeps simulate-only behavior
+      const mode = String((cfgRes?.mode || 'simulate')).toLowerCase();
+      if (mode === 'direct') {
+        // TODO: integrate signer and send, then emit 'tx:send.ok' / 'tx:send.err'
+        try { logger.info('tx.send.skipped_placeholder', { cat: 'tx', code: 'TX.SEND.SKIP' }); } catch {}
+      }
       res.json({ signature: null, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, legsSummary: legs });
     } catch (e: any) {
       io.emit('tx:send.err', { error: String(e?.message || e) });
+      try { logger.error('tx.error', { cat: 'tx', code: 'TX.ERROR', ctx: { error: String(e?.message || e) } as any }); } catch {}
       res.status(400).json({ error: String(e?.message || e) });
     }
   });

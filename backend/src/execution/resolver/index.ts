@@ -13,6 +13,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
   }
 
   const t0 = Date.now();
+  logger.info('tx.resolve.start', { cat: 'tx', code: 'TX.RESOLVE.START', ctx: { hopCount: path.length - 1 } as any });
   const hops: DirectHop[] = await Promise.all(path.slice(0, -1).map(async (_mint, i) => {
     const dexv = String(dexes[i] || '').toLowerCase();
     const dex = (dexv.includes('raydium') ? 'raydium' : (dexv.includes('orca') ? 'orca' : 'meteora')) as DirectHop['dex'];
@@ -47,7 +48,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
     return hop;
   }));
 
-  logger.info('arb.resolve_direct.plan_ready', { cat: 'arb', subcat: 'direct', code: 'ARB.RESOLVE.PLAN' });
+  logger.info('tx.resolve.ok', { cat: 'tx', code: 'TX.RESOLVE.OK', ctx: { ms: Date.now() - t0, hops: hops.length } as any });
   return { path, hops, computeUnitPriceMicroLamports: cfg.computeUnitPriceMicroLamports };
 }
 
