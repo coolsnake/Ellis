@@ -86,6 +86,25 @@ npm run dev
 
 Open the frontend URL in your browser. The UI will connect to the backend via REST/WebSocket.
 
+### Migration Notes (routes refactor)
+
+- Backend `routes.ts` was modularized under `backend/src/server/routes/*`.
+- Frontend centralizes endpoints in `frontend/src/utils/routes.ts` and base in `frontend/src/utils/apiBase.ts`.
+- Notable changes:
+  - Arbitrage direct endpoints → `/api/arb/simulate`, `/api/arb/execute`.
+  - Pool subscriptions returns `{ wsEnabled, wsHealthy, lastEventMs, ws }`.
+  - Wallet tokens returns `{ list }`.
+
+Fallbacks retained: `/api/api/start|stop|reset`, `/api/bot/start|stop`, `/api/config/reset`.
+
+### QA Checklist (post-refactor)
+
+- System/auth: `/api/system` loads; `/api/system/config` saves and log level reflects on frontend.
+- Arbitrage: metrics refresh; start/stop; opportunities; simulate/execute; pools refresh/subscriptions/retarget; Graph reacts.
+- Strategies: threshold/grid CRUD via `/api/strategy`; Grid Monitor rebalance and onlyClose toggle; Drift leveraged grid status/start/stop/update.
+- Wallet: wallet info loads; add token, wrap/unwrap, send; `/api/wallet/tokens` returns `{ list }`.
+- Liquidation: liquidator start/stop/update; queue updates over WS and HTTP.
+
 ## UI Guide
 
 ### Main Dashboard

@@ -1,0 +1,100 @@
+// Centralized API route constants to avoid string drift
+export const ROUTES = {
+  system: {
+    base: '/system',
+    config: '/system/config',
+    shutdown: '/system/shutdown',
+  },
+  tokens: {
+    map: '/tokens/map',
+    search: '/tokens/search',
+  },
+  fees: {
+    config: '/fees/config',
+    calculate: '/fees/calculate',
+  },
+  prices: '/prices',
+  graph: {
+    snapshot: '/graph',
+    path: '/graph/path',
+  },
+  pools: {
+    raydium: '/arb/pools/raydium',
+    orca: '/arb/pools/orca',
+    meteora: '/arb/pools/meteora',
+    refresh: '/arb/pools/refresh',
+    subscribe: '/arb/pools/subscribe',
+    unsubscribe: '/arb/pools/unsubscribe',
+    subscriptions: '/arb/pools/subscriptions',
+    retarget: '/arb/pools/retarget',
+  },
+  arb: {
+    config: '/arb/config',
+    start: '/arb/start',
+    health: '/arb/health',
+    metrics: '/arb/metrics',
+    metricsJson: '/arb/metrics/json',
+    opportunities: '/arb/opportunities',
+    txHistory: '/arb/tx-history',
+    simulate: '/arb/simulate',
+    execute: '/arb/execute',
+  },
+  drift: {
+    status: '/drift/status',
+    l2: '/drift/l2',
+    funding: '/drift/funding',
+    subaccounts: '/drift/subaccounts',
+    subaccountCreate: '/drift/subaccount/create',
+    subaccountSwitch: '/drift/subaccount/switch',
+    subaccountBalances: '/drift/subaccount/balances',
+    subaccountDeposit: '/drift/subaccount/deposit',
+    subaccountWithdraw: '/drift/subaccount/withdraw',
+    subaccountTransfer: '/drift/subaccount/transfer',
+    spotMarkets: '/drift/spot-markets',
+  },
+  strategies: {
+    leveragedGrid: {
+      status: '/strategies/leveraged-grid/status',
+      start: '/strategies/leveraged-grid/start',
+      stop: '/strategies/leveraged-grid/stop',
+      update: '/strategies/leveraged-grid/update',
+    },
+    liquidator: {
+      status: '/strategies/liquidator/status',
+      start: '/strategies/liquidator/start',
+      stop: '/strategies/liquidator/stop',
+      remove: '/strategies/liquidator/remove',
+      update: '/strategies/liquidator/update',
+      config: '/strategies/liquidator/config',
+      queue: '/strategies/liquidator/queue',
+    },
+  },
+  wallet: {
+    base: '/wallet',
+    generate: '/wallet/generate',
+    refresh: '/wallet/refresh',
+    send: '/wallet/send',
+    wrap: '/wallet/wrap',
+    unwrap: '/wallet/unwrap',
+    tokens: '/wallet/tokens',
+    tokenAccounts: '/wallet/token-accounts',
+  },
+  watchlist: '/watchlist',
+  swap: '/swap',
+  // Legacy control endpoints retained by backend for now
+  legacy: {
+    apiStart: '/api/start',
+    apiStop: '/api/stop',
+    apiReset: '/api/reset',
+    botStart: '/bot/start',
+    botStop: '/bot/stop',
+    ticktime: '/ticktime',
+    configReset: '/config/reset',
+    terminalLog: '/terminal/log',
+    strategy: '/strategy',
+  },
+} as const;
+
+export type RoutePath = (typeof ROUTES)[keyof typeof ROUTES];
+
+

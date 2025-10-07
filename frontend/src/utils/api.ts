@@ -90,6 +90,35 @@ function isApiUrl(url: string): boolean {
 	};
 })();
 
+// Export helpers for consistent API usage
+export { apiBase } from './apiBase';
+
+export function apiUrl(path: string): string {
+	try {
+		if (!path) return apiBase;
+		return /^(https?:)?\/\//i.test(path) ? path : `${apiBase}${path}`;
+	} catch {
+		return `${apiBase}${path}`;
+	}
+}
+
+export async function apiGet<T = any>(path: string, init?: RequestInit): Promise<T> {
+	const res = await fetch(apiUrl(path), init);
+	if (!res.ok) {
+		throw new Error(`GET ${path} failed: ${res.status}`);
+	}
+	try { return (await res.json()) as T; } catch { return undefined as unknown as T; }
+}
+
+export async function apiPost<T = any>(path: string, body?: any, init?: RequestInit): Promise<T> {
+	const res = await fetch(apiUrl(path), { method: 'POST', headers: { 'content-type': 'application/json', ...(init?.headers || {}) }, body: body !== undefined ? JSON.stringify(body) : undefined, ...init });
+	if (!res.ok) {
+		const text = await res.text().catch(() => '');
+		throw new Error(`POST ${path} failed: ${res.status} ${text}`);
+	}
+	try { return (await res.json()) as T; } catch { return undefined as unknown as T; }
+}
+
 export {};
 
 

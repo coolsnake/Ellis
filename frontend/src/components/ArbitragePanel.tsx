@@ -379,7 +379,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
                 const nm: any = summary.near_miss as any;
                 const body: any = { path: nm.path, hopPoolIds: nm.hop_pool_ids || [], dexes: nm.hop_dexes || [] };
                 if (sendMode === 'USD') body.sizeUsd = Number(sendAmount)||0; else body.size = Number(sendAmount)||0;
-                const r = await fetch(`${apiBase}/arb/resolve-direct`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                const r = await fetch(`${apiBase}/arb/simulate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
                 await r.json().catch(()=>({}));
               } catch {}
               setSending(false);
@@ -391,7 +391,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
                 const nm: any = summary.near_miss as any;
                 const body: any = { path: nm.path, hopPoolIds: nm.hop_pool_ids || [], dexes: nm.hop_dexes || [] };
                 if (sendMode === 'USD') body.sizeUsd = Number(sendAmount)||0; else body.size = Number(sendAmount)||0;
-                const r = await fetch(`${apiBase}/arb/execute-direct`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                const r = await fetch(`${apiBase}/arb/execute`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
                 await r.json().catch(()=>({}));
               } catch {}
               setSending(false);
@@ -499,14 +499,14 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
               <button className="px-1 py-0.5 border rounded" onClick={async()=>{
                 try {
                   const body: any = { path: op.path, hopPoolIds: (op as any)?.hop_pool_ids, dexes: (op as any)?.hop_dexes };
-                  const r = await fetch(`${apiBase}/arb/resolve-direct`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                  const r = await fetch(`${apiBase}/arb/simulate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
                   await r.json().catch(()=>({}));
                 } catch {}
               }}>Simulate Direct</button>
               <button className="px-1 py-0.5 border rounded" onClick={async()=>{
                 try {
                   const body: any = { path: op.path, hopPoolIds: (op as any)?.hop_pool_ids, dexes: (op as any)?.hop_dexes, sizeUsd: sendMode==='USD'? Number(sendAmount)||0 : undefined, size: sendMode==='TOKENS'? Number(sendAmount)||0 : undefined };
-                  const r = await fetch(`${apiBase}/arb/execute-direct`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                  const r = await fetch(`${apiBase}/arb/execute`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
                   await r.json().catch(()=>({}));
                 } catch {}
               }}>Execute Direct</button>

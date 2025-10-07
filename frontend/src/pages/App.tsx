@@ -224,7 +224,7 @@ export const App: React.FC = () => {
         setStrategies(baseList || []);
       }
     });
-    fetch(`${apiBase}/wallet/tokens`).then(r => r.json()).then(d => setWalletTokens(d.walletTokens || []));
+    fetch(`${apiBase}/wallet/tokens`).then(r => r.json()).then(d => setWalletTokens(Array.isArray(d.list) ? d.list : (d.walletTokens || [])));
     fetch(`${apiBase}/arb/config`).then(r => r.json()).then(setArbConfig).catch(() => {});
     // Load Drift status/subaccounts for Drift panel
     (async () => {
@@ -903,7 +903,7 @@ export const App: React.FC = () => {
           if (!resp.ok) {
             await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: wallet addtoken failed: ${json?.error || 'unknown'}` }) });
           } else {
-            setWalletTokens(json.walletTokens || []);
+            setWalletTokens(Array.isArray(json.list) ? json.list : (json.walletTokens || []));
             await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: wallet addtoken added ${json.added?.symbol || json.added?.id}` }) });
           }
           return;
@@ -1104,8 +1104,8 @@ export const App: React.FC = () => {
             setWatchlist(wl.watchlist || []);
             const st = await (await fetch(`${apiBase}/strategy`)).json();
             setStrategies(st.strategies || []);
-            const wt = await (await fetch(`${apiBase}/wallet/tokens`)).json();
-            setWalletTokens(wt.walletTokens || []);
+        const wt = await (await fetch(`${apiBase}/wallet/tokens`)).json();
+        setWalletTokens(Array.isArray(wt.list) ? wt.list : (wt.walletTokens || []));
             await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: 'terminal: config reset executed' }) });
           } catch (e: any) {
             await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: config reset failed ${String(e?.message || e)}` }) });
@@ -1237,7 +1237,7 @@ export const App: React.FC = () => {
         if (!resp.ok) {
           await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: walletaddtoken failed: ${json?.error || 'unknown'}` }) });
         } else {
-          setWalletTokens(json.walletTokens || []);
+          setWalletTokens(Array.isArray(json.list) ? json.list : (json.walletTokens || []));
           await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: walletaddtoken added ${json.added?.symbol || json.added?.id}` }) });
         }
       }
@@ -1289,7 +1289,7 @@ export const App: React.FC = () => {
         const st = await (await fetch(`${apiBase}/strategy`)).json();
         setStrategies(st.strategies || []);
         const wt = await (await fetch(`${apiBase}/wallet/tokens`)).json();
-        setWalletTokens(wt.walletTokens || []);
+        setWalletTokens(Array.isArray(wt.list) ? wt.list : (wt.walletTokens || []));
         await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: 'terminal: resetconfig executed' }) });
       } catch (e: any) {
         await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `resetconfig failed: ${String(e?.message || e)}` }) });

@@ -80,7 +80,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
     fetch(`${apiBase}/arb/metrics/json`).catch(()=>{});
     // Probe arb config to detect enabled state
     fetch(`${apiBase}/arb/config`).then(r=>r.json()).then((j)=>{ if (j && typeof j.enabled === 'boolean') setArbEnabled(!!j.enabled); }).catch(()=>{});
-    fetch(`${apiBase}/arb/pools/subscriptions`).then(r=>r.json()).then((j)=>{ setSubscribed(!!j.enablePoolWs); setWsHealthy(!!j.healthy); setLastEventMs(Number(j.lastEventMs||0)); setWsDetails({ orca: j.orca, raydium: j.raydium, meteora: j.meteora }); }).catch(()=>{});
+    fetch(`${apiBase}/arb/pools/subscriptions`).then(r=>r.json()).then((j)=>{ setSubscribed(!!j.wsEnabled); setWsHealthy(!!j.wsHealthy); setLastEventMs(Number(j.lastEventMs||0)); setWsDetails(j.ws || {}); }).catch(()=>{});
     return () => {};
   }, [paused]);
 
