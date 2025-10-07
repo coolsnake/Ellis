@@ -1580,6 +1580,31 @@ async fn set_config(
     Json(cfg): Json<ConfigReq>,
 ) -> Json<serde_json::Value> {
     let mut s = state.write().await;
+    // Log receipt of config update and which keys were provided
+    {
+        let mut keys: Vec<&str> = Vec::new();
+        if cfg.enabled.is_some() { keys.push("enabled"); }
+        if cfg.min_profit_bps.is_some() { keys.push("min_profit_bps"); }
+        if cfg.max_profit_bps.is_some() { keys.push("max_profit_bps"); }
+        if cfg.min_notional_usd.is_some() { keys.push("min_notional_usd"); }
+        if cfg.max_hops.is_some() { keys.push("max_hops"); }
+        if cfg.max_paths_per_cycle.is_some() { keys.push("max_paths_per_cycle"); }
+        if cfg.max_idle_ms.is_some() || cfg.poll_interval_ms.is_some() { keys.push("max_idle_ms/poll_interval_ms"); }
+        if cfg.dex_allow.is_some() { keys.push("dex_allow"); }
+        if cfg.priority_fee_tier.is_some() { keys.push("priority_fee_tier"); }
+        if cfg.sources.is_some() { keys.push("sources"); }
+        if cfg.max_slippage_bps.is_some() { keys.push("max_slippage_bps"); }
+        if cfg.execution_mode.is_some() { keys.push("execution_mode"); }
+        if cfg.quote_size_usd.is_some() { keys.push("quote_size_usd"); }
+        if cfg.fee_bps.is_some() { keys.push("fee_bps"); }
+        if cfg.link_penalty_bps.is_some() { keys.push("link_penalty_bps"); }
+        if cfg.debug_emit_subthreshold.is_some() { keys.push("debug_emit_subthreshold"); }
+        if cfg.debug_top_n.is_some() { keys.push("debug_top_n"); }
+        if cfg.near_miss_enable.is_some() { keys.push("near_miss_enable"); }
+        if cfg.near_miss_epsilon.is_some() { keys.push("near_miss_epsilon"); }
+        let keys_str = keys.join(",");
+        tracing::info!(target = "arb_rs", "arb.config.receive keys=[{}] near_miss_enable={:?} debug_top_n={:?}", keys_str, cfg.near_miss_enable, cfg.debug_top_n);
+    }
     if let Some(v) = cfg.enabled { s.config.enabled = v; }
     if let Some(v) = cfg.min_profit_bps { s.config.min_profit_bps = v; }
     if let Some(v) = cfg.max_profit_bps { s.config.max_profit_bps = v; }
