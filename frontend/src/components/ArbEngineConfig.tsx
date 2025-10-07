@@ -4,21 +4,13 @@ type Props = { apiBase: string; onClose: () => void };
 
 export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
   const [cfg, setCfg] = useState<any>({
-    enabled: true,
-    min_profit_bps: 30,
-    max_profit_bps: 20000,
-    max_hops: 3,
-    poll_interval_ms: 2000,
-    quote_size_usd: 50,
-    max_slippage_bps: 100,
-    fee_bps: 30,
-    link_penalty_bps: 2,
-    sources: { jupiter: true, raydium: true, orca: true },
-    execution_mode: 'simulate',
-    dex_allow: ['Raydium','Orca','Jupiter'],
-    debug_top_n: 5,
-    near_miss_enable: true,
-    near_miss_epsilon: 0.0005,
+    mode: 'simulate',
+    slippageBpsDefault: 50,
+    computeUnitLimit: 1000000,
+    computeUnitPriceMicroLamports: 1000,
+    createAtasInTx: true,
+    dynamicCompute: true,
+    maxTxSizeBytes: 1200,
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -29,24 +21,7 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
         const r = await fetch(`${apiBase}/arb/config`);
         if (r.ok) {
           const j = await r.json();
-          setCfg((p: any) => ({
-            ...p,
-            enabled: j?.enabled ?? p.enabled,
-            min_profit_bps: j?.min_profit_bps ?? p.min_profit_bps,
-            max_profit_bps: j?.max_profit_bps ?? p.max_profit_bps,
-            max_hops: j?.max_hops ?? p.max_hops,
-            poll_interval_ms: j?.poll_interval_ms ?? p.poll_interval_ms,
-            quote_size_usd: j?.quote_size_usd ?? p.quote_size_usd,
-            max_slippage_bps: j?.max_slippage_bps ?? p.max_slippage_bps,
-            fee_bps: j?.fee_bps ?? p.fee_bps,
-            link_penalty_bps: j?.link_penalty_bps ?? p.link_penalty_bps,
-            sources: j?.sources ?? p.sources,
-            execution_mode: j?.execution_mode ?? p.execution_mode,
-            dex_allow: Array.isArray(j?.dex_allow) ? j.dex_allow : (Array.isArray((j as any)?.dex_allowlist) ? (j as any).dex_allowlist : p.dex_allow),
-            debug_top_n: Number(j?.debug_top_n ?? p.debug_top_n),
-            near_miss_enable: typeof j?.near_miss_enable === 'boolean' ? j.near_miss_enable : p.near_miss_enable,
-            near_miss_epsilon: typeof j?.near_miss_epsilon === 'number' ? j.near_miss_epsilon : p.near_miss_epsilon,
-          }));
+          setCfg((p: any) => ({ ...p, ...j }));
         }
       } catch {}
     })();
@@ -58,24 +33,16 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
   const onSave = async () => {
     if (saving) return; setSaving(true); setError(null);
     const body = {
-      enabled: !!cfg.enabled,
-      min_profit_bps: Number(cfg.min_profit_bps),
-      max_profit_bps: Number(cfg.max_profit_bps),
-      max_hops: Number(cfg.max_hops),
-      poll_interval_ms: Number(cfg.poll_interval_ms),
-      quote_size_usd: Number(cfg.quote_size_usd),
-      max_slippage_bps: Number(cfg.max_slippage_bps),
-      fee_bps: Number(cfg.fee_bps),
-      link_penalty_bps: Number(cfg.link_penalty_bps),
-      sources: cfg.sources,
-      execution_mode: cfg.execution_mode,
-      dex_allow: cfg.dex_allow,
-      debug_top_n: Number(cfg.debug_top_n),
-      near_miss_enable: !!cfg.near_miss_enable,
-      near_miss_epsilon: Number(cfg.near_miss_epsilon),
+      mode: cfg.mode,
+      slippageBpsDefault: Number(cfg.slippageBpsDefault),
+      computeUnitLimit: Number(cfg.computeUnitLimit),
+      computeUnitPriceMicroLamports: Number(cfg.computeUnitPriceMicroLamports),
+      createAtasInTx: !!cfg.createAtasInTx,
+      dynamicCompute: !!cfg.dynamicCompute,
+      maxTxSizeBytes: Number(cfg.maxTxSizeBytes || 0) || undefined,
     } as any;
     try {
-      const r = await fetch(`${apiBase}/arb/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      const r = await fetch(`${apiBase}/arb/config`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       if (!r.ok) throw new Error('Failed to save');
       onClose();
     } catch (e: any) {
@@ -101,54 +68,15 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
 
         <div className="space-y-6">
           <div className="bg-gray-700 rounded p-4">
-            <h3 className="text-lg font-semibold mb-3">Core</h3>
+            <h3 className="text-lg font-semibold mb-3">Direct Execution</h3>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.enabled} onChange={(e)=>set('enabled', e.target.checked)} />Enabled</label>
-              <div><label className="block text-sm mb-1">Execution Mode</label><select className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.execution_mode} onChange={(e)=>set('execution_mode', e.target.value)}><option value="simulate">simulate</option><option value="execute">execute</option></select></div>
-              <div><label className="block text-sm mb-1">Min Profit (bps)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.min_profit_bps} onChange={(e)=>set('min_profit_bps', Number(e.target.value)||0)} /></div>
-              <div><label className="block text-sm mb-1">Max Profit (bps)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.max_profit_bps} onChange={(e)=>set('max_profit_bps', Number(e.target.value)||0)} /></div>
-              <div><label className="block text-sm mb-1">Max Hops</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.max_hops} onChange={(e)=>set('max_hops', Number(e.target.value)||0)} /></div>
-              <div><label className="block text-sm mb-1">Poll Interval (ms)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.poll_interval_ms} onChange={(e)=>set('poll_interval_ms', Number(e.target.value)||0)} /></div>
-              <div><label className="block text-sm mb-1">Quote Size (USD)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.quote_size_usd} onChange={(e)=>set('quote_size_usd', Number(e.target.value)||0)} /></div>
-              <div className="md:col-span-2 text-xs text-gray-300">If route starts with SOL, you can instead send a specific token amount from the opportunities panel using the Send action. This global USD setting controls detection heuristics and per-hop estimates.</div>
-              <div><label className="block text-sm mb-1">Max Slippage (bps)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.max_slippage_bps} onChange={(e)=>set('max_slippage_bps', Number(e.target.value)||0)} /></div>
-            </div>
-          </div>
-
-          <div className="bg-gray-700 rounded p-4">
-            <h3 className="text-lg font-semibold mb-3">Sources</h3>
-            <div className="grid grid-cols-3 gap-4">
-              <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.sources.jupiter} onChange={(e)=>setSource('jupiter', e.target.checked)} />Jupiter</label>
-              <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.sources.raydium} onChange={(e)=>setSource('raydium', e.target.checked)} />Raydium</label>
-              <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.sources.orca} onChange={(e)=>setSource('orca', e.target.checked)} />Orca</label>
-            </div>
-          </div>
-
-          <div className="bg-gray-700 rounded p-4">
-            <h3 className="text-lg font-semibold mb-3">Fees & Penalties</h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div><label className="block text-sm mb-1">Fee (bps)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.fee_bps} onChange={(e)=>set('fee_bps', Number(e.target.value)||0)} /></div>
-              <div><label className="block text-sm mb-1">Link Penalty (bps)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.link_penalty_bps} onChange={(e)=>set('link_penalty_bps', Number(e.target.value)||0)} /></div>
-            </div>
-          </div>
-
-          <div className="bg-gray-700 rounded p-4">
-            <h3 className="text-lg font-semibold mb-3">DEX Lists</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div>
-                <div className="text-sm mb-1">Allowlist</div>
-                <div className="flex flex-wrap gap-2 mb-2">{(cfg.dex_allow||[]).map((d: string, i: number)=> <span key={i} className="inline-flex items-center bg-gray-700 text-gray-100 px-2 py-1 rounded">{d}<button className="ml-2" onClick={()=>removeListItem('dex_allow', i)}>×</button></span>)}</div>
-                <input className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" placeholder="Add DEX" onKeyDown={(e)=>{const v=(e.target as HTMLInputElement).value.trim(); if(e.key==='Enter'&&v){ addListItem('dex_allow', v); (e.target as HTMLInputElement).value=''; }}} />
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-gray-700 rounded p-4">
-            <h3 className="text-lg font-semibold mb-3">Debug</h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div><label className="block text-sm mb-1">Top-N Subthreshold</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.debug_top_n} onChange={(e)=>set('debug_top_n', Number(e.target.value)||0)} /></div>
-              <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.near_miss_enable} onChange={(e)=>set('near_miss_enable', e.target.checked)} />Enable near-miss (BF slack)</label>
-              <div><label className="block text-sm mb-1">Near-miss epsilon</label><input type="number" step={0.0001} className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.near_miss_epsilon} onChange={(e)=>set('near_miss_epsilon', Number(e.target.value)||0)} /></div>
+              <div><label className="block text-sm mb-1">Mode</label><select className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.mode} onChange={(e)=>set('mode', e.target.value)}><option value="simulate">simulate</option><option value="direct">direct</option></select></div>
+              <div><label className="block text-sm mb-1">Default Slippage (bps)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.slippageBpsDefault} onChange={(e)=>set('slippageBpsDefault', Number(e.target.value)||0)} /></div>
+              <div><label className="block text-sm mb-1">Compute Unit Limit</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.computeUnitLimit} onChange={(e)=>set('computeUnitLimit', Number(e.target.value)||0)} /></div>
+              <div><label className="block text-sm mb-1">Priority Fee (microLamports)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.computeUnitPriceMicroLamports} onChange={(e)=>set('computeUnitPriceMicroLamports', Number(e.target.value)||0)} /></div>
+              <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.createAtasInTx} onChange={(e)=>set('createAtasInTx', e.target.checked)} />Create ATAs in transaction</label>
+              <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.dynamicCompute} onChange={(e)=>set('dynamicCompute', e.target.checked)} />Dynamic Compute</label>
+              <div><label className="block text-sm mb-1">Max Tx Size (bytes)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.maxTxSizeBytes ?? ''} onChange={(e)=>set('maxTxSizeBytes', Number(e.target.value)||0)} /></div>
             </div>
           </div>
 

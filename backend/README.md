@@ -153,3 +153,15 @@ Refresh:
 
 - `POST /api/arb/pools/refresh` now accepts `{ source: 'meteora' }`
 
+
+## Direct Execution (Multi-hop)
+
+Endpoints:
+
+- `GET /api/arb/config` → ExecConfig
+- `PUT /api/arb/config` → update ExecConfig
+- `POST /api/arb/resolve-direct` → `{ path, hopPoolIds, dexes, size?, sizeUsd?, slippageBps? }` → `{ plan }`
+- `POST /api/arb/execute-direct` → `{ plan }` or `{ path, hopPoolIds, dexes, size?, sizeUsd? }` → `{ signature?, ixCount, txSizeBytes, legsSummary }`
+- `GET /api/arb/tx-history?limit=50` → recent submissions
+
+Websocket events (Socket.IO): `tx:start`, `tx:resolved`, `tx:sim.ok`, `tx:sim.err`, `tx:send.ok`, `tx:send.err`.

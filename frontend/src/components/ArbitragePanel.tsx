@@ -61,6 +61,8 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
   const [sendAmount, setSendAmount] = useState<number>(50);
   const isFetchingRef = useRef(false);
   const [firstLoad, setFirstLoad] = useState(true);
+  const [txRows, setTxRows] = useState<Array<{ id: string; timeMs: number; path: string[]; hops: Array<{ dex: string; variant: string; poolId: string }>; ixCount: number; txSizeBytes: number; status: string; signature?: string | null }>>([]);
+  const [expandedTxId, setExpandedTxId] = useState<string | null>(null);
 
   const fmt = (n: number | undefined | null, digits = 0) => {
     if (n === undefined || n === null || isNaN(n as any)) return '—';
@@ -116,6 +118,9 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
     (async () => {
       try { const r = await fetch(`${apiBase}/arb/config`); const j = await r.json(); if (typeof j?.quote_size_usd === 'number') setQuoteSize(Number(j.quote_size_usd)||50); } catch {}
     })();
+    (async () => {
+      try { const r = await fetch(`${apiBase}/arb/tx-history?limit=50`); const j = await r.json(); setTxRows(Array.isArray(j?.items) ? j.items : []); } catch {}
+    })();
   }, []);
   useEffect(() => {
     if (!socket) return;
@@ -143,13 +148,28 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
         fetchOpps();
       }
     };
+    const onTxAny = async () => {
+      try { const r = await fetch(`${apiBase}/arb/tx-history?limit=50`); const j = await r.json(); setTxRows(Array.isArray(j?.items) ? j.items : []); } catch {}
+    };
     socket.on('graph-snapshot', onGraphSnapshot);
     socket.on('graph-update', onGraphUpdate);
     socket.on('log', onArbLog);
+    socket.on('tx:start', onTxAny);
+    socket.on('tx:resolved', onTxAny);
+    socket.on('tx:sim.ok', onTxAny);
+    socket.on('tx:sim.err', onTxAny);
+    socket.on('tx:send.ok', onTxAny);
+    socket.on('tx:send.err', onTxAny);
     return () => {
       socket.off('graph-snapshot', onGraphSnapshot);
       socket.off('graph-update', onGraphUpdate);
       socket.off('log', onArbLog);
+      socket.off('tx:start', onTxAny);
+      socket.off('tx:resolved', onTxAny);
+      socket.off('tx:sim.ok', onTxAny);
+      socket.off('tx:sim.err', onTxAny);
+      socket.off('tx:send.ok', onTxAny);
+      socket.off('tx:send.err', onTxAny);
     };
   }, [socket, lastGraphVersion]);
 
@@ -439,6 +459,20 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
                   }
                 } catch {}
               }}>Highlight</button>
+              <button className="px-1 py-0.5 border rounded" onClick={async()=>{
+                try {
+                  const body: any = { path: op.path, hopPoolIds: (op as any)?.hop_pool_ids, dexes: (op as any)?.hop_dexes };
+                  const r = await fetch(`${apiBase}/arb/resolve-direct`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                  await r.json().catch(()=>({}));
+                } catch {}
+              }}>Simulate Direct</button>
+              <button className="px-1 py-0.5 border rounded" onClick={async()=>{
+                try {
+                  const body: any = { path: op.path, hopPoolIds: (op as any)?.hop_pool_ids, dexes: (op as any)?.hop_dexes, sizeUsd: sendMode==='USD'? Number(sendAmount)||0 : undefined, size: sendMode==='TOKENS'? Number(sendAmount)||0 : undefined };
+                  const r = await fetch(`${apiBase}/arb/execute-direct`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                  await r.json().catch(()=>({}));
+                } catch {}
+              }}>Execute Direct</button>
             </div>
             {op.bottleneck && (() => {
               const b = op.bottleneck!;
@@ -454,6 +488,65 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
             <div className="text-[11px] opacity-60">Seen: {age(op.first_seen_ms || op.detected_ms)} · Detections: {op.detections ?? 1}</div>
           </div>
         ))}
+      </div>
+      <div className="mt-4 p-2 border rounded bg-black/10">
+        <div className="flex items-center justify-between mb-2">
+          <h4 className="font-semibold">Transactions</h4>
+          <button className="px-2 py-1 border rounded" onClick={async()=>{ try { const r = await fetch(`${apiBase}/arb/tx-history?limit=50`); const j = await r.json(); setTxRows(Array.isArray(j?.items) ? j.items : []); } catch {} }}>Refresh</button>
+        </div>
+        <div className="overflow-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-left opacity-70">
+                <th className="py-1 pr-2">Time</th>
+                <th className="py-1 pr-2">Path</th>
+                <th className="py-1 pr-2">Hops</th>
+                <th className="py-1 pr-2">Ix</th>
+                <th className="py-1 pr-2">Bytes</th>
+                <th className="py-1 pr-2">Status</th>
+                <th className="py-1 pr-2">Sig</th>
+              </tr>
+            </thead>
+            <tbody>
+              {txRows.map((r) => (
+                <>
+                  <tr key={r.id} className="border-t border-white/10 cursor-pointer" onClick={()=> setExpandedTxId(expandedTxId===r.id?null:r.id)}>
+                    <td className="py-1 pr-2">{new Date(r.timeMs).toLocaleTimeString()}</td>
+                    <td className="py-1 pr-2 font-mono">{(r.path||[]).map(m=>tokenMap[m]||m.slice(0,4)+'…'+m.slice(-4)).join(' → ')}</td>
+                    <td className="py-1 pr-2">{r.hops.map(h=>`${h.dex}/${h.variant}`).join(', ')}</td>
+                    <td className="py-1 pr-2">{r.ixCount}</td>
+                    <td className="py-1 pr-2">{r.txSizeBytes}</td>
+                    <td className="py-1 pr-2">{r.status}</td>
+                    <td className="py-1 pr-2">{r.signature ? <a className="text-blue-400 underline" href={`https://solscan.io/tx/${r.signature}`} target="_blank" rel="noreferrer">{r.signature.slice(0,6)}…</a> : '—'}</td>
+                  </tr>
+                  {expandedTxId === r.id && (
+                    <tr key={`${r.id}-exp`} className="bg-black/20">
+                      <td colSpan={7} className="py-2 px-2">
+                        <div className="text-[11px] grid grid-cols-1 md:grid-cols-2 gap-2">
+                          <div>
+                            <div className="font-semibold mb-1">Hops</div>
+                            <div className="space-y-1">
+                              {r.hops.map((h, i) => (
+                                <div key={i} className="font-mono">{i+1}. {h.dex}/{h.variant} · pool {h.poolId}</div>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="opacity-80">
+                            <div className="font-semibold mb-1">Details</div>
+                            <div>Ix Count: {r.ixCount} · Size: {r.txSizeBytes} bytes · Status: {r.status}</div>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </>
+              ))}
+              {txRows.length === 0 && (
+                <tr><td className="py-2 opacity-70" colSpan={7}>No transactions</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );

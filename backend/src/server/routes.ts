@@ -21,6 +21,15 @@ import { apiStart, apiStop, apiReset, setTargetTickTimeMs } from '../jupiter/rat
 import { getRaydiumPoolsNormalized, getOrcaPoolsCached, startRaydiumRefreshLoop, getPoolsMetrics, getMeteoraPoolsCached } from './pools.js';
 import { getGraphSnapshot, findPath } from './graph.js';
 import { writeSessionLogAndClear } from '../utils/sessionLogs.js';
+import { z } from 'zod';
+  const ResolveDirectSchema = z.object({
+    path: z.array(z.string()).min(2),
+    hopPoolIds: z.array(z.string()),
+    dexes: z.array(z.string()),
+    size: z.number().optional(),
+    sizeUsd: z.number().optional(),
+    slippageBps: z.number().optional(),
+  }).refine((o) => o.hopPoolIds.length === o.path.length - 1 && o.dexes.length === o.path.length - 1, { message: 'path/hops length mismatch' });
 
 export function registerRoutes(app: Express, io: SocketIOServer): void {
   const api = Router();
@@ -49,6 +58,73 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       system: CONFIG.system,
       logCategories: CONFIG.system.logCategories,
     });
+  });
+
+  // --- Direct execution config and routes ---
+  api.get('/arb/config', async (_req, res) => {
+    try {
+      const { loadExecConfig } = await import('./execConfigStore.js');
+      const cfg = await loadExecConfig();
+      res.json(cfg);
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.put('/arb/config', async (req, res) => {
+    try {
+      const body = req.body || {};
+      const { saveExecConfig } = await import('./execConfigStore.js');
+      const saved = await saveExecConfig(body);
+      res.json(saved);
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.post('/arb/resolve-direct', async (req: Request, res: Response) => {
+    try {
+      const { resolveDirectPlan } = await import('../execution/resolver/index.js');
+      const parsed = ResolveDirectSchema.parse(req.body || {});
+      const { path, hopPoolIds, dexes, size, sizeUsd, slippageBps } = parsed;
+      const cfgRes = await (async () => { const r = await fetch(`${req.protocol}://${req.get('host')}/api/arb/config`); try { return await r.json(); } catch { return {}; } })();
+      const plan = await resolveDirectPlan({ path, hopPoolIds, dexes, size, sizeUsd, slippageBps }, cfgRes);
+      io.emit('tx:resolved', { plan });
+      res.json({ plan });
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.post('/arb/execute-direct', async (req: Request, res: Response) => {
+    try {
+      const { resolveDirectPlan } = await import('../execution/resolver/index.js');
+      const { buildDirectArbTx } = await import('../execution/builder/tx.js');
+      const { addTxRecord } = await import('./txHistory.js');
+      const input = req.body || {};
+      const cfgRes = await (async () => { const r = await fetch(`${req.protocol}://${req.get('host')}/api/arb/config`); try { return await r.json(); } catch { return {}; } })();
+      const plan = input?.plan && Array.isArray(input.plan?.hops) ? input.plan : await resolveDirectPlan(ResolveDirectSchema.parse(input), cfgRes);
+      io.emit('tx:start', { plan });
+      const built = buildDirectArbTx(plan, []);
+      // Simulate path only in placeholder
+      io.emit('tx:sim.ok', { plan, ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
+      const legs = plan.hops.map(h => ({ dex: h.dex, variant: h.variant, poolId: h.poolId }));
+      await addTxRecord({ id: Math.random().toString(36).slice(2,10), timeMs: Date.now(), path: plan.path, hops: legs, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature: null, status: 'sim_ok' });
+      res.json({ signature: null, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, legsSummary: legs });
+    } catch (e: any) {
+      io.emit('tx:send.err', { error: String(e?.message || e) });
+      res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.get('/arb/tx-history', async (_req: Request, res: Response) => {
+    try {
+      const { getTxHistory } = await import('./txHistory.js');
+      const items = await getTxHistory(50);
+      res.json({ items });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
   });
 
   // Token map (mint -> symbol) combining Jupiter-verified tokens and local overrides (non-destructive)
@@ -1724,39 +1800,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     }
   });
 
-  // Arbitrage config GET passthrough
-  api.get('/arb/config', async (_req, res) => {
-    try {
-      const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
-      logger.info(`api.request GET /arb-service/config`, { url: `${host}/config`, cat: 'api' });
-      const started = Date.now();
-      const r = await (async () => { const ac = new AbortController(); const t = setTimeout(() => ac.abort('timeout'), 7000); try { return await fetch(`${host}/config`, { headers: { 'accept': 'application/json' }, signal: ac.signal }); } finally { clearTimeout(t); } })();
-      logger.info(`api.response GET /arb-service/config ${r.status} ${Date.now()-started}ms`, { status: r.status, cat: 'api' });
-      let json: any = {};
-      try {
-        const ct = r.headers.get('content-type') || '';
-        if (ct.includes('application/json')) json = await r.json();
-        else json = { ok: r.ok, text: await r.text().catch(() => '') };
-      } catch { json = {}; }
-      // Persist a local copy for durability
-      try { await writeJson('backend/config/arbConfig.json', json); } catch {}
-      try {
-        const mode = (json?.execution_mode || 'unknown').toString();
-        const minBps = typeof json?.min_profit_bps === 'number' ? json.min_profit_bps : undefined;
-        const allowLen = Array.isArray(json?.dex_allowlist) ? json.dex_allowlist.length : undefined;
-        const denyLen = Array.isArray(json?.dex_denylist) ? json.dex_denylist.length : undefined;
-        emit('log', { level: 'info', message: `arb:config mode=${mode}${minBps!==undefined?` minBps=${minBps}`:''}${allowLen!==undefined?` allow=${allowLen}`:''}${denyLen!==undefined?` deny=${denyLen}`:''}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } });
-      } catch {}
-      res.status(r.status).json(json);
-    } catch (e: any) {
-      // Fallback to locally persisted config, if any
-      try {
-        const local = await readJson<any>('backend/config/arbConfig.json', {} as any);
-        if (local && Object.keys(local).length > 0) return res.status(200).json(local);
-      } catch {}
-      res.status(503).json({ ok: false, error: 'arb service unreachable' });
-    }
-  });
+  // (removed legacy arb-service passthrough for /arb/config)
 
   // Arbitrage metrics passthroughs
   api.get('/arb/metrics', async (_req, res) => {
