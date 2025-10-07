@@ -11,6 +11,8 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
     createAtasInTx: true,
     dynamicCompute: true,
     maxTxSizeBytes: 1200,
+    near_miss_enable: true,
+    debug_top_n: 5,
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -21,7 +23,7 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
         const r = await fetch(`${apiBase}/arb/config`);
         if (r.ok) {
           const j = await r.json();
-          setCfg((p: any) => ({ ...p, ...j }));
+          setCfg((p: any) => ({ ...p, ...j, near_miss_enable: (j?.near_miss_enable ?? p.near_miss_enable), debug_top_n: (j?.debug_top_n ?? p.debug_top_n) }));
         }
       } catch {}
     })();
@@ -40,6 +42,8 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
       createAtasInTx: !!cfg.createAtasInTx,
       dynamicCompute: !!cfg.dynamicCompute,
       maxTxSizeBytes: Number(cfg.maxTxSizeBytes || 0) || undefined,
+      near_miss_enable: !!cfg.near_miss_enable,
+      debug_top_n: Number(cfg.debug_top_n||0),
     } as any;
     try {
       const r = await fetch(`${apiBase}/arb/config`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -77,6 +81,8 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
               <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.createAtasInTx} onChange={(e)=>set('createAtasInTx', e.target.checked)} />Create ATAs in transaction</label>
               <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.dynamicCompute} onChange={(e)=>set('dynamicCompute', e.target.checked)} />Dynamic Compute</label>
               <div><label className="block text-sm mb-1">Max Tx Size (bytes)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.maxTxSizeBytes ?? ''} onChange={(e)=>set('maxTxSizeBytes', Number(e.target.value)||0)} /></div>
+              <label className="flex items-center gap-2 md:col-span-3"><input type="checkbox" checked={!!cfg.near_miss_enable} onChange={(e)=>set('near_miss_enable', e.target.checked)} />Enable near-miss output (arb-rs)</label>
+              <div><label className="block text-sm mb-1">Debug Top-N Near Misses</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.debug_top_n} onChange={(e)=>set('debug_top_n', Number(e.target.value)||0)} /></div>
             </div>
           </div>
 

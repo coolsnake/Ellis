@@ -76,6 +76,16 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       const body = req.body || {};
       const { saveExecConfig } = await import('./execConfigStore.js');
       const saved = await saveExecConfig(body);
+      // Forward near-miss and debug settings to arb-rs if provided
+      try {
+        const forward: any = {};
+        if (typeof body?.near_miss_enable === 'boolean') forward.near_miss_enable = !!body.near_miss_enable;
+        if (typeof body?.debug_top_n === 'number') forward.debug_top_n = Number(body.debug_top_n);
+        if (Object.keys(forward).length) {
+          const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
+          await fetch(`${host}/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(forward) }).catch(()=>{});
+        }
+      } catch {}
       res.json(saved);
     } catch (e: any) {
       res.status(500).json({ error: String(e?.message || e) });
