@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ROUTES } from '../utils/routes';
 // @ts-ignore - types may be missing in some environments
 import CytoscapeComponent from 'react-cytoscapejs';
 import cytoscape, { ElementDefinition } from 'cytoscape';
@@ -351,7 +352,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
   const loadSnapshot = async () => {
     setLoading(true); setError(null);
     try {
-      const r = await fetch(`${apiBase}/graph`);
+      const r = await fetch(`${apiBase}${ROUTES.graph.snapshot}`);
       const j: GraphSnapshot = await r.json();
       const cy = cyRef.current; if (!cy) return;
       cy.elements().remove();

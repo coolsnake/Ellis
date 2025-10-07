@@ -1,5 +1,6 @@
 // @ts-nocheck
 import React, { useEffect, useMemo, useState } from 'react';
+import { ROUTES } from '../utils/routes';
 
 interface Props {
   apiBase?: string;
@@ -56,7 +57,7 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
     let alive = true;
     (async () => {
       try {
-        const res = await fetch(`${apiBase}/drift/status`);
+        const res = await fetch(`${apiBase}${ROUTES.drift.status}`);
         const data = await res.json();
         if (!alive) return;
         setStatus({ markets: Array.isArray(data?.markets) ? data.markets : [] });
@@ -106,7 +107,7 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
         idleCooldownMs: Math.max(1000, Number(form.idleCooldownMs || 0)),
         outOfScopeCooldownMs: Math.max(1000, Number(form.outOfScopeCooldownMs || 0)),
       };
-      const res = await fetch(`${apiBase}/strategies/liquidator/start`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const res = await fetch(`${apiBase}${ROUTES.strategies.liquidator.start}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       if (!res.ok) throw new Error(await res.text());
       try { onSaved && onSaved(); } catch {}
       onClose();

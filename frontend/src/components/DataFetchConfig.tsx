@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { ROUTES } from '../utils/routes';
 
 type Props = {
   apiBase: string;
@@ -67,7 +68,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetch(`${apiBase}/system/config`);
+        const r = await fetch(`${apiBase}${ROUTES.system.config}`);
         if (r.ok) {
           const j = await r.json();
 				setCfg((prev: any) => ({
@@ -185,7 +186,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
       },
     };
     try {
-      const r = await fetch(`${apiBase}/system/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      const r = await fetch(`${apiBase}${ROUTES.system.config}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       if (!r.ok) throw new Error('Failed to save');
       onClose();
     } catch (e: any) {

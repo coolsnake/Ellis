@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { ROUTES } from '../utils/routes';
 import { logger } from '../utils/logger';
 
 interface AddTokenFormProps {
@@ -34,7 +35,7 @@ export const AddTokenForm: React.FC<AddTokenFormProps> = ({ onSave, onCancel, ap
     setIsSearching(true);
     try {
       // Call the actual token search API
-      const response = await fetch(`${apiBase}/tokens/search?query=${encodeURIComponent(token.symbol)}`);
+      const response = await fetch(`${apiBase}${ROUTES.tokens.search}?query=${encodeURIComponent(token.symbol)}`);
       if (response.ok) {
         const data = await response.json();
         setSearchResults(data || []);

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { ROUTES } from '../utils/routes';
 
 type Props = { apiBase: string; onClose: () => void };
 
@@ -20,7 +21,7 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetch(`${apiBase}/arb/config`);
+        const r = await fetch(`${apiBase}${ROUTES.arb.config}`);
         if (r.ok) {
           const j = await r.json();
           setCfg((p: any) => ({ ...p, ...j, near_miss_enable: (j?.near_miss_enable ?? p.near_miss_enable), debug_top_n: (j?.debug_top_n ?? p.debug_top_n) }));
@@ -46,7 +47,7 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
       debug_top_n: Number(cfg.debug_top_n||0),
     } as any;
     try {
-      const r = await fetch(`${apiBase}/arb/config`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      const r = await fetch(`${apiBase}${ROUTES.arb.config}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       if (!r.ok) throw new Error('Failed to save');
       onClose();
     } catch (e: any) {

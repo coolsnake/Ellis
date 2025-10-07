@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { ROUTES } from '../utils/routes';
 
 type ArbConfigProps = {
   apiBase: string;
@@ -90,7 +91,7 @@ export const ArbConfig: React.FC<ArbConfigProps> = ({ apiBase, initial, onClose 
           const t = setTimeout(() => ac.abort('timeout'), ms);
           try { return await fn(ac.signal); } finally { clearTimeout(t); }
         };
-        const r = await withTimeout((signal) => fetch(`${apiBase}/arb/config`, { signal }));
+        const r = await withTimeout((signal) => fetch(`${apiBase}${ROUTES.arb.config}`, { signal }));
         if (r.ok) {
           const j = await r.json();
           setCfg(prev => ({
@@ -125,7 +126,7 @@ export const ArbConfig: React.FC<ArbConfigProps> = ({ apiBase, initial, onClose 
           const t = setTimeout(() => ac.abort('timeout'), ms);
           try { return await fn(ac.signal); } finally { clearTimeout(t); }
         };
-        const rs = await withTimeout((signal) => fetch(`${apiBase}/system/config`, { signal }));
+        const rs = await withTimeout((signal) => fetch(`${apiBase}${ROUTES.system.config}`, { signal }));
         if (rs.ok) {
           const s = await rs.json();
           setCfg(prev => ({
@@ -204,25 +205,25 @@ export const ArbConfig: React.FC<ArbConfigProps> = ({ apiBase, initial, onClose 
     };
     try {
       // Apply system config first (strict)
-      const sysRes = await withTimeout((signal) => fetch(`${apiBase}/system/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(sys), signal }), 6000);
+      const sysRes = await withTimeout((signal) => fetch(`${apiBase}${ROUTES.system.config}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(sys), signal }), 6000);
       if (!sysRes.ok) throw new Error('Failed to update system configuration');
       // Best-effort arb config: reasonable timeout, do not block closing if slow/unreachable
       try {
-        const arbRes = await withTimeout((signal) => fetch(`${apiBase}/arb/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal }), 7000);
+        const arbRes = await withTimeout((signal) => fetch(`${apiBase}${ROUTES.arb.config}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal }), 7000);
         if (!arbRes.ok) {
           // Inform terminal but do not block UI
-          try { await withTimeout((signal) => fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: Arb config update may not have reached arb-service (saved locally)' }), signal }), 2000); } catch {}
+          try { await withTimeout((signal) => fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: Arb config update may not have reached arb-service (saved locally)' }), signal }), 2000); } catch {}
         }
       } catch {
-        try { await withTimeout((signal) => fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: Arb config update timed out; saved locally' }), signal }), 2000); } catch {}
+        try { await withTimeout((signal) => fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: Arb config update timed out; saved locally' }), signal }), 2000); } catch {}
       }
       // Verify persistence by reloading arb config once (best-effort)
       try {
-        const r = await withTimeout((signal) => fetch(`${apiBase}/arb/config`, { signal }), 4000);
+        const r = await withTimeout((signal) => fetch(`${apiBase}${ROUTES.arb.config}`, { signal }), 4000);
         if (r.ok) {
           const j = await r.json();
           // No state update in modal; just sanity fetch to warm local cache and backend log
-          try { await withTimeout((signal) => fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ level: 'info', message: 'terminal: Arb config reload after save ok' }), signal }), 2000); } catch {}
+          try { await withTimeout((signal) => fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ level: 'info', message: 'terminal: Arb config reload after save ok' }), signal }), 2000); } catch {}
         }
       } catch {}
       onClose();

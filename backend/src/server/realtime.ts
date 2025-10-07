@@ -96,7 +96,9 @@ async function fetchArbMetrics(): Promise<{ last_detection_ms: number }> {
   try {
     const host = ((globalThis as any)?.process?.env?.ARB_SERVICE_URL) || 'http://127.0.0.1:4010';
     // eslint-disable-next-line no-undef
-    const r = await fetch(`${host}/metrics/json`, { headers: { accept: 'application/json' } });
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort('timeout'), 3000);
+    const r = await fetch(`${host}/metrics/json`, { headers: { accept: 'application/json' }, signal: ac.signal }).finally(() => clearTimeout(t));
     const j: any = await r.json().catch(() => ({}));
     return { last_detection_ms: Number(j?.last_detection_ms || 0) };
   } catch {
@@ -169,7 +171,10 @@ export async function checkArbServiceReady(timeoutMs = 4000): Promise<boolean> {
     try {
       const r = await fetch(`${host}/arb/graph/version`, { method: 'GET', headers: { accept: 'application/json' }, signal: ac.signal });
       clearTimeout(t);
-      return !!r && r.ok;
+      if (r && r.ok) return true;
+      // Fallback to /health if version endpoint not available
+      const r2 = await fetch(`${host}/health`, { method: 'GET', headers: { accept: 'application/json' }, signal: ac.signal });
+      return !!r2 && r2.ok;
     } catch {
       clearTimeout(t);
       return false;
@@ -190,7 +195,9 @@ export function getCachedArbVersion(): { version: number; timestamp: number; age
     setInterval(async () => {
       try {
         // eslint-disable-next-line no-undef
-        const r = await fetch(`${host}/arb/graph/version`, { headers: { 'accept': 'application/json' } });
+        const ac = new AbortController();
+        const t = setTimeout(() => ac.abort('timeout'), 2000);
+        const r = await fetch(`${host}/arb/graph/version`, { headers: { 'accept': 'application/json' }, signal: ac.signal }).finally(() => clearTimeout(t));
         if (r?.ok) {
           const j: any = await r.json().catch(() => ({}));
           arbVersionCache = { version: Number(j?.version || 0), timestamp: Number(j?.timestamp || 0), ts: Date.now() };

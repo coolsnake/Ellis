@@ -147,6 +147,9 @@ Routes are modularized by feature and mounted under `/api` in `src/server/routes
 - Graph: `src/server/routes/graph.ts` → `/graph*`
 - Pools: `src/server/routes/pools.ts` → `/arb/pools/*`
 - Arbitrage: `src/server/routes/arb.ts` → `/arb/*`
+  - Backend provides `/api/arb/graph/version` for arb-rs freshness checks
+  - Arb service (arb-rs) now exposes `/arb/graph/version` returning `{ version, timestamp }`
+  - Frontend/backends use `/api/arb/config` (GET/PUT) for exec config; POST `/api/arb/config` proxies to arb-rs and lives in `routes/arb.ts`
 - Drift: `src/server/routes/drift.ts` → `/drift/*`
 - Strategies:
   - Leveraged Grid: `src/server/routes/strategies/leveragedGrid.ts` → `/strategies/leveraged-grid/*`

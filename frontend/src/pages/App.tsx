@@ -5,6 +5,7 @@ import { logger } from '../utils/logger';
 import { io, Socket } from 'socket.io-client';
 import { GridStrategyConfig } from '../components/GridStrategyConfig';
 import { LeveragedGridConfig } from '../components/LeveragedGridConfig';
+import { ROUTES } from '../utils/routes';
 import { GridMonitor } from '../components/GridMonitor';
 import { LiquidationMonitor } from '../components/LiquidationMonitor';
 // removed legacy LiquidatorConfig modal
@@ -183,15 +184,15 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     if (!creds) return;
-    fetch(`${apiBase}/system`).then(r => r.json()).then(setSystem);
-    fetch(`${apiBase}/wallet`).then(r => r.json()).then(setWallet);
-    fetch(`${apiBase}/watchlist`).then(r => r.json()).then(d => setWatchlist(d.watchlist));
+    fetch(`${apiBase}${ROUTES.system.base}`).then(r => r.json()).then(setSystem);
+    fetch(`${apiBase}${ROUTES.wallet.base}`).then(r => r.json()).then(setWallet);
+    fetch(`${apiBase}${ROUTES.watchlist}`).then(r => r.json()).then(d => setWatchlist(d.watchlist));
     // Load base (spot) strategies first
-    fetch(`${apiBase}/strategy`).then(r => r.json()).then(async (d) => {
+    fetch(`${apiBase}${ROUTES.legacy.strategy}`).then(r => r.json()).then(async (d) => {
       const baseList = d.strategies || [];
       // Load Drift leveraged grid strategies and merge into the same list for display
       try {
-        const resp = await fetch(`${apiBase}/strategies/leveraged-grid/status`);
+        const resp = await fetch(`${apiBase}${ROUTES.strategies.leveragedGrid.status}`);
         const lg = await resp.json();
         const mapped = Array.isArray(lg?.strategies) ? (lg.strategies as any[]).map((s: any, i: number) => {
           const cfg = (s?.status?.config || {}) as any;
@@ -224,15 +225,15 @@ export const App: React.FC = () => {
         setStrategies(baseList || []);
       }
     });
-    fetch(`${apiBase}/wallet/tokens`).then(r => r.json()).then(d => setWalletTokens(Array.isArray(d.list) ? d.list : (d.walletTokens || [])));
-    fetch(`${apiBase}/arb/config`).then(r => r.json()).then(setArbConfig).catch(() => {});
+    fetch(`${apiBase}${ROUTES.wallet.tokens}`).then(r => r.json()).then(d => setWalletTokens(Array.isArray(d.list) ? d.list : (d.walletTokens || [])));
+    fetch(`${apiBase}${ROUTES.arb.config}`).then(r => r.json()).then(setArbConfig).catch(() => {});
     // Load Drift status/subaccounts for Drift panel
     (async () => {
       try {
-        const st = await fetch(`${apiBase}/drift/status`).then(r => r.json());
+        const st = await fetch(`${apiBase}${ROUTES.drift.status}`).then(r => r.json());
         setDriftStatus(st);
         try {
-          const subsResp = await fetch(`${apiBase}/drift/subaccounts`).then(r => r.json());
+          const subsResp = await fetch(`${apiBase}${ROUTES.drift.subaccounts}`).then(r => r.json());
           const subs = subsResp?.subaccounts || [];
           setDriftSubaccounts(subs);
           const selected = Number(subsResp?.selectedId ?? (subs[0]?.id ?? 0));
@@ -243,7 +244,7 @@ export const App: React.FC = () => {
           }
         } catch {}
         try {
-          const markets = await fetch(`${apiBase}/drift/spot-markets`).then(r => r.json());
+          const markets = await fetch(`${apiBase}${ROUTES.drift.spotMarkets}`).then(r => r.json());
           setDriftSpotMarkets(Array.isArray(markets?.markets) ? markets.markets : []);
         } catch {}
       } catch {}
@@ -255,7 +256,7 @@ export const App: React.FC = () => {
     (async () => {
       try {
         if (!Number.isFinite(Number(driftSelectedSubId))) return;
-        const b = await fetch(`${apiBase}/drift/subaccount/balances?subaccountId=${Number(driftSelectedSubId)}`).then(r => r.json());
+        const b = await fetch(`${apiBase}${ROUTES.drift.subaccountBalances}?subaccountId=${Number(driftSelectedSubId)}`).then(r => r.json());
         setDriftSubBalances(Array.isArray(b?.balances) ? b.balances : []);
       } catch {}
     })();
@@ -324,7 +325,7 @@ export const App: React.FC = () => {
     socket.on('strategies-update', async (list) => {
       const base = Array.isArray(list) ? list : [];
       try {
-        const resp = await fetch(`${apiBase}/strategies/leveraged-grid/status`);
+            const resp = await fetch(`${apiBase}${ROUTES.strategies.leveragedGrid.status}`);
         const lg = await resp.json();
         const mapped = Array.isArray(lg?.strategies) ? (lg.strategies as any[]).map((s: any, i: number) => {
           const cfg = (s?.status?.config || {}) as any;
@@ -459,7 +460,7 @@ export const App: React.FC = () => {
     setAuthError(null);
     // probe first; only persist/set creds on success
     const token = btoa(`${c.user}:${c.pass}`);
-    fetch(`${apiBase}/system`, { headers: { Authorization: `Basic ${token}` } })
+    fetch(`${apiBase}${ROUTES.system.base}`, { headers: { Authorization: `Basic ${token}` } })
       .then(r => { if (!r.ok) throw new Error('Invalid credentials'); return r.json(); })
       .then((sys) => {
         try {
@@ -528,7 +529,7 @@ export const App: React.FC = () => {
 
   const handleSystemConfigSave = async (config: any) => {
     try {
-      const response = await fetch(`${apiBase}/system/config`, {
+      const response = await fetch(`${apiBase}${ROUTES.system.config}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config)
@@ -537,7 +538,7 @@ export const App: React.FC = () => {
       if (response.ok) {
         setShowSystemConfig(false);
         // Refresh system info
-        const systemResponse = await fetch(`${apiBase}/system`);
+        const systemResponse = await fetch(`${apiBase}${ROUTES.system.base}`);
         const systemData = await systemResponse.json();
         setSystem(systemData);
         // Apply frontend log level locally if provided
@@ -557,7 +558,7 @@ export const App: React.FC = () => {
 
   const handleSaveGridStrategy = async (config: any) => {
     try {
-      const response = await fetch(`${apiBase}/strategy`, {
+      const response = await fetch(`${apiBase}${ROUTES.legacy.strategy}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config)
@@ -568,7 +569,7 @@ export const App: React.FC = () => {
         setStrategies(data.strategies || []);
         setShowGridConfig(false);
         setEditingStrategy(null);
-        await fetch(`${apiBase}/terminal/log`, { 
+        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { 
           method: 'POST', 
           headers: { 'Content-Type': 'application/json' }, 
           body: JSON.stringify({ level: 'info', message: `terminal: Grid strategy saved: ${config.name}` }) 
@@ -578,7 +579,7 @@ export const App: React.FC = () => {
         throw new Error(error.error || 'Failed to save strategy');
       }
     } catch (error: any) {
-      await fetch(`${apiBase}/terminal/log`, { 
+      await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { 
         method: 'POST', 
         headers: { 'Content-Type': 'application/json' }, 
         body: JSON.stringify({ level: 'error', message: `terminal: Failed to save grid strategy: ${error.message}` }) 
@@ -602,7 +603,7 @@ export const App: React.FC = () => {
 
   const handleSaveThresholdStrategy = async (config: any) => {
     try {
-      const response = await fetch(`${apiBase}/strategy`, {
+      const response = await fetch(`${apiBase}${ROUTES.legacy.strategy}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config)
@@ -613,7 +614,7 @@ export const App: React.FC = () => {
         setStrategies(data.strategies || []);
         setShowThresholdConfig(false);
         setEditingStrategy(null);
-        await fetch(`${apiBase}/terminal/log`, { 
+        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { 
           method: 'POST', 
           headers: { 'Content-Type': 'application/json' }, 
           body: JSON.stringify({ level: 'info', message: `terminal: Threshold strategy saved: ${config.name}` }) 
@@ -623,7 +624,7 @@ export const App: React.FC = () => {
         throw new Error(error.error || 'Failed to save strategy');
       }
     } catch (error: any) {
-      await fetch(`${apiBase}/terminal/log`, { 
+      await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { 
         method: 'POST', 
         headers: { 'Content-Type': 'application/json' }, 
         body: JSON.stringify({ level: 'error', message: `terminal: Failed to save threshold strategy: ${error.message}` }) 
@@ -679,7 +680,7 @@ export const App: React.FC = () => {
         const key = await resolveDriftKey();
         if (!key) throw new Error('Unable to determine leveraged grid key to remove');
 
-        const resp = await fetch(`${apiBase}/strategies/leveraged-grid/stop`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key }) });
+        const resp = await fetch(`${apiBase}${ROUTES.strategies.leveragedGrid.stop}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key }) });
         if (!resp.ok) {
           const txt = await resp.text();
           throw new Error(txt || 'Failed to stop leveraged grid');
@@ -697,7 +698,7 @@ export const App: React.FC = () => {
         setActivitiesByStrategy(prev => { const next = { ...(prev || {}) } as any; delete next[strategyName]; return next; });
         // Refresh from server to avoid reappearing due to stale merges
         try {
-          const base = await (await fetch(`${apiBase}/strategy`)).json();
+          const base = await (await fetch(`${apiBase}${ROUTES.legacy.strategy}`)).json();
           const baseList = base?.strategies || [];
           const statusResp = await fetch(`${apiBase}/strategies/leveraged-grid/status`);
           const lg = await statusResp.json();
@@ -730,7 +731,7 @@ export const App: React.FC = () => {
           setStrategies([...(baseList || []), ...mapped]);
         } catch {}
       } else {
-        const response = await fetch(`${apiBase}/strategy`, {
+        const response = await fetch(`${apiBase}${ROUTES.legacy.strategy}`, {
           method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: strategyName })
@@ -743,13 +744,13 @@ export const App: React.FC = () => {
           throw new Error(error.error || 'Failed to remove strategy');
         }
       }
-        await fetch(`${apiBase}/terminal/log`, { 
+        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { 
           method: 'POST', 
           headers: { 'Content-Type': 'application/json' }, 
           body: JSON.stringify({ level: 'info', message: `terminal: Strategy removed: ${strategyName}` }) 
         });
     } catch (error: any) {
-      await fetch(`${apiBase}/terminal/log`, { 
+      await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { 
         method: 'POST', 
         headers: { 'Content-Type': 'application/json' }, 
         body: JSON.stringify({ level: 'error', message: `terminal: Failed to remove strategy: ${error.message}` }) 
@@ -769,7 +770,7 @@ export const App: React.FC = () => {
         const data = await response.json();
         setWatchlist(data.watchlist || []);
         setShowAddToken(false);
-        await fetch(`${apiBase}/terminal/log`, { 
+        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { 
           method: 'POST', 
           headers: { 'Content-Type': 'application/json' }, 
           body: JSON.stringify({ level: 'info', message: `terminal: Token added to watchlist: ${token.symbol}` }) 
@@ -779,7 +780,7 @@ export const App: React.FC = () => {
         throw new Error(error.error || 'Failed to add token');
       }
     } catch (error: any) {
-      await fetch(`${apiBase}/terminal/log`, { 
+      await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { 
         method: 'POST', 
         headers: { 'Content-Type': 'application/json' }, 
         body: JSON.stringify({ level: 'error', message: `terminal: Failed to add token: ${error.message}` }) 
@@ -800,7 +801,7 @@ export const App: React.FC = () => {
       if (response.ok) {
         const data = await response.json();
         setWatchlist(data.watchlist || []);
-        await fetch(`${apiBase}/terminal/log`, { 
+        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { 
           method: 'POST', 
           headers: { 'Content-Type': 'application/json' }, 
           body: JSON.stringify({ level: 'info', message: `terminal: Token removed from watchlist: ${tokenSymbol}` }) 
@@ -810,7 +811,7 @@ export const App: React.FC = () => {
         throw new Error(error.error || 'Failed to remove token');
       }
     } catch (error: any) {
-      await fetch(`${apiBase}/terminal/log`, { 
+      await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { 
         method: 'POST', 
         headers: { 'Content-Type': 'application/json' }, 
         body: JSON.stringify({ level: 'error', message: `terminal: Failed to remove token: ${error.message}` }) 
@@ -820,7 +821,7 @@ export const App: React.FC = () => {
 
   async function handleTerminal(cmd: string) {
     if (cmd) {
-      await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: > ${cmd}` }) });
+      await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: > ${cmd}` }) });
     }
     // Namespaced command routing (preferred)
     {
@@ -830,44 +831,44 @@ export const App: React.FC = () => {
         const action = (parts[1] || '').toLowerCase();
         if (action === 'generate') {
           try {
-            const resp = await fetch(`${apiBase}/wallet/generate`, { method: 'POST' });
+            const resp = await fetch(`${apiBase}${ROUTES.wallet.generate}`, { method: 'POST' });
             const json = await resp.json();
             if (!resp.ok) throw new Error(json?.error || 'generate failed');
-            await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: wallet generated ${json.address}` }) });
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: wallet generated ${json.address}` }) });
           } catch (e: any) {
-            await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: wallet generate failed ${String(e?.message || e)}` }) });
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: wallet generate failed ${String(e?.message || e)}` }) });
           }
           return;
         }
         if (action === 'wrap') {
           const amount = Number(parts[2]);
           if (!isFinite(amount) || amount <= 0) {
-            await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: wallet wrap AMOUNT' }) });
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: wallet wrap AMOUNT' }) });
           } else {
             try {
-              const resp = await fetch(`${apiBase}/wallet/wrap`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amount }) });
+              const resp = await fetch(`${apiBase}${ROUTES.wallet.wrap}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amount }) });
               const json = await resp.json();
               if (!resp.ok) throw new Error(json?.error || 'wrap failed');
-              await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: wallet wrap success ${amount} SOL sig=${json.signature}` }) });
+              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: wallet wrap success ${amount} SOL sig=${json.signature}` }) });
             } catch (e: any) {
-              await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: wallet wrap failed ${String(e?.message || e)}` }) });
+              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: wallet wrap failed ${String(e?.message || e)}` }) });
             }
           }
           return;
         }
         if (action === 'unwrap') {
           try {
-            const resp = await fetch(`${apiBase}/wallet/unwrap`, { method: 'POST' });
+            const resp = await fetch(`${apiBase}${ROUTES.wallet.unwrap}`, { method: 'POST' });
             const json = await resp.json();
             if (!resp.ok) throw new Error(json?.error || 'unwrap failed');
-            await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: wallet unwrap success sig=${json.signature}` }) });
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: wallet unwrap success sig=${json.signature}` }) });
           } catch (e: any) {
-            await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: wallet unwrap failed ${String(e?.message || e)}` }) });
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: wallet unwrap failed ${String(e?.message || e)}` }) });
           }
           return;
         }
         if (action === 'refresh') {
-          try { await fetch(`${apiBase}/wallet/refresh`, { method: 'POST' }); } catch {}
+          try { await fetch(`${apiBase}${ROUTES.wallet.refresh}`, { method: 'POST' }); } catch {}
           return;
         }
         if (action === 'send') {
@@ -876,39 +877,39 @@ export const App: React.FC = () => {
             const amount = Number(parts[3]);
             const address = parts[4];
             if (!isFinite(amount) || amount <= 0) {
-              await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: wallet send TOKEN|MINT AMOUNT ADDRESS' }) });
+              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: wallet send TOKEN|MINT AMOUNT ADDRESS' }) });
               return;
             }
             try {
-              const resp = await fetch(`${apiBase}/wallet/send`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, destination: address, amount }) });
+              const resp = await fetch(`${apiBase}${ROUTES.wallet.send}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, destination: address, amount }) });
               const json = await resp.json();
               if (!resp.ok) throw new Error(json?.error || 'send failed');
-              await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: wallet send success sig=${json.signature || '(n/a)'}` }) });
+              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: wallet send success sig=${json.signature || '(n/a)'}` }) });
             } catch (e: any) {
-              await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: wallet send failed ${String(e?.message || e)}` }) });
+              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: wallet send failed ${String(e?.message || e)}` }) });
             }
           } else {
-            await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: wallet send TOKEN|MINT AMOUNT ADDRESS' }) });
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: wallet send TOKEN|MINT AMOUNT ADDRESS' }) });
           }
           return;
         }
         if (action === 'addtoken') {
           const query = parts.slice(2).join(' ');
           if (!query) {
-            await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: wallet addtoken TOKEN|MINT' }) });
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: wallet addtoken TOKEN|MINT' }) });
             return;
           }
-          const resp = await fetch(`${apiBase}/wallet/tokens`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query }) });
+          const resp = await fetch(`${apiBase}${ROUTES.wallet.tokens}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query }) });
           const json = await resp.json();
           if (!resp.ok) {
-            await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: wallet addtoken failed: ${json?.error || 'unknown'}` }) });
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: wallet addtoken failed: ${json?.error || 'unknown'}` }) });
           } else {
             setWalletTokens(Array.isArray(json.list) ? json.list : (json.walletTokens || []));
-            await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: wallet addtoken added ${json.added?.symbol || json.added?.id}` }) });
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: wallet addtoken added ${json.added?.symbol || json.added?.id}` }) });
           }
           return;
         }
-        await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: wallet commands: generate | refresh | send TOKEN|MINT AMOUNT ADDRESS | addtoken TOKEN|MINT | wrap AMOUNT | unwrap' }) });
+        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: wallet commands: generate | refresh | send TOKEN|MINT AMOUNT ADDRESS | addtoken TOKEN|MINT | wrap AMOUNT | unwrap' }) });
         return;
       }
       if (ns === 'watchlist') {
@@ -916,35 +917,35 @@ export const App: React.FC = () => {
         if (action === 'add') {
           const query = cmd.slice('watchlist add '.length).trim();
           if (!query) {
-            await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: watchlist add QUERY|MINT' }) });
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: watchlist add QUERY|MINT' }) });
           } else {
-            await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: -> adding ${query} to watchlist` }) });
-            await fetch(`${apiBase}/watchlist`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query }) });
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: -> adding ${query} to watchlist` }) });
+            await fetch(`${apiBase}${ROUTES.watchlist}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idOrSymbol: query }) });
           }
           return;
         }
         if (action === 'remove') {
           const idOrSymbol = parts[2];
           if (!idOrSymbol) {
-            await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: watchlist remove SYMBOL|MINT' }) });
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: watchlist remove SYMBOL|MINT' }) });
           } else {
-            await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: -> removing ${idOrSymbol} from watchlist` }) });
-            await fetch(`${apiBase}/watchlist`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idOrSymbol }) });
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: -> removing ${idOrSymbol} from watchlist` }) });
+            await fetch(`${apiBase}${ROUTES.watchlist}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idOrSymbol }) });
           }
           return;
         }
         if (action === 'list') {
-          const d = await (await fetch(`${apiBase}/watchlist`)).json();
+          const d = await (await fetch(`${apiBase}${ROUTES.watchlist}`)).json();
           setWatchlist(d.watchlist || []);
           return;
         }
-        await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: watchlist commands: add QUERY|MINT | remove SYMBOL|MINT | list' }) });
+        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: watchlist commands: add QUERY|MINT | remove SYMBOL|MINT | list' }) });
         return;
       }
       if (ns === 'strategy') {
         const action = (parts[1] || '').toLowerCase();
         if (action === 'list') {
-          const updated = await (await fetch(`${apiBase}/strategy`)).json();
+          const updated = await (await fetch(`${apiBase}${ROUTES.legacy.strategy}`)).json();
           setStrategies(updated.strategies || []);
           return;
         }
@@ -953,7 +954,7 @@ export const App: React.FC = () => {
           const name = parts[1];
           const kvParts = parts.slice(2);
           if (!name || kvParts.length === 0) {
-            await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: strategy NAME key=value [key=value ...]' }) });
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: strategy NAME key=value [key=value ...]' }) });
             return;
           }
           const rawKv: Record<string, string> = {};
@@ -977,14 +978,14 @@ export const App: React.FC = () => {
             else if (numKeys.has(k)) payload[key] = Number(v);
             else payload[key] = v;
           }
-          await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: -> strategy update ${name} ${JSON.stringify(payload)}` }) });
+          await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: -> strategy update ${name} ${JSON.stringify(payload)}` }) });
           const resp = await fetch(`${apiBase}/strategy`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
           const updated = await (await fetch(`${apiBase}/strategy`)).json();
           setStrategies(updated.strategies || []);
           if (!resp.ok) {
-            await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: 'terminal: strategy update failed' }) });
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: 'terminal: strategy update failed' }) });
           } else {
-            await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: strategy updated ${name}` }) });
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: strategy updated ${name}` }) });
           }
           return;
         }
@@ -1022,41 +1023,41 @@ export const App: React.FC = () => {
             maxPositionSize: kv.maxpositionsize ? Number(kv.maxpositionsize) : (current as any).maxPositionSize,
             anchorPairAtSetup: kv.anchorpairatsetup ? Number(kv.anchorpairatsetup) : (current as any).anchorPairAtSetup,
           } as any;
-          await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: -> strategy set ${JSON.stringify(next)}` }) });
-          await fetch(`${apiBase}/strategy`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next) });
-          const updated = await (await fetch(`${apiBase}/strategy`)).json();
+          await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: -> strategy set ${JSON.stringify(next)}` }) });
+          await fetch(`${apiBase}${ROUTES.legacy.strategy}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next) });
+          const updated = await (await fetch(`${apiBase}${ROUTES.legacy.strategy}`)).json();
           setStrategies(updated.strategies || []);
-          await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: strategy set ${JSON.stringify(next)}` }) });
+          await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: strategy set ${JSON.stringify(next)}` }) });
           return;
         }
         if (action === 'remove') {
           const name = parts[2];
           if (!name) {
-            await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: strategy remove NAME' }) });
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: strategy remove NAME' }) });
           } else {
-            await fetch(`${apiBase}/strategy`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
-            const updated = await (await fetch(`${apiBase}/strategy`)).json();
+            await fetch(`${apiBase}${ROUTES.legacy.strategy}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+            const updated = await (await fetch(`${apiBase}${ROUTES.legacy.strategy}`)).json();
             setStrategies(updated.strategies || []);
-            await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: -> strategy remove ${name}` }) });
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: -> strategy remove ${name}` }) });
           }
           return;
         }
-        await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: strategy commands: list | set name=... token=... buyPct=... sellPct=... amount=... test=true|false | remove NAME' }) });
+        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: strategy commands: list | set name=... token=... buyPct=... sellPct=... amount=... test=true|false | remove NAME' }) });
         return;
       }
       if (ns === 'bot') {
         const action = (parts[1] || '').toLowerCase();
         if (action === 'start') { await fetch(`${apiBase}/bot/start`, { method: 'POST' }); return; }
         if (action === 'stop') { await fetch(`${apiBase}/bot/stop`, { method: 'POST' }); return; }
-        await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: bot commands: start | stop' }) });
+        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: bot commands: start | stop' }) });
         return;
       }
       if (ns === 'api') {
         const action = (parts[1] || '').toLowerCase();
-        if (action === 'start') { await fetch(`${apiBase}/api/start`, { method: 'POST' }); return; }
-        if (action === 'stop') { await fetch(`${apiBase}/api/stop`, { method: 'POST' }); return; }
-        if (action === 'reset') { await fetch(`${apiBase}/api/reset`, { method: 'POST' }); return; }
-        await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: api commands: start | stop | reset' }) });
+        if (action === 'start') { await fetch(`${apiBase}${ROUTES.legacy.apiStart}`, { method: 'POST' }); return; }
+        if (action === 'stop') { await fetch(`${apiBase}${ROUTES.legacy.apiStop}`, { method: 'POST' }); return; }
+        if (action === 'reset') { await fetch(`${apiBase}${ROUTES.legacy.apiReset}`, { method: 'POST' }); return; }
+        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: api commands: start | stop | reset' }) });
         return;
       }
       if (ns === 'swap') {
@@ -1065,31 +1066,31 @@ export const App: React.FC = () => {
           const from = parts[2];
           const to = parts[3];
           try {
-            await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: -> swapping ${amount} ${from} ${to}` }) });
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: -> swapping ${amount} ${from} ${to}` }) });
             const resp = await fetch(`${apiBase}/swap`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amount, from, to }) });
             const json = await resp.json();
             if (!resp.ok) throw new Error(json?.error || 'swap failed');
-            await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: swap success ${amount} ${from}->${to} sig=${json.signature}` }) });
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: swap success ${amount} ${from}->${to} sig=${json.signature}` }) });
           } catch (e: any) {
-            await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: swap failed ${String(e?.message || e)}` }) });
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: swap failed ${String(e?.message || e)}` }) });
           }
         } else {
-          await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: swap AMOUNT FROM TO' }) });
+          await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: swap AMOUNT FROM TO' }) });
         }
         return;
       }
       if (ns === 'ticktime') {
         const ms = Number(parts[1]);
         if (!isFinite(ms) || ms <= 0) {
-          await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: ticktime MS (e.g., ticktime 2000)' }) });
+          await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: ticktime MS (e.g., ticktime 2000)' }) });
         } else {
           const resp = await fetch(`${apiBase}/ticktime`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ms }) });
           const json = await resp.json();
           if (!resp.ok) {
-            await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: ticktime failed ${json?.error || 'unknown'}` }) });
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: ticktime failed ${json?.error || 'unknown'}` }) });
           } else {
             setSystem((prev: any) => ({ ...prev, targetTickTimeMs: json.targetTickTimeMs }));
-            await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: ticktime set to ${json.targetTickTimeMs} ms` }) });
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: ticktime set to ${json.targetTickTimeMs} ms` }) });
           }
         }
         return;
@@ -1102,7 +1103,7 @@ export const App: React.FC = () => {
             if (!resp.ok) throw new Error('reset failed');
             const wl = await (await fetch(`${apiBase}/watchlist`)).json();
             setWatchlist(wl.watchlist || []);
-            const st = await (await fetch(`${apiBase}/strategy`)).json();
+            const st = await (await fetch(`${apiBase}${ROUTES.legacy.strategy}`)).json();
             setStrategies(st.strategies || []);
         const wt = await (await fetch(`${apiBase}/wallet/tokens`)).json();
         setWalletTokens(Array.isArray(wt.list) ? wt.list : (wt.walletTokens || []));
@@ -1126,7 +1127,7 @@ export const App: React.FC = () => {
           }
           return;
         } else {
-          await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: config commands: reset' }) });
+        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: config commands: reset' }) });
         }
         return;
       }
@@ -1146,7 +1147,7 @@ export const App: React.FC = () => {
           'config: reset | ticktime MS',
           'help — show this help'
         ];
-        await Promise.all(lines.map(line => fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: ${line}` }) })));
+        await Promise.all(lines.map(line => fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: ${line}` }) })));
         return;
       }
     }
@@ -1161,9 +1162,9 @@ export const App: React.FC = () => {
       const idOrSymbol = cmd.split(' ')[1];
       await fetch(`${apiBase}/watchlist`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idOrSymbol }) });
     } else if (cmd === 'show strategy') {
-      const cfg = await (await fetch(`${apiBase}/strategy`)).json();
+      const cfg = await (await fetch(`${apiBase}${ROUTES.legacy.strategy}`)).json();
       setStrategies(cfg.strategies || []);
-      await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: 'terminal: show strategy' }) });
+      await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: 'terminal: show strategy' }) });
     } else if (cmd === 'help') {
       const lines = [
         'Help: Available commands',
@@ -1182,7 +1183,7 @@ export const App: React.FC = () => {
         "send TOKEN|MINT ADDRESS AMOUNT — send SOL/SPL from wallet",
         "help — show this help"
       ];
-      await Promise.all(lines.map(line => fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: ${line}` }) })));
+      await Promise.all(lines.map(line => fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: ${line}` }) })));
     } else if (cmd.startsWith('send ')) {
       // send TOKEN|MINT ADDRESS AMOUNT
       const parts = cmd.split(/\s+/);
@@ -1196,7 +1197,7 @@ export const App: React.FC = () => {
           body: JSON.stringify({ token, destination: address, amount })
         });
       } else {
-        await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: send incomplete' }) });
+        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: send incomplete' }) });
       }
     } else if (cmd.startsWith('swap ')) {
       // swap AMOUNT FROM TO
@@ -1213,40 +1214,40 @@ export const App: React.FC = () => {
           });
           const json = await resp.json();
           if (!resp.ok) throw new Error(json?.error || 'swap failed');
-          await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: swap success ${amount} ${from}->${to} sig=${json.signature}` }) });
+          await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: swap success ${amount} ${from}->${to} sig=${json.signature}` }) });
         } catch (e: any) {
-          await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: swap failed ${String(e?.message || e)}` }) });
+          await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: swap failed ${String(e?.message || e)}` }) });
         }
       } else {
-        await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: swap incomplete (usage: swap AMOUNT FROM TO)' }) });
+        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: swap incomplete (usage: swap AMOUNT FROM TO)' }) });
       }
     } else if (cmd === 'refreshwallet') {
       try {
         const resp = await fetch(`${apiBase}/wallet/refresh`, { method: 'POST' });
         if (!resp.ok) throw new Error('refresh failed');
       } catch (e: any) {
-        await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: refreshwallet failed ${String(e?.message || e)}` }) });
+        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: refreshwallet failed ${String(e?.message || e)}` }) });
       }
     } else if (cmd.startsWith('walletaddtoken ')) {
       const query = cmd.slice('walletaddtoken '.length).trim();
       if (!query) {
-        await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'walletaddtoken requires a TOKEN or MINT' }) });
+        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'walletaddtoken requires a TOKEN or MINT' }) });
       } else {
         const resp = await fetch(`${apiBase}/wallet/tokens`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query }) });
         const json = await resp.json();
         if (!resp.ok) {
-          await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: walletaddtoken failed: ${json?.error || 'unknown'}` }) });
+          await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: walletaddtoken failed: ${json?.error || 'unknown'}` }) });
         } else {
           setWalletTokens(Array.isArray(json.list) ? json.list : (json.walletTokens || []));
-          await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: walletaddtoken added ${json.added?.symbol || json.added?.id}` }) });
+          await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: walletaddtoken added ${json.added?.symbol || json.added?.id}` }) });
         }
       }
     } else if (cmd === 'apistop') {
-      await fetch(`${apiBase}/api/stop`, { method: 'POST' });
+      await fetch(`${apiBase}${ROUTES.legacy.apiStop}`, { method: 'POST' });
     } else if (cmd === 'apistart') {
-      await fetch(`${apiBase}/api/start`, { method: 'POST' });
+      await fetch(`${apiBase}${ROUTES.legacy.apiStart}`, { method: 'POST' });
     } else if (cmd === 'apireset') {
-      await fetch(`${apiBase}/api/reset`, { method: 'POST' });
+      await fetch(`${apiBase}${ROUTES.legacy.apiReset}`, { method: 'POST' });
     } else if (cmd.startsWith('set ')) {
       // set key=value pairs; allowed keys: token, buyPct, sellPct, amount, test
       const parts = cmd.slice(4).split(/[\s,]+/).filter(Boolean);
@@ -1265,20 +1266,20 @@ export const App: React.FC = () => {
         amount: kv.amount ? Number(kv.amount) : current.amount ?? 0.1,
         testMode: kv.test ? kv.test.toLowerCase() === 'true' : current.testMode ?? true,
       };
-      await fetch(`${apiBase}/strategy`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next) });
-      const updated = await (await fetch(`${apiBase}/strategy`)).json();
+      await fetch(`${apiBase}${ROUTES.legacy.strategy}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next) });
+      const updated = await (await fetch(`${apiBase}${ROUTES.legacy.strategy}`)).json();
       setStrategies(updated.strategies || []);
-      await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: set ${JSON.stringify(next)}` }) });
+      await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: set ${JSON.stringify(next)}` }) });
     } else if (cmd.startsWith('removestrategy')) {
       const parts = cmd.split(/\s+/);
       const name = parts[1];
       if (!name) {
-        await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: removestrategy requires a name' }) });
+        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: removestrategy requires a name' }) });
       } else {
-        await fetch(`${apiBase}/strategy`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
-        const updated = await (await fetch(`${apiBase}/strategy`)).json();
+        await fetch(`${apiBase}${ROUTES.legacy.strategy}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+        const updated = await (await fetch(`${apiBase}${ROUTES.legacy.strategy}`)).json();
         setStrategies(updated.strategies || []);
-        await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: removed strategy ${name}` }) });
+        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: removed strategy ${name}` }) });
       }
     } else if (cmd === 'resetconfig') {
       try {
@@ -1290,12 +1291,12 @@ export const App: React.FC = () => {
         setStrategies(st.strategies || []);
         const wt = await (await fetch(`${apiBase}/wallet/tokens`)).json();
         setWalletTokens(Array.isArray(wt.list) ? wt.list : (wt.walletTokens || []));
-        await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: 'terminal: resetconfig executed' }) });
+      await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: 'terminal: resetconfig executed' }) });
       } catch (e: any) {
-        await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `resetconfig failed: ${String(e?.message || e)}` }) });
+      await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `resetconfig failed: ${String(e?.message || e)}` }) });
       }
     } else {
-      await fetch(`${apiBase}/terminal/log`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: `terminal: unknown or incomplete command: ${cmd}` }) });
+      await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: `terminal: unknown or incomplete command: ${cmd}` }) });
     }
   }
 
@@ -2670,7 +2671,7 @@ export const App: React.FC = () => {
             try {
               const base = await (await fetch(`${apiBase}/strategy`)).json();
               const baseList = base?.strategies || [];
-              const resp = await fetch(`${apiBase}/strategies/leveraged-grid/status`);
+        const resp = await fetch(`${apiBase}${ROUTES.strategies.leveragedGrid.status}`);
               const lg = await resp.json();
               const mapped = Array.isArray(lg?.strategies) ? (lg.strategies as any[]).map((s: any, i: number) => {
                 const cfg = (s?.status?.config || {}) as any;
@@ -2735,7 +2736,7 @@ export const App: React.FC = () => {
               
               if (response.ok) {
                 setShowFeeConfig(false);
-                await fetch(`${apiBase}/terminal/log`, { 
+                await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, {
                   method: 'POST', 
                   headers: { 'Content-Type': 'application/json' }, 
                   body: JSON.stringify({ level: 'info', message: 'terminal: Fee configuration updated' }) 

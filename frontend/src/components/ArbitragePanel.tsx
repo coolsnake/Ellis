@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ROUTES } from '../utils/routes';
 
 type BottleneckEdge = { from: string; to: string; dex: string; rate: number; liquidity: number; fee_bps: number };
 type Opportunity = {
@@ -87,7 +88,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
     setLoading(true);
     setError(null);
     try {
-      const r = await fetch(`${apiBase}/arb/opportunities`);
+      const r = await fetch(`${apiBase}${ROUTES.arb.opportunities}`);
       const j = await r.json();
       setItems((j?.items as Opportunity[]) || []);
       setSummary((j?.summary as OpportunitiesSummary) || null);
@@ -116,10 +117,10 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
     fetchTokenMap();
     // Load quote size from arb config for display consistency
     (async () => {
-      try { const r = await fetch(`${apiBase}/arb/config`); const j = await r.json(); if (typeof j?.quote_size_usd === 'number') setQuoteSize(Number(j.quote_size_usd)||50); } catch {}
+      try { const r = await fetch(`${apiBase}${ROUTES.arb.config}`); const j = await r.json(); if (typeof j?.quote_size_usd === 'number') setQuoteSize(Number(j.quote_size_usd)||50); } catch {}
     })();
     (async () => {
-      try { const r = await fetch(`${apiBase}/arb/tx-history?limit=50`); const j = await r.json(); setTxRows(Array.isArray(j?.items) ? j.items : []); } catch {}
+      try { const r = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const j = await r.json(); setTxRows(Array.isArray(j?.items) ? j.items : []); } catch {}
     })();
   }, []);
 
@@ -173,7 +174,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
       }
     };
     const onTxAny = async () => {
-      try { const r = await fetch(`${apiBase}/arb/tx-history?limit=50`); const j = await r.json(); setTxRows(Array.isArray(j?.items) ? j.items : []); } catch {}
+      try { const r = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const j = await r.json(); setTxRows(Array.isArray(j?.items) ? j.items : []); } catch {}
     };
     socket.on('graph-snapshot', onGraphSnapshot);
     socket.on('graph-update', onGraphUpdate);
@@ -205,7 +206,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
         <h3 className="text-lg font-semibold">Arbitrage Opportunities</h3>
         <div className="flex items-center gap-2">
           <button className="px-2 py-1 border rounded" onClick={async()=>{
-            try { await fetch(`${apiBase}/arb/metrics/json`, { headers: { 'accept': 'application/json' } }); } catch {}
+            try { await fetch(`${apiBase}${ROUTES.arb.metricsJson}`, { headers: { 'accept': 'application/json' } }); } catch {}
             // Best-effort also refresh opportunities snapshot
             try { await fetchOpps(); } catch {}
           }}>Refresh Metrics</button>
@@ -379,7 +380,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
                 const nm: any = summary.near_miss as any;
                 const body: any = { path: nm.path, hopPoolIds: nm.hop_pool_ids || [], dexes: nm.hop_dexes || [] };
                 if (sendMode === 'USD') body.sizeUsd = Number(sendAmount)||0; else body.size = Number(sendAmount)||0;
-                const r = await fetch(`${apiBase}/arb/simulate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                const r = await fetch(`${apiBase}${ROUTES.arb.simulate}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
                 await r.json().catch(()=>({}));
               } catch {}
               setSending(false);
@@ -391,7 +392,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
                 const nm: any = summary.near_miss as any;
                 const body: any = { path: nm.path, hopPoolIds: nm.hop_pool_ids || [], dexes: nm.hop_dexes || [] };
                 if (sendMode === 'USD') body.sizeUsd = Number(sendAmount)||0; else body.size = Number(sendAmount)||0;
-                const r = await fetch(`${apiBase}/arb/execute`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                const r = await fetch(`${apiBase}${ROUTES.arb.execute}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
                 await r.json().catch(()=>({}));
               } catch {}
               setSending(false);
@@ -499,14 +500,14 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
               <button className="px-1 py-0.5 border rounded" onClick={async()=>{
                 try {
                   const body: any = { path: op.path, hopPoolIds: (op as any)?.hop_pool_ids, dexes: (op as any)?.hop_dexes };
-                  const r = await fetch(`${apiBase}/arb/simulate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                  const r = await fetch(`${apiBase}${ROUTES.arb.simulate}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
                   await r.json().catch(()=>({}));
                 } catch {}
               }}>Simulate Direct</button>
               <button className="px-1 py-0.5 border rounded" onClick={async()=>{
                 try {
                   const body: any = { path: op.path, hopPoolIds: (op as any)?.hop_pool_ids, dexes: (op as any)?.hop_dexes, sizeUsd: sendMode==='USD'? Number(sendAmount)||0 : undefined, size: sendMode==='TOKENS'? Number(sendAmount)||0 : undefined };
-                  const r = await fetch(`${apiBase}/arb/execute`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                  const r = await fetch(`${apiBase}${ROUTES.arb.execute}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
                   await r.json().catch(()=>({}));
                 } catch {}
               }}>Execute Direct</button>
@@ -529,7 +530,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
       <div className="mt-4 p-2 border rounded bg-black/10">
         <div className="flex items-center justify-between mb-2">
           <h4 className="font-semibold">Transactions</h4>
-          <button className="px-2 py-1 border rounded" onClick={async()=>{ try { const r = await fetch(`${apiBase}/arb/tx-history?limit=50`); const j = await r.json(); setTxRows(Array.isArray(j?.items) ? j.items : []); } catch {} }}>Refresh</button>
+          <button className="px-2 py-1 border rounded" onClick={async()=>{ try { const r = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const j = await r.json(); setTxRows(Array.isArray(j?.items) ? j.items : []); } catch {} }}>Refresh</button>
         </div>
         <div className="overflow-auto">
           <table className="w-full text-xs">

@@ -1227,6 +1227,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/ws/opportunities", get(ws_opportunities))
         .route("/config", post(set_config).get(get_config))
         .route("/arb/start", post(arb_start))
+        .route("/arb/graph/version", get(arb_graph_version))
         .route("/arb/graph/snapshot", post(arb_graph_snapshot))
         .route("/arb/graph/update", post(arb_graph_update))
         .route("/metrics", get(metrics_prom))
@@ -1726,6 +1727,14 @@ struct EventsResponse { events: Vec<EventItem> }
 async fn events_json(State(state): State<Arc<RwLock<AppState>>>) -> Json<EventsResponse> {
     let s = state.read().await;
     Json(EventsResponse { events: s.events.clone() })
+}
+
+#[derive(serde::Serialize)]
+struct GraphVersionResponse { version: u64, timestamp: u64 }
+
+async fn arb_graph_version(State(state): State<Arc<RwLock<AppState>>>) -> Json<GraphVersionResponse> {
+    let s = state.read().await;
+    Json(GraphVersionResponse { version: s.last_graph_version, timestamp: s.last_graph_ts })
 }
 
 #[derive(serde::Deserialize)]

@@ -1,4 +1,5 @@
 import React from 'react';
+import { ROUTES } from '../utils/routes';
 
 export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; socket?: any }> = (
   { apiBase, paused, socket }: { apiBase: string; paused?: boolean; socket?: any }
@@ -24,7 +25,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
           if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
         }
       } catch {}
-      const r = await fetch(`${apiBase}/arb/metrics/json`, { headers });
+      const r = await fetch(`${apiBase}${ROUTES.arb.metricsJson}`, { headers });
       if (r.ok) {
         const j = await r.json();
         setM(j);
@@ -45,7 +46,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
         }
       } catch {}
       // Unified refresh also subscribes server-side by default
-      await fetch(`${apiBase}/arb/pools/refresh`, { method: 'POST', headers, body: JSON.stringify({ source: 'all', subscribe: true }) });
+      await fetch(`${apiBase}${ROUTES.pools.refresh}`, { method: 'POST', headers, body: JSON.stringify({ source: 'all', subscribe: true }) });
     } catch {}
     // Re-pull scoped pools and metrics
     try {
@@ -57,7 +58,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
           if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
         }
       } catch {}
-      fetch(`${apiBase}/arb/pools/raydium`, { headers }).then(r=>r.json()).then(setPools).catch(()=>{});
+      fetch(`${apiBase}${ROUTES.pools.raydium}`, { headers }).then(r=>r.json()).then(setPools).catch(()=>{});
     } catch {}
     try {
       const headers: Record<string, string> = {};
@@ -68,7 +69,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
           if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
         }
       } catch {}
-      fetch(`${apiBase}/arb/pools/orca`, { headers }).then(r=>r.json()).then(setOrcaPools).catch(()=>{});
+      fetch(`${apiBase}${ROUTES.pools.orca}`, { headers }).then(r=>r.json()).then(setOrcaPools).catch(()=>{});
     } catch {}
     fetchMetrics();
     try { window.dispatchEvent(new CustomEvent('graph-refresh')); } catch {}
@@ -77,10 +78,10 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
   React.useEffect(() => {
     if (paused) return;
     fetchMetrics();
-    fetch(`${apiBase}/arb/metrics/json`).catch(()=>{});
+    fetch(`${apiBase}${ROUTES.arb.metricsJson}`).catch(()=>{});
     // Probe arb config to detect enabled state
-    fetch(`${apiBase}/arb/config`).then(r=>r.json()).then((j)=>{ if (j && typeof j.enabled === 'boolean') setArbEnabled(!!j.enabled); }).catch(()=>{});
-    fetch(`${apiBase}/arb/pools/subscriptions`).then(r=>r.json()).then((j)=>{ setSubscribed(!!j.wsEnabled); setWsHealthy(!!j.wsHealthy); setLastEventMs(Number(j.lastEventMs||0)); setWsDetails(j.ws || {}); }).catch(()=>{});
+    fetch(`${apiBase}${ROUTES.arb.config}`).then(r=>r.json()).then((j)=>{ if (j && typeof j.enabled === 'boolean') setArbEnabled(!!j.enabled); }).catch(()=>{});
+    fetch(`${apiBase}${ROUTES.pools.subscriptions}`).then(r=>r.json()).then((j)=>{ setSubscribed(!!j.wsEnabled); setWsHealthy(!!j.wsHealthy); setLastEventMs(Number(j.lastEventMs||0)); setWsDetails(j.ws || {}); }).catch(()=>{});
     return () => {};
   }, [paused]);
 
@@ -160,7 +161,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
                   if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
                 }
               } catch {}
-              await fetch(`${apiBase}/arb/pools/retarget`, { method: 'POST', headers }).catch(()=>{});
+              await fetch(`${apiBase}${ROUTES.pools.retarget}`, { method: 'POST', headers }).catch(()=>{});
               fetchMetrics();
             } catch {}
           }}>Retarget WS</button>

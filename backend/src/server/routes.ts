@@ -94,6 +94,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     }
   });
 
+/* moved to routes/arb.ts
   api.post('/arb/resolve-direct', async (req: Request, res: Response) => {
     try {
       const { resolveDirectPlan } = await import('../execution/resolver/index.js');
@@ -1307,6 +1308,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
 
   // Raydium pools (normalized) for arb-rs bridge
 /* legacy pools and arb routes moved to createPoolsRouter/createArbRouter
+  moved to routes/pools.ts
   api.get('/arb/pools/raydium', async (req, res) => {
     try {
       // Optional per-request TVL overrides
@@ -1586,6 +1588,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       res.status(500).json({ ok: false, error: String(e?.message || e) });
     }
   });
+*/
 
   // Graph version endpoint for arb-rs freshness checks
   api.get('/arb/graph/version', async (_req, res) => {
@@ -1599,6 +1602,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   });
 
   // Arbitrage opportunities proxy to Rust service (MVP)
+  /* moved to routes/arb.ts
   api.get('/arb/opportunities', async (_req, res) => {
     try {
       const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
@@ -2049,6 +2053,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       res.status(500).json({ error: String(e?.message || e) });
     }
   });
+*/
 
   // Background: poll arb metrics and emit log snapshots
   try {
@@ -2240,6 +2245,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   } catch {}
 
   // Arbitrage config passthrough (min profit bps, DEX allowlist)
+  /* moved to routes/arb.ts
   api.post('/arb/config', async (req, res) => {
     try {
       const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
@@ -2282,7 +2288,6 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       res.status(500).json({ error: String(e?.message || e) });
     }
   });
-
   api.post('/bot/stop', async (_req, res) => {
     try {
       tradingController.stop();

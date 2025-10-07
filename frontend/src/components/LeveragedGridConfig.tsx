@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { ROUTES } from '../utils/routes';
 
 type DriftStatus = {
   cluster: 'mainnet-beta' | 'devnet' | 'localnet';
@@ -11,9 +12,10 @@ interface LeveragedGridConfigProps {
   onClose: () => void;
   onSaved?: () => void;
   initialConfig?: any;
+  apiBase?: string;
 }
 
-export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClose, onSaved, initialConfig }) => {
+export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClose, onSaved, initialConfig, apiBase = '/api' }) => {
   const [status, setStatus] = useState<DriftStatus | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [saving, setSaving] = useState<boolean>(false);
@@ -71,7 +73,7 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
     const load = async () => {
       try {
         setLoading(true);
-        const res = await fetch('/api/drift/status');
+        const res = await fetch(`${apiBase}${ROUTES.drift.status}`);
         const data = await res.json();
         if (!alive) return;
         setStatus(data);
@@ -88,7 +90,7 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
         // If editing, try to prefill from current runner status for full fidelity
         if (isEdit) {
           try {
-            const statusRes = await fetch('/api/strategies/leveraged-grid/status');
+            const statusRes = await fetch(`${apiBase}${ROUTES.strategies.leveragedGrid.status}`);
             const statusJson = await statusRes.json();
             const list = Array.isArray(statusJson?.strategies) ? statusJson.strategies : [];
             const key = String(initialConfig?.driftKey || `${initialConfig?.name}#${initialConfig?.marketIndex}#${initialConfig?.subaccountId}`);
@@ -161,7 +163,7 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
     if (!Number.isFinite(idx)) return;
     (async () => {
       try {
-        const res = await fetch(`/api/drift/l2?marketIndex=${idx}`);
+        const res = await fetch(`${apiBase}${ROUTES.drift.l2}?marketIndex=${idx}`);
         const data = await res.json();
         if (!alive) return;
         setL2(data);
@@ -169,7 +171,7 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
     })();
     (async () => {
       try {
-        const res = await fetch(`/api/drift/funding?marketIndex=${idx}`);
+        const res = await fetch(`${apiBase}${ROUTES.drift.funding}?marketIndex=${idx}`);
         const data = await res.json();
         if (!alive) return;
         setFunding(data);
@@ -250,8 +252,8 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
         market: { marketIndex: Number(initialConfig?.marketIndex ?? cfg.market.marketIndex) },
         subaccountId: Number(initialConfig?.subaccountId ?? cfg.subaccountId),
       } : cfg;
-      const endpoint = isEdit ? '/api/strategies/leveraged-grid/update' : '/api/strategies/leveraged-grid/start';
-      const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const endpoint = isEdit ? ROUTES.strategies.leveragedGrid.update : ROUTES.strategies.leveragedGrid.start;
+      const res = await fetch(`${apiBase}${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       if (!res.ok) throw new Error(await res.text());
       try { onSaved && onSaved(); } catch {}
       onClose();
@@ -264,10 +266,10 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
 
   const handleSwitchSub = async (id: number) => {
     try {
-      await fetch('/api/drift/subaccount/switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+      await fetch(`${apiBase}${ROUTES.drift.subaccountSwitch}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
       // refresh status to pick up subaccount details
       try {
-        const res = await fetch('/api/drift/status');
+        const res = await fetch(`${apiBase}${ROUTES.drift.status}`);
         const data = await res.json();
         setStatus(data);
       } catch {}
@@ -276,7 +278,7 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
 
   const refreshSubaccounts = async () => {
     try {
-      const res = await fetch('/api/drift/subaccounts');
+      const res = await fetch(`${apiBase}${ROUTES.drift.subaccounts}`);
       const data = await res.json();
       if (data && Array.isArray(data.subaccounts)) {
         setStatus((prev) => prev ? { ...prev, subaccounts: data.subaccounts } : prev);
@@ -288,7 +290,7 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
     try {
       setOpBusy(true);
       setError(null);
-      const res = await fetch('/api/drift/subaccount/create', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+      const res = await fetch(`${apiBase}${ROUTES.drift.subaccountCreate}`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
       if (!res.ok) throw new Error(await res.text());
       const created = await res.json();
       await refreshSubaccounts();
@@ -312,7 +314,8 @@ export const LeveragedGridConfig: React.FC<LeveragedGridConfigProps> = ({ onClos
       const body = { subaccountId: Number(form.subaccountId), amount: Number(amount), spotMarketIndex: Number(spotMarketIndex) };
       if (!Number.isFinite(body.subaccountId)) throw new Error('Invalid subaccount');
       if (!Number.isFinite(body.amount) || body.amount <= 0) throw new Error('Enter a positive amount');
-      const res = await fetch(`/api/drift/subaccount/${kind}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const endpoint = kind === 'deposit' ? ROUTES.drift.subaccountDeposit : ROUTES.drift.subaccountWithdraw;
+      const res = await fetch(`${apiBase}${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       if (!res.ok) throw new Error(await res.text());
       const out = await res.json();
       if (!out?.ok) throw new Error(`${kind} failed`);
