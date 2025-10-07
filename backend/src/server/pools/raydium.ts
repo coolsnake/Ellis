@@ -1,15 +1,16 @@
 import { logger } from '../../utils/logger.js';
 import { emit } from '../realtime.js';
 import { CONFIG } from '../../utils/config.js';
-import { readJson } from '../../utils/fs.js';
+import { readJson, writeJson, joinPath } from '../../utils/fs.js';
 import type { AmmPool, ClmmPool, PoolsPayload } from './types.js';
-import { canonicalizePairsLex } from './common.js';
+import { canonicalizePairs } from './common.js';
 
 let rayProbeOffset = 0;
 
 export async function fetchRaydiumPoolsRaw(): Promise<any> {
   const mode = 'http';
   try {
+    const RAYDIUM_RAW_PATH = joinPath(CONFIG.cacheDir, 'raydium-raw-sample.json');
     const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
     // eslint-disable-next-line no-undef
     const fetchFn: any = (globalThis as any).fetch || fetch;
@@ -108,13 +109,16 @@ export async function fetchRaydiumPoolsRaw(): Promise<any> {
 
     if (collected.length) {
       logger.info('raydium.http.fetch ok', { count: collected.length, cat: 'raydium' });
+      try { await writeJson(RAYDIUM_RAW_PATH, { data: collected }); } catch {}
       return { data: collected };
     }
     logger.warn('raydium.http returned 0');
+    try { await writeJson(RAYDIUM_RAW_PATH, { data: [] }); } catch {}
     return { data: [] };
   } catch (e: any) {
     const msg = String(e?.message || e);
     logger.warn('raydium.http failed', { error: msg, cat: 'raydium' });
+    try { await writeJson(joinPath(CONFIG.cacheDir, 'raydium-raw-sample.json'), { data: [] }); } catch {}
     return { data: [] };
   }
 }
@@ -268,8 +272,8 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
     }
   }
 
-  const ammCanon = canonicalizePairsLex(amm);
-  const clmmCanon = canonicalizePairsLex(clmm);
+  const ammCanon = canonicalizePairs(amm);
+  const clmmCanon = canonicalizePairs(clmm);
   logger.info('raydium.pools normalized', { amm: ammCanon.length, clmm: clmmCanon.length, cat: 'raydium' });
   return { amm: ammCanon, clmm: clmmCanon };
 }

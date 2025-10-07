@@ -1,10 +1,12 @@
 import { logger } from '../../utils/logger.js';
 import { emit } from '../realtime.js';
 import { CONFIG } from '../../utils/config.js';
+import { writeJson, joinPath } from '../../utils/fs.js';
 import type { ClmmPool, PoolsPayload } from './types.js';
-import { canonicalizePairsLex } from './common.js';
+import { canonicalizePairs } from './common.js';
 
 export async function fetchOrcaHttp(): Promise<any> {
+  const ORCA_RAW_PATH = joinPath(CONFIG.cacheDir, 'orca-raw-sample.json');
   const base = CONFIG.orca?.apiUrl || 'https://api.orca.so/v2/solana/pools';
   const retries = CONFIG.orca?.maxHttpRetries ?? 2;
   const backoffMs = CONFIG.orca?.httpBackoffMs ?? 500;
@@ -55,8 +57,10 @@ export async function fetchOrcaHttp(): Promise<any> {
     const json: any = await res.json();
     const data: any[] = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []);
     logger.info('orca.http single ok', { ms, count: data.length });
+    try { await writeJson(ORCA_RAW_PATH, data); } catch {}
     return data;
   }
+  try { await writeJson(ORCA_RAW_PATH, merged); } catch {}
   return merged;
 }
 
@@ -213,7 +217,7 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
     }
   }
   // Canonicalize pair ordering consistently across sources (A<=B lex), inverting price when needed
-  const clmmCanon = canonicalizePairsLex(clmm);
+  const clmmCanon = canonicalizePairs(clmm);
   if (!clmm.length) {
     logger.warn('orca.http normalized 0 clmm', { hint: 'Check inspect log for field presence and pool types' });
   }

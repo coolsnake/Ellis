@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BACKEND_ROOT = resolve(__dirname, '..', '..');
+const CACHE_DIR = process.env.CACHE_DIR || resolve(BACKEND_ROOT, 'cache');
 // Allow overriding default directories for Linux deployments
 const CONFIG_DIR = process.env.CONFIG_DIR || resolve(BACKEND_ROOT, 'config');
 const WALLET_DIR = process.env.WALLET_DIR || resolve(BACKEND_ROOT, 'wallet');
@@ -28,6 +29,7 @@ export const CONFIG = {
   // Centralized wallet token accounts path (for Linux deployments)
   tokenAccountsPath: (process.env.TOKEN_ACCOUNTS_PATH as any) || resolve(CONFIG_DIR, 'tokenAccounts.json'),
   logDir: LOG_DIR,
+  cacheDir: CACHE_DIR,
   socketIoPath: process.env.SOCKETIO_PATH || '/socket.io',
   // Orca configuration
   orca: {

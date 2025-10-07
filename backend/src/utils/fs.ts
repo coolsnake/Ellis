@@ -23,4 +23,8 @@ export async function writeJson(filePath: string, data: unknown): Promise<void> 
   await fs.writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8');
 }
 
+export function joinPath(...parts: string[]): string {
+  return path.resolve(...parts);
+}
+
 

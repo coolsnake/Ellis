@@ -1,10 +1,12 @@
 import { logger } from '../../utils/logger.js';
 import { emit } from '../realtime.js';
 import { CONFIG } from '../../utils/config.js';
+import { writeJson, joinPath } from '../../utils/fs.js';
 import type { ClmmPool, PoolsPayload } from './types.js';
-import { canonicalizePairsLex } from './common.js';
+import { canonicalizePairs, canonicalizePairsLex } from './common.js';
 
 export async function fetchMeteoraHttp(): Promise<any> {
+  const METEORA_RAW_PATH = joinPath(CONFIG.cacheDir, 'meteora-raw-sample.json');
   try {
     const base = (CONFIG as any)?.meteora?.apiUrl || 'https://dlmm-api.meteora.ag/v1/pairs';
     const size = Number(((CONFIG as any)?.meteora?.pageSize) || 200);
@@ -54,8 +56,10 @@ export async function fetchMeteoraHttp(): Promise<any> {
       const json: any = await res.json().catch(() => null);
       const single = Array.isArray(json?.pairs) ? json.pairs : (Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []));
       try { logger.info('meteora.http single ok', { count: single.length, cat: 'meteora' }); } catch {}
+      try { await writeJson(METEORA_RAW_PATH, single); } catch {}
       return single;
     }
+    try { await writeJson(METEORA_RAW_PATH, out); } catch {}
     return out;
   } catch {
     return [];
@@ -142,7 +146,7 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     if (!price_ok) { try { logger.warn('meteora.clmm drop by sanity', { id, mint_a, mint_b, price_a_per_b, cat: 'meteora' }); } catch {}; continue; }
     clmm.push({ id, dex: 'Meteora', mint_a, mint_b, fee_bps, sqrt_price_x64: 0, liquidity: 0, tick_spacing: Number((it as any)?.bin_step || (it as any)?.binStep || 0), updated_ms: now, price_a_per_b: (price_a_per_b && price_a_per_b > 0) ? price_a_per_b : undefined, amount_a, amount_b, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, pool_kind: 'clmm', pool_liquidity_raw, tvl_usd, liquidity_display } as any);
   }
-  const clmmCanon = canonicalizePairsLex(clmm);
+  const clmmCanon = canonicalizePairs(clmm);
   try {
     const canon = String(((CONFIG as any)?.meteora?.canonicalizePairs ?? (CONFIG.system as any)?.canonicalizePairs) || 'none');
     logger.info('meteora.http normalized', { clmm: clmmCanon.length, cat: 'meteora', canon });
