@@ -23,6 +23,7 @@ import { recordSessionLog, writeSessionLogAndClear } from '../utils/sessionLogs.
 import { readJson } from '../utils/fs.js';
 import { startRaydiumRefreshLoop } from './pools.js';
 import util from 'util';
+import { ensureDir, writeJson } from '../utils/fs.js';
 
 const app = express();
 // Respect X-Forwarded-* from Nginx
@@ -348,6 +349,22 @@ server.listen(CONFIG.port, () => {
 
   // Post-listen initialization: run migrations and history load without blocking readiness
   setImmediate(async () => {
+    // Ensure cache directory exists and placeholder sample files are present
+    try {
+      const cacheDir = (CONFIG as any)?.cacheDir;
+      if (cacheDir) {
+        await ensureDir(cacheDir);
+        const placeholders: Array<{ name: string; data: any }> = [
+          { name: 'orca-raw-sample.json', data: [] },
+          { name: 'meteora-raw-sample.json', data: [] },
+          { name: 'raydium-raw-sample.json', data: { data: [] } },
+        ];
+        for (const p of placeholders) {
+          try { await writeJson((await import('path')).resolve(cacheDir, p.name), p.data); } catch {}
+        }
+        try { logger.info('cache.dir ready', { dir: cacheDir, cat: 'server' }); } catch {}
+      }
+    } catch {}
     try { await initWalletHistory(); } catch {}
     try {
       // One-time migration: move nested resources from backend/backend/* to backend/* if present

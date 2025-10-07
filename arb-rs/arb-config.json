@@ -1,6 +1,7 @@
 {
   "enabled": true,
   "min_profit_bps": 30,
+  "max_profit_bps": 20000,
   "min_notional_usd": 50.0,
   "max_hops": 3,
   "max_paths_per_cycle": 10,

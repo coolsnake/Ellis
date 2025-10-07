@@ -26,6 +26,8 @@ use pools::{PoolCache};
 struct ArbConfig {
     enabled: bool,
     min_profit_bps: i64,
+    // Discard opportunities with absurdly high raw profitability (bps)
+    max_profit_bps: i64,
     min_notional_usd: f64,
     max_hops: usize,
     max_paths_per_cycle: usize,
@@ -190,7 +192,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async move {
         let sources = Sources::new();
         loop {
-            let (enabled, idle_ms, min_bps, max_slip_bps, _fee_bps, _link_penalty_bps, _quote_size_usd, max_hops, sources_cfg, min_pool_liquidity) = {
+                    let (enabled, idle_ms, min_bps, max_slip_bps, _fee_bps, _link_penalty_bps, _quote_size_usd, max_hops, sources_cfg, min_pool_liquidity) = {
                 let s = loop_state.read().await;
                 (
                     s.config.enabled,
@@ -657,6 +659,8 @@ async fn main() -> anyhow::Result<()> {
                             };
                             tracing::info!(target = "arb_rs", "arb.opportunity path={} profit_bps={} net_bps={} hops={} rates=[{}] outs=[{}] fees=[{}] pools=[{}] edges=[{}] product={:.8}", path_str, profit_bps, net_bps, nlen, rates_str, outs_str, fees_str, pools_str, edges_str, rate_prod);
                         }
+                        // Skip absurdly high raw profits (likely data issues)
+                        if profit_bps > s.config.max_profit_bps { continue; }
                         curr.push(Opportunity {
                             path: canon_labels,
                             profit_bps,
@@ -1516,6 +1520,7 @@ async fn ws_opportunities(ws: WebSocketUpgrade, State(state): State<Arc<RwLock<A
 struct ConfigReq {
     enabled: Option<bool>,
     min_profit_bps: Option<i64>,
+    max_profit_bps: Option<i64>,
     min_notional_usd: Option<f64>,
     max_hops: Option<usize>,
     max_paths_per_cycle: Option<usize>,
@@ -1544,6 +1549,7 @@ async fn set_config(
     let mut s = state.write().await;
     if let Some(v) = cfg.enabled { s.config.enabled = v; }
     if let Some(v) = cfg.min_profit_bps { s.config.min_profit_bps = v; }
+    if let Some(v) = cfg.max_profit_bps { s.config.max_profit_bps = v; }
     if let Some(v) = cfg.min_notional_usd { s.config.min_notional_usd = v; }
     if let Some(v) = cfg.max_hops { s.config.max_hops = v; }
     if let Some(v) = cfg.max_paths_per_cycle { s.config.max_paths_per_cycle = v; }
@@ -1574,6 +1580,7 @@ fn default_config() -> ArbConfig {
     ArbConfig {
         enabled: false,
         min_profit_bps: 30,
+        max_profit_bps: 20000,
         min_notional_usd: 50.0,
         max_hops: 3,
         max_paths_per_cycle: 10,

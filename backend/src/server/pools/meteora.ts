@@ -56,10 +56,10 @@ export async function fetchMeteoraHttp(): Promise<any> {
       const json: any = await res.json().catch(() => null);
       const single = Array.isArray(json?.pairs) ? json.pairs : (Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []));
       try { logger.info('meteora.http single ok', { count: single.length, cat: 'meteora' }); } catch {}
-      try { await writeJson(METEORA_RAW_PATH, single); } catch {}
+      try { await writeJson(METEORA_RAW_PATH, single); } catch (e: any) { try { logger.warn('meteora.cache write failed', { file: METEORA_RAW_PATH, error: String(e?.message || e), cat: 'meteora' }); } catch {} }
       return single;
     }
-    try { await writeJson(METEORA_RAW_PATH, out); } catch {}
+    try { await writeJson(METEORA_RAW_PATH, out); } catch (e: any) { try { logger.warn('meteora.cache write failed', { file: METEORA_RAW_PATH, error: String(e?.message || e), cat: 'meteora' }); } catch {} }
     return out;
   } catch {
     return [];

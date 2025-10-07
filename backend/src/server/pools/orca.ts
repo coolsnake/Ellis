@@ -57,10 +57,10 @@ export async function fetchOrcaHttp(): Promise<any> {
     const json: any = await res.json();
     const data: any[] = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []);
     logger.info('orca.http single ok', { ms, count: data.length });
-    try { await writeJson(ORCA_RAW_PATH, data); } catch {}
+    try { await writeJson(ORCA_RAW_PATH, data); } catch (e: any) { try { logger.warn('orca.cache write failed', { file: ORCA_RAW_PATH, error: String(e?.message || e), cat: 'orca' }); } catch {} }
     return data;
   }
-  try { await writeJson(ORCA_RAW_PATH, merged); } catch {}
+  try { await writeJson(ORCA_RAW_PATH, merged); } catch (e: any) { try { logger.warn('orca.cache write failed', { file: ORCA_RAW_PATH, error: String(e?.message || e), cat: 'orca' }); } catch {} }
   return merged;
 }
 

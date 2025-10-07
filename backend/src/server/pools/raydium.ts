@@ -109,16 +109,16 @@ export async function fetchRaydiumPoolsRaw(): Promise<any> {
 
     if (collected.length) {
       logger.info('raydium.http.fetch ok', { count: collected.length, cat: 'raydium' });
-      try { await writeJson(RAYDIUM_RAW_PATH, { data: collected }); } catch {}
+      try { await writeJson(RAYDIUM_RAW_PATH, { data: collected }); } catch (e: any) { try { logger.warn('raydium.cache write failed', { file: RAYDIUM_RAW_PATH, error: String(e?.message || e), cat: 'raydium' }); } catch {} }
       return { data: collected };
     }
     logger.warn('raydium.http returned 0');
-    try { await writeJson(RAYDIUM_RAW_PATH, { data: [] }); } catch {}
+    try { await writeJson(RAYDIUM_RAW_PATH, { data: [] }); } catch (e: any) { try { logger.warn('raydium.cache write failed', { file: RAYDIUM_RAW_PATH, error: String(e?.message || e), cat: 'raydium' }); } catch {} }
     return { data: [] };
   } catch (e: any) {
     const msg = String(e?.message || e);
     logger.warn('raydium.http failed', { error: msg, cat: 'raydium' });
-    try { await writeJson(joinPath(CONFIG.cacheDir, 'raydium-raw-sample.json'), { data: [] }); } catch {}
+    try { await writeJson(joinPath(CONFIG.cacheDir, 'raydium-raw-sample.json'), { data: [] }); } catch (e2: any) { try { logger.warn('raydium.cache write failed', { file: joinPath(CONFIG.cacheDir, 'raydium-raw-sample.json'), error: String(e2?.message || e2), cat: 'raydium' }); } catch {} }
     return { data: [] };
   }
 }
