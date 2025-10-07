@@ -19,10 +19,16 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
   // Build per-hop placeholders
   const hopIxs: any[] = [];
   for (const hop of plan.hops) {
-    if (hop.dex === 'raydium' && hop.variant === 'amm') { const ixs = await buildRaydiumAmmSwapIxReal(hop); hopIxs.push(...ixs); }
-    else if (hop.dex === 'raydium' && hop.variant === 'clmm') { const ixs = await buildRaydiumClmmSwapIxReal(hop); hopIxs.push(...ixs); }
-    else if (hop.dex === 'orca') { const ixs = await buildOrcaSwapIx(hop) as any[]; hopIxs.push(...ixs); }
-    else if (hop.dex === 'meteora') { const ixs = await buildMeteoraDlmmSwapIxReal(hop); hopIxs.push(...ixs); }
+    try { logger.info('tx.build.hop', { cat: 'tx', code: 'TX.BUILD.HOP', ctx: { dex: hop.dex, variant: hop.variant, poolId: hop.poolId } as any }); } catch {}
+    try {
+      if (hop.dex === 'raydium' && hop.variant === 'amm') { const ixs = await buildRaydiumAmmSwapIxReal(hop); hopIxs.push(...ixs); }
+      else if (hop.dex === 'raydium' && hop.variant === 'clmm') { const ixs = await buildRaydiumClmmSwapIxReal(hop); hopIxs.push(...ixs); }
+      else if (hop.dex === 'orca') { const ixs = await buildOrcaSwapIx(hop) as any[]; hopIxs.push(...ixs); }
+      else if (hop.dex === 'meteora') { const ixs = await buildMeteoraDlmmSwapIxReal(hop); hopIxs.push(...ixs); }
+    } catch (e) {
+      try { logger.error('tx.build.hop.err', { cat: 'tx', code: 'TX.BUILD.HOP.ERR', ctx: { dex: hop.dex, variant: hop.variant, poolId: hop.poolId, error: String((e as any)?.message || e) } as any }); } catch {}
+      throw e;
+    }
   }
   const budget = computeBudgetIxs(cb);
   const all = [...budget, ...extraSetupIxs, ...hopIxs];

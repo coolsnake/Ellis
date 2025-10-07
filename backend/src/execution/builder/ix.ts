@@ -1,12 +1,6 @@
 import type { DirectHop } from '../types.js';
 import { logger } from '../../utils/logger.js';
 import { PublicKey } from '@solana/web3.js';
-import { WhirlpoolContext, buildWhirlpoolClient, swapQuoteByInputToken, SwapUtils, toTx } from '@orca-so/whirlpools-sdk';
-import { Percentage } from '@orca-so/common-sdk';
-import { getConnection, ensureWallet } from '../../wallet/wallet.js';
-import { CONFIG } from '../../utils/config.js';
-import { PublicKey } from '@solana/web3.js';
-import { WhirlpoolContext, buildWhirlpoolClient, swapQuoteByInputToken, Percentage } from '@orca-so/whirlpools-sdk';
 import { getConnection, ensureWallet } from '../../wallet/wallet.js';
 import { CONFIG } from '../../utils/config.js';
 
@@ -24,32 +18,28 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
   try {
     const connection = getConnection();
     const kp = await ensureWallet(CONFIG.walletPath);
-    const dummyWallet: any = {
-      publicKey: kp.publicKey,
-      signTransaction: async (tx: any) => tx,
-      signAllTransactions: async (txs: any[]) => txs,
-    };
+    const { WhirlpoolContext, buildWhirlpoolClient, swapQuoteByInputToken, SwapUtils, toTx } = await import('@orca-so/whirlpools-sdk');
+    const { Percentage } = await import('@orca-so/common-sdk');
+    const dummyWallet: any = { publicKey: kp.publicKey, signTransaction: async (tx: any) => tx, signAllTransactions: async (txs: any[]) => txs };
     const programId = new PublicKey(hop.programId || (CONFIG.orca?.programId as any));
-    const ctx = WhirlpoolContext.from(connection as any, dummyWallet, programId);
-    const client = buildWhirlpoolClient(ctx);
+    const ctx = (WhirlpoolContext as any).from(connection as any, dummyWallet, programId);
+    const client = (buildWhirlpoolClient as any)(ctx);
     const poolPk = new PublicKey(hop.poolId);
     const pool = await client.getPool(poolPk);
     const inputMint = new PublicKey(hop.inputMint);
     const slippage = (() => {
       try {
         if (hop.amountInRaw > 0n && hop.minOutRaw > 0n) {
-          const ratio = Number(hop.minOutRaw) / Math.max(1, Number(hop.amountInRaw));
-          const bps = Math.max(0, Math.min(9900, Math.round((1 - ratio) * 10000)));
-          return Percentage.fromBasisPoints(bps);
+          const bps = Math.max(0, Math.min(9900, Math.round((1 - (Number(hop.minOutRaw) / Math.max(1, Number(hop.amountInRaw)) )) * 10000)));
+          return (Percentage as any).fromFraction(bps, 10000);
         }
       } catch {}
-      return Percentage.fromBasisPoints(100); // 1%
+      return (Percentage as any).fromFraction(1, 100); // 1%
     })();
-    const quote = await swapQuoteByInputToken(pool, inputMint, hop.amountInRaw, slippage, ctx.program.programId, ctx.fetcher, true);
-    const params = SwapUtils.getSwapParamsFromQuote(quote);
+    const quote = await (swapQuoteByInputToken as any)(pool, inputMint, hop.amountInRaw, slippage, ctx.program.programId, ctx.fetcher, true);
+    const params = (SwapUtils as any).getSwapParamsFromQuote(quote);
     const txb = await pool.swap(params);
-    const tx = toTx(ctx, txb);
-    // Return raw instructions for assembly in our tx builder
+    const tx = (toTx as any)(ctx, txb);
     const built = await tx.build();
     return built.instructions || [];
   } catch (e) {
@@ -66,7 +56,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
   try { logger.info('ix.build meteora.dlmm.real', { pool: hop.poolId, cat: 'tx' }); } catch {}
   try {
     // Attempt dynamic import of a DLMM SDK if available; otherwise construct minimal raw ix descriptor
-    const maybe: any = await import('@meteora-ag/dlmm-sdk').catch(() => null);
+    const maybe: any = await (async () => { try { return await (Function('return import')())('@meteora-ag/dlmm-sdk'); } catch { return null; } })();
     if (maybe && maybe?.DLMM && maybe?.DLMM?.swapIx) {
       const connection = getConnection();
       const kp = await ensureWallet(CONFIG.walletPath);
