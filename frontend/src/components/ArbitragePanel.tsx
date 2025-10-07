@@ -122,6 +122,30 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
       try { const r = await fetch(`${apiBase}/arb/tx-history?limit=50`); const j = await r.json(); setTxRows(Array.isArray(j?.items) ? j.items : []); } catch {}
     })();
   }, []);
+
+  // Auto-highlight current near-miss on graph to visualize triangles for diagnostics
+  useEffect(() => {
+    try {
+      const nm: any = summary?.near_miss as any;
+      if (!nm) return;
+      const ids: string[] | undefined = nm?.hop_pool_ids;
+      if (ids && ids.length) {
+        try { window.dispatchEvent(new CustomEvent('graph-highlight', { detail: { edgeIds: ids } })); } catch {}
+        if (socket) { try { socket.emit('graph-highlight', { edgeIds: ids }); } catch {} }
+        return;
+      }
+      const pathArr: string[] = Array.isArray(nm?.path) ? nm.path : [];
+      const hops: string[] = Array.isArray(nm?.hop_dexes) ? nm.hop_dexes : [];
+      if (pathArr.length > 1) {
+        const pairs: Array<{ source: string; target: string; dex?: string }> = [];
+        for (let i = 0; i < pathArr.length - 1; i++) {
+          pairs.push({ source: pathArr[i], target: pathArr[i+1], dex: hops[i % (hops.length || 1)] });
+        }
+        try { window.dispatchEvent(new CustomEvent('graph-highlight', { detail: { pairs } })); } catch {}
+        if (socket) { try { socket.emit('graph-highlight', { pairs }); } catch {} }
+      }
+    } catch {}
+  }, [summary?.near_miss, socket]);
   useEffect(() => {
     if (!socket) return;
     const onGraphSnapshot = (snap: { version: number }) => {
