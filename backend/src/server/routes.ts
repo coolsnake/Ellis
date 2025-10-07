@@ -21,15 +21,21 @@ import { apiStart, apiStop, apiReset, setTargetTickTimeMs } from '../jupiter/rat
 import { getRaydiumPoolsNormalized, getOrcaPoolsCached, startRaydiumRefreshLoop, getPoolsMetrics, getMeteoraPoolsCached } from './pools.js';
 import { getGraphSnapshot, findPath } from './graph.js';
 import { writeSessionLogAndClear } from '../utils/sessionLogs.js';
-import { z } from 'zod';
-  const ResolveDirectSchema = z.object({
-    path: z.array(z.string()).min(2),
-    hopPoolIds: z.array(z.string()),
-    dexes: z.array(z.string()),
-    size: z.number().optional(),
-    sizeUsd: z.number().optional(),
-    slippageBps: z.number().optional(),
-  }).refine((o) => o.hopPoolIds.length === o.path.length - 1 && o.dexes.length === o.path.length - 1, { message: 'path/hops length mismatch' });
+import { ResolveDirectSchema } from './routes/schemas.js';
+import { createSystemRouter } from './routes/system.js';
+import { createTokensRouter } from './routes/tokens.js';
+import { createFeesRouter } from './routes/fees.js';
+import { createWatchlistRouter } from './routes/watchlist.js';
+import { createPricesRouter } from './routes/prices.js';
+import { createGraphRouter } from './routes/graph.js';
+import { createDebugRouter } from './routes/debug.js';
+import { createWalletRouter } from './routes/wallet.js';
+import { createSwapRouter } from './routes/swap.js';
+import { createDriftRouter } from './routes/drift.js';
+import { createLeveragedGridRouter } from './routes/strategies/leveragedGrid.js';
+import { createLiquidatorRouter } from './routes/strategies/liquidator.js';
+import { createPoolsRouter } from './routes/pools.js';
+import { createArbRouter } from './routes/arb.js';
 
 export function registerRoutes(app: Express, io: SocketIOServer): void {
   const api = Router();
@@ -39,26 +45,22 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   let lastArbHealthStatus: string | null = null;
   const arbLatency: { metrics: number[]; opps: number[]; lastSummaryAt: number } = { metrics: [], opps: [], lastSummaryAt: 0 };
 
-  api.get('/system', async (_req, res) => {
-    const { getAppInfo } = await import('../utils/appInfo.js');
-    const info = await getAppInfo();
-    res.json({
-      version: info.version,
-      name: info.name,
-      status: 'ok',
-      uptimeMs: Date.now() - systemStatus.startTimeMs,
-      lastPriceUpdateMs: systemStatus.lastPriceUpdateMs,
-      rateLimitActive: systemStatus.rateLimitActive,
-      cooldownUntilMs: systemStatus.cooldownUntilMs,
-      botName: info.name,
-      bot: systemStatus.bot,
-      targetTickTimeMs: systemStatus.targetTickTimeMs,
-      rpcUrl: CONFIG.rpcUrl,
-      fees: CONFIG.fees,
-      system: CONFIG.system,
-      logCategories: CONFIG.system.logCategories,
-    });
-  });
+  // Mount system routes
+  api.use(createSystemRouter(io));
+  // Mount basic feature routes
+  api.use(createTokensRouter(io));
+  api.use(createFeesRouter(io));
+  api.use(createWatchlistRouter(io));
+  api.use(createPricesRouter(io));
+  api.use(createGraphRouter(io));
+  api.use(createDebugRouter(io));
+  api.use(createWalletRouter(io));
+  api.use(createSwapRouter(io));
+  api.use(createDriftRouter(io));
+  api.use(createLeveragedGridRouter(io));
+  api.use(createLiquidatorRouter(io));
+  api.use(createPoolsRouter(io));
+  api.use(createArbRouter(io));
 
   // --- Direct execution config and routes ---
   api.get('/arb/config', async (_req, res) => {
@@ -172,141 +174,11 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     }
   });
 
-  // Token map (mint -> symbol) combining Jupiter-verified tokens and local overrides (non-destructive)
-  api.get('/tokens/map', async (_req, res) => {
-    try {
-      const tokensMod: any = await import('../utils/tokens.js');
-      const loadTokenMap = (tokensMod as any).loadTokenMap as () => Promise<Record<string, { mint: string; decimals: number }>>;
-      const loadJupiterTokenMap = (tokensMod as any).loadJupiterTokenMap as () => Promise<Record<string, { symbol: string; decimals: number }>>;
-      const local = await loadTokenMap();
-      const jmap = await loadJupiterTokenMap();
-      const out: Record<string, string> = {};
-      // 1) Prefer Jupiter-verified symbols first
-      for (const [mint, meta] of Object.entries(jmap || {})) {
-        if (!mint) continue;
-        const sym = (meta?.symbol || '').toString().trim();
-        if (sym) out[mint] = sym.toUpperCase();
-      }
-      // 2) Merge local tokens without overriding existing mints (avoid bad aliases)
-      for (const [sym, info] of Object.entries(local || {})) {
-        const upperSym = (sym || '').toString().trim().toUpperCase();
-        const mint = info?.mint;
-        if (!mint) continue;
-        if (!out[mint]) out[mint] = upperSym;
-      }
-      // 3) Enforce canonical anchors for SOL and USDC
-      const SOL_MINT = 'So11111111111111111111111111111111111111112';
-      const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-      out[SOL_MINT] = 'SOL';
-      out[USDC_MINT] = 'USDC';
-      res.json({ map: out });
-    } catch (e: any) {
-      res.status(500).json({ map: {} });
-    }
-  });
+  // tokens routes moved to createTokensRouter
 
-  api.get('/system/config', async (_req, res) => {
-    try {
-      res.json({
-        rpcUrl: CONFIG.rpcUrl,
-        system: CONFIG.system,
-        fees: CONFIG.fees,
-        raydium: CONFIG.raydium,
-        orca: CONFIG.orca,
-        meteora: (CONFIG as any).meteora,
-        sanity: (CONFIG as any).sanity,
-      });
-    } catch (e: any) {
-      logger.error('server: failed to get system config', { error: String(e?.message || e), cat: 'server' });
-      res.status(500).json({ error: String(e?.message || e) });
-    }
-  });
+  // system routes moved to createSystemRouter
 
-  api.post('/system/config', async (req, res) => {
-    try {
-      const { rpcUrl, system, fees, raydium, orca, sanity } = req.body as {
-        rpcUrl?: string;
-        system?: any;
-        fees?: any;
-        raydium?: { enableOnChain?: boolean; ammV4Program?: string; clmmProgram?: string; cacheTtlMs?: number; sdkConcurrency?: number; sdkProbeMintsLimit?: number; sdkClmmPageSize?: number; filterToOrcaTokens?: boolean };
-        orca?: { mode?: string; apiUrl?: string; programId?: string; configPubkey?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; pageSize?: number; maxPages?: number; minAmmLiqBase?: number; minClmmLiquidity?: number };
-        sanity?: { enabled?: boolean; maxPriceDeviation?: number; feeMin?: number; feeMax?: number; writeSamples?: boolean; sampleRate?: number };
-      };
-      
-      // Update CONFIG with new values
-      if (rpcUrl) CONFIG.rpcUrl = rpcUrl;
-      if (system) {
-        const nextSystem = { ...CONFIG.system, ...system } as any;
-        // Validate category inputs if present
-        try {
-          if (Array.isArray(system.enabledLogCategories)) {
-            nextSystem.enabledLogCategories = (system.enabledLogCategories as string[]).map((s) => String(s).toLowerCase());
-          }
-          if (Array.isArray(system.frontendEnabledLogCategories)) {
-            nextSystem.frontendEnabledLogCategories = (system.frontendEnabledLogCategories as string[]).map((s) => String(s).toLowerCase());
-          }
-          // Map legacy category toggles to structured config if provided
-          if (Array.isArray(nextSystem.enabledLogCategories) && nextSystem.enabledLogCategories.length) {
-            nextSystem.log = nextSystem.log || {};
-            const cats: Record<string, 'error'|'warn'|'info'|'debug'> = { ...(nextSystem.log?.categories || {}) };
-            const on = new Set<string>(nextSystem.enabledLogCategories);
-            const all: string[] = Array.isArray(nextSystem.logCategories) ? nextSystem.logCategories : [];
-            for (const c of all) {
-              const name = String(c || '').toLowerCase();
-              if (!name) continue;
-              cats[name] = on.has(name) ? (cats[name] || 'info') : 'error';
-            }
-            nextSystem.log.categories = cats;
-          }
-        } catch {}
-        CONFIG.system = nextSystem;
-      }
-      if (fees) CONFIG.fees = { ...CONFIG.fees, ...fees };
-      if (raydium) CONFIG.raydium = { ...CONFIG.raydium, ...raydium } as any;
-      if (orca) CONFIG.orca = { ...CONFIG.orca, ...orca } as any;
-      if (sanity) (CONFIG as any).sanity = { ...(CONFIG as any).sanity, ...sanity } as any;
-      // Apply runtime logger changes if provided
-      try {
-        if (system && Object.prototype.hasOwnProperty.call(system, 'enableLogging')) {
-          setLoggingEnabled(system.enableLogging !== false);
-        }
-        if (system && typeof system.logLevel === 'string') {
-          setLogLevel((system.logLevel as string) as any);
-        }
-        if (system && (Object.prototype.hasOwnProperty.call(system, 'logToFile') || typeof system.logFilePath === 'string')) {
-          setFileLogging(!!system.logToFile, system.logFilePath);
-        }
-      } catch {}
-      
-      res.json({ success: true, message: 'System configuration updated' });
-      emit('log', { 
-        level: 'info', 
-        message: 'System configuration updated', 
-        timestamp: new Date().toISOString(),
-        context: { cat: 'terminal' }
-      });
-    } catch (e: any) {
-      logger.error('server: failed to update system config', { error: String(e?.message || e), cat: 'server' });
-      res.status(500).json({ error: String(e?.message || e) });
-    }
-  });
-
-  // Shutdown all services (best-effort). This will terminate the backend process; scripts should clean up others.
-  api.post('/system/shutdown', async (_req, res) => {
-    try {
-      emit('log', { level: 'warn', message: 'terminal: shutdown requested from UI', timestamp: new Date().toISOString() });
-      res.json({ ok: true });
-      setTimeout(() => {
-        try { emit('log', { level: 'warn', message: 'terminal: shutting down now', timestamp: new Date().toISOString() }); } catch {}
-        try { writeSessionLogAndClear().catch(() => null); } catch {}
-        process.exit(0);
-      }, 250);
-    } catch (e: any) {
-      logger.error('server: shutdown failed', { error: String(e?.message || e), cat: 'server' });
-      res.status(500).json({ ok: false, error: String(e?.message || e) });
-    }
-  });
-
+/* legacy wallet routes moved to createWalletRouter
   api.get('/wallet', async (_req, res) => {
     try {
       const kp = await ensureWallet(CONFIG.walletPath);
@@ -521,8 +393,9 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       res.status(500).json({ error: String(e) });
     }
   });
+*/
 
-  // Drift: status and subaccounts
+/* legacy drift routes moved to createDriftRouter
   api.get('/drift/status', async (_req: Request, res: Response) => {
     try {
       const { DriftService } = await import('../drift/client.js');
@@ -945,8 +818,9 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       res.status(500).json({ error: String(e?.message || e) });
     }
   });
+*/
 
-  // Leveraged Grid (Drift) strategy control
+/* legacy strategies routes moved to createLeveragedGridRouter and createLiquidatorRouter
   api.get('/strategies/leveraged-grid/status', async (_req: Request, res: Response) => {
     try {
       const { DriftGridRegistry } = await import('../drift/execution.js');
@@ -1220,6 +1094,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       res.status(500).json({ error: String(e?.message || e) });
     }
   });
+*/
 
   // Fee configuration endpoints
   api.get('/fees/config', async (_req, res) => {
@@ -1305,6 +1180,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     }
   });
 
+/* legacy tokens/wallet additions moved to routers
   api.post('/wallet/tokens', async (req, res) => {
     const { query } = req.body as { query: string };
     if (!query) return res.status(400).json({ error: 'query required' });
@@ -1395,6 +1271,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       }
     }
   });
+*/
 
   // Wrap / Unwrap SOL
   api.post('/wallet/wrap', async (req, res) => {
@@ -1420,115 +1297,16 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     }
   });
 
-  api.get('/watchlist', async (_req, res) => {
-    const watchlist = await readJson<any[]>(CONFIG.watchlistPath, []);
-    res.json({ watchlist, walletHistory: getWalletHistory() });
-  });
+  // watchlist routes moved to createWatchlistRouter
 
-  api.post('/watchlist', async (req, res) => {
-    try {
-      const { query } = req.body as { query: string };
-      const list = await readJson<any[]>(CONFIG.watchlistPath, []);
-      let entry: any | null = null;
-      if (query && query.length > 30) {
-        const results = await searchTokens(query, true).catch(() => []);
-        entry = results[0] || { id: query, symbol: query.slice(0, 4).toUpperCase(), name: query, decimals: 6 };
-      } else {
-        try {
-          const results = await searchTokens(query, true);
-          entry = results[0] || null;
-        } catch (e: any) {
-          // Fallback to local token resolver when API is paused/unavailable
-          try {
-            const r = await resolveMint(query);
-            if (r?.mint) entry = { id: r.mint, symbol: query.toUpperCase(), name: query, decimals: (r as any).decimals ?? 6 };
-          } catch {}
-          if (!entry) {
-            const msg = String(e?.message || e);
-            if (msg.includes('API paused')) {
-              emit('log', { level: 'warn', message: 'terminal: watchlist add blocked: API paused (run apistart or provide a mint address)', timestamp: new Date().toISOString() });
-              return res.status(503).json({ error: 'API paused; run apistart or provide a mint address' });
-            }
-            throw e;
-          }
-        }
-      }
-      if (!entry) return res.status(404).json({ error: 'Token not found' });
-      if (!list.find((t) => t.id === entry.id)) list.push(entry);
-      await writeJson(CONFIG.watchlistPath, list);
-      res.json({ watchlist: list, added: entry });
-      io.emit('watchlist-update', list);
-      emit('log', { level: 'info', message: `Added to watchlist: ${entry.symbol || entry.id}`, timestamp: new Date().toISOString(), context: entry });
-      enablePriceFeed(true);
-      try { await pollPriceFeedNow(); } catch {}
-    } catch (e: any) {
-      logger.error('watchlist add failed', { error: String(e) });
-      res.status(500).json({ error: String(e) });
-    }
-  });
+  // tokens search moved to createTokensRouter
 
-  api.delete('/watchlist', async (req, res) => {
-    const { idOrSymbol } = req.body as { idOrSymbol: string };
-    const list = await readJson<any[]>(CONFIG.watchlistPath, []);
-    const upper = idOrSymbol?.toUpperCase?.() || '';
-    const updated = list.filter((t) => {
-      if (typeof t === 'string') {
-        // legacy string entries (symbol or mint)
-        return t !== idOrSymbol && t.toUpperCase() !== upper;
-      }
-      return t.id !== idOrSymbol && (t.symbol?.toUpperCase?.() || '') !== upper;
-    });
-    await writeJson(CONFIG.watchlistPath, updated);
-    res.json({ watchlist: updated, removed: idOrSymbol });
-    io.emit('watchlist-update', updated);
-    emit('log', { level: 'info', message: `Removed from watchlist: ${idOrSymbol}` , timestamp: new Date().toISOString()});
-    if (updated.length === 0) enablePriceFeed(false);
-    else { try { await pollPriceFeedNow(); } catch {} }
-  });
+  // prices moved to createPricesRouter
 
-  // Token search endpoint
-  api.get('/tokens/search', async (req, res) => {
-    try {
-      const { query } = req.query as { query: string };
-      if (!query) return res.status(400).json({ error: 'query required' });
-      
-      const results = await searchTokens(query, true);
-      res.json(results);
-    } catch (e: any) {
-      logger.error('token search failed', { error: String(e) });
-      res.status(500).json({ error: String(e) });
-    }
-  });
-
-  api.get('/prices', async (_req, res) => {
-    // Simple in-memory; in a more robust design we'd inject a singleton feed
-    res.json({ message: 'Use websocket for live prices' });
-  });
-
-  // Graph snapshot for frontend visualization
-  api.get('/graph', async (_req, res) => {
-    try {
-      const snap = await getGraphSnapshot(false);
-      res.json(snap);
-    } catch (e: any) {
-      logger.error('graph snapshot failed', { error: String(e?.message || e) });
-      res.status(500).json({ version: 0, timestamp: Date.now(), nodes: [], edges: [] });
-    }
-  });
-
-  // Simple path endpoint for highlighting routes
-  api.get('/graph/path', async (req, res) => {
-    try {
-      const { from, to } = req.query as { from?: string; to?: string };
-      if (!from || !to) return res.status(400).json({ error: 'from and to required' });
-      const { path } = await findPath(from, to);
-      res.json({ path });
-    } catch (e: any) {
-      res.status(500).json({ path: [] });
-    }
-  });
+  // graph routes moved to createGraphRouter
 
   // Raydium pools (normalized) for arb-rs bridge
+/* legacy pools and arb routes moved to createPoolsRouter/createArbRouter
   api.get('/arb/pools/raydium', async (req, res) => {
     try {
       // Optional per-request TVL overrides
@@ -2485,6 +2263,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       res.status(503).json({ ok: false, error: 'arb service unreachable; config saved locally' });
     }
   });
+*/
 
   api.post('/bot/start', async (_req, res) => {
     try {

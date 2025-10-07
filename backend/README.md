@@ -135,6 +135,28 @@ The graph builder was partially modularized to improve maintainability without b
 
 - Interaction with pools: `graph.ts` reads from non-fetching peek helpers (`peekRaydiumPools`, `peekOrcaPools`, `peekMeteoraPools`), which remain available after the pools refactor. Refresh/subscription continues to be handled by `pools.ts` (`enablePoolWebsocketRefreshes`, timers) and is triggered when the graph stream starts.
 
+### HTTP API route structure
+
+Routes are modularized by feature and mounted under `/api` in `src/server/routes.ts`:
+
+- System: `src/server/routes/system.ts` → `/system*`
+- Tokens: `src/server/routes/tokens.ts` → `/tokens/*`
+- Fees: `src/server/routes/fees.ts` → `/fees/*`
+- Wallet: `src/server/routes/wallet.ts` → `/wallet/*`
+- Watchlist: `src/server/routes/watchlist.ts` → `/watchlist`
+- Graph: `src/server/routes/graph.ts` → `/graph*`
+- Pools: `src/server/routes/pools.ts` → `/arb/pools/*`
+- Arbitrage: `src/server/routes/arb.ts` → `/arb/*`
+- Drift: `src/server/routes/drift.ts` → `/drift/*`
+- Strategies:
+  - Leveraged Grid: `src/server/routes/strategies/leveragedGrid.ts` → `/strategies/leveraged-grid/*`
+  - Liquidator: `src/server/routes/strategies/liquidator.ts` → `/strategies/liquidator/*`
+- Debug: `src/server/routes/debug.ts` → `/debug/*`
+- Swap: `src/server/routes/swap.ts` → `/swap`
+- Prices: `src/server/routes/prices.ts` → `/prices`
+
+Entrypoint: `src/server/index.ts` sets up Express and calls `registerRoutes(app, io)`.
+
 ## Meteora Pools (DLMM)
 
 - Endpoint: `GET /api/arb/pools/meteora`

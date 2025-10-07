@@ -1,5 +1,6 @@
 import type { Server as SocketIOServer } from 'socket.io';
 import { recordSessionLog } from '../utils/sessionLogs.js';
+import { logger } from '../utils/logger.js';
 
 let ioRef: SocketIOServer | null = null;
 
@@ -86,20 +87,76 @@ export async function notifyArbServiceRefresh(): Promise<void> {
   } catch {}
 }
 
-export async function pushArbGraphSnapshot(snapshot: any): Promise<void> {
+// Simple sequential push queue to arb-rs with detection-run acknowledgement
+type ArbJob = { kind: 'snapshot' | 'diff'; payload: any; resolve: () => void; reject: (e: any) => void };
+let arbQueue: ArbJob[] = [];
+let arbInFlight = false;
+
+async function fetchArbMetrics(): Promise<{ last_detection_ms: number }> {
   try {
     const host = ((globalThis as any)?.process?.env?.ARB_SERVICE_URL) || 'http://127.0.0.1:4010';
     // eslint-disable-next-line no-undef
-    await fetch(`${host}/arb/graph/snapshot`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ graph: snapshot }) });
-  } catch {}
+    const r = await fetch(`${host}/metrics/json`, { headers: { accept: 'application/json' } });
+    const j: any = await r.json().catch(() => ({}));
+    return { last_detection_ms: Number(j?.last_detection_ms || 0) };
+  } catch {
+    return { last_detection_ms: 0 };
+  }
+}
+
+async function processArbQueue(): Promise<void> {
+  if (arbInFlight) return;
+  arbInFlight = true;
+  try {
+    while (arbQueue.length) {
+      const job = arbQueue.shift()!;
+      const host = ((globalThis as any)?.process?.env?.ARB_SERVICE_URL) || 'http://127.0.0.1:4010';
+      const before = await fetchArbMetrics();
+      try {
+        if (job.kind === 'snapshot') {
+          // eslint-disable-next-line no-undef
+          await fetch(`${host}/arb/graph/snapshot`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ graph: job.payload }) });
+        } else {
+          // eslint-disable-next-line no-undef
+          await fetch(`${host}/arb/graph/update`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(job.payload) });
+        }
+      } catch (e: any) {
+        try { logger.warn('arb.push failed', { kind: job.kind, error: String(e?.message || e) }); } catch {}
+      }
+      try { await notifyArbServiceRefresh(); } catch {}
+      // Wait for detection loop to complete (last_detection_ms to increase)
+      const start = Date.now();
+      let observed = before.last_detection_ms;
+      const timeoutMs = 12_000;
+      while (Date.now() - start < timeoutMs) {
+        await new Promise((r) => setTimeout(r, 250));
+        const cur = await fetchArbMetrics();
+        if (cur.last_detection_ms > observed) { observed = cur.last_detection_ms; break; }
+      }
+      try { logger.info('arb.push ack', { kind: job.kind, waited_ms: Date.now() - start }); } catch {}
+      job.resolve();
+      // If a snapshot was pushed, it supersedes any pending diffs built from older state; drop consecutive diffs until next rebuild
+      if (job.kind === 'snapshot' && arbQueue.length) {
+        arbQueue = arbQueue.filter((j) => j.kind === 'snapshot');
+      }
+    }
+  } finally {
+    arbInFlight = false;
+  }
+}
+
+export async function pushArbGraphSnapshot(snapshot: any): Promise<void> {
+  return new Promise((resolve, reject) => {
+    arbQueue.push({ kind: 'snapshot', payload: snapshot, resolve, reject });
+    processArbQueue().catch(() => {});
+  });
 }
 
 export async function pushArbGraphDiff(diff: any): Promise<void> {
-  try {
-    const host = ((globalThis as any)?.process?.env?.ARB_SERVICE_URL) || 'http://127.0.0.1:4010';
-    // eslint-disable-next-line no-undef
-    await fetch(`${host}/arb/graph/update`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(diff) });
-  } catch {}
+  return new Promise((resolve, reject) => {
+    arbQueue.push({ kind: 'diff', payload: diff, resolve, reject });
+    processArbQueue().catch(() => {});
+  });
 }
 
 // Lightweight readiness probe for arb-rs backend mode

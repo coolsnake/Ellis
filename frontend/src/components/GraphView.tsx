@@ -36,6 +36,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 	const [filterKind, setFilterKind] = useState<{ AMM: boolean; CLMM: boolean }>({ AMM: true, CLMM: true });
   const laidOutRef = useRef(false);
 	const forceLayoutRef = useRef(false);
+  const lastVersionRef = useRef<number>(0);
   const [selection, setSelection] = useState<
     | { kind: 'node'; id: string; label?: string; degree?: number; neighbors?: number }
     | { kind: 'edge'; id: string; source: string; target: string; dex: string; fee_bps?: number; liquidity?: number; weight?: number; price_a_per_b?: number; tvl_usd?: number; pool_id?: string; source_account?: string; target_account?: string; combined_edges?: Array<{ dex: string; pool_id?: string; fee_bps?: number; liquidity?: number; price_a_per_b?: number; tvl_usd?: number; pool_kind?: string; direction?: string; pool_liquidity_raw?: number }> }
@@ -449,6 +450,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 		const onDiff = (diff: GraphDiff) => {
       const cy = cyRef.current; if (!cy) return;
 			snapshotInitializedRef.current = true; // prefer diffs after first reception
+      try { if (typeof diff?.version === 'number') lastVersionRef.current = Math.max(lastVersionRef.current || 0, Number(diff.version)); } catch {}
       const touchedPairs = new Set<string>();
       try {
         const remIds = Array.isArray(diff.removedEdgeIds) ? diff.removedEdgeIds : [];
@@ -483,6 +485,16 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
         } catch {}
       }
       if (upserts.length) cy.add(upserts);
+      // Briefly highlight updated/added edges
+      try {
+        const highlightIds: string[] = [];
+        for (const e of [...(diff.addedEdges||[]), ...(diff.updatedEdges||[])]) { if (e?.id) { highlightIds.push(String(e.id), `${String(e.id)}-rev`); } }
+        if (highlightIds.length) {
+          const sel = cy.$(highlightIds.map((id) => `#${id}`).join(','));
+          sel.addClass('highlighted');
+          setTimeout(() => { try { sel.removeClass('highlighted'); } catch {} }, 500);
+        }
+      } catch {}
       try {
         touchedPairs.forEach((key) => {
           const [a, b] = key.split('|');
@@ -493,8 +505,11 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
     };
     const onSnapshot = (snap: GraphSnapshot) => {
 			const cy = cyRef.current; if (!cy) return;
-			// If we already have content and have processed diffs, ignore periodic snapshots to avoid resets
-			if (snapshotInitializedRef.current && cy.nodes().length > 0) return;
+			// Only accept snapshot if it's newer than our current version or we have no content
+      const incomingVer = Number(snap?.version || 0);
+      const haveContent = cy.nodes().length > 0;
+      if (haveContent && snapshotInitializedRef.current && incomingVer <= (lastVersionRef.current || 0)) return;
+      lastVersionRef.current = incomingVer;
 			cy.elements().remove();
 			cy.add(toElements(snap));
 			// Run initial layout once on the first snapshot when container is sized
