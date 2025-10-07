@@ -109,7 +109,13 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       const plan = input?.plan && Array.isArray(input.plan?.hops) ? input.plan : await resolveDirectPlan(ResolveDirectSchema.parse(input), cfgRes);
       io.emit('tx:start', { plan });
       try { logger.info('tx.start', { cat: 'tx', code: 'TX.START', ctx: { hops: plan.hops.length } as any }); } catch {}
-      const built = await buildDirectArbTx(plan, [], { computeUnitPriceMicroLamports: plan.computeUnitPriceMicroLamports, computeUnitLimit: (cfgRes?.computeUnitLimit || 0) });
+      let built;
+      try {
+        built = await buildDirectArbTx(plan, [], { computeUnitPriceMicroLamports: plan.computeUnitPriceMicroLamports, computeUnitLimit: (cfgRes?.computeUnitLimit || 0) });
+      } catch (e: any) {
+        try { logger.error('tx.build.err', { cat: 'tx', code: 'TX.BUILD.ERR', ctx: { error: String(e?.message || e) } as any }); } catch {}
+        throw e;
+      }
       // Simulate placeholder with diagnostics parsing
       io.emit('tx:sim.ok', { plan, ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
       try { logger.info('tx.sim.ok', { cat: 'tx', code: 'TX.SIM.OK', ctx: { ixCount: built.ixCount, sizeBytes: built.sizeBytes } as any }); } catch {}
