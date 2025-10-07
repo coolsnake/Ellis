@@ -80,7 +80,7 @@ export async function emit(event: string, payload: any) {
 
 export async function notifyArbServiceRefresh(): Promise<void> {
   try {
-    const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
+    const host = ((globalThis as any)?.process?.env?.ARB_SERVICE_URL) || 'http://127.0.0.1:4010';
     // eslint-disable-next-line no-undef
     await fetch(`${host}/graph/trigger-refresh`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason: 'graph-diff' }) });
   } catch {}
@@ -88,7 +88,7 @@ export async function notifyArbServiceRefresh(): Promise<void> {
 
 export async function pushArbGraphSnapshot(snapshot: any): Promise<void> {
   try {
-    const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
+    const host = ((globalThis as any)?.process?.env?.ARB_SERVICE_URL) || 'http://127.0.0.1:4010';
     // eslint-disable-next-line no-undef
     await fetch(`${host}/arb/graph/snapshot`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ graph: snapshot }) });
   } catch {}
@@ -96,10 +96,30 @@ export async function pushArbGraphSnapshot(snapshot: any): Promise<void> {
 
 export async function pushArbGraphDiff(diff: any): Promise<void> {
   try {
-    const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
+    const host = ((globalThis as any)?.process?.env?.ARB_SERVICE_URL) || 'http://127.0.0.1:4010';
     // eslint-disable-next-line no-undef
     await fetch(`${host}/arb/graph/update`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(diff) });
   } catch {}
+}
+
+// Lightweight readiness probe for arb-rs backend mode
+export async function checkArbServiceReady(timeoutMs = 4000): Promise<boolean> {
+  try {
+    const host = ((globalThis as any)?.process?.env?.ARB_SERVICE_URL) || 'http://127.0.0.1:4010';
+    // eslint-disable-next-line no-undef
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort('timeout'), Math.max(1000, timeoutMs));
+    try {
+      const r = await fetch(`${host}/arb/graph/version`, { method: 'GET', headers: { accept: 'application/json' }, signal: ac.signal });
+      clearTimeout(t);
+      return !!r && r.ok;
+    } catch {
+      clearTimeout(t);
+      return false;
+    }
+  } catch {
+    return false;
+  }
 }
 
 

@@ -699,22 +699,49 @@ export function startRaydiumRefreshLoop(): void {
             subs.push(conn.onProgramAccountChange(rayClmm, (ch) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
           }
         } catch {}
-        // Meteora targeted subscriptions from scoped graph edges; fallback to program-level when set
+        // Meteora targeted subscriptions from graph edges. If none yet, retry briefly for targets; fallback to program-level when configured.
         try {
-          const edgeIds: string[] = Array.from(meteoraTargets);
-          let attachedMet = 0;
-          for (const addr of edgeIds) {
-            try {
-              const pk = new web3.PublicKey(addr);
-              const id = await conn.onAccountChange(pk, (info: any) => { handle(pk as any, info); });
-              subs.push(id as any); attachedMet++;
-            } catch {}
+          const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+          const attachMeteora = async (): Promise<number> => {
+            let attached = 0;
+            const edgeIds: string[] = Array.from(meteoraTargets);
+            for (const addr of edgeIds) {
+              try {
+                const pk = new web3.PublicKey(addr);
+                const id = await conn.onAccountChange(pk, (info: any) => { handle(pk as any, info); });
+                subs.push(id as any); attached++;
+              } catch {}
+            }
+            return attached;
+          };
+          // Try immediate targets; if none, make a couple of quick retries to allow first graph to include Meteora edges
+          let attachedMet = await attachMeteora();
+          if (attachedMet === 0) {
+            const maxRetries = Math.max(1, Number(((CONFIG.system as any)?.meteoraWsRetryCount) || 2));
+            const delayMs = Math.max(200, Number(((CONFIG.system as any)?.meteoraWsRetryDelayMs) || 600));
+            for (let i = 0; i < maxRetries && attachedMet === 0; i++) {
+              try {
+                // Refresh targets from a fresh graph snapshot
+                const gmod: any = await import('./graph.js');
+                const snap = await gmod.getGraphSnapshot(true);
+                const mset = new Set<string>();
+                for (const e of (snap?.edges || [])) {
+                  const pid = String((e as any)?.pool_id || '');
+                  if (!pid) continue;
+                  const base = pid.replace(/-rev$/, '');
+                  if ((e as any)?.dex === 'Meteora') mset.add(base);
+                }
+                meteoraTargets = mset;
+              } catch {}
+              if (meteoraTargets.size > 0) attachedMet = await attachMeteora();
+              if (attachedMet === 0) await sleep(delayMs);
+            }
           }
           attachedMeteoraPools = attachedMet;
           if (attachedMet > 0) {
             try { logger.info('pools.ws subscribe meteora.pools', { attached: attachedMet, source: 'meteora' }); } catch {}
           } else {
-            // Program-level fallback
+            // Program-level fallback when configured
             const meteoraProg = String((CONFIG as any)?.meteora?.programId || '').trim();
             if (meteoraProg) {
               try { logger.info('pools.ws subscribe meteora(program)', { source: 'meteora', cat: 'pools' }); } catch {}

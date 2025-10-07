@@ -353,13 +353,17 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const amtA = Number((p as any)?.amount_a ?? NaN);
         const amtB = Number((p as any)?.amount_b ?? NaN);
         let usd: number | undefined = (p as any)?.tvl_usd;
-        let price: number | undefined = Number((p as any)?.price_a_per_b || 0) || undefined;
+        // Ensure forward price is strictly mint_a per 1 mint_b. Prefer whole amounts, else USD ref, else incoming price.
+        let price: number | undefined = undefined;
         if (((p as any)?.amounts_are_whole && (Number.isFinite(amtAwhole) || Number.isFinite(amtBwhole))) || (Number.isFinite(decA) && Number.isFinite(decB) && Number.isFinite(amtA) && Number.isFinite(amtB))) {
           const wholeA = (p as any)?.amounts_are_whole ? amtAwhole : (amtA / Math.pow(10, decA));
           const wholeB = (p as any)?.amounts_are_whole ? amtBwhole : (amtB / Math.pow(10, decB));
           // Prefer external USD TVL if available
           usd = tvlUsd(p.mint_a, p.mint_b, wholeA, wholeB);
-          if (!price || price <= 0) { if (wholeB > 0) price = wholeA / wholeB; }
+          // Primary: compute A per 1 B from amounts
+          if (wholeB && (wholeB as number) > 0 && Number.isFinite(wholeA as any)) {
+            price = (wholeA as number) / (wholeB as number);
+          }
           // If only one side has a USD price, infer the other using pool price
           if ((usd == null || !(usd > 0)) && price && price > 0) {
             try {
@@ -391,6 +395,10 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         }
         if (Number.isFinite(usd as any) && (usd as number) > 0) ammUsd++;
         if (!price || price <= 0) price = priceFromUsd(p.mint_a, p.mint_b);
+        // Fallback: if still missing, use incoming pool price when valid (assumed A per 1 B from normalization)
+        if ((!price || price <= 0) && Number.isFinite((p as any)?.price_a_per_b as any) && (p as any).price_a_per_b > 0) {
+          price = Number((p as any).price_a_per_b);
+        }
         // Prefer notional (in B units) when USD TVL is missing
         let notionalB: number | undefined;
         try {

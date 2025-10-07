@@ -1611,12 +1611,15 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
         try { io.emit('graph-snapshot', snap); } catch {}
         // Also push snapshot to arb-rs and trigger a refresh so backend-graph mode stays current
         try {
-          const { pushArbGraphSnapshot, notifyArbServiceRefresh } = await import('./realtime.js');
+          const { pushArbGraphSnapshot, notifyArbServiceRefresh, checkArbServiceReady } = await import('./realtime.js');
+          // Optional: readiness probe before and after push
+          const readyBefore = await checkArbServiceReady(1500).catch(() => false);
           try { await pushArbGraphSnapshot(snap); } catch {}
           try { await notifyArbServiceRefresh(); } catch {}
+          const readyAfter = readyBefore || await checkArbServiceReady(1500).catch(() => false);
           try {
-            logger.info('arb.push snapshot forwarded', { version: snap.version, nodes: snap.nodes.length, edges: snap.edges.length, cat: 'arb' });
-            emit('log', { level: 'info', message: `arb:push snapshot v=${snap.version} nodes=${snap.nodes.length} edges=${snap.edges.length}` as any, timestamp: new Date().toISOString(), context: { cat: 'arb' } });
+            logger.info('arb.push snapshot forwarded', { version: snap.version, nodes: snap.nodes.length, edges: snap.edges.length, ready: readyAfter, cat: 'arb' });
+            emit('log', { level: 'info', message: `arb:push snapshot v=${snap.version} nodes=${snap.nodes.length} edges=${snap.edges.length} ready=${readyAfter}` as any, timestamp: new Date().toISOString(), context: { cat: 'arb' } });
           } catch {}
         } catch {}
       } catch {}
