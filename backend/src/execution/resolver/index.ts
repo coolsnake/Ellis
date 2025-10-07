@@ -2,6 +2,7 @@ import { executionCache } from '../cache.js';
 import type { DirectHop, ExecutionPlan, ExecConfig, ResolveDirectInput } from '../types.js';
 import { logger } from '../../utils/logger.js';
 import { getTokenMeta } from './tokenMeta.js';
+import { CONFIG } from '../../utils/config.js';
 import { applySlippage } from '../limits.js';
 
 export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConfig): Promise<ExecutionPlan> {
@@ -28,7 +29,12 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       dex,
       variant,
       poolId,
-      programId: executionCache.getStatic(poolId)?.programId || '',
+      programId: executionCache.getStatic(poolId)?.programId || (() => {
+        if (dex === 'raydium') return variant === 'clmm' ? (CONFIG.raydium?.clmmProgram || '') : (CONFIG.raydium?.ammV4Program || '');
+        if (dex === 'orca') return CONFIG.orca?.programId || '';
+        if (dex === 'meteora') return (CONFIG.meteora?.programId as any) || '';
+        return '';
+      })(),
       inputMint,
       outputMint,
       inputDecimals: tokenInMeta.decimals,
@@ -40,6 +46,18 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       amountInRaw: BigInt(Math.max(0, Math.floor(Number(input.size || 0)))) ,
       minOutRaw: 0n,
     };
+    // Populate common per-DEX account fields opportunistically from cache
+    const stat = executionCache.getStatic(poolId);
+    if (stat) {
+      hop.vaultA = hop.vaultA || (stat.vaults?.a);
+      hop.vaultB = hop.vaultB || (stat.vaults?.b);
+      if (variant === 'clmm') {
+        hop.tickSpacing = hop.tickSpacing || stat.tickSpacing;
+      }
+      if (dex === 'meteora' && variant === 'dlmm') {
+        hop.binStep = hop.binStep || stat.binStep;
+      }
+    }
     // Compute conservative minOut using default slippage when provided size specified (placeholder)
     if (hop.amountInRaw > 0n) {
       const slippage = typeof input.slippageBps === 'number' ? input.slippageBps : cfg.slippageBpsDefault;

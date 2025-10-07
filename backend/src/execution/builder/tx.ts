@@ -1,5 +1,5 @@
 import type { ExecutionPlan } from '../types.js';
-import { buildRaydiumAmmSwapIx, buildRaydiumClmmSwapIx, buildOrcaSwapIx, buildMeteoraDlmmSwapIx } from './ix.js';
+import { buildRaydiumAmmSwapIx, buildRaydiumClmmSwapIx, buildOrcaSwapIx, buildMeteoraDlmmSwapIx, buildRaydiumAmmSwapIxReal, buildRaydiumClmmSwapIxReal, buildMeteoraDlmmSwapIxReal } from './ix.js';
 import { logger } from '../../utils/logger.js';
 
 export type ComputeBudgetConfig = { computeUnitLimit?: number; computeUnitPriceMicroLamports?: number };
@@ -14,15 +14,15 @@ function computeBudgetIxs(cfg?: ComputeBudgetConfig): any[] {
   return out;
 }
 
-export function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[], cb?: ComputeBudgetConfig): { tx: any; ixCount: number; sizeBytes: number } {
+export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[], cb?: ComputeBudgetConfig): Promise<{ tx: any; ixCount: number; sizeBytes: number }> {
   const t0 = Date.now();
   // Build per-hop placeholders
   const hopIxs: any[] = [];
   for (const hop of plan.hops) {
-    if (hop.dex === 'raydium' && hop.variant === 'amm') hopIxs.push(...buildRaydiumAmmSwapIx(hop));
-    else if (hop.dex === 'raydium' && hop.variant === 'clmm') hopIxs.push(...buildRaydiumClmmSwapIx(hop));
-    else if (hop.dex === 'orca') hopIxs.push(...buildOrcaSwapIx(hop));
-    else if (hop.dex === 'meteora') hopIxs.push(...buildMeteoraDlmmSwapIx(hop));
+    if (hop.dex === 'raydium' && hop.variant === 'amm') { const ixs = await buildRaydiumAmmSwapIxReal(hop); hopIxs.push(...ixs); }
+    else if (hop.dex === 'raydium' && hop.variant === 'clmm') { const ixs = await buildRaydiumClmmSwapIxReal(hop); hopIxs.push(...ixs); }
+    else if (hop.dex === 'orca') { const ixs = await buildOrcaSwapIx(hop) as any[]; hopIxs.push(...ixs); }
+    else if (hop.dex === 'meteora') { const ixs = await buildMeteoraDlmmSwapIxReal(hop); hopIxs.push(...ixs); }
   }
   const budget = computeBudgetIxs(cb);
   const all = [...budget, ...extraSetupIxs, ...hopIxs];
@@ -38,7 +38,7 @@ export function chunkRoute(plan: ExecutionPlan, extraSetupIxs: any[], cb: Comput
   for (const hop of plan.hops) {
     if (hop.dex === 'raydium' && hop.variant === 'amm') perHop.push(...buildRaydiumAmmSwapIx(hop));
     else if (hop.dex === 'raydium' && hop.variant === 'clmm') perHop.push(...buildRaydiumClmmSwapIx(hop));
-    else if (hop.dex === 'orca') perHop.push(...buildOrcaSwapIx(hop));
+    else if (hop.dex === 'orca') perHop.push(...(buildOrcaSwapIx(hop) as any));
     else if (hop.dex === 'meteora') perHop.push(...buildMeteoraDlmmSwapIx(hop));
   }
   const base = [...budget, ...extraSetupIxs];
