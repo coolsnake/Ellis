@@ -120,6 +120,7 @@ export const CONFIG = {
       'orca',
       'meteora',
       'arb',
+      'tx',
       'opportunity',
       'drift',
       'strategy',
