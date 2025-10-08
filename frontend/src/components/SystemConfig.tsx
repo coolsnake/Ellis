@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
+import type { SystemConfigRequest, SystemConfigResponse, SharedSystemConfig, SharedFeesConfig } from 'shared/config-types';
 
 interface SystemConfigProps {
-  onSave: (config: any) => void;
+  onSave: (config: SystemConfigRequest) => void;
   onCancel: () => void;
-  initialConfig: any;
+  initialConfig: SystemConfigResponse;
 }
 
 export const SystemConfig: React.FC<SystemConfigProps> = ({ onSave, onCancel, initialConfig }) => {
@@ -64,7 +65,9 @@ export const SystemConfig: React.FC<SystemConfigProps> = ({ onSave, onCancel, in
         logLevel: initialConfig.system?.logLevel || 'info',
         frontendLogLevel: (initialConfig.system?.frontendLogLevel || initialConfig.system?.logLevel || 'info'),
         wrapAndUnwrapSol: initialConfig.system?.wrapAndUnwrapSol !== false,
-        logCategories: Array.isArray(initialConfig.logCategories) ? initialConfig.logCategories : (Array.isArray(initialConfig.system?.logCategories) ? initialConfig.system.logCategories : []),
+        logCategories: Array.isArray((initialConfig as any).logCategories)
+          ? (initialConfig as any).logCategories
+          : (Array.isArray(initialConfig.system?.logCategories) ? (initialConfig.system?.logCategories as any) : []),
         enabledLogCategories: Array.isArray(initialConfig.system?.enabledLogCategories) ? initialConfig.system.enabledLogCategories : [],
         frontendEnabledLogCategories: Array.isArray(initialConfig.system?.frontendEnabledLogCategories) ? initialConfig.system.frontendEnabledLogCategories : [],
         baseFee: initialConfig.fees?.baseFee || 5000,
@@ -91,7 +94,7 @@ export const SystemConfig: React.FC<SystemConfigProps> = ({ onSave, onCancel, in
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     try { window.localStorage.setItem('frontendEnabledLogCategories', JSON.stringify(config.frontendEnabledLogCategories || [])); } catch {}
-    onSave({
+    const payload: SystemConfigRequest = {
       rpcUrl: config.rpcUrl,
       system: {
         jupiterApiUrl: config.jupiterApiUrl,
@@ -124,7 +127,8 @@ export const SystemConfig: React.FC<SystemConfigProps> = ({ onSave, onCancel, in
         jupiterSlippageBps: config.jupiterSlippageBps,
         jupiterMaxSlippageBps: config.jupiterMaxSlippageBps,
       }
-    });
+    };
+    onSave(payload);
   };
 
   const handleChange = (field: string, value: any) => {

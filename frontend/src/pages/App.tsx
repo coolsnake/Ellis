@@ -21,6 +21,8 @@ import { ArbEngineConfig } from '../components/ArbEngineConfig';
 import { SystemConfig } from '../components/SystemConfig';
 import { GraphView } from '../components/GraphView';
 import { CollapsibleSection } from '../components/CollapsibleSection';
+import { LogWindow } from '../components/LogWindow';
+import { LOG_WINDOWS, WINDOW_ORDER, catToWindowId } from '../utils/logs';
 import { setLogLevel as setFrontendLogLevel } from '../utils/logger';
 // Login page is now routed at /login; main app assumes authenticated state
 
@@ -73,6 +75,11 @@ export const App: React.FC = () => {
   const [arbLogs, setArbLogs] = useState<LogEvent[]>([]);
   const [apiLogs, setApiLogs] = useState<LogEvent[]>([]);
   const [terminalLogs, setTerminalLogs] = useState<LogEvent[]>([]);
+  const [logsByWindow, setLogsByWindow] = useState<Record<string, LogEvent[]>>(() => {
+    const init: Record<string, LogEvent[]> = {};
+    try { WINDOW_ORDER.forEach((id) => { init[id] = []; }); } catch {}
+    return init;
+  });
   const [positions, setPositions] = useState<any[]>([]);
   const [gridPositionsSummary, setGridPositionsSummary] = useState<Array<{ strategy: string; fromSymbol: string; toSymbol: string; count: number; totalFromToken: number; avgOpenMs: number }>>([]);
   const [activity, setActivity] = useState<{ status: string; trades: any[] }>({ status: 'idle', trades: [] });
@@ -283,53 +290,18 @@ export const App: React.FC = () => {
     socket.on('watchlist-update', (list) => setWatchlist(list));
     socket.on('log', (evt: LogEvent & { cat?: string; muted?: boolean }) => {
       const cat = (evt?.cat || '').toLowerCase();
-      const msg = (evt?.message || '').toString();
-      const code = (evt?.code || '').toString();
       // Frontend category filter: use server-provided defaults if present
       const serverCats: string[] | undefined = (system as any)?.system?.frontendEnabledLogCategories || (system as any)?.system?.enabledLogCategories;
       const localCatsJson = typeof window !== 'undefined' ? window.localStorage.getItem('frontendEnabledLogCategories') : null;
       const localCats: string[] | null = localCatsJson ? JSON.parse(localCatsJson) : null;
       const allowedCats = Array.isArray(localCats) && localCats.length ? localCats : (Array.isArray(serverCats) ? serverCats : null);
       if (allowedCats && allowedCats.length && cat && !allowedCats.includes(cat)) return;
-      if (evt.muted === true) return; // backend flagged as muted
-      const push = (setter: React.Dispatch<React.SetStateAction<LogEvent[]>>) => setter((prev) => [evt, ...prev].slice(0, 500));
-      const isApiCat = cat === 'api' || cat === 'jupiter' || cat === 'raydium' || cat === 'orca' || cat === 'meteora';
-      let matched = false;
-      // Categorize without duplication
-      // User Log: user-facing (terminal)
-      if (!isApiCat && (
-        cat === 'terminal' || msg.startsWith('terminal:') ||
-        cat === 'trade' && /executed|submitted|filled|success|fail|error/i.test(msg) ||
-        /swap success|filled:|executed:|Swap executed/i.test(msg) ||
-        /strategy (saved|updated|removed)/i.test(msg) || (/\bwatchlist\b|wallet addtoken/i.test(msg) && !/^api\./i.test(msg))
-      )) {
-        push(setTerminalLogs);
-        matched = true;
-      }
-      // Trade Log: trade lifecycle (quotes ok to show here if directly tied to a trade attempt)
-      if (cat === 'trade' || cat === 'pretrade' || /^pretrade:|^trade:/i.test(msg) || /^PRETRADE\.|^TRADE\./i.test(code)) {
-        push(setTradeLogs);
-        matched = true;
-      }
-      // Strategy Log: strategy computations, Drift, Jupiter strategy fetchers
-      if (cat === 'strategy' || cat === 'drift' || /^strategy:/i.test(msg) || /^STRATEGY\.|^DRIFT\./i.test(code)) {
-        push(setStrategyLogs);
-        matched = true;
-      }
-      // Arbitrage Log: arb engine activity, Raydium/Orca pool data fetchers, and opportunity details
-      if (cat === 'arb' || cat === 'opportunity' || cat === 'pools' || cat === 'raydium' || cat === 'orca' || cat === 'meteora' || /^arb\b|^pretrade:arb|^trade:arb|^opportunity:/i.test(msg) || /^ARB\.|^GRAPH\.|^POOLS\./i.test(code)) {
-        push(setArbLogs);
-        matched = true;
-      }
-      // API Log: internal/external API requests (exclude pools/arb/strategy-related fetchers)
-      if (cat === 'api' || cat === 'jupiter' || /^api:|^jup\./i.test(msg) || /^API\.|^JUP\./i.test(code)) {
-        push(setApiLogs);
-        matched = true;
-      }
-      // Fallback: if nothing matched, show in Terminal (User Log)
-      if (!matched) {
-        push(setTerminalLogs);
-      }
+      if (evt.muted === true) return;
+      const id = catToWindowId.get(cat) || 'system';
+      setLogsByWindow((prev) => {
+        const base = Array.isArray(prev[id]) ? prev[id] : [];
+        return { ...prev, [id]: [evt, ...base].slice(0, 500) };
+      });
     });
     socket.on('prices-update', (p) => setPrices(p));
     socket.on('strategies-update', async (list) => {
@@ -466,6 +438,19 @@ export const App: React.FC = () => {
     return () => { socket.disconnect(); };
   }, [wsUrl, creds, authHeaders]);
 
+  // Listen for clear events from individual LogWindow components
+  useEffect(() => {
+    const onClear = (e: any) => {
+      try {
+        const id = e && e.detail && e.detail.id;
+        if (!id) return;
+        setLogsByWindow((prev) => ({ ...prev, [id]: [] }));
+      } catch {}
+    };
+    try { window.addEventListener('logwin:clear', onClear as any); } catch {}
+    return () => { try { window.removeEventListener('logwin:clear', onClear as any); } catch {} };
+  }, []);
+
   const onLogin = (c: { user: string; pass: string }) => {
     setAuthError(null);
     // probe first; only persist/set creds on success
@@ -537,7 +522,7 @@ export const App: React.FC = () => {
     setCollapsedStrategies(allCollapsed);
   };
 
-  const handleSystemConfigSave = async (config: any) => {
+  const handleSystemConfigSave = async (config: import('shared/config-types').SystemConfigRequest) => {
     try {
       const response = await fetch(`${apiBase}${ROUTES.system.config}`, {
         method: 'POST',
@@ -2493,176 +2478,15 @@ export const App: React.FC = () => {
         
       </div>
       <div className="space-y-4">
-        <section className="bg-gray-900 rounded p-4 h-[32vh] overflow-auto">
-          <h2 className="text-2xl font-semibold mb-3">User Log</h2>
-          {/* Simple filters: level and code search */}
-          <div className="flex items-center gap-2 mb-2">
-            <select className="bg-gray-700 text-sm px-2 py-1 rounded" onChange={(e)=>{
-              const lvl = e.target.value;
-              // Filter locally by level by trimming arrays (dev-lightweight)
-              // Users can reset to show all via empty selection
-              if (!lvl) return;
-              setTerminalLogs(prev => prev.filter(l => l.level === lvl));
-            }}>
-              <option value="">Level: All</option>
-              <option value="error">Error</option>
-              <option value="warn">Warn</option>
-              <option value="info">Info</option>
-              <option value="debug">Debug</option>
-            </select>
-            <input className="bg-gray-700 text-sm px-2 py-1 rounded" placeholder="Filter by code (exact)" onChange={(e)=>{
-              const code = e.target.value.trim();
-              if (!code) return;
-              setTerminalLogs(prev => prev.filter(l => (l as any).code === code));
-            }}/>
-            <input className="bg-gray-700 text-sm px-2 py-1 rounded" placeholder="Filter by CID" onChange={(e)=>{
-              const cid = e.target.value.trim();
-              if (!cid) return;
-              setTerminalLogs(prev => prev.filter(l => (l as any).cid === cid));
-            }}/>
-          </div>
-          <ul className="space-y-1">
-            {terminalLogs.map((l, i) => {
-              const colorByCat: Record<string,string> = {
-                api: 'text-blue-300', jupiter: 'text-blue-300', raydium: 'text-emerald-300', orca: 'text-amber-300',
-                arb: 'text-indigo-300', strategy: 'text-green-300', pretrade: 'text-purple-300', trade: 'text-cyan-300',
-                terminal: 'text-gray-300', graph: 'text-pink-300', pools: 'text-teal-300', price: 'text-orange-300',
-                wallet: 'text-lime-300', server: 'text-slate-300', auth: 'text-fuchsia-300', system: 'text-zinc-300', other: 'text-gray-300'
-              };
-              const color = l.level === 'error' ? 'text-red-400' : l.level === 'warn' ? 'text-yellow-400' : (colorByCat as any)[(l as any).cat] || 'text-gray-300';
-              return (
-                <li key={i} className={`text-sm ${color}`}>
-                  <span className="text-gray-500">[{l.timestamp}]</span> <span className="uppercase text-gray-400">{l.level}</span> {(l as any).cat ? <span className={`uppercase ${color}`}>[{(l as any).cat}]</span> : null} {(l as any).code ? <span className="text-blue-300">[{(l as any).code}]</span> : null} {(l as any).cid ? <span className="text-gray-400">(cid={(l as any).cid})</span> : null} {l.message}
-                </li>
-              );
-            })}
-            {terminalLogs.length === 0 && <li className="text-sm text-gray-500">No terminal logs yet</li>}
-          </ul>
-        </section>
-        <section className="bg-gray-900 rounded p-4 h-[52vh] overflow-auto">
-          <h2 className="text-2xl font-semibold mb-3">Trade Log</h2>
-          <div className="flex items-center gap-2 mb-2">
-            <select className="bg-gray-700 text-sm px-2 py-1 rounded" onChange={(e)=>{
-              const lvl = e.target.value; if (!lvl) return; setTradeLogs(prev => prev.filter(l => l.level === lvl));
-            }}>
-              <option value="">Level: All</option>
-              <option value="error">Error</option>
-              <option value="warn">Warn</option>
-              <option value="info">Info</option>
-              <option value="debug">Debug</option>
-            </select>
-            <input className="bg-gray-700 text-sm px-2 py-1 rounded" placeholder="Filter by code" onChange={(e)=>{
-              const code = e.target.value.trim(); if (!code) return; setTradeLogs(prev => prev.filter(l => (l as any).code === code));
-            }}/>
-            <input className="bg-gray-700 text-sm px-2 py-1 rounded" placeholder="Filter by CID" onChange={(e)=>{
-              const cid = e.target.value.trim(); if (!cid) return; setTradeLogs(prev => prev.filter(l => (l as any).cid === cid));
-            }}/>
-          </div>
-          <ul className="space-y-1">
-            {tradeLogs.map((l, i) => {
-              const colorByCat: Record<string,string> = { api: 'text-blue-300', jupiter: 'text-blue-300', pretrade: 'text-purple-300', trade: 'text-cyan-300', arb: 'text-indigo-300', raydium: 'text-emerald-300', orca: 'text-amber-300' };
-              const color = l.level === 'error' ? 'text-red-400' : l.level === 'warn' ? 'text-yellow-400' : (colorByCat as any)[(l as any).cat] || 'text-gray-300';
-              return (
-                <li key={i} className={`text-sm ${color}`}>
-                  <span className="text-gray-500">[{l.timestamp}]</span> <span className="uppercase text-gray-400">{l.level}</span> {(l as any).cat ? <span className={`uppercase ${color}`}>[{(l as any).cat}]</span> : null} {(l as any).code ? <span className="text-blue-300">[{(l as any).code}]</span> : null} {(l as any).cid ? <span className="text-gray-400">(cid={(l as any).cid})</span> : null} {l.message}
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-        <section className="bg-gray-900 rounded p-4 h-[40vh] overflow-auto">
-          <h2 className="text-2xl font-semibold mb-3">Strategy Log</h2>
-          <div className="flex items-center gap-2 mb-2">
-            <select className="bg-gray-700 text-sm px-2 py-1 rounded" onChange={(e)=>{
-              const lvl = e.target.value; if (!lvl) return; setStrategyLogs(prev => prev.filter(l => l.level === lvl));
-            }}>
-              <option value="">Level: All</option>
-              <option value="error">Error</option>
-              <option value="warn">Warn</option>
-              <option value="info">Info</option>
-              <option value="debug">Debug</option>
-            </select>
-            <input className="bg-gray-700 text-sm px-2 py-1 rounded" placeholder="Filter by code" onChange={(e)=>{
-              const code = e.target.value.trim(); if (!code) return; setStrategyLogs(prev => prev.filter(l => (l as any).code === code));
-            }}/>
-            <input className="bg-gray-700 text-sm px-2 py-1 rounded" placeholder="Filter by CID" onChange={(e)=>{
-              const cid = e.target.value.trim(); if (!cid) return; setStrategyLogs(prev => prev.filter(l => (l as any).cid === cid));
-            }}/>
-          </div>
-          <ul className="space-y-1">
-            {strategyLogs.map((l, i) => {
-              const colorByCat: Record<string,string> = { strategy: 'text-green-300', pretrade: 'text-purple-300', trade: 'text-cyan-300' };
-              const color = l.level === 'error' ? 'text-red-400' : l.level === 'warn' ? 'text-yellow-400' : (colorByCat as any)[(l as any).cat] || 'text-green-300';
-              return (
-                <li key={i} className={`text-sm ${color}`}>
-                  <span className="text-gray-500">[{l.timestamp}]</span> <span className="uppercase text-gray-400">{l.level}</span> {(l as any).cat ? <span className={`uppercase ${color}`}>[{(l as any).cat}]</span> : null} {(l as any).code ? <span className="text-blue-300">[{(l as any).code}]</span> : null} {(l as any).cid ? <span className="text-gray-400">(cid={(l as any).cid})</span> : null} {l.message}
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-        <section className="bg-gray-900 rounded p-4 h-[40vh] overflow-auto">
-          <h2 className="text-2xl font-semibold mb-3">Arbitrage Log</h2>
-          <div className="flex items-center gap-2 mb-2">
-            <select className="bg-gray-700 text-sm px-2 py-1 rounded" onChange={(e)=>{
-              const lvl = e.target.value; if (!lvl) return; setArbLogs(prev => prev.filter(l => l.level === lvl));
-            }}>
-              <option value="">Level: All</option>
-              <option value="error">Error</option>
-              <option value="warn">Warn</option>
-              <option value="info">Info</option>
-              <option value="debug">Debug</option>
-            </select>
-            <input className="bg-gray-700 text-sm px-2 py-1 rounded" placeholder="Filter by code" onChange={(e)=>{
-              const code = e.target.value.trim(); if (!code) return; setArbLogs(prev => prev.filter(l => (l as any).code === code));
-            }}/>
-            <input className="bg-gray-700 text-sm px-2 py-1 rounded" placeholder="Filter by CID" onChange={(e)=>{
-              const cid = e.target.value.trim(); if (!cid) return; setArbLogs(prev => prev.filter(l => (l as any).cid === cid));
-            }}/>
-          </div>
-          <ul className="space-y-1">
-            {arbLogs.map((l, i) => {
-              const colorByCat: Record<string,string> = { arb: 'text-indigo-300', graph: 'text-pink-300', pools: 'text-teal-300', raydium: 'text-emerald-300', orca: 'text-amber-300' };
-              const color = l.level === 'error' ? 'text-red-400' : l.level === 'warn' ? 'text-yellow-400' : (colorByCat as any)[(l as any).cat] || 'text-indigo-300';
-              return (
-                <li key={i} className={`text-sm ${color}`}>
-                  <span className="text-gray-500">[{l.timestamp}]</span> <span className="uppercase text-gray-400">{l.level}</span> {(l as any).cat ? <span className={`uppercase ${color}`}>[{(l as any).cat}]</span> : null} {(l as any).code ? <span className="text-blue-300">[{(l as any).code}]</span> : null} {(l as any).cid ? <span className="text-gray-400">(cid={(l as any).cid})</span> : null} {l.message}
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-        <section className="bg-gray-900 rounded p-4 h-[40vh] overflow-auto">
-          <h2 className="text-2xl font-semibold mb-3">API Log</h2>
-          <div className="flex items-center gap-2 mb-2">
-            <select className="bg-gray-700 text-sm px-2 py-1 rounded" onChange={(e)=>{
-              const lvl = e.target.value; if (!lvl) return; setApiLogs(prev => prev.filter(l => l.level === lvl));
-            }}>
-              <option value="">Level: All</option>
-              <option value="error">Error</option>
-              <option value="warn">Warn</option>
-              <option value="info">Info</option>
-              <option value="debug">Debug</option>
-            </select>
-            <input className="bg-gray-700 text-sm px-2 py-1 rounded" placeholder="Filter by code" onChange={(e)=>{
-              const code = e.target.value.trim(); if (!code) return; setApiLogs(prev => prev.filter(l => (l as any).code === code));
-            }}/>
-            <input className="bg-gray-700 text-sm px-2 py-1 rounded" placeholder="Filter by CID" onChange={(e)=>{
-              const cid = e.target.value.trim(); if (!cid) return; setApiLogs(prev => prev.filter(l => (l as any).cid === cid));
-            }}/>
-          </div>
-          <ul className="space-y-1">
-            {apiLogs.map((l, i) => {
-              const colorByCat: Record<string,string> = { api: 'text-blue-300', jupiter: 'text-blue-300', raydium: 'text-amber-300', orca: 'text-emerald-300' };
-              const color = l.level === 'error' ? 'text-red-400' : l.level === 'warn' ? 'text-yellow-400' : (colorByCat as any)[(l as any).cat] || 'text-blue-300';
-              return (
-                <li key={i} className={`text-sm ${color}`}>
-                  <span className="text-gray-500">[{l.timestamp}]</span> <span className="uppercase text-gray-400">{l.level}</span> {(l as any).cat ? <span className={`uppercase ${color}`}>[{(l as any).cat}]</span> : null} {l.message}
-                </li>
-              );
-            })}
-          </ul>
-        </section>
+        {WINDOW_ORDER.map((id) => {
+          const cfg = LOG_WINDOWS.find(w => w.id === id);
+          if (!cfg) return null;
+          const title = `${cfg.title} Log`;
+          const items = logsByWindow[id] || [];
+          return (
+            <LogWindow key={id} id={id} title={title} logs={items} />
+          );
+        })}
       </div>
       
       {/* Grid Strategy Configuration Modal */}

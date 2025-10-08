@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
+import type { SharedFeesConfig } from 'shared/config-types';
 import { logger } from '../utils/logger';
 
 interface FeeConfigProps {
-  onSave: (config: any) => void;
+  onSave: (config: SharedFeesConfig) => void;
   onCancel: () => void;
-  initialConfig?: any;
+  initialConfig?: SharedFeesConfig;
 }
 
 export const FeeConfig: React.FC<FeeConfigProps> = ({ onSave, onCancel, initialConfig }) => {
@@ -36,7 +37,23 @@ export const FeeConfig: React.FC<FeeConfigProps> = ({ onSave, onCancel, initialC
     setLoading(true);
     
     try {
-      await onSave(config);
+      await onSave({
+        baseFee: config.baseFee,
+        priorityFee: config.priorityFee,
+        maxFee: config.maxFee,
+        dynamicFees: config.dynamicFees,
+        feeMultiplier: config.feeMultiplier,
+        minFee: config.minFee,
+        maxFeeMultiplier: config.maxFeeMultiplier,
+        feeUpdateInterval: config.feeUpdateInterval,
+        networkCongestionThreshold: config.networkCongestionThreshold,
+        jupiterPriorityFee: config.jupiterPriorityFee,
+        jupiterMaxAccounts: config.jupiterMaxAccounts,
+        jupiterDynamicCompute: config.jupiterDynamicCompute,
+        jupiterLegacyTransaction: config.jupiterLegacyTransaction,
+        jupiterSlippageBps: config.jupiterSlippageBps,
+        jupiterMaxSlippageBps: config.jupiterMaxSlippageBps,
+      });
     } catch (error) {
       logger.error('Failed to save fee configuration:', error);
     } finally {

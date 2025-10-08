@@ -24,6 +24,7 @@ import { readJson } from '../utils/fs.js';
 import { startRaydiumRefreshLoop } from './pools.js';
 import util from 'util';
 import { ensureDir, writeJson } from '../utils/fs.js';
+import { setupRustLogForwarding } from './arbProcess.js';
 
 const app = express();
 // Respect X-Forwarded-* from Nginx
@@ -477,6 +478,8 @@ server.listen(CONFIG.port, () => {
     setTimeout(startGraph, delayMs);
     io.on('connection', () => startGraph());
   } catch {}
+  // Start optional arb-rs stdout/stderr forwarding over WS
+  try { setupRustLogForwarding(); } catch {}
 });
 
 

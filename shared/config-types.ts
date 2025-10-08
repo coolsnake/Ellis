@@ -13,6 +13,7 @@ export interface SharedSystemConfig {
   logLevel?: LogLevel | string;
   frontendLogLevel?: LogLevel | string;
   wrapAndUnwrapSol?: boolean;
+  logCategories?: string[];
   enabledLogCategories?: string[];
   frontendEnabledLogCategories?: string[];
   log?: {
