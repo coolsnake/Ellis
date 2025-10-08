@@ -16,7 +16,7 @@ import { findPathInSnapshot } from './graph.path.js';
 
 let lastSnapshot: GraphSnapshot | null = null;
 let inflight: Promise<GraphSnapshot> | null = null;
-const SNAPSHOT_TTL_MS = 30_000;
+const SNAPSHOT_TTL_MS = Math.max(1000, Number((CONFIG.system as any)?.graphSnapshotTtlMs || 30_000));
 let lastAt = 0;
 let rebuildTimer: any | null = null;
 let pendingUpdates = 0;

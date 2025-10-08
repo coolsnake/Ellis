@@ -163,21 +163,7 @@ io.on('connection', (socket) => {
     const hist = getWalletHistory();
     socket.emit('wallet-history', hist);
   } catch {}
-  try {
-    // On pool-updates events emitted from fetchers, rebuild graph with debounce
-    const onPoolUpdates = () => {
-      (async () => {
-        try {
-          const gmod: any = await import('./graph.js');
-          const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
-          // We cannot measure delta size here; always schedule with debounce (threshold applied in pools)
-          gmod.scheduleGraphRebuild(io, Math.max(100, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 200)));
-        } catch {}
-      })();
-    };
-    io.on('pool-updates', onPoolUpdates);
-    socket.on('disconnect', () => { try { io.off('pool-updates', onPoolUpdates); } catch {} });
-  } catch {}
+  // Note: graph rebuilds are scheduled directly from pool update points in pools.ts (HTTP + WS)
 });
 
 // Bridge logger to websocket with local-time timestamp (no ms)
