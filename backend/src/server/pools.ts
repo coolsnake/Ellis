@@ -970,6 +970,82 @@ export function peekMeteoraPools(): PoolsPayload { return meteoraCache.data || {
 export function peekSaberPools(): PoolsPayload { return saberCache.data || { amm: [], clmm: [] }; }
 export function peekMeteoraBalancedPools(): PoolsPayload { return metbalCache.data || { amm: [], clmm: [] }; }
 
+export async function getSaberPoolsCached(force = false): Promise<PoolsPayload> {
+  const ttlMs = Number(((CONFIG as any)?.saber?.cacheTtlMs) || 300_000);
+  const minForceGap = Math.max(1000, Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000));
+  (getSaberPoolsCached as any).__lastForceAt = (getSaberPoolsCached as any).__lastForceAt || 0;
+  const now = Date.now();
+  if (!force) {
+    if (saberCache.data && now - saberCache.ts < ttlMs) return saberCache.data;
+    return saberCache.data || { amm: [], clmm: [] };
+  }
+  if (force) {
+    const last = (getSaberPoolsCached as any).__lastForceAt as number;
+    if (now - last < minForceGap && saberCache.data) return saberCache.data as any;
+    (getSaberPoolsCached as any).__lastForceAt = now;
+  }
+  if (saberCache.inflight) return saberCache.inflight;
+  saberCache.inflight = (async () => {
+    try {
+      const t0 = Date.now();
+      const raw = await fetchSaberRegistryImpl();
+      const norm = await normalizeSaberRegistryImpl(raw);
+      const prev = saberCache.data;
+      saberCache.data = norm; saberCache.ts = Date.now();
+      poolsMetrics.saber.fetches = (poolsMetrics.saber.fetches || 0) + 1;
+      poolsMetrics.saber.lastMs = Date.now() - t0;
+      poolsMetrics.saber.lastAmm = (norm.amm || []).length;
+      try {
+        const d = diffNormalizedPools(prev || { amm: [], clmm: [] }, norm);
+        emit('pools-update', { source: 'saber', amm: (norm.amm || []).length, clmm: 0, ts: Date.now() });
+        emit('pool-updates', { source: 'saber', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample: { amm: d.amm.slice(0, 50), clmm: [] }, ts: Date.now() });
+      } catch {}
+      return norm;
+    } finally {
+      saberCache.inflight = undefined;
+    }
+  })();
+  return saberCache.inflight;
+}
+
+export async function getMeteoraBalancedPoolsCached(force = false): Promise<PoolsPayload> {
+  const ttlMs = Number(((CONFIG as any)?.meteoraBalanced?.cacheTtlMs) || 300_000);
+  const minForceGap = Math.max(1000, Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000));
+  (getMeteoraBalancedPoolsCached as any).__lastForceAt = (getMeteoraBalancedPoolsCached as any).__lastForceAt || 0;
+  const now = Date.now();
+  if (!force) {
+    if (metbalCache.data && now - metbalCache.ts < ttlMs) return metbalCache.data;
+    return metbalCache.data || { amm: [], clmm: [] };
+  }
+  if (force) {
+    const last = (getMeteoraBalancedPoolsCached as any).__lastForceAt as number;
+    if (now - last < minForceGap && metbalCache.data) return metbalCache.data as any;
+    (getMeteoraBalancedPoolsCached as any).__lastForceAt = now;
+  }
+  if (metbalCache.inflight) return metbalCache.inflight;
+  metbalCache.inflight = (async () => {
+    try {
+      const t0 = Date.now();
+      const raw = await fetchMeteoraBalancedHttpImpl();
+      const norm = await normalizeMeteoraBalancedHttpImpl(raw);
+      const prev = metbalCache.data;
+      metbalCache.data = norm; metbalCache.ts = Date.now();
+      poolsMetrics.meteora_balanced.fetches = (poolsMetrics.meteora_balanced.fetches || 0) + 1;
+      poolsMetrics.meteora_balanced.lastMs = Date.now() - t0;
+      poolsMetrics.meteora_balanced.lastAmm = (norm.amm || []).length;
+      try {
+        const d = diffNormalizedPools(prev || { amm: [], clmm: [] }, norm);
+        emit('pools-update', { source: 'meteora_balanced', amm: (norm.amm || []).length, clmm: 0, ts: Date.now() });
+        emit('pool-updates', { source: 'meteora_balanced', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample: { amm: d.amm.slice(0, 50), clmm: [] }, ts: Date.now() });
+      } catch {}
+      return norm;
+    } finally {
+      metbalCache.inflight = undefined;
+    }
+  })();
+  return metbalCache.inflight;
+}
+
 export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPayload> {
   const ttlMs = Number(CONFIG.raydium?.cacheTtlMs || 300_000);
   const minForceGap = Math.max(1000, Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000));
