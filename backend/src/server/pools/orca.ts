@@ -12,7 +12,7 @@ export async function fetchOrcaHttp(): Promise<any> {
   const retries = CONFIG.orca?.maxHttpRetries ?? 2;
   const backoffMs = CONFIG.orca?.httpBackoffMs ?? 500;
   const maxPages = CONFIG.orca?.maxPages ?? 5;
-  const size = Number(CONFIG.orca?.pageSize ?? CONFIG.orca?.size ?? 500);
+  const size = Number(CONFIG.orca?.pageSize ?? 500);
   const params: Record<string, string> = {};
   if (Number.isFinite(size as any) && size > 0) params.size = String(size);
   // Optional TVL/liquidity sorting & filters (only include if configured)

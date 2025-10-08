@@ -9,7 +9,7 @@ import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpL
 export async function fetchMeteoraHttp(): Promise<any> {
   const METEORA_RAW_PATH = joinPath(CONFIG.cacheDir, 'meteora-raw-sample.json');
   try {
-    const base = (CONFIG as any)?.meteora?.apiUrl || 'https://dlmm-api.meteora.ag/v1/pairs';
+    const base = (CONFIG as any)?.meteora?.apiUrl || 'https://dlmm-api.meteora.ag/pair/all_with_pagination';
     const size = Number(((CONFIG as any)?.meteora?.pageSize) || 200);
     const retries = Number(((CONFIG as any)?.meteora?.maxHttpRetries) || 2);
     const backoffMs = Number(((CONFIG as any)?.meteora?.httpBackoffMs) || 500);

@@ -24,8 +24,8 @@ export async function fetchRaydiumPoolsRaw(): Promise<any> {
       const listModeDisabled = (CONFIG.raydium as any)?.enableApiFetchByMints === true;
       if (!listModeDisabled) {
         const baseUrl = 'https://api-v3.raydium.io/pools/info';
-        const pageSize = Math.max(20, Number((CONFIG.raydium as any)?.httpPageSize || 50));
-        const maxPages = Math.max(1, Number((CONFIG as any)?.raydium?.httpMaxPagesGlobal || 10));
+        const pageSize = Math.max(20, Number((CONFIG as any)?.raydium?.pageSize || (CONFIG as any)?.raydium?.httpPageSize || 50));
+        const maxPages = Math.max(1, Number((CONFIG as any)?.raydium?.maxPages || (CONFIG as any)?.raydium?.httpMaxPagesGlobal || 10));
         const collected: any[] = [];
         let page = 1;
         for (let i = 0; i < maxPages; i++) {
@@ -102,19 +102,21 @@ export async function fetchRaydiumPoolsRaw(): Promise<any> {
     rayProbeOffset = (start + limit) % Math.max(uniqAll.length, 1);
 
     const baseUrl = 'https://api-v3.raydium.io/pools/info/mint';
-    const pageSize = Math.max(20, Number((CONFIG.raydium as any)?.httpPageSize || 50));
-    const maxPagesPerMint = Math.max(1, Number((CONFIG.raydium as any)?.httpMaxPagesPerMint || 2));
-    const concurrency = Math.max(1, Math.min(3, Number(CONFIG.raydium?.sdkConcurrency || 8)));
+    const pageSize = Math.max(20, Number(((CONFIG as any)?.raydium?.pageSize) || (CONFIG.raydium as any)?.httpPageSize || 50));
+    const maxPagesGlobal = Math.max(1, Number(((CONFIG as any)?.raydium?.maxPages) || 10));
+    const concurrency = Math.max(1, Math.min(3, Number(((CONFIG as any)?.raydium?.concurrency) || (CONFIG.raydium as any)?.sdkConcurrency || 8)));
+    const maxRetries = Math.max(0, Number(((CONFIG as any)?.raydium?.maxHttpRetries) || 2));
+    const backoffMs = Math.max(50, Number(((CONFIG as any)?.raydium?.httpBackoffMs) || 300));
 
     const collected: any[] = [];
     const queue: Array<() => Promise<void>> = [];
+    let globalPagesFetched = 0;
 
     for (const mint of uniq) {
       queue.push(async () => {
         let page = 1;
         let hasNext = true;
-        let pagesFetched = 0;
-        while (hasNext && pagesFetched < maxPagesPerMint) {
+        while (hasNext && globalPagesFetched < maxPagesGlobal) {
           try {
             if ((CONFIG as any)?.poolsMetrics?.raydium?.backoffMs > 0) await sleep((CONFIG as any).poolsMetrics.raydium.backoffMs); else await sleep(150 + Math.floor(Math.random() * 150));
             const qs = new URLSearchParams({
@@ -128,10 +130,22 @@ export async function fetchRaydiumPoolsRaw(): Promise<any> {
             const url = `${baseUrl}?${qs.toString()}`;
             const started = Date.now();
             try { logger.info('raydium.http request', { mint, page, pageSize, cat: 'raydium' }); } catch {}
-            const res = await fetchFn(url, { headers: { accept: 'application/json' } });
+            // retry loop
+            let res: any = null; let attempt = 0;
+            for (; attempt <= maxRetries; attempt++) {
+              res = await fetchFn(url, { headers: { accept: 'application/json' } });
+              if (res?.status === 429) {
+                try { emit('log', { level: 'warn', message: 'arb:429 source=raydium kind=http surface=pools.info', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+                try { logger.warn('raydium.http 429', { mint, page, cat: 'raydium' }); } catch {}
+                await sleep(backoffMs * (attempt + 1));
+                continue;
+              }
+              if (!res?.ok) {
+                if (attempt < maxRetries) { await sleep(backoffMs * (attempt + 1)); continue; }
+              }
+              break;
+            }
             if (res?.status === 429) {
-              try { emit('log', { level: 'warn', message: 'arb:429 source=raydium kind=http surface=pools.info', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
-              try { logger.warn('raydium.http 429', { mint, page, cat: 'raydium' }); } catch {}
               continue;
             }
             if (!res?.ok) {
@@ -144,7 +158,7 @@ export async function fetchRaydiumPoolsRaw(): Promise<any> {
             if (arr.length) collected.push(...arr);
             hasNext = !!json?.data?.hasNextPage;
             page += 1;
-            pagesFetched += 1;
+            globalPagesFetched += 1;
             try { logger.info('raydium.http page ok', { mint, page: page - 1, ms: Date.now() - started, count: arr.length, next: !!hasNext, cat: 'raydium' }); } catch {}
           } catch (e: any) {
             const msg = String(e?.message || e);

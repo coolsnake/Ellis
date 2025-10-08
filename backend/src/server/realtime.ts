@@ -60,6 +60,9 @@ export async function notifyArbServiceRefresh(): Promise<void> {
 type ArbJob = { kind: 'snapshot' | 'diff'; payload: any; resolve: () => void; reject: (e: any) => void };
 let arbQueue: ArbJob[] = [];
 let arbInFlight = false;
+let lastRebaseAt = 0;
+let pushSuccess = 0;
+let pushFailed = 0;
 
 async function fetchArbMetrics(): Promise<{ last_detection_ms: number }> {
   try {
@@ -83,28 +86,55 @@ async function processArbQueue(): Promise<void> {
       const job = arbQueue.shift()!;
       const host = ((globalThis as any)?.process?.env?.ARB_SERVICE_URL) || 'http://127.0.0.1:4010';
       const before = await fetchArbMetrics();
-      try {
-        if (job.kind === 'snapshot') {
+      // Retry with exponential backoff
+      const auth = String(((globalThis as any)?.process?.env?.ARB_SHARED_SECRET) || '');
+      const headers: any = { 'content-type': 'application/json' };
+      if (auth) headers['authorization'] = `Bearer ${auth}`;
+      const url = job.kind === 'snapshot' ? `${host}/arb/graph/snapshot` : `${host}/arb/graph/update`;
+      const body = job.kind === 'snapshot' ? JSON.stringify({ graph: job.payload }) : JSON.stringify(job.payload);
+      let attempt = 0;
+      const maxAttempts = 5;
+      let sent = false;
+      while (attempt < maxAttempts && !sent) {
+        try {
           // eslint-disable-next-line no-undef
-          await fetch(`${host}/arb/graph/snapshot`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ graph: job.payload }) });
-        } else {
-          // eslint-disable-next-line no-undef
-          await fetch(`${host}/arb/graph/update`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(job.payload) });
+          const r = await fetch(url, { method: 'POST', headers, body });
+          if (!r || !r.ok) throw new Error(`status ${r && (r as any).status}`);
+          sent = true;
+          break;
+        } catch (e: any) {
+          attempt += 1;
+          const wait = Math.min(2000 * Math.pow(2, attempt - 1), 15000);
+          try { logger.warn('arb.push retry', { kind: job.kind, attempt, wait_ms: wait, error: String(e?.message || e) }); } catch {}
+          await new Promise((r) => setTimeout(r, wait));
         }
-      } catch (e: any) {
-        try { logger.warn('arb.push failed', { kind: job.kind, error: String(e?.message || e) }); } catch {}
       }
-      try { await notifyArbServiceRefresh(); } catch {}
-      // Wait for detection loop to complete (last_detection_ms to increase)
+      if (!sent) {
+        try { logger.error('arb.push giveup', { kind: job.kind, attempts: attempt }); } catch {}
+      }
+      // Ack by polling /arb/graph/version until target version observed or timeout
+      const wantVersion: number = Number((job.kind === 'snapshot' ? job.payload?.version : job.payload?.version) || 0);
       const start = Date.now();
-      let observed = before.last_detection_ms;
       const timeoutMs = 12_000;
+      let acked = false;
       while (Date.now() - start < timeoutMs) {
+        try {
+          // eslint-disable-next-line no-undef
+          const ac = new AbortController();
+          const t = setTimeout(() => ac.abort('timeout'), 2000);
+          const r = await fetch(`${host}/arb/graph/version`, { headers: { accept: 'application/json' }, signal: ac.signal }).finally(() => clearTimeout(t));
+          if (r?.ok) {
+            const j: any = await r.json().catch(() => ({}));
+            const cur = Number(j?.version || 0);
+            if (wantVersion > 0 && cur >= wantVersion) { acked = true; break; }
+          }
+        } catch {}
         await new Promise((r) => setTimeout(r, 250));
-        const cur = await fetchArbMetrics();
-        if (cur.last_detection_ms > observed) { observed = cur.last_detection_ms; break; }
       }
-      try { logger.info('arb.push ack', { kind: job.kind, waited_ms: Date.now() - start }); } catch {}
+      try {
+        if (acked) pushSuccess += 1; else pushFailed += 1;
+        logger.info('arb.push ack', { kind: job.kind, acked, waited_ms: Date.now() - start, wantVersion, queue_depth: arbQueue.length, push_success: pushSuccess, push_failed: pushFailed });
+      } catch {}
       job.resolve();
       // If a snapshot was pushed, it supersedes any pending diffs built from older state; drop consecutive diffs until next rebuild
       if (job.kind === 'snapshot' && arbQueue.length) {
@@ -134,6 +164,8 @@ export async function pushArbGraphDiff(diff: any): Promise<void> {
     processArbQueue().catch(() => {});
   });
 }
+
+// Optional: basic retry with backoff for failed pushes is handled implicitly by queue re-enqueue if needed in future
 
 // Lightweight readiness probe for arb-rs backend mode
 export async function checkArbServiceReady(timeoutMs = 4000): Promise<boolean> {

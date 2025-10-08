@@ -124,8 +124,9 @@ const server = http.createServer(app);
 // Some TS environments model the Socket.IO constructor as zero-arg; attach explicitly to the HTTP server.
 const io: any = new (SocketIOClass as any)();
 (io as any).attach(server, {
-	path: (CONFIG as any).socketIoPath || '/socket.io',
-	cors: { origin: corsOrigin === '*' ? true : corsOrigin }
+    path: (CONFIG as any).socketIoPath || '/socket.io',
+    cors: { origin: corsOrigin === '*' ? true : corsOrigin },
+    perMessageDeflate: true
 });
 
 // Optional Basic Auth for Socket.IO (works when browser sends Authorization, e.g., via Nginx Basic Auth)
@@ -298,6 +299,19 @@ setInterval(() => {
     cooldownUntilMs: systemStatus.cooldownUntilMs,
     botName: systemStatus.botName,
   });
+
+// On-demand snapshot over socket for gap recovery
+try {
+  io.on('connection', (socket: any) => {
+    socket.on('graph:request-snapshot', async () => {
+      try {
+        const { getGraphSnapshot } = await import('./graph.js');
+        const snap = await getGraphSnapshot(true);
+        socket.emit('graph-snapshot', snap);
+      } catch {}
+    });
+  });
+} catch {}
 }, 1000);
 
 // Periodic heartbeat log to reassure the user the program is running

@@ -217,7 +217,15 @@ export const CONFIG = {
     // Cache & SDK behavior
     // Keep cache TTL configurable; timers use unified poolsRefreshMs by default
     cacheTtlMs: Number(process.env.RAYDIUM_CACHE_TTL_MS || 60_000),
+    // Unified HTTP concurrency (alias legacy sdkConcurrency)
+    concurrency: Number(process.env.RAYDIUM_HTTP_CONCURRENCY || process.env.RAYDIUM_SDK_CONCURRENCY || 8),
+    // Legacy alias kept for backward compatibility (not used by new code paths)
     sdkConcurrency: Number(process.env.RAYDIUM_SDK_CONCURRENCY || 8),
+    // Unified pagination & retry controls (with legacy env aliases)
+    pageSize: Number(process.env.RAYDIUM_HTTP_PAGE_SIZE || 50),
+    maxPages: Number(process.env.RAYDIUM_HTTP_MAX_PAGES || process.env.RAYDIUM_HTTP_MAX_PAGES_GLOBAL || 10),
+    maxHttpRetries: Number(process.env.RAYDIUM_HTTP_MAX_RETRIES || 2),
+    httpBackoffMs: Number(process.env.RAYDIUM_HTTP_BACKOFF_MS || 300),
     sdkProbeMintsLimit: Number(process.env.RAYDIUM_SDK_PROBE_MINTS_LIMIT || 200),
     sdkClmmPageSize: Number(process.env.RAYDIUM_SDK_CLMM_PAGE_SIZE || 5000),
     // Make token-universe filtering opt-in (default false)

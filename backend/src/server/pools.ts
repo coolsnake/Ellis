@@ -103,19 +103,21 @@ async function fetchRaydiumPoolsRaw(): Promise<any> {
     rayProbeOffset = (start + limit) % Math.max(uniqAll.length, 1);
 
     const baseUrl = 'https://api-v3.raydium.io/pools/info/mint';
-    const pageSize = Math.max(20, Number((CONFIG.raydium as any)?.httpPageSize || 50));
-    const maxPagesPerMint = Math.max(1, Number((CONFIG.raydium as any)?.httpMaxPagesPerMint || 2));
-    const concurrency = Math.max(1, Math.min(3, Number(CONFIG.raydium?.sdkConcurrency || 8)));
+    const pageSize = Math.max(20, Number(((CONFIG as any)?.raydium?.pageSize) || (CONFIG.raydium as any)?.httpPageSize || 50));
+    const maxPagesGlobal = Math.max(1, Number(((CONFIG as any)?.raydium?.maxPages) || 10));
+    const concurrency = Math.max(1, Math.min(3, Number(((CONFIG as any)?.raydium?.concurrency) || CONFIG.raydium?.sdkConcurrency || 8)));
+    const maxRetries = Math.max(0, Number(((CONFIG as any)?.raydium?.maxHttpRetries) || 2));
+    const backoffMs = Math.max(50, Number(((CONFIG as any)?.raydium?.httpBackoffMs) || 300));
 
     const collected: any[] = [];
     const queue: Array<() => Promise<void>> = [];
+    let globalPagesFetched = 0;
 
     for (const mint of uniq) {
       queue.push(async () => {
         let page = 1;
         let hasNext = true;
-        let pagesFetched = 0;
-        while (hasNext && pagesFetched < maxPagesPerMint) {
+        while (hasNext && globalPagesFetched < maxPagesGlobal) {
           try {
             if (poolsMetrics.raydium.backoffMs > 0) await sleep(poolsMetrics.raydium.backoffMs); else await sleep(150 + Math.floor(Math.random() * 150));
             const qs = new URLSearchParams({
@@ -129,26 +131,35 @@ async function fetchRaydiumPoolsRaw(): Promise<any> {
             const url = `${baseUrl}?${qs.toString()}`;
             const started = Date.now();
             const cid = httpLogStart({ source: 'raydium', url, extra: { mint, page, pageSize } });
-            const res = await fetchFn(url, { headers: { accept: 'application/json' } });
-            if (res?.status === 429) {
-              poolsMetrics.raydium.http429++;
-              poolsMetrics.raydium.backoffMs = Math.min(5000, Math.max(1500, poolsMetrics.raydium.backoffMs * 2 || 1500));
-              try { emit('log', { level: 'warn', message: 'arb:429 source=raydium kind=http surface=pools.info', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
-              httpLog429({ source: 'raydium', url, cid });
-              // Backoff then continue to next loop iteration
-              continue;
-            }
-            if (!res?.ok) {
-              const txt = await res?.text?.();
-              httpLogNonOk({ source: 'raydium', url, cid, status: res?.status || 0, bodySample: (txt || '').slice(0, 200) });
+            let res: any = null; let attempt = 0;
+            for (; attempt <= maxRetries; attempt++) {
+              res = await fetchFn(url, { headers: { accept: 'application/json' } });
+              if (res?.status === 429) {
+                poolsMetrics.raydium.http429++;
+                poolsMetrics.raydium.backoffMs = Math.min(5000, Math.max(1500, poolsMetrics.raydium.backoffMs * 2 || 1500));
+                try { emit('log', { level: 'warn', message: 'arb:429 source=raydium kind=http surface=pools.info', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+                httpLog429({ source: 'raydium', url, cid });
+                await sleep(backoffMs * (attempt + 1));
+                continue;
+              }
+              if (!res?.ok) {
+                const txt = await res?.text?.();
+                httpLogNonOk({ source: 'raydium', url, cid, status: res?.status || 0, bodySample: (txt || '').slice(0, 200) });
+                if (attempt < maxRetries) { await sleep(backoffMs * (attempt + 1)); continue; }
+                break;
+              }
               break;
             }
+            if (res?.status === 429) {
+              continue;
+            }
+            if (!res?.ok) { break; }
             const json = await res.json().catch(() => null);
             const arr = Array.isArray(json?.data?.data) ? json.data.data : [];
             if (arr.length) collected.push(...arr);
             hasNext = !!json?.data?.hasNextPage;
             page += 1;
-            pagesFetched += 1;
+            globalPagesFetched += 1;
             httpLogResponse({ source: 'raydium', url, cid, status: res.status, ms: Date.now() - started, count: arr.length });
           } catch (e: any) {
             const msg = String(e?.message || e);

@@ -57,6 +57,9 @@ export async function rebuildGraphNow(io?: SocketIOServer): Promise<void> {
         try { await pushArbGraphSnapshot(next); } catch {}
         diffSinceRebase = 0; lastRebaseMs = nowMs;
         try { emit('log', { level: 'info', message: `graph:push snapshot v=${next.version} nodes=${next.nodes.length} edges=${next.edges.length}`, timestamp: new Date().toISOString(), context: { cat: 'graph', code: LogCode.GRAPH_PUSH_SNAPSHOT } }); } catch {}
+        // Also emit snapshot to clients to ensure they rebase in lockstep
+        try { if (io) io.emit('graph-snapshot', next); else emit('graph-snapshot', next); } catch {}
+        try { logger.info('graph.rebase', { at_ms: lastRebaseMs, version: next.version, nodes: next.nodes.length, edges: next.edges.length }); } catch {}
       } else {
         try { await pushArbGraphDiff(diff); } catch {}
         diffSinceRebase += (diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length);

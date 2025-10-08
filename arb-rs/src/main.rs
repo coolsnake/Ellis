@@ -1127,15 +1127,12 @@ struct GraphDiffReq {
     removedEdgeIds: Option<Vec<String>>,
 }
 
-async fn arb_graph_snapshot(State(state): State<Arc<RwLock<AppState>>>, Json(req): Json<GraphSnapshotReq>) -> Json<serde_json::Value> {
-    // AuthN: optional shared-secret bearer token
-    // Note: We validate in a thin wrapper below; keep handler signature unchanged for compatibility
-    Json(handle_graph_snapshot(state, req, None).await)
+async fn arb_graph_snapshot(State(state): State<Arc<RwLock<AppState>>>, headers: HeaderMap, Json(req): Json<GraphSnapshotReq>) -> Json<serde_json::Value> {
+    if !auth_ok(Some(&headers)) { return Json(serde_json::json!({"error":"unauthorized"})); }
+    Json(handle_graph_snapshot(state, req).await)
 }
 
-async fn handle_graph_snapshot(state: Arc<RwLock<AppState>>, req: GraphSnapshotReq, auth: Option<HeaderMap>) -> serde_json::Value {
-    // Validate secret when configured
-    if !auth_ok(auth.as_ref()) { return serde_json::json!({"error":"unauthorized"}); }
+async fn handle_graph_snapshot(state: Arc<RwLock<AppState>>, req: GraphSnapshotReq) -> serde_json::Value {
     let mut s = state.write().await;
     let g = req.graph;
     tracing::info!(version = ?g.version, ts = ?g.timestamp, nodes = g.nodes.len(), edges = g.edges.len(), "arb.graph.snapshot: received");
@@ -1179,7 +1176,8 @@ async fn handle_graph_snapshot(state: Arc<RwLock<AppState>>, req: GraphSnapshotR
     serde_json::json!({"ok": true, "nodes": nodes, "edges": edges})
 }
 
-async fn arb_graph_update(State(state): State<Arc<RwLock<AppState>>>, Json(req): Json<GraphDiffReq>) -> Json<serde_json::Value> {
+async fn arb_graph_update(State(state): State<Arc<RwLock<AppState>>>, headers: HeaderMap, Json(req): Json<GraphDiffReq>) -> Json<serde_json::Value> {
+    if !auth_ok(Some(&headers)) { return Json(serde_json::json!({"error":"unauthorized"})); }
     // Buffer the diff to apply between loop iterations to avoid contention
     let mut s = state.write().await;
     if let Some(v) = req.version { if v <= s.last_graph_version { s.metrics.graph_updates_skipped = s.metrics.graph_updates_skipped.saturating_add(1); return Json(serde_json::json!({"ok": true, "skipped": true })); } }
@@ -1361,7 +1359,8 @@ async fn metrics_json(State(state): State<Arc<RwLock<AppState>>>) -> Json<Metric
 }
 
 async fn metrics_prom(State(state): State<Arc<RwLock<AppState>>>) -> String {
-    let m = { state.read().await.metrics.clone() };
+    let s = state.read().await;
+    let m = &s.metrics;
     format!(
         concat!(
             "arb_detection_cycles_total {}\n",
@@ -1374,7 +1373,9 @@ async fn metrics_prom(State(state): State<Arc<RwLock<AppState>>>) -> String {
             "arb_ws_skipped_nochange_total {}\n",
             "arb_max_profit_bps {}\n",
             "arb_avg_profit_bps {}\n",
-            "arb_diff_to_detect_ms {}\n"
+            "arb_diff_to_detect_ms {}\n",
+            "arb_graph_last_version {}\n",
+            "arb_graph_last_timestamp {}\n"
         ),
         m.detection_cycles_total,
         m.opportunities_active,
@@ -1386,7 +1387,9 @@ async fn metrics_prom(State(state): State<Arc<RwLock<AppState>>>) -> String {
         m.ws_skipped_nochange_total,
         m.max_profit_bps,
         m.avg_profit_bps,
-        m.diff_to_detect_ms
+        m.diff_to_detect_ms,
+        s.last_graph_version,
+        s.last_graph_ts
     )
 }
 
@@ -1411,5 +1414,20 @@ async fn arb_graph_version(State(state): State<Arc<RwLock<AppState>>>) -> Json<G
 }
 
 // trigger_refresh removed with local mode deprecation
+
+fn auth_ok(headers: Option<&HeaderMap>) -> bool {
+    let expect = std::env::var("ARB_SHARED_SECRET").ok().unwrap_or_default();
+    if expect.is_empty() { return true; }
+    if let Some(hm) = headers {
+        if let Some(val) = hm.get("authorization") {
+            if let Ok(s) = val.to_str() {
+                let token = s.trim();
+                let want = format!("Bearer {}", expect);
+                return token == want;
+            }
+        }
+    }
+    false
+}
 
 

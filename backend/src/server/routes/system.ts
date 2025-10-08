@@ -54,8 +54,8 @@ export function createSystemRouter(_io: SocketIOServer): Router {
         rpcUrl?: string;
         system?: any;
         fees?: any;
-        raydium?: { enableOnChain?: boolean; ammV4Program?: string; clmmProgram?: string; cacheTtlMs?: number; sdkConcurrency?: number; sdkProbeMintsLimit?: number; sdkClmmPageSize?: number; filterToOrcaTokens?: boolean };
-        orca?: { mode?: string; apiUrl?: string; programId?: string; configPubkey?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; pageSize?: number; maxPages?: number; minAmmLiqBase?: number; minClmmLiquidity?: number };
+        raydium?: { enableOnChain?: boolean; ammV4Program?: string; clmmProgram?: string; cacheTtlMs?: number; concurrency?: number; pageSize?: number; maxPages?: number; maxHttpRetries?: number; httpBackoffMs?: number; minAmmLiqBase?: number; minClmmLiquidity?: number };
+        orca?: { apiUrl?: string; programId?: string; configPubkey?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; pageSize?: number; maxPages?: number; minAmmLiqBase?: number; minClmmLiquidity?: number };
         sanity?: { enabled?: boolean; maxPriceDeviation?: number; feeMin?: number; feeMax?: number; writeSamples?: boolean; sampleRate?: number };
       };
       if (rpcUrl) CONFIG.rpcUrl = rpcUrl;

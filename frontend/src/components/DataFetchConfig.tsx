@@ -39,7 +39,6 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     sanity_writeSamples: false,
     sanity_sampleRate: 0.005,
     // Orca
-    orca_mode: 'http',
     orca_cacheTtlMs: 300000,
     orca_maxHttpRetries: 2,
     orca_httpBackoffMs: 500,
@@ -48,7 +47,6 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     orca_minAmmLiqBase: 0,
     orca_minClmmLiquidity: 0,
     // Meteora (DLMM)
-    meteora_mode: 'http',
     meteora_apiUrl: 'https://dlmm-api.meteora.ag/pair/all_with_pagination',
     meteora_cacheTtlMs: 300000,
     meteora_maxHttpRetries: 2,
@@ -88,13 +86,15 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             minDexOverlap: Number(j?.system?.minDexOverlap ?? prev.minDexOverlap),
             universePrefilterOrca: !!j?.system?.universePrefilterOrca,
             jupiterApiUrl: j?.system?.jupiterApiUrl || prev.jupiterApiUrl,
-				ray_cacheTtlMs: Number(j?.raydium?.cacheTtlMs ?? prev.ray_cacheTtlMs),
-				ray_httpConcurrency: Number(j?.raydium?.sdkConcurrency ?? prev.ray_httpConcurrency),
-				ray_httpPageSize: Number(j?.raydium?.httpPageSize ?? prev.ray_httpPageSize),
-				ray_httpMaxPagesPerMint: Number(j?.raydium?.httpMaxPagesPerMint ?? prev.ray_httpMaxPagesPerMint),
+			ray_cacheTtlMs: Number(j?.raydium?.cacheTtlMs ?? prev.ray_cacheTtlMs),
+			ray_httpConcurrency: Number((j?.raydium?.concurrency ?? j?.raydium?.sdkConcurrency) ?? prev.ray_httpConcurrency),
+			ray_pageSize: Number((j?.raydium?.pageSize ?? j?.raydium?.httpPageSize) ?? (prev.ray_pageSize ?? prev.ray_httpPageSize)),
+			ray_maxPages: Number((j?.raydium?.maxPages ?? j?.raydium?.httpMaxPagesPerMint) ?? (prev.ray_maxPages ?? 0)),
+            ray_maxHttpRetries: Number(j?.raydium?.maxHttpRetries ?? 2),
+            ray_httpBackoffMs: Number(j?.raydium?.httpBackoffMs ?? 300),
             ray_minAmmLiqBase: Number(j?.raydium?.minAmmLiqBase ?? prev.ray_minAmmLiqBase),
             ray_minClmmLiquidity: Number(j?.raydium?.minClmmLiquidity ?? prev.ray_minClmmLiquidity),
-            orca_mode: j?.orca?.mode || prev.orca_mode,
+            // mode removed from UI
             orca_cacheTtlMs: Number(j?.orca?.cacheTtlMs ?? prev.orca_cacheTtlMs),
             orca_maxHttpRetries: Number(j?.orca?.maxHttpRetries ?? prev.orca_maxHttpRetries),
             orca_httpBackoffMs: Number(j?.orca?.httpBackoffMs ?? prev.orca_httpBackoffMs),
@@ -103,7 +103,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             orca_minAmmLiqBase: Number(j?.orca?.minAmmLiqBase ?? prev.orca_minAmmLiqBase),
             orca_minClmmLiquidity: Number(j?.orca?.minClmmLiquidity ?? prev.orca_minClmmLiquidity),
             // Meteora
-            meteora_mode: j?.meteora?.mode || prev.meteora_mode,
+            // mode removed from UI
             meteora_apiUrl: j?.meteora?.apiUrl || prev.meteora_apiUrl,
             meteora_cacheTtlMs: Number(j?.meteora?.cacheTtlMs ?? prev.meteora_cacheTtlMs),
             meteora_maxHttpRetries: Number(j?.meteora?.maxHttpRetries ?? prev.meteora_maxHttpRetries),
@@ -149,14 +149,15 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
       },
 			raydium: {
 			cacheTtlMs: Number(cfg.ray_cacheTtlMs),
-			sdkConcurrency: Number(cfg.ray_httpConcurrency),
-			httpPageSize: Number(cfg.ray_httpPageSize),
-			httpMaxPagesPerMint: Number(cfg.ray_httpMaxPagesPerMint),
+			concurrency: Number(cfg.ray_httpConcurrency),
+			pageSize: Number(cfg.ray_pageSize ?? cfg.ray_httpPageSize),
+			maxPages: Number(cfg.ray_maxPages ?? 0),
+			maxHttpRetries: Number(cfg.ray_maxHttpRetries ?? 2),
+			httpBackoffMs: Number(cfg.ray_httpBackoffMs ?? 300),
 			minAmmLiqBase: Number(cfg.ray_minAmmLiqBase),
 			minClmmLiquidity: Number(cfg.ray_minClmmLiquidity),
 		},
       orca: {
-        mode: cfg.orca_mode,
         cacheTtlMs: Number(cfg.orca_cacheTtlMs),
         maxHttpRetries: Number(cfg.orca_maxHttpRetries),
         httpBackoffMs: Number(cfg.orca_httpBackoffMs),
@@ -166,7 +167,6 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         minClmmLiquidity: Number(cfg.orca_minClmmLiquidity),
       },
       meteora: {
-        mode: cfg.meteora_mode,
         apiUrl: cfg.meteora_apiUrl,
         cacheTtlMs: Number(cfg.meteora_cacheTtlMs),
         maxHttpRetries: Number(cfg.meteora_maxHttpRetries),
@@ -289,12 +289,20 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                 <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.ray_httpConcurrency} onChange={(e)=>set('ray_httpConcurrency', Number(e.target.value)||0)} />
               </div>
               <div>
-                <label className="block text-sm mb-1">HTTP Page Size</label>
-                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.ray_httpPageSize} onChange={(e)=>set('ray_httpPageSize', Number(e.target.value)||0)} />
+                <label className="block text-sm mb-1">Page Size</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.ray_pageSize ?? cfg.ray_httpPageSize} onChange={(e)=>set('ray_pageSize', Number(e.target.value)||0)} />
               </div>
               <div>
-                <label className="block text-sm mb-1">Max Pages Per Mint</label>
-                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.ray_httpMaxPagesPerMint} onChange={(e)=>set('ray_httpMaxPagesPerMint', Number(e.target.value)||0)} />
+                <label className="block text-sm mb-1">Max Pages (Global)</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.ray_maxPages ?? 0} onChange={(e)=>set('ray_maxPages', Number(e.target.value)||0)} />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Max HTTP Retries</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.ray_maxHttpRetries ?? 2} onChange={(e)=>set('ray_maxHttpRetries', Number(e.target.value)||0)} />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">HTTP Backoff (ms)</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.ray_httpBackoffMs ?? 300} onChange={(e)=>set('ray_httpBackoffMs', Number(e.target.value)||0)} />
               </div>
               <div>
                 <label className="block text-sm mb-1">Min AMM TVL (USD)</label>
@@ -340,14 +348,6 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             <h3 className="text-lg font-semibold mb-3">Orca</h3>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
-                <label className="block text-sm mb-1">Mode</label>
-                <select className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.orca_mode} onChange={(e)=>set('orca_mode', e.target.value)}>
-                  <option value="http">http</option>
-                  <option value="v4">v4</option>
-                  <option value="legacy">legacy</option>
-                </select>
-              </div>
-              <div>
                 <label className="block text-sm mb-1">Cache TTL (ms)</label>
                 <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.orca_cacheTtlMs} onChange={(e)=>set('orca_cacheTtlMs', Number(e.target.value)||0)} />
               </div>
@@ -381,13 +381,6 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
           <div className="bg-gray-700 rounded p-4">
             <h3 className="text-lg font-semibold mb-3">Meteora (DLMM)</h3>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <label className="block text-sm mb-1">Mode</label>
-                <select className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.meteora_mode} onChange={(e)=>set('meteora_mode', e.target.value)}>
-                  <option value="http">http</option>
-                  <option value="sdk">sdk</option>
-                </select>
-              </div>
               <div className="md:col-span-2">
                 <label className="block text-sm mb-1">API URL</label>
                 <input type="url" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.meteora_apiUrl} onChange={(e)=>set('meteora_apiUrl', e.target.value)} placeholder="https://dlmm-api.meteora.ag/v1/pairs" />

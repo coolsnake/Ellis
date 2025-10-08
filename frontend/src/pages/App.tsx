@@ -25,68 +25,38 @@ import { CollapsibleSection } from '../components/CollapsibleSection';
 import { LogWindow } from '../components/LogWindow';
 import { LOG_WINDOWS, WINDOW_ORDER, catToWindowId } from '../utils/logs';
 import { setLogLevel as setFrontendLogLevel } from '../utils/logger';
+import { maskRpcUrl } from '../utils/mask';
+import { useSystem } from '../app/contexts/system';
+import { useWallet } from '../app/contexts/wallet';
+import { useLogs } from '../app/contexts/logs';
+import { useDrift } from '../app/contexts/drift';
+import { useArb } from '../app/contexts/arb';
 // Login page is now routed at /login; main app assumes authenticated state
 
 type LogEvent = { level: string; message: string; timestamp: string; context?: Record<string, unknown>; cat?: string; subcat?: string; code?: string; cid?: string; span?: 'start' | 'end'; muted?: boolean };
 
-// Mask sensitive tokens/keys that may appear in RPC URLs
-const maskRpcUrl = (url?: string) => {
-  if (!url || typeof url !== 'string') return url as any;
-  const maskValue = (v: string) => (v.length <= 4 ? '****' : `${v.slice(0, 2)}***${v.slice(-2)}`);
-  try {
-    const u = new URL(url);
-    const sensitiveParams = ['api-key', 'api_key', 'apikey', 'key', 'x-api-key', 'token', 'auth', 'access_token', 'apiKey'];
-    for (const p of sensitiveParams) {
-      if (u.searchParams.has(p)) {
-        const v = u.searchParams.get(p);
-        if (v) u.searchParams.set(p, maskValue(v));
-      }
-    }
-    // Mask path segments that look like inline API keys (e.g., /v2/<key>)
-    const segs = u.pathname.split('/').map((seg) => {
-      if (seg.length >= 16 && /^[A-Za-z0-9._-]+$/.test(seg)) return maskValue(seg);
-      return seg;
-    });
-    u.pathname = segs.join('/');
-    return u.toString();
-  } catch {
-    // Fallback: mask common query param patterns in raw strings
-    return url.replace(/(api[-_]?key|x-api-key|token|auth|access_token|apiKey)=([^&]+)/gi, '$1=****');
-  }
-};
+// maskRpcUrl moved to ../utils/mask
 
 export const App: React.FC = () => {
-  const [system, setSystem] = useState<any>({});
-  const [wallet, setWallet] = useState<any>(null);
+  const { system, setSystem } = useSystem();
+  const { wallet, setWallet, walletTokens, setWalletTokens, prices, setPrices } = useWallet();
+  const { logsByWindow, setLogsByWindow } = useLogs();
+  const { status: driftStatus, setStatus: setDriftStatus, subaccounts: driftSubaccounts, setSubaccounts: setDriftSubaccounts, selectedSubId: driftSelectedSubId, setSelectedSubId: setDriftSelectedSubId, subBalances: driftSubBalances, setSubBalances: setDriftSubBalances, spotMarkets: driftSpotMarkets, setSpotMarkets: setDriftSpotMarkets, action: driftAction, setAction: setDriftAction, amount: driftAmount, setAmount: setDriftAmount, spotIndex: driftSpotIndex, setSpotIndex: setDriftSpotIndex } = useDrift();
+  const { arbConfig, setArbConfig, strategies, setStrategies } = useArb();
   const [watchlist, setWatchlist] = useState<any[]>([]);
-  const [strategies, setStrategies] = useState<any[]>([]);
-  const [driftStatus, setDriftStatus] = useState<any>(null);
-  const [driftSubaccounts, setDriftSubaccounts] = useState<any[]>([]);
-  const [driftSelectedSubId, setDriftSelectedSubId] = useState<number>(0);
   const [driftNewSubName, setDriftNewSubName] = useState<string>('');
   const [driftRenameSubName, setDriftRenameSubName] = useState<string>('');
   const [driftOpBusy, setDriftOpBusy] = useState<boolean>(false);
-  const [driftAmount, setDriftAmount] = useState<number>(0);
-  const [driftSpotIndex, setDriftSpotIndex] = useState<number>(0);
-  const [driftSubBalances, setDriftSubBalances] = useState<any[]>([]);
-  const [driftSpotMarkets, setDriftSpotMarkets] = useState<any[]>([]);
-  const [driftAction, setDriftAction] = useState<'deposit' | 'withdraw'>('deposit');
   const [tradeLogs, setTradeLogs] = useState<LogEvent[]>([]);
   const [strategyLogs, setStrategyLogs] = useState<LogEvent[]>([]);
   const [arbLogs, setArbLogs] = useState<LogEvent[]>([]);
   const [apiLogs, setApiLogs] = useState<LogEvent[]>([]);
   const [terminalLogs, setTerminalLogs] = useState<LogEvent[]>([]);
-  const [logsByWindow, setLogsByWindow] = useState<Record<string, LogEvent[]>>(() => {
-    const init: Record<string, LogEvent[]> = {};
-    try { WINDOW_ORDER.forEach((id) => { init[id] = []; }); } catch {}
-    return init;
-  });
   const [positions, setPositions] = useState<any[]>([]);
   const [gridPositionsSummary, setGridPositionsSummary] = useState<Array<{ strategy: string; fromSymbol: string; toSymbol: string; count: number; totalFromToken: number; avgOpenMs: number }>>([]);
   const [activity, setActivity] = useState<{ status: string; trades: any[] }>({ status: 'idle', trades: [] });
   const [activitiesByStrategy, setActivitiesByStrategy] = useState<Record<string, { status: string; trades: any[]; pair?: string; anchor?: number; buyTrigger?: number; sellTrigger?: number; currentPairPrice?: number }>>({});
-  const [prices, setPrices] = useState<Record<string, { usdc: number | null; sol: number | null }>>({});
-  const [walletTokens, setWalletTokens] = useState<any[]>([]);
+  
   const [walletHistory, setWalletHistory] = useState<any[]>([]);
   const [terminalInput, setTerminalInput] = useState('');
   const [showGridConfig, setShowGridConfig] = useState(false);
@@ -109,7 +79,7 @@ export const App: React.FC = () => {
   const socketRef = useRef<Socket | null>(null);
   const lastSystemRef = useRef<number>(Date.now());
   const [isConnected, setIsConnected] = useState<boolean>(false);
-  const [arbConfig, setArbConfig] = useState<any>(null);
+  // arbConfig managed by useArb
   const [authError, setAuthError] = useState<string | null>(null);
   const [creds, setCreds] = useState<{ user: string; pass: string; expiresAt?: number } | null>(() => {
     try {

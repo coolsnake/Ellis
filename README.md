@@ -71,6 +71,7 @@ npm -C backend ci --no-audit --no-fund
   - `STRATEGY_CONFIG_PATH`, `WATCHLIST_PATH`, `TOKENS_PATH`: override config locations
   - `API_MIN_GAP_MS_BASE`, `API_MIN_GAP_MS_MIN`, `API_MIN_GAP_MS_MAX`: rate limiter pacing
   - `MIN_SOL_FOR_FEES`: minimum SOL reserve for fees (default ~0.02)
+  - `ARB_SHARED_SECRET`: shared token for backend→arb-rs graph pushes (Authorization: Bearer <secret>)
 - Frontend:
   - `VITE_API_BASE`: e.g., `http://localhost:3001/api`
   - `VITE_WS_URL`: e.g., `http://localhost:3001`
@@ -601,7 +602,10 @@ User=lockstone
 WorkingDirectory=/opt/lockstone/Lockstone/arb-rs
 Environment=RUST_LOG=info
 Environment=ARB_PORT=4010
+Environment=ARB_HOST=127.0.0.1
 Environment=ARB_CONFIG_PATH=/var/lockstone/config/arb-config.json
+# Optional: require Authorization header from backend pushes
+# Environment=ARB_SHARED_SECRET=<secret>
 ExecStart=/opt/lockstone/Lockstone/arb-rs/target/release/arb-rs
 Restart=always
 RestartSec=5

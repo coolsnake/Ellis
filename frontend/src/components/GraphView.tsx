@@ -38,6 +38,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
   const laidOutRef = useRef(false);
 	const forceLayoutRef = useRef(false);
   const lastVersionRef = useRef<number>(0);
+  const [needsResync, setNeedsResync] = useState(false);
   const [selection, setSelection] = useState<
     | { kind: 'node'; id: string; label?: string; degree?: number; neighbors?: number }
     | { kind: 'edge'; id: string; source: string; target: string; dex: string; fee_bps?: number; liquidity?: number; weight?: number; price_a_per_b?: number; tvl_usd?: number; pool_id?: string; source_account?: string; target_account?: string; combined_edges?: Array<{ dex: string; pool_id?: string; fee_bps?: number; liquidity?: number; price_a_per_b?: number; tvl_usd?: number; pool_kind?: string; direction?: string; pool_liquidity_raw?: number }> }
@@ -448,9 +449,21 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 
   useEffect(() => {
     if (!socket) return;
-		const onDiff = (diff: GraphDiff) => {
+    const onDiff = (diff: GraphDiff) => {
       const cy = cyRef.current; if (!cy) return;
-			snapshotInitializedRef.current = true; // prefer diffs after first reception
+      snapshotInitializedRef.current = true; // prefer diffs after first reception
+      // Gap detection: if incoming diff version is not strictly newer than lastVersion, ignore; if it jumps ahead, request snapshot
+      try {
+        const cur = Number(lastVersionRef.current || 0);
+        const inc = Number(diff?.version || 0);
+        if (inc <= cur) return; // stale/out-of-order
+        if (cur > 0 && inc !== cur + 1) {
+          setNeedsResync(true);
+          try { socket.emit('graph:request-snapshot'); } catch {}
+          return;
+        }
+        lastVersionRef.current = inc;
+      } catch {}
       try { if (typeof diff?.version === 'number') lastVersionRef.current = Math.max(lastVersionRef.current || 0, Number(diff.version)); } catch {}
       const touchedPairs = new Set<string>();
       try {
@@ -528,6 +541,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
       const haveContent = cy.nodes().length > 0;
       if (haveContent && snapshotInitializedRef.current && incomingVer <= (lastVersionRef.current || 0)) return;
       lastVersionRef.current = incomingVer;
+      setNeedsResync(false);
 			cy.elements().remove();
 			cy.add(toElements(snap));
 			// Run initial layout once on the first snapshot when container is sized
@@ -642,6 +656,11 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 						<input type="checkbox" checked={filterKind.CLMM} onChange={(e) => setFilterKind((p) => ({ ...p, CLMM: e.target.checked }))} /> CLMM
 					</label>
             <button className="px-2 py-1 border rounded text-sm" onClick={loadSnapshot} disabled={loading}>Refresh Graph</button>
+            {needsResync ? (
+              <button className="px-2 py-1 border rounded text-sm bg-yellow-600/60" onClick={() => { try { socket?.emit('graph:request-snapshot'); } catch {}; }}>
+                Resync
+              </button>
+            ) : null}
             <button className="px-2 py-1 border rounded text-sm" onClick={refitAndResize}>Refit & Resize</button>
           </div>
 				{error ? <div className="text-red-400 text-xs pointer-events-auto">{error}</div> : null}
