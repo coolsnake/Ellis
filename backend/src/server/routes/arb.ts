@@ -64,7 +64,7 @@ export function createArbRouter(io: SocketIOServer): Router {
       const { getGraphSnapshot } = await import('../graph.js');
       const snap = await getGraphSnapshot(true);
       const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
-      const r = await fetch(`${host}/start`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ graph: snap, ...body }) }).catch(() => null);
+      const r = await fetch(`${host}/arb/start`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ graph: snap, ...body }) }).catch(() => null);
       res.status(r?.status || 503).json(r ? await r.json().catch(() => ({})) : { ok: false });
     } catch (e: any) {
       res.status(503).json({ ok: false, error: String(e?.message || e) });

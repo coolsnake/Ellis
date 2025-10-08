@@ -164,14 +164,8 @@ class RealtimeLogger extends EventEmitter {
     return 'other';
   }
 
-  private isCategoryAllowed(cat: string | undefined): boolean {
-    try {
-      const enabled = (CONFIG as any)?.system?.enabledLogCategories as string[] | undefined;
-      if (Array.isArray(enabled)) {
-        const name = String(cat || 'other').toLowerCase();
-        return enabled.includes(name);
-      }
-    } catch {}
+  private isCategoryAllowed(_cat: string | undefined): boolean {
+    // Do not drop any logs at source based on categories; frontend controls visibility
     return true;
   }
 

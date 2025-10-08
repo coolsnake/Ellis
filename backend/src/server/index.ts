@@ -209,9 +209,6 @@ try {
 logger.on('log', (event: any) => {
   const msg: string = event?.message || '';
   const level = String(event?.level || 'info').toLowerCase();
-  // Only suppress debug in non-debug mode; when system logLevel is debug, forward all
-  const systemLevel = String(((CONFIG as any)?.system?.log?.level || (CONFIG as any)?.system?.logLevel || process.env.LOG_LEVEL || 'info')).toLowerCase();
-  if (level === 'debug' && systemLevel !== 'debug') return;
   // Prefer provided cat/subcat/code; compute cat only if missing
   let cat: string | undefined = (event?.cat || event?.context?.cat);
   if (!cat) {
@@ -242,14 +239,6 @@ logger.on('log', (event: any) => {
   if (!cat && /grid|strategy/i.test(msg)) cat = 'strategy';
   if (!cat && /server|backend|routes registered|listening on/i.test(msg)) cat = 'server';
   const enriched = { ...event, timestamp: ts(), cat: (cat || 'other').toLowerCase() } as any;
-  // Category filtering (legacy): if disabled, drop entirely at backend
-  try {
-    const enabled: string[] | undefined = (CONFIG as any)?.system?.enabledLogCategories;
-    if (Array.isArray(enabled) && enabled.length > 0) {
-      const name = String(enriched.cat || 'other').toLowerCase();
-      if (!enabled.includes(name)) return;
-    }
-  } catch {}
   try { recordSessionLog({ level: String(event?.level || 'info'), message: msg, timestamp: enriched.timestamp, context: event?.context, cat: enriched.cat }); } catch {}
   // simple de-dup: drop identical consecutive messages within 800ms
   const now = Date.now();

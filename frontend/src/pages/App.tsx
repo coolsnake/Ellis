@@ -294,6 +294,7 @@ export const App: React.FC = () => {
       if (evt.muted === true) return; // backend flagged as muted
       const push = (setter: React.Dispatch<React.SetStateAction<LogEvent[]>>) => setter((prev) => [evt, ...prev].slice(0, 500));
       const isApiCat = cat === 'api' || cat === 'jupiter' || cat === 'raydium' || cat === 'orca' || cat === 'meteora';
+      let matched = false;
       // Categorize without duplication
       // User Log: user-facing (terminal)
       if (!isApiCat && (
@@ -303,22 +304,31 @@ export const App: React.FC = () => {
         /strategy (saved|updated|removed)/i.test(msg) || (/\bwatchlist\b|wallet addtoken/i.test(msg) && !/^api\./i.test(msg))
       )) {
         push(setTerminalLogs);
+        matched = true;
       }
       // Trade Log: trade lifecycle (quotes ok to show here if directly tied to a trade attempt)
       if (cat === 'trade' || cat === 'pretrade' || /^pretrade:|^trade:/i.test(msg) || /^PRETRADE\.|^TRADE\./i.test(code)) {
         push(setTradeLogs);
+        matched = true;
       }
       // Strategy Log: strategy computations, Drift, Jupiter strategy fetchers
       if (cat === 'strategy' || cat === 'drift' || /^strategy:/i.test(msg) || /^STRATEGY\.|^DRIFT\./i.test(code)) {
         push(setStrategyLogs);
+        matched = true;
       }
       // Arbitrage Log: arb engine activity, Raydium/Orca pool data fetchers, and opportunity details
       if (cat === 'arb' || cat === 'opportunity' || cat === 'pools' || cat === 'raydium' || cat === 'orca' || cat === 'meteora' || /^arb\b|^pretrade:arb|^trade:arb|^opportunity:/i.test(msg) || /^ARB\.|^GRAPH\.|^POOLS\./i.test(code)) {
         push(setArbLogs);
+        matched = true;
       }
       // API Log: internal/external API requests (exclude pools/arb/strategy-related fetchers)
       if (cat === 'api' || cat === 'jupiter' || /^api:|^jup\./i.test(msg) || /^API\.|^JUP\./i.test(code)) {
         push(setApiLogs);
+        matched = true;
+      }
+      // Fallback: if nothing matched, show in Terminal (User Log)
+      if (!matched) {
+        push(setTerminalLogs);
       }
     });
     socket.on('prices-update', (p) => setPrices(p));
@@ -546,6 +556,11 @@ export const App: React.FC = () => {
           const lvl = (config?.system?.frontendLogLevel || config?.system?.logLevel);
           if (lvl === 'error' || lvl === 'warn' || lvl === 'info' || lvl === 'debug') {
             setFrontendLogLevel(lvl);
+          }
+          // Persist frontend category preferences from System Config
+          const cats = Array.isArray(config?.system?.frontendEnabledLogCategories) ? config.system.frontendEnabledLogCategories : undefined;
+          if (cats) {
+            try { window.localStorage.setItem('frontendEnabledLogCategories', JSON.stringify(cats)); } catch {}
           }
         } catch {}
       } else {

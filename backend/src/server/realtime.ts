@@ -37,38 +37,7 @@ export async function emit(event: string, payload: any) {
         else if (/^api\.request\b/.test(m)) code = 'API.REQUEST';
         else if (/^api\.response\b/.test(m)) code = 'API.RESPONSE';
       }
-      // If backend category filtering is configured, drop disabled categories here as well
-      try {
-        const { CONFIG } = await import('../utils/config.js');
-        // Legacy category allowlist
-        const enabled = (CONFIG as any)?.system?.enabledLogCategories as string[] | undefined;
-        if (Array.isArray(enabled) && enabled.length > 0 && !enabled.includes(cat)) return;
-        // Structured logging rules
-        const logCfg = (CONFIG as any)?.system?.log as any | undefined;
-        if (logCfg) {
-          const lvlOrder: Record<string, number> = { error: 0, warn: 1, info: 2, debug: 3 };
-          const minLevel = String((logCfg.level || 'info')).toLowerCase();
-          if ((lvlOrder[(level||'info').toLowerCase()] ?? 2) > (lvlOrder[minLevel] ?? 2)) return;
-          const catLevels = (logCfg.categories || {}) as Record<string, string>;
-          const keys = Object.keys(catLevels);
-          let effMin: string | undefined;
-          if (keys.length) {
-            let best = -1;
-            for (const k of keys) {
-              const kl = String(k).toLowerCase();
-              if (cat === kl || cat.startsWith(kl + '.')) { if (kl.length > best) { best = kl.length; effMin = String(catLevels[k]).toLowerCase(); } }
-            }
-          }
-          if (effMin && (lvlOrder[(level||'info').toLowerCase()] ?? 2) > (lvlOrder[effMin] ?? 2)) return;
-          const toRegex = (p: string) => new RegExp('^' + String(p||'').replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$', 'i');
-          const enableCodes: string[] = Array.isArray(logCfg.enableCodes) ? logCfg.enableCodes : [];
-          const disableCodes: string[] = Array.isArray(logCfg.disableCodes) ? logCfg.disableCodes : [];
-          if (code && disableCodes.some((p) => toRegex(p).test(code))) return;
-          if (enableCodes.length && code && (lvlOrder[(level||'info').toLowerCase()] ?? 2) > (lvlOrder['warn'] ?? 1)) {
-            if (!enableCodes.some((p) => toRegex(p).test(code))) return;
-          }
-        }
-      } catch {}
+      // Do not drop logs in emitter; let frontend handle visibility based on System Config
       recordSessionLog({ level, message, timestamp, context, cat });
       // Overwrite outgoing payload timestamp and normalized category
       try {
