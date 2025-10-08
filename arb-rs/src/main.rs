@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use petgraph::prelude::NodeIndex;
 
 use axum::{extract::State, routing::{get, post}, Json, Router};
+use axum::http::HeaderMap;
 use axum::extract::ws::{WebSocketUpgrade, Message};
 use axum::response::IntoResponse;
 use serde::Serialize;
@@ -1013,10 +1014,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/events/json", get(events_json))
         .with_state(state);
 
-    let addr: SocketAddr = (
-        [127, 0, 0, 1],
-        std::env::var("ARB_PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(4010),
-    ).into();
+    // Bind host/port configurable via env; default host 127.0.0.1
+    let host = std::env::var("ARB_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+    let ip: std::net::IpAddr = host.parse().unwrap_or_else(|_| std::net::IpAddr::V4(std::net::Ipv4Addr::new(127,0,0,1)));
+    let port: u16 = std::env::var("ARB_PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(4010);
+    let addr: SocketAddr = std::net::SocketAddr::new(ip, port);
     tracing::info!(?addr, "starting arb-rs server");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await?;
@@ -1126,9 +1128,19 @@ struct GraphDiffReq {
 }
 
 async fn arb_graph_snapshot(State(state): State<Arc<RwLock<AppState>>>, Json(req): Json<GraphSnapshotReq>) -> Json<serde_json::Value> {
+    // AuthN: optional shared-secret bearer token
+    // Note: We validate in a thin wrapper below; keep handler signature unchanged for compatibility
+    Json(handle_graph_snapshot(state, req, None).await)
+}
+
+async fn handle_graph_snapshot(state: Arc<RwLock<AppState>>, req: GraphSnapshotReq, auth: Option<HeaderMap>) -> serde_json::Value {
+    // Validate secret when configured
+    if !auth_ok(auth.as_ref()) { return serde_json::json!({"error":"unauthorized"}); }
     let mut s = state.write().await;
     let g = req.graph;
     tracing::info!(version = ?g.version, ts = ?g.timestamp, nodes = g.nodes.len(), edges = g.edges.len(), "arb.graph.snapshot: received");
+    // Version guard: ignore stale or equal snapshots
+    if let Some(v) = g.version { if v <= s.last_graph_version { s.metrics.graph_updates_skipped = s.metrics.graph_updates_skipped.saturating_add(1); return serde_json::json!({"ok": true, "ignored": true, "reason": "stale_version"}); } }
     let mut new_graph = ArbGraph::new();
     for e in g.edges.into_iter() {
         let dex = e.dex.unwrap_or_else(|| "Unknown".to_string());
@@ -1164,7 +1176,7 @@ async fn arb_graph_snapshot(State(state): State<Arc<RwLock<AppState>>>, Json(req
     let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
     // Wake detection loop immediately
     s.wake.notify_one();
-    Json(serde_json::json!({"ok": true, "nodes": nodes, "edges": edges}))
+    serde_json::json!({"ok": true, "nodes": nodes, "edges": edges})
 }
 
 async fn arb_graph_update(State(state): State<Arc<RwLock<AppState>>>, Json(req): Json<GraphDiffReq>) -> Json<serde_json::Value> {
@@ -1184,7 +1196,9 @@ async fn arb_graph_update(State(state): State<Arc<RwLock<AppState>>>, Json(req):
     Json(serde_json::json!({"ok": true}))
 }
 
-async fn arb_start(State(state): State<Arc<RwLock<AppState>>>, Json(req): Json<StartReq>) -> Json<serde_json::Value> {
+async fn arb_start(State(state): State<Arc<RwLock<AppState>>>, headers: HeaderMap, Json(req): Json<StartReq>) -> Json<serde_json::Value> {
+    // Validate secret when configured
+    if !auth_ok(Some(&headers)) { return Json(serde_json::json!({ "error": "unauthorized" })); }
     // Build graph outside lock
     let prebuilt: Option<(ArbGraph, Option<u64>, Option<u64>, u64, u64)> = if let Some(g) = req.graph.clone() {
         tracing::info!(version = ?g.version, ts = ?g.timestamp, nodes = g.nodes.len(), edges = g.edges.len(), "arb.start: graph received");

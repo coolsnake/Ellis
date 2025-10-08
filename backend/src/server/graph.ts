@@ -1,5 +1,6 @@
 import type { Server as SocketIOServer } from 'socket.io';
 import { logger } from '../utils/logger.js';
+import { LogCode } from '../utils/logging.js';
 import { readJson } from '../utils/fs.js';
 import { notifyArbServiceRefresh, emit, pushArbGraphSnapshot, pushArbGraphDiff } from './realtime.js';
 import { CONFIG } from '../utils/config.js';
@@ -29,7 +30,7 @@ let lastRebaseMs = 0;
 export function getGraphVersion(): { version: number; timestamp: number } {
   const version = lastSnapshot?.version || 0;
   const timestamp = lastSnapshot?.timestamp || 0;
-  try { logger.info('graph.version.peek', { version, timestamp, cat: 'graph' }); } catch {}
+  try { logger.debug('graph.version.peek', { version, timestamp, cat: 'graph', code: LogCode.GRAPH_TVL_STATS }); } catch {}
   return { version, timestamp };
 }
 
@@ -55,11 +56,11 @@ export async function rebuildGraphNow(io?: SocketIOServer): Promise<void> {
       if (shouldRebase) {
         try { await pushArbGraphSnapshot(next); } catch {}
         diffSinceRebase = 0; lastRebaseMs = nowMs;
-        try { emit('log', { level: 'info', message: `graph:push snapshot v=${next.version} nodes=${next.nodes.length} edges=${next.edges.length}`, timestamp: new Date().toISOString(), context: { cat: 'graph' } }); } catch {}
+        try { emit('log', { level: 'info', message: `graph:push snapshot v=${next.version} nodes=${next.nodes.length} edges=${next.edges.length}`, timestamp: new Date().toISOString(), context: { cat: 'graph', code: LogCode.GRAPH_PUSH_SNAPSHOT } }); } catch {}
       } else {
         try { await pushArbGraphDiff(diff); } catch {}
         diffSinceRebase += (diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length);
-        try { emit('log', { level: 'info', message: `graph:push diff v=${diff.version} changes=${(diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length)}`, timestamp: new Date().toISOString(), context: { cat: 'graph' } }); } catch {}
+        try { emit('log', { level: 'info', message: `graph:push diff v=${diff.version} changes=${(diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length)}`, timestamp: new Date().toISOString(), context: { cat: 'graph', code: LogCode.GRAPH_PUSH_DIFF } }); } catch {}
       }
       try { await notifyArbServiceRefresh(); } catch {}
     }
@@ -85,8 +86,8 @@ export function scheduleGraphRebuild(io?: SocketIOServer, debounceMs = 200): voi
   // Allow very low debounce when explicitly configured
   const minDebounce = Math.max(5, Number((CONFIG.system as any)?.graphRebuildMinDebounceMs || 50));
   const wait = Math.max(minDebounce, debounceMs);
-  rebuildTimer = setTimeout(() => { rebuildTimer = null; const pending = pendingUpdates; pendingUpdates = 0; try { logger.info('graph.rebuild.batch', { pending }); } catch {}; rebuildGraphNow(io).catch(() => {}); }, wait);
-  try { logger.info('graph.rebuild.scheduled', { debounceMs }); } catch {}
+  rebuildTimer = setTimeout(() => { rebuildTimer = null; const pending = pendingUpdates; pendingUpdates = 0; try { logger.debug('graph.rebuild.batch', { pending, code: LogCode.GRAPH_REBUILD_BATCH }); } catch {}; rebuildGraphNow(io).catch(() => {}); }, wait);
+  try { logger.debug('graph.rebuild.scheduled', { debounceMs, code: LogCode.GRAPH_REBUILD_SCHEDULED }); } catch {}
 }
 
 // Lightweight timing gauges for build and push latencies
@@ -804,14 +805,14 @@ export function startGraphStream(io: SocketIOServer): void {
           if (shouldRebase) {
             try { await pushArbGraphSnapshot(snap); } catch {}
             diffSinceRebase = 0; lastRebaseMs = nowMs;
-            try { logger.info('graph.push rebase snapshot', { version: snap.version, nodes: snap.nodes.length, edges: snap.edges.length, cat: 'graph' }); } catch {}
+      try { logger.info('graph.push rebase snapshot', { version: snap.version, nodes: snap.nodes.length, edges: snap.edges.length, cat: 'graph', code: LogCode.GRAPH_PUSH_SNAPSHOT }); } catch {}
             try { emit('log', { level: 'info', message: `graph:push rebase v=${snap.version} nodes=${snap.nodes.length} edges=${snap.edges.length}`, timestamp: new Date().toISOString(), context: { cat: 'graph' } }); } catch {}
           } else {
             try { await pushArbGraphDiff(diff); } catch {}
             diffSinceRebase += (diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length);
             try {
               const ch = diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length;
-              logger.info('graph.push diff', { version: diff.version, changes: ch, cat: 'graph' });
+              logger.info('graph.push diff', { version: diff.version, changes: ch, cat: 'graph', code: LogCode.GRAPH_PUSH_DIFF });
               emit('log', { level: 'info', message: `graph:push diff v=${diff.version} changes=${ch}`, timestamp: new Date().toISOString(), context: { cat: 'graph' } });
             } catch {}
           }

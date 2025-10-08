@@ -1,6 +1,7 @@
 import { executionCache } from '../cache.js';
 import type { DirectHop, ExecutionPlan, ExecConfig, ResolveDirectInput } from '../types.js';
 import { logger } from '../../utils/logger.js';
+import { LogCode } from '../../utils/logging.js';
 import { getTokenMeta } from './tokenMeta.js';
 import { CONFIG } from '../../utils/config.js';
 import { applySlippage } from '../limits.js';
@@ -14,7 +15,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
   }
 
   const t0 = Date.now();
-  logger.info('tx.resolve.start', { cat: 'tx', code: 'TX.RESOLVE.START', ctx: { hopCount: path.length - 1 } as any });
+  logger.debug('tx.resolve.start', { cat: 'tx', code: LogCode.TX_RESOLVE_START, ctx: { hopCount: path.length - 1 } as any });
   const hops: DirectHop[] = await Promise.all(path.slice(0, -1).map(async (_mint, i) => {
     const dexv = String(dexes[i] || '').toLowerCase();
     const dex = (dexv.includes('raydium') ? 'raydium' : (dexv.includes('orca') ? 'orca' : 'meteora')) as DirectHop['dex'];
@@ -97,7 +98,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       if (raw > 0n) hopAdjustAmount(hops, raw);
     }
   } catch {}
-  logger.info('tx.resolve.ok', { cat: 'tx', code: 'TX.RESOLVE.OK', ctx: { ms: Date.now() - t0, hops: hops.length } as any });
+  logger.info('tx.resolve.ok', { cat: 'tx', code: LogCode.TX_RESOLVE_OK, ctx: { ms: Date.now() - t0, hops: hops.length } as any });
   return { path, hops, computeUnitPriceMicroLamports: cfg.computeUnitPriceMicroLamports };
 }
 

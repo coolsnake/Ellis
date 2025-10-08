@@ -8,6 +8,7 @@ import type { AmmPool, ClmmPool, PoolsPayload } from './pools/types.js';
 import { fetchRaydiumPoolsRaw as fetchRaydiumPoolsRawImpl, normalizeRaydiumPools as normalizeRaydiumPoolsImpl } from './pools/raydium.js';
 import { fetchOrcaHttp as fetchOrcaHttpImpl, normalizeOrcaHttp as normalizeOrcaHttpImpl } from './pools/orca.js';
 import { fetchMeteoraHttp as fetchMeteoraHttpImpl, normalizeMeteoraHttp as normalizeMeteoraHttpImpl } from './pools/meteora.js';
+import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './pools/httpLog.js';
 
 const raydiumCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 const orcaCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
@@ -127,19 +128,19 @@ async function fetchRaydiumPoolsRaw(): Promise<any> {
             });
             const url = `${baseUrl}?${qs.toString()}`;
             const started = Date.now();
-            try { logger.info('raydium.http request', { mint, page, pageSize, cat: 'raydium' }); } catch {}
+            const cid = httpLogStart({ source: 'raydium', url, extra: { mint, page, pageSize } });
             const res = await fetchFn(url, { headers: { accept: 'application/json' } });
             if (res?.status === 429) {
               poolsMetrics.raydium.http429++;
               poolsMetrics.raydium.backoffMs = Math.min(5000, Math.max(1500, poolsMetrics.raydium.backoffMs * 2 || 1500));
               try { emit('log', { level: 'warn', message: 'arb:429 source=raydium kind=http surface=pools.info', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
-              try { logger.warn('raydium.http 429', { mint, page, cat: 'raydium' }); } catch {}
+              httpLog429({ source: 'raydium', url, cid });
               // Backoff then continue to next loop iteration
               continue;
             }
             if (!res?.ok) {
               const txt = await res?.text?.();
-              logger.warn('raydium.http non-ok', { status: res?.status, body: (txt || '').slice(0, 200), cat: 'raydium' });
+              httpLogNonOk({ source: 'raydium', url, cid, status: res?.status || 0, bodySample: (txt || '').slice(0, 200) });
               break;
             }
             const json = await res.json().catch(() => null);
@@ -148,7 +149,7 @@ async function fetchRaydiumPoolsRaw(): Promise<any> {
             hasNext = !!json?.data?.hasNextPage;
             page += 1;
             pagesFetched += 1;
-            try { logger.info('raydium.http page ok', { mint, page: page - 1, ms: Date.now() - started, count: arr.length, next: !!hasNext, cat: 'raydium' }); } catch {}
+            httpLogResponse({ source: 'raydium', url, cid, status: res.status, ms: Date.now() - started, count: arr.length });
           } catch (e: any) {
             const msg = String(e?.message || e);
             logger.warn('raydium.http fetch failed', { error: msg, cat: 'raydium' });

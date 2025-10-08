@@ -175,7 +175,7 @@ export const GridMonitor: React.FC<GridMonitorProps> = ({ strategyName, apiBase,
         
         // Refresh data to get updated trade history
         await fetchGridData();
-        logger.info('Position closed successfully');
+        logger.debug('Position closed successfully');
       } else {
         const errorData = await response.json();
         logger.error('Failed to close position:', errorData.error);

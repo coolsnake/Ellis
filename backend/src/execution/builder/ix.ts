@@ -1,20 +1,21 @@
 import type { DirectHop } from '../types.js';
 import { logger } from '../../utils/logger.js';
+import { LogCode } from '../../utils/logging.js';
 import { PublicKey } from '@solana/web3.js';
 import { getConnection, ensureWallet } from '../../wallet/wallet.js';
 import { CONFIG } from '../../utils/config.js';
 
 // Placeholders to satisfy wiring; concrete implementations will target specific programs
 export function buildRaydiumAmmSwapIx(hop: DirectHop): any[] {
-  try { logger.info('ix.build raydium.amm', { pool: hop.poolId, cat: 'tx' }); } catch {}
+  try { logger.debug('ix.build raydium.amm', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
   return [{ programId: hop.programId || 'RaydiumAmmV4', type: 'raydium.amm.swap', keys: { poolId: hop.poolId, userSourceAta: hop.userSourceAta, userDestAta: hop.userDestAta, vaultA: hop.vaultA, vaultB: hop.vaultB }, data: { amountIn: hop.amountInRaw, minOut: hop.minOutRaw } }];
 }
 export function buildRaydiumClmmSwapIx(hop: DirectHop): any[] {
-  try { logger.info('ix.build raydium.clmm', { pool: hop.poolId, cat: 'tx' }); } catch {}
+  try { logger.debug('ix.build raydium.clmm', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
   return [{ programId: hop.programId || 'RaydiumClmm', type: 'raydium.clmm.swap', keys: { poolId: hop.poolId, tickArrayLower: hop.tickArrayLower, tickArrayCenter: hop.tickArrayCenter, tickArrayUpper: hop.tickArrayUpper, oracle: hop.oracle, userSourceAta: hop.userSourceAta, userDestAta: hop.userDestAta, vaultA: hop.vaultA, vaultB: hop.vaultB }, data: { amountIn: hop.amountInRaw, minOut: hop.minOutRaw, sqrtPriceLimitX64: hop.sqrtPriceLimitX64 || 0n } }];
 }
 export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
-  try { logger.info('ix.build orca.clmm', { pool: hop.poolId, cat: 'tx' }); } catch {}
+  try { logger.debug('ix.build orca.clmm', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
   try {
     const connection = getConnection();
     const kp = await ensureWallet(CONFIG.walletPath);
@@ -43,17 +44,17 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
     const built = await tx.build();
     return built.instructions || [];
   } catch (e) {
-    try { logger.warn('ix.build orca.clmm fallback', { error: String((e as any)?.message || e), cat: 'tx' }); } catch {}
+    try { logger.warn('ix.build orca.clmm fallback', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
     return [{ programId: hop.programId || 'whirlpool', type: 'orca.clmm.swap', keys: { poolId: hop.poolId }, data: { amountIn: hop.amountInRaw, minOut: hop.minOutRaw } }];
   }
 }
 export function buildMeteoraDlmmSwapIx(hop: DirectHop): any[] {
-  try { logger.info('ix.build meteora.dlmm', { pool: hop.poolId, cat: 'tx' }); } catch {}
+  try { logger.debug('ix.build meteora.dlmm', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
   return [{ programId: hop.programId || 'meteoraDLMM', type: 'meteora.dlmm.swap', keys: { poolId: hop.poolId, binArrayLower: hop.binArrayLower, binArrayUpper: hop.binArrayUpper, reserveX: hop.reserveX, reserveY: hop.reserveY, userSourceAta: hop.userSourceAta, userDestAta: hop.userDestAta }, data: { amountIn: hop.amountInRaw, minOut: hop.minOutRaw } }];
 }
 
 export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]> {
-  try { logger.info('ix.build meteora.dlmm.real', { pool: hop.poolId, cat: 'tx' }); } catch {}
+  try { logger.debug('ix.build meteora.dlmm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
   try {
     // Attempt dynamic import of a DLMM SDK if available; otherwise construct minimal raw ix descriptor
     const maybe: any = await (async () => { try { return await (Function('return import')())('@meteora-ag/dlmm-sdk'); } catch { return null; } })();
@@ -77,7 +78,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       if (ix) return [ix];
     }
   } catch (e) {
-    try { logger.warn('ix.build meteora.dlmm.real fallback', { error: String((e as any)?.message || e), cat: 'tx' }); } catch {}
+    try { logger.warn('ix.build meteora.dlmm.real fallback', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
   }
   return buildMeteoraDlmmSwapIx(hop);
 }
@@ -92,7 +93,7 @@ export function maybeCreateAtas(hop: DirectHop, create: boolean): any[] {
 
 // Real Raydium builders (best-effort via SDK; fallback to placeholders on error)
 export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]> {
-  try { logger.info('ix.build raydium.clmm.real', { pool: hop.poolId, cat: 'tx' }); } catch {}
+  try { logger.debug('ix.build raydium.clmm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
   try {
     // Dynamic import to avoid hard crashes on API mismatch
     const sdk: any = await import('@raydium-io/raydium-sdk-v2');
@@ -122,13 +123,13 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       if (ixs && ixs.length) return ixs as any[];
     }
   } catch (e) {
-    try { logger.warn('ix.build raydium.clmm.real fallback', { error: String((e as any)?.message || e), cat: 'tx' }); } catch {}
+    try { logger.warn('ix.build raydium.clmm.real fallback', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
   }
   return buildRaydiumClmmSwapIx(hop);
 }
 
 export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> {
-  try { logger.info('ix.build raydium.amm.real', { pool: hop.poolId, cat: 'tx' }); } catch {}
+  try { logger.debug('ix.build raydium.amm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
   try {
     const sdk: any = await import('@raydium-io/raydium-sdk-v2');
     const connection = getConnection();
@@ -155,7 +156,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       if (ixs && ixs.length) return ixs as any[];
     }
   } catch (e) {
-    try { logger.warn('ix.build raydium.amm.real fallback', { error: String((e as any)?.message || e), cat: 'tx' }); } catch {}
+    try { logger.warn('ix.build raydium.amm.real fallback', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
   }
   return buildRaydiumAmmSwapIx(hop);
 }

@@ -4,6 +4,7 @@ import { CONFIG } from '../../utils/config.js';
 import { writeJson, joinPath } from '../../utils/fs.js';
 import type { ClmmPool, PoolsPayload } from './types.js';
 import { canonicalizePairs } from './common.js';
+import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
 
 export async function fetchOrcaHttp(): Promise<any> {
   const ORCA_RAW_PATH = joinPath(CONFIG.cacheDir, 'orca-raw-sample.json');
@@ -54,16 +55,20 @@ export async function fetchOrcaHttp(): Promise<any> {
   const runPaged = async () => {
     while (ok && pageCount < maxPages) {
       const started = Date.now();
+      const url = buildUrl(nextCursor);
       // eslint-disable-next-line no-undef
-      const res = await ((globalThis as any).fetch || fetch)(buildUrl(nextCursor));
+      const res = await ((globalThis as any).fetch || fetch)(url);
       const ms = Date.now() - started;
       if (res.status === 429) {
         try { emit('log', { level: 'warn', message: 'arb:429 source=orca kind=http', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
-        try { logger.warn('orca.http 429'); } catch {}
+        try { httpLog429({ source: 'orca', url, cid: `http-${Date.now()}` }); } catch {}
         ok = false; break;
       }
       if (!res.ok) {
-        logger.warn('orca.http non-ok', { status: res.status });
+        try {
+          const txt = await res.text().catch(() => '');
+          httpLogNonOk({ source: 'orca', url, cid: `http-${Date.now()}`, status: res.status, bodySample: (txt || '').slice(0, 200) });
+        } catch { logger.warn('orca.http non-ok', { status: res.status }); }
         ok = false; break;
       }
       const json = await res.json().catch(() => null);
@@ -71,7 +76,7 @@ export async function fetchOrcaHttp(): Promise<any> {
       merged.push(...data);
       pageCount += 1;
       nextCursor = (json && typeof json === 'object') ? (json.cursor || json.nextCursor || json.next) : undefined;
-      try { logger.info('orca.http page ok', { ms, count: data.length, next: !!nextCursor }); } catch {}
+      try { httpLogResponse({ source: 'orca', url, cid: `http-${Date.now()}`, status: res.status, ms, count: data.length }); } catch {}
       if (!nextCursor) break;
       if (pageCount >= maxPages) break;
     }
@@ -79,13 +84,14 @@ export async function fetchOrcaHttp(): Promise<any> {
   await runPaged();
   if (merged.length === 0) {
     const started = Date.now();
+    const url = buildUrl();
     // eslint-disable-next-line no-undef
-    const res = await ((globalThis as any).fetch || fetch)(buildUrl());
+    const res = await ((globalThis as any).fetch || fetch)(url);
     const ms = Date.now() - started;
     if (!res.ok) throw new Error(`http ${res.status}`);
     const json: any = await res.json();
     const data: any[] = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []);
-    logger.info('orca.http single ok', { ms, count: data.length });
+    try { httpLogResponse({ source: 'orca', url, cid: `http-${Date.now()}`, status: res.status, ms, count: data.length }); } catch {}
     try { await writeJson(ORCA_RAW_PATH, data); } catch (e: any) { try { logger.warn('orca.cache write failed', { file: ORCA_RAW_PATH, error: String(e?.message || e), cat: 'orca' }); } catch {} }
     return data;
   }

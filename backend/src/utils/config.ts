@@ -160,9 +160,16 @@ export const CONFIG = {
       enableCodes: [] as string[],
       disableCodes: [] as string[],
       // Sampling probability per code (0..1)
-      sample: {} as Record<string, number>,
+      sample: {
+        'GRAPH.PUSH.DIFF': 0.05,
+        'GRAPH.REBUILD.BATCH': 0.1,
+        'POOLS.WS.UNHEALTHY': 0.25,
+      } as Record<string, number>,
       // Simple per-code rate limits
-      rateLimit: {} as Record<string, { perSec?: number; minIntervalMs?: number }>,
+      rateLimit: {
+        'POOLS.HTTP.429': { minIntervalMs: 500 },
+        'DRIFT.WS.ERROR': { minIntervalMs: 2000 },
+      } as Record<string, { perSec?: number; minIntervalMs?: number }>,
       // Named presets the UI can apply (optional)
       presets: {
         dev: {

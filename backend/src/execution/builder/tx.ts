@@ -1,6 +1,7 @@
 import type { ExecutionPlan } from '../types.js';
 import { buildRaydiumAmmSwapIx, buildRaydiumClmmSwapIx, buildOrcaSwapIx, buildMeteoraDlmmSwapIx, buildRaydiumAmmSwapIxReal, buildRaydiumClmmSwapIxReal, buildMeteoraDlmmSwapIxReal } from './ix.js';
 import { logger } from '../../utils/logger.js';
+import { LogCode } from '../../utils/logging.js';
 
 export type ComputeBudgetConfig = { computeUnitLimit?: number; computeUnitPriceMicroLamports?: number };
 
@@ -19,14 +20,14 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
   // Build per-hop placeholders
   const hopIxs: any[] = [];
   for (const hop of plan.hops) {
-    try { logger.info('tx.build.hop', { cat: 'tx', code: 'TX.BUILD.HOP', ctx: { dex: hop.dex, variant: hop.variant, poolId: hop.poolId } as any }); } catch {}
+    try { logger.debug('tx.build.hop', { cat: 'tx', code: LogCode.TX_BUILD_HOP, ctx: { dex: hop.dex, variant: hop.variant, poolId: hop.poolId } as any }); } catch {}
     try {
       if (hop.dex === 'raydium' && hop.variant === 'amm') { const ixs = await buildRaydiumAmmSwapIxReal(hop); hopIxs.push(...ixs); }
       else if (hop.dex === 'raydium' && hop.variant === 'clmm') { const ixs = await buildRaydiumClmmSwapIxReal(hop); hopIxs.push(...ixs); }
       else if (hop.dex === 'orca') { const ixs = await buildOrcaSwapIx(hop) as any[]; hopIxs.push(...ixs); }
       else if (hop.dex === 'meteora') { const ixs = await buildMeteoraDlmmSwapIxReal(hop); hopIxs.push(...ixs); }
     } catch (e) {
-      try { logger.error('tx.build.hop.err', { cat: 'tx', code: 'TX.BUILD.HOP.ERR', ctx: { dex: hop.dex, variant: hop.variant, poolId: hop.poolId, error: String((e as any)?.message || e) } as any }); } catch {}
+      try { logger.error('tx.build.hop.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { dex: hop.dex, variant: hop.variant, poolId: hop.poolId, error: String((e as any)?.message || e) } as any }); } catch {}
       throw e;
     }
   }
@@ -34,7 +35,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
   const all = [...budget, ...extraSetupIxs, ...hopIxs];
   // Approximate size
   const sizeBytes = all.length * 200;
-  try { logger.info('tx.build.ok', { cat: 'tx', code: 'TX.BUILD.OK', ctx: { ms: Date.now() - t0, ixCount: all.length, sizeBytes } as any }); } catch {}
+  try { logger.info('tx.build.ok', { cat: 'tx', code: LogCode.TX_BUILD_OK, ctx: { ms: Date.now() - t0, ixCount: all.length, sizeBytes } as any }); } catch {}
   return { tx: { instructions: all, v: 0 }, ixCount: all.length, sizeBytes };
 }
 

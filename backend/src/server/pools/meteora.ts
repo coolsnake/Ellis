@@ -4,6 +4,7 @@ import { CONFIG } from '../../utils/config.js';
 import { writeJson, joinPath } from '../../utils/fs.js';
 import type { ClmmPool, PoolsPayload } from './types.js';
 import { canonicalizePairs, canonicalizePairsLex } from './common.js';
+import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
 
 export async function fetchMeteoraHttp(): Promise<any> {
   const METEORA_RAW_PATH = joinPath(CONFIG.cacheDir, 'meteora-raw-sample.json');
@@ -30,9 +31,9 @@ export async function fetchMeteoraHttp(): Promise<any> {
       for (let attempt = 0; attempt <= retries; attempt++) {
         try {
           const url = build(page, size);
-          try { logger.info('meteora.http request', { page, limit: size, cat: 'meteora' }); } catch {}
+          const cid = httpLogStart({ source: 'meteora', url, extra: { page, limit: size } });
           const res = await fetchFn(url, { headers: { accept: 'application/json' }, method: 'GET' });
-          if (res?.status === 429) { try { logger.warn('meteora.http 429', { page, cat: 'meteora' }); emit('log', { level: 'warn', message: `arb:429 source=meteora page=${page}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}; throw new Error('http 429'); }
+          if (res?.status === 429) { try { logger.warn('meteora.http 429', { page, cat: 'meteora' }); emit('log', { level: 'warn', message: `arb:429 source=meteora page=${page}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}; httpLog429({ source: 'meteora', url, cid }); throw new Error('http 429'); }
           if (!res?.ok) throw new Error(`http ${res?.status}`);
           const json: any = await res.json().catch(() => null);
           const arr: any[] = Array.isArray(json?.pairs) ? json.pairs : (Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []));
@@ -41,6 +42,7 @@ export async function fetchMeteoraHttp(): Promise<any> {
           page += 1;
           ok = true;
           if (!more) { i = pageLimit; break; }
+          httpLogResponse({ source: 'meteora', url, cid, status: res.status, ms: 0, count: arr.length });
           break;
         } catch (e: any) {
           const msg = String(e?.message || e);
@@ -51,11 +53,12 @@ export async function fetchMeteoraHttp(): Promise<any> {
       if (!ok) break;
     }
     if (out.length === 0) {
-      const res = await fetchFn(build(0, size), { headers: { accept: 'application/json' }, method: 'GET' });
+      const url = build(0, size);
+      const res = await fetchFn(url, { headers: { accept: 'application/json' }, method: 'GET' });
       if (!res?.ok) throw new Error(`http ${res?.status}`);
       const json: any = await res.json().catch(() => null);
       const single = Array.isArray(json?.pairs) ? json.pairs : (Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []));
-      try { logger.info('meteora.http single ok', { count: single.length, cat: 'meteora' }); } catch {}
+      try { httpLogResponse({ source: 'meteora', url, cid: `http-${Date.now()}`, status: res.status, ms: 0, count: single.length }); } catch {}
       try { await writeJson(METEORA_RAW_PATH, single); } catch (e: any) { try { logger.warn('meteora.cache write failed', { file: METEORA_RAW_PATH, error: String(e?.message || e), cat: 'meteora' }); } catch {} }
       return single;
     }

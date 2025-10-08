@@ -6,6 +6,7 @@ import http from 'http';
 import { Server as SocketIOClass } from 'socket.io';
 import type { Server as SocketIOServer } from 'socket.io';
 import { logger } from '../utils/logger.js';
+import { LogCode } from '../utils/logging.js';
 import { setLogLevel } from '../utils/logger.js';
 import { CONFIG } from '../utils/config.js';
 import { registerRoutes } from './routes.js';
@@ -111,10 +112,10 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   const startMs = Date.now();
   const reqId = Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-4);
   (req as any).reqId = reqId;
-  logger.info(`api.request ${req.method} ${req.path}`, { reqId, cid: reqId, method: req.method, path: req.path, query: req.query, body: req.body, ip: req.ip, ua: req.headers['user-agent'], cat: 'api', subcat: 'http', code: 'API.REQUEST', span: 'start' });
+  logger.debug(`api.request ${req.method} ${req.path}`, { reqId, cid: reqId, method: req.method, path: req.path, query: req.query, body: req.body, ip: req.ip, ua: req.headers['user-agent'], cat: 'api', subcat: 'http', code: LogCode.API_REQUEST, span: 'start' });
   res.on('finish', () => {
     const durationMs = Date.now() - startMs;
-    logger.info(`api.response ${req.method} ${req.path} ${res.statusCode} ${durationMs}ms`, { reqId, cid: reqId, method: req.method, path: req.path, status: res.statusCode, durationMs, cat: 'api', subcat: 'http', code: 'API.RESPONSE', span: 'end' });
+    logger.info(`api.response ${req.method} ${req.path} ${res.statusCode} ${durationMs}ms`, { reqId, cid: reqId, method: req.method, path: req.path, status: res.statusCode, durationMs, cat: 'api', subcat: 'http', code: LogCode.API_RESPONSE, span: 'end' });
   });
   next();
 });
