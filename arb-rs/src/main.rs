@@ -1,4 +1,6 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::sync::Mutex;
+use std::collections::VecDeque;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::collections::HashSet;
 use petgraph::prelude::NodeIndex;
@@ -129,6 +131,28 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // In-memory ring buffer to capture formatted log lines (last 2000)
+    let ring: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
+
+    #[derive(Clone)]
+    struct RingWriter { ring: Arc<Mutex<VecDeque<String>>>, buf: String }
+    impl std::io::Write for RingWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.buf.push_str(&String::from_utf8_lossy(bytes));
+            while let Some(pos) = self.buf.find('\n') {
+                let line = self.buf[..pos].to_string();
+                if !line.trim().is_empty() {
+                    let mut guard = self.ring.lock().unwrap();
+                    if guard.len() >= 2000 { guard.pop_front(); }
+                    guard.push_back(line);
+                }
+                self.buf.drain(..=pos);
+            }
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
             std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
@@ -137,6 +161,8 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer().without_time())
         // Bridge layer (no ANSI, no time) to backend terminal/log endpoint
         .with(tracing_subscriber::fmt::layer().without_time().with_ansi(false).with_writer(move || BridgeWriter { tx: bridge_tx.clone() }))
+        // Ring capture layer (no ANSI, no time) writing to in-memory buffer
+        .with(tracing_subscriber::fmt::layer().without_time().with_ansi(false).with_writer({ let ring = ring.clone(); move || RingWriter { ring: ring.clone(), buf: String::new() } }))
         .init();
 
     let state = Arc::new(RwLock::new(AppState { config: default_config(), opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), near_miss: None, near_miss_shortfall_bps: None, near_misses: Vec::new(), last_graph_version: 0, last_graph_ts: 0, pending_added_edges: Vec::new(), pending_updated_edges: Vec::new(), pending_removed_edge_ids: Vec::new(), pending_graph_version: None, pending_graph_ts: None, wake: Arc::new(Notify::new()) }));
@@ -1025,11 +1051,11 @@ async fn main() -> anyhow::Result<()> {
     let addr: SocketAddr = std::net::SocketAddr::new(ip, port);
     tracing::info!(?addr, "starting arb-rs server");
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await?;
+    axum::serve(listener, app).with_graceful_shutdown(shutdown_signal(ring.clone())).await?;
     Ok(())
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal(ring: Arc<Mutex<VecDeque<String>>>) {
     let ctrl_c = async {
         tokio::signal::ctrl_c().await.expect("failed to install Ctrl+C handler");
     };
@@ -1044,7 +1070,25 @@ async fn shutdown_signal() {
 
     tokio::select! { _ = ctrl_c => {}, _ = terminate => {}, };
     tracing::info!("shutdown requested");
+    // Attempt to write last 2000 log lines to logs/session.json
+    if let Err(e) = write_session_json(&ring).await { let _ = e; }
     tokio::time::sleep(Duration::from_millis(200)).await;
+}
+
+async fn write_session_json(ring: &Arc<Mutex<VecDeque<String>>>) -> anyhow::Result<()> {
+    let dir = std::env::var("ARB_LOG_DIR").unwrap_or_else(|_| "logs".into());
+    let path = std::path::Path::new(&dir);
+    tokio::fs::create_dir_all(path).await.ok();
+    let file = path.join("session.json");
+    let items: Vec<String> = {
+        let guard = ring.lock().unwrap();
+        let len = guard.len();
+        let start = if len > 2000 { len - 2000 } else { 0 };
+        guard.iter().skip(start).cloned().collect()
+    };
+    let data = serde_json::to_string_pretty(&items)?;
+    tokio::fs::write(file, data).await?;
+    Ok(())
 }
 
 async fn get_opportunities(

@@ -179,46 +179,27 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
     let amount_a = Number(typeof amtAraw === 'string' ? Number(amtAraw) : amtAraw || 0);
     let amount_b = Number(typeof amtBraw === 'string' ? Number(amtBraw) : amtBraw || 0);
     const incomingPrice = Number(it?.price ?? it?.price_a_per_b ?? it?.priceAperB ?? 0);
-    if ((!sqrt_price_x64 || sqrt_price_x64 <= 0) && isWhirlpool) {
-      const price = incomingPrice;
-      if (price > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
-        const ratioSquared = price * Math.pow(10, (decB as number) - (decA as number));
-        const ratio = Math.sqrt(ratioSquared);
-        const two64 = Math.pow(2, 64);
-        sqrt_price_x64 = Math.floor(ratio * two64);
-      }
-    }
     if (isWhirlpool && id && sqrt_price_x64 > 0) {
       let cA = mint_a; let cB = mint_b; let cDecA = decA; let cDecB = decB; let cAmtA = amount_a; let cAmtB = amount_b;
       let priceFromSqrt = 0;
       if (sqrt_price_x64 > 0 && Number.isFinite(cDecA) && Number.isFinite(cDecB)) {
         const two64 = Math.pow(2, 64);
         const ratio = sqrt_price_x64 / two64;
-        const cand1 = Math.pow(10, cDecB - cDecA) / (ratio * ratio);
-        const cand2 = (ratio * ratio) * Math.pow(10, cDecA - cDecB);
-        const finiteCands = [cand1, cand2].filter((x) => Number.isFinite(x) && x > 0) as number[];
-        let chosen = finiteCands[0] || 0;
-        try {
-          const { getPriceByMint } = await import('../../server/priceStore.js');
-          const pa = getPriceByMint(cA)?.usdc ?? null;
-          const pb = getPriceByMint(cB)?.usdc ?? null;
-          const refUsd = (pa && pb && (pa as number) > 0 && (pb as number) > 0) ? ((pb as number) / (pa as number)) : null;
-          const refIncoming = (incomingPrice && incomingPrice > 0) ? incomingPrice : null;
-          const ref = refUsd ?? refIncoming;
-          if (ref && finiteCands.length) {
-            let best = finiteCands[0];
-            let bestDev = Math.max(best / ref, ref / best);
-            for (let k = 1; k < finiteCands.length; k += 1) {
-              const dev = Math.max(finiteCands[k] / ref, ref / finiteCands[k]);
-              if (dev + 1e-12 < bestDev) { bestDev = dev; best = finiteCands[k]; }
-            }
-            chosen = best;
-          }
-        } catch {}
-        priceFromSqrt = chosen;
+        // Lock orientation to A per 1 B
+        const aPerB = Math.pow(10, cDecB - cDecA) / (ratio * ratio);
+        if (Number.isFinite(aPerB) && aPerB > 0) priceFromSqrt = aPerB;
       }
       const incomingCanonical = (incomingPrice > 0) ? incomingPrice : 0;
       let priceDerived = priceFromSqrt > 0 ? priceFromSqrt : incomingCanonical;
+      
+      // Magnitude-only calibration (no flips)
+      try {
+        const { getPriceByMint } = await import('../../server/priceStore.js');
+        const getUsd = (m: string) => { try { return getPriceByMint(m)?.usdc ?? undefined; } catch { return undefined; } };
+        const { calibrateMagnitude } = await import('../../server/priceCalib.js');
+        const calibrated = calibrateMagnitude(cA, cB, priceDerived, getUsd);
+        if (calibrated && calibrated > 0) priceDerived = calibrated;
+      } catch {}
       const wholeA = Number.isFinite(cDecA) ? (cAmtA / Math.pow(10, cDecA as number)) : undefined;
       const wholeB = Number.isFinite(cDecB) ? (cAmtB / Math.pow(10, cDecB as number)) : undefined;
       const tvlUsdcRaw = (it as any)?.tvlUsdc;

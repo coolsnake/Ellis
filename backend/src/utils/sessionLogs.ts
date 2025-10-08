@@ -23,10 +23,10 @@ export async function writeSessionLogAndClear(): Promise<string | null> {
     if (sessionEvents.length === 0) return null;
     const dir = CONFIG.logDir || resolve('backend', 'logs');
     await fsp.mkdir(dir, { recursive: true }).catch(() => {});
-    const iso = new Date().toISOString().replace(/[:]/g, '-');
-    const file = resolve(dir, `session-${iso}.jsonl`);
-    const lines = sessionEvents.map((e) => JSON.stringify(e));
-    await fsp.writeFile(file, lines.join('\n') + '\n', 'utf-8');
+    const file = resolve(dir, 'session.json');
+    // Limit to last 2000 events
+    const items = sessionEvents.slice(-2000);
+    await fsp.writeFile(file, JSON.stringify(items, null, 2), 'utf-8');
     sessionEvents.length = 0;
     return file;
   } catch {
