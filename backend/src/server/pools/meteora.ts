@@ -128,17 +128,22 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
         'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
         'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
       ]);
+      const symA = String((tokenA as any)?.symbol || '').toUpperCase();
+      const symB = String((tokenB as any)?.symbol || '').toUpperCase();
+      const symStable = (s: string) => s === 'USDC' || s === 'USDT' || /USD/.test(s);
+      const aStable = STABLES.has(mint_a) || symStable(symA);
+      const bStable = STABLES.has(mint_b) || symStable(symB);
       const haveWhole = Number.isFinite(decA) && Number.isFinite(decB) && Number.isFinite(amount_a) && Number.isFinite(amount_b);
-      // Only apply flip to pure upstream cases in tests OR always when B is clearly stable and A is volatile
-      const shouldConsiderFlip = (!haveWhole && price_a_per_b > 0) || (STABLES.has(mint_b) && !STABLES.has(mint_a) && price_a_per_b > 0);
+      // Only apply flip to pure upstream cases OR when B is stable and A is not
+      const shouldConsiderFlip = (!haveWhole && price_a_per_b > 0) || (bStable && !aStable && price_a_per_b > 0);
       if (shouldConsiderFlip) {
         // Use output copies for potential swap to avoid reassigning consts
         let outMintA = mint_a; let outMintB = mint_b;
         let outDecA = decA; let outDecB = decB;
         let outAmtA = amount_a; let outAmtB = amount_b;
         let outPrice = price_a_per_b;
-        const bIsStable = STABLES.has(outMintB);
-        const aIsStable = STABLES.has(outMintA);
+        const bIsStable = bStable;
+        const aIsStable = aStable;
         if ((bIsStable && outPrice < 1) || (aIsStable && outPrice < 1)) {
           const mA = outMintA, mB = outMintB, dA = outDecA, dB = outDecB, amtA = outAmtA, amtB = outAmtB;
           outMintA = mB; outMintB = mA;
@@ -199,6 +204,29 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
   try {
     const mode = String(((CONFIG as any)?.meteora?.canonicalizePairs ?? 'none'));
     if (mode === 'lex') clmmCanon = canonicalizePairsLex(clmm);
+  } catch {}
+  // Final pass: enforce stable-first ordering when exactly one side is stable (by mint string or symbol)
+  try {
+    const STABLES = new Set<string>([
+      'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+      'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
+    ]);
+    const isStable = (v: string) => {
+      const s = String(v || '').toUpperCase();
+      return STABLES.has(s) || /USDC|USDT|USD/.test(s);
+    };
+    clmmCanon = clmmCanon.map((p: any) => {
+      const aStable = isStable(String(p.mint_a));
+      const bStable = isStable(String(p.mint_b));
+      if (!aStable && bStable) {
+        const out: any = { ...p };
+        const mA = out.mint_a, mB = out.mint_b, dA = out.decimals_a, dB = out.decimals_b, amtA = out.amount_a, amtB = out.amount_b;
+        out.mint_a = mB; out.mint_b = mA; out.decimals_a = dB; out.decimals_b = dA; out.amount_a = amtB; out.amount_b = amtA;
+        if (typeof out.price_a_per_b === 'number' && out.price_a_per_b > 0) out.price_a_per_b = 1 / out.price_a_per_b;
+        return out;
+      }
+      return p;
+    });
   } catch {}
   try {
     const canon = String(((CONFIG as any)?.meteora?.canonicalizePairs ?? (CONFIG.system as any)?.canonicalizePairs) || 'none');

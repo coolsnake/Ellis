@@ -25,7 +25,7 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       return;
     }
 
-    const enabled = (import.meta as any)?.env?.VITE_USE_CONTEXT_SOCKET === 'true';
+    const enabled = (((import.meta as any)?.env?.VITE_USE_CONTEXT_SOCKET) ?? 'true') === 'true';
     if (!enabled) {
       if (socketRef.current) {
         try { socketRef.current.disconnect(); } catch {}
