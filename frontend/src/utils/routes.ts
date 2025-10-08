@@ -39,6 +39,9 @@ export const ROUTES = {
     simulate: '/arb/simulate',
     execute: '/arb/execute',
   },
+  exec: {
+    config: '/exec/config',
+  },
   drift: {
     status: '/drift/status',
     l2: '/drift/l2',

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ROUTES } from '../utils/routes';
+import type { ExecEngineConfigPublic, ArbDetectorConfigPublic } from 'shared/config-types';
 
 type Props = { apiBase: string; onClose: () => void };
 
@@ -21,11 +22,16 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetch(`${apiBase}${ROUTES.arb.config}`);
-        if (r.ok) {
-          const j = await r.json();
-          setCfg((p: any) => ({ ...p, ...j, near_miss_enable: (j?.near_miss_enable ?? p.near_miss_enable), debug_top_n: (j?.debug_top_n ?? p.debug_top_n) }));
-        }
+        // Load execution config (backend)
+        const ex = await fetch(`${apiBase}${ROUTES.exec.config}`).then(r => r.ok ? r.json() : null).catch(() => null);
+        // Load detector config (arb-rs)
+        const det = await fetch(`${apiBase}${ROUTES.arb.config}`).then(r => r.ok ? r.json() : null).catch(() => null);
+        setCfg((p: any) => ({
+          ...p,
+          ...(ex || {}),
+          near_miss_enable: (det?.near_miss_enable ?? p.near_miss_enable),
+          debug_top_n: (det?.debug_top_n ?? p.debug_top_n),
+        }));
       } catch {}
     })();
   }, [apiBase]);
@@ -35,20 +41,25 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
 
   const onSave = async () => {
     if (saving) return; setSaving(true); setError(null);
-    const body = {
-      mode: cfg.mode,
-      slippageBpsDefault: Number(cfg.slippageBpsDefault),
-      computeUnitLimit: Number(cfg.computeUnitLimit),
-      computeUnitPriceMicroLamports: Number(cfg.computeUnitPriceMicroLamports),
+    const execBody: ExecEngineConfigPublic = {
+      mode: (cfg.mode === 'direct' ? 'direct' : 'simulate'),
+      slippageBpsDefault: Number(cfg.slippageBpsDefault) || 0,
+      computeUnitLimit: Number(cfg.computeUnitLimit) || 0,
+      computeUnitPriceMicroLamports: Number(cfg.computeUnitPriceMicroLamports) || 0,
       createAtasInTx: !!cfg.createAtasInTx,
       dynamicCompute: !!cfg.dynamicCompute,
       maxTxSizeBytes: Number(cfg.maxTxSizeBytes || 0) || undefined,
+    };
+    const detBody: ArbDetectorConfigPublic = {
       near_miss_enable: !!cfg.near_miss_enable,
-      debug_top_n: Number(cfg.debug_top_n||0),
-    } as any;
+      debug_top_n: Number(cfg.debug_top_n || 0),
+    };
     try {
-      const r = await fetch(`${apiBase}${ROUTES.arb.config}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-      if (!r.ok) throw new Error('Failed to save');
+      const [r1, r2] = await Promise.all([
+        fetch(`${apiBase}${ROUTES.exec.config}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(execBody) }),
+        fetch(`${apiBase}${ROUTES.arb.config}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(detBody) }),
+      ]);
+      if (!r1.ok || !r2.ok) throw new Error('Failed to save');
       onClose();
     } catch (e: any) {
       setError(String(e?.message || e));

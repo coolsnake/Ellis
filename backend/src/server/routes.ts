@@ -62,7 +62,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   api.use(createArbRouter(io));
 
   // --- Direct execution config and routes ---
-  api.get('/arb/config', async (_req, res) => {
+  api.get('/exec/config', async (_req, res) => {
     try {
       const { loadExecConfig } = await import('./execConfigStore.js');
       const cfg = await loadExecConfig();
@@ -72,7 +72,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     }
   });
 
-  api.put('/arb/config', async (req, res) => {
+  api.post('/exec/config', async (req, res) => {
     try {
       const body = req.body || {};
       const { saveExecConfig } = await import('./execConfigStore.js');

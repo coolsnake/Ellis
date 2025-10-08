@@ -39,3 +39,4 @@ frontend/dist
 
 backend/backendlog.txt
 backend/arbrs.txt
+frontend/package-lock.json

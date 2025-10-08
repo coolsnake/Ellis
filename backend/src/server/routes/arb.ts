@@ -6,6 +6,16 @@ import { writeJson } from '../../utils/fs.js';
 
 export function createArbRouter(io: SocketIOServer): Router {
   const api = Router();
+  api.get('/arb/config', async (_req, res) => {
+    try {
+      const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
+      const r = await fetch(`${host}/config`).catch(() => null);
+      res.status(r?.status || 503).json(r ? await r.json().catch(() => ({})) : { ok: false });
+    } catch {
+      res.status(503).json({ ok: false });
+    }
+  });
+
 
   api.get('/arb/graph/version', async (_req, res) => {
     try {
