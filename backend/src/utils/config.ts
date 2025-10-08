@@ -150,7 +150,7 @@ export const CONFIG = {
     enabledLogCategories: undefined as undefined | string[],
     // New structured logging controls (optional). When present, these take precedence.
     log: {
-      level: (process.env.LOG_LEVEL as any) || 'debug',
+      level: (process.env.LOG_LEVEL as any) || 'info',
       // Per-category minimum levels. Keys can be nested like "pretrade.sim".
       categories: {
         api: 'debug',
@@ -181,7 +181,7 @@ export const CONFIG = {
           categories: { api: 'debug', 'pretrade.sim': 'info', strategy: 'info', drift: 'warn', jupiter: 'warn' }
         },
         ops: {
-          categories: { api: 'warn', pretrade: 'warn', 'strategy.grid': 'info', graph: 'info', pools: 'info', arb: 'info', opportunity: 'info', tx: 'info', drift: 'info' }
+          categories: { api: 'warn', pretrade: 'warn', 'strategy.grid': 'info', graph: 'info', pools: 'info', arb: 'info', opportunity: 'info', tx: 'info', drift: 'info', strategy: 'info',  }
         },
         research: {
           categories: { arb: 'debug', graph: 'debug', pools: 'info', api: 'debug', 'drift.dlob': 'info' }
@@ -284,7 +284,7 @@ export const CONFIG = {
     maxHttpRetries: Number(process.env.METEORA_HTTP_MAX_RETRIES || 2),
     httpBackoffMs: Number(process.env.METEORA_HTTP_BACKOFF_MS || 500),
     // Canonicalization policy for Meteora only (default: keep incoming orientation)
-    canonicalizePairs: (process.env.METEORA_CANONICALIZE_PAIRS as any) || 'none',
+    canonicalizePairs: (process.env.METEORA_CANONICALIZE_PAIRS as any) || 'lex',
     // TVL filtering (raw liquidity proxies)
     minClmmLiquidity: Number(process.env.METEORA_MIN_CLMM_LIQUIDITY || 0),
     // Optional conservative prefiltering by universe

@@ -244,6 +244,75 @@ export function diffNormalizedPools(prev: PoolsPayload | null | undefined, next:
 
 export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> { return normalizeRaydiumPoolsImpl(raw); }
 
+// Synchronous default normalizer for tests that import without awaiting.
+// Mirrors core fields from normalizeRaydiumPools but avoids async imports and network calls.
+export function defaultNormalizeRaydiumPools(raw: any): PoolsPayload {
+  const now = Date.now();
+  const amm: any[] = [];
+  const clmm: any[] = [];
+  const arr: any[] = Array.isArray(raw?.data?.data)
+    ? raw.data.data
+    : (Array.isArray(raw?.data) ? raw.data : (Array.isArray(raw) ? raw : []));
+  const toMint = (v: any): string => {
+    if (!v) return '';
+    if (typeof v === 'string') return v;
+    if ((v as any)?.address) return String((v as any).address);
+    return '';
+  };
+  const toFeeBps = (v: any): number => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 30;
+    return n <= 1 ? Math.round(n * 10_000) : Math.round(n);
+  };
+  for (const it of (arr || [])) {
+    if (!it) continue;
+    const id = String(it?.id || it?.address || it?.pool_id || it?.ammId || '');
+    const mintA = toMint(it?.mintA);
+    const mintB = toMint(it?.mintB);
+    if (!id || !mintA || !mintB) continue;
+    const typeStr = String(it?.type || it?.poolType || '').toLowerCase();
+    const pooltype = Array.isArray((it as any)?.pooltype) ? (it as any).pooltype : [];
+    const isClmm = typeStr.includes('concentrated') || pooltype.map((s: any) => String(s).toLowerCase()).includes('clmm');
+    const fee_bps = toFeeBps((it as any)?.feeRate ?? (it as any)?.tradeFeeRate ?? (it as any)?.feeBps ?? (it as any)?.tradeFeeBps);
+    const decA = Number((it?.mintA as any)?.decimals);
+    const decB = Number((it?.mintB as any)?.decimals);
+    const price = Number((it as any)?.price);
+    const tvl = Number((it as any)?.tvl);
+    const mintAmountA = Number((it as any)?.mintAmountA);
+    const mintAmountB = Number((it as any)?.mintAmountB);
+    if (isClmm) {
+      const tick = Number((it as any)?.tickSpacing ?? (it as any)?.config?.tickSpacing ?? 0);
+      const sqrt = Number((it as any)?.sqrtPriceX64 ?? (it as any)?.sqrtPrice ?? 0);
+      const liquidity = Number((it as any)?.liquidity ?? 0);
+      const tvl_usd = Number.isFinite(tvl) && tvl > 0 ? tvl : undefined;
+      // Derive A per 1 B from sqrt if possible
+      let price_from_sqrt = 0;
+      if (sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
+        const two64 = Math.pow(2, 64);
+        const ratio = sqrt / two64;
+        const cand = Math.pow(10, (decB as number) - (decA as number)) / (ratio * ratio);
+        price_from_sqrt = Number.isFinite(cand) && cand > 0 ? cand : 0;
+      }
+      const px = price_from_sqrt > 0 ? price_from_sqrt : (Number(price) > 0 ? Number(price) : 0);
+      clmm.push({ id, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps, sqrt_price_x64: Number.isFinite(sqrt) ? sqrt : 0, liquidity: Number.isFinite(liquidity) ? liquidity : 0, tick_spacing: Number.isFinite(tick) ? tick : 0, updated_ms: now, price_a_per_b: px > 0 ? px : undefined, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, pool_kind: 'clmm', tvl_usd } as any);
+    } else {
+      const tvl_usd = Number.isFinite(tvl) && tvl > 0 ? tvl : undefined;
+      // Treat mintAmountA/B as whole amounts (legacy API behavior in tests)
+      const amount_a_whole = Number.isFinite(mintAmountA) ? mintAmountA : undefined;
+      const amount_b_whole = Number.isFinite(mintAmountB) ? mintAmountB : undefined;
+      const price_res = (Number.isFinite(amount_a_whole as any) && Number.isFinite(amount_b_whole as any) && (amount_b_whole as number) > 0)
+        ? ((amount_a_whole as number) / (amount_b_whole as number))
+        : 0;
+      const price_res_decs = (Number.isFinite(decA) && Number.isFinite(decB) && Number.isFinite(mintAmountA) && Number.isFinite(mintAmountB) && (mintAmountB as number) > 0)
+        ? ((mintAmountA as number) / Math.pow(10, decA as number)) / ((mintAmountB as number) / Math.pow(10, decB as number))
+        : 0;
+      const px = price_res > 0 ? price_res : (price_res_decs > 0 ? price_res_decs : (Number(price) > 0 ? Number(price) : 0));
+      amm.push({ id, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps, price_a_per_b: Number.isFinite(px) ? px : 0, updated_ms: now, pool_kind: 'amm', tvl_usd, amount_a_whole, amount_b_whole, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined } as any);
+    }
+  }
+  return { amm, clmm } as any;
+}
+
 let rayTimer: any | undefined;
 let orcaTimer: any | undefined;
 let meteoraTimer: any | undefined;

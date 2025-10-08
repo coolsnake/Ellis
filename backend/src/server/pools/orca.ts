@@ -3,7 +3,7 @@ import { emit } from '../realtime.js';
 import { CONFIG } from '../../utils/config.js';
 import { writeJson, joinPath } from '../../utils/fs.js';
 import type { ClmmPool, PoolsPayload } from './types.js';
-import { canonicalizePairs } from './common.js';
+import { canonicalizePairs, canonicalizePairsLex } from './common.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
 
 export async function fetchOrcaHttp(): Promise<any> {
@@ -232,8 +232,12 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
       }
     }
   }
-  // Canonicalize pair ordering consistently across sources (A<=B lex), inverting price when needed
-  const clmmCanon = canonicalizePairs(clmm);
+  // Canonicalize pair ordering per-source policy (default: none for Orca)
+  let clmmCanon = clmm;
+  try {
+    const mode = String(((CONFIG as any)?.orca?.canonicalizePairs || 'none'));
+    if (mode === 'lex') clmmCanon = canonicalizePairsLex(clmm);
+  } catch {}
   if (!clmm.length) {
     logger.warn('orca.http normalized 0 clmm', { hint: 'Check inspect log for field presence and pool types' });
   }

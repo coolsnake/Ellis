@@ -231,3 +231,6 @@ arb-rs/target/release/.fingerprint/arb-rs-9606e769fe65c6ad/bin-arb-rs.json
 arb-rs/target/release/.fingerprint/arb-rs-9606e769fe65c6ad/bin-arb-rs
 /arb-rs/target
 frontend/package-lock.json
+backend/cache/raydium-raw-sample.json
+backend/cache/orca-raw-sample.json
+backend/cache/meteora-raw-sample.json

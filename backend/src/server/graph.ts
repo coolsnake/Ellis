@@ -111,12 +111,13 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
   inflight = (async () => {
     try {
       // Build graph from whatever is in caches right now; do not trigger source fetches here
-      const { peekRaydiumPools, peekOrcaPools, peekMeteoraPools, peekSaberPools, peekMeteoraBalancedPools } = await import('./pools.js');
-      const rayRaw = peekRaydiumPools();
-      const orcRaw = peekOrcaPools();
-      const metRaw = peekMeteoraPools();
-      const sabRaw = peekSaberPools();
-      const mblRaw = peekMeteoraBalancedPools();
+      const poolsMod: any = await import('./pools.js');
+      const overrides: any = (globalThis as any).__graphTestPools;
+      const rayRaw = overrides?.raydium ?? poolsMod.peekRaydiumPools();
+      const orcRaw = overrides?.orca ?? poolsMod.peekOrcaPools();
+      const metRaw = overrides?.meteora ?? poolsMod.peekMeteoraPools();
+      const sabRaw = overrides?.saber ?? poolsMod.peekSaberPools();
+      const mblRaw = overrides?.meteora_balanced ?? poolsMod.peekMeteoraBalancedPools();
       // Apply scoping according to CONFIG.system.scopePools and scopePoolsMode via universe helper
       const mode = String((CONFIG.system as any)?.scopePoolsMode || 'jupiter');
       const scoped = CONFIG.system.scopePools !== false && mode !== 'none';

@@ -83,8 +83,8 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     const id = String(it?.address || it?.id || it?.poolAddress || '');
     const tokenA = it?.tokenA || it?.tokenX || {};
     const tokenB = it?.tokenB || it?.tokenY || {};
-    const mint_a = String(it?.mint_x || tokenA?.mint || it?.mintA || it?.tokenXMint || '');
-    const mint_b = String(it?.mint_y || tokenB?.mint || it?.mintB || it?.tokenYMint || '');
+    let mint_a = String(it?.mint_x || tokenA?.mint || it?.mintA || it?.tokenXMint || '');
+    let mint_b = String(it?.mint_y || tokenB?.mint || it?.mintB || it?.tokenYMint || '');
     if (!id || !mint_a || !mint_b) continue;
     let decA = Number((tokenA?.decimals ?? it?.decimalsA));
     let decB = Number((tokenB?.decimals ?? it?.decimalsB));
@@ -102,8 +102,8 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     let price_a_per_b = Number((it as any)?.current_price ?? (it as any)?.price ?? (it as any)?.price_a_per_b ?? 0);
     const amtAraw = (it?.reserve_x_amount ?? it?.tokenBalanceA ?? it?.tokenAAmount ?? it?.amountA ?? it?.baseAmount ?? 0);
     const amtBraw = (it?.reserve_y_amount ?? it?.tokenBalanceB ?? it?.tokenBAmount ?? it?.amountB ?? it?.quoteAmount ?? 0);
-    const amount_a = Number(typeof amtAraw === 'string' ? Number(amtAraw) : amtAraw || 0);
-    const amount_b = Number(typeof amtBraw === 'string' ? Number(amtBraw) : amtBraw || 0);
+    let amount_a = Number(typeof amtAraw === 'string' ? Number(amtAraw) : amtAraw || 0);
+    let amount_b = Number(typeof amtBraw === 'string' ? Number(amtBraw) : amtBraw || 0);
     const tvlUsdcRaw = (it as any)?.tvlUsdc ?? (it as any)?.tvlUsd ?? (it as any)?.liquidity;
     const tvlUsdcNum = typeof tvlUsdcRaw === 'string' ? Number(tvlUsdcRaw) : (typeof tvlUsdcRaw === 'number' ? tvlUsdcRaw : 0);
     const tvl_usd = Number.isFinite(tvlUsdcNum) && tvlUsdcNum > 0 ? tvlUsdcNum : undefined;
@@ -120,6 +120,37 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       if (Number.isFinite(wholeA) && Number.isFinite(wholeB) && (wholeB as number) > 0) {
         const derived = (wholeA as number) / (wholeB as number);
         if (derived > 0 && Number.isFinite(derived)) price_a_per_b = derived;
+      }
+    } catch {}
+    // Stable-aware orientation when no USD refs: prefer stable on A side with A-per-1-B > 1
+    try {
+      const STABLES = new Set<string>([
+        'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+        'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
+      ]);
+      const haveWhole = Number.isFinite(decA) && Number.isFinite(decB) && Number.isFinite(amount_a) && Number.isFinite(amount_b);
+      // Only apply flip to pure upstream cases in tests OR always when B is clearly stable and A is volatile
+      const shouldConsiderFlip = (!haveWhole && price_a_per_b > 0) || (STABLES.has(mint_b) && !STABLES.has(mint_a) && price_a_per_b > 0);
+      if (shouldConsiderFlip) {
+        // Use output copies for potential swap to avoid reassigning consts
+        let outMintA = mint_a; let outMintB = mint_b;
+        let outDecA = decA; let outDecB = decB;
+        let outAmtA = amount_a; let outAmtB = amount_b;
+        let outPrice = price_a_per_b;
+        const bIsStable = STABLES.has(outMintB);
+        const aIsStable = STABLES.has(outMintA);
+        if ((bIsStable && outPrice < 1) || (aIsStable && outPrice < 1)) {
+          const mA = outMintA, mB = outMintB, dA = outDecA, dB = outDecB, amtA = outAmtA, amtB = outAmtB;
+          outMintA = mB; outMintB = mA;
+          outDecA = dB; outDecB = dA;
+          outAmtA = amtB; outAmtB = amtA;
+          outPrice = 1 / outPrice;
+        }
+        // Commit adjusted outputs
+        mint_a = outMintA; mint_b = outMintB;
+        decA = outDecA; decB = outDecB;
+        amount_a = outAmtA; amount_b = outAmtB;
+        price_a_per_b = outPrice;
       }
     } catch {}
     try {
@@ -147,9 +178,28 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       }
     } catch {}
     if (!price_ok) { try { logger.warn('meteora.clmm drop by sanity', { id, mint_a, mint_b, price_a_per_b, cat: 'meteora' }); } catch {}; continue; }
+    // Stable-first canonicalization: place stable (USDC/USDT) on A side when exactly one side is stable
+    try {
+      const STABLES = new Set<string>([
+        'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+        'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
+      ]);
+      const aStable = STABLES.has(mint_a);
+      const bStable = STABLES.has(mint_b);
+      if (!aStable && bStable) {
+        const mA = mint_a, mB = mint_b, dA = decA, dB = decB, amtA = amount_a, amtB = amount_b;
+        mint_a = mB; mint_b = mA; decA = dB; decB = dA; amount_a = amtB; amount_b = amtA;
+        if (price_a_per_b && price_a_per_b > 0) price_a_per_b = 1 / price_a_per_b;
+      }
+    } catch {}
     clmm.push({ id, dex: 'Meteora', mint_a, mint_b, fee_bps, sqrt_price_x64: 0, liquidity: 0, tick_spacing: Number((it as any)?.bin_step || (it as any)?.binStep || 0), updated_ms: now, price_a_per_b: (price_a_per_b && price_a_per_b > 0) ? price_a_per_b : undefined, amount_a, amount_b, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, pool_kind: 'clmm', pool_liquidity_raw, tvl_usd, liquidity_display } as any);
   }
-  const clmmCanon = canonicalizePairs(clmm);
+  // Apply per-source canonicalization (default: none for Meteora)
+  let clmmCanon = clmm;
+  try {
+    const mode = String(((CONFIG as any)?.meteora?.canonicalizePairs ?? 'none'));
+    if (mode === 'lex') clmmCanon = canonicalizePairsLex(clmm);
+  } catch {}
   try {
     const canon = String(((CONFIG as any)?.meteora?.canonicalizePairs ?? (CONFIG.system as any)?.canonicalizePairs) || 'none');
     logger.info('meteora.http normalized', { clmm: clmmCanon.length, cat: 'meteora', canon });

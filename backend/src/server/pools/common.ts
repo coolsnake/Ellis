@@ -21,16 +21,20 @@ function swapABFields<T extends Record<string, any>>(obj: T): T {
   const touched = new Set<string>();
   for (const k of keys) {
     if (touched.has(k)) continue;
-    if (k.endsWith('_a')) {
-      const kb = k.slice(0, -2) + '_b';
-      if (kb in out && !touched.has(kb)) {
-        const tmp = out[k]; out[k] = out[kb]; out[kb] = tmp;
-        touched.add(k); touched.add(kb);
-      }
+    if (k === 'mint_a' || k === 'mint_b') continue;
+    let kb: string | null = null;
+    if (k.includes('_a_')) {
+      kb = k.replace('_a_', '_b_');
+    } else if (k.endsWith('_a')) {
+      kb = k.slice(0, -2) + '_b';
+    }
+    if (kb && (kb in out) && kb !== 'mint_b' && !touched.has(kb)) {
+      const tmp = out[k]; out[k] = out[kb]; out[kb] = tmp;
+      touched.add(k); touched.add(kb);
     }
   }
   // Common alias pairs which may not follow the exact *_a/_b suffix pattern across sources
-  const aliasPairs: Array<[string,string]> = [['account_a','account_b'], ['source_account','target_account']];
+  const aliasPairs: Array<[string,string]> = [['source_account','target_account']];
   for (const [ka, kb] of aliasPairs) {
     if (ka in out && kb in out) {
       const tmp = out[ka]; out[ka] = out[kb]; out[kb] = tmp;
@@ -42,12 +46,7 @@ function swapABFields<T extends Record<string, any>>(obj: T): T {
 export function canonicalizePairsLex<T extends { mint_a: string; mint_b: string; price_a_per_b?: number }>(
   pools: T[]
 ): T[] {
-  try {
-    const mode = String((CONFIG.system as any)?.canonicalizePairs || 'none');
-    if (mode !== 'lex') return pools;
-  } catch {
-    return pools;
-  }
+  // Always enforce lex ordering here, independent of CONFIG.
   const out: T[] = [];
   for (const p of pools) {
     if (String(p.mint_a) <= String(p.mint_b)) { out.push(p); continue; }

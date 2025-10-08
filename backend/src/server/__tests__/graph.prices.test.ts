@@ -10,9 +10,8 @@ describe('graph prices orientation - Raydium AMM forward uses normalized', () =>
     const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
     const SOL = 'So11111111111111111111111111111111111111112';
     // Mock pools provider
-    const poolsMod = await import('../pools.js');
-    const origPeekRay = (poolsMod as any).peekRaydiumPools;
-    (poolsMod as any).peekRaydiumPools = () => ({
+    const poolsMod: any = await import('../pools.js');
+    const fake: any = {
       amm: [{
         id: 'ray-amm-sol-usdc', dex: 'Raydium', pool_kind: 'amm',
         mint_a: USDC, mint_b: SOL,
@@ -24,12 +23,13 @@ describe('graph prices orientation - Raydium AMM forward uses normalized', () =>
         liquidity_display: 80_0000,
       }],
       clmm: [],
-    });
+    };
+    (globalThis as any).__graphTestPools = { raydium: fake, orca: { amm: [], clmm: [] }, meteora: { amm: [], clmm: [] } };
     // Mock Orca/Meteora providers empty
     const origPeekOrc = (poolsMod as any).peekOrcaPools;
     const origPeekMet = (poolsMod as any).peekMeteoraPools;
-    (poolsMod as any).peekOrcaPools = () => ({ amm: [], clmm: [] });
-    (poolsMod as any).peekMeteoraPools = () => ({ amm: [], clmm: [] });
+    try { (poolsMod as any).peekOrcaPools = () => ({ amm: [], clmm: [] }); } catch {}
+    try { (poolsMod as any).peekMeteoraPools = () => ({ amm: [], clmm: [] }); } catch {}
 
     try {
       const snap = await getGraphSnapshot(true);
@@ -49,9 +49,9 @@ describe('graph prices orientation - Raydium AMM forward uses normalized', () =>
       }
     } finally {
       // Restore
-      (poolsMod as any).peekRaydiumPools = origPeekRay;
-      (poolsMod as any).peekOrcaPools = origPeekOrc;
-      (poolsMod as any).peekMeteoraPools = origPeekMet;
+      (globalThis as any).__graphTestPools = undefined;
+      try { (poolsMod as any).peekOrcaPools = origPeekOrc; } catch {}
+      try { (poolsMod as any).peekMeteoraPools = origPeekMet; } catch {}
     }
   });
 });
