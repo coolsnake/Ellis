@@ -240,6 +240,9 @@ async fn main() -> anyhow::Result<()> {
                         s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.graph.diff: applied add={} upd={} rem={}", add_ct, upd_ct, rem_ct) });
                         tracing::info!(add=add_ct, upd=upd_ct, rem=rem_ct, "arb.graph.diff: applied");
                         let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
+                    } else {
+                        // Explicitly log that there were no pending graph updates for this tick
+                        tracing::info!("arb.graph.diff: none pending");
                     }
                     if let Some(v) = s.pending_graph_version.take() { s.last_graph_version = v; }
                     if let Some(t) = s.pending_graph_ts.take() { s.last_graph_ts = t; }
@@ -966,6 +969,15 @@ async fn main() -> anyhow::Result<()> {
                     } else {
                         s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.detect.done ms={} opps=0", det_ms) });
                         tracing::info!(det_ms, opps = 0u64, "arb.detect.done");
+                        // Also emit a concise near-miss summary if available when no opportunities detected
+                        if let (Some(nm), Some(shortfall)) = (s.near_miss.clone(), s.near_miss_shortfall_bps) {
+                            let path = nm.path.join("->");
+                            let hops = nm.hop_count.unwrap_or(nm.path.len());
+                            let net_bps = nm.net_bps.unwrap_or(nm.profit_bps);
+                            tracing::info!(shortfall_bps = shortfall, net_bps, hops, path = %path, "arb.near_miss.summary");
+                            s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.near_miss.summary shortfall_bps={} net_bps={} hops={} path={}", shortfall, net_bps, hops, path) });
+                            let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
+                        }
                     }
                     let len = s.events.len();
                     if len > 200 { s.events.drain(0..(len-200)); }

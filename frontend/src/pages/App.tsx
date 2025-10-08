@@ -1367,13 +1367,7 @@ export const App: React.FC = () => {
               >
                 Shutdown
               </button>
-              <button
-                onClick={() => setShowGraph((v) => !v)}
-                className="px-4 py-2 rounded text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white"
-                title="Toggle Graph Visualizer"
-              >
-                {showGraph ? 'Hide Graph' : 'Show Graph'}
-              </button>
+              
             </div>
           </div>
           {(() => {
@@ -1588,7 +1582,7 @@ export const App: React.FC = () => {
           )}
         >
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <ArbitragePanel apiBase={apiBase} socket={socketRef.current} />
+            <ArbitragePanel apiBase={apiBase} socket={socketRef.current} showGraph={showGraph} onToggleGraph={()=>setShowGraph(v=>!v)} />
             <ArbitrageMetrics apiBase={apiBase} paused={showArbConfig || showSystemConfig || showFeeConfig} socket={socketRef.current} />
           </div>
           {showGraph ? (

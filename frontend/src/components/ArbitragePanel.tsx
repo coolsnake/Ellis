@@ -49,7 +49,7 @@ type OpportunitiesSummary = {
   near_misses?: Opportunity[];
 };
 
-export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ apiBase, socket }) => {
+export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph: boolean; onToggleGraph: () => void }> = ({ apiBase, socket, showGraph, onToggleGraph }) => {
   const [items, setItems] = useState<Opportunity[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -210,6 +210,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
             // Best-effort also refresh opportunities snapshot
             try { await fetchOpps(); } catch {}
           }}>Refresh Metrics</button>
+          <button className="px-2 py-1 border rounded" onClick={onToggleGraph} title="Toggle Graph Visualizer">{showGraph ? 'Hide Graph' : 'Show Graph'}</button>
           {loading ? <span className="text-xs opacity-70 animate-pulse">Refreshing…</span> : null}
         </div>
       </div>
@@ -414,17 +415,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any }> = ({ ap
         </div>
       )}
       {items.length === 0 && !firstLoad && (!summary?.near_misses || summary.near_misses.length === 0) && <div className="text-sm opacity-70">No opportunities</div>}
-      {summary?.near_miss && typeof summary?.near_miss_shortfall_bps === 'number' && (summary.near_miss_shortfall_bps as number) > 0 && (summary.near_miss.hop_count ?? summary.near_miss.path.length) >= 3 && (
-        <div className="p-2 border rounded bg-yellow-900/20 text-xs mb-3">
-          <div className="font-semibold mb-1">Closest Path{summary?.near_miss_shortfall_bps !== undefined ? ` (below threshold by ${fmt(summary?.near_miss_shortfall_bps)} bps)` : ''}</div>
-          <div className="font-mono mb-1">{(summary.near_miss.path || []).map(m => tokenMap[m] || (m.length > 6 ? `${m.slice(0,4)}…${m.slice(-4)}` : m)).join(' → ')}</div>
-          <div>Profit: {fmtPctFromBps(summary.near_miss.profit_bps)} · Net: {fmtPctFromBps(summary.near_miss.net_bps || summary.near_miss.profit_bps)}</div>
-          <div>Hops: {summary.near_miss.hop_count ?? summary.near_miss.path.length} · Links: {summary.near_miss.link_edges_used ?? 0} · Min Edge Liq: {fmt(summary.near_miss.min_edge_liquidity, 2)}</div>
-          {summary.near_miss.bottleneck && (
-            <div>Bottleneck: {summary.near_miss.bottleneck.dex} {summary.near_miss.bottleneck.from} → {summary.near_miss.bottleneck.to} · rate {fmt(summary.near_miss.bottleneck.rate, 6)} · liq {fmt(summary.near_miss.bottleneck.liquidity, 2)}</div>
-          )}
-        </div>
-      )}
+      {/* Duplicate near-miss summary removed (detailed version rendered above when items.length===0) */}
       <div className="space-y-2">
         {items.map((op, idx) => (
           <div key={idx} className="p-2 border rounded bg-black/20">

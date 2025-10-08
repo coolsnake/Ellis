@@ -101,13 +101,31 @@ export function createArbRouter(io: SocketIOServer): Router {
       const { resolveDirectPlan } = await import('../../execution/resolver/index.js');
       const { ResolveDirectSchema } = await import('../routes/schemas.js');
       const { buildDirectArbTx } = await import('../../execution/builder/tx.js');
+      const { assembleAndSend } = await import('../../execution/sender.js');
       const { addTxRecord } = await import('../txHistory.js');
+      const { loadExecConfig } = await import('../execConfigStore.js');
+
       const input = req.body || {};
       const parsed = ResolveDirectSchema.parse(input);
       const plan = input?.plan && Array.isArray(input.plan?.hops) ? input.plan : await resolveDirectPlan(parsed as any, {} as any);
       const built = await buildDirectArbTx(plan, [], {} as any);
-      await addTxRecord({ id: Math.random().toString(36).slice(2,10), timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature: null, status: 'sim_ok' });
-      res.json({ signature: null, ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
+
+      const id = Math.random().toString(36).slice(2,10);
+      await addTxRecord({ id, timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature: null, status: 'sim_ok' });
+
+      const execCfg = await loadExecConfig();
+      const mode = (execCfg.mode || 'simulate');
+      if (mode !== 'direct') {
+        return res.json({ mode, signature: null, ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
+      }
+
+      const sendRes = await assembleAndSend(built.tx.instructions, {
+        computeUnitLimit: execCfg.computeUnitLimit,
+        computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
+      } as any);
+      const signature = sendRes.signature;
+      await addTxRecord({ id, timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature, status: signature ? 'send_ok' : 'send_err' });
+      res.json({ mode, signature, ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
     }

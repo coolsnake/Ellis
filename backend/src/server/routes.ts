@@ -38,8 +38,7 @@ import { createArbRouter } from './routes/arb.js';
 
 export function registerRoutes(app: Express, io: SocketIOServer): void {
   const api = Router();
-  // Optionally auto-start periodic pool refresh loop (controlled by config)
-  try { if ((CONFIG as any)?.system?.autoStartPools) { startRaydiumRefreshLoop(); } } catch {}
+  // Removed auto-start of pool refresh loop; use explicit /arb/pools/refresh or /arb/pools/subscribe
   // Arb service observability state
   let lastArbHealthStatus: string | null = null;
   const arbLatency: { metrics: number[]; opps: number[]; lastSummaryAt: number } = { metrics: [], opps: [], lastSummaryAt: 0 };
