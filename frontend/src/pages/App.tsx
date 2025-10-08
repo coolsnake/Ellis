@@ -189,14 +189,8 @@ export const App: React.FC = () => {
   useEffect(() => {
     if (!credentials) return;
     // strategies and activity updates remain here for now
-    const socket = io(wsUrl, {
-      path: '/socket.io',
-      transports: ['websocket', 'polling'],
-      auth: { user: credentials.user, pass: credentials.pass },
-    });
-    socket.on('connect', () => setIsConnected(true));
-    socket.on('disconnect', () => setIsConnected(false));
-    socket.on('strategies-update', async (list) => {
+    // strategies/activity updates are now handled via socket context hooks
+    const onStrategiesUpdate = async (list: any[]) => {
       const base = Array.isArray(list) ? list : [];
       try {
             const resp = await fetch(`${apiBase}${ROUTES.strategies.leveragedGrid.status}`);
@@ -231,9 +225,9 @@ export const App: React.FC = () => {
       } catch {
         setStrategies(base || []);
       }
-    });
-    socket.on('positions', (p) => setPositions(p || []));
-    socket.on('grid-positions', (payload: any) => {
+    };
+    const onPositions = (p: any) => setPositions(p || []);
+    const onGridPositions = (payload: any) => {
       const updates = Array.isArray(payload) ? payload : [payload];
       setGridPositionsSummary((prev) => {
         const next = new Map<string, { strategy: string; fromSymbol: string; toSymbol: string; count: number; totalFromToken: number; avgOpenMs: number }>();
@@ -255,9 +249,9 @@ export const App: React.FC = () => {
         }
         return Array.from(next.values());
       });
-    });
-    socket.on('wallet-history', (h) => setWalletHistory(h || []));
-    socket.on('activity', (a) => {
+    };
+    const onWalletHistory = (h: any) => setWalletHistory(h || []);
+    const onActivity = (a: any) => {
       setActivity(a || { status: 'idle', trades: [] });
       const name = (a && (a as any).strategy) || 'default';
       setActivitiesByStrategy((prev) => ({
@@ -286,8 +280,9 @@ export const App: React.FC = () => {
           })(),
         },
       }));
-    });
-    return () => { socket.disconnect(); };
+    };
+    // No direct socket binding here; left for compatibility if needed in future
+    return () => {};
   }, [wsUrl, credentials]);
 
   // Listen for clear events from individual LogWindow components
