@@ -402,6 +402,20 @@ server.listen(CONFIG.port, () => {
           socket.on('graph-highlight', async (payload: any) => {
             try {
               const ids: string[] = (payload?.edgeIds || []).filter((x: any) => typeof x === 'string');
+              const pairs: any[] = Array.isArray((payload as any)?.pairs) ? (payload as any).pairs : [];
+              // Broadcast sanitized highlight payload to all clients for propagation
+              try {
+                const safePayload: any = {};
+                if (ids && ids.length) safePayload.edgeIds = ids;
+                if (pairs && pairs.length) {
+                  safePayload.pairs = pairs
+                    .filter(p => p && typeof p.source === 'string' && typeof p.target === 'string')
+                    .map(p => ({ source: String(p.source), target: String(p.target), ...(p.dex ? { dex: String(p.dex) } : {}) }));
+                }
+                if ((safePayload.edgeIds && safePayload.edgeIds.length) || (safePayload.pairs && safePayload.pairs.length)) {
+                  io.emit('graph-highlight', safePayload);
+                }
+              } catch {}
               if (!ids.length) return;
               const { peekOrcaPools, peekRaydiumPools } = await import('./pools.js');
               const orc = peekOrcaPools();

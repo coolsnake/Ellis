@@ -19,7 +19,6 @@ import { addWalletHistory, getWalletHistory } from './walletHistory.js';
 import { apiStart, apiStop, apiReset, setTargetTickTimeMs } from '../jupiter/rateLimiter.js';
 // priceFeed is started in index.ts and broadcasts via websocket
 import { getRaydiumPoolsNormalized, getOrcaPoolsCached, startRaydiumRefreshLoop, getPoolsMetrics, getMeteoraPoolsCached } from './pools.js';
-import { getGraphSnapshot, findPath } from './graph.js';
 import { writeSessionLogAndClear } from '../utils/sessionLogs.js';
 import { ResolveDirectSchema } from './routes/schemas.js';
 import { createSystemRouter } from './routes/system.js';
@@ -202,16 +201,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     }
   });
 
-    // Graph version endpoint for arb-rs freshness checks
-  api.get('/arb/graph/version', async (_req, res) => {
-    try {
-      const { getGraphVersion } = await import('./graph.js');
-      const v = getGraphVersion();
-      res.json(v);
-    } catch (e: any) {
-      res.status(200).json({ version: 0, timestamp: 0 });
-    }
-  });
+  // (removed) Duplicate /arb/graph/version route; use routes/arb.ts version
 
     // Background: poll arb metrics and emit log snapshots
   try {

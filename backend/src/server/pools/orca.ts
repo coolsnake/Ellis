@@ -14,6 +14,35 @@ export async function fetchOrcaHttp(): Promise<any> {
   const size = Number(CONFIG.orca?.pageSize ?? CONFIG.orca?.size ?? 500);
   const params: Record<string, string> = {};
   if (Number.isFinite(size as any) && size > 0) params.size = String(size);
+  // Optional TVL/liquidity sorting & filters (only include if configured)
+  try {
+    const sortBy = (CONFIG.orca as any)?.sortBy;
+    const sortDirection = (CONFIG.orca as any)?.sortDirection;
+    const minTvl = (CONFIG.orca as any)?.minTvl;
+    const minVolume = (CONFIG.orca as any)?.minVolume;
+    const minLockedLiquidityPercent = (CONFIG.orca as any)?.minLockedLiquidityPercent;
+    const hasRewards = (CONFIG.orca as any)?.hasRewards;
+    const hasWarning = (CONFIG.orca as any)?.hasWarning;
+    const hasAdaptiveFee = (CONFIG.orca as any)?.hasAdaptiveFee;
+    const isWavebreak = (CONFIG.orca as any)?.isWavebreak;
+    const token = (CONFIG.orca as any)?.token;
+    const tokensBothOf = (CONFIG.orca as any)?.tokensBothOf;
+    const addresses = (CONFIG.orca as any)?.addresses;
+    const includeBlocked = (CONFIG.orca as any)?.includeBlocked;
+    if (sortBy) params.sortBy = String(sortBy);
+    if (sortDirection) params.sortDirection = String(sortDirection);
+    if (minTvl != null) params.minTvl = String(minTvl);
+    if (minVolume != null) params.minVolume = String(minVolume);
+    if (minLockedLiquidityPercent != null) params.minLockedLiquidityPercent = String(minLockedLiquidityPercent);
+    if (hasRewards != null) params.hasRewards = String(hasRewards);
+    if (hasWarning != null) params.hasWarning = String(hasWarning);
+    if (hasAdaptiveFee != null) params.hasAdaptiveFee = String(hasAdaptiveFee);
+    if (isWavebreak != null) params.isWavebreak = String(isWavebreak);
+    if (token) params.token = String(token);
+    if (tokensBothOf) params.tokensBothOf = String(tokensBothOf);
+    if (addresses) params.addresses = String(addresses);
+    if (includeBlocked != null) params.includeBlocked = String(includeBlocked);
+  } catch {}
   const buildUrl = (cursor?: string) => {
     const sp = new URLSearchParams(params);
     if (cursor) sp.append('cursor', cursor);

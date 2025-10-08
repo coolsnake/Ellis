@@ -48,11 +48,32 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
     }
   });
 
-  api.get('/arb/pools/orca', async (_req, res) => {
+  api.get('/arb/pools/orca', async (req, res) => {
     try {
       const { getOrcaPoolsCached } = await import('../pools.js');
       const pools = await getOrcaPoolsCached(false);
       let out = pools;
+      // Optional harmonized TVL filters/sorting via query: minUsd, limit, sort=tvl
+      try {
+        const q = (req.query || {}) as { minUsd?: string; limit?: string; sort?: string };
+        const val = (p: any) => {
+          const tvl = Number((p as any)?.tvl_usd ?? 0);
+          if (Number.isFinite(tvl) && tvl > 0) return tvl;
+          const disp = Number((p as any)?.liquidity_display ?? 0);
+          if (Number.isFinite(disp) && disp > 0) return disp;
+          const liq = Number((p as any)?.liquidity ?? (p as any)?.pool_liquidity_raw ?? (p as any)?.liquidity_base ?? 0);
+          return Number.isFinite(liq) && liq > 0 ? liq : 0;
+        };
+        const minUsd = Math.max(0, Number(q.minUsd ?? NaN));
+        const limit = Math.max(0, Number(q.limit ?? NaN));
+        const sortTvl = String(q.sort || '').toLowerCase() === 'tvl';
+        const filt = (arr: any[]) => (Number.isFinite(minUsd) && minUsd > 0) ? arr.filter(p => val(p) >= minUsd) : arr;
+        let amm = filt(pools.amm || []);
+        let clmm = filt(pools.clmm || []);
+        if (sortTvl) { amm = [...amm].sort((a,b) => val(b) - val(a)); clmm = [...clmm].sort((a,b) => val(b) - val(a)); }
+        if (Number.isFinite(limit) && limit > 0) { amm = amm.slice(0, limit); clmm = clmm.slice(0, limit); }
+        out = { amm, clmm } as any;
+      } catch {}
       const routeScope = !!((CONFIG.system as any)?.routeLevelScoping);
       if (routeScope) {
         try {
@@ -74,11 +95,33 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
     }
   });
 
-  api.get('/arb/pools/meteora', async (_req, res) => {
+  api.get('/arb/pools/meteora', async (req, res) => {
     try {
       const { getMeteoraPoolsCached } = await import('../pools.js');
       const pools = await getMeteoraPoolsCached(false);
-      res.json(pools);
+      let out = pools;
+      // Optional harmonized TVL filters/sorting via query: minUsd, limit, sort=tvl
+      try {
+        const q = (req.query || {}) as { minUsd?: string; limit?: string; sort?: string };
+        const val = (p: any) => {
+          const tvl = Number((p as any)?.tvl_usd ?? 0);
+          if (Number.isFinite(tvl) && tvl > 0) return tvl;
+          const disp = Number((p as any)?.liquidity_display ?? 0);
+          if (Number.isFinite(disp) && disp > 0) return disp;
+          const liq = Number((p as any)?.liquidity ?? (p as any)?.pool_liquidity_raw ?? (p as any)?.liquidity_base ?? 0);
+          return Number.isFinite(liq) && liq > 0 ? liq : 0;
+        };
+        const minUsd = Math.max(0, Number(q.minUsd ?? NaN));
+        const limit = Math.max(0, Number(q.limit ?? NaN));
+        const sortTvl = String(q.sort || '').toLowerCase() === 'tvl';
+        let amm: any[] = [];
+        let clmm = (pools.clmm || []);
+        if (Number.isFinite(minUsd) && minUsd > 0) clmm = clmm.filter(p => val(p) >= minUsd);
+        if (sortTvl) clmm = [...clmm].sort((a,b) => val(b) - val(a));
+        if (Number.isFinite(limit) && limit > 0) clmm = clmm.slice(0, limit);
+        out = { amm, clmm } as any;
+      } catch {}
+      res.json(out);
     } catch (e: any) {
       logger.error('meteora pools fetch failed', { error: String(e?.message || e) });
       res.status(503).json({ amm: [], clmm: [] });

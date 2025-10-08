@@ -469,23 +469,40 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
       const hideKind = new Set<string>();
       if (!filterKind.AMM) hideKind.add('amm');
       if (!filterKind.CLMM) hideKind.add('clmm');
-      const upserts: ElementDefinition[] = [];
+      // Upsert nodes in-place
       for (const n of [...(diff.addedNodes||[]), ...(diff.updatedNodes||[])]) {
-        upserts.push({ data: { id: n.id, label: n.label || n.id.slice(0,4) } });
+        try {
+          const id = String(n.id);
+          const existing = cy.getElementById(id);
+          if (existing && existing.length && existing.isNode()) {
+            existing.data('label', n.label || id.slice(0,4));
+          } else {
+            cy.add({ data: { id, label: n.label || id.slice(0,4) } });
+          }
+        } catch {}
       }
+      // Upsert edges in-place and collect touched pairs
       for (const e of [...(diff.addedEdges||[]), ...(diff.updatedEdges||[])]) {
         const kind = (e as any).pool_kind;
         if (kind === 'amm' || kind === 'clmm') {
           if (hideKind.has(kind)) continue;
         }
-        upserts.push({ data: { id: e.id, source: e.source, target: e.target, dex: e.dex, fee_bps: e.fee_bps, liquidity: e.liquidity, liquidity_display: (e as any).liquidity_display, weight: e.weight, price_a_per_b: (e as any).price_a_per_b, tvl_usd: (e as any).tvl_usd, pool_id: (e as any).pool_id, source_account: (e as any).source_account, target_account: (e as any).target_account, pool_kind: (e as any).pool_kind, direction: (e as any).direction, pool_liquidity_raw: (e as any).pool_liquidity_raw } });
+        const data: any = { id: e.id, source: e.source, target: e.target, dex: e.dex, fee_bps: e.fee_bps, liquidity: e.liquidity, liquidity_display: (e as any).liquidity_display, weight: e.weight, price_a_per_b: (e as any).price_a_per_b, tvl_usd: (e as any).tvl_usd, pool_id: (e as any).pool_id, source_account: (e as any).source_account, target_account: (e as any).target_account, pool_kind: (e as any).pool_kind, direction: (e as any).direction, pool_liquidity_raw: (e as any).pool_liquidity_raw };
+        try {
+          const id = String(e.id);
+          const el = cy.getElementById(id);
+          if (el && el.length && el.isEdge()) {
+            el.data(data);
+          } else {
+            cy.add({ data } as any);
+          }
+        } catch {}
         try {
           const a = String(e.source);
           const b = String(e.target);
           touchedPairs.add(`${a}|${b}`);
         } catch {}
       }
-      if (upserts.length) cy.add(upserts);
       // Briefly highlight updated/added edges
       try {
         const highlightIds: string[] = [];

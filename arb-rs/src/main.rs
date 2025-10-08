@@ -4,7 +4,6 @@ use std::collections::HashSet;
 use petgraph::prelude::NodeIndex;
 
 use axum::{extract::State, routing::{get, post}, Json, Router};
-use axum::extract::Query;
 use axum::extract::ws::{WebSocketUpgrade, Message};
 use axum::response::IntoResponse;
 use serde::Serialize;
@@ -13,14 +12,10 @@ use tokio::sync::{RwLock, Notify};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 mod opportunities;
 use opportunities::{OpportunitiesResponse, Opportunity, OpportunitiesSummary};
-mod sources;
-use sources::Sources;
 mod graph;
 use graph::{ArbGraph, EdgeData};
 mod algos;
 use algos::{detect_negative_cycles, detect_near_miss_cycles};
-mod pools;
-use pools::{PoolCache};
 
 #[derive(Default, serde::Serialize, serde::Deserialize, Clone)]
 struct ArbConfig {
@@ -30,28 +25,15 @@ struct ArbConfig {
     max_profit_bps: i64,
     min_notional_usd: f64,
     max_hops: usize,
-    max_paths_per_cycle: usize,
     max_idle_ms: u64,
-    dex_allow: Vec<String>,
-    priority_fee_tier: String,
-    sources: SourcesCfg,
-    max_slippage_bps: i64,
-    execution_mode: String, // "simulate" | "execute"
     quote_size_usd: f64,
-    fee_bps: i64,
-    link_penalty_bps: i64,
     debug_emit_subthreshold: bool,
     debug_top_n: usize,
     near_miss_enable: bool,
     near_miss_epsilon: f64,
-    // Skip adding pool edges when pool liquidity below this threshold (applies to AMM liquidity_base and CLMM liquidity)
-    min_pool_liquidity: f64,
     // Estimate per-hop priority fee in lamports to include in net profit heuristics (rough)
     est_priority_fee_per_hop_lamports: Option<u64>,
 }
-
-#[derive(Default, serde::Serialize, serde::Deserialize, Clone)]
-struct SourcesCfg { jupiter: bool, raydium: bool, orca: bool }
 
 #[derive(Default, serde::Serialize, Clone)]
 struct Metrics {
@@ -59,15 +41,8 @@ struct Metrics {
     opportunities_active: u64,
     last_detection_ms: u64,
     detection_duration_ms: u64,
-    ingestion_duration_ms: u64,
     graph_nodes: u64,
     graph_edges: u64,
-    ingestion_requests_total_jupiter: u64,
-    ingestion_requests_total_raydium: u64,
-    ingestion_requests_total_orca: u64,
-    ingestion_errors_total_jupiter: u64,
-    ingestion_errors_total_raydium: u64,
-    ingestion_errors_total_orca: u64,
     ws_push_total: u64,
     ws_skipped_nochange_total: u64,
     max_profit_bps: i64,
@@ -93,15 +68,11 @@ struct AppState {
     graph: ArbGraph,
     metrics: Metrics,
     events: Vec<EventItem>,
-    pool_cache: PoolCache,
     near_miss: Option<Opportunity>,
     near_miss_shortfall_bps: Option<i64>,
     near_misses: Vec<Opportunity>,
-    force_refresh_next: bool,
     last_graph_version: u64,
     last_graph_ts: u64,
-    // When true, skip local ingestion and use graph provided externally by backend
-    use_backend_graph: bool,
     // Buffered graph updates to be applied between loop runs
     pending_added_edges: Vec<GraphDiffEdge>,
     pending_updated_edges: Vec<GraphDiffEdge>,
@@ -167,7 +138,7 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer().without_time().with_ansi(false).with_writer(move || BridgeWriter { tx: bridge_tx.clone() }))
         .init();
 
-    let state = Arc::new(RwLock::new(AppState { config: default_config(), opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), pool_cache: PoolCache::new(), near_miss: None, near_miss_shortfall_bps: None, near_misses: Vec::new(), force_refresh_next: false, last_graph_version: 0, last_graph_ts: 0, use_backend_graph: true, pending_added_edges: Vec::new(), pending_updated_edges: Vec::new(), pending_removed_edge_ids: Vec::new(), pending_graph_version: None, pending_graph_ts: None, wake: Arc::new(Notify::new()) }));
+    let state = Arc::new(RwLock::new(AppState { config: default_config(), opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), near_miss: None, near_miss_shortfall_bps: None, near_misses: Vec::new(), last_graph_version: 0, last_graph_ts: 0, pending_added_edges: Vec::new(), pending_updated_edges: Vec::new(), pending_removed_edge_ids: Vec::new(), pending_graph_version: None, pending_graph_ts: None, wake: Arc::new(Notify::new()) }));
 
     // Install shutdown handler to clear in-memory state
     {
@@ -188,29 +159,20 @@ async fn main() -> anyhow::Result<()> {
             s.pending_graph_ts = None;
             s.last_graph_version = 0;
             s.last_graph_ts = 0;
-            s.use_backend_graph = true;
-            s.force_refresh_next = false;
         });
     }
 
     // Kick off a background task to update opportunities using config interval (MVP placeholder)
     let loop_state = state.clone();
     tokio::spawn(async move {
-        let sources = Sources::new();
         loop {
-                    let (enabled, idle_ms, min_bps, max_slip_bps, _fee_bps, _link_penalty_bps, _quote_size_usd, max_hops, sources_cfg, min_pool_liquidity) = {
+            let (enabled, idle_ms, min_bps, max_hops) = {
                 let s = loop_state.read().await;
                 (
                     s.config.enabled,
                     s.config.max_idle_ms,
                     s.config.min_profit_bps,
-                    s.config.max_slippage_bps,
-                    s.config.fee_bps,
-                    s.config.link_penalty_bps,
-                    s.config.quote_size_usd,
                     s.config.max_hops,
-                    s.config.sources.clone(),
-                    s.config.min_pool_liquidity,
                 )
             };
             let iter_start = Instant::now();
@@ -242,7 +204,6 @@ async fn main() -> anyhow::Result<()> {
                 {
                     let mut s = loop_state.write().await;
                     if incoming_ver > s.last_graph_version {
-                        s.force_refresh_next = true;
                         s.last_graph_version = incoming_ver;
                         s.last_graph_ts = incoming_ts;
                         s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.graph.version.update v={} ts={}", incoming_ver, incoming_ts) });
@@ -250,237 +211,40 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 let loop_start = Instant::now();
-                let ingest_start = Instant::now();
                 let sol = "So11111111111111111111111111111111111111112";
                 let usdc = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-                let amt_sol_small: u64 = 100_000; // 0.0001 SOL for probing
-                let amt_usdc_small: u64 = 10_000; // 0.01 USDC for probing
-
-                // Force backend-provided graph; no local ingestion fallback
-                let use_backend_graph = { let s = loop_state.read().await; s.use_backend_graph };
-                let (mut wl, mut pairs): (Vec<String>, Vec<(String,String,u64,u32,u32)>) = (Vec::new(), Vec::new());
-                if !use_backend_graph {
-                    // Pull watchlist from backend and build pair candidates (star topology to USDC)
-                    let api_base = std::env::var("BACKEND_API_BASE").unwrap_or_else(|_| "http://127.0.0.1:3001/api".into());
-                    wl = sources.backend_watchlist(&api_base).await.unwrap_or_else(|e| { tracing::warn!(error=?e, "arb.watchlist fetch failed; falling back to defaults"); vec![usdc.to_string(), sol.to_string()] });
-                    tracing::info!(enabled, min_bps, max_slip_bps, max_hops, watchlist_len = wl.len(), "arb.loop.start");
-                    for mint in wl.iter() {
-                        if mint == usdc { continue; }
-                        // Assume unknown decimals default {USDC:6, others:9}; future: resolve decimals via token API
-                        pairs.push((mint.clone(), usdc.to_string(), amt_sol_small, 9, 6));
-                        pairs.push((usdc.to_string(), mint.clone(), amt_usdc_small, 6, 9));
-                    }
-                    {
-                        let mut s = loop_state.write().await;
-                        s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.detect.start pairs={}", pairs.len()) });
-                        let len = s.events.len();
-                        if len > 200 { s.events.drain(0..(len-200)); }
-                    }
-                }
-
-                // Jupiter quotes disabled for arbitrage engine
-                // Raydium compute-quote is redundant when using pool edges; keep disabled by default
-
-                // Pools snapshot (rate-limited)
-                let (need_orca, need_rayd, force_now) = (false, false, false);
-                // Hint backend to refresh its normalized caches before we pull them, so Rust sees latest normalization
-                // Backend route is internally debounced; ignore errors
-                if need_orca || need_rayd || force_now { tracing::info!(need_orca, need_rayd, force_now, "arb.pools.refresh.hint"); let _ = sources.backend_refresh_pools(&api_base, Some("all")).await; }
-                let t_orca = Instant::now();
-                let orca: anyhow::Result<serde_json::Value> = Ok(serde_json::json!({ "amm": [], "clmm": [] }));
-                let orca_ms = t_orca.elapsed().as_millis();
-                let t_rayd = Instant::now();
-                let rayd: anyhow::Result<serde_json::Value> = Ok(serde_json::json!({ "amm": [], "clmm": [] }));
-                let rayd_ms = t_rayd.elapsed().as_millis();
-                tracing::info!(orca_ms = orca_ms as u128, rayd_ms = rayd_ms as u128, "arb.pools.fetch.done");
-                let (mut orca_amm_len, mut orca_clmm_len, mut ray_amm_len, mut ray_clmm_len) = (0usize,0usize,0usize,0usize);
-                if let Ok(ref j) = orca { orca_amm_len = j.get("amm").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0); orca_clmm_len = j.get("clmm").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0); }
-                if let Ok(ref j) = rayd { ray_amm_len = j.get("amm").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0); ray_clmm_len = j.get("clmm").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0); }
-                let orca_timed_out = matches!(&orca, Err(e) if e.to_string().contains("deadline has elapsed") || e.to_string().contains("timeout"));
-                let rayd_timed_out = matches!(&rayd, Err(e) if e.to_string().contains("deadline has elapsed") || e.to_string().contains("timeout"));
-                tracing::info!(
-                    orca_need=?need_orca, ray_need=?need_rayd,
-                    orca_amm_len, orca_clmm_len, ray_amm_len, ray_clmm_len,
-                    orca_ms, rayd_ms,
-                    orca_timeout=orca_timed_out, rayd_timeout=rayd_timed_out,
-                    "arb.pools.snap"
-                );
-
-                // Build/update graph with effective rates unless using backend-provided graph
+                // Apply any buffered diffs now (between detection runs)
                 {
                     let mut s = loop_state.write().await;
-                    // Jupiter quotes disabled: no ingestion recorded
-                    s.metrics.ingestion_requests_total_jupiter += 0;
-                    if need_rayd { s.metrics.ingestion_requests_total_raydium += 1; }
-                    if need_orca { s.metrics.ingestion_requests_total_orca += 1; }
-                    // Jupiter quotes disabled: no errors recorded
-                    if need_rayd && rayd.is_err() { s.metrics.ingestion_errors_total_raydium += 1; }
-                    if need_orca && orca.is_err() { s.metrics.ingestion_errors_total_orca += 1; }
-                    // Update pool cache best-effort
-                    // Merge normalized payloads without discarding other DEX entries
-                    if let Ok(ref j) = orca { let _ = s.pool_cache.merge_normalized_from_backend(j).await; }
-                    if let Ok(ref j) = rayd { let _ = s.pool_cache.merge_normalized_from_backend(j).await; }
-                    if force_now { s.force_refresh_next = false; }
-                    s.metrics.ingestion_duration_ms = ingest_start.elapsed().as_millis() as u64;
-
-                    // If backend graph mode is active, preserve the externally pushed graph
-                    if use_backend_graph {
-                        // Apply any buffered diffs now (between detection runs)
-                        if !s.pending_removed_edge_ids.is_empty() || !s.pending_added_edges.is_empty() || !s.pending_updated_edges.is_empty() {
-                            let rem_ct = s.pending_removed_edge_ids.len();
-                            let add_ct = s.pending_added_edges.len();
-                            let upd_ct = s.pending_updated_edges.len();
-                            let removed = std::mem::take(&mut s.pending_removed_edge_ids);
-                            let added = std::mem::take(&mut s.pending_added_edges);
-                            let updated = std::mem::take(&mut s.pending_updated_edges);
-                            if !removed.is_empty() { let _ = s.graph.remove_edges_by_ids(&removed); }
-                            let mut upsert = |e: &GraphDiffEdge| {
-                                let dex = e.dex.clone().unwrap_or_else(|| "Unknown".to_string());
-                                let fee = e.fee_bps.unwrap_or(0);
-                                let liq = e.liquidity.unwrap_or(0.0);
-                                let liq_disp = e.liquidity_display.unwrap_or(0.0);
-                                // e.price_a_per_b is A per 1 B for edge source=A -> target=B; invert to get B per 1 A
-                                let px = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
-                                let base = if px > 0.0 { 1.0 / px } else { 0.0 };
-                                let rate_eff = if base > 0.0 { base * (1.0 - (fee as f64)/10_000.0).max(0.0) } else { 0.0 };
-                                s.graph.upsert_edge(&dex, &e.source, &e.target, EdgeData {
-                                    rate_effective: rate_eff,
-                                    fee_bps: fee,
-                                    liquidity: liq,
-                                    dex: dex.clone(),
-                                    pool_id: e.pool_id.clone().unwrap_or_default(),
-                                    liquidity_display: liq_disp,
-                                });
-                            };
-                            for e in added.iter() { upsert(e); }
-                            for e in updated.iter() { upsert(e); }
-                            s.metrics.graph_updates_applied = s.metrics.graph_updates_applied.saturating_add(1);
-                            // Emit both event and stdout log for visibility
-                            s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.graph.diff: applied add={} upd={} rem={}", add_ct, upd_ct, rem_ct) });
-                            tracing::info!(add=add_ct, upd=upd_ct, rem=rem_ct, "arb.graph.diff: applied");
-                            let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
-                        }
-                        if let Some(v) = s.pending_graph_version.take() { s.last_graph_version = v; }
-                        if let Some(t) = s.pending_graph_ts.take() { s.last_graph_ts = t; }
-                        s.metrics.graph_nodes = s.graph.g.node_count() as u64;
-                        s.metrics.graph_edges = s.graph.g.edge_count() as u64;
-                        // Skip local rebuild entirely
-                        // Continue to detection on the preserved graph
-                    } else {
-                    // Rebuild graph from pool cache scoped by watchlist mints and source toggles
-                    let mut wl_set: std::collections::HashSet<String> = wl.iter().cloned().collect();
-                    let amm_pools = s.pool_cache.amm.clone();
-                    let clmm_pools = s.pool_cache.clmm.clone();
-
-                    // Expand watchlist by 1-hop neighbors present in current pools (to enable triangles)
-                    if !wl_set.is_empty() {
-                        for p in amm_pools.iter() {
-                            if wl_set.contains(&p.mint_a) || wl_set.contains(&p.mint_b) {
-                                wl_set.insert(p.mint_a.clone());
-                                wl_set.insert(p.mint_b.clone());
-                            }
-                        }
-                        for p in clmm_pools.iter() {
-                            if wl_set.contains(&p.mint_a) || wl_set.contains(&p.mint_b) {
-                                wl_set.insert(p.mint_a.clone());
-                                wl_set.insert(p.mint_b.clone());
-                            }
-                        }
+                    if !s.pending_removed_edge_ids.is_empty() || !s.pending_added_edges.is_empty() || !s.pending_updated_edges.is_empty() {
+                        let rem_ct = s.pending_removed_edge_ids.len();
+                        let add_ct = s.pending_added_edges.len();
+                        let upd_ct = s.pending_updated_edges.len();
+                        let removed = std::mem::take(&mut s.pending_removed_edge_ids);
+                        let added = std::mem::take(&mut s.pending_added_edges);
+                        let updated = std::mem::take(&mut s.pending_updated_edges);
+                        if !removed.is_empty() { let _ = s.graph.remove_edges_by_ids(&removed); }
+                        let mut upsert = |e: &GraphDiffEdge| {
+                            let dex = e.dex.clone().unwrap_or_else(|| "Unknown".to_string());
+                            let fee = e.fee_bps.unwrap_or(0);
+                            let liq = e.liquidity.unwrap_or(0.0);
+                            let liq_disp = e.liquidity_display.unwrap_or(0.0);
+                            let px = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
+                            let base = if px > 0.0 { 1.0 / px } else { 0.0 };
+                            let rate_eff = if base > 0.0 { base * (1.0 - (fee as f64)/10_000.0).max(0.0) } else { 0.0 };
+                            s.graph.upsert_edge(&dex, &e.source, &e.target, EdgeData { rate_effective: rate_eff, fee_bps: fee, liquidity: liq, dex: dex.clone(), pool_id: e.pool_id.clone().unwrap_or_default(), liquidity_display: liq_disp });
+                        };
+                        for e in added.iter() { upsert(e); }
+                        for e in updated.iter() { upsert(e); }
+                        s.metrics.graph_updates_applied = s.metrics.graph_updates_applied.saturating_add(1);
+                        s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.graph.diff: applied add={} upd={} rem={}", add_ct, upd_ct, rem_ct) });
+                        tracing::info!(add=add_ct, upd=upd_ct, rem=rem_ct, "arb.graph.diff: applied");
+                        let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
                     }
-
-                    s.graph = ArbGraph::new();
-                    // Build detection edges using ONLY pool fees (and link penalties). Global fee/slippage are applied later for net metrics.
-                    let adj_detect = |rate: f64, pool_fee_bps: i64| -> f64 {
-                        let pool_fee_dec = (pool_fee_bps as f64) / 10_000.0;
-                        rate.max(1e-12) * (1.0 - pool_fee_dec).max(0.0)
-                    };
-
-                    // AMM pools (Raydium)
-                    if sources_cfg.raydium {
-                        for p in amm_pools.into_iter() {
-                            if !wl_set.contains(&p.mint_a) && !wl_set.contains(&p.mint_b) { continue; }
-                            if p.liquidity_base < min_pool_liquidity { continue; }
-                            if p.price_a_per_b > 0.0 {
-                                // Size-based slippage haircut (conservative) using liquidity_base
-                                let max_slip_bps = s.config.max_slippage_bps.max(0) as f64;
-                                let q_usd = s.config.quote_size_usd.max(1.0);
-                                let liq = p.liquidity_base.max(1.0);
-                                let hair_bps = (q_usd / liq.sqrt()).min(max_slip_bps);
-                                let hair = (1.0 - hair_bps / 10_000.0).max(1e-6);
-                                let rate_b_per_a = (1.0 / p.price_a_per_b).abs() * hair;
-                                let rate_a_per_b = p.price_a_per_b.abs() * hair;
-                                s.graph.upsert_edge(&p.dex, &p.mint_a, &p.mint_b, EdgeData { rate_effective: adj_detect(rate_b_per_a, p.fee_bps), fee_bps: p.fee_bps, liquidity: p.liquidity_base, dex: p.dex.clone(), pool_id: p.id.clone(), liquidity_display: p.liquidity_base });
-                                s.graph.upsert_edge(&p.dex, &p.mint_b, &p.mint_a, EdgeData { rate_effective: adj_detect(rate_a_per_b, p.fee_bps), fee_bps: p.fee_bps, liquidity: p.liquidity_base, dex: p.dex.clone(), pool_id: p.id.clone(), liquidity_display: p.liquidity_base });
-                            }
-                        }
-                    }
-
-                    // CLMM pools (Orca and others); approximate mid-price from sqrt_price_x64 with decimals when available
-                    if sources_cfg.orca {
-                        let mut clmm_edges_added: usize = 0;
-                        let mut clmm_edges_by_dex: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-                        for p in clmm_pools.into_iter() {
-                            if !wl_set.contains(&p.mint_a) && !wl_set.contains(&p.mint_b) { continue; }
-                            if p.liquidity < min_pool_liquidity { continue; }
-                            // Prefer sqrt-derived mid-price when available; fallback to backend-provided price
-                            let mut price_b_per_a: f64 = 0.0;
-                            if p.sqrt_price_x64 > 0.0 {
-                                // Uniswap/CLMM convention:
-                                //   ratio = sqrt(price_B_per_A)
-                                //   price_B_per_A = ratio^2 * 10^(decA - decB)
-                                //   price_A_per_B = 1 / price_B_per_A
-                                let s64 = p.sqrt_price_x64;
-                                let ratio = s64 / (2f64.powi(64));
-                                let dec_a = (p.decimals_a.unwrap_or(0)) as i32;
-                                let dec_b = (p.decimals_b.unwrap_or(0)) as i32;
-                                let price_b_per_a_unscaled = (ratio * ratio).max(1e-24);
-                                price_b_per_a = if dec_a != 0 || dec_b != 0 {
-                                    price_b_per_a_unscaled * 10f64.powi(dec_a - dec_b)
-                                } else {
-                                    price_b_per_a_unscaled
-                                };
-                            } else if let Some(px) = p.price_a_per_b {
-                                if px > 0.0 { price_b_per_a = 1.0 / px; }
-                            }
-                            if price_b_per_a > 0.0 {
-                                    // Size-based slippage haircut (conservative): scale by liquidity
-                                    let max_slip_bps = s.config.max_slippage_bps.max(0) as f64;
-                                    let q_usd = s.config.quote_size_usd.max(1.0);
-                                    let liq = p.liquidity.max(1.0);
-                                    let hair_bps = (q_usd / liq.sqrt()).min(max_slip_bps);
-                                    let hair = (1.0 - hair_bps / 10_000.0).max(1e-6);
-                                    let rate_b_per_a = price_b_per_a * hair;
-                                    let rate_a_per_b = (1.0 / price_b_per_a) * hair;
-                                    s.graph.upsert_edge(&p.dex, &p.mint_a, &p.mint_b, EdgeData { rate_effective: adj_detect(rate_b_per_a, p.fee_bps), fee_bps: p.fee_bps, liquidity: p.liquidity, dex: p.dex.clone(), pool_id: p.id.clone(), liquidity_display: p.liquidity });
-                                    s.graph.upsert_edge(&p.dex, &p.mint_b, &p.mint_a, EdgeData { rate_effective: adj_detect(rate_a_per_b, p.fee_bps), fee_bps: p.fee_bps, liquidity: p.liquidity, dex: p.dex.clone(), pool_id: p.id.clone(), liquidity_display: p.liquidity });
-                                    clmm_edges_added += 2;
-                                    *clmm_edges_by_dex.entry(p.dex.clone()).or_insert(0) += 2;
-                            }
-                        }
-                        // Simple visibility log to confirm CLMM edges added
-                        tracing::debug!(target = "arb_rs", total = clmm_edges_added, by_dex = ?clmm_edges_by_dex, "graph: clmm edges added");
-                    }
-
-                    let _parse_rate = |q: &serde_json::Value, in_dec: u32, out_dec: u32| -> Option<f64> {
-                        let out_raw = q.get("outAmount")?.as_str()?.parse::<u128>().ok()? as f64;
-                        let in_raw = q.get("inAmount").and_then(|x| x.as_str()).and_then(|st| st.parse::<u128>().ok()).unwrap_or(0) as f64;
-                        let in_raw = if in_raw == 0.0 { amt_sol_small as f64 } else { in_raw };
-                        let out = out_raw / 10f64.powi(out_dec as i32);
-                        let inn = in_raw / 10f64.powi(in_dec as i32);
-                        if inn > 0.0 { Some(out / inn) } else { None }
-                    };
-                    // Jupiter edges disabled for arbitrage engine
-
-                    // Cross-DEX link edges removed: nodes are unified by mint now
-                    // Skip adding Raydium compute-quote edges; pool-derived edges already modeled
+                    if let Some(v) = s.pending_graph_version.take() { s.last_graph_version = v; }
+                    if let Some(t) = s.pending_graph_ts.take() { s.last_graph_ts = t; }
                     s.metrics.graph_nodes = s.graph.g.node_count() as u64;
                     s.metrics.graph_edges = s.graph.g.edge_count() as u64;
-                    let nodes = s.metrics.graph_nodes;
-                    let edges = s.metrics.graph_edges;
-                    s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.ingest.done ms={} nodes={} edges={}", ingest_start.elapsed().as_millis(), nodes, edges) });
-                    let len = s.events.len();
-                    if len > 200 { s.events.drain(0..(len-200)); }
-                    }
                 }
                 // Detect cycles (MVP -log weights)
                 // Compare with previous to only push WS updates on change
@@ -1222,8 +986,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(|| async { Json(HealthResp { status: "ok" }) }))
         .route("/opportunities", get(get_opportunities))
-        .route("/pools/json", get(get_pools))
-        .route("/quote", get(get_quote))
+        
         .route("/ws/opportunities", get(ws_opportunities))
         .route("/config", post(set_config).get(get_config))
         .route("/arb/start", post(arb_start))
@@ -1232,7 +995,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/arb/graph/update", post(arb_graph_update))
         .route("/metrics", get(metrics_prom))
         .route("/metrics/json", get(metrics_json))
-        .route("/graph/trigger-refresh", post(trigger_refresh))
         .route("/events/json", get(events_json))
         .with_state(state);
 
@@ -1291,13 +1053,8 @@ async fn get_opportunities(
         min_edge_liquidity_min,
         last_detection_ms: s.metrics.last_detection_ms,
         detection_duration_ms: s.metrics.detection_duration_ms,
-        ingestion_duration_ms: s.metrics.ingestion_duration_ms,
         graph_nodes: s.metrics.graph_nodes,
         graph_edges: s.metrics.graph_edges,
-        pools_amm: s.pool_cache.amm.len(),
-        pools_clmm: s.pool_cache.clmm.len(),
-        last_orca_ms: s.pool_cache.last_refresh_orca_ms,
-        last_raydium_ms: s.pool_cache.last_refresh_raydium_ms,
         near_miss: s.near_miss.clone(),
         near_miss_shortfall_bps: s.near_miss_shortfall_bps,
         near_misses: if s.near_misses.is_empty() { None } else { Some(s.near_misses.clone()) },
@@ -1385,8 +1142,7 @@ async fn arb_graph_snapshot(State(state): State<Arc<RwLock<AppState>>>, Json(req
     s.last_graph_ts = g.timestamp.unwrap_or(s.last_graph_ts);
     // Record time of receipt for diff_to_detect tracking
     s.metrics.last_graph_push_rx_ms = now_ms();
-    s.use_backend_graph = true;
-    s.force_refresh_next = false;
+    
     let nodes = s.metrics.graph_nodes; let edges = s.metrics.graph_edges;
     s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.graph.snapshot: accepted nodes={} edges={}", nodes, edges) });
     tracing::info!(nodes, edges, "arb.graph.snapshot: accepted");
@@ -1407,8 +1163,7 @@ async fn arb_graph_update(State(state): State<Arc<RwLock<AppState>>>, Json(req):
     if req.timestamp.is_some() { s.pending_graph_ts = req.timestamp; }
     // Record time of receipt for diff_to_detect tracking
     s.metrics.last_graph_push_rx_ms = now_ms();
-    s.use_backend_graph = true;
-    s.force_refresh_next = false;
+    
     // Wake detection loop to apply diff promptly
     s.wake.notify_one();
     Json(serde_json::json!({"ok": true}))
@@ -1443,8 +1198,8 @@ async fn arb_start(State(state): State<Arc<RwLock<AppState>>>, Json(req): Json<S
         s.metrics.graph_edges = edges_cnt;
         if let Some(vv) = v { s.last_graph_version = vv; }
         if let Some(tt) = ts { s.last_graph_ts = tt; }
-        s.use_backend_graph = true;
-        s.force_refresh_next = false;
+    
+    
         s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.start: graph accepted nodes={} edges={}", nodes_cnt, edges_cnt) });
         tracing::info!(nodes = nodes_cnt, edges = edges_cnt, "arb.start: graph accepted");
         let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
@@ -1464,67 +1219,6 @@ async fn arb_start(State(state): State<Arc<RwLock<AppState>>>, Json(req): Json<S
     Json(serde_json::json!({ "ok": true, "enabled": s.config.enabled, "graph_nodes": s.metrics.graph_nodes, "graph_edges": s.metrics.graph_edges }))
 }
 
-#[derive(Serialize)]
-struct PoolsResp { amm: usize, clmm: usize, last_orca_ms: u64, last_raydium_ms: u64 }
-
-async fn get_pools(State(state): State<Arc<RwLock<AppState>>>) -> Json<PoolsResp> {
-    let s = state.read().await;
-    Json(PoolsResp {
-        amm: s.pool_cache.amm.len(),
-        clmm: s.pool_cache.clmm.len(),
-        last_orca_ms: s.pool_cache.last_refresh_orca_ms,
-        last_raydium_ms: s.pool_cache.last_refresh_raydium_ms,
-    })
-}
-
-#[derive(serde::Deserialize)]
-struct QuoteReq { input_mint: String, output_mint: String, amount: f64 }
-
-#[derive(Serialize)]
-struct QuoteResp { rate: f64, out_amount: f64 }
-
-async fn get_quote(State(state): State<Arc<RwLock<AppState>>>, Query(q): Query<QuoteReq>) -> Json<QuoteResp> {
-    let s = state.read().await;
-    let fee_dec = (s.config.fee_bps as f64) / 10_000.0;
-    let slip_dec = (s.config.max_slippage_bps as f64) / 10_000.0;
-    let adj = |r: f64| {
-        let f1 = 1.0 - fee_dec;
-        let f2 = 1.0 - slip_dec;
-        r.max(1e-12) * (if f1 > 0.0 { f1 } else { 0.0 }) * (if f2 > 0.0 { f2 } else { 0.0 })
-    };
-    // Try AMM first
-    for p in s.pool_cache.amm.iter() {
-        if (p.mint_a == q.input_mint && p.mint_b == q.output_mint) && p.price_a_per_b > 0.0 {
-            let rate = adj(1.0 / p.price_a_per_b);
-            return Json(QuoteResp { rate, out_amount: rate * q.amount });
-        }
-        if (p.mint_b == q.input_mint && p.mint_a == q.output_mint) && p.price_a_per_b > 0.0 {
-            let rate = adj(p.price_a_per_b);
-            return Json(QuoteResp { rate, out_amount: rate * q.amount });
-        }
-    }
-    // Try CLMM approximate mid-price
-    for p in s.pool_cache.clmm.iter() {
-        if (p.mint_a == q.input_mint && p.mint_b == q.output_mint) && p.sqrt_price_x64 > 0.0 {
-            let s64 = p.sqrt_price_x64;
-            let price_b_per_a = (s64 * s64) / (2f64.powi(128));
-            if price_b_per_a > 0.0 {
-                let rate = adj(price_b_per_a);
-                return Json(QuoteResp { rate, out_amount: rate * q.amount });
-            }
-        }
-        if (p.mint_b == q.input_mint && p.mint_a == q.output_mint) && p.sqrt_price_x64 > 0.0 {
-            let s64 = p.sqrt_price_x64;
-            let price_b_per_a = (s64 * s64) / (2f64.powi(128));
-            if price_b_per_a > 0.0 {
-                let rate = adj(1.0 / price_b_per_a);
-                return Json(QuoteResp { rate, out_amount: rate * q.amount });
-            }
-        }
-    }
-    // Fallback
-    Json(QuoteResp { rate: 0.0, out_amount: 0.0 })
-}
 
 async fn ws_opportunities(ws: WebSocketUpgrade, State(state): State<Arc<RwLock<AppState>>>) -> impl IntoResponse {
     ws.on_upgrade(move |mut socket| async move {
@@ -1557,19 +1251,8 @@ struct ConfigReq {
     max_profit_bps: Option<i64>,
     min_notional_usd: Option<f64>,
     max_hops: Option<usize>,
-    max_paths_per_cycle: Option<usize>,
     max_idle_ms: Option<u64>,
-    // deprecated: mapped to max_idle_ms
-    // deprecated: mapped to max_idle_ms
-    poll_interval_ms: Option<u64>,
-    dex_allow: Option<Vec<String>>,
-    priority_fee_tier: Option<String>,
-    sources: Option<SourcesCfg>,
-    max_slippage_bps: Option<i64>,
-    execution_mode: Option<String>,
     quote_size_usd: Option<f64>,
-    fee_bps: Option<i64>,
-    link_penalty_bps: Option<i64>,
     debug_emit_subthreshold: Option<bool>,
     debug_top_n: Option<usize>,
     near_miss_enable: Option<bool>,
@@ -1589,16 +1272,9 @@ async fn set_config(
         if cfg.max_profit_bps.is_some() { keys.push("max_profit_bps"); }
         if cfg.min_notional_usd.is_some() { keys.push("min_notional_usd"); }
         if cfg.max_hops.is_some() { keys.push("max_hops"); }
-        if cfg.max_paths_per_cycle.is_some() { keys.push("max_paths_per_cycle"); }
-        if cfg.max_idle_ms.is_some() || cfg.poll_interval_ms.is_some() { keys.push("max_idle_ms/poll_interval_ms"); }
-        if cfg.dex_allow.is_some() { keys.push("dex_allow"); }
-        if cfg.priority_fee_tier.is_some() { keys.push("priority_fee_tier"); }
-        if cfg.sources.is_some() { keys.push("sources"); }
-        if cfg.max_slippage_bps.is_some() { keys.push("max_slippage_bps"); }
-        if cfg.execution_mode.is_some() { keys.push("execution_mode"); }
+        if cfg.max_idle_ms.is_some() { keys.push("max_idle_ms"); }
         if cfg.quote_size_usd.is_some() { keys.push("quote_size_usd"); }
-        if cfg.fee_bps.is_some() { keys.push("fee_bps"); }
-        if cfg.link_penalty_bps.is_some() { keys.push("link_penalty_bps"); }
+        
         if cfg.debug_emit_subthreshold.is_some() { keys.push("debug_emit_subthreshold"); }
         if cfg.debug_top_n.is_some() { keys.push("debug_top_n"); }
         if cfg.near_miss_enable.is_some() { keys.push("near_miss_enable"); }
@@ -1611,17 +1287,8 @@ async fn set_config(
     if let Some(v) = cfg.max_profit_bps { s.config.max_profit_bps = v; }
     if let Some(v) = cfg.min_notional_usd { s.config.min_notional_usd = v; }
     if let Some(v) = cfg.max_hops { s.config.max_hops = v; }
-    if let Some(v) = cfg.max_paths_per_cycle { s.config.max_paths_per_cycle = v; }
     if let Some(v) = cfg.max_idle_ms { s.config.max_idle_ms = v; }
-    if let Some(v) = cfg.poll_interval_ms { s.config.max_idle_ms = v; }
-    if let Some(v) = cfg.dex_allow { s.config.dex_allow = v; }
-    if let Some(v) = cfg.priority_fee_tier { s.config.priority_fee_tier = v; }
-    if let Some(v) = cfg.sources { s.config.sources = v; }
-    if let Some(v) = cfg.max_slippage_bps { s.config.max_slippage_bps = v; }
-    if let Some(v) = cfg.execution_mode { s.config.execution_mode = v; }
     if let Some(v) = cfg.quote_size_usd { s.config.quote_size_usd = v; }
-    if let Some(v) = cfg.fee_bps { s.config.fee_bps = v; }
-    if let Some(v) = cfg.link_penalty_bps { s.config.link_penalty_bps = v; }
     if let Some(v) = cfg.debug_emit_subthreshold { s.config.debug_emit_subthreshold = v; }
     if let Some(v) = cfg.debug_top_n { s.config.debug_top_n = v; }
     if let Some(v) = cfg.near_miss_enable { s.config.near_miss_enable = v; }
@@ -1642,21 +1309,12 @@ fn default_config() -> ArbConfig {
         max_profit_bps: 20000,
         min_notional_usd: 50.0,
         max_hops: 3,
-        max_paths_per_cycle: 10,
         max_idle_ms: 2000,
-        dex_allow: vec!["Raydium".into(), "Orca".into()],
-        priority_fee_tier: "h".into(),
-        sources: SourcesCfg { jupiter: false, raydium: false, orca: false },
-        max_slippage_bps: 100,
-        execution_mode: "simulate".into(),
         quote_size_usd: 50.0,
-        fee_bps: 30,
-        link_penalty_bps: 2,
         debug_emit_subthreshold: false,
         debug_top_n: 5,
         near_miss_enable: true,
         near_miss_epsilon: 5e-4,
-        min_pool_liquidity: 0.0,
         est_priority_fee_per_hop_lamports: Some(50_000),
     }
 }
@@ -1681,15 +1339,8 @@ async fn metrics_prom(State(state): State<Arc<RwLock<AppState>>>) -> String {
             "arb_opportunities_active {}\n",
             "arb_last_detection_ms {}\n",
             "arb_detection_duration_ms {}\n",
-            "arb_ingestion_duration_ms {}\n",
             "arb_graph_nodes {}\n",
             "arb_graph_edges {}\n",
-            "arb_ingestion_requests_total{{source=\"jupiter\"}} {}\n",
-            "arb_ingestion_requests_total{{source=\"raydium\"}} {}\n",
-            "arb_ingestion_requests_total{{source=\"orca\"}} {}\n",
-            "arb_ingestion_errors_total{{source=\"jupiter\"}} {}\n",
-            "arb_ingestion_errors_total{{source=\"raydium\"}} {}\n",
-            "arb_ingestion_errors_total{{source=\"orca\"}} {}\n",
             "arb_ws_push_total {}\n",
             "arb_ws_skipped_nochange_total {}\n",
             "arb_max_profit_bps {}\n",
@@ -1700,15 +1351,8 @@ async fn metrics_prom(State(state): State<Arc<RwLock<AppState>>>) -> String {
         m.opportunities_active,
         m.last_detection_ms,
         m.detection_duration_ms,
-        m.ingestion_duration_ms,
         m.graph_nodes,
         m.graph_edges,
-        m.ingestion_requests_total_jupiter,
-        m.ingestion_requests_total_raydium,
-        m.ingestion_requests_total_orca,
-        m.ingestion_errors_total_jupiter,
-        m.ingestion_errors_total_raydium,
-        m.ingestion_errors_total_orca,
         m.ws_push_total,
         m.ws_skipped_nochange_total,
         m.max_profit_bps,
@@ -1737,19 +1381,6 @@ async fn arb_graph_version(State(state): State<Arc<RwLock<AppState>>>) -> Json<G
     Json(GraphVersionResponse { version: s.last_graph_version, timestamp: s.last_graph_ts })
 }
 
-#[derive(serde::Deserialize)]
-struct TriggerReq { reason: Option<String> }
-
-async fn trigger_refresh(State(state): State<Arc<RwLock<AppState>>>, Json(_req): Json<TriggerReq>) -> Json<serde_json::Value> {
-    {
-        let mut s = state.write().await;
-        s.force_refresh_next = true;
-        s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: "graph.trigger_refresh".into() });
-        let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
-        // Wake detection loop immediately
-        s.wake.notify_one();
-    }
-    Json(serde_json::json!({"ok": true}))
-}
+// trigger_refresh removed with local mode deprecation
 
 

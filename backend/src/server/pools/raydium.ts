@@ -19,6 +19,60 @@ export async function fetchRaydiumPoolsRaw(): Promise<any> {
       return { data: [] };
     }
 
+    // Prefer global list-mode (sorted by liquidity) when enabled; fallback to mint-based mode for resilience
+    try {
+      const listModeDisabled = (CONFIG.raydium as any)?.enableApiFetchByMints === true;
+      if (!listModeDisabled) {
+        const baseUrl = 'https://api-v3.raydium.io/pools/info';
+        const pageSize = Math.max(20, Number((CONFIG.raydium as any)?.httpPageSize || 50));
+        const maxPages = Math.max(1, Number((CONFIG as any)?.raydium?.httpMaxPagesGlobal || 10));
+        const collected: any[] = [];
+        let page = 1;
+        for (let i = 0; i < maxPages; i++) {
+          try {
+            const qs = new URLSearchParams({
+              poolType: 'all',
+              poolSortField: 'liquidity',
+              sortType: 'desc',
+              pageSize: String(pageSize),
+              page: String(page),
+            });
+            const url = `${baseUrl}?${qs.toString()}`;
+            const started = Date.now();
+            try { logger.info('raydium.http list request', { page, pageSize, cat: 'raydium' }); } catch {}
+            const res = await fetchFn(url, { headers: { accept: 'application/json' } });
+            if (res?.status === 429) {
+              try { emit('log', { level: 'warn', message: 'arb:429 source=raydium kind=http surface=pools.info.list', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+              try { logger.warn('raydium.http 429 list', { page, cat: 'raydium' }); } catch {}
+              break; // fallback to mint-mode
+            }
+            if (!res?.ok) {
+              const txt = await res?.text?.();
+              logger.warn('raydium.http non-ok list', { status: res?.status, body: (txt || '').slice(0, 200), cat: 'raydium' });
+              break; // fallback to mint-mode
+            }
+            const json = await res.json().catch(() => null);
+            const arr = Array.isArray(json?.data?.data) ? json.data.data : [];
+            if (arr.length) collected.push(...arr);
+            const hasNext = !!json?.data?.hasNextPage;
+            page += 1;
+            try { logger.info('raydium.http list page ok', { page: page - 1, ms: Date.now() - started, count: arr.length, next: !!hasNext, cat: 'raydium' }); } catch {}
+            if (!hasNext) break;
+          } catch (e: any) {
+            const msg = String(e?.message || e);
+            logger.warn('raydium.http list fetch failed', { error: msg, cat: 'raydium' });
+            break; // fallback to mint-mode
+          }
+        }
+        if (collected.length) {
+          logger.info('raydium.http.list.fetch ok', { count: collected.length, cat: 'raydium' });
+          try { await writeJson(RAYDIUM_RAW_PATH, { data: collected }); } catch (e: any) { try { logger.warn('raydium.cache write failed', { file: RAYDIUM_RAW_PATH, error: String(e?.message || e), cat: 'raydium' }); } catch {} }
+          return { data: collected };
+        }
+        logger.warn('raydium.http list returned 0; falling back to mint-mode');
+      }
+    } catch {}
+
     // Collect mint universe from configured tokenUniverseMode; fallback to Jupiter token map, then watchlist
     let mints: string[] = [];
     try {
