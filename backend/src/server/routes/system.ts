@@ -56,7 +56,7 @@ export function createSystemRouter(_io: SocketIOServer): Router {
         fees?: any;
         raydium?: { enableOnChain?: boolean; ammV4Program?: string; clmmProgram?: string; cacheTtlMs?: number; concurrency?: number; pageSize?: number; maxPages?: number; maxHttpRetries?: number; httpBackoffMs?: number; minAmmLiqBase?: number; minClmmLiquidity?: number };
         orca?: { apiUrl?: string; programId?: string; configPubkey?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; pageSize?: number; maxPages?: number; minAmmLiqBase?: number; minClmmLiquidity?: number };
-        sanity?: { enabled?: boolean; maxPriceDeviation?: number; feeMin?: number; feeMax?: number; writeSamples?: boolean; sampleRate?: number };
+        sanity?: { enabled?: boolean; maxPriceDeviation?: number; feeMin?: number; feeMax?: number; writeSamples?: boolean; sampleRate?: number; sanity_applyRaydiumAmm?: boolean; sanity_applyOrcaClmm?: boolean };
       };
       if (rpcUrl) CONFIG.rpcUrl = rpcUrl;
       if (system) {

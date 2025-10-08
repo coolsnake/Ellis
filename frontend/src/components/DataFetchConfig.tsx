@@ -38,6 +38,9 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     sanity_feeMax: 10000,
     sanity_writeSamples: false,
     sanity_sampleRate: 0.005,
+    sanity_applyRaydiumAmm: true,
+    sanity_applyRaydiumClmm: true,
+    sanity_applyOrcaClmm: true,
     // Orca
     orca_cacheTtlMs: 300000,
     orca_maxHttpRetries: 2,
@@ -119,6 +122,9 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             sanity_feeMax: Number(j?.sanity?.feeMax ?? prev.sanity_feeMax),
             sanity_writeSamples: !!j?.sanity?.writeSamples,
             sanity_sampleRate: Number(j?.sanity?.sampleRate ?? prev.sanity_sampleRate),
+            sanity_applyRaydiumAmm: (j?.sanity?.sanity_applyRaydiumAmm ?? true) !== false,
+            sanity_applyRaydiumClmm: (j?.sanity?.sanity_applyRaydiumClmm ?? true) !== false,
+            sanity_applyOrcaClmm: (j?.sanity?.sanity_applyOrcaClmm ?? true) !== false,
           }));
         }
       } catch {}
@@ -183,6 +189,9 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         feeMax: Number(cfg.sanity_feeMax),
         writeSamples: !!cfg.sanity_writeSamples,
         sampleRate: Number(cfg.sanity_sampleRate),
+        sanity_applyRaydiumAmm: !!cfg.sanity_applyRaydiumAmm,
+        sanity_applyRaydiumClmm: !!cfg.sanity_applyRaydiumClmm,
+        sanity_applyOrcaClmm: !!cfg.sanity_applyOrcaClmm,
       },
     };
     try {

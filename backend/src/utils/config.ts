@@ -72,6 +72,15 @@ export const CONFIG = {
     jupiterApiUrl: process.env.JUPITER_API_URL || 'https://quote-api.jup.ag/v6',
     targetTickTimeMs: Number(process.env.TARGET_TICK_TIME_MS || 2000),
     graphStartDelayMs: Number(process.env.GRAPH_START_DELAY_MS || 5000),
+    // Graph push cadence; when 0, rely entirely on event-driven rebuilds
+    graphStreamIntervalMs: Number(process.env.GRAPH_STREAM_INTERVAL_MS || 5000),
+    // Debounce and delta threshold for event-driven graph rebuilds
+    graphRebuildDebounceMs: Number(process.env.GRAPH_REBUILD_DEBOUNCE_MS || 150),
+    graphRebuildMinDebounceMs: Number(process.env.GRAPH_REBUILD_MIN_DEBOUNCE_MS || 25),
+    graphDeltaRebuildThreshold: Number(process.env.GRAPH_DELTA_REBUILD_THRESHOLD || 0),
+    graphRebaseDiffThreshold: Number(process.env.GRAPH_REBASE_DIFF_THRESHOLD || 2000),
+    graphRebaseTimeMs: Number(process.env.GRAPH_REBASE_TIME_MS || (5 * 60 * 1000)),
+    graphSnapshotTtlMs: Number(process.env.GRAPH_SNAPSHOT_TTL_MS || 1500),
     maxRetries: Number(process.env.MAX_RETRIES || 3),
     retryDelayMs: Number(process.env.RETRY_DELAY_MS || 1000),
     connectionTimeoutMs: Number(process.env.CONNECTION_TIMEOUT_MS || 30000),
@@ -93,8 +102,9 @@ export const CONFIG = {
     // Optional canonicalization of pair orientation for normalized outputs: 'none' | 'lex'
     canonicalizePairs: (process.env.CANONICALIZE_PAIRS as any) || 'lex',
     // System-wide TVL/liquidity thresholds (applied in addition to per-source thresholds)
-    minAmmLiqBase: process.env.MIN_AMM_LIQ_BASE ? Number(process.env.MIN_AMM_LIQ_BASE) : 100_000,
-    minClmmLiquidity: process.env.MIN_CLMM_LIQUIDITY ? Number(process.env.MIN_CLMM_LIQUIDITY) : 100_000,
+    // Lower defaults to avoid over-pruning during discovery; tune via env in prod
+    minAmmLiqBase: process.env.MIN_AMM_LIQ_BASE ? Number(process.env.MIN_AMM_LIQ_BASE) : 10_000,
+    minClmmLiquidity: process.env.MIN_CLMM_LIQUIDITY ? Number(process.env.MIN_CLMM_LIQUIDITY) : 10_000,
     // Minimum number of distinct DEXes a token pair must appear on to include (1..3)
     minDexOverlap: Number(process.env.MIN_DEX_OVERLAP || 2),
     // Optional: anchors always included in universe and bridging exceptions
@@ -206,6 +216,15 @@ export const CONFIG = {
     maxPriceDeviation: Number(process.env.SANITY_MAX_PRICE_DEVIATION || 50), // allow up to 50x deviation vs USD ref
     feeMin: Number(process.env.SANITY_FEE_MIN || 0),
     feeMax: Number(process.env.SANITY_FEE_MAX || 10000),
+    // Avoid double-applying source-specific sanity at graph level
+    avoidDoubleApply: (process.env.SANITY_AVOID_DOUBLE_APPLY || 'true') !== 'false',
+    applyAtGraph: (process.env.SANITY_APPLY_AT_GRAPH || 'true') !== 'false',
+    // Optional clamps for prices to drop absurd magnitudes
+    priceClampMin: Number(process.env.SANITY_PRICE_CLAMP_MIN || 1e-12),
+    priceClampMax: Number(process.env.SANITY_PRICE_CLAMP_MAX || 1e12),
+    // Per-source sanity application toggles
+    sanity_applyRaydiumAmm: (process.env.SANITY_APPLY_RAYDIUM_AMM || 'true') !== 'false',
+    sanity_applyOrcaClmm: (process.env.SANITY_APPLY_ORCA_CLMM || 'true') !== 'false',
     writeSamples: process.env.SANITY_WRITE_SAMPLES === 'true',
     sampleRate: Number(process.env.SANITY_SAMPLE_RATE || 0.005),
   },

@@ -556,7 +556,7 @@ export function startRaydiumRefreshLoop(): void {
                     const gmod: any = await import('./graph.js');
                     const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
                     const delta = d.clmm.length;
-                    if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(100, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 200)));
+                    if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
                   } catch {}
                       updated = true;
                     }
@@ -587,7 +587,7 @@ export function startRaydiumRefreshLoop(): void {
                           const gmod: any = await import('./graph.js');
                           const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
                           const delta = d.amm.length;
-                          if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(100, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 200)));
+                          if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
                         } catch {}
                         updated = true;
                     }
@@ -1053,7 +1053,7 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
           const gmod: any = await import('./graph.js');
           const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
           const delta = d.amm.length + d.clmm.length + d.addedAmm + d.addedClmm + d.removedAmm + d.removedClmm;
-          if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(100, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 200)));
+          if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
         } catch {}
         try { logger.info('pools.delta raydium', { updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, cat: 'pools' }); } catch {}
       } catch {}
@@ -1119,7 +1119,7 @@ export async function getOrcaPoolsCached(force = false): Promise<PoolsPayload> {
           const gmod: any = await import('./graph.js');
           const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
           const delta = d.amm.length + d.clmm.length + d.addedAmm + d.addedClmm + d.removedAmm + d.removedClmm;
-          if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(100, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 200)));
+          if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
         } catch {}
       } catch {}
       // Graph rebuilds now orchestrated by refresh endpoint; avoid redundant triggers here

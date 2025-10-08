@@ -968,11 +968,16 @@ async fn main() -> anyhow::Result<()> {
                     if let Some(top) = s.opportunities.iter().max_by_key(|o| o.profit_bps) {
                         let top_bps = top.profit_bps;
                         let path = top.path.join("->");
-                        s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.detect.done ms={} opps={} top_bps={} path={}", det_ms, active, top_bps, path) });
-                        tracing::info!(det_ms, opps = active, top_bps, path = %path, "arb.detect.done");
+                        // Compute graph age and latency metrics for observability
+                        let graph_age_ms = if s.last_graph_ts > 0 { now_ms().saturating_sub(s.last_graph_ts) } else { 0 };
+                        let dtd = s.metrics.diff_to_detect_ms;
+                        s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.detect.done ms={} opps={} top_bps={} path={} graph_age_ms={} diff_to_detect_ms={}", det_ms, active, top_bps, path, graph_age_ms, dtd) });
+                        tracing::info!(det_ms, opps = active, top_bps, path = %path, graph_age_ms, diff_to_detect_ms = dtd, "arb.detect.done");
                     } else {
-                        s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.detect.done ms={} opps=0", det_ms) });
-                        tracing::info!(det_ms, opps = 0u64, "arb.detect.done");
+                        let graph_age_ms = if s.last_graph_ts > 0 { now_ms().saturating_sub(s.last_graph_ts) } else { 0 };
+                        let dtd = s.metrics.diff_to_detect_ms;
+                        s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.detect.done ms={} opps=0 graph_age_ms={} diff_to_detect_ms={}", det_ms, graph_age_ms, dtd) });
+                        tracing::info!(det_ms, opps = 0u64, graph_age_ms, diff_to_detect_ms = dtd, "arb.detect.done");
                         // Also emit a concise near-miss summary if available when no opportunities detected
                         if let (Some(nm), Some(shortfall)) = (s.near_miss.clone(), s.near_miss_shortfall_bps) {
                             let path = nm.path.join("->");
@@ -1336,12 +1341,12 @@ fn default_config() -> ArbConfig {
         max_profit_bps: 20000,
         min_notional_usd: 50.0,
         max_hops: 3,
-        max_idle_ms: 2000,
+        max_idle_ms: std::env::var("ARB_IDLE_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(2000),
         quote_size_usd: 50.0,
-        debug_emit_subthreshold: false,
-        debug_top_n: 5,
-        near_miss_enable: true,
-        near_miss_epsilon: 5e-4,
+        debug_emit_subthreshold: std::env::var("ARB_DEBUG_SUBTHRESHOLD").ok().map(|v| v == "true").unwrap_or(false),
+        debug_top_n: std::env::var("ARB_DEBUG_TOP_N").ok().and_then(|s| s.parse().ok()).unwrap_or(5),
+        near_miss_enable: std::env::var("ARB_NEAR_MISS_ENABLE").ok().map(|v| v != "false").unwrap_or(true),
+        near_miss_epsilon: std::env::var("ARB_NEAR_MISS_EPS").ok().and_then(|s| s.parse().ok()).unwrap_or(5e-4),
         est_priority_fee_per_hop_lamports: Some(50_000),
     }
 }

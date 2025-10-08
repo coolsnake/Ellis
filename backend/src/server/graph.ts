@@ -298,7 +298,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
 
       type NormPools = { amm: any[]; clmm: any[] };
       const validatePoolsForGraph = (norm: NormPools): NormPools => {
-        if (!sanityEnabled) return norm;
+        const applyAtGraph = (sanityCfg as any).applyAtGraph !== false; // default on
+        if (!sanityEnabled || !applyAtGraph) return norm;
         const out: NormPools = { amm: [], clmm: [] };
         const drop = { badFees: 0, priceOutliers: 0, nonFinitePrice: 0 } as any;
         const getUsd = (mint: string): number | undefined => {
@@ -311,8 +312,18 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           if (!Number.isFinite(price) || price <= 0) return 'nonFinitePrice';
           const aUsd = getUsd(p.mint_a);
           const bUsd = getUsd(p.mint_b);
-          if (Number.isFinite(aUsd as any) && Number.isFinite(bUsd as any) && (aUsd as number) > 0 && (bUsd as number) > 0) {
-            const ref = (aUsd as number) / (bUsd as number);
+          // Avoid double-applying price deviation sanity if source already sanitized
+          const avoidDouble = (sanityCfg as any).avoidDoubleApply !== false; // default on
+          const dex = String((p as any)?.dex || '');
+          const kind = String((p as any)?.pool_kind || '');
+          const sourceSanitized = (
+            (dex === 'Orca' && kind === 'clmm' && ((CONFIG as any)?.sanity?.sanity_applyOrcaClmm ?? true) === true) ||
+            (dex === 'Raydium' && kind === 'amm' && ((CONFIG as any)?.sanity?.sanity_applyRaydiumAmm ?? true) === true)
+          );
+          const skipDeviation = avoidDouble && sourceSanitized;
+          if (!skipDeviation && Number.isFinite(aUsd as any) && Number.isFinite(bUsd as any) && (aUsd as number) > 0 && (bUsd as number) > 0) {
+            // price is A per 1 B, USD ref should be USD(B)/USD(A)
+            const ref = (bUsd as number) / (aUsd as number);
             const dev = Math.max(price / ref, ref / price);
             if (dev > maxDeviation) return 'priceOutliers';
           }
@@ -354,7 +365,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         try {
           const pa = getPriceByMintVar(mintA)?.usdc ?? null;
           const pb = getPriceByMintVar(mintB)?.usdc ?? null;
-          if (pa && pb && pb > 0) return pa / pb;
+          // We need A per 1 B; using USD prices => price = USD(B) / USD(A)
+          if (pa && pb && pa > 0) return (pb as number) / (pa as number);
         } catch {}
         return undefined;
       };
@@ -468,6 +480,14 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           if (edgesMap[rid]) edgesMap[rid].pool_liquidity_raw = rawLiq > 0 ? rawLiq : undefined;
         } catch {}
       }
+      const clampPrice = (px: number | undefined): number | undefined => {
+        const min = Number.isFinite(Number(((CONFIG as any)?.sanity as any)?.priceClampMin)) ? Number(((CONFIG as any)?.sanity as any)?.priceClampMin) : 1e-12;
+        const max = Number.isFinite(Number(((CONFIG as any)?.sanity as any)?.priceClampMax)) ? Number(((CONFIG as any)?.sanity as any)?.priceClampMax) : 1e12;
+        const v = Number(px);
+        if (!Number.isFinite(v) || !(v > 0)) return undefined;
+        if (v < min || v > max) return undefined;
+        return v;
+      };
       for (const p of (rayValid.clmm || [])) {
         clmmTotal++;
         let price = (p as any)?.price_a_per_b as number | undefined;
@@ -533,13 +553,15 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           if (price && ref) {
             const dev = Math.max(price / ref, ref / price);
             const fwd = 1 / price, rev = price;
-            if (dev > 5 || fwd > 1e4 || rev > 1e4) {
+            const clampMin = Number(((CONFIG as any)?.sanity as any)?.priceClampMin) || 1e-12;
+            const clampMax = Number(((CONFIG as any)?.sanity as any)?.priceClampMax) || 1e12;
+            if (dev > 5 || fwd > 1e4 || rev > 1e4 || price < clampMin || price > clampMax) {
               logger.warn('graph.calibrate.raydium.clmm outlier', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, calibrated: price, ref, dev, fwd, rev });
             }
           }
         } catch {}
         // Forward + reverse with strict reciprocal rule and consistency guard
-        const fwdR = (price && price > 0) ? price : undefined;
+        const fwdR = clampPrice((price && price > 0) ? price : undefined);
         const revR = (fwdR && fwdR > 0) ? (1 / fwdR) : undefined;
         addEdge(p.mint_a, p.mint_b, 'Raydium', p.fee_bps, liqDisplay, fwdR, usd, pidClmm, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
         const pidClmmRev = pidClmm ? `${pidClmm}-rev` : undefined;
@@ -688,7 +710,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           }
         } catch {}
         // Forward + reverse with strict reciprocal rule and consistency guard
-        const fwdClmm = (priceClmmOrca && priceClmmOrca > 0) ? priceClmmOrca : undefined;
+        const fwdClmm = clampPrice((priceClmmOrca && priceClmmOrca > 0) ? priceClmmOrca : undefined);
         const revClmm = (fwdClmm && fwdClmm > 0) ? (1 / fwdClmm) : undefined;
         addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaClmm, fwdClmm, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
         const pidClmmOrcaRev = pid ? `${pid}-rev` : undefined;
@@ -719,7 +741,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         // Forward edge must carry A per 1 B; reverse is strict reciprocal
         const pid = String((p as any)?.id || undefined) || undefined;
         const liqParam = (p as any)?.liquidity_display ?? (usd && usd > 0 ? usd : (p as any)?.pool_liquidity_raw);
-        const fwdMet = (priceMet && priceMet > 0) ? priceMet : undefined;
+        const fwdMet = clampPrice((priceMet && priceMet > 0) ? priceMet : undefined);
         const revMet = (fwdMet && fwdMet > 0) ? (1 / fwdMet) : undefined;
         addEdge(p.mint_a, p.mint_b, 'Meteora', p.fee_bps, liqParam, fwdMet, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
         const pidRev = pid ? `${pid}-rev` : undefined;
@@ -781,7 +803,7 @@ export { diffSnapshots };
 export function startGraphStream(io: SocketIOServer): void {
   // Emit initial snapshot periodically and diffs when changed
   let last: GraphSnapshot | null = null;
-  const period = 30_000;
+  const period = Math.max(1000, Number((CONFIG.system as any)?.graphStreamIntervalMs || 5000));
   const tick = async () => {
     try {
       // Do not auto-refresh pool sources here; rely on explicit /arb/pools/refresh

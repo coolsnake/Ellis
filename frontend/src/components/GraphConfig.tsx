@@ -15,6 +15,9 @@ export const GraphConfig: React.FC<Props> = ({ apiBase, onClose }) => {
     sanity_maxPriceDeviation: 50,
     sanity_feeMin: 0,
     sanity_feeMax: 10000,
+    sanity_applyRaydiumAmm: true,
+    sanity_applyRaydiumClmm: true,
+    sanity_applyOrcaClmm: true,
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -37,6 +40,9 @@ export const GraphConfig: React.FC<Props> = ({ apiBase, onClose }) => {
             sanity_maxPriceDeviation: Number(j?.sanity?.maxPriceDeviation ?? p.sanity_maxPriceDeviation),
             sanity_feeMin: Number(j?.sanity?.feeMin ?? p.sanity_feeMin),
             sanity_feeMax: Number(j?.sanity?.feeMax ?? p.sanity_feeMax),
+            sanity_applyRaydiumAmm: (j?.sanity?.sanity_applyRaydiumAmm ?? true) !== false,
+            sanity_applyRaydiumClmm: (j?.sanity?.sanity_applyRaydiumClmm ?? true) !== false,
+            sanity_applyOrcaClmm: (j?.sanity?.sanity_applyOrcaClmm ?? true) !== false,
           }));
         }
       } catch {}
@@ -61,6 +67,9 @@ export const GraphConfig: React.FC<Props> = ({ apiBase, onClose }) => {
         maxPriceDeviation: Number(cfg.sanity_maxPriceDeviation),
         feeMin: Number(cfg.sanity_feeMin),
         feeMax: Number(cfg.sanity_feeMax),
+        sanity_applyRaydiumAmm: !!cfg.sanity_applyRaydiumAmm,
+        sanity_applyRaydiumClmm: !!cfg.sanity_applyRaydiumClmm,
+        sanity_applyOrcaClmm: !!cfg.sanity_applyOrcaClmm,
       },
     };
     try {
@@ -103,6 +112,9 @@ export const GraphConfig: React.FC<Props> = ({ apiBase, onClose }) => {
               <div><label className="block text-sm mb-1">Max Price Deviation (x)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.sanity_maxPriceDeviation} onChange={(e)=>set('sanity_maxPriceDeviation', Number(e.target.value)||0)} /></div>
               <div><label className="block text-sm mb-1">Fee Min (bps)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.sanity_feeMin} onChange={(e)=>set('sanity_feeMin', Number(e.target.value)||0)} /></div>
               <div><label className="block text-sm mb-1">Fee Max (bps)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.sanity_feeMax} onChange={(e)=>set('sanity_feeMax', Number(e.target.value)||0)} /></div>
+              <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.sanity_applyRaydiumAmm} onChange={(e)=>set('sanity_applyRaydiumAmm', e.target.checked)} />Apply to Raydium AMM</label>
+              <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.sanity_applyRaydiumClmm} onChange={(e)=>set('sanity_applyRaydiumClmm', e.target.checked)} />Apply to Raydium CLMM</label>
+              <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.sanity_applyOrcaClmm} onChange={(e)=>set('sanity_applyOrcaClmm', e.target.checked)} />Apply to Orca CLMM</label>
             </div>
           </div>
 
