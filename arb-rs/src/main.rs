@@ -13,6 +13,7 @@ use serde::Serialize;
 use serde::Deserialize;
 use tokio::sync::{RwLock, Notify};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use base64::{engine::general_purpose, Engine as _};
 mod opportunities;
 use opportunities::{OpportunitiesResponse, Opportunity, OpportunitiesSummary};
 mod graph;
@@ -110,6 +111,18 @@ async fn main() -> anyhow::Result<()> {
         bridge_tx = Some(tx.clone());
         let client = reqwest::Client::new();
         let url = format!("{}/terminal/log", bridge_base.trim_end_matches('/'));
+        // Prepare optional Basic auth header for backend /api routes
+        let auth_header: Option<String> = {
+            let user = std::env::var("BACKEND_AUTH_USER").ok();
+            let pass = std::env::var("BACKEND_AUTH_PASS").ok();
+            match (user, pass) {
+                (Some(u), Some(p)) if !u.is_empty() => {
+                    let creds = format!("{}:{}", u, p);
+                    Some(format!("Basic {}", general_purpose::STANDARD.encode(creds.as_bytes())))
+                }
+                _ => None,
+            }
+        };
         tokio::spawn(async move {
             while let Some(line) = rx.recv().await {
                 let msg = line.trim();
@@ -126,7 +139,9 @@ async fn main() -> anyhow::Result<()> {
                           else if msg.contains("pools") { Some("pools") }
                           else { None };
                 let payload = if let Some(c) = cat { serde_json::json!({ "level": level, "message": msg, "cat": c }) } else { serde_json::json!({ "level": level, "message": msg }) };
-                let _ = client.post(&url).json(&payload).send().await;
+                let mut req = client.post(&url).json(&payload);
+                if let Some(h) = &auth_header { req = req.header("authorization", h); }
+                let _ = req.send().await;
             }
         });
     }

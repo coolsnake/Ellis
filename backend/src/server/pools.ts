@@ -947,7 +947,16 @@ export function startRaydiumRefreshLoop(): void {
           try {
             const snapshot = { raydium: wsCounts.raydium, orca: wsCounts.orca, meteora: wsCounts.meteora } as any;
             wsCounts.raydium = 0; wsCounts.orca = 0; wsCounts.meteora = 0;
-            logger.info('pools.ws aggregate', { events: snapshot, healthy: wsHealthy, lastEventMs: lastWsEventMs });
+            logger.info('pools.ws aggregate', { 
+              events: snapshot, 
+              healthy: wsHealthy, 
+              lastEventMs: lastWsEventMs,
+              counts: {
+                raydium: { attached: attachedRaydiumPools, target: (typeof getWsTargets === 'function' ? (getWsTargets as any)._last?.raydium?.target : undefined) },
+                orca: { attached: attachedOrcaPools, target: (typeof getWsTargets === 'function' ? (getWsTargets as any)._last?.orca?.target : undefined) },
+                meteora: { attached: attachedMeteoraPools, target: (typeof getWsTargets === 'function' ? (getWsTargets as any)._last?.meteora?.target : undefined) }
+              }
+            });
             // Emit a dedicated ws-activity event for UI regardless of log filtering
             try { emit('ws-activity', { healthy: wsHealthy, lastEventMs: lastWsEventMs, orca: { attached: attachedOrcaPools, events: snapshot.orca || 0 }, raydium: { attached: attachedRaydiumPools, events: snapshot.raydium || 0 }, meteora: { attached: attachedMeteoraPools, events: snapshot.meteora || 0 } }); } catch {}
             try { emit('log', { level: 'debug', message: `pools:ws aggregate ray=${snapshot.raydium} orca=${snapshot.orca}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}

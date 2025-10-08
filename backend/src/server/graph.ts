@@ -342,7 +342,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         };
         for (const p of (norm.amm || [])) { const r = isOk(p); if (r) drop[r] = (drop[r] || 0) + 1; else out.amm.push(p); }
         for (const p of (norm.clmm || [])) { const r = isOk(p); if (r) drop[r] = (drop[r] || 0) + 1; else out.clmm.push(p); }
-        try { logger.info('graph.sanity.filter', { feeMin, feeMax, maxDeviation, dropped: drop }); } catch {}
+        try { logger.debug('graph.sanity.filter', { feeMin, feeMax, maxDeviation, dropped: drop }); } catch {}
         try { emit('sanity-update', { ts: Date.now(), scope: 'graph', feeMin, feeMax, maxDeviation, dropped: drop }); } catch {}
         return out;
       };
@@ -574,7 +574,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             const clampMin = Number(((CONFIG as any)?.sanity as any)?.priceClampMin) || 1e-12;
             const clampMax = Number(((CONFIG as any)?.sanity as any)?.priceClampMax) || 1e12;
             if (dev > 5 || fwd > 1e4 || rev > 1e4 || price < clampMin || price > clampMax) {
-              logger.warn('graph.calibrate.raydium.clmm outlier', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, calibrated: price, ref, dev, fwd, rev });
+              logger.debug('graph.calibrate.raydium.clmm outlier', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, calibrated: price, ref, dev, fwd, rev });
             }
           }
         } catch {}
@@ -666,11 +666,11 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             if (ref) {
               const dev = Math.max(priceAmmOrca / ref, ref / priceAmmOrca);
               if (dev > 5 || fwd > 1e4 || rev > 1e4 || fwd < 1e-6 || rev < 1e-12) {
-                logger.warn('graph.calibrate.orca.amm outlier', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, raw: (p as any)?.price_a_per_b, calibrated: priceAmmOrca, ref, dev, fwd, rev });
+                logger.debug('graph.calibrate.orca.amm outlier', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, raw: (p as any)?.price_a_per_b, calibrated: priceAmmOrca, ref, dev, fwd, rev });
               }
             } else {
               if (fwd > 1e4 || rev > 1e4 || fwd < 1e-6 || rev < 1e-12) {
-                logger.warn('graph.calibrate.orca.amm magnitude', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, raw: (p as any)?.price_a_per_b, calibrated: priceAmmOrca, fwd, rev });
+                logger.debug('graph.calibrate.orca.amm magnitude', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, raw: (p as any)?.price_a_per_b, calibrated: priceAmmOrca, fwd, rev });
               }
             }
           }
@@ -776,11 +776,11 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             if (ref) {
               const dev = Math.max(priceClmmOrca / ref, ref / priceClmmOrca);
               if (dev > 5 || fwd > 1e4 || rev > 1e4 || fwd < 1e-6 || rev < 1e-12) {
-                logger.warn('graph.calibrate.orca.clmm outlier', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, raw: (p as any)?.price_a_per_b, calibrated: priceClmmOrca, ref, dev, fwd, rev, decA: (p as any)?.decimals_a, decB: (p as any)?.decimals_b, sqrt_price_x64: (p as any)?.sqrt_price_x64 });
+                logger.debug('graph.calibrate.orca.clmm outlier', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, raw: (p as any)?.price_a_per_b, calibrated: priceClmmOrca, ref, dev, fwd, rev, decA: (p as any)?.decimals_a, decB: (p as any)?.decimals_b, sqrt_price_x64: (p as any)?.sqrt_price_x64 });
               }
             } else {
               if (fwd > 1e4 || rev > 1e4 || fwd < 1e-6 || rev < 1e-12) {
-                logger.warn('graph.calibrate.orca.clmm magnitude', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, raw: (p as any)?.price_a_per_b, calibrated: priceClmmOrca, fwd, rev, decA: (p as any)?.decimals_a, decB: (p as any)?.decimals_b, sqrt_price_x64: (p as any)?.sqrt_price_x64 });
+                logger.debug('graph.calibrate.orca.clmm magnitude', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, raw: (p as any)?.price_a_per_b, calibrated: priceClmmOrca, fwd, rev, decA: (p as any)?.decimals_a, decB: (p as any)?.decimals_b, sqrt_price_x64: (p as any)?.sqrt_price_x64 });
               }
             }
           }
@@ -853,7 +853,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         };
         const sampleAmm = pick('amm');
         const sampleClmm = pick('clmm');
-        logger.info('graph.edges sample', { amm: sampleAmm, clmm: sampleClmm, cat: 'graph' });
+        logger.debug('graph.edges sample', { amm: sampleAmm, clmm: sampleClmm, cat: 'graph' });
       } catch {}
 
       const snapshot: GraphSnapshot = {
