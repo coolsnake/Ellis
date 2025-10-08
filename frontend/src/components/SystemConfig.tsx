@@ -18,8 +18,8 @@ export const SystemConfig: React.FC<SystemConfigProps> = ({ onSave, onCancel, in
     retryDelayMs: 1000,
     connectionTimeoutMs: 30000,
     enableLogging: true,
-    logLevel: 'info',
-    frontendLogLevel: 'info',
+    logLevel: 'debug',
+    frontendLogLevel: 'debug',
     baseFee: 5000,
     priorityFee: 1000,
     maxFee: 100000,
@@ -62,8 +62,8 @@ export const SystemConfig: React.FC<SystemConfigProps> = ({ onSave, onCancel, in
         retryDelayMs: initialConfig.system?.retryDelayMs || 1000,
         connectionTimeoutMs: initialConfig.system?.connectionTimeoutMs || 30000,
         enableLogging: initialConfig.system?.enableLogging !== false,
-        logLevel: initialConfig.system?.logLevel || 'info',
-        frontendLogLevel: (initialConfig.system?.frontendLogLevel || initialConfig.system?.logLevel || 'info'),
+        logLevel: initialConfig.system?.logLevel || 'debug',
+        frontendLogLevel: (initialConfig.system?.frontendLogLevel || initialConfig.system?.logLevel || 'debug'),
         wrapAndUnwrapSol: initialConfig.system?.wrapAndUnwrapSol !== false,
         logCategories: Array.isArray((initialConfig as any).logCategories)
           ? (initialConfig as any).logCategories

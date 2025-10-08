@@ -85,7 +85,7 @@ export const CONFIG = {
     retryDelayMs: Number(process.env.RETRY_DELAY_MS || 1000),
     connectionTimeoutMs: Number(process.env.CONNECTION_TIMEOUT_MS || 30000),
     enableLogging: process.env.ENABLE_LOGGING !== 'false',
-    logLevel: process.env.LOG_LEVEL || 'info',
+    logLevel: process.env.LOG_LEVEL || 'debug',
     txCommitment: (process.env.TX_COMMITMENT as any) || 'confirmed',
     wrapAndUnwrapSol: process.env.WRAP_AND_UNWRAP_SOL !== 'false',
     scopePools: process.env.SCOPE_POOLS !== 'false',
@@ -150,36 +150,29 @@ export const CONFIG = {
     enabledLogCategories: undefined as undefined | string[],
     // New structured logging controls (optional). When present, these take precedence.
     log: {
-      level: (process.env.LOG_LEVEL as any) || 'info',
+      level: (process.env.LOG_LEVEL as any) || 'debug',
       // Per-category minimum levels. Keys can be nested like "pretrade.sim".
       categories: {
         api: 'debug',
-        pretrade: 'warn',
-        'pretrade.sim': 'info',
-        strategy: 'info',
-        'strategy.grid': 'info',
-        drift: 'warn',
-        jupiter: 'warn',
-        graph: 'info',
-        pools: 'info',
-        arb: 'info',
-        system: 'info',
-        wallet: 'info',
+        pretrade: 'debug',
+        'pretrade.sim': 'debug',
+        strategy: 'debug',
+        'strategy.grid': 'debug',
+        drift: 'debug',
+        jupiter: 'debug',
+        graph: 'debug',
+        pools: 'debug',
+        arb: 'debug',
+        system: 'debug',
+        wallet: 'debug',
       } as Record<string, 'error' | 'warn' | 'info' | 'debug'>,
       // Force-include or exclude specific codes (supports * globs)
       enableCodes: [] as string[],
       disableCodes: [] as string[],
       // Sampling probability per code (0..1)
-      sample: {
-        'GRAPH.PUSH.DIFF': 0.05,
-        'GRAPH.REBUILD.BATCH': 0.1,
-        'POOLS.WS.UNHEALTHY': 0.25,
-      } as Record<string, number>,
+      sample: {} as Record<string, number>,
       // Simple per-code rate limits
-      rateLimit: {
-        'POOLS.HTTP.429': { minIntervalMs: 500 },
-        'DRIFT.WS.ERROR': { minIntervalMs: 2000 },
-      } as Record<string, { perSec?: number; minIntervalMs?: number }>,
+      rateLimit: {} as Record<string, { perSec?: number; minIntervalMs?: number }>,
       // Named presets the UI can apply (optional)
       presets: {
         dev: {

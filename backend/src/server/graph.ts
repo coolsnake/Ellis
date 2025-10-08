@@ -466,11 +466,13 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const liqDisplayAmm = (usd && usd > 0) ? usd : (Number.isFinite(notionalB as any) && (notionalB as number) > 0 ? (notionalB as number) : (Number.isFinite(liqBase) && liqBase > 0 ? liqBase : undefined));
         const liqParamAmm = (p as any)?.liquidity_display ?? liqDisplayAmm;
         // Incoming price is A per 1 B.
-        // Prefer normalized incoming price; fallback to amounts/USD-derived only when missing.
+        // Prefer normalized incoming price by default; allow override via config.
+        const preferNormalized = (((CONFIG as any)?.system as any)?.preferNormalizedPriceForAmm !== false);
         const incomingFwd = Number((p as any)?.price_a_per_b || 0);
-        const fwdAmmRay = (incomingFwd && incomingFwd > 0)
-          ? incomingFwd
-          : ((price && price > 0) ? price : undefined);
+        const preferred = preferNormalized
+          ? ((incomingFwd && incomingFwd > 0) ? incomingFwd : price)
+          : ((price && price > 0) ? price : (incomingFwd && incomingFwd > 0 ? incomingFwd : undefined));
+        const fwdAmmRay = (preferred && preferred > 0) ? preferred : undefined;
         const revAmmRay = (fwdAmmRay && fwdAmmRay > 0) ? (1 / fwdAmmRay) : undefined;
         addEdge(p.mint_a, p.mint_b, 'Raydium', p.fee_bps, liqParamAmm, fwdAmmRay, usd, pidAmm, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
         // Use a distinct id for reverse edge when poolId exists to avoid overwriting forward

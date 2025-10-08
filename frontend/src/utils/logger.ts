@@ -5,9 +5,9 @@ const levelOrder: Record<LogLevel, number> = { error: 0, warn: 1, info: 2, debug
 function readInitialLevel(): LogLevel {
   const fromEnv = (import.meta as any).env?.VITE_LOG_LEVEL as string | undefined;
   const fromStorage = (typeof window !== 'undefined') ? window.localStorage.getItem('logLevel') as LogLevel | null : null;
-  const val = (fromStorage || fromEnv || 'info').toLowerCase();
+  const val = (fromStorage || fromEnv || 'debug').toLowerCase();
   if (val === 'error' || val === 'warn' || val === 'info' || val === 'debug') return val;
-  return 'info';
+  return 'debug';
 }
 
 let currentLevel: LogLevel = readInitialLevel();

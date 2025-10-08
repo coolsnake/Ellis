@@ -696,7 +696,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
                         <React.Fragment key={i}>
                           <div className="opacity-70">DEX</div><div>{ed.dex}</div>
                           <div className="opacity-70">Fee (bps)</div><div>{ed.fee_bps ?? '—'}</div>
-                          <div className="opacity-70">Price A/B</div><div>{ed.price_a_per_b ?? '—'}</div>
+                          <div className="opacity-70">Price A/B</div><div>{(() => { const v = ed.price_a_per_b as any; return (typeof v === 'number' && v > 0) ? `${v} (B/A: ${1 / v})` : '—'; })()}</div>
                           <div className="opacity-70">Pool Liquidity (raw)</div><div>{ed.pool_liquidity_raw ?? '—'}</div>
                           <div className="opacity-70">Pool Kind</div><div>{ed.pool_kind ?? '—'}</div>
                           <div className="opacity-70">Direction</div><div>{ed.direction ?? '—'}</div>
@@ -710,7 +710,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
                     <>
                       <div className="opacity-70">DEX</div><div>{selection.dex}</div>
                       <div className="opacity-70">Fee (bps)</div><div>{selection.fee_bps ?? '—'}</div>
-                      <div className="opacity-70">Price A/B</div><div>{(selection as any).price_a_per_b ?? '—'}</div>
+                      <div className="opacity-70">Price A/B</div><div>{(() => { const v = (selection as any).price_a_per_b; return (typeof v === 'number' && v > 0) ? `${v} (B/A: ${1 / v})` : '—'; })()}</div>
                       <div className="opacity-70">Pool Liquidity (raw)</div><div>{(selection as any).pool_liquidity_raw ?? '—'}</div>
                       <div className="opacity-70">Pool Kind</div><div>{(selection as any).pool_kind ?? '—'}</div>
                       <div className="opacity-70">Direction</div><div>{(selection as any).direction ?? '—'}</div>
@@ -733,7 +733,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 											<div className="opacity-70">Target</div><div className="truncate" title={ed.target}>{ed.target}</div>
 											<div className="opacity-70">DEX</div><div>{ed.dex}</div>
 											<div className="opacity-70">Fee (bps)</div><div>{ed.fee_bps ?? '—'}</div>
-											<div className="opacity-70">Price A/B</div><div>{ed.price_a_per_b ?? '—'}</div>
+                                            <div className="opacity-70">Price A/B</div><div>{(() => { const v = ed.price_a_per_b as any; return (typeof v === 'number' && v > 0) ? `${v} (B/A: ${1 / v})` : '—'; })()}</div>
 											<div className="opacity-70">Pool Liquidity (raw)</div><div>{ed.pool_liquidity_raw ?? '—'}</div>
 											<div className="opacity-70">Pool Kind</div><div>{ed.pool_kind ?? '—'}</div>
 											<div className="opacity-70">Direction</div><div>{ed.direction ?? '—'}</div>
