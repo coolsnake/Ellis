@@ -9,10 +9,14 @@ import { fetchRaydiumPoolsRaw as fetchRaydiumPoolsRawImpl, normalizeRaydiumPools
 import { fetchOrcaHttp as fetchOrcaHttpImpl, normalizeOrcaHttp as normalizeOrcaHttpImpl } from './pools/orca.js';
 import { fetchMeteoraHttp as fetchMeteoraHttpImpl, normalizeMeteoraHttp as normalizeMeteoraHttpImpl } from './pools/meteora.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './pools/httpLog.js';
+import { fetchSaberRegistry as fetchSaberRegistryImpl, normalizeSaberRegistry as normalizeSaberRegistryImpl } from './pools/saber.js';
+import { fetchMeteoraBalancedHttp as fetchMeteoraBalancedHttpImpl, normalizeMeteoraBalancedHttp as normalizeMeteoraBalancedHttpImpl } from './pools/meteoraBalanced.js';
 
 const raydiumCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 const orcaCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 const meteoraCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
+const saberCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
+const metbalCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 
 // WS lifecycle flags: defer websocket subscriptions until graph signals readiness
 let wsAllowed: boolean = false;
@@ -35,6 +39,8 @@ const poolsMetrics: {
   };
   orca: { fetches: number; lastMs: number; lastAmm: number; lastClmm: number };
   meteora: { fetches: number; lastMs: number; lastClmm: number };
+  saber: { fetches: number; lastMs: number; lastAmm: number; http429?: number; backoffMs?: number };
+  meteora_balanced: { fetches: number; lastMs: number; lastAmm: number };
 } = {
   raydium: {
     fetches: 0, lastMs: 0, lastAmm: 0, lastClmm: 0,
@@ -44,6 +50,8 @@ const poolsMetrics: {
   },
   orca: { fetches: 0, lastMs: 0, lastAmm: 0, lastClmm: 0 },
   meteora: { fetches: 0, lastMs: 0, lastClmm: 0 },
+  saber: { fetches: 0, lastMs: 0, lastAmm: 0, http429: 0, backoffMs: 0 },
+  meteora_balanced: { fetches: 0, lastMs: 0, lastAmm: 0 },
 };
 
 export function getPoolsMetrics(): any {
@@ -290,15 +298,19 @@ export async function getWsTargets(): Promise<{ orca: { target: number }; raydiu
 }
 
 // Expose cache ages for observability (ms since last fetch)
-export function getPoolCacheAges(): { raydium: number; orca: number; meteora: number; ttl: { raydium: number; orca: number; meteora: number } } {
+export function getPoolCacheAges(): { raydium: number; orca: number; meteora: number; saber: number; meteora_balanced: number; ttl: { raydium: number; orca: number; meteora: number; saber: number; meteora_balanced: number } } {
   const now = Date.now();
   const rayTtl = Number((CONFIG as any)?.raydium?.cacheTtlMs || 300_000);
   const orcTtl = Number((CONFIG as any)?.orca?.cacheTtlMs || 300_000);
   const metTtl = Number(((CONFIG as any)?.meteora?.cacheTtlMs) || 300_000);
+  const sabTtl = Number(((CONFIG as any)?.saber?.cacheTtlMs) || 300_000);
+  const mblTtl = Number(((CONFIG as any)?.meteoraBalanced?.cacheTtlMs) || 300_000);
   const rayAge = raydiumCache.ts ? (now - raydiumCache.ts) : Number.POSITIVE_INFINITY;
   const orcAge = orcaCache.ts ? (now - orcaCache.ts) : Number.POSITIVE_INFINITY;
   const metAge = meteoraCache.ts ? (now - meteoraCache.ts) : Number.POSITIVE_INFINITY;
-  return { raydium: rayAge, orca: orcAge, meteora: metAge, ttl: { raydium: rayTtl, orca: orcTtl, meteora: metTtl } };
+  const sabAge = saberCache.ts ? (now - saberCache.ts) : Number.POSITIVE_INFINITY;
+  const mblAge = metbalCache.ts ? (now - metbalCache.ts) : Number.POSITIVE_INFINITY;
+  return { raydium: rayAge, orca: orcAge, meteora: metAge, saber: sabAge, meteora_balanced: mblAge, ttl: { raydium: rayTtl, orca: orcTtl, meteora: metTtl, saber: sabTtl, meteora_balanced: mblTtl } };
 }
 
 // Retarget WS: unsubscribe and re-subscribe to current graph-derived targets
@@ -317,10 +329,12 @@ export async function retargetPoolWebsockets(): Promise<{ attached: { orca: numb
 }
 
 // Unified refresh orchestrator: fetch all sources and optionally (re)subscribe
-export async function refreshAllSources(force = true, subscribe = true): Promise<{ raydium: PoolsPayload; orca: PoolsPayload; meteora: PoolsPayload }> {
+export async function refreshAllSources(force = true, subscribe = true): Promise<{ raydium: PoolsPayload; orca: PoolsPayload; meteora: PoolsPayload; saber: PoolsPayload; meteora_balanced: PoolsPayload }> {
   const r = await getRaydiumPoolsNormalized(!!force).catch(() => ({ amm: [], clmm: [] }));
   const o = await getOrcaPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
   const m = await getMeteoraPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
+  const s = await getSaberPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
+  const mb = await getMeteoraBalancedPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
   // Pair diagnostics: log a single SOL-USDC pool per fetcher
   try {
     const SOL = 'So11111111111111111111111111111111111111112';
@@ -401,7 +415,7 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
       startRaydiumRefreshLoop();
     } catch {}
   }
-  return { raydium: r, orca: o, meteora: m };
+  return { raydium: r, orca: o, meteora: m, saber: s, meteora_balanced: mb };
 }
 
 export function startRaydiumRefreshLoop(): void {
@@ -953,6 +967,8 @@ const enrichMemo: Map<string, { mint_a?: string; mint_b?: string; decimals_a?: n
 export function peekRaydiumPools(): PoolsPayload { return raydiumCache.data || { amm: [], clmm: [] }; }
 export function peekOrcaPools(): PoolsPayload { return orcaCache.data || { amm: [], clmm: [] }; }
 export function peekMeteoraPools(): PoolsPayload { return meteoraCache.data || { amm: [], clmm: [] }; }
+export function peekSaberPools(): PoolsPayload { return saberCache.data || { amm: [], clmm: [] }; }
+export function peekMeteoraBalancedPools(): PoolsPayload { return metbalCache.data || { amm: [], clmm: [] }; }
 
 export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPayload> {
   const ttlMs = Number(CONFIG.raydium?.cacheTtlMs || 300_000);

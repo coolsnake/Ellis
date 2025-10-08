@@ -62,7 +62,14 @@ export function createArbRouter(io: SocketIOServer): Router {
     try {
       const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
       const r = await fetch(`${host}/metrics/json`).catch(() => null);
-      res.status(r?.status || 503).json(r ? await r.json().catch(() => ({})) : { ok: false });
+      let j: any = r ? await r.json().catch(() => ({})) : {};
+      try {
+        const { getPoolsMetrics, getPoolCacheAges } = await import('../pools.js');
+        const pm = getPoolsMetrics();
+        const ages = getPoolCacheAges();
+        j = { ...(j || {}), pools: { ...(j?.pools || {}), ...pm }, pools_age_ms: ages };
+      } catch {}
+      res.status(r?.status || 200).json(j);
     } catch {
       res.status(503).json({ ok: false });
     }

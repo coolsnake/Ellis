@@ -4,7 +4,7 @@ import { LogCode } from '../utils/logging.js';
 import { readJson } from '../utils/fs.js';
 import { notifyArbServiceRefresh, emit, pushArbGraphSnapshot, pushArbGraphDiff } from './realtime.js';
 import { CONFIG } from '../utils/config.js';
-import { getRaydiumPoolsNormalized, getOrcaPoolsCached, enablePoolWebsocketRefreshes, peekMeteoraPools, getMeteoraPoolsCached } from './pools.js';
+import { getRaydiumPoolsNormalized, getOrcaPoolsCached, enablePoolWebsocketRefreshes, peekMeteoraPools, getMeteoraPoolsCached, peekSaberPools, peekMeteoraBalancedPools } from './pools.js';
 import { loadTokenMap } from '../utils/tokens.js';
 import { fetch } from 'undici';
 import { calibrateMagnitude } from './priceCalib.js';
@@ -111,14 +111,16 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
   inflight = (async () => {
     try {
       // Build graph from whatever is in caches right now; do not trigger source fetches here
-      const { peekRaydiumPools, peekOrcaPools, peekMeteoraPools } = await import('./pools.js');
+      const { peekRaydiumPools, peekOrcaPools, peekMeteoraPools, peekSaberPools, peekMeteoraBalancedPools } = await import('./pools.js');
       const rayRaw = peekRaydiumPools();
       const orcRaw = peekOrcaPools();
       const metRaw = peekMeteoraPools();
+      const sabRaw = peekSaberPools();
+      const mblRaw = peekMeteoraBalancedPools();
       // Apply scoping according to CONFIG.system.scopePools and scopePoolsMode via universe helper
       const mode = String((CONFIG.system as any)?.scopePoolsMode || 'jupiter');
       const scoped = CONFIG.system.scopePools !== false && mode !== 'none';
-      let ray = rayRaw; let orc = orcRaw; let met = metRaw;
+      let ray = rayRaw; let orc = orcRaw; let met = metRaw; let sab = sabRaw; let mbl = mblRaw;
       if (scoped) {
         try {
           const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
@@ -127,6 +129,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const rScoped = filterPoolsByUniverse(rayRaw as any, universe, anchorBridging);
           const oScoped = filterPoolsByUniverse(orcRaw as any, universe, anchorBridging);
           const mScoped = filterPoolsByUniverse(metRaw as any, universe, anchorBridging);
+          const sScoped = filterPoolsByUniverse(sabRaw as any, universe, anchorBridging);
+          const mbScoped = filterPoolsByUniverse(mblRaw as any, universe, anchorBridging);
           const upstreamR = (rayRaw.amm?.length || 0) + (rayRaw.clmm?.length || 0);
           const scopedR = (rScoped.amm.length || 0) + (rScoped.clmm.length || 0);
           const upstreamO = (orcRaw.amm?.length || 0) + (orcRaw.clmm?.length || 0);
@@ -136,6 +140,12 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           ray = (upstreamR > 0 && scopedR === 0) ? rayRaw : rScoped as any;
           orc = (upstreamO > 0 && scopedO === 0) ? orcRaw : oScoped as any;
           met = (upstreamM > 0 && scopedM === 0) ? metRaw : mScoped as any;
+          const upstreamS = (sabRaw.amm?.length || 0) + (sabRaw.clmm?.length || 0);
+          const scopedS = (sScoped.amm.length || 0) + (sScoped.clmm.length || 0);
+          sab = (upstreamS > 0 && scopedS === 0) ? sabRaw : sScoped as any;
+          const upstreamMb = (mblRaw.amm?.length || 0) + (mblRaw.clmm?.length || 0);
+          const scopedMb = (mbScoped.amm.length || 0) + (mbScoped.clmm.length || 0);
+          mbl = (upstreamMb > 0 && scopedMb === 0) ? mblRaw : mbScoped as any;
         } catch {}
       }
       // Apply global TVL/liquidity thresholds after scoping, before graph build
@@ -589,6 +599,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       }
       const orcValid = validatePoolsForGraph(orc as any);
       const metValid = validatePoolsForGraph(met as any);
+      const sabValid = validatePoolsForGraph(sab as any);
+      const mblValid = validatePoolsForGraph(mbl as any);
       // Helper: triangulate A per B using a pivot C present in pools (no USD refs needed)
       const PIVOTS: string[] = [
         'So11111111111111111111111111111111111111112', // SOL
@@ -598,6 +610,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       const allPools: any[] = [
         ...(rayValid.amm || []), ...(rayValid.clmm || []),
         ...(orcValid.amm || []), ...(orcValid.clmm || []),
+        ...(sabValid.amm || []),
+        ...(mblValid.amm || []),
       ];
       const getPriceAPerBFromPools = (A: string, B: string): number | undefined => {
         let best: { v: number; w: number } | null = null;
@@ -667,6 +681,61 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const pidAmmOrcaRev = pid ? `${pid}-rev` : undefined;
         addEdge(p.mint_b, p.mint_a, 'Orca', p.fee_bps, liqParamOrcaAmm, revAmm, undefined, pidAmmOrcaRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse');
         try { if (fwdAmm && revAmm) { const prod = fwdAmm * revAmm; if (!(prod > 1/1.02 && prod < 1.02)) { consistency.orc.amm++; logger.warn('graph.consistency.orca.amm', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, fwd: fwdAmm, rev: revAmm, prod }); } } } catch {}
+      }
+      // Saber AMM
+      for (const p of (sabValid.amm || [])) {
+        ammTotal++;
+        const decA = Number((p as any)?.decimals_a ?? decimalsByMint[p.mint_a] ?? NaN);
+        const decB = Number((p as any)?.decimals_b ?? decimalsByMint[p.mint_b] ?? NaN);
+        const amtAwhole = Number((p as any)?.amount_a_whole ?? NaN);
+        const amtBwhole = Number((p as any)?.amount_b_whole ?? NaN);
+        const amtA = Number((p as any)?.amount_a ?? NaN);
+        const amtB = Number((p as any)?.amount_b ?? NaN);
+        let usd: number | undefined = (p as any)?.tvl_usd;
+        let price: number | undefined = undefined;
+        if (((p as any)?.amounts_are_whole && (Number.isFinite(amtAwhole) || Number.isFinite(amtBwhole))) || (Number.isFinite(decA) && Number.isFinite(decB) && Number.isFinite(amtA) && Number.isFinite(amtB))) {
+          const wholeA = (p as any)?.amounts_are_whole ? amtAwhole : (amtA / Math.pow(10, decA));
+          const wholeB = (p as any)?.amounts_are_whole ? amtBwhole : (amtB / Math.pow(10, decB));
+          usd = tvlUsd(p.mint_a, p.mint_b, wholeA, wholeB);
+          if (wholeB && (wholeB as number) > 0 && Number.isFinite(wholeA as any)) price = (wholeA as number) / (wholeB as number);
+        }
+        if (!price || price <= 0) price = priceFromUsd(p.mint_a, p.mint_b);
+        if ((!price || price <= 0) && Number.isFinite((p as any)?.price_a_per_b as any) && (p as any).price_a_per_b > 0) price = Number((p as any).price_a_per_b);
+        const pid = safePoolId(p);
+        const liqBase = Number((p as any)?.liquidity_base);
+        const liqDisplay = (p as any)?.liquidity_display ?? ((usd && usd > 0) ? usd : (Number.isFinite(liqBase) && liqBase > 0 ? liqBase : undefined));
+        const fwd = price && price > 0 ? price : undefined;
+        const rev = fwd && fwd > 0 ? (1 / fwd) : undefined;
+        addEdge(p.mint_a, p.mint_b, 'Saber', p.fee_bps, liqDisplay, fwd, usd, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
+        const pidRev = pid ? `${pid}-rev` : undefined;
+        addEdge(p.mint_b, p.mint_a, 'Saber', p.fee_bps, liqDisplay, rev, usd, pidRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse');
+      }
+      // Meteora Balanced AMM
+      for (const p of (mblValid.amm || [])) {
+        ammTotal++;
+        const decA = Number((p as any)?.decimals_a ?? decimalsByMint[p.mint_a] ?? NaN);
+        const decB = Number((p as any)?.decimals_b ?? decimalsByMint[p.mint_b] ?? NaN);
+        const amtA = Number((p as any)?.amount_a ?? (p as any)?.amount_a_whole ?? NaN);
+        const amtB = Number((p as any)?.amount_b ?? (p as any)?.amount_b_whole ?? NaN);
+        let usd: number | undefined = (p as any)?.tvl_usd;
+        let price: number | undefined = (p as any)?.price_a_per_b as number | undefined;
+        if (!price || !(price > 0)) price = priceFromUsd(p.mint_a, p.mint_b);
+        if ((!usd || !(usd > 0)) && Number.isFinite(decA) && Number.isFinite(decB)) {
+          const wholeA = Number.isFinite(amtA) ? (amtA / Math.pow(10, decA)) : NaN;
+          const wholeB = Number.isFinite(amtB) ? (amtB / Math.pow(10, decB)) : NaN;
+          if (Number.isFinite(wholeA) && Number.isFinite(wholeB)) {
+            usd = tvlUsd(p.mint_a, p.mint_b, wholeA, wholeB);
+            if ((!price || price <= 0) && (wholeB as number) > 0) price = (wholeA as number) / (wholeB as number);
+          }
+        }
+        const pid = safePoolId(p);
+        const liqBase = Number((p as any)?.liquidity_base);
+        const liqDisplay = (p as any)?.liquidity_display ?? ((usd && usd > 0) ? usd : (Number.isFinite(liqBase) && liqBase > 0 ? liqBase : undefined));
+        const fwd = price && price > 0 ? price : undefined;
+        const rev = fwd && fwd > 0 ? (1 / fwd) : undefined;
+        addEdge(p.mint_a, p.mint_b, 'Meteora', p.fee_bps, liqDisplay, fwd, usd, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
+        const pidRev = pid ? `${pid}-rev` : undefined;
+        addEdge(p.mint_b, p.mint_a, 'Meteora', p.fee_bps, liqDisplay, rev, usd, pidRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse');
       }
       for (const p of (orcValid.clmm || [])) {
         // amounts from HTTP (raw token units) need decimals to convert to whole tokens for USD TVL

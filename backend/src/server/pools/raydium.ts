@@ -317,10 +317,11 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
           const pb = getPriceByMint(mintB)?.usdc ?? null;
           if (pa && pb && (pa as number) > 0 && (pb as number) > 0) {
             const ref = (pb as number) / (pa as number);
+            // Magnitude-only calibration: do not include reciprocals; keep orientation A per 1 B
             const candidates: number[] = [];
-            if (price_in > 0) { candidates.push(price_in); candidates.push(1 / price_in); }
-            if (price_res > 0) { candidates.push(price_res); candidates.push(1 / price_res); }
-            if (price_res_decs > 0) { candidates.push(price_res_decs); candidates.push(1 / price_res_decs); }
+            if (price_in > 0) candidates.push(price_in);
+            if (price_res > 0) candidates.push(price_res);
+            if (price_res_decs > 0) candidates.push(price_res_decs);
             if (candidates.length) {
               let bestVal = candidates[0];
               let bestDev = Math.max(bestVal / ref, ref / bestVal);

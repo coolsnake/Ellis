@@ -149,6 +149,60 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
     }
   });
 
+  api.get('/arb/pools/saber', async (req, res) => {
+    try {
+      const { getSaberPoolsCached } = await import('../pools.js');
+      const pools = await getSaberPoolsCached(false);
+      const q = (req.query || {}) as { minUsd?: string; limit?: string; sort?: string };
+      const val = (p: any) => {
+        const tvl = Number((p as any)?.tvl_usd ?? 0);
+        if (Number.isFinite(tvl) && tvl > 0) return tvl;
+        const disp = Number((p as any)?.liquidity_display ?? 0);
+        if (Number.isFinite(disp) && disp > 0) return disp;
+        const liq = Number((p as any)?.liquidity ?? (p as any)?.pool_liquidity_raw ?? (p as any)?.liquidity_base ?? 0);
+        return Number.isFinite(liq) && liq > 0 ? liq : 0;
+      };
+      let amm = pools.amm || [];
+      const minUsd = Math.max(0, Number(q.minUsd ?? NaN));
+      const limit = Math.max(0, Number(q.limit ?? NaN));
+      const sortTvl = String(q.sort || '').toLowerCase() === 'tvl';
+      if (Number.isFinite(minUsd) && minUsd > 0) amm = amm.filter(p => val(p) >= minUsd);
+      if (sortTvl) amm = [...amm].sort((a,b) => val(b) - val(a));
+      if (Number.isFinite(limit) && limit > 0) amm = amm.slice(0, limit);
+      res.json({ amm, clmm: [] });
+    } catch (e: any) {
+      logger.error('saber pools fetch failed', { error: String(e?.message || e) });
+      res.status(503).json({ amm: [], clmm: [] });
+    }
+  });
+
+  api.get('/arb/pools/meteora-balanced', async (req, res) => {
+    try {
+      const { getMeteoraBalancedPoolsCached } = await import('../pools.js');
+      const pools = await getMeteoraBalancedPoolsCached(false);
+      const q = (req.query || {}) as { minUsd?: string; limit?: string; sort?: string };
+      const val = (p: any) => {
+        const tvl = Number((p as any)?.tvl_usd ?? 0);
+        if (Number.isFinite(tvl) && tvl > 0) return tvl;
+        const disp = Number((p as any)?.liquidity_display ?? 0);
+        if (Number.isFinite(disp) && disp > 0) return disp;
+        const liq = Number((p as any)?.liquidity ?? (p as any)?.pool_liquidity_raw ?? (p as any)?.liquidity_base ?? 0);
+        return Number.isFinite(liq) && liq > 0 ? liq : 0;
+      };
+      let amm = pools.amm || [];
+      const minUsd = Math.max(0, Number(q.minUsd ?? NaN));
+      const limit = Math.max(0, Number(q.limit ?? NaN));
+      const sortTvl = String(q.sort || '').toLowerCase() === 'tvl';
+      if (Number.isFinite(minUsd) && minUsd > 0) amm = amm.filter(p => val(p) >= minUsd);
+      if (sortTvl) amm = [...amm].sort((a,b) => val(b) - val(a));
+      if (Number.isFinite(limit) && limit > 0) amm = amm.slice(0, limit);
+      res.json({ amm, clmm: [] });
+    } catch (e: any) {
+      logger.error('meteora balanced pools fetch failed', { error: String(e?.message || e) });
+      res.status(503).json({ amm: [], clmm: [] });
+    }
+  });
+
   api.get('/arb/pools/universe/diagnostics', async (_req, res) => {
     try {
       const { getSourceTokenSet, getWatchlistTokenSet, getJupiterTokenSet, computeTokenUniverse } = await import('../universe.js');

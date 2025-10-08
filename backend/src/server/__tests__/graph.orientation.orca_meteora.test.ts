@@ -10,8 +10,8 @@ describe('orca/meteora forward-reverse reciprocity', () => {
       const rid = e.pool_id ? `${e.pool_id}-rev` : `${e.target}->${e.source}-${e.dex}`;
       const r = byId.get(rid);
       if (!r) continue;
-      const f = Number(e.price_a_per_b || 0);
-      const v = Number(r.price_a_per_b || 0);
+      const f = Number((e as any).price_a_per_b || 0);
+      const v = Number((r as any).price_a_per_b || 0);
       if (!(f > 0) || !(v > 0)) continue;
       const prod = f * v;
       expect(prod).toBeGreaterThan(0.98);

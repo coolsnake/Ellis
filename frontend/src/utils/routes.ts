@@ -22,6 +22,8 @@ export const ROUTES = {
     raydium: '/arb/pools/raydium',
     orca: '/arb/pools/orca',
     meteora: '/arb/pools/meteora',
+    saber: '/arb/pools/saber',
+    meteoraBalanced: '/arb/pools/meteora-balanced',
     refresh: '/arb/pools/refresh',
     subscribe: '/arb/pools/subscribe',
     unsubscribe: '/arb/pools/unsubscribe',

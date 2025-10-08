@@ -10,6 +10,8 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
   const [m, setM] = React.useState<any | null>(null);
   const [pools, setPools] = React.useState<any | null>(null);
   const [orcaPools, setOrcaPools] = React.useState<any | null>(null);
+  const [saberPools, setSaberPools] = React.useState<any | null>(null);
+  const [mblPools, setMblPools] = React.useState<any | null>(null);
   const [poolsStats, setPoolsStats] = React.useState<any | null>(null);
   const [subscribed, setSubscribed] = React.useState<boolean>(false);
   const [wsHealthy, setWsHealthy] = React.useState<boolean>(false);
@@ -73,6 +75,28 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
         }
       } catch {}
       fetch(`${apiBase}${ROUTES.pools.orca}`, { headers }).then(r=>r.json()).then(setOrcaPools).catch(()=>{});
+    } catch {}
+    try {
+      const headers: Record<string, string> = {};
+      try {
+        const s = localStorage.getItem('authCreds');
+        if (s) {
+          const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
+          if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
+        }
+      } catch {}
+      fetch(`${apiBase}${ROUTES.pools.saber}`, { headers }).then(r=>r.json()).then(setSaberPools).catch(()=>{});
+    } catch {}
+    try {
+      const headers: Record<string, string> = {};
+      try {
+        const s = localStorage.getItem('authCreds');
+        if (s) {
+          const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
+          if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
+        }
+      } catch {}
+      fetch(`${apiBase}${ROUTES.pools.meteoraBalanced}`, { headers }).then(r=>r.json()).then(setMblPools).catch(()=>{});
     } catch {}
     fetchMetrics();
     try { window.dispatchEvent(new CustomEvent('graph-refresh')); } catch {}
@@ -197,12 +221,24 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
               <div>AMM: {fmt(pools.amm?.length)} CLMM: {fmt(pools.clmm?.length)}</div>
             )}
           </div>
-          <div className="col-span-2">
+            <div className="col-span-2">
             <div className="text-gray-400">Orca Pools (scoped)</div>
             {!orcaPools ? <div className="opacity-70">-</div> : (
               <div>AMM: {fmt(orcaPools.amm?.length)} CLMM: {fmt(orcaPools.clmm?.length)}</div>
             )}
           </div>
+            <div className="col-span-2">
+              <div className="text-gray-400">Saber Pools (scoped)</div>
+              {!saberPools ? <div className="opacity-70">-</div> : (
+                <div>AMM: {fmt(saberPools.amm?.length)}</div>
+              )}
+            </div>
+            <div className="col-span-2">
+              <div className="text-gray-400">Meteora Balanced Pools (scoped)</div>
+              {!mblPools ? <div className="opacity-70">-</div> : (
+                <div>AMM: {fmt(mblPools.amm?.length)}</div>
+              )}
+            </div>
           {poolAges ? (
             <div className="col-span-2">
               <div className="text-gray-400">Pool Cache Age</div>
@@ -210,6 +246,8 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
                 <span className={`px-1 rounded border ${Number(poolAges.raydium) > Number(poolAges.ttl?.raydium) ? 'bg-yellow-800/50 border-yellow-700' : 'bg-green-800/40 border-green-700'}`}>Ray {fmt(poolAges.raydium)}ms / TTL {fmt(poolAges.ttl?.raydium)}ms</span>
                 <span className={`px-1 rounded border ${Number(poolAges.orca) > Number(poolAges.ttl?.orca) ? 'bg-yellow-800/50 border-yellow-700' : 'bg-green-800/40 border-green-700'}`}>Orc {fmt(poolAges.orca)}ms / TTL {fmt(poolAges.ttl?.orca)}ms</span>
                 <span className={`px-1 rounded border ${Number(poolAges.meteora) > Number(poolAges.ttl?.meteora) ? 'bg-yellow-800/50 border-yellow-700' : 'bg-green-800/40 border-green-700'}`}>Met {fmt(poolAges.meteora)}ms / TTL {fmt(poolAges.ttl?.meteora)}ms</span>
+                <span className={`px-1 rounded border ${Number(poolAges.saber) > Number(poolAges.ttl?.saber) ? 'bg-yellow-800/50 border-yellow-700' : 'bg-green-800/40 border-green-700'}`}>Sab {fmt(poolAges.saber)}ms / TTL {fmt(poolAges.ttl?.saber)}ms</span>
+                <span className={`px-1 rounded border ${Number(poolAges.meteora_balanced) > Number(poolAges.ttl?.meteora_balanced) ? 'bg-yellow-800/50 border-yellow-700' : 'bg-green-800/40 border-green-700'}`}>MetBal {fmt(poolAges.meteora_balanced)}ms / TTL {fmt(poolAges.ttl?.meteora_balanced)}ms</span>
               </div>
             </div>
           ) : null}
@@ -244,6 +282,22 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
                 <div>
                   <div className="text-gray-400">Meteora Last (CLMM)</div>
                   <div>{fmt(poolsStats.meteora?.lastClmm)}</div>
+                </div>
+                <div>
+                  <div className="text-gray-400">Saber Fetches / Last Ms</div>
+                  <div>{fmt(poolsStats.saber?.fetches)} / {fmt(poolsStats.saber?.lastMs)}</div>
+                </div>
+                <div>
+                  <div className="text-gray-400">Saber Last (AMM)</div>
+                  <div>{fmt(poolsStats.saber?.lastAmm)}</div>
+                </div>
+                <div>
+                  <div className="text-gray-400">Meteora Balanced Fetches / Last Ms</div>
+                  <div>{fmt(poolsStats.meteora_balanced?.fetches)} / {fmt(poolsStats.meteora_balanced?.lastMs)}</div>
+                </div>
+                <div>
+                  <div className="text-gray-400">Meteora Balanced Last (AMM)</div>
+                  <div>{fmt(poolsStats.meteora_balanced?.lastAmm)}</div>
                 </div>
               </div>
             </div>
