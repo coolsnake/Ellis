@@ -278,7 +278,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 		// If there are no nodes yet, defer layout until we have content
 		if (cy.nodes().length === 0) return;
     const options: any = name === 'fcose'
-			? { name: 'fcose', animate: false, fit: false, quality: 'default', randomize: true, nodeSeparation: 75, nodeRepulsion: 4500 }
+			? { name: 'fcose', animate: false, fit: false, quality: 'default', randomize: !laidOutRef.current, nodeSeparation: 75, nodeRepulsion: 4500 }
 			: { name, animate: false, fit: false };
 		const layout = cy.layout(options);
 		if (shouldFit) {
@@ -290,9 +290,8 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
   };
 
   const refitAndResize = () => {
-    const cy = cyRef.current; if (!cy) return;
-    cy.resize();
-    try { cy.fit(undefined, 20); } catch {}
+    // Re-run the current layout and fit so the current algorithm is applied
+    runLayout('always');
   };
 
 		// Apply edge highlighting given edge ids and/or (source,target,dex) pairs
@@ -388,8 +387,17 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
       const r = await fetch(`${apiBase}${ROUTES.graph.snapshot}`);
       const j: GraphSnapshot = await r.json();
       const cy = cyRef.current; if (!cy) return;
+      // Capture previous node positions to preserve layout across refreshes
+      const hadLayout = !!laidOutRef.current;
+      const preservePositions = hadLayout && !forceLayoutRef.current;
+      const prevPos = new Map<string, { x: number; y: number }>();
+      try { cy.nodes().forEach((n) => { prevPos.set(n.id(), { x: n.position('x'), y: n.position('y') }); }); } catch {}
       cy.elements().remove();
 			cy.add(toElements(j));
+      // Restore positions for existing nodes when preserving layout
+      if (preservePositions) {
+        try { cy.nodes().forEach((n) => { const p = prevPos.get(n.id()); if (p) n.position(p); }); } catch {}
+      }
 			// Fan out parallel edges across the entire graph after adding
 			try {
 				const pairs = new Set<string>();
@@ -421,7 +429,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 				requestAnimationFrame(attemptLayout);
 			}
       // Do not periodically refit; keep current viewport
-      setSelection(null);
+      // keep selection and viewport stable on refresh
     } catch (e: any) {
       setError(String(e?.message || e));
     } finally {
@@ -574,8 +582,16 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
       if (haveContent && snapshotInitializedRef.current && incomingVer <= (lastVersionRef.current || 0)) return;
       lastVersionRef.current = incomingVer;
       setNeedsResync(false);
+			// Preserve previous node positions when refreshing snapshot to avoid jarring jumps
+      const hadLayout = !!laidOutRef.current;
+      const preservePositions = hadLayout && !forceLayoutRef.current;
+      const prevPos = new Map<string, { x: number; y: number }>();
+      try { cy.nodes().forEach((n) => { prevPos.set(n.id(), { x: n.position('x'), y: n.position('y') }); }); } catch {}
 			cy.elements().remove();
 			cy.add(toElements(snap));
+      if (preservePositions) {
+        try { cy.nodes().forEach((n) => { const p = prevPos.get(n.id()); if (p) n.position(p); }); } catch {}
+      }
 			// Run initial layout once on the first snapshot when container is sized
 			if (!laidOutRef.current || forceLayoutRef.current) {
 				const attemptLayout = () => {
