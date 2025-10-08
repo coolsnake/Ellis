@@ -59,8 +59,6 @@ pub fn detect_negative_cycles(g: &ArbGraph) -> Vec<DetectedCycle> {
 pub struct NearMissCycle {
     pub nodes: Vec<usize>,
     pub slack: f64,
-    pub close_u: usize,
-    pub close_v: usize,
 }
 
 /// Detect near-miss cycles using Bellman-Ford slack on the final pass.
@@ -161,7 +159,7 @@ pub fn detect_near_miss_cycles(g: &ArbGraph, epsilon: f64, max_hops: usize, top_
         let key = canon_nodes.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("->");
         if seen_keys.contains(&key) { continue; }
         seen_keys.insert(key);
-        out.push(NearMissCycle { nodes: canon_nodes, slack: s, close_u: u, close_v: v });
+        out.push(NearMissCycle { nodes: canon_nodes, slack: s });
         if out.len() >= limit { break 'outer; }
     }
     out

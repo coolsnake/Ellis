@@ -215,7 +215,6 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 let loop_start = Instant::now();
-                let sol = "So11111111111111111111111111111111111111112";
                 let usdc = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
                 // Apply any buffered diffs now (between detection runs)
                 {
@@ -1085,6 +1084,7 @@ async fn get_opportunities(
 }
 
 #[derive(Deserialize, Clone)]
+#[allow(dead_code)]
 struct StartReqNode { id: String }
 #[derive(Deserialize, Clone)]
 struct StartReqEdge {
@@ -1107,10 +1107,7 @@ struct StartReq { graph: Option<StartReqGraph>, enable: Option<bool> }
 struct GraphSnapshotReq { graph: StartReqGraph }
 
 #[derive(Deserialize)]
-struct GraphDiffNode { id: String, label: Option<String>, degree: Option<i64> }
-#[derive(Deserialize)]
 struct GraphDiffEdge {
-    id: String,
     source: String,
     target: String,
     dex: Option<String>,
@@ -1121,15 +1118,13 @@ struct GraphDiffEdge {
     price_a_per_b: Option<f64>,
 }
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GraphDiffReq {
     version: Option<u64>,
     timestamp: Option<u64>,
-    addedNodes: Option<Vec<GraphDiffNode>>,
-    updatedNodes: Option<Vec<GraphDiffNode>>,
-    removedNodeIds: Option<Vec<String>>,
-    addedEdges: Option<Vec<GraphDiffEdge>>,
-    updatedEdges: Option<Vec<GraphDiffEdge>>,
-    removedEdgeIds: Option<Vec<String>>,
+    added_edges: Option<Vec<GraphDiffEdge>>,    
+    updated_edges: Option<Vec<GraphDiffEdge>>,  
+    removed_edge_ids: Option<Vec<String>>,      
 }
 
 async fn arb_graph_snapshot(State(state): State<Arc<RwLock<AppState>>>, headers: HeaderMap, Json(req): Json<GraphSnapshotReq>) -> Json<serde_json::Value> {
@@ -1186,9 +1181,9 @@ async fn arb_graph_update(State(state): State<Arc<RwLock<AppState>>>, headers: H
     // Buffer the diff to apply between loop iterations to avoid contention
     let mut s = state.write().await;
     if let Some(v) = req.version { if v <= s.last_graph_version { s.metrics.graph_updates_skipped = s.metrics.graph_updates_skipped.saturating_add(1); return Json(serde_json::json!({"ok": true, "skipped": true })); } }
-    if let Some(removed) = req.removedEdgeIds { let n = removed.len(); s.pending_removed_edge_ids.extend(removed); tracing::info!(removed=n, "arb.graph.diff: buffered removed edges"); }
-    if let Some(added) = req.addedEdges { let n = added.len(); s.pending_added_edges.extend(added); tracing::info!(added=n, "arb.graph.diff: buffered added edges"); }
-    if let Some(updated) = req.updatedEdges { let n = updated.len(); s.pending_updated_edges.extend(updated); tracing::info!(updated=n, "arb.graph.diff: buffered updated edges"); }
+    if let Some(removed) = req.removed_edge_ids { let n = removed.len(); s.pending_removed_edge_ids.extend(removed); tracing::info!(removed=n, "arb.graph.diff: buffered removed edges"); }
+    if let Some(added) = req.added_edges { let n = added.len(); s.pending_added_edges.extend(added); tracing::info!(added=n, "arb.graph.diff: buffered added edges"); }
+    if let Some(updated) = req.updated_edges { let n = updated.len(); s.pending_updated_edges.extend(updated); tracing::info!(updated=n, "arb.graph.diff: buffered updated edges"); }
     if req.version.is_some() { s.pending_graph_version = req.version; }
     if req.timestamp.is_some() { s.pending_graph_ts = req.timestamp; }
     // Record time of receipt for diff_to_detect tracking

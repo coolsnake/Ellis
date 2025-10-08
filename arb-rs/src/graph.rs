@@ -62,17 +62,6 @@ impl ArbGraph {
         format!("{}->{}-{}", a, b, dex)
     }
 
-    pub fn remove_edge_by_id(&mut self, id: &str) -> usize {
-        let mut to_remove = Vec::new();
-        for e in self.g.edge_references() {
-            let eid = self.compute_edge_id(e.source(), e.target(), e.weight());
-            if eid == id { to_remove.push(e.id()); }
-        }
-        let n = to_remove.len();
-        for idx in to_remove { let _ = self.g.remove_edge(idx); }
-        n
-    }
-
     pub fn remove_edges_by_ids(&mut self, ids: &[String]) -> usize {
         let set: std::collections::HashSet<&String> = ids.iter().collect();
         let mut to_remove = Vec::new();

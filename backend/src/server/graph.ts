@@ -464,8 +464,11 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const liqDisplayAmm = (usd && usd > 0) ? usd : (Number.isFinite(notionalB as any) && (notionalB as number) > 0 ? (notionalB as number) : (Number.isFinite(liqBase) && liqBase > 0 ? liqBase : undefined));
         const liqParamAmm = (p as any)?.liquidity_display ?? liqDisplayAmm;
         // Incoming price is A per 1 B.
-        // Store display price consistently as A per 1 B for the edge direction.
-        const fwdAmmRay = (price && price > 0) ? price : undefined;
+        // Prefer normalized incoming price; fallback to amounts/USD-derived only when missing.
+        const incomingFwd = Number((p as any)?.price_a_per_b || 0);
+        const fwdAmmRay = (incomingFwd && incomingFwd > 0)
+          ? incomingFwd
+          : ((price && price > 0) ? price : undefined);
         const revAmmRay = (fwdAmmRay && fwdAmmRay > 0) ? (1 / fwdAmmRay) : undefined;
         addEdge(p.mint_a, p.mint_b, 'Raydium', p.fee_bps, liqParamAmm, fwdAmmRay, usd, pidAmm, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
         // Use a distinct id for reverse edge when poolId exists to avoid overwriting forward
