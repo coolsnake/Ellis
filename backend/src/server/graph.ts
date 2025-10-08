@@ -40,6 +40,9 @@ export async function rebuildGraphNow(io?: SocketIOServer): Promise<void> {
     const changed = diff.addedNodes.length || diff.updatedNodes.length || diff.removedNodeIds.length || diff.addedEdges.length || diff.updatedEdges.length || diff.removedEdgeIds.length;
     if (io) {
       if (!prev) io.emit('graph-snapshot', next); else if (changed) io.emit('graph-update', diff);
+    } else {
+      // If no io is provided, emit via realtime emitter to reach clients
+      try { if (!prev) emit('graph-snapshot', next); else if (changed) emit('graph-update', diff); } catch {}
     }
     if (!prev) {
       try { await pushArbGraphSnapshot(next); } catch {}
@@ -51,13 +54,25 @@ export async function rebuildGraphNow(io?: SocketIOServer): Promise<void> {
       if (shouldRebase) {
         try { await pushArbGraphSnapshot(next); } catch {}
         diffSinceRebase = 0; lastRebaseMs = nowMs;
+        try { emit('log', { level: 'info', message: `graph:push snapshot v=${next.version} nodes=${next.nodes.length} edges=${next.edges.length}`, timestamp: new Date().toISOString(), context: { cat: 'graph' } }); } catch {}
       } else {
         try { await pushArbGraphDiff(diff); } catch {}
         diffSinceRebase += (diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length);
+        try { emit('log', { level: 'info', message: `graph:push diff v=${diff.version} changes=${(diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length)}`, timestamp: new Date().toISOString(), context: { cat: 'graph' } }); } catch {}
       }
       try { await notifyArbServiceRefresh(); } catch {}
     }
     try { logger.info('graph.rebuild.now', { nodes: next.nodes.length, edges: next.edges.length, changed }); } catch {}
+    // Optional: auto-retarget WS if many edges changed
+    try {
+      const auto = !!((CONFIG.system as any)?.autoRetargetOnGraph);
+      const ch = (diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length);
+      const big = ch >= Math.max(50, Number((CONFIG.system as any)?.autoRetargetEdgeThreshold || 200));
+      if (auto && (big || !prev)) {
+        const pools = await import('./pools.js');
+        try { await (pools as any).retargetPoolWebsockets?.(); } catch {}
+      }
+    } catch {}
   } catch (e: any) {
     logger.warn('graph.rebuild.now failed', { error: String(e?.message || e) });
   }

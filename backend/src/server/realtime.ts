@@ -125,7 +125,12 @@ export async function pushArbGraphSnapshot(snapshot: any): Promise<void> {
 
 export async function pushArbGraphDiff(diff: any): Promise<void> {
   return new Promise((resolve, reject) => {
+    // Coalesce pending diffs to avoid backlog under high churn; keep snapshots
+    try {
+      arbQueue = arbQueue.filter((j) => j.kind === 'snapshot');
+    } catch {}
     arbQueue.push({ kind: 'diff', payload: diff, resolve, reject });
+    try { logger.info('arb.queue enq', { kind: 'diff', size: arbQueue.length }); } catch {}
     processArbQueue().catch(() => {});
   });
 }
