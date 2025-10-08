@@ -15,6 +15,7 @@ import { ThresholdStrategyConfig } from '../components/ThresholdStrategyConfig';
 import { AddTokenForm } from '../components/AddTokenForm';
 import { FeeConfig } from '../components/FeeConfig';
 import { ArbitrageSection } from '../features/arbitrage/ArbitrageSection';
+import { DriftSection } from '../features/drift/DriftSection';
 import { ArbConfig } from '../components/ArbConfig';
 import { DataFetchConfig } from '../components/DataFetchConfig';
 import { ArbEngineConfig } from '../components/ArbEngineConfig';
