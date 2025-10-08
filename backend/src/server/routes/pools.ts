@@ -27,6 +27,27 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
       const pools = await getRaydiumPoolsNormalized(false);
       try { if (restore) { (CONFIG.raydium as any).minAmmLiqBase = prevAmm; (CONFIG.raydium as any).minClmmLiquidity = prevClmm; if (prevAnchors) (CONFIG.raydium as any).anchorMints = prevAnchors; if (prevUseAnchor !== undefined) (CONFIG.raydium as any).useAnchorDiscovery = prevUseAnchor; } } catch {}
       let out = pools;
+      // Optional harmonized TVL filters/sorting via query: minUsd, limit, sort=tvl
+      try {
+        const extra = (req.query || {}) as { minUsd?: string; limit?: string; sort?: string };
+        const val = (p: any) => {
+          const tvl = Number((p as any)?.tvl_usd ?? 0);
+          if (Number.isFinite(tvl) && tvl > 0) return tvl;
+          const disp = Number((p as any)?.liquidity_display ?? 0);
+          if (Number.isFinite(disp) && disp > 0) return disp;
+          const liq = Number((p as any)?.liquidity ?? (p as any)?.pool_liquidity_raw ?? (p as any)?.liquidity_base ?? 0);
+          return Number.isFinite(liq) && liq > 0 ? liq : 0;
+        };
+        const minUsd = Math.max(0, Number(extra.minUsd ?? NaN));
+        const limit = Math.max(0, Number(extra.limit ?? NaN));
+        const sortTvl = String(extra.sort || '').toLowerCase() === 'tvl';
+        const filt = (arr: any[]) => (Number.isFinite(minUsd) && minUsd > 0) ? arr.filter(p => val(p) >= minUsd) : arr;
+        let amm = filt(pools.amm || []);
+        let clmm = filt(pools.clmm || []);
+        if (sortTvl) { amm = [...amm].sort((a,b) => val(b) - val(a)); clmm = [...clmm].sort((a,b) => val(b) - val(a)); }
+        if (Number.isFinite(limit) && limit > 0) { amm = amm.slice(0, limit); clmm = clmm.slice(0, limit); }
+        out = { amm, clmm } as any;
+      } catch {}
       const routeScope = !!((CONFIG.system as any)?.routeLevelScoping);
       if (routeScope) {
         try {
