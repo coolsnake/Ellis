@@ -164,10 +164,35 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 		return [...nodes, ...edges];
   };
 
+	// Helper: find edges between nodes with optional flags to avoid fragile selector strings
+	const findEdgesBetween = (
+		cy: cytoscape.Core,
+		a: string,
+		b: string,
+		opts?: { includeBoth?: boolean; excludeHidden?: boolean; excludeCombined?: boolean; dex?: string }
+	) => {
+		const includeBoth = opts?.includeBoth ?? false;
+		const excludeHidden = opts?.excludeHidden ?? false;
+		const excludeCombined = opts?.excludeCombined ?? false;
+		const dex = opts?.dex ?? '';
+		return cy.edges().filter((e) => {
+			try {
+				const src = String(e.data('source'));
+				const dst = String(e.data('target'));
+				const matchesPair = includeBoth ? ((src === a && dst === b) || (src === b && dst === a)) : (src === a && dst === b);
+				if (!matchesPair) return false;
+				if (excludeHidden && e.data('hiddenEdge') === 1) return false;
+				if (excludeCombined && e.data('combined') === 1) return false;
+				if (dex && String(e.data('dex')) !== dex) return false;
+				return true;
+			} catch { return false; }
+		});
+	};
+
 	// Recompute control-point distances to fan out parallel edges between two nodes
 	const recomputeParallelOffsets = (cy: cytoscape.Core, a: string, b: string, step: number = 24) => {
 		try {
-			const sel = cy.$(`edge[source = "${a}"][target = "${b}"]:not([hiddenEdge = 1]), edge[source = "${b}"][target = "${a}"]:not([hiddenEdge = 1])`);
+				const sel = findEdgesBetween(cy, a, b, { includeBoth: true, excludeHidden: true });
 			const arr = sel ? sel.toArray() : [];
 			if (!arr.length) return;
 			arr.sort((x, y) => String(x.id()).localeCompare(String(y.id())));
@@ -183,7 +208,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 	// Ensure combined edge exists (or is removed) for a directed pair, and originals are hidden/shown appropriately
 	const ensureCombinedForPair = (cy: cytoscape.Core, a: string, b: string) => {
 		try {
-			const originals = cy.$(`edge[source = "${a}"][target = "${b}"]:not([combined = 1])`);
+				const originals = findEdgesBetween(cy, a, b, { excludeCombined: true });
 			if (!originals || originals.length === 0) {
 				// Nothing to do; remove any stale combined
 				const combinedId = `combined:${a}->${b}`;
@@ -191,11 +216,17 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 				if (existing && existing.length) { try { existing.remove(); } catch {} }
 				return;
 			}
-			// Filter by currently visible DEX
-			let vis = originals;
-			if (!filterDex.Raydium) vis = vis.not('[dex = "Raydium"]');
-			if (!filterDex.Orca) vis = vis.not('[dex = "Orca"]');
-			if (!filterDex.Meteora) vis = vis.not('[dex = "Meteora"]');
+				// Filter by currently visible DEX
+				let vis = originals;
+				try {
+					vis = vis.filter((e) => {
+						const dx = String(e.data('dex'));
+						if (!filterDex.Raydium && dx === 'Raydium') return false;
+						if (!filterDex.Orca && dx === 'Orca') return false;
+						if (!filterDex.Meteora && dx === 'Meteora') return false;
+						return true;
+					});
+				} catch {}
 			// Determine number of distinct DEX among visible originals
 			const dexSet = new Set<string>();
 			vis.forEach((e) => { try { dexSet.add(String(e.data('dex'))); } catch {} });
@@ -264,8 +295,8 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
     try { cy.fit(undefined, 20); } catch {}
   };
 
-  // Apply edge highlighting given edge ids and/or (source,target,dex) pairs
-  const applyHighlight = (payload: { edgeIds?: string[]; pairs?: Array<{ source: string; target: string; dex?: string }> }) => {
+		// Apply edge highlighting given edge ids and/or (source,target,dex) pairs
+		const applyHighlight = (payload: { edgeIds?: string[]; pairs?: Array<{ source: string; target: string; dex?: string }> }) => {
     try {
       const cy = cyRef.current; if (!cy) return;
       const ids = (payload?.edgeIds || []).filter(Boolean);
@@ -276,18 +307,16 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
       // Match by ids (including reverse suffix) and by (source,target,dex) pairs
       const allIds: string[] = [];
       for (const id of ids) { allIds.push(id, `${id}-rev`); }
-      const idSelector = allIds.length ? allIds.map((id) => `#${id}`).join(',') : '';
-      const pairSelectors: string[] = [];
-      for (const p of pairs) {
-        const src = String(p.source);
-        const dst = String(p.target);
-        const dex = p.dex ? String(p.dex) : '';
-        const dexSel = dex ? `[dex = "${dex}"]` : '';
-        pairSelectors.push(`edge[source = "${src}"][target = "${dst}"]${dexSel}`);
-      }
-      const selector = [idSelector, ...pairSelectors].filter(Boolean).join(',');
-      const sel = selector ? cy.$(selector) : cy.collection();
-      sel.addClass('highlighted');
+				const idSelector = allIds.length ? allIds.map((id) => `#${id}`).join(',') : '';
+				let collection = idSelector ? cy.$(idSelector) : cy.collection();
+				for (const p of pairs) {
+					const src = String(p.source);
+					const dst = String(p.target);
+					const dex = p.dex ? String(p.dex) : '';
+					const edges = findEdgesBetween(cy, src, dst, { dex });
+					collection = collection.union(edges);
+				}
+				collection.addClass('highlighted');
       // Highlight combined edges when originals are highlighted or when pair matches
       try {
         if (allIds.length) {
@@ -297,14 +326,14 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
             if (list.some((x) => allIds.includes(String(x)))) e.addClass('highlighted');
           });
         }
-        for (const p of pairs) {
-          const src = String(p.source);
-          const dst = String(p.target);
-          cy.$(`edge[source = "${src}"][target = "${dst}"][combined = 1]`).addClass('highlighted');
-        }
+					for (const p of pairs) {
+						const src = String(p.source);
+						const dst = String(p.target);
+						findEdgesBetween(cy, src, dst, {}).filter((e) => e.data('combined') === 1).addClass('highlighted');
+					}
       } catch {}
       // Optionally focus view on highlighted selection
-      try { if (sel && sel.length) { cy.fit(sel, 40); } } catch {}
+				try { if (collection && collection.length) { cy.fit(collection, 40); } } catch {}
 
       // Build ordered path details and open the Path details panel
       try {
@@ -338,15 +367,14 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
             const rev = cy.getElementById(`${String(rawId)}-rev`);
             if (rev && rev.length && rev.isEdge()) { pushEdge(rev as any); }
           }
-        } else if (pairs.length) {
+					} else if (pairs.length) {
           for (const p of pairs) {
             const src = String(p.source);
             const dst = String(p.target);
             const dex = p.dex ? String(p.dex) : '';
-            const dexSel = dex ? `[dex = "${dex}"]` : '';
-            let cand = cy.$(`edge[source = "${src}"][target = "${dst}"]${dexSel}:not([combined = 1])`);
-            if (!cand || cand.length === 0) cand = cy.$(`edge[source = "${src}"][target = "${dst}"]${dexSel}`);
-            pushEdge((cand && cand.length) ? (cand[0] as any) : null);
+							let cand = findEdgesBetween(cy, src, dst, { dex, excludeCombined: true });
+							if (!cand || cand.length === 0) cand = findEdgesBetween(cy, src, dst, { dex });
+							pushEdge((cand && cand.length) ? (cand[0] as any) : null);
           }
         }
         if (pathEdges.length) setSelection({ kind: 'path', edges: pathEdges });

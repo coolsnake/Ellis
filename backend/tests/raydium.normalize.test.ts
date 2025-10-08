@@ -1,3 +1,61 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+describe('raydium amm orientation normalization', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.restoreAllMocks();
+  });
+
+  it('prefers reserves-derived price over upstream when reserves present', async () => {
+    const now = Date.now();
+    const raw = {
+      data: [
+        {
+          id: 'POOL_AMM_1',
+          poolType: 'amm',
+          mintA: { address: 'BONK_MINT', decimals: 5 },
+          mintB: { address: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', decimals: 6 }, // USDC
+          mintAmountA: 100000000, // 1,000,000 BONK (dec=5) => 10000 whole
+          mintAmountB: 2000000,   // 2,000,000 USDC (dec=6) => 2 whole
+          price: 0.00002,         // upstream says BONK per 1 USDC is tiny
+          tvl: 0,
+          updatedTime: now,
+        },
+      ],
+    };
+    const mod = await import('../src/server/pools/raydium');
+    const norm = await mod.normalizeRaydiumPools(raw as any);
+    const p = norm.amm.find(p => p.id === 'POOL_AMM_1') as any;
+    expect(p).toBeTruthy();
+    // Reserves-derived price: A per 1 B = 10000 / 2 = 5000
+    expect(p.price_a_per_b).toBeGreaterThan(1000);
+  });
+
+  it('applies stable-aware flip when using upstream price and no reserves', async () => {
+    const now = Date.now();
+    const raw = {
+      data: [
+        {
+          id: 'POOL_AMM_2',
+          poolType: 'amm',
+          mintA: { address: 'BONK_MINT', decimals: 5 },
+          mintB: { address: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', decimals: 6 }, // USDC
+          // No mintAmountA/B => no reserves-based price
+          price: 0.00002, // Upstream inverted: BONK per 1 USDC very small
+          tvl: 0,
+          updatedTime: now,
+        },
+      ],
+    };
+    const mod = await import('../src/server/pools/raydium');
+    const norm = await mod.normalizeRaydiumPools(raw as any);
+    const p = norm.amm.find(p => p.id === 'POOL_AMM_2') as any;
+    expect(p).toBeTruthy();
+    // Should flip once because B is USDC and upstream < 1
+    expect(p.price_a_per_b).toBeGreaterThan(1);
+  });
+});
+
 import { describe, it, expect } from 'vitest';
 
 // Import normalize via dynamic import to avoid top-level side effects

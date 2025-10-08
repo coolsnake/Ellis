@@ -304,7 +304,9 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
       const price_res_decs = (Number.isFinite(decA) && Number.isFinite(decB) && Number.isFinite(mintAmountA) && Number.isFinite(mintAmountB) && (mintAmountB as number) > 0)
         ? ((mintAmountA as number) / Math.pow(10, decA as number)) / ((mintAmountB as number) / Math.pow(10, decB as number))
         : 0;
-      let price_sane = price_in > 0 ? price_in : (price_res > 0 ? price_res : price_res_decs);
+      // Prefer reserves-derived price; only fall back to upstream price when reserves are unavailable
+      const price_from_reserves = price_res > 0 ? price_res : (price_res_decs > 0 ? price_res_decs : 0);
+      let price_sane = price_from_reserves > 0 ? price_from_reserves : (price_in > 0 ? price_in : 0);
       try {
         const sanityCfg = (CONFIG as any)?.sanity || {};
         const apply = (sanityCfg as any).sanity_applyRaydiumAmm ?? true;
@@ -336,6 +338,24 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
           }
         }
       } catch {}
+      // If we had to rely on upstream price and lack USD refs, apply a one-pass stable-aware orientation flip
+      try {
+        if (price_sane > 0 && price_from_reserves === 0) {
+          const STABLES = new Set<string>([
+            'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+            'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
+          ]);
+          const aStable = STABLES.has(mintA);
+          const bStable = STABLES.has(mintB);
+          const before = price_sane;
+          if (bStable && price_sane < 1) price_sane = 1 / price_sane; // A per 1 stable should rarely be < 1 for volatile A
+          else if (aStable && price_sane > 10) price_sane = 1 / price_sane; // stable per 1 volatile shouldn't be unreasonably large
+          if (price_sane !== before) {
+            try { logger.warn('raydium.amm reorient by stable heuristic', { id, mint_a: mintA, mint_b: mintB, before, after: price_sane, cat: 'raydium' }); } catch {}
+          }
+        }
+      } catch {}
+
       amm.push({ id, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps, price_a_per_b: Number.isFinite(price_sane) ? price_sane : 0, liquidity_base, updated_ms: now, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, pool_kind: 'amm', tvl_usd, amount_a_whole, amount_b_whole, amounts_are_whole, liquidity_display });
     }
   }
