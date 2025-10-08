@@ -165,6 +165,14 @@ io.on('connection', (socket) => {
     const hist = getWalletHistory();
     socket.emit('wallet-history', hist);
   } catch {}
+  // On-demand snapshot over socket for gap recovery
+  socket.on('graph:request-snapshot', async () => {
+    try {
+      const { getGraphSnapshot } = await import('./graph.js');
+      const snap = await getGraphSnapshot(true);
+      socket.emit('graph-snapshot', snap);
+    } catch {}
+  });
   // Note: graph rebuilds are scheduled directly from pool update points in pools.ts (HTTP + WS)
 });
 
@@ -298,19 +306,7 @@ setInterval(() => {
     cooldownUntilMs: systemStatus.cooldownUntilMs,
     botName: systemStatus.botName,
   });
-
-// On-demand snapshot over socket for gap recovery
-try {
-  io.on('connection', (socket: any) => {
-    socket.on('graph:request-snapshot', async () => {
-      try {
-        const { getGraphSnapshot } = await import('./graph.js');
-        const snap = await getGraphSnapshot(true);
-        socket.emit('graph-snapshot', snap);
-      } catch {}
-    });
-  });
-} catch {}
+ 
 }, 1000);
 
 // Periodic heartbeat log to reassure the user the program is running
