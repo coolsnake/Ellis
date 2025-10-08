@@ -18,6 +18,7 @@ import { ArbitrageMetrics } from '../components/ArbitrageMetrics';
 import { ArbConfig } from '../components/ArbConfig';
 import { DataFetchConfig } from '../components/DataFetchConfig';
 import { ArbEngineConfig } from '../components/ArbEngineConfig';
+import { GraphConfig } from '../components/GraphConfig';
 import { SystemConfig } from '../components/SystemConfig';
 import { GraphView } from '../components/GraphView';
 import { CollapsibleSection } from '../components/CollapsibleSection';
@@ -101,6 +102,7 @@ export const App: React.FC = () => {
   const [showSystemConfig, setShowSystemConfig] = useState(false);
   const [showArbConfig, setShowArbConfig] = useState(false);
   const [showDataFetchConfig, setShowDataFetchConfig] = useState(false);
+  const [showGraphConfig, setShowGraphConfig] = useState(false);
   const [showEngineConfig, setShowEngineConfig] = useState(false);
   const [showLiqConfig, setShowLiqConfig] = useState(false);
   const [showGraph, setShowGraph] = useState(false);
@@ -1578,6 +1580,7 @@ export const App: React.FC = () => {
             <>
               <button onClick={()=>setShowDataFetchConfig(true)} className="px-3 py-1 bg-blue-600 text-white rounded text-sm hover:bg-blue-700">Fetchers & Normalizers</button>
               <button onClick={()=>setShowEngineConfig(true)} className="px-3 py-1 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Arb Engine</button>
+              <button onClick={()=>setShowGraphConfig(true)} className="px-3 py-1 bg-teal-600 text-white rounded text-sm hover:bg-teal-700">Graph Config</button>
             </>
           )}
         >
@@ -1591,6 +1594,9 @@ export const App: React.FC = () => {
             </div>
           ) : null}
         </CollapsibleSection>
+        {showGraphConfig && (
+          <GraphConfig apiBase={apiBase} onClose={() => setShowGraphConfig(false)} />
+        )}
         {/* Drift Panel: subaccounts and management */}
         <CollapsibleSection title={"Drift"} storageKey="panel:drift">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

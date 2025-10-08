@@ -21,8 +21,9 @@ let lastAt = 0;
 let rebuildTimer: any | null = null;
 let pendingUpdates = 0;
 let diffSinceRebase = 0;
-const REBASE_DIFF_THRESHOLD = 2000; // send full snapshot after many changes
-const REBASE_TIME_MS = 5 * 60 * 1000; // or after time window
+// Allow rebase policy to be configured via CONFIG.system
+const REBASE_DIFF_THRESHOLD = Math.max(0, Number((CONFIG.system as any)?.graphRebaseDiffThreshold || 2000));
+const REBASE_TIME_MS = Math.max(0, Number((CONFIG.system as any)?.graphRebaseTimeMs || (5 * 60 * 1000)));
 let lastRebaseMs = 0;
 
 export function getGraphVersion(): { version: number; timestamp: number } {
@@ -81,7 +82,9 @@ export async function rebuildGraphNow(io?: SocketIOServer): Promise<void> {
 export function scheduleGraphRebuild(io?: SocketIOServer, debounceMs = 200): void {
   if (rebuildTimer) { clearTimeout(rebuildTimer); rebuildTimer = null; }
   pendingUpdates += 1;
-  const wait = Math.max(50, debounceMs);
+  // Allow very low debounce when explicitly configured
+  const minDebounce = Math.max(5, Number((CONFIG.system as any)?.graphRebuildMinDebounceMs || 50));
+  const wait = Math.max(minDebounce, debounceMs);
   rebuildTimer = setTimeout(() => { rebuildTimer = null; const pending = pendingUpdates; pendingUpdates = 0; try { logger.info('graph.rebuild.batch', { pending }); } catch {}; rebuildGraphNow(io).catch(() => {}); }, wait);
   try { logger.info('graph.rebuild.scheduled', { debounceMs }); } catch {}
 }

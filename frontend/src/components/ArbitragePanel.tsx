@@ -205,6 +205,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
       <div className="flex items-center justify-between mb-2">
         <h3 className="text-lg font-semibold">Arbitrage Opportunities</h3>
         <div className="flex items-center gap-2">
+          <button className="px-2 py-1 border rounded" onClick={()=>{ try { (window as any).dispatchEvent(new CustomEvent('open-graph-config')); } catch {} }}>Graph Config</button>
           <button className="px-2 py-1 border rounded" onClick={async()=>{
             try { await fetch(`${apiBase}${ROUTES.arb.metricsJson}`, { headers: { 'accept': 'application/json' } }); } catch {}
             // Best-effort also refresh opportunities snapshot

@@ -1,0 +1,119 @@
+import React, { useEffect, useState } from 'react';
+import { ROUTES } from '../utils/routes';
+
+type Props = { apiBase: string; onClose: () => void };
+
+export const GraphConfig: React.FC<Props> = ({ apiBase, onClose }) => {
+  const [cfg, setCfg] = useState<any>({
+    graphRebaseDiffThreshold: 2000,
+    graphRebaseTimeMs: 300000,
+    graphSnapshotTtlMs: 30000,
+    graphRebuildDebounceMs: 200,
+    graphRebuildMinDebounceMs: 50,
+    graphDeltaRebuildThreshold: 0,
+    sanity_enabled: true,
+    sanity_maxPriceDeviation: 50,
+    sanity_feeMin: 0,
+    sanity_feeMax: 10000,
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch(`${apiBase}${ROUTES.system.config}`);
+        if (r.ok) {
+          const j = await r.json();
+          setCfg((p: any) => ({
+            ...p,
+            graphRebaseDiffThreshold: Number(j?.system?.graphRebaseDiffThreshold ?? p.graphRebaseDiffThreshold),
+            graphRebaseTimeMs: Number(j?.system?.graphRebaseTimeMs ?? p.graphRebaseTimeMs),
+            graphSnapshotTtlMs: Number(j?.system?.graphSnapshotTtlMs ?? p.graphSnapshotTtlMs),
+            graphRebuildDebounceMs: Number(j?.system?.graphRebuildDebounceMs ?? p.graphRebuildDebounceMs),
+            graphRebuildMinDebounceMs: Number(j?.system?.graphRebuildMinDebounceMs ?? p.graphRebuildMinDebounceMs),
+            graphDeltaRebuildThreshold: Number(j?.system?.graphDeltaRebuildThreshold ?? p.graphDeltaRebuildThreshold),
+            sanity_enabled: (j?.sanity?.enabled ?? true) !== false,
+            sanity_maxPriceDeviation: Number(j?.sanity?.maxPriceDeviation ?? p.sanity_maxPriceDeviation),
+            sanity_feeMin: Number(j?.sanity?.feeMin ?? p.sanity_feeMin),
+            sanity_feeMax: Number(j?.sanity?.feeMax ?? p.sanity_feeMax),
+          }));
+        }
+      } catch {}
+    })();
+  }, [apiBase]);
+
+  const set = (k: string, v: any) => setCfg((p: any) => ({ ...p, [k]: v }));
+
+  const onSave = async () => {
+    if (saving) return; setSaving(true); setError(null);
+    const body: any = {
+      system: {
+        graphRebaseDiffThreshold: Number(cfg.graphRebaseDiffThreshold),
+        graphRebaseTimeMs: Number(cfg.graphRebaseTimeMs),
+        graphSnapshotTtlMs: Number(cfg.graphSnapshotTtlMs),
+        graphRebuildDebounceMs: Number(cfg.graphRebuildDebounceMs),
+        graphRebuildMinDebounceMs: Number(cfg.graphRebuildMinDebounceMs),
+        graphDeltaRebuildThreshold: Number(cfg.graphDeltaRebuildThreshold),
+      },
+      sanity: {
+        enabled: !!cfg.sanity_enabled,
+        maxPriceDeviation: Number(cfg.sanity_maxPriceDeviation),
+        feeMin: Number(cfg.sanity_feeMin),
+        feeMax: Number(cfg.sanity_feeMax),
+      },
+    };
+    try {
+      const r = await fetch(`${apiBase}${ROUTES.system.config}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      if (!r.ok) throw new Error('Failed to save');
+      onClose();
+    } catch (e: any) {
+      setError(String(e?.message || e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-gray-800 rounded-lg p-6 w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-2xl font-bold text-white">Graph Configuration</h2>
+          <button className="text-gray-300 hover:text-white" onClick={onClose}>✕</button>
+        </div>
+        {error ? <div className="text-red-400 text-sm mb-2">{error}</div> : null}
+
+        <div className="space-y-6">
+          <div className="bg-gray-700 rounded p-4">
+            <h3 className="text-lg font-semibold mb-3">Rebase & Diff Policy</h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div><label className="block text-sm mb-1">Rebase Diff Threshold (edges)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.graphRebaseDiffThreshold} onChange={(e)=>set('graphRebaseDiffThreshold', Number(e.target.value)||0)} /></div>
+              <div><label className="block text-sm mb-1">Rebase Time (ms)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.graphRebaseTimeMs} onChange={(e)=>set('graphRebaseTimeMs', Number(e.target.value)||0)} /></div>
+              <div><label className="block text-sm mb-1">Snapshot TTL (ms)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.graphSnapshotTtlMs} onChange={(e)=>set('graphSnapshotTtlMs', Number(e.target.value)||0)} /></div>
+              <div><label className="block text-sm mb-1">Rebuild Debounce (ms)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.graphRebuildDebounceMs} onChange={(e)=>set('graphRebuildDebounceMs', Number(e.target.value)||0)} /></div>
+              <div><label className="block text-sm mb-1">Min Debounce (ms)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.graphRebuildMinDebounceMs} onChange={(e)=>set('graphRebuildMinDebounceMs', Number(e.target.value)||0)} /></div>
+              <div><label className="block text-sm mb-1">Delta Rebuild Threshold</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.graphDeltaRebuildThreshold} onChange={(e)=>set('graphDeltaRebuildThreshold', Number(e.target.value)||0)} /></div>
+            </div>
+          </div>
+
+          <div className="bg-gray-700 rounded p-4">
+            <h3 className="text-lg font-semibold mb-3">Sanity Filters</h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.sanity_enabled} onChange={(e)=>set('sanity_enabled', e.target.checked)} />Enable</label>
+              <div><label className="block text-sm mb-1">Max Price Deviation (x)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.sanity_maxPriceDeviation} onChange={(e)=>set('sanity_maxPriceDeviation', Number(e.target.value)||0)} /></div>
+              <div><label className="block text-sm mb-1">Fee Min (bps)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.sanity_feeMin} onChange={(e)=>set('sanity_feeMin', Number(e.target.value)||0)} /></div>
+              <div><label className="block text-sm mb-1">Fee Max (bps)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.sanity_feeMax} onChange={(e)=>set('sanity_feeMax', Number(e.target.value)||0)} /></div>
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-3">
+            <button className="px-4 py-2 bg-gray-600 rounded text-white" onClick={onClose} disabled={saving}>Cancel</button>
+            <button className={`px-4 py-2 ${saving?'bg-blue-500/60':'bg-blue-600 hover:bg-blue-700'} rounded text-white`} onClick={onSave} disabled={saving}>{saving?'Saving…':'Save'}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+
