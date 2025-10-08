@@ -1,3 +1,12 @@
+# Harvest script (requested to ignore; note: already tracked files remain tracked)
+scripts/harvest-logs.js
+
+# Harvested log outputs
+lockstone-logs-*.jsonl
+
+# Backend session logs
+backend/logs/*.jsonl
+
 node_modules
 dist
 .DS_Store
