@@ -1,9 +1,12 @@
 import React from 'react';
 import { ROUTES } from '../utils/routes';
+import { useSocket } from '../app/contexts/socket';
 
 export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; socket?: any }> = (
   { apiBase, paused, socket }: { apiBase: string; paused?: boolean; socket?: any }
 ) => {
+  const { socket: ctxSocket } = useSocket();
+  const effectiveSocket = socket ?? ctxSocket;
   const [m, setM] = React.useState<any | null>(null);
   const [pools, setPools] = React.useState<any | null>(null);
   const [orcaPools, setOrcaPools] = React.useState<any | null>(null);
@@ -87,7 +90,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
 
   // Subscribe to socket events to refresh metrics on push updates
   React.useEffect(() => {
-    if (!socket || paused) return;
+    if (!effectiveSocket || paused) return;
     const onGraphSnapshot = () => { try { fetchMetrics(); } catch {} };
     const onGraphUpdate = () => { try { fetchMetrics(); } catch {} };
     const onWsActivity = (evt: any) => {
@@ -112,17 +115,17 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
         }
       } catch {}
     };
-    try { socket.on('graph-snapshot', onGraphSnapshot); } catch {}
-    try { socket.on('graph-update', onGraphUpdate); } catch {}
-    try { socket.on('ws-activity', onWsActivity); } catch {}
-    try { socket.on('log', onArbLog); } catch {}
+    try { effectiveSocket.on('graph-snapshot', onGraphSnapshot); } catch {}
+    try { effectiveSocket.on('graph-update', onGraphUpdate); } catch {}
+    try { effectiveSocket.on('ws-activity', onWsActivity); } catch {}
+    try { effectiveSocket.on('log', onArbLog); } catch {}
     return () => {
-      try { socket.off('graph-snapshot', onGraphSnapshot); } catch {}
-      try { socket.off('graph-update', onGraphUpdate); } catch {}
-      try { socket.off('ws-activity', onWsActivity); } catch {}
-      try { socket.off('log', onArbLog); } catch {}
+      try { effectiveSocket.off('graph-snapshot', onGraphSnapshot); } catch {}
+      try { effectiveSocket.off('graph-update', onGraphUpdate); } catch {}
+      try { effectiveSocket.off('ws-activity', onWsActivity); } catch {}
+      try { effectiveSocket.off('log', onArbLog); } catch {}
     };
-  }, [socket, paused]);
+  }, [effectiveSocket, paused]);
 
   const fmt = (v: any) => typeof v === 'number' ? v.toLocaleString() : String(v || '-');
   const ago = (ms?: number) => {

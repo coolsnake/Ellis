@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ROUTES } from '../utils/routes';
+import { useSocket } from '../app/contexts/socket';
 
 type BottleneckEdge = { from: string; to: string; dex: string; rate: number; liquidity: number; fee_bps: number };
 type Opportunity = {
@@ -50,6 +51,8 @@ type OpportunitiesSummary = {
 };
 
 export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph: boolean; onToggleGraph: () => void }> = ({ apiBase, socket, showGraph, onToggleGraph }) => {
+  const { socket: ctxSocket } = useSocket();
+  const effectiveSocket = socket ?? ctxSocket;
   const [items, setItems] = useState<Opportunity[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -132,7 +135,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
       const ids: string[] | undefined = nm?.hop_pool_ids;
       if (ids && ids.length) {
         try { window.dispatchEvent(new CustomEvent('graph-highlight', { detail: { edgeIds: ids } })); } catch {}
-        if (socket) { try { socket.emit('graph-highlight', { edgeIds: ids }); } catch {} }
+        if (effectiveSocket) { try { effectiveSocket.emit('graph-highlight', { edgeIds: ids }); } catch {} }
         return;
       }
       const pathArr: string[] = Array.isArray(nm?.path) ? nm.path : [];
@@ -143,12 +146,12 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
           pairs.push({ source: pathArr[i], target: pathArr[i+1], dex: hops[i % (hops.length || 1)] });
         }
         try { window.dispatchEvent(new CustomEvent('graph-highlight', { detail: { pairs } })); } catch {}
-        if (socket) { try { socket.emit('graph-highlight', { pairs }); } catch {} }
+        if (effectiveSocket) { try { effectiveSocket.emit('graph-highlight', { pairs }); } catch {} }
       }
     } catch {}
-  }, [summary?.near_miss, socket]);
+  }, [summary?.near_miss, effectiveSocket]);
   useEffect(() => {
-    if (!socket) return;
+    if (!effectiveSocket) return;
     const onGraphSnapshot = (snap: { version: number }) => {
       if (typeof snap?.version === 'number' && snap.version !== lastGraphVersion) {
         setLastGraphVersion(snap.version);
@@ -176,27 +179,27 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
     const onTxAny = async () => {
       try { const r = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const j = await r.json(); setTxRows(Array.isArray(j?.items) ? j.items : []); } catch {}
     };
-    socket.on('graph-snapshot', onGraphSnapshot);
-    socket.on('graph-update', onGraphUpdate);
-    socket.on('log', onArbLog);
-    socket.on('tx:start', onTxAny);
-    socket.on('tx:resolved', onTxAny);
-    socket.on('tx:sim.ok', onTxAny);
-    socket.on('tx:sim.err', onTxAny);
-    socket.on('tx:send.ok', onTxAny);
-    socket.on('tx:send.err', onTxAny);
+    effectiveSocket.on('graph-snapshot', onGraphSnapshot);
+    effectiveSocket.on('graph-update', onGraphUpdate);
+    effectiveSocket.on('log', onArbLog);
+    effectiveSocket.on('tx:start', onTxAny);
+    effectiveSocket.on('tx:resolved', onTxAny);
+    effectiveSocket.on('tx:sim.ok', onTxAny);
+    effectiveSocket.on('tx:sim.err', onTxAny);
+    effectiveSocket.on('tx:send.ok', onTxAny);
+    effectiveSocket.on('tx:send.err', onTxAny);
     return () => {
-      socket.off('graph-snapshot', onGraphSnapshot);
-      socket.off('graph-update', onGraphUpdate);
-      socket.off('log', onArbLog);
-      socket.off('tx:start', onTxAny);
-      socket.off('tx:resolved', onTxAny);
-      socket.off('tx:sim.ok', onTxAny);
-      socket.off('tx:sim.err', onTxAny);
-      socket.off('tx:send.ok', onTxAny);
-      socket.off('tx:send.err', onTxAny);
+      effectiveSocket.off('graph-snapshot', onGraphSnapshot);
+      effectiveSocket.off('graph-update', onGraphUpdate);
+      effectiveSocket.off('log', onArbLog);
+      effectiveSocket.off('tx:start', onTxAny);
+      effectiveSocket.off('tx:resolved', onTxAny);
+      effectiveSocket.off('tx:sim.ok', onTxAny);
+      effectiveSocket.off('tx:sim.err', onTxAny);
+      effectiveSocket.off('tx:send.ok', onTxAny);
+      effectiveSocket.off('tx:send.err', onTxAny);
     };
-  }, [socket, lastGraphVersion]);
+  }, [effectiveSocket, lastGraphVersion]);
 
   // Remove periodic polling; rely on socket-driven refreshes
 

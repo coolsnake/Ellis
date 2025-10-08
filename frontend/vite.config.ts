@@ -5,6 +5,9 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 3000
+  },
+  define: {
+    'import.meta.env.VITE_USE_CONTEXT_SOCKET': JSON.stringify('true'),
   }
 })
 

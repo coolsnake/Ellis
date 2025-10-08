@@ -27,7 +27,11 @@ type GraphDiff = {
   removedEdgeIds: string[];
 };
 
+import { useSocket } from '../app/contexts/socket';
+
 export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boolean }> = ({ apiBase, socket, square }) => {
+  const { socket: ctxSocket } = useSocket();
+  const effectiveSocket = socket ?? ctxSocket;
   const cyRef = useRef<cytoscape.Core | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [loading, setLoading] = useState(false);
@@ -448,7 +452,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
   }, [containerRef.current]);
 
   useEffect(() => {
-    if (!socket) return;
+    if (!effectiveSocket) return;
     const onDiff = (diff: GraphDiff) => {
       const cy = cyRef.current; if (!cy) return;
       snapshotInitializedRef.current = true; // prefer diffs after first reception
@@ -459,7 +463,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
         if (inc <= cur) return; // stale/out-of-order
         if (cur > 0 && inc !== cur + 1) {
           setNeedsResync(true);
-          try { socket.emit('graph:request-snapshot'); } catch {}
+        try { effectiveSocket.emit('graph:request-snapshot'); } catch {}
           return;
         }
         lastVersionRef.current = inc;
@@ -564,15 +568,15 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 			snapshotInitializedRef.current = true;
     };
     const onHighlight = (payload: { edgeIds?: string[]; pairs?: Array<{ source: string; target: string; dex?: string }> }) => { applyHighlight(payload as any); };
-    socket.on('graph-update', onDiff);
-    socket.on('graph-snapshot', onSnapshot);
-    socket.on('graph-highlight', onHighlight);
+    effectiveSocket.on('graph-update', onDiff);
+    effectiveSocket.on('graph-snapshot', onSnapshot);
+    effectiveSocket.on('graph-highlight', onHighlight);
     return () => {
-      socket.off('graph-update', onDiff);
-      socket.off('graph-snapshot', onSnapshot);
-      socket.off('graph-highlight', onHighlight);
+      effectiveSocket.off('graph-update', onDiff);
+      effectiveSocket.off('graph-snapshot', onSnapshot);
+      effectiveSocket.off('graph-highlight', onHighlight);
     };
-	}, [socket, filterDex.Raydium, filterDex.Orca, filterDex.Meteora, layoutName]);
+  }, [effectiveSocket, filterDex.Raydium, filterDex.Orca, filterDex.Meteora, layoutName]);
 
   // Initialize cy configuration when instance is available
 	const onCyReady = (cy: cytoscape.Core) => {

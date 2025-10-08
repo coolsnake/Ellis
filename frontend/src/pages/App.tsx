@@ -1,6 +1,5 @@
 // @ts-nocheck
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Navigate } from 'react-router-dom';
 import { logger } from '../utils/logger';
 import { io, Socket } from 'socket.io-client';
 import { GridStrategyConfig } from '../components/GridStrategyConfig';
@@ -8,13 +7,14 @@ import { LeveragedGridConfig } from '../components/LeveragedGridConfig';
 import { ROUTES } from '../utils/routes';
 import { GridMonitor } from '../components/GridMonitor';
 import { LiquidationMonitor } from '../components/LiquidationMonitor';
+import { WatchlistSection } from '../features/wallet/WatchlistSection';
+import { ConfigsSection } from '../features/configs/ConfigsSection';
 // removed legacy LiquidatorConfig modal
 import { LiquidatorRunnerConfig } from '../components/LiquidatorRunnerConfig';
 import { ThresholdStrategyConfig } from '../components/ThresholdStrategyConfig';
 import { AddTokenForm } from '../components/AddTokenForm';
 import { FeeConfig } from '../components/FeeConfig';
-import { ArbitragePanel } from '../components/ArbitragePanel';
-import { ArbitrageMetrics } from '../components/ArbitrageMetrics';
+import { ArbitrageSection } from '../features/arbitrage/ArbitrageSection';
 import { ArbConfig } from '../components/ArbConfig';
 import { DataFetchConfig } from '../components/DataFetchConfig';
 import { ArbEngineConfig } from '../components/ArbEngineConfig';
@@ -31,6 +31,7 @@ import { useWallet } from '../app/contexts/wallet';
 import { useLogs } from '../app/contexts/logs';
 import { useDrift } from '../app/contexts/drift';
 import { useArb } from '../app/contexts/arb';
+import { useAuth } from '../app/contexts/auth';
 // Login page is now routed at /login; main app assumes authenticated state
 
 type LogEvent = { level: string; message: string; timestamp: string; context?: Record<string, unknown>; cat?: string; subcat?: string; code?: string; cid?: string; span?: 'start' | 'end'; muted?: boolean };
@@ -76,23 +77,9 @@ export const App: React.FC = () => {
   const [showEngineConfig, setShowEngineConfig] = useState(false);
   const [showLiqConfig, setShowLiqConfig] = useState(false);
   const [showGraph, setShowGraph] = useState(false);
-  const socketRef = useRef<Socket | null>(null);
+  // socket managed by context; remove local ref after full migration
   const lastSystemRef = useRef<number>(Date.now());
-  const [isConnected, setIsConnected] = useState<boolean>(false);
-  // arbConfig managed by useArb
-  const [authError, setAuthError] = useState<string | null>(null);
-  const [creds, setCreds] = useState<{ user: string; pass: string; expiresAt?: number } | null>(() => {
-    try {
-      const s = localStorage.getItem('authCreds');
-      const obj = s ? JSON.parse(s) : null;
-      const exp = Number(obj?.expiresAt ?? NaN);
-      if (!obj || !Number.isFinite(exp) || exp <= Date.now()) {
-        try { localStorage.removeItem('authCreds'); } catch {}
-        return null;
-      }
-      return obj;
-    } catch { return null; }
-  });
+  const { credentials } = useAuth();
 
   // Liquidator panel state
   // removed legacy inline liquidator fields (use +Liquidator modal instead)
@@ -135,36 +122,12 @@ export const App: React.FC = () => {
     setCollapsedStrategyParams(prev => ({ ...prev, [name]: !prev[name] }));
   };
 
-  // Helper to inject Basic Authorization header when creds exist
-  const authHeaders = useMemo(() => {
-    if (!creds) return {};
-    const token = btoa(`${creds.user}:${creds.pass}`);
-    return { Authorization: `Basic ${token}` } as Record<string, string>;
-  }, [creds]);
+  // Authorization headers are injected globally in utils/api
 
-  // Auto-logout when local credential TTL expires
-  useEffect(() => {
-    if (!creds) return;
-    let exp = 0;
-    try {
-      const s = localStorage.getItem('authCreds');
-      const obj = s ? JSON.parse(s) : null;
-      exp = Number(obj?.expiresAt ?? 0);
-    } catch {}
-    if (!exp) return;
-    const ms = Math.max(0, exp - Date.now());
-    const timer = window.setTimeout(() => {
-      try { localStorage.removeItem('authCreds'); } catch {}
-      try { socketRef.current?.disconnect(); } catch {}
-      setCreds(null);
-    }, ms);
-    return () => { window.clearTimeout(timer); };
-  }, [creds]);
+  // TTL/redirects handled by fetch interceptor + router gating
 
   useEffect(() => {
-    if (!creds) return;
-    fetch(`${apiBase}${ROUTES.system.base}`).then(r => r.json()).then(setSystem);
-    fetch(`${apiBase}${ROUTES.wallet.base}`).then(r => r.json()).then(setWallet);
+    if (!credentials) return;
     fetch(`${apiBase}${ROUTES.watchlist}`).then(r => r.json()).then(d => setWatchlist(d.watchlist));
     // Load base (spot) strategies first
     fetch(`${apiBase}${ROUTES.legacy.strategy}`).then(r => r.json()).then(async (d) => {
@@ -204,34 +167,10 @@ export const App: React.FC = () => {
         setStrategies(baseList || []);
       }
     });
-    fetch(`${apiBase}${ROUTES.wallet.tokens}`).then(r => r.json()).then(d => setWalletTokens(Array.isArray(d.list) ? d.list : (d.walletTokens || [])));
-    fetch(`${apiBase}${ROUTES.arb.config}`).then(r => r.json()).then(setArbConfig).catch(() => {});
-    // Load Drift status/subaccounts for Drift panel
-    (async () => {
-      try {
-        const st = await fetch(`${apiBase}${ROUTES.drift.status}`).then(r => r.json());
-        setDriftStatus(st);
-        try {
-          const subsResp = await fetch(`${apiBase}${ROUTES.drift.subaccounts}`).then(r => r.json());
-          const subs = subsResp?.subaccounts || [];
-          setDriftSubaccounts(subs);
-          const selected = Number(subsResp?.selectedId ?? (subs[0]?.id ?? 0));
-          if (Number.isFinite(selected)) {
-            setDriftSelectedSubId(selected);
-            const sel = subs.find((s: any) => Number(s.id) === Number(selected));
-            setDriftRenameSubName(sel?.name || '');
-          }
-        } catch {}
-        try {
-          const markets = await fetch(`${apiBase}${ROUTES.drift.spotMarkets}`).then(r => r.json());
-          setDriftSpotMarkets(Array.isArray(markets?.markets) ? markets.markets : []);
-        } catch {}
-      } catch {}
-    })();
-  }, [apiBase, authHeaders, creds]);
+  }, [apiBase, credentials]);
 
   useEffect(() => {
-    if (!creds) return;
+    if (!credentials) return;
     (async () => {
       try {
         if (!Number.isFinite(Number(driftSelectedSubId))) return;
@@ -239,7 +178,7 @@ export const App: React.FC = () => {
         setDriftSubBalances(Array.isArray(b?.balances) ? b.balances : []);
       } catch {}
     })();
-  }, [apiBase, authHeaders, creds, driftSelectedSubId]);
+  }, [apiBase, credentials, driftSelectedSubId]);
 
   useEffect(() => {
     const sel = driftSubaccounts.find((s: any) => Number(s.id) === Number(driftSelectedSubId));
@@ -247,35 +186,15 @@ export const App: React.FC = () => {
   }, [driftSelectedSubId, driftSubaccounts]);
 
   useEffect(() => {
-    if (!creds) return;
+    if (!credentials) return;
+    // strategies and activity updates remain here for now
     const socket = io(wsUrl, {
       path: '/socket.io',
       transports: ['websocket', 'polling'],
-      auth: { user: creds.user, pass: creds.pass },
-      extraHeaders: authHeaders as any,
+      auth: { user: credentials.user, pass: credentials.pass },
     });
-    socketRef.current = socket;
     socket.on('connect', () => setIsConnected(true));
     socket.on('disconnect', () => setIsConnected(false));
-    socket.on('system', (data) => { lastSystemRef.current = Date.now(); setSystem((prev: any) => ({ ...prev, ...data })); });
-    socket.on('wallet-update', (data) => setWallet((prev: any) => ({ ...prev, ...data })));
-    socket.on('watchlist-update', (list) => setWatchlist(list));
-    socket.on('log', (evt: LogEvent & { cat?: string; muted?: boolean }) => {
-      const cat = (evt?.cat || '').toLowerCase();
-      // Frontend category filter: use server-provided defaults if present
-      const serverCats: string[] | undefined = (system as any)?.system?.frontendEnabledLogCategories || (system as any)?.system?.enabledLogCategories;
-      const localCatsJson = typeof window !== 'undefined' ? window.localStorage.getItem('frontendEnabledLogCategories') : null;
-      const localCats: string[] | null = localCatsJson ? JSON.parse(localCatsJson) : null;
-      const allowedCats = Array.isArray(localCats) && localCats.length ? localCats : (Array.isArray(serverCats) ? serverCats : null);
-      if (allowedCats && allowedCats.length && cat && !allowedCats.includes(cat)) return;
-      if (evt.muted === true) return;
-      const id = catToWindowId.get(cat) || 'system';
-      setLogsByWindow((prev) => {
-        const base = Array.isArray(prev[id]) ? prev[id] : [];
-        return { ...prev, [id]: [evt, ...base].slice(0, 500) };
-      });
-    });
-    socket.on('prices-update', (p) => setPrices(p));
     socket.on('strategies-update', async (list) => {
       const base = Array.isArray(list) ? list : [];
       try {
@@ -307,33 +226,33 @@ export const App: React.FC = () => {
             subaccountId: Number(cfg?.subaccountId ?? 0),
           } as any;
         }) : [];
-        const merged = [...base, ...mapped];
-        setStrategies(merged);
-        try {
-          const valid = new Set((merged || []).map((s: any) => s?.name).filter(Boolean));
-          setGridPositionsSummary((prev) => (prev || []).filter((x) => valid.has(x.strategy)));
-        } catch {}
+        setStrategies([...(base || []), ...mapped]);
       } catch {
-        setStrategies(base);
-        try {
-          const valid = new Set((base || []).map((s: any) => s?.name).filter(Boolean));
-          setGridPositionsSummary((prev) => (prev || []).filter((x) => valid.has(x.strategy)));
-        } catch {}
+        setStrategies(base || []);
       }
     });
     socket.on('positions', (p) => setPositions(p || []));
     socket.on('grid-positions', (payload: any) => {
       const updates = Array.isArray(payload) ? payload : [payload];
       setGridPositionsSummary((prev) => {
-        const map = new Map<string, { strategy: string; fromSymbol: string; toSymbol: string; count: number; totalFromToken: number; avgOpenMs: number }>(
-          (prev || []).map((x) => [x.strategy, x])
-        );
-        for (const u of updates) {
-          if (u && typeof u.strategy === 'string') {
-            map.set(u.strategy, u);
-          }
+        const next = new Map<string, { strategy: string; fromSymbol: string; toSymbol: string; count: number; totalFromToken: number; avgOpenMs: number }>();
+        for (const it of prev) { next.set(`${it.strategy}|${it.fromSymbol}|${it.toSymbol}`, { ...it }); }
+        for (const upd of updates) {
+          try {
+            const strategy = String((upd as any)?.strategy || 'default');
+            const fromSymbol = String((upd as any)?.fromSymbol || 'USDC');
+            const toSymbol = String((upd as any)?.toSymbol || 'SOL');
+            const key = `${strategy}|${fromSymbol}|${toSymbol}`;
+            const exists = next.get(key) || { strategy, fromSymbol, toSymbol, count: 0, totalFromToken: 0, avgOpenMs: 0 };
+            next.set(key, {
+              strategy, fromSymbol, toSymbol,
+              count: Number((upd as any)?.count || exists.count || 0),
+              totalFromToken: Number((upd as any)?.totalFromToken || exists.totalFromToken || 0),
+              avgOpenMs: Number((upd as any)?.avgOpenMs || exists.avgOpenMs || 0),
+            });
+          } catch {}
         }
-        return Array.from(map.values());
+        return Array.from(next.values());
       });
     });
     socket.on('wallet-history', (h) => setWalletHistory(h || []));
@@ -350,9 +269,7 @@ export const App: React.FC = () => {
           anchor: (a as any)?.anchor,
           buyTrigger: (a as any)?.buyTrigger,
           sellTrigger: (a as any)?.sellTrigger,
-          currentPairPrice: (a as any)?.currentPairPrice ?? (a as any)?.current,
-          phaseLabel: (a as any)?.phaseLabel,
-          nextAction: (a as any)?.nextAction,
+          currentPairPrice: (a as any)?.currentPairPrice,
           holding: (a as any)?.holding,
           completedCycles: (a as any)?.completedCycles,
           // omit realized/unrealized drift PnL from activity card summary now
@@ -366,49 +283,11 @@ export const App: React.FC = () => {
             } catch {}
             return undefined;
           })(),
-        }
+        },
       }));
-      // Ensure leveraged grid strategies appear in the Strategy panel when activity starts
-      try {
-        setStrategies((prev) => {
-          const arr = Array.isArray(prev) ? prev : [];
-          const exists = arr.some((s: any) => (s?.name || 'default') === name);
-          if (exists) return arr;
-          const pair = (a as any)?.pair as string | undefined;
-          let toSym = 'SOL';
-          if (typeof pair === 'string' && pair.includes('/')) {
-            const parts = pair.split('/');
-            toSym = parts[1] || toSym;
-          }
-          // Try resolve market symbol from drift markets via activity hint (if present)
-          try {
-            const idx = Number((a as any)?.marketIndex);
-            if (Number.isFinite(idx)) {
-              const hit = (driftStatus?.markets || []).find((m: any) => Number(m.marketIndex) === idx);
-              if (hit?.symbol) toSym = hit.symbol;
-            }
-          } catch {}
-          const marketIndex = Number((a as any)?.marketIndex ?? NaN);
-          const subaccountId = Number((a as any)?.subaccountId ?? NaN);
-          const driftKey = (Number.isFinite(marketIndex) && Number.isFinite(subaccountId)) ? `${name}#${marketIndex}#${subaccountId}` : undefined;
-          const add: any = {
-            name,
-            type: 'drift-grid',
-            fromToken: 'USDC',
-            toToken: toSym,
-            gridType: 'drift',
-            gridLevels: [],
-            active: ((a as any)?.status === 'active'),
-            driftKey,
-            marketIndex: Number.isFinite(marketIndex) ? marketIndex : undefined,
-            subaccountId: Number.isFinite(subaccountId) ? subaccountId : undefined,
-          };
-          return [...arr, add];
-        });
-      } catch {}
     });
     return () => { socket.disconnect(); };
-  }, [wsUrl, creds, authHeaders]);
+  }, [wsUrl, credentials]);
 
   // Listen for clear events from individual LogWindow components
   useEffect(() => {
@@ -423,41 +302,7 @@ export const App: React.FC = () => {
     return () => { try { window.removeEventListener('logwin:clear', onClear as any); } catch {} };
   }, []);
 
-  const onLogin = (c: { user: string; pass: string }) => {
-    setAuthError(null);
-    // probe first; only persist/set creds on success
-    const token = btoa(`${c.user}:${c.pass}`);
-    fetch(`${apiBase}${ROUTES.system.base}`, { headers: { Authorization: `Basic ${token}` } })
-      .then(r => { if (!r.ok) throw new Error('Invalid credentials'); return r.json(); })
-      .then((sys) => {
-        try {
-          const ttlMin = Number((import.meta as any).env?.VITE_AUTH_TTL_MINUTES ?? 480);
-          const ttlMs = Math.max(1, ttlMin) * 60 * 1000;
-          const expiresAt = Date.now() + ttlMs;
-          const stored = { ...c, expiresAt } as any;
-          setCreds(stored);
-          try { localStorage.setItem('authCreds', JSON.stringify(stored)); } catch {}
-        } catch {
-          setCreds(c);
-        }
-        setSystem(sys);
-      })
-      .catch(() => setAuthError('Invalid username or password'));
-  };
-
-  const onLogout = () => {
-    setCreds(null);
-    setAuthError(null);
-    try { localStorage.removeItem('authCreds'); } catch {}
-    try { socketRef.current?.disconnect(); } catch {}
-  };
-
-  // Always require login: gate the app until credentials are provided
-  const needsLogin = !creds;
-
-  if (needsLogin) {
-    return <Navigate to="/login" replace />;
-  }
+  // Auth is gated at the router level
 
   const isGridStrategy = (strategy: any) => {
     return !!(strategy.gridType || strategy.gridSpacing || strategy.gridLevels || strategy.totalAmount || strategy.levelAmount);
@@ -1343,15 +1188,15 @@ export const App: React.FC = () => {
             </div>
           </div>
           {(() => {
-            const rlActive = isConnected && !!system.rateLimitActive;
+            const rlActive = !!system.rateLimitActive;
             const cooldown = !!system.cooldownUntilMs;
             const apiColor = rlActive ? (cooldown ? 'text-yellow-400' : 'text-red-400') : 'text-green-400';
-            const apiText = isConnected ? (rlActive ? (cooldown ? 'THROTTLED' : 'PAUSED') : 'ON') : 'STOPPED';
+            const apiText = rlActive ? (cooldown ? 'THROTTLED' : 'PAUSED') : 'ON';
             return <div className="text-base text-gray-300">API Status: <span className={`font-semibold ${apiColor}`}>{apiText}</span></div>;
           })()}
           {(() => {
             const now = Date.now();
-            const stale = !isConnected || (now - (lastSystemRef.current || 0) > 5000);
+            const stale = (now - (lastSystemRef.current || 0) > 5000);
             const got429 = !!system.last429AtMs && (now - system.last429AtMs < 60000);
             const showThrottled = got429 && !!system.rateLimitActive;
             const statusText = stale ? 'offline' : (showThrottled ? 'throttled' : 'running');
@@ -1409,54 +1254,7 @@ export const App: React.FC = () => {
             </div>
           </div>
           </section>
-          <section className="bg-gray-900 rounded p-4 mt-4 flex-1 overflow-auto">
-            <div className="flex justify-between items-center mb-3">
-              <h2 className="text-2xl font-semibold">Watchlist</h2>
-              <button
-                onClick={() => setShowAddToken(true)}
-                className="px-3 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700"
-              >
-                + Token
-              </button>
-            </div>
-            <ul className="space-y-1">
-              {watchlist.map((t, index) => {
-                const isString = typeof t === 'string';
-                const id = isString ? t : t?.id;
-                const label = isString ? t : (t?.symbol || (t?.id ? t.id.slice(0,4) : ''));
-                const priceUsd = id ? prices?.[id]?.usdc : null;
-                // LST NAV/premium if strategy indicates lst and matches token symbol
-                const symUpper = (isString ? label : t?.symbol || '').toUpperCase?.() || '';
-                const lstStrat = strategies.find((s) => {
-                  if (!s?.lst) return false;
-                  const cand = [s.toToken, s.token, s.fromToken].filter(Boolean).map((x: any) => String(x).toUpperCase());
-                  return cand.includes(symUpper);
-                });
-                const a = lstStrat ? (activitiesByStrategy[lstStrat.name || 'default'] as any) : undefined;
-                const navPair = typeof a?.nav === 'number' ? a.nav as number : null;
-                const premPct = typeof a?.premium === 'number' ? a.premium as number : null;
-                return (
-                  <li key={id || label} className="text-sm text-gray-300 flex items-center justify-between px-3 py-1.5 bg-gray-800 rounded">
-                    <span className="font-medium">{label}</span>
-                    <div className="flex items-center space-x-2">
-                      <span>
-                        {priceUsd ? `$${priceUsd.toFixed(4)}` : '-'}
-                        {navPair ? <span className="ml-2 text-gray-400">NAV {navPair.toFixed(6)}{typeof premPct === 'number' ? ` (${(premPct*100).toFixed(2)}%)` : ''}</span> : null}
-                      </span>
-                      <button
-                        onClick={() => handleRemoveToken(t)}
-                        className="text-red-400 hover:text-red-300 text-xs px-2 py-1 rounded hover:bg-red-900"
-                        title="Remove token"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  </li>
-                );
-              })}
-              {watchlist.length === 0 && <li className="text-gray-400 text-sm px-3">No tokens yet (use terminal)</li>}
-            </ul>
-          </section>
+          <WatchlistSection watchlist={watchlist} prices={prices} strategies={strategies} activitiesByStrategy={activitiesByStrategy} onAdd={()=>setShowAddToken(true)} onRemove={handleRemoveToken} />
           </div>
           <section className="bg-gray-900 rounded p-4">
             <h2 className="text-2xl font-semibold mb-3">Wallet</h2>
@@ -1554,303 +1352,43 @@ export const App: React.FC = () => {
             </>
           )}
         >
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <ArbitragePanel apiBase={apiBase} socket={socketRef.current} showGraph={showGraph} onToggleGraph={()=>setShowGraph(v=>!v)} />
-            <ArbitrageMetrics apiBase={apiBase} paused={showArbConfig || showSystemConfig || showFeeConfig} socket={socketRef.current} />
-          </div>
-          {showGraph ? (
-            <div className="mt-4">
-              <GraphView apiBase={apiBase} socket={socketRef.current} square />
-            </div>
-          ) : null}
+          <ArbitrageSection apiBase={apiBase} showGraph={showGraph} onToggleGraph={()=>setShowGraph(v=>!v)} paused={showArbConfig || showSystemConfig || showFeeConfig} />
         </CollapsibleSection>
-        {showGraphConfig && (
-          <GraphConfig apiBase={apiBase} onClose={() => setShowGraphConfig(false)} />
-        )}
-        {/* Drift Panel: subaccounts and management */}
+        <ConfigsSection
+          apiBase={apiBase}
+          showGraphConfig={showGraphConfig}
+          onCloseGraph={() => setShowGraphConfig(false)}
+          showFeeConfig={showFeeConfig}
+          onSaveFee={async (config) => {
+            const res = await fetch(`${apiBase}/fees/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) });
+            if (res.ok) setShowFeeConfig(false);
+          }}
+          onCloseFee={() => setShowFeeConfig(false)}
+          showSystemConfig={showSystemConfig}
+          onSaveSystem={handleSystemConfigSave}
+          onCloseSystem={() => setShowSystemConfig(false)}
+          showDataFetchConfig={showDataFetchConfig}
+          onCloseDataFetch={() => setShowDataFetchConfig(false)}
+          showEngineConfig={showEngineConfig}
+          onCloseEngine={() => setShowEngineConfig(false)}
+          showLiqRunnerConfig={showLiqRunnerConfig}
+          onCloseLiqRunner={() => setShowLiqRunnerConfig(false)}
+        />
         <CollapsibleSection title={"Drift"} storageKey="panel:drift">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="p-3 bg-gray-800 rounded md:col-span-2">
-              <div className="text-white font-semibold mb-2">Subaccounts</div>
-              {driftSubaccounts.length === 0 ? (
-                <div className="text-gray-400 text-sm">No subaccounts detected.</div>
-              ) : (
-                <div className="space-y-2 text-sm">
-                  <div className="flex items-center space-x-2">
-                    <select className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" value={driftSelectedSubId} onChange={async e => { const id = Number(e.target.value); setDriftSelectedSubId(id); try { await fetch(`${apiBase}/drift/subaccount/switch`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) }); } catch {} try { const subsResp = await fetch(`${apiBase}/drift/subaccounts`).then(r => r.json()); setDriftSubaccounts(subsResp?.subaccounts || []); } catch {} }}>
-                      {driftSubaccounts.map((s: any) => (
-                        <option key={s.id} value={s.id}>
-                          {s.name ? `${s.name} (Sub ${s.id})` : `Sub ${s.id}`}
-                          {(() => {
-                            // Mark already-initialized subs
-                            const init = Number(s.totalCollateral || 0) > 0 || Number(s.freeCollateral || 0) > 0 || (Array.isArray(s.positions) && s.positions.length > 0);
-                            return init ? ' ✓' : '';
-                          })()}
-                        </option>
-                      ))}
-                    </select>
-                    <input className="px-2 py-2 bg-gray-700 border border-gray-600 rounded-md text-white w-40" placeholder="Name (optional)" value={driftNewSubName} onChange={e => setDriftNewSubName(e.target.value)} />
-                    <button disabled={driftOpBusy} onClick={async () => { try { setDriftOpBusy(true); const body = driftNewSubName.trim() ? { name: driftNewSubName.trim() } : undefined; await fetch(`${apiBase}/drift/subaccount/create`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }); const subsResp = await fetch(`${apiBase}/drift/subaccounts`).then(r => r.json()); const subs = subsResp?.subaccounts || []; setDriftSubaccounts(subs); const sel = Number(subsResp?.selectedId ?? (subs[0]?.id ?? 0)); if (Number.isFinite(sel)) setDriftSelectedSubId(sel); setDriftNewSubName(''); } catch {} finally { setDriftOpBusy(false); } }} className="px-3 py-2 bg-gray-700 text-white rounded hover:bg-gray-600 disabled:opacity-60">{driftOpBusy ? 'Working...' : 'Create'}</button>
-                  </div>
-                  <div className="flex items-center space-x-2 mt-2">
-                    <input className="flex-1 px-2 py-2 bg-gray-700 border border-gray-600 rounded-md text-white" placeholder="Rename selected" value={driftRenameSubName} onChange={e => setDriftRenameSubName(e.target.value)} />
-                    <button disabled={driftOpBusy || !driftSelectedSubId} onClick={async () => { try { setDriftOpBusy(true); const name = driftRenameSubName.trim(); if (name) { await fetch(`${apiBase}/drift/subaccount/name`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: Number(driftSelectedSubId), name }) }); const subsResp = await fetch(`${apiBase}/drift/subaccounts`).then(r => r.json()); const subs = subsResp?.subaccounts || []; setDriftSubaccounts(subs); } } catch {} finally { setDriftOpBusy(false); } }} className="px-3 py-2 bg-gray-700 text-white rounded hover:bg-gray-600 disabled:opacity-60">Rename</button>
-                  </div>
-                  {/* Funds controls moved here */}
-                  <div className="grid grid-cols-1 md:grid-cols-4 gap-2 items-center mt-2">
-                    <div className="flex space-x-2">
-                      <button onClick={() => setDriftAction('deposit')} className={`px-3 py-2 rounded text-white text-sm ${driftAction === 'deposit' ? 'bg-green-700' : 'bg-gray-700 hover:bg-gray-600'}`}>Deposit</button>
-                      <button onClick={() => setDriftAction('withdraw')} className={`px-3 py-2 rounded text-white text-sm ${driftAction === 'withdraw' ? 'bg-red-700' : 'bg-gray-700 hover:bg-gray-600'}`}>Withdraw</button>
-                    </div>
-                    <input type="number" min={0} step={0.000001} className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white text-base" value={driftAmount} onChange={e => setDriftAmount(Number(e.target.value))} placeholder="Amount" />
-                    <select className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white text-base" value={driftSpotIndex} onChange={e => setDriftSpotIndex(Number(e.target.value))}>
-                      {(() => {
-                        const marketsByMint = new Map<string, any>();
-                        for (const m of (driftSpotMarkets || [])) {
-                          const mint = String(m?.mint || '').toLowerCase();
-                          if (mint) marketsByMint.set(mint, m);
-                        }
-                        if (driftAction === 'deposit') {
-                          const opts: Array<{ idx: number; label: string }> = [];
-                          for (const t of (walletTokens || [])) {
-                            try {
-                              const bal = Number((t as any)?.uiAmount ?? (t as any)?.amount ?? (t as any)?.balance ?? 0);
-                              const mint = String((t as any)?.mint || (t as any)?.id || '').toLowerCase();
-                              if (bal > 0 && mint && marketsByMint.has(mint)) {
-                                const m = marketsByMint.get(mint);
-                                const sym = (t as any)?.symbol || m?.symbol || mint.slice(0,4) + '…';
-                                opts.push({ idx: Number(m.marketIndex), label: `${sym} (${bal.toLocaleString(undefined, { maximumFractionDigits: 6 })})` });
-                              }
-                            } catch {}
-                          }
-                          if (opts.length === 0) {
-                            for (const m of (driftSpotMarkets || [])) {
-                              opts.push({ idx: Number(m.marketIndex), label: `${m.symbol || m.mint || `Index ${m.marketIndex}`} (${m.marketIndex})` });
-                            }
-                          }
-                          const has = opts.some(o => o.idx === Number(driftSpotIndex));
-                          if (!has && opts[0]) setDriftSpotIndex(opts[0].idx);
-                          return opts.map(o => (<option key={o.idx} value={o.idx}>{o.label}</option>));
-                        } else {
-                          const opts: Array<{ idx: number; label: string }> = [];
-                          for (const b of (driftSubBalances || [])) {
-                            try {
-                              const bal = Number((b as any)?.balance || 0);
-                              if (bal > 0 && Number.isFinite(Number(b.marketIndex))) {
-                                const idx = Number(b.marketIndex);
-                                const sym = (b as any)?.symbol || (driftSpotMarkets.find((m: any) => Number(m.marketIndex) === idx)?.symbol) || `Index ${idx}`;
-                                opts.push({ idx, label: `${sym} (${bal.toLocaleString(undefined, { maximumFractionDigits: 6 })})` });
-                              }
-                            } catch {}
-                          }
-                          if (opts.length === 0) {
-                            for (const m of (driftSpotMarkets || [])) {
-                              opts.push({ idx: Number(m.marketIndex), label: `${m.symbol || m.mint || `Index ${m.marketIndex}`} (${m.marketIndex})` });
-                            }
-                          }
-                          const has = opts.some(o => o.idx === Number(driftSpotIndex));
-                          if (!has && opts[0]) setDriftSpotIndex(opts[0].idx);
-                          return opts.map(o => (<option key={o.idx} value={o.idx}>{o.label}</option>));
-                        }
-                      })()}
-                    </select>
-                    <button disabled={driftOpBusy || !Number.isFinite(Number(driftSelectedSubId)) || Number(driftAmount) <= 0} onClick={async () => {
-                      try {
-                        setDriftOpBusy(true);
-                        const body = { subaccountId: Number(driftSelectedSubId), amount: Number(driftAmount), spotMarketIndex: Number(driftSpotIndex) };
-                        const kind = driftAction === 'withdraw' ? 'withdraw' : 'deposit';
-                        await fetch(`${apiBase}/drift/subaccount/${kind}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-                        const subsResp = await fetch(`${apiBase}/drift/subaccounts`).then(r => r.json());
-                        setDriftSubaccounts(subsResp?.subaccounts || []);
-                        const b = await fetch(`${apiBase}/drift/subaccount/balances?subaccountId=${Number(driftSelectedSubId)}`).then(r => r.json());
-                        setDriftSubBalances(Array.isArray(b?.balances) ? b.balances : []);
-                      } catch {} finally { setDriftOpBusy(false); }
-                    }} className="px-3 py-2 bg-indigo-700 text-white rounded hover:bg-indigo-800 disabled:opacity-60">{driftAction === 'withdraw' ? 'Withdraw' : 'Deposit'}</button>
-                  </div>
-                </div>
-              )}
-            </div>
-            <div className="p-3 bg-gray-800 rounded">
-              <div className="text-white font-semibold mb-2">Status</div>
-              <div className="text-sm text-gray-300 space-y-1">
-                <div>Cluster: <span className="text-white">{driftStatus?.cluster || '-'}</span></div>
-                <div>Program: <span className="text-white">{driftStatus?.programId || '-'}</span></div>
-                <div>Markets: <span className="text-white">{Array.isArray(driftStatus?.markets) ? driftStatus.markets.length : 0}</span></div>
-              </div>
-            </div>
-          </div>
-          {/* Manage Funds moved above into Subaccounts card; removed duplicate buttons */}
-          <div className="mt-3 p-3 bg-gray-800 rounded">
-            <div className="text-white font-semibold mb-2">Subaccount Balances</div>
-            {(() => {
-              const sel = driftSubaccounts.find((s: any) => Number(s.id) === Number(driftSelectedSubId));
-              if (!sel) return null;
-              return (
-                <div className="mb-2 grid grid-cols-2 gap-2 text-sm text-gray-300">
-                  <div>Free Collateral: <span className="text-white">{Number(sel.freeCollateral || 0).toFixed(2)}</span></div>
-                  <div>Total Collateral: <span className="text-white">{Number(sel.totalCollateral || 0).toFixed(2)}</span></div>
-                  <div>Initial Req: <span className="text-white">{Number(sel.initialRequirement || 0).toFixed(2)}</span></div>
-                  <div>Maintenance: <span className="text-white">{Number(sel.maintenanceRequirement || 0).toFixed(2)}</span></div>
-                  <div>Eff. Leverage: <span className="text-white">{Number(sel.effectiveLeverage || 0).toFixed(2)}</span></div>
-                </div>
-              );
-            })()}
-            {driftSubBalances.length === 0 ? (
-              <div className="text-gray-400 text-sm">No balances</div>
-            ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-gray-400">
-                    <th className="text-left">Token</th>
-                    <th className="text-left">Market</th>
-                    <th className="text-left">Balance</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {driftSubBalances.map((b: any, i: number) => (
-                    <tr key={i} className="text-gray-300">
-                      <td>{b.symbol || b.mint || '-'}</td>
-                      <td>{b.marketIndex}</td>
-                      <td>{Number(b.balance || 0).toLocaleString(undefined, { maximumFractionDigits: 6 })}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-          {/* Liquidator Panel */}
-          <div className="mt-3">
-            <CollapsibleSection title={"Liquidator"} storageKey="panel:drift:liquidator" rightActions={(
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setShowLiqRunnerConfig(true)}
-                  className="px-3 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700"
-                >
-                  + Liquidator
-                </button>
-              </div>
-            )}>
-              {/* Inline legacy form and controls removed; use +Liquidator and per-runner controls below */}
-              {Boolean(liqStatus) && (
-                <div className="mt-3 bg-gray-800 rounded p-3 text-sm text-gray-300">
-                  <div className="text-white font-semibold mb-2">Liquidator Status</div>
-                  {(() => {
-                    const ls = liqStatus?.liquidators || [];
-                    if (!Array.isArray(ls) || ls.length === 0) return (<div className="text-gray-500">No liquidators</div>);
-                    return (
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="text-gray-400">
-                            <th className="text-left">Key</th>
-                            <th className="text-left">Running</th>
-                            <th className="text-left">Queued</th>
-                            <th className="text-left">Actions (1m)</th>
-                            <th className="text-left">Errors (1m)</th>
-                            <th className="text-left">Controls</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {ls.map((x: any) => (
-                            <tr key={x.key} className="text-gray-300">
-                              <td className="pr-2">{x.key}</td>
-                              <td className="pr-2">{String(x?.status?.running)}</td>
-                              <td className="pr-2">{Number(x?.status?.candidatesQueued || 0)}</td>
-                              <td className="pr-2">{Number(x?.status?.actionsLastMin || 0)}</td>
-                              <td className="pr-2">{Number(x?.status?.errorsLastMin || 0)}</td>
-                              <td className="pr-2">
-                                <div className="flex gap-2">
-                                  {(() => {
-                                    const isRunning = !!(x?.status?.running);
-                                    if (isRunning) {
-                                      return (
-                                        <button
-                                          className="px-2 py-1 bg-yellow-700 text-white rounded hover:bg-yellow-800 text-xs"
-                                          onClick={async () => {
-                                            try {
-                                              await fetch(`${apiBase}/strategies/liquidator/stop`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: x.key }) });
-                                              const r = await fetch(`${apiBase}/strategies/liquidator/status`).then(r => r.json());
-                                              setLiqStatus(r);
-                                            } catch {}
-                                          }}
-                                        >Stop</button>
-                                      );
-                                    } else {
-                                      return (
-                                        <button
-                                          className="px-2 py-1 bg-green-700 text-white rounded hover:bg-green-800 text-xs"
-                                          onClick={async () => {
-                                            try {
-                                              const name = String(x?.key || '').split('#')[1] || 'default';
-                                              await fetch(`${apiBase}/strategies/liquidator/start`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
-                                              const r = await fetch(`${apiBase}/strategies/liquidator/status`).then(r => r.json());
-                                              setLiqStatus(r);
-                                            } catch {}
-                                          }}
-                                        >Start</button>
-                                      );
-                                    }
-                                  })()}
-                                  <button
-                                    className="px-2 py-1 bg-indigo-700 text-white rounded hover:bg-indigo-800 text-xs"
-                                    onClick={async () => {
-                                      try {
-                                        // Minimal inline Update: keeps same name, allows quick refresh
-                                        const name = String(x?.key || '').split('#')[1] || 'default';
-                                        const body = { name };
-                                        await fetch(`${apiBase}/strategies/liquidator/update`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-                                        const r = await fetch(`${apiBase}/strategies/liquidator/status`).then(r => r.json());
-                                        setLiqStatus(r);
-                                      } catch {}
-                                    }}
-                                  >Update</button>
-                                  <button
-                                    className="px-2 py-1 bg-red-700 text-white rounded hover:bg-red-800 text-xs"
-                                    onClick={async () => {
-                                      try {
-                                        await fetch(`${apiBase}/strategies/liquidator/remove`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: x.key }) });
-                                        const r = await fetch(`${apiBase}/strategies/liquidator/status`).then(r => r.json());
-                                        setLiqStatus(r);
-                                      } catch {}
-                                    }}
-                                  >Remove</button>
-                                </div>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    );
-                  })()}
-                </div>
-              )}
-              {(() => {
-                const ls = liqStatus?.liquidators || [];
-                if (!Array.isArray(ls) || ls.length === 0) return null;
-                return (
-                  <div className="mt-3 grid grid-cols-1 gap-3">
-                    {ls.map((x: any) => (
-                      <LiquidationMonitor key={x.key} apiBase={apiBase} socket={socketRef.current} liquidatorKey={x.key} />
-                    ))}
-                  </div>
-                );
-              })()}
-              {/* Inline validation for inputs */}
-              {/* Inline validation removed with legacy form */}
-            </CollapsibleSection>
-          </div>
-          {/* Legacy system-level liquidator config removed in favor of per-runner +Liquidator */}
-          {showLiqRunnerConfig && (
-            <LiquidatorRunnerConfig
-              apiBase={apiBase}
-              onClose={() => setShowLiqRunnerConfig(false)}
-              onSaved={async () => {
-                try {
-                  const r = await fetch(`${apiBase}/strategies/liquidator/status`).then(r => r.json());
-                  setLiqStatus(r);
-                } catch {}
-              }}
-            />
-          )}
+          <DriftSection
+            apiBase={apiBase}
+            driftSubaccounts={driftSubaccounts}
+            driftSelectedSubId={driftSelectedSubId}
+            driftNewSubName={driftNewSubName}
+            driftRenameSubName={driftRenameSubName}
+            driftOpBusy={driftOpBusy}
+            setDriftSelectedSubId={(id)=>setDriftSelectedSubId(id)}
+            setDriftNewSubName={(s)=>setDriftNewSubName(s)}
+            setDriftRenameSubName={(s)=>setDriftRenameSubName(s)}
+            setDriftOpBusy={(v)=>setDriftOpBusy(v)}
+            setDriftSubaccounts={(list)=>setDriftSubaccounts(list)}
+            ls={liqStatus?.liquidators || []}
+          />
         </CollapsibleSection>
         <CollapsibleSection title={"Positions"} storageKey="panel:positions">
           {/* Grid summary per strategy */}

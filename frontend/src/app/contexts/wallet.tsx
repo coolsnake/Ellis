@@ -10,6 +10,10 @@ type WalletContextValue = {
   setWalletTokens: React.Dispatch<React.SetStateAction<any[]>>;
   prices: Record<string, { usdc: number | null; sol: number | null }>;
   setPrices: React.Dispatch<React.SetStateAction<Record<string, { usdc: number | null; sol: number | null }>>>;
+  walletHistory: any[];
+  setWalletHistory: React.Dispatch<React.SetStateAction<any[]>>;
+  watchlist: any[];
+  setWatchlist: React.Dispatch<React.SetStateAction<any[]>>;
 };
 
 const WalletContext = createContext<WalletContextValue | undefined>(undefined);
@@ -18,6 +22,8 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [wallet, setWallet] = useState<any>(null);
   const [walletTokens, setWalletTokens] = useState<any[]>([]);
   const [prices, setPrices] = useState<Record<string, { usdc: number | null; sol: number | null }>>({});
+  const [walletHistory, setWalletHistory] = useState<any[]>([]);
+  const [watchlist, setWatchlist] = useState<any[]>([]);
   const { isAuthenticated } = useAuth();
 
   useEffect(() => {
@@ -27,7 +33,7 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       try { const t = await fetch(`${apiBase}${ROUTES.wallet.tokens}`).then(r => r.json()); setWalletTokens(Array.isArray(t.list) ? t.list : (t.walletTokens || [])); } catch {}
     })();
   }, [isAuthenticated]);
-  const value = useMemo<WalletContextValue>(() => ({ wallet, setWallet, walletTokens, setWalletTokens, prices, setPrices }), [wallet, walletTokens, prices]);
+  const value = useMemo<WalletContextValue>(() => ({ wallet, setWallet, walletTokens, setWalletTokens, prices, setPrices, walletHistory, setWalletHistory, watchlist, setWatchlist }), [wallet, walletTokens, prices, walletHistory, watchlist]);
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;
 };
 

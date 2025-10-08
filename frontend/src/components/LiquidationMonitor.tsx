@@ -1,5 +1,6 @@
 // @ts-nocheck
 import React, { useEffect, useState } from 'react';
+import { useSocket } from '../app/contexts/socket';
 
 type QueueItem = { userPk: string; health: number; updatedAt: number };
 
@@ -10,6 +11,8 @@ interface Props {
 }
 
 export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidatorKey = 'liq#default' }) => {
+  const { socket: ctxSocket } = useSocket();
+  const effectiveSocket = socket ?? ctxSocket;
   const [queue, setQueue] = useState<{ candidatesQueued: number; top: QueueItem[]; markets: number[]; exposures?: Array<{ marketIndex: number; users: number; symbol?: string }>; actionsLastMin: number; errorsLastMin: number } | null>(null);
   const [lastUpdate, setLastUpdate] = useState<number>(0);
 
@@ -33,7 +36,7 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
   }, [apiBase, liquidatorKey]);
 
   useEffect(() => {
-    if (!socket) return;
+    if (!effectiveSocket) return;
     const handler = (evt: any) => {
       try {
         if (!evt || typeof evt !== 'object') return;
@@ -53,9 +56,9 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
         }
       } catch {}
     };
-    socket.on('drift-liquidation', handler);
-    return () => { try { socket.off('drift-liquidation', handler); } catch {} };
-  }, [socket]);
+    effectiveSocket.on('drift-liquidation', handler);
+    return () => { try { effectiveSocket.off('drift-liquidation', handler); } catch {} };
+  }, [effectiveSocket]);
 
   const formatPct = (x: number) => `${(x * 100).toFixed(2)}%`;
   const timeAgo = (ts: number) => {
