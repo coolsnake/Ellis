@@ -15,6 +15,9 @@ export function useSocketExtraEvents(h: Handlers): void {
 
   useEffect(() => {
     if (!socket) return;
+    const boundKey = '__ls_bound_events_extra';
+    if ((socket as any)[boundKey]) return;
+    (socket as any)[boundKey] = true;
     if (h.onStrategiesUpdate) socket.on('strategies-update', h.onStrategiesUpdate as any);
     if (h.onPositions) socket.on('positions', h.onPositions as any);
     if (h.onGridPositions) socket.on('grid-positions', h.onGridPositions as any);
@@ -28,6 +31,7 @@ export function useSocketExtraEvents(h: Handlers): void {
       try { if (h.onWalletHistory) socket.off('wallet-history', h.onWalletHistory as any); } catch {}
       try { if (h.onActivity) socket.off('activity', h.onActivity as any); } catch {}
       try { if (h.onWatchlist) socket.off('watchlist-update', h.onWatchlist as any); } catch {}
+      try { delete (socket as any)[boundKey]; } catch {}
     };
   }, [socket, h.onStrategiesUpdate, h.onPositions, h.onGridPositions, h.onWalletHistory, h.onActivity, h.onWatchlist]);
 }

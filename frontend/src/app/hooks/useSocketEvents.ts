@@ -23,6 +23,9 @@ export function useSocketEvents(opts?: Options): void {
 
   useEffect(() => {
     if (!socket) return;
+    const boundKey = '__ls_bound_events_base';
+    if ((socket as any)[boundKey]) return;
+    (socket as any)[boundKey] = true;
 
     const onConnect = () => { try { opts?.onConnect?.(); } catch {} };
     const onDisconnect = () => { try { opts?.onDisconnect?.(); } catch {} };
@@ -65,6 +68,7 @@ export function useSocketEvents(opts?: Options): void {
       try { socket.off('wallet-update', onWalletUpdate); } catch {}
       try { socket.off('log', onLog); } catch {}
       try { socket.off('prices-update', onPrices); } catch {}
+      try { delete (socket as any)[boundKey]; } catch {}
     };
   }, [socket, system, setSystem, setWallet, setLogsByWindow, setPrices]);
 }
