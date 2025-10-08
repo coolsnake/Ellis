@@ -756,106 +756,11 @@ export const App: React.FC = () => {
         return;
       }
       if (ns === 'strategy') {
-        const action = (parts[1] || '').toLowerCase();
-        if (action === 'list') {
-          const updated = await (await fetch(`${apiBase}${ROUTES.legacy.strategy}`)).json();
-          setStrategies(updated.strategies || []);
-          return;
-        }
-        // Shorthand update: strategy NAME key=value [key=value ...]
-        if (action && !['list','set','remove','status'].includes(action)) {
-          const name = parts[1];
-          const kvParts = parts.slice(2);
-          if (!name || kvParts.length === 0) {
-            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: strategy NAME key=value [key=value ...]' }) });
-            return;
-          }
-          const rawKv: Record<string, string> = {};
-          for (const p of kvParts) { const [k,v] = p.split('='); if (k && v !== undefined) rawKv[k.toLowerCase()] = v; }
-          const boolKeys = new Set(['test','fixedanchor','lst','active','slidinganchor']);
-          const numKeys = new Set(['buypct','sellpct','amount','scaleaggressiveness','scalesteppct','slippagebps','maxopenpositions','maxpositionsize','hysteresisbps','cooldownms','feebps','extraslippagebps','anchorpairatsetup','slideratebpspersec','slidemaxpct']);
-          const mapKeys: Record<string,string> = {
-            fromtoken:'fromToken', totoken:'toToken', token:'token', marketenter:'marketEnter', navsource:'navSource',
-            buypct:'buyPct', sellpct:'sellPct',
-            scaleaggressiveness:'scaleAggressiveness', scalesteppct:'scaleStepPct',
-            slippagebps:'slippageBps', maxopenpositions:'maxOpenPositions', maxpositionsize:'maxPositionSize',
-            hysteresisbps:'hysteresisBps', cooldownms:'cooldownMs', feebps:'feeBps', extraslippagebps:'extraSlippageBps',
-            anchorpairatsetup:'anchorPairAtSetup',
-            slidinganchor:'slidingAnchor', slideratebpspersec:'slideRateBpsPerSec', slidemaxpct:'slideMaxPct',
-            test:'testMode'
-          };
-          const payload: any = { name };
-          for (const [k, v] of Object.entries(rawKv)) {
-            const key = mapKeys[k] || k;
-            if (boolKeys.has(k)) payload[key] = v.toLowerCase() === 'true';
-            else if (numKeys.has(k)) payload[key] = Number(v);
-            else payload[key] = v;
-          }
-          await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: -> strategy update ${name} ${JSON.stringify(payload)}` }) });
-          const resp = await fetch(`${apiBase}/strategy`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-          const updated = await (await fetch(`${apiBase}/strategy`)).json();
-          setStrategies(updated.strategies || []);
-          if (!resp.ok) {
-            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: 'terminal: strategy update failed' }) });
-          } else {
-            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: strategy updated ${name}` }) });
-          }
-          return;
-        }
-        if (action === 'set') {
-          const raw = cmd.slice('strategy set '.length);
-          const items = raw.split(/[\s,]+/).filter(Boolean);
-          const kv: Record<string, string> = {};
-          for (const p of items) { const [k, v] = p.split('='); if (k && v !== undefined) kv[k.toLowerCase()] = v; }
-          const current: any = {};
-          const next = {
-            ...current,
-            name: kv.name ?? 'default',
-            token: kv.totoken || kv.token || current.token || 'SOL',
-            buyPct: kv.buypct ? Number(kv.buypct) : current.buyPct ?? 0.05,
-            sellPct: kv.sellpct ? Number(kv.sellpct) : current.sellPct ?? 0.05,
-            amount: kv.amount ? Number(kv.amount) : current.amount ?? 0.1,
-            testMode: kv.test ? kv.test.toLowerCase() === 'true' : current.testMode ?? true,
-            inputMintUSDC: kv.inputmintusdc,
-            tokenMint: kv.tokenmint,
-            fromToken: kv.fromtoken,
-            toToken: kv.totoken,
-            scaleAggressiveness: kv.scaleaggressiveness ? Number(kv.scaleaggressiveness) : (current as any).scaleAggressiveness,
-            scaleStepPct: kv.scalesteppct ? Number(kv.scalesteppct) : (current as any).scaleStepPct,
-            marketEnter: kv.marketenter ? (kv.marketenter.toLowerCase() === 'long' ? 'long' : (kv.marketenter.toLowerCase() === 'short' ? 'short' : null)) : (current as any).marketEnter,
-            fixedAnchor: kv.fixedanchor ? kv.fixedanchor.toLowerCase() === 'true' : (current as any).fixedAnchor,
-            slippageBps: kv.slippagebps ? Number(kv.slippagebps) : (current as any).slippageBps,
-            // Newly supported fields for quick set
-            lst: kv.lst ? kv.lst.toLowerCase() === 'true' : (current as any).lst,
-            navSource: kv.navsource ? (kv.navsource.toLowerCase() === 'protocol' ? 'protocol' : 'ema') : (current as any).navSource,
-            hysteresisBps: kv.hysteresisbps ? Number(kv.hysteresisbps) : (current as any).hysteresisBps,
-            cooldownMs: kv.cooldownms ? Number(kv.cooldownms) : (current as any).cooldownMs,
-            feeBps: kv.feebps ? Number(kv.feebps) : (current as any).feeBps,
-            extraSlippageBps: kv.extraslippagebps ? Number(kv.extraslippagebps) : (current as any).extraSlippageBps,
-            maxOpenPositions: kv.maxopenpositions ? Number(kv.maxopenpositions) : (current as any).maxOpenPositions,
-            maxPositionSize: kv.maxpositionsize ? Number(kv.maxpositionsize) : (current as any).maxPositionSize,
-            anchorPairAtSetup: kv.anchorpairatsetup ? Number(kv.anchorpairatsetup) : (current as any).anchorPairAtSetup,
-          } as any;
-          await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: -> strategy set ${JSON.stringify(next)}` }) });
-          await fetch(`${apiBase}${ROUTES.legacy.strategy}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next) });
-          const updated = await (await fetch(`${apiBase}${ROUTES.legacy.strategy}`)).json();
-          setStrategies(updated.strategies || []);
-          await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: strategy set ${JSON.stringify(next)}` }) });
-          return;
-        }
-        if (action === 'remove') {
-          const name = parts[2];
-          if (!name) {
-            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: strategy remove NAME' }) });
-          } else {
-            await fetch(`${apiBase}${ROUTES.legacy.strategy}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
-            const updated = await (await fetch(`${apiBase}${ROUTES.legacy.strategy}`)).json();
-            setStrategies(updated.strategies || []);
-            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: -> strategy remove ${name}` }) });
-          }
-          return;
-        }
-        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: strategy commands: list | set name=... token=... buyPct=... sellPct=... amount=... test=true|false | remove NAME' }) });
+        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ level: 'warn', message: 'terminal: strategy commands have been removed; use the Strategy UI panels instead' })
+        });
         return;
       }
       if (ns === 'bot') {
@@ -949,10 +854,7 @@ export const App: React.FC = () => {
           'Help — Commands',
           'wallet: generate | refresh | send TOKEN|MINT AMOUNT ADDRESS | addtoken TOKEN|MINT',
           'watchlist: add QUERY|MINT | remove SYMBOL|MINT | list',
-          'strategy:',
-          '  essentials -> strategy set name=STR fromToken=SYMBOL|MINT toToken=SYMBOL|MINT buyPct=NUM sellPct=NUM amount=NUM active=true|false test=true|false',
-          '  (See README for advanced parameters: slippage/scaling/hysteresis/cooldown/fees/LST/fixedAnchor/slidingAnchor/navSource/maxOpenPositions/maxPositionSize and more)',
-          '  other      -> strategy list | strategy status name=STR active=true|false | strategy remove NAME',
+          'strategies are now configured via the UI panels (no terminal commands)',
           'bot: start | stop',
           'api: start | stop | reset',
           'ticktime: MS (set target tick time in ms)',
@@ -975,9 +877,11 @@ export const App: React.FC = () => {
       const idOrSymbol = cmd.split(' ')[1];
       await fetch(`${apiBase}/watchlist`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idOrSymbol }) });
     } else if (cmd === 'show strategy') {
-      const cfg = await (await fetch(`${apiBase}${ROUTES.legacy.strategy}`)).json();
-      setStrategies(cfg.strategies || []);
-      await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: 'terminal: show strategy' }) });
+      await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ level: 'warn', message: 'terminal: strategy terminal commands have been removed; use the Strategy UI panels instead' })
+      });
     } else if (cmd === 'help') {
       const lines = [
         'Help: Available commands',
@@ -985,9 +889,7 @@ export const App: React.FC = () => {
         "stop — stop the trading bot",
         "add QUERY|MINT — add a token to watchlist (symbol/name or mint)",
         "remove SYMBOL|MINT — remove a token from watchlist",
-        "show strategy — display current strategies",
-        "set name=STR token=SYMBOL|MINT buyPct=NUM sellPct=NUM amount=NUM test=true|false — upsert strategy",
-        "removestrategy NAME — remove a named strategy",
+        "strategies are configured via the UI panels (no terminal commands)",
         "swap AMOUNT FROM TO — swap tokens immediately (e.g., swap 0.01 SOL dSOL)",
         "refreshwallet — refresh wallet balances",
         "walletaddtoken TOKEN|MINT — add token alias for wallet balances",
@@ -1062,38 +964,17 @@ export const App: React.FC = () => {
     } else if (cmd === 'apireset') {
       await fetch(`${apiBase}${ROUTES.legacy.apiReset}`, { method: 'POST' });
     } else if (cmd.startsWith('set ')) {
-      // set key=value pairs; allowed keys: token, buyPct, sellPct, amount, test
-      const parts = cmd.slice(4).split(/[\s,]+/).filter(Boolean);
-      const kv: Record<string, string> = {};
-      for (const p of parts) {
-        const [k, v] = p.split('=');
-        if (k && v !== undefined) kv[k.toLowerCase()] = v;
-      }
-      const current: any = {};
-      const next = {
-        ...current,
-        name: kv.name ?? 'default',
-        token: kv.token ?? current.token ?? 'SOL',
-        buyPct: kv.buypct ? Number(kv.buypct) : current.buyPct ?? 0.05,
-        sellPct: kv.sellpct ? Number(kv.sellpct) : current.sellPct ?? 0.05,
-        amount: kv.amount ? Number(kv.amount) : current.amount ?? 0.1,
-        testMode: kv.test ? kv.test.toLowerCase() === 'true' : current.testMode ?? true,
-      };
-      await fetch(`${apiBase}${ROUTES.legacy.strategy}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next) });
-      const updated = await (await fetch(`${apiBase}${ROUTES.legacy.strategy}`)).json();
-      setStrategies(updated.strategies || []);
-      await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: set ${JSON.stringify(next)}` }) });
+      await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ level: 'warn', message: 'terminal: strategy terminal commands have been removed; use the Strategy UI panels instead' })
+      });
     } else if (cmd.startsWith('removestrategy')) {
-      const parts = cmd.split(/\s+/);
-      const name = parts[1];
-      if (!name) {
-        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: removestrategy requires a name' }) });
-      } else {
-        await fetch(`${apiBase}${ROUTES.legacy.strategy}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
-        const updated = await (await fetch(`${apiBase}${ROUTES.legacy.strategy}`)).json();
-        setStrategies(updated.strategies || []);
-        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: removed strategy ${name}` }) });
-      }
+      await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ level: 'warn', message: 'terminal: strategy terminal commands have been removed; use the Strategy UI panels instead' })
+      });
     } else if (cmd === 'resetconfig') {
       try {
         const resp = await fetch(`${apiBase}/config/reset`, { method: 'POST' });
