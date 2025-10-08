@@ -1,5 +1,34 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+describe('meteora clmm orientation normalization', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.restoreAllMocks();
+  });
+
+  it('applies stable-aware flip when USD refs missing', async () => {
+    const raw = {
+      pairs: [
+        {
+          address: 'MET_CLMM_1',
+          tokenA: { mint: 'So11111111111111111111111111111111111111112', decimals: 9 }, // SOL
+          tokenB: { mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', decimals: 6 }, // USDC
+          current_price: 0.0002, // SOL per 1 USDC (inverted for A/B expected)
+          bin_step: 16,
+          liquidity: 10000,
+          tvlUsdc: 20000,
+        },
+      ],
+    } as any;
+    const mod = await import('../src/server/pools/meteora');
+    const norm = await mod.normalizeMeteoraHttp(raw);
+    const p = norm.clmm.find(p => p.id === 'MET_CLMM_1') as any;
+    expect(p).toBeTruthy();
+    // After stable-aware flip, A-per-B should be > 1 because B is stable (USDC)
+    expect(p.price_a_per_b).toBeGreaterThan(1);
+  });
+});
+
 describe('meteora normalize http', () => {
   beforeEach(() => {
     vi.resetModules();
@@ -20,8 +49,7 @@ describe('meteora normalize http', () => {
         tvlUsdc: '2000'
       }
     ];
-    // @ts-expect-error
-    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: rawPairs, meta: {} }) });
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: rawPairs, meta: {} }) } as any);
     const { getMeteoraPoolsCached } = await import('../src/server/pools');
     const norm = await getMeteoraPoolsCached(true);
     expect(norm.amm.length).toBe(0);

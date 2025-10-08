@@ -682,21 +682,20 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         }
         const pid = safePoolId(p);
         const liqParamOrcaClmm = (p as any)?.liquidity_display ?? p.liquidity;
-        // Prefer recomputing A-per-B from sqrtPrice and decimals for Orca CLMM
-        let priceClmmOrca: number | undefined = undefined;
-        try {
-          const s64 = Number((p as any)?.sqrt_price_x64 || 0);
-          const decA = Number((p as any)?.decimals_a ?? decimalsByMint[p.mint_a] ?? NaN);
-          const decB = Number((p as any)?.decimals_b ?? decimalsByMint[p.mint_b] ?? NaN);
-          if (s64 > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
-            const ratio = s64 / Math.pow(2, 64);
-            const scale = Math.pow(10, decB - decA);
-            const derived = scale / (ratio * ratio); // A per 1 B
-            if (Number.isFinite(derived) && derived > 0) priceClmmOrca = derived;
-          }
-        } catch {}
+        // Prefer normalized price from source; fallback to sqrt-derived only when missing
+        let priceClmmOrca: number | undefined = calibratePrice(p.mint_a, p.mint_b, (p as any).price_a_per_b);
         if (!(priceClmmOrca && priceClmmOrca > 0)) {
-          priceClmmOrca = calibratePrice(p.mint_a, p.mint_b, (p as any).price_a_per_b);
+          try {
+            const s64 = Number((p as any)?.sqrt_price_x64 || 0);
+            const decA = Number((p as any)?.decimals_a ?? decimalsByMint[p.mint_a] ?? NaN);
+            const decB = Number((p as any)?.decimals_b ?? decimalsByMint[p.mint_b] ?? NaN);
+            if (s64 > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
+              const ratio = s64 / Math.pow(2, 64);
+              const scale = Math.pow(10, decB - decA);
+              const derived = scale / (ratio * ratio); // A per 1 B
+              if (Number.isFinite(derived) && derived > 0) priceClmmOrca = derived;
+            }
+          } catch {}
         }
         try {
           const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
