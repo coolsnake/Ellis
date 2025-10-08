@@ -7,7 +7,6 @@ import { Server as SocketIOClass } from 'socket.io';
 import type { Server as SocketIOServer } from 'socket.io';
 import { logger } from '../utils/logger.js';
 import { LogCode } from '../utils/logging.js';
-import { setLogLevel } from '../utils/logger.js';
 import { CONFIG } from '../utils/config.js';
 import { registerRoutes } from './routes.js';
 import { createPriceFeed } from './priceFeed.js';
@@ -333,7 +332,7 @@ async function shutdown() {
     // Reset in-memory graph snapshot so nothing is reused
     try { const graph = await import('./graph.js'); (graph as any).rebuildGraphNow?.(undefined); } catch {}
     const file = await writeSessionLogAndClear();
-    if (file) { try { console.log('Session log written:', file); } catch {} }
+    if (file) { try { logger.info('Session log written', { file }); } catch {} }
   } catch {}
   process.exit(0);
 }
@@ -342,12 +341,6 @@ process.on('SIGTERM', shutdown);
 
 server.listen(CONFIG.port, () => {
   logger.info(`Backend listening on http://localhost:${CONFIG.port}`);
-  // Temporarily reduce log verbosity during initial boot, then restore
-  try {
-    const finalLevel = (CONFIG as any)?.system?.logLevel || 'info';
-    setLogLevel('warn' as any);
-    setTimeout(() => { try { setLogLevel(finalLevel as any); } catch {} }, 10000);
-  } catch {}
 
   // Post-listen initialization: run migrations and history load without blocking readiness
   setImmediate(async () => {
