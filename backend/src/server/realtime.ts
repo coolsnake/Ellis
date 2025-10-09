@@ -1,6 +1,7 @@
 import type { Server as SocketIOServer } from 'socket.io';
 import { recordSessionLog } from '../utils/sessionLogs.js';
 import { logger } from '../utils/logger.js';
+import { WebSocket } from 'ws';
 
 let ioRef: SocketIOServer | null = null;
 
@@ -214,4 +215,74 @@ export function getCachedArbVersion(): { version: number; timestamp: number; age
   } catch {}
 })();
 
+
+let arbOppsWs: WebSocket | null = null;
+let arbOppsReconnectTimer: NodeJS.Timeout | null = null;
+
+function makeArbWsUrl(): string {
+  try {
+    const http = ((globalThis as any)?.process?.env?.ARB_SERVICE_URL) || 'http://127.0.0.1:4010';
+    if (http.startsWith('https://')) return http.replace('https://', 'wss://') + '/ws/opportunities';
+    if (http.startsWith('http://')) return http.replace('http://', 'ws://') + '/ws/opportunities';
+    return `ws://${http.replace(/^wss?:\/\//, '')}/ws/opportunities`;
+  } catch {
+    return 'ws://127.0.0.1:4010/ws/opportunities';
+  }
+}
+
+function scheduleArbOppsReconnect(ms = 1500) {
+  try { if (arbOppsReconnectTimer) clearTimeout(arbOppsReconnectTimer); } catch {}
+  arbOppsReconnectTimer = setTimeout(() => {
+    try { startArbOpportunitiesBridge(); } catch {}
+  }, ms);
+}
+
+export function startArbOpportunitiesBridge(): void {
+  try {
+    if (arbOppsWs && (arbOppsWs.readyState === WebSocket.OPEN || arbOppsWs.readyState === WebSocket.CONNECTING)) return;
+  } catch {}
+  const url = makeArbWsUrl();
+  try {
+    const ws = new WebSocket(url, { handshakeTimeout: 3000 });
+    arbOppsWs = ws;
+
+    ws.on('open', () => {
+      try { emit('log', { level: 'info', message: `arb:ws connected ${url}`, context: { cat: 'arb' } }); } catch {}
+    });
+
+    ws.on('message', (data) => {
+      try {
+        let text: string = '';
+        if (typeof data === 'string') {
+          text = data;
+        } else if (Array.isArray(data)) {
+          try { text = Buffer.concat(data as unknown as Buffer[]).toString(); } catch { text = String(data); }
+        } else if (typeof Buffer !== 'undefined' && Buffer.isBuffer(data)) {
+          text = (data as Buffer).toString();
+        } else if (data && typeof (data as any).byteLength === 'number') {
+          try { text = Buffer.from(data as ArrayBuffer).toString(); } catch { text = String(data); }
+        } else {
+          text = String(data);
+        }
+        const payload = JSON.parse(text);
+        emit('arb:opportunities', payload);
+      } catch (e: any) {
+        try { emit('log', { level: 'warn', message: `arb:ws parse error ${String(e?.message || e)}`, context: { cat: 'arb' } }); } catch {}
+      }
+    });
+
+    ws.on('close', () => {
+      try { emit('log', { level: 'warn', message: 'arb:ws closed; reconnecting…', context: { cat: 'arb' } }); } catch {}
+      scheduleArbOppsReconnect(1500);
+    });
+
+    ws.on('error', (e) => {
+      try { emit('log', { level: 'warn', message: `arb:ws error ${String((e as any)?.message || e)}`, context: { cat: 'arb' } }); } catch {}
+      try { ws.close(); } catch {}
+    });
+  } catch (e: any) {
+    try { emit('log', { level: 'warn', message: `arb:ws connect failed ${String(e?.message || e)}`, context: { cat: 'arb' } }); } catch {}
+    scheduleArbOppsReconnect(2000);
+  }
+}
 

@@ -13,7 +13,7 @@ import { createPriceFeed } from './priceFeed.js';
 import { setPriceFeedRef, enablePriceFeed, isPriceFeedEnabled } from './feedRegistry.js';
 import { createWalletFeed } from './walletFeed.js';
 import { systemStatus } from './status.js';
-import { setIo, emit } from './realtime.js';
+import { setIo, emit, startArbOpportunitiesBridge } from './realtime.js';
 import { startGraphStream } from './graph.js';
 import { setWalletHistorySocket, initWalletHistory, getWalletHistory } from './walletHistory.js';
 import { apiStop, setTargetTickTimeMs } from '../jupiter/rateLimiter.js';
@@ -147,6 +147,7 @@ io.use((socket, next) => {
 });
 
 setIo(io);
+startArbOpportunitiesBridge();
 setWalletHistorySocket(io);
 // Graph stream will be started after first socket connection or after a delay (below)
 io.on('connection', (socket) => {
