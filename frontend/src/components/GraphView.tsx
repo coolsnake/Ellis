@@ -879,7 +879,6 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
           elements={[]}
           style={{ width: '100%', height: '100%' }}
           stylesheet={styles as any}
-          wheelSensitivity={0.2}
         />
       </div>
     </div>

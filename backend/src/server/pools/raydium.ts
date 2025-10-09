@@ -301,7 +301,7 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
           const devInv = Math.max(inv / ref, ref / inv);
           if (devInv + 1e-12 < dev) px = inv;
           // If still far from USD reference (magnitude drift), clamp to ref to avoid 2x errors
-          const maxClampDev = Number(((CONFIG as any)?.sanity as any)?.usdClampMaxDev) || 1.15;
+          const maxClampDev = Number(((CONFIG as any)?.sanity as any)?.usdClampMaxDev) || 1.10;
           const devPost = Math.max((px as number) / ref, ref / (px as number));
           if (devPost > maxClampDev) px = ref;
         }

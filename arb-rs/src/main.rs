@@ -341,13 +341,20 @@ async fn main() -> anyhow::Result<()> {
                     // Run detection
                     let cycles = if use_filtered { detect_negative_cycles_filtered(&s.graph, &affected_nodes) } else { detect_negative_cycles(&s.graph) };
                     tracing::info!(found = cycles.len(), "arb.detect.cycles");
-                    // Update scope metrics (write in a tiny separate block)
+                    // Prepare metrics snapshot, then drop read lock before taking write lock to avoid deadlock
+                    let used_filtered_flag_for_metrics = if use_filtered { 1 } else { 0 };
+                    let scope_nodes_count_for_metrics = if use_filtered { affected_nodes.len() as u64 } else { s.graph.g.node_count() as u64 };
+                    let scope_edges_count_for_metrics = scope_edges;
+                    drop(s);
+                    // Update scope metrics under write lock
                     {
                         let mut sw = loop_state.write().await;
-                        sw.metrics.detect_used_filtered = if use_filtered { 1 } else { 0 };
-                        sw.metrics.detect_scope_nodes = if use_filtered { affected_nodes.len() as u64 } else { s.graph.g.node_count() as u64 };
-                        sw.metrics.detect_scope_edges = scope_edges;
+                        sw.metrics.detect_used_filtered = used_filtered_flag_for_metrics;
+                        sw.metrics.detect_scope_nodes = scope_nodes_count_for_metrics;
+                        sw.metrics.detect_scope_edges = scope_edges_count_for_metrics;
                     }
+                    // Reacquire read lock for subsequent cycle processing
+                    let s = loop_state.read().await;
                     // Deduplicate cycles and compute profit from edge rates
                     let mut seen: HashSet<String> = HashSet::new();
                     let mut curr: Vec<Opportunity> = Vec::new();

@@ -608,7 +608,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
           const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
           const ref = (pa && pb && pb > 0) ? ((pb as number) / (pa as number)) : undefined;
-          const maxClampDev = Number(((CONFIG as any)?.sanity as any)?.usdClampMaxDev) || 1.15;
+          const maxClampDev = Number(((CONFIG as any)?.sanity as any)?.usdClampMaxDev) || 1.10;
           if (price && ref) {
             const dev = Math.max(price / ref, ref / price);
             const fwd = 1 / price, rev = price;
@@ -862,7 +862,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
           const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
           const ref = (pa && pb && pb > 0) ? ((pb as number) / (pa as number)) : undefined;
-          const maxClampDev = Number(((CONFIG as any)?.sanity as any)?.usdClampMaxDev) || 1.15;
+          const maxClampDev = Number(((CONFIG as any)?.sanity as any)?.usdClampMaxDev) || 1.10;
           if (priceMet && ref) {
             const dev = Math.max(priceMet / ref, ref / priceMet);
             // If orientation is wrong or magnitude off beyond threshold, clamp to ref
