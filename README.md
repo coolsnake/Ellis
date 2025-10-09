@@ -383,6 +383,12 @@ Frontend:
   - Nodes: token mints with labels when available (via token map/watchlist)
   - Edges: undirected between token mints, colored by DEX; weight derived from liquidity/fee
 
+### Performance notes (UI responsiveness)
+- The frontend coalesces `graph-update`/`graph-snapshot` events and applies them during idle time to keep the main thread responsive.
+- Cytoscape mutations are batched to reduce layout/reflow work.
+- Opportunities and metrics refreshes triggered by graph/log events are debounced (~750 ms) to avoid redundant fetches under event bursts.
+- Optional backend knob: set `system.graphStreamIntervalMs` (e.g., 6000–8000 ms) in backend config to reduce event cadence if your environment is resource‑constrained.
+
 
 ## Strategy Configuration Fields (Detailed)
 - name: Identifier of the strategy.

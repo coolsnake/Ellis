@@ -75,16 +75,91 @@ impl ArbGraph {
     }
 }
 
+/// Expand a set of starting node indices by up to `max_hops` hops over both
+/// incoming and outgoing edges. Returns the set of node indices reachable within
+/// the hop budget including the starting nodes.
+pub fn expand_nodes_by_hops(
+    g: &ArbGraph,
+    starts: &std::collections::HashSet<usize>,
+    max_hops: usize,
+) -> std::collections::HashSet<usize> {
+    use petgraph::Direction::{Incoming, Outgoing};
+    use std::collections::HashSet;
+    let mut out: HashSet<usize> = starts.clone();
+    if max_hops == 0 || starts.is_empty() { return out; }
+    let mut frontier: HashSet<usize> = starts.clone();
+    for _ in 0..max_hops {
+        let mut next: HashSet<usize> = HashSet::new();
+        for &u in frontier.iter() {
+            let ui = NodeIndex::new(u);
+            for v in g.g.neighbors_directed(ui, Outgoing) { if out.insert(v.index()) { next.insert(v.index()); } }
+            for v in g.g.neighbors_directed(ui, Incoming) { if out.insert(v.index()) { next.insert(v.index()); } }
+        }
+        if next.is_empty() { break; }
+        frontier = next;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn upsert_nodes_and_edges() {
         let mut g = ArbGraph::new();
-        g.upsert_edge("Raydium", "SOL", "USDC", EdgeData { rate_effective: 24.5, fee_bps: 30, liquidity: 1000.0, dex: "Raydium".into() });
-        g.upsert_edge("Raydium", "USDC", "SOL", EdgeData { rate_effective: 0.0408, fee_bps: 30, liquidity: 1000.0, dex: "Raydium".into() });
+        g.upsert_edge(
+            "Raydium",
+            "SOL",
+            "USDC",
+            EdgeData {
+                rate_effective: 24.5,
+                fee_bps: 30,
+                liquidity: 1000.0,
+                dex: "Raydium".into(),
+                pool_id: String::new(),
+                liquidity_display: 1000.0,
+            },
+        );
+        g.upsert_edge(
+            "Raydium",
+            "USDC",
+            "SOL",
+            EdgeData {
+                rate_effective: 0.0408,
+                fee_bps: 30,
+                liquidity: 1000.0,
+                dex: "Raydium".into(),
+                pool_id: String::new(),
+                liquidity_display: 1000.0,
+            },
+        );
         assert!(g.g.node_count() >= 2);
         assert!(g.g.edge_count() >= 2);
+    }
+
+    #[test]
+    fn expand_hops_reaches_expected_nodes() {
+        use std::collections::HashSet;
+        let mut g = ArbGraph::new();
+        // Create a simple line 0->1->2->3 and also a back edge 2->0
+        let dex = "D".to_string();
+        let e = |rate| EdgeData { rate_effective: rate, fee_bps: 0, liquidity: 1.0, dex: dex.clone(), pool_id: String::new(), liquidity_display: 1.0 };
+        g.upsert_edge(&dex, "0", "1", e(1.0));
+        g.upsert_edge(&dex, "1", "2", e(1.0));
+        g.upsert_edge(&dex, "2", "3", e(1.0));
+        g.upsert_edge(&dex, "2", "0", e(1.0));
+        // Map mints to indices
+        let i0 = g.map.get("0").unwrap().index();
+        let i1 = g.map.get("1").unwrap().index();
+        let i2 = g.map.get("2").unwrap().index();
+        let i3 = g.map.get("3").unwrap().index();
+        let mut starts: HashSet<usize> = HashSet::new();
+        starts.insert(i1);
+        let s1 = expand_nodes_by_hops(&g, &starts, 1);
+        assert!(s1.contains(&i0) && s1.contains(&i1) && s1.contains(&i2));
+        assert!(!s1.contains(&i3));
+        let s2 = expand_nodes_by_hops(&g, &starts, 2);
+        assert!(s2.contains(&i3));
     }
 }
 

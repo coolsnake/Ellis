@@ -127,8 +127,16 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
   // Subscribe to socket events to refresh metrics on push updates
   React.useEffect(() => {
     if (!effectiveSocket || paused) return;
-    const onGraphSnapshot = () => { try { fetchMetrics(); } catch {} };
-    const onGraphUpdate = () => { try { fetchMetrics(); } catch {} };
+    // Debounce metrics refresh to avoid redundant work under event bursts
+    const lastMetricsAtRef: { current: number } = { current: 0 } as any;
+    const requestMetrics = (cooldownMs = 750) => {
+      const now = Date.now();
+      if (now - lastMetricsAtRef.current < cooldownMs) return;
+      lastMetricsAtRef.current = now;
+      try { fetchMetrics(); } catch {}
+    };
+    const onGraphSnapshot = () => { requestMetrics(); };
+    const onGraphUpdate = () => { requestMetrics(); };
     const onWsActivity = (evt: any) => {
       try {
         if (!evt) return;
@@ -147,7 +155,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
         const isGraphPush = /^GRAPH\.PUSH\.(SNAPSHOT|DIFF)$/.test(code) || /^(graph:push (snapshot|diff))$/i.test(msg);
         const isArbPush = /^ARB\.PUSH\.SNAPSHOT$/.test(code) || /^arb:push snapshot$/i.test(msg);
         if (isPretradeArb || isOpportunityCat || isGraphPush || isArbPush) {
-          fetchMetrics();
+          requestMetrics();
         }
       } catch {}
     };

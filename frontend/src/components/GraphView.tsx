@@ -9,6 +9,22 @@ import fcose from 'cytoscape-fcose';
 
 cytoscape.use(fcose);
 
+// Idle scheduler with fallback to a short timeout; keeps main thread responsive
+type IdleHandle = number;
+const idle = (cb: () => void, timeout = 100): IdleHandle => {
+    try {
+        const ric = (window as any).requestIdleCallback as any;
+        if (typeof ric === 'function') return ric(cb, { timeout }) as unknown as IdleHandle;
+    } catch {}
+    return window.setTimeout(cb, Math.min(Math.max(timeout, 16), 250)) as unknown as IdleHandle;
+};
+
+// Small helper to batch Cytoscape mutations safely
+const withBatch = (cy: any, fn: () => void) => {
+    try { cy.startBatch(); } catch {}
+    try { fn(); } finally { try { cy.endBatch(); } catch {} }
+};
+
 type GraphSnapshot = {
   version: number;
   timestamp: number;
@@ -531,146 +547,162 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
   }, [containerRef.current]);
 
   useEffect(() => {
-    if (!effectiveSocket) return;
-    const onDiff = (diff: GraphDiff) => {
-      const cy = cyRef.current; if (!cy) return;
-      // Capture previous positions to seed any newly added nodes after upsert
-      const prevPos = new Map<string, { x: number; y: number }>();
-      try { cy.nodes().forEach((n) => { prevPos.set(n.id(), { x: n.position('x'), y: n.position('y') }); }); } catch {}
-      snapshotInitializedRef.current = true; // prefer diffs after first reception
-      // Gap detection: if incoming diff version is not strictly newer than lastVersion, ignore; if it jumps ahead, request snapshot
-      try {
-        const cur = Number(lastVersionRef.current || 0);
-        const inc = Number(diff?.version || 0);
-        if (inc <= cur) return; // stale/out-of-order
-        if (cur > 0 && inc !== cur + 1) {
-          setNeedsResync(true);
-        try { effectiveSocket.emit('graph:request-snapshot'); } catch {}
-          return;
-        }
-        lastVersionRef.current = inc;
-      } catch {}
-      try { if (typeof diff?.version === 'number') lastVersionRef.current = Math.max(lastVersionRef.current || 0, Number(diff.version)); } catch {}
-      const touchedPairs = new Set<string>();
-      try {
-        const remIds = Array.isArray(diff.removedEdgeIds) ? diff.removedEdgeIds : [];
-        for (const id of remIds) {
-          const el = cy.getElementById(String(id));
-          if (el && el.length && el.isEdge()) {
-            const a = String(el.data('source'));
-            const b = String(el.data('target'));
-            touchedPairs.add(`${a}|${b}`);
-          }
-        }
-      } catch {}
-      if (diff.removedEdgeIds?.length) cy.remove(diff.removedEdgeIds.map((id) => `#${id}`).join(','));
-      if (diff.removedNodeIds?.length) cy.remove(diff.removedNodeIds.map((id) => `#${id}`).join(','));
-      const hideKind = new Set<string>();
-      if (!filterKind.AMM) hideKind.add('amm');
-      if (!filterKind.CLMM) hideKind.add('clmm');
-      // Upsert nodes in-place
-      for (const n of [...(diff.addedNodes||[]), ...(diff.updatedNodes||[])]) {
-        try {
-          const id = String(n.id);
-          const existing = cy.getElementById(id);
-          if (existing && existing.length && existing.isNode()) {
-            existing.data('label', n.label || id.slice(0,4));
-          } else {
-            cy.add({ data: { id, label: n.label || id.slice(0,4) } });
-          }
-        } catch {}
-      }
-      // Upsert edges in-place and collect touched pairs
-      for (const e of [...(diff.addedEdges||[]), ...(diff.updatedEdges||[])]) {
-        const kind = (e as any).pool_kind;
-        if (kind === 'amm' || kind === 'clmm') {
-          if (hideKind.has(kind)) continue;
-        }
-        const data: any = { id: e.id, source: e.source, target: e.target, dex: e.dex, fee_bps: e.fee_bps, liquidity: e.liquidity, liquidity_display: (e as any).liquidity_display, weight: e.weight, price_a_per_b: (e as any).price_a_per_b, tvl_usd: (e as any).tvl_usd, pool_id: (e as any).pool_id, source_account: (e as any).source_account, target_account: (e as any).target_account, pool_kind: (e as any).pool_kind, direction: (e as any).direction, pool_liquidity_raw: (e as any).pool_liquidity_raw };
-        try {
-          const id = String(e.id);
-          const el = cy.getElementById(id);
-          if (el && el.length && el.isEdge()) {
-            el.data(data);
-          } else {
-            cy.add({ data } as any);
-          }
-        } catch {}
-        try {
-          const a = String(e.source);
-          const b = String(e.target);
-          touchedPairs.add(`${a}|${b}`);
-        } catch {}
-      }
-      // Briefly highlight updated/added edges
-      try {
-        const highlightIds: string[] = [];
-        for (const e of [...(diff.addedEdges||[]), ...(diff.updatedEdges||[])]) { if (e?.id) { highlightIds.push(String(e.id), `${String(e.id)}-rev`); } }
-        if (highlightIds.length) {
-          const sel = cy.$(highlightIds.map((id) => `#${id}`).join(','));
-          sel.addClass('highlighted');
-          setTimeout(() => { try { sel.removeClass('highlighted'); } catch {} }, 500);
-        }
-      } catch {}
-      try {
-        touchedPairs.forEach((key) => {
-          const [a, b] = key.split('|');
-          ensureCombinedForPair(cy, a, b);
-        });
-      } catch {}
-      // Seed initial positions for any nodes created by this diff
-      seedPositionsForNewNodes(cy, prevPos);
-      // no layout run
-    };
-    const onSnapshot = (snap: GraphSnapshot) => {
+		if (!effectiveSocket) return;
+
+		// Coalesce latest event; snapshots take precedence over diffs
+		let latestSnap: GraphSnapshot | null = null;
+		let latestDiff: GraphDiff | null = null;
+		let scheduled = false;
+
+		const applyDiff = (diff: GraphDiff) => {
 			const cy = cyRef.current; if (!cy) return;
-			// Only accept snapshot if it's newer than our current version or we have no content
-      const incomingVer = Number(snap?.version || 0);
-      const haveContent = cy.nodes().length > 0;
-      if (haveContent && snapshotInitializedRef.current && incomingVer <= (lastVersionRef.current || 0)) return;
-      lastVersionRef.current = incomingVer;
-      setNeedsResync(false);
-			// Preserve previous node positions when refreshing snapshot to avoid jarring jumps
-      const hadLayout = !!laidOutRef.current;
-      const preservePositions = hadLayout && !forceLayoutRef.current;
-      const prevPos = new Map<string, { x: number; y: number }>();
-      try { cy.nodes().forEach((n) => { prevPos.set(n.id(), { x: n.position('x'), y: n.position('y') }); }); } catch {}
-			cy.elements().remove();
-			cy.add(toElements(snap));
-      if (preservePositions) {
-        try { cy.nodes().forEach((n) => { const p = prevPos.get(n.id()); if (p) n.position(p); }); } catch {}
-      }
-			// Seed positions for new nodes to avoid stacking
-			seedPositionsForNewNodes(cy, prevPos);
-			// Run initial layout once on the first snapshot when container is sized
-			if (!laidOutRef.current || forceLayoutRef.current) {
-				const attemptLayout = () => {
-					const el = containerRef.current;
-					const w = (el?.clientWidth || 0);
-					const h = (el?.clientHeight || 0);
-					cy.resize();
-					if (w > 0 && h > 0) {
-						runLayout(forceLayoutRef.current ? 'always' : 'first');
-						forceLayoutRef.current = false;
-					} else {
-						requestAnimationFrame(attemptLayout);
+			withBatch(cy, () => {
+				const prevPos = new Map<string, { x: number; y: number }>();
+				try { cy.nodes().forEach((n) => { prevPos.set(n.id(), { x: n.position('x'), y: n.position('y') }); }); } catch {}
+				snapshotInitializedRef.current = true;
+				try {
+					const cur = Number(lastVersionRef.current || 0);
+					const inc = Number(diff?.version || 0);
+					if (inc <= cur) return;
+					if (cur > 0 && inc !== cur + 1) {
+						setNeedsResync(true);
+						try { effectiveSocket.emit('graph:request-snapshot'); } catch {}
+						return;
 					}
-				};
-				requestAnimationFrame(attemptLayout);
-			}
-			// Do not clear selection here to avoid UX reset
-			snapshotInitializedRef.current = true;
-    };
-    const onHighlight = (payload: { edgeIds?: string[]; pairs?: Array<{ source: string; target: string; dex?: string }> }) => { applyHighlight(payload as any); };
-    effectiveSocket.on('graph-update', onDiff);
-    effectiveSocket.on('graph-snapshot', onSnapshot);
-    effectiveSocket.on('graph-highlight', onHighlight);
-    return () => {
-      effectiveSocket.off('graph-update', onDiff);
-      effectiveSocket.off('graph-snapshot', onSnapshot);
-      effectiveSocket.off('graph-highlight', onHighlight);
-    };
-  }, [effectiveSocket, filterDex.Raydium, filterDex.Orca, filterDex.Meteora, layoutName]);
+					lastVersionRef.current = inc;
+				} catch {}
+				try { if (typeof diff?.version === 'number') lastVersionRef.current = Math.max(lastVersionRef.current || 0, Number(diff.version)); } catch {}
+				const touchedPairs = new Set<string>();
+				try {
+					const remIds = Array.isArray(diff.removedEdgeIds) ? diff.removedEdgeIds : [];
+					for (const id of remIds) {
+						const el = cy.getElementById(String(id));
+						if (el && el.length && el.isEdge()) {
+							const a = String(el.data('source'));
+							const b = String(el.data('target'));
+							touchedPairs.add(`${a}|${b}`);
+						}
+					}
+				} catch {}
+				if (diff.removedEdgeIds?.length) cy.remove(diff.removedEdgeIds.map((id) => `#${id}`).join(','));
+				if (diff.removedNodeIds?.length) cy.remove(diff.removedNodeIds.map((id) => `#${id}`).join(','));
+				const hideKind = new Set<string>();
+				if (!filterKind.AMM) hideKind.add('amm');
+				if (!filterKind.CLMM) hideKind.add('clmm');
+				for (const n of [...(diff.addedNodes||[]), ...(diff.updatedNodes||[])]) {
+					try {
+						const id = String(n.id);
+						const existing = cy.getElementById(id);
+						if (existing && existing.length && existing.isNode()) {
+							existing.data('label', n.label || id.slice(0,4));
+						} else {
+							cy.add({ data: { id, label: n.label || id.slice(0,4) } });
+						}
+					} catch {}
+				}
+				for (const e of [...(diff.addedEdges||[]), ...(diff.updatedEdges||[])]) {
+					const kind = (e as any).pool_kind;
+					if (kind === 'amm' || kind === 'clmm') {
+						if (hideKind.has(kind)) continue;
+					}
+					const data: any = { id: e.id, source: e.source, target: e.target, dex: e.dex, fee_bps: e.fee_bps, liquidity: e.liquidity, liquidity_display: (e as any).liquidity_display, weight: e.weight, price_a_per_b: (e as any).price_a_per_b, tvl_usd: (e as any).tvl_usd, pool_id: (e as any).pool_id, source_account: (e as any).source_account, target_account: (e as any).target_account, pool_kind: (e as any).pool_kind, direction: (e as any).direction, pool_liquidity_raw: (e as any).pool_liquidity_raw };
+					try {
+						const id = String(e.id);
+						const el = cy.getElementById(id);
+						if (el && el.length && el.isEdge()) {
+							el.data(data);
+						} else {
+							cy.add({ data } as any);
+						}
+					} catch {}
+					try {
+						const a = String(e.source);
+						const b = String(e.target);
+						touchedPairs.add(`${a}|${b}`);
+					} catch {}
+				}
+				try {
+					const highlightIds: string[] = [];
+					for (const e of [...(diff.addedEdges||[]), ...(diff.updatedEdges||[])]) { if (e?.id) { highlightIds.push(String(e.id), `${String(e.id)}-rev`); } }
+					if (highlightIds.length) {
+						const sel = cy.$(highlightIds.map((id) => `#${id}`).join(','));
+						sel.addClass('highlighted');
+						setTimeout(() => { try { sel.removeClass('highlighted'); } catch {} }, 500);
+					}
+				} catch {}
+				try {
+					touchedPairs.forEach((key) => {
+						const [a, b] = key.split('|');
+						ensureCombinedForPair(cy, a, b);
+					});
+				} catch {}
+				seedPositionsForNewNodes(cy, prevPos);
+			});
+		};
+
+		const applySnapshot = (snap: GraphSnapshot) => {
+			const cy = cyRef.current; if (!cy) return;
+			withBatch(cy, () => {
+				const incomingVer = Number(snap?.version || 0);
+				const haveContent = cy.nodes().length > 0;
+				if (haveContent && snapshotInitializedRef.current && incomingVer <= (lastVersionRef.current || 0)) return;
+				lastVersionRef.current = incomingVer;
+				setNeedsResync(false);
+				const hadLayout = !!laidOutRef.current;
+				const preservePositions = hadLayout && !forceLayoutRef.current;
+				const prevPos = new Map<string, { x: number; y: number }>();
+				try { cy.nodes().forEach((n) => { prevPos.set(n.id(), { x: n.position('x'), y: n.position('y') }); }); } catch {}
+				cy.elements().remove();
+				cy.add(toElements(snap));
+				if (preservePositions) {
+					try { cy.nodes().forEach((n) => { const p = prevPos.get(n.id()); if (p) n.position(p); }); } catch {}
+				}
+				seedPositionsForNewNodes(cy, prevPos);
+				if (!laidOutRef.current || forceLayoutRef.current) {
+					const attemptLayout = () => {
+						const el = containerRef.current;
+						const w = (el?.clientWidth || 0);
+						const h = (el?.clientHeight || 0);
+						cy.resize();
+						if (w > 0 && h > 0) {
+							runLayout(forceLayoutRef.current ? 'always' : 'first');
+							forceLayoutRef.current = false;
+						} else {
+							requestAnimationFrame(attemptLayout);
+						}
+					};
+					requestAnimationFrame(attemptLayout);
+				}
+				snapshotInitializedRef.current = true;
+			});
+		};
+
+		const flush = () => {
+			scheduled = false;
+			const snap = latestSnap; const diff = latestDiff;
+			latestSnap = null; latestDiff = null;
+			if (snap) applySnapshot(snap);
+			else if (diff) applyDiff(diff);
+		};
+		const schedule = () => {
+			if (scheduled) return;
+			scheduled = true;
+			idle(flush, 100);
+		};
+
+		const onDiff = (diff: GraphDiff) => { latestDiff = diff; schedule(); };
+		const onSnapshot = (snap: GraphSnapshot) => { latestSnap = snap; schedule(); };
+		const onHighlight = (payload: { edgeIds?: string[]; pairs?: Array<{ source: string; target: string; dex?: string }> }) => { applyHighlight(payload as any); };
+
+		effectiveSocket.on('graph-update', onDiff);
+		effectiveSocket.on('graph-snapshot', onSnapshot);
+		effectiveSocket.on('graph-highlight', onHighlight);
+		return () => {
+			effectiveSocket.off('graph-update', onDiff);
+			effectiveSocket.off('graph-snapshot', onSnapshot);
+			effectiveSocket.off('graph-highlight', onHighlight);
+		};
+	}, [effectiveSocket, filterDex.Raydium, filterDex.Orca, filterDex.Meteora, filterKind.AMM, filterKind.CLMM, layoutName]);
 
   // Initialize cy configuration when instance is available
 	const onCyReady = (cy: cytoscape.Core) => {

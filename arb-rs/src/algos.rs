@@ -220,3 +220,69 @@ pub fn detect_near_miss_cycles(g: &ArbGraph, epsilon: f64, max_hops: usize, top_
 }
 
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::EdgeData;
+
+    fn mk_edge(dex: &str, rate: f64) -> EdgeData {
+        EdgeData { rate_effective: rate, fee_bps: 0, liquidity: 1.0, dex: dex.to_string(), pool_id: String::new(), liquidity_display: 1.0 }
+    }
+
+    #[test]
+    fn negative_cycle_detects_simple_two_edge_loop() {
+        let mut g = ArbGraph::new();
+        // A <-> B with product > 1.0 (2.0 * 0.6 = 1.2)
+        g.upsert_edge("D", "A", "B", mk_edge("D", 2.0));
+        g.upsert_edge("D", "B", "A", mk_edge("D", 0.6));
+        let cycles = detect_negative_cycles(&g);
+        assert!(!cycles.is_empty());
+    }
+
+    #[test]
+    fn filtered_detection_respects_scope() {
+        use std::collections::HashSet;
+        let mut g = ArbGraph::new();
+        // A <-> B negative, plus C isolated chain
+        g.upsert_edge("D", "A", "B", mk_edge("D", 2.0));
+        g.upsert_edge("D", "B", "A", mk_edge("D", 0.6));
+        g.upsert_edge("D", "B", "C", mk_edge("D", 1.0));
+        // Map names to indices
+        let ia = g.map.get("A").unwrap().index();
+        let ib = g.map.get("B").unwrap().index();
+        let ic = g.map.get("C").unwrap().index();
+        let mut ab: HashSet<usize> = HashSet::new();
+        ab.insert(ia); ab.insert(ib);
+        let mut ac: HashSet<usize> = HashSet::new();
+        ac.insert(ia); ac.insert(ic);
+        let c_ab = detect_negative_cycles_filtered(&g, &ab);
+        assert!(!c_ab.is_empty());
+        let c_ac = detect_negative_cycles_filtered(&g, &ac);
+        assert!(c_ac.is_empty());
+    }
+
+    #[test]
+    fn detection_terminates_on_medium_graph() {
+        let mut g = ArbGraph::new();
+        let dex = "D";
+        // Build a bidirectional chain with no arbitrage
+        let n = 300usize;
+        for i in 0..(n-1) {
+            let a = format!("N{}", i);
+            let b = format!("N{}", i+1);
+            g.upsert_edge(dex, &a, &b, mk_edge(dex, 1.0));
+            g.upsert_edge(dex, &b, &a, mk_edge(dex, 1.0));
+        }
+        let full = detect_negative_cycles(&g);
+        assert!(full.is_empty());
+        // Filtered to a small subset should also terminate and be empty
+        use std::collections::HashSet;
+        let ia = g.map.get("N10").unwrap().index();
+        let ib = g.map.get("N11").unwrap().index();
+        let mut scope: HashSet<usize> = HashSet::new();
+        scope.insert(ia); scope.insert(ib);
+        let part = detect_negative_cycles_filtered(&g, &scope);
+        assert!(part.is_empty());
+    }
+}

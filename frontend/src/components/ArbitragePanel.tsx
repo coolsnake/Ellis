@@ -68,6 +68,14 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
   const [txRows, setTxRows] = useState<Array<{ id: string; timeMs: number; path: string[]; hops: Array<{ dex: string; variant: string; poolId: string }>; ixCount: number; txSizeBytes: number; status: string; signature?: string | null }>>([]);
   const [expandedTxId, setExpandedTxId] = useState<string | null>(null);
 
+  // Debounced refresh for opportunities triggered by graph events
+  const lastOppsFetchAtRef = useRef(0);
+  const requestOppsRefresh = (now = Date.now(), cooldownMs = 750) => {
+    if (now - lastOppsFetchAtRef.current < cooldownMs) return;
+    lastOppsFetchAtRef.current = now;
+    fetchOpps();
+  };
+
   const fmt = (n: number | undefined | null, digits = 0) => {
     if (n === undefined || n === null || isNaN(n as any)) return '—';
     const v = Number(n);
@@ -155,13 +163,13 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
     const onGraphSnapshot = (snap: { version: number }) => {
       if (typeof snap?.version === 'number' && snap.version !== lastGraphVersion) {
         setLastGraphVersion(snap.version);
-        fetchOpps();
+        requestOppsRefresh();
       }
     };
     const onGraphUpdate = (diff: { version: number }) => {
       if (typeof diff?.version === 'number' && diff.version !== lastGraphVersion) {
         setLastGraphVersion(diff.version);
-        fetchOpps();
+        requestOppsRefresh();
       }
     };
     const onArbLog = (evt: any) => {

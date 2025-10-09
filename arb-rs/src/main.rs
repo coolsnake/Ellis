@@ -18,7 +18,7 @@ use base64::{engine::general_purpose, Engine as _};
 mod opportunities;
 use opportunities::{OpportunitiesResponse, Opportunity, OpportunitiesSummary};
 mod graph;
-use graph::{ArbGraph, EdgeData};
+use graph::{ArbGraph, EdgeData, expand_nodes_by_hops};
 mod algos;
 use algos::{detect_negative_cycles, detect_near_miss_cycles, detect_negative_cycles_filtered};
 
@@ -321,23 +321,6 @@ async fn main() -> anyhow::Result<()> {
                 // Compare with previous to only push WS updates on change
                 let (opps, prev, near_pair, near_list): (Vec<Opportunity>, Vec<Opportunity>, Option<(Opportunity,i64)>, Vec<(Opportunity,i64)>) = {
                     let s = loop_state.read().await;
-                    // helper for scope expansion
-                    fn expand_nodes_by_hops(g:&ArbGraph, starts:&HashSet<usize>, max_hops:usize)->HashSet<usize> {
-                        use petgraph::Direction::{Outgoing, Incoming};
-                        let mut out = starts.clone();
-                        let mut frontier = starts.clone();
-                        for _ in 0..max_hops {
-                            let mut next: HashSet<usize> = HashSet::new();
-                            for &u in frontier.iter() {
-                                let ui = NodeIndex::new(u);
-                                for v in g.g.neighbors_directed(ui, Outgoing) { if out.insert(v.index()) { next.insert(v.index()); } }
-                                for v in g.g.neighbors_directed(ui, Incoming) { if out.insert(v.index()) { next.insert(v.index()); } }
-                            }
-                            if next.is_empty() { break; }
-                            frontier = next;
-                        }
-                        out
-                    }
                     // Build affected node index set from changed mints
                     let mut changed_node_idxs: std::collections::HashSet<usize> = std::collections::HashSet::new();
                     for m in changed_mints.iter() {
