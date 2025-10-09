@@ -481,7 +481,9 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         // Incoming price is A per 1 B.
         // Prefer normalized incoming price by default; allow override via config.
         const preferNormalized = (((CONFIG as any)?.system as any)?.preferNormalizedPriceForAmm !== false);
-        const incomingFwd = Number((p as any)?.price_a_per_b || 0);
+        // Calibrate magnitude only using USD reference to correct unit drift from sources
+        const incomingRaw = Number((p as any)?.price_a_per_b || 0);
+        const incomingFwd = calibratePrice(p.mint_a, p.mint_b, incomingRaw);
         const preferred = preferNormalized
           ? ((incomingFwd && incomingFwd > 0) ? incomingFwd : price)
           : ((price && price > 0) ? price : (incomingFwd && incomingFwd > 0 ? incomingFwd : undefined));
