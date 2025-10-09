@@ -10,6 +10,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
   const [m, setM] = React.useState<any | null>(null);
   const [pools, setPools] = React.useState<any | null>(null);
   const [orcaPools, setOrcaPools] = React.useState<any | null>(null);
+  const [meteoraPools, setMeteoraPools] = React.useState<any | null>(null);
   const [saberPools, setSaberPools] = React.useState<any | null>(null);
   const [mblPools, setMblPools] = React.useState<any | null>(null);
   const [poolsStats, setPoolsStats] = React.useState<any | null>(null);
@@ -75,6 +76,17 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
         }
       } catch {}
       fetch(`${apiBase}${ROUTES.pools.orca}`, { headers }).then(r=>r.json()).then(setOrcaPools).catch(()=>{});
+    } catch {}
+    try {
+      const headers: Record<string, string> = {};
+      try {
+        const s = localStorage.getItem('authCreds');
+        if (s) {
+          const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
+          if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
+        }
+      } catch {}
+      fetch(`${apiBase}${ROUTES.pools.meteora}`, { headers }).then(r=>r.json()).then(setMeteoraPools).catch(()=>{});
     } catch {}
     try {
       const headers: Record<string, string> = {};
@@ -227,6 +239,12 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
               <div>AMM: {fmt(orcaPools.amm?.length)} CLMM: {fmt(orcaPools.clmm?.length)}</div>
             )}
           </div>
+            <div className="col-span-2">
+              <div className="text-gray-400">Meteora Pools (scoped)</div>
+              {!meteoraPools ? <div className="opacity-70">-</div> : (
+                <div>CLMM: {fmt(meteoraPools.clmm?.length)}</div>
+              )}
+            </div>
             <div className="col-span-2">
               <div className="text-gray-400">Saber Pools (scoped)</div>
               {!saberPools ? <div className="opacity-70">-</div> : (
