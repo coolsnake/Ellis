@@ -17,6 +17,17 @@ const RUN = String((globalThis as any)?.process?.env?.RUN_REAL_E2E || '') === 't
     // Keep sanity checks on
     cfg.sanity.enabled = true;
 
+    // Seed minimal USD prices to enable magnitude calibration during normalization/graph build
+    try {
+      const { setPrices } = await import('../../server/priceStore.js');
+      const SOL = 'So11111111111111111111111111111111111111112';
+      const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+      setPrices({
+        [USDC]: { usdc: 1, sol: null },
+        [SOL]: { usdc: 225, sol: null },
+      });
+    } catch {}
+
     // Limit HTTP pagination for small, fast runs
     if (cfg.raydium) {
       cfg.raydium.pageSize = 100;
