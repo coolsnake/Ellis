@@ -854,6 +854,20 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         }
         // Calibrate price; for DLMM we only have price_a_per_b, no sqrt
         let priceMet: number | undefined = calibratePrice(p.mint_a, p.mint_b, (p as any).price_a_per_b);
+        // Optional USD clamp: if both sides have USD and deviation is large, snap to USD-implied ref
+        try {
+          const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
+          const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
+          const ref = (pa && pb && pb > 0) ? ((pb as number) / (pa as number)) : undefined;
+          const maxClampDev = Number(((CONFIG as any)?.sanity as any)?.usdClampMaxDev) || 1.15;
+          if (priceMet && ref) {
+            const dev = Math.max(priceMet / ref, ref / priceMet);
+            // If orientation is wrong or magnitude off beyond threshold, clamp to ref
+            if (dev > maxClampDev) {
+              priceMet = ref;
+            }
+          }
+        } catch {}
         // Forward edge must carry A per 1 B; reverse is strict reciprocal
         const pid = String((p as any)?.id || undefined) || undefined;
         const liqParam = (p as any)?.liquidity_display ?? (usd && usd > 0 ? usd : (p as any)?.pool_liquidity_raw);
