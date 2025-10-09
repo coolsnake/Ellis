@@ -50,8 +50,8 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
           if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
         }
       } catch {}
-      // Unified refresh also subscribes server-side by default
-      await fetch(`${apiBase}${ROUTES.pools.refresh}`, { method: 'POST', headers, body: JSON.stringify({ source: 'all', subscribe: true }) });
+      // Unified refresh: force a refresh and subscribe server-side by default
+      await fetch(`${apiBase}${ROUTES.pools.refresh}`, { method: 'POST', headers, body: JSON.stringify({ source: 'all', subscribe: true, force: true }) });
     } catch {}
     // Re-pull scoped pools and metrics
     try {

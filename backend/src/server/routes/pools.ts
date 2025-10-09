@@ -220,6 +220,8 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
   api.post('/arb/pools/refresh', async (req, res) => {
     try {
       const cfg = req.body || {};
+      if (cfg.force == null) cfg.force = true;
+      if (cfg.subscribe == null) cfg.subscribe = true;
       const { refreshAllSources } = await import('../pools.js');
       const { getGraphSnapshot } = await import('../graph.js');
       const { enablePoolWebsocketRefreshes, getWsActivity, getPoolCacheAges } = await import('../pools.js');

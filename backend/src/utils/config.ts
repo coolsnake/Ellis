@@ -36,15 +36,15 @@ export const CONFIG = {
     mode: (process.env.ORCA_MODE as any) || 'http', // 'http' | 'v4' | 'legacy'
     apiUrl: process.env.ORCA_API_URL || 'https://api.orca.so/v2/solana/pools',
     pageSize: Number(process.env.ORCA_HTTP_PAGE_SIZE || 1000),
-    maxPages: Number(process.env.ORCA_HTTP_MAX_PAGES || 10),
+    maxPages: Number(process.env.ORCA_HTTP_MAX_PAGES || 50),
     programId: process.env.ORCA_WHIRLPOOLS_PROGRAM_ID || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc',
     configPubkey: process.env.ORCA_WHIRLPOOLS_CONFIG || '7cSHePZUPCXKmgkkCm1cW8XkyRjB6rQAtv6vZ9VJ4N8S',
     cacheTtlMs: Number(process.env.ORCA_CACHE_TTL_MS || 60_000),
     maxHttpRetries: Number(process.env.ORCA_HTTP_MAX_RETRIES || 2),
     httpBackoffMs: Number(process.env.ORCA_HTTP_BACKOFF_MS || 500),
     // HTTP API filters and pagination (cursor-based)
-    size: Number(process.env.ORCA_HTTP_SIZE || 500),
-    sortBy: process.env.ORCA_HTTP_SORT_BY || 'volume',
+    size: Number(process.env.ORCA_HTTP_SIZE || 1000),
+    sortBy: process.env.ORCA_HTTP_SORT_BY || 'tvl',
     sortDirection: process.env.ORCA_HTTP_SORT_DIR || 'desc',
     hasRewards: process.env.ORCA_HTTP_HAS_REWARDS === 'true' ? true : (process.env.ORCA_HTTP_HAS_REWARDS === 'false' ? false : undefined),
     hasWarning: process.env.ORCA_HTTP_HAS_WARNING === 'true' ? true : (process.env.ORCA_HTTP_HAS_WARNING === 'false' ? false : undefined),
@@ -92,7 +92,7 @@ export const CONFIG = {
     // New: scoping mode for /arb/pools endpoints: 'none' | 'watchlist' | 'jupiter' | 'intersection' | 'union'
     scopePoolsMode: (process.env.SCOPE_POOLS_MODE as any) || 'jupiter',
     // New: token-universe mode used to filter pools at source: 'jupiter' | 'watchlist' | 'intersection' | 'union'
-    tokenUniverseMode: (process.env.TOKEN_UNIVERSE_MODE as any) || 'jupiter',
+    tokenUniverseMode: (process.env.TOKEN_UNIVERSE_MODE as any) || 'union',
     // Control whether anchors are injected into the universe set (default: false)
     includeAnchorsInUniverse: (process.env.INCLUDE_ANCHORS_IN_UNIVERSE || 'false') !== 'false',
     // Route-level scoping (disable to avoid double-scoping if sources already scoped)
@@ -103,8 +103,8 @@ export const CONFIG = {
     canonicalizePairs: (process.env.CANONICALIZE_PAIRS as any) || 'lex',
     // System-wide TVL/liquidity thresholds (applied in addition to per-source thresholds)
     // Lower defaults to avoid over-pruning during discovery; tune via env in prod
-    minAmmLiqBase: process.env.MIN_AMM_LIQ_BASE ? Number(process.env.MIN_AMM_LIQ_BASE) : 10_000,
-    minClmmLiquidity: process.env.MIN_CLMM_LIQUIDITY ? Number(process.env.MIN_CLMM_LIQUIDITY) : 10_000,
+    minAmmLiqBase: process.env.MIN_AMM_LIQ_BASE ? Number(process.env.MIN_AMM_LIQ_BASE) : 0,
+    minClmmLiquidity: process.env.MIN_CLMM_LIQUIDITY ? Number(process.env.MIN_CLMM_LIQUIDITY) : 0,
     // Minimum number of distinct DEXes a token pair must appear on to include (1..3)
     minDexOverlap: Number(process.env.MIN_DEX_OVERLAP || 2),
     // Optional: anchors always included in universe and bridging exceptions
@@ -196,6 +196,11 @@ export const CONFIG = {
     frontendEnabledLogCategories: undefined as undefined | string[],
     // DEPRECATED: pool refresh loops are coordinated via /arb/pools/refresh (kept for compatibility)
     autoStartPools: (process.env.AUTO_START_POOLS || 'false') === 'true',
+    // Token mint blocklist: comma-separated list of mint addresses to exclude from pools
+    tokenBlocklistMints: (process.env.TOKEN_BLOCKLIST_MINTS || 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean),
   },
   // Optional simple Basic Auth for API/WS (prefer Nginx for static site)
   auth: {
@@ -237,7 +242,7 @@ export const CONFIG = {
     sdkConcurrency: Number(process.env.RAYDIUM_SDK_CONCURRENCY || 8),
     // Unified pagination & retry controls (with legacy env aliases)
     pageSize: Number(process.env.RAYDIUM_HTTP_PAGE_SIZE || 1000),
-    maxPages: Number(process.env.RAYDIUM_HTTP_MAX_PAGES || process.env.RAYDIUM_HTTP_MAX_PAGES_GLOBAL || 10),
+    maxPages: Number(process.env.RAYDIUM_HTTP_MAX_PAGES || process.env.RAYDIUM_HTTP_MAX_PAGES_GLOBAL || 50),
     maxHttpRetries: Number(process.env.RAYDIUM_HTTP_MAX_RETRIES || 2),
     httpBackoffMs: Number(process.env.RAYDIUM_HTTP_BACKOFF_MS || 300),
     sdkProbeMintsLimit: Number(process.env.RAYDIUM_SDK_PROBE_MINTS_LIMIT || 200),
@@ -246,8 +251,8 @@ export const CONFIG = {
     filterToOrcaTokens: process.env.RAYDIUM_FILTER_TO_ORCA_TOKENS === 'true',
     // New: select token universe for Raydium filtering: 'jupiter' | 'orca' | 'none'
     filterUniverse: (process.env.RAYDIUM_FILTER_UNIVERSE as any) || 'jupiter',
-    // New: guard legacy API fetch-by-mints fallbacks (enabled by default)
-    enableApiFetchByMints: process.env.RAYDIUM_ENABLE_FETCH_BY_MINTS !== 'false',
+    // New: guard legacy API fetch-by-mints fallbacks (default disabled to prefer list-mode)
+    enableApiFetchByMints: process.env.RAYDIUM_ENABLE_FETCH_BY_MINTS === 'true',
     // Gate raw offset parsing (fragile) behind explicit opt-in
     allowRawOffsetParsing: process.env.RAYDIUM_ALLOW_RAW_OFFSET_PARSING === 'true',
     // Enrichment controls
@@ -279,7 +284,7 @@ export const CONFIG = {
     // Optional DLMM program id for websocket subscriptions
     programId: process.env.METEORA_PROGRAM_ID,
     pageSize: Number(process.env.METEORA_HTTP_PAGE_SIZE || 1000),
-    maxPages: Number(process.env.METEORA_HTTP_MAX_PAGES || 10),
+    maxPages: Number(process.env.METEORA_HTTP_MAX_PAGES || 50),
     cacheTtlMs: Number(process.env.METEORA_CACHE_TTL_MS || 60_000),
     maxHttpRetries: Number(process.env.METEORA_HTTP_MAX_RETRIES || 2),
     httpBackoffMs: Number(process.env.METEORA_HTTP_BACKOFF_MS || 500),
