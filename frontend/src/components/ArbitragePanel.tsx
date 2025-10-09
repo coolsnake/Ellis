@@ -68,7 +68,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
   const [firstLoad, setFirstLoad] = useState(true);
   const [txRows, setTxRows] = useState<Array<{ id: string; timeMs: number; path: string[]; hops: Array<{ dex: string; variant: string; poolId: string }>; ixCount: number; txSizeBytes: number; status: string; signature?: string | null }>>([]);
   const [expandedTxId, setExpandedTxId] = useState<string | null>(null);
-  const [showAll, setShowAll] = useState<boolean>(false);
+  // Show-all toggle moved into OpportunityList
 
   // Deprecated polling/log-triggered refresh removed; rely on socket push with initial fallback
 
@@ -201,10 +201,6 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
             try { await fetchOpps(); } catch {}
           }}>Refresh Metrics</button>
           <button className="px-2 py-1 border rounded" onClick={onToggleGraph} title="Toggle Graph Visualizer">{showGraph ? 'Hide Graph' : 'Show Graph'}</button>
-          <span className="text-xs opacity-70">
-            {showAll ? `Showing ${items.length}` : `Showing ${Math.min(10, items.length)} of ${items.length}`}
-          </span>
-          <button className="px-2 py-1 border rounded" onClick={()=> setShowAll(!showAll)}>{showAll ? 'Show Top 10' : 'Show All'}</button>
           {loading ? <span className="text-xs opacity-70 animate-pulse">Refreshing…</span> : null}
         </div>
       </div>

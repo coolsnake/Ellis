@@ -139,14 +139,14 @@ export function OpportunityList(
               <button className="px-1 py-0.5 border rounded" onClick={async()=>{
                 try {
                   const body: any = { path: op.path, hopPoolIds: (op as any)?.hop_pool_ids, dexes: (op as any)?.hop_dexes };
-                  const r = await fetch(`${apiBase}/api/arb/simulate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                  const r = await fetch(`${apiBase}/arb/simulate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
                   await r.json().catch(()=>({}));
                 } catch {}
               }}>Simulate Direct</button>
               <button className="px-1 py-0.5 border rounded" onClick={async()=>{
                 try {
                   const body: any = { path: op.path, hopPoolIds: (op as any)?.hop_pool_ids, dexes: (op as any)?.hop_dexes, sizeUsd: sendMode==='USD'? Number(sendAmount)||0 : undefined, size: sendMode==='TOKENS'? Number(sendAmount)||0 : undefined };
-                  const r = await fetch(`${apiBase}/api/arb/execute`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                  const r = await fetch(`${apiBase}/arb/execute`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
                   await r.json().catch(()=>({}));
                 } catch {}
               }}>Execute Direct</button>
