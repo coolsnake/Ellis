@@ -222,8 +222,16 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
     const pooltype = Array.isArray((it as any)?.pooltype) ? (it as any).pooltype : [];
     const isClmm = typeStr.includes('concentrated') || pooltype.map((s: any) => String(s).toLowerCase()).includes('clmm');
     const fee_bps = toFeeBps((it as any)?.feeRate ?? (it as any)?.tradeFeeRate ?? (it as any)?.feeBps ?? (it as any)?.tradeFeeBps);
-    const decA = Number((it?.mintA as any)?.decimals);
-    const decB = Number((it?.mintB as any)?.decimals);
+    let decA = Number((it?.mintA as any)?.decimals);
+    let decB = Number((it?.mintB as any)?.decimals);
+    // Fallback to token resolver if Raydium payload omits decimals
+    try {
+      if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
+        const tok = await import('../../utils/tokens.js');
+        if (!Number.isFinite(decA)) { const r = await (tok as any).resolveMint(mintA); decA = Number(r?.decimals); }
+        if (!Number.isFinite(decB)) { const r = await (tok as any).resolveMint(mintB); decB = Number(r?.decimals); }
+      }
+    } catch {}
     const price = Number((it as any)?.price);
     const tvl = Number((it as any)?.tvl);
     const mintAmountA = Number((it as any)?.mintAmountA);
@@ -268,6 +276,14 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         }
       } catch {}
       let px = price_from_sqrt > 0 ? price_from_sqrt : (Number(price) > 0 ? Number(price) : 0);
+      // Magnitude-only calibration to align with USD reference without flipping orientation
+      try {
+        const { getPriceByMint } = await import('../priceStore.js');
+        const getUsd = (m: string) => { try { return getPriceByMint(m)?.usdc ?? undefined; } catch { return undefined; } };
+        const { calibrateMagnitude } = await import('../priceCalib.js');
+        const calibrated = calibrateMagnitude(mintA, mintB, px, getUsd);
+        if (calibrated && calibrated > 0) px = calibrated;
+      } catch {}
       let ok = true;
       try {
         const sanityCfg = (CONFIG as any)?.sanity || {};
