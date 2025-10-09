@@ -72,6 +72,7 @@ const RUN = String((globalThis as any)?.process?.env?.RUN_REAL_E2E || '') === 't
 
     // Multi-hop, multi-dex triangle simulation (prefer 3-hop cycles with >=2 distinct DEXes)
     const edges = snap.edges || [];
+    const { getPriceByMint } = await import('../../server/priceStore.js');
     const bySrc = new Map<string, any[]>();
     for (const e of edges) {
       const arr = bySrc.get(e.source) || [];
@@ -91,6 +92,13 @@ const RUN = String((globalThis as any)?.process?.env?.RUN_REAL_E2E || '') === 't
           const caList = bySrc.get(c) || [];
           const ca = caList.find((e) => e.target === a);
           if (!ca) continue;
+          // Require USD quotes for all three mints to avoid unanchored cycles
+          try {
+            const pa = getPriceByMint(a)?.usdc ?? null;
+            const pb = getPriceByMint(b)?.usdc ?? null;
+            const pc = getPriceByMint(c)?.usdc ?? null;
+            if (!(pa && pb && pc)) continue;
+          } catch {}
           const pf = Number(ab.price_a_per_b || 0);
           const pg = Number(bc.price_a_per_b || 0);
           const ph = Number(ca.price_a_per_b || 0);
