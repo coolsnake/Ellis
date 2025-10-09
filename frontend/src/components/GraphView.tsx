@@ -72,6 +72,10 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 	// Optional cap for rendered edges by priority to reduce overdraw
 	const [maxEdges, setMaxEdges] = useState<number>(4000);
 
+	// Track whether page/tab is visible and whether the graph container is on-screen
+	const pageVisibleRef = useRef<boolean>(true);
+	const isVisibleRef = useRef<boolean>(true);
+
 	const styles: any[] = useMemo(() => ([
 		{ selector: 'node', style: { 'background-color': '#3b82f6', 'label': 'data(label)', 'font-size': 8, 'color': '#e5e7eb', 'text-outline-width': 1, 'text-outline-color': '#111827' } },
 		{
@@ -363,7 +367,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
   };
 
 		// Apply edge highlighting given edge ids and/or (source,target,dex) pairs
-		const applyHighlight = (payload: { edgeIds?: string[]; pairs?: Array<{ source: string; target: string; dex?: string }>; fit?: boolean; pathDetails?: boolean } = {}) => {
+		const applyHighlight = (payload: { edgeIds?: string[]; pairs?: Array<{ source: string; target: string; dex?: string }>; fit?: boolean; pathDetails?: boolean } = {}, opts?: { noFit?: boolean; noDetails?: boolean }) => {
     try {
       const cy = cyRef.current; if (!cy) return;
       const ids = (payload?.edgeIds || []).filter(Boolean);
@@ -655,6 +659,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 
 		const applySnapshot = (snap: GraphSnapshot) => {
 			const cy = cyRef.current; if (!cy) return;
+			if (!pageVisibleRef.current || !isVisibleRef.current) return; // Guard against rendering when not visible
 			withBatch(cy, () => {
 				const incomingVer = Number(snap?.version || 0);
 				const haveContent = cy.nodes().length > 0;

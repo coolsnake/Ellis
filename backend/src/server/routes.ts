@@ -291,6 +291,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
             const sig = top.map((o: ArbOpportunity) => `${Math.round((o.profit_bps ?? o.net_bps ?? 0))}:${(o.path || []).join('>')}`).join('|');
             if (sig !== lastOppSig) {
               lastOppSig = sig;
+              try { emit('arb:opportunities', payload); } catch {}
               const lines = top.map((o: ArbOpportunity, i: number) => `#${i+1} bps=${Math.round((o.profit_bps ?? o.net_bps ?? 0))} hops=${(o.path || []).length-1} path=${(o.path || []).join('->')}`);
               emit('log', { level: 'info', message: `pretrade:arb opps:update ${top.length} top=${lines.join(' | ')} oMs=${odur}`, timestamp: new Date().toISOString() });
               try { arbLatency.opps.push(odur); if (arbLatency.opps.length > 200) arbLatency.opps.shift(); } catch {}

@@ -69,6 +69,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
   const [txRows, setTxRows] = useState<Array<{ id: string; timeMs: number; path: string[]; hops: Array<{ dex: string; variant: string; poolId: string }>; ixCount: number; txSizeBytes: number; status: string; signature?: string | null }>>([]);
   const [expandedTxId, setExpandedTxId] = useState<string | null>(null);
   // Show-all toggle moved into OpportunityList
+  const lastItemsAtRef = useRef(0);
 
   // Deprecated polling/log-triggered refresh removed; rely on socket push with initial fallback
 
@@ -99,6 +100,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
       const j = await r.json();
       setItems((j?.items as Opportunity[]) || []);
       setSummary((j?.summary as OpportunitiesSummary) || null);
+      try { lastItemsAtRef.current = Date.now(); } catch {}
     } catch (e: any) {
       setError(String(e?.message || e));
     } finally {
@@ -137,6 +139,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
       try {
         if (Array.isArray(payload?.items)) setItems(payload.items as Opportunity[]);
         if (payload && typeof payload === 'object' && 'summary' in payload) setSummary((payload as any).summary || null);
+        try { lastItemsAtRef.current = Date.now(); } catch {}
       } catch {}
     };
     try { effectiveSocket.on('arb:opportunities', onOpps); } catch {}
@@ -171,12 +174,28 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
     const onTxAny = async () => {
       try { const r = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const j = await r.json(); setTxRows(Array.isArray(j?.items) ? j.items : []); } catch {}
     };
+    // Fallback: when opportunity-related logs arrive and no fresh items were received recently, fetch snapshot
+    const onArbLog = (evt: any) => {
+      try {
+        const msg: string = (evt?.message || '').toString();
+        const code: string = String(evt?.code || '').toUpperCase();
+        const cat: string = String(evt?.cat || evt?.context?.cat || '').toLowerCase();
+        const isPretradeArb = /\bpretrade:arb\b/.test(msg) || /^PRETRADE\./.test(code);
+        const isOpportunityCat = cat === 'opportunity';
+        const isOpportunityMsg = /^opportunity:/.test(msg) || /arb\.(opportunity|near_miss)/i.test(msg) || /^ARB\.(OPPORTUNITY|NEAR_MISS)/.test(code);
+        const now = Date.now();
+        if ((isPretradeArb || isOpportunityCat || isOpportunityMsg) && (now - (lastItemsAtRef.current || 0) > 1500)) {
+          fetchOpps();
+        }
+      } catch {}
+    };
     effectiveSocket.on('tx:start', onTxAny);
     effectiveSocket.on('tx:resolved', onTxAny);
     effectiveSocket.on('tx:sim.ok', onTxAny);
     effectiveSocket.on('tx:sim.err', onTxAny);
     effectiveSocket.on('tx:send.ok', onTxAny);
     effectiveSocket.on('tx:send.err', onTxAny);
+    try { effectiveSocket.on('log', onArbLog); } catch {}
     return () => {
       effectiveSocket.off('tx:start', onTxAny);
       effectiveSocket.off('tx:resolved', onTxAny);
@@ -184,6 +203,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
       effectiveSocket.off('tx:sim.err', onTxAny);
       effectiveSocket.off('tx:send.ok', onTxAny);
       effectiveSocket.off('tx:send.err', onTxAny);
+      try { effectiveSocket.off('log', onArbLog); } catch {}
     };
   }, [effectiveSocket]);
 
