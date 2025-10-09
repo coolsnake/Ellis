@@ -99,6 +99,24 @@ const RUN = String((globalThis as any)?.process?.env?.RUN_REAL_E2E || '') === 't
           // Require at least two distinct DEXes in the triangle
           if (dexes.size < 2) continue;
           const prod = pf * pg * ph;
+          if (!(prod > 1 / 1.10 && prod < 1.10)) {
+            try {
+              // Log diagnostics for the first offending triangle
+              // a -> b -> c -> a
+              // Include mints, dexes, and per-edge prices
+              // These logs help pinpoint mis-oriented or mis-scaled edges across DEXes
+              // eslint-disable-next-line no-console
+              console.warn('triangle.outOfRange', {
+                a,
+                b,
+                c,
+                prod,
+                ab: { dex: (ab as any)?.dex, source: ab.source, target: ab.target, price: pf },
+                bc: { dex: (bc as any)?.dex, source: bc.source, target: bc.target, price: pg },
+                ca: { dex: (ca as any)?.dex, source: ca.source, target: ca.target, price: ph },
+              });
+            } catch {}
+          }
           expect(prod).toBeGreaterThan(1 / 1.10); // allow 10% slack given real-world feeds
           expect(prod).toBeLessThan(1.10);
           triChecked += 1;
