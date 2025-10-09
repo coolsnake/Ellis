@@ -66,6 +66,12 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
     | null
   >(null);
 
+	// Track active user interaction (pan/zoom) to gate expensive work
+	const interactingRef = useRef(false);
+
+	// Optional cap for rendered edges by priority to reduce overdraw
+	const [maxEdges, setMaxEdges] = useState<number>(4000);
+
 	const styles: any[] = useMemo(() => ([
 		{ selector: 'node', style: { 'background-color': '#3b82f6', 'label': 'data(label)', 'font-size': 8, 'color': '#e5e7eb', 'text-outline-width': 1, 'text-outline-color': '#111827' } },
 		{
@@ -101,12 +107,17 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 		if (!filterKind.CLMM) hideKind.add('clmm');
 		const nodes: ElementDefinition[] = snap.nodes.map((n) => ({ data: { id: n.id, label: n.label || n.id.slice(0, 4) } }));
 		// Build raw edge definitions (without DEX visibility filter yet for grouping)
-		const rawEdges: ElementDefinition[] = snap.edges
+		let rawEdges: ElementDefinition[] = snap.edges
 			.filter((e) => {
 				const kind = (e as any).pool_kind;
 				return kind === 'amm' || kind === 'clmm' ? !hideKind.has(kind) : true;
 			})
 			.map((e) => ({ data: { id: e.id, source: e.source, target: e.target, dex: e.dex, fee_bps: e.fee_bps, liquidity: e.liquidity, liquidity_display: (e as any).liquidity_display, weight: e.weight, price_a_per_b: (e as any).price_a_per_b, tvl_usd: (e as any).tvl_usd, pool_id: (e as any).pool_id, source_account: (e as any).source_account, target_account: (e as any).target_account, pool_kind: (e as any).pool_kind, direction: (e as any).direction, pool_liquidity_raw: (e as any).pool_liquidity_raw, cpd: 0 } }));
+
+		// Limit the number of edges to a configurable max
+		if (maxEdges > 0 && rawEdges.length > maxEdges) {
+			rawEdges = rawEdges.slice(0, maxEdges);
+		}
 
 		// Group by directed pair and create combined edges when both DEXes exist and both are enabled
 		const byPair = new Map<string, ElementDefinition[]>();
@@ -335,7 +346,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 		// If there are no nodes yet, defer layout until we have content
 		if (cy.nodes().length === 0) return;
     const options: any = name === 'fcose'
-			? { name: 'fcose', animate: false, fit: false, quality: 'default', randomize: !laidOutRef.current, nodeSeparation: 75, nodeRepulsion: 4500 }
+			? { name: 'fcose', animate: false, fit: false, quality: 'draft', randomize: !laidOutRef.current, nodeSeparation: 75, nodeRepulsion: 4500 }
 			: { name, animate: false, fit: false };
 		const layout = cy.layout(options);
 		if (shouldFit) {
@@ -352,7 +363,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
   };
 
 		// Apply edge highlighting given edge ids and/or (source,target,dex) pairs
-		const applyHighlight = (payload: { edgeIds?: string[]; pairs?: Array<{ source: string; target: string; dex?: string }> }) => {
+		const applyHighlight = (payload: { edgeIds?: string[]; pairs?: Array<{ source: string; target: string; dex?: string }>; fit?: boolean; pathDetails?: boolean } = {}) => {
     try {
       const cy = cyRef.current; if (!cy) return;
       const ids = (payload?.edgeIds || []).filter(Boolean);
@@ -389,52 +400,54 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 					}
       } catch {}
       // Optionally focus view on highlighted selection
-				try { if (collection && collection.length) { cy.fit(collection, 40); } } catch {}
+			try { if (collection && collection.length) { cy.fit(collection, 40); } } catch {}
 
       // Build ordered path details and open the Path details panel
-      try {
-        const pathEdges: Array<{ id: string; source: string; target: string; dex: string; fee_bps?: number; liquidity?: number; price_a_per_b?: number; tvl_usd?: number; pool_id?: string; pool_kind?: string; direction?: string; pool_liquidity_raw?: number }> = [];
-        const seen = new Set<string>();
-        const pushEdge = (e: EdgeSingular | null) => {
-          if (!e || !e.length) return;
-          if (e.data('combined') === 1) return; // skip combined in details; show underlying hops
-          const id = String(e.id());
-          if (seen.has(id)) return;
-          seen.add(id);
-          pathEdges.push({
-            id,
-            source: String(e.data('source')),
-            target: String(e.data('target')),
-            dex: String(e.data('dex')),
-            fee_bps: e.data('fee_bps'),
-            liquidity: e.data('liquidity'),
-            price_a_per_b: e.data('price_a_per_b'),
-            tvl_usd: e.data('tvl_usd'),
-            pool_id: e.data('pool_id'),
-            pool_kind: e.data('pool_kind'),
-            direction: e.data('direction'),
-            pool_liquidity_raw: e.data('pool_liquidity_raw'),
-          });
-        };
-        if (ids.length) {
-          for (const rawId of ids) {
-            const e = cy.getElementById(String(rawId));
-            if (e && e.length && e.isEdge()) { pushEdge(e as any); continue; }
-            const rev = cy.getElementById(`${String(rawId)}-rev`);
-            if (rev && rev.length && rev.isEdge()) { pushEdge(rev as any); }
-          }
+      if (payload.pathDetails) {
+        try {
+          const pathEdges: Array<{ id: string; source: string; target: string; dex: string; fee_bps?: number; liquidity?: number; price_a_per_b?: number; tvl_usd?: number; pool_id?: string; pool_kind?: string; direction?: string; pool_liquidity_raw?: number }> = [];
+          const seen = new Set<string>();
+          const pushEdge = (e: EdgeSingular | null) => {
+            if (!e || !e.length) return;
+            if (e.data('combined') === 1) return; // skip combined in details; show underlying hops
+            const id = String(e.id());
+            if (seen.has(id)) return;
+            seen.add(id);
+            pathEdges.push({
+              id,
+              source: String(e.data('source')),
+              target: String(e.data('target')),
+              dex: String(e.data('dex')),
+              fee_bps: e.data('fee_bps'),
+              liquidity: e.data('liquidity'),
+              price_a_per_b: e.data('price_a_per_b'),
+              tvl_usd: e.data('tvl_usd'),
+              pool_id: e.data('pool_id'),
+              pool_kind: e.data('pool_kind'),
+              direction: e.data('direction'),
+              pool_liquidity_raw: e.data('pool_liquidity_raw'),
+            });
+          };
+          if (ids.length) {
+            for (const rawId of ids) {
+              const e = cy.getElementById(String(rawId));
+              if (e && e.length && e.isEdge()) { pushEdge(e as any); continue; }
+              const rev = cy.getElementById(`${String(rawId)}-rev`);
+              if (rev && rev.length && rev.isEdge()) { pushEdge(rev as any); }
+            }
 					} else if (pairs.length) {
-          for (const p of pairs) {
-            const src = String(p.source);
-            const dst = String(p.target);
-            const dex = p.dex ? String(p.dex) : '';
+            for (const p of pairs) {
+              const src = String(p.source);
+              const dst = String(p.target);
+              const dex = p.dex ? String(p.dex) : '';
 							let cand = findEdgesBetween(cy, src, dst, { dex, excludeCombined: true });
 							if (!cand || cand.length === 0) cand = findEdgesBetween(cy, src, dst, { dex });
 							pushEdge((cand && cand.length) ? (cand[0] as any) : null);
+            }
           }
-        }
-        if (pathEdges.length) setSelection({ kind: 'path', edges: pathEdges });
-      } catch {}
+          if (pathEdges.length) setSelection({ kind: 'path', edges: pathEdges });
+        } catch {}
+      }
     } catch {}
   };
 
@@ -687,12 +700,17 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 		const schedule = () => {
 			if (scheduled) return;
 			scheduled = true;
-			idle(flush, 100);
+			idle(flush, 150);
 		};
 
 		const onDiff = (diff: GraphDiff) => { latestDiff = diff; schedule(); };
 		const onSnapshot = (snap: GraphSnapshot) => { latestSnap = snap; schedule(); };
-		const onHighlight = (payload: { edgeIds?: string[]; pairs?: Array<{ source: string; target: string; dex?: string }> }) => { applyHighlight(payload as any); };
+		const onHighlight = (payload: { edgeIds?: string[]; pairs?: Array<{ source: string; target: string; dex?: string }> }) => {
+			// Defer to idle to avoid blocking main thread
+			idle(() => {
+				applyHighlight(payload as any);
+			}, 100); // 100ms timeout to allow interaction to settle
+		};
 
 		effectiveSocket.on('graph-update', onDiff);
 		effectiveSocket.on('graph-snapshot', onSnapshot);
@@ -714,6 +732,41 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
     // Force an initial resize to ensure correct viewport
     cy.resize();
 		// Do not auto-fit here; initial layout will handle a single fit once when size is ready
+
+		// Prefer cheaper rendering on HiDPI and toggle perf options during interaction
+		try { (cy as any).renderer?.().setPixelRatio?.(1); } catch {}
+		try {
+			const r: any = (cy as any).renderer?.();
+			if (r && r.options) {
+				Object.assign(r.options, {
+					motionBlur: false,
+					textureOnViewport: true,
+					hideLabelsOnViewport: false,
+					hideEdgesOnViewport: false,
+					motionBlurOpacity: 0.2,
+				});
+			}
+		} catch {}
+		let perfRaf: number | null = null;
+		const enablePerf = () => {
+			try {
+				const r: any = (cy as any).renderer?.();
+				if (r && r.options) Object.assign(r.options, { motionBlur: true, textureOnViewport: true, hideLabelsOnViewport: true, hideEdgesOnViewport: true, motionBlurOpacity: 0.2 });
+			} catch {}
+		};
+		const disablePerf = () => {
+			try {
+				const r: any = (cy as any).renderer?.();
+				if (r && r.options) Object.assign(r.options, { motionBlur: false, hideLabelsOnViewport: false, hideEdgesOnViewport: false });
+			} catch {}
+		};
+		const onInteract = () => {
+			interactingRef.current = true;
+			enablePerf();
+			if (perfRaf) cancelAnimationFrame(perfRaf as any);
+			perfRaf = requestAnimationFrame(() => setTimeout(() => { interactingRef.current = false; disablePerf(); }, 150));
+		};
+		try { cy.on('pan zoom', onInteract as any); } catch {}
 
     // Selection handling
     cy.on('tap', 'node', (evt) => {

@@ -239,6 +239,8 @@ export const CONFIG = {
     sanity_applyOrcaClmm: (process.env.SANITY_APPLY_ORCA_CLMM || 'true') !== 'false',
     writeSamples: process.env.SANITY_WRITE_SAMPLES === 'true',
     sampleRate: Number(process.env.SANITY_SAMPLE_RATE || 0.005),
+    // Drop edges when neither side has a USD quote (non-anchor). Default true
+    dropEdgesNoUsdBoth: (process.env.SANITY_DROP_EDGES_NO_USD_BOTH || 'true') !== 'false',
   },
   // Raydium configuration (HTTP fetcher only; SDK kept for tx building and WS decode)
   raydium: {

@@ -207,6 +207,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const setMet = new Set<string>();
           for (const p of (met.amm || [])) setMet.add(`${p.mint_a}-${p.mint_b}`);
           for (const p of (met.clmm || [])) setMet.add(`${p.mint_a}-${p.mint_b}`);
+          // Include Meteora Balanced (mAMM) pairs in the Meteora set for overlap counting
+          for (const p of (mbl.amm || [])) setMet.add(`${p.mint_a}-${p.mint_b}`);
           const counts = new Map<string, number>();
           const bump = (k: string, has: boolean) => { if (!has) return; counts.set(k, (counts.get(k) || 0) + 1); };
           const all = new Set<string>([...setRay, ...setOrc, ...setMet]);
