@@ -205,6 +205,47 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 		} catch {}
 	};
 
+	// Seed initial positions for nodes that didn't exist before this refresh,
+	// placing them near the average of positioned neighbors (or center with jitter)
+	const seedPositionsForNewNodes = (cy: cytoscape.Core, prevPos: Map<string, { x: number; y: number }>) => {
+		try {
+			const all = cy.nodes(); if (!all || all.length === 0) return;
+			// Compute a viewport center fallback
+			let cx = 0, cyy = 0;
+			try { const bb = cy.extent(); cx = (bb.x1 + bb.x2) / 2; cyy = (bb.y1 + bb.y2) / 2; } catch {}
+			const isNew = (id: string) => !prevPos.has(id);
+			all.forEach((n) => {
+				const id = n.id();
+				if (!isNew(id)) return;
+				// Gather neighbor positions that are known
+				let sumX = 0, sumY = 0, cnt = 0;
+				try {
+					n.connectedEdges().forEach((e) => {
+						try {
+							const s = String(e.data('source'));
+							const t = String(e.data('target'));
+							const otherId = s === id ? t : t === id ? s : '';
+							if (!otherId) return;
+							const nb = cy.getElementById(otherId);
+							if (nb && nb.isNode() && nb.length) {
+								const px = Number(nb.position('x'));
+								const py = Number(nb.position('y'));
+								if (Number.isFinite(px) && Number.isFinite(py)) { sumX += px; sumY += py; cnt++; }
+							}
+						} catch {}
+					});
+				} catch {}
+				let nx = cx, ny = cyy;
+				if (cnt > 0) { nx = sumX / cnt; ny = sumY / cnt; }
+				// Apply a small jitter to avoid perfect overlap
+				const jitter = 12;
+				const rx = (Math.random() - 0.5) * jitter;
+				const ry = (Math.random() - 0.5) * jitter;
+				try { n.position({ x: nx + rx, y: ny + ry }); } catch {}
+			});
+		} catch {}
+	};
+
 	// Ensure combined edge exists (or is removed) for a directed pair, and originals are hidden/shown appropriately
 	const ensureCombinedForPair = (cy: cytoscape.Core, a: string, b: string) => {
 		try {
@@ -398,6 +439,8 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
       if (preservePositions) {
         try { cy.nodes().forEach((n) => { const p = prevPos.get(n.id()); if (p) n.position(p); }); } catch {}
       }
+			// Seed positions for new nodes to avoid stacking at origin
+			seedPositionsForNewNodes(cy, prevPos);
 			// Fan out parallel edges across the entire graph after adding
 			try {
 				const pairs = new Set<string>();
@@ -491,6 +534,9 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
     if (!effectiveSocket) return;
     const onDiff = (diff: GraphDiff) => {
       const cy = cyRef.current; if (!cy) return;
+      // Capture previous positions to seed any newly added nodes after upsert
+      const prevPos = new Map<string, { x: number; y: number }>();
+      try { cy.nodes().forEach((n) => { prevPos.set(n.id(), { x: n.position('x'), y: n.position('y') }); }); } catch {}
       snapshotInitializedRef.current = true; // prefer diffs after first reception
       // Gap detection: if incoming diff version is not strictly newer than lastVersion, ignore; if it jumps ahead, request snapshot
       try {
@@ -572,6 +618,8 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
           ensureCombinedForPair(cy, a, b);
         });
       } catch {}
+      // Seed initial positions for any nodes created by this diff
+      seedPositionsForNewNodes(cy, prevPos);
       // no layout run
     };
     const onSnapshot = (snap: GraphSnapshot) => {
@@ -592,6 +640,8 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
       if (preservePositions) {
         try { cy.nodes().forEach((n) => { const p = prevPos.get(n.id()); if (p) n.position(p); }); } catch {}
       }
+			// Seed positions for new nodes to avoid stacking
+			seedPositionsForNewNodes(cy, prevPos);
 			// Run initial layout once on the first snapshot when container is sized
 			if (!laidOutRef.current || forceLayoutRef.current) {
 				const attemptLayout = () => {
