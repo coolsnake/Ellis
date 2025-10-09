@@ -268,6 +268,17 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         // Require a valid positive price; skip edge entirely if not present
         const priceNum = Number(price_a_per_b);
         if (!Number.isFinite(priceNum) || priceNum <= 0) return;
+        // Sanity: if both sides lack USD reference, drop edge to avoid unanchored magnitudes
+        try {
+          const dropNoUsdBoth = ((CONFIG as any)?.sanity as any)?.dropEdgesNoUsdBoth;
+          // Default to true unless explicitly disabled
+          const shouldDrop = (dropNoUsdBoth !== false);
+          if (shouldDrop) {
+            const pa = getPriceByMintVar(mintA)?.usdc ?? null;
+            const pb = getPriceByMintVar(mintB)?.usdc ?? null;
+            if (!pa && !pb) return;
+          }
+        } catch {}
         // Preserve pool-provided orientation for coherency
         const a = String(mintA);
         const b = String(mintB);
