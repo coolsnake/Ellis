@@ -122,8 +122,8 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
         // Per-bin factor; e.g., binStep=16 => f=1.0016
         const f = 1 + (binStep / 10_000);
         if (f > 0) {
-          // price_B_per_A ≈ f^(activeId) * 10^(decA - decB); A-per-1-B is reciprocal
-          const bPerA = Math.pow(f, activeId) * Math.pow(10, (decA as number) - (decB as number));
+          // price_B_per_A ≈ f^(activeId) * 10^(decB - decA); A-per-1-B is reciprocal
+          const bPerA = Math.pow(f, activeId) * Math.pow(10, (decB as number) - (decA as number));
           const aPerB = bPerA > 0 ? (1 / bPerA) : 0;
           if (Number.isFinite(aPerB) && aPerB > 0) price_a_per_b = aPerB;
         }
