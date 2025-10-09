@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::collections::HashSet;
 use petgraph::prelude::NodeIndex;
+use petgraph::visit::EdgeRef;
 
 use axum::{extract::State, routing::{get, post}, Json, Router};
 use axum::http::HeaderMap;
