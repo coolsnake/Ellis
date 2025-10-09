@@ -361,6 +361,7 @@ async fn main() -> anyhow::Result<()> {
                         let nlen = c.nodes.len();
                         if nlen < 3 { continue; }
                         if nlen > max_hops { continue; }
+                        tracing::info!(len = nlen, "arb.detect.cycle.begin");
                         let mut uniq = std::collections::HashSet::new();
                         let mut simple = true;
                         for &v in c.nodes.iter() { if !uniq.insert(v) { simple = false; break; } }
@@ -383,6 +384,8 @@ async fn main() -> anyhow::Result<()> {
                         let mut hop_liq_disp: Vec<f64> = Vec::new();
                         let mut hop_outs: Vec<f64> = Vec::new();
                         let mut cur_out: f64 = if start_is_usdc { s.config.quote_size_usd.max(0.0) } else { 1.0 };
+                        let cycle_start = std::time::Instant::now();
+                        let mut timed_out = false;
                         'cycle: for w in 0..c.nodes.len() {
                             let u = NodeIndex::new(c.nodes[w]);
                             let v = NodeIndex::new(c.nodes[(w+1) % c.nodes.len()]);
@@ -394,7 +397,10 @@ async fn main() -> anyhow::Result<()> {
                                 let r = wt.rate_effective.max(1e-12);
                                 if r > best_rate { best_rate = r; best_meta = Some((wt.dex.clone(), wt.liquidity, wt.fee_bps, wt.pool_id.clone(), wt.liquidity_display)); }
                             }
-                            if best_rate <= 0.0 { rate_prod = 0.0; break 'cycle; }
+                            if best_rate <= 0.0 {
+                                tracing::info!(u = u.index(), v = v.index(), "arb.detect.cycle.no_edge");
+                                rate_prod = 0.0; break 'cycle;
+                            }
                             if let Some((dex, liq, fee, pid, liqd)) = best_meta.take() {
                                 if dex == "Link" { link_edges_used += 1; link_penalty_bps_total += fee; }
                                 if !dex.is_empty() && dex != "Link" { dexes_set.insert(dex.clone()); }
@@ -414,7 +420,13 @@ async fn main() -> anyhow::Result<()> {
                                 cur_out = next_out;
                             }
                             rate_prod *= best_rate;
+                            if cycle_start.elapsed().as_millis() > 500 {
+                                timed_out = true;
+                                tracing::warn!(len = nlen, elapsed_ms = cycle_start.elapsed().as_millis() as u128, "arb.detect.cycle.timeout");
+                                break 'cycle;
+                            }
                         }
+                        if timed_out { continue; }
                         let profit = rate_prod - 1.0;
                         let profit_bps = (profit * 10_000.0).floor() as i64;
                         // Canonicalize cycle labels by rotation only (preserve direction to keep hop arrays aligned)
@@ -458,6 +470,7 @@ async fn main() -> anyhow::Result<()> {
                             }
                         };
                         let canon_labels = canon(&labels);
+                        tracing::info!(path = %canon_labels.join("->"), profit_bps, "arb.detect.cycle.end");
                         // Align hop arrays with the rotated labels (no reversal)
                         rotate_to_start(&labels, &canon_labels, &mut hop_pool_ids);
                         rotate_to_start(&labels, &canon_labels, &mut hop_dexes);
