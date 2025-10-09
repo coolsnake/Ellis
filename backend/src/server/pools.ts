@@ -287,10 +287,19 @@ export async function retargetPoolWebsockets(): Promise<{ attached: { orca: numb
 // Unified refresh orchestrator: fetch all sources and optionally (re)subscribe
 export async function refreshAllSources(force = true, subscribe = true): Promise<{ raydium: PoolsPayload; orca: PoolsPayload; meteora: PoolsPayload; saber: PoolsPayload; meteora_balanced: PoolsPayload }> {
   try {
-    // Warm baseline USD prices for the universe before fetching pools (best-effort)
+    // Warm baseline USD prices for currently seen source mint sets when universe is unavailable
     if (force) {
-      const { bootstrapPricesForUniverse } = await import('./priceBootstrap.js');
-      const cov = await bootstrapPricesForUniverse({ chunkSize: 400, maxRequests: 3, cat: 'pools.refresh' }).catch(() => null);
+      const { bootstrapPricesForUniverse, bootstrapPricesForMints } = await import('./priceBootstrap.js');
+      let cov = await bootstrapPricesForUniverse({ chunkSize: 400, maxRequests: 3, cat: 'pools.refresh' }).catch(() => null);
+      if (cov && cov.total === 0) {
+        try {
+          const { getSourceTokenSet } = await import('./universe.js');
+          const raySet = await getSourceTokenSet('raydium');
+          const orcSet = await getSourceTokenSet('orca');
+          const merged = new Set<string>([...raySet, ...orcSet]);
+          cov = await bootstrapPricesForMints(Array.from(merged), { chunkSize: 400, maxRequests: 3, cat: 'pools.refresh.fallback' });
+        } catch {}
+      }
       if (cov) { try { logger.info('pools.refresh price coverage', { total: cov.total, priced: cov.priced, missing: cov.missing, cat: 'pools' }); } catch {} }
     }
   } catch {}
