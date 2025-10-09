@@ -268,7 +268,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         // Require a valid positive price; skip edge entirely if not present
         const priceNum = Number(price_a_per_b);
         if (!Number.isFinite(priceNum) || priceNum <= 0) return;
-        // Sanity: if both sides lack USD reference, drop edge to avoid unanchored magnitudes
+        // Sanity: for non-anchor pairs, require both sides to have USD reference; otherwise drop
         try {
           const dropNoUsdBoth = ((CONFIG as any)?.sanity as any)?.dropEdgesNoUsdBoth;
           // Default to true unless explicitly disabled
@@ -276,7 +276,14 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           if (shouldDrop) {
             const pa = getPriceByMintVar(mintA)?.usdc ?? null;
             const pb = getPriceByMintVar(mintB)?.usdc ?? null;
-            if (!pa && !pb) return;
+            const ANCHORS = new Set<string>([
+              'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+              'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
+              'So11111111111111111111111111111111111111112',   // SOL
+            ]);
+            const anchored = ANCHORS.has(mintA) || ANCHORS.has(mintB);
+            // If neither side is an anchor, require BOTH USD prices; otherwise drop
+            if (!anchored && !(pa && pb)) return;
           }
         } catch {}
         // Preserve pool-provided orientation for coherency
