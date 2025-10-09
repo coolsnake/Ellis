@@ -249,27 +249,14 @@ async fn main() -> anyhow::Result<()> {
                 // Track changed mints and edge ids from pending diffs for scoped detection
                 let mut changed_mints: HashSet<String> = HashSet::new();
                 let mut changed_edge_ids: HashSet<String> = HashSet::new();
-                // Ensure we have the most recent backend graph version before detection
+                // Best-effort peek at backend graph version with a short timeout.
+                // Do not advance local last_graph_version here to avoid racing with buffered diffs.
                 let api_base = std::env::var("BACKEND_API_BASE").unwrap_or_else(|_| "http://127.0.0.1:3001/api".into());
                 let gv_url = format!("{}/arb/graph/version", api_base.trim_end_matches('/'));
-                let gv = match reqwest::Client::new().get(&gv_url).send().await {
-                    Ok(resp) => match resp.json::<serde_json::Value>().await {
-                        Ok(j) => j,
-                        Err(_) => serde_json::json!({"version":0,"timestamp":0}),
-                    },
-                    Err(_) => serde_json::json!({"version":0,"timestamp":0}),
-                };
-                let incoming_ver = gv.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
-                let incoming_ts = gv.get("timestamp").and_then(|v| v.as_u64()).unwrap_or(0);
-                {
-                    let mut s = loop_state.write().await;
-                    if incoming_ver > s.last_graph_version {
-                        s.last_graph_version = incoming_ver;
-                        s.last_graph_ts = incoming_ts;
-                        s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.graph.version.update v={} ts={}", incoming_ver, incoming_ts) });
-                        let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
-                    }
-                }
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_millis(300),
+                    reqwest::Client::new().get(&gv_url).send()
+                ).await;
                 let loop_start = Instant::now();
                 let usdc = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
                 // Apply any buffered diffs now (between detection runs)

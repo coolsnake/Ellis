@@ -1,4 +1,5 @@
 import React from 'react';
+import { useSystem } from '../../app/contexts/system';
 import { FeeConfig } from '../../components/FeeConfig';
 import { SystemConfig } from '../../components/SystemConfig';
 import { DataFetchConfig } from '../../components/DataFetchConfig';
@@ -23,14 +24,15 @@ export const ConfigsSection: React.FC<{
   showLiqRunnerConfig: boolean;
   onCloseLiqRunner: () => void;
 }> = (p) => {
+  const { system } = useSystem();
   return (
     <>
       {p.showGraphConfig && (<GraphConfig apiBase={p.apiBase} onClose={p.onCloseGraph} />)}
       {p.showFeeConfig && (
-        <FeeConfig onSave={p.onSaveFee} onCancel={p.onCloseFee} />
+        <FeeConfig onSave={p.onSaveFee} onCancel={p.onCloseFee} initialConfig={system?.fees} />
       )}
       {p.showSystemConfig && (
-        <SystemConfig onSave={p.onSaveSystem} onCancel={p.onCloseSystem} initialConfig={{} as any} />
+        <SystemConfig onSave={p.onSaveSystem} onCancel={p.onCloseSystem} initialConfig={system as any} />
       )}
       {p.showDataFetchConfig && (<DataFetchConfig apiBase={p.apiBase} onClose={p.onCloseDataFetch} />)}
       {p.showEngineConfig && (<ArbEngineConfig apiBase={p.apiBase} onClose={p.onCloseEngine} />)}

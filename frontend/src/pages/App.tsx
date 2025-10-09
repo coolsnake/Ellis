@@ -1237,7 +1237,7 @@ export const App: React.FC = () => {
           onCloseGraph={() => setShowGraphConfig(false)}
           showFeeConfig={showFeeConfig}
           onSaveFee={async (config) => {
-            const res = await fetch(`${apiBase}/fees/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) });
+            const res = await fetch(`${apiBase}/fees/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fees: config }) });
             if (res.ok) setShowFeeConfig(false);
           }}
           onCloseFee={() => setShowFeeConfig(false)}
@@ -1955,7 +1955,7 @@ export const App: React.FC = () => {
               const response = await fetch(`${apiBase}/fees/config`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(config)
+                body: JSON.stringify({ fees: config })
               });
               
               if (response.ok) {

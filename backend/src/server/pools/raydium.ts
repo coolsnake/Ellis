@@ -23,7 +23,7 @@ export async function fetchRaydiumPoolsRaw(): Promise<any> {
     try {
       const listModeDisabled = (CONFIG.raydium as any)?.enableApiFetchByMints === true;
       if (!listModeDisabled) {
-        const baseUrl = 'https://api-v3.raydium.io/pools/info';
+        const baseUrl = 'https://api-v3.raydium.io/pools/info/list';
         const pageSize = Math.max(20, Number((CONFIG as any)?.raydium?.pageSize || (CONFIG as any)?.raydium?.httpPageSize || 50));
         const maxPages = Math.max(1, Number((CONFIG as any)?.raydium?.maxPages || (CONFIG as any)?.raydium?.httpMaxPagesGlobal || 10));
         const collected: any[] = [];

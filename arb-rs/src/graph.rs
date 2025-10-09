@@ -104,6 +104,7 @@ pub fn expand_nodes_by_hops(
 #[cfg(test)]
 mod tests {
     use super::*;
+    
     #[test]
     fn upsert_nodes_and_edges() {
         let mut g = ArbGraph::new();
@@ -160,6 +161,32 @@ mod tests {
         assert!(!s1.contains(&i3));
         let s2 = expand_nodes_by_hops(&g, &starts, 2);
         assert!(s2.contains(&i3));
+    }
+
+    #[test]
+    fn remove_edges_by_ids_handles_pool_and_synth_ids() {
+        let mut g = ArbGraph::new();
+        // Two parallel edges between A->B: one with pool_id, one synthesized for dex
+        let dex = "R".to_string();
+        let edge_pool = EdgeData { rate_effective: 1.0, fee_bps: 0, liquidity: 1.0, dex: dex.clone(), pool_id: "POOL123".to_string(), liquidity_display: 1.0 };
+        let edge_synth = EdgeData { rate_effective: 1.0, fee_bps: 0, liquidity: 1.0, dex: dex.clone(), pool_id: String::new(), liquidity_display: 1.0 };
+        g.upsert_edge(&dex, "A", "B", edge_pool);
+        g.upsert_edge(&dex, "A", "B", edge_synth);
+        assert_eq!(g.g.edge_count(), 2);
+        // Build ids
+        let a = *g.map.get("A").unwrap();
+        let b = *g.map.get("B").unwrap();
+        let synth_id = format!("A->B-{}", dex);
+        // Remove by pool id only
+        let removed1 = g.remove_edges_by_ids(&vec!["POOL123".to_string()]);
+        assert_eq!(removed1, 1);
+        assert_eq!(g.g.edge_count(), 1);
+        // Remove remaining synthesized id
+        let removed2 = g.remove_edges_by_ids(&vec![synth_id]);
+        assert_eq!(removed2, 1);
+        assert_eq!(g.g.edge_count(), 0);
+        // Sanity to use a,b to avoid unused warnings
+        let _ = (a.index(), b.index());
     }
 }
 
