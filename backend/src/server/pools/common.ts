@@ -65,16 +65,23 @@ export function canonicalizePairsLex<T extends { mint_a: string; mint_b: string;
 export function canonicalizePairs<T extends { mint_a: string; mint_b: string; price_a_per_b?: number }>(
   pools: T[]
 ): T[] {
-  let mode = 'lex';
+  let mode = 'quoteHierarchy';
   let preferA: Set<string> | null = null;
   let preferB: Set<string> | null = null;
+  let quoteRank: Map<string, number> | null = null;
   try {
     const sys: any = (CONFIG as any)?.system || {};
-    mode = String(sys.canonicalizePairs || 'lex');
+    // Default to quoteHierarchy for global consistency unless explicitly overridden
+    mode = String(sys.canonicalizePairs || 'quoteHierarchy');
     const aList: string[] = Array.isArray(sys.canonicalPreferAsA) ? sys.canonicalPreferAsA : [];
     const bList: string[] = Array.isArray(sys.canonicalPreferAsB) ? sys.canonicalPreferAsB : [];
     preferA = aList.length ? new Set(aList.map(String)) : null;
     preferB = bList.length ? new Set(bList.map(String)) : null;
+    // Optional quote hierarchy list: highest-ranked mint should end up on B side
+    const qList: string[] = Array.isArray(sys.quoteHierarchy) ? sys.quoteHierarchy : [];
+    if (qList.length) {
+      quoteRank = new Map(qList.map((m, i) => [String(m), i]));
+    }
   } catch {}
   if (mode === 'lex') return canonicalizePairsLex(pools);
   const out: T[] = [];
@@ -87,6 +94,14 @@ export function canonicalizePairs<T extends { mint_a: string; mint_b: string; pr
     }
     if (keep === 0 && (mode === 'preferB' || mode === 'preferLists')) {
       if (preferB && (preferB.has(a) || preferB.has(b))) { keep = preferB.has(b) ? 1 : 2; }
+    }
+    if (keep === 0 && (mode === 'quoteHierarchy') && quoteRank) {
+      const INF = Number.POSITIVE_INFINITY;
+      const ra = quoteRank.get(a) ?? INF;
+      const rb = quoteRank.get(b) ?? INF;
+      // Highest-ranked quote should be placed on the B side.
+      if (ra < rb) { keep = 2; }
+      else if (rb < ra) { keep = 1; }
     }
     if (keep === 0) {
       // Fallback to lex for stability

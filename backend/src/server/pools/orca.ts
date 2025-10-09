@@ -186,8 +186,8 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
       if (sqrt_price_x64 > 0 && Number.isFinite(cDecA) && Number.isFinite(cDecB)) {
         const two64 = Math.pow(2, 64);
         const ratio = sqrt_price_x64 / two64;
-        // Lock orientation to A per 1 B
-        const aPerB = Math.pow(10, cDecB - cDecA) / (ratio * ratio);
+        // Lock orientation to A per 1 B; Orca sqrt encodes sqrt(B/A)
+        const aPerB = Math.pow(10, (cDecB as number) - (cDecA as number)) / (ratio * ratio);
         if (Number.isFinite(aPerB) && aPerB > 0) priceFromSqrt = aPerB;
       }
       const incomingCanonical = (incomingPrice > 0) ? incomingPrice : 0;

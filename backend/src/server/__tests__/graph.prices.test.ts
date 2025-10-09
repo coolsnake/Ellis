@@ -24,7 +24,7 @@ describe('graph prices orientation - Raydium AMM forward uses normalized', () =>
       }],
       clmm: [],
     };
-    (globalThis as any).__graphTestPools = { raydium: fake, orca: { amm: [], clmm: [] }, meteora: { amm: [], clmm: [] } };
+    (globalThis as any).__graphTestPools = { raydium: fake, orca: { amm: [], clmm: [] }, meteora: { amm: [], clmm: [] }, saber: { amm: [], clmm: [] }, meteora_balanced: { amm: [], clmm: [] } };
     // Mock Orca/Meteora providers empty
     const origPeekOrc = (poolsMod as any).peekOrcaPools;
     const origPeekMet = (poolsMod as any).peekMeteoraPools;
@@ -32,9 +32,16 @@ describe('graph prices orientation - Raydium AMM forward uses normalized', () =>
     try { (poolsMod as any).peekMeteoraPools = () => ({ amm: [], clmm: [] }); } catch {}
 
     try {
+      // Reduce scoping and TVL filters to ensure edges are built from fake pools
+      const cfg: any = (await import('../../utils/config.js')).CONFIG;
+      cfg.system.scopePools = false;
+      cfg.system.scopePoolsMode = 'none';
+      cfg.system.minAmmLiqBase = 0;
+      cfg.system.minClmmLiquidity = 0;
+      cfg.system.minDexOverlap = 1;
       const snap = await getGraphSnapshot(true);
-      const edge = (snap.edges || []).find((e: any) => e.id === 'ray-amm-sol-usdc');
-      const edgeRev = (snap.edges || []).find((e: any) => e.id === 'ray-amm-sol-usdc-rev');
+      const edge = (snap.edges || []).find((e: any) => e.dex === 'Raydium' && e.source === USDC && e.target === SOL);
+      const edgeRev = (snap.edges || []).find((e: any) => e.dex === 'Raydium' && e.source === SOL && e.target === USDC);
       // Graph edges store price_a_per_b for display and we add both forward and reverse with reciprocal.
       expect(edge).toBeTruthy();
       // Forward should be A per 1 B, which for USDC->SOL is USDC per 1 SOL ~ 150

@@ -60,4 +60,44 @@ describe('canonicalizePairs swaps all A/B fields and inverts price once', () => 
   });
 });
 
+describe('canonicalizePairs quoteHierarchy places preferred quote on B and inverts once', () => {
+  it('moves USDC to B side and inverts price once', async () => {
+    const mod: any = await import('../../utils/config.js');
+    // Force quoteHierarchy mode and list in CONFIG for test runtime
+    mod.CONFIG.system.canonicalizePairs = 'quoteHierarchy';
+    mod.CONFIG.system.quoteHierarchy = [
+      'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+      'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
+    ];
+    const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+    const SOL = 'So11111111111111111111111111111111111111112';
+    const pool = {
+      id: 'P1',
+      mint_a: USDC,
+      mint_b: SOL,
+      price_a_per_b: 0.02, // USDC per SOL but USDC should be on B
+      amount_a: 1_000_000,
+      amount_b: 1_000_000_000,
+      amount_a_whole: 1_000_000 / 1e6,
+      amount_b_whole: 1_000_000_000 / 1e9,
+      decimals_a: 6,
+      decimals_b: 9,
+      account_a: 'acctA',
+      account_b: 'acctB',
+      source_account: 'srcA',
+      target_account: 'tgtB',
+    } as any;
+    const [out] = canonicalizePairs([pool] as any) as any[];
+    expect(out.mint_a).toBe(SOL);
+    expect(out.mint_b).toBe(USDC);
+    expect(out.price_a_per_b).toBeCloseTo(1 / pool.price_a_per_b, 12);
+    expect(out.decimals_a).toBe(pool.decimals_b);
+    expect(out.decimals_b).toBe(pool.decimals_a);
+    expect(out.account_a).toBe(pool.account_b);
+    expect(out.account_b).toBe(pool.account_a);
+    expect(out.source_account).toBe(pool.target_account);
+    expect(out.target_account).toBe(pool.source_account);
+  });
+});
+
 

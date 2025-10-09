@@ -13,6 +13,7 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const { credentials } = useAuth();
   const [isConnected, setIsConnected] = useState(false);
   const socketRef = useRef<Socket | null>(null);
+  const [socketState, setSocketState] = useState<Socket | null>(null);
 
   useEffect(() => {
     // Lazy-init only when creds exist; do not alter existing backend endpoints
@@ -22,6 +23,7 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         socketRef.current = null;
       }
       setIsConnected(false);
+      setSocketState(null);
       return;
     }
 
@@ -32,6 +34,7 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         socketRef.current = null;
       }
       setIsConnected(false);
+      setSocketState(null);
       return;
     }
 
@@ -42,6 +45,7 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       auth: { user: credentials.user, pass: credentials.pass },
     });
     socketRef.current = s;
+    setSocketState(s);
 
     const onConnect = () => setIsConnected(true);
     const onDisconnect = () => setIsConnected(false);
@@ -54,13 +58,14 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       try { s.disconnect(); } catch {}
       socketRef.current = null;
       setIsConnected(false);
+      setSocketState(null);
     };
   }, [credentials]);
 
   const value = useMemo<SocketContextValue>(() => ({
-    socket: socketRef.current,
+    socket: socketState,
     isConnected,
-  }), [isConnected]);
+  }), [isConnected, socketState]);
 
   return <SocketContext.Provider value={value}>{children}</SocketContext.Provider>;
 };

@@ -99,8 +99,20 @@ export const CONFIG = {
     routeLevelScoping: (process.env.ROUTE_LEVEL_SCOPING || 'false') === 'true',
     // Whether to allow anchor-bridging when scoping (include pools if either side is an anchor mint)
     enableAnchorBridging: (process.env.ENABLE_ANCHOR_BRIDGING || 'true') !== 'false',
-    // Optional canonicalization of pair orientation for normalized outputs: 'none' | 'lex'
-    canonicalizePairs: (process.env.CANONICALIZE_PAIRS as any) || 'lex',
+    // Optional canonicalization of pair orientation for normalized outputs
+    // Modes: 'quoteHierarchy' | 'lex' | 'preferA' | 'preferB' | 'preferLists'
+    canonicalizePairs: (process.env.CANONICALIZE_PAIRS as any) || 'quoteHierarchy',
+    // Quote hierarchy (highest-ranked mint should be on the B side as quote)
+    // Env: SYSTEM_QUOTE_HIERARCHY=Mint1,Mint2,... (defaults to [USDC, USDT])
+    quoteHierarchy: (process.env.SYSTEM_QUOTE_HIERARCHY
+      ? String(process.env.SYSTEM_QUOTE_HIERARCHY)
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [
+          'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+          'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
+        ]),
     // System-wide TVL/liquidity thresholds (applied in addition to per-source thresholds)
     // Lower defaults to avoid over-pruning during discovery; tune via env in prod
     minAmmLiqBase: process.env.MIN_AMM_LIQ_BASE ? Number(process.env.MIN_AMM_LIQ_BASE) : 0,

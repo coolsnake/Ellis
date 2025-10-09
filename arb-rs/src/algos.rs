@@ -1,4 +1,5 @@
 use petgraph::visit::EdgeRef;
+use std::collections::HashSet;
 use crate::graph::{ArbGraph};
 
 pub struct DetectedCycle {
@@ -32,6 +33,59 @@ pub fn detect_negative_cycles(g: &ArbGraph) -> Vec<DetectedCycle> {
     for e in g.g.edge_references() {
         let u = e.source().index();
         let v = e.target().index();
+        let w = - (e.weight().rate_effective.max(1e-12)).ln();
+        if dist[u] + w < dist[v] - 1e-12 {
+            // Found a cycle, backtrack
+            let mut x = v;
+            for _ in 0..n { x = pred[x].unwrap_or(x); }
+            // collect cycle
+            let mut cycle = Vec::new();
+            let mut cur = x;
+            loop {
+                cycle.push(cur);
+                cur = pred[cur].unwrap_or(cur);
+                if cur == x || cycle.len() > n+5 { break; }
+            }
+            if cycle.len() >= 2 {
+                cycle.reverse();
+                cycles.push(DetectedCycle { nodes: cycle, log_sum: 0.0 });
+            }
+        }
+    }
+    cycles
+}
+
+
+/// Variant of negative cycle detection limited to an induced subgraph defined by `nodes`.
+/// Only edges whose endpoints are both in `nodes` are considered. This is useful to scope
+/// detection work to areas impacted by recent graph diffs.
+pub fn detect_negative_cycles_filtered(g: &ArbGraph, nodes: &HashSet<usize>) -> Vec<DetectedCycle> {
+    let n = g.g.node_count();
+    if n == 0 || nodes.is_empty() { return vec![]; }
+    let mut dist = vec![0.0f64; n];
+    let mut pred: Vec<Option<usize>> = vec![None; n];
+    // Relax edges V-1 times on induced edges only
+    for _ in 0..(n.saturating_sub(1)) {
+        let mut updated = false;
+        for e in g.g.edge_references() {
+            let u = e.source().index();
+            let v = e.target().index();
+            if !nodes.contains(&u) || !nodes.contains(&v) { continue; }
+            let w = - (e.weight().rate_effective.max(1e-12)).ln();
+            if dist[u] + w < dist[v] - 1e-12 {
+                dist[v] = dist[u] + w;
+                pred[v] = Some(u);
+                updated = true;
+            }
+        }
+        if !updated { break; }
+    }
+    let mut cycles = Vec::new();
+    // One more pass to find negative cycles on induced edges
+    for e in g.g.edge_references() {
+        let u = e.source().index();
+        let v = e.target().index();
+        if !nodes.contains(&u) || !nodes.contains(&v) { continue; }
         let w = - (e.weight().rate_effective.max(1e-12)).ln();
         if dist[u] + w < dist[v] - 1e-12 {
             // Found a cycle, backtrack

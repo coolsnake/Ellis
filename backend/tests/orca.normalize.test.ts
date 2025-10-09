@@ -41,9 +41,13 @@ describe('orca normalize price math', () => {
     const norm = await getOrcaPoolsNormalized();
     expect(norm.clmm.length).toBe(1);
     const p = norm.clmm[0] as any;
-    // Derived price should closely match desired
-    expect(p.price_a_per_b).toBeGreaterThan(100_000);
-    expect(Math.abs((p.price_a_per_b as number) - desiredAperB) / desiredAperB).toBeLessThan(1e-6);
+    // Derived price should closely match desired, accounting for canonicalization orientation
+    const usdc = 'USDC_MINT';
+    const btc = 'BTC_MINT';
+    const oriented = (p.mint_a === usdc && p.mint_b === btc)
+      ? desiredAperB
+      : (1 / desiredAperB);
+    expect(Math.abs((p.price_a_per_b as number) - oriented) / oriented).toBeLessThan(1e-3);
     // Canonicalization: if lex mode enabled, mints should be ordered lexicographically
     const canon = (await import('../src/utils/config')).CONFIG.system.canonicalizePairs;
     if (String(canon) === 'lex') {

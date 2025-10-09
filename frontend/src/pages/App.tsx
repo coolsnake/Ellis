@@ -1960,6 +1960,11 @@ export const App: React.FC = () => {
               
               if (response.ok) {
                 setShowFeeConfig(false);
+                // Refresh system config so UI reflects latest fees
+                try {
+                  const sys = await fetch(`${apiBase}${ROUTES.system.base}`).then(r => r.json());
+                  setSystem(sys);
+                } catch {}
                 await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, {
                   method: 'POST', 
                   headers: { 'Content-Type': 'application/json' }, 

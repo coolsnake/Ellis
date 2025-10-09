@@ -145,10 +145,15 @@ export function defaultNormalizeRaydiumPools(raw: any): PoolsPayload {
     if (!id || !mintA || !mintB) continue;
     const typeStr = String(it?.type || it?.poolType || '').toLowerCase();
     const pooltype = Array.isArray((it as any)?.pooltype) ? (it as any).pooltype : [];
-    const isClmm = typeStr.includes('concentrated') || pooltype.map((s: any) => String(s).toLowerCase()).includes('clmm');
+    const isClmm = (
+      typeStr.includes('concentrated') ||
+      pooltype.map((s: any) => String(s).toLowerCase()).includes('clmm') ||
+      typeof (it as any)?.tickSpacing === 'number' ||
+      (typeof (it as any)?.sqrtPriceX64 !== 'undefined' || typeof (it as any)?.sqrtPrice !== 'undefined')
+    );
     const fee_bps = toFeeBps((it as any)?.feeRate ?? (it as any)?.tradeFeeRate ?? (it as any)?.feeBps ?? (it as any)?.tradeFeeBps);
-    const decA = Number((it?.mintA as any)?.decimals);
-    const decB = Number((it?.mintB as any)?.decimals);
+    let decA = Number((it?.mintA as any)?.decimals);
+    let decB = Number((it?.mintB as any)?.decimals);
     const price = Number((it as any)?.price);
     const tvl = Number((it as any)?.tvl);
     const mintAmountA = Number((it as any)?.mintAmountA);
@@ -170,16 +175,21 @@ export function defaultNormalizeRaydiumPools(raw: any): PoolsPayload {
       clmm.push({ id, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps, sqrt_price_x64: Number.isFinite(sqrt) ? sqrt : 0, liquidity: Number.isFinite(liquidity) ? liquidity : 0, tick_spacing: Number.isFinite(tick) ? tick : 0, updated_ms: now, price_a_per_b: px > 0 ? px : undefined, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, pool_kind: 'clmm', tvl_usd } as any);
     } else {
       const tvl_usd = Number.isFinite(tvl) && tvl > 0 ? tvl : undefined;
-      // Treat mintAmountA/B as whole amounts (legacy API behavior in tests)
-      const amount_a_whole = Number.isFinite(mintAmountA) ? mintAmountA : undefined;
-      const amount_b_whole = Number.isFinite(mintAmountB) ? mintAmountB : undefined;
+      // Treat mintAmountA/B as whole amounts (legacy API behavior in tests); fallback to reserveA/B
+      const reserveA = Number((it as any)?.reserveA ?? NaN);
+      const reserveB = Number((it as any)?.reserveB ?? NaN);
+      const amount_a_whole = Number.isFinite(mintAmountA) ? mintAmountA : (Number.isFinite(reserveA) ? reserveA : undefined);
+      const amount_b_whole = Number.isFinite(mintAmountB) ? mintAmountB : (Number.isFinite(reserveB) ? reserveB : undefined);
+      // Legacy/alternate reserve fields used in tests (fallback when whole amounts missing)
+      const reserveA0 = Number((it as any)?.reserveA ?? 0);
+      const reserveB0 = Number((it as any)?.reserveB ?? 0);
       const price_res = (Number.isFinite(amount_a_whole as any) && Number.isFinite(amount_b_whole as any) && (amount_b_whole as number) > 0)
         ? ((amount_a_whole as number) / (amount_b_whole as number))
-        : 0;
+        : ((reserveB0 > 0) ? (reserveA0 / reserveB0) : 0);
       const price_res_decs = (Number.isFinite(decA) && Number.isFinite(decB) && Number.isFinite(mintAmountA) && Number.isFinite(mintAmountB) && (mintAmountB as number) > 0)
         ? ((mintAmountA as number) / Math.pow(10, decA as number)) / ((mintAmountB as number) / Math.pow(10, decB as number))
         : 0;
-      const px = price_res > 0 ? price_res : (price_res_decs > 0 ? price_res_decs : (Number(price) > 0 ? Number(price) : 0));
+      const px = price_res_decs > 0 ? price_res_decs : (price_res > 0 ? price_res : (Number(price) > 0 ? Number(price) : 0));
       amm.push({ id, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps, price_a_per_b: Number.isFinite(px) ? px : 0, updated_ms: now, pool_kind: 'amm', tvl_usd, amount_a_whole, amount_b_whole, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined } as any);
     }
   }

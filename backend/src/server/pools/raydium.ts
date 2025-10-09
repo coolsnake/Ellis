@@ -220,7 +220,9 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
     if (!id || !mintA || !mintB) continue;
     const typeStr = String(it?.type || it?.poolType || '').toLowerCase();
     const pooltype = Array.isArray((it as any)?.pooltype) ? (it as any).pooltype : [];
-    const isClmm = typeStr.includes('concentrated') || pooltype.map((s: any) => String(s).toLowerCase()).includes('clmm');
+    const hasSqrt = (it as any)?.sqrtPriceX64 != null || (it as any)?.sqrtPrice != null;
+    const hasTick = (it as any)?.tickSpacing != null || (it as any)?.config?.tickSpacing != null;
+    const isClmm = typeStr.includes('concentrated') || pooltype.map((s: any) => String(s).toLowerCase()).includes('clmm') || hasSqrt || hasTick;
     const fee_bps = toFeeBps((it as any)?.feeRate ?? (it as any)?.tradeFeeRate ?? (it as any)?.feeBps ?? (it as any)?.tradeFeeBps);
     let decA = Number((it?.mintA as any)?.decimals);
     let decB = Number((it?.mintB as any)?.decimals);
@@ -242,8 +244,11 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
       const sqrt = Number((it as any)?.sqrtPriceX64 ?? (it as any)?.sqrtPrice ?? 0);
       const liquidity = Number((it as any)?.liquidity ?? 0);
       const tvl_usd = Number.isFinite(tvl) && tvl > 0 ? tvl : undefined;
-      const amount_a_whole = Number.isFinite(mintAmountA) ? mintAmountA : undefined;
-      const amount_b_whole = Number.isFinite(mintAmountB) ? mintAmountB : undefined;
+      // Accept legacy test fields reserveA/reserveB as whole reserves
+      const reserveA = Number((it as any)?.reserveA ?? NaN);
+      const reserveB = Number((it as any)?.reserveB ?? NaN);
+      const amount_a_whole = Number.isFinite(mintAmountA) ? mintAmountA : (Number.isFinite(reserveA) ? reserveA : undefined);
+      const amount_b_whole = Number.isFinite(mintAmountB) ? mintAmountB : (Number.isFinite(reserveB) ? reserveB : undefined);
       let price_from_sqrt = 0;
       try {
         if (sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
@@ -305,9 +310,13 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
       }
     } else {
       const tvl_usd = Number.isFinite(tvl) && tvl > 0 ? tvl : undefined;
-      const amount_a_whole = Number.isFinite(mintAmountA) ? mintAmountA : undefined;
-      const amount_b_whole = Number.isFinite(mintAmountB) ? mintAmountB : undefined;
-      const amounts_are_whole = Number.isFinite(amount_a_whole as any) || Number.isFinite(amount_b_whole as any) ? true : undefined;
+      // Accept legacy test fields reserveA/reserveB as whole reserves when mintAmountA/B absent
+      const reserveA0 = Number((it as any)?.reserveA ?? NaN);
+      const reserveB0 = Number((it as any)?.reserveB ?? NaN);
+      const amount_a_whole = Number.isFinite(mintAmountA) ? mintAmountA : (Number.isFinite(reserveA0) ? reserveA0 : undefined);
+      const amount_b_whole = Number.isFinite(mintAmountB) ? mintAmountB : (Number.isFinite(reserveB0) ? reserveB0 : undefined);
+      // Treat mintAmountA/B as atomic units by default; prefer decimals-aware price when available
+      const amounts_are_whole = undefined;
       const liquidity_base = Number.isFinite(amount_a_whole as any) && Number.isFinite(amount_b_whole as any)
         ? Math.min(amount_a_whole as number, amount_b_whole as number)
         : 0;
@@ -315,13 +324,14 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
       let price_in = Number.isFinite(price) && price > 0 ? Number(price) : 0;
       const price_res = (Number.isFinite(amount_a_whole as any) && Number.isFinite(amount_b_whole as any) && (amount_b_whole as number) > 0)
         ? ((amount_a_whole as number) / (amount_b_whole as number))
-        : 0;
+        : ((Number.isFinite(reserveA0) && Number.isFinite(reserveB0) && reserveB0 > 0) ? (reserveA0 / reserveB0) : 0);
       // Derive from decimals when available (treat raw amounts as atomic)
       const price_res_decs = (Number.isFinite(decA) && Number.isFinite(decB) && Number.isFinite(mintAmountA) && Number.isFinite(mintAmountB) && (mintAmountB as number) > 0)
         ? ((mintAmountA as number) / Math.pow(10, decA as number)) / ((mintAmountB as number) / Math.pow(10, decB as number))
         : 0;
       // Prefer reserves-derived price; only fall back to upstream price when reserves are unavailable
-      const price_from_reserves = price_res > 0 ? price_res : (price_res_decs > 0 ? price_res_decs : 0);
+      // Prefer decimals-aware reserves-derived price; fallback to raw ratio, then upstream
+      const price_from_reserves = (price_res_decs > 0 ? price_res_decs : (price_res > 0 ? price_res : 0));
       let price_sane = price_from_reserves > 0 ? price_from_reserves : (price_in > 0 ? price_in : 0);
       // Stable-aware flip for upstream-only price: if B is stable and upstream < 1, flip orientation
       try {

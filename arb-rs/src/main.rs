@@ -19,7 +19,7 @@ use opportunities::{OpportunitiesResponse, Opportunity, OpportunitiesSummary};
 mod graph;
 use graph::{ArbGraph, EdgeData};
 mod algos;
-use algos::{detect_negative_cycles, detect_near_miss_cycles};
+use algos::{detect_negative_cycles, detect_near_miss_cycles, detect_negative_cycles_filtered};
 
 #[derive(Default, serde::Serialize, serde::Deserialize, Clone)]
 struct ArbConfig {
@@ -39,6 +39,11 @@ struct ArbConfig {
     est_priority_fee_per_hop_lamports: Option<u64>,
     // When true, emit diagnostic logs when no near-miss is found
     debug_near_miss_failures: bool,
+    // Incremental detection controls
+    filtered_detect_enable: bool,
+    filtered_node_ratio: f64,
+    filtered_expand_hops: Option<usize>,
+    periodic_full_ms: Option<u64>,
 }
 
 #[derive(Default, serde::Serialize, Clone)]
@@ -55,6 +60,10 @@ struct Metrics {
     avg_profit_bps: f64,
     graph_updates_applied: u64,
     graph_updates_skipped: u64,
+    // Detection scope metrics
+    detect_used_filtered: u64,
+    detect_scope_nodes: u64,
+    detect_scope_edges: u64,
     // Time between receiving a backend graph diff/snapshot and start of a detection iteration
     diff_to_detect_ms: u64,
     // Last time a backend graph diff/snapshot was received (server wall time)
@@ -236,6 +245,9 @@ async fn main() -> anyhow::Result<()> {
                         s.metrics.last_graph_push_rx_ms = 0;
                     }
                 }
+                // Track changed mints and edge ids from pending diffs for scoped detection
+                let mut changed_mints: HashSet<String> = HashSet::new();
+                let mut changed_edge_ids: HashSet<String> = HashSet::new();
                 // Ensure we have the most recent backend graph version before detection
                 let api_base = std::env::var("BACKEND_API_BASE").unwrap_or_else(|_| "http://127.0.0.1:3001/api".into());
                 let gv_url = format!("{}/arb/graph/version", api_base.trim_end_matches('/'));
@@ -269,6 +281,15 @@ async fn main() -> anyhow::Result<()> {
                         let removed = std::mem::take(&mut s.pending_removed_edge_ids);
                         let added = std::mem::take(&mut s.pending_added_edges);
                         let updated = std::mem::take(&mut s.pending_updated_edges);
+                        // Build change sets BEFORE applying removals to derive scope
+                        for id in removed.iter() { changed_edge_ids.insert(id.clone()); }
+                        let mut synth_edge_id = |src: &str, dst: &str, dex: &str| -> String { format!("{}->{}-{}", src, dst, dex) };
+                        for e in added.iter().chain(updated.iter()) {
+                            changed_mints.insert(e.source.clone());
+                            changed_mints.insert(e.target.clone());
+                            if let Some(pid) = &e.pool_id { if !pid.is_empty() { changed_edge_ids.insert(pid.clone()); } }
+                            if let Some(dex) = &e.dex { if e.pool_id.is_none() { changed_edge_ids.insert(synth_edge_id(&e.source, &e.target, dex)); } }
+                        }
                         if !removed.is_empty() { let _ = s.graph.remove_edges_by_ids(&removed); }
                         let mut upsert = |e: &GraphDiffEdge| {
                             let dex = e.dex.clone().unwrap_or_else(|| "Unknown".to_string());
@@ -299,7 +320,53 @@ async fn main() -> anyhow::Result<()> {
                 // Compare with previous to only push WS updates on change
                 let (opps, prev, near_pair, near_list): (Vec<Opportunity>, Vec<Opportunity>, Option<(Opportunity,i64)>, Vec<(Opportunity,i64)>) = {
                     let s = loop_state.read().await;
-                    let cycles = detect_negative_cycles(&s.graph);
+                    // helper for scope expansion
+                    fn expand_nodes_by_hops(g:&ArbGraph, starts:&HashSet<usize>, max_hops:usize)->HashSet<usize> {
+                        use petgraph::Direction::{Outgoing, Incoming};
+                        let mut out = starts.clone();
+                        let mut frontier = starts.clone();
+                        for _ in 0..max_hops {
+                            let mut next: HashSet<usize> = HashSet::new();
+                            for &u in frontier.iter() {
+                                let ui = NodeIndex::new(u);
+                                for v in g.g.neighbors_directed(ui, Outgoing) { if out.insert(v.index()) { next.insert(v.index()); } }
+                                for v in g.g.neighbors_directed(ui, Incoming) { if out.insert(v.index()) { next.insert(v.index()); } }
+                            }
+                            if next.is_empty() { break; }
+                            frontier = next;
+                        }
+                        out
+                    }
+                    // Build affected node index set from changed mints
+                    let mut changed_node_idxs: std::collections::HashSet<usize> = std::collections::HashSet::new();
+                    for m in changed_mints.iter() {
+                        if let Some(idx) = s.graph.map.get(m) { changed_node_idxs.insert(idx.index()); }
+                    }
+                    // Expand scope by hops (incoming + outgoing) up to configured bound
+                    let expand_hops = s.config.filtered_expand_hops.unwrap_or(s.config.max_hops);
+                    let affected_nodes = expand_nodes_by_hops(&s.graph, &changed_node_idxs, expand_hops);
+                    // Decide filtered vs full scan
+                    let total_nodes = s.graph.g.node_count().max(1) as f64;
+                    let ratio = (affected_nodes.len() as f64) / total_nodes;
+                    let use_filtered = s.config.filtered_detect_enable && !affected_nodes.is_empty() && ratio <= s.config.filtered_node_ratio.max(0.0).min(1.0);
+                    // Count edges in scope for metrics
+                    let scope_edges: u64 = if use_filtered {
+                        let mut c: u64 = 0;
+                        for e in s.graph.g.edge_references() {
+                            let u = e.source().index(); let v = e.target().index();
+                            if affected_nodes.contains(&u) && affected_nodes.contains(&v) { c += 1; }
+                        }
+                        c
+                    } else { s.graph.g.edge_count() as u64 };
+                    // Run detection
+                    let cycles = if use_filtered { detect_negative_cycles_filtered(&s.graph, &affected_nodes) } else { detect_negative_cycles(&s.graph) };
+                    // Update scope metrics (write in a tiny separate block)
+                    {
+                        let mut sw = loop_state.write().await;
+                        sw.metrics.detect_used_filtered = if use_filtered { 1 } else { 0 };
+                        sw.metrics.detect_scope_nodes = if use_filtered { affected_nodes.len() as u64 } else { s.graph.g.node_count() as u64 };
+                        sw.metrics.detect_scope_edges = scope_edges;
+                    }
                     // Deduplicate cycles and compute profit from edge rates
                     let mut seen: HashSet<String> = HashSet::new();
                     let mut curr: Vec<Opportunity> = Vec::new();
@@ -955,7 +1022,13 @@ async fn main() -> anyhow::Result<()> {
                             let len = sw.events.len(); if len > 200 { sw.events.drain(0..(len-200)); }
                         }
                     }
-                    let prev_opps = s.opportunities.clone();
+                    // Prune prior opps that touched changed edges/pools
+                    let prev_opps = if changed_edge_ids.is_empty() { s.opportunities.clone() } else {
+                        s.opportunities.clone().into_iter().filter(|o| {
+                            let ids: HashSet<String> = o.hop_pool_ids.as_ref().map(|v| v.iter().cloned().collect()).unwrap_or_default();
+                            ids.is_disjoint(&changed_edge_ids)
+                        }).collect::<Vec<_>>()
+                    };
                     (curr, prev_opps, near_pair, near_list)
                 };
                 // Drop stale opps older than 10s if not re-detected
@@ -1417,6 +1490,10 @@ fn default_config() -> ArbConfig {
         near_miss_epsilon: std::env::var("ARB_NEAR_MISS_EPS").ok().and_then(|s| s.parse().ok()).unwrap_or(5e-4),
         est_priority_fee_per_hop_lamports: Some(50_000),
         debug_near_miss_failures: std::env::var("ARB_DEBUG_NM_FAIL").ok().map(|v| v == "true").unwrap_or(false),
+        filtered_detect_enable: std::env::var("ARB_FILTERED_DETECT_ENABLE").ok().map(|v| v != "false").unwrap_or(true),
+        filtered_node_ratio: std::env::var("ARB_FILTERED_NODE_RATIO").ok().and_then(|s| s.parse().ok()).unwrap_or(0.1),
+        filtered_expand_hops: std::env::var("ARB_FILTERED_EXPAND_HOPS").ok().and_then(|s| s.parse().ok()).or(None),
+        periodic_full_ms: std::env::var("ARB_PERIODIC_FULL_MS").ok().and_then(|s| s.parse().ok()).or(None),
     }
 }
 
