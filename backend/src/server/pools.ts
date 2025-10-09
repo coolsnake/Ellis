@@ -29,6 +29,19 @@ function toB58Any(v: any): string {
   return typeof v === 'string' ? v : '';
 }
 
+// Apply token mint blocklist across normalized pools
+function applyTokenMintBlocklist<T extends { mint_a: string; mint_b: string }>(
+  pools: { amm: T[]; clmm: T[] },
+  blocklist: Set<string>
+): { amm: T[]; clmm: T[] } {
+  if (!blocklist || blocklist.size === 0) return pools;
+  const allow = (p: T) => !blocklist.has(p.mint_a) && !blocklist.has(p.mint_b);
+  return {
+    amm: (pools.amm || []).filter(allow),
+    clmm: (pools.clmm || []).filter(allow),
+  };
+}
+
 // Simple in-memory metrics for pool fetches and results
 const poolsMetrics: {
   raydium: {
@@ -1179,6 +1192,19 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
         norm = scoped as any;
       } catch {}
 
+      // Apply token blocklist (exclude pools containing any blocked mint)
+      try {
+        const blist = new Set<string>(Array.isArray((CONFIG.system as any)?.tokenBlocklistMints) ? (CONFIG.system as any).tokenBlocklistMints : []);
+        if (blist.size > 0) {
+          const beforeAmm = norm.amm.length, beforeClmm = norm.clmm.length;
+          const filtered = applyTokenMintBlocklist(norm as any, blist);
+          if (filtered.amm.length !== beforeAmm || filtered.clmm.length !== beforeClmm) {
+            try { logger.info('raydium.blocklist.filter', { beforeAmm, beforeClmm, afterAmm: filtered.amm.length, afterClmm: filtered.clmm.length }); } catch {}
+          }
+          norm = filtered as any;
+        }
+      } catch {}
+
       // Optional: TVL-based filtering to drop dust pools (config-driven)
       try {
         const globalAmm = Number(((CONFIG.system as any)?.minAmmLiqBase) ?? 0);
@@ -1318,6 +1344,18 @@ export async function getOrcaPoolsNormalized(): Promise<PoolsPayload> {
     try {
     const raw = await fetchOrcaHttpImpl();
     let norm = await normalizeOrcaHttpImpl(raw);
+        // Apply token blocklist (exclude pools containing any blocked mint)
+        try {
+          const blist = new Set<string>(Array.isArray((CONFIG.system as any)?.tokenBlocklistMints) ? (CONFIG.system as any).tokenBlocklistMints : []);
+          if (blist.size > 0) {
+            const beforeAmm = (norm.amm || []).length, beforeClmm = (norm.clmm || []).length;
+            const filtered = applyTokenMintBlocklist(norm as any, blist);
+            if (filtered.amm.length !== beforeAmm || filtered.clmm.length !== beforeClmm) {
+              try { logger.info('orca.blocklist.filter', { beforeAmm, beforeClmm, afterAmm: filtered.amm.length, afterClmm: filtered.clmm.length }); } catch {}
+            }
+            norm = filtered as any;
+          }
+        } catch {}
         // Apply universe filtering early so caches are consistent across sources
         try {
           const uniModeAny: any = (CONFIG.system as any)?.tokenUniverseMode || 'jupiter';
@@ -1372,6 +1410,18 @@ export async function getMeteoraPoolsCached(force = false): Promise<PoolsPayload
       const t0 = Date.now();
       const raw = await fetchMeteoraHttpImpl();
       let norm = await normalizeMeteoraHttpImpl(raw);
+      // Apply token blocklist (exclude pools containing any blocked mint)
+      try {
+        const blist = new Set<string>(Array.isArray((CONFIG.system as any)?.tokenBlocklistMints) ? (CONFIG.system as any).tokenBlocklistMints : []);
+        if (blist.size > 0) {
+          const beforeClmm = (norm.clmm || []).length;
+          const filtered = applyTokenMintBlocklist(norm as any, blist);
+          if ((filtered.clmm || []).length !== beforeClmm) {
+            try { logger.info('meteora.blocklist.filter', { beforeClmm, afterClmm: filtered.clmm.length }); } catch {}
+          }
+          norm = filtered as any;
+        }
+      } catch {}
       // Optionally apply universe filtering early (disabled by default for Meteora)
       try {
         const prefilter = !!((CONFIG as any)?.meteora?.universePrefilter);
