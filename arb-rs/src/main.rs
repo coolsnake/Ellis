@@ -1034,8 +1034,9 @@ async fn main() -> anyhow::Result<()> {
                             let epsilon = s.config.near_miss_epsilon;
                             let nodes = s.metrics.graph_nodes;
                             let edges = s.metrics.graph_edges;
-                            tracing::info!(hops, epsilon, nodes, edges, min_bps = s.config.min_profit_bps, "arb.near_miss.none");
-                            s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.near_miss.none hops={} eps={} nodes={} edges={} min_bps={}", hops, epsilon, nodes, edges, s.config.min_profit_bps) });
+                            let min_bps_cfg = s.config.min_profit_bps;
+                            tracing::info!(hops, epsilon, nodes, edges, min_bps = min_bps_cfg, "arb.near_miss.none");
+                            s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.near_miss.none hops={} eps={} nodes={} edges={} min_bps={}", hops, epsilon, nodes, edges, min_bps_cfg) });
                             let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
                         }
                     }

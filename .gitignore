@@ -236,3 +236,13 @@ backend/cache/orca-raw-sample.json
 backend/cache/meteora-raw-sample.json
 ar.findings.md
 ar.runbook.md
+arb-rs/target/release/.fingerprint/arb-rs-9606e769fe65c6ad/bin-arb-rs
+arb-rs/target/release/.fingerprint/arb-rs-9606e769fe65c6ad/bin-arb-rs.json
+arb-rs/target/release/.fingerprint/arb-rs-9606e769fe65c6ad/dep-bin-arb-rs
+arb-rs/target/release/.fingerprint/arb-rs-9606e769fe65c6ad/output-bin-arb-rs
+arb-rs/target/release/arb-rs.d
+arb-rs/target/release/arb-rs.exe
+arb-rs/target/release/arb_rs.pdb
+arb-rs/target/release/deps/arb_rs.d
+arb-rs/target/release/deps/arb_rs.exe
+arb-rs/target/release/deps/arb_rs.pdb
