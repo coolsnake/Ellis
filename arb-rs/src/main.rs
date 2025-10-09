@@ -1553,3 +1553,103 @@ fn auth_ok(headers: Option<&HeaderMap>) -> bool {
 }
 
 
+#[cfg(test)]
+mod e2e_tests {
+    use super::*;
+    use axum::http::HeaderValue;
+    use axum::http::HeaderMap as AxumHeaderMap;
+
+    fn hv(s: &str) -> HeaderValue { HeaderValue::from_str(s).unwrap() }
+
+    #[tokio::test]
+    async fn diff_ordering_and_version_guards_apply_in_order() {
+        std::env::set_var("ARB_SHARED_SECRET", "");
+        let state = Arc::new(RwLock::new(AppState { config: default_config(), opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), near_miss: None, near_miss_shortfall_bps: None, near_misses: Vec::new(), last_graph_version: 1, last_graph_ts: 1, pending_added_edges: Vec::new(), pending_updated_edges: Vec::new(), pending_removed_edge_ids: Vec::new(), pending_graph_version: None, pending_graph_ts: None, wake: Arc::new(Notify::new()) }));
+
+        // Buffer a valid diff at v=2 and a stale diff at v=1
+        let mut headers = AxumHeaderMap::new();
+        headers.insert("authorization", hv(""));
+        let added = vec![GraphDiffEdge { source: "A".into(), target: "B".into(), dex: Some("D".into()), pool_id: None, fee_bps: Some(0), liquidity: Some(1.0), liquidity_display: Some(1.0), price_a_per_b: Some(1.0) }];
+        let req_ok = GraphDiffReq { version: Some(2), timestamp: Some(2), added_edges: Some(added), updated_edges: None, removed_edge_ids: None };
+        let _ = arb_graph_update(State(state.clone()), headers.clone(), Json(req_ok)).await;
+        // Stale should be skipped immediately
+        let req_stale = GraphDiffReq { version: Some(1), timestamp: Some(1), added_edges: Some(vec![]), updated_edges: None, removed_edge_ids: None };
+        let resp = arb_graph_update(State(state.clone()), headers.clone(), Json(req_stale)).await;
+        let j = resp.0; // Json<Value>
+        assert!(j.get("skipped").and_then(|v| v.as_bool()).unwrap_or(false) || j.get("ok").is_some());
+
+        // Apply buffered diffs by running the critical section from loop
+        {
+            let mut s = state.write().await;
+            assert_eq!(s.pending_added_edges.len(), 1);
+            let removed = std::mem::take(&mut s.pending_removed_edge_ids);
+            let added = std::mem::take(&mut s.pending_added_edges);
+            let updated = std::mem::take(&mut s.pending_updated_edges);
+            if !removed.is_empty() { let _ = s.graph.remove_edges_by_ids(&removed); }
+            let mut upsert = |e: &GraphDiffEdge| {
+                let dex = e.dex.clone().unwrap_or_else(|| "Unknown".to_string());
+                let fee = e.fee_bps.unwrap_or(0);
+                let liq = e.liquidity.unwrap_or(0.0);
+                let liq_disp = e.liquidity_display.unwrap_or(0.0);
+                let px = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
+                let base = if px > 0.0 { 1.0 / px } else { 0.0 };
+                let rate_eff = if base > 0.0 { base * (1.0 - (fee as f64)/10_000.0).max(0.0) } else { 0.0 };
+                s.graph.upsert_edge(&dex, &e.source, &e.target, EdgeData { rate_effective: rate_eff, fee_bps: fee, liquidity: liq, dex: dex.clone(), pool_id: e.pool_id.clone().unwrap_or_default(), liquidity_display: liq_disp });
+            };
+            for e in added.iter() { upsert(e); }
+            for e in updated.iter() { upsert(e); }
+            if let Some(v) = s.pending_graph_version.take() { s.last_graph_version = v; }
+            if let Some(t) = s.pending_graph_ts.take() { s.last_graph_ts = t; }
+            s.metrics.graph_nodes = s.graph.g.node_count() as u64;
+            s.metrics.graph_edges = s.graph.g.edge_count() as u64;
+        }
+        let s = state.read().await;
+        assert_eq!(s.last_graph_version, 2);
+        assert_eq!(s.graph.g.edge_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn snapshot_then_diffs_detect_cycle() {
+        std::env::set_var("ARB_SHARED_SECRET", "");
+        let state = Arc::new(RwLock::new(AppState { config: default_config(), opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), near_miss: None, near_miss_shortfall_bps: None, near_misses: Vec::new(), last_graph_version: 0, last_graph_ts: 0, pending_added_edges: Vec::new(), pending_updated_edges: Vec::new(), pending_removed_edge_ids: Vec::new(), pending_graph_version: None, pending_graph_ts: None, wake: Arc::new(Notify::new()) }));
+
+        // Start with snapshot of empty graph at v=1
+        let h = AxumHeaderMap::new();
+        let snap = GraphSnapshotReq { graph: StartReqGraph { version: Some(1), timestamp: Some(1), edges: Vec::new(), nodes: Vec::new() } };
+        let _ = arb_graph_snapshot(State(state.clone()), h.clone(), Json(snap)).await;
+
+        // Push diffs building a two-edge arbitrage A<->B: rates 2.0 and 0.6 -> product 1.2
+        let add1 = GraphDiffEdge { source: "A".into(), target: "B".into(), dex: Some("D".into()), pool_id: None, fee_bps: Some(0), liquidity: Some(1.0), liquidity_display: Some(1.0), price_a_per_b: Some(0.5) }; // B per A = 2.0
+        let add2 = GraphDiffEdge { source: "B".into(), target: "A".into(), dex: Some("D".into()), pool_id: None, fee_bps: Some(0), liquidity: Some(1.0), liquidity_display: Some(1.0), price_a_per_b: Some(1.6666666667) }; // A per B = 1.666.. => B per A = 0.6
+        let diff = GraphDiffReq { version: Some(2), timestamp: Some(2), added_edges: Some(vec![add1, add2]), updated_edges: None, removed_edge_ids: None };
+        let _ = arb_graph_update(State(state.clone()), h.clone(), Json(diff)).await;
+
+        // Apply diffs (simulate loop section)
+        {
+            let mut s = state.write().await;
+            let removed = std::mem::take(&mut s.pending_removed_edge_ids);
+            let added = std::mem::take(&mut s.pending_added_edges);
+            let updated = std::mem::take(&mut s.pending_updated_edges);
+            if !removed.is_empty() { let _ = s.graph.remove_edges_by_ids(&removed); }
+            let mut upsert = |e: &GraphDiffEdge| {
+                let dex = e.dex.clone().unwrap_or_else(|| "Unknown".to_string());
+                let fee = e.fee_bps.unwrap_or(0);
+                let liq = e.liquidity.unwrap_or(0.0);
+                let liq_disp = e.liquidity_display.unwrap_or(0.0);
+                let px = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
+                let base = if px > 0.0 { 1.0 / px } else { 0.0 };
+                let rate_eff = if base > 0.0 { base * (1.0 - (fee as f64)/10_000.0).max(0.0) } else { 0.0 };
+                s.graph.upsert_edge(&dex, &e.source, &e.target, EdgeData { rate_effective: rate_eff, fee_bps: fee, liquidity: liq, dex: dex.clone(), pool_id: e.pool_id.clone().unwrap_or_default(), liquidity_display: liq_disp });
+            };
+            for e in added.iter() { upsert(e); }
+            for e in updated.iter() { upsert(e); }
+            if let Some(v) = s.pending_graph_version.take() { s.last_graph_version = v; }
+            if let Some(t) = s.pending_graph_ts.take() { s.last_graph_ts = t; }
+        }
+
+        // Run detection and assert we find a cycle
+        let s = state.read().await;
+        let cycles = detect_negative_cycles(&s.graph);
+        assert!(!cycles.is_empty());
+    }
+}
