@@ -54,6 +54,9 @@ const RUN = String((globalThis as any)?.process?.env?.RUN_REAL_E2E || '') === 't
     // Build graph from caches
     const snap = await graphMod.getGraphSnapshot(true);
     expect(Array.isArray(snap.edges)).toBe(true);
+    // Graph health: ensure we didn't over-prune in limited mode
+    expect((snap.nodes || []).length).toBeGreaterThanOrEqual(40);
+    expect((snap.edges || []).length).toBeGreaterThanOrEqual(200);
 
     // Validate forward/reverse reciprocity for every pool id where both directions exist
     const byPool = new Map<string, any[]>();

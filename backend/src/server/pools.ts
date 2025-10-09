@@ -286,6 +286,14 @@ export async function retargetPoolWebsockets(): Promise<{ attached: { orca: numb
 
 // Unified refresh orchestrator: fetch all sources and optionally (re)subscribe
 export async function refreshAllSources(force = true, subscribe = true): Promise<{ raydium: PoolsPayload; orca: PoolsPayload; meteora: PoolsPayload; saber: PoolsPayload; meteora_balanced: PoolsPayload }> {
+  try {
+    // Warm baseline USD prices for the universe before fetching pools (best-effort)
+    if (force) {
+      const { bootstrapPricesForUniverse } = await import('./priceBootstrap.js');
+      const cov = await bootstrapPricesForUniverse({ chunkSize: 400, maxRequests: 3, cat: 'pools.refresh' }).catch(() => null);
+      if (cov) { try { logger.info('pools.refresh price coverage', { total: cov.total, priced: cov.priced, missing: cov.missing, cat: 'pools' }); } catch {} }
+    }
+  } catch {}
   const r = await getRaydiumPoolsNormalized(!!force).catch(() => ({ amm: [], clmm: [] }));
   const o = await getOrcaPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
   const m = await getMeteoraPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
