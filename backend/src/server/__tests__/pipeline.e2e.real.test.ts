@@ -69,6 +69,44 @@ const RUN = String((globalThis as any)?.process?.env?.RUN_REAL_E2E || '') === 't
     }
     // Ensure we actually checked at least some edges
     expect(checked).toBeGreaterThan(0);
+
+    // Multi-hop, multi-dex triangle simulation (prefer 3-hop cycles with >=2 distinct DEXes)
+    const edges = snap.edges || [];
+    const bySrc = new Map<string, any[]>();
+    for (const e of edges) {
+      const arr = bySrc.get(e.source) || [];
+      arr.push(e);
+      bySrc.set(e.source, arr);
+    }
+    let triChecked = 0;
+    outer: for (const aNode of snap.nodes) {
+      const a = aNode.id;
+      const abList = bySrc.get(a) || [];
+      for (const ab of abList) {
+        const b = ab.target;
+        const bcList = bySrc.get(b) || [];
+        for (const bc of bcList) {
+          const c = bc.target;
+          if (c === a || c === b) continue;
+          const caList = bySrc.get(c) || [];
+          const ca = caList.find((e) => e.target === a);
+          if (!ca) continue;
+          const pf = Number(ab.price_a_per_b || 0);
+          const pg = Number(bc.price_a_per_b || 0);
+          const ph = Number(ca.price_a_per_b || 0);
+          if (!(pf > 0 && pg > 0 && ph > 0)) continue;
+          const dexes = new Set<string>([String((ab as any).dex || ''), String((bc as any).dex || ''), String((ca as any).dex || '')]);
+          // Require at least two distinct DEXes in the triangle
+          if (dexes.size < 2) continue;
+          const prod = pf * pg * ph;
+          expect(prod).toBeGreaterThan(1 / 1.10); // allow 10% slack given real-world feeds
+          expect(prod).toBeLessThan(1.10);
+          triChecked += 1;
+          if (triChecked >= 1) break outer;
+        }
+      }
+    }
+    expect(triChecked).toBeGreaterThan(0);
   }, 60_000);
 });
 
