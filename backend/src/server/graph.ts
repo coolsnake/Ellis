@@ -274,6 +274,15 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           // Default to true unless explicitly disabled
           const shouldDrop = (dropNoUsdBoth !== false);
           if (shouldDrop) {
+            // Only enforce when any USD prices are available at all
+            let hasAnyUsd = false;
+            try {
+              const all = (priceStore as any)?.getAllPrices?.();
+              hasAnyUsd = !!all && Object.keys(all || {}).length > 0;
+            } catch { hasAnyUsd = false; }
+            if (!hasAnyUsd) {
+              // Skip dropping edges; without USD refs, calibration and sanity checks will be bypassed elsewhere
+            } else {
             const pa = getPriceByMintVar(mintA)?.usdc ?? null;
             const pb = getPriceByMintVar(mintB)?.usdc ?? null;
             const ANCHORS = new Set<string>([
@@ -291,6 +300,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
               // Anchored pair: require the non-anchor side to have USD quote
               if (aIsAnchor && !pb) return;
               if (bIsAnchor && !pa) return;
+            }
             }
           }
         } catch {}
