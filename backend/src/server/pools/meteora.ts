@@ -114,18 +114,20 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
           ? Math.min((amount_a/Math.pow(10, decA as number)), (amount_b/Math.pow(10, decB as number)))
           : undefined);
     const liquidity_display = (tvl_usd != null) ? tvl_usd : undefined;
-    // Prefer DLMM active bin-derived price when available
+    // Use API-provided current_price when present; derive from active bin only as a fallback
     try {
-      const activeId = Number((it as any)?.active_id ?? (it as any)?.activeId);
-      const binStep = Number((it as any)?.bin_step ?? (it as any)?.binStep);
-      if (Number.isFinite(activeId) && Number.isFinite(binStep) && Number.isFinite(decA) && Number.isFinite(decB)) {
-        // Per-bin factor; e.g., binStep=16 => f=1.0016
-        const f = 1 + (binStep / 10_000);
-        if (f > 0) {
-          // price_B_per_A ≈ f^(activeId) * 10^(decB - decA); A-per-1-B is reciprocal
-          const bPerA = Math.pow(f, activeId) * Math.pow(10, (decB as number) - (decA as number));
-          const aPerB = bPerA > 0 ? (1 / bPerA) : 0;
-          if (Number.isFinite(aPerB) && aPerB > 0) price_a_per_b = aPerB;
+      if (!(price_a_per_b > 0)) {
+        const activeId = Number((it as any)?.active_id ?? (it as any)?.activeId);
+        const binStep = Number((it as any)?.bin_step ?? (it as any)?.binStep);
+        if (Number.isFinite(activeId) && Number.isFinite(binStep) && Number.isFinite(decA) && Number.isFinite(decB)) {
+          // Per-bin factor; e.g., binStep=16 => f≈1.0016 (approximate 1.0001^binStep)
+          const f = 1 + (binStep / 10_000);
+          if (f > 0) {
+            // price_B_per_A ≈ f^(activeId) * 10^(decB - decA); A-per-1-B is reciprocal
+            const bPerA = Math.pow(f, activeId) * Math.pow(10, (decB as number) - (decA as number));
+            const aPerB = bPerA > 0 ? (1 / bPerA) : 0;
+            if (Number.isFinite(aPerB) && aPerB > 0) price_a_per_b = aPerB;
+          }
         }
       }
     } catch {}
