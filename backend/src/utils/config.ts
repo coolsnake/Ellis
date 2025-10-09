@@ -228,54 +228,26 @@ export const CONFIG = {
     writeSamples: process.env.SANITY_WRITE_SAMPLES === 'true',
     sampleRate: Number(process.env.SANITY_SAMPLE_RATE || 0.005),
   },
-  // Raydium on-chain discovery configuration
+  // Raydium configuration (HTTP fetcher only; SDK kept for tx building and WS decode)
   raydium: {
-    enableOnChain: process.env.RAYDIUM_ONCHAIN === 'true',
     ammV4Program: process.env.RAYDIUM_AMM_V4_PROGRAM || '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8',
     clmmProgram: process.env.RAYDIUM_CLMM_PROGRAM || 'CAMMCzo5nKXjotvLkGQ6r1N1C8QXr8iY6pYwWf3V8mGk',
-    // Cache & SDK behavior
-    // Keep cache TTL configurable; timers use unified poolsRefreshMs by default
     cacheTtlMs: Number(process.env.RAYDIUM_CACHE_TTL_MS || 60_000),
-    // Unified HTTP concurrency (alias legacy sdkConcurrency)
+    // HTTP controls
     concurrency: Number(process.env.RAYDIUM_HTTP_CONCURRENCY || process.env.RAYDIUM_SDK_CONCURRENCY || 8),
-    // Legacy alias kept for backward compatibility (not used by new code paths)
     sdkConcurrency: Number(process.env.RAYDIUM_SDK_CONCURRENCY || 8),
-    // Unified pagination & retry controls (with legacy env aliases)
     pageSize: Number(process.env.RAYDIUM_HTTP_PAGE_SIZE || 1000),
     maxPages: Number(process.env.RAYDIUM_HTTP_MAX_PAGES || process.env.RAYDIUM_HTTP_MAX_PAGES_GLOBAL || 50),
     maxHttpRetries: Number(process.env.RAYDIUM_HTTP_MAX_RETRIES || 2),
     httpBackoffMs: Number(process.env.RAYDIUM_HTTP_BACKOFF_MS || 300),
     sdkProbeMintsLimit: Number(process.env.RAYDIUM_SDK_PROBE_MINTS_LIMIT || 200),
     sdkClmmPageSize: Number(process.env.RAYDIUM_SDK_CLMM_PAGE_SIZE || 5000),
-    // Make token-universe filtering opt-in (default false)
     filterToOrcaTokens: process.env.RAYDIUM_FILTER_TO_ORCA_TOKENS === 'true',
-    // New: select token universe for Raydium filtering: 'jupiter' | 'orca' | 'none'
     filterUniverse: (process.env.RAYDIUM_FILTER_UNIVERSE as any) || 'jupiter',
-    // New: guard legacy API fetch-by-mints fallbacks (default disabled to prefer list-mode)
     enableApiFetchByMints: process.env.RAYDIUM_ENABLE_FETCH_BY_MINTS === 'true',
-    // Gate raw offset parsing (fragile) behind explicit opt-in
-    allowRawOffsetParsing: process.env.RAYDIUM_ALLOW_RAW_OFFSET_PARSING === 'true',
-    // Enrichment controls
-    enrichmentMode: (process.env.RAYDIUM_ENRICHMENT_MODE as any) || 'mint-repair', // 'none' | 'mint-repair' | 'full'
-    maxPerPoolEnrichPerCycle: Number(process.env.RAYDIUM_MAX_PER_POOL_ENRICH || 100),
-    enrichCacheTtlMs: Number(process.env.RAYDIUM_ENRICH_CACHE_TTL_MS || 86_400_000),
     // TVL filtering (raw liquidity proxies)
-    // Minimum AMM base liquidity (proxy for TVL) required to include a pool
     minAmmLiqBase: Number(process.env.RAYDIUM_MIN_AMM_LIQ_BASE || 0),
-    // Minimum CLMM liquidity required to include a pool
     minClmmLiquidity: Number(process.env.RAYDIUM_MIN_CLMM_LIQUIDITY || 0),
-    // Anchor-based discovery
-    useAnchorDiscovery: (process.env.RAYDIUM_USE_ANCHOR_DISCOVERY || 'true') !== 'false',
-    anchorMints: (process.env.RAYDIUM_ANCHOR_MINTS || 'So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')
-      .split(',')
-      .map(s => s.trim())
-      .filter(Boolean),
-    // Discovery mode: 'anchor-rpc' | 'sdk-api' | 'sdk-clmm' | 'hybrid'
-    discoveryMode: (process.env.RAYDIUM_DISCOVERY_MODE as any) || 'anchor-rpc',
-    // Strict mint extraction: when true, drop pools if mints cannot be verified or require enrichment
-    strictMintMode: process.env.RAYDIUM_STRICT_MINT_MODE === 'true',
-    // Force per-pool SDK enrichment when mints look suspect
-    enforceEnrichment: process.env.RAYDIUM_ENFORCE_ENRICHMENT === 'true',
   }, 
   // Meteora configuration (DLMM HTTP-first)
   meteora: {

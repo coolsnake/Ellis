@@ -56,7 +56,7 @@ describe('raydium amm orientation normalization', () => {
   });
 });
 
-import { describe, it, expect } from 'vitest';
+// vitest globals already imported above
 
 // Import normalize via dynamic import to avoid top-level side effects
 async function normalize(raw: any) {
@@ -88,24 +88,7 @@ describe('normalizeRaydiumPools', () => {
     expect((out.clmm[0] as any).price_a_per_b).toBeGreaterThan(0);
   });
 
-  it('enriches known pool mints via on-chain offsets (ARCT8n...)', async () => {
-    // This test asserts our enrichment function can parse mints from account data
-    const poolId = 'ARCT8nLfGVAR5tQBhtW1oRFLHABASX3PEoeoUzJ9iNfu';
-    const mod: any = await import('../src/server/pools.ts');
-    const fn = (mod as any).getRaydiumPoolsNormalized as (force?: boolean) => Promise<any>;
-    const out = await fn(true).catch(() => ({ amm: [], clmm: [] }));
-    const match = out.amm.find((p: any) => p.id === poolId) || out.clmm.find((p: any) => p.id === poolId);
-    // If the environment can't reach RPC, just assert the structure exists without throwing
-    expect(out).toBeTruthy();
-    if (match) {
-      // Accept either orientation, but ensure both expected mints are present
-      const mints = new Set([match.mint_a, match.mint_b]);
-      const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-      const HELP = 'HeLp6NuQkmYB4pYWo2zYs22mESHXPQYzXbB8n4V98jwC';
-      expect(mints.has(USDC)).toBe(true);
-      expect(mints.has(HELP)).toBe(true);
-    }
-  });
+  // Deprecated: on-chain enrichment and discovery removed; HTTP fetcher only
 
   it('sets pool_kind on normalized pools', async () => {
     const sqrt = Math.floor(Math.sqrt(2) * Math.pow(2, 64));

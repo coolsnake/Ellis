@@ -12,20 +12,16 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
       const q = (req.query || {}) as { minUsd?: string; minAmm?: string; minClmm?: string; unknown?: string; anchor?: string };
       const prevAmm = Number((CONFIG.raydium as any)?.minAmmLiqBase || 0);
       const prevClmm = Number((CONFIG.raydium as any)?.minClmmLiquidity || 0);
-      const prevAnchors = Array.isArray((CONFIG.raydium as any)?.anchorMints) ? ([...((CONFIG.raydium as any).anchorMints as string[])]) : undefined;
-      const prevUseAnchor = (CONFIG.raydium as any)?.useAnchorDiscovery;
+      // Anchor discovery/deprecation: ignore route-level anchor overrides (HTTP fetcher only)
       let restore = false;
       try {
         if (q.minAmm != null) { (CONFIG.raydium as any).minAmmLiqBase = Math.max(0, Number(q.minAmm)); restore = true; }
         if (q.minClmm != null) { (CONFIG.raydium as any).minClmmLiquidity = Math.max(0, Number(q.minClmm)); restore = true; }
-        if (typeof q.anchor === 'string' && q.anchor.trim()) {
-          const list = q.anchor.split(',').map(s => s.trim()).filter(Boolean);
-          if (list.length) { (CONFIG.raydium as any).anchorMints = list; (CONFIG.raydium as any).useAnchorDiscovery = true; restore = true; }
-        }
+        // Ignore q.anchor for Raydium; retained only for backward compatibility
       } catch {}
       const { getRaydiumPoolsNormalized } = await import('../pools.js');
       const pools = await getRaydiumPoolsNormalized(false);
-      try { if (restore) { (CONFIG.raydium as any).minAmmLiqBase = prevAmm; (CONFIG.raydium as any).minClmmLiquidity = prevClmm; if (prevAnchors) (CONFIG.raydium as any).anchorMints = prevAnchors; if (prevUseAnchor !== undefined) (CONFIG.raydium as any).useAnchorDiscovery = prevUseAnchor; } } catch {}
+      try { if (restore) { (CONFIG.raydium as any).minAmmLiqBase = prevAmm; (CONFIG.raydium as any).minClmmLiquidity = prevClmm; } } catch {}
       let out = pools;
       // Optional harmonized TVL filters/sorting via query: minUsd, limit, sort=tvl
       try {
