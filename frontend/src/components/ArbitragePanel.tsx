@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ROUTES } from '../utils/routes';
 import { useSocket } from '../app/contexts/socket';
+import OpportunityList from './OpportunityList';
 
 type BottleneckEdge = { from: string; to: string; dex: string; rate: number; liquidity: number; fee_bps: number };
 type Opportunity = {
@@ -69,13 +70,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
   const [expandedTxId, setExpandedTxId] = useState<string | null>(null);
   const [showAll, setShowAll] = useState<boolean>(false);
 
-  // Debounced refresh for opportunities triggered by graph events
-  const lastOppsFetchAtRef = useRef(0);
-  const requestOppsRefresh = (now = Date.now(), cooldownMs = 750) => {
-    if (now - lastOppsFetchAtRef.current < cooldownMs) return;
-    lastOppsFetchAtRef.current = now;
-    fetchOpps();
-  };
+  // Deprecated polling/log-triggered refresh removed; rely on socket push with initial fallback
 
   const fmt = (n: number | undefined | null, digits = 0) => {
     if (n === undefined || n === null || isNaN(n as any)) return '—';
@@ -121,8 +116,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
     } catch {}
   };
 
-  // Refresh only when arb detection cycles or graph changes
-  const [lastGraphVersion, setLastGraphVersion] = useState<number>(0);
+  // Initial fallback fetch only
   const [lastDetectionTs, setLastDetectionTs] = useState<number>(0);
   useEffect(() => {
     fetchOpps();
@@ -174,36 +168,9 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
   }, [summary?.near_miss, effectiveSocket]);
   useEffect(() => {
     if (!effectiveSocket) return;
-    const onGraphSnapshot = (snap: { version: number }) => {
-      if (typeof snap?.version === 'number' && snap.version !== lastGraphVersion) {
-        setLastGraphVersion(snap.version);
-        requestOppsRefresh();
-      }
-    };
-    const onGraphUpdate = (diff: { version: number }) => {
-      if (typeof diff?.version === 'number' && diff.version !== lastGraphVersion) {
-        setLastGraphVersion(diff.version);
-        requestOppsRefresh();
-      }
-    };
-    const onArbLog = (evt: any) => {
-      const msg: string = (evt?.message || '').toString();
-      const code: string = String(evt?.code || '').toUpperCase();
-      const cat: string = String(evt?.cat || evt?.context?.cat || '').toLowerCase();
-      const isPretradeArb = /\bpretrade:arb\b/.test(msg) || /^PRETRADE\./.test(code);
-      const isOpportunityCat = cat === 'opportunity';
-      const isOpportunityMsg = /^opportunity:/.test(msg) || /arb\.(opportunity|near_miss)/i.test(msg) || /^ARB\.(OPPORTUNITY|NEAR_MISS)/.test(code);
-      if (isPretradeArb || isOpportunityCat || isOpportunityMsg) {
-        setLastDetectionTs(Date.now());
-        fetchOpps();
-      }
-    };
     const onTxAny = async () => {
       try { const r = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const j = await r.json(); setTxRows(Array.isArray(j?.items) ? j.items : []); } catch {}
     };
-    effectiveSocket.on('graph-snapshot', onGraphSnapshot);
-    effectiveSocket.on('graph-update', onGraphUpdate);
-    effectiveSocket.on('log', onArbLog);
     effectiveSocket.on('tx:start', onTxAny);
     effectiveSocket.on('tx:resolved', onTxAny);
     effectiveSocket.on('tx:sim.ok', onTxAny);
@@ -211,9 +178,6 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
     effectiveSocket.on('tx:send.ok', onTxAny);
     effectiveSocket.on('tx:send.err', onTxAny);
     return () => {
-      effectiveSocket.off('graph-snapshot', onGraphSnapshot);
-      effectiveSocket.off('graph-update', onGraphUpdate);
-      effectiveSocket.off('log', onArbLog);
       effectiveSocket.off('tx:start', onTxAny);
       effectiveSocket.off('tx:resolved', onTxAny);
       effectiveSocket.off('tx:sim.ok', onTxAny);
@@ -221,7 +185,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
       effectiveSocket.off('tx:send.ok', onTxAny);
       effectiveSocket.off('tx:send.err', onTxAny);
     };
-  }, [effectiveSocket, lastGraphVersion]);
+  }, [effectiveSocket]);
 
   // Remove periodic polling; rely on socket-driven refreshes
 
@@ -445,109 +409,16 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
         </div>
       )}
       {items.length === 0 && !firstLoad && (!summary?.near_misses || summary.near_misses.length === 0) && <div className="text-sm opacity-70">No opportunities</div>}
-      {/* Duplicate near-miss summary removed (detailed version rendered above when items.length===0) */}
-      <div className="space-y-2">
-        {(showAll ? items : items.slice(0, 10)).map((op, idx) => (
-          <div key={idx} className="p-2 border rounded bg-black/20">
-            <div className="text-sm">
-              <span className="font-mono">
-                {(() => {
-                  const hops = op.hop_dexes || [];
-                  const rates = (op as any).hop_rates || [];
-                  const outs = (op as any).hop_outs as number[] | undefined;
-                  const fees = (op as any).hop_fee_bps as number[] | undefined;
-                  const liqs = (op as any).hop_liquidity_display as number[] | undefined;
-                  const startMint = op.path?.[0];
-                  const pathArr = op.path || [];
-                  const edgesCount = Math.max(0, pathArr.length - 1);
-                  const showClosing = Array.isArray(rates) && rates.length > edgesCount;
-                  let amt = startMint === quoteSizeMint ? quoteSize : 1.0;
-                  const pieces: React.ReactNode[] = [];
-                  for (let i = 0; i < pathArr.length; i++) {
-                    const m = pathArr[i];
-                    const sym = tokenMap[m] || (m.length > 6 ? `${m.slice(0,4)}…${m.slice(-4)}` : m);
-                    const dex = hops[i % (hops.length || 1)];
-                    const color = dex === 'Raydium' ? 'text-green-400' : (dex === 'Orca' ? 'text-yellow-300' : 'text-blue-300');
-                    const rate = Number.isFinite(rates[i % (rates.length || 1)]) ? rates[i % (rates.length || 1)] : undefined;
-                    const fee = fees && Number.isFinite(fees[i % (fees.length || 1)] as any) ? fees[i % (fees.length || 1)] : undefined;
-                    const liq = liqs && Number.isFinite(liqs[i % (liqs.length || 1)] as any) ? liqs[i % (liqs.length || 1)] : undefined;
-                    const out = outs && Number.isFinite(outs[i % (outs.length || 1)] as any) ? outs[i % (outs.length || 1)] : undefined;
-                    pieces.push(
-                      <span key={`${m}-${i}`}>
-                        <span className="font-semibold">{sym}</span>{i===0?` (${amt.toFixed(4)})`:''}
-                        {i < pathArr.length - 1 && (
-                          <span> <span className={`px-1 rounded ${color}`}>{dex || '—'}{fee!=null ? ` · fee ${fee}bps` : ''}{liq!=null ? ` · liq ${fmt(liq, 2)}` : ''}{out!=null ? ` · → ${Number(out).toFixed(4)}` : (rate ? ` · ×${rate.toFixed(4)} → ${(amt * rate).toFixed(4)}` : '')}</span> → </span>
-                        )}
-                      </span>
-                    );
-                    if (i < pathArr.length - 1) {
-                      if (out != null) amt = Number(out); else if (rate) amt = amt * rate;
-                    }
-                  }
-                  if (showClosing) {
-                    const i = edgesCount;
-                    const last = pathArr[pathArr.length - 1];
-                    const first = pathArr[0];
-                    const dex = hops[i % (hops.length || 1)];
-                    const color = dex === 'Raydium' ? 'text-green-400' : (dex === 'Orca' ? 'text-yellow-300' : 'text-blue-300');
-                    const rate = Number.isFinite(rates[i]) ? rates[i] : undefined;
-                    const fee = fees && Number.isFinite((fees as any)[i] as any) ? (fees as any)[i] : undefined;
-                    const liq = liqs && Number.isFinite((liqs as any)[i] as any) ? (liqs as any)[i] : undefined;
-                    const out = outs && Number.isFinite((outs as any)[i] as any) ? (outs as any)[i] : undefined;
-                    pieces.push(
-                      <span key={`${last}-close`}>
-                        <span className="font-semibold">{tokenMap[last] || (last.length > 6 ? `${last.slice(0,4)}…${last.slice(-4)}` : last)}</span>
-                        <span> <span className={`px-1 rounded ${color}`}>{dex || '—'}{fee!=null ? ` · fee ${fee}bps` : ''}{liq!=null ? ` · liq ${fmt(liq, 2)}` : ''}{out!=null ? ` · → ${Number(out).toFixed(4)}` : (rate ? ` · ×${(rate as number).toFixed(4)} → ${(amt * (rate as number)).toFixed(4)}` : '')}</span> → </span>
-                        <span className="font-semibold">{tokenMap[first] || (first.length > 6 ? `${first.slice(0,4)}…${first.slice(-4)}` : first)}</span>
-                      </span>
-                    );
-                  }
-                  return pieces;
-                })()}
-              </span>
-            </div>
-            <div className="text-xs opacity-80">DEXes: {op.dexes.join(', ')}</div>
-            <div className="text-xs">Profit: {fmtPctFromBps(op.profit_bps)} · Net: {fmtPctFromBps(op.net_bps)} · ${fmt(op.est_profit_usd, 2)}</div>
-            <div className="text-[11px] opacity-80 flex items-center gap-2">Hops: {op.hop_count ?? op.path.length} · Links: {op.link_edges_used ?? 0} · Min Edge Liq: {fmt(op.min_edge_liquidity, 2)}
-              <button className="px-1 py-0.5 border rounded" onClick={()=>{
-                try {
-                  const ids = (op as any)?.hop_pool_ids as string[] | undefined;
-                  if (ids && ids.length) {
-                    try { window.dispatchEvent(new CustomEvent('graph-highlight', { detail: { edgeIds: ids } })); } catch {}
-                    if (socket) { try { socket.emit('graph-highlight', { edgeIds: ids }); } catch {} }
-                  }
-                } catch {}
-              }}>Highlight</button>
-              <button className="px-1 py-0.5 border rounded" onClick={async()=>{
-                try {
-                  const body: any = { path: op.path, hopPoolIds: (op as any)?.hop_pool_ids, dexes: (op as any)?.hop_dexes };
-                  const r = await fetch(`${apiBase}${ROUTES.arb.simulate}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-                  await r.json().catch(()=>({}));
-                } catch {}
-              }}>Simulate Direct</button>
-              <button className="px-1 py-0.5 border rounded" onClick={async()=>{
-                try {
-                  const body: any = { path: op.path, hopPoolIds: (op as any)?.hop_pool_ids, dexes: (op as any)?.hop_dexes, sizeUsd: sendMode==='USD'? Number(sendAmount)||0 : undefined, size: sendMode==='TOKENS'? Number(sendAmount)||0 : undefined };
-                  const r = await fetch(`${apiBase}${ROUTES.arb.execute}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-                  await r.json().catch(()=>({}));
-                } catch {}
-              }}>Execute Direct</button>
-            </div>
-            {op.bottleneck && (() => {
-              const b = op.bottleneck!;
-              const fromSym = tokenMap[b.from] || (b.from.length > 6 ? `${b.from.slice(0,4)}…${b.from.slice(-4)}` : b.from);
-              const toSym = tokenMap[b.to] || (b.to.length > 6 ? `${b.to.slice(0,4)}…${b.to.slice(-4)}` : b.to);
-              const color = b.dex === 'Raydium' ? 'text-green-400' : (b.dex === 'Orca' ? 'text-yellow-300' : 'text-blue-300');
-              return (
-                <div className="text-[11px] opacity-80">
-                  Bottleneck: <span className={`px-1 rounded ${color}`}>{b.dex}</span> {fromSym} → {toSym} · rate {fmt(b.rate, 6)} · liq {fmt(b.liquidity, 2)}
-                </div>
-              );
-            })()}
-            <div className="text-[11px] opacity-60">Seen: {age(op.first_seen_ms || op.detected_ms)} · Detections: {op.detections ?? 1}</div>
-          </div>
-        ))}
-      </div>
+      <OpportunityList
+        items={items}
+        tokenMap={tokenMap}
+        quoteSize={quoteSize}
+        quoteSizeMint={quoteSizeMint}
+        sendMode={sendMode}
+        sendAmount={sendAmount}
+        apiBase={apiBase}
+        socket={effectiveSocket}
+      />
       <div className="mt-4 p-2 border rounded bg-black/10">
         <div className="flex items-center justify-between mb-2">
           <h4 className="font-semibold">Transactions</h4>
