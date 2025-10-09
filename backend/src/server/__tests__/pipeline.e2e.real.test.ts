@@ -43,6 +43,11 @@ const RUN = String((globalThis as any)?.process?.env?.RUN_REAL_E2E || '') === 't
       (cfg as any).meteora.pageSize = 100;
       (cfg as any).meteora.maxPages = 1;
     }
+    // Include DAMM (Meteora Balanced) with small pagination if configured
+    if ((cfg as any).meteoraBalanced) {
+      (cfg as any).meteoraBalanced.pageSize = 100;
+      (cfg as any).meteoraBalanced.maxPages = 1;
+    }
 
     const poolsMod: any = await import('../pools.js');
     const graphMod: any = await import('../graph.js');
