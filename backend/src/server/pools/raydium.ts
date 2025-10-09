@@ -289,6 +289,19 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         const calibrated = calibrateMagnitude(mintA, mintB, px, getUsd);
         if (calibrated && calibrated > 0) px = calibrated;
       } catch {}
+      // Orientation correction using USD reference when available: choose value closer to ref
+      try {
+        const { getPriceByMint } = await import('../priceStore.js');
+        const pa = getPriceByMint(mintA)?.usdc ?? null;
+        const pb = getPriceByMint(mintB)?.usdc ?? null;
+        if (pa && pb && px && (px as number) > 0) {
+          const ref = (pb as number) / (pa as number);
+          const inv = 1 / (px as number);
+          const dev = Math.max((px as number) / ref, ref / (px as number));
+          const devInv = Math.max(inv / ref, ref / inv);
+          if (devInv + 1e-12 < dev) px = inv;
+        }
+      } catch {}
       let ok = true;
       try {
         const sanityCfg = (CONFIG as any)?.sanity || {};
@@ -372,6 +385,13 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
                 if (dev + 1e-12 < bestDev) { bestDev = dev; bestVal = cur; }
               }
               price_sane = bestVal;
+              // Orientation correction: if reciprocal is closer to ref, invert once
+              if (price_sane && (price_sane as number) > 0) {
+                const inv = 1 / (price_sane as number);
+                const devBest = Math.max((price_sane as number) / ref, ref / (price_sane as number));
+                const devInv = Math.max(inv / ref, ref / inv);
+                if (devInv + 1e-12 < devBest) price_sane = inv;
+              }
               if (bestDev > maxDeviation) {
                 try { logger.warn('raydium.amm drop by sanity', { id, mint_a: mintA, mint_b: mintB, price_in, price_res, ref, dev: bestDev, maxDeviation }); } catch {}
                 continue;
