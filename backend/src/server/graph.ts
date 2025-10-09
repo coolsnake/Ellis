@@ -281,9 +281,17 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
               'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
               'So11111111111111111111111111111111111111112',   // SOL
             ]);
-            const anchored = ANCHORS.has(mintA) || ANCHORS.has(mintB);
-            // If neither side is an anchor, require BOTH USD prices; otherwise drop
-            if (!anchored && !(pa && pb)) return;
+            const aIsAnchor = ANCHORS.has(mintA);
+            const bIsAnchor = ANCHORS.has(mintB);
+            const anchored = aIsAnchor || bIsAnchor;
+            if (!anchored) {
+              // Neither side anchored: require both USD quotes
+              if (!(pa && pb)) return;
+            } else {
+              // Anchored pair: require the non-anchor side to have USD quote
+              if (aIsAnchor && !pb) return;
+              if (bIsAnchor && !pa) return;
+            }
           }
         } catch {}
         // Preserve pool-provided orientation for coherency
