@@ -329,8 +329,18 @@ async fn main() -> anyhow::Result<()> {
                         }
                         c
                     } else { s.graph.g.edge_count() as u64 };
+                    // Emit scope decision at INFO
+                    tracing::info!(
+                        use_filtered,
+                        scope_nodes = affected_nodes.len(),
+                        scope_edges,
+                        total_nodes = s.graph.g.node_count(),
+                        ratio,
+                        "arb.detect.scope"
+                    );
                     // Run detection
                     let cycles = if use_filtered { detect_negative_cycles_filtered(&s.graph, &affected_nodes) } else { detect_negative_cycles(&s.graph) };
+                    tracing::info!(found = cycles.len(), "arb.detect.cycles");
                     // Update scope metrics (write in a tiny separate block)
                     {
                         let mut sw = loop_state.write().await;
@@ -1096,7 +1106,7 @@ async fn main() -> anyhow::Result<()> {
                 _ = wake.notified() => {},
                 _ = tokio::time::sleep(timeout) => {},
             }
-            tracing::debug!(iter_ms = iter_start.elapsed().as_millis() as u128, "arb.loop.end");
+            tracing::info!(iter_ms = iter_start.elapsed().as_millis() as u128, "arb.loop.end");
         }
     });
 
