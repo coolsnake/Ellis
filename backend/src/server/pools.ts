@@ -308,6 +308,34 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
   const m = await getMeteoraPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
   const s = await getSaberPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
   const mb = await getMeteoraBalancedPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
+
+  // Post-fetch bootstrap: if universe was empty earlier, hydrate prices for all fetched mints and rebuild graph
+  try {
+    if (force) {
+      const { getAllPrices } = await import('./priceStore.js');
+      const priced = Object.keys(getAllPrices() || {}).length;
+      if (priced === 0) {
+        const mintSet = new Set<string>();
+        const addFrom = (pp: PoolsPayload) => {
+          try { for (const p of (pp?.amm || [])) { if (p?.mint_a) mintSet.add(String(p.mint_a)); if (p?.mint_b) mintSet.add(String(p.mint_b)); } } catch {}
+          try { for (const p of (pp?.clmm || [])) { if (p?.mint_a) mintSet.add(String(p.mint_a)); if (p?.mint_b) mintSet.add(String(p.mint_b)); } } catch {}
+        };
+        addFrom(r); addFrom(o); addFrom(m); addFrom(s); addFrom(mb);
+        if (mintSet.size > 0) {
+          try {
+            const { bootstrapPricesForMints } = await import('./priceBootstrap.js');
+            const cov2 = await bootstrapPricesForMints(Array.from(mintSet), { chunkSize: 400, maxRequests: 4, cat: 'pools.refresh.post' });
+            try { logger.info('pools.refresh price coverage post', { total: cov2.total, priced: cov2.priced, missing: cov2.missing, cat: 'pools' }); } catch {}
+            // Rebuild graph with prices now available
+            try {
+              const gmod: any = await import('./graph.js');
+              gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
+            } catch {}
+          } catch {}
+        }
+      }
+    }
+  } catch {}
   // Pair diagnostics: log a single SOL-USDC pool per fetcher
   try {
     const SOL = 'So11111111111111111111111111111111111111112';
