@@ -284,7 +284,7 @@ async fn main() -> anyhow::Result<()> {
                         let updated = std::mem::take(&mut s.pending_updated_edges);
                         // Build change sets BEFORE applying removals to derive scope
                         for id in removed.iter() { changed_edge_ids.insert(id.clone()); }
-                        let mut synth_edge_id = |src: &str, dst: &str, dex: &str| -> String { format!("{}->{}-{}", src, dst, dex) };
+                        let synth_edge_id = |src: &str, dst: &str, dex: &str| -> String { format!("{}->{}-{}", src, dst, dex) };
                         for e in added.iter().chain(updated.iter()) {
                             changed_mints.insert(e.source.clone());
                             changed_mints.insert(e.target.clone());
