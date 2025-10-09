@@ -309,19 +309,24 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
   const s = await getSaberPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
   const mb = await getMeteoraBalancedPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
 
-  // Post-fetch bootstrap: if universe was empty earlier, hydrate prices for all fetched mints and rebuild graph
+  // Post-fetch bootstrap: if pricing coverage is low, hydrate prices for all fetched mints and rebuild graph
   try {
     if (force) {
       const { getAllPrices } = await import('./priceStore.js');
-      const priced = Object.keys(getAllPrices() || {}).length;
-      if (priced === 0) {
-        const mintSet = new Set<string>();
-        const addFrom = (pp: PoolsPayload) => {
-          try { for (const p of (pp?.amm || [])) { if (p?.mint_a) mintSet.add(String(p.mint_a)); if (p?.mint_b) mintSet.add(String(p.mint_b)); } } catch {}
-          try { for (const p of (pp?.clmm || [])) { if (p?.mint_a) mintSet.add(String(p.mint_a)); if (p?.mint_b) mintSet.add(String(p.mint_b)); } } catch {}
-        };
-        addFrom(r); addFrom(o); addFrom(m); addFrom(s); addFrom(mb);
-        if (mintSet.size > 0) {
+      const mintSet = new Set<string>();
+      const addFrom = (pp: PoolsPayload) => {
+        try { for (const p of (pp?.amm || [])) { if (p?.mint_a) mintSet.add(String(p.mint_a)); if (p?.mint_b) mintSet.add(String(p.mint_b)); } } catch {}
+        try { for (const p of (pp?.clmm || [])) { if (p?.mint_a) mintSet.add(String(p.mint_a)); if (p?.mint_b) mintSet.add(String(p.mint_b)); } } catch {}
+      };
+      addFrom(r); addFrom(o); addFrom(m); addFrom(s); addFrom(mb);
+      if (mintSet.size > 0) {
+        const pricedMap = getAllPrices() || {};
+        let pricedCount = 0;
+        for (const x of mintSet) { if (typeof (pricedMap as any)[x]?.usdc === 'number') pricedCount++; }
+        const coverage = pricedCount / Math.max(1, mintSet.size);
+        const minPriced = Math.max(50, Number((CONFIG.system as any)?.minMintPriceBootstrap || 120));
+        const minCoverage = Math.max(0.05, Math.min(0.9, Number((CONFIG.system as any)?.minMintPriceCoverage || 0.4)));
+        if (pricedCount < minPriced || coverage < minCoverage) {
           try {
             const { bootstrapPricesForMints } = await import('./priceBootstrap.js');
             const cov2 = await bootstrapPricesForMints(Array.from(mintSet), { chunkSize: 400, maxRequests: 4, cat: 'pools.refresh.post' });
