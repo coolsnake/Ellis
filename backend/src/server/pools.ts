@@ -329,8 +329,11 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
         if (pricedCount < minPriced || coverage < minCoverage) {
           try {
             const { bootstrapPricesForMints } = await import('./priceBootstrap.js');
-            const cov2 = await bootstrapPricesForMints(Array.from(mintSet), { chunkSize: 400, maxRequests: 4, cat: 'pools.refresh.post' });
-            try { logger.info('pools.refresh price coverage post', { total: cov2.total, priced: cov2.priced, missing: cov2.missing, cat: 'pools' }); } catch {}
+            const cov2 = await bootstrapPricesForMints(Array.from(mintSet), { chunkSize: 80, maxRequests: 6, cat: 'pools.refresh.post' });
+            const covPost1 = await bootstrapPricesForMints(Array.from(mintSet), { chunkSize: 80, maxRequests: 6, cat: 'pools.refresh.post' });
+            try { logger.info('pools.refresh price coverage post', { total: covPost1.total, priced: covPost1.priced, missing: covPost1.missing, cat: 'pools' }); } catch {}
+            const covPost2 = await bootstrapPricesForMints(Array.from(mintSet), { chunkSize: 80, maxRequests: 6, cat: 'pools.refresh.post' });
+            try { logger.info('pools.refresh price coverage post', { total: covPost2.total, priced: covPost2.priced, missing: covPost2.missing, cat: 'pools' }); } catch {}
             // Rebuild graph with prices now available
             try {
               const gmod: any = await import('./graph.js');

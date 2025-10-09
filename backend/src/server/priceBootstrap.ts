@@ -16,7 +16,7 @@ export async function bootstrapPricesForUniverse(opts: BootstrapOpts = {}): Prom
   missing: number;
 }> {
   const cat = opts.cat || 'price-bootstrap';
-  const chunkSize = Math.max(10, Math.min(500, Number(opts.chunkSize ?? 400)));
+  const chunkSize = Math.max(10, Math.min(500, Number(opts.chunkSize ?? 80)));
   const maxRequests = Math.max(1, Number(opts.maxRequests ?? 5));
 
   const uni = await computeTokenUniverse('jupiter');
@@ -57,7 +57,7 @@ export async function bootstrapPricesForMints(mintsIn: string[], opts: Bootstrap
   missing: number;
 }> {
   const cat = opts.cat || 'price-bootstrap';
-  const chunkSize = Math.max(10, Math.min(500, Number(opts.chunkSize ?? 400)));
+  const chunkSize = Math.max(10, Math.min(500, Number(opts.chunkSize ?? 80)));
   const maxRequests = Math.max(1, Number(opts.maxRequests ?? 5));
   const mints = Array.from(new Set((mintsIn || []).filter(Boolean)));
   if (mints.length === 0) return { total: 0, priced: 0, missing: 0 };
