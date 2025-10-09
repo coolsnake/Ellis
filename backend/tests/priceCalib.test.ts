@@ -1,4 +1,35 @@
 import { describe, it, expect } from 'vitest';
+import { calibrateMagnitude } from '../src/server/priceCalib';
+
+describe('priceCalib.calibrateMagnitude', () => {
+  it('scales magnitude by powers of ten to match USD(B)/USD(A) without inverting', () => {
+    const A = 'MintA';
+    const B = 'MintB';
+    // USD prices: A = 2, B = 8 => reference A per 1 B = USD(B)/USD(A) = 4
+    const getUsd = (m: string): number | undefined => (m === A ? 2 : (m === B ? 8 : undefined));
+    const raw = 0.004; // off by 10^3
+    const calibrated = calibrateMagnitude(A, B, raw, getUsd);
+    expect(calibrated).toBeCloseTo(4, 1e-9 as any);
+  });
+
+  it('returns raw price when USD refs are missing', () => {
+    const A = 'MintA';
+    const B = 'MintB';
+    const getUsd = (_m: string): number | undefined => undefined;
+    const raw = 123.45;
+    const calibrated = calibrateMagnitude(A, B, raw, getUsd);
+    expect(calibrated).toBe(raw);
+  });
+
+  it('returns undefined for non-positive or non-finite inputs', () => {
+    const getUsd = (_: string) => 1;
+    expect(calibrateMagnitude('A','B', 0, getUsd)).toBeUndefined();
+    expect(calibrateMagnitude('A','B', -5, getUsd)).toBeUndefined();
+    expect(calibrateMagnitude('A','B', Number.NaN, getUsd)).toBeUndefined();
+  });
+});
+
+import { describe, it, expect } from 'vitest';
 import { calibrateMagnitude } from '../src/server/priceCalib.ts';
 
 describe('calibrateMagnitude', () => {

@@ -3,13 +3,14 @@ import { emit } from '../realtime.js';
 import { CONFIG } from '../../utils/config.js';
 import { writeJson, joinPath } from '../../utils/fs.js';
 import type { ClmmPool, PoolsPayload } from './types.js';
-import { canonicalizePairs, canonicalizePairsLex } from './common.js';
+import { canonicalizePairs, validateHttpUrl } from './common.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
 
 export async function fetchMeteoraHttp(): Promise<any> {
   const METEORA_RAW_PATH = joinPath(CONFIG.cacheDir, 'meteora-raw-sample.json');
   try {
-    const base = (CONFIG as any)?.meteora?.apiUrl || 'https://dlmm-api.meteora.ag/pair/all_with_pagination';
+    const baseUnsafe = (CONFIG as any)?.meteora?.apiUrl || 'https://dlmm-api.meteora.ag/pair/all_with_pagination';
+    const base = validateHttpUrl(baseUnsafe) || 'https://dlmm-api.meteora.ag/pair/all_with_pagination';
     const size = Number(((CONFIG as any)?.meteora?.pageSize) || 200);
     const retries = Number(((CONFIG as any)?.meteora?.maxHttpRetries) || 2);
     const backoffMs = Number(((CONFIG as any)?.meteora?.httpBackoffMs) || 500);
@@ -199,37 +200,10 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     } catch {}
     clmm.push({ id, dex: 'Meteora', mint_a, mint_b, fee_bps, sqrt_price_x64: 0, liquidity: 0, tick_spacing: Number((it as any)?.bin_step || (it as any)?.binStep || 0), updated_ms: now, price_a_per_b: (price_a_per_b && price_a_per_b > 0) ? price_a_per_b : undefined, amount_a, amount_b, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, pool_kind: 'clmm', pool_liquidity_raw, tvl_usd, liquidity_display } as any);
   }
-  // Apply per-source canonicalization (default: none for Meteora)
-  let clmmCanon = clmm;
+  // Canonicalize pairs using unified policy; handles A/B swap and price inversion when needed
+  const clmmCanon = canonicalizePairs(clmm);
   try {
-    const mode = String(((CONFIG as any)?.meteora?.canonicalizePairs ?? 'none'));
-    if (mode === 'lex') clmmCanon = canonicalizePairsLex(clmm);
-  } catch {}
-  // Final pass: enforce stable-first ordering when exactly one side is stable (by mint string or symbol)
-  try {
-    const STABLES = new Set<string>([
-      'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-      'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
-    ]);
-    const isStable = (v: string) => {
-      const s = String(v || '').toUpperCase();
-      return STABLES.has(s) || /USDC|USDT|USD/.test(s);
-    };
-    clmmCanon = clmmCanon.map((p: any) => {
-      const aStable = isStable(String(p.mint_a));
-      const bStable = isStable(String(p.mint_b));
-      if (!aStable && bStable) {
-        const out: any = { ...p };
-        const mA = out.mint_a, mB = out.mint_b, dA = out.decimals_a, dB = out.decimals_b, amtA = out.amount_a, amtB = out.amount_b;
-        out.mint_a = mB; out.mint_b = mA; out.decimals_a = dB; out.decimals_b = dA; out.amount_a = amtB; out.amount_b = amtA;
-        if (typeof out.price_a_per_b === 'number' && out.price_a_per_b > 0) out.price_a_per_b = 1 / out.price_a_per_b;
-        return out;
-      }
-      return p;
-    });
-  } catch {}
-  try {
-    const canon = String(((CONFIG as any)?.meteora?.canonicalizePairs ?? (CONFIG.system as any)?.canonicalizePairs) || 'none');
+    const canon = String(((CONFIG as any)?.system?.canonicalizePairs) || 'lex');
     logger.info('meteora.http normalized', { clmm: clmmCanon.length, cat: 'meteora', canon });
   } catch {}
   return { amm: [], clmm: clmmCanon };

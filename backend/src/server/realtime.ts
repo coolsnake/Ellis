@@ -51,8 +51,9 @@ export async function emit(event: string, payload: any) {
 export async function notifyArbServiceRefresh(): Promise<void> {
   try {
     const host = ((globalThis as any)?.process?.env?.ARB_SERVICE_URL) || 'http://127.0.0.1:4010';
+    // Use a lightweight ping to a valid arb-rs endpoint to nudge the loop without assuming custom routes
     // eslint-disable-next-line no-undef
-    await fetch(`${host}/graph/trigger-refresh`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason: 'graph-diff' }) });
+    await fetch(`${host}/arb/graph/version`, { method: 'GET', headers: { 'accept': 'application/json' } });
   } catch {}
 }
 

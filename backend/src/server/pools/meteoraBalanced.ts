@@ -3,13 +3,14 @@ import { emit } from '../realtime.js';
 import { CONFIG } from '../../utils/config.js';
 import { writeJson, joinPath } from '../../utils/fs.js';
 import type { AmmPool, PoolsPayload } from './types.js';
-import { canonicalizePairs } from './common.js';
+import { canonicalizePairs, validateHttpUrl } from './common.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
 
 export async function fetchMeteoraBalancedHttp(): Promise<any> {
   const RAW_PATH = joinPath(CONFIG.cacheDir, 'meteora-balanced-raw-sample.json');
   try {
-    const base = (CONFIG as any)?.meteoraBalanced?.apiUrl || '';
+    const baseUnsafe = (CONFIG as any)?.meteoraBalanced?.apiUrl || '';
+    const base = validateHttpUrl(baseUnsafe) || '';
     if (!base) { try { await writeJson(RAW_PATH, []); } catch {}; return []; }
     const retries = Number(((CONFIG as any)?.meteoraBalanced?.maxHttpRetries) || 2);
     const backoffMs = Number(((CONFIG as any)?.meteoraBalanced?.httpBackoffMs) || 500);

@@ -234,3 +234,5 @@ frontend/package-lock.json
 backend/cache/raydium-raw-sample.json
 backend/cache/orca-raw-sample.json
 backend/cache/meteora-raw-sample.json
+ar.findings.md
+ar.runbook.md

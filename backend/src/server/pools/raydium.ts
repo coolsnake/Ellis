@@ -3,7 +3,7 @@ import { emit } from '../realtime.js';
 import { CONFIG } from '../../utils/config.js';
 import { readJson, writeJson, joinPath } from '../../utils/fs.js';
 import type { AmmPool, ClmmPool, PoolsPayload } from './types.js';
-import { canonicalizePairs } from './common.js';
+import { canonicalizePairs, validateHttpUrl } from './common.js';
 
 let rayProbeOffset = 0;
 

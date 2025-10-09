@@ -1,4 +1,5 @@
 import { CONFIG } from '../../utils/config.js';
+import { logger } from '../../utils/logger.js';
 
 export function toFeeBpsSafe(value: any, defaultBps = 30): number {
   const n = Number(value);
@@ -95,6 +96,38 @@ export function canonicalizePairs<T extends { mint_a: string; mint_b: string; pr
     out.push(keep === 1 ? p : swapABFields(p));
   }
   return out;
+}
+
+
+// Basic SSRF guard for configured HTTP endpoints used by fetchers.
+// Allows only http/https schemes and blocks obvious local/private hosts and IP literals.
+export function validateHttpUrl(input: string): string | null {
+  try {
+    if (!input || typeof input !== 'string') return null;
+    const url = new URL(input);
+    const scheme = String(url.protocol || '').toLowerCase();
+    if (scheme !== 'http:' && scheme !== 'https:') return null;
+    const host = String(url.hostname || '').toLowerCase();
+    // Quick denylist: localhost and common internal hostnames
+    const badHosts = new Set<string>(['localhost', '127.0.0.1', '::1']);
+    if (badHosts.has(host)) return null;
+    // Block obvious internal domains
+    if (host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.intranet')) return null;
+    // Block private IP ranges when host is an IP literal
+    const isIpV4 = /^\d+\.\d+\.\d+\.\d+$/.test(host);
+    if (isIpV4) {
+      const [a, b] = host.split('.').map((s) => Number(s));
+      // 10.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16
+      if (a === 10 || a === 127) return null;
+      if (a === 169 && b === 254) return null;
+      if (a === 172 && b >= 16 && b <= 31) return null;
+      if (a === 192 && b === 168) return null;
+    }
+    return url.toString();
+  } catch {
+    try { logger.warn('ssrf.validate failed', { url: input }); } catch {}
+    return null;
+  }
 }
 
 

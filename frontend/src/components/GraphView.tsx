@@ -36,7 +36,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-	const [layoutName, setLayoutName] = useState<'fcose' | 'cose' | 'grid' | 'circle'>('circle');
+	const [layoutName, setLayoutName] = useState<'fcose' | 'cose' | 'grid' | 'circle'>('fcose');
 	const [filterDex, setFilterDex] = useState<{ Raydium: boolean; Orca: boolean; Meteora: boolean }>({ Raydium: true, Orca: true, Meteora: true });
 	const [filterKind, setFilterKind] = useState<{ AMM: boolean; CLMM: boolean }>({ AMM: true, CLMM: true });
   const laidOutRef = useRef(false);

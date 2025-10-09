@@ -360,9 +360,13 @@ export async function getWsTargets(): Promise<{ orca: { target: number }; raydiu
       else if (dex === 'Orca') orc.add(base);
       else if (dex === 'Meteora') met.add(base);
     }
-    return { orca: { target: orc.size }, raydium: { target: ray.size }, meteora: { target: met.size } };
+    const out = { orca: { target: orc.size }, raydium: { target: ray.size }, meteora: { target: met.size } };
+    try { (getWsTargets as any)._last = out; } catch {}
+    return out;
   } catch {
-    return { orca: { target: 0 }, raydium: { target: 0 }, meteora: { target: 0 } };
+    const out = { orca: { target: 0 }, raydium: { target: 0 }, meteora: { target: 0 } };
+    try { (getWsTargets as any)._last = out; } catch {}
+    return out;
   }
 }
 

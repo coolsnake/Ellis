@@ -3,13 +3,14 @@ import { emit } from '../realtime.js';
 import { CONFIG } from '../../utils/config.js';
 import { writeJson, joinPath } from '../../utils/fs.js';
 import type { AmmPool, PoolsPayload } from './types.js';
-import { canonicalizePairs } from './common.js';
+import { canonicalizePairs, validateHttpUrl } from './common.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
 
 export async function fetchSaberRegistry(): Promise<any> {
   const SABER_RAW_PATH = joinPath(CONFIG.cacheDir, 'saber-raw-sample.json');
   try {
-    const base = (CONFIG as any)?.saber?.registryUrl || 'https://raw.githubusercontent.com/saber-hq/saber-registry/master/pools/mainnet.json';
+    const baseUnsafe = (CONFIG as any)?.saber?.registryUrl || 'https://raw.githubusercontent.com/saber-hq/saber-registry/master/pools/mainnet.json';
+    const base = validateHttpUrl(baseUnsafe) || 'https://raw.githubusercontent.com/saber-hq/saber-registry/master/pools/mainnet.json';
     const retries = Number(((CONFIG as any)?.saber?.maxHttpRetries) || 2);
     const backoffMs = Number(((CONFIG as any)?.saber?.httpBackoffMs) || 500);
     // eslint-disable-next-line no-undef
