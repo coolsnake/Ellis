@@ -85,7 +85,7 @@ export const CONFIG = {
     retryDelayMs: Number(process.env.RETRY_DELAY_MS || 1000),
     connectionTimeoutMs: Number(process.env.CONNECTION_TIMEOUT_MS || 30000),
     enableLogging: process.env.ENABLE_LOGGING !== 'false',
-    logLevel: process.env.LOG_LEVEL || 'debug',
+    logLevel: process.env.LOG_LEVEL || 'info',
     txCommitment: (process.env.TX_COMMITMENT as any) || 'confirmed',
     wrapAndUnwrapSol: process.env.WRAP_AND_UNWRAP_SOL !== 'false',
     scopePools: process.env.SCOPE_POOLS !== 'false',

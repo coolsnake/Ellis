@@ -37,6 +37,8 @@ struct ArbConfig {
     near_miss_epsilon: f64,
     // Estimate per-hop priority fee in lamports to include in net profit heuristics (rough)
     est_priority_fee_per_hop_lamports: Option<u64>,
+    // When true, emit diagnostic logs when no near-miss is found
+    debug_near_miss_failures: bool,
 }
 
 #[derive(Default, serde::Serialize, Clone)]
@@ -1026,6 +1028,15 @@ async fn main() -> anyhow::Result<()> {
                             tracing::info!(shortfall_bps = shortfall, net_bps, hops, path = %path, "arb.near_miss.summary");
                             s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.near_miss.summary shortfall_bps={} net_bps={} hops={} path={}", shortfall, net_bps, hops, path) });
                             let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
+                        } else if s.config.debug_near_miss_failures {
+                            // Emit diagnostics when no near-miss found
+                            let hops = s.config.max_hops;
+                            let epsilon = s.config.near_miss_epsilon;
+                            let nodes = s.metrics.graph_nodes;
+                            let edges = s.metrics.graph_edges;
+                            tracing::info!(hops, epsilon, nodes, edges, min_bps = s.config.min_profit_bps, "arb.near_miss.none");
+                            s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.near_miss.none hops={} eps={} nodes={} edges={} min_bps={}", hops, epsilon, nodes, edges, s.config.min_profit_bps) });
+                            let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
                         }
                     }
                     let len = s.events.len();
@@ -1343,6 +1354,7 @@ struct ConfigReq {
     debug_top_n: Option<usize>,
     near_miss_enable: Option<bool>,
     near_miss_epsilon: Option<f64>,
+    debug_near_miss_failures: Option<bool>,
 }
 
 async fn set_config(
@@ -1379,6 +1391,7 @@ async fn set_config(
     if let Some(v) = cfg.debug_top_n { s.config.debug_top_n = v; }
     if let Some(v) = cfg.near_miss_enable { s.config.near_miss_enable = v; }
     if let Some(v) = cfg.near_miss_epsilon { s.config.near_miss_epsilon = v; }
+    if let Some(v) = cfg.debug_near_miss_failures { s.config.debug_near_miss_failures = v; }
     let _ = persist_config(&s.config).await;
     Json(serde_json::json!({"ok": true, "config": &s.config}))
 }
@@ -1402,6 +1415,7 @@ fn default_config() -> ArbConfig {
         near_miss_enable: std::env::var("ARB_NEAR_MISS_ENABLE").ok().map(|v| v != "false").unwrap_or(true),
         near_miss_epsilon: std::env::var("ARB_NEAR_MISS_EPS").ok().and_then(|s| s.parse().ok()).unwrap_or(5e-4),
         est_priority_fee_per_hop_lamports: Some(50_000),
+        debug_near_miss_failures: std::env::var("ARB_DEBUG_NM_FAIL").ok().map(|v| v == "true").unwrap_or(false),
     }
 }
 
