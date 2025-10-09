@@ -814,10 +814,14 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
           const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
           const ref = (pa && pb && pb > 0) ? ((pb as number) / (pa as number)) : undefined;
+          const maxClampDev = Number(((CONFIG as any)?.sanity as any)?.usdClampMaxDev) || 1.10;
           if (priceClmmOrca) {
             const fwd = 1 / priceClmmOrca, rev = priceClmmOrca;
             if (ref) {
               const dev = Math.max(priceClmmOrca / ref, ref / priceClmmOrca);
+              if (dev > maxClampDev) {
+                priceClmmOrca = ref;
+              }
               if (dev > 5 || fwd > 1e4 || rev > 1e4 || fwd < 1e-6 || rev < 1e-12) {
                 logger.debug('graph.calibrate.orca.clmm outlier', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, raw: (p as any)?.price_a_per_b, calibrated: priceClmmOrca, ref, dev, fwd, rev, decA: (p as any)?.decimals_a, decB: (p as any)?.decimals_b, sqrt_price_x64: (p as any)?.sqrt_price_x64 });
               }
