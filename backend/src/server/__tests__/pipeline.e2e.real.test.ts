@@ -1,0 +1,75 @@
+import { describe, it, expect } from 'vitest';
+
+// End-to-end pipeline using limited real HTTP fetches from Raydium, Orca, and Meteora
+// This test is SKIPPED by default. Enable by running with RUN_REAL_E2E=true
+
+const RUN = String((globalThis as any)?.process?.env?.RUN_REAL_E2E || '') === 'true';
+
+(RUN ? describe : describe.skip)('e2e: real fetch pipeline (limited pages)', () => {
+  it('fetches, normalizes, builds graph, and validates reciprocity for all pools', async () => {
+    const cfg: any = (await import('../../utils/config.js')).CONFIG;
+    // Disable scoping/filters to keep edges
+    cfg.system.scopePools = false;
+    cfg.system.scopePoolsMode = 'none';
+    cfg.system.minDexOverlap = 1;
+    cfg.system.minAmmLiqBase = 0;
+    cfg.system.minClmmLiquidity = 0;
+    // Keep sanity checks on
+    cfg.sanity.enabled = true;
+
+    // Limit HTTP pagination for small, fast runs
+    if (cfg.raydium) {
+      cfg.raydium.pageSize = 100;
+      cfg.raydium.maxPages = 1;
+      (cfg.raydium as any).enableApiFetchByMints = false;
+    }
+    if (cfg.orca) {
+      cfg.orca.pageSize = 100;
+      cfg.orca.maxPages = 1;
+      cfg.orca.includeBlocked = true;
+    }
+    if ((cfg as any).meteora) {
+      (cfg as any).meteora.pageSize = 100;
+      (cfg as any).meteora.maxPages = 1;
+    }
+
+    const poolsMod: any = await import('../pools.js');
+    const graphMod: any = await import('../graph.js');
+
+    // Fetch + normalize from sources (limited)
+    const res = await poolsMod.refreshAllSources(true, false);
+    expect(res).toBeTruthy();
+
+    // Build graph from caches
+    const snap = await graphMod.getGraphSnapshot(true);
+    expect(Array.isArray(snap.edges)).toBe(true);
+
+    // Validate forward/reverse reciprocity for every pool id where both directions exist
+    const byPool = new Map<string, any[]>();
+    for (const e of (snap.edges || [])) {
+      const pid = String((e as any)?.pool_id || '');
+      if (!pid) continue;
+      const key = pid.replace(/-rev$/, '');
+      const arr = byPool.get(key) || [];
+      arr.push(e);
+      byPool.set(key, arr);
+    }
+    let checked = 0;
+    for (const [, arr] of byPool) {
+      const fwd = arr.find((e: any) => e.direction === 'forward');
+      const rev = arr.find((e: any) => e.direction === 'reverse');
+      if (!fwd || !rev) continue;
+      const pf = Number((fwd as any).price_a_per_b || 0);
+      const pr = Number((rev as any).price_a_per_b || 0);
+      if (!(pf > 0 && pr > 0)) continue;
+      const prod = pf * pr;
+      expect(prod).toBeGreaterThan(1 / 1.05);
+      expect(prod).toBeLessThan(1.05);
+      checked++;
+    }
+    // Ensure we actually checked at least some edges
+    expect(checked).toBeGreaterThan(0);
+  }, 60_000);
+});
+
+
