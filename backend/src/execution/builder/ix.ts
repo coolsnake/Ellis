@@ -5,6 +5,17 @@ import { PublicKey } from '@solana/web3.js';
 import { getConnection, ensureWallet } from '../../wallet/wallet.js';
 import { CONFIG } from '../../utils/config.js';
 
+export function computeSlippageBps(amountInRaw?: bigint, minOutRaw?: bigint): number {
+  try {
+    if ((amountInRaw ?? 0n) > 0n && (minOutRaw ?? 0n) > 0n) {
+      const ratio = Number(minOutRaw) / Math.max(1, Number(amountInRaw));
+      const bps = Math.max(0, Math.min(9900, Math.round((1 - ratio) * 10000)));
+      return bps;
+    }
+  } catch {}
+  return 100; // default 1%
+}
+
 // Placeholders to satisfy wiring; concrete implementations will target specific programs
 export function buildRaydiumAmmSwapIx(hop: DirectHop): any[] {
   try { logger.debug('ix.build raydium.amm', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
@@ -28,17 +39,11 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
     const poolPk = new PublicKey(hop.poolId);
     const pool = await client.getPool(poolPk);
     const inputMint = new PublicKey(hop.inputMint);
-    const slippage = (() => {
-      try {
-        if (hop.amountInRaw > 0n && hop.minOutRaw > 0n) {
-          const bps = Math.max(0, Math.min(9900, Math.round((1 - (Number(hop.minOutRaw) / Math.max(1, Number(hop.amountInRaw)) )) * 10000)));
-          return (Percentage as any).fromFraction(bps, 10000);
-        }
-      } catch {}
-      return (Percentage as any).fromFraction(1, 100); // 1%
-    })();
+    const bps = computeSlippageBps(hop.amountInRaw, hop.minOutRaw);
+    const slippage = (Percentage as any).fromFraction(bps, 10000);
     const quote = await (swapQuoteByInputToken as any)(pool, inputMint, hop.amountInRaw, slippage, ctx.program.programId, ctx.fetcher, true);
     const params = (SwapUtils as any).getSwapParamsFromQuote(quote);
+    try { if (hop.sqrtPriceLimitX64 && params && ('sqrtPriceLimit' in (params as any))) { (params as any).sqrtPriceLimit = hop.sqrtPriceLimitX64; } } catch {}
     const txb = await pool.swap(params);
     const tx = (toTx as any)(ctx, txb);
     const built = await tx.build();
@@ -106,10 +111,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     const poolId = new PublicKey(hop.poolId);
     const programId = new PublicKey(hop.programId || (CONFIG.raydium?.clmmProgram as any));
     // Heuristic slippage from minOut
-    const bps = (() => {
-      try { if (hop.amountInRaw > 0n && hop.minOutRaw > 0n) { const r = Number(hop.minOutRaw) / Math.max(1, Number(hop.amountInRaw)); return Math.max(0, Math.min(9900, Math.round((1 - r) * 10000))); } } catch {}
-      return 100; // 1%
-    })();
+    const bps = computeSlippageBps(hop.amountInRaw, hop.minOutRaw);
     if (sdk?.Clmm && sdk?.Clmm?.makeSwapInstructionSimple) {
       const res = await sdk.Clmm.makeSwapInstructionSimple({
         connection,
@@ -120,6 +122,9 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
         amountOutMin: hop.minOutRaw,
         slippage: bps,
         programId,
+        // best-effort price guard propagation
+        priceLimit: hop.sqrtPriceLimitX64,
+        sqrtPriceLimitX64: hop.sqrtPriceLimitX64,
       });
       const ixs = Array.isArray(res?.instructions) ? res.instructions : (res?.innerTransaction ? res.innerTransaction.instructions : []);
       if (ixs && ixs.length) return ixs as any[];
@@ -139,10 +144,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     const wallet = { publicKey: kp.publicKey } as any;
     const poolId = new PublicKey(hop.poolId);
     const programId = new PublicKey(hop.programId || (CONFIG.raydium?.ammV4Program as any));
-    const bps = (() => {
-      try { if (hop.amountInRaw > 0n && hop.minOutRaw > 0n) { const r = Number(hop.minOutRaw) / Math.max(1, Number(hop.amountInRaw)); return Math.max(0, Math.min(9900, Math.round((1 - r) * 10000))); } } catch {}
-      return 100;
-    })();
+    const bps = computeSlippageBps(hop.amountInRaw, hop.minOutRaw);
     if (sdk?.AmmV4 && sdk?.AmmV4?.makeSwapInstructionSimple) {
       const res = await sdk.AmmV4.makeSwapInstructionSimple({
         connection,
