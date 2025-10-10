@@ -344,8 +344,8 @@ export const CONFIG = {
   // (Saber removed)
   // Meteora Balanced (mAMM) configuration
   meteoraBalanced: {
-    apiUrl: process.env.METEORA_BALANCED_API_URL || 'https://amm.meteora.ag/v1/pools',
-    apiUrlV2: process.env.METEORA_BALANCED_API_URL_V2 || 'https://amm-v2.meteora.ag/v2/pools',
+    apiUrl: process.env.METEORA_BALANCED_API_URL || 'https://damm-api.meteora.ag/pools',
+    apiUrlV2: process.env.METEORA_BALANCED_API_URL_V2 || 'https://dammv2-api.meteora.ag/pools',
     pageSize: Number(process.env.METEORA_BALANCED_HTTP_PAGE_SIZE || 1000),
     maxPages: Number(process.env.METEORA_BALANCED_HTTP_MAX_PAGES || 10),
     cacheTtlMs: Number(process.env.METEORA_BALANCED_CACHE_TTL_MS || 300_000),
