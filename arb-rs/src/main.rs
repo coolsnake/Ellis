@@ -482,6 +482,7 @@ async fn main() -> anyhow::Result<()> {
                         rotate_to_start(&labels, &canon_labels, &mut hop_pool_ids);
                         rotate_to_start(&labels, &canon_labels, &mut hop_dexes);
                         rotate_to_start_num(&labels, &canon_labels, &mut hop_rates);
+                        rotate_to_start_num(&labels, &canon_labels, &mut hop_outs);
                         let key = canon_labels.join("->");
                         if seen.contains(&key) { continue; }
                         seen.insert(key);
@@ -498,6 +499,8 @@ async fn main() -> anyhow::Result<()> {
                             let to = s.graph.g[NodeIndex::new(*vi)].clone();
                             opportunities::BottleneckEdge { from, to, dex: dex.clone(), rate: *rate, liquidity: *liq, fee_bps: *fee }
                         });
+                        // Compute estimated USD profit if cycle notionally started at USDC
+                        let est_profit_usd_val: f64 = if start_is_usdc { s.config.quote_size_usd.max(0.0) * (rate_prod - 1.0) } else { 0.0 };
                         if profit_bps < min_bps {
                             let shortfall = (min_bps - profit_bps).max(0);
                             if shortfall < best_below_shortfall {
@@ -505,7 +508,7 @@ async fn main() -> anyhow::Result<()> {
                                     path: canon_labels.clone(),
                                     profit_bps,
                                     net_bps: Some(net_bps),
-                                    est_profit_usd: 1.0,
+                                    est_profit_usd: est_profit_usd_val,
                                     dexes: dexes.clone(),
                                     hop_dexes: Some(hop_dexes.clone()),
                                     hop_rates: Some(hop_rates.clone()),
@@ -563,7 +566,7 @@ async fn main() -> anyhow::Result<()> {
                             path: canon_labels,
                             profit_bps,
                             net_bps: Some(net_bps),
-                            est_profit_usd: 1.0,
+                            est_profit_usd: est_profit_usd_val,
                             dexes,
                             hop_dexes: Some(hop_dexes),
                             hop_rates: Some(hop_rates),

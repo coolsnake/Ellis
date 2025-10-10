@@ -397,34 +397,8 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
               try {
                 const detailed: ArbOpportunityFull[] = (Array.isArray((payload as any)?.items) ? (payload as any).items : []).slice(0, 3);
                 for (const [i, o] of detailed.entries()) {
-                  const bps = Math.round((o.profit_bps ?? o.net_bps ?? 0));
-                  const path = (o.path || []).join('->');
-                  const dexes = (o.hop_dexes || o.dexes || []).join('>');
-                  const rates = (o.hop_rates || []).map(v => Number.isFinite(v) ? Number(v).toFixed(8) : String(v)).join(',');
-                  const outs = (o.hop_outs || []).map(v => Number.isFinite(v) ? Number(v).toFixed(6) : String(v)).join(',');
-                  const fees = (o.hop_fee_bps || []).join(',');
-                  const pools = (o.hop_pool_ids || []).join(',');
-                  const liqs = (o.hop_liquidity_display || []).map(v => Number.isFinite(v) ? Number(v).toFixed(2) : String(v)).join(',');
-                  const cap = (o.est_capacity ?? undefined);
-                  const bn = o.bottleneck ? ` from=${o.bottleneck.from} to=${o.bottleneck.to} dex=${o.bottleneck.dex} rate=${o.bottleneck.rate} liq=${o.bottleneck.liquidity} fee_bps=${o.bottleneck.fee_bps}` : '';
-                  // Build explicit edge sequence from path and pool ids, including closing hop
-                  const edges = (() => {
-                    try {
-                      const p: string[] = Array.isArray((o as any).path) ? ((o as any).path as string[]) : [];
-                      const ids: string[] = Array.isArray((o as any).hop_pool_ids) ? ((o as any).hop_pool_ids as string[]) : [];
-                      const n = p.length;
-                      const out: string[] = [];
-                      for (let k = 0; k < n; k += 1) {
-                        const a = p[k];
-                        const b = p[(k + 1) % n];
-                        const id = ids[k] || '';
-                        const short = (m: string) => (typeof m === 'string' && m.length > 8) ? `${m.slice(0,4)}…${m.slice(-4)}` : m;
-                        out.push(`${short(a)}->${short(b)}:${id}`);
-                      }
-                      return out.join(',');
-                    } catch { return ''; }
-                  })();
-                  const msg = `opportunity:detected #${i+1} bps=${bps} usd=${o.est_profit_usd ?? '-'} hops=${(o.path||[]).length-1} path=${path} dexes=${dexes} rates=[${rates}] outs=[${outs}] fees=[${fees}] pools=[${pools}] edges=[${edges}] liq=[${liqs}] est_capacity=${cap ?? '-'} bottleneck{${bn.trim()}}`;
+                  const { formatOpportunityLog } = await import('./utils/opportunityLog.js');
+                  const msg = formatOpportunityLog(o, i);
                   emit('log', { level: 'info', message: msg, timestamp: new Date().toISOString(), context: { cat: 'opportunity' } });
                 }
               } catch {}
