@@ -105,19 +105,30 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
 
   for (const it of arr) {
     try {
-      const id = String(it?.address || it?.id || '');
+      const id = String(it?.pool_address || it?.address || it?.id || '');
       const a = it?.tokenA || it?.mintA || it?.base || {};
       const b = it?.tokenB || it?.mintB || it?.quote || {};
-      const mint_a = toMint(a) || toMint(a?.info) || String(it?.mintA || '');
-      const mint_b = toMint(b) || toMint(b?.info) || String(it?.mintB || '');
+      const mint_a = String(it?.token_a_mint || toMint(a) || toMint(a?.info) || it?.mintA || '');
+      const mint_b = String(it?.token_b_mint || toMint(b) || toMint(b?.info) || it?.mintB || '');
       if (!id || !mint_a || !mint_b) continue;
 
       const decA = toDec(a?.decimals ?? it?.decimalsA);
       const decB = toDec(b?.decimals ?? it?.decimalsB);
       const amtAraw = Number(it?.reserveA ?? it?.amountA ?? it?.tokenAmountA ?? 0);
       const amtBraw = Number(it?.reserveB ?? it?.amountB ?? it?.tokenAmountB ?? 0);
-      const tvl_usd = Number(it?.tvlUsd ?? it?.tvl_usd);
-      const fee_bps = toFeeBps(it);
+      const tvl_usd = Number(it?.tvl ?? it?.tvlUsd ?? it?.tvl_usd);
+      // Prefer v2 base_fee/dynamic_fee (assumed percent); fallback to existing numeric fields
+      let fee_bps = (() => {
+        try {
+          const bf = Number((it as any)?.base_fee);
+          const df = Number((it as any)?.dynamic_fee);
+          if (Number.isFinite(bf) || Number.isFinite(df)) {
+            const pct = (Number.isFinite(bf) ? bf : 0) + (Number.isFinite(df) ? df : 0);
+            if (Number.isFinite(pct)) return Math.round(pct * 100);
+          }
+        } catch {}
+        return toFeeBps(it);
+      })();
 
       const wholeA = (Number.isFinite(amtAraw) && Number.isFinite(decA)) ? (amtAraw / Math.pow(10, decA as number)) : NaN;
       const wholeB = (Number.isFinite(amtBraw) && Number.isFinite(decB)) ? (amtBraw / Math.pow(10, decB as number)) : NaN;
@@ -160,6 +171,62 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
   return { amm: ammCanon, clmm: [] };
 }
 
+// v1 normalizer: array response shape
+export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload> {
+  const now = Date.now();
+  const amm: AmmPool[] = [];
+  const arr: any[] = Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : []);
+  const toNum = (v: any): number => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+  for (const it of (arr || [])) {
+    try {
+      const id = String(it?.pool_address || '');
+      const mints: string[] = Array.isArray((it as any)?.pool_token_mints) ? (it as any).pool_token_mints : [];
+      const amounts: (string|number)[] = Array.isArray((it as any)?.pool_token_amounts) ? (it as any).pool_token_amounts : [];
+      const usdAmounts: (string|number)[] = Array.isArray((it as any)?.pool_token_usd_amounts) ? (it as any).pool_token_usd_amounts : [];
+      const mint_a = String(mints?.[0] || '');
+      const mint_b = String(mints?.[1] || '');
+      if (!id || !mint_a || !mint_b) continue;
+      const wholeA = toNum(amounts?.[0]);
+      const wholeB = toNum(amounts?.[1]);
+      const usdA = toNum(usdAmounts?.[0]);
+      const usdB = toNum(usdAmounts?.[1]);
+      let price_a_per_b = 0;
+      if (wholeB > 0 && wholeA > 0) price_a_per_b = wholeA / wholeB;
+      else if (usdA > 0 && usdB > 0) price_a_per_b = usdA / usdB;
+      const tvl_usd = toNum((it as any)?.pool_tvl);
+      // Convert total_fee_pct (percent string) to bps
+      let fee_bps = (() => {
+        const s = String((it as any)?.total_fee_pct ?? '').trim();
+        const n = Number(s);
+        if (Number.isFinite(n)) return Math.round(n * 100);
+        return 0;
+      })();
+      const liquidity_base = (wholeA > 0 && wholeB > 0) ? Math.min(wholeA, wholeB) : 0;
+      amm.push({
+        id,
+        dex: 'Meteora',
+        mint_a,
+        mint_b,
+        fee_bps,
+        price_a_per_b: (price_a_per_b > 0) ? price_a_per_b : undefined,
+        liquidity_base,
+        updated_ms: now,
+        pool_kind: 'amm',
+        amount_a_whole: wholeA > 0 ? wholeA : undefined,
+        amount_b_whole: wholeB > 0 ? wholeB : undefined,
+        tvl_usd: tvl_usd > 0 ? tvl_usd : undefined,
+        liquidity_display: (tvl_usd > 0) ? tvl_usd : (liquidity_base > 0 ? liquidity_base : undefined),
+      } as any);
+    } catch {}
+  }
+  const ammCanon = canonicalizePairs(amm);
+  try { logger.info('meteora.balanced.v1 normalized', { amm: ammCanon.length, cat: 'meteora' }); } catch {}
+  return { amm: ammCanon, clmm: [] } as any;
+}
+
 // New: explicit v1 and v2 HTTP fetchers and a union fetch for both
 export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[]> {
   const cfg: any = (CONFIG as any)?.meteoraBalanced || {};
@@ -173,38 +240,57 @@ export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[
   // eslint-disable-next-line no-undef
   const fetchFn: any = (globalThis as any).fetch || fetch;
   const out: any[] = [];
-  let page = 0;
-  for (let i = 0; i < (maxPages && maxPages > 0 ? maxPages : Number.POSITIVE_INFINITY); i++) {
-    const url = (() => {
-      const sp = new URLSearchParams();
-      if (Number.isFinite(size) && size > 0) sp.append('limit', String(size));
-      sp.append('page', String(page));
-      const qs = sp.toString();
-      return qs ? `${base}?${qs}` : base;
-    })();
-    const cid = httpLogStart({ source: 'meteora_balanced', url });
-    let res: any = null; let ok = false;
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      res = await fetchFn(url, { headers: { accept: 'application/json' } });
-      if (res?.status === 429) { httpLog429({ source: 'meteora_balanced', url, cid }); await new Promise(r => setTimeout(r, backoffMs * (attempt + 1))); continue; }
-      if (!res?.ok) {
-        const txt = await res?.text?.();
-        httpLogNonOk({ source: 'meteora_balanced', url, cid, status: res?.status || 0, bodySample: (txt || '').slice(0, 200) });
-        if (attempt < retries) { await new Promise(r => setTimeout(r, backoffMs * (attempt + 1))); continue; }
+  const anchors: string[] = [
+    'So11111111111111111111111111111111111111112', // SOL
+    'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+  ];
+  for (const addr of anchors) {
+    let page = 0;
+    for (let i = 0; i < (maxPages && maxPages > 0 ? maxPages : Number.POSITIVE_INFINITY); i++) {
+      const url = (() => {
+        const sp = new URLSearchParams();
+        sp.append('address', addr);
+        if (Number.isFinite(size) && size > 0) sp.append('limit', String(size));
+        sp.append('page', String(page));
+        const qs = sp.toString();
+        return qs ? `${base}?${qs}` : base;
+      })();
+      const cid = httpLogStart({ source: 'meteora_balanced', url });
+      let res: any = null; let ok = false;
+      for (let attempt = 0; attempt <= retries; attempt++) {
+        res = await fetchFn(url, { headers: { accept: 'application/json' } });
+        if (res?.status === 429) { httpLog429({ source: 'meteora_balanced', url, cid }); await new Promise(r => setTimeout(r, backoffMs * (attempt + 1))); continue; }
+        if (!res?.ok) {
+          const txt = await res?.text?.();
+          httpLogNonOk({ source: 'meteora_balanced', url, cid, status: res?.status || 0, bodySample: (txt || '').slice(0, 200) });
+          if (attempt < retries) { await new Promise(r => setTimeout(r, backoffMs * (attempt + 1))); continue; }
+        }
+        ok = true; break;
       }
-      ok = true; break;
+      if (!ok || !res?.ok) { httpLogResponse({ source: 'meteora_balanced', url, cid, status: res?.status || 0, ms: 0, count: 0 }); break; }
+      const json: any = await res.json().catch(() => null);
+      const data = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []);
+      out.push(...data);
+      httpLogResponse({ source: 'meteora_balanced', url, cid, status: res.status, ms: 0, count: data.length });
+      const hasMore = (() => {
+        if (json?.next || json?.hasNextPage) return true;
+        const pages = Number(json?.pages || 0);
+        const curr = Number(json?.current_page || (page + 1));
+        return pages > 0 && curr < pages;
+      })();
+      if (!hasMore) break;
+      page += 1;
+      await new Promise(r => setTimeout(r, 110));
     }
-    if (!ok || !res?.ok) { httpLogResponse({ source: 'meteora_balanced', url, cid, status: res?.status || 0, ms: 0, count: 0 }); break; }
-    const json: any = await res.json().catch(() => null);
-    const data = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []);
-    out.push(...data);
-    httpLogResponse({ source: 'meteora_balanced', url, cid, status: res.status, ms: 0, count: data.length });
-    if (!json?.next && !json?.hasNextPage) break;
-    page += 1;
-    // Respect 10 RPS: space requests ~100ms apart
-    await new Promise(r => setTimeout(r, 110));
   }
-  return out;
+  // Deduplicate by pool address/id
+  const seen = new Set<string>();
+  const dedup: any[] = [];
+  for (const it of out) {
+    const id = String(it?.pool_address || it?.address || it?.id || '');
+    if (id && !seen.has(id)) { seen.add(id); dedup.push(it); }
+  }
+  return dedup;
 }
 
 export async function fetchMeteoraBalancedV2Http(baseUrl?: string): Promise<any[]> {

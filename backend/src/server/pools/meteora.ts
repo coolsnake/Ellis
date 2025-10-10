@@ -24,6 +24,21 @@ export async function fetchMeteoraHttp(): Promise<any> {
     };
     // eslint-disable-next-line no-undef
     const fetchFn: any = (globalThis as any).fetch || fetch;
+    // First attempt: call all_with_pagination directly without page/limit
+    try {
+      const cid0 = httpLogStart({ source: 'meteora', url: base });
+      const r0 = await fetchFn(base, { headers: { accept: 'application/json' }, method: 'GET' });
+      const j0: any = await r0.json().catch(() => null);
+      const arr0: any[] = Array.isArray(j0?.pairs) ? j0.pairs : (Array.isArray(j0) ? j0 : (Array.isArray(j0?.data) ? j0.data : []));
+      httpLogResponse({ source: 'meteora', url: base, cid: cid0, status: r0.status || 0, ms: 0, count: (arr0 || []).length });
+      if (Array.isArray(arr0) && arr0.length > 0) {
+        try { await writeJson(METEORA_RAW_PATH, arr0); } catch {}
+        try { logger.info('meteora.http raw', { count: arr0.length, cat: 'meteora' }); } catch {}
+        return arr0;
+      }
+    } catch {}
+
+    // Fallback: single page with page/limit and small pagination loop
     const out: any[] = [];
     let page = 0;
     const pageLimit = (maxPages && maxPages > 0) ? maxPages : Number.POSITIVE_INFINITY;
@@ -64,6 +79,7 @@ export async function fetchMeteoraHttp(): Promise<any> {
       return single;
     }
     try { await writeJson(METEORA_RAW_PATH, out); } catch (e: any) { try { logger.warn('meteora.cache write failed', { file: METEORA_RAW_PATH, error: String(e?.message || e), cat: 'meteora' }); } catch {} }
+    try { logger.info('meteora.http raw', { count: out.length, cat: 'meteora' }); } catch {}
     return out;
   } catch {
     return [];
@@ -152,12 +168,16 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       const sanityCfg = (CONFIG as any)?.sanity || {};
       const apply = (sanityCfg as any).sanity_applyMeteoraClmm ?? true;
       if (apply !== false) {
-        const maxDeviation = Number.isFinite(Number(sanityCfg.maxPriceDeviation)) ? Number(sanityCfg.maxPriceDeviation) : 50;
+        const baseMaxDev = Number.isFinite(Number(sanityCfg.maxPriceDeviation)) ? Number(sanityCfg.maxPriceDeviation) : 50;
         const { getPriceByMint } = await import('../../server/priceStore.js');
         const pa = getPriceByMint(mint_a)?.usdc ?? null;
         const pb = getPriceByMint(mint_b)?.usdc ?? null;
         const px = (price_a_per_b && price_a_per_b > 0) ? price_a_per_b : undefined;
         if (pa && pb && px && (px as number) > 0) {
+          const SOL = 'So11111111111111111111111111111111111111112';
+          const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+          const isAnchor = (mint_a === SOL && mint_b === USDC) || (mint_a === USDC && mint_b === SOL);
+          const maxDeviation = isAnchor ? Math.max(baseMaxDev, 100) : baseMaxDev;
           const ref = (pb as number) / (pa as number);
           const dev = Math.max((px as number) / ref, ref / (px as number));
           if (dev > maxDeviation) price_ok = false;
