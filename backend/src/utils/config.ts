@@ -92,7 +92,7 @@ export const CONFIG = {
     // New: scoping mode for /arb/pools endpoints: 'none' | 'watchlist' | 'jupiter' | 'intersection' | 'union'
     scopePoolsMode: (process.env.SCOPE_POOLS_MODE as any) || 'intersection',
     // New: token-universe mode used to filter pools at source: 'jupiter' | 'watchlist' | 'intersection' | 'union'
-    tokenUniverseMode: (process.env.TOKEN_UNIVERSE_MODE as any) || 'jupiter',
+    tokenUniverseMode: (process.env.TOKEN_UNIVERSE_MODE as any) || 'intersection',
     // Control whether anchors are injected into the universe set (default: false)
     includeAnchorsInUniverse: (process.env.INCLUDE_ANCHORS_IN_UNIVERSE || 'false') !== 'false',
     // Route-level scoping (disable to avoid double-scoping if sources already scoped)
