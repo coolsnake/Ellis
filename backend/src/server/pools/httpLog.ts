@@ -3,7 +3,7 @@ import { emit } from '../realtime.js';
 import { LogCat, LogSubcat, LogCode } from '../../utils/logging.js';
 
 export type HttpLogCtx = {
-  source: 'raydium' | 'orca' | 'meteora' | 'meteora_balanced';
+  source: 'raydium' | 'orca' | 'meteora' | 'meteora_balanced' | 'meteora_balanced_v2';
   url: string;
   cid?: string;
   extra?: Record<string, unknown>;

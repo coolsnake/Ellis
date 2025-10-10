@@ -18,40 +18,60 @@ export async function fetchMeteoraBalancedHttp(): Promise<any> {
     const size = Number(((CONFIG as any)?.meteoraBalanced?.pageSize) || 200);
     // eslint-disable-next-line no-undef
     const fetchFn: any = (globalThis as any).fetch || fetch;
-    const out: any[] = [];
-    let page = 0;
-    for (let i = 0; i < (maxPages && maxPages > 0 ? maxPages : Number.POSITIVE_INFINITY); i++) {
-      const url = (() => {
-        const sp = new URLSearchParams();
-        if (Number.isFinite(size) && size > 0) sp.append('limit', String(size));
-        sp.append('page', String(page));
-        const qs = sp.toString();
-        return qs ? `${base}?${qs}` : base;
-      })();
-      const started = Date.now();
-      const cid = httpLogStart({ source: 'meteora_balanced', url });
-      let res: any = null; let ok = false;
-      for (let attempt = 0; attempt <= retries; attempt++) {
-        res = await fetchFn(url, { headers: { accept: 'application/json' } });
-        if (res?.status === 429) { httpLog429({ source: 'meteora_balanced', url, cid }); await new Promise(r => setTimeout(r, backoffMs * (attempt + 1))); continue; }
-        if (!res?.ok) {
-          const txt = await res?.text?.();
-          httpLogNonOk({ source: 'meteora_balanced', url, cid, status: res?.status || 0, bodySample: (txt || '').slice(0, 200) });
-          if (attempt < retries) { await new Promise(r => setTimeout(r, backoffMs * (attempt + 1))); continue; }
+    // Build candidate bases with a safe v1->v2 fallback for DAMM
+    const candidates: string[] = (() => {
+      const list = [base];
+      try {
+        if (/\/v1\/pairs(\/?$|\?)/.test(base)) {
+          const v2 = base.replace('/v1/pairs', '/v2/pairs');
+          if (v2 !== base) list.push(v2);
         }
-        ok = true; break;
+      } catch {}
+      return list;
+    })();
+
+    for (const baseCandidate of candidates) {
+      const out: any[] = [];
+      let page = 0;
+      for (let i = 0; i < (maxPages && maxPages > 0 ? maxPages : Number.POSITIVE_INFINITY); i++) {
+        const url = (() => {
+          const sp = new URLSearchParams();
+          if (Number.isFinite(size) && size > 0) sp.append('limit', String(size));
+          sp.append('page', String(page));
+          const qs = sp.toString();
+          return qs ? `${baseCandidate}?${qs}` : baseCandidate;
+        })();
+        const started = Date.now();
+        const cid = httpLogStart({ source: 'meteora_balanced', url });
+        let res: any = null; let ok = false;
+        for (let attempt = 0; attempt <= retries; attempt++) {
+          res = await fetchFn(url, { headers: { accept: 'application/json' } });
+          if (res?.status === 429) { httpLog429({ source: 'meteora_balanced', url, cid }); await new Promise(r => setTimeout(r, backoffMs * (attempt + 1))); continue; }
+          if (!res?.ok) {
+            const txt = await res?.text?.();
+            httpLogNonOk({ source: 'meteora_balanced', url, cid, status: res?.status || 0, bodySample: (txt || '').slice(0, 200) });
+            if (attempt < retries) { await new Promise(r => setTimeout(r, backoffMs * (attempt + 1))); continue; }
+          }
+          ok = true; break;
+        }
+        const ms = Date.now() - started;
+        if (!ok || !res?.ok) { httpLogResponse({ source: 'meteora_balanced', url, cid, status: res?.status || 0, ms, count: 0 }); break; }
+        const json: any = await res.json().catch(() => null);
+        const data = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []);
+        out.push(...data);
+        httpLogResponse({ source: 'meteora_balanced', url, cid, status: res.status, ms, count: data.length });
+        if (!json?.next && !json?.hasNextPage) break;
+        page += 1;
       }
-      const ms = Date.now() - started;
-      if (!ok || !res?.ok) { httpLogResponse({ source: 'meteora_balanced', url, cid, status: res?.status || 0, ms, count: 0 }); break; }
-      const json: any = await res.json().catch(() => null);
-      const data = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []);
-      out.push(...data);
-      httpLogResponse({ source: 'meteora_balanced', url, cid, status: res.status, ms, count: data.length });
-      if (!json?.next && !json?.hasNextPage) break;
-      page += 1;
+      if (out.length > 0) {
+        try { await writeJson(RAW_PATH, out); } catch {}
+        return out;
+      }
+      // If this candidate produced nothing, try next candidate (e.g., v2)
     }
-    try { await writeJson(RAW_PATH, out); } catch {}
-    return out;
+    // If all candidates failed/empty, return []
+    try { await writeJson(RAW_PATH, []); } catch {}
+    return [];
   } catch {
     return [];
   }
@@ -138,6 +158,126 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
   const ammCanon = canonicalizePairs(amm);
   try { logger.info('meteora.balanced normalized', { amm: ammCanon.length, cat: 'meteora' }); } catch {}
   return { amm: ammCanon, clmm: [] };
+}
+
+// New: explicit v1 and v2 HTTP fetchers and a union fetch for both
+export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[]> {
+  const cfg: any = (CONFIG as any)?.meteoraBalanced || {};
+  const baseUnsafe = baseUrl || cfg.apiUrl || '';
+  const base = validateHttpUrl(baseUnsafe) || '';
+  if (!base) return [];
+  const retries = Number(cfg.maxHttpRetries || 2);
+  const backoffMs = Number(cfg.httpBackoffMs || 500);
+  const maxPages = Number(cfg.maxPages || 3);
+  const size = Number(cfg.pageSize || 200);
+  // eslint-disable-next-line no-undef
+  const fetchFn: any = (globalThis as any).fetch || fetch;
+  const out: any[] = [];
+  let page = 0;
+  for (let i = 0; i < (maxPages && maxPages > 0 ? maxPages : Number.POSITIVE_INFINITY); i++) {
+    const url = (() => {
+      const sp = new URLSearchParams();
+      if (Number.isFinite(size) && size > 0) sp.append('limit', String(size));
+      sp.append('page', String(page));
+      const qs = sp.toString();
+      return qs ? `${base}?${qs}` : base;
+    })();
+    const cid = httpLogStart({ source: 'meteora_balanced', url });
+    let res: any = null; let ok = false;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      res = await fetchFn(url, { headers: { accept: 'application/json' } });
+      if (res?.status === 429) { httpLog429({ source: 'meteora_balanced', url, cid }); await new Promise(r => setTimeout(r, backoffMs * (attempt + 1))); continue; }
+      if (!res?.ok) {
+        const txt = await res?.text?.();
+        httpLogNonOk({ source: 'meteora_balanced', url, cid, status: res?.status || 0, bodySample: (txt || '').slice(0, 200) });
+        if (attempt < retries) { await new Promise(r => setTimeout(r, backoffMs * (attempt + 1))); continue; }
+      }
+      ok = true; break;
+    }
+    if (!ok || !res?.ok) { httpLogResponse({ source: 'meteora_balanced', url, cid, status: res?.status || 0, ms: 0, count: 0 }); break; }
+    const json: any = await res.json().catch(() => null);
+    const data = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []);
+    out.push(...data);
+    httpLogResponse({ source: 'meteora_balanced', url, cid, status: res.status, ms: 0, count: data.length });
+    if (!json?.next && !json?.hasNextPage) break;
+    page += 1;
+  }
+  return out;
+}
+
+export async function fetchMeteoraBalancedV2Http(baseUrl?: string): Promise<any[]> {
+  const cfg: any = (CONFIG as any)?.meteoraBalanced || {};
+  const baseUnsafe = baseUrl || cfg.apiUrlV2 || '';
+  const base = validateHttpUrl(baseUnsafe) || '';
+  if (!base) return [];
+  const retries = Number(cfg.maxHttpRetries || 2);
+  const backoffMs = Number(cfg.httpBackoffMs || 500);
+  const maxPages = Number(cfg.maxPages || 3);
+  const size = Number(cfg.pageSize || 200);
+  // eslint-disable-next-line no-undef
+  const fetchFn: any = (globalThis as any).fetch || fetch;
+  const out: any[] = [];
+  let page = 0;
+  for (let i = 0; i < (maxPages && maxPages > 0 ? maxPages : Number.POSITIVE_INFINITY); i++) {
+    const url = (() => {
+      const sp = new URLSearchParams();
+      if (Number.isFinite(size) && size > 0) sp.append('limit', String(size));
+      sp.append('page', String(page));
+      const qs = sp.toString();
+      return qs ? `${base}?${qs}` : base;
+    })();
+    const cid = httpLogStart({ source: 'meteora_balanced_v2', url });
+    let res: any = null; let ok = false;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      res = await fetchFn(url, { headers: { accept: 'application/json' } });
+      if (res?.status === 429) { httpLog429({ source: 'meteora_balanced_v2', url, cid }); await new Promise(r => setTimeout(r, backoffMs * (attempt + 1))); continue; }
+      if (!res?.ok) {
+        const txt = await res?.text?.();
+        httpLogNonOk({ source: 'meteora_balanced_v2', url, cid, status: res?.status || 0, bodySample: (txt || '').slice(0, 200) });
+        if (attempt < retries) { await new Promise(r => setTimeout(r, backoffMs * (attempt + 1))); continue; }
+      }
+      ok = true; break;
+    }
+    if (!ok || !res?.ok) { httpLogResponse({ source: 'meteora_balanced_v2', url, cid, status: res?.status || 0, ms: 0, count: 0 }); break; }
+    const json: any = await res.json().catch(() => null);
+    const data = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []);
+    out.push(...data);
+    httpLogResponse({ source: 'meteora_balanced_v2', url, cid, status: res.status, ms: 0, count: data.length });
+    if (!json?.next && !json?.hasNextPage) break;
+    page += 1;
+  }
+  return out;
+}
+
+export async function fetchMeteoraBalancedAll(): Promise<PoolsPayload> {
+  const v2 = await fetchMeteoraBalancedV2Http();
+  const v1 = await fetchMeteoraBalancedV1Http();
+  const normV2 = await normalizeMeteoraBalancedHttp(v2);
+  const normV1 = await normalizeMeteoraBalancedHttp(v1);
+  const combinedAmm = mergeBalancedPools(normV2.amm, normV1.amm);
+  const ammCanon = canonicalizePairs(combinedAmm);
+  return { amm: ammCanon, clmm: [] } as any;
+}
+
+export function mergeBalancedPools(v2: AmmPool[], v1: AmmPool[]): AmmPool[] {
+  const byKey = new Map<string, AmmPool>();
+  const makeKey = (p: AmmPool): string => {
+    const id = String((p as any).id || '');
+    if (id) return `id:${id}`;
+    const a = String((p as any).mint_a || '');
+    const b = String((p as any).mint_b || '');
+    const [x, y] = a <= b ? [a, b] : [b, a];
+    return `pair:${x}:${y}`;
+  };
+  for (const p of (v1 || [])) {
+    const k = makeKey(p);
+    if (!byKey.has(k)) byKey.set(k, p);
+  }
+  for (const p of (v2 || [])) {
+    const k = makeKey(p);
+    byKey.set(k, p); // prefer/override with v2
+  }
+  return Array.from(byKey.values());
 }
 
 

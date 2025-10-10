@@ -40,6 +40,7 @@ export function createSystemRouter(_io: SocketIOServer): Router {
         raydium: CONFIG.raydium,
         orca: CONFIG.orca,
         meteora: (CONFIG as any).meteora,
+        meteoraBalanced: (CONFIG as any).meteoraBalanced,
         sanity: (CONFIG as any).sanity,
       });
     } catch (e: any) {
@@ -50,12 +51,14 @@ export function createSystemRouter(_io: SocketIOServer): Router {
 
   api.post('/system/config', async (req, res) => {
     try {
-      const { rpcUrl, system, fees, raydium, orca, sanity } = req.body as {
+      const { rpcUrl, system, fees, raydium, orca, meteora, meteoraBalanced, sanity } = req.body as {
         rpcUrl?: string;
         system?: any;
         fees?: any;
         raydium?: { enableOnChain?: boolean; ammV4Program?: string; clmmProgram?: string; cacheTtlMs?: number; concurrency?: number; pageSize?: number; maxPages?: number; maxHttpRetries?: number; httpBackoffMs?: number; minAmmLiqBase?: number; minClmmLiquidity?: number };
         orca?: { apiUrl?: string; programId?: string; configPubkey?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; pageSize?: number; maxPages?: number; minAmmLiqBase?: number; minClmmLiquidity?: number };
+        meteora?: { apiUrl?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; pageSize?: number; maxPages?: number; minClmmLiquidity?: number; universePrefilter?: boolean };
+        meteoraBalanced?: { apiUrl?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; pageSize?: number; maxPages?: number };
         sanity?: { enabled?: boolean; maxPriceDeviation?: number; feeMin?: number; feeMax?: number; writeSamples?: boolean; sampleRate?: number; sanity_applyRaydiumAmm?: boolean; sanity_applyOrcaClmm?: boolean };
       };
       if (rpcUrl) CONFIG.rpcUrl = rpcUrl;
@@ -86,6 +89,8 @@ export function createSystemRouter(_io: SocketIOServer): Router {
       if (fees) CONFIG.fees = { ...CONFIG.fees, ...fees };
       if (raydium) CONFIG.raydium = { ...CONFIG.raydium, ...raydium } as any;
       if (orca) CONFIG.orca = { ...CONFIG.orca, ...orca } as any;
+      if (meteora) (CONFIG as any).meteora = { ...(CONFIG as any).meteora, ...meteora } as any;
+      if (meteoraBalanced) (CONFIG as any).meteoraBalanced = { ...(CONFIG as any).meteoraBalanced, ...meteoraBalanced } as any;
       if (sanity) (CONFIG as any).sanity = { ...(CONFIG as any).sanity, ...sanity } as any;
       try {
         if (system && Object.prototype.hasOwnProperty.call(system, 'enableLogging')) {

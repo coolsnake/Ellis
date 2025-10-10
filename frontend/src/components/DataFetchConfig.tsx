@@ -50,7 +50,14 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     orca_minAmmLiqBase: 0,
     orca_minClmmLiquidity: 0,
     // Meteora (DLMM)
-    meteora_apiUrl: 'https://dlmm-api.meteora.ag/pair/all_with_pagination',
+    meteora_apiUrl: 'https://dlmm-api.meteora.ag/v1/pairs',
+    // Meteora Balanced (mAMM)
+    meteoraBalanced_apiUrl: 'https://damm-api.meteora.ag/v1/pairs',
+    meteoraBalanced_cacheTtlMs: 300000,
+    meteoraBalanced_maxHttpRetries: 2,
+    meteoraBalanced_httpBackoffMs: 500,
+    meteoraBalanced_pageSize: 200,
+    meteoraBalanced_maxPages: 3,
     meteora_cacheTtlMs: 300000,
     meteora_maxHttpRetries: 2,
     meteora_httpBackoffMs: 500,
@@ -115,6 +122,13 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             meteora_maxPages: Number(j?.meteora?.maxPages ?? prev.meteora_maxPages),
             meteora_minClmmLiquidity: Number(j?.meteora?.minClmmLiquidity ?? prev.meteora_minClmmLiquidity),
             meteora_universePrefilter: !!j?.meteora?.universePrefilter,
+            // Meteora Balanced
+            meteoraBalanced_apiUrl: j?.meteoraBalanced?.apiUrl || prev.meteoraBalanced_apiUrl,
+            meteoraBalanced_cacheTtlMs: Number(j?.meteoraBalanced?.cacheTtlMs ?? prev.meteoraBalanced_cacheTtlMs),
+            meteoraBalanced_maxHttpRetries: Number(j?.meteoraBalanced?.maxHttpRetries ?? prev.meteoraBalanced_maxHttpRetries),
+            meteoraBalanced_httpBackoffMs: Number(j?.meteoraBalanced?.httpBackoffMs ?? prev.meteoraBalanced_httpBackoffMs),
+            meteoraBalanced_pageSize: Number(j?.meteoraBalanced?.pageSize ?? prev.meteoraBalanced_pageSize),
+            meteoraBalanced_maxPages: Number(j?.meteoraBalanced?.maxPages ?? prev.meteoraBalanced_maxPages),
             // Sanity
             sanity_enabled: (j?.sanity?.enabled ?? true) !== false,
             sanity_maxPriceDeviation: Number(j?.sanity?.maxPriceDeviation ?? prev.sanity_maxPriceDeviation),
@@ -181,6 +195,14 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         maxPages: Number(cfg.meteora_maxPages),
         minClmmLiquidity: Number(cfg.meteora_minClmmLiquidity),
         universePrefilter: !!cfg.meteora_universePrefilter,
+      },
+      meteoraBalanced: {
+        apiUrl: cfg.meteoraBalanced_apiUrl,
+        cacheTtlMs: Number(cfg.meteoraBalanced_cacheTtlMs),
+        maxHttpRetries: Number(cfg.meteoraBalanced_maxHttpRetries),
+        httpBackoffMs: Number(cfg.meteoraBalanced_httpBackoffMs),
+        pageSize: Number(cfg.meteoraBalanced_pageSize),
+        maxPages: Number(cfg.meteoraBalanced_maxPages),
       },
       sanity: {
         enabled: !!cfg.sanity_enabled,
@@ -419,6 +441,36 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                 <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.meteora_minClmmLiquidity} onChange={(e)=>set('meteora_minClmmLiquidity', Number(e.target.value)||0)} />
               </div>
               <label className="flex items-center gap-2 md:col-span-3"><input type="checkbox" checked={!!cfg.meteora_universePrefilter} onChange={(e)=>set('meteora_universePrefilter', e.target.checked)} />Prefilter Meteora HTTP by universe (conservative)</label>
+            </div>
+          </div>
+
+          <div className="bg-gray-700 rounded p-4">
+            <h3 className="text-lg font-semibold mb-3">Meteora Balanced (mAMM)</h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="md:col-span-2">
+                <label className="block text-sm mb-1">API URL</label>
+                <input type="url" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.meteoraBalanced_apiUrl} onChange={(e)=>set('meteoraBalanced_apiUrl', e.target.value)} placeholder="https://damm-api.meteora.ag/v1/pairs" />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Cache TTL (ms)</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.meteoraBalanced_cacheTtlMs} onChange={(e)=>set('meteoraBalanced_cacheTtlMs', Number(e.target.value)||0)} />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Max HTTP Retries</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.meteoraBalanced_maxHttpRetries} onChange={(e)=>set('meteoraBalanced_maxHttpRetries', Number(e.target.value)||0)} />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">HTTP Backoff (ms)</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.meteoraBalanced_httpBackoffMs} onChange={(e)=>set('meteoraBalanced_httpBackoffMs', Number(e.target.value)||0)} />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Page Size</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.meteoraBalanced_pageSize} onChange={(e)=>set('meteoraBalanced_pageSize', Number(e.target.value)||0)} />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Max Pages</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.meteoraBalanced_maxPages} onChange={(e)=>set('meteoraBalanced_maxPages', Number(e.target.value)||0)} />
+              </div>
             </div>
           </div>
 

@@ -9,7 +9,7 @@ import { fetchRaydiumPoolsRaw as fetchRaydiumPoolsRawImpl, normalizeRaydiumPools
 import { fetchOrcaHttp as fetchOrcaHttpImpl, normalizeOrcaHttp as normalizeOrcaHttpImpl } from './pools/orca.js';
 import { fetchMeteoraHttp as fetchMeteoraHttpImpl, normalizeMeteoraHttp as normalizeMeteoraHttpImpl } from './pools/meteora.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './pools/httpLog.js';
-import { fetchMeteoraBalancedHttp as fetchMeteoraBalancedHttpImpl, normalizeMeteoraBalancedHttp as normalizeMeteoraBalancedHttpImpl } from './pools/meteoraBalanced.js';
+import { fetchMeteoraBalancedHttp as fetchMeteoraBalancedHttpImpl, normalizeMeteoraBalancedHttp as normalizeMeteoraBalancedHttpImpl, fetchMeteoraBalancedAll as fetchMeteoraBalancedAllImpl } from './pools/meteoraBalanced.js';
 
 const raydiumCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 const orcaCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
@@ -1011,8 +1011,12 @@ export async function getMeteoraBalancedPoolsCached(force = false): Promise<Pool
   metbalCache.inflight = (async () => {
     try {
       const t0 = Date.now();
-      const raw = await fetchMeteoraBalancedHttpImpl();
-      const norm = await normalizeMeteoraBalancedHttpImpl(raw);
+      // Use union of v2+v1 (prefer v2) when available
+      const union = await fetchMeteoraBalancedAllImpl().catch(async () => {
+        const raw = await fetchMeteoraBalancedHttpImpl();
+        return await normalizeMeteoraBalancedHttpImpl(raw);
+      });
+      const norm = union;
       const prev = metbalCache.data;
       metbalCache.data = norm; metbalCache.ts = Date.now();
       poolsMetrics.meteora_balanced.fetches = (poolsMetrics.meteora_balanced.fetches || 0) + 1;

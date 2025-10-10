@@ -1,19 +1,7 @@
 // @ts-nocheck
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import express from 'express';
 import request from 'supertest';
-
-// Mock modules by absolute resolved path to intercept dynamic imports inside the router
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const arbDir = path.resolve(__dirname, '../routes');
-const resolverMod = path.resolve(arbDir, '../../execution/resolver/index.js');
-const builderTxMod = path.resolve(arbDir, '../../execution/builder/tx.js');
-const senderMod = path.resolve(arbDir, '../../execution/sender.js');
-const execCfgMod = path.resolve(arbDir, '../execConfigStore.js');
-const schemasMod = path.resolve(arbDir, '../routes/schemas.js');
 
 // Shared stubs which individual tests may override
 let execMode: 'simulate' | 'direct' = 'simulate';
@@ -22,7 +10,7 @@ let preflightErr: any = null;
 let preflightLogs: string[] = ['log A', 'log B'];
 let sendSignature = 'sig-test-123';
 
-vi.mock(execCfgMod, () => ({
+vi.mock('../execConfigStore.js', () => ({
   loadExecConfig: vi.fn(async () => ({
     mode: execMode,
     slippageBpsDefault: 50,
@@ -36,11 +24,11 @@ vi.mock(execCfgMod, () => ({
   })),
 }));
 
-vi.mock(resolverMod, () => ({
+vi.mock('../../execution/resolver/index.js', () => ({
   resolveDirectPlan: vi.fn(async (input: any) => ({ path: input?.path || ['A', 'B'], hops: [], computeUnitPriceMicroLamports: 0 })),
 }));
 
-vi.mock(builderTxMod, () => ({
+vi.mock('../../execution/builder/tx.js', () => ({
   buildDirectArbTx: vi.fn(async (_plan: any) => ({
     tx: { instructions: [{ programId: 'Test111111111111111111111111111111111111111', keys: [], data: {} }] },
     ixCount: 1,
@@ -48,13 +36,13 @@ vi.mock(builderTxMod, () => ({
   })),
 }));
 
-vi.mock(senderMod, () => ({
+vi.mock('../../execution/sender.js', () => ({
   assembleAndSimulate: vi.fn(async () => ({ logs: preflightLogs, err: preflightErr })),
   assembleAndSend: vi.fn(async () => ({ signature: sendSignature })),
 }));
 
 // Schemas: accept body as-is to avoid coupling to zod in tests
-vi.mock(schemasMod, () => ({
+vi.mock('../routes/schemas.js', () => ({
   ResolveDirectSchema: { parse: (x: any) => x },
 }));
 
