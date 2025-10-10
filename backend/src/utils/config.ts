@@ -128,6 +128,13 @@ export const CONFIG = {
     universePrefilterOrca: (process.env.UNIVERSE_PREFILTER_ORCA || 'false') === 'true',
     // Enable websocket subscriptions for pool state changes
     enablePoolWs: process.env.ENABLE_POOL_WS !== 'false',
+    // WS program-level fallbacks: allow subscribing at program level when no targeted pools (default false)
+    wsFallbackPrograms: (process.env.WS_FALLBACK_PROGRAMS || 'false') === 'true',
+    // Meteora WS retry tuning
+    meteoraWsRetryCount: Number(process.env.METEORA_WS_RETRY_COUNT || 2),
+    meteoraWsRetryDelayMs: Number(process.env.METEORA_WS_RETRY_DELAY_MS || 600),
+    // Meteora program-level fallback (default false)
+    meteoraWsProgramFallback: (process.env.METEORA_WS_PROGRAM_FALLBACK || 'false') === 'true',
     // Minimum gap between forced pool refreshes per source (ms)
     poolRefreshMinGapMs: Number(process.env.POOL_REFRESH_MIN_GAP_MS || 3000),
     // Price feed TTL - how often to fetch fresh prices from Jupiter (default 15s for rate limiting)

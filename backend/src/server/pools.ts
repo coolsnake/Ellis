@@ -424,6 +424,16 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
       startRaydiumRefreshLoop();
     } catch {}
   }
+  // One-shot consolidated graph push after initial forced refresh completes (guarded)
+  try {
+    (refreshAllSources as any).__didInitialGraphPush = (refreshAllSources as any).__didInitialGraphPush || false;
+    if (force && !(refreshAllSources as any).__didInitialGraphPush) {
+      const gmod: any = await import('./graph.js');
+      try { await gmod.rebuildGraphNow(); } catch {}
+      try { await (gmod as any).enablePoolWebsocketRefreshes?.(); } catch {}
+      (refreshAllSources as any).__didInitialGraphPush = true;
+    }
+  } catch {}
   return { raydium: r, orca: o, meteora: m, saber: s, meteora_balanced: mb };
 }
 
@@ -750,16 +760,18 @@ export function startRaydiumRefreshLoop(): void {
           }
           attachedOrcaPools = attached;
           logger.info('pools.ws subscribe orca.pools', { attached, source: 'orca' });
-          // Subscribe at program level only if we had no targeted addresses
-          if (attached === 0) {
+          // Subscribe at program level only if we had no targeted addresses and fallback is enabled
+          if (attached === 0 && !!((CONFIG.system as any)?.wsFallbackPrograms)) {
             try { logger.info('pools.ws subscribe orca(program)', { source: 'orca', cat: 'pools' }); } catch {}
             subs.push(conn.onProgramAccountChange(orcaProg, (ch) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
           }
         } catch (e:any) {
           logger.warn('pools.ws orca address subscribe failed', { error: String(e?.message || e) });
-          // Fallback to program-level subscription (may include non-pool accounts)
-          try { logger.info('pools.ws subscribe orca(fallback)', { source: 'orca', cat: 'pools' }); } catch {}
-          subs.push(conn.onProgramAccountChange(orcaProg, (ch) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
+          // Fallback to program-level subscription (may include non-pool accounts) when enabled
+          if (!!((CONFIG.system as any)?.wsFallbackPrograms)) {
+            try { logger.info('pools.ws subscribe orca(fallback)', { source: 'orca', cat: 'pools' }); } catch {}
+            subs.push(conn.onProgramAccountChange(orcaProg, (ch) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
+          }
         }
         // Raydium address-level subscriptions when we have known pool ids (from prior refresh)
         try {
@@ -788,8 +800,8 @@ export function startRaydiumRefreshLoop(): void {
           }
           attachedRaydiumPools = attachedRay;
           logger.info('pools.ws subscribe raydium.pools', { attached: attachedRay });
-          // Fallback to program-level if none attached
-          if (attachedRay === 0) {
+          // Fallback to program-level if none attached and fallback is enabled
+          if (attachedRay === 0 && !!((CONFIG.system as any)?.wsFallbackPrograms)) {
             try { logger.info('pools.ws subscribe raydium.amm(fallback)', { source: 'raydium', cat: 'pools' }); } catch {}
             subs.push(conn.onProgramAccountChange(rayAmm, (ch) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
             try { logger.info('pools.ws subscribe raydium.clmm(fallback)', { source: 'raydium', cat: 'pools' }); } catch {}
@@ -840,7 +852,7 @@ export function startRaydiumRefreshLoop(): void {
           } else {
             // Program-level fallback when configured
             const meteoraProg = String((CONFIG as any)?.meteora?.programId || '').trim();
-            if (meteoraProg) {
+            if (meteoraProg && !!((CONFIG.system as any)?.meteoraWsProgramFallback)) {
               try { logger.info('pools.ws subscribe meteora(program)', { source: 'meteora', cat: 'pools' }); } catch {}
               subs.push(conn.onProgramAccountChange(new web3.PublicKey(meteoraProg), (ch: any) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
               attachedMeteoraPools = 1;

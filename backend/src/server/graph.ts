@@ -903,6 +903,20 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       for (const n of Object.values(nodesMap)) n.degree = degree[n.id] || 0;
 
       // Emit sample edges for inspection (both AMM and CLMM), prefer canonical SOL/USDC if present
+      // Also log per-DEX edge counts to aid debugging of visibility in the viewer
+      try {
+        const all = Object.values(edgesMap);
+        const countDex = (dex: string) => all.filter((e: any) => e.dex === dex).length;
+        const sample = (dex: string) => all
+          .filter((e: any) => e.dex === dex)
+          .slice(0, 5)
+          .map((e: any) => ({ id: e.id, source: e.source, target: e.target, pool_id: (e as any)?.pool_id, kind: (e as any)?.pool_kind, direction: (e as any)?.direction }));
+        logger.info('graph.edges.count', {
+          raydium: { count: countDex('Raydium'), sample: sample('Raydium') },
+          orca: { count: countDex('Orca'), sample: sample('Orca') },
+          meteora: { count: countDex('Meteora'), sample: sample('Meteora') },
+        });
+      } catch {}
       try {
         const allEdges = Object.values(edgesMap);
         const SOL = 'So11111111111111111111111111111111111111112';

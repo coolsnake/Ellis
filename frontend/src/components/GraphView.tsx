@@ -65,6 +65,8 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
     | { kind: 'path'; edges: Array<{ id: string; source: string; target: string; dex: string; fee_bps?: number; liquidity?: number; price_a_per_b?: number; tvl_usd?: number; pool_id?: string; pool_kind?: string; direction?: string; pool_liquidity_raw?: number }> }
     | null
   >(null);
+  // Debug: allow disabling combined edges to show per-DEX edges directly
+  const [combineEdges, setCombineEdges] = useState<boolean>(true);
 
 	// Track active user interaction (pan/zoom) to gate expensive work
 	const interactingRef = useRef(false);
@@ -123,7 +125,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 			rawEdges = rawEdges.slice(0, maxEdges);
 		}
 
-		// Group by directed pair and create combined edges when both DEXes exist and both are enabled
+    // Group by directed pair and create combined edges when both DEXes exist and both are enabled
 		const byPair = new Map<string, ElementDefinition[]>();
 		for (const ed of rawEdges) {
 			const a = String((ed.data as any).source);
@@ -135,13 +137,13 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 		}
 
 		const edges: ElementDefinition[] = [];
-		for (const [, arr] of byPair) {
+    for (const [, arr] of byPair) {
 			// Consider only edges whose DEX is not hidden by filter
 			const visible = arr.filter((e) => !hideDex.has(String((e.data as any).dex)));
 			// Count distinct DEX among visible edges
 			const dexSet = new Set<string>();
 			for (const ed of visible) { dexSet.add(String((ed.data as any).dex)); }
-			if (dexSet.size >= 2) {
+      if (combineEdges && dexSet.size >= 2) {
 				const anyEd = visible[0];
 				const source = String((anyEd.data as any).source);
 				const target = String((anyEd.data as any).target);
@@ -163,7 +165,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 					(ed.data as any).hiddenEdge = 1;
 					edges.push(ed);
 				}
-			} else {
+      } else {
 				// Render only those edges whose DEX is enabled
 				for (const ed of visible) {
 					edges.push(ed);
@@ -194,6 +196,9 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 		}
 		return [...nodes, ...edges];
   };
+
+  // Minimal toggle control UI (hook into existing controls region if present)
+  // If there is a toolbar/controls, wire this state into it; otherwise, leave as internal
 
 	// Helper: find edges between nodes with optional flags to avoid fragile selector strings
 	const findEdgesBetween = (
