@@ -5,16 +5,28 @@ Environment variables and defaults that control Meteora fetchers:
 
 - METEORA_API_URL
   - Description: DLMM (CLMM) pairs API endpoint
-  - Default: `https://dlmm-api.meteora.ag/v1/pairs`
+  - Default: `https://dlmm-api.meteora.ag/pair/all_with_pagination`
 
 - METEORA_BALANCED_API_URL
   - Description: Balanced (mAMM) pools API endpoint (DAMM v1)
-  - Default: `https://amm.meteora.ag/pools`
+  - Default: `https://damm-api.meteora.ag/pools`
 
 // METEORA_BALANCED_API_URL_V2
   - Description: Balanced (mAMM) v2 pools API endpoint
   - Default: `https://amm-v2.meteora.ag/pools`
   - Behavior: When both v1 and v2 are configured, results are unioned with v2 preferred on conflicts.
+
+- METEORA_BALANCED_HIDE_LOW_TVL
+  - Description: Optional USD TVL threshold to exclude low TVL pools in v1 fetch (`hide_low_tvl` query)
+  - Default: `0` (disabled)
+
+- METEORA_BALANCED_HTTP_PAGE_SIZE
+  - Description: Page size for v1/v2 paginated requests
+  - Default: `1000`
+
+- METEORA_BALANCED_HTTP_MAX_PAGES
+  - Description: Maximum number of pages to fetch from v1/v2 endpoints
+  - Default: `10`
 
 Related runtime config keys (exposed via /system/config and UI):
 

@@ -50,6 +50,17 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
   const effectiveSocket = socket ?? ctxSocket;
   const cyRef = useRef<cytoscape.Core | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  // Coalesce resize calls to prevent forced reflows from repeated synchronous cy.resize()
+  const resizeScheduledRef = useRef(false);
+  const scheduleResize = () => {
+    const cy = cyRef.current; if (!cy) return;
+    if (resizeScheduledRef.current) return;
+    resizeScheduledRef.current = true;
+    requestAnimationFrame(() => {
+      try { cy.resize(); } catch {}
+      resizeScheduledRef.current = false;
+    });
+  };
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 	const [layoutName, setLayoutName] = useState<'fcose' | 'cose' | 'grid' | 'circle'>('fcose');
@@ -390,7 +401,8 @@ useEffect(() => {
 			try { cy.one('layoutstop', () => { try { cy.fit(undefined, 20); } catch {} }); } catch {}
 		}
 		layout.run();
-    cy.resize();
+		// Schedule resize on next frame to avoid sync layout thrash
+		scheduleResize();
     laidOutRef.current = true;
   };
 
@@ -548,7 +560,7 @@ useEffect(() => {
 					const el = containerRef.current;
 					const w = (el?.clientWidth || 0);
 					const h = (el?.clientHeight || 0);
-					cy.resize();
+					scheduleResize();
 					if (w > 0 && h > 0) {
 						runLayout(forceLayoutRef.current ? 'always' : 'first');
 						forceLayoutRef.current = false;
@@ -605,11 +617,18 @@ useEffect(() => {
       const h = Math.floor(cr.height);
       if (w !== lastW || h !== lastH) {
         lastW = w; lastH = h;
-        cy.resize();
+        scheduleResize();
       }
     }) : null;
     if (ro) ro.observe(el);
-    const onWinResize = () => { cy.resize(); };
+    let winResizeRaf: number | null = null;
+    const onWinResize = () => {
+      if (winResizeRaf) cancelAnimationFrame(winResizeRaf);
+      winResizeRaf = requestAnimationFrame(() => {
+        scheduleResize();
+        winResizeRaf = null;
+      });
+    };
     window.addEventListener('resize', onWinResize);
     return () => {
       window.removeEventListener('resize', onWinResize);
@@ -734,9 +753,9 @@ useEffect(() => {
 				if (!laidOutRef.current || forceLayoutRef.current) {
 					const attemptLayout = () => {
 						const el = containerRef.current;
-						const w = (el?.clientWidth || 0);
-						const h = (el?.clientHeight || 0);
-						cy.resize();
+					const w = (el?.clientWidth || 0);
+					const h = (el?.clientHeight || 0);
+					scheduleResize();
 						if (w > 0 && h > 0) {
 							runLayout(forceLayoutRef.current ? 'always' : 'first');
 							forceLayoutRef.current = false;
@@ -804,8 +823,8 @@ useEffect(() => {
     try { cy.minZoom(0.02); cy.maxZoom(8); } catch {}
 		// Ensure user can pan/zoom freely
 		try { cy.userZoomingEnabled(true); cy.panningEnabled(true); } catch {}
-    // Force an initial resize to ensure correct viewport
-    cy.resize();
+    // Ensure correct viewport, but schedule to avoid sync reflow
+    scheduleResize();
 		// Do not auto-fit here; initial layout will handle a single fit once when size is ready
 
 		// Prefer cheaper rendering on HiDPI and toggle perf options during interaction
@@ -1057,7 +1076,8 @@ useEffect(() => {
         <CytoscapeComponent
           cy={onCyReady}
           elements={[]}
-          style={{ width: '100%', height: '100%' }}
+          // Memoize style to avoid new object every render (prop churn -> reflow)
+          style={useMemo(() => ({ width: '100%', height: '100%' }), [])}
           stylesheet={styles as any}
         />
       </div>

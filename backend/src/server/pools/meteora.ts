@@ -10,77 +10,98 @@ export async function fetchMeteoraHttp(): Promise<any> {
   const METEORA_RAW_PATH = joinPath(CONFIG.cacheDir, 'meteora-raw-sample.json');
   try {
     const baseUnsafe = (CONFIG as any)?.meteora?.apiUrl || 'https://dlmm-api.meteora.ag/pair/all_with_pagination';
-    const base = validateHttpUrl(baseUnsafe) || 'https://dlmm-api.meteora.ag/pair/all_with_pagination';
+    const baseResolved = validateHttpUrl(baseUnsafe) || 'https://dlmm-api.meteora.ag/pair/all_with_pagination';
     const size = Number(((CONFIG as any)?.meteora?.pageSize) || 200);
     const retries = Number(((CONFIG as any)?.meteora?.maxHttpRetries) || 2);
     const backoffMs = Number(((CONFIG as any)?.meteora?.httpBackoffMs) || 500);
     const maxPages = Number(((CONFIG as any)?.meteora?.maxPages) || 3);
-    const build = (page: number, limit: number) => {
+    const candidates: string[] = (() => {
+      const list: string[] = [];
+      try {
+        const b = baseResolved;
+        // Prefer all_with_pagination; add v1/pairs as secondary if user gave that
+        if (/\/v1\/pairs(\/?.*)?$/.test(b)) {
+          list.push(b);
+          const alt = b.replace('/v1/pairs', '/pair/all_with_pagination');
+          if (alt && alt !== b) list.push(alt);
+        } else {
+          list.push(b);
+          const maybeV1 = b.replace('/pair/all_with_pagination', '/v1/pairs');
+          if (maybeV1 && maybeV1 !== b) list.push(maybeV1);
+        }
+      } catch { list.push(baseResolved); }
+      return Array.from(new Set(list.filter(Boolean)));
+    })();
+    const build = (baseUrl: string, page: number, limit: number) => {
       const sp = new URLSearchParams();
       sp.append('page', String(Math.max(0, page)));
       if (Number.isFinite(limit as any) && limit > 0) sp.append('limit', String(limit));
       const qs = sp.toString();
-      return qs ? `${base}?${qs}` : base;
+      return qs ? `${baseUrl}?${qs}` : baseUrl;
     };
     // eslint-disable-next-line no-undef
     const fetchFn: any = (globalThis as any).fetch || fetch;
-    // First attempt: call all_with_pagination directly without page/limit
-    try {
-      const cid0 = httpLogStart({ source: 'meteora', url: base });
-      const r0 = await fetchFn(base, { headers: { accept: 'application/json' }, method: 'GET' });
-      const j0: any = await r0.json().catch(() => null);
-      const arr0: any[] = Array.isArray(j0?.pairs) ? j0.pairs : (Array.isArray(j0) ? j0 : (Array.isArray(j0?.data) ? j0.data : []));
-      httpLogResponse({ source: 'meteora', url: base, cid: cid0, status: r0.status || 0, ms: 0, count: (arr0 || []).length });
-      if (Array.isArray(arr0) && arr0.length > 0) {
-        try { await writeJson(METEORA_RAW_PATH, arr0); } catch {}
-        try { logger.info('meteora.http raw', { count: arr0.length, cat: 'meteora' }); } catch {}
-        return arr0;
-      }
-    } catch {}
-
-    // Fallback: single page with page/limit and small pagination loop
-    const out: any[] = [];
-    let page = 0;
-    const pageLimit = (maxPages && maxPages > 0) ? maxPages : Number.POSITIVE_INFINITY;
-    for (let i = 0; i < pageLimit; i++) {
-      let ok = false;
-      for (let attempt = 0; attempt <= retries; attempt++) {
-        try {
-          const url = build(page, size);
-          const cid = httpLogStart({ source: 'meteora', url, extra: { page, limit: size } });
-          const res = await fetchFn(url, { headers: { accept: 'application/json' }, method: 'GET' });
-          if (res?.status === 429) { try { logger.warn('meteora.http 429', { page, cat: 'meteora' }); emit('log', { level: 'warn', message: `arb:429 source=meteora page=${page}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}; httpLog429({ source: 'meteora', url, cid }); throw new Error('http 429'); }
-          if (!res?.ok) throw new Error(`http ${res?.status}`);
-          const json: any = await res.json().catch(() => null);
-          const arr: any[] = Array.isArray(json?.pairs) ? json.pairs : (Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []));
-          const more = Array.isArray(arr) && arr.length >= size;
-          out.push(...(arr || []));
-          page += 1;
-          ok = true;
-          if (!more) { i = pageLimit; break; }
-          httpLogResponse({ source: 'meteora', url, cid, status: res.status, ms: 0, count: arr.length });
-          break;
-        } catch (e: any) {
-          const msg = String(e?.message || e);
-          if (/429/.test(msg)) { await new Promise(r => setTimeout(r, backoffMs * (attempt + 1))); continue; }
-          if (attempt < retries) await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
+    for (const base of candidates) {
+      // First attempt: call base directly without page/limit
+      try {
+        const cid0 = httpLogStart({ source: 'meteora', url: base });
+        const r0 = await fetchFn(base, { headers: { accept: 'application/json' }, method: 'GET' });
+        const j0: any = await r0.json().catch(() => null);
+        const arr0: any[] = Array.isArray(j0?.pairs) ? j0.pairs : (Array.isArray(j0) ? j0 : (Array.isArray(j0?.data) ? j0.data : []));
+        httpLogResponse({ source: 'meteora', url: base, cid: cid0, status: r0.status || 0, ms: 0, count: (arr0 || []).length });
+        if (Array.isArray(arr0) && arr0.length > 0) {
+          try { await writeJson(METEORA_RAW_PATH, arr0); } catch {}
+          try { logger.info('meteora.http raw', { count: arr0.length, cat: 'meteora' }); } catch {}
+          return arr0;
         }
+      } catch {}
+
+      // Fallback: pagination loop on this base
+      const out: any[] = [];
+      let page = 0;
+      const pageLimit = (maxPages && maxPages > 0) ? maxPages : Number.POSITIVE_INFINITY;
+      for (let i = 0; i < pageLimit; i++) {
+        let ok = false;
+        for (let attempt = 0; attempt <= retries; attempt++) {
+          try {
+            const url = build(base, page, size);
+            const cid = httpLogStart({ source: 'meteora', url, extra: { page, limit: size } });
+            const res = await fetchFn(url, { headers: { accept: 'application/json' }, method: 'GET' });
+            if (res?.status === 429) { try { logger.warn('meteora.http 429', { page, cat: 'meteora' }); emit('log', { level: 'warn', message: `arb:429 source=meteora page=${page}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}; httpLog429({ source: 'meteora', url, cid }); throw new Error('http 429'); }
+            if (!res?.ok) throw new Error(`http ${res?.status}`);
+            const json: any = await res.json().catch(() => null);
+            const arr: any[] = Array.isArray(json?.pairs) ? json.pairs : (Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []));
+            const more = Array.isArray(arr) && arr.length >= size;
+            out.push(...(arr || []));
+            page += 1;
+            ok = true;
+            if (!more) { i = pageLimit; break; }
+            httpLogResponse({ source: 'meteora', url, cid, status: res.status, ms: 0, count: arr.length });
+            break;
+          } catch (e: any) {
+            const msg = String(e?.message || e);
+            if (/429/.test(msg)) { await new Promise(r => setTimeout(r, backoffMs * (attempt + 1))); continue; }
+            if (attempt < retries) await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
+          }
+        }
+        if (!ok) break;
       }
-      if (!ok) break;
+      if (out.length > 0) {
+        try { await writeJson(METEORA_RAW_PATH, out); } catch (e: any) { try { logger.warn('meteora.cache write failed', { file: METEORA_RAW_PATH, error: String(e?.message || e), cat: 'meteora' }); } catch {} }
+        try { logger.info('meteora.http raw', { count: out.length, cat: 'meteora' }); } catch {}
+        return out;
+      }
+      // else try next candidate
     }
-    if (out.length === 0) {
-      const url = build(0, size);
-      const res = await fetchFn(url, { headers: { accept: 'application/json' }, method: 'GET' });
-      if (!res?.ok) throw new Error(`http ${res?.status}`);
-      const json: any = await res.json().catch(() => null);
-      const single = Array.isArray(json?.pairs) ? json.pairs : (Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []));
-      try { httpLogResponse({ source: 'meteora', url, cid: `http-${Date.now()}`, status: res.status, ms: 0, count: single.length }); } catch {}
-      try { await writeJson(METEORA_RAW_PATH, single); } catch (e: any) { try { logger.warn('meteora.cache write failed', { file: METEORA_RAW_PATH, error: String(e?.message || e), cat: 'meteora' }); } catch {} }
-      return single;
-    }
-    try { await writeJson(METEORA_RAW_PATH, out); } catch (e: any) { try { logger.warn('meteora.cache write failed', { file: METEORA_RAW_PATH, error: String(e?.message || e), cat: 'meteora' }); } catch {} }
-    try { logger.info('meteora.http raw', { count: out.length, cat: 'meteora' }); } catch {}
-    return out;
+    // If all candidates failed, attempt one last single GET on primary base with paging
+    const url = build(baseResolved, 0, size);
+    const res = await fetchFn(url, { headers: { accept: 'application/json' }, method: 'GET' });
+    if (!res?.ok) throw new Error(`http ${res?.status}`);
+    const json: any = await res.json().catch(() => null);
+    const single = Array.isArray(json?.pairs) ? json.pairs : (Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []));
+    try { httpLogResponse({ source: 'meteora', url, cid: `http-${Date.now()}`, status: res.status, ms: 0, count: single.length }); } catch {}
+    try { await writeJson(METEORA_RAW_PATH, single); } catch (e: any) { try { logger.warn('meteora.cache write failed', { file: METEORA_RAW_PATH, error: String(e?.message || e), cat: 'meteora' }); } catch {} }
+    return single;
   } catch {
     return [];
   }

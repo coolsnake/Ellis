@@ -273,7 +273,7 @@ export const CONFIG = {
   // Meteora configuration (DLMM HTTP-first)
   meteora: {
     mode: (process.env.METEORA_MODE as any) || 'http', // 'http' | 'sdk'
-    apiUrl: process.env.METEORA_API_URL || 'https://dlmm-api.meteora.ag/v1/pairs',
+    apiUrl: process.env.METEORA_API_URL || 'https://dlmm-api.meteora.ag/pair/all_with_pagination',
     // Optional DLMM program id for websocket subscriptions
     programId: process.env.METEORA_PROGRAM_ID,
     pageSize: Number(process.env.METEORA_HTTP_PAGE_SIZE || 1000),
@@ -346,6 +346,8 @@ export const CONFIG = {
   meteoraBalanced: {
     apiUrl: process.env.METEORA_BALANCED_API_URL || 'https://damm-api.meteora.ag/pools',
     apiUrlV2: process.env.METEORA_BALANCED_API_URL_V2 || 'https://dammv2-api.meteora.ag/pools',
+    // Optional: hide pools below this TVL threshold (USD) for v1 API
+    hideLowTvl: Number(process.env.METEORA_BALANCED_HIDE_LOW_TVL || 0),
     pageSize: Number(process.env.METEORA_BALANCED_HTTP_PAGE_SIZE || 1000),
     maxPages: Number(process.env.METEORA_BALANCED_HTTP_MAX_PAGES || 10),
     cacheTtlMs: Number(process.env.METEORA_BALANCED_CACHE_TTL_MS || 300_000),

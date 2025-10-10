@@ -240,6 +240,14 @@ export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[
   // eslint-disable-next-line no-undef
   const fetchFn: any = (globalThis as any).fetch || fetch;
   const out: any[] = [];
+  const hideLow = (() => {
+    try {
+      const raw = (CONFIG as any)?.meteoraBalanced?.hideLowTvl;
+      if (raw == null) return undefined;
+      const n = Number(raw);
+      return Number.isFinite(n) && n > 0 ? n : undefined;
+    } catch { return undefined; }
+  })();
   const anchors: string[] = [
     'So11111111111111111111111111111111111111112', // SOL
     'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
@@ -252,6 +260,7 @@ export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[
         sp.append('address', addr);
         if (Number.isFinite(size) && size > 0) sp.append('limit', String(size));
         sp.append('page', String(page));
+        if (hideLow != null) sp.append('hide_low_tvl', String(hideLow));
         const qs = sp.toString();
         return qs ? `${base}?${qs}` : base;
       })();
@@ -331,7 +340,14 @@ export async function fetchMeteoraBalancedV2Http(baseUrl?: string): Promise<any[
     const data = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []);
     out.push(...data);
     httpLogResponse({ source: 'meteora_balanced_v2', url, cid, status: res.status, ms: 0, count: data.length });
-    if (!json?.next && !json?.hasNextPage) break;
+    const hasMore = (() => {
+      if (json?.next || json?.hasNextPage) return true;
+      const pages = Number(json?.pages || 0);
+      const curr = Number(json?.current_page || (page + 1));
+      if (pages > 0 && curr < pages) return true;
+      return Array.isArray(data) && Number.isFinite(size) && size > 0 && data.length >= size;
+    })();
+    if (!hasMore) break;
     page += 1;
     // Respect 10 RPS: space requests ~100ms apart
     await new Promise(r => setTimeout(r, 110));
@@ -343,7 +359,7 @@ export async function fetchMeteoraBalancedAll(): Promise<PoolsPayload> {
   const v2 = await fetchMeteoraBalancedV2Http();
   const v1 = await fetchMeteoraBalancedV1Http();
   const normV2 = await normalizeMeteoraBalancedHttp(v2);
-  const normV1 = await normalizeMeteoraBalancedHttp(v1);
+  const normV1 = await normalizeMeteoraBalancedV1(v1);
   const combinedAmm = mergeBalancedPools(normV2.amm, normV1.amm);
   const ammCanon = canonicalizePairs(combinedAmm);
   return { amm: ammCanon, clmm: [] } as any;

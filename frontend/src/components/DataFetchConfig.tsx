@@ -50,9 +50,10 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     orca_minAmmLiqBase: 0,
     orca_minClmmLiquidity: 0,
     // Meteora (DLMM)
-    meteora_apiUrl: 'https://dlmm-api.meteora.ag/v1/pairs',
+    meteora_apiUrl: 'https://dlmm-api.meteora.ag/pair/all_with_pagination',
     // Meteora Balanced (mAMM)
-    meteoraBalanced_apiUrl: 'https://amm.meteora.ag/pools',
+    meteoraBalanced_apiUrl: 'https://damm-api.meteora.ag/pools',
+    meteoraBalanced_hideLowTvl: 0,
     meteoraBalanced_cacheTtlMs: 300000,
     meteoraBalanced_maxHttpRetries: 2,
     meteoraBalanced_httpBackoffMs: 500,
