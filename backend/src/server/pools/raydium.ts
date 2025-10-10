@@ -39,7 +39,7 @@ export async function fetchRaydiumPoolsRaw(): Promise<any> {
             });
             const url = `${baseUrl}?${qs.toString()}`;
             const started = Date.now();
-            try { logger.info('raydium.http list request', { page, pageSize, cat: 'raydium' }); } catch {}
+            try { logger.debug('raydium.http list request', { page, pageSize, cat: 'raydium' }); } catch {}
             const res = await fetchFn(url, { headers: { accept: 'application/json' } });
             if (res?.status === 429) {
               try { emit('log', { level: 'warn', message: 'arb:429 source=raydium kind=http surface=pools.info.list', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
@@ -56,7 +56,7 @@ export async function fetchRaydiumPoolsRaw(): Promise<any> {
             if (arr.length) collected.push(...arr);
             const hasNext = !!json?.data?.hasNextPage;
             page += 1;
-            try { logger.info('raydium.http list page ok', { page: page - 1, ms: Date.now() - started, count: arr.length, next: !!hasNext, cat: 'raydium' }); } catch {}
+            try { logger.debug('raydium.http list page ok', { page: page - 1, ms: Date.now() - started, count: arr.length, next: !!hasNext, cat: 'raydium' }); } catch {}
             if (!hasNext) break;
           } catch (e: any) {
             const msg = String(e?.message || e);
