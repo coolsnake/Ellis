@@ -216,7 +216,7 @@ export const CONFIG = {
     // DEPRECATED: pool refresh loops are coordinated via /arb/pools/refresh (kept for compatibility)
     autoStartPools: (process.env.AUTO_START_POOLS || 'false') === 'true',
     // Token mint blocklist: comma-separated list of mint addresses to exclude from pools
-    tokenBlocklistMints: (process.env.TOKEN_BLOCKLIST_MINTS || 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263')
+    tokenBlocklistMints: (process.env.TOKEN_BLOCKLIST_MINTS || '')
       .split(',')
       .map(s => s.trim())
       .filter(Boolean),
