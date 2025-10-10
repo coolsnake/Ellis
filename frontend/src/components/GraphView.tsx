@@ -400,12 +400,31 @@ useEffect(() => {
   };
 
 		// Apply edge highlighting given edge ids and/or (source,target,dex) pairs
-		const applyHighlight = (payload: { edgeIds?: string[]; pairs?: Array<{ source: string; target: string; dex?: string }>; fit?: boolean; pathDetails?: boolean } = {}, opts?: { noFit?: boolean; noDetails?: boolean }) => {
+    const applyHighlight = async (payload: { edgeIds?: string[]; pairs?: Array<{ source: string; target: string; dex?: string }>; fit?: boolean; pathDetails?: boolean } = {}, opts?: { noFit?: boolean; noDetails?: boolean }) => {
     try {
       const cy = cyRef.current; if (!cy) return;
       const ids = (payload?.edgeIds || []).filter(Boolean);
       const pairs = Array.isArray(payload?.pairs) ? payload?.pairs : [];
       if (!ids.length && !pairs.length) return;
+      // Prefetch details for path rendering if requested
+      if (payload.pathDetails && !opts?.noDetails) {
+        try {
+          const pairList = pairs?.map((p) => ({ source: String(p.source), target: String(p.target), dex: p.dex ? String(p.dex) : undefined })) as any;
+          const fetched = await (async () => {
+            // @ts-ignore - fetchEdgeDetails bound in onCyReady scope
+            if (typeof (fetchEdgeDetails as any) === 'function') {
+              // @ts-ignore
+              return await (fetchEdgeDetails as any)(ids, pairList);
+            }
+            return [] as any[];
+          })();
+          // @ts-ignore - hydrateEdgesInCy bound in onCyReady scope
+          if (Array.isArray(fetched) && typeof (hydrateEdgesInCy as any) === 'function') {
+            // @ts-ignore
+            (hydrateEdgesInCy as any)(cy, fetched);
+          }
+        } catch {}
+      }
       // Clear previous highlight
       cy.edges().removeClass('highlighted');
       // Match by ids (including reverse suffix) and by (source,target,dex) pairs
@@ -493,7 +512,7 @@ useEffect(() => {
     try {
       // Skip heavy snapshot load when not visible; will be loaded on first visibility
       if (!pageVisibleRef.current || !isVisibleRef.current) { return; }
-      const r = await fetch(`${apiBase}${ROUTES.graph.snapshot}`);
+      const r = await fetch(`${apiBase}${ROUTES.graph.snapshot}?lite=1`);
       const j: GraphSnapshot = await r.json();
       const cy = cyRef.current; if (!cy) return;
       // Capture previous node positions to preserve layout across refreshes
@@ -836,9 +855,61 @@ useEffect(() => {
       } catch {}
       setSelection({ kind: 'node', id, label, degree, neighbors });
     });
-    cy.on('tap', 'edge', (evt) => {
+    // Details cache + fetchers for on-demand hydration
+    const detailsCache = new Map<string, any>();
+    const fetchEdgeDetails = async (ids: string[], pairs?: Array<{ source: string; target: string; dex?: string }>) => {
+      const want = (ids || []).map(String).filter(Boolean);
+      const missing = want.filter((id) => !detailsCache.has(id));
+      if (missing.length === 0 && (!pairs || pairs.length === 0)) return [] as any[];
+      const r = await fetch(`${apiBase}${ROUTES.graph.edgeDetails}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ids: missing, pairs }),
+      });
+      const j = await r.json();
+      const edges: any[] = Array.isArray(j?.edges) ? j.edges : [];
+      edges.forEach((e: any) => detailsCache.set(String(e.id), e));
+      return edges;
+    };
+    const hydrateEdgesInCy = (core: cytoscape.Core, edges: any[]) => {
+      edges.forEach((e) => {
+        const id = String(e?.id || ''); if (!id) return;
+        const el = core.getElementById(id);
+        if (el && el.length && el.isEdge()) {
+          el.data({
+            ...el.data(),
+            fee_bps: e.fee_bps,
+            liquidity: e.liquidity,
+            liquidity_display: e.liquidity_display,
+            weight: e.weight,
+            price_a_per_b: e.price_a_per_b,
+            tvl_usd: e.tvl_usd,
+            pool_id: e.pool_id,
+            source_account: e.source_account,
+            target_account: e.target_account,
+            pool_kind: e.pool_kind,
+            direction: e.direction,
+            pool_liquidity_raw: e.pool_liquidity_raw,
+          });
+        }
+      });
+    };
+
+    cy.on('tap', 'edge', async (evt) => {
       const e = evt.target as EdgeSingular;
-      const combinedEdgesDetails = e.data('combinedEdgesDetails');
+      const isCombined = e.data('combined') === 1;
+      if (isCombined) {
+        const ids: string[] = (Array.isArray(e.data('combinedOriginalIds')) ? e.data('combinedOriginalIds') : []).map(String);
+        const fetched = await fetchEdgeDetails(ids);
+        hydrateEdgesInCy(cy, fetched.length ? fetched : ids.map((id) => detailsCache.get(id)).filter(Boolean));
+      } else {
+        const id = String(e.id());
+        const fetched = await fetchEdgeDetails([id]);
+        hydrateEdgesInCy(cy, fetched.length ? fetched : [detailsCache.get(id)].filter(Boolean));
+      }
+      const combinedEdgesDetails = isCombined
+        ? (e.data('combinedOriginalIds') || []).map((id: string) => detailsCache.get(String(id))).filter(Boolean)
+        : undefined;
       setSelection({
         kind: 'edge',
         id: e.id(),

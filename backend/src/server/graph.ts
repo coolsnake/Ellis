@@ -15,6 +15,38 @@ import { findPathInSnapshot } from './graph.path.js';
 
 
 
+// Lite view types and mappers (for UI payload minimization)
+type GraphEdgeLite = Pick<GraphEdge, 'id' | 'source' | 'target' | 'dex' | 'pool_id' | 'weight'>;
+
+const toLiteEdge = (e: GraphEdge): GraphEdgeLite => ({
+  id: e.id,
+  source: e.source,
+  target: e.target,
+  dex: e.dex,
+  pool_id: e.pool_id,
+  weight: e.weight,
+});
+
+export const toLiteSnapshot = (snap: GraphSnapshot): GraphSnapshot => ({
+  version: snap.version,
+  timestamp: snap.timestamp,
+  nodes: snap.nodes,
+  // Cast ok: GraphEdge fields are optional; lite subset is valid at runtime for UI
+  edges: (snap.edges as any[]).map(toLiteEdge as any) as any,
+});
+
+export const toLiteDiff = (d: GraphDiff): GraphDiff => ({
+  version: d.version,
+  timestamp: d.timestamp,
+  addedNodes: d.addedNodes,
+  updatedNodes: d.updatedNodes,
+  removedNodeIds: d.removedNodeIds,
+  // Cast ok: see note above
+  addedEdges: (d.addedEdges as any[]).map(toLiteEdge as any) as any,
+  updatedEdges: (d.updatedEdges as any[]).map(toLiteEdge as any) as any,
+  removedEdgeIds: d.removedEdgeIds,
+});
+
 let lastSnapshot: GraphSnapshot | null = null;
 let inflight: Promise<GraphSnapshot> | null = null;
 const SNAPSHOT_TTL_MS = Math.max(1000, Number((CONFIG.system as any)?.graphSnapshotTtlMs || 30_000));
@@ -41,10 +73,10 @@ export async function rebuildGraphNow(io?: SocketIOServer): Promise<void> {
     const diff = diffSnapshots(prev, next);
     const changed = diff.addedNodes.length || diff.updatedNodes.length || diff.removedNodeIds.length || diff.addedEdges.length || diff.updatedEdges.length || diff.removedEdgeIds.length;
     if (io) {
-      if (!prev) io.emit('graph-snapshot', next); else if (changed) io.emit('graph-update', diff);
+      if (!prev) io.emit('graph-snapshot', toLiteSnapshot(next)); else if (changed) io.emit('graph-update', toLiteDiff(diff));
     } else {
       // If no io is provided, emit via realtime emitter to reach clients
-      try { if (!prev) emit('graph-snapshot', next); else if (changed) emit('graph-update', diff); } catch {}
+      try { if (!prev) emit('graph-snapshot', toLiteSnapshot(next)); else if (changed) emit('graph-update', toLiteDiff(diff)); } catch {}
     }
     if (!prev) {
       try { await pushArbGraphSnapshot(next); } catch {}
@@ -57,8 +89,8 @@ export async function rebuildGraphNow(io?: SocketIOServer): Promise<void> {
         try { await pushArbGraphSnapshot(next); } catch {}
         diffSinceRebase = 0; lastRebaseMs = nowMs;
         try { emit('log', { level: 'info', message: `graph:push snapshot v=${next.version} nodes=${next.nodes.length} edges=${next.edges.length}`, timestamp: new Date().toISOString(), context: { cat: 'graph', code: LogCode.GRAPH_PUSH_SNAPSHOT } }); } catch {}
-        // Also emit snapshot to clients to ensure they rebase in lockstep
-        try { if (io) io.emit('graph-snapshot', next); else emit('graph-snapshot', next); } catch {}
+        // Also emit snapshot to clients (lite) to ensure they rebase in lockstep
+        try { if (io) io.emit('graph-snapshot', toLiteSnapshot(next)); else emit('graph-snapshot', toLiteSnapshot(next)); } catch {}
         try { logger.info('graph.rebase', { at_ms: lastRebaseMs, version: next.version, nodes: next.nodes.length, edges: next.edges.length }); } catch {}
       } else {
         try { await pushArbGraphDiff(diff); } catch {}
@@ -947,7 +979,7 @@ export function startGraphStream(io: SocketIOServer): void {
       // Do not auto-refresh pool sources here; rely on explicit /arb/pools/refresh
       const snap = await getGraphSnapshot(true);
       if (!last) {
-        io.emit('graph-snapshot', snap);
+        io.emit('graph-snapshot', toLiteSnapshot(snap));
         // Push initial snapshot to arb-rs to enter backend-graph mode immediately
         try { await pushArbGraphSnapshot(snap); } catch {}
         try { await notifyArbServiceRefresh(); } catch {}
@@ -960,7 +992,7 @@ export function startGraphStream(io: SocketIOServer): void {
       const diff = diffSnapshots(last, snap);
       const changed = diff.addedNodes.length || diff.updatedNodes.length || diff.removedNodeIds.length || diff.addedEdges.length || diff.updatedEdges.length || diff.removedEdgeIds.length;
       if (changed) {
-        io.emit('graph-update', diff);
+        io.emit('graph-update', toLiteDiff(diff));
         // Push diff to arb-rs; occasionally rebase with full snapshot per rebase policy
         try {
           const nowMs = Date.now();

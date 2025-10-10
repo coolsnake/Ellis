@@ -27,6 +27,8 @@ pub struct Opportunity {
     #[serde(skip_serializing_if = "Option::is_none")] pub bf_slack_log: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")] pub bf_required_rate: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")] pub bf_rate_delta_bps: Option<i64>,
+    // Marker to distinguish simulated candidates
+    #[serde(skip_serializing_if = "Option::is_none")] pub is_near_miss: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -42,6 +44,7 @@ pub struct BottleneckEdge {
 #[derive(Debug, Clone, Serialize)]
 pub struct OpportunitiesResponse {
     pub items: Vec<Opportunity>,
+    #[serde(skip_serializing_if = "Option::is_none")] pub near_items: Option<Vec<Opportunity>>,
     #[serde(skip_serializing_if = "Option::is_none")] pub summary: Option<OpportunitiesSummary>,
 }
 

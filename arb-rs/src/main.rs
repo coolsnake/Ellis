@@ -587,6 +587,7 @@ async fn main() -> anyhow::Result<()> {
                             bf_slack_log: None,
                             bf_required_rate: None,
                             bf_rate_delta_bps: None,
+                            is_near_miss: None,
                         });
                     }
                     let mut near_pair = best_below.map(|o| (o, best_below_shortfall));
@@ -719,6 +720,7 @@ async fn main() -> anyhow::Result<()> {
                                 bf_slack_log: None,
                                 bf_required_rate: None,
                                 bf_rate_delta_bps: None,
+                                is_near_miss: Some(true),
                             };
                             // Attach BF slack debug for near-miss
                             near.bf_slack_log = Some(nmcy.slack);
@@ -983,7 +985,7 @@ async fn main() -> anyhow::Result<()> {
                                     let rates_units = hop_units.join("; ");
                                     tracing::info!(target = "arb_rs", "arb.near_miss.triangle path={} profit_bps={} net_bps={} hops=3 rates_units={} pools=[{}] fees=[{}] product={:.8}", path_str, profit_bps, net_bps, rates_units, pools_str, fees_str, prod);
                                 }
-                                let near = Opportunity { path: labels, profit_bps, net_bps: Some(net_bps), est_profit_usd: 1.0, dexes, hop_dexes: Some(hop_dexes), hop_rates: Some(hop_rates), hop_outs: None, hop_pool_ids: Some(hop_pool_ids), hop_fee_bps: Some(hop_fee_bps_vec), hop_liquidity_display: None, hop_count: Some(3), rate_product: Some(prod), link_edges_used: Some(link_edges_used), link_penalty_bps_total: Some(link_penalty_bps_total), min_edge_liquidity: est_capacity, est_capacity, bottleneck: bottleneck_edge, detected_ms: Some(now_ts), first_seen_ms: None, detections: Some(0), bf_slack_log: None, bf_required_rate: None, bf_rate_delta_bps: None };
+                                let near = Opportunity { path: labels, profit_bps, net_bps: Some(net_bps), est_profit_usd: 1.0, dexes, hop_dexes: Some(hop_dexes), hop_rates: Some(hop_rates), hop_outs: None, hop_pool_ids: Some(hop_pool_ids), hop_fee_bps: Some(hop_fee_bps_vec), hop_liquidity_display: None, hop_count: Some(3), rate_product: Some(prod), link_edges_used: Some(link_edges_used), link_penalty_bps_total: Some(link_penalty_bps_total), min_edge_liquidity: est_capacity, est_capacity, bottleneck: bottleneck_edge, detected_ms: Some(now_ts), first_seen_ms: None, detections: Some(0), bf_slack_log: None, bf_required_rate: None, bf_rate_delta_bps: None, is_near_miss: Some(true) };
                                 near_pair = Some((near, shortfall));
                             }
                         }
@@ -1082,13 +1084,23 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                     s.opportunities = merged;
-                    s.near_miss = near_pair.as_ref().map(|(o, _)| o.clone());
-                    s.near_miss_shortfall_bps = near_pair.as_ref().map(|(_, sh)| *sh);
                     // Build top-K near-misses list for UI
                     let mut nlist = near_list;
                     nlist.sort_by_key(|(_, sh)| *sh);
                     let k = s.config.debug_top_n.max(1).min(10);
-                    s.near_misses = nlist.into_iter().take(k).map(|(o,_)| o).collect();
+                    s.near_misses = nlist.iter().take(k).map(|(o,_)| o.clone()).collect();
+                    // Prefer ≥3-DEX paths and rotate across cycles; fallback to best-by-shortfall
+                    let preferred: Vec<Opportunity> = s.near_misses.iter().cloned().filter(|o| o.dexes.len() >= 3).collect();
+                    let pool: Vec<Opportunity> = if !preferred.is_empty() { preferred } else { s.near_misses.clone() };
+                    if !pool.is_empty() {
+                        let idx = (s.metrics.detection_cycles_total as usize) % pool.len();
+                        let chosen = pool[idx].clone();
+                        s.near_miss = Some(chosen.clone());
+                        s.near_miss_shortfall_bps = Some((s.config.min_profit_bps - chosen.profit_bps).max(0));
+                    } else {
+                        s.near_miss = near_pair.as_ref().map(|(o, _)| o.clone());
+                        s.near_miss_shortfall_bps = near_pair.as_ref().map(|(_, sh)| *sh);
+                    }
                     s.metrics.opportunities_active = s.opportunities.len() as u64;
                     s.metrics.max_profit_bps = s.opportunities.iter().map(|o| o.profit_bps).max().unwrap_or(0) as i64;
                     let total: i64 = s.opportunities.iter().map(|o| o.profit_bps).sum();
@@ -1116,7 +1128,8 @@ async fn main() -> anyhow::Result<()> {
                             let path = nm.path.join("->");
                             let hops = nm.hop_count.unwrap_or(nm.path.len());
                             let net_bps = nm.net_bps.unwrap_or(nm.profit_bps);
-                            tracing::info!(shortfall_bps = shortfall, net_bps, hops, path = %path, "arb.near_miss.summary");
+                            let dexes = nm.dexes.join(",");
+                            tracing::info!(shortfall_bps = shortfall, net_bps, hops, dexes = %dexes, path = %path, "arb.near_miss.summary");
                             s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.near_miss.summary shortfall_bps={} net_bps={} hops={} path={}", shortfall, net_bps, hops, path) });
                             let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
                         } else if s.config.debug_near_miss_failures {
@@ -1214,6 +1227,7 @@ async fn get_opportunities(
 ) -> Json<OpportunitiesResponse> {
     let s = state.read().await;
     let items = s.opportunities.clone();
+    let near_items = if s.near_misses.is_empty() { None } else { Some(s.near_misses.clone()) };
     // Build summary even if empty
     let count = items.len();
     let max_profit_bps = items.iter().map(|o| o.profit_bps).max().unwrap_or(0);
@@ -1242,7 +1256,7 @@ async fn get_opportunities(
         near_miss_shortfall_bps: s.near_miss_shortfall_bps,
         near_misses: if s.near_misses.is_empty() { None } else { Some(s.near_misses.clone()) },
     };
-    Json(OpportunitiesResponse { items, summary: Some(summary) })
+    Json(OpportunitiesResponse { items, near_items, summary: Some(summary) })
 }
 
 #[derive(Deserialize, Clone)]

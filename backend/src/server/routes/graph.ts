@@ -9,6 +9,15 @@ export function createGraphRouter(_io: SocketIOServer): Router {
     try {
       const { getGraphSnapshot } = await import('../graph.js');
       const snap = await getGraphSnapshot(false);
+      // Support lite view via query param
+      try {
+        const reqAny = _req as any;
+        const lite = String(reqAny?.query?.lite || '') === '1';
+        if (lite) {
+          const { toLiteSnapshot } = await import('../graph.js');
+          return res.json(toLiteSnapshot(snap) as any);
+        }
+      } catch {}
       res.json(snap);
     } catch (e: any) {
       logger.error('graph snapshot failed', { error: String(e?.message || e) });
@@ -25,6 +34,25 @@ export function createGraphRouter(_io: SocketIOServer): Router {
       res.json({ path });
     } catch (e: any) {
       res.status(500).json({ path: [] });
+    }
+  });
+
+  // Return full edge details for selected edges by ids and/or pairs
+  api.post('/graph/edge-details', async (req, res) => {
+    try {
+      const body = (req as any)?.body || {};
+      const ids: string[] = Array.isArray(body?.ids) ? (body.ids as any[]).map((x) => String(x)).filter(Boolean) : [];
+      const pairs: Array<{ source: string; target: string; dex?: string }> = Array.isArray(body?.pairs)
+        ? (body.pairs as any[]).map((p) => ({ source: String(p?.source||''), target: String(p?.target||''), dex: p?.dex ? String(p.dex) : '' }))
+        : [];
+      const wantIds = new Set(ids);
+      const matchPair = (e: any) => pairs.some((p) => e.source === p.source && e.target === p.target && (!p.dex || e.dex === p.dex));
+      const { getGraphSnapshot } = await import('../graph.js');
+      const snap = await getGraphSnapshot(false);
+      const edges = (snap?.edges || []).filter((e: any) => wantIds.has(String(e?.id)) || matchPair(e));
+      res.json({ edges });
+    } catch (e: any) {
+      res.status(500).json({ edges: [] });
     }
   });
 
