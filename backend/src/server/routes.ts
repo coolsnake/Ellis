@@ -6,7 +6,7 @@ import { logger, setLogLevel, setLoggingEnabled, setFileLogging } from '../utils
 import { CONFIG } from '../utils/config.js';
 import { ensureWallet, getBalances, getPublicKey, generateAndSaveWallet, signAndSendSerializedTransaction, getConnection } from '../wallet/wallet.js';
 import { getPriceByMint } from './priceStore.js';
-import { readJson, writeJson } from '../utils/fs.js';
+import { readJson, writeJson, joinPath, ensureDir } from '../utils/fs.js';
 import { searchTokens } from '../jupiter/tokenApi.js';
 import { tradingController } from './tradingController.js';
 import { systemStatus } from './status.js';
@@ -35,6 +35,83 @@ import { createLeveragedGridRouter } from './routes/strategies/leveragedGrid.js'
 import { createLiquidatorRouter } from './routes/strategies/liquidator.js';
 import { createPoolsRouter } from './routes/pools.js';
 import { createArbRouter } from './routes/arb.js';
+
+// Opportunity sampling (env knobs + helper)
+const OPP_SAMPLE_DIR = process.env.OPP_SAMPLE_DIR || joinPath(CONFIG.logDir, 'opportunity-samples');
+const OPP_SAMPLE_RATE = Number(process.env.OPP_SAMPLE_RATE || 0.02);
+const OPP_SAMPLE_THRESHOLD_BPS = Number(process.env.OPP_SAMPLE_THRESHOLD_BPS || 50);
+const OPP_SAMPLE_RETENTION_HOURS = Number(process.env.OPP_SAMPLE_RETENTION_HOURS || 1);
+const OPP_SAMPLE_RETENTION_MS = Math.max(0, Math.floor(OPP_SAMPLE_RETENTION_HOURS * 60 * 60 * 1000));
+const OPP_SAMPLE_MAX_FILES_PER_KIND = Math.max(0, Number(process.env.OPP_SAMPLE_MAX_FILES_PER_KIND || 500));
+const OPP_SAMPLE_PRUNE_INTERVAL_MS = Math.max(30000, Number(process.env.OPP_SAMPLE_PRUNE_INTERVAL_MS || 300000));
+
+async function saveOpportunitySampleOnce(kind: 'detected'|'near_miss', o: any): Promise<void> {
+  try {
+    const { createHash } = await import('crypto');
+    const fs = await import('fs/promises');
+    const sig = createHash('sha1').update(JSON.stringify({
+      path: Array.isArray(o?.path) ? o.path : [],
+      dexes: Array.isArray(o?.hop_dexes) ? o.hop_dexes : (Array.isArray(o?.dexes) ? o.dexes : []),
+      pools: Array.isArray(o?.hop_pool_ids) ? o.hop_pool_ids : [],
+      bps_bucket: Math.round((Number(o?.net_bps ?? o?.profit_bps ?? 0)) / 5) * 5,
+    })).digest('hex');
+    const dir = joinPath(OPP_SAMPLE_DIR, kind);
+    await ensureDir(dir);
+    const fp = joinPath(dir, `${sig}.json`);
+    try { await fs.access(fp); return; } catch {}
+    const bps = Math.round(Number(o?.net_bps ?? o?.profit_bps ?? 0) || 0);
+    if (!(bps >= OPP_SAMPLE_THRESHOLD_BPS) && Math.random() >= OPP_SAMPLE_RATE) return;
+    await fs.writeFile(fp, JSON.stringify({ saved_at_ms: Date.now(), kind, opportunity: o }, null, 2), 'utf-8');
+  } catch {}
+}
+
+async function pruneKindDir(kind: 'detected'|'near_miss'): Promise<void> {
+  try {
+    const fs = await import('fs/promises');
+    const dir = joinPath(OPP_SAMPLE_DIR, kind);
+    await ensureDir(dir);
+    let names: string[] = [];
+    try { names = await fs.readdir(dir); } catch { names = []; }
+    const paths = names.filter(n => n.toLowerCase().endsWith('.json')).map(n => joinPath(dir, n));
+    if (!paths.length) return;
+    const stats = await Promise.all(paths.map(async (p) => {
+      try { const s = await fs.stat(p); return { path: p, mtimeMs: s.mtimeMs || 0, size: s.size || 0 }; } catch { return null; }
+    }));
+    const files = stats.filter(Boolean) as { path: string; mtimeMs: number; size: number }[];
+    const now = Date.now();
+    const cutoff = now - OPP_SAMPLE_RETENTION_MS;
+    // Delete by age first
+    for (const f of files) {
+      if (OPP_SAMPLE_RETENTION_MS > 0 && f.mtimeMs > 0 && f.mtimeMs < cutoff) {
+        try { await fs.unlink(f.path); } catch {}
+      }
+    }
+    // Refresh file list after age-based deletes
+    let remainingNames: string[] = [];
+    try { remainingNames = await fs.readdir(dir); } catch { remainingNames = []; }
+    const remainingPaths = remainingNames.filter(n => n.toLowerCase().endsWith('.json')).map(n => joinPath(dir, n));
+    if (OPP_SAMPLE_MAX_FILES_PER_KIND > 0 && remainingPaths.length > OPP_SAMPLE_MAX_FILES_PER_KIND) {
+      const restats = await Promise.all(remainingPaths.map(async (p) => {
+        try { const s = await fs.stat(p); return { path: p, mtimeMs: s.mtimeMs || 0 }; } catch { return null; }
+      }));
+      const order = (restats.filter(Boolean) as { path: string; mtimeMs: number }[])
+        .sort((a, b) => a.mtimeMs - b.mtimeMs); // oldest first
+      const toDelete = Math.max(0, order.length - OPP_SAMPLE_MAX_FILES_PER_KIND);
+      for (let i = 0; i < toDelete; i += 1) {
+        try { await fs.unlink(order[i].path); } catch {}
+      }
+    }
+  } catch {}
+}
+
+async function pruneOpportunitySamples(): Promise<void> {
+  await pruneKindDir('detected');
+  await pruneKindDir('near_miss');
+}
+
+// Kick off periodic pruning and run once on boot
+try { pruneOpportunitySamples().catch(()=>{}); } catch {}
+try { setInterval(() => { pruneOpportunitySamples().catch(()=>{}); }, OPP_SAMPLE_PRUNE_INTERVAL_MS); } catch {}
 
 export function registerRoutes(app: Express, io: SocketIOServer): void {
   const api = Router();
@@ -287,6 +364,12 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
             const items: ArbOpportunity[] = Array.isArray((payload as any)?.items)
               ? ((payload as any).items as ArbOpportunity[])
               : (Array.isArray(payload) ? (payload as ArbOpportunity[]) : []);
+            // Sample and dedupe-save top detected opportunities (best-effort)
+            try {
+              for (const o of items.slice(0, 3)) {
+                saveOpportunitySampleOnce('detected', o as any).catch(()=>{});
+              }
+            } catch {}
             // richer signature + periodic emit fallback to avoid UI appearing stuck when lower-ranked items change
             (registerRoutes as any)._lastOppEmitAt = (registerRoutes as any)._lastOppEmitAt || 0;
             const richSig = JSON.stringify({
@@ -354,6 +437,8 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
               // Keep a signature to avoid spamming identical near-miss logs
               (registerRoutes as any)._lastNearSig = (registerRoutes as any)._lastNearSig || '';
               if (near && typeof shortfallBps === 'number') {
+                // Sample and dedupe-save near-miss opportunity (best-effort)
+                try { saveOpportunitySampleOnce('near_miss', near as any).catch(()=>{}); } catch {}
                 const nearSig = `${Math.round(shortfallBps)}:${(near.path||[]).join('>')}`;
                 if ((registerRoutes as any)._lastNearSig !== nearSig) {
                   (registerRoutes as any)._lastNearSig = nearSig;

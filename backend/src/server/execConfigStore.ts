@@ -10,6 +10,10 @@ export type ExecConfig = {
   createAtasInTx: boolean;
   dynamicCompute: boolean;
   maxTxSizeBytes?: number;
+  // New: optionally wrap/unwrap SOL inside tx where needed
+  wrapSolInTx?: boolean;
+  // New: optional Address Lookup Tables to include when assembling
+  lookupTableAddresses?: string[];
 };
 
 const file = resolve(CONFIG.cacheDir, 'exec-config.json');
@@ -23,6 +27,8 @@ const defaults: ExecConfig = {
   createAtasInTx: true,
   dynamicCompute: true,
   maxTxSizeBytes: 1200,
+  wrapSolInTx: true,
+  lookupTableAddresses: undefined,
 };
 
 export async function loadExecConfig(): Promise<ExecConfig> {

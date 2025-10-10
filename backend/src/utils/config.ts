@@ -341,13 +341,7 @@ export const CONFIG = {
       dryRun: (process.env.DRIFT_LIQUIDATOR_DRY_RUN || 'true') === 'true',
     },
   }, 
-  // Saber stable-swap registry
-  saber: {
-    registryUrl: process.env.SABER_REGISTRY_URL || 'https://raw.githubusercontent.com/saber-hq/saber-registry/master/pools/mainnet.json',
-    cacheTtlMs: Number(process.env.SABER_CACHE_TTL_MS || 300_000),
-    maxHttpRetries: Number(process.env.SABER_HTTP_MAX_RETRIES || 2),
-    httpBackoffMs: Number(process.env.SABER_HTTP_BACKOFF_MS || 500),
-  },
+  // (Saber removed)
   // Meteora Balanced (mAMM) configuration
   meteoraBalanced: {
     apiUrl: process.env.METEORA_BALANCED_API_URL || '',

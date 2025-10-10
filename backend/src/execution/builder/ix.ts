@@ -75,12 +75,14 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         binArrayUpper: hop.binArrayUpper ? new PublicKey(hop.binArrayUpper) : undefined,
       } as any;
       const ix = await maybe.DLMM.swapIx(connection, kp.publicKey, params);
+      // Meteora SDK returns a TransactionInstruction
       if (ix) return [ix];
     }
   } catch (e) {
     try { logger.warn('ix.build meteora.dlmm.real fallback', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
   }
-  return buildMeteoraDlmmSwapIx(hop);
+  // If SDK path fails, prefer explicit error to avoid sending placeholders
+  throw new Error('METEORA_DLMM_BUILD_FAILED');
 }
 
 export function maybeCreateAtas(hop: DirectHop, create: boolean): any[] {
@@ -125,7 +127,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
   } catch (e) {
     try { logger.warn('ix.build raydium.clmm.real fallback', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
   }
-  return buildRaydiumClmmSwapIx(hop);
+  throw new Error('RAYDIUM_CLMM_BUILD_FAILED');
 }
 
 export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> {
@@ -158,7 +160,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
   } catch (e) {
     try { logger.warn('ix.build raydium.amm.real fallback', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
   }
-  return buildRaydiumAmmSwapIx(hop);
+  throw new Error('RAYDIUM_AMM_BUILD_FAILED');
 }
 
 

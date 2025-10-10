@@ -9,13 +9,11 @@ import { fetchRaydiumPoolsRaw as fetchRaydiumPoolsRawImpl, normalizeRaydiumPools
 import { fetchOrcaHttp as fetchOrcaHttpImpl, normalizeOrcaHttp as normalizeOrcaHttpImpl } from './pools/orca.js';
 import { fetchMeteoraHttp as fetchMeteoraHttpImpl, normalizeMeteoraHttp as normalizeMeteoraHttpImpl } from './pools/meteora.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './pools/httpLog.js';
-import { fetchSaberRegistry as fetchSaberRegistryImpl, normalizeSaberRegistry as normalizeSaberRegistryImpl } from './pools/saber.js';
 import { fetchMeteoraBalancedHttp as fetchMeteoraBalancedHttpImpl, normalizeMeteoraBalancedHttp as normalizeMeteoraBalancedHttpImpl } from './pools/meteoraBalanced.js';
 
 const raydiumCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 const orcaCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 const meteoraCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
-const saberCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 const metbalCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 
 // WS lifecycle flags: defer websocket subscriptions until graph signals readiness
@@ -52,7 +50,6 @@ const poolsMetrics: {
   };
   orca: { fetches: number; lastMs: number; lastAmm: number; lastClmm: number };
   meteora: { fetches: number; lastMs: number; lastClmm: number };
-  saber: { fetches: number; lastMs: number; lastAmm: number; http429?: number; backoffMs?: number };
   meteora_balanced: { fetches: number; lastMs: number; lastAmm: number };
 } = {
   raydium: {
@@ -63,7 +60,6 @@ const poolsMetrics: {
   },
   orca: { fetches: 0, lastMs: 0, lastAmm: 0, lastClmm: 0 },
   meteora: { fetches: 0, lastMs: 0, lastClmm: 0 },
-  saber: { fetches: 0, lastMs: 0, lastAmm: 0, http429: 0, backoffMs: 0 },
   meteora_balanced: { fetches: 0, lastMs: 0, lastAmm: 0 },
 };
 
@@ -254,19 +250,17 @@ export async function getWsTargets(): Promise<{ orca: { target: number }; raydiu
 }
 
 // Expose cache ages for observability (ms since last fetch)
-export function getPoolCacheAges(): { raydium: number; orca: number; meteora: number; saber: number; meteora_balanced: number; ttl: { raydium: number; orca: number; meteora: number; saber: number; meteora_balanced: number } } {
+export function getPoolCacheAges(): { raydium: number; orca: number; meteora: number; meteora_balanced: number; ttl: { raydium: number; orca: number; meteora: number; meteora_balanced: number } } {
   const now = Date.now();
   const rayTtl = Number((CONFIG as any)?.raydium?.cacheTtlMs || 300_000);
   const orcTtl = Number((CONFIG as any)?.orca?.cacheTtlMs || 300_000);
   const metTtl = Number(((CONFIG as any)?.meteora?.cacheTtlMs) || 300_000);
-  const sabTtl = Number(((CONFIG as any)?.saber?.cacheTtlMs) || 300_000);
   const mblTtl = Number(((CONFIG as any)?.meteoraBalanced?.cacheTtlMs) || 300_000);
   const rayAge = raydiumCache.ts ? (now - raydiumCache.ts) : Number.POSITIVE_INFINITY;
   const orcAge = orcaCache.ts ? (now - orcaCache.ts) : Number.POSITIVE_INFINITY;
   const metAge = meteoraCache.ts ? (now - meteoraCache.ts) : Number.POSITIVE_INFINITY;
-  const sabAge = saberCache.ts ? (now - saberCache.ts) : Number.POSITIVE_INFINITY;
   const mblAge = metbalCache.ts ? (now - metbalCache.ts) : Number.POSITIVE_INFINITY;
-  return { raydium: rayAge, orca: orcAge, meteora: metAge, saber: sabAge, meteora_balanced: mblAge, ttl: { raydium: rayTtl, orca: orcTtl, meteora: metTtl, saber: sabTtl, meteora_balanced: mblTtl } };
+  return { raydium: rayAge, orca: orcAge, meteora: metAge, meteora_balanced: mblAge, ttl: { raydium: rayTtl, orca: orcTtl, meteora: metTtl, meteora_balanced: mblTtl } };
 }
 
 // Retarget WS: unsubscribe and re-subscribe to current graph-derived targets
@@ -285,7 +279,7 @@ export async function retargetPoolWebsockets(): Promise<{ attached: { orca: numb
 }
 
 // Unified refresh orchestrator: fetch all sources and optionally (re)subscribe
-export async function refreshAllSources(force = true, subscribe = true): Promise<{ raydium: PoolsPayload; orca: PoolsPayload; meteora: PoolsPayload; saber: PoolsPayload; meteora_balanced: PoolsPayload }> {
+export async function refreshAllSources(force = true, subscribe = true): Promise<{ raydium: PoolsPayload; orca: PoolsPayload; meteora: PoolsPayload; meteora_balanced: PoolsPayload }> {
   try {
     // Warm baseline USD prices for currently seen source mint sets when universe is unavailable
     if (force) {
@@ -306,7 +300,6 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
   const r = await getRaydiumPoolsNormalized(!!force).catch(() => ({ amm: [], clmm: [] }));
   const o = await getOrcaPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
   const m = await getMeteoraPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
-  const s = await getSaberPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
   const mb = await getMeteoraBalancedPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
 
   // Post-fetch bootstrap: if pricing coverage is low, hydrate prices for all fetched mints and rebuild graph
@@ -318,7 +311,7 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
         try { for (const p of (pp?.amm || [])) { if (p?.mint_a) mintSet.add(String(p.mint_a)); if (p?.mint_b) mintSet.add(String(p.mint_b)); } } catch {}
         try { for (const p of (pp?.clmm || [])) { if (p?.mint_a) mintSet.add(String(p.mint_a)); if (p?.mint_b) mintSet.add(String(p.mint_b)); } } catch {}
       };
-      addFrom(r); addFrom(o); addFrom(m); addFrom(s); addFrom(mb);
+      addFrom(r); addFrom(o); addFrom(m); addFrom(mb);
       if (mintSet.size > 0) {
         const pricedMap = getAllPrices() || {};
         let pricedCount = 0;
@@ -376,7 +369,7 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
     if (rayPick) {
       const { forward, reverse } = compute(rayPick);
       if (forward && reverse) {
-        try { logger.info('pools.pair_sol_usdc', { source: 'raydium', id: rayPick.id, kind: rayPick.pool_kind || (rayPick.sqrt_price_x64 != null ? 'clmm' : 'amm'), forward_usdc_per_sol: forward, reverse_sol_per_usdc: reverse, cat: 'pools' }); } catch {}
+        try { logger.debug('pools.pair_sol_usdc', { source: 'raydium', id: rayPick.id, kind: rayPick.pool_kind || (rayPick.sqrt_price_x64 != null ? 'clmm' : 'amm'), forward_usdc_per_sol: forward, reverse_sol_per_usdc: reverse, cat: 'pools' }); } catch {}
         try { emit('log', { level: 'info', message: `pools:pair_sol_usdc source=raydium id=${rayPick.id} kind=${rayPick.pool_kind || (rayPick.sqrt_price_x64 != null ? 'clmm' : 'amm')} fwd=${forward} rev=${reverse}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
       } else {
         try { logger.debug('pools.pair_sol_usdc.skip', { source: 'raydium', reason: 'invalid_price_or_orientation', id: rayPick.id, a: rayPick.mint_a, b: rayPick.mint_b, px: rayPick.price_a_per_b, cat: 'pools' }); } catch {}
@@ -390,7 +383,7 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
     if (orcPick) {
       const { forward, reverse } = compute(orcPick);
       if (forward && reverse) {
-        try { logger.info('pools.pair_sol_usdc', { source: 'orca', id: orcPick.id, kind: orcPick.pool_kind || (orcPick.sqrt_price_x64 != null ? 'clmm' : 'amm'), forward_usdc_per_sol: forward, reverse_sol_per_usdc: reverse, cat: 'pools' }); } catch {}
+        try { logger.debug('pools.pair_sol_usdc', { source: 'orca', id: orcPick.id, kind: orcPick.pool_kind || (orcPick.sqrt_price_x64 != null ? 'clmm' : 'amm'), forward_usdc_per_sol: forward, reverse_sol_per_usdc: reverse, cat: 'pools' }); } catch {}
         try { emit('log', { level: 'info', message: `pools:pair_sol_usdc source=orca id=${orcPick.id} kind=${orcPick.pool_kind || (orcPick.sqrt_price_x64 != null ? 'clmm' : 'amm')} fwd=${forward} rev=${reverse}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
       } else {
         try { logger.debug('pools.pair_sol_usdc.skip', { source: 'orca', reason: 'invalid_price_or_orientation', id: orcPick.id, a: orcPick.mint_a, b: orcPick.mint_b, px: orcPick.price_a_per_b, cat: 'pools' }); } catch {}
@@ -404,7 +397,7 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
     if (metPick) {
       const { forward, reverse } = compute(metPick);
       if (forward && reverse) {
-        try { logger.info('pools.pair_sol_usdc', { source: 'meteora', id: metPick.id, kind: metPick.pool_kind || (metPick.sqrt_price_x64 != null ? 'clmm' : 'amm'), forward_usdc_per_sol: forward, reverse_sol_per_usdc: reverse, cat: 'pools' }); } catch {}
+        try { logger.debug('pools.pair_sol_usdc', { source: 'meteora', id: metPick.id, kind: metPick.pool_kind || (metPick.sqrt_price_x64 != null ? 'clmm' : 'amm'), forward_usdc_per_sol: forward, reverse_sol_per_usdc: reverse, cat: 'pools' }); } catch {}
         try { emit('log', { level: 'info', message: `pools:pair_sol_usdc source=meteora id=${metPick.id} kind=${metPick.pool_kind || (metPick.sqrt_price_x64 != null ? 'clmm' : 'amm')} fwd=${forward} rev=${reverse}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
       } else {
         try { logger.debug('pools.pair_sol_usdc.skip', { source: 'meteora', reason: 'invalid_price_or_orientation', id: metPick.id, a: metPick.mint_a, b: metPick.mint_b, px: metPick.price_a_per_b, cat: 'pools' }); } catch {}
@@ -434,7 +427,7 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
       (refreshAllSources as any).__didInitialGraphPush = true;
     }
   } catch {}
-  return { raydium: r, orca: o, meteora: m, saber: s, meteora_balanced: mb };
+  return { raydium: r, orca: o, meteora: m, meteora_balanced: mb };
 }
 
 export function startRaydiumRefreshLoop(): void {
@@ -997,46 +990,8 @@ const enrichMemo: Map<string, { mint_a?: string; mint_b?: string; decimals_a?: n
 export function peekRaydiumPools(): PoolsPayload { return raydiumCache.data || { amm: [], clmm: [] }; }
 export function peekOrcaPools(): PoolsPayload { return orcaCache.data || { amm: [], clmm: [] }; }
 export function peekMeteoraPools(): PoolsPayload { return meteoraCache.data || { amm: [], clmm: [] }; }
-export function peekSaberPools(): PoolsPayload { return saberCache.data || { amm: [], clmm: [] }; }
 export function peekMeteoraBalancedPools(): PoolsPayload { return metbalCache.data || { amm: [], clmm: [] }; }
 
-export async function getSaberPoolsCached(force = false): Promise<PoolsPayload> {
-  const ttlMs = Number(((CONFIG as any)?.saber?.cacheTtlMs) || 300_000);
-  const minForceGap = Math.max(1000, Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000));
-  (getSaberPoolsCached as any).__lastForceAt = (getSaberPoolsCached as any).__lastForceAt || 0;
-  const now = Date.now();
-  if (!force) {
-    if (saberCache.data && now - saberCache.ts < ttlMs) return saberCache.data;
-    return saberCache.data || { amm: [], clmm: [] };
-  }
-  if (force) {
-    const last = (getSaberPoolsCached as any).__lastForceAt as number;
-    if (now - last < minForceGap && saberCache.data) return saberCache.data as any;
-    (getSaberPoolsCached as any).__lastForceAt = now;
-  }
-  if (saberCache.inflight) return saberCache.inflight;
-  saberCache.inflight = (async () => {
-    try {
-      const t0 = Date.now();
-      const raw = await fetchSaberRegistryImpl();
-      const norm = await normalizeSaberRegistryImpl(raw);
-      const prev = saberCache.data;
-      saberCache.data = norm; saberCache.ts = Date.now();
-      poolsMetrics.saber.fetches = (poolsMetrics.saber.fetches || 0) + 1;
-      poolsMetrics.saber.lastMs = Date.now() - t0;
-      poolsMetrics.saber.lastAmm = (norm.amm || []).length;
-      try {
-        const d = diffNormalizedPools(prev || { amm: [], clmm: [] }, norm);
-        emit('pools-update', { source: 'saber', amm: (norm.amm || []).length, clmm: 0, ts: Date.now() });
-        emit('pool-updates', { source: 'saber', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample: { amm: d.amm.slice(0, 50), clmm: [] }, ts: Date.now() });
-      } catch {}
-      return norm;
-    } finally {
-      saberCache.inflight = undefined;
-    }
-  })();
-  return saberCache.inflight;
-}
 
 export async function getMeteoraBalancedPoolsCached(force = false): Promise<PoolsPayload> {
   const ttlMs = Number(((CONFIG as any)?.meteoraBalanced?.cacheTtlMs) || 300_000);

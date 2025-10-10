@@ -126,13 +126,34 @@ export function createArbRouter(io: SocketIOServer): Router {
         return res.json({ mode, signature: null, ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
       }
 
-      const sendRes = await assembleAndSend(built.tx.instructions, {
-        computeUnitLimit: execCfg.computeUnitLimit,
-        computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
-      } as any);
-      const signature = sendRes.signature;
+      // Optional chunking by approx size
+      const maxBytes = Number(execCfg.maxTxSizeBytes || 0);
+      let signatures: string[] = [];
+      if (maxBytes > 0 && built.sizeBytes > maxBytes) {
+        // naive chunk: split instruction array by 200-byte units
+        const chunkSize = Math.max(1, Math.floor(maxBytes / 200));
+        const ixs = built.tx.instructions.slice();
+        const chunks: any[][] = [];
+        for (let i = 0; i < ixs.length; i += chunkSize) chunks.push(ixs.slice(i, i + chunkSize));
+        for (const part of chunks) {
+          const resSend = await assembleAndSend(part, {
+            computeUnitLimit: execCfg.computeUnitLimit,
+            computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
+            lookupTableAddresses: execCfg.lookupTableAddresses,
+          } as any);
+          signatures.push(resSend.signature);
+        }
+      } else {
+        const sendRes = await assembleAndSend(built.tx.instructions, {
+          computeUnitLimit: execCfg.computeUnitLimit,
+          computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
+          lookupTableAddresses: execCfg.lookupTableAddresses,
+        } as any);
+        signatures = [sendRes.signature];
+      }
+      const signature = signatures[signatures.length - 1] || null;
       await addTxRecord({ id, timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature, status: signature ? 'send_ok' : 'send_err' });
-      res.json({ mode, signature, ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
+      res.json({ mode, signature, signatures, ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
     }
