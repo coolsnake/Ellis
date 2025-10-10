@@ -12,6 +12,26 @@ describe('meteoraBalanced.graph.include', () => {
     cfg.sanity.enabled = true;
     (cfg.sanity as any).dropEdgesNoUsdBoth = false;
 
+    // Limit HTTP pagination for speed to avoid timeouts in CI
+    if (cfg.raydium) {
+      cfg.raydium.pageSize = 100;
+      cfg.raydium.maxPages = 1;
+      (cfg.raydium as any).enableApiFetchByMints = false;
+    }
+    if (cfg.orca) {
+      cfg.orca.pageSize = 100;
+      cfg.orca.maxPages = 1;
+      cfg.orca.includeBlocked = true;
+    }
+    if ((cfg as any).meteora) {
+      (cfg as any).meteora.pageSize = 100;
+      (cfg as any).meteora.maxPages = 1;
+    }
+    if ((cfg as any).meteoraBalanced) {
+      (cfg as any).meteoraBalanced.pageSize = 100;
+      (cfg as any).meteoraBalanced.maxPages = 1;
+    }
+
     const poolsMod: any = await import('../pools.js');
     const graphMod: any = await import('../graph.js');
 
@@ -33,7 +53,7 @@ describe('meteoraBalanced.graph.include', () => {
     const hasMeteoraAmm = (snap.edges || []).some((e: any) => String(e.dex) === 'Meteora' && String((e as any).pool_kind || '') === 'amm');
     // We do not hard-require true in CI if API not set, but validate type correctness
     expect(typeof hasMeteoraAmm).toBe('boolean');
-  });
+  }, 20000);
 });
 
 
