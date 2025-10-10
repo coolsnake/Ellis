@@ -9,7 +9,7 @@
     "test": "vitest run",
     "test:unit": "vitest run tests --reporter=basic",
     "test:pipeline": "bash ./scripts/run-pipeline-tests.sh",
-    "test:real": "RUN_REAL_E2E=true vitest run src/server/__tests__/pipeline.e2e.real.test.ts --threads=false --reporter=basic"
+    "test:real": "RUN_REAL_E2E=true vitest run src/server/__tests__/pipeline.e2e.real.test.ts --pool=threads --maxWorkers=1 --reporter=basic"
   },
   "dependencies": {
     "@coral-xyz/anchor": "0.29.0",
