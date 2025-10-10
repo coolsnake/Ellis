@@ -529,6 +529,7 @@ async fn main() -> anyhow::Result<()> {
                                     bf_slack_log: None,
                                     bf_required_rate: None,
                                     bf_rate_delta_bps: None,
+                                    is_near_miss: Some(true),
                                 };
                                 // Only accept near-miss if at least 3 hops and min_edge_liquidity > 0
                                 if nlen >= 3 && est_capacity.unwrap_or(0.0) > 0.0 {
@@ -891,6 +892,7 @@ async fn main() -> anyhow::Result<()> {
                                 bf_slack_log: None,
                                 bf_required_rate: None,
                                 bf_rate_delta_bps: None,
+                                is_near_miss: Some(true),
                               };
                               let shortfall = (min_bps - profit_bps).max(0);
                               near_pair = Some((near, shortfall));
@@ -1559,6 +1561,7 @@ mod tests {
             bf_slack_log: None,
             bf_required_rate: None,
             bf_rate_delta_bps: None,
+            is_near_miss: None,
         }
     }
 
