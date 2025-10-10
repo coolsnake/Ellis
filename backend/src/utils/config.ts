@@ -35,15 +35,15 @@ export const CONFIG = {
   orca: {
     mode: (process.env.ORCA_MODE as any) || 'http', // 'http' | 'v4' | 'legacy'
     apiUrl: process.env.ORCA_API_URL || 'https://api.orca.so/v2/solana/pools',
-    pageSize: Number(process.env.ORCA_HTTP_PAGE_SIZE || 1000),
-    maxPages: Number(process.env.ORCA_HTTP_MAX_PAGES || 50),
+    pageSize: Number(process.env.ORCA_HTTP_PAGE_SIZE || 50),
+    maxPages: Number(process.env.ORCA_HTTP_MAX_PAGES || 10),
     programId: process.env.ORCA_WHIRLPOOLS_PROGRAM_ID || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc',
     configPubkey: process.env.ORCA_WHIRLPOOLS_CONFIG || '7cSHePZUPCXKmgkkCm1cW8XkyRjB6rQAtv6vZ9VJ4N8S',
     cacheTtlMs: Number(process.env.ORCA_CACHE_TTL_MS || 60_000),
     maxHttpRetries: Number(process.env.ORCA_HTTP_MAX_RETRIES || 2),
     httpBackoffMs: Number(process.env.ORCA_HTTP_BACKOFF_MS || 500),
     // HTTP API filters and pagination (cursor-based)
-    size: Number(process.env.ORCA_HTTP_SIZE || 1000),
+    size: Number(process.env.ORCA_HTTP_SIZE || 50),
     sortBy: process.env.ORCA_HTTP_SORT_BY || 'tvl',
     sortDirection: process.env.ORCA_HTTP_SORT_DIR || 'desc',
     hasRewards: process.env.ORCA_HTTP_HAS_REWARDS === 'true' ? true : (process.env.ORCA_HTTP_HAS_REWARDS === 'false' ? false : undefined),
@@ -257,8 +257,8 @@ export const CONFIG = {
     // HTTP controls
     concurrency: Number(process.env.RAYDIUM_HTTP_CONCURRENCY || process.env.RAYDIUM_SDK_CONCURRENCY || 8),
     sdkConcurrency: Number(process.env.RAYDIUM_SDK_CONCURRENCY || 8),
-    pageSize: Number(process.env.RAYDIUM_HTTP_PAGE_SIZE || 1000),
-    maxPages: Number(process.env.RAYDIUM_HTTP_MAX_PAGES || process.env.RAYDIUM_HTTP_MAX_PAGES_GLOBAL || 50),
+    pageSize: Number(process.env.RAYDIUM_HTTP_PAGE_SIZE || 50),
+    maxPages: Number(process.env.RAYDIUM_HTTP_MAX_PAGES || process.env.RAYDIUM_HTTP_MAX_PAGES_GLOBAL || 10),
     maxHttpRetries: Number(process.env.RAYDIUM_HTTP_MAX_RETRIES || 2),
     httpBackoffMs: Number(process.env.RAYDIUM_HTTP_BACKOFF_MS || 300),
     sdkProbeMintsLimit: Number(process.env.RAYDIUM_SDK_PROBE_MINTS_LIMIT || 200),
@@ -276,8 +276,8 @@ export const CONFIG = {
     apiUrl: process.env.METEORA_API_URL || 'https://dlmm-api.meteora.ag/pair/all_with_pagination',
     // Optional DLMM program id for websocket subscriptions
     programId: process.env.METEORA_PROGRAM_ID,
-    pageSize: Number(process.env.METEORA_HTTP_PAGE_SIZE || 1000),
-    maxPages: Number(process.env.METEORA_HTTP_MAX_PAGES || 50),
+    pageSize: Number(process.env.METEORA_HTTP_PAGE_SIZE || 50),
+    maxPages: Number(process.env.METEORA_HTTP_MAX_PAGES || 10),
     cacheTtlMs: Number(process.env.METEORA_CACHE_TTL_MS || 60_000),
     maxHttpRetries: Number(process.env.METEORA_HTTP_MAX_RETRIES || 2),
     httpBackoffMs: Number(process.env.METEORA_HTTP_BACKOFF_MS || 500),
@@ -348,7 +348,7 @@ export const CONFIG = {
     apiUrlV2: process.env.METEORA_BALANCED_API_URL_V2 || 'https://dammv2-api.meteora.ag/pools',
     // Optional: hide pools below this TVL threshold (USD) for v1 API
     hideLowTvl: Number(process.env.METEORA_BALANCED_HIDE_LOW_TVL || 0),
-    pageSize: Number(process.env.METEORA_BALANCED_HTTP_PAGE_SIZE || 1000),
+    pageSize: Number(process.env.METEORA_BALANCED_HTTP_PAGE_SIZE || 50),
     maxPages: Number(process.env.METEORA_BALANCED_HTTP_MAX_PAGES || 10),
     cacheTtlMs: Number(process.env.METEORA_BALANCED_CACHE_TTL_MS || 300_000),
     maxHttpRetries: Number(process.env.METEORA_BALANCED_HTTP_MAX_RETRIES || 2),

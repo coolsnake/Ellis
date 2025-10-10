@@ -1429,11 +1429,43 @@ async fn ws_opportunities(ws: WebSocketUpgrade, State(state): State<Arc<RwLock<A
     ws.on_upgrade(move |mut socket| async move {
         let mut last: Option<String> = None;
         loop {
-            let items = {
+            // Build WS payload aligned with GET /opportunities (items + near_items + summary)
+            let (items, near_items, summary) = {
                 let s = state.read().await;
-                s.opportunities.clone()
+                let items = s.opportunities.clone();
+                let count = items.len();
+                let max_profit_bps = items.iter().map(|o| o.profit_bps).max().unwrap_or(0);
+                let avg_profit_bps = if count == 0 { 0.0 } else { items.iter().map(|o| o.profit_bps as f64).sum::<f64>() / (count as f64) };
+                let avg_net_bps = if count == 0 { 0.0 } else { items.iter().map(|o| o.net_bps.unwrap_or(o.profit_bps) as f64).sum::<f64>() / (count as f64) };
+                let avg_hop_count = if count == 0 { 0.0 } else { items.iter().map(|o| o.hop_count.unwrap_or(o.path.len()) as f64).sum::<f64>() / (count as f64) };
+                let avg_link_edges_used = if count == 0 { 0.0 } else { items.iter().map(|o| o.link_edges_used.unwrap_or(0) as f64).sum::<f64>() / (count as f64) };
+                let min_edge_liquidity_vals: Vec<f64> = items.iter().map(|o| o.min_edge_liquidity.unwrap_or(0.0)).collect();
+                let min_edge_liquidity_avg = if count == 0 { 0.0 } else { min_edge_liquidity_vals.iter().sum::<f64>() / (count as f64) };
+                let min_edge_liquidity_min = {
+                    let m = min_edge_liquidity_vals.iter().cloned().fold(f64::INFINITY, f64::min);
+                    if m.is_infinite() { 0.0 } else { m }
+                };
+                let near_items = if s.near_misses.is_empty() { None } else { Some(s.near_misses.clone()) };
+                let summary = OpportunitiesSummary {
+                    count,
+                    max_profit_bps,
+                    avg_profit_bps,
+                    avg_net_bps,
+                    avg_hop_count,
+                    avg_link_edges_used,
+                    min_edge_liquidity_avg,
+                    min_edge_liquidity_min,
+                    last_detection_ms: s.metrics.last_detection_ms,
+                    detection_duration_ms: s.metrics.detection_duration_ms,
+                    graph_nodes: s.metrics.graph_nodes,
+                    graph_edges: s.metrics.graph_edges,
+                    near_miss: s.near_miss.clone(),
+                    near_miss_shortfall_bps: s.near_miss_shortfall_bps,
+                    near_misses: if s.near_misses.is_empty() { None } else { Some(s.near_misses.clone()) },
+                };
+                (items, near_items, summary)
             };
-            let payload = serde_json::json!({ "items": items });
+            let payload = serde_json::json!({ "items": items, "near_items": near_items, "summary": summary });
             let text = payload.to_string();
             if last.as_ref() != Some(&text) {
                 if socket.send(Message::Text(text.clone())).await.is_err() { break; }
