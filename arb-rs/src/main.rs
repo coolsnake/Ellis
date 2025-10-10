@@ -1503,7 +1503,7 @@ fn default_config() -> ArbConfig {
         debug_top_n: std::env::var("ARB_DEBUG_TOP_N").ok().and_then(|s| s.parse().ok()).unwrap_or(5),
         near_miss_enable: std::env::var("ARB_NEAR_MISS_ENABLE").ok().map(|v| v != "false").unwrap_or(true),
         near_miss_epsilon: std::env::var("ARB_NEAR_MISS_EPS").ok().and_then(|s| s.parse().ok()).unwrap_or(5e-4),
-        est_priority_fee_per_hop_lamports: Some(50_000),
+        est_priority_fee_per_hop_lamports: Some(0),
         debug_near_miss_failures: std::env::var("ARB_DEBUG_NM_FAIL").ok().map(|v| v == "true").unwrap_or(false),
         filtered_detect_enable: std::env::var("ARB_FILTERED_DETECT_ENABLE").ok().map(|v| v != "false").unwrap_or(true),
         filtered_node_ratio: std::env::var("ARB_FILTERED_NODE_RATIO").ok().and_then(|s| s.parse().ok()).unwrap_or(0.1),

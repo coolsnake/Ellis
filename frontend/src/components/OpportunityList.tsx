@@ -47,6 +47,8 @@ export function OpportunityList(
   }
 ): React.ReactElement {
   const [showAll, setShowAll] = React.useState(false);
+  const [simLogs, setSimLogs] = React.useState<string[] | null>(null);
+  const [simErr, setSimErr] = React.useState<string | null>(null);
 
   const fmt = (n: number | undefined | null, digits = 0) => {
     if (n === undefined || n === null || isNaN(n as any)) return '—';
@@ -66,7 +68,7 @@ export function OpportunityList(
     return `${h}h`;
   };
 
-  const visible = showAll ? items : items.slice(0, 10);
+  const visible = React.useMemo(() => (showAll ? items : items.slice(0, 10)), [showAll, items]);
 
   return (
     <div>
@@ -138,7 +140,7 @@ export function OpportunityList(
               </span>
             </div>
             <div className="text-xs opacity-80">DEXes: {op.dexes.join(', ')}</div>
-            <div className="text-xs">Profit: {fmtPctFromBps(op.profit_bps)} · Net: {fmtPctFromBps(op.net_bps)} · ${fmt(op.est_profit_usd, 2)}</div>
+            <div className="text-xs">Profit: {fmtPctFromBps(op.profit_bps)} · Net: {fmtPctFromBps(op.net_bps)} · ${fmt(op.est_profit_usd, 2)}{Number.isFinite(op.est_capacity as any) ? ` · Cap: ${fmt(op.est_capacity, 2)}` : ''}</div>
             <div className="text-[11px] opacity-80 flex items-center gap-2">Hops: {op.hop_count ?? op.path.length} · Links: {op.link_edges_used ?? 0} · Min Edge Liq: {fmt(op.min_edge_liquidity, 2)}
               <button className="px-1 py-0.5 border rounded" onClick={()=>{
                 try {
@@ -158,12 +160,39 @@ export function OpportunityList(
               }}>Simulate Direct</button>
               <button className="px-1 py-0.5 border rounded" onClick={async()=>{
                 try {
+                  setSimLogs(null); setSimErr(null);
+                  const body: any = { path: op.path, hopPoolIds: (op as any)?.hop_pool_ids, dexes: (op as any)?.hop_dexes, sizeUsd: sendMode==='USD'? Number(sendAmount)||0 : undefined, size: sendMode==='TOKENS'? Number(sendAmount)||0 : undefined };
+                  const r = await fetch(`${apiBase}/arb/simulate-send`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                  const j = await r.json().catch(()=>({}));
+                  if (!r.ok) {
+                    setSimErr(String((j && (j.error || j.err)) || 'preflight_failed'));
+                  } else {
+                    const logs = Array.isArray(j?.logs) ? (j.logs as string[]) : [];
+                    setSimLogs(logs.slice(-20));
+                    setSimErr(j?.err ? String(j.err) : null);
+                  }
+                } catch (e: any) {
+                  setSimErr(String(e?.message || e));
+                }
+              }}>Preflight Simulate</button>
+              <button className="px-1 py-0.5 border rounded" onClick={async()=>{
+                try {
                   const body: any = { path: op.path, hopPoolIds: (op as any)?.hop_pool_ids, dexes: (op as any)?.hop_dexes, sizeUsd: sendMode==='USD'? Number(sendAmount)||0 : undefined, size: sendMode==='TOKENS'? Number(sendAmount)||0 : undefined };
                   const r = await fetch(`${apiBase}/arb/execute`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
                   await r.json().catch(()=>({}));
                 } catch {}
               }}>Execute Direct</button>
             </div>
+            {(simErr || (simLogs && simLogs.length)) && (
+              <div className="mt-1 p-2 bg-black/30 rounded text-[11px]">
+                {simErr && <div className="text-red-400">Preflight error: {simErr}</div>}
+                {simLogs && simLogs.length > 0 && (
+                  <pre className="whitespace-pre-wrap break-words opacity-80">
+                    {simLogs.join('\n')}
+                  </pre>
+                )}
+              </div>
+            )}
             {op.bottleneck && (() => {
               const b = op.bottleneck!;
               const fromSym = tokenMap[b.from] || (b.from.length > 6 ? `${b.from.slice(0,4)}…${b.from.slice(-4)}` : b.from);

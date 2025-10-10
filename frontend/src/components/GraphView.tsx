@@ -72,14 +72,14 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 	const interactingRef = useRef(false);
 
 	// Optional cap for rendered edges by priority to reduce overdraw
-	const [maxEdges, setMaxEdges] = useState<number>(4000);
+	const [maxEdges, setMaxEdges] = useState<number>(2000);
 
 	// Track whether page/tab is visible and whether the graph container is on-screen
 	const pageVisibleRef = useRef<boolean>(true);
 	const isVisibleRef = useRef<boolean>(true);
 
 	const styles: any[] = useMemo(() => ([
-		{ selector: 'node', style: { 'background-color': '#3b82f6', 'label': 'data(label)', 'font-size': 8, 'color': '#e5e7eb', 'text-outline-width': 1, 'text-outline-color': '#111827' } },
+		{ selector: 'node', style: { 'background-color': '#3b82f6', 'label': '', 'font-size': 8, 'color': '#e5e7eb', 'text-outline-width': 1, 'text-outline-color': '#111827' } },
 		{
 			selector: 'edge',
 			style: {
@@ -103,6 +103,31 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 		{ selector: ':selected', style: { 'line-color': '#ef4444', 'background-color': '#ef4444' } },
 	]), []);
 
+// Track page/tab visibility
+useEffect(() => {
+  const onVis = () => { try { pageVisibleRef.current = (document.visibilityState === 'visible'); } catch {} };
+  try { onVis(); } catch {}
+  try { document.addEventListener('visibilitychange', onVis); } catch {}
+  return () => { try { document.removeEventListener('visibilitychange', onVis); } catch {} };
+}, []);
+
+// Track container viewport visibility
+useEffect(() => {
+  const el = containerRef.current as any;
+  try {
+    const IO: any = (window as any).IntersectionObserver;
+    if (!el || !IO) return;
+    const io = new IO((entries: any[]) => {
+      try {
+        const e = entries?.[0];
+        isVisibleRef.current = !!(e && e.isIntersecting);
+      } catch {}
+    }, { threshold: 0.01 });
+    io.observe(el);
+    return () => { try { io.disconnect(); } catch {} };
+  } catch {}
+}, [containerRef.current]);
+
 	const toElements = (snap: GraphSnapshot): ElementDefinition[] => {
 		const hideDex = new Set<string>();
 		if (!filterDex.Raydium) hideDex.add('Raydium');
@@ -111,7 +136,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 		const hideKind = new Set<string>();
 		if (!filterKind.AMM) hideKind.add('amm');
 		if (!filterKind.CLMM) hideKind.add('clmm');
-		const nodes: ElementDefinition[] = snap.nodes.map((n) => ({ data: { id: n.id, label: n.label || n.id.slice(0, 4) } }));
+		const nodes: ElementDefinition[] = snap.nodes.map((n) => ({ data: { id: n.id, label: '' } }));
 		// Build raw edge definitions (without DEX visibility filter yet for grouping)
 		let rawEdges: ElementDefinition[] = snap.edges
 			.filter((e) => {
@@ -354,9 +379,12 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 		const shouldFit = fitMode === 'always' || (fitMode === 'first' && !laidOutRef.current);
 		// If there are no nodes yet, defer layout until we have content
 		if (cy.nodes().length === 0) return;
-    const options: any = name === 'fcose'
+		const nodeCount = cy.nodes().length;
+		// Avoid heavy force-directed layouts for very large graphs; fall back to grid
+		const chosen = (nodeCount > 1200 && (name === 'fcose' || name === 'cose')) ? 'grid' : name;
+		const options: any = chosen === 'fcose'
 			? { name: 'fcose', animate: false, fit: false, quality: 'draft', randomize: !laidOutRef.current, nodeSeparation: 75, nodeRepulsion: 4500 }
-			: { name, animate: false, fit: false };
+			: { name: chosen, animate: false, fit: false };
 		const layout = cy.layout(options);
 		if (shouldFit) {
 			try { cy.one('layoutstop', () => { try { cy.fit(undefined, 20); } catch {} }); } catch {}
@@ -463,6 +491,8 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
   const loadSnapshot = async () => {
     setLoading(true); setError(null);
     try {
+      // Skip heavy snapshot load when not visible; will be loaded on first visibility
+      if (!pageVisibleRef.current || !isVisibleRef.current) { return; }
       const r = await fetch(`${apiBase}${ROUTES.graph.snapshot}`);
       const j: GraphSnapshot = await r.json();
       const cy = cyRef.current; if (!cy) return;
@@ -576,8 +606,9 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 		let latestDiff: GraphDiff | null = null;
 		let scheduled = false;
 
-		const applyDiff = (diff: GraphDiff) => {
-			const cy = cyRef.current; if (!cy) return;
+    const applyDiff = (diff: GraphDiff) => {
+      const cy = cyRef.current; if (!cy) return;
+      if (!pageVisibleRef.current || !isVisibleRef.current) return;
 			withBatch(cy, () => {
 				const prevPos = new Map<string, { x: number; y: number }>();
 				try { cy.nodes().forEach((n) => { prevPos.set(n.id(), { x: n.position('x'), y: n.position('y') }); }); } catch {}
@@ -611,14 +642,14 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 				const hideKind = new Set<string>();
 				if (!filterKind.AMM) hideKind.add('amm');
 				if (!filterKind.CLMM) hideKind.add('clmm');
-				for (const n of [...(diff.addedNodes||[]), ...(diff.updatedNodes||[])]) {
+		for (const n of [...(diff.addedNodes||[]), ...(diff.updatedNodes||[])]) {
 					try {
 						const id = String(n.id);
 						const existing = cy.getElementById(id);
 						if (existing && existing.length && existing.isNode()) {
-							existing.data('label', n.label || id.slice(0,4));
+						existing.data('label', '');
 						} else {
-							cy.add({ data: { id, label: n.label || id.slice(0,4) } });
+						cy.add({ data: { id, label: '' } });
 						}
 					} catch {}
 				}
@@ -709,8 +740,10 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 		};
 		const schedule = () => {
 			if (scheduled) return;
+			// If not visible, skip scheduling to avoid unnecessary main-thread work
+			if (!pageVisibleRef.current || !isVisibleRef.current) return;
 			scheduled = true;
-			idle(flush, 150);
+      idle(flush, 250);
 		};
 
 		const onDiff = (diff: GraphDiff) => { latestDiff = diff; schedule(); };
@@ -731,6 +764,19 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 			effectiveSocket.off('graph-highlight', onHighlight);
 		};
 	}, [effectiveSocket, filterDex.Raydium, filterDex.Orca, filterDex.Meteora, filterKind.AMM, filterKind.CLMM, layoutName]);
+
+  // On becoming visible for the first time, load a snapshot if none has been applied
+  useEffect(() => {
+    const onVis = () => {
+      try {
+        if (document.visibilityState === 'visible' && !snapshotInitializedRef.current) {
+          loadSnapshot();
+        }
+      } catch {}
+    };
+    try { document.addEventListener('visibilitychange', onVis); } catch {}
+    return () => { try { document.removeEventListener('visibilitychange', onVis); } catch {} };
+  }, [apiBase]);
 
   // Initialize cy configuration when instance is available
 	const onCyReady = (cy: cytoscape.Core) => {

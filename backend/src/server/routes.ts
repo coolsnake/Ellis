@@ -385,7 +385,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
             if (richSig !== lastOppSig || sinceLast > 2000) {
               lastOppSig = richSig;
               (registerRoutes as any)._lastOppEmitAt = nowMsSig;
-              try { emit('arb:opportunities', payload); } catch {}
+              // Avoid emitting arb:opportunities here; the WS bridge forwards live updates to clients
               const lines = items.slice(0, 3).map((o: ArbOpportunity, i: number) => `#${i+1} bps=${Math.round((o.profit_bps ?? o.net_bps ?? 0))} hops=${(o.path || []).length-1} path=${(o.path || []).join('->')}`);
               emit('log', { level: 'info', message: `pretrade:arb opps:update ${Math.min(3, items.length)} top=${lines.join(' | ')} oMs=${odur}`, timestamp: new Date().toISOString() });
               try { arbLatency.opps.push(odur); if (arbLatency.opps.length > 200) arbLatency.opps.shift(); } catch {}

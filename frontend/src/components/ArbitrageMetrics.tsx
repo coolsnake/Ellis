@@ -20,6 +20,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
   const [arbEnabled, setArbEnabled] = React.useState<boolean>(false);
   const [wsDetails, setWsDetails] = React.useState<{ orca?: { attached?: number; events?: number }, raydium?: { attached?: number; events?: number }, meteora?: { attached?: number; events?: number } }>({});
   const [poolAges, setPoolAges] = React.useState<any | null>(null);
+  const [wsTargets, setWsTargets] = React.useState<{ orca?: number; raydium?: number; meteora?: number }>({});
 
   const fetchMetrics = async () => {
     try {
@@ -110,7 +111,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
     fetch(`${apiBase}${ROUTES.arb.metricsJson}`).catch(()=>{});
     // Probe arb config to detect enabled state
     fetch(`${apiBase}${ROUTES.arb.config}`).then(r=>r.json()).then((j)=>{ if (j && typeof j.enabled === 'boolean') setArbEnabled(!!j.enabled); }).catch(()=>{});
-    fetch(`${apiBase}${ROUTES.pools.subscriptions}`).then(r=>r.json()).then((j)=>{ setSubscribed(!!j.wsEnabled); setWsHealthy(!!j.wsHealthy); setLastEventMs(Number(j.lastEventMs||0)); setWsDetails(j.ws || {}); }).catch(()=>{});
+    fetch(`${apiBase}${ROUTES.pools.subscriptions}`).then(r=>r.json()).then((j)=>{ setSubscribed(!!j.wsEnabled); setWsHealthy(!!j.wsHealthy); setLastEventMs(Number(j.lastEventMs||0)); setWsDetails(j.ws || {}); setWsTargets({ orca: j?.targets?.orca?.target, raydium: j?.targets?.raydium?.target, meteora: j?.targets?.meteora?.target }); }).catch(()=>{});
     return () => {};
   }, [paused]);
 
@@ -203,7 +204,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
             } catch {}
           }}>Retarget WS</button>
           <span className={`px-2 py-0.5 text-xs rounded border ${wsHealthy ? 'bg-green-700/50 border-green-600' : 'bg-yellow-700/50 border-yellow-600'}`}>
-            {wsHealthy ? `WS Active: Ray ${wsDetails.raydium?.attached||0}/${(wsDetails as any)?.raydium?.target||0} ev=${wsDetails.raydium?.events||0}, Orca ${wsDetails.orca?.attached||0}/${(wsDetails as any)?.orca?.target||0} ev=${wsDetails.orca?.events||0}, Met ${wsDetails.meteora?.attached||0}/${(wsDetails as any)?.meteora?.target||0} ev=${wsDetails.meteora?.events||0} · idle ${ago(lastEventMs)}` : `WS Idle · idle ${ago(lastEventMs)}`}
+            {wsHealthy ? `WS Active: Ray ${wsDetails.raydium?.attached||0}/${wsTargets.raydium||0} ev=${wsDetails.raydium?.events||0}, Orca ${wsDetails.orca?.attached||0}/${wsTargets.orca||0} ev=${wsDetails.orca?.events||0}, Met ${wsDetails.meteora?.attached||0}/${wsTargets.meteora||0} ev=${wsDetails.meteora?.events||0} · idle ${ago(lastEventMs)}` : `WS Idle · idle ${ago(lastEventMs)}`}
           </span>
         </div>
       </div>

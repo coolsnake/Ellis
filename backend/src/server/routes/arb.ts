@@ -103,12 +103,39 @@ export function createArbRouter(io: SocketIOServer): Router {
     }
   });
 
+  // New endpoint: simulate fully assembled tx on-chain and return logs (no send)
+  api.post('/arb/simulate-send', async (req, res) => {
+    try {
+      const { resolveDirectPlan } = await import('../../execution/resolver/index.js');
+      const { ResolveDirectSchema } = await import('../routes/schemas.js');
+      const { buildDirectArbTx } = await import('../../execution/builder/tx.js');
+      const { assembleAndSimulate } = await import('../../execution/sender.js');
+      const { loadExecConfig } = await import('../execConfigStore.js');
+
+      const input = req.body || {};
+      const parsed = ResolveDirectSchema.parse(input);
+      const plan = input?.plan && Array.isArray(input.plan?.hops) ? input.plan : await resolveDirectPlan(parsed as any, {} as any);
+      const built = await buildDirectArbTx(plan, [], {} as any);
+
+      const execCfg = await loadExecConfig();
+      const sim = await assembleAndSimulate(built.tx.instructions, {
+        computeUnitLimit: execCfg.computeUnitLimit,
+        computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
+        lookupTableAddresses: execCfg.lookupTableAddresses,
+      } as any);
+
+      res.json({ ixCount: built.ixCount, txSizeBytes: built.sizeBytes, logs: sim.logs || [], err: sim.err || null });
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
   api.post('/arb/execute', async (req, res) => {
     try {
       const { resolveDirectPlan } = await import('../../execution/resolver/index.js');
       const { ResolveDirectSchema } = await import('../routes/schemas.js');
       const { buildDirectArbTx } = await import('../../execution/builder/tx.js');
-      const { assembleAndSend } = await import('../../execution/sender.js');
+      const { assembleAndSend, assembleAndSimulate } = await import('../../execution/sender.js');
       const { addTxRecord } = await import('../txHistory.js');
       const { loadExecConfig } = await import('../execConfigStore.js');
 
@@ -126,31 +153,29 @@ export function createArbRouter(io: SocketIOServer): Router {
         return res.json({ mode, signature: null, ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
       }
 
-      // Optional chunking by approx size
+      // Atomic only: fail if oversized
       const maxBytes = Number(execCfg.maxTxSizeBytes || 0);
-      let signatures: string[] = [];
       if (maxBytes > 0 && built.sizeBytes > maxBytes) {
-        // naive chunk: split instruction array by 200-byte units
-        const chunkSize = Math.max(1, Math.floor(maxBytes / 200));
-        const ixs = built.tx.instructions.slice();
-        const chunks: any[][] = [];
-        for (let i = 0; i < ixs.length; i += chunkSize) chunks.push(ixs.slice(i, i + chunkSize));
-        for (const part of chunks) {
-          const resSend = await assembleAndSend(part, {
-            computeUnitLimit: execCfg.computeUnitLimit,
-            computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
-            lookupTableAddresses: execCfg.lookupTableAddresses,
-          } as any);
-          signatures.push(resSend.signature);
-        }
-      } else {
-        const sendRes = await assembleAndSend(built.tx.instructions, {
-          computeUnitLimit: execCfg.computeUnitLimit,
-          computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
-          lookupTableAddresses: execCfg.lookupTableAddresses,
-        } as any);
-        signatures = [sendRes.signature];
+        return res.status(400).json({ mode, error: 'tx_too_large', ixCount: built.ixCount, txSizeBytes: built.sizeBytes, maxTxSizeBytes: maxBytes });
       }
+
+      // Require successful preflight before sending
+      const sim = await assembleAndSimulate(built.tx.instructions, {
+        computeUnitLimit: execCfg.computeUnitLimit,
+        computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
+        lookupTableAddresses: execCfg.lookupTableAddresses,
+      } as any);
+      if ((sim as any)?.err) {
+        return res.status(400).json({ mode, error: 'preflight_failed', logs: (sim as any)?.logs || [], ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
+      }
+
+      // Proceed to send (no chunking)
+      const sendRes = await assembleAndSend(built.tx.instructions, {
+        computeUnitLimit: execCfg.computeUnitLimit,
+        computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
+        lookupTableAddresses: execCfg.lookupTableAddresses,
+      } as any);
+      const signatures: string[] = [sendRes.signature];
       const signature = signatures[signatures.length - 1] || null;
       await addTxRecord({ id, timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature, status: signature ? 'send_ok' : 'send_err' });
       res.json({ mode, signature, signatures, ixCount: built.ixCount, txSizeBytes: built.sizeBytes });

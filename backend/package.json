@@ -32,7 +32,8 @@
     "express": "^4.19.2",
     "socket.io": "^4.7.5",
     "ws": "^8.18.0",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "@meteora-ag/dlmm-sdk": "^0.3.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
@@ -41,7 +42,9 @@
     "tsx": "^4.15.7",
     "typescript": "^5.5.4",
     "@types/ws": "^8.18.1",
-    "vitest": "^1.6.0"
+    "vitest": "^1.6.0",
+    "supertest": "^7.0.0",
+    "@types/supertest": "^2.0.16"
   },
   "overrides": {
     "rpc-websockets": "9.1.3",

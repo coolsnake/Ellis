@@ -220,6 +220,26 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
             <div className="text-gray-400">Avg Profit</div>
             <div className="text-sm">{fmtPctFromBps(Number.isFinite(summary?.avg_profit_bps as any) ? Math.round((summary?.avg_profit_bps || 0)) : 0)}</div>
           </div>
+          {(() => {
+            try {
+              const topNet = (() => {
+                try {
+                  let best = Number.NEGATIVE_INFINITY;
+                  for (const it of (items || [])) {
+                    const v = Number.isFinite((it as any)?.net_bps as any) ? (it as any).net_bps : it.profit_bps;
+                    if (Number.isFinite(v as any) && (v as number) > best) best = v as number;
+                  }
+                  return best === Number.NEGATIVE_INFINITY ? undefined : best;
+                } catch { return undefined; }
+              })();
+              return (
+                <div className="p-2 rounded bg-black/20">
+                  <div className="text-gray-400">Top Net</div>
+                  <div className="text-sm">{fmtPctFromBps(topNet)}</div>
+                </div>
+              );
+            } catch { return null; }
+          })()}
           <div className="p-2 rounded bg-black/20">
             <div className="text-gray-400">Avg Net</div>
             <div className="text-sm">{fmtPctFromBps(Number.isFinite(summary?.avg_net_bps as any) ? Math.round((summary?.avg_net_bps || 0)) : 0)}</div>
