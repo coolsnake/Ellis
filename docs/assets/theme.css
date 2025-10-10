@@ -1,0 +1,25 @@
+:root {
+  /* Keep defaults; overrides for dark scheme below */
+}
+
+[data-md-color-scheme="slate"] {
+  /* Background and text to match frontend */
+  --md-default-bg-color: #0a0a0a; /* gray-950 */
+  --md-default-fg-color: #f3f4f6; /* gray-100 */
+
+  /* Primary/accent tones */
+  --md-primary-fg-color: #111827; /* gray-900 */
+  --md-accent-fg-color: #6366f1; /* indigo-500 */
+
+  /* Code blocks */
+  --md-code-fg-color: #e5e7eb; /* gray-200 */
+  --md-code-bg-color: #111827; /* gray-900 */
+
+  /* Card and surface shades */
+  --md-surface-color: #0f0f10;
+  --md-typeset-a-color: #93c5fd; /* sky-300 links */
+}
+
+/* Minor layout tweaks */
+.md-typeset h1, .md-typeset h2, .md-typeset h3 { color: var(--md-default-fg-color); }
+.md-sidebar__scrollwrap { background-color: var(--md-default-bg-color); }

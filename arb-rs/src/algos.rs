@@ -147,7 +147,8 @@ pub fn detect_near_miss_cycles(g: &ArbGraph, epsilon: f64, max_hops: usize, top_
         let v = e.target().index();
         let w = - (e.weight().rate_effective.max(1e-12)).ln();
         let slack = (dist[u] + w) - dist[v];
-        if slack < 0.0 && slack >= -epsilon {
+        // Consider small-magnitude slack in either direction as near-miss
+        if slack != 0.0 && slack.abs() <= epsilon {
             cand.push((u, v, slack));
         }
     }
@@ -167,6 +168,7 @@ pub fn detect_near_miss_cycles(g: &ArbGraph, epsilon: f64, max_hops: usize, top_
         path_rev.push(cur);
         visited.insert(cur);
         let mut ok = false;
+        // First try strict predecessor backtrack
         for _ in 0..max_hops.saturating_sub(1) {
             if cur == u { ok = true; break; }
             if let Some(p) = pred[cur] {
@@ -177,6 +179,33 @@ pub fn detect_near_miss_cycles(g: &ArbGraph, epsilon: f64, max_hops: usize, top_
             } else {
                 break;
             }
+        }
+        // If pred chain failed, attempt greedy backtrack over incoming edges minimizing slack
+        if !ok {
+            use petgraph::Direction::Incoming;
+            path_rev.clear(); visited.clear(); cur = v; path_rev.push(cur); visited.insert(cur);
+            for _ in 0..max_hops.saturating_sub(1) {
+                if cur == u { ok = true; break; }
+                let mut best_p: Option<(usize, f64)> = None;
+                for e_in in g.g.edges_directed(petgraph::graph::NodeIndex::new(cur), Incoming) {
+                    let p = e_in.source().index();
+                    if visited.contains(&p) { continue; }
+                    let w = - (e_in.weight().rate_effective.max(1e-12)).ln();
+                    let slack_here = (dist[p] + w) - dist[cur];
+                    let score = slack_here.abs();
+                    if best_p.as_ref().map(|(_,s)| score < *s).unwrap_or(true) {
+                        best_p = Some((p, score));
+                    }
+                }
+                if let Some((p, _)) = best_p {
+                    path_rev.push(p);
+                    visited.insert(p);
+                    cur = p;
+                } else {
+                    break;
+                }
+            }
+            if cur == u { ok = true; }
         }
         if !ok { continue; }
         // Build forward path [u, ..., v]
@@ -216,6 +245,63 @@ pub fn detect_near_miss_cycles(g: &ArbGraph, epsilon: f64, max_hops: usize, top_
         out.push(NearMissCycle { nodes: canon_nodes, slack: s });
         if out.len() >= limit { break 'outer; }
     }
+    // If BF-based near-miss detection found nothing, fall back to simple triangle search
+    if out.is_empty() && max_hops >= 3 {
+        use petgraph::visit::IntoNeighborsDirected;
+        use petgraph::Direction::{Outgoing};
+        let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+        'tri: for u in g.g.node_indices() {
+            for v in g.g.neighbors_directed(u, Outgoing) {
+                for w in g.g.neighbors_directed(v, Outgoing) {
+                    // Check closing edge w -> u
+                    let mut r_uv = 0.0f64;
+                    let mut r_vw = 0.0f64;
+                    let mut r_wu = 0.0f64;
+                    for e in g.g.edges_connecting(u, v) { r_uv = r_uv.max(e.weight().rate_effective.max(0.0)); }
+                    for e in g.g.edges_connecting(v, w) { r_vw = r_vw.max(e.weight().rate_effective.max(0.0)); }
+                    for e in g.g.edges_connecting(w, u) { r_wu = r_wu.max(e.weight().rate_effective.max(0.0)); }
+                    if r_uv <= 0.0 || r_vw <= 0.0 || r_wu <= 0.0 { continue; }
+                    let prod = r_uv * r_vw * r_wu;
+                    if prod >= 1.0 { continue; }
+                    let shortfall = 1.0 - prod;
+                    if shortfall <= epsilon {
+                        let mut cyc = vec![u.index(), v.index(), w.index()];
+                        // Canonicalize and dedupe (rotation+direction agnostic)
+                        let canon = |v: &Vec<usize>| -> Vec<usize> {
+                            if v.is_empty() { return v.clone(); }
+                            let n = v.len();
+                            let to_key = |arr: &Vec<usize>| -> (String, Vec<usize>) {
+                                let s = arr.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("->");
+                                (s, arr.clone())
+                            };
+                            let mut best: Option<(String, Vec<usize>)> = None;
+                            for i in 0..n {
+                                let mut r = Vec::with_capacity(n);
+                                for k in 0..n { r.push(v[(i+k)%n]); }
+                                let (key, arr) = to_key(&r);
+                                if best.as_ref().map(|(s,_)| &key < s).unwrap_or(true) { best = Some((key, arr)); }
+                            }
+                            let mut vrev = v.clone(); vrev.reverse();
+                            for i in 0..n {
+                                let mut r = Vec::with_capacity(n);
+                                for k in 0..n { r.push(vrev[(i+k)%n]); }
+                                let (key, arr) = to_key(&r);
+                                if best.as_ref().map(|(s,_)| &key < s).unwrap_or(true) { best = Some((key, arr)); }
+                            }
+                            best.unwrap().1
+                        };
+                        let canon_nodes = canon(&cyc);
+                        let key = canon_nodes.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("->");
+                        if seen_keys.contains(&key) { continue; }
+                        seen_keys.insert(key);
+                        out.push(NearMissCycle { nodes: canon_nodes, slack: -shortfall.max(0.0) });
+                        if out.len() >= limit { break 'tri; }
+                    }
+                }
+            }
+        }
+    }
+
     out
 }
 

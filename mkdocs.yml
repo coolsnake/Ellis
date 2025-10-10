@@ -40,6 +40,10 @@ theme:
     - navigation.top
     - toc.integrate
     - content.code.copy
+  palette:
+    - scheme: slate
+      primary: black
+      accent: indigo
 plugins:
   - search
 markdown_extensions:
@@ -50,5 +54,7 @@ markdown_extensions:
   - def_list
 extra:
   generator: false
+extra_css:
+  - assets/theme.css
 
 
