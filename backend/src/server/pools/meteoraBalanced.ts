@@ -201,6 +201,8 @@ export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[
     httpLogResponse({ source: 'meteora_balanced', url, cid, status: res.status, ms: 0, count: data.length });
     if (!json?.next && !json?.hasNextPage) break;
     page += 1;
+    // Respect 10 RPS: space requests ~100ms apart
+    await new Promise(r => setTimeout(r, 110));
   }
   return out;
 }
@@ -245,6 +247,8 @@ export async function fetchMeteoraBalancedV2Http(baseUrl?: string): Promise<any[
     httpLogResponse({ source: 'meteora_balanced_v2', url, cid, status: res.status, ms: 0, count: data.length });
     if (!json?.next && !json?.hasNextPage) break;
     page += 1;
+    // Respect 10 RPS: space requests ~100ms apart
+    await new Promise(r => setTimeout(r, 110));
   }
   return out;
 }

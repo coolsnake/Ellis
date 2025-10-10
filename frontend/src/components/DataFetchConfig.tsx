@@ -52,7 +52,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     // Meteora (DLMM)
     meteora_apiUrl: 'https://dlmm-api.meteora.ag/v1/pairs',
     // Meteora Balanced (mAMM)
-    meteoraBalanced_apiUrl: 'https://damm-api.meteora.ag/v1/pairs',
+    meteoraBalanced_apiUrl: 'https://amm.meteora.ag/pairs',
     meteoraBalanced_cacheTtlMs: 300000,
     meteoraBalanced_maxHttpRetries: 2,
     meteoraBalanced_httpBackoffMs: 500,

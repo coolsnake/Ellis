@@ -8,13 +8,12 @@ Environment variables and defaults that control Meteora fetchers:
   - Default: `https://dlmm-api.meteora.ag/v1/pairs`
 
 - METEORA_BALANCED_API_URL
-  - Description: Balanced (mAMM) pairs API endpoint
-  - Default: `https://damm-api.meteora.ag/v1/pairs`
-  - Notes: The backend will automatically retry `.../v2/pairs` once if `v1` returns empty/non-ok.
+  - Description: Balanced (mAMM) pairs API endpoint (DAMM v1)
+  - Default: `https://amm.meteora.ag/pairs`
 
-- METEORA_BALANCED_API_URL_V2
+// METEORA_BALANCED_API_URL_V2
   - Description: Balanced (mAMM) v2 pairs API endpoint
-  - Default: `https://damm-api.meteora.ag/v2/pairs`
+  - Default: `https://amm-v2.meteora.ag/pairs`
   - Behavior: When both v1 and v2 are configured, results are unioned with v2 preferred on conflicts.
 
 Related runtime config keys (exposed via /system/config and UI):
