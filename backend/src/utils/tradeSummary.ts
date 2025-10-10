@@ -20,7 +20,8 @@ type TradeSummary = {
   solPriceCloseUsd?: number | null;
 };
 
-const FILE_PATH = resolve(CONFIG.logDir, 'trade_summaries.jsonl');
+const LOG_DIR_SAFE = (CONFIG as any)?.logDir || resolve('backend', 'logs');
+const FILE_PATH = resolve(LOG_DIR_SAFE, 'trade_summaries.jsonl');
 
 export async function writeTradeSummary(s: TradeSummary): Promise<void> {
   const line = JSON.stringify(s) + '\n';
@@ -32,9 +33,9 @@ export async function writeTradeSummary(s: TradeSummary): Promise<void> {
 }
 
 // Additional structured logs: quotes, intents, trades (opens/closes/scales)
-const QUOTES_PATH = resolve(CONFIG.logDir, 'quotes.jsonl');
-const INTENTS_PATH = resolve(CONFIG.logDir, 'intents.jsonl');
-const TRADES_PATH = resolve(CONFIG.logDir, 'trades.jsonl');
+const QUOTES_PATH = resolve(LOG_DIR_SAFE, 'quotes.jsonl');
+const INTENTS_PATH = resolve(LOG_DIR_SAFE, 'intents.jsonl');
+const TRADES_PATH = resolve(LOG_DIR_SAFE, 'trades.jsonl');
 
 export async function logQuote(entry: Record<string, any>): Promise<void> {
   const line = JSON.stringify(entry) + '\n';

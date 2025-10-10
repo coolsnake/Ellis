@@ -1016,7 +1016,7 @@ export class GridTrader {
           'strategy'
         );
         
-        const sig = swapResult.signature;
+        const sig = (swapResult as any).signature || (typeof (swapResult as any) === 'string' ? (swapResult as any) : undefined);
         const actualReceivedAmount = (swapResult as any).receivedAmountActual ?? swapResult.receivedAmount;
         const actualReceivedRaw = (swapResult as any).receivedAmountRawActual as string | undefined;
         
@@ -1031,7 +1031,7 @@ export class GridTrader {
         });
 
         // Validate transaction success before proceeding
-        const transactionSuccess = await this.validateTransactionSuccess(sig);
+        const transactionSuccess = sig ? await this.validateTransactionSuccess(sig) : false;
         if (!transactionSuccess) {
           logger.error('Grid level transaction failed', {
             levelSide: level.side,

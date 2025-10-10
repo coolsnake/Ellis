@@ -21,13 +21,13 @@ export function createSwapRouter(io: SocketIOServer): Router {
       const fromInfo = await resolveMint(from);
       const toInfo = await resolveMint(to);
       const raw = Math.round(Number(amount) * Math.pow(10, fromInfo.decimals));
-      const result = await executeSwap(
+      const result: any = await executeSwap(
         { inputMint: fromInfo.mint, outputMint: toInfo.mint, amount: raw, userPublicKey: kp.publicKey.toBase58(), slippageBps: 100 },
         (serialized) => signAndSendSerializedTransaction(serialized, kp, undefined, 'swap'),
         true,
         toInfo.decimals
       );
-      const sig = result.signature;
+      const sig = (result as any)?.signature || (typeof result === 'string' ? result : undefined);
       res.json({ signature: sig });
       try { addWalletHistory({ type: 'swap', time: new Date().toISOString(), fromToken: from, fromAmount: amount, toToken: to, toAmount: undefined, signature: sig }); } catch {}
       emit('log', { level: 'info', message: `terminal: swap success ${amount} ${from}->${to} sig=${sig}`, timestamp: new Date().toISOString() });

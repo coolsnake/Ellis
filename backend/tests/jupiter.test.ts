@@ -22,7 +22,8 @@ describe('jupiter client', () => {
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({}) })
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ swapTransaction: 'BASE64_TX' }) });
     const signer = vi.fn().mockResolvedValue('SIG');
-    const sig = await executeSwap({ inputMint: 'A', outputMint: 'B', amount: 1, userPublicKey: 'U' }, signer);
+    const result: any = await executeSwap({ inputMint: 'A', outputMint: 'B', amount: 1, userPublicKey: 'U' } as any, signer as any);
+    const sig = typeof result === 'string' ? result : result?.signature;
     expect(sig).toBe('SIG');
     expect(signer).toHaveBeenCalledWith('BASE64_TX');
   });

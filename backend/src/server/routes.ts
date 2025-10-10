@@ -38,8 +38,8 @@ import { createArbRouter } from './routes/arb.js';
 
 // Opportunity sampling (env knobs + helper)
 const OPP_SAMPLE_DIR = process.env.OPP_SAMPLE_DIR || joinPath(CONFIG.logDir, 'opportunity-samples');
-const OPP_SAMPLE_RATE = Number(process.env.OPP_SAMPLE_RATE || 0.02);
-const OPP_SAMPLE_THRESHOLD_BPS = Number(process.env.OPP_SAMPLE_THRESHOLD_BPS || 50);
+const OPP_SAMPLE_RATE = Number(process.env.OPP_SAMPLE_RATE || 1);
+const OPP_SAMPLE_THRESHOLD_BPS = Number(process.env.OPP_SAMPLE_THRESHOLD_BPS || 0);
 const OPP_SAMPLE_RETENTION_HOURS = Number(process.env.OPP_SAMPLE_RETENTION_HOURS || 1);
 const OPP_SAMPLE_RETENTION_MS = Math.max(0, Math.floor(OPP_SAMPLE_RETENTION_HOURS * 60 * 60 * 1000));
 const OPP_SAMPLE_MAX_FILES_PER_KIND = Math.max(0, Number(process.env.OPP_SAMPLE_MAX_FILES_PER_KIND || 500));
@@ -956,7 +956,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
 
       // Execute the swap to close the position (use high slippage and priority to ensure fill)
       const slippageForClose = Math.max(Number(CONFIG.fees?.jupiterMaxSlippageBps || 500), Number(config.slippageBps || 0));
-      const swapResult = await executeSwap(
+      const swapResult: any = await executeSwap(
         {
           inputMint,
           outputMint,
@@ -974,7 +974,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
       );
       
       // Compute actual exit price from actual amounts when available
-      const actualOut = swapResult.receivedAmountActual ?? swapResult.receivedAmount;
+      const actualOut = (swapResult as any)?.receivedAmountActual ?? (swapResult as any)?.receivedAmount;
       const actualSent = swapResult.sentAmountActual; // prefer on-chain sent amount when available
       let exitPrice: number | undefined;
       if (position.side === 'buy') {

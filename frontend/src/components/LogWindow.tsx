@@ -94,9 +94,30 @@ export const LogWindow: React.FC<{
             };
             const cat = (l as any).cat as string | undefined;
             const color = l.level === 'error' ? 'text-red-400' : l.level === 'warn' ? 'text-yellow-400' : (cat ? (colorByCat as any)[cat] : null) || 'text-gray-300';
+            const ctx = l.context as Record<string, unknown> | undefined;
+            const reserved = new Set(['cat', 'subcat', 'code', 'cid', 'span']);
+            const ctxParts: string[] = [];
+            if (ctx && typeof ctx === 'object') {
+              for (const [k, v] of Object.entries(ctx)) {
+                if (reserved.has(k)) continue;
+                if (v === undefined || v === null) continue;
+                let vs: string;
+                if (typeof v === 'number' || typeof v === 'boolean') {
+                  vs = String(v);
+                } else if (typeof v === 'string') {
+                  vs = v;
+                } else if (Array.isArray(v)) {
+                  vs = `[${v.length}]`;
+                } else {
+                  try { vs = JSON.stringify(v); } catch { vs = '[obj]'; }
+                }
+                if (vs.length > 120) vs = vs.slice(0, 117) + '...';
+                ctxParts.push(`${k}=${vs}`);
+              }
+            }
             return (
               <li key={i} className={`text-sm ${color}`}>
-                <span className="text-gray-500">[{l.timestamp}]</span> <span className="uppercase text-gray-400">{l.level}</span> {cat ? <span className={`uppercase ${color}`}>[{cat}]</span> : null} {(l as any).code ? <span className="text-blue-300">[{(l as any).code}]</span> : null} {(l as any).cid ? <span className="text-gray-400">(cid={(l as any).cid})</span> : null} {l.message}
+                <span className="text-gray-500">[{l.timestamp}]</span> <span className="uppercase text-gray-400">{l.level}</span> {cat ? <span className={`uppercase ${color}`}>[{cat}]</span> : null} {(l as any).code ? <span className="text-blue-300">[{(l as any).code}]</span> : null} {(l as any).cid ? <span className="text-gray-400">(cid={(l as any).cid})</span> : null} {l.message} {ctxParts.length ? <span className="text-gray-400">{ctxParts.map((p, idx) => (<span key={idx}>({p}) </span>))}</span> : null}
               </li>
             );
           })}

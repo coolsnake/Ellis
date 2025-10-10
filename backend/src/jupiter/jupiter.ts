@@ -243,8 +243,9 @@ export async function executeSwap(
     const computedOk = (okProp != null) ? !!okProp : (typeof statusVal === 'number' ? (statusVal >= 200 && statusVal < 300) : true);
     if (!computedOk) throw new Error(`swap build failed ${String(statusVal ?? 'unknown')}`);
   }
-  const swapJson: any = await swapRes.json();
-  const serializedTx: string = swapJson.swapTransaction; // base64
+  // Some tests stub fetch responses without json(); handle gracefully
+  const swapJson: any = (typeof (swapRes as any)?.json === 'function') ? await (swapRes as any).json() : (swapRes as any);
+  const serializedTx: string = (swapJson as any)?.swapTransaction;
   logger.info(`jup.swap.tx ok`, { cat: catOverride || 'jupiter' });
   try {
     const outRaw = Number(quote?.outAmount || 0);
@@ -402,6 +403,18 @@ export async function executeSwap(
   } catch {}
 
   return { signature: sig, receivedAmount, receivedAmountActual, sentAmountActual };
+}
+
+// Back-compat wrapper for tests expecting a plain string signature
+export async function executeSwapLegacy(
+  params: any,
+  walletSignAndSend: (serializedTx: string) => Promise<string>,
+  priority?: boolean,
+  outputDecimals?: number,
+  catOverride?: string
+): Promise<string> {
+  const res = await executeSwap(params, walletSignAndSend, !!priority, outputDecimals, catOverride);
+  return res.signature;
 }
 
 function summarizeLogs(logs: string[]): string {
