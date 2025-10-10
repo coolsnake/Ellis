@@ -1,0 +1,54 @@
+site_name: Lockstone Docs
+site_url: ''
+use_directory_urls: false
+nav:
+  - Get Started:
+    - Quickstart: get-started/quickstart.md
+    - Install: get-started/install.md
+    - First Trade (Sim): get-started/first-trade.md
+  - User Guide:
+    - App Tour: user-guide/app-tour.md
+    - Wallet: user-guide/wallet.md
+    - Logs: user-guide/logs.md
+    - Arbitrage: user-guide/arbitrage.md
+    - Drift: user-guide/drift.md
+    - Strategies:
+      - Chooser: user-guide/strategies/index.md
+      - Threshold: user-guide/strategies/threshold.md
+      - Grid: user-guide/strategies/grid.md
+  - Parameters:
+    - Catalog: parameters/catalog.md
+  - How‑to:
+    - Simulate Execution: how-to/simulate-execution.md
+    - Backtest/Sandbox: how-to/backtest-or-sandbox.md
+    - Monitoring & Alerts: how-to/setup-alerts-logging.md
+  - Troubleshooting: troubleshooting/index.md
+  - Reference:
+    - Config Files: reference/config-files.md
+    - API: reference/api.md
+    - Error Codes: reference/error-codes.md
+    - Glossary: reference/glossary.md
+  - Explanations:
+    - Architecture: explanations/architecture.md
+    - Data Flows: explanations/data-flows.md
+    - Strategy Design: explanations/strategy-design.md
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.sections
+    - navigation.top
+    - toc.integrate
+    - content.code.copy
+plugins:
+  - search
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
+  - tables
+  - def_list
+extra:
+  generator: false
+
+

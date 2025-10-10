@@ -56,6 +56,16 @@ export function OpportunityList(
   };
   const fmtPctFromBps = (bps?: number) => bps === undefined || bps === null ? '—' : `${(bps/100).toFixed(2)}%`;
 
+  const ago = (ms?: number) => {
+    if (!ms || ms <= 0) return '—';
+    const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m`;
+    const h = Math.floor(m / 60);
+    return `${h}h`;
+  };
+
   const visible = showAll ? items : items.slice(0, 10);
 
   return (
@@ -64,9 +74,12 @@ export function OpportunityList(
         <span className="text-xs opacity-70">{showAll ? `Showing ${items.length}` : `Showing ${Math.min(10, items.length)} of ${items.length}`}</span>
         <button className="px-2 py-1 border rounded" onClick={()=> setShowAll(!showAll)}>{showAll ? 'Show Top 10' : 'Show All'}</button>
       </div>
-      <div className="space-y-2">
-        {visible.map((op, idx) => (
-          <div key={idx} className="p-2 border rounded bg-black/20">
+      <div className="max-h-96 overflow-y-auto">
+        <div className="space-y-2">
+        {visible.map((op) => {
+          const key = `${(op.path||[]).join('>')}|${(op.dexes||[]).join('>')}`;
+          return (
+          <div key={key} className="p-2 border rounded bg-black/20">
             <div className="text-sm">
               <span className="font-mono">
                 {(() => {
@@ -162,12 +175,14 @@ export function OpportunityList(
                 </div>
               );
             })()}
-            <div className="text-[11px] opacity-60">Seen: {/* Show detected/first seen if present */}</div>
+            <div className="text-[11px] opacity-60">First {ago(op.first_seen_ms)} · Last {ago(op.detected_ms)} · Hits {op.detections ?? 1}</div>
           </div>
-        ))}
+          );
+        })}
         {visible.length === 0 && (
           <div className="text-sm opacity-70">No opportunities</div>
         )}
+        </div>
       </div>
     </div>
   );

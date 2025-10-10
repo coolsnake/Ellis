@@ -1032,23 +1032,37 @@ async fn main() -> anyhow::Result<()> {
                     };
                     (curr, prev_opps, near_pair, near_list)
                 };
-                // Drop stale opps older than 10s if not re-detected
+                // Adaptive stale handling based on config.max_idle_ms and detections stability
                 let now_ms_val = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
-                let stale_threshold = 10_000u64;
+                let base_ttl = {
+                    // clamp to ≥5s to avoid overly aggressive churn
+                    let s = loop_state.read().await;
+                    s.config.max_idle_ms.max(5_000)
+                };
                 let mut merged: Vec<Opportunity> = Vec::new();
-                // Keep those just detected
+                // Always keep current detections
                 merged.extend(opps.into_iter());
-                // Retain prior ones if still within threshold and not duplicated
+                // Retain prior ones if within adaptive TTL and not duplicated
                 for mut o in prev.into_iter() {
-                    let ts = o.detected_ms.unwrap_or(now_ms_val);
+                    let first = o.first_seen_ms.unwrap_or(o.detected_ms.unwrap_or(now_ms_val));
+                    let det = o.detections.unwrap_or(1);
+                    // extend TTL up to 3× (1x base + up to +2x for stability)
+                    let ttl = base_ttl.saturating_mul(1 + det.min(2));
                     let is_dup = merged.iter().any(|x| x.path == o.path && x.dexes == o.dexes);
-                    if !is_dup && now_ms_val.saturating_sub(ts) <= stale_threshold {
-                        // Carry over stability counters
+                    if !is_dup && now_ms_val.saturating_sub(first) <= ttl {
                         if o.first_seen_ms.is_none() { o.first_seen_ms = o.detected_ms; }
-                        o.detections = Some(o.detections.unwrap_or(1));
+                        o.detections = Some(det);
                         merged.push(o);
                     }
                 }
+                // Prefer higher net_bps then recency; keep list bounded
+                merged.sort_by(|a, b| {
+                    let an = a.net_bps.unwrap_or(a.profit_bps);
+                    let bn = b.net_bps.unwrap_or(b.profit_bps);
+                    bn.cmp(&an)
+                      .then_with(|| b.detected_ms.unwrap_or(0).cmp(&a.detected_ms.unwrap_or(0)))
+                });
+                if merged.len() > 50 { merged.truncate(50); }
                 // Diff on paths list for change detection
                 let changed = true; // simplified; merged likely differs frequently enough
                 if changed {
@@ -1495,6 +1509,102 @@ fn default_config() -> ArbConfig {
         filtered_node_ratio: std::env::var("ARB_FILTERED_NODE_RATIO").ok().and_then(|s| s.parse().ok()).unwrap_or(0.1),
         filtered_expand_hops: std::env::var("ARB_FILTERED_EXPAND_HOPS").ok().and_then(|s| s.parse().ok()).or(None),
         periodic_full_ms: std::env::var("ARB_PERIODIC_FULL_MS").ok().and_then(|s| s.parse().ok()).or(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mk_opp(path: &[&str], bps: i64, net: Option<i64>, first: u64, last: u64, det: u64) -> Opportunity {
+        Opportunity {
+            path: path.iter().map(|s| s.to_string()).collect(),
+            profit_bps: bps,
+            net_bps: net,
+            est_profit_usd: 0.0,
+            dexes: vec!["X".into(), "Y".into(), "Z".into()],
+            hop_dexes: None,
+            hop_rates: None,
+            hop_outs: None,
+            hop_pool_ids: None,
+            hop_fee_bps: None,
+            hop_liquidity_display: None,
+            hop_count: None,
+            rate_product: None,
+            link_edges_used: None,
+            link_penalty_bps_total: None,
+            min_edge_liquidity: None,
+            est_capacity: None,
+            bottleneck: None,
+            detected_ms: Some(last),
+            first_seen_ms: Some(first),
+            detections: Some(det),
+            bf_slack_log: None,
+            bf_required_rate: None,
+            bf_rate_delta_bps: None,
+        }
+    }
+
+    #[test]
+    fn adaptive_ttl_keeps_stable_and_sorts() {
+        // Simulate now and base TTL
+        let now = 1_000_000u64;
+        let base_ttl = 5_000u64;
+
+        // Current detections empty; prev has two items
+        let mut prev: Vec<Opportunity> = vec![
+            // Stable: first seen long ago but many detections -> extend TTL
+            mk_opp(&["A","B","A"], 40, Some(35), now - 12_000, now - 2_000, 3),
+            // Old and few detections -> should drop under base TTL
+            mk_opp(&["C","D","C"], 90, Some(80), now - 12_000, now - 11_000, 1),
+        ];
+        let opps: Vec<Opportunity> = vec![];
+
+        // Merge logic mirror
+        let mut merged: Vec<Opportunity> = Vec::new();
+        merged.extend(opps.into_iter());
+        for mut o in prev.drain(..) {
+            let first = o.first_seen_ms.unwrap_or(o.detected_ms.unwrap_or(now));
+            let det = o.detections.unwrap_or(1);
+            let ttl = base_ttl.saturating_mul(1 + det.min(2));
+            let is_dup = merged.iter().any(|x| x.path == o.path && x.dexes == o.dexes);
+            if !is_dup && now.saturating_sub(first) <= ttl {
+                if o.first_seen_ms.is_none() { o.first_seen_ms = o.detected_ms; }
+                o.detections = Some(det);
+                merged.push(o);
+            }
+        }
+        // Expect only the stable one retained
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].path, vec!["A","B","A"]);
+
+        // Add a new higher net_bps item and test sorting and cap
+        let mut merged2 = merged;
+        merged2.push(mk_opp(&["E","F","E"], 10, Some(120), now - 100, now - 50, 1));
+        merged2.sort_by(|a,b| {
+            let an = a.net_bps.unwrap_or(a.profit_bps);
+            let bn = b.net_bps.unwrap_or(b.profit_bps);
+            bn.cmp(&an).then_with(|| b.detected_ms.unwrap_or(0).cmp(&a.detected_ms.unwrap_or(0)))
+        });
+        assert_eq!(merged2[0].path, vec!["E","F","E"]);
+    }
+
+    #[test]
+    fn cap_list_to_50() {
+        let now = 2_000_000u64;
+        let mut v: Vec<Opportunity> = Vec::new();
+        for i in 0..60 {
+            v.push(mk_opp(&["X","Y","X"], i, Some(i), now - i as u64, now - i as u64, 1));
+        }
+        v.sort_by(|a,b| {
+            let an = a.net_bps.unwrap_or(a.profit_bps);
+            let bn = b.net_bps.unwrap_or(b.profit_bps);
+            bn.cmp(&an).then_with(|| b.detected_ms.unwrap_or(0).cmp(&a.detected_ms.unwrap_or(0)))
+        });
+        if v.len() > 50 { v.truncate(50); }
+        assert_eq!(v.len(), 50);
+        // Highest net_bps at front
+        assert!(v[0].net_bps.unwrap_or(0) >= v[49].net_bps.unwrap_or(0));
     }
 }
 

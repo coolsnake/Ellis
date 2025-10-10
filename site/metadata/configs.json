@@ -1,0 +1,28 @@
+{
+  "files": [
+    {
+      "path": "backend/config/tokens.json",
+      "purpose": "Supported tokens and metadata.",
+      "keys": [
+        { "name": "symbol", "description": "Ticker symbol." },
+        { "name": "mint", "description": "Token mint address." }
+      ]
+    },
+    {
+      "path": "backend/config/jupTokens.json",
+      "purpose": "Jupiter token list override and metadata.",
+      "keys": [
+        { "name": "symbol", "description": "Ticker symbol." },
+        { "name": "address", "description": "Token address." }
+      ]
+    },
+    {
+      "path": "backend/backend/config/strategies.json",
+      "purpose": "Strategy-specific defaults and toggles.",
+      "keys": [
+        { "name": "threshold", "description": "Default params for threshold strategy." },
+        { "name": "grid", "description": "Default params for grid strategy." }
+      ]
+    }
+  ]
+}

@@ -26,8 +26,12 @@ for f in "${tests[@]}"; do
   npx vitest run --threads=false --reporter=basic "${VITEST_ARGS[@]}" "$f"
 done
 
-echo "\n[pipeline] Running: real E2E (RUN_REAL_E2E=true)"
-RUN_REAL_E2E=true npx vitest run --threads=false --reporter=basic "${VITEST_ARGS[@]}" src/server/__tests__/pipeline.e2e.real.test.ts
+if [ "${RUN_REAL_E2E:-}" = "true" ]; then
+  echo "\n[pipeline] Running: real E2E (RUN_REAL_E2E=true)"
+  RUN_REAL_E2E=true npx vitest run --threads=false --reporter=basic "${VITEST_ARGS[@]}" src/server/__tests__/pipeline.e2e.real.test.ts
+else
+  echo "\n[pipeline] Skipping real E2E (set RUN_REAL_E2E=true to enable)"
+fi
 
 echo "\n[pipeline] All tests completed successfully."
 

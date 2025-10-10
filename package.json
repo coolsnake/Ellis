@@ -9,7 +9,12 @@
     "build": "npm run build:backend && npm run build:frontend",
     "build:backend": "npm --prefix backend run build",
     "build:frontend": "npm --prefix frontend run build",
-    "test": "npm --prefix backend run test"
+    "test": "npm --prefix backend run test",
+    "test:backend": "npm --prefix backend run test",
+    "test:pipeline": "npm --prefix backend run test:pipeline",
+    "test:real": "npm --prefix backend run test:real",
+    "test:rs": "cargo test --manifest-path arb-rs/Cargo.toml",
+    "test:all": "npm run test:backend && npm run test:rs"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"

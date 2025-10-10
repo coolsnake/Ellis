@@ -287,17 +287,28 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
             const items: ArbOpportunity[] = Array.isArray((payload as any)?.items)
               ? ((payload as any).items as ArbOpportunity[])
               : (Array.isArray(payload) ? (payload as ArbOpportunity[]) : []);
-            const top: ArbOpportunity[] = items.slice(0, 3);
-            const sig = top.map((o: ArbOpportunity) => `${Math.round((o.profit_bps ?? o.net_bps ?? 0))}:${(o.path || []).join('>')}`).join('|');
-            if (sig !== lastOppSig) {
-              lastOppSig = sig;
+            // richer signature + periodic emit fallback to avoid UI appearing stuck when lower-ranked items change
+            (registerRoutes as any)._lastOppEmitAt = (registerRoutes as any)._lastOppEmitAt || 0;
+            const richSig = JSON.stringify({
+              count: items.length,
+              top5: items.slice(0, 5).map((o: ArbOpportunity) => [
+                Math.round((o.net_bps ?? o.profit_bps ?? 0)),
+                (o.path || []).join('>')
+              ]),
+              near: (((payload as any)?.summary?.near_miss?.path || []) as string[]).join('>')
+            });
+            const nowMsSig = Date.now();
+            const sinceLast = nowMsSig - Number((registerRoutes as any)._lastOppEmitAt || 0);
+            if (richSig !== lastOppSig || sinceLast > 2000) {
+              lastOppSig = richSig;
+              (registerRoutes as any)._lastOppEmitAt = nowMsSig;
               try { emit('arb:opportunities', payload); } catch {}
-              const lines = top.map((o: ArbOpportunity, i: number) => `#${i+1} bps=${Math.round((o.profit_bps ?? o.net_bps ?? 0))} hops=${(o.path || []).length-1} path=${(o.path || []).join('->')}`);
-              emit('log', { level: 'info', message: `pretrade:arb opps:update ${top.length} top=${lines.join(' | ')} oMs=${odur}`, timestamp: new Date().toISOString() });
+              const lines = items.slice(0, 3).map((o: ArbOpportunity, i: number) => `#${i+1} bps=${Math.round((o.profit_bps ?? o.net_bps ?? 0))} hops=${(o.path || []).length-1} path=${(o.path || []).join('->')}`);
+              emit('log', { level: 'info', message: `pretrade:arb opps:update ${Math.min(3, items.length)} top=${lines.join(' | ')} oMs=${odur}`, timestamp: new Date().toISOString() });
               try { arbLatency.opps.push(odur); if (arbLatency.opps.length > 200) arbLatency.opps.shift(); } catch {}
-              const topBps = Math.round((top?.[0]?.profit_bps ?? top?.[0]?.net_bps ?? 0));
+              const topBps = Math.round((items?.[0]?.profit_bps ?? items?.[0]?.net_bps ?? 0));
               if (topBps >= 30) {
-                emit('log', { level: 'info', message: `pretrade:arb top>=30bps bps=${topBps} hops=${(top?.[0]?.path||[]).length-1}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
+                emit('log', { level: 'info', message: `pretrade:arb top>=30bps bps=${topBps} hops=${(items?.[0]?.path||[]).length-1}`, timestamp: new Date().toISOString(), context: { cat: 'pretrade' } });
               }
               // Emit detailed logs for identified opportunities (top N)
               try {
