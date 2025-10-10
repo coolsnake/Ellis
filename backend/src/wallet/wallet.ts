@@ -7,6 +7,7 @@ import { logger } from '../utils/logger.js';
 import { emit } from '../server/realtime.js';
 import { getTokenAccountManager } from './tokenAccountManager.js';
 import { getFeeCalculator, type FeeConfig } from '../utils/feeCalculator.js';
+import { logTxTrace } from '../utils/txTrace.js';
 
 // cache for balances to reduce RPC pressure
 const getBalancesCache: Record<string, { ts: number; data: { sol: number; tokens: Record<string, number> } | null; inFlight: Promise<{ sol: number; tokens: Record<string, number> }> | null }> = {};
@@ -235,14 +236,45 @@ export async function signAndSendSerializedTransaction(
     tx.sign([signer]);
     const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
     await connection.confirmTransaction(sig, 'confirmed');
+    try {
+      const id = Math.random().toString(36).slice(2,10);
+      await logTxTrace('send', {
+        id,
+        timeMs: Date.now(),
+        transactionType,
+        wireBase64: serializedBase64,
+        signature: sig,
+      });
+    } catch {}
     return sig;
   } catch (e: any) {
     try {
       // Attempt to extract simulation logs
       const logs = (e && typeof e.getLogs === 'function') ? await e.getLogs() : undefined;
       logger.error('sendRawTransaction failed', { error: String(e?.message || e), logs });
+      try {
+        const id = Math.random().toString(36).slice(2,10);
+        await logTxTrace('send', {
+          id,
+          timeMs: Date.now(),
+          transactionType,
+          wireBase64: serializedBase64,
+          err: String(e?.message || e),
+          logs,
+        });
+      } catch {}
     } catch {
       logger.error('sendRawTransaction failed', { error: String(e?.message || e) });
+      try {
+        const id = Math.random().toString(36).slice(2,10);
+        await logTxTrace('send', {
+          id,
+          timeMs: Date.now(),
+          transactionType,
+          wireBase64: serializedBase64,
+          err: String(e?.message || e),
+        });
+      } catch {}
     }
     throw e;
   }

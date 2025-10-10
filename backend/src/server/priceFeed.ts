@@ -113,7 +113,7 @@ export class PriceFeed {
     const priceFeedResponsive = (CONFIG as any).system?.priceFeedResponsive || false;
     const ttlMs = Math.max(configTtl, targetTickTime, websocketInterval);
 
-    logger.info(`price feed TTL calculated`, {
+    logger.debug(`price feed TTL calculated`, {
       cat: 'price',
       configTtl,
       targetTickTime,

@@ -31,7 +31,7 @@ async function loadLookupTables(connection: Connection, addrs: string[]): Promis
   return out;
 }
 
-export async function assembleAndSimulate(instructions: any[], opts?: SendOptions): Promise<{ logs?: string[]; err?: any }> {
+export async function assembleAndSimulate(instructions: any[], opts?: SendOptions): Promise<{ logs?: string[]; err?: any; wireBase64?: string }> {
   const connection = getConnection();
   const kp = await ensureWallet((await import('../utils/config.js')).CONFIG.walletPath);
   const realIxs: TransactionInstruction[] = [];
@@ -42,16 +42,17 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
     const t = toInstruction(ix);
     if (t) realIxs.push(t);
   }
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
+  const { blockhash } = await connection.getLatestBlockhash('finalized');
   const lookupTables = await loadLookupTables(connection, (opts?.lookupTableAddresses || []));
   const msg = new TransactionMessage({ payerKey: kp.publicKey, recentBlockhash: blockhash, instructions: realIxs }).compileToV0Message(lookupTables);
   const tx = new VersionedTransaction(msg);
   tx.sign([kp]);
+  const wireBase64 = Buffer.from(tx.serialize()).toString('base64');
   const sim = await connection.simulateTransaction(tx, { sigVerify: true });
-  return { logs: sim.value?.logs, err: sim.value?.err };
+  return { logs: sim.value?.logs, err: sim.value?.err, wireBase64 };
 }
 
-export async function assembleAndSend(instructions: any[], opts?: SendOptions): Promise<{ signature: string }> {
+export async function assembleAndSend(instructions: any[], opts?: SendOptions): Promise<{ signature: string; wireBase64: string }> {
   const connection = getConnection();
   const kp = await ensureWallet((await import('../utils/config.js')).CONFIG.walletPath);
   const realIxs: TransactionInstruction[] = [];
@@ -66,9 +67,10 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
   const msg = new TransactionMessage({ payerKey: kp.publicKey, recentBlockhash: blockhash, instructions: realIxs }).compileToV0Message(lookupTables);
   const tx = new VersionedTransaction(msg);
   tx.sign([kp]);
+  const wireBase64 = Buffer.from(tx.serialize()).toString('base64');
   const sig = await connection.sendTransaction(tx, { skipPreflight: false, preflightCommitment: 'confirmed' });
   await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
-  return { signature: sig };
+  return { signature: sig, wireBase64 };
 }
 
 

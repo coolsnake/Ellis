@@ -67,7 +67,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
   const isFetchingRef = useRef(false);
   const [firstLoad, setFirstLoad] = useState(true);
   const [txRows, setTxRows] = useState<Array<{ id: string; timeMs: number; path: string[]; hops: Array<{ dex: string; variant: string; poolId: string }>; ixCount: number; txSizeBytes: number; status: string; signature?: string | null }>>([]);
-  const [expandedTxId, setExpandedTxId] = useState<string | null>(null);
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
   // Show-all toggle moved into OpportunityList
 
   // Deprecated polling/log-triggered refresh removed; rely on socket push with initial fallback
@@ -88,6 +88,8 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
     const hr = Math.floor(min / 60);
     return `${hr}h ago`;
   };
+
+  const sym = (m: string) => tokenMap[m] || (m.length > 6 ? `${m.slice(0,4)}…${m.slice(-4)}` : m);
 
   const fetchOpps = async () => {
     if (isFetchingRef.current) return;
@@ -131,10 +133,26 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
   }, []);
 
   // Subscribe to backend-bridged opportunities stream
+  // Throttle opportunities updates and skip redundant signatures (1000ms)
   useEffect(() => {
     if (!effectiveSocket) return;
+    let lastAt = 0;
+    let lastSig = '';
     const onOpps = (payload: { items?: Opportunity[]; summary?: OpportunitiesSummary }) => {
       try {
+        const now = Date.now();
+        if (now - lastAt < 1000) return;
+        const sig = (() => {
+          try {
+            const count = Array.isArray((payload as any)?.items) ? ((payload as any).items as any[]).length : 0;
+            const top = ((payload as any)?.items || []).slice(0, 3).map((o: any) => [Math.round(o?.net_bps ?? o?.profit_bps ?? 0), (o?.path||[]).join('>')]).join('|');
+            const near = (((payload as any)?.summary?.near_miss?.path || []) as string[]).join('>');
+            return `${count}:${top}:${near}`;
+          } catch { return String(now); }
+        })();
+        if (sig === lastSig) return;
+        lastSig = sig;
+        lastAt = now;
         if (Array.isArray(payload?.items)) setItems(payload.items as Opportunity[]);
         if (payload && typeof payload === 'object' && 'summary' in payload) setSummary((payload as any).summary || null);
       } catch {}
@@ -177,6 +195,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
     effectiveSocket.on('tx:sim.err', onTxAny);
     effectiveSocket.on('tx:send.ok', onTxAny);
     effectiveSocket.on('tx:send.err', onTxAny);
+    effectiveSocket.on('tx:history.updated', onTxAny);
     return () => {
       effectiveSocket.off('tx:start', onTxAny);
       effectiveSocket.off('tx:resolved', onTxAny);
@@ -184,6 +203,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
       effectiveSocket.off('tx:sim.err', onTxAny);
       effectiveSocket.off('tx:send.ok', onTxAny);
       effectiveSocket.off('tx:send.err', onTxAny);
+      effectiveSocket.off('tx:history.updated', onTxAny);
     };
   }, [effectiveSocket]);
 
@@ -454,26 +474,28 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
               </tr>
             </thead>
             <tbody>
-              {txRows.map((r) => (
+              {txRows.map((r) => {
+                const rowKey = `${r.id}:${r.status}:${r.timeMs}`;
+                return (
                 <>
-                  <tr key={r.id} className="border-t border-white/10 cursor-pointer" onClick={()=> setExpandedTxId(expandedTxId===r.id?null:r.id)}>
+                  <tr key={rowKey} className="border-t border-white/10 cursor-pointer" onClick={()=> setExpandedKey(expandedKey===rowKey?null:rowKey)}>
                     <td className="py-1 pr-2">{new Date(r.timeMs).toLocaleTimeString()}</td>
-                    <td className="py-1 pr-2 font-mono">{(r.path||[]).map(m=>tokenMap[m]||m.slice(0,4)+'…'+m.slice(-4)).join(' → ')}</td>
-                    <td className="py-1 pr-2">{r.hops.map(h=>`${h.dex}/${h.variant}`).join(', ')}</td>
+                    <td className="py-1 pr-2 font-mono">{(r.path||[]).map(sym).join(' → ')}</td>
+                    <td className="py-1 pr-2">{r.hops.map((h, i) => `${sym(r.path[i])}→${sym(r.path[i+1])} (${h.dex}/${h.variant})`).join(', ')}</td>
                     <td className="py-1 pr-2">{r.ixCount}</td>
                     <td className="py-1 pr-2">{r.txSizeBytes}</td>
                     <td className="py-1 pr-2">{r.status}</td>
                     <td className="py-1 pr-2">{r.signature ? <a className="text-blue-400 underline" href={`https://solscan.io/tx/${r.signature}`} target="_blank" rel="noreferrer">{r.signature.slice(0,6)}…</a> : '—'}</td>
                   </tr>
-                  {expandedTxId === r.id && (
-                    <tr key={`${r.id}-exp`} className="bg-black/20">
+                  {expandedKey === rowKey && (
+                    <tr key={`${rowKey}-exp`} className="bg-black/20">
                       <td colSpan={7} className="py-2 px-2">
                         <div className="text-[11px] grid grid-cols-1 md:grid-cols-2 gap-2">
                           <div>
                             <div className="font-semibold mb-1">Hops</div>
                             <div className="space-y-1">
                               {r.hops.map((h, i) => (
-                                <div key={i} className="font-mono">{i+1}. {h.dex}/{h.variant} · pool {h.poolId}</div>
+                                <div key={i} className="font-mono">{i+1}. {sym(r.path[i])} → {sym(r.path[i+1])} · {h.dex}/{h.variant} · pool {h.poolId}</div>
                               ))}
                             </div>
                           </div>
@@ -486,7 +508,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
                     </tr>
                   )}
                 </>
-              ))}
+              )})}
               {txRows.length === 0 && (
                 <tr><td className="py-2 opacity-70" colSpan={7}>No transactions</td></tr>
               )}

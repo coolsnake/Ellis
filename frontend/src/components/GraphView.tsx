@@ -773,8 +773,31 @@ useEffect(() => {
 			scheduled = false;
 			const snap = latestSnap; const diff = latestDiff;
 			latestSnap = null; latestDiff = null;
-			if (snap) applySnapshot(snap);
-			else if (diff) applyDiff(diff);
+			if (snap) {
+				applySnapshot(snap);
+			} else if (diff) {
+				const chunkSize = 300;
+				const copy: GraphDiff = {
+					...diff,
+					addedEdges: Array.isArray(diff.addedEdges) ? diff.addedEdges.slice() : [],
+					updatedEdges: Array.isArray(diff.updatedEdges) ? diff.updatedEdges.slice() : [],
+					addedNodes: Array.isArray(diff.addedNodes) ? diff.addedNodes.slice() : [],
+					updatedNodes: Array.isArray(diff.updatedNodes) ? diff.updatedNodes.slice() : [],
+				};
+				const runChunks = () => {
+					if (!copy.addedNodes?.length && !copy.updatedNodes?.length && !copy.addedEdges?.length && !copy.updatedEdges?.length) return;
+					const d: GraphDiff = { ...copy, addedNodes: [], updatedNodes: [], addedEdges: [], updatedEdges: [] } as any;
+					if (copy.addedNodes?.length) d.addedNodes = copy.addedNodes.splice(0, chunkSize);
+					if (copy.updatedNodes?.length) d.updatedNodes = copy.updatedNodes.splice(0, chunkSize);
+					if (copy.addedEdges?.length) d.addedEdges = copy.addedEdges.splice(0, chunkSize);
+					if (copy.updatedEdges?.length) d.updatedEdges = copy.updatedEdges.splice(0, chunkSize);
+					applyDiff(d);
+					if (copy.addedNodes?.length || copy.updatedNodes?.length || copy.addedEdges?.length || copy.updatedEdges?.length) {
+						requestAnimationFrame(runChunks);
+					}
+				};
+				runChunks();
+			}
 		};
 		const schedule = () => {
 			if (scheduled) return;
@@ -784,7 +807,19 @@ useEffect(() => {
       idle(flush, 250);
 		};
 
-		const onDiff = (diff: GraphDiff) => { latestDiff = diff; schedule(); };
+		const onDiff = (diff: GraphDiff) => {
+			try {
+				const adds = (diff?.addedEdges?.length || 0) + (diff?.updatedEdges?.length || 0) + (diff?.removedEdgeIds?.length || 0);
+				const nodes = (diff?.addedNodes?.length || 0) + (diff?.updatedNodes?.length || 0) + (diff?.removedNodeIds?.length || 0);
+				if (adds > 1500 || nodes > 1500) {
+					setNeedsResync(true);
+					try { effectiveSocket.emit('graph:request-snapshot'); } catch {}
+					latestDiff = null;
+					return;
+				}
+			} catch {}
+			latestDiff = diff; schedule();
+		};
 		const onSnapshot = (snap: GraphSnapshot) => { latestSnap = snap; schedule(); };
 		const onHighlight = (payload: { edgeIds?: string[]; pairs?: Array<{ source: string; target: string; dex?: string }> }) => {
 			// Defer to idle to avoid blocking main thread

@@ -151,16 +151,31 @@ export function OpportunityList(
                   }
                 } catch {}
               }}>Highlight</button>
-              <button className="px-1 py-0.5 border rounded" onClick={async()=>{
+              {(() => {
+                const edges = Math.max(0, (op.path?.length || 0) - 1);
+                const hopIds = ((op as any)?.hop_pool_ids || []) as string[];
+                const hopDexes = ((op as any)?.hop_dexes || []) as string[];
+                const validHops = edges > 0 && hopIds.length === edges && hopDexes.length === edges;
+                return (
+              <button className="px-1 py-0.5 border rounded" disabled={!validHops} title={!validHops ? `Invalid hops: expected ${edges}, got hopPoolIds=${hopIds.length}, hopDexes=${hopDexes.length}` : undefined} onClick={async()=>{
                 try {
+                  if (!validHops) { setSimErr(`invalid opportunity payload (expected ${edges} hops, got hopPoolIds=${hopIds.length}, hopDexes=${hopDexes.length})`); return; }
                   const body: any = { path: op.path, hopPoolIds: (op as any)?.hop_pool_ids, dexes: (op as any)?.hop_dexes };
                   const r = await fetch(`${apiBase}/arb/simulate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
                   await r.json().catch(()=>({}));
                 } catch {}
               }}>Simulate Direct</button>
-              <button className="px-1 py-0.5 border rounded" onClick={async()=>{
+                ); })()}
+              {(() => {
+                const edges = Math.max(0, (op.path?.length || 0) - 1);
+                const hopIds = ((op as any)?.hop_pool_ids || []) as string[];
+                const hopDexes = ((op as any)?.hop_dexes || []) as string[];
+                const validHops = edges > 0 && hopIds.length === edges && hopDexes.length === edges;
+                return (
+              <button className="px-1 py-0.5 border rounded" disabled={!validHops} title={!validHops ? `Invalid hops: expected ${edges}, got hopPoolIds=${hopIds.length}, hopDexes=${hopDexes.length}` : undefined} onClick={async()=>{
                 try {
                   setSimLogs(null); setSimErr(null);
+                  if (!validHops) { setSimErr(`invalid opportunity payload (expected ${edges} hops, got hopPoolIds=${hopIds.length}, hopDexes=${hopDexes.length})`); return; }
                   const body: any = { path: op.path, hopPoolIds: (op as any)?.hop_pool_ids, dexes: (op as any)?.hop_dexes, sizeUsd: sendMode==='USD'? Number(sendAmount)||0 : undefined, size: sendMode==='TOKENS'? Number(sendAmount)||0 : undefined };
                   const r = await fetch(`${apiBase}/arb/simulate-send`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
                   const j = await r.json().catch(()=>({}));
@@ -175,13 +190,22 @@ export function OpportunityList(
                   setSimErr(String(e?.message || e));
                 }
               }}>Preflight Simulate</button>
-              <button className="px-1 py-0.5 border rounded" onClick={async()=>{
+                ); })()}
+              {(() => {
+                const edges = Math.max(0, (op.path?.length || 0) - 1);
+                const hopIds = ((op as any)?.hop_pool_ids || []) as string[];
+                const hopDexes = ((op as any)?.hop_dexes || []) as string[];
+                const validHops = edges > 0 && hopIds.length === edges && hopDexes.length === edges;
+                return (
+              <button className="px-1 py-0.5 border rounded" disabled={!validHops} title={!validHops ? `Invalid hops: expected ${edges}, got hopPoolIds=${hopIds.length}, hopDexes=${hopDexes.length}` : undefined} onClick={async()=>{
                 try {
+                  if (!validHops) { setSimErr(`invalid opportunity payload (expected ${edges} hops, got hopPoolIds=${hopIds.length}, hopDexes=${hopDexes.length})`); return; }
                   const body: any = { path: op.path, hopPoolIds: (op as any)?.hop_pool_ids, dexes: (op as any)?.hop_dexes, sizeUsd: sendMode==='USD'? Number(sendAmount)||0 : undefined, size: sendMode==='TOKENS'? Number(sendAmount)||0 : undefined };
                   const r = await fetch(`${apiBase}/arb/execute`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
                   await r.json().catch(()=>({}));
                 } catch {}
               }}>Execute Direct</button>
+                ); })()}
             </div>
             {(simErr || (simLogs && simLogs.length)) && (
               <div className="mt-1 p-2 bg-black/30 rounded text-[11px]">

@@ -3,6 +3,7 @@ import type { Server as SocketIOServer } from 'socket.io';
 import { logger } from '../../utils/logger.js';
 import { emit } from '../realtime.js';
 import { writeJson } from '../../utils/fs.js';
+import { logTxTrace } from '../../utils/txTrace.js';
 
 export function createArbRouter(io: SocketIOServer): Router {
   const api = Router();
@@ -97,7 +98,14 @@ export function createArbRouter(io: SocketIOServer): Router {
       const parsed = ResolveDirectSchema.parse(input);
       const plan = input?.plan && Array.isArray(input.plan?.hops) ? input.plan : await resolveDirectPlan(parsed as any, {} as any);
       const built = await buildDirectArbTx(plan, [], {} as any);
-      res.json({ ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
+      const id = Math.random().toString(36).slice(2,10);
+      await logTxTrace('simulate', {
+        id, timeMs: Date.now(),
+        path: plan.path,
+        hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })),
+        ixCount: built.ixCount, txSizeBytes: built.sizeBytes,
+      });
+      res.json({ id, ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
     }
@@ -124,7 +132,37 @@ export function createArbRouter(io: SocketIOServer): Router {
         lookupTableAddresses: execCfg.lookupTableAddresses,
       } as any);
 
-      res.json({ ixCount: built.ixCount, txSizeBytes: built.sizeBytes, logs: sim.logs || [], err: sim.err || null });
+      const id = Math.random().toString(36).slice(2,10);
+      await logTxTrace('preflight', {
+        id, timeMs: Date.now(),
+        path: plan.path,
+        hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })),
+        ixCount: built.ixCount, txSizeBytes: built.sizeBytes,
+        exec: {
+          computeUnitLimit: execCfg.computeUnitLimit,
+          computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
+          lookupTableAddresses: execCfg.lookupTableAddresses,
+        },
+        wireBase64: (sim as any)?.wireBase64,
+        logs: sim.logs || [],
+        err: sim.err || null,
+      });
+      try {
+        const { addTxRecord } = await import('../txHistory.js');
+        await addTxRecord({
+          id,
+          timeMs: Date.now(),
+          path: plan.path,
+          hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })),
+          ixCount: built.ixCount,
+          txSizeBytes: built.sizeBytes,
+          signature: null,
+          status: (sim as any)?.err ? 'sim_err' : 'sim_ok',
+          error: (sim as any)?.err ? String((sim as any)?.err) : undefined,
+        });
+        try { emit('tx:history.updated', { id, status: (sim as any)?.err ? 'sim_err' : 'sim_ok' }); } catch {}
+      } catch {}
+      res.json({ id, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, logs: sim.logs || [], err: sim.err || null });
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
     }
@@ -146,17 +184,18 @@ export function createArbRouter(io: SocketIOServer): Router {
 
       const id = Math.random().toString(36).slice(2,10);
       await addTxRecord({ id, timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature: null, status: 'sim_ok' });
+      try { emit('tx:history.updated', { id, status: 'sim_ok' }); } catch {}
 
       const execCfg = await loadExecConfig();
       const mode = (execCfg.mode || 'simulate');
       if (mode !== 'direct') {
-        return res.json({ mode, signature: null, ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
+        return res.json({ id, mode, signature: null, ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
       }
 
       // Atomic only: fail if oversized
       const maxBytes = Number(execCfg.maxTxSizeBytes || 0);
       if (maxBytes > 0 && built.sizeBytes > maxBytes) {
-        return res.status(400).json({ mode, error: 'tx_too_large', ixCount: built.ixCount, txSizeBytes: built.sizeBytes, maxTxSizeBytes: maxBytes });
+        return res.status(400).json({ id, mode, error: 'tx_too_large', ixCount: built.ixCount, txSizeBytes: built.sizeBytes, maxTxSizeBytes: maxBytes });
       }
 
       // Require successful preflight before sending
@@ -165,20 +204,60 @@ export function createArbRouter(io: SocketIOServer): Router {
         computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
         lookupTableAddresses: execCfg.lookupTableAddresses,
       } as any);
+      await logTxTrace('preflight', {
+        id, timeMs: Date.now(),
+        path: plan.path,
+        hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })),
+        ixCount: built.ixCount, txSizeBytes: built.sizeBytes,
+        exec: {
+          computeUnitLimit: execCfg.computeUnitLimit,
+          computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
+          lookupTableAddresses: execCfg.lookupTableAddresses,
+        },
+        wireBase64: (sim as any)?.wireBase64,
+        logs: (sim as any)?.logs || [],
+        err: (sim as any)?.err || null,
+      });
       if ((sim as any)?.err) {
-        return res.status(400).json({ mode, error: 'preflight_failed', logs: (sim as any)?.logs || [], ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
+        try {
+          await addTxRecord({ id, timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature: null, status: 'sim_err', error: String((sim as any)?.err) });
+          try { emit('tx:history.updated', { id, status: 'sim_err' }); } catch {}
+        } catch {}
+        return res.status(400).json({ id, mode, error: 'preflight_failed', logs: (sim as any)?.logs || [], ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
       }
 
       // Proceed to send (no chunking)
-      const sendRes = await assembleAndSend(built.tx.instructions, {
-        computeUnitLimit: execCfg.computeUnitLimit,
-        computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
-        lookupTableAddresses: execCfg.lookupTableAddresses,
-      } as any);
-      const signatures: string[] = [sendRes.signature];
-      const signature = signatures[signatures.length - 1] || null;
-      await addTxRecord({ id, timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature, status: signature ? 'send_ok' : 'send_err' });
-      res.json({ mode, signature, signatures, ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
+      try {
+        const sendRes = await assembleAndSend(built.tx.instructions, {
+          computeUnitLimit: execCfg.computeUnitLimit,
+          computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
+          lookupTableAddresses: execCfg.lookupTableAddresses,
+        } as any);
+        const signatures: string[] = [sendRes.signature];
+        const signature = signatures[signatures.length - 1] || null;
+        await logTxTrace('send', {
+          id, timeMs: Date.now(),
+          path: plan.path,
+          hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })),
+          ixCount: built.ixCount, txSizeBytes: built.sizeBytes,
+          exec: {
+            computeUnitLimit: execCfg.computeUnitLimit,
+            computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
+            lookupTableAddresses: execCfg.lookupTableAddresses,
+          },
+          wireBase64: (sendRes as any)?.wireBase64,
+          signature,
+        });
+        await addTxRecord({ id, timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature, status: signature ? 'send_ok' : 'send_err' });
+        try { emit('tx:history.updated', { id, status: signature ? 'send_ok' : 'send_err' }); } catch {}
+        res.json({ id, mode, signature, signatures, ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
+      } catch (e: any) {
+        try {
+          await addTxRecord({ id, timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature: null, status: 'send_err', error: String(e?.message || e) });
+          try { emit('tx:history.updated', { id, status: 'send_err' }); } catch {}
+        } catch {}
+        return res.status(400).json({ id, mode, error: 'send_failed' });
+      }
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
     }
