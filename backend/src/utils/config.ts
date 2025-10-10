@@ -90,9 +90,9 @@ export const CONFIG = {
     wrapAndUnwrapSol: process.env.WRAP_AND_UNWRAP_SOL !== 'false',
     scopePools: process.env.SCOPE_POOLS !== 'false',
     // New: scoping mode for /arb/pools endpoints: 'none' | 'watchlist' | 'jupiter' | 'intersection' | 'union'
-    scopePoolsMode: (process.env.SCOPE_POOLS_MODE as any) || 'jupiter',
+    scopePoolsMode: (process.env.SCOPE_POOLS_MODE as any) || 'intersection',
     // New: token-universe mode used to filter pools at source: 'jupiter' | 'watchlist' | 'intersection' | 'union'
-    tokenUniverseMode: (process.env.TOKEN_UNIVERSE_MODE as any) || 'union',
+    tokenUniverseMode: (process.env.TOKEN_UNIVERSE_MODE as any) || 'jupiter',
     // Control whether anchors are injected into the universe set (default: false)
     includeAnchorsInUniverse: (process.env.INCLUDE_ANCHORS_IN_UNIVERSE || 'false') !== 'false',
     // Route-level scoping (disable to avoid double-scoping if sources already scoped)

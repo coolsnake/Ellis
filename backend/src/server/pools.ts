@@ -1300,16 +1300,22 @@ export async function getMeteoraPoolsCached(force = false): Promise<PoolsPayload
       const t0 = Date.now();
       const raw = await fetchMeteoraHttpImpl();
       let norm = await normalizeMeteoraHttpImpl(raw);
-      // Apply token blocklist (exclude pools containing any blocked mint)
+      // Apply token blocklist (exclude pools containing any blocked mint). Don’t drop all Meteora by blocklist.
       try {
         const blist = new Set<string>(Array.isArray((CONFIG.system as any)?.tokenBlocklistMints) ? (CONFIG.system as any).tokenBlocklistMints : []);
         if (blist.size > 0) {
           const beforeClmm = (norm.clmm || []).length;
           const filtered = applyTokenMintBlocklist(norm as any, blist);
-          if ((filtered.clmm || []).length !== beforeClmm) {
-            try { logger.info('meteora.blocklist.filter', { beforeClmm, afterClmm: filtered.clmm.length }); } catch {}
+          // If blocklist would remove all Meteora pools, keep original
+          const afterClmm = (filtered.clmm || []).length;
+          if (afterClmm === 0 && beforeClmm > 0) {
+            try { logger.warn('meteora.blocklist.skip_all', { reason: 'would drop all', beforeClmm, afterClmm }); } catch {}
+          } else {
+            if (afterClmm !== beforeClmm) {
+              try { logger.info('meteora.blocklist.filter', { beforeClmm, afterClmm }); } catch {}
+            }
+            norm = filtered as any;
           }
-          norm = filtered as any;
         }
       } catch {}
       // Optionally apply universe filtering early (disabled by default for Meteora)

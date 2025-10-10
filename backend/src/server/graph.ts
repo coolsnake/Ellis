@@ -211,9 +211,19 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const allow = new Set<string>();
           for (const [k, v] of counts.entries()) if (v >= minOverlap) allow.add(k);
           const filt = <T extends { mint_a: string; mint_b: string }>(arr: T[]) => (arr || []).filter(p => allow.has(`${p.mint_a}-${p.mint_b}`));
-          ray = { amm: filt(ray.amm), clmm: filt(ray.clmm) } as any;
-          orc = { amm: filt(orc.amm), clmm: filt(orc.clmm) } as any;
-          met = { amm: filt(met.amm), clmm: filt(met.clmm) } as any;
+          const preMetCt = (met.amm?.length || 0) + (met.clmm?.length || 0);
+          const newRay = { amm: filt(ray.amm), clmm: filt(ray.clmm) } as any;
+          const newOrc = { amm: filt(orc.amm), clmm: filt(orc.clmm) } as any;
+          const newMet = { amm: filt(met.amm), clmm: filt(met.clmm) } as any;
+          // Fallback: if overlap filtering would drop all Meteora pairs and there were some, keep Meteora
+          const postMetCt = (newMet.amm?.length || 0) + (newMet.clmm?.length || 0);
+          if (preMetCt > 0 && postMetCt === 0) {
+            met = met as any;
+          } else {
+            met = newMet as any;
+          }
+          ray = newRay as any;
+          orc = newOrc as any;
         }
       } catch {}
       const tokenMap = await loadTokenMap().catch(() => ({} as Record<string, { mint: string; decimals: number }>));
