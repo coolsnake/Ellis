@@ -4,6 +4,7 @@ import { useSystem } from '../contexts/system';
 import { useWallet } from '../contexts/wallet';
 import { useLogs } from '../contexts/logs';
 import { catToWindowId } from '../../utils/logs';
+import { getLogLevel } from '../../utils/logger';
 
 type LogEvent = { level: string; message: string; timestamp: string; context?: Record<string, unknown>; cat?: string; subcat?: string; code?: string; cid?: string; span?: 'start' | 'end'; muted?: boolean };
 
@@ -45,6 +46,11 @@ export function useSocketEvents(opts?: Options): void {
         const allowedCats = Array.isArray(localCats) && localCats.length ? localCats : (Array.isArray(serverCats) ? serverCats : null);
         if (allowedCats && allowedCats.length && cat && !allowedCats.includes(cat)) return;
         if (evt.muted === true) return;
+        // Apply frontend log level filter: hide messages below current level
+        const levelOrder: Record<string, number> = { error: 0, warn: 1, info: 2, debug: 3 };
+        const currentLevel = getLogLevel();
+        const eventLevel = String((evt as any)?.level || 'info').toLowerCase();
+        if (levelOrder[currentLevel] < (levelOrder as any)[eventLevel]) return;
         const id = catToWindowId.get(cat) || 'system';
         setLogsByWindow((prev) => {
           const base = Array.isArray((prev as any)[id]) ? (prev as any)[id] : [];
