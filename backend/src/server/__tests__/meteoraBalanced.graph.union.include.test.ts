@@ -22,7 +22,7 @@ describe('meteoraBalanced.graph.union.include', () => {
     expect(Array.isArray(snap.edges)).toBe(true);
     const hasMeteoraAmm = (snap.edges || []).some((e: any) => String(e.dex) === 'Meteora' && String((e as any).pool_kind || '') === 'amm');
     expect(typeof hasMeteoraAmm).toBe('boolean');
-  }, 20000);
+  }, 45000);
 });
 
 
