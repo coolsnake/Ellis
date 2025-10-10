@@ -42,21 +42,7 @@ export async function fetchMeteoraHttp(): Promise<any> {
     // eslint-disable-next-line no-undef
     const fetchFn: any = (globalThis as any).fetch || fetch;
     for (const base of candidates) {
-      // First attempt: call base directly without page/limit
-      try {
-        const cid0 = httpLogStart({ source: 'meteora', url: base });
-        const r0 = await fetchFn(base, { headers: { accept: 'application/json' }, method: 'GET' });
-        const j0: any = await r0.json().catch(() => null);
-        const arr0: any[] = Array.isArray(j0?.pairs) ? j0.pairs : (Array.isArray(j0) ? j0 : (Array.isArray(j0?.data) ? j0.data : []));
-        httpLogResponse({ source: 'meteora', url: base, cid: cid0, status: r0.status || 0, ms: 0, count: (arr0 || []).length });
-        if (Array.isArray(arr0) && arr0.length > 0) {
-          try { await writeJson(METEORA_RAW_PATH, arr0); } catch {}
-          try { logger.info('meteora.http raw', { count: arr0.length, cat: 'meteora' }); } catch {}
-          return arr0;
-        }
-      } catch {}
-
-      // Fallback: pagination loop on this base
+      // Pagination loop on this base
       const out: any[] = [];
       let page = 0;
       const pageLimit = (maxPages && maxPages > 0) ? maxPages : Number.POSITIVE_INFINITY;

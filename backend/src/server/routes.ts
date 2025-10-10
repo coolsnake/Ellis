@@ -364,6 +364,9 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
             const items: ArbOpportunity[] = Array.isArray((payload as any)?.items)
               ? ((payload as any).items as ArbOpportunity[])
               : (Array.isArray(payload) ? (payload as ArbOpportunity[]) : []);
+            const nearItems: ArbOpportunityFull[] = Array.isArray((payload as any)?.near_items)
+              ? ((payload as any).near_items as ArbOpportunityFull[])
+              : [];
             // Sample and dedupe-save top detected opportunities (best-effort)
             try {
               for (const o of items.slice(0, 3)) {
@@ -378,7 +381,8 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
                 Math.round((o.net_bps ?? o.profit_bps ?? 0)),
                 (o.path || []).join('>')
               ]),
-              near: (((payload as any)?.summary?.near_miss?.path || []) as string[]).join('>')
+              near: (((payload as any)?.summary?.near_miss?.path || []) as string[]).join('>'),
+              nearSig: nearItems.slice(0, 3).map(o => [(o.net_bps ?? o.profit_bps ?? 0), (o.path||[]).join('>')])
             });
             const nowMsSig = Date.now();
             const sinceLast = nowMsSig - Number((registerRoutes as any)._lastOppEmitAt || 0);
@@ -387,7 +391,8 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
               (registerRoutes as any)._lastOppEmitAt = nowMsSig;
               // Avoid emitting arb:opportunities here; the WS bridge forwards live updates to clients
               const lines = items.slice(0, 3).map((o: ArbOpportunity, i: number) => `#${i+1} bps=${Math.round((o.profit_bps ?? o.net_bps ?? 0))} hops=${(o.path || []).length-1} path=${(o.path || []).join('->')}`);
-              emit('log', { level: 'info', message: `pretrade:arb opps:update ${Math.min(3, items.length)} top=${lines.join(' | ')} oMs=${odur}`, timestamp: new Date().toISOString() });
+              const nearLine = nearItems?.[0] ? ` | near#1 bps=${Math.round((nearItems[0].profit_bps ?? nearItems[0].net_bps ?? 0))} hops=${(nearItems[0].path||[]).length-1} path=${(nearItems[0].path||[]).join('->')}` : '';
+              emit('log', { level: 'info', message: `pretrade:arb opps:update ${Math.min(3, items.length)} top=${lines.join(' | ')}${nearLine} oMs=${odur}`, timestamp: new Date().toISOString() });
               try { arbLatency.opps.push(odur); if (arbLatency.opps.length > 200) arbLatency.opps.shift(); } catch {}
               const topBps = Math.round((items?.[0]?.profit_bps ?? items?.[0]?.net_bps ?? 0));
               if (topBps >= 30) {
@@ -406,7 +411,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
             // Emit detailed log for near-miss opportunities when present
             try {
               const summary: any = (payload as any)?.summary || {};
-              const near: ArbOpportunityFull | undefined = summary?.near_miss;
+              const near: ArbOpportunityFull | undefined = summary?.near_miss || nearItems?.[0];
               const shortfallBps: number | undefined = summary?.near_miss_shortfall_bps;
               // Keep a signature to avoid spamming identical near-miss logs
               (registerRoutes as any)._lastNearSig = (registerRoutes as any)._lastNearSig || '';

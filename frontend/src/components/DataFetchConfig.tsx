@@ -51,6 +51,8 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     orca_minClmmLiquidity: 0,
     // Meteora (DLMM)
     meteora_apiUrl: 'https://dlmm-api.meteora.ag/pair/all_with_pagination',
+    meteora_pageSize: 1000,
+    meteora_maxPages: 50,
     // Meteora Balanced (mAMM)
     meteoraBalanced_apiUrl: 'https://damm-api.meteora.ag/pools',
     meteoraBalanced_hideLowTvl: 0,
@@ -62,8 +64,9 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     meteora_cacheTtlMs: 300000,
     meteora_maxHttpRetries: 2,
     meteora_httpBackoffMs: 500,
-    meteora_pageSize: 200,
-    meteora_maxPages: 3,
+    // (Note: overridden by values above; keep fields here for backend sync)
+    // meteora_pageSize
+    // meteora_maxPages
     meteora_minClmmLiquidity: 0,
     meteora_universePrefilter: false,
     // Jupiter

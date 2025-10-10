@@ -12,6 +12,7 @@ export type ArbOpportunityLike = {
   hop_liquidity_display?: number[];
   est_capacity?: number;
   bottleneck?: { from?: string; to?: string; dex?: string; rate?: number; liquidity?: number; fee_bps?: number };
+  is_near_miss?: boolean;
 };
 
 export function formatOpportunityLog(o: ArbOpportunityLike, index: number): string {
