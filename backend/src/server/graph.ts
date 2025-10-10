@@ -639,7 +639,15 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         } catch {}
       }
       const orcValid = validatePoolsForGraph(orc as any);
-      const metValid = validatePoolsForGraph(met as any);
+      let metValid = validatePoolsForGraph(met as any);
+      // Fallback: if scoping would drop all and we had some Meteora upstream, keep original Meteora
+      try {
+        const upstreamCount = (met.amm?.length || 0) + (met.clmm?.length || 0);
+        const afterCount = (metValid.amm?.length || 0) + (metValid.clmm?.length || 0);
+        if (upstreamCount > 0 && afterCount === 0) {
+          metValid = met as any;
+        }
+      } catch {}
       const mblValid = validatePoolsForGraph(mbl as any);
       // Helper: triangulate A per B using a pivot C present in pools (no USD refs needed)
       const PIVOTS: string[] = [

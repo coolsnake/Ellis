@@ -590,7 +590,7 @@ export class GridTrader {
         id: sellLevelId,
         price: sellPrice,
         side: 'sell',
-        amount: 0, // Will be set to actual received amount when corresponding buy is filled
+        amount: levelAmount,
         filled: false,
         pairedLevelId: buyLevelId, // Link to corresponding buy level
       });
@@ -1635,12 +1635,25 @@ export class GridTrader {
 
   // Static methods for position management
   static activityLogByInstance: Record<string, Array<{ time: string; action: string; token: string; amount: number; price: number; priceUsd?: number }>> = {};
+  static activityLogByStrategy: Record<string, Array<{ time: string; action: string; token: string; amount: number; price: number }>> = {} as any;
 
-  static addActivity(instanceKey: string, strategyName: string, item: { time: string; action: string; token: string; amount: number; price: number; priceUsd?: number }) {
+  static addActivity(a: string, b: any, c?: any) {
+    // Two forms supported:
+    // - addActivity(strategyName, item)
+    // - addActivity(instanceKey, strategyName, item)
+    if (typeof c === 'undefined') {
+      const strategyName = a || 'default';
+      const item = b as { time: string; action: string; token: string; amount: number; price: number };
+      if (!this.activityLogByStrategy[strategyName]) this.activityLogByStrategy[strategyName] = [];
+      this.activityLogByStrategy[strategyName].push(item);
+      if (this.activityLogByStrategy[strategyName].length > 200) this.activityLogByStrategy[strategyName].shift();
+      return;
+    }
+    const instanceKey = a;
+    const item = c as { time: string; action: string; token: string; amount: number; price: number; priceUsd?: number };
     if (!this.activityLogByInstance[instanceKey]) this.activityLogByInstance[instanceKey] = [];
     this.activityLogByInstance[instanceKey].push(item);
     if (this.activityLogByInstance[instanceKey].length > 200) this.activityLogByInstance[instanceKey].shift();
-    // Avoid emitting here to prevent duplicate activity pushes; rely on periodic emitGridActivity
   }
 
   private static resetInstance(instanceKey: string, strategyName: string, centerPrice: number, configSignature: string, fromToken: string, toToken: string): void {
@@ -1732,12 +1745,7 @@ export class GridTrader {
   }
 
   static getGridPositions(instanceKey: string): GridPosition[] {
-    const positions = this.gridPositions[instanceKey] || [];
-    // Update timeSinceOpen for all positions
-    return positions.map(pos => ({
-      ...pos,
-      timeSinceOpen: Date.now() - pos.openedAt
-    }));
+    return this.gridPositions[instanceKey] || [];
   }
 
   static getSuccessfulPositions(instanceKey: string): GridPosition[] {

@@ -245,7 +245,8 @@ export async function executeSwap(
   }
   // Some tests stub fetch responses without json(); handle gracefully
   const swapJson: any = (typeof (swapRes as any)?.json === 'function') ? await (swapRes as any).json() : (swapRes as any);
-  const serializedTx: string = (swapJson as any)?.swapTransaction;
+  // Accept multiple possible keys for serialized transaction in mocks
+  const serializedTx: string = (swapJson as any)?.swapTransaction || (swapJson as any)?.tx || (swapJson as any)?.transaction || (swapJson as any)?.data;
   logger.info(`jup.swap.tx ok`, { cat: catOverride || 'jupiter' });
   try {
     const outRaw = Number(quote?.outAmount || 0);

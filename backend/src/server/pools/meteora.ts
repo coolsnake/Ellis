@@ -139,42 +139,7 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
         if (derived > 0 && Number.isFinite(derived)) price_a_per_b = derived;
       }
     } catch {}
-    // Stable-aware orientation when no USD refs: prefer stable on A side with A-per-1-B > 1
-    try {
-      const STABLES = new Set<string>([
-        'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-        'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
-      ]);
-      const symA = String((tokenA as any)?.symbol || '').toUpperCase();
-      const symB = String((tokenB as any)?.symbol || '').toUpperCase();
-      const symStable = (s: string) => s === 'USDC' || s === 'USDT' || /USD/.test(s);
-      const aStable = STABLES.has(mint_a) || symStable(symA);
-      const bStable = STABLES.has(mint_b) || symStable(symB);
-      const haveWhole = Number.isFinite(decA) && Number.isFinite(decB) && Number.isFinite(amount_a) && Number.isFinite(amount_b);
-      // Only apply flip to pure upstream cases OR when B is stable and A is not
-      const shouldConsiderFlip = (!haveWhole && price_a_per_b > 0) || (bStable && !aStable && price_a_per_b > 0);
-      if (shouldConsiderFlip) {
-        // Use output copies for potential swap to avoid reassigning consts
-        let outMintA = mint_a; let outMintB = mint_b;
-        let outDecA = decA; let outDecB = decB;
-        let outAmtA = amount_a; let outAmtB = amount_b;
-        let outPrice = price_a_per_b;
-        const bIsStable = bStable;
-        const aIsStable = aStable;
-        if ((bIsStable && outPrice < 1) || (aIsStable && outPrice < 1)) {
-          const mA = outMintA, mB = outMintB, dA = outDecA, dB = outDecB, amtA = outAmtA, amtB = outAmtB;
-          outMintA = mB; outMintB = mA;
-          outDecA = dB; outDecB = dA;
-          outAmtA = amtB; outAmtB = amtA;
-          outPrice = 1 / outPrice;
-        }
-        // Commit adjusted outputs
-        mint_a = outMintA; mint_b = outMintB;
-        decA = outDecA; decB = outDecB;
-        amount_a = outAmtA; amount_b = outAmtB;
-        price_a_per_b = outPrice;
-      }
-    } catch {}
+    // Stable-aware orientation flip here is redundant with canonicalizePairs; avoid double flipping
     try {
       const { getPriceByMint } = await import('../../server/priceStore.js');
       const getUsd = (m: string) => { try { return getPriceByMint(m)?.usdc ?? undefined; } catch { return undefined; } };
