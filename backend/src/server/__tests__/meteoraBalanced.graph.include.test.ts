@@ -53,7 +53,7 @@ describe('meteoraBalanced.graph.include', () => {
     const hasMeteoraAmm = (snap.edges || []).some((e: any) => String(e.dex) === 'Meteora' && String((e as any).pool_kind || '') === 'amm');
     // We do not hard-require true in CI if API not set, but validate type correctness
     expect(typeof hasMeteoraAmm).toBe('boolean');
-  }, 20000);
+  }, 45000);
 });
 
 

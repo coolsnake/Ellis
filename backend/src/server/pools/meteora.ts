@@ -192,20 +192,7 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       }
     } catch {}
     if (!price_ok) { try { logger.warn('meteora.clmm drop by sanity', { id, mint_a, mint_b, price_a_per_b, cat: 'meteora' }); } catch {}; continue; }
-    // Stable-first canonicalization: place stable (USDC/USDT) on A side when exactly one side is stable
-    try {
-      const STABLES = new Set<string>([
-        'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-        'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
-      ]);
-      const aStable = STABLES.has(mint_a);
-      const bStable = STABLES.has(mint_b);
-      if (!aStable && bStable) {
-        const mA = mint_a, mB = mint_b, dA = decA, dB = decB, amtA = amount_a, amtB = amount_b;
-        mint_a = mB; mint_b = mA; decA = dB; decB = dA; amount_a = amtB; amount_b = amtA;
-        if (price_a_per_b && price_a_per_b > 0) price_a_per_b = 1 / price_a_per_b;
-      }
-    } catch {}
+    
     clmm.push({ id, dex: 'Meteora', mint_a, mint_b, fee_bps, sqrt_price_x64: 0, liquidity: 0, tick_spacing: Number((it as any)?.bin_step || (it as any)?.binStep || 0), updated_ms: now, price_a_per_b: (price_a_per_b && price_a_per_b > 0) ? price_a_per_b : undefined, amount_a, amount_b, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, pool_kind: 'clmm', pool_liquidity_raw, tvl_usd, liquidity_display } as any);
   }
   // Canonicalize pairs using unified policy; handles A/B swap and price inversion when needed

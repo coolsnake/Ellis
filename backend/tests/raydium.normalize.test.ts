@@ -53,6 +53,10 @@ describe('raydium amm orientation normalization', () => {
     expect(p).toBeTruthy();
     // Should flip once because B is USDC and upstream < 1
     expect(p.price_a_per_b).toBeGreaterThan(1);
+    // Under quoteHierarchy default, USDC should be on B side
+    const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+    expect(p.mint_b).toBe(USDC);
+    expect(p.mint_a).toBe('BONK_MINT');
   });
 });
 
