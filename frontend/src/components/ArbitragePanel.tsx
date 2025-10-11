@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ROUTES } from '../utils/routes';
 import { useSocket } from '../app/contexts/socket';
 import OpportunityList from './OpportunityList';
+import { enqueueCritical, enqueueFrame, throttle } from '../utils/scheduler';
 
 type BottleneckEdge = { from: string; to: string; dex: string; rate: number; liquidity: number; fee_bps: number };
 type Opportunity = {
@@ -55,6 +56,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
   const { socket: ctxSocket } = useSocket();
   const effectiveSocket = socket ?? ctxSocket;
   const [items, setItems] = useState<Opportunity[]>([]);
+  const [criticalTop, setCriticalTop] = useState<Opportunity[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<OpportunitiesSummary | null>(null);
@@ -138,7 +140,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
     if (!effectiveSocket) return;
     let lastAt = 0;
     let lastSig = '';
-    const onOpps = (payload: { items?: Opportunity[]; summary?: OpportunitiesSummary }) => {
+    const applyBulk = (payload: { items?: Opportunity[]; summary?: OpportunitiesSummary }) => {
       try {
         const now = Date.now();
         if (now - lastAt < 1000) return;
@@ -153,12 +155,31 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
         if (sig === lastSig) return;
         lastSig = sig;
         lastAt = now;
-        if (Array.isArray(payload?.items)) setItems(payload.items as Opportunity[]);
-        if (payload && typeof payload === 'object' && 'summary' in payload) setSummary((payload as any).summary || null);
+        enqueueFrame(() => {
+          if (Array.isArray(payload?.items)) setItems(payload.items as Opportunity[]);
+          if (payload && typeof payload === 'object' && 'summary' in payload) setSummary((payload as any).summary || null);
+        });
+      } catch {}
+    };
+    const onOpps = (payload: { items?: Opportunity[]; summary?: OpportunitiesSummary }) => applyBulk(payload);
+    // Optional: critical fast-path if backend emits "arb:signal"; fallback derives from bulk head
+    const onSignal = (sig: { items?: Opportunity[] }) => {
+      try {
+        const head = Array.isArray(sig?.items) ? (sig.items as Opportunity[]).slice(0, 3) : [];
+        if (!head.length) return;
+        enqueueCritical(() => {
+          // Update minimal, cheap critical state for immediate visibility
+          setCriticalTop(head);
+          setSummary((prev) => (prev ? { ...prev, last_detection_ms: Date.now() } as any : prev));
+        });
       } catch {}
     };
     try { effectiveSocket.on('arb:opportunities', onOpps); } catch {}
-    return () => { try { effectiveSocket.off('arb:opportunities', onOpps); } catch {} };
+    try { effectiveSocket.on('arb:signal', onSignal); } catch {}
+    return () => {
+      try { effectiveSocket.off('arb:opportunities', onOpps); } catch {}
+      try { effectiveSocket.off('arb:signal', onSignal); } catch {}
+    };
   }, [effectiveSocket]);
 
   // Auto-highlight current near-miss on graph to visualize triangles for diagnostics
@@ -291,6 +312,22 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
           <div>Raydium Refresh: {age(summary?.last_raydium_ms)}</div>
         </div>
       </div>
+      {/* Critical top opportunities strip (fast path) */}
+      {criticalTop.length > 0 && (
+        <div className="mb-3 border rounded bg-emerald-900/15 p-2 text-xs">
+          <div className="font-semibold mb-1">Top Opportunities (live)</div>
+          <div className="flex flex-col gap-1">
+            {criticalTop.map((op, i) => (
+              <div key={`${(op.path||[]).join('>')}|${i}`} className="flex items-center gap-2">
+                <div className="px-1 py-0.5 rounded bg-black/20">#{i+1}</div>
+                <div className="font-mono truncate" title={(op.path||[]).join(' -> ')}>{(op.path||[]).map(sym).join(' → ')}</div>
+                <div className="ml-auto opacity-80">Net {fmtPctFromBps(op.net_bps ?? op.profit_bps)} · ${fmt(op.est_profit_usd, 2)}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {items.length === 0 && summary?.near_miss && !firstLoad && (
         <div className="p-2 border rounded bg-yellow-900/20 text-xs mb-3">
           <div className="font-semibold mb-1">Closest Path (below threshold by {fmt(summary?.near_miss_shortfall_bps)} bps)</div>

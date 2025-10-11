@@ -711,6 +711,8 @@ export function startRaydiumRefreshLoop(): void {
             const gmod: any = await import('./graph.js');
             const snap = await gmod.getGraphSnapshot(false);
             for (const e of (snap?.edges || [])) {
+              const dex = String((e as any)?.dex || '');
+              if (dex !== 'Orca') continue;
               const pid = String((e as any)?.pool_id || '');
               if (pid) edgePoolIds.add(pid.replace(/-rev$/,''));
             }
@@ -752,7 +754,7 @@ export function startRaydiumRefreshLoop(): void {
             } catch {}
           }
           attachedOrcaPools = attached;
-          logger.info('pools.ws subscribe orca.pools', { attached, source: 'orca' });
+          logger.info('pools.ws subscribe orca.pools', { attached, target: uniq.length, source: 'orca' });
           // Subscribe at program level only if we had no targeted addresses and fallback is enabled
           if (attached === 0 && !!((CONFIG.system as any)?.wsFallbackPrograms)) {
             try { logger.info('pools.ws subscribe orca(program)', { source: 'orca', cat: 'pools' }); } catch {}
@@ -774,9 +776,12 @@ export function startRaydiumRefreshLoop(): void {
             const gmod: any = await import('./graph.js');
             const snap = await gmod.getGraphSnapshot(false);
             for (const e of (snap?.edges || [])) {
+              const dex = String((e as any)?.dex || '');
+              if (dex !== 'Raydium') continue;
               const pid = String((e as any)?.pool_id || '');
               if (pid) edgePoolIds.add(pid.replace(/-rev$/,''));
             }
+            try { logger.info('pools.ws targets.raydium from graph', { size: edgePoolIds.size }); } catch {}
           } catch {}
           const rayKnown: string[] = [];
           try { for (const p of (raydiumCache.data?.amm || [])) if (p?.id) rayKnown.push(String(p.id)); } catch {}
@@ -792,7 +797,7 @@ export function startRaydiumRefreshLoop(): void {
             } catch {}
           }
           attachedRaydiumPools = attachedRay;
-          logger.info('pools.ws subscribe raydium.pools', { attached: attachedRay });
+          logger.info('pools.ws subscribe raydium.pools', { attached: attachedRay, target: uniqueRay.length });
           // Fallback to program-level if none attached and fallback is enabled
           if (attachedRay === 0 && !!((CONFIG.system as any)?.wsFallbackPrograms)) {
             try { logger.info('pools.ws subscribe raydium.amm(fallback)', { source: 'raydium', cat: 'pools' }); } catch {}
@@ -841,7 +846,7 @@ export function startRaydiumRefreshLoop(): void {
           }
           attachedMeteoraPools = attachedMet;
           if (attachedMet > 0) {
-            try { logger.info('pools.ws subscribe meteora.pools', { attached: attachedMet, source: 'meteora' }); } catch {}
+            try { logger.info('pools.ws subscribe meteora.pools', { attached: attachedMet, target: meteoraTargets.size, source: 'meteora' }); } catch {}
           } else {
             // Program-level fallback when configured
             const meteoraProg = String((CONFIG as any)?.meteora?.programId || '').trim();
@@ -904,7 +909,10 @@ export function startRaydiumRefreshLoop(): void {
             });
             // Emit a dedicated ws-activity event for UI regardless of log filtering
             try { emit('ws-activity', { healthy: wsHealthy, lastEventMs: lastWsEventMs, orca: { attached: attachedOrcaPools, events: snapshot.orca || 0 }, raydium: { attached: attachedRaydiumPools, events: snapshot.raydium || 0 }, meteora: { attached: attachedMeteoraPools, events: snapshot.meteora || 0 } }); } catch {}
-            try { emit('log', { level: 'debug', message: `pools:ws aggregate ray=${snapshot.raydium} orca=${snapshot.orca}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
+            try {
+              const lastTgts: any = (getWsTargets as any)?._last || {};
+              emit('log', { level: 'debug', message: `pools:ws aggregate ray=${snapshot.raydium} orc=${snapshot.orca} met=${snapshot.meteora} | attach/tgt ray=${attachedRaydiumPools}/${lastTgts?.raydium?.target ?? 'n/a'} orc=${attachedOrcaPools}/${lastTgts?.orca?.target ?? 'n/a'} met=${attachedMeteoraPools}/${lastTgts?.meteora?.target ?? 'n/a'}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } });
+            } catch {}
             // Reconcile targets vs attached (debounced): if attached << targets, trigger retarget
             (async () => {
               try {
@@ -913,7 +921,12 @@ export function startRaydiumRefreshLoop(): void {
                 const needOrc = Math.max(0, (tgt.orca.target || 0) - (attachedOrcaPools || 0));
                 const needMet = Math.max(0, (tgt.meteora.target || 0) - (attachedMeteoraPools || 0));
                 const sumNeed = needRay + needOrc + needMet;
-                if (sumNeed > 0) {
+                // Also retarget if significantly over target (shed excess subs)
+                const lastTgts: any = (getWsTargets as any)?._last || {};
+                const overRay = (attachedRaydiumPools || 0) > Math.floor((lastTgts?.raydium?.target || 0) * 1.5);
+                const overOrc = (attachedOrcaPools || 0) > Math.floor((lastTgts?.orca?.target || 0) * 1.5);
+                const overMet = (attachedMeteoraPools || 0) > Math.floor((lastTgts?.meteora?.target || 0) * 1.5);
+                if (sumNeed > 0 || overRay || overOrc || overMet) {
                   const last = (reconcileNow as any)._last || 0;
                   if (Date.now() - last > 5000) { await reconcileNow(); }
                 }

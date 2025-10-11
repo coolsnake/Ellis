@@ -769,7 +769,7 @@ useEffect(() => {
 			});
 		};
 
-		const flush = () => {
+    const flush = () => {
 			scheduled = false;
 			const snap = latestSnap; const diff = latestDiff;
 			latestSnap = null; latestDiff = null;
@@ -799,13 +799,13 @@ useEffect(() => {
 				runChunks();
 			}
 		};
-		const schedule = () => {
-			if (scheduled) return;
-			// If not visible, skip scheduling to avoid unnecessary main-thread work
-			if (!pageVisibleRef.current || !isVisibleRef.current) return;
-			scheduled = true;
-      idle(flush, 250);
-		};
+    const schedule = () => {
+      if (scheduled) return;
+      if (!pageVisibleRef.current || !isVisibleRef.current) return;
+      scheduled = true;
+      // Flush once per frame instead of idle; avoids long idle gaps under load
+      requestAnimationFrame(flush);
+    };
 
 		const onDiff = (diff: GraphDiff) => {
 			try {
@@ -1107,7 +1107,7 @@ useEffect(() => {
           </div>
         ) : null}
       </div>
-      <div ref={containerRef} className="absolute inset-0">
+      <div ref={containerRef} className="absolute inset-0" style={{ contain: 'layout paint', contentVisibility: 'auto' } as any}>
         <CytoscapeComponent
           cy={onCyReady}
           elements={[]}
