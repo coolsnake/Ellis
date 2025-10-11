@@ -641,6 +641,28 @@ async fn main() -> anyhow::Result<()> {
                                 v
                             };
                             labels = rotate_preferred(labels);
+                            // Apply pruning to near-miss cycles as well (symmetric SOL<->stable and stable<->stable)
+                            {
+                                let sol = "So11111111111111111111111111111111111111112";
+                                let default_stables: std::collections::HashSet<&str> = [
+                                    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                                    "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+                                ].into_iter().collect();
+                                let cfg_stables: std::collections::HashSet<String> = s.config.stable_mints.clone().unwrap_or_default().into_iter().collect();
+                                let is_stable = |m: &str| if cfg_stables.is_empty() { default_stables.contains(m) } else { cfg_stables.contains(m) };
+                                let mut has_stable_stable = false;
+                                let mut sol_stable_hops: usize = 0;
+                                for i in 0..labels.len() {
+                                    let a = &labels[i];
+                                    let b = &labels[(i + 1) % labels.len()];
+                                    let a_st = is_stable(a);
+                                    let b_st = is_stable(b);
+                                    if a_st && b_st { has_stable_stable = true; break; }
+                                    if (a == sol && b_st) || (b == sol && a_st) { sol_stable_hops += 1; }
+                                }
+                                if s.config.drop_stable_stable_hops && has_stable_stable { continue; }
+                                if let Some(limit) = s.config.max_sol_stable_hops { if sol_stable_hops > limit { continue; } }
+                            }
                             // Compute product and meta
                             let mut rate_prod: f64 = 1.0;
                             let mut link_edges_used: usize = 0;
@@ -857,6 +879,28 @@ async fn main() -> anyhow::Result<()> {
                                 best.unwrap().1
                             };
                             let canon_labels = canon(&labels);
+                            // Prune canon near-miss best-cycle by SOL<->stable cap and stable<->stable
+                            {
+                                let sol = "So11111111111111111111111111111111111111112";
+                                let default_stables: std::collections::HashSet<&str> = [
+                                    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                                    "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+                                ].into_iter().collect();
+                                let cfg_stables: std::collections::HashSet<String> = s.config.stable_mints.clone().unwrap_or_default().into_iter().collect();
+                                let is_stable = |m: &str| if cfg_stables.is_empty() { default_stables.contains(m) } else { cfg_stables.contains(m) };
+                                let mut has_stable_stable = false;
+                                let mut sol_stable_hops: usize = 0;
+                                for i in 0..canon_labels.len() {
+                                    let a = &canon_labels[i];
+                                    let b = &canon_labels[(i + 1) % canon_labels.len()];
+                                    let a_st = is_stable(a);
+                                    let b_st = is_stable(b);
+                                    if a_st && b_st { has_stable_stable = true; break; }
+                                    if (a == sol && b_st) || (b == sol && a_st) { sol_stable_hops += 1; }
+                                }
+                                if s.config.drop_stable_stable_hops && has_stable_stable { continue; }
+                                if let Some(limit) = s.config.max_sol_stable_hops { if sol_stable_hops > limit { continue; } }
+                            }
                             // Dexes: recompute from edges along best_nodes
                             let mut dexes_set: std::collections::HashSet<String> = std::collections::HashSet::new();
                             // Recompute meta along canonical order
@@ -959,6 +1003,28 @@ async fn main() -> anyhow::Result<()> {
                                     if let Some(pos) = labels.iter().position(|x| x == p) { rot = Some(pos); break; }
                                 }
                                 if let Some(pos) = rot { nodes.rotate_left(pos); labels.rotate_left(pos); }
+                                // Prune triangle near-miss by SOL<->stable cap and stable<->stable
+                                {
+                                    let sol = "So11111111111111111111111111111111111111112";
+                                    let default_stables: std::collections::HashSet<&str> = [
+                                        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                                        "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+                                    ].into_iter().collect();
+                                    let cfg_stables: std::collections::HashSet<String> = s.config.stable_mints.clone().unwrap_or_default().into_iter().collect();
+                                    let is_stable = |m: &str| if cfg_stables.is_empty() { default_stables.contains(m) } else { cfg_stables.contains(m) };
+                                    let mut has_stable_stable = false;
+                                    let mut sol_stable_hops: usize = 0;
+                                    for i in 0..labels.len() {
+                                        let a = &labels[i];
+                                        let b = &labels[(i + 1) % labels.len()];
+                                        let a_st = is_stable(a);
+                                        let b_st = is_stable(b);
+                                        if a_st && b_st { has_stable_stable = true; break; }
+                                        if (a == sol && b_st) || (b == sol && a_st) { sol_stable_hops += 1; }
+                                    }
+                                    if s.config.drop_stable_stable_hops && has_stable_stable { continue; }
+                                    if let Some(limit) = s.config.max_sol_stable_hops { if sol_stable_hops > limit { continue; } }
+                                }
                                 // Build meta across the triangle
                                 let mut link_edges_used: usize = 0; let mut link_penalty_bps_total: i64 = 0; let mut min_edge_liquidity: f64 = f64::INFINITY; let mut bottleneck: Option<(usize,usize,String,f64,f64,i64)> = None; let mut dexes_set: std::collections::HashSet<String> = std::collections::HashSet::new();
                                 let mut hop_dexes: Vec<String> = Vec::new();
