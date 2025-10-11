@@ -189,13 +189,13 @@ export const CONFIG = {
         'strategy.grid': 'debug',
         drift: 'debug',
         jupiter: 'debug',
-        graph: 'debug',
-        pools: 'debug',
-        arb: 'debug',
+        graph: 'info',
+        pools: 'info',
+        arb: 'info',
         system: 'debug',
         wallet: 'debug',
-	opportunity: 'debug',
-	tx: 'debug',
+        opportunity: 'info',
+        tx: 'info',
       } as Record<string, 'error' | 'warn' | 'info' | 'debug'>,
       // Force-include or exclude specific codes (supports * globs)
       enableCodes: [] as string[],
@@ -222,7 +222,14 @@ export const CONFIG = {
     // Enforce HTTPS by redirecting non-secure requests (behind reverse proxy)
     requireHttps: process.env.REQUIRE_HTTPS === 'true',
     // Optional: frontend-only default categories; UI may override locally
-    frontendEnabledLogCategories: undefined as undefined | string[],
+    frontendEnabledLogCategories: (
+      process.env.FRONTEND_ENABLED_LOG_CATEGORIES
+        ? String(process.env.FRONTEND_ENABLED_LOG_CATEGORIES)
+            .split(',')
+            .map((s) => s.trim().toLowerCase())
+            .filter(Boolean)
+        : ['system','server','opportunity','tx','arb','graph']
+    ) as any,
     // DEPRECATED: pool refresh loops are coordinated via /arb/pools/refresh (kept for compatibility)
     autoStartPools: (process.env.AUTO_START_POOLS || 'false') === 'true',
     // Pause watchlist price feed and Jupiter API during deep price bootstrap

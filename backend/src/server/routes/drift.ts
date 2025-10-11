@@ -6,6 +6,8 @@ import { emit } from '../realtime.js';
 
 export function createDriftRouter(io: SocketIOServer): Router {
   const api = Router();
+  // serialize subaccount mutations to reduce concurrent RPC bursts
+  const subMutex = new Map<number, Promise<any>>();
 
   api.get('/drift/status', async (_req: Request, res: Response) => {
     try {
@@ -137,8 +139,19 @@ export function createDriftRouter(io: SocketIOServer): Router {
       if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: 'invalid amount' });
       const { DriftService } = await import('../../drift/client.js');
       const svc = DriftService.getInstance();
-      const out = await svc.depositToSubaccount({ subaccountId, amount, spotMarketIndex });
-      res.json(out);
+      const last = subMutex.get(subaccountId) || Promise.resolve();
+      let resolveNext: (v?: any) => void;
+      const next = new Promise((r) => (resolveNext = r));
+      subMutex.set(subaccountId, last.then(() => next));
+      await last.catch(() => {});
+      try {
+        const out = await svc.depositToSubaccount({ subaccountId, amount, spotMarketIndex });
+        try { emit('drift:user:balances', { subaccountId }); } catch {}
+        res.json(out);
+      } finally {
+        resolveNext!();
+        if (subMutex.get(subaccountId) === next) subMutex.delete(subaccountId);
+      }
     } catch (e: any) {
       logger.error('drift: deposit failed', { error: String(e?.message || e) });
       res.status(500).json({ error: String(e?.message || e) });
@@ -155,8 +168,19 @@ export function createDriftRouter(io: SocketIOServer): Router {
       if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: 'invalid amount' });
       const { DriftService } = await import('../../drift/client.js');
       const svc = DriftService.getInstance();
-      const out = await svc.withdrawFromSubaccount({ subaccountId, amount, spotMarketIndex });
-      res.json(out);
+      const last = subMutex.get(subaccountId) || Promise.resolve();
+      let resolveNext: (v?: any) => void;
+      const next = new Promise((r) => (resolveNext = r));
+      subMutex.set(subaccountId, last.then(() => next));
+      await last.catch(() => {});
+      try {
+        const out = await svc.withdrawFromSubaccount({ subaccountId, amount, spotMarketIndex });
+        try { emit('drift:user:balances', { subaccountId }); } catch {}
+        res.json(out);
+      } finally {
+        resolveNext!();
+        if (subMutex.get(subaccountId) === next) subMutex.delete(subaccountId);
+      }
     } catch (e: any) {
       logger.error('drift: withdraw failed', { error: String(e?.message || e) });
       res.status(500).json({ error: String(e?.message || e) });

@@ -85,7 +85,7 @@ describe('arb tx-history and websocket emission', () => {
     expect(row?.status).toBe('sim_err');
   });
 
-  it('records sim_ok on /arb/execute in simulate mode and emits', async () => {
+  it('does not record history on /arb/execute in simulate mode', async () => {
     const app = makeApp();
     const res = await request(app)
       .post('/arb/execute')
@@ -94,7 +94,7 @@ describe('arb tx-history and websocket emission', () => {
     const id = res.body?.id;
     const hist = await getTxHistory(30);
     const row = hist.find((r) => r.id === id);
-    expect(row?.status).toBe('sim_ok');
+    expect(row).toBeUndefined();
   });
 });
 

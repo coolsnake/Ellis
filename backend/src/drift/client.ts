@@ -43,6 +43,8 @@ export class DriftService {
   private client: any | null = null;
   private cluster: DriftCluster = (CONFIG as any).drift?.cluster || 'mainnet-beta';
   private subaccountsCache: { data: SubaccountInfo[]; ts: number } | null = null;
+  private loader: any | null = null;
+  private lastTxAtMs: number = 0;
 
   static getInstance(): DriftService {
     if (!this.instance) this.instance = new DriftService();
@@ -124,6 +126,8 @@ export class DriftService {
     const subscription = subType === 'polling'
       ? { type: 'polling', accountLoader: new BulkAccountLoader(this.connection, 'confirmed', 1000) }
       : { type: 'websocket' };
+    // Prepare shared loader even when using websocket subscriptions for client internals
+    try { this.loader = new BulkAccountLoader(this.connection, 'confirmed', 1000); } catch {}
     const programIdOpt = (CONFIG as any).drift?.programId ? { programID: new PublicKey((CONFIG as any).drift.programId) } : {};
     const marketOpts = typeof getMarketsAndOraclesForSubscription === 'function' ? (getMarketsAndOraclesForSubscription as any)(this.cluster) : {};
     this.client = await initialize({ connection: this.connection, wallet, opts: { env: this.cluster, accountSubscription: subscription, ...programIdOpt, ...marketOpts } });
@@ -150,12 +154,11 @@ export class DriftService {
     const client: any = this.client;
     const t0 = Date.now();
     try {
-      const { User, BulkAccountLoader } = await loadSdk();
-      const loader = new BulkAccountLoader(this.connection!, 'confirmed', 1000);
+      const { User } = await loadSdk();
       const userPk = await client.getUserAccountPublicKey?.(Number(subaccountId));
       if (userPk) {
         try {
-          const u = new User({ driftClient: client, userAccountPublicKey: userPk, accountSubscription: { type: 'polling', accountLoader: loader } });
+          const u = new User({ driftClient: client, userAccountPublicKey: userPk, accountSubscription: { type: 'polling', accountLoader: this.loader } });
           const exists = await (u as any).exists?.();
           if (!exists && typeof client?.initializeUserAccount === 'function') {
             await client.initializeUserAccount(Number(subaccountId));
@@ -515,9 +518,23 @@ export class DriftService {
         const ata = await resolveAtaForSpotMarketIndex(client, this.walletKp!, spotMarketIndex, this.cluster);
         // Prefer full signature (amount, spotIndex, ata, subId)
         const amt = await this.toBN(nativeAmount);
-        const res = await client.deposit(amt, spotMarketIndex, ata, Number(subaccountId));
+        // basic per-tx spacing
+        const now = Date.now();
+        const minGap = 350;
+        if (now - this.lastTxAtMs < minGap) await new Promise((r) => setTimeout(r, minGap - (now - this.lastTxAtMs)));
+        // backoff on rate limit
+        const { retryWithBackoff } = await import('../utils/retry.js');
+        await retryWithBackoff(async () => {
+          try {
+            await client.deposit(amt, spotMarketIndex, ata, Number(subaccountId));
+          } catch (e: any) {
+            const msg = String(e?.message || e || '');
+            if (msg.includes('rate limited') || msg.includes('-32429') || msg.includes('429')) throw e;
+            throw Object.assign(e || new Error('deposit failed'), { noRetry: true });
+          }
+        }, { maxRetries: 5, baseMs: 300, maxMs: 5000, jitter: true });
+        this.lastTxAtMs = Date.now();
         logger.info('drift.subaccount.deposit_ok', { subaccountId, amount, spotMarketIndex, cat: 'drift' });
-        this.invalidateSubaccountsCache();
         return { ok: true };
       }
     } catch (e: any) {
@@ -540,9 +557,21 @@ export class DriftService {
         const { resolveAtaForSpotMarketIndex } = await import('../wallet/ata.js');
         const ata = await resolveAtaForSpotMarketIndex(client, this.walletKp!, spotMarketIndex, this.cluster);
         const amt = await this.toBN(nativeAmount);
-        const res = await client.withdraw(amt, spotMarketIndex, ata, Number(subaccountId));
+        const now = Date.now();
+        const minGap = 350;
+        if (now - this.lastTxAtMs < minGap) await new Promise((r) => setTimeout(r, minGap - (now - this.lastTxAtMs)));
+        const { retryWithBackoff } = await import('../utils/retry.js');
+        await retryWithBackoff(async () => {
+          try {
+            await client.withdraw(amt, spotMarketIndex, ata, Number(subaccountId));
+          } catch (e: any) {
+            const msg = String(e?.message || e || '');
+            if (msg.includes('rate limited') || msg.includes('-32429') || msg.includes('429')) throw e;
+            throw Object.assign(e || new Error('withdraw failed'), { noRetry: true });
+          }
+        }, { maxRetries: 5, baseMs: 300, maxMs: 5000, jitter: true });
+        this.lastTxAtMs = Date.now();
         logger.info('drift.subaccount.withdraw_ok', { subaccountId, amount, spotMarketIndex, cat: 'drift' });
-        this.invalidateSubaccountsCache();
         return { ok: true };
       }
     } catch (e: any) {

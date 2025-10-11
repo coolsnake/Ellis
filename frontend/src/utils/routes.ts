@@ -39,6 +39,7 @@ export const ROUTES = {
     opportunities: '/arb/opportunities',
     txHistory: '/arb/tx-history',
     simulate: '/arb/simulate',
+    simulateSend: '/arb/simulate-send',
     execute: '/arb/execute',
   },
   exec: {

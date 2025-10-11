@@ -83,7 +83,10 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 	const interactingRef = useRef(false);
 
 	// Optional cap for rendered edges by priority to reduce overdraw
-	const [maxEdges, setMaxEdges] = useState<number>(2000);
+	const [maxEdges, setMaxEdges] = useState<number>(1200);
+
+	// Queue for recomputing combined edges across frames
+	const pairQueueRef = useRef<string[]>([]);
 
 	// Track whether page/tab is visible and whether the graph container is on-screen
 	const pageVisibleRef = useRef<boolean>(true);
@@ -524,6 +527,11 @@ useEffect(() => {
     try {
       // Skip heavy snapshot load when not visible; will be loaded on first visibility
       if (!pageVisibleRef.current || !isVisibleRef.current) { return; }
+      // Also defer when user is interacting (pan/zoom) to avoid jank
+      if (interactingRef.current) {
+        idle(() => { if (!interactingRef.current) { try { loadSnapshot(); } catch {} } }, 150);
+        return;
+      }
       const r = await fetch(`${apiBase}${ROUTES.graph.snapshot}?lite=1`);
       const j: GraphSnapshot = await r.json();
       const cy = cyRef.current; if (!cy) return;
@@ -644,12 +652,14 @@ useEffect(() => {
 		let latestDiff: GraphDiff | null = null;
 		let scheduled = false;
 
-    const applyDiff = (diff: GraphDiff) => {
+    const applyDiff = (diff: GraphDiff, sharedPrevPos?: Map<string, { x: number; y: number }>) => {
       const cy = cyRef.current; if (!cy) return;
       if (!pageVisibleRef.current || !isVisibleRef.current) return;
 			withBatch(cy, () => {
-				const prevPos = new Map<string, { x: number; y: number }>();
-				try { cy.nodes().forEach((n) => { prevPos.set(n.id(), { x: n.position('x'), y: n.position('y') }); }); } catch {}
+        const prevPos = sharedPrevPos || new Map<string, { x: number; y: number }>();
+        if (!sharedPrevPos) {
+          try { cy.nodes().forEach((n) => { prevPos.set(n.id(), { x: n.position('x'), y: n.position('y') }); }); } catch {}
+        }
 				snapshotInitializedRef.current = true;
 				try {
 					const cur = Number(lastVersionRef.current || 0);
@@ -721,12 +731,26 @@ useEffect(() => {
 						setTimeout(() => { try { sel.removeClass('highlighted'); } catch {} }, 500);
 					}
 				} catch {}
-				try {
-					touchedPairs.forEach((key) => {
-						const [a, b] = key.split('|');
-						ensureCombinedForPair(cy, a, b);
-					});
-				} catch {}
+        try {
+          const queue = pairQueueRef.current;
+          for (const key of touchedPairs) queue.push(key);
+          const MAX_PER_FRAME = 400;
+          const nowBatch = queue.splice(0, MAX_PER_FRAME);
+          for (const key of nowBatch) {
+            const [a, b] = key.split('|');
+            ensureCombinedForPair(cy, a, b);
+          }
+          if (queue.length) {
+            requestAnimationFrame(() => {
+              const cy2 = cyRef.current; if (!cy2) { queue.length = 0; return; }
+              const more = queue.splice(0, MAX_PER_FRAME);
+              for (const key2 of more) {
+                const [a2, b2] = key2.split('|');
+                ensureCombinedForPair(cy2, a2, b2);
+              }
+            });
+          }
+        } catch {}
 				seedPositionsForNewNodes(cy, prevPos);
 			});
 		};
@@ -775,8 +799,14 @@ useEffect(() => {
 			latestSnap = null; latestDiff = null;
 			if (snap) {
 				applySnapshot(snap);
-			} else if (diff) {
-				const chunkSize = 300;
+      } else if (diff) {
+        const cy = cyRef.current;
+        let sharedPrevPos: Map<string, { x: number; y: number }> | undefined;
+        try {
+          sharedPrevPos = new Map();
+          cy?.nodes().forEach((n: any) => { sharedPrevPos!.set(n.id(), { x: n.position('x'), y: n.position('y') }); });
+        } catch {}
+        const chunkSize = 300;
 				const copy: GraphDiff = {
 					...diff,
 					addedEdges: Array.isArray(diff.addedEdges) ? diff.addedEdges.slice() : [],
@@ -791,7 +821,7 @@ useEffect(() => {
 					if (copy.updatedNodes?.length) d.updatedNodes = copy.updatedNodes.splice(0, chunkSize);
 					if (copy.addedEdges?.length) d.addedEdges = copy.addedEdges.splice(0, chunkSize);
 					if (copy.updatedEdges?.length) d.updatedEdges = copy.updatedEdges.splice(0, chunkSize);
-					applyDiff(d);
+          applyDiff(d, sharedPrevPos);
 					if (copy.addedNodes?.length || copy.updatedNodes?.length || copy.addedEdges?.length || copy.updatedEdges?.length) {
 						requestAnimationFrame(runChunks);
 					}

@@ -441,30 +441,39 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
               <option value="USD">USD</option>
               <option value="TOKENS">Tokens</option>
             </select>
-            <button className={`px-2 py-1 border rounded ${sending?'opacity-60':''}`} disabled={sending} onClick={async ()=>{
-              if (!summary?.near_miss?.path?.length) return;
-              setSending(true);
-              try {
-                const nm: any = summary.near_miss as any;
-                const body: any = { path: nm.path, hopPoolIds: nm.hop_pool_ids || [], dexes: nm.hop_dexes || [] };
-                if (sendMode === 'USD') body.sizeUsd = Number(sendAmount)||0; else body.size = Number(sendAmount)||0;
-                const r = await fetch(`${apiBase}${ROUTES.arb.simulate}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-                await r.json().catch(()=>({}));
-              } catch {}
-              setSending(false);
-            }}>Simulate Direct</button>
-            <button className={`px-2 py-1 border rounded ${sending?'opacity-60':''}`} disabled={sending} onClick={async ()=>{
-              if (!summary?.near_miss?.path?.length) return;
-              setSending(true);
-              try {
-                const nm: any = summary.near_miss as any;
-                const body: any = { path: nm.path, hopPoolIds: nm.hop_pool_ids || [], dexes: nm.hop_dexes || [] };
-                if (sendMode === 'USD') body.sizeUsd = Number(sendAmount)||0; else body.size = Number(sendAmount)||0;
-                const r = await fetch(`${apiBase}${ROUTES.arb.execute}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-                await r.json().catch(()=>({}));
-              } catch {}
-              setSending(false);
-            }}>Execute Direct</button>
+            {(() => {
+              const nm: any = summary?.near_miss as any;
+              const edges = Math.max(0, (nm?.path?.length || 0) - 1);
+              const hopIds = ((nm?.hop_pool_ids || []) as string[]);
+              const hopDexes = ((nm?.hop_dexes || []) as string[]);
+              const validHops = edges > 0 && hopIds.length === edges && hopDexes.length === edges;
+              return (
+                <>
+                  <button className={`px-2 py-1 border rounded ${sending?'opacity-60':''}`} disabled={sending || !validHops} title={!validHops ? `Invalid hops: expected ${edges}, got hopPoolIds=${hopIds.length}, hopDexes=${hopDexes.length}` : undefined} onClick={async ()=>{
+                    if (!summary?.near_miss?.path?.length || !validHops) return;
+                    setSending(true);
+                    try {
+                      const body: any = { path: nm.path, hopPoolIds: hopIds, dexes: hopDexes };
+                      if (sendMode === 'USD') body.sizeUsd = Number(sendAmount)||0; else body.size = Number(sendAmount)||0;
+                      const r = await fetch(`${apiBase}${ROUTES.arb.simulateSend}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                      await r.json().catch(()=>({}));
+                    } catch {}
+                    setSending(false);
+                  }}>Preflight Simulate</button>
+                  <button className={`px-2 py-1 border rounded ${sending?'opacity-60':''}`} disabled={sending || !validHops} title={!validHops ? `Invalid hops: expected ${edges}, got hopPoolIds=${hopIds.length}, hopDexes=${hopDexes.length}` : undefined} onClick={async ()=>{
+                    if (!summary?.near_miss?.path?.length || !validHops) return;
+                    setSending(true);
+                    try {
+                      const body: any = { path: nm.path, hopPoolIds: hopIds, dexes: hopDexes };
+                      if (sendMode === 'USD') body.sizeUsd = Number(sendAmount)||0; else body.size = Number(sendAmount)||0;
+                      const r = await fetch(`${apiBase}${ROUTES.arb.execute}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                      await r.json().catch(()=>({}));
+                    } catch {}
+                    setSending(false);
+                  }}>Execute Direct</button>
+                </>
+              );
+            })()}
           </div>
         </div>
       )}

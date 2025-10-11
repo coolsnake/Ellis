@@ -15,8 +15,13 @@
 ## Steps
 1. Enable desired liquidity sources (Jupiter/Raydium/Orca/Meteora).
 2. Set risk caps and profitability threshold.
-3. Simulate candidate routes; verify net profit after fees and slippage.
-4. Execute, monitor fills, and review logs.
+3. Preflight Simulate candidate routes; verify logs and net profit after fees and slippage.
+4. Execute (when enabled), monitor fills, and review logs.
+
+### Simulate vs Execute in the UI
+- Preflight Simulate: runs an on-chain simulation for the selected route, returns program logs to the UI, and creates a sim_ok/sim_err entry in the Transactions table. Logs appear in the “Arbitrage” window.
+- Execute: preflights first, then sends when direct mode is enabled in Exec Config. Transactions are recorded as send_ok/send_err.
+- Buttons are disabled if hop metadata is invalid (mismatched hop_pool_ids/hop_dexes), preventing silent failures.
 
 ## Key parameters
 - [Max slippage (maxSlippageBps)](../parameters/catalog.md#maxSlippageBps): cap price impact to avoid adverse fills.

@@ -1,4 +1,5 @@
 import React from 'react';
+import { ROUTES } from '../utils/routes';
 
 type BottleneckEdge = { from: string; to: string; dex: string; rate: number; liquidity: number; fee_bps: number };
 type Opportunity = {
@@ -177,7 +178,7 @@ export function OpportunityList(
                   setSimLogs(null); setSimErr(null);
                   if (!validHops) { setSimErr(`invalid opportunity payload (expected ${edges} hops, got hopPoolIds=${hopIds.length}, hopDexes=${hopDexes.length})`); return; }
                   const body: any = { path: op.path, hopPoolIds: (op as any)?.hop_pool_ids, dexes: (op as any)?.hop_dexes, sizeUsd: sendMode==='USD'? Number(sendAmount)||0 : undefined, size: sendMode==='TOKENS'? Number(sendAmount)||0 : undefined };
-                  const r = await fetch(`${apiBase}/arb/simulate-send`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                  const r = await fetch(`${apiBase}${ROUTES.arb.simulateSend}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
                   const j = await r.json().catch(()=>({}));
                   if (!r.ok) {
                     setSimErr(String((j && (j.error || j.err)) || 'preflight_failed'));

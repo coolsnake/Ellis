@@ -43,27 +43,45 @@ export function useSocketEvents(opts?: Options): void {
       });
     };
     const onLog = (evt: LogEvent & { cat?: string; muted?: boolean }) => {
-      enqueueFrame(() => {
-        try {
-          const cat = (evt?.cat || '').toLowerCase();
-          const serverCats: string[] | undefined = (system as any)?.system?.frontendEnabledLogCategories || (system as any)?.system?.enabledLogCategories;
-          const localCatsJson = typeof window !== 'undefined' ? window.localStorage.getItem('frontendEnabledLogCategories') : null;
-          const localCats: string[] | null = localCatsJson ? JSON.parse(localCatsJson) : null;
-          const allowedCats = Array.isArray(localCats) && localCats.length ? localCats : (Array.isArray(serverCats) ? serverCats : null);
-          if (allowedCats && allowedCats.length && cat && !allowedCats.includes(cat)) return;
-          if (evt.muted === true) return;
-          // Apply frontend log level filter: hide messages below current level
-          const levelOrder: Record<string, number> = { error: 0, warn: 1, info: 2, debug: 3 };
-          const currentLevel = getLogLevel();
-          const eventLevel = String((evt as any)?.level || 'info').toLowerCase();
-          if (levelOrder[currentLevel] < (levelOrder as any)[eventLevel]) return;
-          const id = catToWindowId.get(cat) || 'system';
-          setLogsByWindow((prev) => {
-            const base = Array.isArray((prev as any)[id]) ? (prev as any)[id] : [];
-            return { ...(prev as any), [id]: [evt, ...base].slice(0, 500) } as any;
+      try {
+        const cat = (evt?.cat || '').toLowerCase();
+        const serverCats: string[] | undefined = (system as any)?.system?.frontendEnabledLogCategories || (system as any)?.system?.enabledLogCategories;
+        const localCatsJson = typeof window !== 'undefined' ? window.localStorage.getItem('frontendEnabledLogCategories') : null;
+        const localCats: string[] | null = localCatsJson ? JSON.parse(localCatsJson) : null;
+        const allowedCats = Array.isArray(localCats) && localCats.length ? localCats : (Array.isArray(serverCats) ? serverCats : null);
+        if (allowedCats && allowedCats.length && cat && !allowedCats.includes(cat)) return;
+        if (evt.muted === true) return;
+        // Apply frontend log level filter: hide messages below current level
+        const levelOrder: Record<string, number> = { error: 0, warn: 1, info: 2, debug: 3 };
+        const currentLevel = getLogLevel();
+        const eventLevel = String((evt as any)?.level || 'info').toLowerCase();
+        if (levelOrder[currentLevel] < (levelOrder as any)[eventLevel]) return;
+        const id = catToWindowId.get(cat) || 'system';
+        // Per-frame buffered merge; cap 300 entries per window
+        const store: any = (window as any).__ls_log_buffer__ || ((window as any).__ls_log_buffer__ = { buf: new Map<string, LogEvent[]>(), scheduled: false });
+        const list = store.buf.get(id) || [];
+        list.push(evt);
+        store.buf.set(id, list);
+        if (!store.scheduled) {
+          store.scheduled = true;
+          requestAnimationFrame(() => {
+            try {
+              setLogsByWindow((prev) => {
+                const next: any = { ...(prev as any) };
+                for (const [wid, items] of store.buf.entries()) {
+                  const base = Array.isArray(next[wid]) ? next[wid] : [];
+                  const merged = items.concat(base);
+                  next[wid] = merged.length > 300 ? merged.slice(0, 300) : merged;
+                }
+                return next;
+              });
+            } finally {
+              store.buf.clear();
+              store.scheduled = false;
+            }
           });
-        } catch {}
-      });
+        }
+      } catch {}
     };
     const onPrices = (p: any) => {
       enqueueFrame(() => { try { setPrices(p || {}); } catch {} });

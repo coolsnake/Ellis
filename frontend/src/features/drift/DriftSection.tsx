@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { LiquidationMonitor } from '../drift';
 import { LiquidatorStatus } from '../../components/LiquidatorStatus';
 import { ROUTES } from '../../utils/routes';
+import { useSocket } from '../../app/contexts/socket';
 
 export const DriftSection: React.FC<{
   apiBase: string;
@@ -18,6 +19,7 @@ export const DriftSection: React.FC<{
   ls: Array<{ key: string }>;
   onOpenLiqRunner?: () => void;
 }> = (p) => {
+  const { socket: ctxSocket } = useSocket();
   const [status, setStatus] = useState<any>(null);
   const [balances, setBalances] = useState<any[]>([]);
   const [spotMarkets, setSpotMarkets] = useState<Array<{ marketIndex: number; symbol?: string }>>([]);
@@ -78,6 +80,19 @@ export const DriftSection: React.FC<{
 
   useEffect(() => { loadStatusAndSubs(); loadSubaccounts(); }, []);
   useEffect(() => { loadBalances(p.driftSelectedSubId); }, [p.apiBase, p.driftSelectedSubId]);
+  useEffect(() => {
+    const s = ctxSocket;
+    if (!s) return;
+    const onBal = (evt: any) => {
+      try {
+        if (Number(evt?.subaccountId) === Number(p.driftSelectedSubId)) {
+          loadBalances(p.driftSelectedSubId);
+        }
+      } catch {}
+    };
+    try { s.on('drift:user:balances', onBal); } catch {}
+    return () => { try { s.off('drift:user:balances', onBal); } catch {} };
+  }, [ctxSocket, p.driftSelectedSubId]);
 
   const createSub = async () => {
     try {

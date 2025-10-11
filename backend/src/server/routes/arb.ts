@@ -91,6 +91,7 @@ export function createArbRouter(io: SocketIOServer): Router {
 
   api.post('/arb/simulate', async (req, res) => {
     try {
+      try { emit('log', { level: 'info', message: 'pretrade:arb simulate start', timestamp: new Date().toISOString(), context: { cat: 'arb', code: 'PRETRADE.SIM.START' } }); } catch {}
       const { resolveDirectPlan } = await import('../../execution/resolver/index.js');
       const { ResolveDirectSchema } = await import('../routes/schemas.js');
       const { buildDirectArbTx } = await import('../../execution/builder/tx.js');
@@ -98,6 +99,7 @@ export function createArbRouter(io: SocketIOServer): Router {
       const parsed = ResolveDirectSchema.parse(input);
       const plan = input?.plan && Array.isArray(input.plan?.hops) ? input.plan : await resolveDirectPlan(parsed as any, {} as any);
       const built = await buildDirectArbTx(plan, [], {} as any);
+      try { emit('log', { level: 'info', message: 'pretrade:arb tx built', timestamp: new Date().toISOString(), context: { cat: 'tx', code: 'PRETRADE.TX.BUILT' } }); } catch {}
       const id = Math.random().toString(36).slice(2,10);
       await logTxTrace('simulate', {
         id, timeMs: Date.now(),
@@ -114,6 +116,7 @@ export function createArbRouter(io: SocketIOServer): Router {
   // New endpoint: simulate fully assembled tx on-chain and return logs (no send)
   api.post('/arb/simulate-send', async (req, res) => {
     try {
+      try { emit('log', { level: 'info', message: 'pretrade:arb simulate start', timestamp: new Date().toISOString(), context: { cat: 'arb', code: 'PRETRADE.SIM.START' } }); } catch {}
       const { resolveDirectPlan } = await import('../../execution/resolver/index.js');
       const { ResolveDirectSchema } = await import('../routes/schemas.js');
       const { buildDirectArbTx } = await import('../../execution/builder/tx.js');
@@ -124,6 +127,7 @@ export function createArbRouter(io: SocketIOServer): Router {
       const parsed = ResolveDirectSchema.parse(input);
       const plan = input?.plan && Array.isArray(input.plan?.hops) ? input.plan : await resolveDirectPlan(parsed as any, {} as any);
       const built = await buildDirectArbTx(plan, [], {} as any);
+      try { emit('log', { level: 'info', message: 'pretrade:arb tx built', timestamp: new Date().toISOString(), context: { cat: 'tx', code: 'PRETRADE.TX.BUILT' } }); } catch {}
 
       const execCfg = await loadExecConfig();
       const sim = await assembleAndSimulate(built.tx.instructions, {
@@ -147,6 +151,7 @@ export function createArbRouter(io: SocketIOServer): Router {
         logs: sim.logs || [],
         err: sim.err || null,
       });
+      try { emit('log', { level: 'info', message: 'pretrade:arb simulate result', timestamp: new Date().toISOString(), context: { cat: 'arb', code: 'PRETRADE.SIM.END', ...(sim as any)?.err ? { err: String((sim as any).err) } : {} } }); } catch {}
       try {
         const { addTxRecord } = await import('../txHistory.js');
         await addTxRecord({
@@ -170,6 +175,7 @@ export function createArbRouter(io: SocketIOServer): Router {
 
   api.post('/arb/execute', async (req, res) => {
     try {
+      try { emit('log', { level: 'info', message: 'pretrade:arb execute start', timestamp: new Date().toISOString(), context: { cat: 'arb', code: 'PRETRADE.EXEC.START' } }); } catch {}
       const { resolveDirectPlan } = await import('../../execution/resolver/index.js');
       const { ResolveDirectSchema } = await import('../routes/schemas.js');
       const { buildDirectArbTx } = await import('../../execution/builder/tx.js');
@@ -181,10 +187,9 @@ export function createArbRouter(io: SocketIOServer): Router {
       const parsed = ResolveDirectSchema.parse(input);
       const plan = input?.plan && Array.isArray(input.plan?.hops) ? input.plan : await resolveDirectPlan(parsed as any, {} as any);
       const built = await buildDirectArbTx(plan, [], {} as any);
+      try { emit('log', { level: 'info', message: 'pretrade:arb tx built', timestamp: new Date().toISOString(), context: { cat: 'tx', code: 'PRETRADE.TX.BUILT' } }); } catch {}
 
       const id = Math.random().toString(36).slice(2,10);
-      await addTxRecord({ id, timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature: null, status: 'sim_ok' });
-      try { emit('tx:history.updated', { id, status: 'sim_ok' }); } catch {}
 
       const execCfg = await loadExecConfig();
       const mode = (execCfg.mode || 'simulate');
@@ -218,6 +223,7 @@ export function createArbRouter(io: SocketIOServer): Router {
         logs: (sim as any)?.logs || [],
         err: (sim as any)?.err || null,
       });
+      try { emit('log', { level: 'info', message: 'pretrade:arb simulate result', timestamp: new Date().toISOString(), context: { cat: 'arb', code: 'PRETRADE.SIM.END', ...(sim as any)?.err ? { err: String((sim as any).err) } : {} } }); } catch {}
       if ((sim as any)?.err) {
         try {
           await addTxRecord({ id, timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature: null, status: 'sim_err', error: String((sim as any)?.err) });
@@ -249,6 +255,7 @@ export function createArbRouter(io: SocketIOServer): Router {
           signature,
         });
         await addTxRecord({ id, timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature, status: signature ? 'send_ok' : 'send_err' });
+        try { emit('log', { level: 'info', message: signature ? 'arb:send ok' : 'arb:send err', timestamp: new Date().toISOString(), context: { cat: 'arb', ...(signature ? { signature } : {}) } }); } catch {}
         try { emit('tx:history.updated', { id, status: signature ? 'send_ok' : 'send_err' }); } catch {}
         res.json({ id, mode, signature, signatures, ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
       } catch (e: any) {
