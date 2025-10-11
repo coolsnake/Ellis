@@ -6,7 +6,7 @@ import { describe, it, expect } from 'vitest';
 
 const API_BASE = (process.env.API_BASE as string) || 'http://localhost:3001/api';
 
-describe.skip('Drift leveraged grid integration (devnet scaffolding)', () => {
+describe('Drift leveraged grid integration (devnet scaffolding)', () => {
   it('should fetch Drift status', async () => {
     const res = await fetch(`${API_BASE}/drift/status`);
     expect(res.ok).toBe(true);
@@ -56,7 +56,7 @@ describe.skip('Drift leveraged grid integration (devnet scaffolding)', () => {
   });
 });
 
-describe.skip('Drift liquidator integration (devnet scaffolding)', () => {
+describe('Drift liquidator integration (devnet scaffolding)', () => {
   it('should start and stop liquidator', async () => {
     const start = await fetch(`${API_BASE}/strategies/liquidator/start`, {
       method: 'POST',

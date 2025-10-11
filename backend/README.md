@@ -1,5 +1,18 @@
 ## Leveraged Grid (Drift) - Operations & Safety
 
+### Drift tests
+
+- Unit/mocked:
+  - `npm run test:drift:unit`
+- Real-data (read-only, mainnet-beta):
+  - Set `WALLET_PATH` and `SOLANA_RPC_URL`
+  - `npm run test:drift:real`
+- Real-data mutating (gated, optional):
+  - Set `WALLET_PATH`, `SOLANA_RPC_URL`
+  - Acknowledge: `DRIFT_MUTATING_MAINNET_ACK=I_ACCEPT_RISK`
+  - Optional: enable `DRIFT_MUTATING_FUNDS=true` to attempt `createSubaccount()`
+  - `npm run test:drift:mutating`
+
 This backend adds a Drift-based leveraged grid strategy alongside spot strategies.
 
 ### Prerequisites

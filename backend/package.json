@@ -9,7 +9,10 @@
     "test": "vitest run",
     "test:unit": "vitest run tests --reporter=basic",
     "test:pipeline": "bash ./scripts/run-pipeline-tests.sh",
-    "test:real": "RUN_REAL_E2E=true vitest run src/server/__tests__/pipeline.e2e.real.test.ts --pool=threads --maxWorkers=1 --reporter=basic"
+    "test:real": "RUN_REAL_E2E=true vitest run src/server/__tests__/pipeline.e2e.real.test.ts --pool=threads --maxWorkers=1 --reporter=basic",
+    "test:drift:unit": "vitest run src/drift/__tests__/*.test.ts src/server/__tests__/drift.routes.test.ts --pool=threads --maxWorkers=1 --reporter=basic",
+    "test:drift:real": "RUN_REAL_DRIFT_E2E=true vitest run src/drift/__tests__/drift.e2e.real.test.ts --pool=threads --maxWorkers=1 --reporter=basic",
+    "test:drift:mutating": "RUN_DRIFT_MUTATING=true DRIFT_MUTATING_MAINNET_ACK=I_ACCEPT_RISK vitest run src/drift/__tests__/drift.e2e.mutating.real.test.ts --pool=threads --maxWorkers=1 --reporter=basic"
   },
   "dependencies": {
     "@coral-xyz/anchor": "0.29.0",
