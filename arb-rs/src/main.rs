@@ -1588,6 +1588,15 @@ struct ConfigReq {
     near_miss_enable: Option<bool>,
     near_miss_epsilon: Option<f64>,
     debug_near_miss_failures: Option<bool>,
+    // Additional detector/cadence/pruning fields
+    est_priority_fee_per_hop_lamports: Option<u64>,
+    filtered_detect_enable: Option<bool>,
+    filtered_node_ratio: Option<f64>,
+    filtered_expand_hops: Option<usize>,
+    periodic_full_ms: Option<u64>,
+    max_sol_stable_hops: Option<usize>,
+    drop_stable_stable_hops: Option<bool>,
+    stable_mints: Option<Vec<String>>,
 }
 
 async fn set_config(
@@ -1625,6 +1634,15 @@ async fn set_config(
     if let Some(v) = cfg.near_miss_enable { s.config.near_miss_enable = v; }
     if let Some(v) = cfg.near_miss_epsilon { s.config.near_miss_epsilon = v; }
     if let Some(v) = cfg.debug_near_miss_failures { s.config.debug_near_miss_failures = v; }
+    // Extended fields
+    if let Some(v) = cfg.est_priority_fee_per_hop_lamports { s.config.est_priority_fee_per_hop_lamports = Some(v); }
+    if let Some(v) = cfg.filtered_detect_enable { s.config.filtered_detect_enable = v; }
+    if let Some(v) = cfg.filtered_node_ratio { s.config.filtered_node_ratio = v; }
+    if let Some(v) = cfg.filtered_expand_hops { s.config.filtered_expand_hops = Some(v); }
+    if let Some(v) = cfg.periodic_full_ms { s.config.periodic_full_ms = Some(v); }
+    if let Some(v) = cfg.max_sol_stable_hops { s.config.max_sol_stable_hops = Some(v); }
+    if let Some(v) = cfg.drop_stable_stable_hops { s.config.drop_stable_stable_hops = v; }
+    if let Some(v) = cfg.stable_mints { s.config.stable_mints = Some(v); }
     // Optional: extend ConfigReq to accept pruning fields without breaking existing clients
     // We tolerate presence via raw JSON by re-reading from persisted file later if needed.
     let _ = persist_config(&s.config).await;
@@ -1638,7 +1656,7 @@ async fn get_config(State(state): State<Arc<RwLock<AppState>>>) -> Json<ArbConfi
 
 fn default_config() -> ArbConfig {
     ArbConfig {
-        enabled: false,
+        enabled: true,
         min_profit_bps: 30,
         max_profit_bps: 20000,
         min_notional_usd: 50.0,

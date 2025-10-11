@@ -162,7 +162,7 @@ export function OpportunityList(
                 try {
                   if (!validHops) { setSimErr(`invalid opportunity payload (expected ${edges} hops, got hopPoolIds=${hopIds.length}, hopDexes=${hopDexes.length})`); return; }
                   const body: any = { path: op.path, hopPoolIds: (op as any)?.hop_pool_ids, dexes: (op as any)?.hop_dexes };
-                  const r = await fetch(`${apiBase}/arb/simulate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                  const r = await fetch(`${apiBase}${ROUTES.arb.simulate}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
                   await r.json().catch(()=>({}));
                 } catch {}
               }}>Simulate Direct</button>
@@ -202,8 +202,14 @@ export function OpportunityList(
                 try {
                   if (!validHops) { setSimErr(`invalid opportunity payload (expected ${edges} hops, got hopPoolIds=${hopIds.length}, hopDexes=${hopDexes.length})`); return; }
                   const body: any = { path: op.path, hopPoolIds: (op as any)?.hop_pool_ids, dexes: (op as any)?.hop_dexes, sizeUsd: sendMode==='USD'? Number(sendAmount)||0 : undefined, size: sendMode==='TOKENS'? Number(sendAmount)||0 : undefined };
-                  const r = await fetch(`${apiBase}/arb/execute`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-                  await r.json().catch(()=>({}));
+                  setSimLogs(null); setSimErr(null);
+                  const r = await fetch(`${apiBase}${ROUTES.arb.execute}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                  const j = await r.json().catch(()=>({}));
+                  if (!r.ok) {
+                    setSimErr(String((j && (j.error || j.err)) || 'send_failed'));
+                  } else if (j && j.mode && j.mode !== 'direct') {
+                    setSimErr(`Execution disabled (mode: ${j.mode}). Enable 'direct' in Exec Config.`);
+                  }
                 } catch {}
               }}>Execute Direct</button>
                 ); })()}

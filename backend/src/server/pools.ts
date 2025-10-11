@@ -366,13 +366,10 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
         if (pricedCount < minPriced || coverage < minCoverage) {
           try {
             const { bootstrapPricesForMints } = await import('./priceBootstrap.js');
-            const cov2 = await bootstrapPricesForMints(Array.from(mintSet), { chunkSize: 80, maxRequests: 6, cat: 'pools.refresh.post' });
-            const covPost1 = await bootstrapPricesForMints(Array.from(mintSet), { chunkSize: 80, maxRequests: 6, cat: 'pools.refresh.post' });
-            try { logger.info('pools.refresh price coverage post', { total: covPost1.total, priced: covPost1.priced, missing: covPost1.missing, cat: 'pools' }); } catch {}
-            const covPost2 = await bootstrapPricesForMints(Array.from(mintSet), { chunkSize: 80, maxRequests: 6, cat: 'pools.refresh.post' });
-            try { logger.info('pools.refresh price coverage post', { total: covPost2.total, priced: covPost2.priced, missing: covPost2.missing, cat: 'pools' }); } catch {}
-            try { emit('log', { level: 'info', message: `pools:bootstrap post.coverage total=${covPost2.total} priced=${covPost2.priced} missing=${covPost2.missing}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
-            try { logger.info(`pools:bootstrap post.coverage total=${covPost2.total} priced=${covPost2.priced} missing=${covPost2.missing}`, { cat: 'pools' }); } catch {}
+            const covPost = await bootstrapPricesForMints(Array.from(mintSet), { chunkSize: 80, maxRequests: 6, cat: 'pools.refresh.post' });
+            try { logger.info('pools.refresh price coverage post', { total: covPost.total, priced: covPost.priced, missing: covPost.missing, cat: 'pools' }); } catch {}
+            try { emit('log', { level: 'info', message: `pools:bootstrap post.coverage total=${covPost.total} priced=${covPost.priced} missing=${covPost.missing}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
+            try { logger.info(`pools:bootstrap post.coverage total=${covPost.total} priced=${covPost.priced} missing=${covPost.missing}`, { cat: 'pools' }); } catch {}
             // Rebuild graph with prices now available
             try {
               const gmod: any = await import('./graph.js');
@@ -998,9 +995,12 @@ export function startRaydiumRefreshLoop(): void {
                 const sumNeed = needRay + needOrc + needMet;
                 // Also retarget if significantly over target (shed excess subs)
                 const lastTgts: any = (getWsTargets as any)?._last || {};
-                const overRay = (attachedRaydiumPools || 0) > Math.floor((lastTgts?.raydium?.target || 0) * 1.5);
-                const overOrc = (attachedOrcaPools || 0) > Math.floor((lastTgts?.orca?.target || 0) * 1.5);
-                const overMet = (attachedMeteoraPools || 0) > Math.floor((lastTgts?.meteora?.target || 0) * 1.5);
+                const tgtRay = Math.max(0, Number(lastTgts?.raydium?.target || 0));
+                const tgtOrc = Math.max(0, Number(lastTgts?.orca?.target || 0));
+                const tgtMet = Math.max(0, Number(lastTgts?.meteora?.target || 0));
+                const overRay = (tgtRay > 0) && (attachedRaydiumPools || 0) > Math.floor(tgtRay * 1.5);
+                const overOrc = (tgtOrc > 0) && (attachedOrcaPools || 0) > Math.floor(tgtOrc * 1.5);
+                const overMet = (tgtMet > 0) && (attachedMeteoraPools || 0) > Math.floor(tgtMet * 1.5);
                 if (sumNeed > 0 || overRay || overOrc || overMet) {
                   const last = (reconcileNow as any)._last || 0;
                   if (Date.now() - last > 5000) { await reconcileNow(); }

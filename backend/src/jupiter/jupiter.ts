@@ -16,6 +16,9 @@ const JUP_QUOTE_URL = 'https://lite-api.jup.ag/swap/v1/quote';
 const JUP_SWAP_URL = 'https://lite-api.jup.ag/swap/v1/swap';
 export const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
+// In-flight dedupe for identical Jupiter price requests (same id set)
+const inflightPriceReqs = new Map<string, Promise<Record<string, { usdPrice: number; decimals: number; blockId: number; priceChange24h?: number }>>>();
+
 export async function fetchTokenPrices(symbols: string[], options?: { catOverride?: string }): Promise<PriceQuote[]> {
   if (isApiPaused()) return [];
   if (symbols.length === 0) return [];
@@ -89,6 +92,9 @@ export async function fetchPricesByMints(mints: string[], options?: { catOverrid
   url.searchParams.set('ids', ids.join(','));
   const poolsFlow = !!((options?.catOverride || '').startsWith('pools'));
 
+  // Coalesce concurrent identical id sets
+  const key = ids.slice().sort().join(',');
+
   const attempt = async (attemptIndex: number) => {
     logger.info(`jup.price.fetch ids=${ids.length} attempt=${attemptIndex + 1}`, { cat: options?.catOverride || 'jupiter' });
     try { if (poolsFlow) emit('log', { level: 'info', message: `pools:jup.price.fetch ids=${ids.length}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
@@ -111,18 +117,31 @@ export async function fetchPricesByMints(mints: string[], options?: { catOverrid
   };
 
   let data: Record<string, { usdPrice: number }> | undefined;
-  let lastErr: unknown;
-  for (let i = 0; i < 3; i += 1) {
+  if (inflightPriceReqs.has(key)) {
+    const shared = inflightPriceReqs.get(key)!;
+    data = await shared;
+  } else {
+    const p = (async () => {
+      let lastErr: unknown;
+      for (let i = 0; i < 3; i += 1) {
+        try {
+          return await attempt(i);
+        } catch (e) {
+          lastErr = e;
+          if (!String(e).includes('429')) {
+            await new Promise((r) => setTimeout(r, 600 * (i + 1)));
+          }
+        }
+      }
+      throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+    })();
+    inflightPriceReqs.set(key, p);
     try {
-      data = await attempt(i);
-      break;
-    } catch (e) {
-      lastErr = e;
-      if (String(e).includes('429')) continue;
-      await new Promise((r) => setTimeout(r, 600 * (i + 1)));
+      data = await p;
+    } finally {
+      inflightPriceReqs.delete(key);
     }
   }
-  if (!data) throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 
   const solUsd = data[SOL_MINT]?.usdPrice ?? null;
 

@@ -476,9 +476,17 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
                     try {
                       const body: any = { path: nm.path, hopPoolIds: hopIds, dexes: hopDexes };
                       if (sendMode === 'USD') body.sizeUsd = Number(sendAmount)||0; else body.size = Number(sendAmount)||0;
+                      setNmSimLogs(null); setNmSimErr(null);
                       const r = await fetch(`${apiBase}${ROUTES.arb.execute}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-                      await r.json().catch(()=>({}));
-                    } catch {}
+                      const j = await r.json().catch(()=>({}));
+                      if (!r.ok) {
+                        setNmSimErr(String((j && (j.error || j.err)) || 'send_failed'));
+                      } else if (j && j.mode && j.mode !== 'direct') {
+                        setNmSimErr(`Execution disabled (mode: ${j.mode}). Enable 'direct' in Exec Config.`);
+                      }
+                    } catch (e: any) {
+                      setNmSimErr(String(e?.message || e));
+                    }
                     setSending(false);
                   }}>Execute Direct</button>
                 </>
@@ -497,7 +505,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
           )}
         </div>
       )}
-      {items.length === 0 && summary?.near_misses && summary.near_misses.length > 0 && (
+      {items.length === 0 && !summary?.near_miss && summary?.near_misses && summary.near_misses.length > 0 && (
         <div className="p-2 border rounded bg-yellow-900/10 text-xs mb-3">
           <div className="font-semibold mb-1">Near-misses this run</div>
           <div className="space-y-1">

@@ -76,6 +76,7 @@ export const App: React.FC = () => {
   const [showDataFetchConfig, setShowDataFetchConfig] = useState(false);
   const [showGraphConfig, setShowGraphConfig] = useState(false);
   const [showEngineConfig, setShowEngineConfig] = useState(false);
+  const [showOpportunityConfig, setShowOpportunityConfig] = useState(false);
   const [showLiqConfig, setShowLiqConfig] = useState(false);
   const [showGraph, setShowGraph] = useState(false);
   // socket managed by context; remove local ref after full migration
@@ -1225,6 +1226,7 @@ export const App: React.FC = () => {
             <>
               <button onClick={()=>setShowDataFetchConfig(true)} className="px-3 py-1 bg-blue-600 text-white rounded text-sm hover:bg-blue-700">Fetchers & Normalizers</button>
               <button onClick={()=>setShowEngineConfig(true)} className="px-3 py-1 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Arb Engine</button>
+              <button onClick={()=>setShowOpportunityConfig(true)} className="px-3 py-1 bg-fuchsia-600 text-white rounded text-sm hover:bg-fuchsia-700">Opportunity Config</button>
               <button onClick={()=>setShowGraphConfig(true)} className="px-3 py-1 bg-teal-600 text-white rounded text-sm hover:bg-teal-700">Graph Config</button>
             </>
           )}
@@ -1248,6 +1250,8 @@ export const App: React.FC = () => {
           onCloseDataFetch={() => setShowDataFetchConfig(false)}
           showEngineConfig={showEngineConfig}
           onCloseEngine={() => setShowEngineConfig(false)}
+          showOpportunityConfig={showOpportunityConfig}
+          onCloseOpportunity={() => setShowOpportunityConfig(false)}
           showLiqRunnerConfig={showLiqRunnerConfig}
           onCloseLiqRunner={() => setShowLiqRunnerConfig(false)}
         />

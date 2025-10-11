@@ -107,5 +107,172 @@
     "examples": ["Balanced: 3"],
     "category": "routing",
     "strategies": ["threshold"]
+  },
+  {
+    "key": "maxProfitBps",
+    "label": "Maximum raw profit (bps)",
+    "type": "integer:bps",
+    "default": 20000,
+    "min": 0,
+    "max": 100000,
+    "purpose": "Ceiling to discard absurd/arbitrary mispriced paths before netting.",
+    "whenToChange": "Rarely change; lower during testing to suppress outliers.",
+    "risks": "Too low may hide valid outsized quotes.",
+    "category": "arb-detection"
+  },
+  {
+    "key": "minNotionalUsd",
+    "label": "Minimum notional (USD)",
+    "type": "number:usd",
+    "default": 50,
+    "min": 0,
+    "max": 100000,
+    "purpose": "Discard routes that move too little value.",
+    "whenToChange": "Increase to reduce noise; decrease for testing.",
+    "risks": "Too high may miss scalable routes.",
+    "category": "arb-detection"
+  },
+  {
+    "key": "quoteSizeUsd",
+    "label": "Quote size (USD)",
+    "type": "number:usd",
+    "default": 50,
+    "min": 1,
+    "max": 100000,
+    "purpose": "Size used to evaluate cycle profitability.",
+    "whenToChange": "Align with typical trade sizes.",
+    "risks": "Unrealistic sizing skews profitability.",
+    "category": "arb-detection"
+  },
+  {
+    "key": "maxIdleMs",
+    "label": "Max detector idle (ms)",
+    "type": "integer:ms",
+    "default": 2000,
+    "min": 0,
+    "max": 60000,
+    "purpose": "Upper bound on time between detection cycles.",
+    "whenToChange": "Increase on slow machines; decrease for faster reaction.",
+    "risks": "Too low increases CPU; too high delays opportunities.",
+    "category": "arb-performance"
+  },
+  {
+    "key": "nearMissEnable",
+    "label": "Enable near-miss detection",
+    "type": "boolean",
+    "default": true,
+    "purpose": "Emit candidates just below threshold for analysis.",
+    "risks": "Too many near-misses can add noise to logs.",
+    "category": "debug"
+  },
+  {
+    "key": "nearMissEpsilon",
+    "label": "Near-miss epsilon",
+    "type": "number",
+    "default": 0.0005,
+    "min": 0.00001,
+    "max": 0.01,
+    "purpose": "Slack in log-space to consider near-threshold candidates.",
+    "category": "debug"
+  },
+  {
+    "key": "debugEmitSubthreshold",
+    "label": "Emit sub-threshold cycles",
+    "type": "boolean",
+    "default": false,
+    "purpose": "Log/emit cycles below min profit for inspection.",
+    "category": "debug"
+  },
+  {
+    "key": "debugTopN",
+    "label": "Top-N sub-threshold to log",
+    "type": "integer",
+    "default": 5,
+    "min": 0,
+    "max": 50,
+    "purpose": "Limit noisy diagnostics to N best near-misses.",
+    "category": "debug"
+  },
+  {
+    "key": "debugNearMissFailures",
+    "label": "Log near-miss failures",
+    "type": "boolean",
+    "default": false,
+    "purpose": "Emit diagnostics when no near-miss found.",
+    "category": "debug"
+  },
+  {
+    "key": "estPriorityFeePerHopLamports",
+    "label": "Est. priority fee per hop (lamports)",
+    "type": "integer",
+    "default": 0,
+    "min": 0,
+    "max": 100000,
+    "purpose": "Rough per-hop fee estimate used when netting profit.",
+    "category": "fees"
+  },
+  {
+    "key": "filteredDetectEnable",
+    "label": "Enable filtered detection",
+    "type": "boolean",
+    "default": true,
+    "purpose": "Use incremental/filtered detection between periodic full runs.",
+    "category": "arb-performance"
+  },
+  {
+    "key": "filteredNodeRatio",
+    "label": "Filtered node ratio",
+    "type": "number",
+    "default": 0.1,
+    "min": 0,
+    "max": 1,
+    "purpose": "Fraction of nodes expanded during filtered detection.",
+    "category": "arb-performance"
+  },
+  {
+    "key": "filteredExpandHops",
+    "label": "Filtered expand hops",
+    "type": "integer",
+    "default": 0,
+    "min": 0,
+    "max": 6,
+    "purpose": "Optional hop expansion depth when filtered.",
+    "category": "arb-performance"
+  },
+  {
+    "key": "periodicFullMs",
+    "label": "Periodic full detection (ms)",
+    "type": "integer:ms",
+    "default": 0,
+    "min": 0,
+    "max": 3600000,
+    "purpose": "Interval for full detection pass; 0 disables.",
+    "category": "arb-performance"
+  },
+  {
+    "key": "dropStableStableHops",
+    "label": "Drop stable↔stable hops",
+    "type": "boolean",
+    "default": true,
+    "purpose": "Prune cycles containing stable-to-stable edges (e.g., USDC↔USDT).",
+    "category": "routing"
+  },
+  {
+    "key": "maxSolStableHops",
+    "label": "Max SOL↔stable hops",
+    "type": "integer",
+    "default": 1,
+    "min": 0,
+    "max": 4,
+    "purpose": "Limit SOL<->stable transitions per cycle.",
+    "category": "routing"
+  },
+  {
+    "key": "stableMints",
+    "label": "Stable mints (CSV)",
+    "type": "string:csv",
+    "default": "",
+    "purpose": "Override set of stablecoin mint addresses used by pruning.",
+    "category": "routing"
   }
 ]

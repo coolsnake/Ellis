@@ -4,6 +4,7 @@ import { FeeConfig } from '../../components/FeeConfig';
 import { SystemConfig } from '../../components/SystemConfig';
 import { DataFetchConfig } from '../../components/DataFetchConfig';
 import { ArbEngineConfig } from '../../components/ArbEngineConfig';
+import { OpportunityConfig } from '../../components/OpportunityConfig';
 import { GraphConfig } from '../../components/GraphConfig';
 import { LiquidatorRunnerConfig } from '../../components/LiquidatorRunnerConfig';
 
@@ -21,6 +22,8 @@ export const ConfigsSection: React.FC<{
   onCloseDataFetch: () => void;
   showEngineConfig: boolean;
   onCloseEngine: () => void;
+  showOpportunityConfig?: boolean;
+  onCloseOpportunity?: () => void;
   showLiqRunnerConfig: boolean;
   onCloseLiqRunner: () => void;
 }> = (p) => {
@@ -36,6 +39,7 @@ export const ConfigsSection: React.FC<{
       )}
       {p.showDataFetchConfig && (<DataFetchConfig apiBase={p.apiBase} onClose={p.onCloseDataFetch} />)}
       {p.showEngineConfig && (<ArbEngineConfig apiBase={p.apiBase} onClose={p.onCloseEngine} />)}
+      {p.showOpportunityConfig && (<OpportunityConfig apiBase={p.apiBase} onClose={p.onCloseOpportunity!} />)}
       {p.showLiqRunnerConfig && (<LiquidatorRunnerConfig apiBase={p.apiBase} onClose={p.onCloseLiqRunner} />)}
     </>
   );

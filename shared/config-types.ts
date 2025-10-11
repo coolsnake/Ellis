@@ -66,7 +66,17 @@ export interface ArbDetectorConfigPublic {
   debug_top_n?: number;
   near_miss_enable?: boolean;
   near_miss_epsilon?: number;
+  debug_near_miss_failures?: boolean;
   est_priority_fee_per_hop_lamports?: number;
+  // Perf / cadence
+  filtered_detect_enable?: boolean;
+  filtered_node_ratio?: number;
+  filtered_expand_hops?: number;
+  periodic_full_ms?: number;
+  // Path pruning
+  max_sol_stable_hops?: number;
+  drop_stable_stable_hops?: boolean;
+  stable_mints?: string[];
 }
 
 export interface SystemConfigRequest {
