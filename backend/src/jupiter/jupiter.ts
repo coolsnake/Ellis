@@ -87,9 +87,11 @@ export async function fetchPricesByMints(mints: string[], options?: { catOverrid
   const ids = Array.from(new Set([...mints, SOL_MINT]));
   const url = new URL(JUP_PRICE_URL);
   url.searchParams.set('ids', ids.join(','));
+  const poolsFlow = !!((options?.catOverride || '').startsWith('pools'));
 
   const attempt = async (attemptIndex: number) => {
     logger.info(`jup.price.fetch ids=${ids.length} attempt=${attemptIndex + 1}`, { cat: options?.catOverride || 'jupiter' });
+    try { if (poolsFlow) emit('log', { level: 'info', message: `pools:jup.price.fetch ids=${ids.length}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
     const t0 = Date.now();
     await jupiterLimiter.acquire(false);
     const res = await fetch(url.toString(), { headers: { accept: 'application/json' } });
@@ -97,6 +99,7 @@ export async function fetchPricesByMints(mints: string[], options?: { catOverrid
     if (res.status === 429) {
       const delay = 500 * Math.pow(2, attemptIndex);
       logger.info(`[${new Date().toISOString()}] jup.429 retry delay=${delay}ms`, { cat: options?.catOverride || 'jupiter' });
+      try { if (poolsFlow) emit('log', { level: 'warn', message: `pools:jup.price.429 delay=${delay}ms`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
       try { emit('log', { level: 'warn', message: `arb:429 source=jupiter kind=price ids=${ids.length}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
       await new Promise((r) => setTimeout(r, delay));
       throw new Error('429');
@@ -130,6 +133,7 @@ export async function fetchPricesByMints(mints: string[], options?: { catOverrid
     cat: options?.catOverride || 'jupiter',
     prices: pricesReceived
   });
+  try { if (poolsFlow) emit('log', { level: 'info', message: `pools:jup.price.ok mints=${mints.length}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
 
   const out: Record<string, { usdc: number | null; sol: number | null }> = {};
   for (const mint of mints) {

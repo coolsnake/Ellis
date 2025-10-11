@@ -161,6 +161,23 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
       if (got?.mint) mint_b = got.mint;
       if (!Number.isFinite(Number(decB)) && Number.isFinite(Number(got?.decimals))) decB = Number(got?.decimals);
     }
+    // Enforce authoritative decimals: prefer Jupiter list when present, then hard-override anchors
+    try {
+      const jDecA = Number(jupMap[mint_a]?.decimals);
+      const jDecB = Number(jupMap[mint_b]?.decimals);
+      if (Number.isFinite(jDecA)) decA = jDecA;
+      if (Number.isFinite(jDecB)) decB = jDecB;
+      // Anchors: SOL 9, USDC 6, USDT 6
+      if (mint_a === 'So11111111111111111111111111111111111111112') decA = 9;
+      if (mint_b === 'So11111111111111111111111111111111111111112') decB = 9;
+      if (mint_a === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') decA = 6;
+      if (mint_b === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') decB = 6;
+      if (mint_a === 'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN') decA = 6;
+      if (mint_b === 'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN') decB = 6;
+      // Clamp to reasonable integer bounds
+      decA = Math.min(12, Math.max(0, Math.round(Number(decA))));
+      decB = Math.min(12, Math.max(0, Math.round(Number(decB))));
+    } catch {}
     let fee_bps = 0;
     const feeRateRaw = (it as any)?.feeRate;
     if (typeof feeRateRaw === 'number') {

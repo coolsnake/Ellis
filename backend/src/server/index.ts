@@ -149,6 +149,9 @@ io.use((socket, next) => {
 setIo(io);
 startArbOpportunitiesBridge();
 setWalletHistorySocket(io);
+// Track client busy/idle for graph backpressure
+const busyClients = new Set<string>();
+export function isAnyClientBusy(): boolean { return busyClients.size > 0; }
 // Graph stream will be started after first socket connection or after a delay (below)
 io.on('connection', (socket) => {
   logger.info('server: socket client connected', { id: socket.id, cat: 'server' });
@@ -174,6 +177,9 @@ io.on('connection', (socket) => {
       socket.emit('graph-snapshot', snap);
     } catch {}
   });
+  // Backpressure: busy/idle signals
+  try { socket.on('graph:busy', () => { try { busyClients.add(socket.id); } catch {} }); } catch {}
+  try { socket.on('graph:idle', () => { try { busyClients.delete(socket.id); } catch {} }); } catch {}
   // Note: graph rebuilds are scheduled directly from pool update points in pools.ts (HTTP + WS)
 });
 
@@ -254,6 +260,28 @@ logger.on('log', (event: any) => {
     return;
   }
   lastLogSig = { msg, level: event?.level || 'info', ts: now };
+  // Gate heavy categories while any client is busy applying graph updates
+  try {
+    const { isAnyClientBusy } = require('./index.js');
+    const heavy = new Set(['arb','graph','opportunity','tx']);
+    (globalThis as any).__logBuf ||= { list: [] as any[], flushScheduled: false };
+    const buf = (globalThis as any).__logBuf;
+    if (typeof isAnyClientBusy === 'function' && isAnyClientBusy() && heavy.has((enriched as any).cat)) {
+      buf.list.push(enriched);
+      if (buf.list.length > 200) buf.list.splice(0, buf.list.length - 200);
+      if (!buf.flushScheduled) {
+        buf.flushScheduled = true;
+        setTimeout(() => {
+          buf.flushScheduled = false;
+          if (buf.list.length) {
+            const batch = buf.list.splice(0, buf.list.length);
+            for (const e of batch) io.emit('log', e);
+          }
+        }, 500);
+      }
+      return;
+    }
+  } catch {}
   io.emit('log', enriched);
 });
 

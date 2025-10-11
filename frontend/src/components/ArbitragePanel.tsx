@@ -70,6 +70,8 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
   const [firstLoad, setFirstLoad] = useState(true);
   const [txRows, setTxRows] = useState<Array<{ id: string; timeMs: number; path: string[]; hops: Array<{ dex: string; variant: string; poolId: string }>; ixCount: number; txSizeBytes: number; status: string; signature?: string | null }>>([]);
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const [nmSimLogs, setNmSimLogs] = useState<string[] | null>(null);
+  const [nmSimErr, setNmSimErr] = useState<string | null>(null);
   // Show-all toggle moved into OpportunityList
 
   // Deprecated polling/log-triggered refresh removed; rely on socket push with initial fallback
@@ -455,8 +457,16 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
                     try {
                       const body: any = { path: nm.path, hopPoolIds: hopIds, dexes: hopDexes };
                       if (sendMode === 'USD') body.sizeUsd = Number(sendAmount)||0; else body.size = Number(sendAmount)||0;
+                      setNmSimLogs(null); setNmSimErr(null);
                       const r = await fetch(`${apiBase}${ROUTES.arb.simulateSend}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-                      await r.json().catch(()=>({}));
+                      const j = await r.json().catch(()=>({}));
+                      if (!r.ok) {
+                        setNmSimErr(String((j && (j.error || j.err)) || 'preflight_failed'));
+                      } else {
+                        const logs = Array.isArray(j?.logs) ? (j.logs as string[]) : [];
+                        setNmSimLogs(logs.slice(-20));
+                        setNmSimErr(j?.err ? String(j.err) : null);
+                      }
                     } catch {}
                     setSending(false);
                   }}>Preflight Simulate</button>
@@ -475,6 +485,16 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
               );
             })()}
           </div>
+          {(nmSimErr || (nmSimLogs && nmSimLogs.length)) && (
+            <div className="mt-1 p-2 bg-black/30 rounded text-[11px]">
+              {nmSimErr && <div className="text-red-400">Preflight error: {nmSimErr}</div>}
+              {nmSimLogs && nmSimLogs.length > 0 && (
+                <pre className="whitespace-pre-wrap break-words opacity-80">
+                  {nmSimLogs.join('\n')}
+                </pre>
+              )}
+            </div>
+          )}
         </div>
       )}
       {items.length === 0 && summary?.near_misses && summary.near_misses.length > 0 && (

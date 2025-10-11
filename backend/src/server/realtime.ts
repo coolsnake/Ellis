@@ -185,7 +185,7 @@ export async function pushArbGraphDiff(diff: any): Promise<void> {
       arbQueue = arbQueue.filter((j) => j.kind === 'snapshot');
     } catch {}
     arbQueue.push({ kind: 'diff', payload: diff, resolve, reject });
-    try { logger.info('arb.queue enq', { kind: 'diff', size: arbQueue.length }); } catch {}
+    try { logger.debug('arb.queue enq', { kind: 'diff', size: arbQueue.length }); } catch {}
     processArbQueue().catch(() => {});
   });
 }

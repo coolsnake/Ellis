@@ -88,6 +88,38 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 	// Queue for recomputing combined edges across frames
 	const pairQueueRef = useRef<string[]>([]);
 
+	// Adaptive backpressure and dynamic degrade controls
+	const avgFrameMsRef = useRef(16);
+	const busyRef = useRef(false);
+	const combinedEnabledRef = useRef(true);
+	const skipNextFrameRef = useRef(false);
+
+	const updatePerfBudget = (startTs: number) => {
+		try {
+			const dt = performance.now() - startTs;
+			avgFrameMsRef.current = 0.85 * avgFrameMsRef.current + 0.15 * dt;
+			if (avgFrameMsRef.current > 24) {
+				// Skip every other frame when overloaded
+				skipNextFrameRef.current = !skipNextFrameRef.current;
+				// Disable combined edges first
+				if (combinedEnabledRef.current) {
+					combinedEnabledRef.current = false;
+					try { setCombineEdges(false); } catch {}
+				}
+				// Lower edge cap progressively (min 400)
+				setMaxEdges((prev) => (prev > 800 ? 800 : (prev > 600 ? 600 : (prev > 400 ? 400 : prev))));
+			} else if (avgFrameMsRef.current < 18) {
+				// Recover when we have headroom
+				if (!combinedEnabledRef.current) {
+					combinedEnabledRef.current = true;
+					try { setCombineEdges(true); } catch {}
+				}
+				setMaxEdges((prev) => (prev < 800 ? 800 : prev));
+				skipNextFrameRef.current = false;
+			}
+		} catch {}
+	};
+
 	// Track whether page/tab is visible and whether the graph container is on-screen
 	const pageVisibleRef = useRef<boolean>(true);
 	const isVisibleRef = useRef<boolean>(true);
@@ -806,7 +838,8 @@ useEffect(() => {
           sharedPrevPos = new Map();
           cy?.nodes().forEach((n: any) => { sharedPrevPos!.set(n.id(), { x: n.position('x'), y: n.position('y') }); });
         } catch {}
-        const chunkSize = 300;
+        // Adapt chunk size to current frame budget: smaller chunks under load
+        const chunkSize = avgFrameMsRef.current > 24 ? 100 : (avgFrameMsRef.current > 20 ? 150 : 300);
 				const copy: GraphDiff = {
 					...diff,
 					addedEdges: Array.isArray(diff.addedEdges) ? diff.addedEdges.slice() : [],
@@ -832,9 +865,19 @@ useEffect(() => {
     const schedule = () => {
       if (scheduled) return;
       if (!pageVisibleRef.current || !isVisibleRef.current) return;
+      if (skipNextFrameRef.current) { skipNextFrameRef.current = false; return; }
       scheduled = true;
-      // Flush once per frame instead of idle; avoids long idle gaps under load
-      requestAnimationFrame(flush);
+      busyRef.current = true;
+      try { effectiveSocket?.emit('graph:busy'); } catch {}
+      const startTs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      // Flush once per frame; manage backpressure and adaptive degrade
+      requestAnimationFrame(() => {
+        try { flush(); } finally {
+          busyRef.current = false;
+          updatePerfBudget(startTs);
+          try { effectiveSocket?.emit('graph:idle'); } catch {}
+        }
+      });
     };
 
 		const onDiff = (diff: GraphDiff) => {

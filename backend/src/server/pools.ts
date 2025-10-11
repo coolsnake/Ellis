@@ -286,6 +286,7 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
       let shouldResumeFeed = false;
       const pauseFeed = ((CONFIG.system as any)?.pausePriceFeedDuringBootstrap !== false);
       if (pauseFeed) {
+        try { emit('log', { level: 'info', message: 'pools:bootstrap api.pause', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
         try {
           const reg: any = await import('./feedRegistry.js');
           shouldResumeFeed = (reg as any).isPriceFeedEnabled?.() === true;
@@ -296,14 +297,17 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
 
       // Ensure we have the freshest Jupiter token list
       try {
+        try { emit('log', { level: 'info', message: 'pools:bootstrap tokens.start', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
         const { fetchAndCacheJupiterTokens } = await import('../utils/tokens.js');
         await fetchAndCacheJupiterTokens().catch(() => {});
+        try { emit('log', { level: 'info', message: 'pools:bootstrap tokens.ok', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
       } catch {}
 
       // Warm prices for the Jupiter universe first, with configurable depth
       try {
         const { bootstrapPricesForUniverse, bootstrapPricesForMints } = await import('./priceBootstrap.js');
         const deepMax = Math.max(3, Number((CONFIG.system as any)?.deepJupiterBootstrapMaxRequests ?? 6));
+        try { emit('log', { level: 'info', message: `pools:bootstrap universe.start maxReq=${deepMax}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
         let cov = await bootstrapPricesForUniverse({ chunkSize: 400, maxRequests: deepMax, cat: 'pools.refresh' }).catch(() => null);
         if (cov && cov.total === 0) {
           try {
@@ -311,15 +315,20 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
             const raySet = await getSourceTokenSet('raydium');
             const orcSet = await getSourceTokenSet('orca');
             const merged = new Set<string>([...raySet, ...orcSet]);
+            try { emit('log', { level: 'info', message: `pools:bootstrap fallback.mints size=${merged.size}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
             cov = await bootstrapPricesForMints(Array.from(merged), { chunkSize: 400, maxRequests: 3, cat: 'pools.refresh.fallback' });
           } catch {}
         }
-        if (cov) { try { logger.info('pools.refresh price coverage', { total: cov.total, priced: cov.priced, missing: cov.missing, cat: 'pools' }); } catch {} }
+        if (cov) {
+          try { logger.info('pools.refresh price coverage', { total: cov.total, priced: cov.priced, missing: cov.missing, cat: 'pools' }); } catch {}
+          try { emit('log', { level: 'info', message: `pools:bootstrap universe.done total=${cov.total} priced=${cov.priced} missing=${cov.missing}` as any, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
+        }
       } catch {}
 
       // Resume Jupiter API before source fetches so downstream calls are allowed
       if (pauseFeed) {
         try { (await import('../jupiter/rateLimiter.js')).apiStart(); } catch {}
+        try { emit('log', { level: 'info', message: 'pools:bootstrap api.resume', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
         // Stash the intent to resume the feed at the end of refresh
         (refreshAllSources as any).__resumeFeed = shouldResumeFeed;
       }
@@ -355,6 +364,7 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
             try { logger.info('pools.refresh price coverage post', { total: covPost1.total, priced: covPost1.priced, missing: covPost1.missing, cat: 'pools' }); } catch {}
             const covPost2 = await bootstrapPricesForMints(Array.from(mintSet), { chunkSize: 80, maxRequests: 6, cat: 'pools.refresh.post' });
             try { logger.info('pools.refresh price coverage post', { total: covPost2.total, priced: covPost2.priced, missing: covPost2.missing, cat: 'pools' }); } catch {}
+            try { emit('log', { level: 'info', message: `pools:bootstrap post.coverage total=${covPost2.total} priced=${covPost2.priced} missing=${covPost2.missing}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
             // Rebuild graph with prices now available
             try {
               const gmod: any = await import('./graph.js');
@@ -369,8 +379,10 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
           const jupSet = await getJupiterTokenSet();
           const outside = Array.from(mintSet).filter((m) => !jupSet.has(m));
           if (outside.length > 0) {
+            try { emit('log', { level: 'info', message: `pools:bootstrap outside.start size=${outside.length}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
             const { bootstrapPricesForMints } = await import('./priceBootstrap.js');
             await bootstrapPricesForMints(outside, { chunkSize: 80, maxRequests: 4, cat: 'pools.refresh.outsideJup' });
+            try { emit('log', { level: 'info', message: `pools:bootstrap outside.done size=${outside.length}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
           }
         } catch {}
       }
@@ -460,6 +472,7 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
       const wl = await readJson<any[]>(CONFIG.watchlistPath, []);
       const shouldEnable = wantResume || (Array.isArray(wl) && wl.length > 0);
       (reg as any).enablePriceFeed?.(shouldEnable);
+      try { emit('log', { level: 'info', message: `pools:bootstrap feed.resume enabled=${shouldEnable}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
     }
   } catch {}
   if (subscribe) {

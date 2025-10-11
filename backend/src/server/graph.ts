@@ -984,12 +984,25 @@ export function startGraphStream(io: SocketIOServer): void {
   // Emit initial snapshot periodically and diffs when changed
   let last: GraphSnapshot | null = null;
   const period = Math.max(1000, Number((CONFIG.system as any)?.graphStreamIntervalMs || 5000));
+  // Backpressure state: buffer one pending update (prefer snapshot)
+  let pending: { kind: 'snapshot' | 'diff'; payload: any } | null = null;
+  const tryEmit = (kind: 'snapshot' | 'diff', payload: any) => {
+    try {
+      const { isAnyClientBusy } = require('./index.js');
+      if (typeof isAnyClientBusy === 'function' && isAnyClientBusy()) {
+        if (pending?.kind === 'snapshot' || kind === 'snapshot') pending = { kind: 'snapshot', payload };
+        else pending = { kind: 'diff', payload };
+        return;
+      }
+    } catch {}
+    try { if (kind === 'snapshot') io.emit('graph-snapshot', payload); else io.emit('graph-update', payload); } catch {}
+  };
   const tick = async () => {
     try {
       // Do not auto-refresh pool sources here; rely on explicit /arb/pools/refresh
       const snap = await getGraphSnapshot(true);
       if (!last) {
-        io.emit('graph-snapshot', toLiteSnapshot(snap));
+        tryEmit('snapshot', toLiteSnapshot(snap));
         // Push initial snapshot to arb-rs to enter backend-graph mode immediately
         try { await pushArbGraphSnapshot(snap); } catch {}
         try { await notifyArbServiceRefresh(); } catch {}
@@ -1002,7 +1015,33 @@ export function startGraphStream(io: SocketIOServer): void {
       const diff = diffSnapshots(last, snap);
       const changed = diff.addedNodes.length || diff.updatedNodes.length || diff.removedNodeIds.length || diff.addedEdges.length || diff.updatedEdges.length || diff.removedEdgeIds.length;
       if (changed) {
-        io.emit('graph-update', toLiteDiff(diff));
+        // Optionally filter insignificant updatedEdges to reduce churn
+        try {
+          const prevIndex = new Map<string, any>();
+          try { last.edges.forEach((e) => prevIndex.set(String((e as any).id), e)); } catch {}
+          const pct = (a: number, b: number) => Math.abs(a - b) / Math.max(1, Math.abs(b));
+          const small = (x: number) => !Number.isFinite(x) || x < 1e-12;
+          const filt = (prev: any, next: any) => {
+            const liqPrev = Number(prev?.liquidity_display ?? prev?.liquidity ?? 0);
+            const liqNext = Number(next?.liquidity_display ?? next?.liquidity ?? 0);
+            const pricePrev = Number(prev?.price_a_per_b ?? 0);
+            const priceNext = Number(next?.price_a_per_b ?? 0);
+            const wPrev = Number(prev?.weight ?? 0);
+            const wNext = Number(next?.weight ?? 0);
+            const liqOk = (small(liqPrev) && small(liqNext)) || pct(liqNext, liqPrev) < 0.01; // <1%
+            const priceOk = (small(pricePrev) && small(priceNext)) || pct(priceNext, pricePrev) < 0.002; // <0.2%
+            const wOk = (small(wPrev) && small(wNext)) || pct(wNext, wPrev) < 0.01; // <1%
+            return !(liqOk && priceOk && wOk);
+          };
+          if (Array.isArray((diff as any).updatedEdges)) {
+            (diff as any).updatedEdges = (diff as any).updatedEdges.filter((e: any) => {
+              const id = String(e?.id || ''); if (!id) return true;
+              const prev = prevIndex.get(id); if (!prev) return true;
+              return filt(prev, e);
+            });
+          }
+        } catch {}
+        tryEmit('diff', toLiteDiff(diff));
         // Push diff to arb-rs; occasionally rebase with full snapshot per rebase policy
         try {
           const nowMs = Date.now();
@@ -1031,6 +1070,18 @@ export function startGraphStream(io: SocketIOServer): void {
   };
   setInterval(tick, period);
   // Initial tick is delayed/controlled by index.ts (post-listen) via GRAPH_START_DELAY_MS or first socket connection
+  // Flush any pending coalesced update when a client reports idle
+  // Note: listener attached from index.ts per-socket; here we provide a helper
+  try { (io as any).on?.('connection', (socket: any) => {
+    try { socket.on('graph:idle', () => {
+      try {
+        if (pending) {
+          const p = pending; pending = null;
+          if (p.kind === 'snapshot') io.emit('graph-snapshot', p.payload); else io.emit('graph-update', p.payload);
+        }
+      } catch {}
+    }); } catch {}
+  }); } catch {}
 }
 
 export async function findPath(fromMint: string, toMint: string): Promise<{ path: string[] }> {

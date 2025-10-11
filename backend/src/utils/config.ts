@@ -203,7 +203,13 @@ export const CONFIG = {
       // Sampling probability per code (0..1)
       sample: {} as Record<string, number>,
       // Simple per-code rate limits
-      rateLimit: {} as Record<string, { perSec?: number; minIntervalMs?: number }>,
+      rateLimit: {
+        // Reduce noisy UI log traffic under load (optional/env tunable)
+        'GRAPH.PUSH_DIFF': { perSec: 2 },
+        'GRAPH.PUSH_SNAPSHOT': { perSec: 1 },
+        'PRETRADE.SIM.START': { perSec: 1 },
+        'PRETRADE.SIM.END': { perSec: 1 },
+      } as Record<string, { perSec?: number; minIntervalMs?: number }>,
       // Named presets the UI can apply (optional)
       presets: {
         dev: {
@@ -267,8 +273,8 @@ export const CONFIG = {
     sanity_applyOrcaClmm: (process.env.SANITY_APPLY_ORCA_CLMM || 'true') !== 'false',
     writeSamples: process.env.SANITY_WRITE_SAMPLES === 'true',
     sampleRate: Number(process.env.SANITY_SAMPLE_RATE || 0.005),
-    // Drop edges when neither side has a USD quote (non-anchor). Default true
-    dropEdgesNoUsdBoth: (process.env.SANITY_DROP_EDGES_NO_USD_BOTH || 'true') !== 'false',
+    // Drop edges when neither side has a USD quote (non-anchor). Default false
+    dropEdgesNoUsdBoth: (process.env.SANITY_DROP_EDGES_NO_USD_BOTH || 'false') !== 'false',
   },
   // Raydium configuration (HTTP fetcher only; SDK kept for tx building and WS decode)
   raydium: {
