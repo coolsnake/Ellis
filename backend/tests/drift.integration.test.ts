@@ -4,9 +4,10 @@ import { describe, it, expect } from 'vitest';
 // To run against a live backend, start the server and set API_BASE
 // e.g. API_BASE=http://localhost:3001/api vitest run backend/tests/drift.integration.test.ts
 
-const API_BASE = (process.env.API_BASE as string) || 'http://localhost:3001/api';
+const API_BASE = process.env.API_BASE as string | undefined;
+const describeLive = API_BASE ? describe : describe.skip;
 
-describe('Drift leveraged grid integration (devnet scaffolding)', () => {
+describeLive('Drift leveraged grid integration (devnet scaffolding)', () => {
   it('should fetch Drift status', async () => {
     const res = await fetch(`${API_BASE}/drift/status`);
     expect(res.ok).toBe(true);
@@ -56,7 +57,7 @@ describe('Drift leveraged grid integration (devnet scaffolding)', () => {
   });
 });
 
-describe('Drift liquidator integration (devnet scaffolding)', () => {
+describeLive('Drift liquidator integration (devnet scaffolding)', () => {
   it('should start and stop liquidator', async () => {
     const start = await fetch(`${API_BASE}/strategies/liquidator/start`, {
       method: 'POST',

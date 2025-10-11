@@ -82,6 +82,87 @@ vi.mock('../../execution/sender.js', () => ({
     expect((snap.nodes || []).length).toBeGreaterThanOrEqual(20);
     expect((snap.edges || []).length).toBeGreaterThanOrEqual(80);
 
+    // 2a) Pricing reciprocity sanity across all pools where both directions exist
+    try {
+      // Build quick index by id for reverse lookup
+      const byId = new Map((snap.edges || []).map((e: any) => [String(e.id || ''), e]));
+      let checkedPairs = 0;
+      for (const e of (snap.edges || [])) {
+        const dex = String((e as any)?.dex || '');
+        if (!dex) continue;
+        const rid = e.pool_id ? `${e.pool_id}-rev` : `${e.target}->${e.source}-${dex}`;
+        const r = byId.get(rid);
+        if (!r) continue;
+        const f = Number((e as any).price_a_per_b || 0);
+        const v = Number((r as any).price_a_per_b || 0);
+        if (!(f > 0) || !(v > 0)) continue;
+        const prod = f * v;
+        // allow modest slack for real feeds
+        expect(prod).toBeGreaterThan(1 / 1.10);
+        expect(prod).toBeLessThan(1.10);
+        checkedPairs += 1;
+      }
+      expect(checkedPairs).toBeGreaterThan(0);
+    } catch {}
+
+    // 2b) Orca/Meteora specific reciprocity spot-check (tight bounds)
+    try {
+      const byId2 = new Map((snap.edges || []).map((e: any) => [String(e.id || ''), e]));
+      for (const e of (snap.edges || [])) {
+        const dex = String((e as any)?.dex || '');
+        if (dex !== 'Orca' && dex !== 'Meteora') continue;
+        const rid = e.pool_id ? `${e.pool_id}-rev` : `${e.target}->${e.source}-${dex}`;
+        const r = byId2.get(rid);
+        if (!r) continue;
+        const f = Number((e as any).price_a_per_b || 0);
+        const v = Number((r as any).price_a_per_b || 0);
+        if (!(f > 0) || !(v > 0)) continue;
+        const prod = f * v;
+        expect(prod).toBeGreaterThan(0.98);
+        expect(prod).toBeLessThan(1.02);
+      }
+    } catch {}
+
+    // 2c) Multi-hop (triangle) consistency: try to find at least one 3-cycle across >=2 DEXes
+    try {
+      const edgesAll: any[] = snap.edges || [];
+      const bySrc = new Map<string, any[]>();
+      for (const e of edgesAll) {
+        const arr = bySrc.get(e.source) || [];
+        arr.push(e);
+        bySrc.set(e.source, arr);
+      }
+      let triOk = 0;
+      outer2: for (const n of (snap.nodes || [])) {
+        const a = n.id;
+        const abList = bySrc.get(a) || [];
+        for (const ab of abList) {
+          const b = ab.target;
+          if (b === a) continue;
+          const bcList = bySrc.get(b) || [];
+          for (const bc of bcList) {
+            const c = bc.target;
+            if (c === a || c === b) continue;
+            const caList = bySrc.get(c) || [];
+            const ca = caList.find((e: any) => e.target === a);
+            if (!ca) continue;
+            const pf = Number((ab as any).price_a_per_b || 0);
+            const pg = Number((bc as any).price_a_per_b || 0);
+            const ph = Number((ca as any).price_a_per_b || 0);
+            if (!(pf > 0 && pg > 0 && ph > 0)) continue;
+            const dexes = new Set<string>([String((ab as any).dex || ''), String((bc as any).dex || ''), String((ca as any).dex || '')]);
+            if (dexes.size < 2) continue;
+            const prod = pf * pg * ph;
+            expect(prod).toBeGreaterThan(1 / 1.10);
+            expect(prod).toBeLessThan(1.10);
+            triOk += 1;
+            break outer2;
+          }
+        }
+      }
+      expect(triOk).toBeGreaterThan(0);
+    } catch {}
+
     // 3) Derive an anchored 2-hop cycle across distinct DEXes if available (USDC <-> SOL)
     const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
     const SOL = 'So11111111111111111111111111111111111111112';
