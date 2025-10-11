@@ -135,8 +135,8 @@ describe('refreshAllSources deep bootstrap gating', () => {
     vi.doMock('../pools/meteora.js', () => ({ fetchMeteoraHttp: vi.fn(async () => ({})), normalizeMeteoraHttp: vi.fn(async () => ({ amm: [], clmm: [] })) }));
     const mod: any = await import('../pools.js');
     await mod.refreshAllSources(true, false);
-    vi.restoreAllMocks();
     expect(enableSpy).toHaveBeenCalledWith(true);
+    vi.restoreAllMocks();
   }, 20000);
 });
 

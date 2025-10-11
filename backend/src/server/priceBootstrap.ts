@@ -24,6 +24,9 @@ export async function bootstrapPricesForUniverse(opts: BootstrapOpts = {}): Prom
   const mints = Array.from(uni);
   if (mints.length === 0) {
     logger.warn('price.bootstrap empty universe');
+    // Still emit structured start/done logs for UI observability when universe is empty
+    try { emit('log', { level: 'info', message: `pools:bootstrap.mints start total=0 chunk=${chunkSize} max=${maxRequests} cat=${cat}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
+    try { emit('log', { level: 'info', message: `pools:bootstrap.mints done total=0 priced=0 missing=0 cat=${cat}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
     return { total: 0, priced: 0, missing: 0 };
   }
   logger.info('price.bootstrap start', { cat, totalMints: mints.length, chunkSize, maxRequests });
