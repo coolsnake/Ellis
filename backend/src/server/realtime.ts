@@ -2,6 +2,7 @@ import type { Server as SocketIOServer } from 'socket.io';
 import { recordSessionLog } from '../utils/sessionLogs.js';
 import { logger } from '../utils/logger.js';
 import { WebSocket } from 'ws';
+import { CONFIG } from '../utils/config.js';
 
 let ioRef: SocketIOServer | null = null;
 
@@ -147,6 +148,18 @@ async function processArbQueue(): Promise<void> {
         if (acked) pushSuccess += 1; else pushFailed += 1;
         logger.info('arb.push ack', { kind: job.kind, acked, waited_ms: Date.now() - start, wantVersion, queue_depth: arbQueue.length, push_success: pushSuccess, push_failed: pushFailed });
       } catch {}
+
+      // Wait for a fresh detection to complete after applying this graph update (bounded wait)
+      try {
+        if (String(((globalThis as any)?.process?.env?.NODE_ENV) || '').toLowerCase() !== 'test') {
+          const detectDeadline = Date.now() + 8000;
+          while (Date.now() < detectDeadline) {
+            const cur = await fetchArbMetrics();
+            if (cur.last_detection_ms > before.last_detection_ms) break;
+            await new Promise((r) => setTimeout(r, 100));
+          }
+        }
+      } catch {}
       job.resolve();
       // If a snapshot was pushed, it supersedes any pending diffs built from older state; drop consecutive diffs until next rebuild
       if (job.kind === 'snapshot' && arbQueue.length) {
@@ -207,6 +220,30 @@ let arbVersionCache: { version: number; timestamp: number; ts: number } = { vers
 export function getCachedArbVersion(): { version: number; timestamp: number; ageMs: number } {
   const age = Math.max(0, Date.now() - (arbVersionCache.ts || 0));
   return { version: arbVersionCache.version || 0, timestamp: arbVersionCache.timestamp || 0, ageMs: age };
+}
+
+// Detect-driven trigger: rebuild graph right after each detection finishes
+let lastDetectSeen = 0;
+export function startDetectDrivenGraphPush(debounceMs = 0): void {
+  try {
+    // Avoid duplicate timers
+    let timer: NodeJS.Timeout | null = null;
+    const period = Math.max(100, Number((CONFIG as any)?.system?.graphRebuildMinDebounceMs || 100));
+    const tick = async () => {
+      try {
+        const m = await fetchArbMetrics();
+        if (Number(m.last_detection_ms || 0) > Number(lastDetectSeen || 0)) {
+          lastDetectSeen = Number(m.last_detection_ms || 0);
+          try { logger.info('graph.rebuild.detect_driven', { last_detection_ms: lastDetectSeen, code: 'GRAPH.REBUILD.DETECT_DRIVEN' }); } catch {}
+          try {
+            const gmod: any = await import('./graph.js');
+            gmod.scheduleGraphRebuild(undefined, Math.max(0, debounceMs));
+          } catch {}
+        }
+      } catch {}
+    };
+    timer = setInterval(tick, period);
+  } catch {}
 }
 (async function pollArbVersionLoop(){
   try {
