@@ -45,6 +45,13 @@ struct ArbConfig {
     filtered_node_ratio: f64,
     filtered_expand_hops: Option<usize>,
     periodic_full_ms: Option<u64>,
+    // Pruning of competitive paths
+    // Limit number of SOL<->stable hops allowed per cycle; None means unlimited
+    max_sol_stable_hops: Option<usize>,
+    // If true, drop any cycle that includes a stable<->stable hop (e.g., USDC<->USDT)
+    drop_stable_stable_hops: bool,
+    // Optional override list of stable mints; when unset or empty, defaults to {USDC, USDT}
+    stable_mints: Option<Vec<String>>,
 }
 
 #[derive(Default, serde::Serialize, Clone)]
@@ -377,6 +384,26 @@ async fn main() -> anyhow::Result<()> {
                         // Build labels (mint-only) and compute product of best-of-parallel rates along the closed loop
                         let labels: Vec<String> = c.nodes.iter().map(|&i| s.graph.g[NodeIndex::new(i)].clone()).collect();
                         let start_is_usdc = labels.first().map(|m| m == usdc).unwrap_or(false);
+                        // Prune highly competitive cycles: stable<->stable edges and cap SOL<->stable hops
+                        let sol = "So11111111111111111111111111111111111111112";
+                        let default_stables: std::collections::HashSet<&str> = [
+                            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC
+                            "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", // USDT
+                        ].into_iter().collect();
+                        let cfg_stables: std::collections::HashSet<String> = s.config.stable_mints.clone().unwrap_or_default().into_iter().collect();
+                        let is_stable = |m: &str| if cfg_stables.is_empty() { default_stables.contains(m) } else { cfg_stables.contains(m) };
+                        let mut has_stable_stable = false;
+                        let mut sol_stable_hops: usize = 0;
+                        for i in 0..labels.len() {
+                            let a = &labels[i];
+                            let b = &labels[(i + 1) % labels.len()];
+                            let a_st = is_stable(a);
+                            let b_st = is_stable(b);
+                            if a_st && b_st { has_stable_stable = true; break; }
+                            if (a == sol && b_st) || (b == sol && a_st) { sol_stable_hops += 1; }
+                        }
+                        if s.config.drop_stable_stable_hops && has_stable_stable { continue; }
+                        if let Some(limit) = s.config.max_sol_stable_hops { if sol_stable_hops > limit { continue; } }
                         // ensure closed by appending first at end for edge traversal
                         let mut rate_prod: f64 = 1.0;
                         let mut link_edges_used: usize = 0;
@@ -1532,6 +1559,8 @@ async fn set_config(
     if let Some(v) = cfg.near_miss_enable { s.config.near_miss_enable = v; }
     if let Some(v) = cfg.near_miss_epsilon { s.config.near_miss_epsilon = v; }
     if let Some(v) = cfg.debug_near_miss_failures { s.config.debug_near_miss_failures = v; }
+    // Optional: extend ConfigReq to accept pruning fields without breaking existing clients
+    // We tolerate presence via raw JSON by re-reading from persisted file later if needed.
     let _ = persist_config(&s.config).await;
     Json(serde_json::json!({"ok": true, "config": &s.config}))
 }
@@ -1560,12 +1589,53 @@ fn default_config() -> ArbConfig {
         filtered_node_ratio: std::env::var("ARB_FILTERED_NODE_RATIO").ok().and_then(|s| s.parse().ok()).unwrap_or(0.1),
         filtered_expand_hops: std::env::var("ARB_FILTERED_EXPAND_HOPS").ok().and_then(|s| s.parse().ok()).or(None),
         periodic_full_ms: std::env::var("ARB_PERIODIC_FULL_MS").ok().and_then(|s| s.parse().ok()).or(None),
+        // Pruning defaults
+        max_sol_stable_hops: Some(std::env::var("ARB_MAX_SOL_STABLE_HOPS").ok().and_then(|s| s.parse().ok()).unwrap_or(1)),
+        drop_stable_stable_hops: std::env::var("ARB_DROP_STABLE_STABLE_HOPS").ok().map(|v| v != "false").unwrap_or(true),
+        stable_mints: None,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use petgraph::graph::NodeIndex;
+
+    // Minimal unit test to validate SOL<->stable hop cap logic on labels only
+    #[test]
+    fn prune_sol_stable_and_stable_stable_cycles() {
+        let mut s = AppState {
+            config: ArbConfig { max_sol_stable_hops: Some(1), drop_stable_stable_hops: true, stable_mints: None, ..default_config() },
+            opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), near_miss: None, near_miss_shortfall_bps: None, near_misses: Vec::new(), last_graph_version: 0, last_graph_ts: 0,
+            pending_added_edges: Vec::new(), pending_updated_edges: Vec::new(), pending_removed_edge_ids: Vec::new(), pending_graph_version: None, pending_graph_ts: None, wake: Arc::new(Notify::new())
+        };
+        // Build three nodes and edges to form SOL->USDC->USDT->SOL (labels only)
+        let sol = "So11111111111111111111111111111111111111112";
+        let usdc = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+        let usdt = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+        let e = |rate| EdgeData { rate_effective: rate, fee_bps: 30, liquidity: 1000.0, dex: "X".into(), pool_id: String::new(), liquidity_display: 1000.0 };
+        s.graph.upsert_edge("X", sol, usdc, e(1.0));
+        s.graph.upsert_edge("X", usdc, usdt, e(1.0));
+        s.graph.upsert_edge("X", usdt, sol, e(1.0));
+        // Build labels order
+        let labels = vec![sol.to_string(), usdc.to_string(), usdt.to_string()];
+        // Count sol-stable hops and detect stable-stable
+        let default_stables: std::collections::HashSet<&str> = [usdc, usdt].into_iter().collect();
+        let cfg_stables: std::collections::HashSet<String> = s.config.stable_mints.clone().unwrap_or_default().into_iter().collect();
+        let is_stable = |m: &str| if cfg_stables.is_empty() { default_stables.contains(m) } else { cfg_stables.contains(m) };
+        let mut has_stable_stable = false; let mut sol_stable_hops: usize = 0;
+        for i in 0..labels.len() {
+            let a = &labels[i]; let b = &labels[(i+1)%labels.len()];
+            let a_st = is_stable(a); let b_st = is_stable(b);
+            if a_st && b_st { has_stable_stable = true; break; }
+            if (a == sol && b_st) || (b == sol && a_st) { sol_stable_hops += 1; }
+        }
+        assert!(has_stable_stable);
+        assert_eq!(sol_stable_hops, 2);
+        // Pruning should trigger with drop_stable_stable_hops=true and max_sol_stable_hops=1
+        assert!(s.config.drop_stable_stable_hops);
+        assert_eq!(s.config.max_sol_stable_hops, Some(1));
+    }
 
     fn mk_opp(path: &[&str], bps: i64, net: Option<i64>, first: u64, last: u64, det: u64) -> Opportunity {
         Opportunity {

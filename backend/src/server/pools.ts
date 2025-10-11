@@ -281,20 +281,48 @@ export async function retargetPoolWebsockets(): Promise<{ attached: { orca: numb
 // Unified refresh orchestrator: fetch all sources and optionally (re)subscribe
 export async function refreshAllSources(force = true, subscribe = true): Promise<{ raydium: PoolsPayload; orca: PoolsPayload; meteora: PoolsPayload; meteora_balanced: PoolsPayload }> {
   try {
-    // Warm baseline USD prices for currently seen source mint sets when universe is unavailable
+    // Deep bootstrap phase: optionally pause feed/API, fetch Jup tokens, then hydrate prices
     if (force) {
-      const { bootstrapPricesForUniverse, bootstrapPricesForMints } = await import('./priceBootstrap.js');
-      let cov = await bootstrapPricesForUniverse({ chunkSize: 400, maxRequests: 3, cat: 'pools.refresh' }).catch(() => null);
-      if (cov && cov.total === 0) {
+      let shouldResumeFeed = false;
+      const pauseFeed = ((CONFIG.system as any)?.pausePriceFeedDuringBootstrap !== false);
+      if (pauseFeed) {
         try {
-          const { getSourceTokenSet } = await import('./universe.js');
-          const raySet = await getSourceTokenSet('raydium');
-          const orcSet = await getSourceTokenSet('orca');
-          const merged = new Set<string>([...raySet, ...orcSet]);
-          cov = await bootstrapPricesForMints(Array.from(merged), { chunkSize: 400, maxRequests: 3, cat: 'pools.refresh.fallback' });
+          const reg: any = await import('./feedRegistry.js');
+          shouldResumeFeed = (reg as any).isPriceFeedEnabled?.() === true;
+          (reg as any).enablePriceFeed?.(false);
         } catch {}
+        try { (await import('../jupiter/rateLimiter.js')).apiStop(); } catch {}
       }
-      if (cov) { try { logger.info('pools.refresh price coverage', { total: cov.total, priced: cov.priced, missing: cov.missing, cat: 'pools' }); } catch {} }
+
+      // Ensure we have the freshest Jupiter token list
+      try {
+        const { fetchAndCacheJupiterTokens } = await import('../utils/tokens.js');
+        await fetchAndCacheJupiterTokens().catch(() => {});
+      } catch {}
+
+      // Warm prices for the Jupiter universe first, with configurable depth
+      try {
+        const { bootstrapPricesForUniverse, bootstrapPricesForMints } = await import('./priceBootstrap.js');
+        const deepMax = Math.max(3, Number((CONFIG.system as any)?.deepJupiterBootstrapMaxRequests ?? 6));
+        let cov = await bootstrapPricesForUniverse({ chunkSize: 400, maxRequests: deepMax, cat: 'pools.refresh' }).catch(() => null);
+        if (cov && cov.total === 0) {
+          try {
+            const { getSourceTokenSet } = await import('./universe.js');
+            const raySet = await getSourceTokenSet('raydium');
+            const orcSet = await getSourceTokenSet('orca');
+            const merged = new Set<string>([...raySet, ...orcSet]);
+            cov = await bootstrapPricesForMints(Array.from(merged), { chunkSize: 400, maxRequests: 3, cat: 'pools.refresh.fallback' });
+          } catch {}
+        }
+        if (cov) { try { logger.info('pools.refresh price coverage', { total: cov.total, priced: cov.priced, missing: cov.missing, cat: 'pools' }); } catch {} }
+      } catch {}
+
+      // Resume Jupiter API before source fetches so downstream calls are allowed
+      if (pauseFeed) {
+        try { (await import('../jupiter/rateLimiter.js')).apiStart(); } catch {}
+        // Stash the intent to resume the feed at the end of refresh
+        (refreshAllSources as any).__resumeFeed = shouldResumeFeed;
+      }
     }
   } catch {}
   const r = await getRaydiumPoolsNormalized(!!force).catch(() => ({ amm: [], clmm: [] }));
@@ -334,6 +362,17 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
             } catch {}
           } catch {}
         }
+
+        // Secondary pass: price any fetched mints outside the Jupiter token list
+        try {
+          const { getJupiterTokenSet } = await import('./universe.js');
+          const jupSet = await getJupiterTokenSet();
+          const outside = Array.from(mintSet).filter((m) => !jupSet.has(m));
+          if (outside.length > 0) {
+            const { bootstrapPricesForMints } = await import('./priceBootstrap.js');
+            await bootstrapPricesForMints(outside, { chunkSize: 80, maxRequests: 4, cat: 'pools.refresh.outsideJup' });
+          }
+        } catch {}
       }
     }
   } catch {}
@@ -411,6 +450,18 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
     try { logger.warn('pools.pair_sol_usdc.failed', { error: String(e?.message || e), cat: 'pools' }); } catch {}
     try { emit('log', { level: 'warn', message: `pools:pair_sol_usdc.failed error=${String(e?.message || e)}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
   }
+  // Resume watchlist price feed if we paused it earlier
+  try {
+    if (force && ((CONFIG.system as any)?.pausePriceFeedDuringBootstrap !== false)) {
+      const wantResume = (refreshAllSources as any).__resumeFeed === true;
+      delete (refreshAllSources as any).__resumeFeed;
+      const reg: any = await import('./feedRegistry.js');
+      const { readJson } = await import('../utils/fs.js');
+      const wl = await readJson<any[]>(CONFIG.watchlistPath, []);
+      const shouldEnable = wantResume || (Array.isArray(wl) && wl.length > 0);
+      (reg as any).enablePriceFeed?.(shouldEnable);
+    }
+  } catch {}
   if (subscribe) {
     try {
       enablePoolWebsocketRefreshes();

@@ -121,6 +121,14 @@ export const CONFIG = {
     minClmmLiquidity: process.env.MIN_CLMM_LIQUIDITY ? Number(process.env.MIN_CLMM_LIQUIDITY) : 0,
     // Minimum number of distinct DEXes a token pair must appear on to include (1..3)
     minDexOverlap: Number(process.env.MIN_DEX_OVERLAP || 2),
+    // Stable pruning controls
+    // Comma-separated list of stablecoin mints; defaults to USDC, USDT
+    stableMints: (process.env.STABLE_MINTS || 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean),
+    // If true, drop stable<->stable edges at graph build time
+    dropStableStableEdges: (process.env.DROP_STABLE_STABLE_EDGES || 'true') === 'true',
     // Optional: anchors always included in universe and bridging exceptions
     anchorMints: (process.env.ANCHOR_MINTS || 'So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')
       .split(',')
@@ -217,6 +225,10 @@ export const CONFIG = {
     frontendEnabledLogCategories: undefined as undefined | string[],
     // DEPRECATED: pool refresh loops are coordinated via /arb/pools/refresh (kept for compatibility)
     autoStartPools: (process.env.AUTO_START_POOLS || 'false') === 'true',
+    // Pause watchlist price feed and Jupiter API during deep price bootstrap
+    pausePriceFeedDuringBootstrap: (process.env.PAUSE_FEED_DURING_BOOTSTRAP || 'true') !== 'false',
+    // Max requests for deep Jupiter price bootstrap
+    deepJupiterBootstrapMaxRequests: Number(process.env.DEEP_JUPITER_BOOTSTRAP_MAX_REQUESTS || 6),
     // Token mint blocklist: comma-separated list of mint addresses to exclude from pools
     tokenBlocklistMints: (process.env.TOKEN_BLOCKLIST_MINTS || '')
       .split(',')

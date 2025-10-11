@@ -159,3 +159,34 @@ Example:
     "maxLevelSpacing": 0.02,
     "slidingCenter": true,
 ```
+
+## Arb engine pruning (arb-rs/arb-config.json)
+
+Keys:
+- max_sol_stable_hops: Maximum allowed SOL↔stable hops per cycle (None for unlimited).
+- drop_stable_stable_hops: If true, drop any cycle containing a stable↔stable hop.
+- stable_mints: Optional override of stablecoin mints used for pruning.
+
+Defaults:
+```json
+{
+  "max_sol_stable_hops": 1,
+  "drop_stable_stable_hops": true,
+  "stable_mints": [
+    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+  ]
+}
+```
+
+## Backend graph pruning (env via backend/src/utils/config.ts)
+
+Environment variables and defaults:
+
+- STABLE_MINTS
+  - Description: Comma-separated list of stablecoin mints used for pruning.
+  - Default: `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB`
+
+- DROP_STABLE_STABLE_EDGES
+  - Description: Drop stable↔stable edges at graph build time.
+  - Default: `true`

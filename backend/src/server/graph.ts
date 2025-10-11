@@ -307,6 +307,16 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         // Require a valid positive price; skip edge entirely if not present
         const priceNum = Number(price_a_per_b);
         if (!Number.isFinite(priceNum) || priceNum <= 0) return;
+        // Optional pruning: drop stable<->stable edges entirely
+        try {
+          const dropSS = (CONFIG.system as any)?.dropStableStableEdges;
+          if (dropSS) {
+            const stables = new Set<string>(((CONFIG.system as any)?.stableMints || []) as string[]);
+            const aStable = stables.has(mintA);
+            const bStable = stables.has(mintB);
+            if (aStable && bStable) return;
+          }
+        } catch {}
         // Sanity: for non-anchor pairs, require both sides to have USD reference; otherwise drop
         try {
           const dropNoUsdBoth = ((CONFIG as any)?.sanity as any)?.dropEdgesNoUsdBoth;

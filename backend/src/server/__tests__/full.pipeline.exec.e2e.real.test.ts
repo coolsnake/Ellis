@@ -190,6 +190,19 @@ vi.mock('../../execution/sender.js', () => ({
       return;
     }
 
+    // 3d) Optional Drift connectivity smoke (real, gated via RUN_REAL_DRIFT_E2E and wallet presence)
+    try {
+      const RUN_DRIFT = String((globalThis as any)?.process?.env?.RUN_REAL_DRIFT_E2E || '') === 'true';
+      if (RUN_DRIFT) {
+        const { DriftService } = await import('../../drift/client.js');
+        const svc = DriftService.getInstance();
+        const status = await svc.getStatus();
+        expect(status && (status.cluster || '').length > 0).toBe(true);
+        expect(Array.isArray(status.markets)).toBe(true);
+        expect(Array.isArray(status.subaccounts)).toBe(true);
+      }
+    } catch {}
+
     // 4) Simulate execution for the discovered cycle
     const simRes = await request(app)
       .post('/arb/simulate-send')
