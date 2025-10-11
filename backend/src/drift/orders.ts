@@ -117,6 +117,10 @@ export class DriftOrderEngine {
     maxOpenOrders?: number
   ): Promise<void> {
     try {
+      const refreshStart = Date.now();
+      const plannedLevels = Array.isArray(ladder) ? ladder.length : 0;
+      const dbg = { marketIndex, plannedLevels, anchor, stepPct, maxOpenOrders, makerOnly };
+      try { (await import('../utils/logger.js')).logger.debug('drift.order.refresh.start', { ...dbg, cat: 'drift' }); } catch {}
       const now = Date.now();
       const lastAnchor = this.lastAnchorByMarket.get(marketIndex) || 0;
       const lastAt = this.lastActionAtByMarket.get(marketIndex) || 0;
@@ -136,6 +140,7 @@ export class DriftOrderEngine {
       const tolerance = Math.max(0.25 * stepPct, 0.0025);
       const toKeepFlags = new Array(desired.length).fill(false);
       const toCancel: Array<{ id?: any; marketIndex: number }> = [];
+      try { (await import('../utils/logger.js')).logger.debug('drift.order.existing', { marketIndex, existing: existing.length, tolerance, cat: 'drift' }); } catch {}
 
       // Match existing to desired by closest price on same side
       for (const ex of existing) {
@@ -160,6 +165,15 @@ export class DriftOrderEngine {
       for (let i = 0; i < desired.length; i += 1) {
         if (!toKeepFlags[i]) toPlace.push(desired[i]);
       }
+      try {
+        (await import('../utils/logger.js')).logger.debug('drift.order.delta', {
+          marketIndex,
+          cancelCount: toCancel.length,
+          placeCount: toPlace.length,
+          keepCount: desired.length - toPlace.length,
+          cat: 'drift'
+        });
+      } catch {}
 
       // Dynamic pacing: cap operations per tick
       const maxOps = Math.max(2, Math.min(30, Number((CONFIG as any)?.drift?.gridMaxOpsPerTick || 10)));
@@ -176,6 +190,7 @@ export class DriftOrderEngine {
 
       this.lastAnchorByMarket.set(marketIndex, anchor);
       this.lastActionAtByMarket.set(marketIndex, now);
+      try { (await import('../utils/logger.js')).logger.info('drift.order.refresh.end', { marketIndex, opsUsed: ops, ms: Date.now() - refreshStart, cat: 'drift', code: 'DRIFT.ORDER.REFRESH_END' }); } catch {}
     } catch {}
   }
 }

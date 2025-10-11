@@ -77,6 +77,13 @@ export class DriftGridRunner {
   async tick(): Promise<void> {
     try {
       this.lastTickAt = Date.now();
+      logger.debug('drift.grid.tick.start', {
+        name: this.config.name,
+        marketIndex: this.config.market.marketIndex,
+        subaccountId: this.config.subaccountId,
+        cat: 'drift',
+        code: 'DRIFT.GRID.TICK_START'
+      });
       const drift = DriftService.getInstance();
       await drift.init();
       let sub: any | undefined = undefined;
@@ -92,6 +99,17 @@ export class DriftGridRunner {
         logger.warn('drift.grid.no_subaccount', { requested: this.config.subaccountId, cat: 'drift' });
         return;
       }
+      try {
+        logger.debug('drift.grid.sub_snapshot', {
+          subaccountId: sub.id,
+          freeCollateral: sub.freeCollateral,
+          totalCollateral: sub.totalCollateral,
+          maintenanceRequirement: sub.maintenanceRequirement,
+          initialRequirement: sub.initialRequirement,
+          positions: Array.isArray(sub.positions) ? sub.positions.length : 0,
+          cat: 'drift'
+        });
+      } catch {}
 
       // For scaffold: compute proposed notional as sum of per-level notionals
       const perSide = Math.max(0, Number(this.config.levels || 0));
@@ -111,6 +129,14 @@ export class DriftGridRunner {
         logger.warn('drift.grid.risk_gate_block', { reason: gate.reason, proposedNotional, freeCollateral: sub.freeCollateral, cat: 'drift' });
         return;
       }
+      logger.info('drift.grid.risk_gate_ok', {
+        proposedNotional,
+        freeCollateral: sub.freeCollateral,
+        maintenanceRequirement: sub.maintenanceRequirement,
+        marketIndex: this.config.market.marketIndex,
+        cat: 'drift',
+        code: 'DRIFT.GRID.RISK_OK'
+      });
       // Placeholder: no real orders yet; update state snapshot
       this.state.openOrders = perSide * 2;
       this.state.effectiveLeverage = 0; // unknown until positions; keep zero for scaffold
@@ -124,6 +150,13 @@ export class DriftGridRunner {
       if (typeof mid === 'number' && isFinite(mid)) {
         // Determine anchor and sliding center similar to classic grid
         let anchor = (typeof oracle === 'number' ? oracle : mid);
+        logger.debug('drift.grid.price_ctx', {
+          marketIndex: this.config.market.marketIndex,
+          mid,
+          oracle,
+          chosenAnchor: anchor,
+          cat: 'drift'
+        });
         // Initialize center state if missing
         if (!this.state.centerPrice || !Number.isFinite(this.state.centerPrice)) {
           this.state.centerPrice = anchor;
@@ -148,6 +181,14 @@ export class DriftGridRunner {
             this.state.lastSlideUpdate = now;
           }
           anchor = this.state.centerPrice || anchor;
+          logger.debug('drift.grid.center.sliding', {
+            marketIndex: this.config.market.marketIndex,
+            center: this.state.centerPrice,
+            anchor,
+            rateBpsPerSec: this.config.slideRate,
+            maxDistPct: this.config.slideMaxDistance,
+            cat: 'drift'
+          });
         } else {
           // Keep anchor synced when sliding disabled
           this.state.centerPrice = anchor;
@@ -156,6 +197,14 @@ export class DriftGridRunner {
         }
 
         const ladder = generatePriceLadder(this.config, anchor);
+        logger.debug('drift.grid.ladder.ready', {
+          marketIndex: this.config.market.marketIndex,
+          ladderLevels: Array.isArray(ladder) ? ladder.length : 0,
+          stepPct: this.config.stepPct,
+          makerOnly: !!this.config.makerOnly,
+          maxOpenOrders: this.config.maxOpenOrders,
+          cat: 'drift'
+        });
         // Order refresh lifecycle (maker-only optional)
         try {
           const engine: DriftOrderEngine | undefined = (this as any)._engine;
@@ -168,6 +217,12 @@ export class DriftGridRunner {
               Number(this.config.stepPct || 0.01),
               Number(this.config.maxOpenOrders || 0)
             );
+            logger.debug('drift.grid.engine.refresh_done', {
+              marketIndex: this.config.market.marketIndex,
+              ladderLevels: Array.isArray(ladder) ? ladder.length : 0,
+              anchor,
+              cat: 'drift'
+            });
           }
         } catch {}
         // Fetch PnL metrics (best-effort)

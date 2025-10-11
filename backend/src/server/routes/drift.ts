@@ -9,9 +9,11 @@ export function createDriftRouter(io: SocketIOServer): Router {
 
   api.get('/drift/status', async (_req: Request, res: Response) => {
     try {
+      const t0 = Date.now();
       const { DriftService } = await import('../../drift/client.js');
       const svc = DriftService.getInstance();
       const status = await svc.getStatus();
+      try { logger.info('drift.route.status', { subaccounts: status?.subaccounts?.length || 0, markets: status?.markets?.length || 0, ms: Date.now() - t0, cat: 'drift' }); } catch {}
       res.json(status);
     } catch (e: any) {
       logger.error('drift: status failed', { error: String(e?.message || e) });
@@ -21,10 +23,12 @@ export function createDriftRouter(io: SocketIOServer): Router {
 
   api.post('/drift/subaccount/switch', async (req: Request, res: Response) => {
     try {
+      const t0 = Date.now();
       const { id } = req.body as { id: number };
       const { DriftService } = await import('../../drift/client.js');
       const svc = DriftService.getInstance();
       const ok = await svc.switchSubaccount(Number(id));
+      try { logger.info('drift.route.sub.switch', { id, ok, ms: Date.now() - t0, cat: 'drift' }); } catch {}
       try {
         const { readJson, writeJson } = await import('../../utils/fs.js');
         const pathMod = await import('path');
@@ -42,9 +46,11 @@ export function createDriftRouter(io: SocketIOServer): Router {
 
   api.get('/drift/subaccounts', async (_req: Request, res: Response) => {
     try {
+      const t0 = Date.now();
       const { DriftService } = await import('../../drift/client.js');
       const svc = DriftService.getInstance();
       const subs = await svc.getSubaccounts();
+      try { logger.info('drift.route.sub.list', { count: subs?.length || 0, ms: Date.now() - t0, cat: 'drift' }); } catch {}
       const { readJson } = await import('../../utils/fs.js');
       const pathMod = await import('path');
       const storePath = pathMod.resolve(process.cwd(), 'backend', 'config', 'driftSubaccounts.json');
@@ -59,11 +65,13 @@ export function createDriftRouter(io: SocketIOServer): Router {
 
   api.post('/drift/subaccounts', async (req: Request, res: Response) => {
     try {
+      const t0 = Date.now();
       const refresh = !!(req.body?.refresh) || String(req.query?.refresh || '') === '1';
       const { DriftService } = await import('../../drift/client.js');
       const svc = DriftService.getInstance();
       if (refresh) svc.invalidateSubaccountsCache();
       const subs = await svc.getSubaccounts();
+      try { logger.info('drift.route.sub.refresh', { refresh, count: subs?.length || 0, ms: Date.now() - t0, cat: 'drift' }); } catch {}
       const { readJson } = await import('../../utils/fs.js');
       const pathMod = await import('path');
       const storePath = pathMod.resolve(process.cwd(), 'backend', 'config', 'driftSubaccounts.json');

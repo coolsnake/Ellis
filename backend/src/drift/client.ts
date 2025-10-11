@@ -114,7 +114,8 @@ export class DriftService {
     if (this.client) return;
     this.walletKp = await ensureWallet(CONFIG.walletPath);
     this.connection = new Connection(CONFIG.rpcUrl, 'confirmed');
-    logger.info('drift.sdk.init', { rpcUrl: CONFIG.rpcUrl, cluster: this.cluster, cat: 'drift' });
+    const t0 = Date.now();
+    logger.info('drift.sdk.init', { rpcUrl: CONFIG.rpcUrl, cluster: this.cluster, cat: 'drift', code: 'DRIFT.SDK.INIT' });
     const { initialize, Wallet, BulkAccountLoader, getMarketsAndOraclesForSubscription } = await loadSdk();
     // Use SDK Wallet wrapper per docs
     const wallet = new Wallet(this.walletKp);
@@ -141,12 +142,13 @@ export class DriftService {
         try { await (this.client as any).initializeUser(defaultId); } catch { try { await (this.client as any).initializeUser(); } catch {} }
       }
     } catch {}
-    logger.info('drift.sdk.ready', { pubkey: this.walletKp.publicKey?.toBase58?.(), cat: 'drift' });
+    logger.info('drift.sdk.ready', { pubkey: this.walletKp.publicKey?.toBase58?.(), ms: Date.now() - t0, cat: 'drift', code: 'DRIFT.SDK.READY' });
   }
 
   private async ensureUserReady(subaccountId: number): Promise<void> {
     await this.init();
     const client: any = this.client;
+    const t0 = Date.now();
     try {
       const { User, BulkAccountLoader } = await loadSdk();
       const loader = new BulkAccountLoader(this.connection!, 'confirmed', 1000);
@@ -163,6 +165,7 @@ export class DriftService {
     } catch {}
     try { if (typeof client?.addUser === 'function') { await client.addUser(Number(subaccountId)); } } catch {}
     try { if (typeof client?.switchActiveUser === 'function') { await client.switchActiveUser(Number(subaccountId)); } } catch {}
+    try { logger.debug('drift.user.ready', { subaccountId, ms: Date.now() - t0, cat: 'drift' }); } catch {}
   }
 
   async getActiveSubaccountSnapshot(): Promise<SubaccountInfo | null> {
@@ -216,6 +219,7 @@ export class DriftService {
 
   private async discoverMarkets(): Promise<DriftMarketRef[]> {
     await this.init();
+    const t0 = Date.now();
     const decodeMarketName = (raw: any): string | undefined => {
       try {
         if (!raw) return undefined;
@@ -276,6 +280,7 @@ export class DriftService {
       }).filter(m => Number.isFinite(m.marketIndex)) : [];
       // If empty, fallback to allowlist
       if (markets.length > 0) {
+        try { logger.info('drift.markets.discovery.sdk', { count: markets.length, ms: Date.now() - t0, cat: 'drift' }); } catch {}
         return markets.sort((a, b) => a.marketIndex - b.marketIndex);
       }
       // Constants-based fallback from SDK when RPC queries return empty
@@ -301,6 +306,7 @@ export class DriftService {
           }
         }
         if (out.length > 0) {
+          try { logger.info('drift.markets.discovery.constants', { count: out.length, ms: Date.now() - t0, cat: 'drift' }); } catch {}
           return out.sort((a, b) => a.marketIndex - b.marketIndex);
         }
         const nameMap = constants?.MARKET_INDEX_TO_PERP_MARKET_NAME || constants?.PERP_MARKET_INDEX_TO_MARKET_NAME || null;
@@ -311,12 +317,16 @@ export class DriftService {
             const name = decodeMarketName((nameMap as any)[k]) || undefined;
             if (Number.isFinite(idx)) out2.push({ marketIndex: idx, symbol: name });
           }
-          if (out2.length > 0) return out2.sort((a, b) => a.marketIndex - b.marketIndex);
+          if (out2.length > 0) {
+            try { logger.info('drift.markets.discovery.nameMap', { count: out2.length, ms: Date.now() - t0, cat: 'drift' }); } catch {}
+            return out2.sort((a, b) => a.marketIndex - b.marketIndex);
+          }
         }
       } catch {}
     } catch {}
     // Config-based fallback
     const fromCfg = this.parseAllowlistMarkets();
+    try { logger.warn('drift.markets.discovery.fallback', { count: fromCfg.length, cat: 'drift' }); } catch {}
     return fromCfg;
   }
 
@@ -326,6 +336,7 @@ export class DriftService {
       return this.subaccountsCache.data;
     }
     await this.init();
+    const t0 = Date.now();
     const out: SubaccountInfo[] = [];
     try {
       const client: any = this.client;
@@ -372,7 +383,7 @@ export class DriftService {
         out.push({ id, freeCollateral: 0, totalCollateral: 0, maintenanceRequirement: 0, initialRequirement: 0, effectiveLeverage: 0, positions: [] });
         logger.warn('drift.subaccounts.fallback', { id, cat: 'drift' });
       } else {
-        logger.info('drift.subaccounts.enumerated', { count: out.length, ids: out.map(s => s.id), cat: 'drift' });
+        logger.info('drift.subaccounts.enumerated', { count: out.length, ids: out.map(s => s.id), ms: Date.now() - t0, cat: 'drift' });
       }
       this.subaccountsCache = { data: out, ts: Date.now() };
       return this.subaccountsCache.data;
