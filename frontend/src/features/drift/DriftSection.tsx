@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { LiquidationMonitor } from '../drift';
+import { LiquidatorStatus } from '../../components/LiquidatorStatus';
 import { ROUTES } from '../../utils/routes';
 
 export const DriftSection: React.FC<{
@@ -15,6 +16,7 @@ export const DriftSection: React.FC<{
   setDriftOpBusy: (v: boolean) => void;
   setDriftSubaccounts: (list: any[]) => void;
   ls: Array<{ key: string }>;
+  onOpenLiqRunner?: () => void;
 }> = (p) => {
   const [status, setStatus] = useState<any>(null);
   const [balances, setBalances] = useState<any[]>([]);
@@ -56,6 +58,15 @@ export const DriftSection: React.FC<{
     }
   };
 
+  const loadSubaccounts = async () => {
+    try {
+      const res = await fetch(`${p.apiBase}/drift/subaccounts`);
+      const data = await res.json().catch(() => ({}));
+      if (Array.isArray(data?.subaccounts)) p.setDriftSubaccounts(data.subaccounts);
+      if (Number.isFinite(Number(data?.selectedId))) p.setDriftSelectedSubId(Number(data.selectedId));
+    } catch {}
+  };
+
   const loadBalances = async (subId: number) => {
     if (!Number.isFinite(Number(subId))) { setBalances([]); return; }
     try {
@@ -65,7 +76,7 @@ export const DriftSection: React.FC<{
     } catch {}
   };
 
-  useEffect(() => { loadStatusAndSubs(); }, []);
+  useEffect(() => { loadStatusAndSubs(); loadSubaccounts(); }, []);
   useEffect(() => { loadBalances(p.driftSelectedSubId); }, [p.apiBase, p.driftSelectedSubId]);
 
   const createSub = async () => {
@@ -73,9 +84,10 @@ export const DriftSection: React.FC<{
       p.setDriftOpBusy(true);
       setError(null);
       const res = await fetch(`${p.apiBase}${ROUTES.drift.subaccountCreate}`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) throw new Error((await res.text()) || 'Create unavailable');
       const created = await res.json();
       await loadStatusAndSubs();
+      await loadSubaccounts();
       if (created && typeof created.id === 'number') p.setDriftSelectedSubId(Number(created.id));
     } catch (e: any) {
       setError(String(e?.message || e));
@@ -94,6 +106,7 @@ export const DriftSection: React.FC<{
         body: JSON.stringify({ id: Number(id) }),
       });
       await loadStatusAndSubs();
+      await loadSubaccounts();
       await loadBalances(id);
     } catch (e: any) {
       setError(String(e?.message || e));
@@ -258,7 +271,17 @@ export const DriftSection: React.FC<{
       </div>
 
       <div className="p-3 bg-gray-800 rounded">
-        <div className="text-white font-semibold mb-2">Liquidations</div>
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-white font-semibold">Liquidations</div>
+          <div className="flex items-center gap-2">
+            {!!p.onOpenLiqRunner && (
+              <button className="px-2 py-1 bg-purple-600 text-white rounded text-sm" onClick={() => p.onOpenLiqRunner?.()}>+ New Liquidator</button>
+            )}
+          </div>
+        </div>
+        <div className="mb-3">
+          <LiquidatorStatus apiBase={p.apiBase} />
+        </div>
         <div className="mt-3 grid grid-cols-1 gap-3">
           {p.ls.map((x) => (
             <LiquidationMonitor key={x.key} apiBase={p.apiBase} liquidatorKey={x.key} />

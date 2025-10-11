@@ -1,0 +1,72 @@
+import React, { useEffect, useState } from 'react';
+import { ROUTES } from '../utils/routes';
+
+type Liquidator = {
+  key: string;
+  running: boolean;
+  actionsLastMin?: number;
+  errorsLastMin?: number;
+};
+
+export const LiquidatorStatus: React.FC<{ apiBase: string }> = ({ apiBase }) => {
+  const [status, setStatus] = useState<{ liquidators?: Liquidator[] } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    try {
+      const res = await fetch(`${apiBase}${ROUTES.strategies.liquidator.status}`);
+      const data = await res.json();
+      setStatus(data || null);
+    } catch {}
+  };
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 3000);
+    return () => clearInterval(t);
+  }, [apiBase]);
+
+  const act = async (kind: 'start' | 'stop' | 'remove', key: string) => {
+    try {
+      setBusy(true);
+      const endpoint = (ROUTES as any).strategies.liquidator[kind];
+      await fetch(`${apiBase}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key })
+      });
+      await load();
+    } catch {
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const list = Array.isArray(status?.liquidators) ? (status!.liquidators as Liquidator[]) : [];
+
+  return (
+    <div className="bg-gray-800 rounded p-3">
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="text-white font-semibold">Liquidator Status</h3>
+        <button className="px-2 py-1 bg-gray-700 text-white rounded text-sm" onClick={load} disabled={busy}>Refresh</button>
+      </div>
+      <div className="space-y-2 text-sm">
+        {list.map((it) => (
+          <div key={it.key} className="p-2 bg-gray-700 rounded flex items-center justify-between">
+            <div className="text-gray-200">{it.key} — {it.running ? 'running' : 'stopped'} · actions(1m)={it.actionsLastMin ?? 0} · errors(1m)={it.errorsLastMin ?? 0}</div>
+            <div className="space-x-2">
+              <button className="px-2 py-1 bg-green-600 text-white rounded text-xs" onClick={() => act('start', it.key)} disabled={busy}>Start</button>
+              <button className="px-2 py-1 bg-yellow-600 text-white rounded text-xs" onClick={() => act('stop', it.key)} disabled={busy}>Stop</button>
+              <button className="px-2 py-1 bg-red-600 text-white rounded text-xs" onClick={() => act('remove', it.key)} disabled={busy}>Remove</button>
+            </div>
+          </div>
+        ))}
+        {list.length === 0 && <div className="text-gray-400">No liquidators</div>}
+      </div>
+    </div>
+  );
+};
+
+export default LiquidatorStatus;
+
+

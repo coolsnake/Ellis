@@ -123,10 +123,10 @@ describe('refreshAllSources deep bootstrap gating', () => {
 
   it('resumes feed only when previously enabled or watchlist non-empty', async () => {
     vi.resetModules();
-    const feed = { enablePriceFeed: vi.fn(), isPriceFeedEnabled: vi.fn(() => true) };
-    // Mock both possible specifiers to match dynamic imports inside pools.ts
-    vi.doMock('../feedRegistry.js', () => feed);
-    vi.doMock('./feedRegistry.js', () => feed);
+    // Spy on actual feedRegistry module so dynamic import in pools.ts hits the same instance
+    const reg: any = await import('../feedRegistry.js');
+    const enableSpy = vi.spyOn(reg, 'enablePriceFeed').mockImplementation(() => undefined);
+    vi.spyOn(reg, 'isPriceFeedEnabled').mockReturnValue(true);
     vi.doMock('../../utils/fs.js', () => ({ readJson: vi.fn(async () => ['X']) }));
     vi.doMock('../../jupiter/rateLimiter.js', () => ({ apiStop: vi.fn(), apiStart: vi.fn() }));
     // Stub low-level fetchers to avoid network
@@ -136,7 +136,7 @@ describe('refreshAllSources deep bootstrap gating', () => {
     const mod: any = await import('../pools.js');
     await mod.refreshAllSources(true, false);
     vi.restoreAllMocks();
-    expect(feed.enablePriceFeed).toHaveBeenCalledWith(true);
+    expect(enableSpy).toHaveBeenCalledWith(true);
   }, 20000);
 });
 

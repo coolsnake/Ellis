@@ -1265,6 +1265,7 @@ export const App: React.FC = () => {
             setDriftOpBusy={(v)=>setDriftOpBusy(v)}
             setDriftSubaccounts={(list)=>setDriftSubaccounts(list)}
             ls={liqStatus?.liquidators || []}
+            onOpenLiqRunner={() => setShowLiqRunnerConfig(true)}
           />
         </CollapsibleSection>
         <CollapsibleSection title={"Positions"} storageKey="panel:positions">
