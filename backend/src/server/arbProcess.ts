@@ -20,6 +20,16 @@ let child: ChildProcessWithoutNullStreams | null = null;
 let restarting = false;
 let backoffMs = 1000;
 
+export function shutdownRustProcess(): void {
+  try {
+    if (child) {
+      try { emit('log', { level: 'warn', cat: 'rust', message: 'arb-rs shutting down', timestamp: new Date().toISOString() }); } catch {}
+      child.kill('SIGTERM');
+      child = null;
+    }
+  } catch {}
+}
+
 export function setupRustLogForwarding(): void {
   try {
     const enabled = String(process.env.ARB_SPAWN || '').trim() === '1';

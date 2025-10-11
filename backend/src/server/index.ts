@@ -25,7 +25,7 @@ import { readJson } from '../utils/fs.js';
 import { startRaydiumRefreshLoop } from './pools.js';
 import util from 'util';
 import { ensureDir, writeJson } from '../utils/fs.js';
-import { setupRustLogForwarding } from './arbProcess.js';
+import { setupRustLogForwarding, shutdownRustProcess } from './arbProcess.js';
 
 const app = express();
 // Respect X-Forwarded-* from Nginx
@@ -351,8 +351,11 @@ setInterval(() => {
 }, 15000);
 
 // Graceful shutdown: write session logs
-async function shutdown() {
+export async function shutdown() {
   try {
+    // Shutdown arb-rs process first
+    try { shutdownRustProcess(); } catch {}
+
     // Stop timers and clear in-memory caches to force fresh pools/graph on next boot
     try { const pools = await import('./pools.js'); (pools as any).stopPoolRefreshLoop?.(); (pools as any).disablePoolWebsocketRefreshes?.(); (pools as any).clearAllPoolCaches?.(); } catch {}
     // Reset in-memory graph snapshot so nothing is reused

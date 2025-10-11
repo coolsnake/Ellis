@@ -187,6 +187,7 @@ export function OpportunityList(
                     setSimLogs(logs.slice(-20));
                     setSimErr(j?.err ? String(j.err) : null);
                   }
+                  try { const rh = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const jh = await rh.json(); /* panel owns tx table; this is best-effort for any listeners */ } catch {}
                 } catch (e: any) {
                   setSimErr(String(e?.message || e));
                 }
@@ -210,6 +211,7 @@ export function OpportunityList(
                   } else if (j && j.mode && j.mode !== 'direct') {
                     setSimErr(`Execution disabled (mode: ${j.mode}). Enable 'direct' in Exec Config.`);
                   }
+                  try { const rh = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const jh = await rh.json(); /* best-effort */ } catch {}
                 } catch {}
               }}>Execute Direct</button>
                 ); })()}

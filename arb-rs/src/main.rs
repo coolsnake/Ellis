@@ -79,6 +79,8 @@ struct Metrics {
     // Detector outcome counters
     detection_hits_total: u64,
     detection_misses_total: u64,
+    // Cumulative opportunities detected (sum of items per iteration)
+    opportunities_detected_total: u64,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -1204,6 +1206,13 @@ async fn main() -> anyhow::Result<()> {
                     let total: i64 = s.opportunities.iter().map(|o| o.profit_bps).sum();
                     s.metrics.avg_profit_bps = if s.opportunities.is_empty() { 0.0 } else { total as f64 / s.opportunities.len() as f64 };
                     s.metrics.detection_cycles_total += 1;
+                    // Increment detector outcomes and cumulative opportunities
+                    if s.opportunities.is_empty() {
+                        s.metrics.detection_misses_total = s.metrics.detection_misses_total.saturating_add(1);
+                    } else {
+                        s.metrics.detection_hits_total = s.metrics.detection_hits_total.saturating_add(1);
+                    }
+                    s.metrics.opportunities_detected_total = s.metrics.opportunities_detected_total.saturating_add(s.opportunities.len() as u64);
                     if s.opportunities.is_empty() { s.metrics.detection_misses_total = s.metrics.detection_misses_total.saturating_add(1); } else { s.metrics.detection_hits_total = s.metrics.detection_hits_total.saturating_add(1); }
                     s.metrics.last_detection_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
                     s.metrics.detection_duration_ms = loop_start.elapsed().as_millis() as u64;
@@ -1850,6 +1859,7 @@ async fn metrics_prom(State(state): State<Arc<RwLock<AppState>>>) -> String {
             "arb_diff_to_detect_ms {}\n",
             "arb_detection_hits_total {}\n",
             "arb_detection_misses_total {}\n",
+            "arb_opportunities_detected_total {}\n",
             "arb_graph_last_version {}\n",
             "arb_graph_last_timestamp {}\n"
         ),
@@ -1866,6 +1876,7 @@ async fn metrics_prom(State(state): State<Arc<RwLock<AppState>>>) -> String {
         m.diff_to_detect_ms,
         m.detection_hits_total,
         m.detection_misses_total,
+        m.opportunities_detected_total,
         s.last_graph_version,
         s.last_graph_ts
     )

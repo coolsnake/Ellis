@@ -79,21 +79,21 @@ export async function rebuildGraphNow(io?: SocketIOServer): Promise<void> {
       try { if (!prev) emit('graph-snapshot', toLiteSnapshot(next)); else if (changed) emit('graph-update', toLiteDiff(diff)); } catch {}
     }
     if (!prev) {
-      try { await pushArbGraphSnapshot(next); } catch {}
+      try { void pushArbGraphSnapshot(next); } catch {}
       try { await notifyArbServiceRefresh(); } catch {}
       diffSinceRebase = 0; lastRebaseMs = Date.now();
     } else if (changed) {
       const nowMs = Date.now();
       const shouldRebase = (diffSinceRebase >= REBASE_DIFF_THRESHOLD) || (nowMs - lastRebaseMs > REBASE_TIME_MS);
       if (shouldRebase) {
-        try { await pushArbGraphSnapshot(next); } catch {}
+        try { void pushArbGraphSnapshot(next); } catch {}
         diffSinceRebase = 0; lastRebaseMs = nowMs;
         try { emit('log', { level: 'info', message: `graph:push snapshot v=${next.version} nodes=${next.nodes.length} edges=${next.edges.length}`, timestamp: new Date().toISOString(), context: { cat: 'graph', code: LogCode.GRAPH_PUSH_SNAPSHOT } }); } catch {}
         // Also emit snapshot to clients (lite) to ensure they rebase in lockstep
         try { if (io) io.emit('graph-snapshot', toLiteSnapshot(next)); else emit('graph-snapshot', toLiteSnapshot(next)); } catch {}
         try { logger.info('graph.rebase', { at_ms: lastRebaseMs, version: next.version, nodes: next.nodes.length, edges: next.edges.length }); } catch {}
       } else {
-        try { await pushArbGraphDiff(diff); } catch {}
+        try { void pushArbGraphDiff(diff); } catch {}
         diffSinceRebase += (diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length);
         try { emit('log', { level: 'info', message: `graph:push diff v=${diff.version} changes=${(diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length)}`, timestamp: new Date().toISOString(), context: { cat: 'graph', code: LogCode.GRAPH_PUSH_DIFF } }); } catch {}
       }
@@ -1004,7 +1004,7 @@ export function startGraphStream(io: SocketIOServer): void {
       if (!last) {
         tryEmit('snapshot', toLiteSnapshot(snap));
         // Push initial snapshot to arb-rs to enter backend-graph mode immediately
-        try { await pushArbGraphSnapshot(snap); } catch {}
+        try { void pushArbGraphSnapshot(snap); } catch {}
         try { await notifyArbServiceRefresh(); } catch {}
         try { logger.info('graph.push initial snapshot', { version: snap.version, nodes: snap.nodes.length, edges: snap.edges.length, cat: 'graph' }); } catch {}
         try { emit('log', { level: 'info', message: `graph:push snapshot v=${snap.version} nodes=${snap.nodes.length} edges=${snap.edges.length}`, timestamp: new Date().toISOString(), context: { cat: 'graph' } }); } catch {}
@@ -1021,16 +1021,21 @@ export function startGraphStream(io: SocketIOServer): void {
           try { last.edges.forEach((e) => prevIndex.set(String((e as any).id), e)); } catch {}
           const pct = (a: number, b: number) => Math.abs(a - b) / Math.max(1, Math.abs(b));
           const small = (x: number) => !Number.isFinite(x) || x < 1e-12;
+          const enable = ((CONFIG.system as any)?.graphDiffFilterEnable !== false);
+          const liqEps = Math.max(1e-6, Number((CONFIG.system as any)?.graphDiffLiqEps ?? 0.01));
+          const pxEps  = Math.max(1e-6, Number((CONFIG.system as any)?.graphDiffPriceEps ?? 0.002));
+          const wEps   = Math.max(1e-6, Number((CONFIG.system as any)?.graphDiffWeightEps ?? 0.01));
           const filt = (prev: any, next: any) => {
+            if (!enable) return true; // keep all updates when filter disabled
             const liqPrev = Number(prev?.liquidity_display ?? prev?.liquidity ?? 0);
             const liqNext = Number(next?.liquidity_display ?? next?.liquidity ?? 0);
             const pricePrev = Number(prev?.price_a_per_b ?? 0);
             const priceNext = Number(next?.price_a_per_b ?? 0);
             const wPrev = Number(prev?.weight ?? 0);
             const wNext = Number(next?.weight ?? 0);
-            const liqOk = (small(liqPrev) && small(liqNext)) || pct(liqNext, liqPrev) < 0.01; // <1%
-            const priceOk = (small(pricePrev) && small(priceNext)) || pct(priceNext, pricePrev) < 0.002; // <0.2%
-            const wOk = (small(wPrev) && small(wNext)) || pct(wNext, wPrev) < 0.01; // <1%
+            const liqOk = (small(liqPrev) && small(liqNext)) || pct(liqNext, liqPrev) < liqEps;
+            const priceOk = (small(pricePrev) && small(priceNext)) || pct(priceNext, pricePrev) < pxEps;
+            const wOk = (small(wPrev) && small(wNext)) || pct(wNext, wPrev) < wEps;
             return !(liqOk && priceOk && wOk);
           };
           if (Array.isArray((diff as any).updatedEdges)) {
@@ -1047,12 +1052,12 @@ export function startGraphStream(io: SocketIOServer): void {
           const nowMs = Date.now();
           const shouldRebase = (diffSinceRebase >= REBASE_DIFF_THRESHOLD) || (nowMs - lastRebaseMs > REBASE_TIME_MS);
           if (shouldRebase) {
-            try { await pushArbGraphSnapshot(snap); } catch {}
+            try { void pushArbGraphSnapshot(snap); } catch {}
             diffSinceRebase = 0; lastRebaseMs = nowMs;
       try { logger.info('graph.push rebase snapshot', { version: snap.version, nodes: snap.nodes.length, edges: snap.edges.length, cat: 'graph', code: LogCode.GRAPH_PUSH_SNAPSHOT }); } catch {}
             try { emit('log', { level: 'info', message: `graph:push rebase v=${snap.version} nodes=${snap.nodes.length} edges=${snap.edges.length}`, timestamp: new Date().toISOString(), context: { cat: 'graph' } }); } catch {}
           } else {
-            try { await pushArbGraphDiff(diff); } catch {}
+            try { void pushArbGraphDiff(diff); } catch {}
             diffSinceRebase += (diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length);
             try {
               const ch = diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length;

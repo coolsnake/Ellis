@@ -83,6 +83,11 @@ export const CONFIG = {
     graphRebaseDiffThreshold: Number(process.env.GRAPH_REBASE_DIFF_THRESHOLD || 2000),
     graphRebaseTimeMs: Number(process.env.GRAPH_REBASE_TIME_MS || (5 * 60 * 1000)),
     graphSnapshotTtlMs: Number(process.env.GRAPH_SNAPSHOT_TTL_MS || 1500),
+    // Graph diff filter knobs
+    graphDiffFilterEnable: (process.env.GRAPH_DIFF_FILTER_ENABLE || 'true') !== 'false',
+    graphDiffPriceEps: Number(process.env.GRAPH_DIFF_PRICE_EPS || 0.002),
+    graphDiffLiqEps: Number(process.env.GRAPH_DIFF_LIQ_EPS || 0.01),
+    graphDiffWeightEps: Number(process.env.GRAPH_DIFF_WEIGHT_EPS || 0.01),
     maxRetries: Number(process.env.MAX_RETRIES || 3),
     retryDelayMs: Number(process.env.RETRY_DELAY_MS || 1000),
     connectionTimeoutMs: Number(process.env.CONNECTION_TIMEOUT_MS || 30000),

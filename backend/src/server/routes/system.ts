@@ -115,10 +115,16 @@ export function createSystemRouter(_io: SocketIOServer): Router {
     try {
       emit('log', { level: 'warn', message: 'terminal: shutdown requested from UI', timestamp: new Date().toISOString() });
       res.json({ ok: true });
-      setTimeout(() => {
-        try { emit('log', { level: 'warn', message: 'terminal: shutting down now', timestamp: new Date().toISOString() }); } catch {}
-        try { writeSessionLogAndClear().catch(() => null); } catch {}
-        process.exit(0);
+      // Use proper shutdown function for comprehensive cleanup
+      setTimeout(async () => {
+        try {
+          // Import and call the main shutdown function from index.ts
+          const { shutdown } = await import('../index.js');
+          await shutdown();
+        } catch (e) {
+          try { emit('log', { level: 'error', message: `terminal: shutdown error: ${String(e?.message || e)}`, timestamp: new Date().toISOString() }); } catch {}
+          process.exit(1);
+        }
       }, 250);
     } catch (e: any) {
       logger.error('server: shutdown failed', { error: String(e?.message || e), cat: 'server' });

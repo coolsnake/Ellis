@@ -11,6 +11,10 @@ export const GraphConfig: React.FC<Props> = ({ apiBase, onClose }) => {
     graphRebuildDebounceMs: 200,
     graphRebuildMinDebounceMs: 50,
     graphDeltaRebuildThreshold: 0,
+    graphDiffFilterEnable: true,
+    graphDiffPriceEps: 0.002,
+    graphDiffLiqEps: 0.01,
+    graphDiffWeightEps: 0.01,
     sanity_enabled: true,
     sanity_maxPriceDeviation: 50,
     sanity_feeMin: 0,
@@ -36,6 +40,10 @@ export const GraphConfig: React.FC<Props> = ({ apiBase, onClose }) => {
             graphRebuildDebounceMs: Number(j?.system?.graphRebuildDebounceMs ?? p.graphRebuildDebounceMs),
             graphRebuildMinDebounceMs: Number(j?.system?.graphRebuildMinDebounceMs ?? p.graphRebuildMinDebounceMs),
             graphDeltaRebuildThreshold: Number(j?.system?.graphDeltaRebuildThreshold ?? p.graphDeltaRebuildThreshold),
+            graphDiffFilterEnable: (j?.system?.graphDiffFilterEnable ?? true) !== false,
+            graphDiffPriceEps: Number(j?.system?.graphDiffPriceEps ?? p.graphDiffPriceEps),
+            graphDiffLiqEps: Number(j?.system?.graphDiffLiqEps ?? p.graphDiffLiqEps),
+            graphDiffWeightEps: Number(j?.system?.graphDiffWeightEps ?? p.graphDiffWeightEps),
             sanity_enabled: (j?.sanity?.enabled ?? true) !== false,
             sanity_maxPriceDeviation: Number(j?.sanity?.maxPriceDeviation ?? p.sanity_maxPriceDeviation),
             sanity_feeMin: Number(j?.sanity?.feeMin ?? p.sanity_feeMin),
@@ -61,6 +69,10 @@ export const GraphConfig: React.FC<Props> = ({ apiBase, onClose }) => {
         graphRebuildDebounceMs: Number(cfg.graphRebuildDebounceMs),
         graphRebuildMinDebounceMs: Number(cfg.graphRebuildMinDebounceMs),
         graphDeltaRebuildThreshold: Number(cfg.graphDeltaRebuildThreshold),
+        graphDiffFilterEnable: !!cfg.graphDiffFilterEnable,
+        graphDiffPriceEps: Number(cfg.graphDiffPriceEps),
+        graphDiffLiqEps: Number(cfg.graphDiffLiqEps),
+        graphDiffWeightEps: Number(cfg.graphDiffWeightEps),
       },
       sanity: {
         enabled: !!cfg.sanity_enabled,
@@ -102,6 +114,10 @@ export const GraphConfig: React.FC<Props> = ({ apiBase, onClose }) => {
               <div><label className="block text-sm mb-1">Rebuild Debounce (ms)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.graphRebuildDebounceMs} onChange={(e)=>set('graphRebuildDebounceMs', Number(e.target.value)||0)} /></div>
               <div><label className="block text-sm mb-1">Min Debounce (ms)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.graphRebuildMinDebounceMs} onChange={(e)=>set('graphRebuildMinDebounceMs', Number(e.target.value)||0)} /></div>
               <div><label className="block text-sm mb-1">Delta Rebuild Threshold</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.graphDeltaRebuildThreshold} onChange={(e)=>set('graphDeltaRebuildThreshold', Number(e.target.value)||0)} /></div>
+              <label className="flex items-center gap-2 col-span-1 md:col-span-3"><input type="checkbox" checked={!!cfg.graphDiffFilterEnable} onChange={(e)=>set('graphDiffFilterEnable', e.target.checked)} />Enable Diff Filter</label>
+              <div><label className="block text-sm mb-1">Price Eps (fraction)</label><input step="0.0001" type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.graphDiffPriceEps} onChange={(e)=>set('graphDiffPriceEps', Number(e.target.value)||0)} /></div>
+              <div><label className="block text-sm mb-1">Liquidity Eps (fraction)</label><input step="0.0001" type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.graphDiffLiqEps} onChange={(e)=>set('graphDiffLiqEps', Number(e.target.value)||0)} /></div>
+              <div><label className="block text-sm mb-1">Weight Eps (fraction)</label><input step="0.0001" type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.graphDiffWeightEps} onChange={(e)=>set('graphDiffWeightEps', Number(e.target.value)||0)} /></div>
             </div>
           </div>
 

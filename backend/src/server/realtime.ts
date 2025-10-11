@@ -152,7 +152,7 @@ async function processArbQueue(): Promise<void> {
       // Ack by polling /arb/graph/version until target version observed or timeout
       const wantVersion: number = Number((job.kind === 'snapshot' ? job.payload?.version : job.payload?.version) || 0);
       const start = Date.now();
-      const timeoutMs = 12_000;
+      const timeoutMs = Number((((globalThis as any)?.process?.env?.ARB_ACK_TIMEOUT_MS) || 2500));
       let acked = false;
       while (Date.now() - start < timeoutMs) {
         try {
@@ -177,9 +177,10 @@ async function processArbQueue(): Promise<void> {
         pushBounded(graphPushStats.ackMs, waited);
       } catch {}
 
-      // Wait for a fresh detection to complete after applying this graph update (bounded wait)
+      // Optionally wait for a fresh detection to complete after applying this graph update (bounded wait)
       try {
-        if (String(((globalThis as any)?.process?.env?.NODE_ENV) || '').toLowerCase() !== 'test') {
+        const waitForDetect = String((((globalThis as any)?.process?.env?.ARB_WAIT_FOR_DETECT) || 'false')).toLowerCase() === 'true';
+        if (waitForDetect && String((((globalThis as any)?.process?.env?.NODE_ENV) || '')).toLowerCase() !== 'test') {
           const detectDeadline = Date.now() + 8000;
           while (Date.now() < detectDeadline) {
             const cur = await fetchArbMetrics();

@@ -72,6 +72,8 @@ npm -C backend ci --no-audit --no-fund
   - `API_MIN_GAP_MS_BASE`, `API_MIN_GAP_MS_MIN`, `API_MIN_GAP_MS_MAX`: rate limiter pacing
   - `MIN_SOL_FOR_FEES`: minimum SOL reserve for fees (default ~0.02)
   - `ARB_SHARED_SECRET`: shared token for backend→arb-rs graph pushes (Authorization: Bearer <secret>)
+  - `ARB_WAIT_FOR_DETECT` (backend): when set to `true`, backend waits for a detection cycle to complete after each graph push. Default `false` for better concurrency.
+  - `ARB_ACK_TIMEOUT_MS` (backend): time in ms to wait for arb-rs to report a graph version >= pushed version. Default `2500`.
 - Frontend:
   - `VITE_API_BASE`: e.g., `http://localhost:3001/api`
   - `VITE_WS_URL`: e.g., `http://localhost:3001`

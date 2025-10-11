@@ -1054,7 +1054,7 @@ export const App: React.FC = () => {
                 onClick={async () => {
                   if (!confirm('Shutdown all services? This will stop the backend and related processes.')) return;
                   try {
-                    await fetch(`${apiBase}/system/shutdown`, { method: 'POST' });
+                    await fetch(`${apiBase}${ROUTES.system.shutdown}`, { method: 'POST' });
                   } catch {}
                 }}
                 className="px-4 py-2 rounded text-sm font-medium bg-gray-700 hover:bg-gray-800 text-white"

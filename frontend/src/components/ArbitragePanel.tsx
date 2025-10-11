@@ -73,6 +73,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
   const [nmSimLogs, setNmSimLogs] = useState<string[] | null>(null);
   const [nmSimErr, setNmSimErr] = useState<string | null>(null);
   const [execStats, setExecStats] = useState<any>(null);
+  const [arbMetrics, setArbMetrics] = useState<any>(null);
   // Show-all toggle moved into OpportunityList
 
   // Deprecated polling/log-triggered refresh removed; rely on socket push with initial fallback
@@ -178,7 +179,12 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
       } catch {}
     };
     const requestExecStats = async () => {
-      try { const r = await fetch(`${apiBase}/arb/metrics/json`); const j = await r.json(); setExecStats(j?.exec || null); } catch {}
+      try {
+        const r = await fetch(`${apiBase}/arb/metrics/json`);
+        const j = await r.json();
+        setExecStats(j?.exec || null);
+        setArbMetrics(j || null);
+      } catch {}
     };
     try { effectiveSocket.on('arb:opportunities', onOpps); } catch {}
     try { effectiveSocket.on('arb:signal', onSignal); } catch {}
@@ -256,56 +262,65 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
       <div className="mb-3">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
           <div className="p-2 rounded bg-black/20">
-            <div className="text-gray-400">Active</div>
+            <div className="text-gray-400">Active Opps</div>
             <div className="text-sm">{fmt(summary?.count)}</div>
           </div>
           <div className="p-2 rounded bg-black/20">
-            <div className="text-gray-400">Top Profit</div>
-            <div className="text-sm">{fmtPctFromBps(summary?.max_profit_bps)}</div>
+            <div className="text-gray-400">Detection Cycles</div>
+            <div className="text-sm">{fmt((arbMetrics as any)?.detection_cycles_total)}</div>
           </div>
           <div className="p-2 rounded bg-black/20">
-            <div className="text-gray-400">Avg Profit</div>
-            <div className="text-sm">{fmtPctFromBps(Number.isFinite(summary?.avg_profit_bps as any) ? Math.round((summary?.avg_profit_bps || 0)) : 0)}</div>
-          </div>
-          {(() => {
-            try {
-              const topNet = (() => {
-                try {
-                  let best = Number.NEGATIVE_INFINITY;
-                  for (const it of (items || [])) {
-                    const v = Number.isFinite((it as any)?.net_bps as any) ? (it as any).net_bps : it.profit_bps;
-                    if (Number.isFinite(v as any) && (v as number) > best) best = v as number;
-                  }
-                  return best === Number.NEGATIVE_INFINITY ? undefined : best;
-                } catch { return undefined; }
-              })();
-              return (
-                <div className="p-2 rounded bg-black/20">
-                  <div className="text-gray-400">Top Net</div>
-                  <div className="text-sm">{fmtPctFromBps(topNet)}</div>
-                </div>
-              );
-            } catch { return null; }
-          })()}
-          <div className="p-2 rounded bg-black/20">
-            <div className="text-gray-400">Avg Net</div>
-            <div className="text-sm">{fmtPctFromBps(Number.isFinite(summary?.avg_net_bps as any) ? Math.round((summary?.avg_net_bps || 0)) : 0)}</div>
+            <div className="text-gray-400">Opps Detected (total)</div>
+            <div className="text-sm">{fmt((arbMetrics as any)?.opportunities_detected_total)}</div>
           </div>
           <div className="p-2 rounded bg-black/20">
-            <div className="text-gray-400">Avg Hops</div>
-            <div className="text-sm">{fmt(summary?.avg_hop_count, 2)}</div>
+            <div className="text-gray-400">Detector Hit Rate</div>
+            <div className="text-sm">
+              {(() => { try {
+                const hits = Number((arbMetrics as any)?.detection_hits_total || 0);
+                const misses = Number((arbMetrics as any)?.detection_misses_total || 0);
+                const total = hits + misses;
+                return total ? `${Math.round((100*hits)/total)}%` : '—';
+              } catch { return '—'; } })()}
+            </div>
           </div>
           <div className="p-2 rounded bg-black/20">
-            <div className="text-gray-400">Avg Link Edges</div>
-            <div className="text-sm">{fmt(summary?.avg_link_edges_used, 2)}</div>
+            <div className="text-gray-400">Preflight Success</div>
+            <div className="text-sm">
+              {(() => { try {
+                const ok = Number((execStats as any)?.counts?.preflight_ok || 0);
+                const er = Number((execStats as any)?.counts?.preflight_err || 0);
+                const t = ok + er;
+                return t ? `${Math.round((100*ok)/t)}% (${fmt(ok)}/${fmt(t)})` : '—';
+              } catch { return '—'; } })()}
+            </div>
           </div>
           <div className="p-2 rounded bg-black/20">
-            <div className="text-gray-400">Min Edge Liq (avg)</div>
-            <div className="text-sm">{fmt(summary?.min_edge_liquidity_avg, 2)}</div>
+            <div className="text-gray-400">Transactions Sent</div>
+            <div className="text-sm">{(() => { try { const ok = Number((execStats as any)?.counts?.send_ok || 0); const er = Number((execStats as any)?.counts?.send_err || 0); return fmt(ok + er);} catch { return '—'; } })()}</div>
           </div>
           <div className="p-2 rounded bg-black/20">
-            <div className="text-gray-400">Min Edge Liq (min)</div>
-            <div className="text-sm">{fmt(summary?.min_edge_liquidity_min, 2)}</div>
+            <div className="text-gray-400">Send Success</div>
+            <div className="text-sm">
+              {(() => { try {
+                const ok = Number((execStats as any)?.counts?.send_ok || 0);
+                const er = Number((execStats as any)?.counts?.send_err || 0);
+                const t = ok + er;
+                return t ? `${Math.round((100*ok)/t)}% (${fmt(ok)}/${fmt(t)})` : '—';
+              } catch { return '—'; } })()}
+            </div>
+          </div>
+          <div className="p-2 rounded bg-black/20">
+            <div className="text-gray-400">Tx Coverage</div>
+            <div className="text-sm">
+              {(() => { try {
+                const ok = Number((execStats as any)?.counts?.send_ok || 0);
+                const er = Number((execStats as any)?.counts?.send_err || 0);
+                const sent = ok + er;
+                const opps = Number((arbMetrics as any)?.opportunities_detected_total || 0);
+                return (opps > 0) ? (sent / opps).toFixed(2) : '—';
+              } catch { return '—'; } })()}
+            </div>
           </div>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[10px] mt-2 opacity-80">
@@ -470,6 +485,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
                         setNmSimLogs(logs.slice(-20));
                         setNmSimErr(j?.err ? String(j.err) : null);
                       }
+                      try { const rh = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const jh = await rh.json(); setTxRows(Array.isArray(jh?.items) ? jh.items : []); } catch {}
                     } catch {}
                     setSending(false);
                   }}>Preflight Simulate</button>
@@ -487,6 +503,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
                       } else if (j && j.mode && j.mode !== 'direct') {
                         setNmSimErr(`Execution disabled (mode: ${j.mode}). Enable 'direct' in Exec Config.`);
                       }
+                      try { const rh = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const jh = await rh.json(); setTxRows(Array.isArray(jh?.items) ? jh.items : []); } catch {}
                     } catch (e: any) {
                       setNmSimErr(String(e?.message || e));
                     }

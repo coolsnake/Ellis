@@ -65,6 +65,13 @@ export const LogCode = {
   TX_BUILD_HOP: 'TX.BUILD.HOP',
   TX_BUILD_OK: 'TX.BUILD.OK',
   TX_BUILD_ERR: 'TX.BUILD.HOP.ERR',
+
+  // New tx lifecycle codes (preflight/send)
+  TX_PREFLIGHT_START: 'TX.PREFLIGHT.START',
+  TX_PREFLIGHT_OK: 'TX.PREFLIGHT.OK',
+  TX_PREFLIGHT_ERR: 'TX.PREFLIGHT.ERR',
+  TX_SEND_OK: 'TX.SEND.OK',
+  TX_SEND_ERR: 'TX.SEND.ERR',
 } as const;
 
 export type LogCodeValues = typeof LogCode[keyof typeof LogCode];
