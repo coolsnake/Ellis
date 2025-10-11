@@ -19,7 +19,7 @@ export function httpLogStart(ctx: HttpLogCtx): string {
 
 export function httpLogResponse(ctx: HttpLogCtx & { cid: string; status: number; ms: number; count?: number }): void {
   try {
-    logger.info('pools.http response', { cat: LogCat.pools, subcat: LogSubcat.http, code: LogCode.POOLS_HTTP_RESPONSE, cid: ctx.cid, source: ctx.source, url: ctx.url, status: ctx.status, ms: ctx.ms, ...(ctx.count != null ? { count: ctx.count } : {}), ...(ctx.extra || {}) });
+    logger.debug('pools.http response', { cat: LogCat.pools, subcat: LogSubcat.http, code: LogCode.POOLS_HTTP_RESPONSE, cid: ctx.cid, source: ctx.source, url: ctx.url, status: ctx.status, ms: ctx.ms, ...(ctx.count != null ? { count: ctx.count } : {}), ...(ctx.extra || {}) });
   } catch {}
 }
 

@@ -50,7 +50,20 @@ export function computeTokenUniverseFromSets(
   const a = anchors || getAnchorSet();
   let set = new Set<string>();
   if (mode === 'intersection') {
-    for (const m of rayMints) if (orcaMints.has(m)) set.add(m);
+    // Intersection for any of the 3 DEX: raydium, orca, meteora
+    const meteoraMints: Set<string> = (arguments.length > 3 && arguments[3] instanceof Set) ? arguments[3] as Set<string> : new Set();
+
+    // Get all unique token sets present (handle signature as (ray, orca, mode, meteora, anchors?))
+    // Legacy callers won't pass meteora, so if 4th arg is not a Set use empty set
+
+    // Do all pairwise intersections and take the union of those intersected sets
+    for (const m of rayMints) {
+      if (orcaMints.has(m) || meteoraMints.has(m)) set.add(m);
+    }
+    for (const m of orcaMints) {
+      if (meteoraMints.has(m) && !set.has(m)) set.add(m);
+    }
+    // If all 3 are empty, set remains empty. If only 2 sets, intersect as usual.
   } else if (mode === 'union') {
     set = new Set<string>([...rayMints, ...orcaMints]);
   } else {

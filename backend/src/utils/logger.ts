@@ -18,7 +18,7 @@ export type LogEvent = {
 };
 
 class RealtimeLogger extends EventEmitter {
-  private level: LogEvent['level'] = (process.env.LOG_LEVEL as any) || 'debug';
+  private level: LogEvent['level'] = (process.env.LOG_LEVEL as any) || 'info';
   private enabled = process.env.ENABLE_LOGGING !== 'false';
   private logToFile = process.env.LOG_TO_FILE === 'true';
   private filePath = process.env.LOG_FILE_PATH || resolve(CONFIG.logDir, 'app.jsonl');

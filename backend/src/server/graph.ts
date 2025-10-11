@@ -927,7 +927,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           .filter((e: any) => e.dex === dex)
           .slice(0, 5)
           .map((e: any) => ({ id: e.id, source: e.source, target: e.target, pool_id: (e as any)?.pool_id, kind: (e as any)?.pool_kind, direction: (e as any)?.direction }));
-        logger.info('graph.edges.count', {
+        logger.debug('graph.edges.count', {
           raydium: { count: countDex('Raydium'), sample: sample('Raydium') },
           orca: { count: countDex('Orca'), sample: sample('Orca') },
           meteora: { count: countDex('Meteora'), sample: sample('Meteora') },
@@ -955,10 +955,10 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         nodes: Object.values(nodesMap),
         edges: Object.values(edgesMap),
       };
-      try { logger.info('graph.consistency.summary', { ray: consistency.ray, orc: consistency.orc, met: consistency.met, cat: 'graph' }); } catch {}
+      try { logger.debug('graph.consistency.summary', { ray: consistency.ray, orc: consistency.orc, met: consistency.met, cat: 'graph' }); } catch {}
       lastSnapshot = snapshot;
       lastAt = now;
-      try { logger.info('graph.tvl.stats', { amm: { total: ammTotal, usd: ammUsd }, clmm: { total: clmmTotal, usd: clmmUsd, missingAmounts: clmmMissingAmounts, missingDecimals: clmmMissingDecimals } }); } catch {}
+      try { logger.debug('graph.tvl.stats', { amm: { total: ammTotal, usd: ammUsd }, clmm: { total: clmmTotal, usd: clmmUsd, missingAmounts: clmmMissingAmounts, missingDecimals: clmmMissingDecimals } }); } catch {}
       logger.info('graph.snapshot built', { nodes: snapshot.nodes.length, edges: snapshot.edges.length });
       return snapshot;
     } finally {
