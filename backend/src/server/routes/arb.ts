@@ -7,6 +7,17 @@ import { logTxTrace } from '../../utils/txTrace.js';
 
 export function createArbRouter(io: SocketIOServer): Router {
   const api = Router();
+
+  // In-memory execution timing rings and counters (bounded)
+  const execStats: {
+    buildMs: number[];
+    preflightMs: number[];
+    sendMs: number[];
+    preflightOk: number; preflightErr: number;
+    sendOk: number; sendErr: number;
+  } = { buildMs: [], preflightMs: [], sendMs: [], preflightOk: 0, preflightErr: 0, sendOk: 0, sendErr: 0 };
+  const pushBounded = (arr: number[], v: number, cap = 200) => { if (Number.isFinite(v)) { arr.push(v); if (arr.length > cap) arr.shift(); } };
+  const pct = (arr: number[], p: number): number | null => { if (!arr.length) return null; const a = arr.slice().sort((x,y)=>x-y); const i = Math.min(a.length-1, Math.max(0, Math.floor((p/100)*(a.length-1)))); return a[i] ?? null; };
   api.get('/arb/config', async (_req, res) => {
     try {
       const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
@@ -68,7 +79,16 @@ export function createArbRouter(io: SocketIOServer): Router {
         const { getPoolsMetrics, getPoolCacheAges } = await import('../pools.js');
         const pm = getPoolsMetrics();
         const ages = getPoolCacheAges();
-        j = { ...(j || {}), pools: { ...(j?.pools || {}), ...pm }, pools_age_ms: ages };
+        // Merge exec stats and graph push stats
+        const { getGraphPushStats } = await import('../realtime.js');
+        const exec = {
+          build_ms: { p50: pct(execStats.buildMs, 50), p95: pct(execStats.buildMs, 95) },
+          preflight_ms: { p50: pct(execStats.preflightMs, 50), p95: pct(execStats.preflightMs, 95) },
+          send_ms: { p50: pct(execStats.sendMs, 50), p95: pct(execStats.sendMs, 95) },
+          counts: { preflight_ok: execStats.preflightOk, preflight_err: execStats.preflightErr, send_ok: execStats.sendOk, send_err: execStats.sendErr },
+        };
+        const graph_push = getGraphPushStats();
+        j = { ...(j || {}), pools: { ...(j?.pools || {}), ...pm }, pools_age_ms: ages, exec, graph_push };
       } catch {}
       res.status(r?.status || 200).json(j);
     } catch {
@@ -98,7 +118,9 @@ export function createArbRouter(io: SocketIOServer): Router {
       const input = req.body || {};
       const parsed = ResolveDirectSchema.parse(input);
       const plan = input?.plan && Array.isArray(input.plan?.hops) ? input.plan : await resolveDirectPlan(parsed as any, {} as any);
+      const tBuild0 = Date.now();
       const built = await buildDirectArbTx(plan, [], {} as any);
+      try { pushBounded(execStats.buildMs, Date.now() - tBuild0); } catch {}
       try { emit('log', { level: 'info', message: 'pretrade:arb tx built', timestamp: new Date().toISOString(), context: { cat: 'tx', code: 'PRETRADE.TX.BUILT' } }); } catch {}
       const id = Math.random().toString(36).slice(2,10);
       await logTxTrace('simulate', {
@@ -130,11 +152,13 @@ export function createArbRouter(io: SocketIOServer): Router {
       try { emit('log', { level: 'info', message: 'pretrade:arb tx built', timestamp: new Date().toISOString(), context: { cat: 'tx', code: 'PRETRADE.TX.BUILT' } }); } catch {}
 
       const execCfg = await loadExecConfig();
+      const tPre0 = Date.now();
       const sim = await assembleAndSimulate(built.tx.instructions, {
         computeUnitLimit: execCfg.computeUnitLimit,
         computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
         lookupTableAddresses: execCfg.lookupTableAddresses,
       } as any);
+      try { pushBounded(execStats.preflightMs, Date.now() - tPre0); } catch {}
 
       const id = Math.random().toString(36).slice(2,10);
       await logTxTrace('preflight', {
@@ -225,20 +249,24 @@ export function createArbRouter(io: SocketIOServer): Router {
       });
       try { emit('log', { level: 'info', message: 'pretrade:arb simulate result', timestamp: new Date().toISOString(), context: { cat: 'arb', code: 'PRETRADE.SIM.END', ...(sim as any)?.err ? { err: String((sim as any).err) } : {} } }); } catch {}
       if ((sim as any)?.err) {
+        try { execStats.preflightErr += 1; } catch {}
         try {
           await addTxRecord({ id, timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature: null, status: 'sim_err', error: String((sim as any)?.err) });
           try { emit('tx:history.updated', { id, status: 'sim_err' }); } catch {}
         } catch {}
         return res.status(400).json({ id, mode, error: 'preflight_failed', logs: (sim as any)?.logs || [], ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
       }
+      try { execStats.preflightOk += 1; } catch {}
 
       // Proceed to send (no chunking)
       try {
+        const tSend0 = Date.now();
         const sendRes = await assembleAndSend(built.tx.instructions, {
           computeUnitLimit: execCfg.computeUnitLimit,
           computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
           lookupTableAddresses: execCfg.lookupTableAddresses,
         } as any);
+        try { pushBounded(execStats.sendMs, Date.now() - tSend0); execStats.sendOk += 1; } catch {}
         const signatures: string[] = [sendRes.signature];
         const signature = signatures[signatures.length - 1] || null;
         await logTxTrace('send', {
@@ -254,11 +282,12 @@ export function createArbRouter(io: SocketIOServer): Router {
           wireBase64: (sendRes as any)?.wireBase64,
           signature,
         });
+        try { emit('tx:history.updated', { id, status: signature ? 'send_ok' : 'send_err' }); } catch {}
         await addTxRecord({ id, timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature, status: signature ? 'send_ok' : 'send_err' });
         try { emit('log', { level: 'info', message: signature ? 'arb:send ok' : 'arb:send err', timestamp: new Date().toISOString(), context: { cat: 'arb', ...(signature ? { signature } : {}) } }); } catch {}
-        try { emit('tx:history.updated', { id, status: signature ? 'send_ok' : 'send_err' }); } catch {}
         res.json({ id, mode, signature, signatures, ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
       } catch (e: any) {
+        try { execStats.sendErr += 1; } catch {}
         try {
           await addTxRecord({ id, timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature: null, status: 'send_err', error: String(e?.message || e) });
           try { emit('tx:history.updated', { id, status: 'send_err' }); } catch {}

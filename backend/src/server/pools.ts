@@ -2,6 +2,7 @@ import { logger } from '../utils/logger.js';
 import { emit } from './realtime.js';
 import { CONFIG } from '../utils/config.js';
 import { readJson } from '../utils/fs.js';
+import { enablePriceFeed, isPriceFeedEnabled } from './feedRegistry.js';
 // Defer web3 imports to runtime to prevent type issues in environments without types
 // import { PublicKey } from '@solana/web3.js';
 import type { AmmPool, ClmmPool, PoolsPayload } from './pools/types.js';
@@ -289,9 +290,8 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
         try { emit('log', { level: 'info', message: 'pools:bootstrap api.pause', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
         try { logger.info('pools:bootstrap api.pause', { cat: 'pools' }); } catch {}
         try {
-          const reg: any = await import('./feedRegistry.js');
-          shouldResumeFeed = (reg as any).isPriceFeedEnabled?.() === true;
-          (reg as any).enablePriceFeed?.(false);
+          shouldResumeFeed = isPriceFeedEnabled() === true;
+          enablePriceFeed(false);
         } catch {}
         try { (await import('../jupiter/rateLimiter.js')).apiStop(); } catch {}
       }
@@ -474,11 +474,9 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
     if (force && ((CONFIG.system as any)?.pausePriceFeedDuringBootstrap !== false)) {
       const wantResume = (refreshAllSources as any).__resumeFeed === true;
       delete (refreshAllSources as any).__resumeFeed;
-      const reg: any = await import('./feedRegistry.js');
-      const { readJson } = await import('../utils/fs.js');
       const wl = await readJson<any[]>(CONFIG.watchlistPath, []);
       const shouldEnable = wantResume || (Array.isArray(wl) && wl.length > 0);
-      (reg as any).enablePriceFeed?.(shouldEnable);
+      enablePriceFeed(shouldEnable);
       try { emit('log', { level: 'info', message: `pools:bootstrap feed.resume enabled=${shouldEnable}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
       try { logger.info(`pools:bootstrap feed.resume enabled=${shouldEnable}`, { cat: 'pools' }); } catch {}
     }

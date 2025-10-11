@@ -72,6 +72,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [nmSimLogs, setNmSimLogs] = useState<string[] | null>(null);
   const [nmSimErr, setNmSimErr] = useState<string | null>(null);
+  const [execStats, setExecStats] = useState<any>(null);
   // Show-all toggle moved into OpportunityList
 
   // Deprecated polling/log-triggered refresh removed; rely on socket push with initial fallback
@@ -163,7 +164,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
         });
       } catch {}
     };
-    const onOpps = (payload: { items?: Opportunity[]; summary?: OpportunitiesSummary }) => applyBulk(payload);
+    const onOpps = (payload: { items?: Opportunity[]; summary?: OpportunitiesSummary }) => { applyBulk(payload); try { requestExecStats(); } catch {} };
     // Optional: critical fast-path if backend emits "arb:signal"; fallback derives from bulk head
     const onSignal = (sig: { items?: Opportunity[] }) => {
       try {
@@ -175,6 +176,9 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
           setSummary((prev) => (prev ? { ...prev, last_detection_ms: Date.now() } as any : prev));
         });
       } catch {}
+    };
+    const requestExecStats = async () => {
+      try { const r = await fetch(`${apiBase}/arb/metrics/json`); const j = await r.json(); setExecStats(j?.exec || null); } catch {}
     };
     try { effectiveSocket.on('arb:opportunities', onOpps); } catch {}
     try { effectiveSocket.on('arb:signal', onSignal); } catch {}
@@ -307,11 +311,10 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[10px] mt-2 opacity-80">
           <div>Last Detection: {age(summary?.last_detection_ms)}</div>
           <div>Detect Ms: {fmt(summary?.detection_duration_ms)}</div>
-          <div>Ingest Ms: {fmt(summary?.ingestion_duration_ms)}</div>
+          <div>Diff→Detect Ms: {fmt((summary as any)?.diff_to_detect_ms)}</div>
           <div>Graph: {fmt(summary?.graph_nodes)} nodes / {fmt(summary?.graph_edges)} edges</div>
-          <div>Pools: {fmt(summary?.pools_amm)} AMM / {fmt(summary?.pools_clmm)} CLMM</div>
-          <div>Orca Refresh: {age(summary?.last_orca_ms)}</div>
-          <div>Raydium Refresh: {age(summary?.last_raydium_ms)}</div>
+          <div>Tx Build Ms: {fmt((execStats as any)?.build_ms?.p50)} p50 · {fmt((execStats as any)?.build_ms?.p95)} p95</div>
+          <div>Send Ms: {fmt((execStats as any)?.send_ms?.p50)} p50 · {fmt((execStats as any)?.send_ms?.p95)} p95</div>
         </div>
       </div>
       {/* Critical top opportunities strip (fast path) */}

@@ -60,6 +60,7 @@ pub struct OpportunitiesSummary {
     pub min_edge_liquidity_min: f64,
     pub last_detection_ms: u64,
     pub detection_duration_ms: u64,
+    pub diff_to_detect_ms: u64,
     pub graph_nodes: u64,
     pub graph_edges: u64,
     #[serde(skip_serializing_if = "Option::is_none")] pub near_miss: Option<Opportunity>,

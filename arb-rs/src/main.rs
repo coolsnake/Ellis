@@ -76,6 +76,9 @@ struct Metrics {
     diff_to_detect_ms: u64,
     // Last time a backend graph diff/snapshot was received (server wall time)
     last_graph_push_rx_ms: u64,
+    // Detector outcome counters
+    detection_hits_total: u64,
+    detection_misses_total: u64,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -1201,6 +1204,7 @@ async fn main() -> anyhow::Result<()> {
                     let total: i64 = s.opportunities.iter().map(|o| o.profit_bps).sum();
                     s.metrics.avg_profit_bps = if s.opportunities.is_empty() { 0.0 } else { total as f64 / s.opportunities.len() as f64 };
                     s.metrics.detection_cycles_total += 1;
+                    if s.opportunities.is_empty() { s.metrics.detection_misses_total = s.metrics.detection_misses_total.saturating_add(1); } else { s.metrics.detection_hits_total = s.metrics.detection_hits_total.saturating_add(1); }
                     s.metrics.last_detection_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
                     s.metrics.detection_duration_ms = loop_start.elapsed().as_millis() as u64;
                     let det_ms = s.metrics.detection_duration_ms;
@@ -1345,6 +1349,7 @@ async fn get_opportunities(
         min_edge_liquidity_min,
         last_detection_ms: s.metrics.last_detection_ms,
         detection_duration_ms: s.metrics.detection_duration_ms,
+        diff_to_detect_ms: s.metrics.diff_to_detect_ms,
         graph_nodes: s.metrics.graph_nodes,
         graph_edges: s.metrics.graph_edges,
         near_miss: s.near_miss.clone(),
@@ -1550,6 +1555,7 @@ async fn ws_opportunities(ws: WebSocketUpgrade, State(state): State<Arc<RwLock<A
                     min_edge_liquidity_min,
                     last_detection_ms: s.metrics.last_detection_ms,
                     detection_duration_ms: s.metrics.detection_duration_ms,
+                    diff_to_detect_ms: s.metrics.diff_to_detect_ms,
                     graph_nodes: s.metrics.graph_nodes,
                     graph_edges: s.metrics.graph_edges,
                     near_miss: s.near_miss.clone(),
@@ -1842,6 +1848,8 @@ async fn metrics_prom(State(state): State<Arc<RwLock<AppState>>>) -> String {
             "arb_max_profit_bps {}\n",
             "arb_avg_profit_bps {}\n",
             "arb_diff_to_detect_ms {}\n",
+            "arb_detection_hits_total {}\n",
+            "arb_detection_misses_total {}\n",
             "arb_graph_last_version {}\n",
             "arb_graph_last_timestamp {}\n"
         ),
@@ -1856,6 +1864,8 @@ async fn metrics_prom(State(state): State<Arc<RwLock<AppState>>>) -> String {
         m.max_profit_bps,
         m.avg_profit_bps,
         m.diff_to_detect_ms,
+        m.detection_hits_total,
+        m.detection_misses_total,
         s.last_graph_version,
         s.last_graph_ts
     )

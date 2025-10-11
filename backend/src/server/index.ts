@@ -14,6 +14,7 @@ import { setPriceFeedRef, enablePriceFeed, isPriceFeedEnabled } from './feedRegi
 import { createWalletFeed } from './walletFeed.js';
 import { systemStatus } from './status.js';
 import { setIo, emit, startArbOpportunitiesBridge } from './realtime.js';
+import { writeFile } from 'fs/promises';
 import { startGraphStream } from './graph.js';
 import { setWalletHistorySocket, initWalletHistory, getWalletHistory } from './walletHistory.js';
 import { apiStop, setTargetTickTimeMs } from '../jupiter/rateLimiter.js';
@@ -363,6 +364,18 @@ async function shutdown() {
 }
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
+
+// Persist metrics rings on shutdown (overwrite existing file)
+async function persistMetricsLatest() {
+  try {
+    const { getGraphPushStatsRaw } = await import('./realtime.js');
+    const payload = { graph_push: getGraphPushStatsRaw() } as any;
+    await writeFile('backend/logs/metrics-latest.json', JSON.stringify(payload, null, 2), 'utf-8');
+  } catch {}
+}
+process.on('SIGINT', async () => { try { await persistMetricsLatest(); } catch {}; });
+process.on('SIGTERM', async () => { try { await persistMetricsLatest(); } catch {}; });
+process.on('beforeExit', async () => { try { await persistMetricsLatest(); } catch {}; });
 
 server.listen(CONFIG.port, () => {
   logger.info(`Backend listening on http://localhost:${CONFIG.port}`);

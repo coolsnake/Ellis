@@ -67,6 +67,30 @@ let lastRebaseAt = 0;
 let pushSuccess = 0;
 let pushFailed = 0;
 
+// Lightweight graph push ack statistics (bounded in-memory)
+const graphPushStats = {
+  ackMs: [] as number[],
+  success: 0,
+  failed: 0,
+};
+function pushBounded(arr: number[], v: number, cap = 200): void {
+  if (!Number.isFinite(v)) return;
+  arr.push(v);
+  if (arr.length > cap) arr.shift();
+}
+function pct(arr: number[], p: number): number | null {
+  if (!arr || arr.length === 0) return null;
+  const a = arr.slice().sort((x, y) => x - y);
+  const i = Math.min(a.length - 1, Math.max(0, Math.floor(((p / 100) * (a.length - 1)))));
+  return a[i] ?? null;
+}
+export function getGraphPushStats(): { count: number; p50: number | null; p95: number | null; success: number; failed: number } {
+  return { count: graphPushStats.ackMs.length, p50: pct(graphPushStats.ackMs, 50), p95: pct(graphPushStats.ackMs, 95), success: graphPushStats.success, failed: graphPushStats.failed };
+}
+export function getGraphPushStatsRaw(): { ackMs: number[]; success: number; failed: number } {
+  return { ackMs: graphPushStats.ackMs.slice(), success: graphPushStats.success, failed: graphPushStats.failed };
+}
+
 async function fetchArbMetrics(): Promise<{ last_detection_ms: number }> {
   try {
     // Skip network during unit tests to avoid timeouts
@@ -147,6 +171,10 @@ async function processArbQueue(): Promise<void> {
       try {
         if (acked) pushSuccess += 1; else pushFailed += 1;
         logger.info('arb.push ack', { kind: job.kind, acked, waited_ms: Date.now() - start, wantVersion, queue_depth: arbQueue.length, push_success: pushSuccess, push_failed: pushFailed });
+        // Record stats
+        const waited = Date.now() - start;
+        if (acked) graphPushStats.success += 1; else graphPushStats.failed += 1;
+        pushBounded(graphPushStats.ackMs, waited);
       } catch {}
 
       // Wait for a fresh detection to complete after applying this graph update (bounded wait)
