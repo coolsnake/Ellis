@@ -31,6 +31,7 @@ export async function bootstrapPricesForUniverse(opts: BootstrapOpts = {}): Prom
   }
   logger.info('price.bootstrap start', { cat, totalMints: mints.length, chunkSize, maxRequests });
   try { emit('log', { level: 'info', message: `pools:bootstrap.mints start total=${mints.length} chunk=${chunkSize} max=${maxRequests} cat=${cat}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
+  try { logger.info(`pools:bootstrap.mints start total=${mints.length} chunk=${chunkSize} max=${maxRequests} cat=${cat}`, { cat: 'pools' }); } catch {}
 
   // Skip already priced mints to reduce calls
   const existing = getAllPrices();
@@ -46,6 +47,7 @@ export async function bootstrapPricesForUniverse(opts: BootstrapOpts = {}): Prom
       logger.warn('price.bootstrap batch failed', { error: String(e?.message || e), cat });
       // On 429/backoff, stop early; partial coverage is OK
       try { emit('log', { level: 'warn', message: `pools:bootstrap.mints batch.fail cat=${cat}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
+      try { logger.info(`pools:bootstrap.mints batch.fail cat=${cat}`, { cat: 'pools' }); } catch {}
       break;
     }
   }
@@ -55,6 +57,7 @@ export async function bootstrapPricesForUniverse(opts: BootstrapOpts = {}): Prom
   const out = { total: mints.length, priced, missing: mints.length - priced };
   logger.info('price.bootstrap done', { cat, ...out });
   try { emit('log', { level: 'info', message: `pools:bootstrap.mints done total=${out.total} priced=${out.priced} missing=${out.missing} cat=${cat}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
+  try { logger.info(`pools:bootstrap.mints done total=${out.total} priced=${out.priced} missing=${out.missing} cat=${cat}`, { cat: 'pools' }); } catch {}
   return out;
 }
 
@@ -70,6 +73,7 @@ export async function bootstrapPricesForMints(mintsIn: string[], opts: Bootstrap
   if (mints.length === 0) return { total: 0, priced: 0, missing: 0 };
   logger.info('price.bootstrap.mints start', { cat, totalMints: mints.length, chunkSize, maxRequests });
   try { emit('log', { level: 'info', message: `pools:bootstrap.mints start total=${mints.length} chunk=${chunkSize} max=${maxRequests} cat=${cat}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
+  try { logger.info(`pools:bootstrap.mints start total=${mints.length} chunk=${chunkSize} max=${maxRequests} cat=${cat}`, { cat: 'pools' }); } catch {}
   const existing = getAllPrices();
   const toFetch = mints.filter((m) => !existing[m]?.usdc);
   let requests = 0;
@@ -82,6 +86,7 @@ export async function bootstrapPricesForMints(mintsIn: string[], opts: Bootstrap
     } catch (e: any) {
       logger.warn('price.bootstrap.mints batch failed', { error: String(e?.message || e), cat });
       try { emit('log', { level: 'warn', message: `pools:bootstrap.mints batch.fail cat=${cat}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
+      try { logger.info(`pools:bootstrap.mints batch.fail cat=${cat}`, { cat: 'pools' }); } catch {}
       break;
     }
   }
@@ -91,6 +96,7 @@ export async function bootstrapPricesForMints(mintsIn: string[], opts: Bootstrap
   const out = { total: mints.length, priced, missing: mints.length - priced };
   logger.info('price.bootstrap.mints done', { cat, ...out });
   try { emit('log', { level: 'info', message: `pools:bootstrap.mints done total=${out.total} priced=${out.priced} missing=${out.missing} cat=${cat}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
+  try { logger.info(`pools:bootstrap.mints done total=${out.total} priced=${out.priced} missing=${out.missing} cat=${cat}`, { cat: 'pools' }); } catch {}
   return out;
 }
 
