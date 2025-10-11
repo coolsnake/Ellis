@@ -12,7 +12,7 @@ export type HttpLogCtx = {
 export function httpLogStart(ctx: HttpLogCtx): string {
   const cid = ctx.cid || `http-${Math.random().toString(36).slice(2, 8)}`;
   try {
-    logger.info('pools.http request', { cat: LogCat.pools, subcat: LogSubcat.http, code: LogCode.POOLS_HTTP_REQUEST, cid, source: ctx.source, url: ctx.url, ...(ctx.extra || {}) });
+    logger.debug('pools.http request', { cat: LogCat.pools, subcat: LogSubcat.http, code: LogCode.POOLS_HTTP_REQUEST, cid, source: ctx.source, url: ctx.url, ...(ctx.extra || {}) });
   } catch {}
   return cid;
 }
