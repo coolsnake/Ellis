@@ -8,12 +8,13 @@ export async function getTokenMeta(mintStr: string): Promise<{ decimals: number;
   const cached = executionCache.getTokenMeta(mintStr);
   if (cached) return cached;
   const conn = new Connection(CONFIG.rpcUrl, 'confirmed');
-  const mint = new PublicKey(mintStr);
+  let mint: PublicKey | null = null;
+  try { mint = new PublicKey(mintStr); } catch {}
   let program: 'spl-token'|'token-2022' = 'spl-token';
   let decimals: number | undefined;
   try {
     const [acc, jmap] = await Promise.all([
-      conn.getAccountInfo(mint).catch(() => null),
+      mint ? conn.getAccountInfo(mint).catch(() => null) : Promise.resolve(null),
       loadJupiterTokenMap().catch(() => ({} as any)),
     ]);
     const owner = acc?.owner?.toBase58?.();
@@ -21,9 +22,10 @@ export async function getTokenMeta(mintStr: string): Promise<{ decimals: number;
     const j = Number((jmap as any)?.[mintStr]?.decimals);
     if (Number.isFinite(j)) decimals = j;
   } catch {}
-  if (!Number.isFinite(decimals as any)) {
+  if (!Number.isFinite(decimals as any) && mint) {
     try { decimals = Number((await getMint(conn, mint)).decimals); } catch {}
   }
+  if (!Number.isFinite(decimals as any)) decimals = 9;
   const meta = { decimals: Math.min(12, Math.max(0, Number(decimals ?? 9))), program };
   executionCache.setTokenMeta(mintStr, meta);
   return meta;

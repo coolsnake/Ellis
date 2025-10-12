@@ -10,29 +10,39 @@ export type SessionLogEvent = {
   cat?: string;
 };
 
-const sessionEvents: SessionLogEvent[] = [];
+// Mutable array exported via property descriptor to allow test overwrite
+const _sessionEvents: SessionLogEvent[] = [];
+Object.defineProperty(exports, 'sessionEvents', {
+  get() { return _sessionEvents; },
+  set(v: any) {
+    try {
+      _sessionEvents.length = 0;
+      if (Array.isArray(v)) _sessionEvents.push(...v);
+    } catch {}
+  },
+});
 const MAX_EVENTS = Number((globalThis as any)?.process?.env?.SESSION_LOGS_MAX ?? 5000);
 
 export function recordSessionLog(event: SessionLogEvent): void {
   try {
-    sessionEvents.push(event);
+    _sessionEvents.push(event);
     // Bound memory: keep only the newest MAX_EVENTS
-    if (sessionEvents.length > MAX_EVENTS) {
-      sessionEvents.splice(0, sessionEvents.length - MAX_EVENTS);
+    if (_sessionEvents.length > MAX_EVENTS) {
+      _sessionEvents.splice(0, _sessionEvents.length - MAX_EVENTS);
     }
   } catch {}
 }
 
 export async function writeSessionLogAndClear(): Promise<string | null> {
   try {
-    if (sessionEvents.length === 0) return null;
+    if (_sessionEvents.length === 0) return null;
     const dir = CONFIG.logDir || resolve('backend', 'logs');
     await fsp.mkdir(dir, { recursive: true }).catch(() => {});
     const file = resolve(dir, 'session.json');
     // Limit to last 2000 events
-    const items = sessionEvents.slice(-2000);
+    const items = _sessionEvents.slice(-2000);
     await fsp.writeFile(file, JSON.stringify(items, null, 2), 'utf-8');
-    sessionEvents.length = 0;
+    _sessionEvents.length = 0;
     return file;
   } catch {
     return null;
@@ -48,7 +58,7 @@ export async function writeConsolidatedSessionLog(): Promise<string | null> {
     const max = Number((CONFIG as any)?.consolidated?.max || 2000);
 
     // Backend session events (prefer in-memory; if empty, fall back to last written session.json)
-    let backend = sessionEvents.slice(-max).map((e) => ({ ...e, source: 'backend' as const }));
+    let backend = _sessionEvents.slice(-max).map((e) => ({ ...e, source: 'backend' as const }));
     if (!backend.length) {
       try {
         const sessionFile = resolve(dir, 'session.json');
@@ -82,7 +92,17 @@ export async function writeConsolidatedSessionLog(): Promise<string | null> {
     } catch {}
 
     const merged = [...backend, ...arb];
-    const items = merged.slice(-max);
+    // Interleave tails to preserve both sources when present
+    const cap = Math.max(1, max);
+    const backTail = backend.slice(-cap);
+    const arbTail = arb.slice(-cap);
+    const outArr: any[] = [];
+    let i = backTail.length - 1, j = arbTail.length - 1;
+    while (outArr.length < cap && (i >= 0 || j >= 0)) {
+      if (i >= 0) outArr.push(backTail[i--]);
+      if (outArr.length < cap && j >= 0) outArr.push(arbTail[j--]);
+    }
+    const items = outArr.reverse();
     await fsp.writeFile(out, JSON.stringify(items, null, 2), 'utf-8');
     return out;
   } catch {
