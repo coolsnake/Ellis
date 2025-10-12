@@ -477,15 +477,15 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
     try { logger.warn('pools.pair_sol_usdc.failed', { error: String(e?.message || e), cat: 'pools' }); } catch {}
     try { emit('log', { level: 'warn', message: `pools:pair_sol_usdc.failed error=${String(e?.message || e)}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
   }
-  // Resume watchlist price feed if we paused it earlier
+  // Resume watchlist price feed based on prior state or watchlist
   try {
-    if (force && ((CONFIG.system as any)?.pausePriceFeedDuringBootstrap !== false)) {
-      const wantResume = (refreshAllSources as any).__resumeFeed === true;
+    if (force) {
+      const reg: any = await import('./feedRegistry.js');
+      const wantResume = (refreshAllSources as any).__resumeFeed === true || reg.isPriceFeedEnabled?.() === true;
       delete (refreshAllSources as any).__resumeFeed;
       const fsmod: any = await import('../utils/fs.js');
       const wl = await fsmod.readJson(CONFIG.watchlistPath, [] as any[]);
       const shouldEnable = wantResume || (Array.isArray(wl) && wl.length > 0);
-      const reg: any = await import('./feedRegistry.js');
       reg.enablePriceFeed?.(shouldEnable);
       try { emit('log', { level: 'info', message: `pools:bootstrap feed.resume enabled=${shouldEnable}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
       try { logger.info(`pools:bootstrap feed.resume enabled=${shouldEnable}`, { cat: 'pools' }); } catch {}

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
 // Common mints
 const SOL = 'So11111111111111111111111111111111111111112';
@@ -14,35 +14,20 @@ const cfg = {
   dynamicCompute: true,
 } as any;
 
-// Mock modules that are dynamically imported by the resolver
-vi.mock('../server/priceStore.js', () => {
-  return {
-    getPriceByMint: vi.fn(),
-    setPrices: vi.fn(),
-    getAllPrices: vi.fn(),
-  };
-});
-
-vi.mock('../execution/resolver/tokenMeta.js', () => {
-  return {
-    getTokenMeta: vi.fn(),
-  };
-});
-
-beforeEach(() => {
-  vi.clearAllMocks();
-});
+// Tests seed price store and token meta directly (no ESM export mutation or test runner mocks)
 
 describe('resolver sizeUsd sizing', () => {
 
   it('uses sizeUsd to compute atoms for starting mint when size not provided', async () => {
-    // Mock price store: SOL = $25
-    const mockPriceStore = await import('../server/priceStore.js');
-    (mockPriceStore as any).getPriceByMint.mockImplementation((m: string) => (
-      m === SOL ? { usdc: 25, sol: 1 } : (m === USDC ? { usdc: 1, sol: null } : { usdc: null, sol: null })
-    ));
-    const mockTokenMeta = await import('../execution/resolver/tokenMeta.js');
-    (mockTokenMeta as any).getTokenMeta.mockImplementation(async (m: string) => ({ decimals: m === SOL ? 9 : 6, program: 'spl-token' }));
+    // Seed price store: SOL = $25, USDC = $1; and token metas
+    const priceStore = await import('../server/priceStore.js');
+    priceStore.setPrices({
+      [SOL]: { usdc: 25, sol: 1 },
+      [USDC]: { usdc: 1, sol: null },
+    });
+    const { executionCache } = await import('../execution/cache.js');
+    executionCache.setTokenMeta(SOL, { decimals: 9, program: 'spl-token' });
+    executionCache.setTokenMeta(USDC, { decimals: 6, program: 'spl-token' });
 
     const { resolveDirectPlan } = await import('../execution/resolver/index.js');
     const plan = await resolveDirectPlan({
@@ -63,10 +48,14 @@ describe('resolver sizeUsd sizing', () => {
   });
 
   it('size (raw) takes precedence over sizeUsd', async () => {
-    const mockPriceStore2 = await import('../server/priceStore.js');
-    (mockPriceStore2 as any).getPriceByMint.mockImplementation((_m: string) => ({ usdc: 1000, sol: null }));
-    const mockTokenMeta2 = await import('../execution/resolver/tokenMeta.js');
-    (mockTokenMeta2 as any).getTokenMeta.mockImplementation(async (_m: string) => ({ decimals: 9, program: 'spl-token' }));
+    const priceStore2 = await import('../server/priceStore.js');
+    priceStore2.setPrices({
+      [SOL]: { usdc: 1000, sol: null },
+      [USDC]: { usdc: 1, sol: null },
+    });
+    const { executionCache: executionCache2 } = await import('../execution/cache.js');
+    executionCache2.setTokenMeta(SOL, { decimals: 9, program: 'spl-token' });
+    executionCache2.setTokenMeta(USDC, { decimals: 6, program: 'spl-token' });
 
     const { resolveDirectPlan } = await import('../execution/resolver/index.js');
     const plan = await resolveDirectPlan({
