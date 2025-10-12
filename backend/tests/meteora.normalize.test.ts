@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 describe('meteora.normalize DLMM', () => {
   it('uses 1.0001^binStep base and falls back to decimals when missing', async () => {
@@ -28,8 +28,6 @@ describe('meteora.normalize DLMM', () => {
     expect(p.decimals_b).toBeTypeOf('number');
   });
 });
-
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 describe('meteora clmm orientation normalization', () => {
   beforeEach(() => {
