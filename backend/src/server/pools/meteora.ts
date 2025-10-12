@@ -114,6 +114,19 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     let decB = Number((tokenB?.decimals ?? it?.decimalsB));
     if (!Number.isFinite(decA) && jupMap[mint_a]?.decimals != null) decA = Number(jupMap[mint_a].decimals);
     if (!Number.isFinite(decB) && jupMap[mint_b]?.decimals != null) decB = Number(jupMap[mint_b].decimals);
+    // Fallback: fetch decimals on-chain if still unknown
+    try {
+      if (!Number.isFinite(decA)) {
+        const tok = await import('../../utils/tokens.js');
+        const r = await (tok as any).resolveMint(mint_a);
+        if (Number.isFinite(Number(r?.decimals))) decA = Number(r.decimals);
+      }
+      if (!Number.isFinite(decB)) {
+        const tok = await import('../../utils/tokens.js');
+        const r = await (tok as any).resolveMint(mint_b);
+        if (Number.isFinite(Number(r?.decimals))) decB = Number(r.decimals);
+      }
+    } catch {}
     const feeBasePctRaw: any = (it as any)?.base_fee_percentage;
     let fee_bps = 0;
     if (feeBasePctRaw != null) {
@@ -142,10 +155,10 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       const activeId = Number((it as any)?.active_id ?? (it as any)?.activeId);
       const binStep = Number((it as any)?.bin_step ?? (it as any)?.binStep);
       if (Number.isFinite(activeId) && Number.isFinite(binStep) && Number.isFinite(decA) && Number.isFinite(decB)) {
-        // Per-bin factor; e.g., binStep=16 => f≈1.0016 (approximate 1.0001^binStep)
-        const f = 1 + (binStep / 10_000);
+        // Use standard LB base: 1.0001^binStep
+        const f = Math.pow(1.0001, binStep);
         if (f > 0) {
-          // price_B_per_A ≈ f^(activeId) * 10^(decA - decB); A-per-1-B is reciprocal
+          // price_B_per_A = f^(activeId) * 10^(decA - decB); A-per-1-B is reciprocal
           const bPerA = Math.pow(f, activeId) * Math.pow(10, (decA as number) - (decB as number));
           const aPerB = bPerA > 0 ? (1 / bPerA) : 0;
           if (Number.isFinite(aPerB) && aPerB > 0) price_a_per_b = aPerB;

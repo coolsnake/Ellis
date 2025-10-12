@@ -1,3 +1,34 @@
+import { describe, it, expect } from 'vitest';
+
+describe('meteora.normalize DLMM', () => {
+  it('uses 1.0001^binStep base and falls back to decimals when missing', async () => {
+    const mod = await import('../src/server/pools/meteora');
+    const { normalizeMeteoraHttp } = mod as any;
+    const mintA = 'So11111111111111111111111111111111111111112'; // SOL 9
+    const mintB = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'; // USDC 6
+    const raw = [{
+      address: 'DLMM_POOL',
+      tokenA: { mint: mintA },
+      tokenB: { mint: mintB },
+      // omit decimals to trigger fallback
+      active_id: 10,
+      bin_step: 16,
+      reserve_x_amount: '1000000000',
+      reserve_y_amount: '1000000',
+    }];
+    const out = await normalizeMeteoraHttp(raw);
+    expect(out.clmm.length).toBe(1);
+    const p = out.clmm[0];
+    expect(p.mint_a).toBe(mintA);
+    expect(p.mint_b).toBe(mintB);
+    expect(typeof p.price_a_per_b).toBe('number');
+    expect(p.price_a_per_b! > 0).toBe(true);
+    // decimals should be filled
+    expect(p.decimals_a).toBeTypeOf('number');
+    expect(p.decimals_b).toBeTypeOf('number');
+  });
+});
+
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 describe('meteora clmm orientation normalization', () => {

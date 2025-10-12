@@ -174,6 +174,19 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
       if (mint_b === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') decB = 6;
       if (mint_a === 'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN') decA = 6;
       if (mint_b === 'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN') decB = 6;
+      // Fallback: fetch decimals on-chain if still unknown
+      try {
+        if (!Number.isFinite(decA)) {
+          const tok = await import('../../utils/tokens.js');
+          const r = await (tok as any).resolveMint(mint_a);
+          if (Number.isFinite(Number(r?.decimals))) decA = Number(r.decimals);
+        }
+        if (!Number.isFinite(decB)) {
+          const tok = await import('../../utils/tokens.js');
+          const r = await (tok as any).resolveMint(mint_b);
+          if (Number.isFinite(Number(r?.decimals))) decB = Number(r.decimals);
+        }
+      } catch {}
       // Clamp to reasonable integer bounds
       decA = Math.min(12, Math.max(0, Math.round(Number(decA))));
       decB = Math.min(12, Math.max(0, Math.round(Number(decB))));

@@ -1,4 +1,8 @@
 {
 "name": "LockStone",
-"version": "0.1"
+"version": "0.1",
+"sanity": {
+  "priceClampMin": 1e-12,
+  "priceClampMax": 1e9
+}
 }
