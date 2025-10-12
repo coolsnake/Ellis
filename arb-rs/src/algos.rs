@@ -247,7 +247,6 @@ pub fn detect_near_miss_cycles(g: &ArbGraph, epsilon: f64, max_hops: usize, top_
     }
     // If BF-based near-miss detection found nothing, fall back to simple triangle search
     if out.is_empty() && max_hops >= 3 {
-        use petgraph::visit::IntoNeighborsDirected;
         use petgraph::Direction::{Outgoing};
         let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
         'tri: for u in g.g.node_indices() {
@@ -265,7 +264,7 @@ pub fn detect_near_miss_cycles(g: &ArbGraph, epsilon: f64, max_hops: usize, top_
                     if prod >= 1.0 { continue; }
                     let shortfall = 1.0 - prod;
                     if shortfall <= epsilon {
-                        let mut cyc = vec![u.index(), v.index(), w.index()];
+                        let cyc = vec![u.index(), v.index(), w.index()];
                         // Canonicalize and dedupe (rotation+direction agnostic)
                         let canon = |v: &Vec<usize>| -> Vec<usize> {
                             if v.is_empty() { return v.clone(); }
