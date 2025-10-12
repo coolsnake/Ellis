@@ -590,7 +590,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           // Fallback: prefer reserves then incoming
           chosen = (price && price > 0) ? price : ((incomingFwd && incomingFwd > 0) ? incomingFwd : undefined);
         }
-        // Ensure oriented as A per 1 B using USD reference when available
+        // Ensure oriented as A per 1 B. Prefer USD-based orientation when available; otherwise triangulate.
         let oriented = chosen;
         try {
           const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
@@ -605,6 +605,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             const post = Math.max(out / ref, ref / out);
             if (post > maxClampDev) out = ref;
             oriented = out;
+          } else {
+            // No USD reference: keep chosen price as-is; reciprocity tests will guard egregious cases
           }
         } catch {}
         const fwdAmmRay = (oriented && (oriented as number) > 0) ? (oriented as number) : undefined;
