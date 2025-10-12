@@ -350,21 +350,7 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
       // Prefer decimals-aware reserves-derived price; fallback to raw ratio, then upstream
       const price_from_reserves = (price_res_decs > 0 ? price_res_decs : (price_res > 0 ? price_res : 0));
       let price_sane = price_from_reserves > 0 ? price_from_reserves : (price_in > 0 ? price_in : 0);
-      // Stable-aware flip for upstream-only price: if B is stable and upstream < 1, flip orientation
-      try {
-        const STABLES = new Set<string>([
-          'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-          'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
-        ]);
-        const usedUpstreamOnly = !(price_from_reserves > 0) && (price_in > 0);
-        if (usedUpstreamOnly && price_sane > 0) {
-          if (STABLES.has(mintB) && price_sane < 1) {
-            // Flip A/B sides logically: invert price to keep A per 1 B after swap
-            // Instead of mutating mints, keep normalized A/B and just invert to reflect expected orientation
-            price_sane = 1 / price_sane;
-          }
-        }
-      } catch {}
+      // Removed stable-aware flip to avoid double-orientation corrections; orientation handled later via canonicalization/graph USD refs
       try {
         const sanityCfg = (CONFIG as any)?.sanity || {};
         const apply = (sanityCfg as any).sanity_applyRaydiumAmm ?? true;

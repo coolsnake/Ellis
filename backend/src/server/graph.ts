@@ -474,6 +474,14 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
         'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
       ]);
+      const clampPrice = (px: number | undefined): number | undefined => {
+        const min = Number.isFinite(Number(((CONFIG as any)?.sanity as any)?.priceClampMin)) ? Number(((CONFIG as any)?.sanity as any)?.priceClampMin) : 1e-12;
+        const max = Number.isFinite(Number(((CONFIG as any)?.sanity as any)?.priceClampMax)) ? Number(((CONFIG as any)?.sanity as any)?.priceClampMax) : 1e12;
+        const v = Number(px);
+        if (!Number.isFinite(v) || !(v > 0)) return undefined;
+        if (v < min || v > max) return undefined;
+        return v;
+      };
       // Add reverse visualization edges so graph reflects tradable paths in both directions
       const rayValid = validatePoolsForGraph(ray as any);
       const safePoolId = (p: any): string | undefined => {
@@ -609,7 +617,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             // No USD reference: keep chosen price as-is; reciprocity tests will guard egregious cases
           }
         } catch {}
-        const fwdAmmRay = (oriented && (oriented as number) > 0) ? (oriented as number) : undefined;
+        const fwdAmmRay = clampPrice((oriented && (oriented as number) > 0) ? (oriented as number) : undefined);
         const revAmmRay = (fwdAmmRay && fwdAmmRay > 0) ? (1 / fwdAmmRay) : undefined;
         addEdge(p.mint_a, p.mint_b, 'Raydium', p.fee_bps, liqParamAmm, fwdAmmRay, usd, pidAmm, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
         // Use a distinct id for reverse edge when poolId exists to avoid overwriting forward
@@ -624,14 +632,6 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           if (edgesMap[rid]) edgesMap[rid].pool_liquidity_raw = rawLiq > 0 ? rawLiq : undefined;
         } catch {}
       }
-      const clampPrice = (px: number | undefined): number | undefined => {
-        const min = Number.isFinite(Number(((CONFIG as any)?.sanity as any)?.priceClampMin)) ? Number(((CONFIG as any)?.sanity as any)?.priceClampMin) : 1e-12;
-        const max = Number.isFinite(Number(((CONFIG as any)?.sanity as any)?.priceClampMax)) ? Number(((CONFIG as any)?.sanity as any)?.priceClampMax) : 1e12;
-        const v = Number(px);
-        if (!Number.isFinite(v) || !(v > 0)) return undefined;
-        if (v < min || v > max) return undefined;
-        return v;
-      };
       // Orientation correction: ensure price is A per 1 B. When USD refs are available,
       // choose between px and 1/px to match pb/pa; optionally clamp large deviation.
       const orientAPerB = (mintA: string, mintB: string, px: number | undefined): number | undefined => {
@@ -897,7 +897,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const pid = safePoolId(p);
         const liqBase = Number((p as any)?.liquidity_base);
         const liqDisplay = (p as any)?.liquidity_display ?? ((usd && usd > 0) ? usd : (Number.isFinite(liqBase) && liqBase > 0 ? liqBase : undefined));
-        const fwd = price && price > 0 ? price : undefined;
+        const fwd = clampPrice(price && price > 0 ? price : undefined);
         const rev = fwd && fwd > 0 ? (1 / fwd) : undefined;
         addEdge(p.mint_a, p.mint_b, 'Meteora', p.fee_bps, liqDisplay, fwd, usd, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
         const pidRev = pid ? `${pid}-rev` : undefined;
