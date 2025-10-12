@@ -25,6 +25,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
   // Build per-hop placeholders
   const hopIxs: any[] = [];
   const owner = (await ensureWallet(CONFIG.walletPath)).publicKey;
+  // Optional basic preflight checks (balances/ATAs) can be added here in future
   const execCfg = await loadExecConfig().catch(() => ({ createAtasInTx: true, wrapSolInTx: true } as any));
   let performedWrap = false;
   let willUnwrap = false;

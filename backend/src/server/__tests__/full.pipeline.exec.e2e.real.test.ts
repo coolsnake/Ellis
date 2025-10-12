@@ -97,7 +97,7 @@ vi.mock('../../execution/sender.js', () => ({
         const v = Number((r as any).price_a_per_b || 0);
         if (!(f > 0) || !(v > 0)) continue;
         const prod = f * v;
-        // allow modest slack for real feeds
+        // global slack for real feeds
         expect(prod).toBeGreaterThan(1 / 1.10);
         expect(prod).toBeLessThan(1.10);
         checkedPairs += 1;
@@ -105,12 +105,13 @@ vi.mock('../../execution/sender.js', () => ({
       expect(checkedPairs).toBeGreaterThan(0);
     } catch {}
 
-    // 2b) Orca/Meteora specific reciprocity spot-check (tight bounds)
+    // 2b) Tight reciprocity spot-check for all DEXes (when both directions exist)
     try {
       const byId2 = new Map((snap.edges || []).map((e: any) => [String(e.id || ''), e]));
+      const allowDex = new Set(['Raydium','Orca','Meteora']);
       for (const e of (snap.edges || [])) {
         const dex = String((e as any)?.dex || '');
-        if (dex !== 'Orca' && dex !== 'Meteora') continue;
+        if (!allowDex.has(dex)) continue;
         const rid = e.pool_id ? `${e.pool_id}-rev` : `${e.target}->${e.source}-${dex}`;
         const r = byId2.get(rid);
         if (!r) continue;

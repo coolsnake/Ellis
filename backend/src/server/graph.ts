@@ -596,6 +596,28 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         if (v < min || v > max) return undefined;
         return v;
       };
+      // Orientation correction: ensure price is A per 1 B. When USD refs are available,
+      // choose between px and 1/px to match pb/pa; optionally clamp large deviation.
+      const orientAPerB = (mintA: string, mintB: string, px: number | undefined): number | undefined => {
+        const v = Number(px);
+        if (!Number.isFinite(v) || !(v > 0)) return px;
+        try {
+          const pa = getPriceByMintVar(mintA)?.usdc ?? null;
+          const pb = getPriceByMintVar(mintB)?.usdc ?? null;
+          if (!(pa && pb && (pa as number) > 0 && (pb as number) > 0)) return v;
+          const ref = (pb as number) / (pa as number);
+          const inv = 1 / v;
+          const dev  = Math.max(v / ref,  ref / v);
+          const devI = Math.max(inv / ref, ref / inv);
+          let out = devI + 1e-12 < dev ? inv : v;
+          const maxClampDev = Number(((CONFIG as any)?.sanity as any)?.usdClampMaxDev) || 1.10;
+          const post = Math.max(out / ref, ref / out);
+          if (post > maxClampDev) out = ref;
+          return out;
+        } catch {
+          return v;
+        }
+      };
       for (const p of (rayValid.clmm || [])) {
         clmmTotal++;
         let price = (p as any)?.price_a_per_b as number | undefined;
@@ -756,6 +778,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const liqParamOrcaAmm = (p as any)?.liquidity_display ?? (p as any).liquidity_base;
         // Orca AMM: incoming price is A per 1 B. Calibrate then apply orientation rule.
         let priceAmmOrca = calibratePrice(p.mint_a, p.mint_b, (p as any).price_a_per_b);
+        // Ensure oriented as A per 1 B using USD reference when available
+        priceAmmOrca = orientAPerB(p.mint_a, p.mint_b, priceAmmOrca);
         try {
           const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
           const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
@@ -861,6 +885,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             }
           }
         } catch {}
+        // Orient as A per 1 B using USD reference when available
+        priceClmmOrca = orientAPerB(p.mint_a, p.mint_b, priceClmmOrca);
         // Forward + reverse with strict reciprocal rule and consistency guard
         const fwdClmm = clampPrice((priceClmmOrca && priceClmmOrca > 0) ? priceClmmOrca : undefined);
         const revClmm = (fwdClmm && fwdClmm > 0) ? (1 / fwdClmm) : undefined;
@@ -904,6 +930,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             }
           }
         } catch {}
+        // Orient as A per 1 B using USD reference when available
+        priceMet = orientAPerB(p.mint_a, p.mint_b, priceMet);
         // Forward edge must carry A per 1 B; reverse is strict reciprocal
         const pid = String((p as any)?.id || undefined) || undefined;
         const liqParam = (p as any)?.liquidity_display ?? (usd && usd > 0 ? usd : (p as any)?.pool_liquidity_raw);

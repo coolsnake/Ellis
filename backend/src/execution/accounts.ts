@@ -33,9 +33,12 @@ export function isSolMint(mint: string): boolean {
 
 export function buildWrapSolIxs(owner: PublicKey, payer: PublicKey, lamports: number): { ixs: any[]; wsolAta: PublicKey } {
   const ata = getAssociatedTokenAddressSync(NATIVE_MINT, owner, false);
-  // System transfer is constructed at sender with real web3.js; here we emit descriptors
   const ixs = [
-    { programId: SystemProgram.programId, type: 'system.transfer', keys: { from: payer.toBase58(), to: ata.toBase58() }, data: { lamports } },
+    // Ensure WSOL ATA exists
+    createAssociatedTokenAccountIdempotentInstruction(payer, ata, owner, NATIVE_MINT),
+    // Fund WSOL account
+    SystemProgram.transfer({ fromPubkey: payer, toPubkey: ata, lamports }),
+    // Sync native balance into token amount
     createSyncNativeInstruction(ata),
   ];
   return { ixs, wsolAta: ata };

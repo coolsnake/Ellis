@@ -265,6 +265,12 @@ export const CONFIG = {
       .split(',')
       .map(s => s.trim())
       .filter(Boolean),
+    // Token-2022 allowlist per-DEX (default: blocked everywhere)
+    token2022Allow: {
+      raydium: (process.env.TOKEN2022_ALLOW_RAYDIUM || 'false') === 'true',
+      orca: (process.env.TOKEN2022_ALLOW_ORCA || 'false') === 'true',
+      meteora: (process.env.TOKEN2022_ALLOW_METEORA || 'false') === 'true',
+    },
   },
   // Optional simple Basic Auth for API/WS (prefer Nginx for static site)
   auth: {

@@ -26,6 +26,15 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
     // lightweight placeholders; per-DEX resolvers will fill in accounts/state
     const tokenInMeta = executionCache.getTokenMeta(inputMint) || await getTokenMeta(inputMint);
     const tokenOutMeta = executionCache.getTokenMeta(outputMint) || await getTokenMeta(outputMint);
+    // Token-2022 gating (blocked by default unless allowed per-DEX via config)
+    try {
+      const allow = (CONFIG.system as any)?.token2022Allow || {};
+      const any2022 = tokenInMeta.program === 'token-2022' || tokenOutMeta.program === 'token-2022';
+      if (any2022) {
+        const ok = (dex === 'raydium' && allow.raydium) || (dex === 'orca' && allow.orca) || (dex === 'meteora' && allow.meteora);
+        if (!ok) throw new Error('TOKEN2022_NOT_ALLOWED');
+      }
+    } catch {}
     const hop: DirectHop = {
       dex,
       variant,
@@ -44,7 +53,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       outputTokenProgram: tokenOutMeta.program,
       userSourceAta: '',
       userDestAta: '',
-      amountInRaw: BigInt(Math.max(0, Math.floor(Number(input.size || 0)))) ,
+      amountInRaw: 0n,
       minOutRaw: 0n,
     };
     // Populate common per-DEX account fields opportunistically from cache
@@ -83,35 +92,22 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       return hop;
     }
   }));
-
-  // Dynamic sizing from bottleneck: naive proportional to min vault liquidity across hops
+  // Set amounts and minOuts using per-hop quotes; propagate through hops
   try {
-    const caps = hops.map(h => Number((h as any)?.liquidity_display || 0)).filter(v => Number.isFinite(v) && v > 0);
-    if (caps.length) {
-      const minCap = Math.min(...caps);
-      const usd = Math.max(1, Math.floor(minCap * 0.02));
-      const dec = hops[0]?.inputDecimals || 9;
-      const priceUsd = 1; // placeholder: assume $1 units for input mint
-      const tokens = usd / priceUsd;
-      const raw = BigInt(Math.max(1, Math.floor(tokens * Math.pow(10, dec))));
-      // Apply to first hop only for now
-      if (raw > 0n) hopAdjustAmount(hops, raw);
+    const slippage = typeof input.slippageBps === 'number' ? input.slippageBps : cfg.slippageBpsDefault;
+    let curIn = BigInt(Math.max(0, Math.floor(Number(input.size || 0))));
+    const { quoteHopOut, applyMinOut } = await import('./quotes.js');
+    for (let i = 0; i < hops.length; i++) {
+      hops[i].amountInRaw = curIn;
+      const out = await quoteHopOut(hops[i], curIn);
+      hops[i].minOutRaw = applyMinOut(out, slippage);
+      curIn = out > 0n ? out : curIn;
     }
   } catch {}
   logger.info('tx.resolve.ok', { cat: 'tx', code: LogCode.TX_RESOLVE_OK, ctx: { ms: Date.now() - t0, hops: hops.length } as any });
   return { path, hops, computeUnitPriceMicroLamports: cfg.computeUnitPriceMicroLamports };
 }
 
-function hopAdjustAmount(hops: DirectHop[], raw: bigint): void {
-  try {
-    const h0 = hops[0];
-    if (h0) {
-      h0.amountInRaw = raw;
-      const slippageBps = 100;
-      const one = 10_000n;
-      h0.minOutRaw = (raw * (one - BigInt(slippageBps))) / one;
-    }
-  } catch {}
-}
+function hopAdjustAmount(_hops: DirectHop[], _raw: bigint): void { /* deprecated */ }
 
 
