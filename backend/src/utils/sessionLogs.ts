@@ -11,10 +11,15 @@ export type SessionLogEvent = {
 };
 
 const sessionEvents: SessionLogEvent[] = [];
+const MAX_EVENTS = Number((globalThis as any)?.process?.env?.SESSION_LOGS_MAX ?? 5000);
 
 export function recordSessionLog(event: SessionLogEvent): void {
   try {
     sessionEvents.push(event);
+    // Bound memory: keep only the newest MAX_EVENTS
+    if (sessionEvents.length > MAX_EVENTS) {
+      sessionEvents.splice(0, sessionEvents.length - MAX_EVENTS);
+    }
   } catch {}
 }
 

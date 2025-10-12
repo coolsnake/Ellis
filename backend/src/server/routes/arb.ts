@@ -303,6 +303,17 @@ export function createArbRouter(io: SocketIOServer): Router {
         try { logger.info('tx.send.ok', { cat: 'tx', code: LogCode.TX_SEND_OK, ctx: { id, signature, ixCount: built.ixCount, txSizeBytes: built.sizeBytes } as any }); } catch {}
         try { emit('tx:history.updated', { id, status: signature ? 'send_ok' : 'send_err' }); } catch {}
         await addTxRecord({ id, timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature, status: signature ? 'send_ok' : 'send_err' });
+        // Notify arb-rs that this opportunity path has been executed (best-effort)
+        try {
+          const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
+          const secret = process.env.ARB_SHARED_SECRET;
+          const dexes = Array.from(new Set((plan.hops || []).map((h:any) => String(h?.dex || '')))).filter(Boolean).sort();
+          await fetch(`${host}/arb/opportunity/executed`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', ...(secret ? { authorization: `Bearer ${secret}` } : {}) },
+            body: JSON.stringify({ path: plan.path, dexes }),
+          }).catch(() => null);
+        } catch {}
         try { emit('log', { level: 'info', message: signature ? 'arb:send ok' : 'arb:send err', timestamp: new Date().toISOString(), context: { cat: 'arb', ...(signature ? { signature } : {}) } }); } catch {}
         res.json({ id, mode, signature, signatures, ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
       } catch (e: any) {

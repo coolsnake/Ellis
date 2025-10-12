@@ -627,6 +627,13 @@ useEffect(() => {
 		loadSnapshot();
 	}, [filterDex.Raydium, filterDex.Orca, filterDex.Meteora, filterKind.AMM, filterKind.CLMM]);
 
+  // Ensure we don't leave the server thinking we're busy after unmount
+  useEffect(() => {
+    return () => {
+      try { effectiveSocket?.emit('graph:idle'); } catch {}
+    };
+  }, [effectiveSocket]);
+
   // Listen for external refresh requests (e.g., from ArbitragePanel)
   useEffect(() => {
     const onRefresh = () => { loadSnapshot(); };
@@ -984,6 +991,18 @@ useEffect(() => {
     });
     // Details cache + fetchers for on-demand hydration
     const detailsCache = new Map<string, any>();
+    const MAX_DETAILS = 5000;
+    const pruneDetailsCache = () => {
+      try {
+        if (detailsCache.size > MAX_DETAILS) {
+          const over = detailsCache.size - MAX_DETAILS;
+          for (let i = 0; i < over; i++) {
+            const it = detailsCache.keys().next();
+            if (it && !it.done) detailsCache.delete(it.value); else break;
+          }
+        }
+      } catch {}
+    };
     const fetchEdgeDetails = async (ids: string[], pairs?: Array<{ source: string; target: string; dex?: string }>) => {
       const want = (ids || []).map(String).filter(Boolean);
       const missing = want.filter((id) => !detailsCache.has(id));
@@ -996,6 +1015,7 @@ useEffect(() => {
       const j = await r.json();
       const edges: any[] = Array.isArray(j?.edges) ? j.edges : [];
       edges.forEach((e: any) => detailsCache.set(String(e.id), e));
+      pruneDetailsCache();
       return edges;
     };
     const hydrateEdgesInCy = (core: cytoscape.Core, edges: any[]) => {

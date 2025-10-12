@@ -12,6 +12,7 @@ use axum::extract::ws::{WebSocketUpgrade, Message};
 use axum::response::IntoResponse;
 use serde::Serialize;
 use serde::Deserialize;
+use std::collections::{HashMap, HashSet};
 use tokio::sync::{RwLock, Notify};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use base64::{engine::general_purpose, Engine as _};
@@ -32,6 +33,10 @@ struct ArbConfig {
     max_hops: usize,
     max_idle_ms: u64,
     quote_size_usd: f64,
+    // Cap repeated detections before suppressing unless executed
+    max_detections_without_exec: usize,
+    // TTL window for detection history bookkeeping
+    detection_history_ttl_ms: u64,
     debug_emit_subthreshold: bool,
     debug_top_n: usize,
     near_miss_enable: bool,
@@ -109,6 +114,16 @@ struct AppState {
     pending_graph_ts: Option<u64>,
     // Event-driven wakeup for detection loop
     wake: Arc<Notify>,
+    // Detection bookkeeping and execution markers
+    detection_counts: HashMap<String, (u64, u64)>, // key -> (count, last_seen_ms)
+    executed_keys: HashSet<String>,
+}
+
+#[inline]
+fn keyify_opportunity(path: &Vec<String>, dexes: &Vec<String>) -> String {
+    let mut ds = dexes.clone();
+    ds.sort();
+    format!("{}|{}", path.join("->"), ds.join(","))
 }
 
 #[derive(Serialize)]
@@ -204,7 +219,7 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer().without_time().with_ansi(false).with_writer({ let ring = ring.clone(); move || RingWriter { ring: ring.clone(), buf: String::new() } }))
         .init();
 
-    let state = Arc::new(RwLock::new(AppState { config: default_config(), opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), near_miss: None, near_miss_shortfall_bps: None, near_misses: Vec::new(), last_graph_version: 0, last_graph_ts: 0, pending_added_edges: Vec::new(), pending_updated_edges: Vec::new(), pending_removed_edge_ids: Vec::new(), pending_graph_version: None, pending_graph_ts: None, wake: Arc::new(Notify::new()) }));
+    let state = Arc::new(RwLock::new(AppState { config: default_config(), opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), near_miss: None, near_miss_shortfall_bps: None, near_misses: Vec::new(), last_graph_version: 0, last_graph_ts: 0, pending_added_edges: Vec::new(), pending_updated_edges: Vec::new(), pending_removed_edge_ids: Vec::new(), pending_graph_version: None, pending_graph_ts: None, wake: Arc::new(Notify::new()), detection_counts: std::collections::HashMap::new(), executed_keys: std::collections::HashSet::new() }));
 
     // Install shutdown handler to clear in-memory state
     {
@@ -1139,18 +1154,48 @@ async fn main() -> anyhow::Result<()> {
                 };
                 // Adaptive stale handling based on config.max_idle_ms and detections stability
                 let now_ms_val = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+                // Bump detection counts for current opps and prune old entries
+                {
+                    let mut sw = loop_state.write().await;
+                    let ttl = sw.config.detection_history_ttl_ms.max(1_000);
+                    sw.detection_counts.retain(|_, &mut (_, ts)| now_ms_val.saturating_sub(ts) <= ttl);
+                    for m in opps.iter() {
+                        let key = keyify_opportunity(&m.path, &m.dexes);
+                        let (c, _) = sw.detection_counts.get(&key).copied().unwrap_or((0, 0));
+                        sw.detection_counts.insert(key, (c.saturating_add(1), now_ms_val));
+                    }
+                }
                 let base_ttl = {
                     // clamp to ≥5s to avoid overly aggressive churn
                     let s = loop_state.read().await;
                     s.config.max_idle_ms.max(5_000)
                 };
                 let mut merged: Vec<Opportunity> = Vec::new();
-                // Always keep current detections
-                merged.extend(opps.into_iter());
+                // Always keep current detections, but enforce detection cap unless executed
+                for m in opps.into_iter() {
+                    let s = loop_state.read().await;
+                    let key = keyify_opportunity(&m.path, &m.dexes);
+                    let executed = s.executed_keys.contains(&key);
+                    let count = s.detection_counts.get(&key).map(|(c,_)| *c).unwrap_or(0) as usize;
+                    if executed || count < s.config.max_detections_without_exec { merged.push(m); }
+                }
                 // Retain prior ones if within adaptive TTL and not duplicated
                 for mut o in prev.into_iter() {
                     let first = o.first_seen_ms.unwrap_or(o.detected_ms.unwrap_or(now_ms_val));
-                    let det = o.detections.unwrap_or(1);
+                    // Reuse history to determine detections and cap
+                    let det = {
+                        let s = loop_state.read().await;
+                        let key = keyify_opportunity(&o.path, &o.dexes);
+                        s.detection_counts.get(&key).map(|(c,_)| *c).unwrap_or(o.detections.unwrap_or(1))
+                    };
+                    // Hard drop if exceeding cap and not executed
+                    let over_cap = {
+                        let s = loop_state.read().await;
+                        let key = keyify_opportunity(&o.path, &o.dexes);
+                        let executed = s.executed_keys.contains(&key);
+                        !executed && (s.detection_counts.get(&key).map(|(c,_)| (*c as usize) >= s.config.max_detections_without_exec).unwrap_or(false))
+                    };
+                    if over_cap { continue; }
                     // extend TTL up to 3× (1x base + up to +2x for stability)
                     let ttl = base_ttl.saturating_mul(1 + det.min(2));
                     let is_dup = merged.iter().any(|x| x.path == o.path && x.dexes == o.dexes);
@@ -1273,6 +1318,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/opportunities", get(get_opportunities))
         
         .route("/ws/opportunities", get(ws_opportunities))
+        .route("/arb/opportunity/executed", post(opportunity_executed))
         .route("/config", post(set_config).get(get_config))
         .route("/arb/start", post(arb_start))
         .route("/arb/graph/version", get(arb_graph_version))
@@ -1590,6 +1636,21 @@ async fn ws_opportunities(ws: WebSocketUpgrade, State(state): State<Arc<RwLock<A
 }
 
 #[derive(serde::Deserialize)]
+struct ExecutedReq { path: Vec<String>, dexes: Option<Vec<String>> }
+
+async fn opportunity_executed(
+    State(state): State<Arc<RwLock<AppState>>>,
+    headers: HeaderMap,
+    Json(req): Json<ExecutedReq>,
+) -> Json<serde_json::Value> {
+    if !auth_ok(Some(&headers)) { return Json(serde_json::json!({"error":"unauthorized"})); }
+    let mut s = state.write().await;
+    let key = keyify_opportunity(&req.path, &req.dexes.unwrap_or_default());
+    s.executed_keys.insert(key);
+    Json(serde_json::json!({"ok": true}))
+}
+
+#[derive(serde::Deserialize)]
 struct ConfigReq {
     enabled: Option<bool>,
     min_profit_bps: Option<i64>,
@@ -1598,6 +1659,8 @@ struct ConfigReq {
     max_hops: Option<usize>,
     max_idle_ms: Option<u64>,
     quote_size_usd: Option<f64>,
+    max_detections_without_exec: Option<usize>,
+    detection_history_ttl_ms: Option<u64>,
     debug_emit_subthreshold: Option<bool>,
     debug_top_n: Option<usize>,
     near_miss_enable: Option<bool>,
@@ -1629,6 +1692,8 @@ async fn set_config(
         if cfg.max_hops.is_some() { keys.push("max_hops"); }
         if cfg.max_idle_ms.is_some() { keys.push("max_idle_ms"); }
         if cfg.quote_size_usd.is_some() { keys.push("quote_size_usd"); }
+        if cfg.max_detections_without_exec.is_some() { keys.push("max_detections_without_exec"); }
+        if cfg.detection_history_ttl_ms.is_some() { keys.push("detection_history_ttl_ms"); }
         
         if cfg.debug_emit_subthreshold.is_some() { keys.push("debug_emit_subthreshold"); }
         if cfg.debug_top_n.is_some() { keys.push("debug_top_n"); }
@@ -1644,6 +1709,8 @@ async fn set_config(
     if let Some(v) = cfg.max_hops { s.config.max_hops = v; }
     if let Some(v) = cfg.max_idle_ms { s.config.max_idle_ms = v; }
     if let Some(v) = cfg.quote_size_usd { s.config.quote_size_usd = v; }
+    if let Some(v) = cfg.max_detections_without_exec { s.config.max_detections_without_exec = v; }
+    if let Some(v) = cfg.detection_history_ttl_ms { s.config.detection_history_ttl_ms = v; }
     if let Some(v) = cfg.debug_emit_subthreshold { s.config.debug_emit_subthreshold = v; }
     if let Some(v) = cfg.debug_top_n { s.config.debug_top_n = v; }
     if let Some(v) = cfg.near_miss_enable { s.config.near_miss_enable = v; }
@@ -1678,6 +1745,8 @@ fn default_config() -> ArbConfig {
         max_hops: 3,
         max_idle_ms: std::env::var("ARB_IDLE_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(2000),
         quote_size_usd: 50.0,
+        max_detections_without_exec: std::env::var("ARB_MAX_DETECTIONS").ok().and_then(|s| s.parse().ok()).unwrap_or(3),
+        detection_history_ttl_ms: std::env::var("ARB_DETECTION_TTL_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(120_000),
         debug_emit_subthreshold: std::env::var("ARB_DEBUG_SUBTHRESHOLD").ok().map(|v| v == "true").unwrap_or(false),
         debug_top_n: std::env::var("ARB_DEBUG_TOP_N").ok().and_then(|s| s.parse().ok()).unwrap_or(5),
         near_miss_enable: std::env::var("ARB_NEAR_MISS_ENABLE").ok().map(|v| v != "false").unwrap_or(true),
@@ -1706,7 +1775,8 @@ mod tests {
         let mut s = AppState {
             config: ArbConfig { max_sol_stable_hops: Some(1), drop_stable_stable_hops: true, stable_mints: None, ..default_config() },
             opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), near_miss: None, near_miss_shortfall_bps: None, near_misses: Vec::new(), last_graph_version: 0, last_graph_ts: 0,
-            pending_added_edges: Vec::new(), pending_updated_edges: Vec::new(), pending_removed_edge_ids: Vec::new(), pending_graph_version: None, pending_graph_ts: None, wake: Arc::new(Notify::new())
+            pending_added_edges: Vec::new(), pending_updated_edges: Vec::new(), pending_removed_edge_ids: Vec::new(), pending_graph_version: None, pending_graph_ts: None, wake: Arc::new(Notify::new()),
+            detection_counts: HashMap::new(), executed_keys: HashSet::new(),
         };
         // Build three nodes and edges to form SOL->USDC->USDT->SOL (labels only)
         let sol = "So11111111111111111111111111111111111111112";
@@ -1826,6 +1896,61 @@ mod tests {
         assert_eq!(v.len(), 50);
         // Highest net_bps at front
         assert!(v[0].net_bps.unwrap_or(0) >= v[49].net_bps.unwrap_or(0));
+    }
+
+    #[test]
+    fn detections_cap_without_execution() {
+        let mut detection_counts: HashMap<String, (u64, u64)> = HashMap::new();
+        let executed_keys: HashSet<String> = HashSet::new();
+        let cfg = ArbConfig { max_detections_without_exec: 3, detection_history_ttl_ms: 120_000, ..default_config() };
+        let opp = mk_opp(&["A","B","A"], 100, Some(90), 0, 0, 0);
+        let key = keyify_opportunity(&opp.path, &opp.dexes);
+        let mut included = Vec::new();
+        for i in 0..3u64 {
+            let now = 1_000 + i * 500; // within TTL
+            // prune
+            detection_counts.retain(|_, &mut (_, ts)| now.saturating_sub(ts) <= cfg.detection_history_ttl_ms);
+            // bump
+            let (c, _) = detection_counts.get(&key).copied().unwrap_or((0, 0));
+            detection_counts.insert(key.clone(), (c.saturating_add(1), now));
+            // include if under cap or executed
+            let executed = executed_keys.contains(&key);
+            let count = detection_counts.get(&key).map(|(c,_)| *c as usize).unwrap_or(0);
+            included.push(executed || count < cfg.max_detections_without_exec);
+        }
+        assert_eq!(included, vec![true, true, false]);
+    }
+
+    #[test]
+    fn executed_override_allows_after_cap() {
+        let mut detection_counts: HashMap<String, (u64, u64)> = HashMap::new();
+        let mut executed_keys: HashSet<String> = HashSet::new();
+        let cfg = ArbConfig { max_detections_without_exec: 3, detection_history_ttl_ms: 120_000, ..default_config() };
+        let opp = mk_opp(&["A","B","A"], 100, Some(90), 0, 0, 0);
+        let key = keyify_opportunity(&opp.path, &opp.dexes);
+        detection_counts.insert(key.clone(), (3, 10_000));
+        executed_keys.insert(key.clone());
+        let executed = executed_keys.contains(&key);
+        let count = detection_counts.get(&key).map(|(c,_)| *c as usize).unwrap_or(0);
+        assert!(executed && count >= cfg.max_detections_without_exec);
+        // should be included due to executed override
+        assert!(executed || count < cfg.max_detections_without_exec);
+    }
+
+    #[test]
+    fn detection_history_ttl_prunes_old_counts() {
+        let mut detection_counts: HashMap<String, (u64, u64)> = HashMap::new();
+        let cfg = ArbConfig { detection_history_ttl_ms: 1000, ..default_config() };
+        let opp = mk_opp(&["A","B","A"], 100, Some(90), 0, 0, 0);
+        let key = keyify_opportunity(&opp.path, &opp.dexes);
+        detection_counts.insert(key.clone(), (2, 1_000));
+        // advance beyond TTL
+        let now = 3_500u64;
+        detection_counts.retain(|_, &mut (_, ts)| now.saturating_sub(ts) <= cfg.detection_history_ttl_ms);
+        assert!(detection_counts.get(&key).is_none());
+        // With count missing, include under cap
+        let count = detection_counts.get(&key).map(|(c,_)| *c as usize).unwrap_or(0);
+        assert!(count < cfg.max_detections_without_exec);
     }
 }
 

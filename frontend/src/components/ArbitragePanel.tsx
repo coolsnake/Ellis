@@ -178,14 +178,14 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
         });
       } catch {}
     };
-    const requestExecStats = async () => {
+    const requestExecStats = throttle(async () => {
       try {
         const r = await fetch(`${apiBase}/arb/metrics/json`);
         const j = await r.json();
         setExecStats(j?.exec || null);
         setArbMetrics(j || null);
       } catch {}
-    };
+    }, 2000);
     try { effectiveSocket.on('arb:opportunities', onOpps); } catch {}
     try { effectiveSocket.on('arb:signal', onSignal); } catch {}
     return () => {

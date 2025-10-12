@@ -1,4 +1,4 @@
-import { writeFile, mkdir } from 'fs/promises';
+import { writeFile, mkdir, stat, rename } from 'fs/promises';
 import { existsSync } from 'fs';
 import { dirname, resolve } from 'path';
 import { CONFIG } from './config.js';
@@ -12,6 +12,19 @@ const FILES = {
 } as const;
 
 async function appendJsonl(path: string, entry: Record<string, any>): Promise<void> {
+  // lightweight rotation by size
+  try {
+    const maxBytes = Number(process.env.TX_TRACE_MAX_BYTES || 50_000_000);
+    if (Number.isFinite(maxBytes) && maxBytes > 0) {
+      try {
+        const s = await stat(path);
+        if (s?.size && s.size > maxBytes) {
+          const rotated = `${path}.${Date.now()}.bak`;
+          await rename(path, rotated).catch(() => {});
+        }
+      } catch {}
+    }
+  } catch {}
   const line = JSON.stringify(entry) + '\n';
   const dir = dirname(path);
   if (!existsSync(dir)) {

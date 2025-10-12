@@ -181,6 +181,7 @@ io.on('connection', (socket) => {
   // Backpressure: busy/idle signals
   try { socket.on('graph:busy', () => { try { busyClients.add(socket.id); } catch {} }); } catch {}
   try { socket.on('graph:idle', () => { try { busyClients.delete(socket.id); } catch {} }); } catch {}
+  try { socket.on('disconnect', () => { try { busyClients.delete(socket.id); } catch {} }); } catch {}
   // Note: graph rebuilds are scheduled directly from pool update points in pools.ts (HTTP + WS)
 });
 

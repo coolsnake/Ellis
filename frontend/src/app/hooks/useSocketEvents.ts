@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useSocket } from '../contexts/socket';
 import { useSystem } from '../contexts/system';
 import { useWallet } from '../contexts/wallet';
@@ -22,6 +22,19 @@ export function useSocketEvents(opts?: Options): void {
   const { system, setSystem } = useSystem();
   const { setWallet, setPrices } = useWallet();
   const { setLogsByWindow } = useLogs();
+  const systemRef = useRef(system);
+  useEffect(() => { systemRef.current = system; }, [system]);
+  const allowedCatsRef = useRef<string[] | null>(null);
+  useEffect(() => {
+    try {
+      const serverCats: string[] | undefined = (systemRef.current as any)?.system?.frontendEnabledLogCategories || (systemRef.current as any)?.system?.enabledLogCategories;
+      const localCatsJson = typeof window !== 'undefined' ? window.localStorage.getItem('frontendEnabledLogCategories') : null;
+      const localCats: string[] | null = localCatsJson ? JSON.parse(localCatsJson) : null;
+      allowedCatsRef.current = (Array.isArray(localCats) && localCats.length ? localCats : (Array.isArray(serverCats) ? serverCats : null)) || null;
+    } catch {
+      allowedCatsRef.current = null;
+    }
+  }, [system]);
 
   useEffect(() => {
     if (!socket) return;
@@ -45,10 +58,7 @@ export function useSocketEvents(opts?: Options): void {
     const onLog = (evt: LogEvent & { cat?: string; muted?: boolean }) => {
       try {
         const cat = (evt?.cat || '').toLowerCase();
-        const serverCats: string[] | undefined = (system as any)?.system?.frontendEnabledLogCategories || (system as any)?.system?.enabledLogCategories;
-        const localCatsJson = typeof window !== 'undefined' ? window.localStorage.getItem('frontendEnabledLogCategories') : null;
-        const localCats: string[] | null = localCatsJson ? JSON.parse(localCatsJson) : null;
-        const allowedCats = Array.isArray(localCats) && localCats.length ? localCats : (Array.isArray(serverCats) ? serverCats : null);
+        const allowedCats = allowedCatsRef.current;
         if (allowedCats && allowedCats.length && cat && !allowedCats.includes(cat)) return;
         if (evt.muted === true) return;
         // Apply frontend log level filter: hide messages below current level
@@ -105,7 +115,7 @@ export function useSocketEvents(opts?: Options): void {
       try { socket.off('prices-update', onPrices); } catch {}
       try { delete (socket as any)[boundKey]; } catch {}
     };
-  }, [socket, system, setSystem, setWallet, setLogsByWindow, setPrices]);
+  }, [socket]);
 }
 
 
