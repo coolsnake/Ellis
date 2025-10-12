@@ -564,16 +564,50 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const liqBase = Number((p as any)?.liquidity_base);
         const liqDisplayAmm = (usd && usd > 0) ? usd : (Number.isFinite(notionalB as any) && (notionalB as number) > 0 ? (notionalB as number) : (Number.isFinite(liqBase) && liqBase > 0 ? liqBase : undefined));
         const liqParamAmm = (p as any)?.liquidity_display ?? liqDisplayAmm;
-        // Incoming price is A per 1 B.
-        // Prefer normalized incoming price by default; allow override via config.
+        // Incoming price is A per 1 B. Prefer a sane candidate:
+        // - If USD refs exist, pick the candidate (incoming vs reserves) closer to ref
+        // - If USD refs missing, prefer reserves-derived price when available
         const preferNormalized = (((CONFIG as any)?.system as any)?.preferNormalizedPriceForAmm !== false);
-        // Calibrate magnitude only using USD reference to correct unit drift from sources
         const incomingRaw = Number((p as any)?.price_a_per_b || 0);
         const incomingFwd = calibratePrice(p.mint_a, p.mint_b, incomingRaw);
-        const preferred = preferNormalized
-          ? ((incomingFwd && incomingFwd > 0) ? incomingFwd : price)
-          : ((price && price > 0) ? price : (incomingFwd && incomingFwd > 0 ? incomingFwd : undefined));
-        const fwdAmmRay = (preferred && preferred > 0) ? preferred : undefined;
+        let chosen: number | undefined = undefined;
+        try {
+          const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
+          const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
+          const hasUsd = !!(pa && pb && (pa as number) > 0 && (pb as number) > 0);
+          const cIn = (incomingFwd && incomingFwd > 0) ? incomingFwd : undefined;
+          const cRes = (price && price > 0) ? price : undefined;
+          if (preferNormalized && hasUsd && (cIn || cRes)) {
+            const ref = (pb as number) / (pa as number);
+            const devIn  = cIn  ? Math.max((cIn as number) / ref,  ref / (cIn as number)) : Number.POSITIVE_INFINITY;
+            const devRes = cRes ? Math.max((cRes as number) / ref, ref / (cRes as number)) : Number.POSITIVE_INFINITY;
+            chosen = (devIn <= devRes) ? cIn : cRes;
+          } else {
+            // Without USD refs, prefer reserves when available to avoid upstream drift
+            chosen = cRes || cIn;
+          }
+        } catch {
+          // Fallback: prefer reserves then incoming
+          chosen = (price && price > 0) ? price : ((incomingFwd && incomingFwd > 0) ? incomingFwd : undefined);
+        }
+        // Ensure oriented as A per 1 B using USD reference when available
+        let oriented = chosen;
+        try {
+          const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
+          const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
+          if (pa && pb && oriented && (oriented as number) > 0) {
+            const ref = (pb as number) / (pa as number);
+            const inv = 1 / (oriented as number);
+            const dev  = Math.max((oriented as number) / ref,  ref / (oriented as number));
+            const devI = Math.max(inv / ref, ref / inv);
+            let out = (devI + 1e-12 < dev) ? inv : (oriented as number);
+            const maxClampDev = Number(((CONFIG as any)?.sanity as any)?.usdClampMaxDev) || 1.10;
+            const post = Math.max(out / ref, ref / out);
+            if (post > maxClampDev) out = ref;
+            oriented = out;
+          }
+        } catch {}
+        const fwdAmmRay = (oriented && (oriented as number) > 0) ? (oriented as number) : undefined;
         const revAmmRay = (fwdAmmRay && fwdAmmRay > 0) ? (1 / fwdAmmRay) : undefined;
         addEdge(p.mint_a, p.mint_b, 'Raydium', p.fee_bps, liqParamAmm, fwdAmmRay, usd, pidAmm, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
         // Use a distinct id for reverse edge when poolId exists to avoid overwriting forward
