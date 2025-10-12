@@ -153,6 +153,13 @@ setWalletHistorySocket(io);
 // Track client busy/idle for graph backpressure
 const busyClients = new Set<string>();
 export function isAnyClientBusy(): boolean { return busyClients.size > 0; }
+const GRAPH_ROOM = 'graph';
+export function hasGraphSubscribers(): boolean {
+  try {
+    const room = (io as any).sockets?.adapter?.rooms?.get?.(GRAPH_ROOM);
+    return !!(room && room.size > 0);
+  } catch { return false; }
+}
 // Graph stream will be started after first socket connection or after a delay (below)
 io.on('connection', (socket) => {
   logger.info('server: socket client connected', { id: socket.id, cat: 'server' });
@@ -178,6 +185,12 @@ io.on('connection', (socket) => {
       socket.emit('graph-snapshot', snap);
     } catch {}
   });
+  // Visibility gating: join/leave graph room
+  try {
+    socket.on('graph:visible', (visible: boolean) => {
+      try { if (visible) socket.join(GRAPH_ROOM); else socket.leave(GRAPH_ROOM); } catch {}
+    });
+  } catch {}
   // Backpressure: busy/idle signals
   try { socket.on('graph:busy', () => { try { busyClients.add(socket.id); } catch {} }); } catch {}
   try { socket.on('graph:idle', () => { try { busyClients.delete(socket.id); } catch {} }); } catch {}

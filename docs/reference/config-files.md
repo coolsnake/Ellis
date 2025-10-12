@@ -190,3 +190,14 @@ Environment variables and defaults:
 - DROP_STABLE_STABLE_EDGES
   - Description: Drop stable↔stable edges at graph build time.
   - Default: `true`
+
+## Graph streaming and diff config
+
+Runtime config keys under `system` (see backend/src/utils/config.ts):
+
+- `graphStreamIntervalMs`: Interval for periodic graph snapshot rebuild/check.
+- `graphPushMode`: 'stream' | 'snapshot' (default 'stream'). When 'snapshot', prefer periodic snapshot polling on the client over diff streaming.
+- `graphSnapshotPollMs`: Poll interval in ms for snapshot-only mode (default 10000).
+- `graphRebaseDiffThreshold`: Number of diff changes after which to rebase to full snapshot.
+- `graphRebaseTimeMs`: Max time between forced rebases.
+- `graphDiffLiqEps`, `graphDiffPriceEps`, `graphDiffWeightEps`: Tolerances for diff filtering/comparison to reduce churn.

@@ -416,7 +416,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const kind = String((p as any)?.pool_kind || '');
           const sourceSanitized = (
             (dex === 'Orca' && kind === 'clmm' && ((CONFIG as any)?.sanity?.sanity_applyOrcaClmm ?? true) === true) ||
-            (dex === 'Raydium' && kind === 'amm' && ((CONFIG as any)?.sanity?.sanity_applyRaydiumAmm ?? true) === true)
+            (dex === 'Raydium' && kind === 'amm' && ((CONFIG as any)?.sanity?.sanity_applyRaydiumAmm ?? true) === true) ||
+            (dex === 'Meteora' && kind === 'clmm' && ((CONFIG as any)?.sanity?.sanity_applyMeteoraClmm ?? true) === true)
           );
           const skipDeviation = avoidDouble && sourceSanitized;
           if (!skipDeviation && Number.isFinite(aUsd as any) && Number.isFinite(bUsd as any) && (aUsd as number) > 0 && (bUsd as number) > 0) {
@@ -988,14 +989,22 @@ export function startGraphStream(io: SocketIOServer): void {
   let pending: { kind: 'snapshot' | 'diff'; payload: any } | null = null;
   const tryEmit = (kind: 'snapshot' | 'diff', payload: any) => {
     try {
-      const { isAnyClientBusy } = require('./index.js');
+      const { isAnyClientBusy, hasGraphSubscribers } = require('./index.js');
+      if (typeof hasGraphSubscribers === 'function' && !hasGraphSubscribers()) {
+        // No subscribers: coalesce the latest as a snapshot
+        pending = { kind: 'snapshot', payload };
+        return;
+      }
       if (typeof isAnyClientBusy === 'function' && isAnyClientBusy()) {
         if (pending?.kind === 'snapshot' || kind === 'snapshot') pending = { kind: 'snapshot', payload };
         else pending = { kind: 'diff', payload };
         return;
       }
     } catch {}
-    try { if (kind === 'snapshot') io.emit('graph-snapshot', payload); else io.emit('graph-update', payload); } catch {}
+    try {
+      const room = (io as any).to?.('graph') || io;
+      if (kind === 'snapshot') room.emit('graph-snapshot', payload); else room.emit('graph-update', payload);
+    } catch {}
   };
   const tick = async () => {
     try {
@@ -1038,15 +1047,18 @@ export function startGraphStream(io: SocketIOServer): void {
             const wOk = (small(wPrev) && small(wNext)) || pct(wNext, wPrev) < wEps;
             return !(liqOk && priceOk && wOk);
           };
+          const uiDiff: any = { ...diff };
           if (Array.isArray((diff as any).updatedEdges)) {
-            (diff as any).updatedEdges = (diff as any).updatedEdges.filter((e: any) => {
+            uiDiff.updatedEdges = (diff as any).updatedEdges.filter((e: any) => {
               const id = String(e?.id || ''); if (!id) return true;
               const prev = prevIndex.get(id); if (!prev) return true;
               return filt(prev, e);
             });
           }
-        } catch {}
-        tryEmit('diff', toLiteDiff(diff));
+          tryEmit('diff', toLiteDiff(uiDiff));
+        } catch {
+          tryEmit('diff', toLiteDiff(diff));
+        }
         // Push diff to arb-rs; occasionally rebase with full snapshot per rebase policy
         try {
           const nowMs = Date.now();
@@ -1082,7 +1094,8 @@ export function startGraphStream(io: SocketIOServer): void {
       try {
         if (pending) {
           const p = pending; pending = null;
-          if (p.kind === 'snapshot') io.emit('graph-snapshot', p.payload); else io.emit('graph-update', p.payload);
+          const room = (io as any).to?.('graph') || io;
+          if (p.kind === 'snapshot') room.emit('graph-snapshot', p.payload); else room.emit('graph-update', p.payload);
         }
       } catch {}
     }); } catch {}

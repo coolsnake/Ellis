@@ -648,6 +648,32 @@ useEffect(() => {
     return () => { try { window.removeEventListener('graph-highlight' as any, handler as any); } catch {} };
   }, []);
 
+  // Notify server when the graph becomes visible/hidden so it can gate streaming
+  useEffect(() => {
+    if (!effectiveSocket) return;
+    let last = -1 as number;
+    const send = () => {
+      const v = !!(pageVisibleRef.current && isVisibleRef.current);
+      const n = v ? 1 : 0;
+      if (n !== last) { last = n; try { effectiveSocket.emit('graph:visible', v); } catch {} }
+    };
+    try {
+      const onVis = () => send();
+      document.addEventListener('visibilitychange', onVis);
+      // Re-evaluate when intersection updates happen (isVisibleRef is updated in IO callback above)
+      const checkInterval = window.setInterval(send, 1000);
+      send();
+      return () => {
+        try { document.removeEventListener('visibilitychange', onVis); } catch {}
+        try { window.clearInterval(checkInterval); } catch {}
+        try { effectiveSocket.emit('graph:visible', false); } catch {}
+      };
+    } catch {
+      try { effectiveSocket.emit('graph:visible', !!(pageVisibleRef.current && isVisibleRef.current)); } catch {}
+      return () => { try { effectiveSocket.emit('graph:visible', false); } catch {} };
+    }
+  }, [effectiveSocket]);
+
 	const snapshotInitializedRef = useRef(false);
 
 	useEffect(() => {
@@ -917,6 +943,18 @@ useEffect(() => {
 			effectiveSocket.off('graph-highlight', onHighlight);
 		};
 	}, [effectiveSocket, filterDex.Raydium, filterDex.Orca, filterDex.Meteora, filterKind.AMM, filterKind.CLMM, layoutName]);
+
+  // Optional snapshot-only polling mode guarded by backend config via system endpoint is not available here;
+  // implement a frontend flag by environment or assume disabled by default. If enabled, prefer polling snapshots when visible.
+  const SNAPSHOT_ONLY = false; // set true if switching to snapshot-only mode
+  useEffect(() => {
+    if (!SNAPSHOT_ONLY) return;
+    let timer: any = null;
+    const pollMs = 10000;
+    const tick = () => { if (pageVisibleRef.current && isVisibleRef.current) loadSnapshot(); };
+    timer = setInterval(tick, pollMs);
+    return () => { try { clearInterval(timer); } catch {} };
+  }, [apiBase]);
 
   // On becoming visible for the first time, load a snapshot if none has been applied
   useEffect(() => {
