@@ -463,17 +463,18 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
             </select>
             {(() => {
               const nm: any = summary?.near_miss as any;
-              const edges = Math.max(0, (nm?.path?.length || 0) - 1);
               const hopIds = ((nm?.hop_pool_ids || []) as string[]);
               const hopDexes = ((nm?.hop_dexes || []) as string[]);
-              const validHops = edges > 0 && hopIds.length === edges && hopDexes.length === edges;
+              const expectedHops = Math.max(0, ((nm?.hop_count ?? nm?.path?.length) || 0));
+              const validHops = expectedHops > 0 && hopIds.length === expectedHops && hopDexes.length === expectedHops;
+              const pathClosed = Array.isArray(nm?.path) && nm.path.length ? [...nm.path, nm.path[0]] : nm?.path;
               return (
                 <>
-                  <button className={`px-2 py-1 border rounded ${sending?'opacity-60':''}`} disabled={sending || !validHops} title={!validHops ? `Invalid hops: expected ${edges}, got hopPoolIds=${hopIds.length}, hopDexes=${hopDexes.length}` : undefined} onClick={async ()=>{
+                  <button className={`px-2 py-1 border rounded ${sending?'opacity-60':''}`} disabled={sending || !validHops} title={!validHops ? `Invalid hops: expected ${expectedHops}, got hopPoolIds=${hopIds.length}, hopDexes=${hopDexes.length}` : undefined} onClick={async ()=>{
                     if (!summary?.near_miss?.path?.length || !validHops) return;
                     setSending(true);
                     try {
-                      const body: any = { path: nm.path, hopPoolIds: hopIds, dexes: hopDexes };
+                      const body: any = { path: pathClosed, hopPoolIds: hopIds, dexes: hopDexes };
                       if (sendMode === 'USD') body.sizeUsd = Number(sendAmount)||0; else body.size = Number(sendAmount)||0;
                       setNmSimLogs(null); setNmSimErr(null);
                       const r = await fetch(`${apiBase}${ROUTES.arb.simulateSend}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -489,11 +490,11 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
                     } catch {}
                     setSending(false);
                   }}>Preflight Simulate</button>
-                  <button className={`px-2 py-1 border rounded ${sending?'opacity-60':''}`} disabled={sending || !validHops} title={!validHops ? `Invalid hops: expected ${edges}, got hopPoolIds=${hopIds.length}, hopDexes=${hopDexes.length}` : undefined} onClick={async ()=>{
+                  <button className={`px-2 py-1 border rounded ${sending?'opacity-60':''}`} disabled={sending || !validHops} title={!validHops ? `Invalid hops: expected ${expectedHops}, got hopPoolIds=${hopIds.length}, hopDexes=${hopDexes.length}` : undefined} onClick={async ()=>{
                     if (!summary?.near_miss?.path?.length || !validHops) return;
                     setSending(true);
                     try {
-                      const body: any = { path: nm.path, hopPoolIds: hopIds, dexes: hopDexes };
+                      const body: any = { path: pathClosed, hopPoolIds: hopIds, dexes: hopDexes };
                       if (sendMode === 'USD') body.sizeUsd = Number(sendAmount)||0; else body.size = Number(sendAmount)||0;
                       setNmSimLogs(null); setNmSimErr(null);
                       const r = await fetch(`${apiBase}${ROUTES.arb.execute}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });

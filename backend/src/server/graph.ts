@@ -585,12 +585,6 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           } else {
             // Without USD refs, prefer reserves when available to avoid upstream drift
             chosen = cRes || cIn;
-            // Stable-aware orientation: if B is a stable and chosen < 1, invert to keep A per 1 B
-            try {
-              if (chosen && (chosen as number) > 0 && STABLES.has(p.mint_b) && (chosen as number) < 1) {
-                chosen = 1 / (chosen as number);
-              }
-            } catch {}
           }
         } catch {
           // Fallback: prefer reserves then incoming
@@ -1010,8 +1004,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             if (post > maxClampDev) out = ref;
             priceMet = out;
           } else {
-            // If no refs at all, stable-aware flip when B is stable and price < 1
-            if (priceMet && priceMet > 0 && STABLES.has(p.mint_b) && priceMet < 1) priceMet = 1 / priceMet;
+            // No USD reference: keep candidate orientation as-is
           }
         } catch {}
         // Forward edge must carry A per 1 B; reverse is strict reciprocal

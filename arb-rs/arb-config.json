@@ -3,7 +3,7 @@
   "min_profit_bps": 0,
   "max_profit_bps": 20000,
   "min_notional_usd": 0.0,
-  "max_hops": 4,
+  "max_hops": 3,
   "max_paths_per_cycle": 10,
   "poll_interval_ms": 500,
   "dex_allow": [
@@ -27,7 +27,7 @@
   "near_miss_epsilon": 0.0005,
   "min_pool_liquidity": 0.0,
   "max_sol_stable_hops": 999999,
-  "drop_stable_stable_hops": false,
+  "drop_stable_stable_hops": true,
   "stable_mints": [
     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
     "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
