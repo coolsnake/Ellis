@@ -10,17 +10,16 @@ export type SessionLogEvent = {
   cat?: string;
 };
 
-// Mutable array exported via property descriptor to allow test overwrite
+// In-memory buffer of session events. Module-private; mutate via helpers below.
 const _sessionEvents: SessionLogEvent[] = [];
-Object.defineProperty(exports, 'sessionEvents', {
-  get() { return _sessionEvents; },
-  set(v: any) {
-    try {
-      _sessionEvents.length = 0;
-      if (Array.isArray(v)) _sessionEvents.push(...v);
-    } catch {}
-  },
-});
+
+// Test-only helper to seed/override session events without relying on CommonJS exports.
+export function setSessionEventsForTest(events: SessionLogEvent[]): void {
+  try {
+    _sessionEvents.length = 0;
+    if (Array.isArray(events)) _sessionEvents.push(...events);
+  } catch {}
+}
 const MAX_EVENTS = Number((globalThis as any)?.process?.env?.SESSION_LOGS_MAX ?? 5000);
 
 export function recordSessionLog(event: SessionLogEvent): void {

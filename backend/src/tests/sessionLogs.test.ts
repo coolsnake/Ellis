@@ -23,13 +23,12 @@ describe('writeConsolidatedSessionLog', () => {
       arbSessionPath: arbPath,
       arbLogDir: undefined,
     };
-    // Seed backend session events via module internals
-    const anySession = session as any;
-    anySession[Object.getOwnPropertyNames(anySession).find(k => k.includes('sessionEvents'))!] = [
+    // Seed backend session events via provided test helper
+    session.setSessionEventsForTest([
       { level: 'info', message: 'b1', timestamp: 't1' },
       { level: 'info', message: 'b2', timestamp: 't2' },
       { level: 'info', message: 'b3', timestamp: 't3' },
-    ];
+    ]);
     // Write arb session as array of strings
     await fsp.writeFile(arbPath, JSON.stringify(['a1','a2','a3','a4','a5','a6']), 'utf-8');
 
