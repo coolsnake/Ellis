@@ -1,0 +1,67 @@
+import { describe, it, expect } from 'vitest';
+import { resolveDirectPlan } from '../execution/resolver/index.js';
+
+// Common mints
+const SOL = 'So11111111111111111111111111111111111111112';
+const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+// Minimal ExecConfig for tests
+const cfg = {
+  mode: 'simulate',
+  slippageBpsDefault: 50,
+  computeUnitLimit: 1_000_000,
+  computeUnitPriceMicroLamports: 1000,
+  createAtasInTx: true,
+  dynamicCompute: true,
+} as any;
+
+describe('resolver sizeUsd sizing', () => {
+
+  it('uses sizeUsd to compute atoms for starting mint when size not provided', async () => {
+    // Mock price store: SOL = $25
+    // Dynamic import stubs via inline module map (avoid relying on vi/VTU APIs)
+    const mockPriceStore = await import('../server/priceStore.js');
+    (mockPriceStore as any).getPriceByMint = (m: string) => (m === SOL ? { usdc: 25, sol: 1 } : (m === USDC ? { usdc: 1, sol: null } : { usdc: null, sol: null }));
+    const mockTokenMeta = await import('../execution/resolver/tokenMeta.js');
+    (mockTokenMeta as any).getTokenMeta = async (m: string) => ({ decimals: m === SOL ? 9 : 6, program: 'spl-token' });
+
+    const plan = await resolveDirectPlan({
+      path: [SOL, USDC],
+      hopPoolIds: ['p1'],
+      dexes: ['raydium.amm'],
+      sizeUsd: 10,
+      slippageBps: 50,
+    } as any, cfg);
+
+    expect(plan.hops.length).toBe(1);
+    const atoms = plan.hops[0].amountInRaw;
+    // $10 at $25/SOL => 0.4 SOL => 0.4 * 1e9 = 400,000,000 lamports
+    expect(typeof atoms).toBe('bigint');
+    expect(Number(atoms)).toBeGreaterThan(0);
+    expect(Number(atoms)).toBeGreaterThanOrEqual(399_000_000);
+    expect(Number(atoms)).toBeLessThanOrEqual(401_000_000);
+  });
+
+  it('size (raw) takes precedence over sizeUsd', async () => {
+    const mockPriceStore2 = await import('../server/priceStore.js');
+    (mockPriceStore2 as any).getPriceByMint = (_m: string) => ({ usdc: 1000, sol: null });
+    const mockTokenMeta2 = await import('../execution/resolver/tokenMeta.js');
+    (mockTokenMeta2 as any).getTokenMeta = async (_m: string) => ({ decimals: 9, program: 'spl-token' });
+
+    const plan = await resolveDirectPlan({
+      path: [SOL, USDC],
+      hopPoolIds: ['p1'],
+      dexes: ['raydium.amm'],
+      size: 1_234_567_890, // raw atoms
+      sizeUsd: 10,
+      slippageBps: 50,
+    } as any, cfg);
+
+    expect(plan.hops.length).toBe(1);
+    const atoms = plan.hops[0].amountInRaw;
+    expect(typeof atoms).toBe('bigint');
+    expect(atoms).toBe(1234567890n);
+  });
+});
+
+

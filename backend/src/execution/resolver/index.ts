@@ -95,7 +95,26 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
   // Set amounts and minOuts using per-hop quotes; propagate through hops
   try {
     const slippage = typeof input.slippageBps === 'number' ? input.slippageBps : cfg.slippageBpsDefault;
-    let curIn = BigInt(Math.max(0, Math.floor(Number(input.size || 0))));
+    // Determine initial input size: prefer raw size; else compute from sizeUsd using priceStore (USD → tokens)
+    let curIn = 0n;
+    const rawSize = Number.isFinite(input.size as any) ? Math.floor(Number(input.size)) : 0;
+    if (rawSize > 0) {
+      curIn = BigInt(Math.max(0, rawSize));
+    } else if (Number.isFinite(input.sizeUsd as any) && Number(input.sizeUsd) > 0 && hops.length > 0) {
+      try {
+        const startMint = hops[0].inputMint;
+        const decimals = Number(hops[0].inputDecimals ?? 0);
+        const { getPriceByMint } = await import('../../server/priceStore.js');
+        const usdPx = Number((getPriceByMint(startMint)?.usdc) ?? 0); // USD per 1 token
+        if (usdPx > 0) {
+          // atoms = (usdAmt * 10^decimals) / usdPx, with micro precision for stability
+          const usdAmtMicro = BigInt(Math.round(Number(input.sizeUsd) * 1_000_000));
+          const usdPxMicro  = BigInt(Math.round(usdPx * 1_000_000));
+          const scale       = (10n ** BigInt(Math.max(0, Math.min(12, decimals))));
+          curIn = (usdAmtMicro * scale) / usdPxMicro;
+        }
+      } catch {}
+    }
     const { quoteHopOut, applyMinOut } = await import('./quotes.js');
     for (let i = 0; i < hops.length; i++) {
       hops[i].amountInRaw = curIn;

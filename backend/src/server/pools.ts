@@ -339,6 +339,13 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
         try { logger.info('pools:bootstrap api.resume', { cat: 'pools' }); } catch {}
         // Stash the intent to resume the feed at the end of refresh
         (refreshAllSources as any).__resumeFeed = shouldResumeFeed;
+        // Opportunistically resume immediately if it was previously enabled
+        try {
+          if (shouldResumeFeed === true) {
+            const reg: any = await import('./feedRegistry.js');
+            reg.enablePriceFeed?.(true);
+          }
+        } catch {}
       }
     }
   } catch {}
