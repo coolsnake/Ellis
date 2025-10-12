@@ -27,14 +27,12 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
     const tokenInMeta = executionCache.getTokenMeta(inputMint) || await getTokenMeta(inputMint);
     const tokenOutMeta = executionCache.getTokenMeta(outputMint) || await getTokenMeta(outputMint);
     // Token-2022 gating (blocked by default unless allowed per-DEX via config)
-    try {
-      const allow = (CONFIG.system as any)?.token2022Allow || {};
-      const any2022 = tokenInMeta.program === 'token-2022' || tokenOutMeta.program === 'token-2022';
-      if (any2022) {
-        const ok = (dex === 'raydium' && allow.raydium) || (dex === 'orca' && allow.orca) || (dex === 'meteora' && allow.meteora);
-        if (!ok) throw new Error('TOKEN2022_NOT_ALLOWED');
-      }
-    } catch {}
+    const allow = (CONFIG.system as any)?.token2022Allow || {};
+    const any2022 = tokenInMeta.program === 'token-2022' || tokenOutMeta.program === 'token-2022';
+    if (any2022) {
+      const ok = (dex === 'raydium' && allow.raydium) || (dex === 'orca' && allow.orca) || (dex === 'meteora' && allow.meteora);
+      if (!ok) throw new Error('TOKEN2022_NOT_ALLOWED');
+    }
     const hop: DirectHop = {
       dex,
       variant,
