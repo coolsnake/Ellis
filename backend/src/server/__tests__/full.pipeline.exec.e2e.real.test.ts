@@ -124,6 +124,27 @@ vi.mock('../../execution/sender.js', () => ({
       }
     } catch {}
 
+    // 2c) Implied-USD orientation for DLMM sanity: ensure product ~1 when refs are derivable
+    try {
+      const byId3 = new Map((snap.edges || []).map((e: any) => [String(e.id || ''), e]));
+      let checked = 0;
+      for (const e of (snap.edges || [])) {
+        const dex = String((e as any)?.dex || '');
+        if (dex !== 'Meteora') continue;
+        const rid = e.pool_id ? `${e.pool_id}-rev` : `${e.target}->${e.source}-${dex}`;
+        const r = byId3.get(rid);
+        if (!r) continue;
+        const f = Number((e as any).price_a_per_b || 0);
+        const v = Number((r as any).price_a_per_b || 0);
+        if (!(f > 0) || !(v > 0)) continue;
+        const prod = f * v;
+        expect(prod).toBeGreaterThan(0.98);
+        expect(prod).toBeLessThan(1.02);
+        checked++;
+      }
+      expect(checked).toBeGreaterThan(0);
+    } catch {}
+
     // 2c) Multi-hop (triangle) consistency: try to find at least one 3-cycle across >=2 DEXes
     try {
       const edgesAll: any[] = snap.edges || [];

@@ -73,10 +73,10 @@ export async function rebuildGraphNow(io?: SocketIOServer): Promise<void> {
     const diff = diffSnapshots(prev, next);
     const changed = diff.addedNodes.length || diff.updatedNodes.length || diff.removedNodeIds.length || diff.addedEdges.length || diff.updatedEdges.length || diff.removedEdgeIds.length;
     if (io) {
-      if (!prev) io.emit('graph-snapshot', toLiteSnapshot(next)); else if (changed) io.emit('graph-update', toLiteDiff(diff));
+      if (!prev) io.emit('graph-rebase', { version: next.version, timestamp: next.timestamp }); else if (changed) io.emit('graph-update', toLiteDiff(diff));
     } else {
       // If no io is provided, emit via realtime emitter to reach clients
-      try { if (!prev) emit('graph-snapshot', toLiteSnapshot(next)); else if (changed) emit('graph-update', toLiteDiff(diff)); } catch {}
+      try { if (!prev) emit('graph-rebase', { version: next.version, timestamp: next.timestamp }); else if (changed) emit('graph-update', toLiteDiff(diff)); } catch {}
     }
     if (!prev) {
       try { void pushArbGraphSnapshot(next); } catch {}
@@ -88,9 +88,9 @@ export async function rebuildGraphNow(io?: SocketIOServer): Promise<void> {
       if (shouldRebase) {
         try { void pushArbGraphSnapshot(next); } catch {}
         diffSinceRebase = 0; lastRebaseMs = nowMs;
-        try { emit('log', { level: 'info', message: `graph:push snapshot v=${next.version} nodes=${next.nodes.length} edges=${next.edges.length}`, timestamp: new Date().toISOString(), context: { cat: 'graph', code: LogCode.GRAPH_PUSH_SNAPSHOT } }); } catch {}
-        // Also emit snapshot to clients (lite) to ensure they rebase in lockstep
-        try { if (io) io.emit('graph-snapshot', toLiteSnapshot(next)); else emit('graph-snapshot', toLiteSnapshot(next)); } catch {}
+        try { emit('log', { level: 'info', message: `graph:push rebase v=${next.version} nodes=${next.nodes.length} edges=${next.edges.length}`, timestamp: new Date().toISOString(), context: { cat: 'graph', code: LogCode.GRAPH_PUSH_SNAPSHOT } }); } catch {}
+        // Emit a lightweight rebase signal to clients; they will pull lite snapshot when idle/visible
+        try { if (io) io.emit('graph-rebase', { version: next.version, timestamp: next.timestamp }); else emit('graph-rebase', { version: next.version, timestamp: next.timestamp }); } catch {}
         try { logger.info('graph.rebase', { at_ms: lastRebaseMs, version: next.version, nodes: next.nodes.length, edges: next.edges.length }); } catch {}
       } else {
         try { void pushArbGraphDiff(diff); } catch {}
@@ -755,6 +755,39 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           if (edgesMap[rid]) edgesMap[rid].pool_liquidity_raw = Number((p as any).liquidity || 0) || undefined;
         } catch {}
       }
+      // Helper: implied USD via current edges when direct priceStore lacks USD
+      const impliedUsdViaEdges = (mint: string): { usd?: number; via?: 'USDC'|'SOL'; weight?: number } => {
+        try {
+          const SOL = 'So11111111111111111111111111111111111111112';
+          const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+          const getUsdDirect = (m: string): number | undefined => {
+            try { const v = getPriceByMintVar(m)?.usdc ?? null; return (typeof v === 'number' && v > 0) ? v : undefined; } catch { return undefined; }
+          };
+          let best: { usd: number; via: 'USDC'|'SOL'; weight: number } | null = null;
+          const pick = (usd: number | undefined, via: 'USDC'|'SOL', w: number) => {
+            if (typeof usd === 'number' && usd > 0) { if (!best || w > best.weight) best = { usd, via, weight: w }; }
+          };
+          for (const e of Object.values(edgesMap)) {
+            const w = Number((e as any)?.weight || 1);
+            if (e.source === mint && e.target === USDC) {
+              const p = Number((e as any)?.price_a_per_b || 0); // mint per 1 USDC
+              if (p > 0) pick(1 / p, 'USDC', w);
+            } else if (e.source === USDC && e.target === mint) {
+              const p = Number((e as any)?.price_a_per_b || 0); // USDC per 1 mint
+              if (p > 0) pick(p, 'USDC', w);
+            } else if (e.source === mint && e.target === SOL) {
+              const p = Number((e as any)?.price_a_per_b || 0); // mint per 1 SOL
+              const solUsd = getUsdDirect(SOL);
+              if (p > 0 && solUsd) pick((solUsd as number) / p, 'SOL', w);
+            } else if (e.source === SOL && e.target === mint) {
+              const p = Number((e as any)?.price_a_per_b || 0); // SOL per 1 mint
+              const solUsd = getUsdDirect(SOL);
+              if (p > 0 && solUsd) pick((solUsd as number) * p, 'SOL', w);
+            }
+          }
+          return best || {};
+        } catch { return {}; }
+      };
       const orcValid = validatePoolsForGraph(orc as any);
       let metValid = validatePoolsForGraph(met as any);
       // Fallback: if scoping would drop all and we had some Meteora upstream, keep original Meteora
@@ -958,22 +991,29 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         }
         // Calibrate price; for DLMM we only have price_a_per_b, no sqrt
         let priceMet: number | undefined = calibratePrice(p.mint_a, p.mint_b, (p as any).price_a_per_b);
-        // Optional USD clamp: if both sides have USD and deviation is large, snap to USD-implied ref
+        // Orient and clamp using combined USD (direct or implied via edges)
         try {
-          const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
-          const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
-          const ref = (pa && pb && pb > 0) ? ((pb as number) / (pa as number)) : undefined;
+          const directA = getPriceByMintVar(p.mint_a)?.usdc ?? null;
+          const directB = getPriceByMintVar(p.mint_b)?.usdc ?? null;
+          let pa = (typeof directA === 'number' && directA > 0) ? directA : undefined;
+          let pb = (typeof directB === 'number' && directB > 0) ? directB : undefined;
+          if (!pa) { const imp = impliedUsdViaEdges(p.mint_a); if (typeof imp.usd === 'number' && imp.usd > 0) { pa = imp.usd; try { logger.debug('graph.implied.usd', { mint: p.mint_a, implied: imp.usd, via: imp.via, weight: imp.weight }); } catch {} } }
+          if (!pb) { const imp = impliedUsdViaEdges(p.mint_b); if (typeof imp.usd === 'number' && imp.usd > 0) { pb = imp.usd; try { logger.debug('graph.implied.usd', { mint: p.mint_b, implied: imp.usd, via: imp.via, weight: imp.weight }); } catch {} } }
           const maxClampDev = Number(((CONFIG as any)?.sanity as any)?.usdClampMaxDev) || 1.10;
-          if (priceMet && ref) {
-            const dev = Math.max(priceMet / ref, ref / priceMet);
-            // If orientation is wrong or magnitude off beyond threshold, clamp to ref
-            if (dev > maxClampDev) {
-              priceMet = ref;
-            }
+          if (priceMet && pa && pb) {
+            const ref = (pb as number) / (pa as number);
+            const inv = 1 / (priceMet as number);
+            const dev = Math.max((priceMet as number) / ref, ref / (priceMet as number));
+            const devI = Math.max(inv / ref, ref / inv);
+            let out = (devI + 1e-12 < dev) ? inv : (priceMet as number);
+            const post = Math.max(out / ref, ref / out);
+            if (post > maxClampDev) out = ref;
+            priceMet = out;
+          } else {
+            // If no refs at all, stable-aware flip when B is stable and price < 1
+            if (priceMet && priceMet > 0 && STABLES.has(p.mint_b) && priceMet < 1) priceMet = 1 / priceMet;
           }
         } catch {}
-        // Orient as A per 1 B using USD reference when available
-        priceMet = orientAPerB(p.mint_a, p.mint_b, priceMet);
         // Forward edge must carry A per 1 B; reverse is strict reciprocal
         const pid = String((p as any)?.id || undefined) || undefined;
         const liqParam = (p as any)?.liquidity_display ?? (usd && usd > 0 ? usd : (p as any)?.pool_liquidity_raw);
@@ -1073,7 +1113,7 @@ export function startGraphStream(io: SocketIOServer): void {
     } catch {}
     try {
       const room = (io as any).to?.('graph') || io;
-      if (kind === 'snapshot') room.emit('graph-snapshot', payload); else room.emit('graph-update', payload);
+      if (kind === 'snapshot') room.emit('graph-rebase', { version: (payload as any)?.version, timestamp: (payload as any)?.timestamp }); else room.emit('graph-update', payload);
     } catch {}
   };
   const tick = async () => {
@@ -1081,12 +1121,12 @@ export function startGraphStream(io: SocketIOServer): void {
       // Do not auto-refresh pool sources here; rely on explicit /arb/pools/refresh
       const snap = await getGraphSnapshot(true);
       if (!last) {
-        tryEmit('snapshot', toLiteSnapshot(snap));
+        tryEmit('snapshot', { version: snap.version, timestamp: snap.timestamp });
         // Push initial snapshot to arb-rs to enter backend-graph mode immediately
         try { void pushArbGraphSnapshot(snap); } catch {}
         try { await notifyArbServiceRefresh(); } catch {}
-        try { logger.info('graph.push initial snapshot', { version: snap.version, nodes: snap.nodes.length, edges: snap.edges.length, cat: 'graph' }); } catch {}
-        try { emit('log', { level: 'info', message: `graph:push snapshot v=${snap.version} nodes=${snap.nodes.length} edges=${snap.edges.length}`, timestamp: new Date().toISOString(), context: { cat: 'graph' } }); } catch {}
+        try { logger.info('graph.push initial rebase', { version: snap.version, nodes: snap.nodes.length, edges: snap.edges.length, cat: 'graph' }); } catch {}
+        try { emit('log', { level: 'info', message: `graph:push rebase v=${snap.version} nodes=${snap.nodes.length} edges=${snap.edges.length}`, timestamp: new Date().toISOString(), context: { cat: 'graph' } }); } catch {}
         try { enablePoolWebsocketRefreshes(); } catch {}
         last = snap;
         return;
@@ -1136,7 +1176,7 @@ export function startGraphStream(io: SocketIOServer): void {
           if (shouldRebase) {
             try { void pushArbGraphSnapshot(snap); } catch {}
             diffSinceRebase = 0; lastRebaseMs = nowMs;
-      try { logger.info('graph.push rebase snapshot', { version: snap.version, nodes: snap.nodes.length, edges: snap.edges.length, cat: 'graph', code: LogCode.GRAPH_PUSH_SNAPSHOT }); } catch {}
+      try { logger.info('graph.push rebase', { version: snap.version, nodes: snap.nodes.length, edges: snap.edges.length, cat: 'graph', code: LogCode.GRAPH_PUSH_SNAPSHOT }); } catch {}
             try { emit('log', { level: 'info', message: `graph:push rebase v=${snap.version} nodes=${snap.nodes.length} edges=${snap.edges.length}`, timestamp: new Date().toISOString(), context: { cat: 'graph' } }); } catch {}
           } else {
             try { void pushArbGraphDiff(diff); } catch {}
@@ -1165,7 +1205,7 @@ export function startGraphStream(io: SocketIOServer): void {
         if (pending) {
           const p = pending; pending = null;
           const room = (io as any).to?.('graph') || io;
-          if (p.kind === 'snapshot') room.emit('graph-snapshot', p.payload); else room.emit('graph-update', p.payload);
+          if (p.kind === 'snapshot') room.emit('graph-rebase', p.payload); else room.emit('graph-update', p.payload);
         }
       } catch {}
     }); } catch {}

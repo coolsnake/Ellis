@@ -22,6 +22,8 @@ export const GraphConfig: React.FC<Props> = ({ apiBase, onClose }) => {
     sanity_applyRaydiumAmm: true,
     sanity_applyRaydiumClmm: true,
     sanity_applyOrcaClmm: true,
+    logMinLevel: 'info',
+    logAllowCats: '',
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -44,6 +46,8 @@ export const GraphConfig: React.FC<Props> = ({ apiBase, onClose }) => {
             graphDiffPriceEps: Number(j?.system?.graphDiffPriceEps ?? p.graphDiffPriceEps),
             graphDiffLiqEps: Number(j?.system?.graphDiffLiqEps ?? p.graphDiffLiqEps),
             graphDiffWeightEps: Number(j?.system?.graphDiffWeightEps ?? p.graphDiffWeightEps),
+            logMinLevel: String(j?.system?.logMinLevel ?? p.logMinLevel ?? 'info'),
+            logAllowCats: Array.isArray(j?.system?.logAllowCats) ? (j?.system?.logAllowCats as string[]).join(',') : (p.logAllowCats || ''),
             sanity_enabled: (j?.sanity?.enabled ?? true) !== false,
             sanity_maxPriceDeviation: Number(j?.sanity?.maxPriceDeviation ?? p.sanity_maxPriceDeviation),
             sanity_feeMin: Number(j?.sanity?.feeMin ?? p.sanity_feeMin),
@@ -73,6 +77,8 @@ export const GraphConfig: React.FC<Props> = ({ apiBase, onClose }) => {
         graphDiffPriceEps: Number(cfg.graphDiffPriceEps),
         graphDiffLiqEps: Number(cfg.graphDiffLiqEps),
         graphDiffWeightEps: Number(cfg.graphDiffWeightEps),
+        logMinLevel: String(cfg.logMinLevel || 'info'),
+        logAllowCats: String(cfg.logAllowCats || '').split(',').map((s)=>s.trim()).filter(Boolean),
       },
       sanity: {
         enabled: !!cfg.sanity_enabled,
@@ -118,6 +124,26 @@ export const GraphConfig: React.FC<Props> = ({ apiBase, onClose }) => {
               <div><label className="block text-sm mb-1">Price Eps (fraction)</label><input step="0.0001" type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.graphDiffPriceEps} onChange={(e)=>set('graphDiffPriceEps', Number(e.target.value)||0)} /></div>
               <div><label className="block text-sm mb-1">Liquidity Eps (fraction)</label><input step="0.0001" type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.graphDiffLiqEps} onChange={(e)=>set('graphDiffLiqEps', Number(e.target.value)||0)} /></div>
               <div><label className="block text-sm mb-1">Weight Eps (fraction)</label><input step="0.0001" type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.graphDiffWeightEps} onChange={(e)=>set('graphDiffWeightEps', Number(e.target.value)||0)} /></div>
+            </div>
+          </div>
+
+          <div className="bg-gray-700 rounded p-4">
+            <h3 className="text-lg font-semibold mb-3">Logstream (UI)</h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm mb-1">Min Level</label>
+                <select className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.logMinLevel} onChange={(e)=>set('logMinLevel', e.target.value)}>
+                  <option value="error">error</option>
+                  <option value="warn">warn</option>
+                  <option value="info">info</option>
+                  <option value="debug">debug</option>
+                </select>
+              </div>
+              <div className="md:col-span-2">
+                <label className="block text-sm mb-1">Allowed Categories (comma-separated)</label>
+                <input type="text" placeholder="e.g. system,arb" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.logAllowCats} onChange={(e)=>set('logAllowCats', e.target.value)} />
+                <div className="text-xs text-gray-300 mt-1">Leave empty to allow all cats but still respect min level. Keep empty to avoid chatty 'graph' logs in UI.</div>
+              </div>
             </div>
           </div>
 

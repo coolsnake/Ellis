@@ -47,6 +47,20 @@ export async function emit(event: string, payload: any) {
       } catch {}
     }
   } catch {}
+  // Gate high-volume UI logs by category and level per CONFIG.system
+  try {
+    if (event === 'log') {
+      const cfg: any = (CONFIG as any)?.system || {};
+      const allowCats: string[] = Array.isArray(cfg.logAllowCats) ? (cfg.logAllowCats as string[]).map((s) => String(s).toLowerCase()) : [];
+      const minLevel: string = String(cfg.logMinLevel || 'info').toLowerCase();
+      const order: Record<string, number> = { error: 0, warn: 1, info: 2, debug: 3 };
+      const cat: string = String(((payload as any)?.cat || (payload as any)?.context?.cat || '')).toLowerCase();
+      const lvl: string = String((payload as any)?.level || 'info').toLowerCase();
+      const catAllowed: boolean = allowCats.length === 0 || (!!cat && allowCats.includes(cat));
+      const meetsLevel: boolean = (order[minLevel] ?? 2) >= (order[lvl] ?? 2);
+      if (!(catAllowed && meetsLevel)) return; // drop to UI when not allowed
+    }
+  } catch {}
   ioRef?.emit(event, payload);
 }
 

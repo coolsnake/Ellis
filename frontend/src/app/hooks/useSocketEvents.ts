@@ -58,8 +58,10 @@ export function useSocketEvents(opts?: Options): void {
     const onLog = (evt: LogEvent & { cat?: string; muted?: boolean }) => {
       try {
         const cat = (evt?.cat || '').toLowerCase();
-        const allowedCats = allowedCatsRef.current;
-        if (allowedCats && allowedCats.length && cat && !allowedCats.includes(cat)) return;
+        const allowedCats = allowedCatsRef.current || [];
+        // Default mute of chatty graph logs unless explicitly allowed client-side or by server-config
+        if (!allowedCats.length && cat === 'graph') return;
+        if (allowedCats.length && cat && !allowedCats.includes(cat)) return;
         if (evt.muted === true) return;
         // Apply frontend log level filter: hide messages below current level
         const levelOrder: Record<string, number> = { error: 0, warn: 1, info: 2, debug: 3 };
@@ -69,12 +71,21 @@ export function useSocketEvents(opts?: Options): void {
         const id = catToWindowId.get(cat) || 'system';
         // Per-frame buffered merge; cap 300 entries per window
         const store: any = (window as any).__ls_log_buffer__ || ((window as any).__ls_log_buffer__ = { buf: new Map<string, LogEvent[]>(), scheduled: false });
+        // Throttle high-rate graph logs to avoid main-thread jank
+        try {
+          if (cat === 'graph') {
+            const now = Date.now();
+            const last = Number((window as any).__ls_last_graph_at || 0);
+            if (now - last < 75) return;
+            (window as any).__ls_last_graph_at = now;
+          }
+        } catch {}
         const list = store.buf.get(id) || [];
         list.push(evt);
         store.buf.set(id, list);
         if (!store.scheduled) {
           store.scheduled = true;
-          requestAnimationFrame(() => {
+          const flush = () => {
             try {
               setLogsByWindow((prev) => {
                 const next: any = { ...(prev as any) };
@@ -89,7 +100,9 @@ export function useSocketEvents(opts?: Options): void {
               store.buf.clear();
               store.scheduled = false;
             }
-          });
+          };
+          const ric: any = (window as any).requestIdleCallback;
+          if (typeof ric === 'function') ric(flush, { timeout: 32 }); else requestAnimationFrame(flush);
         }
       } catch {}
     };

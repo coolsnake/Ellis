@@ -180,9 +180,9 @@ io.on('connection', (socket) => {
   // On-demand snapshot over socket for gap recovery
   socket.on('graph:request-snapshot', async () => {
     try {
-      const { getGraphSnapshot } = await import('./graph.js');
+      const { getGraphSnapshot, toLiteSnapshot } = await import('./graph.js');
       const snap = await getGraphSnapshot(true);
-      socket.emit('graph-snapshot', snap);
+      socket.emit('graph-snapshot', toLiteSnapshot(snap));
     } catch {}
   });
   // Visibility gating: join/leave graph room

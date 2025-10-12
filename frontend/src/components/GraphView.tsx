@@ -926,7 +926,13 @@ useEffect(() => {
 			} catch {}
 			latestDiff = diff; schedule();
 		};
-		const onSnapshot = (snap: GraphSnapshot) => { latestSnap = snap; schedule(); };
+		const onSnapshot = (_snap: GraphSnapshot) => {
+			// Prefer controlled fetch with visibility/idle gating and lite payload
+			idle(() => { try { loadSnapshot(); } catch {} }, 0);
+		};
+		const onRebase = () => {
+			idle(() => { try { loadSnapshot(); } catch {} }, 0);
+		};
 		const onHighlight = (payload: { edgeIds?: string[]; pairs?: Array<{ source: string; target: string; dex?: string }> }) => {
 			// Defer to idle to avoid blocking main thread
 			idle(() => {
@@ -936,10 +942,12 @@ useEffect(() => {
 
 		effectiveSocket.on('graph-update', onDiff);
 		effectiveSocket.on('graph-snapshot', onSnapshot);
+		effectiveSocket.on('graph-rebase', onRebase);
 		effectiveSocket.on('graph-highlight', onHighlight);
 		return () => {
 			effectiveSocket.off('graph-update', onDiff);
 			effectiveSocket.off('graph-snapshot', onSnapshot);
+			effectiveSocket.off('graph-rebase', onRebase);
 			effectiveSocket.off('graph-highlight', onHighlight);
 		};
 	}, [effectiveSocket, filterDex.Raydium, filterDex.Orca, filterDex.Meteora, filterKind.AMM, filterKind.CLMM, layoutName]);
