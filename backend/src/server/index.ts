@@ -20,7 +20,7 @@ import { setWalletHistorySocket, initWalletHistory, getWalletHistory } from './w
 import { apiStop, setTargetTickTimeMs } from '../jupiter/rateLimiter.js';
 import { promises as fsp } from 'fs';
 import { resolve } from 'path';
-import { recordSessionLog, writeSessionLogAndClear } from '../utils/sessionLogs.js';
+import { recordSessionLog, writeSessionLogAndClear, writeConsolidatedSessionLog } from '../utils/sessionLogs.js';
 import { readJson } from '../utils/fs.js';
 import { startRaydiumRefreshLoop } from './pools.js';
 import util from 'util';
@@ -376,6 +376,8 @@ export async function shutdown() {
     try { const graph = await import('./graph.js'); (graph as any).rebuildGraphNow?.(undefined); } catch {}
     const file = await writeSessionLogAndClear();
     if (file) { try { logger.info('Session log written', { file }); } catch {} }
+    // Also write consolidated log merging backend UI logs with arb-rs session (if available)
+    try { const cfile = await writeConsolidatedSessionLog(); if (cfile) { try { logger.info('Consolidated session log written', { file: cfile }); } catch {} } } catch {}
   } catch {}
   process.exit(0);
 }

@@ -1,11 +1,11 @@
 {
   "enabled": true,
-  "min_profit_bps": 30,
+  "min_profit_bps": 0,
   "max_profit_bps": 20000,
-  "min_notional_usd": 50.0,
-  "max_hops": 3,
+  "min_notional_usd": 0.0,
+  "max_hops": 4,
   "max_paths_per_cycle": 10,
-  "poll_interval_ms": 2000,
+  "poll_interval_ms": 500,
   "dex_allow": [
     "Raydium",
     "Orca"
@@ -18,7 +18,7 @@
   },
   "max_slippage_bps": 100,
   "execution_mode": "simulate",
-  "quote_size_usd": 50.0,
+  "quote_size_usd": 100.0,
   "fee_bps": 30,
   "link_penalty_bps": 0,
   "debug_emit_subthreshold": false,
@@ -26,8 +26,8 @@
   "near_miss_enable": true,
   "near_miss_epsilon": 0.0005,
   "min_pool_liquidity": 0.0,
-  "max_sol_stable_hops": 1,
-  "drop_stable_stable_hops": true,
+  "max_sol_stable_hops": 999999,
+  "drop_stable_stable_hops": false,
   "stable_mints": [
     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
     "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"

@@ -40,3 +40,54 @@ export async function writeSessionLogAndClear(): Promise<string | null> {
 }
 
 
+export async function writeConsolidatedSessionLog(): Promise<string | null> {
+  try {
+    const dir = CONFIG.logDir || resolve('backend', 'logs');
+    await fsp.mkdir(dir, { recursive: true }).catch(() => {});
+    const out = (CONFIG as any)?.consolidated?.path || resolve(dir, 'consolidated-session.json');
+    const max = Number((CONFIG as any)?.consolidated?.max || 2000);
+
+    // Backend session events (prefer in-memory; if empty, fall back to last written session.json)
+    let backend = sessionEvents.slice(-max).map((e) => ({ ...e, source: 'backend' as const }));
+    if (!backend.length) {
+      try {
+        const sessionFile = resolve(dir, 'session.json');
+        const text = await fsp.readFile(sessionFile, 'utf-8').catch(() => null);
+        if (text) {
+          const arr = JSON.parse(text);
+          if (Array.isArray(arr)) {
+            backend = arr.slice(-max).map((e: any) => ({ ...(e || {}), source: 'backend' as const }));
+          }
+        }
+      } catch {}
+    }
+
+    // Arb session: read if configured
+    let arb: any[] = [];
+    try {
+      const arbPath = (CONFIG as any)?.consolidated?.arbSessionPath
+        || (((CONFIG as any)?.consolidated?.arbLogDir) && resolve((CONFIG as any).consolidated.arbLogDir, 'session.json'))
+        || null;
+      if (arbPath) {
+        const text = await fsp.readFile(arbPath, 'utf-8').catch(() => null);
+        if (text) {
+          const arr = JSON.parse(text);
+          if (Array.isArray(arr)) {
+            arb = arr.slice(-max).map((line: any) => ({
+              source: 'arb', level: 'info', message: String(line), timestamp: null, cat: 'rust' as const,
+            }));
+          }
+        }
+      }
+    } catch {}
+
+    const merged = [...backend, ...arb];
+    const items = merged.slice(-max);
+    await fsp.writeFile(out, JSON.stringify(items, null, 2), 'utf-8');
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+

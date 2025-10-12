@@ -1738,12 +1738,12 @@ async fn get_config(State(state): State<Arc<RwLock<AppState>>>) -> Json<ArbConfi
 fn default_config() -> ArbConfig {
     ArbConfig {
         enabled: true,
-        min_profit_bps: 30,
+        min_profit_bps: 0,
         max_profit_bps: 20000,
-        min_notional_usd: 50.0,
-        max_hops: 3,
-        max_idle_ms: std::env::var("ARB_IDLE_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(2000),
-        quote_size_usd: 50.0,
+        min_notional_usd: 0.0,
+        max_hops: 4,
+        max_idle_ms: std::env::var("ARB_IDLE_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(500),
+        quote_size_usd: 100.0,
         max_detections_without_exec: std::env::var("ARB_MAX_DETECTIONS").ok().and_then(|s| s.parse().ok()).unwrap_or(3),
         detection_history_ttl_ms: std::env::var("ARB_DETECTION_TTL_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(120_000),
         debug_emit_subthreshold: std::env::var("ARB_DEBUG_SUBTHRESHOLD").ok().map(|v| v == "true").unwrap_or(false),
@@ -1752,13 +1752,13 @@ fn default_config() -> ArbConfig {
         near_miss_epsilon: std::env::var("ARB_NEAR_MISS_EPS").ok().and_then(|s| s.parse().ok()).unwrap_or(5e-4),
         est_priority_fee_per_hop_lamports: Some(0),
         debug_near_miss_failures: std::env::var("ARB_DEBUG_NM_FAIL").ok().map(|v| v == "true").unwrap_or(false),
-        filtered_detect_enable: std::env::var("ARB_FILTERED_DETECT_ENABLE").ok().map(|v| v != "false").unwrap_or(true),
-        filtered_node_ratio: std::env::var("ARB_FILTERED_NODE_RATIO").ok().and_then(|s| s.parse().ok()).unwrap_or(0.1),
+        filtered_detect_enable: std::env::var("ARB_FILTERED_DETECT_ENABLE").ok().map(|v| v != "false").unwrap_or(false),
+        filtered_node_ratio: std::env::var("ARB_FILTERED_NODE_RATIO").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0),
         filtered_expand_hops: std::env::var("ARB_FILTERED_EXPAND_HOPS").ok().and_then(|s| s.parse().ok()).or(None),
-        periodic_full_ms: std::env::var("ARB_PERIODIC_FULL_MS").ok().and_then(|s| s.parse().ok()).or(None),
+        periodic_full_ms: std::env::var("ARB_PERIODIC_FULL_MS").ok().and_then(|s| s.parse().ok()).or(Some(1000)),
         // Pruning defaults
-        max_sol_stable_hops: Some(std::env::var("ARB_MAX_SOL_STABLE_HOPS").ok().and_then(|s| s.parse().ok()).unwrap_or(1)),
-        drop_stable_stable_hops: std::env::var("ARB_DROP_STABLE_STABLE_HOPS").ok().map(|v| v != "false").unwrap_or(true),
+        max_sol_stable_hops: Some(std::env::var("ARB_MAX_SOL_STABLE_HOPS").ok().and_then(|s| s.parse().ok()).unwrap_or(usize::MAX)),
+        drop_stable_stable_hops: std::env::var("ARB_DROP_STABLE_STABLE_HOPS").ok().map(|v| v != "false").unwrap_or(false),
         stable_mints: None,
     }
 }

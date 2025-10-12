@@ -12,6 +12,12 @@ const CONFIG_DIR = process.env.CONFIG_DIR || resolve(BACKEND_ROOT, 'config');
 const WALLET_DIR = process.env.WALLET_DIR || resolve(BACKEND_ROOT, 'wallet');
 const LOG_DIR = process.env.LOG_DIR || resolve(BACKEND_ROOT, 'logs');
 
+// Consolidated session log envs
+const ARB_SESSION_JSON_PATH = process.env.ARB_SESSION_JSON_PATH;
+const ARB_LOG_DIR = process.env.ARB_LOG_DIR;
+const CONSOLIDATED_LOG_MAX = Number(process.env.CONSOLIDATED_LOG_MAX || 2000);
+const CONSOLIDATED_LOG_PATH = process.env.CONSOLIDATED_LOG_PATH || resolve(LOG_DIR, 'consolidated-session.json');
+
 export const CONFIG = {
   port: Number(process.env.PORT || 3001),
   rpcUrl: process.env.SOLANA_RPC_URL || 'https://mainnet.helius-rpc.com/?api-key=4673beb7-dcca-4942-91ac-c69babdf1f02',
@@ -30,6 +36,13 @@ export const CONFIG = {
   tokenAccountsPath: (process.env.TOKEN_ACCOUNTS_PATH as any) || resolve(CONFIG_DIR, 'tokenAccounts.json'),
   logDir: LOG_DIR,
   cacheDir: CACHE_DIR,
+  // Consolidated session log configuration
+  consolidated: {
+    max: CONSOLIDATED_LOG_MAX,
+    path: CONSOLIDATED_LOG_PATH,
+    arbSessionPath: ARB_SESSION_JSON_PATH,
+    arbLogDir: ARB_LOG_DIR,
+  },
   socketIoPath: process.env.SOCKETIO_PATH || '/socket.io',
   // Orca configuration
   orca: {
@@ -73,12 +86,12 @@ export const CONFIG = {
     targetTickTimeMs: Number(process.env.TARGET_TICK_TIME_MS || 2000),
     graphStartDelayMs: Number(process.env.GRAPH_START_DELAY_MS || 5000),
     // Graph push cadence; when 0, rely entirely on event-driven rebuilds
-    graphStreamIntervalMs: Number(process.env.GRAPH_STREAM_INTERVAL_MS || 5000),
+    graphStreamIntervalMs: Number(process.env.GRAPH_STREAM_INTERVAL_MS || 1000),
     // Enable detect-driven graph push cadence (default: false)
     detectDrivenGraphPush: (process.env.DETECT_DRIVEN_GRAPH_PUSH || 'true') === 'true',
     // Debounce and delta threshold for event-driven graph rebuilds
-    graphRebuildDebounceMs: Number(process.env.GRAPH_REBUILD_DEBOUNCE_MS || 150),
-    graphRebuildMinDebounceMs: Number(process.env.GRAPH_REBUILD_MIN_DEBOUNCE_MS || 25),
+    graphRebuildDebounceMs: Number(process.env.GRAPH_REBUILD_DEBOUNCE_MS || 25),
+    graphRebuildMinDebounceMs: Number(process.env.GRAPH_REBUILD_MIN_DEBOUNCE_MS || 10),
     graphDeltaRebuildThreshold: Number(process.env.GRAPH_DELTA_REBUILD_THRESHOLD || 0),
     graphRebaseDiffThreshold: Number(process.env.GRAPH_REBASE_DIFF_THRESHOLD || 2000),
     graphRebaseTimeMs: Number(process.env.GRAPH_REBASE_TIME_MS || (5 * 60 * 1000)),
@@ -95,13 +108,13 @@ export const CONFIG = {
     logLevel: process.env.LOG_LEVEL || 'info',
     txCommitment: (process.env.TX_COMMITMENT as any) || 'confirmed',
     wrapAndUnwrapSol: process.env.WRAP_AND_UNWRAP_SOL !== 'false',
-    scopePools: process.env.SCOPE_POOLS !== 'false',
+    scopePools: (process.env.SCOPE_POOLS || 'false') === 'true',
     // New: scoping mode for /arb/pools endpoints: 'none' | 'watchlist' | 'jupiter' | 'intersection' | 'union'
-    scopePoolsMode: (process.env.SCOPE_POOLS_MODE as any) || 'intersection',
+    scopePoolsMode: (process.env.SCOPE_POOLS_MODE as any) || 'none',
     // New: token-universe mode used to filter pools at source: 'jupiter' | 'watchlist' | 'intersection' | 'union'
-    tokenUniverseMode: (process.env.TOKEN_UNIVERSE_MODE as any) || 'intersection',
-    // Control whether anchors are injected into the universe set (default: false)
-    includeAnchorsInUniverse: (process.env.INCLUDE_ANCHORS_IN_UNIVERSE || 'false') !== 'false',
+    tokenUniverseMode: (process.env.TOKEN_UNIVERSE_MODE as any) || 'union',
+    // Control whether anchors are injected into the universe set (default: true)
+    includeAnchorsInUniverse: (process.env.INCLUDE_ANCHORS_IN_UNIVERSE || 'true') !== 'false',
     // Route-level scoping (disable to avoid double-scoping if sources already scoped)
     routeLevelScoping: (process.env.ROUTE_LEVEL_SCOPING || 'false') === 'true',
     // Whether to allow anchor-bridging when scoping (include pools if either side is an anchor mint)
@@ -125,7 +138,7 @@ export const CONFIG = {
     minAmmLiqBase: process.env.MIN_AMM_LIQ_BASE ? Number(process.env.MIN_AMM_LIQ_BASE) : 0,
     minClmmLiquidity: process.env.MIN_CLMM_LIQUIDITY ? Number(process.env.MIN_CLMM_LIQUIDITY) : 0,
     // Minimum number of distinct DEXes a token pair must appear on to include (1..3)
-    minDexOverlap: Number(process.env.MIN_DEX_OVERLAP || 2),
+    minDexOverlap: Number(process.env.MIN_DEX_OVERLAP || 1),
     // Stable pruning controls
     // Comma-separated list of stablecoin mints; defaults to USDC, USDT
     stableMints: (process.env.STABLE_MINTS || 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB')
@@ -133,7 +146,7 @@ export const CONFIG = {
       .map(s => s.trim())
       .filter(Boolean),
     // If true, drop stable<->stable edges at graph build time
-    dropStableStableEdges: (process.env.DROP_STABLE_STABLE_EDGES || 'true') === 'true',
+    dropStableStableEdges: (process.env.DROP_STABLE_STABLE_EDGES || 'false') === 'true',
     // Optional: anchors always included in universe and bridging exceptions
     anchorMints: (process.env.ANCHOR_MINTS || 'So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')
       .split(',')
