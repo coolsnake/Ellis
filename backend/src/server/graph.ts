@@ -829,6 +829,14 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         // CLMM: calibrate then reciprocal-only orientation via USD refs; add USD deviation clamp for robustness
         price = calibratePrice(p.mint_a, p.mint_b, price);
         price = orientWithUsdFallbacks(p.mint_a, p.mint_b, price);
+        // Rescale CLMM price from pool decimals to global decimals (align across DEXes)
+        try {
+          const ga = Number(decimalsByMint[p.mint_a] ?? (p as any)?.decimals_a);
+          const gb = Number(decimalsByMint[p.mint_b] ?? (p as any)?.decimals_b);
+          const poolDecA = Number((p as any)?.decimals_a);
+          const poolDecB = Number((p as any)?.decimals_b);
+          price = rescalePriceByDecimals(price, poolDecA, poolDecB, ga, gb);
+        } catch {}
         try {
           const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
           const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
@@ -1134,6 +1142,14 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
               }
             } catch {}
           }
+        } catch {}
+        // Rescale Meteora CLMM to global decimals prior to clamp/edge emission
+        try {
+          const ga = Number(decimalsByMint[p.mint_a] ?? (p as any)?.decimals_a);
+          const gb = Number(decimalsByMint[p.mint_b] ?? (p as any)?.decimals_b);
+          const poolDecA = Number((p as any)?.decimals_a);
+          const poolDecB = Number((p as any)?.decimals_b);
+          priceMet = rescalePriceByDecimals(priceMet, poolDecA, poolDecB, ga, gb);
         } catch {}
         // Forward edge must carry A per 1 B; reverse is strict reciprocal
         const pid = String((p as any)?.id || undefined) || undefined;

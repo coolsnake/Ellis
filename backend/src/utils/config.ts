@@ -272,6 +272,8 @@ export const CONFIG = {
     token2022Mode: (process.env.TOKEN2022_MODE as any) || 'auto',
     // Additional slippage (bps) applied only to Token-2022 hops
     token2022ExtraSlippageBps: Number(process.env.TOKEN2022_EXTRA_SLIPPAGE_BPS || 20),
+    // Default USD quote size used when neither size nor sizeUsd is provided
+    defaultQuoteSizeUsd: Number(process.env.DEFAULT_QUOTE_SIZE_USD || 0),
     // Token-2022 allowlist per-DEX (default: blocked everywhere)
     token2022Allow: {
       raydium: (process.env.TOKEN2022_ALLOW_RAYDIUM || 'false') === 'true',

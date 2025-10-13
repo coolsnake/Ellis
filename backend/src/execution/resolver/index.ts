@@ -122,6 +122,24 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
         }
       } catch {}
     }
+    // If still zero and a defaultQuoteSizeUsd is configured, convert USD→atoms using start mint
+    if (curIn === 0n && hops.length > 0) {
+      try {
+        const defUsd = Number(((CONFIG.system as any)?.defaultQuoteSizeUsd) || 0);
+        if (defUsd > 0) {
+          const startMint = hops[0].inputMint;
+          const decimals = Number(hops[0].inputDecimals ?? 0);
+          const { getPriceByMint } = await import('../../server/priceStore.js');
+          const usdPx = Number((getPriceByMint(startMint)?.usdc) ?? 0); // USD per 1 token
+          if (usdPx > 0) {
+            const usdAmtMicro = BigInt(Math.round(defUsd * 1_000_000));
+            const usdPxMicro  = BigInt(Math.round(usdPx * 1_000_000));
+            const scale       = (10n ** BigInt(Math.max(0, Math.min(12, decimals))));
+            curIn = (usdAmtMicro * scale) / usdPxMicro;
+          }
+        }
+      } catch {}
+    }
     // Tiny probe seed when size/sizeUsd omitted, to allow real ix building for below-threshold probes
     if (curIn === 0n && hops.length > 0) {
       curIn = 1n;

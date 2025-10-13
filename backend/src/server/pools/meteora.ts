@@ -127,6 +127,21 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
         if (Number.isFinite(Number(r?.decimals))) decB = Number(r.decimals);
       }
     } catch {}
+    // Enforce authoritative decimals from Jupiter list, then anchors, then clamp
+    try {
+      const jDecA = Number(jupMap[mint_a]?.decimals);
+      const jDecB = Number(jupMap[mint_b]?.decimals);
+      if (Number.isFinite(jDecA)) decA = jDecA;
+      if (Number.isFinite(jDecB)) decB = jDecB;
+      if (mint_a === 'So11111111111111111111111111111111111111112') decA = 9;
+      if (mint_b === 'So11111111111111111111111111111111111111112') decB = 9;
+      if (mint_a === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') decA = 6;
+      if (mint_b === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') decB = 6;
+      if (mint_a === 'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN') decA = 6;
+      if (mint_b === 'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN') decB = 6;
+      decA = Math.min(12, Math.max(0, Math.round(Number(decA))));
+      decB = Math.min(12, Math.max(0, Math.round(Number(decB))));
+    } catch {}
     const feeBasePctRaw: any = (it as any)?.base_fee_percentage;
     let fee_bps = 0;
     if (feeBasePctRaw != null) {

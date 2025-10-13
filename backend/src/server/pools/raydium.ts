@@ -199,6 +199,14 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
   const arr: any[] = Array.isArray(raw?.data?.data)
     ? raw.data.data
     : (Array.isArray(raw?.data) ? raw.data : (Array.isArray(raw) ? raw : []));
+  // Load Jupiter token decimals to enforce authoritative values for CLMM
+  let jupMap: Record<string, { symbol?: string; decimals?: number }> = {};
+  try {
+    const tok = await import('../../utils/tokens.js');
+    if (typeof (tok as any).loadJupiterTokenMap === 'function') {
+      jupMap = await (tok as any).loadJupiterTokenMap();
+    }
+  } catch {}
 
   const toMint = (v: any): string => {
     if (!v) return '';
@@ -249,6 +257,22 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
       const reserveB = Number((it as any)?.reserveB ?? NaN);
       const amount_a_whole = Number.isFinite(mintAmountA) ? mintAmountA : (Number.isFinite(reserveA) ? reserveA : undefined);
       const amount_b_whole = Number.isFinite(mintAmountB) ? mintAmountB : (Number.isFinite(reserveB) ? reserveB : undefined);
+      // Enforce authoritative decimals from Jupiter list, then anchors, then clamp
+      try {
+        const jDecA = Number(jupMap[mintA]?.decimals);
+        const jDecB = Number(jupMap[mintB]?.decimals);
+        if (Number.isFinite(jDecA)) decA = jDecA;
+        if (Number.isFinite(jDecB)) decB = jDecB;
+        // Anchors: SOL 9, USDC/USDT 6
+        if (mintA === 'So11111111111111111111111111111111111111112') decA = 9;
+        if (mintB === 'So11111111111111111111111111111111111111112') decB = 9;
+        if (mintA === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') decA = 6;
+        if (mintB === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') decB = 6;
+        if (mintA === 'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN') decA = 6;
+        if (mintB === 'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN') decB = 6;
+        decA = Math.min(12, Math.max(0, Math.round(Number(decA))));
+        decB = Math.min(12, Math.max(0, Math.round(Number(decB))));
+      } catch {}
       let price_from_sqrt = 0;
       try {
         if (sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
