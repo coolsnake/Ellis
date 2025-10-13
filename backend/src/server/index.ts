@@ -115,7 +115,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   logger.debug(`api.request ${req.method} ${req.path}`, { reqId, cid: reqId, method: req.method, path: req.path, query: req.query, body: req.body, ip: req.ip, ua: req.headers['user-agent'], cat: 'api', subcat: 'http', code: LogCode.API_REQUEST, span: 'start' });
   res.on('finish', () => {
     const durationMs = Date.now() - startMs;
-    logger.info(`api.response ${req.method} ${req.path} ${res.statusCode} ${durationMs}ms`, { reqId, cid: reqId, method: req.method, path: req.path, status: res.statusCode, durationMs, cat: 'api', subcat: 'http', code: LogCode.API_RESPONSE, span: 'end' });
+    logger.debug(`api.response ${req.method} ${req.path} ${res.statusCode} ${durationMs}ms`, { reqId, cid: reqId, method: req.method, path: req.path, status: res.statusCode, durationMs, cat: 'api', subcat: 'http', code: LogCode.API_RESPONSE, span: 'end' });
   });
   next();
 });

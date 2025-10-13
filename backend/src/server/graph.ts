@@ -656,6 +656,44 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           return v;
         }
       };
+      // Helper: triangulate A per B using a pivot C present in pools (no USD refs needed)
+      const PIVOTS: string[] = [
+        'So11111111111111111111111111111111111111112', // SOL
+        'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+        '3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh', // WBTC (as seen in logs)
+      ];
+      const allPools: any[] = [
+        ...(rayValid.amm || []), ...(rayValid.clmm || []),
+        ...(orcValid.amm || []), ...(orcValid.clmm || []),
+        ...(mblValid.amm || []),
+      ];
+      const getPriceAPerBFromPools = (A: string, B: string): number | undefined => {
+        let best: { v: number; w: number } | null = null;
+        for (const p of allPools) {
+          const w = Number((p as any)?.liquidity_display || (p as any)?.tvl_usd || 0) || 1;
+          const px = Number((p as any)?.price_a_per_b || 0);
+          if (!(px > 0)) continue;
+          let cand: number | undefined;
+          if (p.mint_a === A && p.mint_b === B) cand = px; else if (p.mint_a === B && p.mint_b === A) cand = 1 / px;
+          if (cand && cand > 0) {
+            if (!best || w > best.w) best = { v: cand, w };
+          }
+        }
+        return best?.v;
+      };
+      const triangulateAPerB = (A: string, B: string): number | undefined => {
+        for (const C of PIVOTS) {
+          if (C === A || C === B) continue;
+          const aPerC = getPriceAPerBFromPools(A, C);
+          const bPerC = getPriceAPerBFromPools(B, C);
+          if (aPerC && bPerC && aPerC > 0 && bPerC > 0) {
+            const implied = aPerC / bPerC;
+            if (isFinite(implied) && implied > 0) return implied;
+          }
+        }
+        return undefined;
+      };
+
       for (const p of (rayValid.clmm || [])) {
         clmmTotal++;
         let price = (p as any)?.price_a_per_b as number | undefined;
@@ -729,6 +767,19 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             } else if (dev > 5 || fwd > 1e4 || rev > 1e4 || price < clampMin || price > clampMax) {
               logger.debug('graph.calibrate.raydium.clmm outlier', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, calibrated: price, ref, dev, fwd, rev });
             }
+          } else {
+            // No reliable USD reference: triangulate using pivots to decide orientation
+            try {
+              const tri = triangulateAPerB(p.mint_a, p.mint_b);
+              if (typeof tri === 'number' && tri > 0 && price && price > 0) {
+                const dev = Math.max(price / tri, tri / price);
+                const inv = 1 / price;
+                const devI = Math.max(inv / tri, tri / inv);
+                if (devI + 1e-12 < dev) price = inv;
+              } else if (typeof tri === 'number' && tri > 0 && (!price || !(price > 0))) {
+                price = tri;
+              }
+            } catch {}
           }
         } catch {}
         // Forward + reverse with strict reciprocal rule and consistency guard

@@ -10,10 +10,10 @@ export async function getV6Quote(inputMint: string, outputMint: string, amount: 
   url.searchParams.set('slippageBps', String(slippageBps));
   url.searchParams.set('restrictIntermediateTokens', 'true');
   const started = Date.now();
-  logger.info(`api.request GET ${url.pathname}`, { url: url.toString(), cat: 'api' });
+  logger.debug(`api.request GET ${url.pathname}`, { url: url.toString(), cat: 'api' });
   const res = await fetch(url.toString(), { headers: { accept: 'application/json' } });
   const dur = Date.now() - started;
-  logger.info(`api.response GET ${url.pathname} ${res.status} ${dur}ms`, { status: res.status, durationMs: dur, url: url.toString(), cat: 'api' });
+  logger.debug(`api.response GET ${url.pathname} ${res.status} ${dur}ms`, { status: res.status, durationMs: dur, url: url.toString(), cat: 'api' });
   if (res.status === 429) {
     try { const { emit } = await import('../server/realtime.js'); emit('log', { level: 'warn', message: `arb:429 source=jupiter kind=v6_quote in=${inputMint} out=${outputMint}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
     logger.warn('jup.v6.quote 429', { in: inputMint, out: outputMint });
@@ -26,7 +26,7 @@ export async function getV6Quote(inputMint: string, outputMint: string, amount: 
 export async function getSwapInstructions(quoteResponse: any, userPublicKey: string, wrapAndUnwrapSol: boolean = true) {
   const url = 'https://quote-api.jup.ag/v6/swap-instructions';
   const started = Date.now();
-  logger.info(`api.request POST /v6/swap-instructions`, { url, cat: 'api' });
+  logger.debug(`api.request POST /v6/swap-instructions`, { url, cat: 'api' });
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -41,7 +41,7 @@ export async function getSwapInstructions(quoteResponse: any, userPublicKey: str
     })
   });
   const dur = Date.now() - started;
-  logger.info(`api.response POST /v6/swap-instructions ${res.status} ${dur}ms`, { status: res.status, durationMs: dur, url, cat: 'api' });
+  logger.debug(`api.response POST /v6/swap-instructions ${res.status} ${dur}ms`, { status: res.status, durationMs: dur, url, cat: 'api' });
   if (res.status === 429) {
     try { const { emit } = await import('../server/realtime.js'); emit('log', { level: 'warn', message: 'arb:429 source=jupiter kind=v6_swap_instructions', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
     logger.warn('jup.v6.swap_instructions 429');

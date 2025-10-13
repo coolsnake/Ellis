@@ -343,10 +343,10 @@ export function createArbRouter(io: SocketIOServer): Router {
   api.post('/arb/config', async (req, res) => {
     try {
       const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
-      logger.info(`api.request POST /arb-service/config`, { url: `${host}/config`, cat: 'api' });
+      logger.debug(`api.request POST /arb-service/config`, { url: `${host}/config`, cat: 'api' });
       const started = Date.now();
       const r = await (async () => { const ac = new AbortController(); const t = setTimeout(() => ac.abort('timeout'), 7000); try { return await fetch(`${host}/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(req.body || {}), signal: ac.signal }); } finally { clearTimeout(t); } })();
-      logger.info(`api.response POST /arb-service/config ${r.status} ${Date.now()-started}ms`, { status: r.status, cat: 'api' });
+      logger.debug(`api.response POST /arb-service/config ${r.status} ${Date.now()-started}ms`, { status: r.status, cat: 'api' });
       let json: any = {};
       try { json = await r.json(); } catch { json = {}; }
       try {
