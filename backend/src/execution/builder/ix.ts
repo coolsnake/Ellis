@@ -5,6 +5,25 @@ import { PublicKey } from '@solana/web3.js';
 import { getConnection, ensureWallet } from '../../wallet/wallet.js';
 import { CONFIG } from '../../utils/config.js';
 
+function sanitizeKeyString(v: any): string {
+  try {
+    return String(v || '').trim().replace(/-rev$/, '');
+  } catch {
+    return '';
+  }
+}
+
+function toPublicKey(value: any, fallback?: any): PublicKey {
+  const primary = sanitizeKeyString(value);
+  try { if (primary) return new PublicKey(primary); } catch {}
+  const fb = sanitizeKeyString(fallback);
+  if (fb) {
+    try { return new PublicKey(fb); } catch {}
+  }
+  // Preserve original error semantics to aid upstream handling/logging
+  throw new Error('Non-base58 character');
+}
+
 export function computeSlippageBps(amountInRaw?: bigint, minOutRaw?: bigint): number {
   try {
     if ((amountInRaw ?? 0n) > 0n && (minOutRaw ?? 0n) > 0n) {
@@ -33,12 +52,12 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
     const { WhirlpoolContext, buildWhirlpoolClient, swapQuoteByInputToken, SwapUtils, toTx } = await import('@orca-so/whirlpools-sdk');
     const { Percentage } = await import('@orca-so/common-sdk');
     const dummyWallet: any = { publicKey: kp.publicKey, signTransaction: async (tx: any) => tx, signAllTransactions: async (txs: any[]) => txs };
-    const programId = new PublicKey(hop.programId || (CONFIG.orca?.programId as any));
+    const programId = toPublicKey(hop.programId, (CONFIG.orca?.programId as any));
     const ctx = (WhirlpoolContext as any).from(connection as any, dummyWallet, programId);
     const client = (buildWhirlpoolClient as any)(ctx);
-    const poolPk = new PublicKey(hop.poolId);
+    const poolPk = toPublicKey(hop.poolId);
     const pool = await client.getPool(poolPk);
-    const inputMint = new PublicKey(hop.inputMint);
+    const inputMint = toPublicKey(hop.inputMint);
     const bps = computeSlippageBps(hop.amountInRaw, hop.minOutRaw);
     const slippage = (Percentage as any).fromFraction(bps, 10000);
     const quote = await (swapQuoteByInputToken as any)(pool, inputMint, hop.amountInRaw, slippage, ctx.program.programId, ctx.fetcher, true);
@@ -66,18 +85,18 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     if (maybe && maybe?.DLMM && maybe?.DLMM?.swapIx) {
       const connection = getConnection();
       const kp = await ensureWallet(CONFIG.walletPath);
-      const poolPk = new PublicKey(hop.poolId);
-      const programId = new PublicKey(hop.programId as string);
+      const poolPk = toPublicKey(hop.poolId);
+      const programId = toPublicKey(hop.programId as string);
       const params = {
         pool: poolPk,
         programId,
-        userSourceAta: new PublicKey(hop.userSourceAta),
-        userDestAta: new PublicKey(hop.userDestAta),
+        userSourceAta: toPublicKey(hop.userSourceAta),
+        userDestAta: toPublicKey(hop.userDestAta),
         amountIn: hop.amountInRaw,
         minOut: hop.minOutRaw,
         // Optional: bin arrays if required
-        binArrayLower: hop.binArrayLower ? new PublicKey(hop.binArrayLower) : undefined,
-        binArrayUpper: hop.binArrayUpper ? new PublicKey(hop.binArrayUpper) : undefined,
+        binArrayLower: hop.binArrayLower ? toPublicKey(hop.binArrayLower) : undefined,
+        binArrayUpper: hop.binArrayUpper ? toPublicKey(hop.binArrayUpper) : undefined,
       } as any;
       const ix = await maybe.DLMM.swapIx(connection, kp.publicKey, params);
       // Meteora SDK returns a TransactionInstruction
@@ -108,8 +127,8 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     const connection = getConnection();
     const kp = await ensureWallet(CONFIG.walletPath);
     const wallet = { publicKey: kp.publicKey } as any;
-    const poolId = new PublicKey(hop.poolId.replace(/-rev$/, ''));
-    const programId = new PublicKey(hop.programId || (CONFIG.raydium?.clmmProgram as any));
+    const poolId = toPublicKey(hop.poolId);
+    const programId = toPublicKey(hop.programId, (CONFIG.raydium?.clmmProgram as any));
     // Heuristic slippage from minOut
     const bps = computeSlippageBps(hop.amountInRaw, hop.minOutRaw);
     if (sdk?.Clmm && sdk?.Clmm?.makeSwapInstructionSimple) {
@@ -117,7 +136,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
         connection,
         poolInfo: { id: poolId } as any,
         owner: wallet,
-        inputMint: new PublicKey(hop.inputMint),
+        inputMint: toPublicKey(hop.inputMint),
         amountIn: hop.amountInRaw,
         amountOutMin: hop.minOutRaw,
         slippage: bps,
@@ -142,15 +161,15 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     const connection = getConnection();
     const kp = await ensureWallet(CONFIG.walletPath);
     const wallet = { publicKey: kp.publicKey } as any;
-    const poolId = new PublicKey(hop.poolId.replace(/-rev$/, ''));
-    const programId = new PublicKey(hop.programId || (CONFIG.raydium?.ammV4Program as any));
+    const poolId = toPublicKey(hop.poolId);
+    const programId = toPublicKey(hop.programId, (CONFIG.raydium?.ammV4Program as any));
     const bps = computeSlippageBps(hop.amountInRaw, hop.minOutRaw);
     if (sdk?.AmmV4 && sdk?.AmmV4?.makeSwapInstructionSimple) {
       const res = await sdk.AmmV4.makeSwapInstructionSimple({
         connection,
         poolInfo: { id: poolId } as any,
         owner: wallet,
-        inputMint: new PublicKey(hop.inputMint),
+        inputMint: toPublicKey(hop.inputMint),
         amountIn: hop.amountInRaw,
         amountOutMin: hop.minOutRaw,
         slippage: bps,
