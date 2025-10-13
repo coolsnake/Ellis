@@ -938,8 +938,12 @@ async fn main() -> anyhow::Result<()> {
                             for w in 0..best_nodes.len() {
                                 let u = NodeIndex::new(best_nodes[w]);
                                 let v = NodeIndex::new(best_nodes[(w+1)%best_nodes.len()]);
-                                let mut best_rate: f64 = 0.0; let mut best_meta: Option<(String, f64, i64, String, f64)> = None;
-                                for e in s.graph.g.edges_connecting(u, v) { let wt = e.weight(); if wt.liquidity <= 0.0 { continue; } let r = wt.rate_effective.max(1e-12); if r > best_rate { best_rate = r; best_meta = Some((wt.dex.clone(), wt.liquidity, wt.fee_bps, wt.pool_id.clone(), wt.liquidity_display)); } }
+                            let mut best_rate: f64 = 0.0; let mut best_meta: Option<(String, f64, i64, String, f64)> = None;
+                            for e in s.graph.g.edges_connecting(u, v) {
+                                let wt = e.weight(); if wt.liquidity <= 0.0 { continue; }
+                                let r = wt.rate_effective.max(1e-12);
+                                if r > best_rate { best_rate = r; best_meta = Some((wt.dex.clone(), wt.liquidity, wt.fee_bps, wt.pool_id.clone(), wt.liquidity_display)); }
+                            }
                                 if best_rate <= 0.0 { prod2 = 0.0; break; }
                                 if let Some((dex, liq, fee, pid, liqd)) = best_meta.take() { if dex == "Link" { link_edges_used += 1; link_penalty_bps_total += fee; } else { dexes_set.insert(dex.clone()); } min_edge_liquidity = min_edge_liquidity.min(liq); if bottleneck.as_ref().map(|(_,_,_,r,_,_)| best_rate < *r).unwrap_or(true) { bottleneck = Some((u.index(), v.index(), dex.clone(), best_rate, liq, fee)); } hop_dexes.push(dex); hop_rates.push(best_rate); hop_pool_ids.push(pid); hop_fee_bps.push(fee); hop_liq_disp.push(liqd); let next_out = if cur_out.is_finite() { cur_out * best_rate } else { 0.0 }; hop_outs.push(next_out); cur_out = next_out; }
                                 prod2 *= best_rate;
@@ -1469,17 +1473,23 @@ async fn handle_graph_snapshot(state: Arc<RwLock<AppState>>, req: GraphSnapshotR
     // Version guard: ignore stale or equal snapshots
     if let Some(v) = g.version { if v <= s.last_graph_version { s.metrics.graph_updates_skipped = s.metrics.graph_updates_skipped.saturating_add(1); return serde_json::json!({"ok": true, "ignored": true, "reason": "stale_version"}); } }
     let mut new_graph = ArbGraph::new();
+    // Centralized price conversion: A-per-1-B (backend) -> B-per-1-A (detector), apply fee once
+    fn edge_rate_effective_local(e: &GraphEdge) -> (f64, f64) {
+        let fee = e.fee_bps.unwrap_or(0) as f64 / 10_000.0;
+        let px = e.price_a_per_b.unwrap_or(0.0);
+        if !(px.is_finite() && px > 0.0) { return (0.0, 0.0); }
+        let base = 1.0 / px;
+        if !(base.is_finite() && base > 0.0) { return (0.0, 0.0); }
+        let eff = base * (1.0 - fee).max(0.0);
+        (base, eff)
+    }
     for e in g.edges.into_iter() {
         let dex = e.dex.unwrap_or_else(|| "Unknown".to_string());
         let fee = e.fee_bps.unwrap_or(0);
         let liq = e.liquidity.unwrap_or(0.0);
         let pool_id = e.pool_id.unwrap_or_else(|| "".to_string());
         let liq_disp = e.liquidity_display.unwrap_or(0.0);
-        // Backend sends price_a_per_b (A per 1 B) for edge source=A -> target=B.
-        // Detector expects target-per-source (B per 1 A). Invert here.
-        let px = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
-        let base = if px > 0.0 { 1.0 / px } else { 0.0 };
-        let rate_eff = if base > 0.0 { let f = 1.0 - (fee as f64)/10_000.0; base * if f > 0.0 { f } else { 0.0 } } else { 0.0 };
+        let (_base, rate_eff) = edge_rate_effective_local(&e);
         new_graph.upsert_edge(&dex, &e.source, &e.target, EdgeData {
             rate_effective: rate_eff,
             fee_bps: fee,
@@ -1488,6 +1498,35 @@ async fn handle_graph_snapshot(state: Arc<RwLock<AppState>>, req: GraphSnapshotR
             pool_id,
             liquidity_display: liq_disp,
         });
+    }
+    // Enforce reciprocity between forward/reverse edges when both present
+    {
+        use std::collections::HashMap;
+        let mut by_core: HashMap<String, (petgraph::graph::NodeIndex, petgraph::graph::NodeIndex, f64, i64, Option<(petgraph::graph::NodeIndex, petgraph::graph::NodeIndex, f64, i64)>)> = HashMap::new();
+        for e in new_graph.g.edge_references() {
+            let w = e.weight();
+            let pid = w.pool_id.clone();
+            if pid.is_empty() { continue; }
+            let core = pid.strip_suffix("-rev").unwrap_or(&pid).to_string();
+            let entry = by_core.entry(core).or_insert((e.source(), e.target(), w.rate_effective, w.fee_bps, None));
+            if pid.ends_with("-rev") { entry.4 = Some((e.source(), e.target(), w.rate_effective, w.fee_bps)); }
+            else { entry.0 = e.source(); entry.1 = e.target(); entry.2 = w.rate_effective; entry.3 = w.fee_bps; }
+        }
+        for (_k,(u,v,rf,ff,rev_opt)) in by_core.into_iter() {
+            if let Some((vr,ur,rr,fr)) = rev_opt {
+                let exp = (1.0 - (ff as f64)/10_000.0).max(0.0) * (1.0 - (fr as f64)/10_000.0).max(0.0);
+                let prod = rf * rr;
+                let ok = prod.is_finite() && exp.is_finite() && exp > 0.0 && (prod/exp) > 0.99 && (prod/exp) < 1.01;
+                if !ok {
+                    // Correct reverse to reciprocal of forward base
+                    let base_fwd = if (1.0 - (ff as f64)/10_000.0) > 0.0 { rf / (1.0 - (ff as f64)/10_000.0) } else { 0.0 };
+                    if base_fwd.is_finite() && base_fwd > 0.0 {
+                        let rr_new = (1.0 / base_fwd) * (1.0 - (fr as f64)/10_000.0).max(0.0);
+                        if rr_new.is_finite() && rr_new > 0.0 { if let Some(eid) = new_graph.g.find_edge(vr, ur) { if let Some(w) = new_graph.g.edge_weight_mut(eid) { w.rate_effective = rr_new; } } }
+                    }
+                }
+            }
+        }
     }
     s.graph = new_graph;
     s.metrics.graph_nodes = s.graph.g.node_count() as u64;
@@ -1537,10 +1576,7 @@ async fn arb_start(State(state): State<Arc<RwLock<AppState>>>, headers: HeaderMa
             let liq = e.liquidity.unwrap_or(0.0);
             let pool_id = e.pool_id.unwrap_or_else(|| "".to_string());
             let liq_disp = e.liquidity_display.unwrap_or(0.0);
-            // price_a_per_b is A per 1 B for edge source=A -> target=B; invert to B per 1 A
-            let px = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
-            let base = if px > 0.0 { 1.0 / px } else { 0.0 };
-            let rate_eff = if base > 0.0 { let f = 1.0 - (fee as f64)/10_000.0; base * if f > 0.0 { f } else { 0.0 } } else { 0.0 };
+            let (_base, rate_eff) = edge_rate_effective_local(&e);
             new_graph.upsert_edge(&dex, &e.source, &e.target, EdgeData { rate_effective: rate_eff, fee_bps: fee, liquidity: liq, dex: dex.clone(), pool_id, liquidity_display: liq_disp });
         }
         let nodes_cnt = new_graph.g.node_count() as u64;
