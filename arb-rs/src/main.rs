@@ -1466,6 +1466,18 @@ async fn arb_graph_snapshot(State(state): State<Arc<RwLock<AppState>>>, headers:
     Json(handle_graph_snapshot(state, req).await)
 }
 
+// Centralized price conversion: A-per-1-B (backend) -> B-per-1-A (detector), apply fee once
+#[inline]
+fn edge_rate_effective_local(px_opt: Option<f64>, fee_bps_opt: Option<i64>) -> (f64, f64) {
+    let fee_bps: f64 = (fee_bps_opt.unwrap_or(0)) as f64;
+    let px: f64 = px_opt.unwrap_or(0.0);
+    if !(px.is_finite() && px > 0.0) { return (0.0, 0.0); }
+    let base: f64 = 1.0 / px;
+    if !(base.is_finite() && base > 0.0) { return (0.0, 0.0); }
+    let eff: f64 = base * (1.0 - fee_bps/10_000.0).max(0.0);
+    (base, eff)
+}
+
 async fn handle_graph_snapshot(state: Arc<RwLock<AppState>>, req: GraphSnapshotReq) -> serde_json::Value {
     let mut s = state.write().await;
     let g = req.graph;
@@ -1513,7 +1525,7 @@ async fn handle_graph_snapshot(state: Arc<RwLock<AppState>>, req: GraphSnapshotR
             if pid.ends_with("-rev") { entry.4 = Some((e.source(), e.target(), w.rate_effective, w.fee_bps)); }
             else { entry.0 = e.source(); entry.1 = e.target(); entry.2 = w.rate_effective; entry.3 = w.fee_bps; }
         }
-        for (_k,(u,v,rf,ff,rev_opt)) in by_core.into_iter() {
+        for (_k,(_u,_v,rf,ff,rev_opt)) in by_core.into_iter() {
             if let Some((vr,ur,rr,fr)) = rev_opt {
                 let exp = (1.0 - (ff as f64)/10_000.0).max(0.0) * (1.0 - (fr as f64)/10_000.0).max(0.0);
                 let prod = rf * rr;
