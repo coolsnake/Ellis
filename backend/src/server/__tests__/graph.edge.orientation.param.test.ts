@@ -83,6 +83,7 @@ describe('Edge orientation and reciprocity across DEXes', () => {
     const mod = await import('vitest');
     const vi = (mod as any).vi as any;
     vi.resetModules(); vi.restoreAllMocks();
+    (cfgMod.CONFIG.system as any).stableMints = [USDC, USD1];
     await stubUsd({ [SOL]: 200 });
     const pack = { raydium: { amm: [], clmm: [] }, orca: { amm: [], clmm: [] }, meteora: { amm: [], clmm: [{ id: 'met1', mint_a: SOL, mint_b: USD1, price_a_per_b: 210, fee_bps: 20, pool_kind: 'clmm', decimals_a: 9, decimals_b: 6 }] }, meteora_balanced: { amm: [] } };
     const snap = await buildSnap(pack);

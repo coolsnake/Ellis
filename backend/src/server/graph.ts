@@ -408,18 +408,24 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const isOk = (p: any): string | null => {
           const fb = Number(p?.fee_bps);
           if (Number.isFinite(fb) && (fb < feeMin || fb > feeMax)) return 'badFees';
+          const kind = String((p as any)?.pool_kind || '');
+          const s64  = Number((p as any)?.sqrt_price_x64 || 0);
           const price = Number((p as any)?.price_a_per_b);
-          if (!Number.isFinite(price) || price <= 0) return 'nonFinitePrice';
+          // Allow CLMM pools that can derive price from sqrt even if price_a_per_b is missing
+          if (!Number.isFinite(price) || price <= 0) {
+            if (!(kind === 'clmm' && s64 > 0)) return 'nonFinitePrice';
+          }
           const aUsd = getUsd(p.mint_a);
           const bUsd = getUsd(p.mint_b);
           // Avoid double-applying price deviation sanity if source already sanitized
           const avoidDouble = (sanityCfg as any).avoidDoubleApply !== false; // default on
           const dex = String((p as any)?.dex || '');
-          const kind = String((p as any)?.pool_kind || '');
           const sourceSanitized = (
             (dex === 'Orca' && kind === 'clmm' && ((CONFIG as any)?.sanity?.sanity_applyOrcaClmm ?? true) === true) ||
             (dex === 'Raydium' && kind === 'amm' && ((CONFIG as any)?.sanity?.sanity_applyRaydiumAmm ?? true) === true) ||
-            (dex === 'Meteora' && kind === 'clmm' && ((CONFIG as any)?.sanity?.sanity_applyMeteoraClmm ?? true) === true)
+            (dex === 'Meteora' && kind === 'clmm' && ((CONFIG as any)?.sanity?.sanity_applyMeteoraClmm ?? true) === true) ||
+            // Raydium CLMM: skip graph-level deviation drop; CLMM block performs USD snap/clamp
+            (dex === 'Raydium' && kind === 'clmm')
           );
           const skipDeviation = avoidDouble && sourceSanitized;
           if (!skipDeviation && Number.isFinite(aUsd as any) && Number.isFinite(bUsd as any) && (aUsd as number) > 0 && (bUsd as number) > 0) {
