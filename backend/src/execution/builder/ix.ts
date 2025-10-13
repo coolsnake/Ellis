@@ -108,7 +108,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     const connection = getConnection();
     const kp = await ensureWallet(CONFIG.walletPath);
     const wallet = { publicKey: kp.publicKey } as any;
-    const poolId = new PublicKey(hop.poolId);
+    const poolId = new PublicKey(hop.poolId.replace(/-rev$/, ''));
     const programId = new PublicKey(hop.programId || (CONFIG.raydium?.clmmProgram as any));
     // Heuristic slippage from minOut
     const bps = computeSlippageBps(hop.amountInRaw, hop.minOutRaw);
@@ -142,7 +142,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     const connection = getConnection();
     const kp = await ensureWallet(CONFIG.walletPath);
     const wallet = { publicKey: kp.publicKey } as any;
-    const poolId = new PublicKey(hop.poolId);
+    const poolId = new PublicKey(hop.poolId.replace(/-rev$/, ''));
     const programId = new PublicKey(hop.programId || (CONFIG.raydium?.ammV4Program as any));
     const bps = computeSlippageBps(hop.amountInRaw, hop.minOutRaw);
     if (sdk?.AmmV4 && sdk?.AmmV4?.makeSwapInstructionSimple) {

@@ -23,10 +23,8 @@ describe('raydium amm orientation (no stable flip)', () => {
         }
       ]
     } as any;
-    // @ts-ignore
-    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => raw });
-    const { getRaydiumPoolsNormalized } = await import('../src/server/pools');
-    const norm = await getRaydiumPoolsNormalized();
+    const { normalizeRaydiumPools } = await import('../src/server/pools/raydium');
+    const norm = await normalizeRaydiumPools(raw as any);
     expect(norm.amm.length).toBe(1);
     const p = norm.amm[0] as any;
     // No stable-aware flip occurs inside Raydium normalizer now. Canonicalization may reorder mints, but price stays consistent with orientation A-per-B
