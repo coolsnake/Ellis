@@ -24,6 +24,8 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     minClmmLiquidity: 100000,
     minDexOverlap: 2,
     universePrefilterOrca: false,
+    // WS Attach rate (pools per second)
+    wsAttachPerSec: 10,
 		// Raydium (HTTP)
 		ray_cacheTtlMs: 300000,
 		ray_httpConcurrency: 2,
@@ -100,6 +102,8 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             minDexOverlap: Number(j?.system?.minDexOverlap ?? prev.minDexOverlap),
             universePrefilterOrca: !!j?.system?.universePrefilterOrca,
             jupiterApiUrl: j?.system?.jupiterApiUrl || prev.jupiterApiUrl,
+            // WS attach rate
+            wsAttachPerSec: Number(j?.system?.wsAttachPerSec ?? prev.wsAttachPerSec ?? 10),
 			ray_cacheTtlMs: Number(j?.raydium?.cacheTtlMs ?? prev.ray_cacheTtlMs),
 			ray_httpConcurrency: Number((j?.raydium?.concurrency ?? j?.raydium?.sdkConcurrency) ?? prev.ray_httpConcurrency),
 			ray_pageSize: Number((j?.raydium?.pageSize ?? j?.raydium?.httpPageSize) ?? (prev.ray_pageSize ?? prev.ray_httpPageSize)),
@@ -158,6 +162,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         enablePoolWs: !!cfg.enablePoolWs,
         poolsRefreshMs: Number(cfg.poolsRefreshMs),
         poolRefreshMinGapMs: Number(cfg.poolRefreshMinGapMs),
+        wsAttachPerSec: Number(cfg.wsAttachPerSec),
         tokenUniverseMode: cfg.tokenUniverseMode,
         scopePoolsMode: cfg.scopePoolsMode,
         anchorMints: String(cfg.anchorMints || '').split(',').map(s => s.trim()).filter(Boolean),
@@ -252,6 +257,10 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
               <div>
                 <label className="block text-sm mb-1">Min Gap Between Refreshes (ms)</label>
                 <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.poolRefreshMinGapMs} onChange={(e)=>set('poolRefreshMinGapMs', Number(e.target.value)||0)} />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">WS Attach Rate (pools/sec)</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.wsAttachPerSec} onChange={(e)=>set('wsAttachPerSec', Number(e.target.value)||0)} />
               </div>
             </div>
           </div>

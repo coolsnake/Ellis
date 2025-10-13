@@ -717,7 +717,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         if (Number.isFinite(usd as any) && (usd as number) > 0) clmmUsd++;
         const pidClmm = safePoolId(p);
         const liqDisplay = (p as any)?.liquidity_display ?? ((usd && usd > 0) ? usd : liqRaw);
-        // CLMM: calibrate then apply orientation rule (no clamp-to-USD)
+        // CLMM: calibrate magnitude only; keep normalized orientation (no USD-based orientation)
         price = calibratePrice(p.mint_a, p.mint_b, price);
         try {
           const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
