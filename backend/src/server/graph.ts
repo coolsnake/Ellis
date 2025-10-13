@@ -621,11 +621,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             const inv = 1 / (oriented as number);
             const dev  = Math.max((oriented as number) / ref,  ref / (oriented as number));
             const devI = Math.max(inv / ref, ref / inv);
-            let out = (devI + 1e-12 < dev) ? inv : (oriented as number);
-            const maxClampDev = Number(((CONFIG as any)?.sanity as any)?.usdClampMaxDev) || 1.10;
-            const post = Math.max(out / ref, ref / out);
-            if (post > maxClampDev) out = ref;
-            oriented = out;
+            oriented = (devI + 1e-12 < dev) ? inv : (oriented as number);
           } else {
             // No USD reference: keep chosen price as-is; reciprocity tests will guard egregious cases
           }
@@ -728,17 +724,6 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
           const ref = (pa && pb && pb > 0) ? ((pb as number) / (pa as number)) : undefined;
           if (price && ref) {
-            // Snap anchors (SOL/USDC/USDT) to USD ref to avoid residual inversion on reverse
-            try {
-              const ANCHORS = new Set<string>([
-                'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-                'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
-                'So11111111111111111111111111111111111111112',  // SOL
-              ]);
-              if (ANCHORS.has(p.mint_a) || ANCHORS.has(p.mint_b)) {
-                price = ref;
-              }
-            } catch {}
             const dev = Math.max(price / ref, ref / price);
             const fwd = 1 / price, rev = price;
             const clampMin = Number(((CONFIG as any)?.sanity as any)?.priceClampMin) || 1e-12;
@@ -881,7 +866,9 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const pid = safePoolId(p);
         const liqBase = Number((p as any)?.liquidity_base);
         const liqDisplay = (p as any)?.liquidity_display ?? ((usd && usd > 0) ? usd : (Number.isFinite(liqBase) && liqBase > 0 ? liqBase : undefined));
-        const fwd = clampPrice(price && price > 0 ? price : undefined);
+        // If no pool price, skip and log; do not use USD substitution
+        if (!price || !(price > 0)) { try { logger.debug('graph.skip.edge.no_price', { dex: 'Meteora', kind: 'amm', pool_id: pid, mint_a: p.mint_a, mint_b: p.mint_b, reason: 'no_pool_price' }); } catch {}; continue; }
+        const fwd = clampPrice(price);
         const rev = fwd && fwd > 0 ? (1 / fwd) : undefined;
         addEdge(p.mint_a, p.mint_b, 'Meteora', p.fee_bps, liqDisplay, fwd, usd, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
         const pidRev = pid ? `${pid}-rev` : undefined;
@@ -1015,21 +1002,14 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           let pb = (typeof directB === 'number' && directB > 0) ? directB : undefined;
           if (!pa) { const imp = impliedUsdViaEdges(p.mint_a); if (typeof imp.usd === 'number' && imp.usd > 0) { pa = imp.usd; try { logger.debug('graph.implied.usd', { mint: p.mint_a, implied: imp.usd, via: imp.via, weight: imp.weight }); } catch {} } }
           if (!pb) { const imp = impliedUsdViaEdges(p.mint_b); if (typeof imp.usd === 'number' && imp.usd > 0) { pb = imp.usd; try { logger.debug('graph.implied.usd', { mint: p.mint_b, implied: imp.usd, via: imp.via, weight: imp.weight }); } catch {} } }
-          const maxClampDev = Number(((CONFIG as any)?.sanity as any)?.usdClampMaxDev) || 1.10;
-          // Prefer a USD reference whenever we can: direct/implied pa,pb or fallback via priceFromUsd (stable=1)
+          // Prefer a USD reference whenever we can: direct/implied pa,pb only; no priceFromUsd fallback
           let ref: number | undefined = undefined;
           if (pa && pb) ref = (pb as number) / (pa as number);
-          if (!(ref && ref > 0)) {
-            const pf = priceFromUsd(p.mint_a, p.mint_b);
-            if (pf && pf > 0) ref = pf;
-          }
           if (priceMet && ref && ref > 0) {
             const inv = 1 / (priceMet as number);
             const dev = Math.max((priceMet as number) / ref, ref / (priceMet as number));
             const devI = Math.max(inv / ref, ref / inv);
             let out = (devI + 1e-12 < dev) ? inv : (priceMet as number);
-            const post = Math.max(out / ref, ref / out);
-            if (post > maxClampDev) out = ref;
             priceMet = out;
           } else {
             // No reliable USD reference: triangulate using pivot edges (SOL/USDC/WBTC) if available
@@ -1051,18 +1031,9 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         // Forward edge must carry A per 1 B; reverse is strict reciprocal
         const pid = String((p as any)?.id || undefined) || undefined;
         const liqParam = (p as any)?.liquidity_display ?? (usd && usd > 0 ? usd : (p as any)?.pool_liquidity_raw);
-        // Choose between oriented priceMet and a USD-derived fallback (stable=1 when configured)
-        const fallbackUsd = (CONFIG.sanity?.dropEdgesNoUsdBoth === false) ? priceFromUsd(p.mint_a, p.mint_b) : undefined;
+        // Do not substitute with USD fallback; require a pool-derived price
         let chosenMet: number | undefined = (priceMet && priceMet > 0) ? priceMet : undefined;
-        if (fallbackUsd && fallbackUsd > 0) {
-          if (!(chosenMet && chosenMet > 0)) {
-            chosenMet = fallbackUsd;
-          } else {
-            const maxClampDev = Number(((CONFIG as any)?.sanity as any)?.usdClampMaxDev) || 1.10;
-            const dev = Math.max((chosenMet as number) / (fallbackUsd as number), (fallbackUsd as number) / (chosenMet as number));
-            if (dev > maxClampDev) chosenMet = fallbackUsd;
-          }
-        }
+        if (!(chosenMet && chosenMet > 0)) { try { logger.debug('graph.skip.edge.no_price', { dex: 'Meteora', kind: 'clmm', pool_id: pid, mint_a: p.mint_a, mint_b: p.mint_b, reason: 'no_pool_price' }); } catch {}; continue; }
         const fwdMet = clampPrice(chosenMet);
         const revMet = (fwdMet && fwdMet > 0) ? (1 / fwdMet) : undefined;
         addEdge(p.mint_a, p.mint_b, 'Meteora', p.fee_bps, liqParam, fwdMet, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
