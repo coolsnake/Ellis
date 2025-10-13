@@ -472,6 +472,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
         'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
       ]);
+      // Treat USD1 like any other token; do not apply stable shortcuts or assume 1.0
+      try { STABLES.delete('USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB'); } catch {}
       const priceFromUsd = (mintA: string, mintB: string): number | undefined => {
         try {
           let pa = getPriceByMintVar(mintA)?.usdc ?? null;
@@ -1049,7 +1051,6 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           // Prefer a USD reference whenever we can. If missing, use stable=1 fallback via priceFromUsd.
           let ref: number | undefined = undefined;
           if (pa && pb) ref = (pb as number) / (pa as number);
-          if (!ref) ref = priceFromUsd(p.mint_a, p.mint_b);
           if (priceMet && ref && ref > 0) {
             const inv = 1 / (priceMet as number);
             const dev = Math.max((priceMet as number) / ref, ref / (priceMet as number));

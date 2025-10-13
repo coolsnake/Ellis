@@ -329,6 +329,38 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       owner: kp.publicKey,
     };
 
+    // Normalize poolKeys shape to match Raydium SDK expectations
+    try {
+      const ensurePk = (v: any) => (v && typeof v === 'object' && typeof v.toBase58 === 'function') ? v : (v ? toPublicKey(v) : undefined);
+      // mintLp should be an object with address: PublicKey
+      const mintLpAddr = (poolKeys as any)?.mintLp?.address ? ensurePk((poolKeys as any).mintLp.address) : undefined;
+      if (!mintLpAddr) {
+        const fromState = ensurePk((poolKeys as any)?.mintLp) || undefined;
+        (poolKeys as any).mintLp = { address: fromState };
+      } else {
+        (poolKeys as any).mintLp.address = mintLpAddr;
+      }
+      // Vaults must be { A: PublicKey, B: PublicKey }
+      (poolKeys as any).vault = {
+        A: ensurePk((poolKeys as any)?.vault?.A || (poolKeys as any)?.baseVault),
+        B: ensurePk((poolKeys as any)?.vault?.B || (poolKeys as any)?.quoteVault),
+      };
+      // Coerce remaining PublicKey fields
+      (poolKeys as any).id = ensurePk((poolKeys as any).id);
+      (poolKeys as any).programId = ensurePk((poolKeys as any).programId);
+      (poolKeys as any).authority = ensurePk((poolKeys as any).authority);
+      (poolKeys as any).openOrders = ensurePk((poolKeys as any).openOrders);
+      (poolKeys as any).targetOrders = ensurePk((poolKeys as any).targetOrders);
+      (poolKeys as any).marketProgramId = ensurePk((poolKeys as any).marketProgramId);
+      (poolKeys as any).marketId = ensurePk((poolKeys as any).marketId);
+      (poolKeys as any).marketEventQueue = ensurePk((poolKeys as any).marketEventQueue);
+      (poolKeys as any).marketBids = ensurePk((poolKeys as any).marketBids);
+      (poolKeys as any).marketAsks = ensurePk((poolKeys as any).marketAsks);
+      (poolKeys as any).marketBaseVault = ensurePk((poolKeys as any).marketBaseVault);
+      (poolKeys as any).marketQuoteVault = ensurePk((poolKeys as any).marketQuoteVault);
+      (poolKeys as any).marketAuthority = ensurePk((poolKeys as any).marketAuthority);
+    } catch {}
+
     const ix = (makeSwapFixedInInstruction as any)({
       poolKeys,
       userKeys,
