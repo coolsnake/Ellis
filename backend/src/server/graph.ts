@@ -1028,7 +1028,9 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         // Forward edge must carry A per 1 B; reverse is strict reciprocal
         const pid = String((p as any)?.id || undefined) || undefined;
         const liqParam = (p as any)?.liquidity_display ?? (usd && usd > 0 ? usd : (p as any)?.pool_liquidity_raw);
-        const fwdMet = clampPrice((priceMet && priceMet > 0) ? priceMet : undefined) || (CONFIG.sanity?.dropEdgesNoUsdBoth === false ? priceFromUsd(p.mint_a, p.mint_b) : undefined);
+        // Always clamp fallback USD-derived price as well
+        const fallbackUsd = (CONFIG.sanity?.dropEdgesNoUsdBoth === false) ? priceFromUsd(p.mint_a, p.mint_b) : undefined;
+        const fwdMet = clampPrice((priceMet && priceMet > 0) ? priceMet : fallbackUsd);
         const revMet = (fwdMet && fwdMet > 0) ? (1 / fwdMet) : undefined;
         addEdge(p.mint_a, p.mint_b, 'Meteora', p.fee_bps, liqParam, fwdMet, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
         const pidRev = pid ? `${pid}-rev` : undefined;
