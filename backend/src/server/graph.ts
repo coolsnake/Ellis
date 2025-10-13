@@ -987,7 +987,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         }
         // Calibrate price; for DLMM we only have price_a_per_b, no sqrt
         let priceMet: number | undefined = calibratePrice(p.mint_a, p.mint_b, (p as any).price_a_per_b);
-        // Orient and clamp using combined USD (direct or implied via edges)
+        // Orient using combined USD (direct or implied via edges), else fall back to triangulation pivots
         try {
           const directA = getPriceByMintVar(p.mint_a)?.usdc ?? null;
           const directB = getPriceByMintVar(p.mint_b)?.usdc ?? null;
@@ -1006,7 +1006,20 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             if (post > maxClampDev) out = ref;
             priceMet = out;
           } else {
-            // No USD reference: keep candidate orientation as-is
+            // No reliable USD reference: triangulate using pivot edges (SOL/USDC/WBTC) if available
+            try {
+              const tri = triangulateAPerB(p.mint_a, p.mint_b);
+              if (typeof tri === 'number' && tri > 0) {
+                if (priceMet && priceMet > 0) {
+                  const dev = Math.max(priceMet / tri, tri / priceMet);
+                  const inv = 1 / priceMet;
+                  const devI = Math.max(inv / tri, tri / inv);
+                  if (devI + 1e-12 < dev) priceMet = inv;
+                } else {
+                  priceMet = tri;
+                }
+              }
+            } catch {}
           }
         } catch {}
         // Forward edge must carry A per 1 B; reverse is strict reciprocal
