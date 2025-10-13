@@ -1,8 +1,7 @@
 import { describe, it, expect } from 'vitest';
-// Use globalThis vitest if available to avoid re-declarations in ESM
-const vi = (globalThis as any).vi || require('vitest').vi;
-const beforeEach = (globalThis as any).beforeEach || require('vitest').beforeEach;
-// remove duplicate vi declaration if any lingering types cause redeclare
+// Provide ambient declarations for vi/beforeEach to satisfy type checker in this test file
+declare const vi: any;
+declare function beforeEach(cb: (...args: any[]) => any): void;
 
 describe('multi-hop multi-dex tx building (SPL and Token2022)', () => {
   beforeEach(() => {

@@ -310,7 +310,65 @@ async fn main() -> anyhow::Result<()> {
                             let fee = e.fee_bps.unwrap_or(0);
                             let liq = e.liquidity.unwrap_or(0.0);
                             let liq_disp = e.liquidity_display.unwrap_or(0.0);
-                            let px = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
+                            // Magnitude calibration using current graph edges as USD pivots (USDC/SOL)
+                            let px_raw = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
+                            let mut px = px_raw;
+                            if px > 0.0 {
+                                let SOL: &str  = "So11111111111111111111111111111111111111112";
+                                let USDC: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+                                let get_usd = |mint: &str, graph: &ArbGraph| -> Option<f64> {
+                                    if mint == USDC { return Some(1.0); }
+                                    if let Some(idx) = graph.map.get(mint) {
+                                        // Prefer direct edges to USDC
+                                        for edge in graph.g.edges(*idx) {
+                                            let u = edge.source(); let v = edge.target();
+                                            let src = graph.g.node_weight(u).cloned().unwrap_or_default();
+                                            let dst = graph.g.node_weight(v).cloned().unwrap_or_default();
+                                            let r = edge.weight().rate_effective;
+                                            if dst == USDC && r > 0.0 { return Some(r); }
+                                            if src == USDC && r > 0.0 { return Some(1.0 / r); }
+                                        }
+                                        // Via SOL
+                                        let mut via_sol: Option<f64> = None;
+                                        let mut sol_usd: Option<f64> = None;
+                                        for edge in graph.g.edge_references() {
+                                            let src = graph.g.node_weight(edge.source()).cloned().unwrap_or_default();
+                                            let dst = graph.g.node_weight(edge.target()).cloned().unwrap_or_default();
+                                            let r = edge.weight().rate_effective;
+                                            if r <= 0.0 { continue; }
+                                            if src == SOL && dst == USDC { sol_usd = Some(r); }
+                                            if src == USDC && dst == SOL { sol_usd = Some(1.0 / r); }
+                                        }
+                                        if let Some(su) = sol_usd {
+                                            for edge in graph.g.edges(*idx) {
+                                                let u = edge.source(); let v = edge.target();
+                                                let s = graph.g.node_weight(u).cloned().unwrap_or_default();
+                                                let t = graph.g.node_weight(v).cloned().unwrap_or_default();
+                                                let r = edge.weight().rate_effective;
+                                                if r <= 0.0 { continue; }
+                                                if s == *mint && t == SOL { via_sol = Some(su / r); break; }
+                                                if s == SOL && t == *mint { via_sol = Some(su * r); break; }
+                                            }
+                                        }
+                                        return via_sol;
+                                    }
+                                    None
+                                };
+                                let pa = get_usd(&e.source, &s.graph);
+                                let pb = get_usd(&e.target, &s.graph);
+                                if let (Some(pa), Some(pb)) = (pa, pb) {
+                                    let refv = pb / pa;
+                                    let mut best = px; let mut best_dev = f64::INFINITY; let mut best_k = 0i32;
+                                    for k in -8..=8 {
+                                        let cand = px * 10f64.powi(k);
+                                        if !(cand.is_finite() && cand > 0.0) { continue; }
+                                        let dev = (cand / refv).max(refv / cand);
+                                        if dev + 1e-12 < best_dev { best_dev = dev; best = cand; best_k = k; }
+                                    }
+                                    if best_k != 0 { tracing::debug!(mint_a = %e.source, mint_b = %e.target, px_in = px_raw, px_out = best, k = best_k, refv, "arb.magnitude.calibrated.diff"); }
+                                    px = best;
+                                }
+                            }
                             let base = if px > 0.0 { 1.0 / px } else { 0.0 };
                             let rate_eff = if base > 0.0 { base * (1.0 - (fee as f64)/10_000.0).max(0.0) } else { 0.0 };
                             s.graph.upsert_edge(&dex, &e.source, &e.target, EdgeData { rate_effective: rate_eff, fee_bps: fee, liquidity: liq, dex: dex.clone(), pool_id: e.pool_id.clone().unwrap_or_default(), liquidity_display: liq_disp });
@@ -1485,24 +1543,53 @@ async fn handle_graph_snapshot(state: Arc<RwLock<AppState>>, req: GraphSnapshotR
     // Version guard: ignore stale or equal snapshots
     if let Some(v) = g.version { if v <= s.last_graph_version { s.metrics.graph_updates_skipped = s.metrics.graph_updates_skipped.saturating_add(1); return serde_json::json!({"ok": true, "ignored": true, "reason": "stale_version"}); } }
     let mut new_graph = ArbGraph::new();
-    // Centralized price conversion: A-per-1-B (backend) -> B-per-1-A (detector), apply fee once
-    #[inline]
-    fn edge_rate_effective_local(px_opt: Option<f64>, fee_bps_opt: Option<i64>) -> (f64, f64) {
-        let fee_bps: f64 = (fee_bps_opt.unwrap_or(0)) as f64;
-        let px: f64 = px_opt.unwrap_or(0.0);
-        if !(px.is_finite() && px > 0.0) { return (0.0, 0.0); }
-        let base: f64 = 1.0 / px;
-        if !(base.is_finite() && base > 0.0) { return (0.0, 0.0); }
-        let eff: f64 = base * (1.0 - fee_bps/10_000.0).max(0.0);
-        (base, eff)
+    // Build a lightweight USD reference from the incoming snapshot edges to correct 10^k magnitude slips
+    use std::collections::HashMap;
+    let SOL: &str  = "So11111111111111111111111111111111111111112";
+    let USDC: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+    let USD1: &str = "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB";
+    let mut px_map: HashMap<(String,String), f64> = HashMap::new();
+    for e in g.edges.iter() {
+        if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px_map.insert((e.source.clone(), e.target.clone()), px); } }
     }
+    let sol_usd: Option<f64> = {
+        if let Some(px) = px_map.get(&(USDC.to_string(), SOL.to_string())) { if *px > 0.0 { Some(*px) } else { None } }
+        else if let Some(px) = px_map.get(&(SOL.to_string(), USDC.to_string())) { if *px > 0.0 { Some(1.0 / *px) } else { None } }
+        else { None }
+    };
+    let get_usd_from_snapshot = |mint: &str| -> Option<f64> {
+        if mint == USDC || mint == USD1 { return Some(1.0); }
+        if mint == SOL { return sol_usd; }
+        if let Some(px) = px_map.get(&(mint.to_string(), USDC.to_string())) { if *px > 0.0 { return Some(1.0 / *px); } }
+        if let Some(px) = px_map.get(&(USDC.to_string(), mint.to_string())) { if *px > 0.0 { return Some(*px); } }
+        if let Some(su) = sol_usd {
+            if let Some(px) = px_map.get(&(mint.to_string(), SOL.to_string())) { if *px > 0.0 { return Some(su / *px); } }
+            if let Some(px) = px_map.get(&(SOL.to_string(), mint.to_string())) { if *px > 0.0 { return Some(su * *px); } }
+        }
+        None
+    };
+    let adjust_magnitude = |a: &str, b: &str, px_in: f64| -> f64 {
+        let pa = get_usd_from_snapshot(a); let pb = get_usd_from_snapshot(b);
+        if let (Some(pa), Some(pb)) = (pa, pb) {
+            let refv = pb / pa;
+            let mut best = px_in; let mut best_dev = f64::INFINITY; let mut best_k = 0i32;
+            for k in -8..=8 { let cand = px_in * 10f64.powi(k); if !(cand.is_finite() && cand > 0.0) { continue; } let dev = (cand / refv).max(refv / cand); if dev + 1e-12 < best_dev { best_dev = dev; best = cand; best_k = k; } }
+            if best_k != 0 { tracing::debug!(mint_a = a, mint_b = b, px_in, px_out = best, k = best_k, refv, "arb.magnitude.calibrated.snapshot"); }
+            best
+        } else {
+            px_in
+        }
+    };
     for e in g.edges.into_iter() {
         let dex = e.dex.unwrap_or_else(|| "Unknown".to_string());
         let fee = e.fee_bps.unwrap_or(0);
         let liq = e.liquidity.unwrap_or(0.0);
         let pool_id = e.pool_id.unwrap_or_else(|| "".to_string());
         let liq_disp = e.liquidity_display.unwrap_or(0.0);
-        let (_base, rate_eff) = edge_rate_effective_local(e.price_a_per_b, e.fee_bps);
+        let mut px = e.price_a_per_b.unwrap_or(0.0);
+        if px.is_finite() && px > 0.0 { px = adjust_magnitude(&e.source, &e.target, px); }
+        let base = if px > 0.0 { 1.0 / px } else { 0.0 };
+        let rate_eff = if base > 0.0 { base * (1.0 - (fee as f64)/10_000.0).max(0.0) } else { 0.0 };
         new_graph.upsert_edge(&dex, &e.source, &e.target, EdgeData {
             rate_effective: rate_eff,
             fee_bps: fee,
