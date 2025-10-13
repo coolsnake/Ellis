@@ -314,10 +314,10 @@ async fn main() -> anyhow::Result<()> {
                             let px_raw = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
                             let mut px = px_raw;
                             if px > 0.0 {
-                                let SOL: &str  = "So11111111111111111111111111111111111111112";
-                                let USDC: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+                                let sol_mint: &str  = "So11111111111111111111111111111111111111112";
+                                let usdc_mint: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
                                 let get_usd = |mint: &str, graph: &ArbGraph| -> Option<f64> {
-                                    if mint == USDC { return Some(1.0); }
+                                    if mint == usdc_mint { return Some(1.0); }
                                     if let Some(idx) = graph.map.get(mint) {
                                         // Prefer direct edges to USDC
                                         for edge in graph.g.edges(*idx) {
@@ -336,8 +336,8 @@ async fn main() -> anyhow::Result<()> {
                                             let dst = graph.g.node_weight(edge.target()).cloned().unwrap_or_default();
                                             let r = edge.weight().rate_effective;
                                             if r <= 0.0 { continue; }
-                                            if src == SOL && dst == USDC { sol_usd = Some(r); }
-                                            if src == USDC && dst == SOL { sol_usd = Some(1.0 / r); }
+                                            if src == sol_mint && dst == usdc_mint { sol_usd = Some(r); }
+                                            if src == usdc_mint && dst == sol_mint { sol_usd = Some(1.0 / r); }
                                         }
                                         if let Some(su) = sol_usd {
                                             for edge in graph.g.edges(*idx) {
@@ -346,8 +346,8 @@ async fn main() -> anyhow::Result<()> {
                                                 let t = graph.g.node_weight(v).cloned().unwrap_or_default();
                                                 let r = edge.weight().rate_effective;
                                                 if r <= 0.0 { continue; }
-                                                if s == *mint && t == SOL { via_sol = Some(su / r); break; }
-                                                if s == SOL && t == *mint { via_sol = Some(su * r); break; }
+                                                if s == *mint && t == sol_mint { via_sol = Some(su / r); break; }
+                                                if s == sol_mint && t == *mint { via_sol = Some(su * r); break; }
                                             }
                                         }
                                         return via_sol;
@@ -1545,26 +1545,26 @@ async fn handle_graph_snapshot(state: Arc<RwLock<AppState>>, req: GraphSnapshotR
     let mut new_graph = ArbGraph::new();
     // Build a lightweight USD reference from the incoming snapshot edges to correct 10^k magnitude slips
     use std::collections::HashMap;
-    let SOL: &str  = "So11111111111111111111111111111111111111112";
-    let USDC: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-    let USD1: &str = "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB";
+    let sol_mint: &str  = "So11111111111111111111111111111111111111112";
+    let usdc_mint: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+    let usd1_mint: &str = "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB";
     let mut px_map: HashMap<(String,String), f64> = HashMap::new();
     for e in g.edges.iter() {
         if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px_map.insert((e.source.clone(), e.target.clone()), px); } }
     }
     let sol_usd: Option<f64> = {
-        if let Some(px) = px_map.get(&(USDC.to_string(), SOL.to_string())) { if *px > 0.0 { Some(*px) } else { None } }
-        else if let Some(px) = px_map.get(&(SOL.to_string(), USDC.to_string())) { if *px > 0.0 { Some(1.0 / *px) } else { None } }
+        if let Some(px) = px_map.get(&(usdc_mint.to_string(), sol_mint.to_string())) { if *px > 0.0 { Some(*px) } else { None } }
+        else if let Some(px) = px_map.get(&(sol_mint.to_string(), usdc_mint.to_string())) { if *px > 0.0 { Some(1.0 / *px) } else { None } }
         else { None }
     };
     let get_usd_from_snapshot = |mint: &str| -> Option<f64> {
-        if mint == USDC || mint == USD1 { return Some(1.0); }
-        if mint == SOL { return sol_usd; }
-        if let Some(px) = px_map.get(&(mint.to_string(), USDC.to_string())) { if *px > 0.0 { return Some(1.0 / *px); } }
-        if let Some(px) = px_map.get(&(USDC.to_string(), mint.to_string())) { if *px > 0.0 { return Some(*px); } }
+        if mint == usdc_mint || mint == usd1_mint { return Some(1.0); }
+        if mint == sol_mint { return sol_usd; }
+        if let Some(px) = px_map.get(&(mint.to_string(), usdc_mint.to_string())) { if *px > 0.0 { return Some(1.0 / *px); } }
+        if let Some(px) = px_map.get(&(usdc_mint.to_string(), mint.to_string())) { if *px > 0.0 { return Some(*px); } }
         if let Some(su) = sol_usd {
-            if let Some(px) = px_map.get(&(mint.to_string(), SOL.to_string())) { if *px > 0.0 { return Some(su / *px); } }
-            if let Some(px) = px_map.get(&(SOL.to_string(), mint.to_string())) { if *px > 0.0 { return Some(su * *px); } }
+            if let Some(px) = px_map.get(&(mint.to_string(), sol_mint.to_string())) { if *px > 0.0 { return Some(su / *px); } }
+            if let Some(px) = px_map.get(&(sol_mint.to_string(), mint.to_string())) { if *px > 0.0 { return Some(su * *px); } }
         }
         None
     };
