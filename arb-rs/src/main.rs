@@ -325,8 +325,8 @@ async fn main() -> anyhow::Result<()> {
                                             let src = graph.g.node_weight(u).cloned().unwrap_or_default();
                                             let dst = graph.g.node_weight(v).cloned().unwrap_or_default();
                                             let r = edge.weight().rate_effective;
-                                            if dst == USDC && r > 0.0 { return Some(r); }
-                                            if src == USDC && r > 0.0 { return Some(1.0 / r); }
+                                            if dst == usdc_mint && r > 0.0 { return Some(r); }
+                                            if src == usdc_mint && r > 0.0 { return Some(1.0 / r); }
                                         }
                                         // Via SOL
                                         let mut via_sol: Option<f64> = None;
