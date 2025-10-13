@@ -69,6 +69,7 @@ fn near_miss_finds_almost_profitable_triangle() {
         min_edge_liquidity_min: 0.0,
         last_detection_ms: 0,
         detection_duration_ms: 0,
+        diff_to_detect_ms: 0,
         graph_nodes: 0,
         graph_edges: 0,
         near_miss: None,
