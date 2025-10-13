@@ -2119,9 +2119,7 @@ mod e2e_tests {
                 let fee = e.fee_bps.unwrap_or(0);
                 let liq = e.liquidity.unwrap_or(0.0);
                 let liq_disp = e.liquidity_display.unwrap_or(0.0);
-                let px = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
-                let base = if px > 0.0 { 1.0 / px } else { 0.0 };
-                let rate_eff = if base > 0.0 { base * (1.0 - (fee as f64)/10_000.0).max(0.0) } else { 0.0 };
+                let (_base, rate_eff) = edge_rate_effective_local(e.price_a_per_b, e.fee_bps);
                 s.graph.upsert_edge(&dex, &e.source, &e.target, EdgeData { rate_effective: rate_eff, fee_bps: fee, liquidity: liq, dex: dex.clone(), pool_id: e.pool_id.clone().unwrap_or_default(), liquidity_display: liq_disp });
             };
             for e in added.iter() { upsert(e); }
