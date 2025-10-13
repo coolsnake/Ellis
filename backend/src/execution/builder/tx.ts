@@ -67,6 +67,21 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
         }
       }
 
+      // Guard: if amount is zero, avoid invoking real SDK builders
+      // - In simulate mode, fall back to placeholder descriptors so build succeeds
+      // - In direct mode, fail fast with a descriptive error
+      if ((hop.amountInRaw || 0n) <= 0n) {
+        const mode: any = (execCfg as any)?.mode || 'simulate';
+        if (mode !== 'direct') {
+          if (hop.dex === 'raydium' && hop.variant === 'amm') { hopIxs.push(...buildRaydiumAmmSwapIx(hop)); continue; }
+          else if (hop.dex === 'raydium' && hop.variant === 'clmm') { hopIxs.push(...buildRaydiumClmmSwapIx(hop)); continue; }
+          else if (hop.dex === 'orca') { hopIxs.push({ programId: hop.programId || 'whirlpool', type: 'orca.clmm.swap', keys: { poolId: hop.poolId }, data: { amountIn: hop.amountInRaw, minOut: hop.minOutRaw } }); continue; }
+          else if (hop.dex === 'meteora') { hopIxs.push(...buildMeteoraDlmmSwapIx(hop)); continue; }
+        } else {
+          throw new Error('AMOUNT_ZERO');
+        }
+      }
+
       if (hop.dex === 'raydium' && hop.variant === 'amm') { const ixs = await buildRaydiumAmmSwapIxReal(hop); hopIxs.push(...ixs); }
       else if (hop.dex === 'raydium' && hop.variant === 'clmm') { const ixs = await buildRaydiumClmmSwapIxReal(hop); hopIxs.push(...ixs); }
       else if (hop.dex === 'orca') { const ixs = await buildOrcaSwapIx(hop) as any[]; hopIxs.push(...ixs); }

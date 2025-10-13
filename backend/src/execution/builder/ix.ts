@@ -157,6 +157,9 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
 export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> {
   try { logger.debug('ix.build raydium.amm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
   try {
+    if ((hop.amountInRaw || 0n) <= 0n) {
+      throw new Error('RAYDIUM_AMM_BUILD_FAILED: amount=0');
+    }
     const sdk: any = await import('@raydium-io/raydium-sdk-v2');
     const connection = getConnection();
     const kp = await ensureWallet(CONFIG.walletPath);
@@ -177,6 +180,27 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       });
       const ixs = Array.isArray(res?.instructions) ? res.instructions : (res?.innerTransaction ? res.innerTransaction.instructions : []);
       if (ixs && ixs.length) return ixs as any[];
+    }
+    // Fallback to instance API when available
+    if (sdk?.Raydium && typeof sdk.Raydium.load === 'function') {
+      try {
+        const ray = await sdk.Raydium.load({ connection, owner: kp, disableLoadToken: true });
+        const amm = (ray as any)?.ammV4;
+        const fn = amm?.swapInstructionSimple || amm?.makeSwapInstructionSimple;
+        if (typeof fn === 'function') {
+          const res2 = await fn.call(amm, {
+            poolInfo: { id: poolId } as any,
+            owner: wallet,
+            inputMint: toPublicKey(hop.inputMint),
+            amountIn: hop.amountInRaw,
+            amountOutMin: hop.minOutRaw,
+            slippage: bps,
+            programId,
+          } as any);
+          const ixs2 = Array.isArray(res2?.instructions) ? res2.instructions : (res2?.innerTransaction ? res2.innerTransaction.instructions : []);
+          if (ixs2 && ixs2.length) return ixs2 as any[];
+        }
+      } catch {}
     }
   } catch (e) {
     try { logger.warn('ix.build raydium.amm.real fallback', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
