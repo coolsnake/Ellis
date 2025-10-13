@@ -1017,8 +1017,14 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           if (!pa) { const imp = impliedUsdViaEdges(p.mint_a); if (typeof imp.usd === 'number' && imp.usd > 0) { pa = imp.usd; try { logger.debug('graph.implied.usd', { mint: p.mint_a, implied: imp.usd, via: imp.via, weight: imp.weight }); } catch {} } }
           if (!pb) { const imp = impliedUsdViaEdges(p.mint_b); if (typeof imp.usd === 'number' && imp.usd > 0) { pb = imp.usd; try { logger.debug('graph.implied.usd', { mint: p.mint_b, implied: imp.usd, via: imp.via, weight: imp.weight }); } catch {} } }
           const maxClampDev = Number(((CONFIG as any)?.sanity as any)?.usdClampMaxDev) || 1.10;
-          if (priceMet && pa && pb) {
-            const ref = (pb as number) / (pa as number);
+          // Prefer a USD reference whenever we can: direct/implied pa,pb or fallback via priceFromUsd (stable=1)
+          let ref: number | undefined = undefined;
+          if (pa && pb) ref = (pb as number) / (pa as number);
+          if (!(ref && ref > 0)) {
+            const pf = priceFromUsd(p.mint_a, p.mint_b);
+            if (pf && pf > 0) ref = pf;
+          }
+          if (priceMet && ref && ref > 0) {
             const inv = 1 / (priceMet as number);
             const dev = Math.max((priceMet as number) / ref, ref / (priceMet as number));
             const devI = Math.max(inv / ref, ref / inv);
