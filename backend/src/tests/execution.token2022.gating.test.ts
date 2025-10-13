@@ -1,9 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { resolveDirectPlan } from '../execution/resolver/index.js';
 import { executionCache } from '../execution/cache.js';
+import { CONFIG } from '../utils/config.js';
 
 describe('token-2022 gating', () => {
   it('rejects when token-2022 present and not allowed', async () => {
+    // Force gating to block mode regardless of env/defaults
+    (CONFIG.system as any).token2022Mode = 'block';
+    (CONFIG.system as any).token2022Allow = { raydium: false, orca: false, meteora: false };
     // Use fake mints; resolver will attempt chain lookups, but we exercise the error path only when it detects 2022
     // We cannot force token-2022 here without network; treat this as smoke test to ensure call path exists
     // Seed cache to simulate one mint being Token-2022 so gating triggers deterministically
