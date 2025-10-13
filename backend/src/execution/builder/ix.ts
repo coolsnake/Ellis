@@ -61,6 +61,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
     const connection = getConnection();
     const kp = await ensureWallet(CONFIG.walletPath);
     const { WhirlpoolContext, buildWhirlpoolClient, swapQuoteByInputToken, SwapUtils, toTx } = await import('@orca-so/whirlpools-sdk');
+    const BN = (await import('bn.js')).default as any;
     const { Percentage } = await import('@orca-so/common-sdk');
     const dummyWallet: any = { publicKey: kp.publicKey, signTransaction: async (tx: any) => tx, signAllTransactions: async (txs: any[]) => txs };
     const programId = toPublicKey(hop.programId, (CONFIG.orca?.programId as any));
@@ -71,7 +72,8 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
     const inputMint = toPublicKey(hop.inputMint);
     const bps = computeSlippageBps(hop.amountInRaw, hop.minOutRaw);
     const slippage = (Percentage as any).fromFraction(bps, 10000);
-    const quote = await (swapQuoteByInputToken as any)(pool, inputMint, hop.amountInRaw, slippage, ctx.program.programId, ctx.fetcher, true);
+    const amountInBn = new BN(String(hop.amountInRaw ?? 0n));
+    const quote = await (swapQuoteByInputToken as any)(pool, inputMint, amountInBn, slippage, ctx.program.programId, ctx.fetcher, true);
     const params = (SwapUtils as any).getSwapParamsFromQuote(quote);
     try { if (hop.sqrtPriceLimitX64 && params && ('sqrtPriceLimit' in (params as any))) { (params as any).sqrtPriceLimit = hop.sqrtPriceLimitX64; } } catch {}
     const txb = await pool.swap(params);

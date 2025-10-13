@@ -760,12 +760,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           if (price && ref) {
             const dev = Math.max(price / ref, ref / price);
             const fwd = 1 / price, rev = price;
-            const maxClampDev = Number(((CONFIG as any)?.sanity as any)?.usdClampMaxDev) || 1.10;
             const clampMin = Number(((CONFIG as any)?.sanity as any)?.priceClampMin) || 1e-12;
             const clampMax = Number(((CONFIG as any)?.sanity as any)?.priceClampMax) || 1e12;
-            if (dev > maxClampDev) {
-              price = ref;
-            }
             if (dev > 5 || fwd > 1e4 || rev > 1e4 || price < clampMin || price > clampMax) {
               logger.debug('graph.calibrate.raydium.clmm outlier', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, calibrated: price, ref, dev, fwd, rev });
             }
@@ -945,14 +941,10 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
           const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
           const ref = (pa && pb && pb > 0) ? ((pb as number) / (pa as number)) : undefined;
-          const maxClampDev = Number(((CONFIG as any)?.sanity as any)?.usdClampMaxDev) || 1.10;
           if (priceClmmOrca) {
             const fwd = 1 / priceClmmOrca, rev = priceClmmOrca;
             if (ref) {
               const dev = Math.max(priceClmmOrca / ref, ref / priceClmmOrca);
-              if (dev > maxClampDev) {
-                priceClmmOrca = ref;
-              }
               if (dev > 5 || fwd > 1e4 || rev > 1e4 || fwd < 1e-6 || rev < 1e-12) {
                 logger.debug('graph.calibrate.orca.clmm outlier', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, raw: (p as any)?.price_a_per_b, calibrated: priceClmmOrca, ref, dev, fwd, rev, decA: (p as any)?.decimals_a, decB: (p as any)?.decimals_b, sqrt_price_x64: (p as any)?.sqrt_price_x64 });
               }
@@ -1057,10 +1049,6 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             const devI = Math.max(inv / ref, ref / inv);
             let out = (devI + 1e-12 < dev) ? inv : (priceMet as number);
             priceMet = out;
-            const maxClampDev = Number(((CONFIG as any)?.sanity as any)?.usdClampMaxDev) || 1.10;
-            if (Math.max((priceMet as number) / ref, ref / (priceMet as number)) > maxClampDev) {
-              priceMet = ref;
-            }
           } else {
             // No reliable USD reference: triangulate using pivot edges (SOL/USDC/WBTC) if available
             try {
