@@ -744,14 +744,6 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const liqDisplay = (p as any)?.liquidity_display ?? ((usd && usd > 0) ? usd : liqRaw);
         // CLMM: calibrate then reciprocal-only orientation via USD refs; add USD deviation clamp for robustness
         price = calibratePrice(p.mint_a, p.mint_b, price);
-        // Rescale to global decimals before orientation
-        {
-          const ga = Number(decimalsByMint[p.mint_a] ?? decA);
-          const gb = Number(decimalsByMint[p.mint_b] ?? decB);
-          const poolDecA = Number((p as any)?.decimals_a ?? decA);
-          const poolDecB = Number((p as any)?.decimals_b ?? decB);
-          price = rescalePriceByDecimals(price, poolDecA, poolDecB, ga, gb);
-        }
         price = orientAPerB(p.mint_a, p.mint_b, price);
         try {
           const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
@@ -1024,14 +1016,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         }
         // Calibrate price; for DLMM we only have price_a_per_b, no sqrt
         let priceMet: number | undefined = calibratePrice(p.mint_a, p.mint_b, (p as any).price_a_per_b);
-        // Rescale to global decimals
-        try {
-          const ga = Number(decimalsByMint[p.mint_a] ?? (p as any)?.decimals_a);
-          const gb = Number(decimalsByMint[p.mint_b] ?? (p as any)?.decimals_b);
-          const poolDecA = Number((p as any)?.decimals_a);
-          const poolDecB = Number((p as any)?.decimals_b);
-          priceMet = rescalePriceByDecimals(priceMet, poolDecA, poolDecB, ga, gb);
-        } catch {}
+        // No CLMM rescale here; rely on normalizer decode units
         // Orient using combined USD (direct or implied via edges); allow stable=1 fallback; else triangulate
         try {
           const directA = getPriceByMintVar(p.mint_a)?.usdc ?? null;
