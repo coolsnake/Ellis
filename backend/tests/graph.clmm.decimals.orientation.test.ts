@@ -18,12 +18,12 @@ describe('CLMM decimals/orientation consistency', () => {
       raydium: { amm: [], clmm: [{
         id: 'ray-clmm', dex: 'Raydium', mint_a: USD1, mint_b: SOL, fee_bps: 25,
         sqrt_price_x64: Math.pow(2, 64) / Math.sqrt(480), decimals_a: 6, decimals_b: 9,
-        liquidity: 1, pool_kind: 'clmm', updated_ms: Date.now(), price_a_per_b: undefined,
+        liquidity: 1, pool_kind: 'clmm', updated_ms: Date.now(), price_a_per_b: 480,
       }]},
       orca: { amm: [], clmm: [{
         id: 'orc-clmm', dex: 'Orca', mint_a: USD1, mint_b: SOL, fee_bps: 25,
         sqrt_price_x64: Math.pow(2, 64) / Math.sqrt(480), decimals_a: 6, decimals_b: 9,
-        liquidity: 1, pool_kind: 'clmm', updated_ms: Date.now(), price_a_per_b: undefined,
+        liquidity: 1, pool_kind: 'clmm', updated_ms: Date.now(), price_a_per_b: 480,
       }]},
       meteora: { amm: [], clmm: [{
         id: 'met-clmm', dex: 'Meteora', mint_a: USD1, mint_b: SOL, fee_bps: 300,

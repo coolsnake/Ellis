@@ -866,8 +866,18 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         // Forward + reverse with strict reciprocal rule and consistency guard
         // If still no price, skip and log
         if (!price || !(price > 0)) { try { logger.debug('graph.skip.edge.no_price', { dex: 'Raydium', kind: 'clmm', pool_id: safePoolId(p), mint_a: p.mint_a, mint_b: p.mint_b, reason: 'no_pool_price' }); } catch {}; continue; }
-        const fwdR = clampPrice(price);
-        const revR = (fwdR && fwdR > 0) ? (1 / fwdR) : undefined;
+        let fwdR = clampPrice(price);
+        let revR = (fwdR && fwdR > 0) ? (1 / fwdR) : undefined;
+        // Final reciprocity product clamp: drop if far from 1
+        try {
+          if (fwdR && revR) {
+            const prod = fwdR * revR;
+            if (!(prod > 0.98 && prod < 1.02)) {
+              try { logger.debug('graph.drop.clmm.reciprocity', { dex: 'Raydium', pool: (p as any)?.id, prod, fwd: fwdR, rev: revR }); } catch {}
+              fwdR = undefined; revR = undefined;
+            }
+          }
+        } catch {}
         addEdge(p.mint_a, p.mint_b, 'Raydium', p.fee_bps, liqDisplay, fwdR, usd, pidClmm, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
         const pidClmmRev = pidClmm ? `${pidClmm}-rev` : undefined;
         addEdge(p.mint_b, p.mint_a, 'Raydium', p.fee_bps, liqDisplay, revR, usd, pidClmmRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse');
@@ -1181,8 +1191,17 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           }
         } catch {}
         if (!(chosenMet && chosenMet > 0)) { try { logger.debug('graph.skip.edge.no_price', { dex: 'Meteora', kind: 'clmm', pool_id: pid, mint_a: p.mint_a, mint_b: p.mint_b, reason: 'no_pool_price' }); } catch {}; continue; }
-        const fwdMet = clampPrice(chosenMet);
-        const revMet = (fwdMet && fwdMet > 0) ? (1 / fwdMet) : undefined;
+        let fwdMet = clampPrice(chosenMet);
+        let revMet = (fwdMet && fwdMet > 0) ? (1 / fwdMet) : undefined;
+        try {
+          if (fwdMet && revMet) {
+            const prod = fwdMet * revMet;
+            if (!(prod > 0.98 && prod < 1.02)) {
+              try { logger.debug('graph.drop.clmm.reciprocity', { dex: 'Meteora', pool: (p as any)?.id, prod, fwd: fwdMet, rev: revMet }); } catch {}
+              fwdMet = undefined; revMet = undefined;
+            }
+          }
+        } catch {}
         addEdge(p.mint_a, p.mint_b, 'Meteora', p.fee_bps, liqParam, fwdMet, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
         const pidRev = pid ? `${pid}-rev` : undefined;
         addEdge(p.mint_b, p.mint_a, 'Meteora', p.fee_bps, liqParam, revMet, usd, pidRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse');
