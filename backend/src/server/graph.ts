@@ -462,20 +462,23 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       };
 
       // Helper: fallback price using USD quotes if pool price missing
-      const priceFromUsd = (mintA: string, mintB: string): number | undefined => {
-        try {
-          const pa = getPriceByMintVar(mintA)?.usdc ?? null;
-          const pb = getPriceByMintVar(mintB)?.usdc ?? null;
-          // We need A per 1 B; using USD prices => price = USD(B) / USD(A)
-          if (pa && pb && pa > 0) return (pb as number) / (pa as number);
-        } catch {}
-        return undefined;
-      };
-      // Helper: stablecoin-aware TVL when one side is a stable (no external price needed)
+      // Dynamic stable set from config + common majors
       const STABLES = new Set<string>([
+        ...(((CONFIG.system as any)?.stableMints || []) as string[]),
         'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
         'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
       ]);
+      const priceFromUsd = (mintA: string, mintB: string): number | undefined => {
+        try {
+          let pa = getPriceByMintVar(mintA)?.usdc ?? null;
+          let pb = getPriceByMintVar(mintB)?.usdc ?? null;
+          // If missing and token is configured stable, assume 1.0
+          if (!(typeof pa === 'number' && pa > 0) && STABLES.has(mintA)) pa = 1;
+          if (!(typeof pb === 'number' && pb > 0) && STABLES.has(mintB)) pb = 1;
+          if (pa && pb && (pa as number) > 0) return (pb as number) / (pa as number);
+        } catch {}
+        return undefined;
+      };
       const clampPrice = (px: number | undefined): number | undefined => {
         const min = Number.isFinite(Number(((CONFIG as any)?.sanity as any)?.priceClampMin)) ? Number(((CONFIG as any)?.sanity as any)?.priceClampMin) : 1e-12;
         const max = Number.isFinite(Number(((CONFIG as any)?.sanity as any)?.priceClampMax)) ? Number(((CONFIG as any)?.sanity as any)?.priceClampMax) : 1e12;
@@ -722,6 +725,17 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const ref = (pa && pb && pb > 0) ? ((pb as number) / (pa as number)) : undefined;
           const maxClampDev = Number(((CONFIG as any)?.sanity as any)?.usdClampMaxDev) || 1.10;
           if (price && ref) {
+            // Snap anchors (SOL/USDC/USDT) to USD ref to avoid residual inversion on reverse
+            try {
+              const ANCHORS = new Set<string>([
+                'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+                'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
+                'So11111111111111111111111111111111111111112',  // SOL
+              ]);
+              if (ANCHORS.has(p.mint_a) || ANCHORS.has(p.mint_b)) {
+                price = ref;
+              }
+            } catch {}
             const dev = Math.max(price / ref, ref / price);
             const fwd = 1 / price, rev = price;
             const clampMin = Number(((CONFIG as any)?.sanity as any)?.priceClampMin) || 1e-12;
