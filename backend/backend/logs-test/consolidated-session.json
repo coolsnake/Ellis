@@ -1,0 +1,27 @@
+[
+  {
+    "level": "info",
+    "message": "b1",
+    "timestamp": "t1",
+    "source": "backend"
+  },
+  {
+    "level": "info",
+    "message": "b2",
+    "timestamp": "t2",
+    "source": "backend"
+  },
+  {
+    "source": "arb",
+    "level": "info",
+    "message": "x1",
+    "timestamp": null,
+    "cat": "rust"
+  },
+  {
+    "level": "info",
+    "message": "b3",
+    "timestamp": "t3",
+    "source": "backend"
+  }
+]

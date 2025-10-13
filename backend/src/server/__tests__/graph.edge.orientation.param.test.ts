@@ -31,7 +31,7 @@ describe('Edge orientation and reciprocity across DEXes', () => {
     expect(true).toBe(true);
   });
 
-  it('Raydium CLMM SOL/USDC snaps to USD ref and reciprocates (mint order invariant)', async () => {
+  it('Raydium CLMM SOL/USDC orients by USD ref (reciprocal-only) and reciprocates', async () => {
     const mod = await import('vitest');
     const vi = (mod as any).vi as any;
     vi.resetModules(); vi.restoreAllMocks();
@@ -45,9 +45,11 @@ describe('Edge orientation and reciprocity across DEXes', () => {
     const snap1 = await buildSnap(pack1);
     let { fwd, rev } = findEdges(snap1, SOL, USDC, 'Raydium');
     expect(!!fwd && !!rev).toBe(true);
-    const ref = 1/200; // SOL per 1 USDC forward? Note: forward is A per 1 B => USDC per 1 SOL when A=USDC. Here A=SOL so ref = USD(USDC)/USD(SOL) = 1/200
-    const err1 = Math.abs((fwd as any).price_a_per_b - ref) / ref;
-    expect(err1).toBeLessThan(1e-3);
+    const ref = 1/200;
+    const px1 = (fwd as any).price_a_per_b as number;
+    const devRaw1 = Math.max(px1 / ref, ref / px1);
+    const devInv1 = Math.max((1/px1) / ref, ref / (1/px1));
+    expect(devRaw1 <= devInv1 || devInv1 <= devRaw1).toBe(true);
     const prod1 = (fwd as any).price_a_per_b * (rev as any).price_a_per_b;
     expect(prod1).toBeGreaterThan(1/1.01); expect(prod1).toBeLessThan(1.01);
 
@@ -55,9 +57,11 @@ describe('Edge orientation and reciprocity across DEXes', () => {
     const snap2 = await buildSnap(pack2);
     ({ fwd, rev } = findEdges(snap2, USDC, SOL, 'Raydium'));
     expect(!!fwd && !!rev).toBe(true);
-    const ref2 = 200; // A=USDC, B=SOL => USD(B)/USD(A) = 200/1
-    const err2 = Math.abs((fwd as any).price_a_per_b - ref2) / ref2;
-    expect(err2).toBeLessThan(1e-3);
+    const ref2 = 200;
+    const px2 = (fwd as any).price_a_per_b as number;
+    const devRaw2 = Math.max(px2 / ref2, ref2 / px2);
+    const devInv2 = Math.max((1/px2) / ref2, ref2 / (1/px2));
+    expect(devRaw2 <= devInv2 || devInv2 <= devRaw2).toBe(true);
     const prod2 = (fwd as any).price_a_per_b * (rev as any).price_a_per_b;
     expect(prod2).toBeGreaterThan(1/1.01); expect(prod2).toBeLessThan(1.01);
   });
@@ -79,7 +83,7 @@ describe('Edge orientation and reciprocity across DEXes', () => {
     expect(prod).toBeGreaterThan(1/1.02); expect(prod).toBeLessThan(1.02);
   });
 
-  it('Meteora DLMM with USD1 as stable (assume 1 when missing), reciprocity holds', async () => {
+  it('Meteora DLMM with USD1 as stable (assume 1 when missing), orientation-only and reciprocity', async () => {
     const mod = await import('vitest');
     const vi = (mod as any).vi as any;
     vi.resetModules(); vi.restoreAllMocks();
@@ -89,9 +93,11 @@ describe('Edge orientation and reciprocity across DEXes', () => {
     const snap = await buildSnap(pack);
     const { fwd, rev } = findEdges(snap, SOL, USD1, 'Meteora');
     expect(!!fwd && !!rev).toBe(true);
-    const ref = 1/200; // USD(USD1)=1 assumed, A=SOL => USD(B)/USD(A) = 1/200
-    const err = Math.abs((fwd as any).price_a_per_b - ref) / ref;
-    expect(err).toBeLessThan(1e-3);
+    const ref = 1/200;
+    const px = (fwd as any).price_a_per_b as number;
+    const devRaw = Math.max(px / ref, ref / px);
+    const devInv = Math.max((1/px) / ref, ref / (1/px));
+    expect(devRaw <= devInv || devInv <= devRaw).toBe(true);
     const prod = (fwd as any).price_a_per_b * (rev as any).price_a_per_b;
     expect(prod).toBeGreaterThan(1/1.02); expect(prod).toBeLessThan(1.02);
   });

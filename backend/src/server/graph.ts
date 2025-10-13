@@ -145,10 +145,10 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       // Build graph from whatever is in caches right now; do not trigger source fetches here
       const poolsMod: any = await import('./pools.js');
       const overrides: any = (globalThis as any).__graphTestPools;
-      const rayRaw = overrides?.raydium ?? poolsMod.peekRaydiumPools();
-      const orcRaw = overrides?.orca ?? poolsMod.peekOrcaPools();
-      const metRaw = overrides?.meteora ?? poolsMod.peekMeteoraPools();
-      const mblRaw = overrides?.meteora_balanced ?? poolsMod.peekMeteoraBalancedPools();
+      const rayRaw = overrides?.raydium ?? (typeof poolsMod.peekRaydiumPools === 'function' ? poolsMod.peekRaydiumPools() : { amm: [], clmm: [] });
+      const orcRaw = overrides?.orca ?? (typeof poolsMod.peekOrcaPools === 'function' ? poolsMod.peekOrcaPools() : { amm: [], clmm: [] });
+      const metRaw = overrides?.meteora ?? (typeof poolsMod.peekMeteoraPools === 'function' ? poolsMod.peekMeteoraPools() : { amm: [], clmm: [] });
+      const mblRaw = overrides?.meteora_balanced ?? (typeof poolsMod.peekMeteoraBalancedPools === 'function' ? poolsMod.peekMeteoraBalancedPools() : { amm: [], clmm: [] });
       // Apply scoping according to CONFIG.system.scopePools and scopePoolsMode via universe helper
       const mode = String((CONFIG.system as any)?.scopePoolsMode || 'jupiter');
       const scoped = CONFIG.system.scopePools !== false && mode !== 'none';
