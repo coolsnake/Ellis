@@ -163,6 +163,9 @@ export const CONFIG = {
     meteoraWsRetryDelayMs: Number(process.env.METEORA_WS_RETRY_DELAY_MS || 600),
     // Meteora program-level fallback (default false)
     meteoraWsProgramFallback: (process.env.METEORA_WS_PROGRAM_FALLBACK || 'false') === 'true',
+    // Limit how many new targeted pool websocket subscriptions we attach per second
+    // Default aligns with common RPC free-tier limits; increase when provider allows more
+    wsAttachPerSec: Number(process.env.WS_ATTACH_PER_SEC || 10),
     // Minimum gap between forced pool refreshes per source (ms)
     poolRefreshMinGapMs: Number(process.env.POOL_REFRESH_MIN_GAP_MS || 3000),
     // Price feed TTL - how often to fetch fresh prices from Jupiter (default 15s for rate limiting)

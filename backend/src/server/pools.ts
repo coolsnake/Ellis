@@ -826,12 +826,18 @@ export function startRaydiumRefreshLoop(): void {
             uniq = Array.from(new Set(poolAddrs));
           }
           let attached = 0;
-          for (const addr of uniq) {
+          // Rate-limit new attachments per second based on config
+          const perSec = Math.max(1, Number(((CONFIG.system as any)?.wsAttachPerSec) || 10));
+          const intervalMs = Math.floor(1000 / perSec);
+          const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+          for (let i = 0; i < uniq.length; i++) {
+            const addr = uniq[i];
             try {
               const pk = new PublicKey(addr);
               const id = await conn.onAccountChange(pk, (info: any) => { handle(pk as any, info); });
               subs.push(id as any); attached++;
             } catch {}
+            if (i < uniq.length - 1 && intervalMs > 0) { await sleep(intervalMs); }
           }
           attachedOrcaPools = attached;
           logger.info('pools.ws subscribe orca.pools', { attached, target: uniq.length, source: 'orca' });
@@ -869,12 +875,18 @@ export function startRaydiumRefreshLoop(): void {
           const base = edgePoolIds.size > 0 ? Array.from(edgePoolIds) : rayKnown;
           const uniqueRay = Array.from(new Set(base.filter(Boolean)));
           let attachedRay = 0;
-          for (const addr of uniqueRay) {
+          // Rate-limit new attachments per second based on config
+          const perSecRay = Math.max(1, Number(((CONFIG.system as any)?.wsAttachPerSec) || 10));
+          const intervalMsRay = Math.floor(1000 / perSecRay);
+          const sleepRay = (ms: number) => new Promise(r => setTimeout(r, ms));
+          for (let i = 0; i < uniqueRay.length; i++) {
+            const addr = uniqueRay[i];
             try {
               const pk = new web3.PublicKey(addr);
               const id = await conn.onAccountChange(pk, (info: any) => { handle(pk as any, info); });
               subs.push(id as any); attachedRay++;
             } catch {}
+            if (i < uniqueRay.length - 1 && intervalMsRay > 0) { await sleepRay(intervalMsRay); }
           }
           attachedRaydiumPools = attachedRay;
           logger.info('pools.ws subscribe raydium.pools', { attached: attachedRay, target: uniqueRay.length });
@@ -892,12 +904,18 @@ export function startRaydiumRefreshLoop(): void {
           const attachMeteora = async (): Promise<number> => {
             let attached = 0;
             const edgeIds: string[] = Array.from(meteoraTargets);
-            for (const addr of edgeIds) {
+            // Rate-limit new attachments per second based on config
+            const perSecMet = Math.max(1, Number(((CONFIG.system as any)?.wsAttachPerSec) || 10));
+            const intervalMsMet = Math.floor(1000 / perSecMet);
+            const sleepMet = (ms: number) => new Promise(r => setTimeout(r, ms));
+            for (let i = 0; i < edgeIds.length; i++) {
+              const addr = edgeIds[i];
               try {
                 const pk = new web3.PublicKey(addr);
                 const id = await conn.onAccountChange(pk, (info: any) => { handle(pk as any, info); });
                 subs.push(id as any); attached++;
               } catch {}
+              if (i < edgeIds.length - 1 && intervalMsMet > 0) { await sleepMet(intervalMsMet); }
             }
             return attached;
           };
