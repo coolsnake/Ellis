@@ -1,4 +1,4 @@
-use arb_rs::utils::{rotate_to_start, rotate_to_start_num, compute_est_profit_usd};
+use arb_rs::utils::{rotate_to_start_num, compute_est_profit_usd};
 
 #[test]
 fn rotates_numeric_array_with_labels() {

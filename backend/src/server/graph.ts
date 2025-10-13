@@ -421,11 +421,9 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const avoidDouble = (sanityCfg as any).avoidDoubleApply !== false; // default on
           const dex = String((p as any)?.dex || '');
           const sourceSanitized = (
-            (dex === 'Orca' && kind === 'clmm' && ((CONFIG as any)?.sanity?.sanity_applyOrcaClmm ?? true) === true) ||
-            (dex === 'Raydium' && kind === 'amm' && ((CONFIG as any)?.sanity?.sanity_applyRaydiumAmm ?? true) === true) ||
-            (dex === 'Meteora' && kind === 'clmm' && ((CONFIG as any)?.sanity?.sanity_applyMeteoraClmm ?? true) === true) ||
-            // Raydium CLMM: skip graph-level deviation drop; CLMM block performs USD snap/clamp
-            (dex === 'Raydium' && kind === 'clmm')
+            // All CLMMs receive orientation/clamp handling in their dedicated blocks; avoid double-dropping here
+            (kind === 'clmm') ||
+            (dex === 'Raydium' && kind === 'amm' && ((CONFIG as any)?.sanity?.sanity_applyRaydiumAmm ?? true) === true)
           );
           const skipDeviation = avoidDouble && sourceSanitized;
           if (!skipDeviation && Number.isFinite(aUsd as any) && Number.isFinite(bUsd as any) && (aUsd as number) > 0 && (bUsd as number) > 0) {
