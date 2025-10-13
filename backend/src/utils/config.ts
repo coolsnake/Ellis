@@ -269,7 +269,7 @@ export const CONFIG = {
       .map(s => s.trim())
       .filter(Boolean),
     // Token-2022 routing mode: 'block' | 'allow' | 'auto'
-    token2022Mode: (process.env.TOKEN2022_MODE as any) || 'block',
+    token2022Mode: (process.env.TOKEN2022_MODE as any) || 'auto',
     // Additional slippage (bps) applied only to Token-2022 hops
     token2022ExtraSlippageBps: Number(process.env.TOKEN2022_EXTRA_SLIPPAGE_BPS || 20),
     // Token-2022 allowlist per-DEX (default: blocked everywhere)
