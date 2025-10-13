@@ -2104,7 +2104,7 @@ mod e2e_tests {
     #[tokio::test]
     async fn diff_ordering_and_version_guards_apply_in_order() {
         std::env::set_var("ARB_SHARED_SECRET", "");
-        let state = Arc::new(RwLock::new(AppState { config: default_config(), opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), near_miss: None, near_miss_shortfall_bps: None, near_misses: Vec::new(), last_graph_version: 1, last_graph_ts: 1, pending_added_edges: Vec::new(), pending_updated_edges: Vec::new(), pending_removed_edge_ids: Vec::new(), pending_graph_version: None, pending_graph_ts: None, wake: Arc::new(Notify::new()) }));
+        let state = Arc::new(RwLock::new(AppState { config: default_config(), opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), near_miss: None, near_miss_shortfall_bps: None, near_misses: Vec::new(), last_graph_version: 1, last_graph_ts: 1, pending_added_edges: Vec::new(), pending_updated_edges: Vec::new(), pending_removed_edge_ids: Vec::new(), pending_graph_version: None, pending_graph_ts: None, wake: Arc::new(Notify::new()), detection_counts: HashMap::new(), executed_keys: HashSet::new() }));
 
         // Buffer a valid diff at v=2 and a stale diff at v=1
         let mut headers = AxumHeaderMap::new();
@@ -2149,7 +2149,7 @@ mod e2e_tests {
     #[tokio::test]
     async fn snapshot_then_diffs_detect_cycle() {
         std::env::set_var("ARB_SHARED_SECRET", "");
-        let state = Arc::new(RwLock::new(AppState { config: default_config(), opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), near_miss: None, near_miss_shortfall_bps: None, near_misses: Vec::new(), last_graph_version: 0, last_graph_ts: 0, pending_added_edges: Vec::new(), pending_updated_edges: Vec::new(), pending_removed_edge_ids: Vec::new(), pending_graph_version: None, pending_graph_ts: None, wake: Arc::new(Notify::new()) }));
+        let state = Arc::new(RwLock::new(AppState { config: default_config(), opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), near_miss: None, near_miss_shortfall_bps: None, near_misses: Vec::new(), last_graph_version: 0, last_graph_ts: 0, pending_added_edges: Vec::new(), pending_updated_edges: Vec::new(), pending_removed_edge_ids: Vec::new(), pending_graph_version: None, pending_graph_ts: None, wake: Arc::new(Notify::new()), detection_counts: HashMap::new(), executed_keys: HashSet::new() }));
 
         // Start with snapshot of empty graph at v=1
         let h = AxumHeaderMap::new();
