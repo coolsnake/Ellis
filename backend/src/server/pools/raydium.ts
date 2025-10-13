@@ -255,29 +255,8 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
           const two64 = Math.pow(2, 64);
           const ratio = sqrt / two64;
           const cand1 = Math.pow(10, (decB as number) - (decA as number)) / (ratio * ratio);
-          const cand2 = (ratio * ratio) * Math.pow(10, (decA as number) - (decB as number));
-          const finite = [cand1, cand2].filter((x) => Number.isFinite(x) && x > 0) as number[];
-          let chosen = finite[0] || 0;
-          try {
-            const { getPriceByMint } = await import('../priceStore.js');
-            const pa = getPriceByMint(mintA)?.usdc ?? null;
-            const pb = getPriceByMint(mintB)?.usdc ?? null;
-            const incoming = Number(price) > 0 ? Number(price) : undefined;
-            const refUsd = (pa && pb && (pa as number) > 0 && (pb as number) > 0) ? ((pb as number) / (pa as number)) : undefined;
-            const refs = [refUsd, incoming].filter((v) => Number.isFinite(v as any) && (v as number) > 0) as number[];
-            if (refs.length && finite.length) {
-              let best = finite[0];
-              let bestDev = Number.POSITIVE_INFINITY;
-              for (const cand of finite) {
-                for (const ref of refs) {
-                  const dev = Math.max(cand / ref, ref / cand);
-                  if (dev + 1e-12 < bestDev) { bestDev = dev; best = cand; }
-                }
-              }
-              chosen = best;
-            }
-          } catch {}
-          price_from_sqrt = chosen;
+          // Prefer canonical A-per-1-B candidate; orientation handled in graph later
+          price_from_sqrt = Number.isFinite(cand1) && cand1 > 0 ? cand1 : 0;
         }
       } catch {}
       let px = price_from_sqrt > 0 ? price_from_sqrt : (Number(price) > 0 ? Number(price) : 0);
@@ -288,19 +267,6 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         const { calibrateMagnitude } = await import('../priceCalib.js');
         const calibrated = calibrateMagnitude(mintA, mintB, px, getUsd);
         if (calibrated && calibrated > 0) px = calibrated;
-      } catch {}
-      // Orientation correction using USD reference when available: choose value closer to ref (no USD magnitude clamp)
-      try {
-        const { getPriceByMint } = await import('../priceStore.js');
-        const pa = getPriceByMint(mintA)?.usdc ?? null;
-        const pb = getPriceByMint(mintB)?.usdc ?? null;
-        if (pa && pb && px && (px as number) > 0) {
-          const ref = (pb as number) / (pa as number);
-          const inv = 1 / (px as number);
-          const dev = Math.max((px as number) / ref, ref / (px as number));
-          const devInv = Math.max(inv / ref, ref / inv);
-          if (devInv + 1e-12 < dev) px = inv;
-        }
       } catch {}
       let ok = true;
       try {

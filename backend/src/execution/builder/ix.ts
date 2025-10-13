@@ -193,6 +193,35 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     if ((hop.amountInRaw || 0n) <= 0n) {
       throw new Error('RAYDIUM_AMM_BUILD_FAILED: amount=0');
     }
+    // Best-effort: derive missing market/program from on-chain pool state
+    try {
+      if (!hop.market || !hop.serumProgramId) {
+        const connection = getConnection();
+        const poolPk = toPublicKey(hop.poolId);
+        const acc = await connection.getAccountInfo(poolPk);
+        if (acc?.data?.length) {
+          const rmod: any = await import('@raydium-io/raydium-sdk-v2');
+          const layouts = [
+            (rmod as any)?.LiquidityStateLayoutV4,
+            (rmod as any)?.liquidityStateV4Layout,
+            (rmod as any)?.LiquidityStateLayoutV5,
+            (rmod as any)?.liquidityStateV5Layout,
+          ].filter(Boolean);
+          for (const layout of layouts) {
+            try {
+              const state = layout.decode(acc.data);
+              const mk = state.marketId?.toBase58?.() || state.marketId?.toString?.() || '';
+              const mp = state.marketProgramId?.toBase58?.() || state.marketProgramId?.toString?.() || '';
+              if (mk && mp) {
+                hop.market = hop.market || mk;
+                hop.serumProgramId = hop.serumProgramId || mp;
+                break;
+              }
+            } catch {}
+          }
+        }
+      }
+    } catch {}
     // Validate required fields for Raydium AMM build
     const missing: string[] = [];
     if (!hop.market) missing.push('market');

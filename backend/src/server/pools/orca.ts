@@ -235,19 +235,7 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
         const calibrated = calibrateMagnitude(cA, cB, priceDerived, getUsd);
         if (calibrated && calibrated > 0) priceDerived = calibrated;
       } catch {}
-      // Orientation correction by USD reference: ensure A per 1 B (no USD magnitude clamp)
-      try {
-        const { getPriceByMint } = await import('../../server/priceStore.js');
-        const pa = getPriceByMint(cA)?.usdc ?? null;
-        const pb = getPriceByMint(cB)?.usdc ?? null;
-        if (pa && pb && priceDerived && (priceDerived as number) > 0) {
-          const ref = (pb as number) / (pa as number);
-          const inv = 1 / (priceDerived as number);
-          const dev  = Math.max((priceDerived as number) / ref,  ref / (priceDerived as number));
-          const devI = Math.max(inv / ref, ref / inv);
-          priceDerived = (devI + 1e-12 < dev) ? inv : (priceDerived as number);
-        }
-      } catch {}
+      // No USD-based orientation here; orientation handled centrally in graph
       const wholeA = Number.isFinite(cDecA) ? (cAmtA / Math.pow(10, cDecA as number)) : undefined;
       const wholeB = Number.isFinite(cDecB) ? (cAmtB / Math.pow(10, cDecB as number)) : undefined;
       const tvlUsdcRaw = (it as any)?.tvlUsdc;
