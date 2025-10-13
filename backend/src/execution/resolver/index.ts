@@ -26,12 +26,21 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
     // lightweight placeholders; per-DEX resolvers will fill in accounts/state
     const tokenInMeta = executionCache.getTokenMeta(inputMint) || await getTokenMeta(inputMint);
     const tokenOutMeta = executionCache.getTokenMeta(outputMint) || await getTokenMeta(outputMint);
-    // Token-2022 gating (blocked by default unless allowed per-DEX via config)
-    const allow = (CONFIG.system as any)?.token2022Allow || {};
+    // Token-2022 gating with mode controls
+    const sys = (CONFIG.system as any) || {};
+    const mode = String(sys.token2022Mode || 'block');
+    const allow = (sys.token2022Allow || {}) as { raydium?: boolean; orca?: boolean; meteora?: boolean };
     const any2022 = tokenInMeta.program === 'token-2022' || tokenOutMeta.program === 'token-2022';
     if (any2022) {
-      const ok = (dex === 'raydium' && allow.raydium) || (dex === 'orca' && allow.orca) || (dex === 'meteora' && allow.meteora);
-      if (!ok) throw new Error('TOKEN2022_NOT_ALLOWED');
+      let ok = false;
+      if (mode === 'allow' || mode === 'auto') ok = true;
+      else {
+        ok = (dex === 'raydium' && !!allow.raydium) || (dex === 'orca' && !!allow.orca) || (dex === 'meteora' && !!allow.meteora);
+      }
+      if (!ok) {
+        const msg = `TOKEN2022_NOT_ALLOWED: dex=${dex}, mode=${mode}, in=${tokenInMeta.program}, out=${tokenOutMeta.program}`;
+        throw new Error(msg);
+      }
     }
     const hop: DirectHop = {
       dex,
@@ -117,7 +126,16 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
     for (let i = 0; i < hops.length; i++) {
       hops[i].amountInRaw = curIn;
       const out = await quoteHopOut(hops[i], curIn);
-      hops[i].minOutRaw = applyMinOut(out, slippage);
+      // Optional extra bps for Token-2022 hops
+      try {
+        const sys = (CONFIG.system as any) || {};
+        const bump = Number(sys.token2022ExtraSlippageBps ?? 0);
+        const is2022 = (hops[i].inputTokenProgram === 'token-2022') || (hops[i].outputTokenProgram === 'token-2022');
+        const eff = Math.max(0, Math.min(9900, slippage + (is2022 ? bump : 0)));
+        hops[i].minOutRaw = applyMinOut(out, eff);
+      } catch {
+        hops[i].minOutRaw = applyMinOut(out, slippage);
+      }
       curIn = out > 0n ? out : curIn;
     }
   } catch {}
