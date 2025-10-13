@@ -254,8 +254,8 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         if (sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
           const two64 = Math.pow(2, 64);
           const ratio = sqrt / two64;
-          // Raydium CLMM: A-per-1-B in whole tokens = 10^(decA - decB) / (ratio^2)
-          const aPerB = Math.pow(10, (decA as number) - (decB as number)) / (ratio * ratio);
+          // Align Raydium CLMM with Orca encoding: A-per-1-B = 10^(decB - decA) / (ratio^2)
+          const aPerB = Math.pow(10, (decB as number) - (decA as number)) / (ratio * ratio);
           price_from_sqrt = Number.isFinite(aPerB) && aPerB > 0 ? aPerB : 0;
         }
       } catch {}
