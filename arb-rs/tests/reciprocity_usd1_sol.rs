@@ -1,4 +1,4 @@
-use arb_rs::*;
+use arb_rs::graph::{ArbGraph, EdgeData};
 
 #[test]
 fn reciprocity_usd1_sol() {
