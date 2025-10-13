@@ -13,7 +13,11 @@ fn triangle_consistency() {
     g.upsert_edge("Raydium", &sol, &x,     EdgeData{ rate_effective: 1000.0*(1.0-(f2 as f64)/10_000.0), fee_bps: f2, liquidity: liq, dex: "Raydium".into(), pool_id: "t2".into(), liquidity_display: liq });
     g.upsert_edge("Raydium", &x,    &usdc,  EdgeData{ rate_effective: 0.0005*(1.0-(f3 as f64)/10_000.0), fee_bps: f3, liquidity: liq, dex: "Raydium".into(), pool_id: "t3".into(), liquidity_display: liq });
     let mut prod = 1.0;
-    for (u,v) in vec![(&usdc,&sol), (&sol,&x), (&x,&usdc)] { for e in g.g.edges_connecting(g.node_index(u), g.node_index(v)) { prod *= e.weight().rate_effective; } }
+    for (u,v) in vec![(&usdc,&sol), (&sol,&x), (&x,&usdc)] {
+        let ui = *g.map.get(u).expect("node exists");
+        let vi = *g.map.get(v).expect("node exists");
+        for e in g.g.edges_connecting(ui, vi) { prod *= e.weight().rate_effective; }
+    }
     let exp = (1.0-(f1 as f64)/10_000.0) * (1.0-(f2 as f64)/10_000.0) * (1.0-(f3 as f64)/10_000.0);
     assert!(prod/exp > 0.98 && prod/exp < 1.02, "prod={}, exp={}", prod, exp);
 }
