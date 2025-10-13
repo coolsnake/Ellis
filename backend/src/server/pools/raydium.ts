@@ -274,13 +274,17 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         decB = Math.min(12, Math.max(0, Math.round(Number(decB))));
       } catch {}
       let price_from_sqrt = 0;
+      let price_from_sqrt_alt = 0;
       try {
         if (sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
           const two64 = Math.pow(2, 64);
           const ratio = sqrt / two64;
-          // Align Raydium CLMM with Orca encoding: A-per-1-B = 10^(decB - decA) / (ratio^2)
-          const aPerB = Math.pow(10, (decB as number) - (decA as number)) / (ratio * ratio);
-          price_from_sqrt = Number.isFinite(aPerB) && aPerB > 0 ? aPerB : 0;
+          // Candidate 1 (Orca-like): A-per-1-B = 10^(decB - decA) / (ratio^2)
+          const cand1 = Math.pow(10, (decB as number) - (decA as number)) / (ratio * ratio);
+          // Candidate 2 (Raydium alt): A-per-1-B = (ratio^2) / 10^(decB - decA)
+          const cand2 = (ratio * ratio) / Math.pow(10, (decB as number) - (decA as number));
+          price_from_sqrt = Number.isFinite(cand1) && cand1 > 0 ? cand1 : 0;
+          price_from_sqrt_alt = Number.isFinite(cand2) && cand2 > 0 ? cand2 : 0;
         }
       } catch {}
       // Choose candidate closer to USD reference (when available): sqrt-derived vs incoming vs reserves-whole
@@ -292,6 +296,7 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         const ref = (pa && pb && (pa as number) > 0 && (pb as number) > 0) ? ((pb as number) / (pa as number)) : undefined;
         const candidates: number[] = [];
         if (price_from_sqrt > 0) candidates.push(price_from_sqrt);
+        if (price_from_sqrt_alt > 0) candidates.push(price_from_sqrt_alt);
         if (Number(price) > 0) candidates.push(Number(price));
         try {
           const wholeA = Number.isFinite(amount_a_whole as any) ? (amount_a_whole as number) : NaN;

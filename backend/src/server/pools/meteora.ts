@@ -170,14 +170,19 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       const activeId = Number((it as any)?.active_id ?? (it as any)?.activeId);
       const binStep = Number((it as any)?.bin_step ?? (it as any)?.binStep);
       if (Number.isFinite(activeId) && Number.isFinite(binStep) && Number.isFinite(decA) && Number.isFinite(decB)) {
-        // Use standard LB base: 1.0001^binStep
         const f = Math.pow(1.0001, binStep);
         if (f > 0) {
-          // Align DLMM whole-unit math with test expectations: use 10^(decA - decB) in bPerA
-          // price_B_per_A = f^(activeId) * 10^(decA - decB); A-per-1-B is reciprocal
+          // Two candidates depending on vendor orientation; pick by USD ref later
           const bPerA = Math.pow(f, activeId) * Math.pow(10, (decA as number) - (decB as number));
-          const aPerB = bPerA > 0 ? (1 / bPerA) : 0;
-          if (Number.isFinite(aPerB) && aPerB > 0) price_a_per_b = aPerB;
+          const aPerB1 = bPerA > 0 ? (1 / bPerA) : 0; // A per 1 B via reciprocal
+          const aPerB2 = bPerA; // treat directly as A per 1 B (alt)
+          const cand: number[] = [];
+          if (aPerB1 > 0 && Number.isFinite(aPerB1)) cand.push(aPerB1);
+          if (aPerB2 > 0 && Number.isFinite(aPerB2)) cand.push(aPerB2);
+          if (cand.length) {
+            // Defer choosing until USD ref selection below; stash best for now
+            price_a_per_b = cand[0];
+          }
         }
       }
     } catch {}
@@ -199,7 +204,8 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       const ref = (pa && pb && (pa as number) > 0 && (pb as number) > 0) ? ((pb as number) / (pa as number)) : undefined;
       const cand: number[] = [];
       if (Number.isFinite(price_a_per_b) && price_a_per_b > 0) cand.push(price_a_per_b);
-      // active-bin result already placed into price_a_per_b above when available
+      // If we computed two possible A/B candidates above, include reciprocal too
+      try { if (Number.isFinite(price_a_per_b) && price_a_per_b > 0) { const inv = 1 / (price_a_per_b as number); if (inv > 0 && Number.isFinite(inv)) cand.push(inv); } } catch {}
       if (ref && cand.length) {
         let best = cand[0];
         let bestDev = Math.max(best / (ref as number), (ref as number) / best);
