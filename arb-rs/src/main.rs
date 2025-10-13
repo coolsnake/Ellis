@@ -1474,13 +1474,14 @@ async fn handle_graph_snapshot(state: Arc<RwLock<AppState>>, req: GraphSnapshotR
     if let Some(v) = g.version { if v <= s.last_graph_version { s.metrics.graph_updates_skipped = s.metrics.graph_updates_skipped.saturating_add(1); return serde_json::json!({"ok": true, "ignored": true, "reason": "stale_version"}); } }
     let mut new_graph = ArbGraph::new();
     // Centralized price conversion: A-per-1-B (backend) -> B-per-1-A (detector), apply fee once
-    fn edge_rate_effective_local(e: &GraphEdge) -> (f64, f64) {
-        let fee = e.fee_bps.unwrap_or(0) as f64 / 10_000.0;
-        let px = e.price_a_per_b.unwrap_or(0.0);
+    #[inline]
+    fn edge_rate_effective_local(px_opt: Option<f64>, fee_bps_opt: Option<i64>) -> (f64, f64) {
+        let fee_bps: f64 = (fee_bps_opt.unwrap_or(0)) as f64;
+        let px: f64 = px_opt.unwrap_or(0.0);
         if !(px.is_finite() && px > 0.0) { return (0.0, 0.0); }
-        let base = 1.0 / px;
+        let base: f64 = 1.0 / px;
         if !(base.is_finite() && base > 0.0) { return (0.0, 0.0); }
-        let eff = base * (1.0 - fee).max(0.0);
+        let eff: f64 = base * (1.0 - fee_bps/10_000.0).max(0.0);
         (base, eff)
     }
     for e in g.edges.into_iter() {
@@ -1489,7 +1490,7 @@ async fn handle_graph_snapshot(state: Arc<RwLock<AppState>>, req: GraphSnapshotR
         let liq = e.liquidity.unwrap_or(0.0);
         let pool_id = e.pool_id.unwrap_or_else(|| "".to_string());
         let liq_disp = e.liquidity_display.unwrap_or(0.0);
-        let (_base, rate_eff) = edge_rate_effective_local(&e);
+        let (_base, rate_eff) = edge_rate_effective_local(e.price_a_per_b, e.fee_bps);
         new_graph.upsert_edge(&dex, &e.source, &e.target, EdgeData {
             rate_effective: rate_eff,
             fee_bps: fee,
@@ -1576,7 +1577,7 @@ async fn arb_start(State(state): State<Arc<RwLock<AppState>>>, headers: HeaderMa
             let liq = e.liquidity.unwrap_or(0.0);
             let pool_id = e.pool_id.unwrap_or_else(|| "".to_string());
             let liq_disp = e.liquidity_display.unwrap_or(0.0);
-            let (_base, rate_eff) = edge_rate_effective_local(&e);
+            let (_base, rate_eff) = edge_rate_effective_local(e.price_a_per_b, e.fee_bps);
             new_graph.upsert_edge(&dex, &e.source, &e.target, EdgeData { rate_effective: rate_eff, fee_bps: fee, liquidity: liq, dex: dex.clone(), pool_id, liquidity_display: liq_disp });
         }
         let nodes_cnt = new_graph.g.node_count() as u64;
