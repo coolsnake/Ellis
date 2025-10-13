@@ -1046,9 +1046,19 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         // Forward edge must carry A per 1 B; reverse is strict reciprocal
         const pid = String((p as any)?.id || undefined) || undefined;
         const liqParam = (p as any)?.liquidity_display ?? (usd && usd > 0 ? usd : (p as any)?.pool_liquidity_raw);
-        // Always clamp fallback USD-derived price as well
+        // Choose between oriented priceMet and a USD-derived fallback (stable=1 when configured)
         const fallbackUsd = (CONFIG.sanity?.dropEdgesNoUsdBoth === false) ? priceFromUsd(p.mint_a, p.mint_b) : undefined;
-        const fwdMet = clampPrice((priceMet && priceMet > 0) ? priceMet : fallbackUsd);
+        let chosenMet: number | undefined = (priceMet && priceMet > 0) ? priceMet : undefined;
+        if (fallbackUsd && fallbackUsd > 0) {
+          if (!(chosenMet && chosenMet > 0)) {
+            chosenMet = fallbackUsd;
+          } else {
+            const maxClampDev = Number(((CONFIG as any)?.sanity as any)?.usdClampMaxDev) || 1.10;
+            const dev = Math.max((chosenMet as number) / (fallbackUsd as number), (fallbackUsd as number) / (chosenMet as number));
+            if (dev > maxClampDev) chosenMet = fallbackUsd;
+          }
+        }
+        const fwdMet = clampPrice(chosenMet);
         const revMet = (fwdMet && fwdMet > 0) ? (1 / fwdMet) : undefined;
         addEdge(p.mint_a, p.mint_b, 'Meteora', p.fee_bps, liqParam, fwdMet, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
         const pidRev = pid ? `${pid}-rev` : undefined;
