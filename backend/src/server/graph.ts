@@ -557,10 +557,14 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           }
         }
         if (Number.isFinite(usd as any) && (usd as number) > 0) ammUsd++;
-        if (!price || price <= 0) price = priceFromUsd(p.mint_a, p.mint_b);
-        // Fallback: if still missing, use incoming pool price when valid (assumed A per 1 B from normalization)
+        // Do not substitute USD reference; if no pool-derived price, try normalized price
         if ((!price || price <= 0) && Number.isFinite((p as any)?.price_a_per_b as any) && (p as any).price_a_per_b > 0) {
           price = Number((p as any).price_a_per_b);
+        }
+        // If still no price, skip this edge and log for debugging
+        if (!price || price <= 0) {
+          try { logger.debug('graph.skip.edge.no_price', { dex: 'Raydium', kind: 'amm', pool_id: safePoolId(p), mint_a: p.mint_a, mint_b: p.mint_b, reason: 'no_pool_price' }); } catch {}
+          continue;
         }
         // Prefer notional (in B units) when USD TVL is missing
         let notionalB: number | undefined;
@@ -654,11 +658,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const inv = 1 / v;
           const dev  = Math.max(v / ref,  ref / v);
           const devI = Math.max(inv / ref, ref / inv);
-          let out = devI + 1e-12 < dev ? inv : v;
-          const maxClampDev = Number(((CONFIG as any)?.sanity as any)?.usdClampMaxDev) || 1.10;
-          const post = Math.max(out / ref, ref / out);
-          if (post > maxClampDev) out = ref;
-          return out;
+          return devI + 1e-12 < dev ? inv : v;
         } catch {
           return v;
         }
@@ -668,7 +668,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       for (const p of (rayValid.clmm || [])) {
         clmmTotal++;
         let price = (p as any)?.price_a_per_b as number | undefined;
-        if (!price || !(price > 0)) price = priceFromUsd(p.mint_a, p.mint_b);
+        // No USD substitution; if missing price, skip edge later after calibration/orientation attempt
         // Compute USD TVL if we have vault amounts and decimals
         const decA = Number((p as any)?.decimals_a ?? decimalsByMint[p.mint_a] ?? NaN);
         const decB = Number((p as any)?.decimals_b ?? decimalsByMint[p.mint_b] ?? NaN);
@@ -721,13 +721,12 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         if (Number.isFinite(usd as any) && (usd as number) > 0) clmmUsd++;
         const pidClmm = safePoolId(p);
         const liqDisplay = (p as any)?.liquidity_display ?? ((usd && usd > 0) ? usd : liqRaw);
-        // CLMM: calibrate then apply orientation rule
+        // CLMM: calibrate then apply orientation rule (no clamp-to-USD)
         price = calibratePrice(p.mint_a, p.mint_b, price);
         try {
           const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
           const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
           const ref = (pa && pb && pb > 0) ? ((pb as number) / (pa as number)) : undefined;
-          const maxClampDev = Number(((CONFIG as any)?.sanity as any)?.usdClampMaxDev) || 1.10;
           if (price && ref) {
             // Snap anchors (SOL/USDC/USDT) to USD ref to avoid residual inversion on reverse
             try {
@@ -744,15 +743,15 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             const fwd = 1 / price, rev = price;
             const clampMin = Number(((CONFIG as any)?.sanity as any)?.priceClampMin) || 1e-12;
             const clampMax = Number(((CONFIG as any)?.sanity as any)?.priceClampMax) || 1e12;
-            if (dev > maxClampDev) {
-              price = ref;
-            } else if (dev > 5 || fwd > 1e4 || rev > 1e4 || price < clampMin || price > clampMax) {
+            if (dev > 5 || fwd > 1e4 || rev > 1e4 || price < clampMin || price > clampMax) {
               logger.debug('graph.calibrate.raydium.clmm outlier', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, calibrated: price, ref, dev, fwd, rev });
             }
           }
         } catch {}
         // Forward + reverse with strict reciprocal rule and consistency guard
-        const fwdR = clampPrice((price && price > 0) ? price : undefined);
+        // If still no price, skip and log
+        if (!price || !(price > 0)) { try { logger.debug('graph.skip.edge.no_price', { dex: 'Raydium', kind: 'clmm', pool_id: safePoolId(p), mint_a: p.mint_a, mint_b: p.mint_b, reason: 'no_pool_price' }); } catch {}; continue; }
+        const fwdR = clampPrice(price);
         const revR = (fwdR && fwdR > 0) ? (1 / fwdR) : undefined;
         addEdge(p.mint_a, p.mint_b, 'Raydium', p.fee_bps, liqDisplay, fwdR, usd, pidClmm, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
         const pidClmmRev = pidClmm ? `${pidClmm}-rev` : undefined;
@@ -870,7 +869,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const amtB = Number((p as any)?.amount_b ?? (p as any)?.amount_b_whole ?? NaN);
         let usd: number | undefined = (p as any)?.tvl_usd;
         let price: number | undefined = (p as any)?.price_a_per_b as number | undefined;
-        if (!price || !(price > 0)) price = priceFromUsd(p.mint_a, p.mint_b);
+        // No USD substitution; compute USD TVL and keep pool price only
         if ((!usd || !(usd > 0)) && Number.isFinite(decA) && Number.isFinite(decB)) {
           const wholeA = Number.isFinite(amtA) ? (amtA / Math.pow(10, decA)) : NaN;
           const wholeB = Number.isFinite(amtB) ? (amtB / Math.pow(10, decB)) : NaN;

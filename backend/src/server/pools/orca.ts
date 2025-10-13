@@ -235,7 +235,7 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
         const calibrated = calibrateMagnitude(cA, cB, priceDerived, getUsd);
         if (calibrated && calibrated > 0) priceDerived = calibrated;
       } catch {}
-      // Orientation correction by USD reference: ensure A per 1 B; clamp large deviation
+      // Orientation correction by USD reference: ensure A per 1 B (no USD magnitude clamp)
       try {
         const { getPriceByMint } = await import('../../server/priceStore.js');
         const pa = getPriceByMint(cA)?.usdc ?? null;
@@ -245,11 +245,7 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
           const inv = 1 / (priceDerived as number);
           const dev  = Math.max((priceDerived as number) / ref,  ref / (priceDerived as number));
           const devI = Math.max(inv / ref, ref / inv);
-          let out = (devI + 1e-12 < dev) ? inv : (priceDerived as number);
-          const maxClampDev = Number(((CONFIG as any)?.sanity as any)?.usdClampMaxDev) || 1.10;
-          const post = Math.max(out / ref, ref / out);
-          if (post > maxClampDev) out = ref;
-          priceDerived = out;
+          priceDerived = (devI + 1e-12 < dev) ? inv : (priceDerived as number);
         }
       } catch {}
       const wholeA = Number.isFinite(cDecA) ? (cAmtA / Math.pow(10, cDecA as number)) : undefined;

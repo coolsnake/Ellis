@@ -289,7 +289,7 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         const calibrated = calibrateMagnitude(mintA, mintB, px, getUsd);
         if (calibrated && calibrated > 0) px = calibrated;
       } catch {}
-      // Orientation correction using USD reference when available: choose value closer to ref
+      // Orientation correction using USD reference when available: choose value closer to ref (no USD magnitude clamp)
       try {
         const { getPriceByMint } = await import('../priceStore.js');
         const pa = getPriceByMint(mintA)?.usdc ?? null;
@@ -300,10 +300,6 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
           const dev = Math.max((px as number) / ref, ref / (px as number));
           const devInv = Math.max(inv / ref, ref / inv);
           if (devInv + 1e-12 < dev) px = inv;
-          // If still far from USD reference (magnitude drift), clamp to ref to avoid 2x errors
-          const maxClampDev = Number(((CONFIG as any)?.sanity as any)?.usdClampMaxDev) || 1.10;
-          const devPost = Math.max((px as number) / ref, ref / (px as number));
-          if (devPost > maxClampDev) px = ref;
         }
       } catch {}
       let ok = true;

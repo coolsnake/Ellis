@@ -24,6 +24,17 @@ function toPublicKey(value: any, fallback?: any): PublicKey {
   throw new Error('Non-base58 character');
 }
 
+function resolveRaydiumAmmVersion(programIdStr?: string): 4 | 5 {
+  try {
+    const pid = sanitizeKeyString(programIdStr);
+    const v4 = sanitizeKeyString((CONFIG as any)?.raydium?.ammV4Program);
+    const v5 = sanitizeKeyString((CONFIG as any)?.raydium?.ammV5Program);
+    if (pid && v5 && pid === v5) return 5;
+    if (pid && v4 && pid === v4) return 4;
+  } catch {}
+  return 4;
+}
+
 export function computeSlippageBps(amountInRaw?: bigint, minOutRaw?: bigint): number {
   try {
     if ((amountInRaw ?? 0n) > 0n && (minOutRaw ?? 0n) > 0n) {
@@ -121,33 +132,55 @@ export function maybeCreateAtas(hop: DirectHop, create: boolean): any[] {
 export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]> {
   try { logger.debug('ix.build raydium.clmm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
   try {
-    // Dynamic import to avoid hard crashes on API mismatch
-    const sdk: any = await import('@raydium-io/raydium-sdk-v2');
-    // Expected helpers may differ by version; attempt common paths
-    const connection = getConnection();
+    // Validate required CLMM fields
+    const missing: string[] = [];
+    if (!hop.inputMint) missing.push('inputMint');
+    if (!hop.outputMint) missing.push('outputMint');
+    if (!hop.userSourceAta) missing.push('userSourceAta');
+    if (!hop.userDestAta) missing.push('userDestAta');
+    if (!hop.tickArrayLower || !hop.tickArrayUpper) missing.push('tickArrayLower/Upper');
+    if (!hop.oracle) missing.push('oracle');
+    if (missing.length) throw new Error(`RAYDIUM_CLMM_BUILD_FAILED: missing ${missing.join(',')}`);
+
+    const { ClmmInstrument } = await import('@raydium-io/raydium-sdk-v2');
     const kp = await ensureWallet(CONFIG.walletPath);
-    const wallet = { publicKey: kp.publicKey } as any;
     const poolId = toPublicKey(hop.poolId);
     const programId = toPublicKey(hop.programId, (CONFIG.raydium?.clmmProgram as any));
-    // Heuristic slippage from minOut
-    const bps = computeSlippageBps(hop.amountInRaw, hop.minOutRaw);
-    if (sdk?.Clmm && sdk?.Clmm?.makeSwapInstructionSimple) {
-      const res = await sdk.Clmm.makeSwapInstructionSimple({
-        connection,
-        poolInfo: { id: poolId } as any,
-        owner: wallet,
-        inputMint: toPublicKey(hop.inputMint),
-        amountIn: hop.amountInRaw,
-        amountOutMin: hop.minOutRaw,
-        slippage: bps,
-        programId,
-        // best-effort price guard propagation
-        priceLimit: hop.sqrtPriceLimitX64,
-        sqrtPriceLimitX64: hop.sqrtPriceLimitX64,
-      });
-      const ixs = Array.isArray(res?.instructions) ? res.instructions : (res?.innerTransaction ? res.innerTransaction.instructions : []);
-      if (ixs && ixs.length) return ixs as any[];
-    }
+    const observationId = toPublicKey((CONFIG.raydium as any)?.clmmObservationId || PublicKey.default.toBase58());
+
+    const ownerInfo = {
+      wallet: kp.publicKey,
+      tokenAccountA: toPublicKey(hop.userSourceAta),
+      tokenAccountB: toPublicKey(hop.userDestAta),
+    };
+
+    // Minimal poolInfo/poolKeys for swapBaseIn; for real use, prefer full keys via SDK helper if available in version
+    const poolInfo = { id: poolId, programId, mintA: toPublicKey(hop.inputMint), mintB: toPublicKey(hop.outputMint), config: {} } as any;
+    const poolKeys = {
+      id: poolId,
+      programId,
+      mintA: toPublicKey(hop.inputMint),
+      mintB: toPublicKey(hop.outputMint),
+      vault: { A: toPublicKey(hop.vaultA as any), B: toPublicKey(hop.vaultB as any) },
+      authority: toPublicKey((CONFIG.raydium as any)?.clmmAuthority || PublicKey.default.toBase58()),
+      observationId,
+      tickArrayLower: toPublicKey(hop.tickArrayLower as any),
+      tickArrayUpper: toPublicKey(hop.tickArrayUpper as any),
+    } as any;
+
+    const res = (ClmmInstrument as any).makeSwapBaseInInstructions({
+      poolInfo,
+      poolKeys,
+      observationId,
+      ownerInfo,
+      inputMint: toPublicKey(hop.inputMint),
+      amountIn: hop.amountInRaw,
+      amountOutMin: hop.minOutRaw,
+      sqrtPriceLimitX64: hop.sqrtPriceLimitX64 ?? 0n,
+      remainingAccounts: [],
+    });
+    const ixs = Array.isArray(res?.instructions) ? res.instructions : (res?.innerTransaction ? res.innerTransaction.instructions : []);
+    if (ixs && ixs.length) return ixs as any[];
   } catch (e) {
     try { logger.warn('ix.build raydium.clmm.real fallback', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
   }
@@ -160,48 +193,57 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     if ((hop.amountInRaw || 0n) <= 0n) {
       throw new Error('RAYDIUM_AMM_BUILD_FAILED: amount=0');
     }
-    const sdk: any = await import('@raydium-io/raydium-sdk-v2');
-    const connection = getConnection();
+    // Validate required fields for Raydium AMM build
+    const missing: string[] = [];
+    if (!hop.market) missing.push('market');
+    if (!hop.serumProgramId) missing.push('serumProgramId');
+    if (!hop.inputMint) missing.push('inputMint');
+    if (!hop.outputMint) missing.push('outputMint');
+    if (!Number.isFinite(Number(hop.inputDecimals))) missing.push('inputDecimals');
+    if (!Number.isFinite(Number(hop.outputDecimals))) missing.push('outputDecimals');
+    if (!hop.userSourceAta) missing.push('userSourceAta');
+    if (!hop.userDestAta) missing.push('userDestAta');
+    if (missing.length) {
+      const ver = resolveRaydiumAmmVersion(hop.programId);
+      throw new Error(`RAYDIUM_AMM_BUILD_FAILED: missing ${missing.join(',')} (version=${ver})`);
+    }
+
+    const { getAssociatedPoolKeys, makeSwapFixedInInstruction } = await import('@raydium-io/raydium-sdk-v2');
     const kp = await ensureWallet(CONFIG.walletPath);
-    const wallet = { publicKey: kp.publicKey } as any;
-    const poolId = toPublicKey(hop.poolId);
     const programId = toPublicKey(hop.programId, (CONFIG.raydium?.ammV4Program as any));
-    const bps = computeSlippageBps(hop.amountInRaw, hop.minOutRaw);
-    if (sdk?.AmmV4 && sdk?.AmmV4?.makeSwapInstructionSimple) {
-      const res = await sdk.AmmV4.makeSwapInstructionSimple({
-        connection,
-        poolInfo: { id: poolId } as any,
-        owner: wallet,
-        inputMint: toPublicKey(hop.inputMint),
-        amountIn: hop.amountInRaw,
-        amountOutMin: hop.minOutRaw,
-        slippage: bps,
-        programId,
-      });
-      const ixs = Array.isArray(res?.instructions) ? res.instructions : (res?.innerTransaction ? res.innerTransaction.instructions : []);
-      if (ixs && ixs.length) return ixs as any[];
-    }
-    // Fallback to instance API when available
-    if (sdk?.Raydium && typeof sdk.Raydium.load === 'function') {
-      try {
-        const ray = await sdk.Raydium.load({ connection, owner: kp, disableLoadToken: true });
-        const amm = (ray as any)?.ammV4;
-        const fn = amm?.swapInstructionSimple || amm?.makeSwapInstructionSimple;
-        if (typeof fn === 'function') {
-          const res2 = await fn.call(amm, {
-            poolInfo: { id: poolId } as any,
-            owner: wallet,
-            inputMint: toPublicKey(hop.inputMint),
-            amountIn: hop.amountInRaw,
-            amountOutMin: hop.minOutRaw,
-            slippage: bps,
-            programId,
-          } as any);
-          const ixs2 = Array.isArray(res2?.instructions) ? res2.instructions : (res2?.innerTransaction ? res2.innerTransaction.instructions : []);
-          if (ixs2 && ixs2.length) return ixs2 as any[];
-        }
-      } catch {}
-    }
+    const marketId = toPublicKey(hop.market);
+    const marketProgramId = toPublicKey(hop.serumProgramId);
+
+    // Choose Raydium AMM version; default to 4
+    const version = resolveRaydiumAmmVersion(hop.programId);
+
+    // Build pool keys (requires correct base/quote mints & decimals per market)
+    const poolKeys = (getAssociatedPoolKeys as any)({
+      version,
+      marketVersion: 3,
+      marketId,
+      baseMint: toPublicKey(hop.inputMint),
+      quoteMint: toPublicKey(hop.outputMint),
+      baseDecimals: Number(hop.inputDecimals),
+      quoteDecimals: Number(hop.outputDecimals),
+      programId,
+      marketProgramId,
+    });
+
+    const userKeys = {
+      tokenAccountIn: toPublicKey(hop.userSourceAta),
+      tokenAccountOut: toPublicKey(hop.userDestAta),
+      owner: kp.publicKey,
+    };
+
+    const ix = (makeSwapFixedInInstruction as any)({
+      poolKeys,
+      userKeys,
+      amountIn: hop.amountInRaw,
+      minAmountOut: hop.minOutRaw,
+    }, version);
+
+    return [ix];
   } catch (e) {
     try { logger.warn('ix.build raydium.amm.real fallback', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
   }
