@@ -289,6 +289,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       let ammTotal = 0, ammUsd = 0;
       let clmmTotal = 0, clmmUsd = 0, clmmMissingAmounts = 0, clmmMissingDecimals = 0;
 
+      // impliedUsdViaEdges helper is defined later; reuse that one to avoid duplication
+
       const addEdge = (
         mintA: string,
         mintB: string,

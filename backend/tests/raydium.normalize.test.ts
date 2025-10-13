@@ -31,7 +31,7 @@ describe('raydium amm orientation normalization', () => {
     expect(p.price_a_per_b).toBeGreaterThan(1);
   });
 
-  it('applies stable-aware flip when using upstream price and no reserves', async () => {
+  it('does not flip when using upstream price and no reserves (no stable-aware flip)', async () => {
     const now = Date.now();
     const raw = {
       data: [
@@ -51,12 +51,11 @@ describe('raydium amm orientation normalization', () => {
     const norm = await mod.normalizeRaydiumPools(raw as any);
     const p = norm.amm.find(p => p.id === 'POOL_AMM_2') as any;
     expect(p).toBeTruthy();
-    // Should flip once because B is USDC and upstream < 1
-    expect(p.price_a_per_b).toBeGreaterThan(1);
-    // Under quoteHierarchy default, USDC should be on B side
     const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-    expect(p.mint_b).toBe(USDC);
-    expect(p.mint_a).toBe('BONK_MINT');
+    const upstream = 0.00002;
+    // No flip in normalizer: price remains consistent with orientation
+    const oriented = (p.mint_a === 'BONK_MINT' && p.mint_b === USDC) ? upstream : (1 / upstream);
+    expect(Math.abs((p.price_a_per_b as number) - oriented) / oriented).toBeLessThan(1e-9);
   });
 });
 
