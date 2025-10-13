@@ -740,7 +740,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         if (Number.isFinite(usd as any) && (usd as number) > 0) clmmUsd++;
         const pidClmm = safePoolId(p);
         const liqDisplay = (p as any)?.liquidity_display ?? ((usd && usd > 0) ? usd : liqRaw);
-        // CLMM: calibrate then reciprocal-only orientation via USD refs (no magnitude clamp)
+        // CLMM: calibrate then reciprocal-only orientation via USD refs; add USD deviation clamp for robustness
         price = calibratePrice(p.mint_a, p.mint_b, price);
         // Rescale to global decimals before orientation
         {
@@ -758,8 +758,12 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           if (price && ref) {
             const dev = Math.max(price / ref, ref / price);
             const fwd = 1 / price, rev = price;
+            const maxClampDev = Number(((CONFIG as any)?.sanity as any)?.usdClampMaxDev) || 1.10;
             const clampMin = Number(((CONFIG as any)?.sanity as any)?.priceClampMin) || 1e-12;
             const clampMax = Number(((CONFIG as any)?.sanity as any)?.priceClampMax) || 1e12;
+            if (dev > maxClampDev) {
+              price = ref;
+            }
             if (dev > 5 || fwd > 1e4 || rev > 1e4 || price < clampMin || price > clampMax) {
               logger.debug('graph.calibrate.raydium.clmm outlier', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, calibrated: price, ref, dev, fwd, rev });
             }
@@ -1034,7 +1038,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const poolDecB = Number((p as any)?.decimals_b);
           priceMet = rescalePriceByDecimals(priceMet, poolDecA, poolDecB, ga, gb);
         } catch {}
-        // Orient using combined USD (direct or implied via edges), else fall back to triangulation pivots
+        // Orient using combined USD (direct or implied via edges); allow stable=1 fallback; else triangulate
         try {
           const directA = getPriceByMintVar(p.mint_a)?.usdc ?? null;
           const directB = getPriceByMintVar(p.mint_b)?.usdc ?? null;
@@ -1042,15 +1046,20 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           let pb = (typeof directB === 'number' && directB > 0) ? directB : undefined;
           if (!pa) { const imp = impliedUsdViaEdges(p.mint_a); if (typeof imp.usd === 'number' && imp.usd > 0) { pa = imp.usd; try { logger.debug('graph.implied.usd', { mint: p.mint_a, implied: imp.usd, via: imp.via, weight: imp.weight }); } catch {} } }
           if (!pb) { const imp = impliedUsdViaEdges(p.mint_b); if (typeof imp.usd === 'number' && imp.usd > 0) { pb = imp.usd; try { logger.debug('graph.implied.usd', { mint: p.mint_b, implied: imp.usd, via: imp.via, weight: imp.weight }); } catch {} } }
-          // Prefer a USD reference whenever we can: direct/implied pa,pb only; no priceFromUsd fallback
+          // Prefer a USD reference whenever we can. If missing, use stable=1 fallback via priceFromUsd.
           let ref: number | undefined = undefined;
           if (pa && pb) ref = (pb as number) / (pa as number);
+          if (!ref) ref = priceFromUsd(p.mint_a, p.mint_b);
           if (priceMet && ref && ref > 0) {
             const inv = 1 / (priceMet as number);
             const dev = Math.max((priceMet as number) / ref, ref / (priceMet as number));
             const devI = Math.max(inv / ref, ref / inv);
             let out = (devI + 1e-12 < dev) ? inv : (priceMet as number);
             priceMet = out;
+            const maxClampDev = Number(((CONFIG as any)?.sanity as any)?.usdClampMaxDev) || 1.10;
+            if (Math.max((priceMet as number) / ref, ref / (priceMet as number)) > maxClampDev) {
+              priceMet = ref;
+            }
           } else {
             // No reliable USD reference: triangulate using pivot edges (SOL/USDC/WBTC) if available
             try {

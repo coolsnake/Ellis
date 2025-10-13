@@ -14,13 +14,8 @@ describe('graph AMM vs CLMM coherency (SOL/USDC)', () => {
     const clmm = { id: 'clmm1', dex: 'Raydium', mint_a: USDC, mint_b: SOL, fee_bps: 4, price_a_per_b: 205, pool_kind: 'clmm' };
     const pools = { raydium: { amm: [amm], clmm: [clmm] }, orca: { amm: [], clmm: [] }, meteora: { amm: [], clmm: [] }, meteora_balanced: { amm: [], clmm: [] } };
 
-    // Mock getGraphSnapshot sources
-    vi.doMock('../src/server/pools.ts', async () => ({
-      getRaydiumPoolsNormalized: async () => ({ amm: [amm], clmm: [clmm] }),
-      getOrcaPoolsNormalized: async () => ({ amm: [], clmm: [] }),
-      getMeteoraPoolsNormalized: async () => ({ amm: [], clmm: [] }),
-      getMeteoraBalancedPoolsNormalized: async () => ({ amm: [], clmm: [] }),
-    }));
+    // Provide in-memory test pools to graph via override (avoids mocking peek* helpers)
+    (globalThis as any).__graphTestPools = { raydium: { amm: [amm], clmm: [clmm] }, orca: { amm: [], clmm: [] }, meteora: { amm: [], clmm: [] }, meteora_balanced: { amm: [], clmm: [] } };
     const mod = await import('../src/server/graph');
     const snap = await mod.getGraphSnapshot(true);
     // Extract SOL/USDC edges
