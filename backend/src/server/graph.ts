@@ -717,8 +717,9 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         if (Number.isFinite(usd as any) && (usd as number) > 0) clmmUsd++;
         const pidClmm = safePoolId(p);
         const liqDisplay = (p as any)?.liquidity_display ?? ((usd && usd > 0) ? usd : liqRaw);
-        // CLMM: calibrate magnitude only; keep normalized orientation (no USD-based orientation)
+        // CLMM: calibrate then reciprocal-only orientation via USD refs (no magnitude clamp)
         price = calibratePrice(p.mint_a, p.mint_b, price);
+        price = orientAPerB(p.mint_a, p.mint_b, price);
         try {
           const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
           const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
@@ -1060,6 +1061,23 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       // Also log per-DEX edge counts to aid debugging of visibility in the viewer
       try {
         const all = Object.values(edgesMap);
+        // Diagnostics: compare SOL/USDC AMM vs CLMM magnitudes
+        try {
+          const SOL = 'So11111111111111111111111111111111111111112';
+          const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+          const amm = all.find((e: any) => e.dex === 'Raydium' && e.pool_kind === 'amm' && ((e.source === USDC && e.target === SOL) || (e.source === SOL && e.target === USDC)));
+          const clmm = all.find((e: any) => e.dex === 'Raydium' && e.pool_kind === 'clmm' && ((e.source === USDC && e.target === SOL) || (e.source === SOL && e.target === USDC)));
+          if (amm && clmm && amm.price_a_per_b && clmm.price_a_per_b) {
+            const ratio = Number(clmm.price_a_per_b) / Number(amm.price_a_per_b);
+            if (!(ratio > 0.5 && ratio < 2.0)) {
+              logger.debug('graph.diagnostic.amm_vs_clmm', {
+                ratio,
+                amm: { id: amm.id, price: amm.price_a_per_b },
+                clmm: { id: clmm.id, price: clmm.price_a_per_b },
+              });
+            }
+          }
+        } catch {}
         const countDex = (dex: string) => all.filter((e: any) => e.dex === dex).length;
         const sample = (dex: string) => all
           .filter((e: any) => e.dex === dex)

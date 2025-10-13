@@ -247,7 +247,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     const version = resolveRaydiumAmmVersion(hop.programId);
 
     // Build pool keys (requires correct base/quote mints & decimals per market)
-    const poolKeys = (getAssociatedPoolKeys as any)({
+    let poolKeys = (getAssociatedPoolKeys as any)({
       version,
       marketVersion: 3,
       marketId,
@@ -258,6 +258,70 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       programId,
       marketProgramId,
     });
+
+    // If SDK helper didn't populate vaults/auth/market keys (mint order or decimals mismatch),
+    // derive them from on-chain AMM state (V4/V5).
+    try {
+      const needVaults = !poolKeys?.vault?.A || !poolKeys?.vault?.B;
+      const needMarket = !poolKeys?.marketProgramId || !poolKeys?.marketId;
+      const needAuth = !poolKeys?.authority;
+      if (needVaults || needMarket || needAuth) {
+        const connection = getConnection();
+        const acc = await connection.getAccountInfo(toPublicKey(hop.poolId));
+        if (acc?.data?.length) {
+          const sdkLayouts: any = await import('@raydium-io/raydium-sdk-v2');
+          const layouts = [
+            (sdkLayouts as any)?.LiquidityStateLayoutV4,
+            (sdkLayouts as any)?.liquidityStateV4Layout,
+            (sdkLayouts as any)?.LiquidityStateLayoutV5,
+            (sdkLayouts as any)?.liquidityStateV5Layout,
+          ].filter(Boolean);
+          let state: any = null;
+          for (const layout of layouts) {
+            try { state = layout.decode(acc.data); break; } catch {}
+          }
+          if (state) {
+            // Normalize fields across versions
+            const asPk = (v: any) => (v?.toBase58 ? v : (v ? toPublicKey(v) : undefined));
+            const baseVault = asPk(state.baseVault || state.coinVault || state.vaultA);
+            const quoteVault = asPk(state.quoteVault || state.pcVault || state.vaultB);
+            const authority = asPk(state.owner || state.ammAuthority || state.authority);
+            const openOrders = asPk(state.openOrders);
+            const targetOrders = asPk(state.targetOrders);
+            const lpMint = asPk(state.lpMint);
+            const marketPk = asPk(state.marketId);
+            const marketProg = asPk(state.marketProgramId);
+            const marketEventQueue = asPk(state.marketEventQueue);
+            const marketBids = asPk(state.marketBids);
+            const marketAsks = asPk(state.marketAsks);
+            const marketBaseVault = asPk(state.marketBaseVault || state.baseVault);
+            const marketQuoteVault = asPk(state.marketQuoteVault || state.quoteVault);
+            const marketAuthority = asPk(state.marketAuthority);
+            poolKeys = {
+              ...poolKeys,
+              id: toPublicKey(hop.poolId),
+              programId,
+              authority: authority || poolKeys?.authority,
+              openOrders: openOrders || poolKeys?.openOrders,
+              targetOrders: targetOrders || poolKeys?.targetOrders,
+              vault: {
+                A: baseVault || (poolKeys?.vault ? poolKeys.vault.A : undefined),
+                B: quoteVault || (poolKeys?.vault ? poolKeys.vault.B : undefined),
+              },
+              mintLp: lpMint || poolKeys?.mintLp,
+              marketProgramId: marketProg || poolKeys?.marketProgramId,
+              marketId: marketPk || poolKeys?.marketId,
+              marketEventQueue: marketEventQueue || poolKeys?.marketEventQueue,
+              marketBids: marketBids || poolKeys?.marketBids,
+              marketAsks: marketAsks || poolKeys?.marketAsks,
+              marketBaseVault: marketBaseVault || poolKeys?.marketBaseVault,
+              marketQuoteVault: marketQuoteVault || poolKeys?.marketQuoteVault,
+              marketAuthority: marketAuthority || poolKeys?.marketAuthority,
+            } as any;
+          }
+        }
+      }
+    } catch {}
 
     const userKeys = {
       tokenAccountIn: toPublicKey(hop.userSourceAta),

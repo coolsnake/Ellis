@@ -254,9 +254,9 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         if (sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
           const two64 = Math.pow(2, 64);
           const ratio = sqrt / two64;
-          const cand1 = Math.pow(10, (decB as number) - (decA as number)) / (ratio * ratio);
-          // Prefer canonical A-per-1-B candidate; orientation handled in graph later
-          price_from_sqrt = Number.isFinite(cand1) && cand1 > 0 ? cand1 : 0;
+          // Raydium CLMM: A-per-1-B in whole tokens = 10^(decA - decB) / (ratio^2)
+          const aPerB = Math.pow(10, (decA as number) - (decB as number)) / (ratio * ratio);
+          price_from_sqrt = Number.isFinite(aPerB) && aPerB > 0 ? aPerB : 0;
         }
       } catch {}
       let px = price_from_sqrt > 0 ? price_from_sqrt : (Number(price) > 0 ? Number(price) : 0);
