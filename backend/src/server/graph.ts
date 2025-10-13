@@ -491,6 +491,23 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         if (v < min || v > max) return undefined;
         return v;
       };
+      // Rescale a price from pool-reported decimals to global decimals per mint
+      const rescalePriceByDecimals = (
+        priceAPerB: number | undefined,
+        poolDecA?: number,
+        poolDecB?: number,
+        globalDecA?: number,
+        globalDecB?: number,
+      ): number | undefined => {
+        const p = Number(priceAPerB);
+        if (!Number.isFinite(p) || !(p > 0)) return priceAPerB;
+        const da = Number(poolDecA); const db = Number(poolDecB);
+        const ga = Number(globalDecA); const gb = Number(globalDecB);
+        if (![da, db, ga, gb].every((x) => Number.isFinite(x))) return priceAPerB;
+        const scalePow = (ga - da) - (gb - db);
+        const scaled = p * Math.pow(10, scalePow);
+        return (Number.isFinite(scaled) && scaled > 0) ? scaled : priceAPerB;
+      };
       // Add reverse visualization edges so graph reflects tradable paths in both directions
       const rayValid = validatePoolsForGraph(ray as any);
       const safePoolId = (p: any): string | undefined => {
@@ -626,6 +643,12 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             // No USD reference: keep chosen price as-is; reciprocity tests will guard egregious cases
           }
         } catch {}
+        // Rescale to global decimals before orientation and clamping
+        const ga = Number(decimalsByMint[p.mint_a] ?? decA);
+        const gb = Number(decimalsByMint[p.mint_b] ?? decB);
+        const poolDecA = Number((p as any)?.decimals_a ?? decA);
+        const poolDecB = Number((p as any)?.decimals_b ?? decB);
+        oriented = rescalePriceByDecimals(oriented as number, poolDecA, poolDecB, ga, gb);
         const fwdAmmRay = clampPrice((oriented && (oriented as number) > 0) ? (oriented as number) : undefined);
         const revAmmRay = (fwdAmmRay && fwdAmmRay > 0) ? (1 / fwdAmmRay) : undefined;
         addEdge(p.mint_a, p.mint_b, 'Raydium', p.fee_bps, liqParamAmm, fwdAmmRay, usd, pidAmm, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
@@ -719,6 +742,14 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const liqDisplay = (p as any)?.liquidity_display ?? ((usd && usd > 0) ? usd : liqRaw);
         // CLMM: calibrate then reciprocal-only orientation via USD refs (no magnitude clamp)
         price = calibratePrice(p.mint_a, p.mint_b, price);
+        // Rescale to global decimals before orientation
+        {
+          const ga = Number(decimalsByMint[p.mint_a] ?? decA);
+          const gb = Number(decimalsByMint[p.mint_b] ?? decB);
+          const poolDecA = Number((p as any)?.decimals_a ?? decA);
+          const poolDecB = Number((p as any)?.decimals_b ?? decB);
+          price = rescalePriceByDecimals(price, poolDecA, poolDecB, ga, gb);
+        }
         price = orientAPerB(p.mint_a, p.mint_b, price);
         try {
           const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
@@ -995,6 +1026,14 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         }
         // Calibrate price; for DLMM we only have price_a_per_b, no sqrt
         let priceMet: number | undefined = calibratePrice(p.mint_a, p.mint_b, (p as any).price_a_per_b);
+        // Rescale to global decimals
+        try {
+          const ga = Number(decimalsByMint[p.mint_a] ?? (p as any)?.decimals_a);
+          const gb = Number(decimalsByMint[p.mint_b] ?? (p as any)?.decimals_b);
+          const poolDecA = Number((p as any)?.decimals_a);
+          const poolDecB = Number((p as any)?.decimals_b);
+          priceMet = rescalePriceByDecimals(priceMet, poolDecA, poolDecB, ga, gb);
+        } catch {}
         // Orient using combined USD (direct or implied via edges), else fall back to triangulation pivots
         try {
           const directA = getPriceByMintVar(p.mint_a)?.usdc ?? null;
@@ -1075,6 +1114,29 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
                 amm: { id: amm.id, price: amm.price_a_per_b },
                 clmm: { id: clmm.id, price: clmm.price_a_per_b },
               });
+            }
+          }
+        } catch {}
+        // Triangle diagnostics: for any token X, compare (USDC->X)*(X->SOL) to (USDC->SOL)
+        try {
+          const SOL = 'So11111111111111111111111111111111111111112';
+          const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+          const getEdge = (a: string, b: string) => all.find((e: any) => e.source === a && e.target === b && e.price_a_per_b && e.price_a_per_b > 0);
+          const usdcSol = getEdge(USDC, SOL);
+          if (usdcSol) {
+            const nodes = new Set<string>(all.flatMap((e: any) => [e.source, e.target]));
+            for (const X of nodes) {
+              if (X === USDC || X === SOL) continue;
+              const usdcX = getEdge(USDC, X);
+              const xSol = getEdge(X, SOL);
+              if (usdcX && xSol) {
+                const product = (usdcX.price_a_per_b as number) * (xSol.price_a_per_b as number);
+                const ref = usdcSol.price_a_per_b as number;
+                const dev = Math.max(product / ref, ref / product);
+                if (!(dev < 2.0)) {
+                  logger.debug('graph.diagnostic.triangle', { X, usdcX: usdcX.id, xSol: xSol.id, usdcSol: usdcSol.id, product, ref, dev });
+                }
+              }
             }
           }
         } catch {}
