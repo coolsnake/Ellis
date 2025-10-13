@@ -837,6 +837,18 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const poolDecB = Number((p as any)?.decimals_b);
           price = rescalePriceByDecimals(price, poolDecA, poolDecB, ga, gb);
         } catch {}
+        // Orientation guard: if USD ref exists and reciprocal is closer, invert once
+        try {
+          const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
+          const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
+          if (pa && pb && price && (price as number) > 0) {
+            const ref = (pb as number) / (pa as number);
+            const inv = 1 / (price as number);
+            const dev  = Math.max((price as number) / ref,  ref / (price as number));
+            const devI = Math.max(inv / ref, ref / inv);
+            if (devI + 1e-12 < dev) price = inv;
+          }
+        } catch {}
         try {
           const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
           const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
@@ -1156,6 +1168,18 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const liqParam = (p as any)?.liquidity_display ?? (usd && usd > 0 ? usd : (p as any)?.pool_liquidity_raw);
         // Do not substitute with USD fallback; require a pool-derived price
         let chosenMet: number | undefined = (priceMet && priceMet > 0) ? priceMet : undefined;
+        // Orientation guard for Meteora: ensure USD-oriented before emission
+        try {
+          const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
+          const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
+          if (pa && pb && chosenMet && (chosenMet as number) > 0) {
+            const ref = (pb as number) / (pa as number);
+            const inv = 1 / (chosenMet as number);
+            const dev  = Math.max((chosenMet as number) / ref,  ref / (chosenMet as number));
+            const devI = Math.max(inv / ref, ref / inv);
+            if (devI + 1e-12 < dev) chosenMet = inv;
+          }
+        } catch {}
         if (!(chosenMet && chosenMet > 0)) { try { logger.debug('graph.skip.edge.no_price', { dex: 'Meteora', kind: 'clmm', pool_id: pid, mint_a: p.mint_a, mint_b: p.mint_b, reason: 'no_pool_price' }); } catch {}; continue; }
         const fwdMet = clampPrice(chosenMet);
         const revMet = (fwdMet && fwdMet > 0) ? (1 / fwdMet) : undefined;

@@ -191,6 +191,26 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
         if (derived > 0 && Number.isFinite(derived)) price_a_per_b = derived;
       }
     } catch {}
+    // Prefer candidate closer to USD ref between active-bin and incoming price
+    try {
+      const { getPriceByMint } = await import('../../server/priceStore.js');
+      const pa = getPriceByMint(mint_a)?.usdc ?? null;
+      const pb = getPriceByMint(mint_b)?.usdc ?? null;
+      const ref = (pa && pb && (pa as number) > 0 && (pb as number) > 0) ? ((pb as number) / (pa as number)) : undefined;
+      const cand: number[] = [];
+      if (Number.isFinite(price_a_per_b) && price_a_per_b > 0) cand.push(price_a_per_b);
+      // active-bin result already placed into price_a_per_b above when available
+      if (ref && cand.length) {
+        let best = cand[0];
+        let bestDev = Math.max(best / (ref as number), (ref as number) / best);
+        for (let i = 1; i < cand.length; i++) {
+          const v = cand[i];
+          const d = Math.max(v / (ref as number), (ref as number) / v);
+          if (d + 1e-12 < bestDev) { bestDev = d; best = v; }
+        }
+        price_a_per_b = best;
+      }
+    } catch {}
     // Stable-aware orientation flip here is redundant with canonicalizePairs; avoid double flipping
     try {
       const { getPriceByMint } = await import('../../server/priceStore.js');
@@ -204,7 +224,8 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       const sanityCfg = (CONFIG as any)?.sanity || {};
       const apply = (sanityCfg as any).sanity_applyMeteoraClmm ?? true;
       if (apply !== false) {
-        const baseMaxDev = Number.isFinite(Number(sanityCfg.maxPriceDeviation)) ? Number(sanityCfg.maxPriceDeviation) : 50;
+        const baseMaxDev = Number.isFinite(Number((sanityCfg as any).maxPriceDeviationClmm)) ? Number((sanityCfg as any).maxPriceDeviationClmm)
+          : (Number.isFinite(Number(sanityCfg.maxPriceDeviation)) ? Number(sanityCfg.maxPriceDeviation) : 5);
         const { getPriceByMint } = await import('../../server/priceStore.js');
         const pa = getPriceByMint(mint_a)?.usdc ?? null;
         const pb = getPriceByMint(mint_b)?.usdc ?? null;

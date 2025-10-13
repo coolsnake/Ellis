@@ -283,7 +283,39 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
           price_from_sqrt = Number.isFinite(aPerB) && aPerB > 0 ? aPerB : 0;
         }
       } catch {}
-      let px = price_from_sqrt > 0 ? price_from_sqrt : (Number(price) > 0 ? Number(price) : 0);
+      // Choose candidate closer to USD reference (when available): sqrt-derived vs incoming vs reserves-whole
+      let px = 0;
+      try {
+        const { getPriceByMint } = await import('../priceStore.js');
+        const pa = getPriceByMint(mintA)?.usdc ?? null;
+        const pb = getPriceByMint(mintB)?.usdc ?? null;
+        const ref = (pa && pb && (pa as number) > 0 && (pb as number) > 0) ? ((pb as number) / (pa as number)) : undefined;
+        const candidates: number[] = [];
+        if (price_from_sqrt > 0) candidates.push(price_from_sqrt);
+        if (Number(price) > 0) candidates.push(Number(price));
+        try {
+          const wholeA = Number.isFinite(amount_a_whole as any) ? (amount_a_whole as number) : NaN;
+          const wholeB = Number.isFinite(amount_b_whole as any) ? (amount_b_whole as number) : NaN;
+          if (Number.isFinite(wholeA) && Number.isFinite(wholeB) && (wholeB as number) > 0) {
+            const fromWhole = (wholeA as number) / (wholeB as number);
+            if (fromWhole > 0 && Number.isFinite(fromWhole)) candidates.push(fromWhole);
+          }
+        } catch {}
+        if (ref && candidates.length) {
+          let best = candidates[0];
+          let bestDev = Math.max(best / (ref as number), (ref as number) / best);
+          for (let i = 1; i < candidates.length; i++) {
+            const v = candidates[i];
+            const d = Math.max(v / (ref as number), (ref as number) / v);
+            if (d + 1e-12 < bestDev) { bestDev = d; best = v; }
+          }
+          px = best;
+        } else {
+          px = price_from_sqrt > 0 ? price_from_sqrt : (Number(price) > 0 ? Number(price) : 0);
+        }
+      } catch {
+        px = price_from_sqrt > 0 ? price_from_sqrt : (Number(price) > 0 ? Number(price) : 0);
+      }
       // Magnitude-only calibration to align with USD reference without flipping orientation
       try {
         const { getPriceByMint } = await import('../priceStore.js');
@@ -297,7 +329,9 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         const sanityCfg = (CONFIG as any)?.sanity || {};
         const apply = (sanityCfg as any).sanity_applyRaydiumClmm ?? true;
         if (apply !== false && px > 0) {
-          const maxDeviation = Number.isFinite(Number(sanityCfg.maxPriceDeviation)) ? Number(sanityCfg.maxPriceDeviation) : 50;
+          const maxDeviation = Number.isFinite(Number((sanityCfg as any).maxPriceDeviationClmm))
+            ? Number((sanityCfg as any).maxPriceDeviationClmm)
+            : (Number.isFinite(Number((sanityCfg as any).maxPriceDeviation)) ? Number((sanityCfg as any).maxPriceDeviation) : 5);
           const { getPriceByMint } = await import('../priceStore.js');
           const pa = getPriceByMint(mintA)?.usdc ?? null;
           const pb = getPriceByMint(mintB)?.usdc ?? null;
