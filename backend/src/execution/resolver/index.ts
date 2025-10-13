@@ -122,6 +122,10 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
         }
       } catch {}
     }
+    // Tiny probe seed when size/sizeUsd omitted, to allow real ix building for below-threshold probes
+    if (curIn === 0n && hops.length > 0) {
+      curIn = 1n;
+    }
     const { quoteHopOut, applyMinOut } = await import('./quotes.js');
     for (let i = 0; i < hops.length; i++) {
       hops[i].amountInRaw = curIn;

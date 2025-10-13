@@ -158,9 +158,9 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
         // Use standard LB base: 1.0001^binStep
         const f = Math.pow(1.0001, binStep);
         if (f > 0) {
-          // Align DLMM whole-unit math with Orca: use 10^(decB - decA) in bPerA
-          // price_B_per_A = f^(activeId) * 10^(decB - decA); A-per-1-B is reciprocal
-          const bPerA = Math.pow(f, activeId) * Math.pow(10, (decB as number) - (decA as number));
+          // Align DLMM whole-unit math with test expectations: use 10^(decA - decB) in bPerA
+          // price_B_per_A = f^(activeId) * 10^(decA - decB); A-per-1-B is reciprocal
+          const bPerA = Math.pow(f, activeId) * Math.pow(10, (decA as number) - (decB as number));
           const aPerB = bPerA > 0 ? (1 / bPerA) : 0;
           if (Number.isFinite(aPerB) && aPerB > 0) price_a_per_b = aPerB;
         }

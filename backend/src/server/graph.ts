@@ -388,6 +388,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         if (!nodesMap[a]) nodesMap[a] = { id: a, label: labelByMint[a] };
         if (!nodesMap[b]) nodesMap[b] = { id: b, label: labelByMint[b] };
       };
+      // Backwards-compatible alias per plan
+      const orientWithUsdFallbacks = (mintA: string, mintB: string, px: number | undefined): number | undefined => orientAPerB(mintA, mintB, px);
 
       // Pre-graph validator: fee bounds and price deviation vs USD references
       const sanityCfg = (CONFIG as any)?.sanity || {};
@@ -666,23 +668,105 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           if (edgesMap[rid]) edgesMap[rid].pool_liquidity_raw = rawLiq > 0 ? rawLiq : undefined;
         } catch {}
       }
-      // Orientation correction: ensure price is A per 1 B. When USD refs are available,
-      // choose between px and 1/px to match pb/pa; optionally clamp large deviation.
+      // Orientation correction: ensure price is A per 1 B. Prefer direct USD refs,
+      // else use implied USD via existing edges, else triangulate with pivots.
       const orientAPerB = (mintA: string, mintB: string, px: number | undefined): number | undefined => {
         const v = Number(px);
         if (!Number.isFinite(v) || !(v > 0)) return px;
-        try {
-          const pa = getPriceByMintVar(mintA)?.usdc ?? null;
-          const pb = getPriceByMintVar(mintB)?.usdc ?? null;
-          if (!(pa && pb && (pa as number) > 0 && (pb as number) > 0)) return v;
-          const ref = (pb as number) / (pa as number);
+        const pickByRef = (pRefA?: number, pRefB?: number): number => {
+          if (!(typeof pRefA === 'number' && pRefA > 0 && typeof pRefB === 'number' && pRefB > 0)) return v;
+          const ref = (pRefB as number) / (pRefA as number);
           const inv = 1 / v;
           const dev  = Math.max(v / ref,  ref / v);
           const devI = Math.max(inv / ref, ref / inv);
-          return devI + 1e-12 < dev ? inv : v;
-        } catch {
-          return v;
-        }
+          return (devI + 1e-12 < dev) ? inv : v;
+        };
+        try {
+          // 1) Direct USD ref
+          const pa = getPriceByMintVar(mintA)?.usdc ?? null;
+          const pb = getPriceByMintVar(mintB)?.usdc ?? null;
+          if (pa && pb && (pa as number) > 0 && (pb as number) > 0) {
+            return pickByRef(pa as number, pb as number);
+          }
+        } catch {}
+        try {
+          // 2) Implied USD via existing edges (USDC/SOL pivots)
+          const SOL = 'So11111111111111111111111111111111111111112';
+          const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+          const getDirectUsd = (m: string): number | undefined => {
+            try { const p = getPriceByMintVar(m)?.usdc ?? null; return (typeof p === 'number' && p > 0) ? p : undefined; } catch { return undefined; }
+          };
+          const impliedUsd = (mint: string): { usd?: number; via?: 'USDC'|'SOL'; weight?: number } => {
+            let best: { usd: number; via: 'USDC'|'SOL'; weight: number } | null = null;
+            const pick = (usd: number | undefined, via: 'USDC'|'SOL', w: number) => {
+              if (typeof usd === 'number' && usd > 0) { if (!best || w > best.weight) best = { usd, via, weight: w }; }
+            };
+            for (const e of Object.values(edgesMap)) {
+              const w = Number((e as any)?.weight || 1);
+              if (e.source === mint && e.target === USDC) {
+                const p = Number((e as any)?.price_a_per_b || 0); // mint per 1 USDC
+                if (p > 0) pick(1 / p, 'USDC', w);
+              } else if (e.source === USDC && e.target === mint) {
+                const p = Number((e as any)?.price_a_per_b || 0); // USDC per 1 mint
+                if (p > 0) pick(p, 'USDC', w);
+              } else if (e.source === mint && e.target === SOL) {
+                const p = Number((e as any)?.price_a_per_b || 0); // mint per 1 SOL
+                const solUsd = getDirectUsd(SOL);
+                if (p > 0 && solUsd) pick((solUsd as number) / p, 'SOL', w);
+              } else if (e.source === SOL && e.target === mint) {
+                const p = Number((e as any)?.price_a_per_b || 0); // SOL per 1 mint
+                const solUsd = getDirectUsd(SOL);
+                if (p > 0 && solUsd) pick((solUsd as number) * p, 'SOL', w);
+              }
+            }
+            return best || {};
+          };
+          let paImp = getDirectUsd(mintA);
+          let pbImp = getDirectUsd(mintB);
+          if (!paImp) paImp = impliedUsd(mintA).usd;
+          if (!pbImp) pbImp = impliedUsd(mintB).usd;
+          const oriented = pickByRef(paImp, pbImp);
+          if (oriented !== v) {
+            try { logger.debug('graph.orient.fallback.implied', { mintA, mintB, price_in: v, price_out: oriented, pa: paImp, pb: pbImp }); } catch {}
+            return oriented;
+          }
+        } catch {}
+        try {
+          // 3) Simple triangulation using current edges and common pivots
+          const PIVOTS: string[] = [
+            'So11111111111111111111111111111111111111112', // SOL
+            'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+          ];
+          const getAPerBFromEdges = (A: string, B: string): number | undefined => {
+            let best: { v: number; w: number } | null = null;
+            for (const e of Object.values(edgesMap)) {
+              const w = Number((e as any)?.weight || 1);
+              const p = Number((e as any)?.price_a_per_b || 0);
+              if (!(p > 0)) continue;
+              let cand: number | undefined;
+              if (e.source === A && e.target === B) cand = p;
+              else if (e.source === B && e.target === A) cand = 1 / p;
+              if (cand && cand > 0) { if (!best || w > best.w) best = { v: cand, w }; }
+            }
+            return best?.v;
+          };
+          let ref: number | undefined;
+          for (const C of PIVOTS) {
+            if (C === mintA || C === mintB) continue;
+            const aPerC = getAPerBFromEdges(mintA, C);
+            const bPerC = getAPerBFromEdges(mintB, C);
+            if (aPerC && bPerC && aPerC > 0 && bPerC > 0) { ref = aPerC / bPerC; break; }
+          }
+          if (ref && ref > 0) {
+            const inv = 1 / v;
+            const dev  = Math.max(v / ref,  ref / v);
+            const devI = Math.max(inv / ref, ref / inv);
+            const out = (devI + 1e-12 < dev) ? inv : v;
+            try { if (out !== v) logger.debug('graph.orient.fallback.tri', { mintA, mintB, price_in: v, price_out: out, ref }); } catch {}
+            return out;
+          }
+        } catch {}
+        return v;
       };
       // Triangulation helpers are defined below after we have all valid pools
 
@@ -744,7 +828,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const liqDisplay = (p as any)?.liquidity_display ?? ((usd && usd > 0) ? usd : liqRaw);
         // CLMM: calibrate then reciprocal-only orientation via USD refs; add USD deviation clamp for robustness
         price = calibratePrice(p.mint_a, p.mint_b, price);
-        price = orientAPerB(p.mint_a, p.mint_b, price);
+        price = orientWithUsdFallbacks(p.mint_a, p.mint_b, price);
         try {
           const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
           const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
@@ -948,7 +1032,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           }
         } catch {}
         // Orient as A per 1 B using USD reference when available
-        priceClmmOrca = orientAPerB(p.mint_a, p.mint_b, priceClmmOrca);
+        priceClmmOrca = orientWithUsdFallbacks(p.mint_a, p.mint_b, priceClmmOrca);
         // Forward + reverse with strict reciprocal rule and consistency guard
         const fwdClmm = clampPrice((priceClmmOrca && priceClmmOrca > 0) ? priceClmmOrca : undefined);
         const revClmm = (fwdClmm && fwdClmm > 0) ? (1 / fwdClmm) : undefined;
