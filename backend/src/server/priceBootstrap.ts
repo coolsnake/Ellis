@@ -97,7 +97,7 @@ export async function bootstrapPricesForUniverse(opts: BootstrapOpts = {}): Prom
   // Persist prices into tokens.json for any tokens present there
   try {
     const tokenMap = await loadTokenMap().catch(() => ({} as any));
-    let changed = false;
+    let updated = 0;
     for (const [sym, info] of Object.entries(tokenMap || {})) {
       const mint = (info as any)?.mint;
       if (!mint) continue;
@@ -108,12 +108,19 @@ export async function bootstrapPricesForUniverse(opts: BootstrapOpts = {}): Prom
         if ((info as any).usdc !== usdc || (info as any).sol !== sol) {
           (info as any).usdc = usdc;
           (info as any).sol = sol;
-          changed = true;
+          updated += 1;
         }
       }
     }
-    if (changed) await writeJson(CONFIG.tokensPath, tokenMap);
-  } catch {}
+    if (updated > 0) {
+      await writeJson(CONFIG.tokensPath, tokenMap);
+      try { logger.info('tokens.persist', { path: (CONFIG as any)?.tokensPath, updated, total: Object.keys(tokenMap || {}).length, cat: 'pools' }); } catch {}
+    } else {
+      try { logger.info('tokens.persist', { path: (CONFIG as any)?.tokensPath, updated: 0, total: Object.keys(tokenMap || {}).length, cat: 'pools' }); } catch {}
+    }
+  } catch (e: any) {
+    try { logger.warn('tokens.persist failed', { error: String(e?.message || e), path: (CONFIG as any)?.tokensPath, cat: 'pools' }); } catch {}
+  }
   return out;
 }
 
@@ -168,7 +175,7 @@ export async function bootstrapPricesForMints(mintsIn: string[], opts: Bootstrap
   // Persist to tokens.json for any known tokens
   try {
     const tokenMap = await loadTokenMap().catch(() => ({} as any));
-    let changed = false;
+    let updated = 0;
     for (const [sym, info] of Object.entries(tokenMap || {})) {
       const mint = (info as any)?.mint;
       if (!mint) continue;
@@ -179,13 +186,22 @@ export async function bootstrapPricesForMints(mintsIn: string[], opts: Bootstrap
         if ((info as any).usdc !== usdc || (info as any).sol !== sol) {
           (info as any).usdc = usdc;
           (info as any).sol = sol;
-          changed = true;
+          updated += 1;
         }
       }
     }
-    if (changed) await writeJson(CONFIG.tokensPath, tokenMap);
-  } catch {}
+    if (updated > 0) {
+      await writeJson(CONFIG.tokensPath, tokenMap);
+      try { logger.info('tokens.persist', { path: (CONFIG as any)?.tokensPath, updated, total: Object.keys(tokenMap || {}).length, cat: 'pools' }); } catch {}
+    } else {
+      try { logger.info('tokens.persist', { path: (CONFIG as any)?.tokensPath, updated: 0, total: Object.keys(tokenMap || {}).length, cat: 'pools' }); } catch {}
+    }
+  } catch (e: any) {
+    try { logger.warn('tokens.persist failed', { error: String(e?.message || e), path: (CONFIG as any)?.tokensPath, cat: 'pools' }); } catch {}
+  }
   return out;
 }
+
+
 
 
