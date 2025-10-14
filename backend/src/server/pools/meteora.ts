@@ -115,6 +115,7 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     if (!Number.isFinite(decA) && jupMap[mint_a]?.decimals != null) decA = Number(jupMap[mint_a].decimals);
     if (!Number.isFinite(decB) && jupMap[mint_b]?.decimals != null) decB = Number(jupMap[mint_b].decimals);
     // Fallback: fetch decimals on-chain if still unknown
+    let usedWhole = false;
     try {
       if (!Number.isFinite(decA)) {
         const tok = await import('../../utils/tokens.js');
@@ -166,6 +167,7 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
           : undefined);
     const liquidity_display = (tvl_usd != null) ? tvl_usd : undefined;
     // Derive A-per-1-B from active bin; tests expect active bin precedence over current_price
+    let usedBin = false;
     try {
       const activeId = Number((it as any)?.active_id ?? (it as any)?.activeId);
       const binStep = Number((it as any)?.bin_step ?? (it as any)?.binStep);
@@ -182,6 +184,7 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
           if (cand.length) {
             // Defer choosing until USD ref selection below; stash best for now
             price_a_per_b = cand[0];
+            usedBin = true;
           }
         }
       }
@@ -193,7 +196,7 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       const wholeB = haveDecs && Number.isFinite(amount_b) ? (amount_b / Math.pow(10, decB as number)) : NaN;
       if (!(price_a_per_b > 0) && Number.isFinite(wholeA) && Number.isFinite(wholeB) && (wholeB as number) > 0) {
         const derived = (wholeA as number) / (wholeB as number);
-        if (derived > 0 && Number.isFinite(derived)) price_a_per_b = derived;
+        if (derived > 0 && Number.isFinite(derived)) { price_a_per_b = derived; usedWhole = true; }
       }
     } catch {}
     // Prefer candidate closer to USD ref between active-bin and incoming price
@@ -206,6 +209,8 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       if (Number.isFinite(price_a_per_b) && price_a_per_b > 0) cand.push(price_a_per_b);
       // If we computed two possible A/B candidates above, include reciprocal too
       try { if (Number.isFinite(price_a_per_b) && price_a_per_b > 0) { const inv = 1 / (price_a_per_b as number); if (inv > 0 && Number.isFinite(inv)) cand.push(inv); } } catch {}
+      // If we lack bin/reserve-derived candidates, include ref as a candidate to avoid stale upstream
+      try { if (Number.isFinite(ref as any) && (ref as number) > 0 && (!cand.length || (!usedBin && !usedWhole))) cand.push(ref as number); } catch {}
       if (ref && cand.length) {
         let best = cand[0];
         let bestDev = Math.max(best / (ref as number), (ref as number) / best);

@@ -304,6 +304,7 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
           if (Number.isFinite(solUsd) && solUsd > 0) refs.push(solUsd / solUsd); // neutral, keeps refs non-empty
         } catch {}
         const candidates: number[] = [];
+        let usedWhole = false;
         if (price_from_sqrt > 0) candidates.push(price_from_sqrt);
         if (price_from_sqrt_alt > 0) candidates.push(price_from_sqrt_alt);
         if (Number(price) > 0) candidates.push(Number(price));
@@ -312,9 +313,14 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
           const wholeB = Number.isFinite(amount_b_whole as any) ? (amount_b_whole as number) : NaN;
           if (Number.isFinite(wholeA) && Number.isFinite(wholeB) && (wholeB as number) > 0) {
             const fromWhole = (wholeA as number) / (wholeB as number);
-            if (fromWhole > 0 && Number.isFinite(fromWhole)) candidates.push(fromWhole);
+            if (fromWhole > 0 && Number.isFinite(fromWhole)) { candidates.push(fromWhole); usedWhole = true; }
           }
         } catch {}
+        // If we don't have sqrt-derived or whole-derived candidates, include ref as a candidate to avoid stale upstream prices
+        if (refs.length && (!candidates.length || (price_from_sqrt <= 0 && !usedWhole))) {
+          const directRef = refs[0];
+          if (Number.isFinite(directRef) && (directRef as number) > 0) candidates.push(directRef as number);
+        }
         if (refs.length && candidates.length) {
           // Robust pick: minimize median deviation across refs
           let best = candidates[0];
