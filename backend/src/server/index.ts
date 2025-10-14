@@ -412,14 +412,16 @@ server.listen(CONFIG.port, () => {
             stale = !st || ((Date.now() - (st.mtimeMs || 0)) > ONE_DAY_MS);
           } catch { stale = true; }
           if (stale) {
-            try { emit('log', { level: 'info', message: `tokens.refresh: starting (stale>1d)`, timestamp: new Date().toISOString(), context: { cat: 'price' } }); } catch {}
             const { loadTokenMap } = await import('../utils/tokens.js');
             const map = await loadTokenMap().catch(() => ({} as any));
             const mints: string[] = Object.values(map || {}).map((v: any) => String(v?.mint || '')).filter(Boolean);
+            try { emit('log', { level: 'info', message: `tokens.refresh: starting mints=${mints.length} (stale>1d)`, timestamp: new Date().toISOString(), context: { cat: 'price' } }); } catch {}
+            try { logger.info('tokens.refresh.start', { mints: mints.length, cat: 'price' }); } catch {}
             if (mints.length) {
               const { bootstrapPricesForMints } = await import('./priceBootstrap.js');
               await bootstrapPricesForMints(mints, { cat: 'tokens.refresh', chunkSize: 400, maxRequests: (CONFIG as any)?.system?.deepJupiterBootstrapMaxRequests || 6 });
               try { emit('log', { level: 'info', message: `tokens.refresh: done mints=${mints.length}`, timestamp: new Date().toISOString(), context: { cat: 'price' } }); } catch {}
+              try { logger.info('tokens.refresh.done', { mints: mints.length, cat: 'price' }); } catch {}
             }
           }
         }
