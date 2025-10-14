@@ -228,7 +228,8 @@ export function createArbRouter(io: SocketIOServer): Router {
 
       const id = Math.random().toString(36).slice(2,10);
       const mode = (execCfg.mode || 'simulate');
-      if (mode !== 'direct') {
+      const forceDirect = !!(input && (input as any).forceDirect);
+      if (mode !== 'direct' && !forceDirect) {
         return res.json({ id, mode, signature: null, ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
       }
 
@@ -261,9 +262,9 @@ export function createArbRouter(io: SocketIOServer): Router {
       try { emit('log', { level: 'info', message: 'pretrade:arb simulate result', timestamp: new Date().toISOString(), context: { cat: 'arb', code: 'PRETRADE.SIM.END', mode: (execCfg as any)?.mode, ...(sim as any)?.err ? { err: String((sim as any).err) } : {} } }); } catch {}
       try {
         if ((sim as any)?.err) {
-          logger.info('tx.preflight.err', { cat: 'tx', code: LogCode.TX_PREFLIGHT_ERR, ctx: { id, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, logCount: Array.isArray((sim as any)?.logs) ? (sim as any).logs.length : 0, error: String((sim as any)?.err) } as any });
+          logger.info('tx.preflight.err', { cat: 'tx', code: LogCode.TX_PREFLIGHT_ERR, ctx: { id, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode, logCount: Array.isArray((sim as any)?.logs) ? (sim as any).logs.length : 0, error: String((sim as any)?.err) } as any });
         } else {
-          logger.info('tx.preflight.ok', { cat: 'tx', code: LogCode.TX_PREFLIGHT_OK, ctx: { id, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, logCount: Array.isArray((sim as any)?.logs) ? (sim as any).logs.length : 0 } as any });
+          logger.info('tx.preflight.ok', { cat: 'tx', code: LogCode.TX_PREFLIGHT_OK, ctx: { id, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode, logCount: Array.isArray((sim as any)?.logs) ? (sim as any).logs.length : 0 } as any });
         }
       } catch {}
       if ((sim as any)?.err) {
@@ -300,7 +301,7 @@ export function createArbRouter(io: SocketIOServer): Router {
           wireBase64: (sendRes as any)?.wireBase64,
           signature,
         });
-        try { logger.info('tx.send.ok', { cat: 'tx', code: LogCode.TX_SEND_OK, ctx: { id, signature, ixCount: built.ixCount, txSizeBytes: built.sizeBytes } as any }); } catch {}
+        try { logger.info('tx.send.ok', { cat: 'tx', code: LogCode.TX_SEND_OK, ctx: { id, signature, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode } as any }); } catch {}
         try { emit('tx:history.updated', { id, status: signature ? 'send_ok' : 'send_err' }); } catch {}
         await addTxRecord({ id, timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature, status: signature ? 'send_ok' : 'send_err' });
         // Notify arb-rs that this opportunity path has been executed (best-effort)
@@ -314,12 +315,12 @@ export function createArbRouter(io: SocketIOServer): Router {
             body: JSON.stringify({ path: plan.path, dexes }),
           }).catch(() => null);
         } catch {}
-        try { emit('log', { level: 'info', message: signature ? 'arb:send ok' : 'arb:send err', timestamp: new Date().toISOString(), context: { cat: 'arb', ...(signature ? { signature } : {}) } }); } catch {}
-        res.json({ id, mode, signature, signatures, ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
+        try { emit('log', { level: 'info', message: signature ? 'arb:send ok' : 'arb:send err', timestamp: new Date().toISOString(), context: { cat: 'arb', mode: forceDirect ? 'direct(force)' : mode, ...(signature ? { signature } : {}) } }); } catch {}
+        res.json({ id, mode: forceDirect ? 'direct(force)' : mode, signature, signatures, ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
       } catch (e: any) {
         try { execStats.sendErr += 1; } catch {}
         try {
-          try { logger.info('tx.send.err', { cat: 'tx', code: LogCode.TX_SEND_ERR, ctx: { id, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, error: String(e?.message || e) } as any }); } catch {}
+          try { logger.info('tx.send.err', { cat: 'tx', code: LogCode.TX_SEND_ERR, ctx: { id, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode, error: String(e?.message || e) } as any }); } catch {}
           await addTxRecord({ id, timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature: null, status: 'send_err', error: String(e?.message || e) });
           try { emit('tx:history.updated', { id, status: 'send_err' }); } catch {}
         } catch {}
