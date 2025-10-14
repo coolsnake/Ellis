@@ -60,6 +60,22 @@ const REBASE_DIFF_THRESHOLD = Math.max(0, Number((CONFIG.system as any)?.graphRe
 const REBASE_TIME_MS = Math.max(0, Number((CONFIG.system as any)?.graphRebaseTimeMs || (5 * 60 * 1000)));
 let lastRebaseMs = 0;
 
+// Runtime-only set of pool ids to drop from the graph. Not persisted across restarts.
+const droppedPoolIds: Set<string> = new Set<string>();
+
+export function dropPoolRuntime(id: string): { added: boolean; current: string[] } {
+  const key = String(id || '').trim();
+  if (!key) return { added: false, current: Array.from(droppedPoolIds) };
+  const before = droppedPoolIds.size;
+  droppedPoolIds.add(key);
+  try { logger.info('graph.drop.runtime', { pool_id: key, total: droppedPoolIds.size }); } catch {}
+  return { added: droppedPoolIds.size > before, current: Array.from(droppedPoolIds) };
+}
+
+export function listDroppedPools(): string[] {
+  return Array.from(droppedPoolIds);
+}
+
 export function getGraphVersion(): { version: number; timestamp: number } {
   const version = lastSnapshot?.version || 0;
   const timestamp = lastSnapshot?.timestamp || 0;
@@ -240,6 +256,14 @@ export async function applyPoolUpdates(prev: PoolsPayload, next: PoolsPayload): 
     const removedEdgeIds: string[] = [];
     for (const id of prevA) if (!nextA.has(id)) { if (edgesMap.delete(id)) removedEdgeIds.push(id); const rid = `${id}-rev`; if (edgesMap.delete(rid)) removedEdgeIds.push(rid); }
     for (const id of prevC) if (!nextC.has(id)) { if (edgesMap.delete(id)) removedEdgeIds.push(id); const rid = `${id}-rev`; if (edgesMap.delete(rid)) removedEdgeIds.push(rid); }
+    // Apply runtime drops: remove both forward and reverse edges for any dropped pool ids
+    try {
+      for (const pid of droppedPoolIds) {
+        if (edgesMap.delete(pid)) removedEdgeIds.push(pid);
+        const rid = `${pid}-rev`;
+        if (edgesMap.delete(rid)) removedEdgeIds.push(rid);
+      }
+    } catch {}
 
     // Upsert edges for changed pools (based on updated_ms when available)
     const byIdPrev: Map<string, AmmPool | ClmmPool> = new Map([...(prev?.amm || []), ...(prev?.clmm || [])].map((p: any) => [String(p.id), p]));
@@ -252,6 +276,8 @@ export async function applyPoolUpdates(prev: PoolsPayload, next: PoolsPayload): 
       const id = String((p as any)?.id || '');
       const pv = byIdPrev.get(id);
       const changed = !pv || Number((p as any)?.updated_ms || 0) > Number((pv as any)?.updated_ms || 0);
+      // Skip pools explicitly dropped at runtime
+      if (droppedPoolIds.has(id)) continue;
       if (!changed) continue;
       const [fwd, rev] = edgesFromPoolIncremental(p, getUsd);
       for (const e of [fwd, rev]) {
@@ -531,6 +557,14 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         poolKind?: 'amm' | 'clmm',
         direction?: 'forward' | 'reverse',
       ) => {
+        // Honor runtime pool drops: skip any edges belonging to dropped pool ids (forward or reverse)
+        try {
+          const pid = String(poolId || '');
+          if (pid) {
+            const base = pid.endsWith('-rev') ? pid.slice(0, -4) : pid;
+            if (droppedPoolIds.has(base)) return;
+          }
+        } catch {}
         if (!mintA || !mintB || mintA === mintB) return;
         // Require a valid positive price; skip edge entirely if not present
         const priceNum = Number(price_a_per_b);
