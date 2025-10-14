@@ -201,3 +201,5 @@ Runtime config keys under `system` (see backend/src/utils/config.ts):
 - `graphRebaseDiffThreshold`: Number of diff changes after which to rebase to full snapshot.
 - `graphRebaseTimeMs`: Max time between forced rebases.
 - `graphDiffLiqEps`, `graphDiffPriceEps`, `graphDiffWeightEps`: Tolerances for diff filtering/comparison to reduce churn.
+- `graphIncrementalMode`: When true (default), apply pool deltas directly and push diffs to clients/arb-rs; otherwise schedule full rebuilds.
+- Disable periodic stream: set `graphStreamIntervalMs` to `0`.

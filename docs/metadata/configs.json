@@ -23,6 +23,16 @@
         { "name": "threshold", "description": "Default params for threshold strategy." },
         { "name": "grid", "description": "Default params for grid strategy." }
       ]
+    },
+    {
+      "path": "backend/src/utils/config.ts",
+      "purpose": "Backend runtime configuration (system, pools, graph).",
+      "keys": [
+        { "name": "system.graphIncrementalMode", "description": "Apply pool deltas directly and push diffs (default true)." },
+        { "name": "system.graphStreamIntervalMs", "description": "Periodic snapshot interval; set 0 to disable." },
+        { "name": "system.graphRebaseDiffThreshold", "description": "Changes threshold before forcing snapshot rebase." },
+        { "name": "system.graphRebaseTimeMs", "description": "Max time between snapshot rebases." }
+      ]
     }
   ]
 }

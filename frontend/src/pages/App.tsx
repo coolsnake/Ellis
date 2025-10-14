@@ -797,10 +797,12 @@ export const App: React.FC = () => {
           return match ? String(match.id) : null;
         };
 
-        const buildTwoHopBody = async (dex: 'raydium'|'orca'|'meteora', poolId?: string) => {
+        const buildTwoHopBody = async (dex: 'raydium'|'orca'|'meteora', variant?: 'amm'|'clmm', poolId?: string) => {
           const pid = poolId || await pickPoolId(dex);
           if (!pid) throw new Error(`no USDC/USDT pool found for ${dex}`);
-          const dexKey = dex === 'raydium' ? 'raydium-clmm' : (dex === 'orca' ? 'orca' : 'meteora');
+          const dexKey = dex === 'raydium'
+            ? (variant === 'clmm' ? 'raydium-clmm' : 'raydium-amm')
+            : (dex === 'orca' ? 'orca' : 'meteora');
           return {
             path: [USDC, USDT, USDC],
             hopPoolIds: [pid, pid],
@@ -818,7 +820,7 @@ export const App: React.FC = () => {
           return {
             path: [USDC, USDT, USDC, USDT, USDC],
             hopPoolIds: [ray, orc, met, ray],
-            dexes: ['raydium-clmm', 'orca', 'meteora', 'raydium-clmm'],
+            dexes: ['raydium-amm', 'orca', 'meteora', 'raydium-amm'],
             sizeUsd: 1,
             slippageBps: 50,
           };
@@ -855,12 +857,13 @@ export const App: React.FC = () => {
             let body: any = null;
             if (target === 'multi') {
               body = await buildMultiHopBody();
-            } else if (target === 'ray' || target === 'raydium') {
-              body = await buildTwoHopBody('raydium');
+            } else if (target === 'ray' || target === 'raydium' || target === 'ray-amm' || target === 'raydium-amm' || target === 'ray-clmm' || target === 'raydium-clmm') {
+              const isClmm = target.includes('clmm');
+              body = await buildTwoHopBody('raydium', isClmm ? 'clmm' : 'amm');
             } else if (target === 'orca') {
-              body = await buildTwoHopBody('orca');
+              body = await buildTwoHopBody('orca', undefined);
             } else if (target === 'meteora') {
-              body = await buildTwoHopBody('meteora');
+              body = await buildTwoHopBody('meteora', undefined);
             } else {
               await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: arb simulate|preflight|execute ray|orca|meteora|multi' }) });
               return;
