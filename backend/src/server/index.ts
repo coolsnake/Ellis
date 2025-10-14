@@ -401,6 +401,29 @@ server.listen(CONFIG.port, () => {
 
   // Post-listen initialization: run migrations and history load without blocking readiness
   setImmediate(async () => {
+      // One-time tokens.json refresh: if older than 1 day, fetch USDC/SOL prices for all listed mints
+      try {
+        const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+        const tokPath = (CONFIG as any)?.tokensPath;
+        if (tokPath) {
+          let stale = false;
+          try {
+            const st = await fsp.stat(tokPath);
+            stale = !st || ((Date.now() - (st.mtimeMs || 0)) > ONE_DAY_MS);
+          } catch { stale = true; }
+          if (stale) {
+            try { emit('log', { level: 'info', message: `tokens.refresh: starting (stale>1d)`, timestamp: new Date().toISOString(), context: { cat: 'price' } }); } catch {}
+            const { loadTokenMap } = await import('../utils/tokens.js');
+            const map = await loadTokenMap().catch(() => ({} as any));
+            const mints: string[] = Object.values(map || {}).map((v: any) => String(v?.mint || '')).filter(Boolean);
+            if (mints.length) {
+              const { bootstrapPricesForMints } = await import('./priceBootstrap.js');
+              await bootstrapPricesForMints(mints, { cat: 'tokens.refresh', chunkSize: 400, maxRequests: (CONFIG as any)?.system?.deepJupiterBootstrapMaxRequests || 6 });
+              try { emit('log', { level: 'info', message: `tokens.refresh: done mints=${mints.length}`, timestamp: new Date().toISOString(), context: { cat: 'price' } }); } catch {}
+            }
+          }
+        }
+      } catch {}
     // Ensure cache directory exists and placeholder sample files are present
     try {
       const cacheDir = (CONFIG as any)?.cacheDir;
