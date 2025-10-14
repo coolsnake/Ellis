@@ -43,9 +43,10 @@ export async function resolveMint(symbolOrMint: string): Promise<{ mint: string;
   const results = await searchTokens(input).catch(() => []);
   const first = results[0];
   if (first?.id) {
-    // persist mapping for future lookups
+    // persist mapping for future lookups (merge to preserve existing fields like usdc/sol)
     const current = await loadTokenMap();
-    current[upper] = { mint: first.id, decimals: first.decimals ?? 6 };
+    const prev = current[upper] || {} as any;
+    current[upper] = { ...prev, mint: first.id, decimals: first.decimals ?? 6 } as any;
     await writeJson(CONFIG.tokensPath, current);
     // Opportunistic price bootstrap for the newly discovered token
     try {

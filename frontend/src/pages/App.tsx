@@ -807,7 +807,8 @@ export const App: React.FC = () => {
             path: [USDC, USDT, USDC],
             hopPoolIds: [pid, pid],
             dexes: [dexKey, dexKey],
-            sizeUsd: 1,
+            // Use raw atoms to avoid dependency on price feed for initial size
+            size: 1_000_000, // 1 USDC (6 decimals)
             slippageBps: 50,
           };
         };
@@ -821,7 +822,7 @@ export const App: React.FC = () => {
             path: [USDC, USDT, USDC, USDT, USDC],
             hopPoolIds: [ray, orc, met, ray],
             dexes: ['raydium-amm', 'orca', 'meteora', 'raydium-amm'],
-            sizeUsd: 1,
+            size: 1_000_000,
             slippageBps: 50,
           };
         };
