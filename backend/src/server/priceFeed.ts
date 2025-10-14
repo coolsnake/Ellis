@@ -200,7 +200,7 @@ export class PriceFeed {
   async warmUniverseOnce(maxRequests: number = 3): Promise<{ total: number; priced: number; missing: number } | null> {
     try {
       const { bootstrapPricesForUniverse } = await import('./priceBootstrap.js');
-      const cov = await bootstrapPricesForUniverse({ maxRequests, chunkSize: 400, cat: 'priceFeed.warm' });
+      const cov = await bootstrapPricesForUniverse({ maxRequests, chunkSize: 100, cat: 'priceFeed.warm' });
       return cov;
     } catch {
       return null;

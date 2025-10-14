@@ -421,7 +421,7 @@ server.listen(CONFIG.port, () => {
             try { logger.info('tokens.refresh.start', { mints: mints.length, cat: 'pools' }); } catch {}
             if (mints.length) {
               const { bootstrapPricesForMints } = await import('./priceBootstrap.js');
-              await bootstrapPricesForMints(mints, { cat: 'tokens.refresh', chunkSize: 400, maxRequests: (CONFIG as any)?.system?.deepJupiterBootstrapMaxRequests || 6 });
+              await bootstrapPricesForMints(mints, { cat: 'tokens.refresh', chunkSize: 100, maxRequests: (CONFIG as any)?.system?.deepJupiterBootstrapMaxRequests || 6 });
               try { emit('log', { level: 'info', message: `tokens.refresh: done mints=${mints.length}`, timestamp: new Date().toISOString(), context: { cat: 'price' } }); } catch {}
               try { logger.info('tokens.refresh.done', { mints: mints.length, cat: 'pools' }); } catch {}
             }

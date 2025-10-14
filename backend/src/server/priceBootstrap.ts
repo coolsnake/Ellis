@@ -61,18 +61,30 @@ export async function bootstrapPricesForUniverse(opts: BootstrapOpts = {}): Prom
   const existing = getAllPrices();
   const toFetch = mintList.filter((m) => !existing[m]?.usdc);
   let requests = 0;
-  for (let i = 0; i < toFetch.length && requests < maxRequests; i += chunkSize) {
-    const batch = toFetch.slice(i, i + chunkSize);
+  let i = 0;
+  let curChunk = chunkSize;
+  while (i < toFetch.length && requests < maxRequests) {
+    const batch = toFetch.slice(i, Math.min(i + curChunk, toFetch.length));
+    if (batch.length === 0) break;
     try {
       const fresh = await fetchPricesByMints(batch, { catOverride: cat, ignorePause: true });
       setPrices(fresh);
       requests += 1;
+      i += batch.length;
     } catch (e: any) {
-      logger.warn('price.bootstrap batch failed', { error: String(e?.message || e), cat });
-      // On 429/backoff, stop early; partial coverage is OK
+      const msg = String(e?.message || e);
+      const is413 = /\b413\b/.test(msg) || /payload too large/i.test(msg);
+      if (is413 && curChunk > 50) {
+        const prev = curChunk;
+        curChunk = Math.max(50, Math.floor(curChunk / 2));
+        logger.warn('price.bootstrap batch 413, reducing chunk', { prev, next: curChunk, cat });
+        continue; // retry same i with smaller chunk
+      }
+      logger.warn('price.bootstrap batch failed', { error: msg, cat });
       try { emit('log', { level: 'warn', message: `pools:bootstrap.mints batch.fail cat=${cat}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
       try { logger.info(`pools:bootstrap.mints batch.fail cat=${cat}`, { cat: 'pools' }); } catch {}
-      break;
+      // Move past this batch to avoid stalling, but keep going for remainder
+      i += batch.length;
     }
   }
   const after = getAllPrices();
@@ -121,17 +133,29 @@ export async function bootstrapPricesForMints(mintsIn: string[], opts: Bootstrap
   const existing = getAllPrices();
   const toFetch = mints.filter((m) => !existing[m]?.usdc);
   let requests = 0;
-  for (let i = 0; i < toFetch.length && requests < maxRequests; i += chunkSize) {
-    const batch = toFetch.slice(i, i + chunkSize);
+  let idx = 0;
+  let curChunk = chunkSize;
+  while (idx < toFetch.length && requests < maxRequests) {
+    const batch = toFetch.slice(idx, Math.min(idx + curChunk, toFetch.length));
+    if (batch.length === 0) break;
     try {
       const fresh = await fetchPricesByMints(batch, { catOverride: cat, ignorePause: true });
       setPrices(fresh);
       requests += 1;
+      idx += batch.length;
     } catch (e: any) {
-      logger.warn('price.bootstrap.mints batch failed', { error: String(e?.message || e), cat });
+      const msg = String(e?.message || e);
+      const is413 = /\b413\b/.test(msg) || /payload too large/i.test(msg);
+      if (is413 && curChunk > 50) {
+        const prev = curChunk;
+        curChunk = Math.max(50, Math.floor(curChunk / 2));
+        logger.warn('price.bootstrap.mints 413, reducing chunk', { prev, next: curChunk, cat });
+        continue; // retry same idx with smaller chunk
+      }
+      logger.warn('price.bootstrap.mints batch failed', { error: msg, cat });
       try { emit('log', { level: 'warn', message: `pools:bootstrap.mints batch.fail cat=${cat}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
       try { logger.info(`pools:bootstrap.mints batch.fail cat=${cat}`, { cat: 'pools' }); } catch {}
-      break;
+      idx += batch.length; // skip past this batch to avoid stalling
     }
   }
   const after = getAllPrices();

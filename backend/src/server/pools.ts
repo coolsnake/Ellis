@@ -313,7 +313,7 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
         const deepMax = Math.max(3, Number((CONFIG.system as any)?.deepJupiterBootstrapMaxRequests ?? 6));
         try { emit('log', { level: 'info', message: `pools:bootstrap universe.start maxReq=${deepMax}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
         try { logger.info(`pools:bootstrap universe.start maxReq=${deepMax}`, { cat: 'pools' }); } catch {}
-        let cov = await bootstrapPricesForUniverse({ chunkSize: 400, maxRequests: deepMax, cat: 'pools.refresh' }).catch(() => null);
+        let cov = await bootstrapPricesForUniverse({ chunkSize: 100, maxRequests: deepMax, cat: 'pools.refresh' }).catch(() => null);
         if (cov && cov.total === 0) {
           try {
             const { getSourceTokenSet } = await import('./universe.js');
@@ -322,7 +322,7 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
             const merged = new Set<string>([...raySet, ...orcSet]);
             try { emit('log', { level: 'info', message: `pools:bootstrap fallback.mints size=${merged.size}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
             try { logger.info(`pools:bootstrap fallback.mints size=${merged.size}`, { cat: 'pools' }); } catch {}
-            cov = await bootstrapPricesForMints(Array.from(merged), { chunkSize: 400, maxRequests: 3, cat: 'pools.refresh.fallback' });
+            cov = await bootstrapPricesForMints(Array.from(merged), { chunkSize: 100, maxRequests: 3, cat: 'pools.refresh.fallback' });
           } catch {}
         }
         if (cov) {
