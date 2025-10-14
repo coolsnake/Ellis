@@ -50,7 +50,26 @@ export function canonicalizePairsLex<T extends { mint_a: string; mint_b: string;
   // Always enforce lex ordering here, independent of CONFIG.
   const out: T[] = [];
   for (const p of pools) {
-    if (String(p.mint_a) <= String(p.mint_b)) { out.push(p); continue; }
+    const SOL = 'So11111111111111111111111111111111111111112';
+    const STABLES = new Set<string>([
+      ...((((CONFIG as any)?.system as any)?.stableMints || []) as string[]),
+      'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+      'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
+    ]);
+    const a = String(p.mint_a);
+    const b = String(p.mint_b);
+    // Rule 1: SOL must be on A side
+    if (a === SOL) { out.push(p); continue; }
+    if (b === SOL) { out.push(swapABFields(p)); continue; }
+    // Rule 2: If no SOL, ensure stable is on B side when exactly one stable present
+    const aStable = STABLES.has(a);
+    const bStable = STABLES.has(b);
+    if (aStable !== bStable) { // exactly one is stable
+      if (aStable && !bStable) { out.push(swapABFields(p)); continue; }
+      out.push(p); continue; // bStable
+    }
+    // Fallback: lex ordering for stability
+    if (a <= b) { out.push(p); continue; }
     out.push(swapABFields(p));
   }
   return out;
@@ -88,7 +107,23 @@ export function canonicalizePairs<T extends { mint_a: string; mint_b: string; pr
   for (const p of pools) {
     const a = String(p.mint_a || '');
     const b = String(p.mint_b || '');
+    const SOL = 'So11111111111111111111111111111111111111112';
+    const STABLES = new Set<string>([
+      ...((((CONFIG as any)?.system as any)?.stableMints || []) as string[]),
+      'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+      'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
+    ]);
     let keep = 0; // 0 unknown, 1 keep as-is, 2 swap
+    // Hard rules first: SOL on A; else stable on B if exactly one stable present
+    if (a === SOL || b === SOL) {
+      keep = (a === SOL) ? 1 : 2;
+    } else {
+      const aStable = STABLES.has(a);
+      const bStable = STABLES.has(b);
+      if (aStable !== bStable) {
+        keep = aStable ? 2 : 1; // move stable to B side
+      }
+    }
     if (mode === 'preferA' || mode === 'preferLists') {
       if (preferA && (preferA.has(a) || preferA.has(b))) { keep = preferA.has(a) ? 1 : 2; }
     }
