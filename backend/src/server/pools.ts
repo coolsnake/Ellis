@@ -297,14 +297,27 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
         try { (await import('../jupiter/rateLimiter.js')).apiStop(); } catch {}
       }
 
-      // Ensure we have the freshest Jupiter token list
+      // Ensure we have a recent Jupiter token list: skip if verified list is fresh (<1d)
       try {
-        try { emit('log', { level: 'info', message: 'pools:bootstrap tokens.start', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
-        try { logger.info('pools:bootstrap tokens.start', { cat: 'pools' }); } catch {}
-        const { fetchAndCacheJupiterTokens } = await import('../utils/tokens.js');
-        await fetchAndCacheJupiterTokens().catch(() => {});
-        try { emit('log', { level: 'info', message: 'pools:bootstrap tokens.ok', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
-        try { logger.info('pools:bootstrap tokens.ok', { cat: 'pools' }); } catch {}
+        const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+        const jupPath = (CONFIG as any)?.jupTokensPath;
+        let fresh = false;
+        try {
+          if (jupPath) {
+            const st = await (await import('fs/promises')).stat(jupPath);
+            fresh = !!st && ((Date.now() - (st.mtimeMs || 0)) < ONE_DAY_MS);
+          }
+        } catch { fresh = false; }
+        if (!fresh) {
+          try { emit('log', { level: 'info', message: 'pools:bootstrap tokens.start', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
+          try { logger.info('pools:bootstrap tokens.start', { cat: 'pools' }); } catch {}
+          const { fetchAndCacheJupiterTokens } = await import('../utils/tokens.js');
+          await fetchAndCacheJupiterTokens().catch(() => {});
+          try { emit('log', { level: 'info', message: 'pools:bootstrap tokens.ok', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
+          try { logger.info('pools:bootstrap tokens.ok', { cat: 'pools' }); } catch {}
+        } else {
+          try { logger.info('pools:bootstrap tokens.skip_fresh', { cat: 'pools' }); } catch {}
+        }
       } catch {}
 
       // Warm prices for the Jupiter universe first, with configurable depth
