@@ -535,54 +535,7 @@ server.listen(CONFIG.port, () => {
   // DEPRECATED: avoid auto-starting loops; use /arb/pools/refresh to coordinate fetch+subscribe
   // try { if ((CONFIG as any)?.system?.autoStartPools) { startRaydiumRefreshLoop(); } } catch {}
 
-  // Background: fetch Jupiter token list once at startup
-  try {
-    import('../utils/tokens.js')
-      .then(async ({ fetchAndCacheJupiterTokens, loadJupiterTokenMap }) => {
-        try {
-          const arr = await fetchAndCacheJupiterTokens().catch(() => [] as any[]);
-          // Seed priceStore with usdPrice from verified list
-          if (Array.isArray(arr) && arr.length) {
-            // Backfill missing usdPrice via price API before seeding
-            const missing: string[] = [];
-            for (const t of arr) {
-              const addr = String((t as any)?.address || '');
-              const p = (t as any)?.usdPrice;
-              if (addr && !(typeof p === 'number')) missing.push(addr);
-            }
-            if (missing.length) {
-              try {
-                const { bootstrapPricesForMints } = await import('./priceBootstrap.js');
-                await bootstrapPricesForMints(missing, { chunkSize: 100, maxRequests: Number.MAX_SAFE_INTEGER, cat: 'jup.verified.backfill' });
-              } catch {}
-            }
-            // Build final seed map from verified list + backfilled priceStore
-            const priceMod: any = await import('./priceStore.js');
-            const pricesAll: Record<string, { usdc: number | null; sol: number | null }> = priceMod.getAllPrices?.() || {};
-            const SOL = 'So11111111111111111111111111111111111111112';
-            const solUsdExisting = Number(pricesAll[SOL]?.usdc ?? NaN);
-            let solUsd: number | undefined = Number.isFinite(solUsdExisting) ? solUsdExisting : undefined;
-            const map: Record<string, { usdc: number | null; sol: number | null }> = {};
-            for (const t of arr) {
-              const addr = String((t as any)?.address || '');
-              if (!addr) continue;
-              const fromVerified = typeof (t as any)?.usdPrice === 'number' ? (t as any).usdPrice : undefined;
-              const fromStore = pricesAll[addr]?.usdc;
-              const usdc = (typeof fromStore === 'number') ? fromStore : (typeof fromVerified === 'number' ? fromVerified : null);
-              if (addr === SOL && typeof usdc === 'number') solUsd = usdc;
-              map[addr] = { usdc, sol: null };
-            }
-            if (typeof solUsd === 'number' && solUsd > 0) {
-              for (const [mint, v] of Object.entries(map)) {
-                if (typeof v.usdc === 'number') v.sol = (v.usdc as number) / (solUsd as number);
-              }
-            }
-            try { priceMod.setPrices?.(map); } catch {}
-          }
-        } catch {}
-      })
-      .catch(() => {});
-  } catch {}
+  // Removed background verified fetch; use manual endpoint
 
   // Start graph stream on first socket connect, or after configured delay
   try {
