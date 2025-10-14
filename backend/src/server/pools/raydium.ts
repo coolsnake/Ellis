@@ -281,9 +281,9 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         if (sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
           const two64 = Math.pow(2, 64);
           const ratio = sqrt / two64;
-          // Correct for Q64.64: price B/A = (ratio^2) * 10^(decB - decA)
-          // A-per-1-B = 1 / (B/A) = 10^(decA - decB) / (ratio^2)
-          const scale = Math.pow(10, (decA as number) - (decB as number));
+          // Align with Orca/Uniswap-style decode:
+          // A-per-1-B = 10^(decB - decA) / (ratio^2)
+          const scale = Math.pow(10, (decB as number) - (decA as number));
           const cand1 = scale / (ratio * ratio); // A per 1 B (preferred)
           const cand2 = (ratio * ratio) / scale; // reciprocal alternative
           price_from_sqrt = Number.isFinite(cand1) && cand1 > 0 ? cand1 : 0;
@@ -312,6 +312,8 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         let usedWhole = false;
         if (price_from_sqrt > 0) candidates.push(price_from_sqrt);
         if (price_from_sqrt_alt > 0) candidates.push(price_from_sqrt_alt);
+        // Include vendor-reported price as an additional candidate for magnitude selection only
+        if (Number(price) > 0) candidates.push(Number(price));
         // Do not include vendor-reported price; rely on sqrt/reserves only for CLMM
         try {
           const wholeA = Number.isFinite(amount_a_whole as any) ? (amount_a_whole as number) : NaN;

@@ -37,6 +37,23 @@ export function createGraphRouter(_io: SocketIOServer): Router {
     }
   });
 
+  // Runtime-only: drop a pool from the graph by id (forward and reverse). Not persisted.
+  api.post('/graph/drop', async (req, res) => {
+    try {
+      const body = (req as any)?.body || {};
+      const id = String(body?.id || body?.poolId || '').trim();
+      if (!id) return res.status(400).json({ error: 'id required' });
+      const { dropPoolRuntime, rebuildGraphNow } = await import('../graph.js');
+      const result = dropPoolRuntime(id);
+      // Trigger a rebuild to apply removal immediately
+      await rebuildGraphNow(undefined);
+      return res.json({ ok: true, dropped: id, added: result.added, total: result.current.length });
+    } catch (e: any) {
+      try { logger.error('graph.drop failed', { error: String(e?.message || e) }); } catch {}
+      return res.status(500).json({ error: 'failed' });
+    }
+  });
+
   // Return full edge details for selected edges by ids and/or pairs
   api.post('/graph/edge-details', async (req, res) => {
     try {

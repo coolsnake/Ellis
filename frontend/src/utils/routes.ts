@@ -18,6 +18,7 @@ export const ROUTES = {
     snapshot: '/graph',
     path: '/graph/path',
     edgeDetails: '/graph/edge-details',
+    drop: '/graph/drop',
   },
   pools: {
     raydium: '/arb/pools/raydium',

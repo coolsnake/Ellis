@@ -769,6 +769,27 @@ export const App: React.FC = () => {
         });
         return;
       }
+      if (ns === 'graph') {
+        const action = (parts[1] || '').toLowerCase();
+        if (action === 'drop') {
+          const poolId = parts[2];
+          if (!poolId) {
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: "terminal: graph drop POOL_ID" }) });
+            return;
+          }
+          try {
+            const resp = await fetch(`${apiBase}${ROUTES.graph.drop}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: poolId }) });
+            const json = await resp.json();
+            if (!resp.ok) throw new Error(json?.error || 'drop failed');
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: graph dropped ${poolId}` }) });
+          } catch (e: any) {
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: graph drop failed ${String(e?.message || e)}` }) });
+          }
+          return;
+        }
+        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: graph commands: drop POOL_ID' }) });
+        return;
+      }
       if (ns === 'bot') {
         const action = (parts[1] || '').toLowerCase();
         if (action === 'start') { await fetch(`${apiBase}/bot/start`, { method: 'POST' }); return; }
