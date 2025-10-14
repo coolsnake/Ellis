@@ -168,6 +168,7 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     const liquidity_display = (tvl_usd != null) ? tvl_usd : undefined;
     // Derive A-per-1-B from active bin; tests expect active bin precedence over current_price
     let usedBin = false;
+    let derivedWhole: number | undefined = undefined;
     try {
       const activeId = Number((it as any)?.active_id ?? (it as any)?.activeId);
       const binStep = Number((it as any)?.bin_step ?? (it as any)?.binStep);
@@ -194,10 +195,11 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       const haveDecs = Number.isFinite(decA) && Number.isFinite(decB);
       const wholeA = haveDecs && Number.isFinite(amount_a) ? (amount_a / Math.pow(10, decA as number)) : NaN;
       const wholeB = haveDecs && Number.isFinite(amount_b) ? (amount_b / Math.pow(10, decB as number)) : NaN;
-      if (!(price_a_per_b > 0) && Number.isFinite(wholeA) && Number.isFinite(wholeB) && (wholeB as number) > 0) {
-        const derived = (wholeA as number) / (wholeB as number);
-        if (derived > 0 && Number.isFinite(derived)) { price_a_per_b = derived; usedWhole = true; }
+      if (Number.isFinite(wholeA) && Number.isFinite(wholeB) && (wholeB as number) > 0) {
+        const dv = (wholeA as number) / (wholeB as number);
+        if (dv > 0 && Number.isFinite(dv)) { derivedWhole = dv; }
       }
+      if (!(price_a_per_b > 0) && derivedWhole) { price_a_per_b = derivedWhole; usedWhole = true; }
     } catch {}
     // Prefer candidate closer to USD ref between pool-derived orientations only (do not substitute USD ref as price)
     try {
@@ -209,6 +211,8 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       if (Number.isFinite(price_a_per_b) && price_a_per_b > 0) cand.push(price_a_per_b);
       // If we computed two possible A/B candidates above, include reciprocal too
       try { if (Number.isFinite(price_a_per_b) && price_a_per_b > 0) { const inv = 1 / (price_a_per_b as number); if (inv > 0 && Number.isFinite(inv)) cand.push(inv); } } catch {}
+      // Include reserves-derived magnitude when available
+      if (Number.isFinite(derivedWhole as any) && (derivedWhole as number) > 0) cand.push(derivedWhole as number);
       if (ref && cand.length > 1) {
         let best = cand[0];
         let bestDev = Math.max(best / (ref as number), (ref as number) / best);
@@ -218,6 +222,22 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
           if (d + 1e-12 < bestDev) { bestDev = d; best = v; }
         }
         price_a_per_b = best;
+      }
+    } catch {}
+    // Stable-stable guard: if active-bin implies exactly 1 and reserves give a different finite value, prefer reserves
+    try {
+      const STABLES = new Set<string>([
+        ...((((CONFIG as any)?.system as any)?.stableMints || []) as string[]),
+        'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN',
+      ]);
+      const aStable = STABLES.has(mint_a);
+      const bStable = STABLES.has(mint_b);
+      if (aStable && bStable) {
+        const px = Number(price_a_per_b);
+        if (usedBin && Number.isFinite(px) && Math.abs(px - 1) < 1e-12 && Number.isFinite(derivedWhole as any) && (derivedWhole as number) > 0 && Math.abs((derivedWhole as number) - 1) > 0) {
+          price_a_per_b = derivedWhole as number;
+        }
       }
     } catch {}
     // Stable-aware orientation flip here is redundant with canonicalizePairs; avoid double flipping
