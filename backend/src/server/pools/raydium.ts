@@ -311,6 +311,8 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         let usedWhole = false;
         if (price_from_sqrt > 0) candidates.push(price_from_sqrt);
         if (price_from_sqrt_alt > 0) candidates.push(price_from_sqrt_alt);
+        // Include vendor-reported price as an additional candidate (used only for selection, not substitution)
+        if (Number(price) > 0) candidates.push(Number(price));
         try {
           const wholeA = Number.isFinite(amount_a_whole as any) ? (amount_a_whole as number) : NaN;
           const wholeB = Number.isFinite(amount_b_whole as any) ? (amount_b_whole as number) : NaN;
@@ -409,8 +411,18 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         if (apply !== false) {
           const maxDeviation = Number.isFinite(Number(sanityCfg.maxPriceDeviation)) ? Number(sanityCfg.maxPriceDeviation) : 50;
           const { getPriceByMint } = await import('../priceStore.js');
-          const pa = getPriceByMint(mintA)?.usdc ?? null;
-          const pb = getPriceByMint(mintB)?.usdc ?? null;
+          let pa = getPriceByMint(mintA)?.usdc ?? null;
+          let pb = getPriceByMint(mintB)?.usdc ?? null;
+          // Stable fallback: assume 1.0 when missing
+          try {
+            const STABLES = new Set<string>([
+              ...((((CONFIG as any)?.system as any)?.stableMints || []) as string[]),
+              'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+              'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN',
+            ]);
+            if (!(typeof pa === 'number' && pa > 0) && STABLES.has(mintA)) pa = 1;
+            if (!(typeof pb === 'number' && pb > 0) && STABLES.has(mintB)) pb = 1;
+          } catch {}
           if (pa && pb && (pa as number) > 0 && (pb as number) > 0) {
             const ref = (pb as number) / (pa as number);
             // Magnitude-only calibration: do not include reciprocals; keep orientation A per 1 B

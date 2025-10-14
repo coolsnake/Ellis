@@ -533,3 +533,6 @@ site/assets/stylesheets/palette.06af60db.min.css
 site/assets/stylesheets/palette.06af60db.min.css.map
 Trace-20251011T002825.json
 backend/cache/meteora-balanced-raw-sample.json
+backend/config/walletHistory.json
+backend/backend/logs-test/consolidated-session.json
+backend/backend/logs-test/arb-session.json
