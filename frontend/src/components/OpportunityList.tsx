@@ -206,6 +206,7 @@ export function OpportunityList(
                 try {
                   if (!validHops) { setSimErr(`invalid opportunity payload (expected ${expectedHops} hops, got hopPoolIds=${hopIds.length}, hopDexes=${hopDexes.length})`); return; }
                   const body: any = { path: pathClosed, hopPoolIds: hopIds, dexes: hopDexes, sizeUsd: sendMode==='USD'? Number(sendAmount)||0 : undefined, size: sendMode==='TOKENS'? Number(sendAmount)||0 : undefined };
+                  body.forceDirect = true;
                   setSimLogs(null); setSimErr(null);
                   const r = await fetch(`${apiBase}${ROUTES.arb.execute}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
                   const j = await r.json().catch(()=>({}));

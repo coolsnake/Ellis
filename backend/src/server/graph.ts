@@ -1035,8 +1035,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         price = orientWithUsdFallbacks(p.mint_a, p.mint_b, price);
         // Rescale CLMM price from pool decimals to global decimals (align across DEXes)
         try {
-          const ga = Number(decimalsByMint[p.mint_a] ?? (p as any)?.decimals_a);
-          const gb = Number(decimalsByMint[p.mint_b] ?? (p as any)?.decimals_b);
+          const ga = Number(isFinite(Number(decimalsByMint[p.mint_a])) ? decimalsByMint[p.mint_a] : (p as any)?.decimals_a);
+          const gb = Number(isFinite(Number(decimalsByMint[p.mint_b])) ? decimalsByMint[p.mint_b] : (p as any)?.decimals_b);
           const poolDecA = Number((p as any)?.decimals_a);
           const poolDecB = Number((p as any)?.decimals_b);
           price = rescalePriceByDecimals(price, poolDecA, poolDecB, ga, gb);

@@ -496,6 +496,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
                     try {
                       const body: any = { path: pathClosed, hopPoolIds: hopIds, dexes: hopDexes };
                       if (sendMode === 'USD') body.sizeUsd = Number(sendAmount)||0; else body.size = Number(sendAmount)||0;
+                      body.forceDirect = true;
                       setNmSimLogs(null); setNmSimErr(null);
                       const r = await fetch(`${apiBase}${ROUTES.arb.execute}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
                       const j = await r.json().catch(()=>({}));
