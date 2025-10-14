@@ -15,18 +15,19 @@ const JUP_PRICE_URL = 'https://lite-api.jup.ag/price/v3';
 const JUP_QUOTE_URL = 'https://lite-api.jup.ag/swap/v1/quote';
 const JUP_SWAP_URL = 'https://lite-api.jup.ag/swap/v1/swap';
 export const SOL_MINT = 'So11111111111111111111111111111111111111112';
+const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
 // In-flight dedupe for identical Jupiter price requests (same id set)
 const inflightPriceReqs = new Map<string, Promise<Record<string, { usdPrice: number; decimals: number; blockId: number; priceChange24h?: number }>>>();
 
-export async function fetchTokenPrices(symbols: string[], options?: { catOverride?: string }): Promise<PriceQuote[]> {
-  if (isApiPaused()) return [];
+export async function fetchTokenPrices(symbols: string[], options?: { catOverride?: string; ignorePause?: boolean }): Promise<PriceQuote[]> {
+  if (isApiPaused() && !options?.ignorePause) return [];
   if (symbols.length === 0) return [];
 
-  // Resolve symbols to mints; always include SOL to compute SOL-relative price
+  // Resolve symbols to mints; always include SOL and USDC to compute SOL/USDC-relative prices
   const resolved = await Promise.all(symbols.map((s) => resolveMint(s)));
   const solMint = SOL_MINT;
-  const ids = Array.from(new Set([...resolved.map((r) => r.mint), solMint]));
+  const ids = Array.from(new Set([...resolved.map((r) => r.mint), solMint, USDC_MINT]));
 
   const url = new URL(JUP_PRICE_URL);
   url.searchParams.set('ids', ids.join(','));
@@ -84,10 +85,10 @@ export async function fetchTokenPrices(symbols: string[], options?: { catOverrid
   });
 }
 
-export async function fetchPricesByMints(mints: string[], options?: { catOverride?: string }): Promise<Record<string, { usdc: number | null; sol: number | null }>> {
-  if (isApiPaused()) return {};
+export async function fetchPricesByMints(mints: string[], options?: { catOverride?: string; ignorePause?: boolean }): Promise<Record<string, { usdc: number | null; sol: number | null }>> {
+  if (isApiPaused() && !options?.ignorePause) return {};
   if (mints.length === 0) return {};
-  const ids = Array.from(new Set([...mints, SOL_MINT]));
+  const ids = Array.from(new Set([...mints, SOL_MINT, USDC_MINT]));
   const url = new URL(JUP_PRICE_URL);
   url.searchParams.set('ids', ids.join(','));
   const poolsFlow = !!((options?.catOverride || '').startsWith('pools'));

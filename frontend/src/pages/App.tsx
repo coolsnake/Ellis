@@ -83,6 +83,11 @@ export const App: React.FC = () => {
   const lastSystemRef = useRef<number>(Date.now());
   const { credentials } = useAuth();
 
+  // Track last received backend heartbeat (via socket 'system' event updating `system`)
+  useEffect(() => {
+    try { lastSystemRef.current = Date.now(); } catch {}
+  }, [system?.uptimeMs]);
+
   // Liquidator panel state
   // removed legacy inline liquidator fields (use +Liquidator modal instead)
   const [liqStatus, setLiqStatus] = useState<any>(null);

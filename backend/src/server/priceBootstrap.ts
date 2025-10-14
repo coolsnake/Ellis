@@ -64,7 +64,7 @@ export async function bootstrapPricesForUniverse(opts: BootstrapOpts = {}): Prom
   for (let i = 0; i < toFetch.length && requests < maxRequests; i += chunkSize) {
     const batch = toFetch.slice(i, i + chunkSize);
     try {
-      const fresh = await fetchPricesByMints(batch, { catOverride: cat });
+      const fresh = await fetchPricesByMints(batch, { catOverride: cat, ignorePause: true });
       setPrices(fresh);
       requests += 1;
     } catch (e: any) {
@@ -124,7 +124,7 @@ export async function bootstrapPricesForMints(mintsIn: string[], opts: Bootstrap
   for (let i = 0; i < toFetch.length && requests < maxRequests; i += chunkSize) {
     const batch = toFetch.slice(i, i + chunkSize);
     try {
-      const fresh = await fetchPricesByMints(batch, { catOverride: cat });
+      const fresh = await fetchPricesByMints(batch, { catOverride: cat, ignorePause: true });
       setPrices(fresh);
       requests += 1;
     } catch (e: any) {
