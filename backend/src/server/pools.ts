@@ -299,30 +299,7 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
 
       // Removed auto verified token refresh in refresh flow; use manual endpoint
 
-      // Warm prices for the Jupiter universe first, with configurable depth
-      try {
-        const { bootstrapPricesForUniverse, bootstrapPricesForMints } = await import('./priceBootstrap.js');
-        const deepMax = Math.max(3, Number((CONFIG.system as any)?.deepJupiterBootstrapMaxRequests ?? 6));
-        try { emit('log', { level: 'info', message: `pools:bootstrap universe.start maxReq=${deepMax}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
-        try { logger.info(`pools:bootstrap universe.start maxReq=${deepMax}`, { cat: 'pools' }); } catch {}
-        let cov = await bootstrapPricesForUniverse({ chunkSize: 100, maxRequests: deepMax, cat: 'pools.refresh' }).catch(() => null);
-        if (cov && cov.total === 0) {
-          try {
-            const { getSourceTokenSet } = await import('./universe.js');
-            const raySet = await getSourceTokenSet('raydium');
-            const orcSet = await getSourceTokenSet('orca');
-            const merged = new Set<string>([...raySet, ...orcSet]);
-            try { emit('log', { level: 'info', message: `pools:bootstrap fallback.mints size=${merged.size}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
-            try { logger.info(`pools:bootstrap fallback.mints size=${merged.size}`, { cat: 'pools' }); } catch {}
-            cov = await bootstrapPricesForMints(Array.from(merged), { chunkSize: 100, maxRequests: 3, cat: 'pools.refresh.fallback' });
-          } catch {}
-        }
-        if (cov) {
-          try { logger.info('pools.refresh price coverage', { total: cov.total, priced: cov.priced, missing: cov.missing, cat: 'pools' }); } catch {}
-          try { emit('log', { level: 'info', message: `pools:bootstrap universe.done total=${cov.total} priced=${cov.priced} missing=${cov.missing}` as any, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
-          try { logger.info(`pools:bootstrap universe.done total=${cov.total} priced=${cov.priced} missing=${cov.missing}`, { cat: 'pools' }); } catch {}
-        }
-      } catch {}
+      // Removed auto bootstrap on refresh; use manual endpoint
 
       // Resume Jupiter API before source fetches so downstream calls are allowed
       if (pauseFeed) {
@@ -363,35 +340,10 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
         const coverage = pricedCount / Math.max(1, mintSet.size);
         const minPriced = Math.max(50, Number((CONFIG.system as any)?.minMintPriceBootstrap || 120));
         const minCoverage = Math.max(0.05, Math.min(0.9, Number((CONFIG.system as any)?.minMintPriceCoverage || 0.4)));
-        if (pricedCount < minPriced || coverage < minCoverage) {
-          try {
-            const { bootstrapPricesForMints } = await import('./priceBootstrap.js');
-            const covPost = await bootstrapPricesForMints(Array.from(mintSet), { chunkSize: 80, maxRequests: 6, cat: 'pools.refresh.post' });
-            try { logger.info('pools.refresh price coverage post', { total: covPost.total, priced: covPost.priced, missing: covPost.missing, cat: 'pools' }); } catch {}
-            try { emit('log', { level: 'info', message: `pools:bootstrap post.coverage total=${covPost.total} priced=${covPost.priced} missing=${covPost.missing}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
-            try { logger.info(`pools:bootstrap post.coverage total=${covPost.total} priced=${covPost.priced} missing=${covPost.missing}`, { cat: 'pools' }); } catch {}
-            // Rebuild graph with prices now available
-            try {
-              const gmod: any = await import('./graph.js');
-              gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
-            } catch {}
-          } catch {}
-        }
+        // Removed post-refresh mass bootstrap; only report coverage metrics
 
         // Secondary pass: price any fetched mints outside the Jupiter token list
-        try {
-          const { getJupiterTokenSet } = await import('./universe.js');
-          const jupSet = await getJupiterTokenSet();
-          const outside = Array.from(mintSet).filter((m) => !jupSet.has(m));
-          if (outside.length > 0) {
-            try { emit('log', { level: 'info', message: `pools:bootstrap outside.start size=${outside.length}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
-            try { logger.info(`pools:bootstrap outside.start size=${outside.length}`, { cat: 'pools' }); } catch {}
-            const { bootstrapPricesForMints } = await import('./priceBootstrap.js');
-            await bootstrapPricesForMints(outside, { chunkSize: 80, maxRequests: 4, cat: 'pools.refresh.outsideJup' });
-            try { emit('log', { level: 'info', message: `pools:bootstrap outside.done size=${outside.length}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
-            try { logger.info(`pools:bootstrap outside.done size=${outside.length}`, { cat: 'pools' }); } catch {}
-          }
-        } catch {}
+        // Removed secondary pass for outside-Jupiter mints
       }
     }
   } catch {}
