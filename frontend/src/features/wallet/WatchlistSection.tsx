@@ -7,12 +7,18 @@ export const WatchlistSection: React.FC<{
   activitiesByStrategy: Record<string, any>;
   onAdd: () => void;
   onRemove: (t: any) => void;
-}> = ({ watchlist, prices, strategies, activitiesByStrategy, onAdd, onRemove }) => {
+  onFetchVerified: () => void;
+  onBootstrapPools: () => void;
+}> = ({ watchlist, prices, strategies, activitiesByStrategy, onAdd, onRemove, onFetchVerified, onBootstrapPools }) => {
   return (
     <section className="bg-gray-900 rounded p-4 mt-4 flex-1 overflow-auto">
       <div className="flex justify-between items-center mb-3">
         <h2 className="text-2xl font-semibold">Watchlist</h2>
-        <button onClick={onAdd} className="px-3 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700">+ Token</button>
+        <div className="flex items-center space-x-2">
+          <button onClick={onFetchVerified} className="px-3 py-1 bg-blue-600 text-white rounded text-sm hover:bg-blue-700" title="Fetch Jupiter verified tokens and seed prices">Fetch verified</button>
+          <button onClick={onBootstrapPools} className="px-3 py-1 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700" title="Bootstrap prices for current universe">Bootstrap pools</button>
+          <button onClick={onAdd} className="px-3 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700">+ Token</button>
+        </div>
       </div>
       <ul className="space-y-1">
         {watchlist.map((t, index) => {

@@ -1249,7 +1249,20 @@ export const App: React.FC = () => {
             </div>
           </div>
           </section>
-          <WatchlistSection watchlist={watchlist} prices={prices} strategies={strategies} activitiesByStrategy={activitiesByStrategy} onAdd={()=>setShowAddToken(true)} onRemove={handleRemoveToken} />
+          <WatchlistSection
+            watchlist={watchlist}
+            prices={prices}
+            strategies={strategies}
+            activitiesByStrategy={activitiesByStrategy}
+            onAdd={()=>setShowAddToken(true)}
+            onRemove={handleRemoveToken}
+            onFetchVerified={async ()=>{
+              try { await fetch('/api/watchlist/fetch-verified', { method: 'POST' }); } catch {}
+            }}
+            onBootstrapPools={async ()=>{
+              try { await fetch('/api/watchlist/bootstrap-pools', { method: 'POST' }); } catch {}
+            }}
+          />
           </div>
           <section className="bg-gray-900 rounded p-4">
             <h2 className="text-2xl font-semibold mb-3">Wallet</h2>
