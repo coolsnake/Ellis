@@ -263,13 +263,15 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         const jDecB = Number(jupMap[mintB]?.decimals);
         if (Number.isFinite(jDecA)) decA = jDecA;
         if (Number.isFinite(jDecB)) decB = jDecB;
-        // Anchors: SOL 9, USDC/USDT 6
+        // Anchors: SOL 9, USDC/USDT/USD1 6
         if (mintA === 'So11111111111111111111111111111111111111112') decA = 9;
         if (mintB === 'So11111111111111111111111111111111111111112') decB = 9;
         if (mintA === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') decA = 6;
         if (mintB === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') decB = 6;
         if (mintA === 'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN') decA = 6;
         if (mintB === 'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN') decB = 6;
+        if (mintA === 'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB') decA = 6;
+        if (mintB === 'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB') decB = 6;
         decA = Math.min(12, Math.max(0, Math.round(Number(decA))));
         decB = Math.min(12, Math.max(0, Math.round(Number(decB))));
       } catch {}
@@ -291,23 +293,24 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
       let px = 0;
       try {
         const { getPriceByMint } = await import('../priceStore.js');
-        const pa = getPriceByMint(mintA)?.usdc ?? null;
-        const pb = getPriceByMint(mintB)?.usdc ?? null;
+        let pa = getPriceByMint(mintA)?.usdc ?? null;
+        let pb = getPriceByMint(mintB)?.usdc ?? null;
+        try {
+          const STABLES = new Set<string>([
+            ...((((CONFIG as any)?.system as any)?.stableMints || []) as string[]),
+            'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+            'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN',
+          ]);
+          if (!(typeof pa === 'number' && pa > 0) && STABLES.has(mintA)) pa = 1;
+          if (!(typeof pb === 'number' && pb > 0) && STABLES.has(mintB)) pb = 1;
+        } catch {}
         const directRef = (pa && pb && (pa as number) > 0 && (pb as number) > 0) ? ((pb as number) / (pa as number)) : undefined;
         const refs: number[] = [];
         if (Number.isFinite(directRef as any) && (directRef as number) > 0) refs.push(directRef as number);
-        // Implied via anchors: use SOL/USDC edges when present in graph prices
-        try {
-          const { getAllPrices } = await import('../priceStore.js');
-          const all = getAllPrices() || {};
-          const solUsd = Number(all['So11111111111111111111111111111111111111112']?.usdc ?? NaN);
-          if (Number.isFinite(solUsd) && solUsd > 0) refs.push(solUsd / solUsd); // neutral, keeps refs non-empty
-        } catch {}
         const candidates: number[] = [];
         let usedWhole = false;
         if (price_from_sqrt > 0) candidates.push(price_from_sqrt);
         if (price_from_sqrt_alt > 0) candidates.push(price_from_sqrt_alt);
-        if (Number(price) > 0) candidates.push(Number(price));
         try {
           const wholeA = Number.isFinite(amount_a_whole as any) ? (amount_a_whole as number) : NaN;
           const wholeB = Number.isFinite(amount_b_whole as any) ? (amount_b_whole as number) : NaN;
@@ -316,12 +319,8 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
             if (fromWhole > 0 && Number.isFinite(fromWhole)) { candidates.push(fromWhole); usedWhole = true; }
           }
         } catch {}
-        // If we don't have sqrt-derived or whole-derived candidates, include ref as a candidate to avoid stale upstream prices
-        if (refs.length && (!candidates.length || (price_from_sqrt <= 0 && !usedWhole))) {
-          const directRef = refs[0];
-          if (Number.isFinite(directRef) && (directRef as number) > 0) candidates.push(directRef as number);
-        }
-        if (refs.length && candidates.length) {
+        // Use USD references only to choose between pool-derived candidates; never substitute USD ref as price
+        if (refs.length && candidates.length > 1) {
           // Robust pick: minimize median deviation across refs
           let best = candidates[0];
           let bestMed = Number.POSITIVE_INFINITY;
@@ -341,7 +340,18 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
       // Magnitude-only calibration to align with USD reference without flipping orientation
       try {
         const { getPriceByMint } = await import('../priceStore.js');
-        const getUsd = (m: string) => { try { return getPriceByMint(m)?.usdc ?? undefined; } catch { return undefined; } };
+        const getUsd = (m: string) => {
+          try {
+            const v = getPriceByMint(m)?.usdc ?? undefined;
+            if (typeof v === 'number' && v > 0) return v;
+            const STABLES = new Set<string>([
+              ...((((CONFIG as any)?.system as any)?.stableMints || []) as string[]),
+              'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+              'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN',
+            ]);
+            return STABLES.has(m) ? 1 : undefined;
+          } catch { return undefined; }
+        };
         const { calibrateMagnitude } = await import('../priceCalib.js');
         const calibrated = calibrateMagnitude(mintA, mintB, px, getUsd);
         if (calibrated && calibrated > 0) px = calibrated;
