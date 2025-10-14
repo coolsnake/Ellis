@@ -5,7 +5,7 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import { getMint } from '@solana/spl-token';
 
 export type TokenMap = Record<string, { mint: string; decimals: number }>;
-export type JupToken = { address: string; name: string; symbol: string; decimals: number };
+export type JupToken = { address: string; name: string; symbol: string; decimals: number; usdPrice?: number };
 
 export async function loadTokenMap(): Promise<TokenMap> {
   return readJson<TokenMap>(CONFIG.tokensPath, {
@@ -62,28 +62,49 @@ export async function resolveMint(symbolOrMint: string): Promise<{ mint: string;
 }
 
 // Jupiter token list support (separate from local tokens.json)
-const JUP_TOKENS_URL = 'https://tokens.jup.ag/tokens?tags=verified';
+// Use v2 verified tag endpoint; attempt pagination when available.
+const JUP_TOKENS_URL_V2 = 'https://lite-api.jup.ag/tokens/v2/tag?query=verified';
 
 export async function fetchAndCacheJupiterTokens(): Promise<JupToken[]> {
+  const out: JupToken[] = [];
   try {
-    const res = await fetch(JUP_TOKENS_URL, { headers: { accept: 'application/json' } as any } as any);
-    if (!res.ok) throw new Error(`jup tokens http ${res.status}`);
-    const data = await res.json();
-    const arr: JupToken[] = Array.isArray(data) ? data.map((t: any) => ({ address: String(t?.address || t?.id || ''), name: String(t?.name || ''), symbol: String(t?.symbol || ''), decimals: Number(t?.decimals ?? 0) })) : [];
-    await writeJson(CONFIG.jupTokensPath, arr);
-    return arr;
+    let cursor: string | null = null;
+    for (let page = 0; page < 20; page++) {
+      const url = new URL(JUP_TOKENS_URL_V2);
+      url.searchParams.set('query', 'verified');
+      url.searchParams.set('limit', '500');
+      if (cursor) url.searchParams.set('cursor', cursor);
+      const res = await fetch(url.toString(), { headers: { accept: 'application/json' } as any } as any);
+      if (!res.ok) throw new Error(`jup tokens http ${res.status}`);
+      const data: any = await res.json();
+      const arr: any[] = Array.isArray(data)
+        ? data
+        : (Array.isArray((data as any)?.data) ? (data as any).data : (Array.isArray((data as any)?.tokens) ? (data as any).tokens : []));
+      for (const t of (arr || [])) {
+        const address = String(t?.address || t?.id || '');
+        if (!address) continue;
+        out.push({ address, name: String(t?.name || ''), symbol: String(t?.symbol || ''), decimals: Number(t?.decimals ?? 0), usdPrice: (typeof t?.usdPrice === 'number') ? t.usdPrice : undefined });
+      }
+      const next: string | undefined = (data && typeof data === 'object') ? ((data as any)?.cursor || (data as any)?.nextCursor) : undefined;
+      cursor = next && String(next).length ? String(next) : null;
+      if (!cursor) break;
+      // Guard: if endpoint returned a plain array, do single page
+      if (Array.isArray(data)) break;
+    }
+    await writeJson(CONFIG.jupTokensPath, out);
+    return out;
   } catch (e: any) {
-    // Fallback to cached file
     const cached = await readJson<JupToken[]>(CONFIG.jupTokensPath, []);
     return cached;
   }
 }
 
-export async function loadJupiterTokenMap(): Promise<Record<string, { symbol: string; decimals: number }>> {
+export async function loadJupiterTokenMap(): Promise<Record<string, { symbol: string; decimals: number; usdPrice?: number }>> {
   const cached = await readJson<JupToken[]>(CONFIG.jupTokensPath, []);
-  const map: Record<string, { symbol: string; decimals: number }> = {};
+  const map: Record<string, { symbol: string; decimals: number; usdPrice?: number }> = {};
   for (const t of (cached || [])) {
-    if (t?.address) map[t.address] = { symbol: t.symbol || t.name || t.address.slice(0, 4), decimals: Number(t.decimals ?? 0) };
+    if (!t?.address) continue;
+    map[t.address] = { symbol: t.symbol || t.name || t.address.slice(0, 4), decimals: Number(t.decimals ?? 0), usdPrice: (typeof (t as any)?.usdPrice === 'number') ? (t as any).usdPrice : undefined };
   }
   return map;
 }
