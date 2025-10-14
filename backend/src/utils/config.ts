@@ -142,8 +142,8 @@ export const CONFIG = {
     // Minimum number of distinct DEXes a token pair must appear on to include (1..3)
     minDexOverlap: Number(process.env.MIN_DEX_OVERLAP || 1),
     // Stable pruning controls
-    // Comma-separated list of stablecoin mints; defaults to USDC, USDT
-    stableMints: (process.env.STABLE_MINTS || 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB')
+    // Comma-separated list of stablecoin mints; defaults to USDC, USDT, USD1
+    stableMints: (process.env.STABLE_MINTS || 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB,USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB')
       .split(',')
       .map(s => s.trim())
       .filter(Boolean),

@@ -3,6 +3,7 @@ import type { Server as SocketIOServer } from 'socket.io';
 import { logger } from '../../utils/logger.js';
 import { LogCode } from '../../utils/logging.js';
 import { emit } from '../realtime.js';
+import { setArbStreamEnabled } from '../realtime.js';
 import { writeJson } from '../../utils/fs.js';
 import { logTxTrace } from '../../utils/txTrace.js';
 
@@ -103,8 +104,16 @@ export function createArbRouter(io: SocketIOServer): Router {
       const { getGraphSnapshot } = await import('../graph.js');
       const snap = await getGraphSnapshot(true);
       const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
-      const r = await fetch(`${host}/arb/start`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ graph: snap, ...body }) }).catch(() => null);
-      res.status(r?.status || 503).json(r ? await r.json().catch(() => ({})) : { ok: false });
+      const wantEnable: boolean = !!(body && (body as any).enable);
+      // Only include graph when non-empty
+      const includeGraph = !!(snap && Array.isArray((snap as any).edges) && (snap as any).edges.length > 0);
+      const payload = includeGraph ? { graph: snap, ...body } : { ...body };
+      const r = await fetch(`${host}/arb/start`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) }).catch(() => null);
+      const status = r?.status || 503;
+      const j = r ? await r.json().catch(() => ({})) : { ok: false };
+      // Gate streaming based on requested enable flag only when arb-rs responded OK
+      try { if (r && r.ok) setArbStreamEnabled(wantEnable); } catch {}
+      res.status(status).json(j);
     } catch (e: any) {
       res.status(503).json({ ok: false, error: String(e?.message || e) });
     }

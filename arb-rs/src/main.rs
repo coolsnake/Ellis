@@ -1873,7 +1873,7 @@ async fn get_config(State(state): State<Arc<RwLock<AppState>>>) -> Json<ArbConfi
 
 fn default_config() -> ArbConfig {
     ArbConfig {
-        enabled: true,
+        enabled: false,
         min_profit_bps: 0,
         max_profit_bps: 20000,
         min_notional_usd: 0.0,

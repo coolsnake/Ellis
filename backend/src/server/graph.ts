@@ -71,6 +71,11 @@ export async function rebuildGraphNow(io?: SocketIOServer): Promise<void> {
   try {
     const prev = lastSnapshot;
     const next = await getGraphSnapshot(true);
+    // Skip emitting/pushing when we have no retained pools yet
+    if (!prev && (!next || !Array.isArray((next as any).edges) || (next as any).edges.length === 0)) {
+      try { logger.info('graph.rebuild.skip_empty', { reason: 'no_retained_pools' }); } catch {}
+      return;
+    }
     const diff = diffSnapshots(prev, next);
     const changed = diff.addedNodes.length || diff.updatedNodes.length || diff.removedNodeIds.length || diff.addedEdges.length || diff.updatedEdges.length || diff.removedEdgeIds.length;
     if (io) {
@@ -362,6 +367,20 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           mbl = (upstreamMb > 0 && scopedMb === 0) ? mblRaw : mbScoped as any;
         } catch {}
       }
+      // Before building, ensure we actually retained pools after scoping/filters
+      try {
+        const count =
+          (ray?.amm?.length || 0) + (ray?.clmm?.length || 0) +
+          (orc?.amm?.length || 0) + (orc?.clmm?.length || 0) +
+          (met?.amm?.length || 0) + (met?.clmm?.length || 0) +
+          (mbl?.amm?.length || 0) + (mbl?.clmm?.length || 0);
+        if (count <= 0) {
+          try { logger.info('graph.snapshot.skip', { reason: 'no_retained_pools' }); } catch {}
+          if (lastSnapshot) return lastSnapshot;
+          // Return an empty snapshot without updating lastSnapshot to avoid starting empty loop
+          return { version: (lastSnapshot?.version || 0), timestamp: Date.now(), nodes: [], edges: [] } as GraphSnapshot;
+        }
+      } catch {}
       // Apply global TVL/liquidity thresholds after scoping, before graph build
       try {
         const minAmm = Math.max(0, Number(((CONFIG.system as any)?.minAmmLiqBase) ?? 0));
@@ -494,7 +513,21 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         if (!mintA || !mintB || mintA === mintB) return;
         // Require a valid positive price; skip edge entirely if not present
         const priceNum = Number(price_a_per_b);
-        if (!Number.isFinite(priceNum) || priceNum <= 0) return;
+			if (!Number.isFinite(priceNum) || priceNum <= 0) return;
+			// Strict requirement: only include edges (and thus nodes) when BOTH tokens have a USD reference
+			// Treat configured stables as having a USD reference (assume 1.0) even if priceStore lacks quotes
+			try {
+				const pa = getPriceByMintVar(mintA)?.usdc ?? null;
+				const pb = getPriceByMintVar(mintB)?.usdc ?? null;
+				const STABLE_SET = new Set<string>([
+					...((((CONFIG as any)?.system as any)?.stableMints || []) as string[]),
+					'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+					'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN',
+				]);
+				const aHasUsd = (typeof pa === 'number' && pa > 0) || STABLE_SET.has(mintA);
+				const bHasUsd = (typeof pb === 'number' && pb > 0) || STABLE_SET.has(mintB);
+				if (!aHasUsd || !bHasUsd) return;
+			} catch {}
         // Optional pruning: drop stable<->stable edges entirely
         try {
           const dropSS = (CONFIG.system as any)?.dropStableStableEdges;
@@ -656,8 +689,6 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
         'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
       ]);
-      // Treat USD1 like any other token; do not apply stable shortcuts or assume 1.0
-      try { STABLES.delete('USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB'); } catch {}
       const priceFromUsd = (mintA: string, mintB: string): number | undefined => {
         try {
           let pa = getPriceByMintVar(mintA)?.usdc ?? null;
@@ -1519,6 +1550,11 @@ export function startGraphStream(io: SocketIOServer): void {
     try {
       // Do not auto-refresh pool sources here; rely on explicit /arb/pools/refresh
       const snap = await getGraphSnapshot(true);
+      // Skip initial emit/push if graph is empty
+      if (!snap || !Array.isArray((snap as any).edges) || (snap as any).edges.length === 0) {
+        try { logger.debug('graph.stream.skip_empty'); } catch {}
+        return;
+      }
       if (!last) {
         tryEmit('snapshot', { version: snap.version, timestamp: snap.timestamp });
         // Push initial snapshot to arb-rs to enter backend-graph mode immediately

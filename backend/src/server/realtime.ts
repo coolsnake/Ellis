@@ -64,6 +64,14 @@ export async function emit(event: string, payload: any) {
   ioRef?.emit(event, payload);
 }
 
+// Gate: only push graph updates to arb-rs after user presses Start Arb
+let arbStreamEnabled = false;
+export function setArbStreamEnabled(enabled: boolean): void {
+  try { emit('log', { level: 'info', message: `arb:stream ${enabled ? 'enabled' : 'disabled'}`, context: { cat: 'arb', code: enabled ? 'ARB.STREAM.ENABLE' : 'ARB.STREAM.DISABLE' } }); } catch {}
+  arbStreamEnabled = !!enabled;
+}
+export function isArbStreamEnabled(): boolean { return arbStreamEnabled; }
+
 export async function notifyArbServiceRefresh(): Promise<void> {
   try {
     const host = ((globalThis as any)?.process?.env?.ARB_SERVICE_URL) || 'http://127.0.0.1:4010';
@@ -216,6 +224,11 @@ async function processArbQueue(): Promise<void> {
 
 export async function pushArbGraphSnapshot(snapshot: any): Promise<void> {
   return new Promise((resolve, reject) => {
+    // Suppress until explicitly enabled and skip empties
+    try {
+      if (!arbStreamEnabled) { logger.debug('arb.push gated', { kind: 'snapshot' }); resolve(); return; }
+      if (!snapshot || !Array.isArray((snapshot as any).edges) || (snapshot as any).edges.length === 0) { logger.debug('arb.push skip empty snapshot'); resolve(); return; }
+    } catch {}
     arbQueue.push({ kind: 'snapshot', payload: snapshot, resolve, reject });
     processArbQueue().catch(() => {});
   });
@@ -223,6 +236,8 @@ export async function pushArbGraphSnapshot(snapshot: any): Promise<void> {
 
 export async function pushArbGraphDiff(diff: any): Promise<void> {
   return new Promise((resolve, reject) => {
+    // Suppress until explicitly enabled
+    try { if (!arbStreamEnabled) { logger.debug('arb.push gated', { kind: 'diff' }); resolve(); return; } } catch {}
     // Coalesce pending diffs to avoid backlog under high churn; keep snapshots
     try {
       arbQueue = arbQueue.filter((j) => j.kind === 'snapshot');
