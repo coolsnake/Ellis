@@ -1,6 +1,6 @@
 import { logger } from '../utils/logger.js';
 import { computeTokenUniverse } from './universe.js';
-import { readJson } from '../utils/fs.js';
+import { readJson, writeJson } from '../utils/fs.js';
 import { CONFIG } from '../utils/config.js';
 import { loadTokenMap, loadJupiterTokenMap } from '../utils/tokens.js';
 import { fetchPricesByMints } from '../jupiter/jupiter.js';
@@ -82,6 +82,26 @@ export async function bootstrapPricesForUniverse(opts: BootstrapOpts = {}): Prom
   logger.info('price.bootstrap done', { cat, ...out });
   try { emit('log', { level: 'info', message: `pools:bootstrap.mints done total=${out.total} priced=${out.priced} missing=${out.missing} cat=${cat}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
   try { logger.info(`pools:bootstrap.mints done total=${out.total} priced=${out.priced} missing=${out.missing} cat=${cat}`, { cat: 'pools' }); } catch {}
+  // Persist prices into tokens.json for any tokens present there
+  try {
+    const tokenMap = await loadTokenMap().catch(() => ({} as any));
+    let changed = false;
+    for (const [sym, info] of Object.entries(tokenMap || {})) {
+      const mint = (info as any)?.mint;
+      if (!mint) continue;
+      const p = after[mint];
+      if (p) {
+        const usdc = (typeof p.usdc === 'number') ? p.usdc : null;
+        const sol = (typeof p.sol === 'number') ? p.sol : null;
+        if ((info as any).usdc !== usdc || (info as any).sol !== sol) {
+          (info as any).usdc = usdc;
+          (info as any).sol = sol;
+          changed = true;
+        }
+      }
+    }
+    if (changed) await writeJson(CONFIG.tokensPath, tokenMap);
+  } catch {}
   return out;
 }
 
@@ -121,6 +141,26 @@ export async function bootstrapPricesForMints(mintsIn: string[], opts: Bootstrap
   logger.info('price.bootstrap.mints done', { cat, ...out });
   try { emit('log', { level: 'info', message: `pools:bootstrap.mints done total=${out.total} priced=${out.priced} missing=${out.missing} cat=${cat}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
   try { logger.info(`pools:bootstrap.mints done total=${out.total} priced=${out.priced} missing=${out.missing} cat=${cat}`, { cat: 'pools' }); } catch {}
+  // Persist to tokens.json for any known tokens
+  try {
+    const tokenMap = await loadTokenMap().catch(() => ({} as any));
+    let changed = false;
+    for (const [sym, info] of Object.entries(tokenMap || {})) {
+      const mint = (info as any)?.mint;
+      if (!mint) continue;
+      const p = after[mint];
+      if (p) {
+        const usdc = (typeof p.usdc === 'number') ? p.usdc : null;
+        const sol = (typeof p.sol === 'number') ? p.sol : null;
+        if ((info as any).usdc !== usdc || (info as any).sol !== sol) {
+          (info as any).usdc = usdc;
+          (info as any).sol = sol;
+          changed = true;
+        }
+      }
+    }
+    if (changed) await writeJson(CONFIG.tokensPath, tokenMap);
+  } catch {}
   return out;
 }
 
