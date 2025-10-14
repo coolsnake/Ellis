@@ -375,7 +375,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           (met?.amm?.length || 0) + (met?.clmm?.length || 0) +
           (mbl?.amm?.length || 0) + (mbl?.clmm?.length || 0);
         if (count <= 0) {
-          try { logger.info('graph.snapshot.skip', { reason: 'no_retained_pools' }); } catch {}
+          try { logger.debug('graph.snapshot.skip', { reason: 'no_retained_pools' }); } catch {}
           if (lastSnapshot) return lastSnapshot;
           // Return an empty snapshot without updating lastSnapshot to avoid starting empty loop
           return { version: (lastSnapshot?.version || 0), timestamp: Date.now(), nodes: [], edges: [] } as GraphSnapshot;

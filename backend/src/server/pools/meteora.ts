@@ -199,7 +199,7 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
         if (derived > 0 && Number.isFinite(derived)) { price_a_per_b = derived; usedWhole = true; }
       }
     } catch {}
-    // Prefer candidate closer to USD ref between active-bin and incoming price
+    // Prefer candidate closer to USD ref between pool-derived orientations only (do not substitute USD ref as price)
     try {
       const { getPriceByMint } = await import('../../server/priceStore.js');
       const pa = getPriceByMint(mint_a)?.usdc ?? null;
@@ -209,9 +209,7 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       if (Number.isFinite(price_a_per_b) && price_a_per_b > 0) cand.push(price_a_per_b);
       // If we computed two possible A/B candidates above, include reciprocal too
       try { if (Number.isFinite(price_a_per_b) && price_a_per_b > 0) { const inv = 1 / (price_a_per_b as number); if (inv > 0 && Number.isFinite(inv)) cand.push(inv); } } catch {}
-      // If we lack bin/reserve-derived candidates, include ref as a candidate to avoid stale upstream
-      try { if (Number.isFinite(ref as any) && (ref as number) > 0 && (!cand.length || (!usedBin && !usedWhole))) cand.push(ref as number); } catch {}
-      if (ref && cand.length) {
+      if (ref && cand.length > 1) {
         let best = cand[0];
         let bestDev = Math.max(best / (ref as number), (ref as number) / best);
         for (let i = 1; i < cand.length; i++) {
