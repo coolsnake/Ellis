@@ -401,18 +401,61 @@ server.listen(CONFIG.port, () => {
 
   // Post-listen initialization: run migrations and history load without blocking readiness
   setImmediate(async () => {
-      // One-time tokens.json refresh: if older than 1 day, fetch USDC/SOL prices for all listed mints
+      // Fetch Jupiter verified tokens first and seed price store; block downstream bootstrap/refresh until done
+      try {
+        try { emit('log', { level: 'info', message: 'jup.verified.start', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
+        try { logger.info('jup.verified.start', { cat: 'pools' }); } catch {}
+        const tokMod: any = await import('../utils/tokens.js');
+        const arr = await tokMod.fetchAndCacheJupiterTokens().catch(() => [] as any[]);
+        if (Array.isArray(arr) && arr.length) {
+          // Backfill missing usdPrice via price bootstrap
+          const missing: string[] = [];
+          for (const t of arr) {
+            const addr = String((t as any)?.address || '');
+            const p = (t as any)?.usdPrice;
+            if (addr && !(typeof p === 'number')) missing.push(addr);
+          }
+          if (missing.length) {
+            try {
+              const { bootstrapPricesForMints } = await import('./priceBootstrap.js');
+              await bootstrapPricesForMints(missing, { chunkSize: 100, maxRequests: Number.MAX_SAFE_INTEGER, cat: 'jup.verified.backfill' });
+            } catch {}
+          }
+          // Build seed map from verified list + backfilled store
+          const priceMod: any = await import('./priceStore.js');
+          const pricesAll: Record<string, { usdc: number | null; sol: number | null }> = priceMod.getAllPrices?.() || {};
+          const SOL = 'So11111111111111111111111111111111111111112';
+          const solUsdExisting = Number(pricesAll[SOL]?.usdc ?? NaN);
+          let solUsd: number | undefined = Number.isFinite(solUsdExisting) ? solUsdExisting : undefined;
+          const seed: Record<string, { usdc: number | null; sol: number | null }> = {};
+          for (const t of arr) {
+            const addr = String((t as any)?.address || '');
+            if (!addr) continue;
+            const fromVerified = typeof (t as any)?.usdPrice === 'number' ? (t as any).usdPrice : undefined;
+            const fromStore = pricesAll[addr]?.usdc;
+            const usdc = (typeof fromStore === 'number') ? fromStore : (typeof fromVerified === 'number' ? fromVerified : null);
+            if (addr === SOL && typeof usdc === 'number') solUsd = usdc;
+            seed[addr] = { usdc, sol: null };
+          }
+          if (typeof solUsd === 'number' && solUsd > 0) {
+            for (const [mint, v] of Object.entries(seed)) {
+              if (typeof v.usdc === 'number') v.sol = (v.usdc as number) / (solUsd as number);
+            }
+          }
+          try { priceMod.setPrices?.(seed); } catch {}
+          const seeded = Object.values(seed).filter(v => typeof v.usdc === 'number').length;
+          try { emit('log', { level: 'info', message: `jup.verified.done tokens=${arr.length} seeded=${seeded}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
+          try { logger.info('jup.verified.done', { tokens: arr.length, seeded, cat: 'pools' }); } catch {}
+        } else {
+          try { emit('log', { level: 'warn', message: 'jup.verified.empty', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
+          try { logger.warn('jup.verified.empty', { cat: 'pools' }); } catch {}
+        }
+      } catch {}
+      // One-time tokens.json refresh: fetch USDC/SOL prices for all listed mints
       try {
         const ONE_DAY_MS = 24 * 60 * 60 * 1000;
         const tokPath = (CONFIG as any)?.tokensPath;
         if (tokPath) {
-          let stale = false;
-          let st: any = null;
-          try {
-            st = await fsp.stat(tokPath);
-            stale = !st || ((Date.now() - (st.mtimeMs || 0)) > ONE_DAY_MS);
-          } catch { stale = true; }
-          try { logger.info('tokens.refresh.check', { path: tokPath, stale, mtimeMs: st?.mtimeMs ?? null, ageMs: st ? (Date.now() - (st.mtimeMs || 0)) : null, cat: 'pools' }); } catch {}
           {
             const { loadTokenMap } = await import('../utils/tokens.js');
             const map = await loadTokenMap().catch(() => ({} as any));
