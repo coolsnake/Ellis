@@ -1140,6 +1140,14 @@ export async function getMeteoraBalancedPoolsCached(force = false): Promise<Pool
         const d = diffNormalizedPools(prev || { amm: [], clmm: [] }, norm);
         emit('pools-update', { source: 'meteora_balanced', amm: (norm.amm || []).length, clmm: 0, ts: Date.now() });
         emit('pool-updates', { source: 'meteora_balanced', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample: { amm: d.amm.slice(0, 50), clmm: [] }, ts: Date.now() });
+        const inc = !!((CONFIG.system as any)?.graphIncrementalMode);
+        const hasDelta = d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm;
+        try {
+          const gmod: any = await import('./graph.js');
+          if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
+            await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm);
+          }
+        } catch {}
       } catch {}
       return norm;
     } finally {
@@ -1251,17 +1259,22 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
           emit('log', { level: 'info', message: `pools:update source=raydium amm=${nextAmm} clmm=${nextClmm}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } });
         }
       } catch {}
-      // Emit fine-grained pool-updates (deltas) for downstream debounced graph rebuild
+      // Emit fine-grained pool-updates (deltas) and prefer incremental graph apply when enabled
       try {
         const d = diffNormalizedPools(prev || { amm: [], clmm: [] }, norm);
         const sample = { amm: d.amm.slice(0, 100), clmm: d.clmm.slice(0, 100) };
         emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now(), canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
-        // Debounced graph rebuild on pool delta
+        const inc = !!((CONFIG.system as any)?.graphIncrementalMode);
+        const hasDelta = d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm;
         try {
           const gmod: any = await import('./graph.js');
-          const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
-          const delta = d.amm.length + d.clmm.length + d.addedAmm + d.addedClmm + d.removedAmm + d.removedClmm;
-          if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
+          if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
+            await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm);
+          } else {
+            const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
+            const delta = d.amm.length + d.clmm.length + d.addedAmm + d.addedClmm + d.removedAmm + d.removedClmm;
+            if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
+          }
         } catch {}
         try { logger.info('pools.delta raydium', { updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, cat: 'pools' }); } catch {}
       } catch {}
@@ -1316,18 +1329,23 @@ export async function getOrcaPoolsCached(force = false): Promise<PoolsPayload> {
           emit('log', { level: 'info', message: `pools:update source=orca amm=${nextAmm} clmm=${nextClmm}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } });
         }
       } catch {}
-      // Emit fine-grained pool-updates (deltas) for downstream debounced graph rebuild
+      // Emit fine-grained pool-updates (deltas) and prefer incremental graph apply when enabled
       try {
         const d = diffNormalizedPools(prev || { amm: [], clmm: [] }, data);
         const sample = { amm: d.amm.slice(0, 100), clmm: d.clmm.slice(0, 100) };
         emit('pool-updates', { source: 'orca', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now(), canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
         try { logger.debug('pools.delta orca', { updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, cat: 'pools' }); } catch {}
-        // Debounced graph rebuild on pool delta
+        const inc = !!((CONFIG.system as any)?.graphIncrementalMode);
+        const hasDelta = d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm;
         try {
           const gmod: any = await import('./graph.js');
-          const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
-          const delta = d.amm.length + d.clmm.length + d.addedAmm + d.addedClmm + d.removedAmm + d.removedClmm;
-          if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
+          if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
+            await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, data);
+          } else {
+            const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
+            const delta = d.amm.length + d.clmm.length + d.addedAmm + d.addedClmm + d.removedAmm + d.removedClmm;
+            if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
+          }
         } catch {}
       } catch {}
       // Graph rebuilds now orchestrated by refresh endpoint; avoid redundant triggers here
@@ -1457,6 +1475,14 @@ export async function getMeteoraPoolsCached(force = false): Promise<PoolsPayload
         const sample = { amm: [], clmm: d.clmm.slice(0, 100) };
         emit('pools-update', { source: 'meteora', amm: 0, clmm: norm.clmm.length, ts: Date.now() });
         emit('pool-updates', { source: 'meteora', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now() });
+        const inc = !!((CONFIG.system as any)?.graphIncrementalMode);
+        const hasDelta = d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm;
+        try {
+          const gmod: any = await import('./graph.js');
+          if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
+            await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm);
+          }
+        } catch {}
       } catch {}
       // Graph rebuilds now orchestrated by refresh endpoint; avoid redundant triggers here
       return meteoraCache.data!;

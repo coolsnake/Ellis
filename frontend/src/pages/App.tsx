@@ -779,6 +779,108 @@ export const App: React.FC = () => {
         await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: api commands: start | stop | reset' }) });
         return;
       }
+      if (ns === 'arb') {
+        const action = (parts[1] || '').toLowerCase();
+
+        const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+        const USDT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
+
+        const pickPoolId = async (dex: 'raydium'|'orca'|'meteora'): Promise<string | null> => {
+          const resp = await fetch(`${apiBase}/arb/pools/${dex}?sort=tvl`);
+          const json = await resp.json();
+          const list = [ ...(json?.clmm || []), ...(json?.amm || []) ];
+          const match = list.find((p: any) => {
+            const a = String(p?.mint_a || p?.mintA || '').trim();
+            const b = String(p?.mint_b || p?.mintB || '').trim();
+            return (a === USDC && b === USDT) || (a === USDT && b === USDC);
+          });
+          return match ? String(match.id) : null;
+        };
+
+        const buildTwoHopBody = async (dex: 'raydium'|'orca'|'meteora', poolId?: string) => {
+          const pid = poolId || await pickPoolId(dex);
+          if (!pid) throw new Error(`no USDC/USDT pool found for ${dex}`);
+          const dexKey = dex === 'raydium' ? 'raydium-clmm' : (dex === 'orca' ? 'orca' : 'meteora');
+          return {
+            path: [USDC, USDT, USDC],
+            hopPoolIds: [pid, pid],
+            dexes: [dexKey, dexKey],
+            sizeUsd: 1,
+            slippageBps: 50,
+          };
+        };
+
+        const buildMultiHopBody = async (rayPool?: string, orcaPool?: string, meteoraPool?: string) => {
+          const ray = rayPool || await pickPoolId('raydium');
+          const orc = orcaPool || await pickPoolId('orca');
+          const met = meteoraPool || await pickPoolId('meteora');
+          if (!ray || !orc || !met) throw new Error('missing one or more std pools (ray/orca/meteora)');
+          return {
+            path: [USDC, USDT, USDC, USDT, USDC],
+            hopPoolIds: [ray, orc, met, ray],
+            dexes: ['raydium-clmm', 'orca', 'meteora', 'raydium-clmm'],
+            sizeUsd: 1,
+            slippageBps: 50,
+          };
+        };
+
+        try {
+          if (action === 'mode') {
+            const mode = (parts[2] || '').toLowerCase() === 'direct' ? 'direct' : 'simulate';
+            await fetch(`${apiBase}/exec/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) });
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: arb mode set to ${mode}` }) });
+            return;
+          }
+
+          if (action === 'pools') {
+            const kind = (parts[2] || '').toLowerCase();
+            if (kind && kind !== 'usdc-usdt') {
+              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: arb pools usdc-usdt' }) });
+              return;
+            }
+            const [ray, orc, met] = await Promise.all([
+              pickPoolId('raydium'),
+              pickPoolId('orca'),
+              pickPoolId('meteora'),
+            ]);
+            const msg = `USDC/USDT std pools → ray=${ray || '(none)'} orca=${orc || '(none)'} meteora=${met || '(none)'}`;
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: ${msg}` }) });
+            return;
+          }
+
+          if (['simulate','preflight','execute'].includes(action)) {
+            const target = (parts[2] || '').toLowerCase();
+            const endpoint = action === 'simulate' ? '/arb/simulate' : (action === 'preflight' ? '/arb/simulate-send' : '/arb/execute');
+
+            let body: any = null;
+            if (target === 'multi') {
+              body = await buildMultiHopBody();
+            } else if (target === 'ray' || target === 'raydium') {
+              body = await buildTwoHopBody('raydium');
+            } else if (target === 'orca') {
+              body = await buildTwoHopBody('orca');
+            } else if (target === 'meteora') {
+              body = await buildTwoHopBody('meteora');
+            } else {
+              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: arb simulate|preflight|execute ray|orca|meteora|multi' }) });
+              return;
+            }
+
+            const resp = await fetch(`${apiBase}${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+            const json = await resp.json();
+            const ok = resp.ok && !json?.err;
+            const tag = action === 'execute' ? (json?.signature ? `sig=${json.signature}` : 'sent') : (action === 'preflight' ? (ok ? 'preflight ok' : 'preflight err') : 'built');
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: ok ? 'info' : 'error', message: `terminal: arb ${action} ${target || 'n/a'} → ${tag}` }) });
+            return;
+          }
+        } catch (e: any) {
+          await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: arb failed ${String(e?.message || e)}` }) });
+          return;
+        }
+
+        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: arb commands: mode direct|simulate | pools usdc-usdt | simulate|preflight|execute ray|orca|meteora|multi' }) });
+        return;
+      }
       if (ns === 'swap') {
         if (parts.length >= 4) {
           const amount = Number(parts[1]);
@@ -860,6 +962,7 @@ export const App: React.FC = () => {
           'api: start | stop | reset',
           'ticktime: MS (set target tick time in ms)',
           'swap: AMOUNT FROM TO',
+          'arb: mode direct|simulate | pools usdc-usdt | simulate|preflight|execute ray|orca|meteora|multi',
           'config: reset | ticktime MS',
           'help — show this help'
         ];

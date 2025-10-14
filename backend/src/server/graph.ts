@@ -12,6 +12,7 @@ import type { GraphNode, GraphEdge, GraphSnapshot, GraphDiff } from './graph.typ
 export type { GraphNode, GraphEdge, GraphSnapshot, GraphDiff } from './graph.types.js';
 import { diffSnapshots } from './graph.diff.js';
 import { findPathInSnapshot } from './graph.path.js';
+import type { PoolsPayload, AmmPool, ClmmPool } from './pools/types.js';
 
 
 
@@ -123,6 +124,191 @@ export function scheduleGraphRebuild(io?: SocketIOServer, debounceMs = 200): voi
   const wait = Math.max(minDebounce, debounceMs);
   rebuildTimer = setTimeout(() => { rebuildTimer = null; const pending = pendingUpdates; pendingUpdates = 0; try { logger.debug('graph.rebuild.batch', { pending, code: LogCode.GRAPH_REBUILD_BATCH }); } catch {}; rebuildGraphNow(io).catch(() => {}); }, wait);
   try { logger.debug('graph.rebuild.scheduled', { debounceMs, code: LogCode.GRAPH_REBUILD_SCHEDULED }); } catch {}
+}
+
+// Incremental graph apply from pool deltas (diff-first, occasional rebase)
+const priceClampMinInc = Number(((CONFIG as any)?.sanity as any)?.priceClampMin ?? 1e-12);
+const priceClampMaxInc = Number(((CONFIG as any)?.sanity as any)?.priceClampMax ?? 1e12);
+const clampPriceInc = (px?: number): number | undefined => {
+  const v = Number(px);
+  if (!Number.isFinite(v) || !(v > 0)) return undefined;
+  return Math.min(priceClampMaxInc, Math.max(priceClampMinInc, v));
+};
+function liqDisplayFromPool(pool: any): number | undefined {
+  const tvl = Number((pool as any)?.tvl_usd);
+  if (Number.isFinite(tvl) && tvl > 0) return tvl;
+  const disp = Number((pool as any)?.liquidity_display);
+  if (Number.isFinite(disp) && disp > 0) return disp;
+  const raw = Number((pool as any)?.pool_liquidity_raw ?? (pool as any)?.liquidity ?? (pool as any)?.liquidity_base);
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  return undefined;
+}
+function weightFrom(liq?: number, fee_bps?: number): number {
+  const liqv = Number(liq || 0);
+  const fee = Number(fee_bps || 1);
+  return Math.max(1, liqv) / Math.max(1, fee);
+}
+function edgesFromPoolIncremental(p: AmmPool | ClmmPool, getUsd: (m: string) => number | undefined): GraphEdge[] {
+  const dex = String((p as any)?.dex || '');
+  const id = String((p as any)?.id || '');
+  const a = String((p as any)?.mint_a || '');
+  const b = String((p as any)?.mint_b || '');
+  const fee = Number((p as any)?.fee_bps || 0);
+  const liq = liqDisplayFromPool(p);
+  const w = weightFrom(liq, fee);
+  const fwdRaw = Number((p as any)?.price_a_per_b);
+  const fRaw = Number.isFinite(fwdRaw) && fwdRaw > 0 ? fwdRaw : undefined;
+  const mag = calibrateMagnitude(a, b, fRaw, getUsd);
+  const fwd = clampPriceInc(mag);
+  const rev = fwd && fwd > 0 ? 1 / fwd : undefined;
+  const kind = (p as any)?.pool_kind || (typeof (p as any)?.sqrt_price_x64 === 'number' ? 'clmm' : 'amm');
+
+  const forward: GraphEdge = {
+    id: id || `${a}->${b}-${dex}`,
+    source: a,
+    target: b,
+    dex,
+    pool_id: id || undefined,
+    source_account: (p as any)?.account_a,
+    target_account: (p as any)?.account_b,
+    fee_bps: fee,
+    liquidity: liq,
+    liquidity_display: liq,
+    weight: w,
+    price_a_per_b: fwd,
+    tvl_usd: (p as any)?.tvl_usd,
+    pool_kind: kind as any,
+    direction: 'forward',
+    pool_liquidity_raw: (p as any)?.pool_liquidity_raw,
+  };
+  const rid = id ? `${id}-rev` : '';
+  const reverse: GraphEdge = {
+    id: rid || `${b}->${a}-${dex}`,
+    source: b,
+    target: a,
+    dex,
+    pool_id: rid || undefined,
+    source_account: (p as any)?.account_b,
+    target_account: (p as any)?.account_a,
+    fee_bps: fee,
+    liquidity: liq,
+    liquidity_display: liq,
+    weight: w,
+    price_a_per_b: rev,
+    tvl_usd: (p as any)?.tvl_usd,
+    pool_kind: kind as any,
+    direction: 'reverse',
+    pool_liquidity_raw: (p as any)?.pool_liquidity_raw,
+  };
+  return [forward, reverse];
+}
+function edgeChangedSimple(a: GraphEdge, b: GraphEdge): boolean {
+  if (a.id !== b.id) return true;
+  const liqa = Number(a.liquidity_display ?? a.liquidity ?? 0);
+  const liqb = Number(b.liquidity_display ?? b.liquidity ?? 0);
+  const pxa  = Number(a.price_a_per_b ?? 0);
+  const pxb  = Number(b.price_a_per_b ?? 0);
+  const wa   = Number(a.weight ?? 0);
+  const wb   = Number(b.weight ?? 0);
+  const eps = 1e-6;
+  if (Math.abs(liqa - liqb) > eps) return true;
+  if (Math.abs(pxa - pxb) > eps) return true;
+  if (Math.abs(wa - wb) > eps) return true;
+  if (Number(a.fee_bps ?? -1) !== Number(b.fee_bps ?? -1)) return true;
+  return false;
+}
+
+export async function applyPoolUpdates(prev: PoolsPayload, next: PoolsPayload): Promise<void> {
+  try {
+    if (!lastSnapshot) { await rebuildGraphNow(undefined); return; }
+    const priceStore = await import('./priceStore.js');
+    const getUsd = (m: string): number | undefined => { try { return (priceStore as any).getPriceByMint(m)?.usdc ?? undefined; } catch { return undefined; } };
+
+    const edgesMap = new Map(lastSnapshot.edges.map(e => [String(e.id), e]));
+    const nodesMap = new Map(lastSnapshot.nodes.map(n => [String(n.id), n]));
+
+    // Identify removed pools by id (remove fwd + rev edges when pool disappears)
+    const prevA = new Set((prev?.amm || []).map(p => String(p.id)));
+    const prevC = new Set((prev?.clmm || []).map(p => String(p.id)));
+    const nextA = new Set((next?.amm || []).map(p => String(p.id)));
+    const nextC = new Set((next?.clmm || []).map(p => String(p.id)));
+    const removedEdgeIds: string[] = [];
+    for (const id of prevA) if (!nextA.has(id)) { if (edgesMap.delete(id)) removedEdgeIds.push(id); const rid = `${id}-rev`; if (edgesMap.delete(rid)) removedEdgeIds.push(rid); }
+    for (const id of prevC) if (!nextC.has(id)) { if (edgesMap.delete(id)) removedEdgeIds.push(id); const rid = `${id}-rev`; if (edgesMap.delete(rid)) removedEdgeIds.push(rid); }
+
+    // Upsert edges for changed pools (based on updated_ms when available)
+    const byIdPrev: Map<string, AmmPool | ClmmPool> = new Map([...(prev?.amm || []), ...(prev?.clmm || [])].map((p: any) => [String(p.id), p]));
+    const consider = [...(next?.amm || []), ...(next?.clmm || [])];
+    const addedEdges: GraphEdge[] = [];
+    const updatedEdges: GraphEdge[] = [];
+    const addedNodes: GraphNode[] = [];
+    const removedNodeIds: string[] = [];
+    for (const p of consider) {
+      const id = String((p as any)?.id || '');
+      const pv = byIdPrev.get(id);
+      const changed = !pv || Number((p as any)?.updated_ms || 0) > Number((pv as any)?.updated_ms || 0);
+      if (!changed) continue;
+      const [fwd, rev] = edgesFromPoolIncremental(p, getUsd);
+      for (const e of [fwd, rev]) {
+        const cur = edgesMap.get(e.id);
+        if (!cur) { edgesMap.set(e.id, e); addedEdges.push(e); }
+        else if (edgeChangedSimple(cur, e)) { edgesMap.set(e.id, e); updatedEdges.push(e); }
+      }
+      const a = String((p as any)?.mint_a || ''); const b = String((p as any)?.mint_b || '');
+      if (a && !nodesMap.has(a)) { nodesMap.set(a, { id: a }); addedNodes.push({ id: a }); }
+      if (b && !nodesMap.has(b)) { nodesMap.set(b, { id: b }); addedNodes.push({ id: b }); }
+    }
+
+    // prune orphan nodes
+    const incident = new Map<string, number>();
+    for (const e of edgesMap.values()) {
+      incident.set(e.source, (incident.get(e.source) || 0) + 1);
+      incident.set(e.target, (incident.get(e.target) || 0) + 1);
+    }
+    for (const [id] of nodesMap) {
+      if (!incident.has(id)) { nodesMap.delete(id); removedNodeIds.push(id); }
+    }
+
+    if (!(addedEdges.length || updatedEdges.length || removedEdgeIds.length || addedNodes.length || removedNodeIds.length)) return;
+
+    const newSnap: GraphSnapshot = {
+      version: (lastSnapshot.version || 0) + 1,
+      timestamp: Date.now(),
+      nodes: Array.from(nodesMap.values()),
+      edges: Array.from(edgesMap.values()),
+    };
+    lastSnapshot = newSnap;
+
+    const diff: GraphDiff = {
+      version: newSnap.version,
+      timestamp: newSnap.timestamp,
+      addedNodes,
+      updatedNodes: [],
+      removedNodeIds,
+      addedEdges,
+      updatedEdges,
+      removedEdgeIds,
+    };
+
+    const ch = addedEdges.length + updatedEdges.length + removedEdgeIds.length;
+    const nowMs = Date.now();
+    const shouldRebase = (diffSinceRebase >= REBASE_DIFF_THRESHOLD) || (nowMs - lastRebaseMs > REBASE_TIME_MS);
+    if (shouldRebase) {
+      diffSinceRebase = 0; lastRebaseMs = nowMs;
+      try { logger.info('graph.incremental.apply', { added: addedEdges.length, updated: updatedEdges.length, removed: removedEdgeIds.length, nodes_add: addedNodes.length, nodes_rem: removedNodeIds.length, mode: 'rebase', cat: 'graph' }); } catch {}
+      try { emit('graph-rebase', { version: newSnap.version, timestamp: newSnap.timestamp }); } catch {}
+      try { await pushArbGraphSnapshot(newSnap); } catch {}
+    } else {
+      diffSinceRebase += ch;
+      try { logger.info('graph.incremental.apply', { added: addedEdges.length, updated: updatedEdges.length, removed: removedEdgeIds.length, nodes_add: addedNodes.length, nodes_rem: removedNodeIds.length, mode: 'diff', cat: 'graph' }); } catch {}
+      try { emit('graph-update', toLiteDiff(diff)); } catch {}
+      try { await pushArbGraphDiff(diff); } catch {}
+    }
+    try { await notifyArbServiceRefresh(); } catch {}
+  } catch (e: any) {
+    try { logger.debug('graph.incremental.apply failed', { error: String(e?.message || e), cat: 'graph' }); } catch {}
+    try { await rebuildGraphNow(undefined); } catch {}
+  }
 }
 
 // Lightweight timing gauges for build and push latencies
@@ -1317,7 +1503,10 @@ export { diffSnapshots };
 export function startGraphStream(io: SocketIOServer): void {
   // Emit initial snapshot periodically and diffs when changed
   let last: GraphSnapshot | null = null;
-  const period = Math.max(1000, Number((CONFIG.system as any)?.graphStreamIntervalMs || 5000));
+  // Disable periodic stream when configured <= 0
+  const configuredInterval = Number((CONFIG.system as any)?.graphStreamIntervalMs || 0);
+  if (configuredInterval <= 0) return;
+  const period = Math.max(1000, configuredInterval);
   // Backpressure state: buffer one pending update (prefer snapshot)
   let pending: { kind: 'snapshot' | 'diff'; payload: any } | null = null;
   const tryEmit = (kind: 'snapshot' | 'diff', payload: any) => {
