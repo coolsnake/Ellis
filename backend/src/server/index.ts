@@ -407,10 +407,12 @@ server.listen(CONFIG.port, () => {
         const tokPath = (CONFIG as any)?.tokensPath;
         if (tokPath) {
           let stale = false;
+          let st: any = null;
           try {
-            const st = await fsp.stat(tokPath);
+            st = await fsp.stat(tokPath);
             stale = !st || ((Date.now() - (st.mtimeMs || 0)) > ONE_DAY_MS);
           } catch { stale = true; }
+          try { logger.info('tokens.refresh.check', { path: tokPath, stale, mtimeMs: st?.mtimeMs ?? null, ageMs: st ? (Date.now() - (st.mtimeMs || 0)) : null, cat: 'pools' }); } catch {}
           if (stale) {
             const { loadTokenMap } = await import('../utils/tokens.js');
             const map = await loadTokenMap().catch(() => ({} as any));
