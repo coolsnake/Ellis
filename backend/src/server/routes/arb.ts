@@ -211,6 +211,7 @@ export function createArbRouter(io: SocketIOServer): Router {
   api.post('/arb/execute', async (req, res) => {
     try {
       try { emit('log', { level: 'info', message: 'pretrade:arb execute start', timestamp: new Date().toISOString(), context: { cat: 'arb', code: 'PRETRADE.EXEC.START' } }); } catch {}
+      try { logger.info('pretrade:arb execute start', { cat: 'arb', code: LogCode.PRETRADE_EXEC_START }); } catch {}
       const { resolveDirectPlan } = await import('../../execution/resolver/index.js');
       const { ResolveDirectSchema } = await import('../routes/schemas.js');
       const { buildDirectArbTx } = await import('../../execution/builder/tx.js');
