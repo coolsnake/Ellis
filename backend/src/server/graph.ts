@@ -522,11 +522,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             } else {
             const pa = getPriceByMintVar(mintA)?.usdc ?? null;
             const pb = getPriceByMintVar(mintB)?.usdc ?? null;
-            const ANCHORS = new Set<string>([
-              'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-              'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
-              'So11111111111111111111111111111111111111112',   // SOL
-            ]);
+          const ANCHORS = new Set<string>([...(((CONFIG as any)?.system as any)?.anchorMints || [])]);
             const aIsAnchor = ANCHORS.has(mintA);
             const bIsAnchor = ANCHORS.has(mintB);
             const anchored = aIsAnchor || bIsAnchor;
@@ -919,10 +915,10 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         } catch {}
         try {
           // 3) Simple triangulation using current edges and common pivots
-          const PIVOTS: string[] = [
-            'So11111111111111111111111111111111111111112', // SOL
-            'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-          ];
+          const PIVOTS: string[] = Array.from(new Set<string>([
+            ...((((CONFIG as any)?.system as any)?.anchorMints || []) as string[]),
+            ...((((CONFIG as any)?.system as any)?.stableMints || []) as string[]),
+          ]));
           const getAPerBFromEdges = (A: string, B: string): number | undefined => {
             let best: { v: number; w: number } | null = null;
             for (const e of Object.values(edgesMap)) {

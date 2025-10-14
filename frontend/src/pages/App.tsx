@@ -830,6 +830,9 @@ export const App: React.FC = () => {
           if (action === 'mode') {
             const mode = (parts[2] || '').toLowerCase() === 'direct' ? 'direct' : 'simulate';
             await fetch(`${apiBase}/exec/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) });
+            if (mode === 'direct') {
+              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: 'tx.arbmode = direct' }) });
+            }
             await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: arb mode set to ${mode}` }) });
             return;
           }

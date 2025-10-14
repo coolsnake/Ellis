@@ -125,13 +125,15 @@ export const CONFIG = {
     // Modes: 'quoteHierarchy' | 'lex' | 'preferA' | 'preferB' | 'preferLists'
     canonicalizePairs: (process.env.CANONICALIZE_PAIRS as any) || 'quoteHierarchy',
     // Quote hierarchy (highest-ranked mint should be on the B side as quote)
-    // Env: SYSTEM_QUOTE_HIERARCHY=Mint1,Mint2,... (defaults to [USDC, USDT])
+    // Env: SYSTEM_QUOTE_HIERARCHY=Mint1,Mint2,... (defaults to [SOL, CBBTC, USDC, USDT])
     quoteHierarchy: (process.env.SYSTEM_QUOTE_HIERARCHY
       ? String(process.env.SYSTEM_QUOTE_HIERARCHY)
           .split(',')
           .map((s) => s.trim())
           .filter(Boolean)
       : [
+          'So11111111111111111111111111111111111111112', // SOL
+          'cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij', // CBBTC (user-provided)
           'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
           'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
         ]),
@@ -150,7 +152,7 @@ export const CONFIG = {
     // If true, drop stable<->stable edges at graph build time
     dropStableStableEdges: (process.env.DROP_STABLE_STABLE_EDGES || 'false') === 'true',
     // Optional: anchors always included in universe and bridging exceptions
-    anchorMints: (process.env.ANCHOR_MINTS || 'So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')
+    anchorMints: (process.env.ANCHOR_MINTS || 'So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij')
       .split(',')
       .map(s => s.trim())
       .filter(Boolean),

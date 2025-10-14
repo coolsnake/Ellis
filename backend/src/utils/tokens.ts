@@ -47,6 +47,13 @@ export async function resolveMint(symbolOrMint: string): Promise<{ mint: string;
     const current = await loadTokenMap();
     current[upper] = { mint: first.id, decimals: first.decimals ?? 6 };
     await writeJson(CONFIG.tokensPath, current);
+    // Opportunistic price bootstrap for the newly discovered token
+    try {
+      const { fetchPricesByMints } = await import('../jupiter/jupiter.js');
+      const { setPrices } = await import('../server/priceStore.js');
+      const fresh = await fetchPricesByMints([first.id], { catOverride: 'token-resolve' });
+      setPrices(fresh);
+    } catch {}
     resolveCache[upper] = current[upper];
     return current[upper];
   }

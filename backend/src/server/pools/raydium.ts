@@ -400,13 +400,6 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
                 if (dev + 1e-12 < bestDev) { bestDev = dev; bestVal = cur; }
               }
               price_sane = bestVal;
-              // Orientation correction: if reciprocal is closer to ref, invert once
-              if (price_sane && (price_sane as number) > 0) {
-                const inv = 1 / (price_sane as number);
-                const devBest = Math.max((price_sane as number) / ref, ref / (price_sane as number));
-                const devInv = Math.max(inv / ref, ref / inv);
-                if (devInv + 1e-12 < devBest) price_sane = inv;
-              }
               if (bestDev > maxDeviation) {
                 try { logger.warn('raydium.amm drop by sanity', { id, mint_a: mintA, mint_b: mintB, price_in, price_res, ref, dev: bestDev, maxDeviation }); } catch {}
                 continue;
