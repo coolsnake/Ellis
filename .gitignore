@@ -536,3 +536,4 @@ backend/cache/meteora-balanced-raw-sample.json
 backend/config/walletHistory.json
 backend/backend/logs-test/consolidated-session.json
 backend/backend/logs-test/arb-session.json
+backend/config/walletHistory.json
