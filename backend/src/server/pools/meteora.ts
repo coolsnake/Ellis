@@ -152,8 +152,7 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       const feeRaw = (it as any)?.feeRate ?? (it as any)?.fee_bps;
       if (typeof feeRaw === 'number') fee_bps = feeRaw <= 1 ? Math.round(feeRaw * 10_000) : Math.round(feeRaw);
     }
-    // Do not use vendor-provided current_price as a price candidate; derive strictly from pool state
-    let price_a_per_b = 0;
+    let price_a_per_b = Number((it as any)?.current_price ?? (it as any)?.price ?? (it as any)?.price_a_per_b ?? 0);
     const amtAraw = (it?.reserve_x_amount ?? it?.tokenBalanceA ?? it?.tokenAAmount ?? it?.amountA ?? it?.baseAmount ?? 0);
     const amtBraw = (it?.reserve_y_amount ?? it?.tokenBalanceB ?? it?.tokenBAmount ?? it?.amountB ?? it?.quoteAmount ?? 0);
     let amount_a = Number(typeof amtAraw === 'string' ? Number(amtAraw) : amtAraw || 0);
@@ -225,8 +224,6 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
         price_a_per_b = best;
       }
     } catch {}
-    // Final guard: never substitute USD ref; if no pool-derived candidate, skip the pool
-    if (!(price_a_per_b > 0)) { try { logger.debug('meteora.skip.no_pool_price', { id, mint_a, mint_b }); } catch {}; continue; }
     // Stable-stable guard: if active-bin implies exactly 1 and reserves give a different finite value, prefer reserves
     try {
       const STABLES = new Set<string>([

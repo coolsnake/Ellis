@@ -1701,9 +1701,21 @@ async fn arb_start(State(state): State<Arc<RwLock<AppState>>>, headers: HeaderMa
         if want && !s.config.enabled {
             tracing::info!("arb.start: enabling loop");
             s.config.enabled = true;
-        } else if !want && s.config.enabled {
+        } else if !want {
             tracing::info!("arb.stop: disabling loop");
             s.config.enabled = false;
+            // Clear graph and pending buffers so next start receives a fresh snapshot
+            s.graph = ArbGraph::new();
+            s.metrics.graph_nodes = 0;
+            s.metrics.graph_edges = 0;
+            s.last_graph_version = 0;
+            s.last_graph_ts = 0;
+            s.pending_added_edges.clear();
+            s.pending_updated_edges.clear();
+            s.pending_removed_edge_ids.clear();
+            s.pending_graph_version = None;
+            s.pending_graph_ts = None;
+            s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: "arb.stop: graph cleared".into() });
         }
     } else {
         if !s.config.enabled { tracing::info!("arb.start: enabling loop"); }
