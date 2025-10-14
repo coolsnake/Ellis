@@ -20,8 +20,8 @@ export async function bootstrapPricesForUniverse(opts: BootstrapOpts = {}): Prom
   missing: number;
 }> {
   const cat = opts.cat || 'price-bootstrap';
-  const chunkSize = Math.max(10, Math.min(500, Number(opts.chunkSize ?? 80)));
-  const maxRequests = Math.max(1, Number(opts.maxRequests ?? 5));
+  const chunkSize = Math.max(10, Math.min(500, Number(opts.chunkSize ?? 100)));
+  const maxRequests = Number.isFinite(Number(opts.maxRequests)) ? Math.max(1, Number(opts.maxRequests)) : Number.MAX_SAFE_INTEGER;
 
   const uni = await computeTokenUniverse('jupiter');
   const mints = new Set<string>(Array.from(uni));
@@ -123,8 +123,8 @@ export async function bootstrapPricesForMints(mintsIn: string[], opts: Bootstrap
   missing: number;
 }> {
   const cat = opts.cat || 'price-bootstrap';
-  const chunkSize = Math.max(10, Math.min(500, Number(opts.chunkSize ?? 80)));
-  const maxRequests = Math.max(1, Number(opts.maxRequests ?? 5));
+  const chunkSize = Math.max(10, Math.min(500, Number(opts.chunkSize ?? 100)));
+  const maxRequests = Number.isFinite(Number(opts.maxRequests)) ? Math.max(1, Number(opts.maxRequests)) : Number.MAX_SAFE_INTEGER;
   const mints = Array.from(new Set((mintsIn || []).filter(Boolean)));
   if (mints.length === 0) return { total: 0, priced: 0, missing: 0 };
   logger.info('price.bootstrap.mints start', { cat, totalMints: mints.length, chunkSize, maxRequests });
