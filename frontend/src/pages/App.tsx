@@ -872,7 +872,9 @@ export const App: React.FC = () => {
               return;
             }
 
-            const resp = await fetch(`${apiBase}${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+            // If executing, include forceDirect flag so backend always signs/sends
+            const enriched = action === 'execute' ? { ...body, forceDirect: true } : body;
+            const resp = await fetch(`${apiBase}${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(enriched) });
             const json = await resp.json();
             const ok = resp.ok && !json?.err;
             const tag = action === 'execute' ? (json?.signature ? `sig=${json.signature}` : 'sent') : (action === 'preflight' ? (ok ? 'preflight ok' : 'preflight err') : 'built');

@@ -850,71 +850,51 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           if (edgesMap[rid]) edgesMap[rid].pool_liquidity_raw = rawLiq > 0 ? rawLiq : undefined;
         } catch {}
       }
-      // Orientation correction: ensure price is A per 1 B. Prefer direct USD refs,
-      // else use implied USD via existing edges, else triangulate with pivots.
+      // Orientation correction: robust aggregation of refs (direct, implied, triangulated)
       const orientAPerB = (mintA: string, mintB: string, px: number | undefined): number | undefined => {
         const v = Number(px);
         if (!Number.isFinite(v) || !(v > 0)) return px;
-        const pickByRef = (pRefA?: number, pRefB?: number): number => {
-          if (!(typeof pRefA === 'number' && pRefA > 0 && typeof pRefB === 'number' && pRefB > 0)) return v;
-          const ref = (pRefB as number) / (pRefA as number);
-          const inv = 1 / v;
-          const dev  = Math.max(v / ref,  ref / v);
-          const devI = Math.max(inv / ref, ref / inv);
-          return (devI + 1e-12 < dev) ? inv : v;
-        };
+        const refs: number[] = [];
+        let directRef: number | undefined;
         try {
-          // 1) Direct USD ref
           const pa = getPriceByMintVar(mintA)?.usdc ?? null;
           const pb = getPriceByMintVar(mintB)?.usdc ?? null;
           if (pa && pb && (pa as number) > 0 && (pb as number) > 0) {
-            return pickByRef(pa as number, pb as number);
+            directRef = (pb as number) / (pa as number);
+            refs.push(directRef);
           }
         } catch {}
-        try {
-          // 2) Implied USD via existing edges (USDC/SOL pivots)
-          const SOL = 'So11111111111111111111111111111111111111112';
-          const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-          const getDirectUsd = (m: string): number | undefined => {
-            try { const p = getPriceByMintVar(m)?.usdc ?? null; return (typeof p === 'number' && p > 0) ? p : undefined; } catch { return undefined; }
-          };
-          const impliedUsd = (mint: string): { usd?: number; via?: 'USDC'|'SOL'; weight?: number } => {
-            let best: { usd: number; via: 'USDC'|'SOL'; weight: number } | null = null;
-            const pick = (usd: number | undefined, via: 'USDC'|'SOL', w: number) => {
-              if (typeof usd === 'number' && usd > 0) { if (!best || w > best.weight) best = { usd, via, weight: w }; }
-            };
-            for (const e of Object.values(edgesMap)) {
-              const w = Number((e as any)?.weight || 1);
-              if (e.source === mint && e.target === USDC) {
-                const p = Number((e as any)?.price_a_per_b || 0); // mint per 1 USDC
-                if (p > 0) pick(1 / p, 'USDC', w);
-              } else if (e.source === USDC && e.target === mint) {
-                const p = Number((e as any)?.price_a_per_b || 0); // USDC per 1 mint
-                if (p > 0) pick(p, 'USDC', w);
-              } else if (e.source === mint && e.target === SOL) {
-                const p = Number((e as any)?.price_a_per_b || 0); // mint per 1 SOL
-                const solUsd = getDirectUsd(SOL);
-                if (p > 0 && solUsd) pick((solUsd as number) / p, 'SOL', w);
-              } else if (e.source === SOL && e.target === mint) {
-                const p = Number((e as any)?.price_a_per_b || 0); // SOL per 1 mint
-                const solUsd = getDirectUsd(SOL);
-                if (p > 0 && solUsd) pick((solUsd as number) * p, 'SOL', w);
-              }
+        const getDirectUsd = (m: string): number | undefined => {
+          try { const p = getPriceByMintVar(m)?.usdc ?? null; return (typeof p === 'number' && p > 0) ? p : undefined; } catch { return undefined; }
+        };
+        const impliedUsd = (mint: string): { usd?: number; weight?: number } => {
+          let best: { usd: number; weight: number } | null = null;
+          for (const e of Object.values(edgesMap)) {
+            const w = Number((e as any)?.weight || 1);
+            const p = Number((e as any)?.price_a_per_b || 0);
+            if (!(p > 0)) continue;
+            if (e.source === mint && e.target === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') {
+              const usd = 1 / p; if (usd > 0 && (!best || w > best.weight)) best = { usd, weight: w };
+            } else if (e.source === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' && e.target === mint) {
+              const usd = p; if (usd > 0 && (!best || w > best.weight)) best = { usd, weight: w };
+            } else if (e.source === mint && e.target === 'So11111111111111111111111111111111111111112') {
+              const solUsd = getDirectUsd('So11111111111111111111111111111111111111112');
+              if (solUsd) { const usd = (solUsd as number) / p; if (usd > 0 && (!best || w > best.weight)) best = { usd, weight: w }; }
+            } else if (e.source === 'So11111111111111111111111111111111111111112' && e.target === mint) {
+              const solUsd = getDirectUsd('So11111111111111111111111111111111111111112');
+              if (solUsd) { const usd = (solUsd as number) * p; if (usd > 0 && (!best || w > best.weight)) best = { usd, weight: w }; }
             }
-            return best || {};
-          };
-          let paImp = getDirectUsd(mintA);
-          let pbImp = getDirectUsd(mintB);
-          if (!paImp) paImp = impliedUsd(mintA).usd;
-          if (!pbImp) pbImp = impliedUsd(mintB).usd;
-          const oriented = pickByRef(paImp, pbImp);
-          if (oriented !== v) {
-            try { logger.debug('graph.orient.fallback.implied', { mintA, mintB, price_in: v, price_out: oriented, pa: paImp, pb: pbImp }); } catch {}
-            return oriented;
+          }
+          return best || {} as any;
+        };
+        try {
+          const paImp = impliedUsd(mintA).usd ?? getDirectUsd(mintA);
+          const pbImp = impliedUsd(mintB).usd ?? getDirectUsd(mintB);
+          if (typeof paImp === 'number' && paImp > 0 && typeof pbImp === 'number' && pbImp > 0) {
+            refs.push((pbImp as number) / (paImp as number));
           }
         } catch {}
         try {
-          // 3) Simple triangulation using current edges and common pivots
           const PIVOTS: string[] = Array.from(new Set<string>([
             ...((((CONFIG as any)?.system as any)?.anchorMints || []) as string[]),
             ...((((CONFIG as any)?.system as any)?.stableMints || []) as string[]),
@@ -932,23 +912,34 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             }
             return best?.v;
           };
-          let ref: number | undefined;
           for (const C of PIVOTS) {
             if (C === mintA || C === mintB) continue;
             const aPerC = getAPerBFromEdges(mintA, C);
             const bPerC = getAPerBFromEdges(mintB, C);
-            if (aPerC && bPerC && aPerC > 0 && bPerC > 0) { ref = aPerC / bPerC; break; }
-          }
-          if (ref && ref > 0) {
-            const inv = 1 / v;
-            const dev  = Math.max(v / ref,  ref / v);
-            const devI = Math.max(inv / ref, ref / inv);
-            const out = (devI + 1e-12 < dev) ? inv : v;
-            try { if (out !== v) logger.debug('graph.orient.fallback.tri', { mintA, mintB, price_in: v, price_out: out, ref }); } catch {}
-            return out;
+            if (aPerC && bPerC && aPerC > 0 && bPerC > 0) refs.push(aPerC / bPerC);
           }
         } catch {}
-        return v;
+        const goodRefs = refs.filter((r) => Number.isFinite(r) && r > 0);
+        if (!goodRefs.length) return v;
+        try {
+          if (typeof directRef === 'number' && directRef > 0 && goodRefs.length >= 2) {
+            const others = goodRefs.filter((r) => r !== directRef);
+            if (others.length) {
+              const median = [...others].sort((a,b) => a-b)[Math.floor(others.length/2)];
+              const dev = Math.max((directRef as number)/median, median/(directRef as number));
+              if (dev > 2) {
+                const idx = goodRefs.indexOf(directRef as number);
+                if (idx >= 0) goodRefs.splice(idx, 1);
+              }
+            }
+          }
+        } catch {}
+        const inv = 1 / v;
+        const devs = goodRefs.map((r) => { const d = Math.max(v / r, r / v); return Number.isFinite(d) ? d : Number.POSITIVE_INFINITY; });
+        const devsInv = goodRefs.map((r) => { const d = Math.max(inv / r, r / inv); return Number.isFinite(d) ? d : Number.POSITIVE_INFINITY; });
+        const median = [...devs].sort((a,b) => a-b)[Math.floor(devs.length/2)];
+        const medianInv = [...devsInv].sort((a,b) => a-b)[Math.floor(devsInv.length/2)];
+        return (medianInv + 1e-12 < median) ? inv : v;
       };
       // Triangulation helpers are defined below after we have all valid pools
 

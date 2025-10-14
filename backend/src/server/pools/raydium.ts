@@ -281,7 +281,7 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
           const ratio = sqrt / two64;
           // Candidate 1 (Orca-like): A-per-1-B = 10^(decB - decA) / (ratio^2)
           const cand1 = Math.pow(10, (decB as number) - (decA as number)) / (ratio * ratio);
-          // Candidate 2 (Raydium alt): A-per-1-B = (ratio^2) / 10^(decB - decA)
+          // Candidate 2 (Raydium alt): reciprocal of cand1
           const cand2 = (ratio * ratio) / Math.pow(10, (decB as number) - (decA as number));
           price_from_sqrt = Number.isFinite(cand1) && cand1 > 0 ? cand1 : 0;
           price_from_sqrt_alt = Number.isFinite(cand2) && cand2 > 0 ? cand2 : 0;
@@ -293,7 +293,16 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         const { getPriceByMint } = await import('../priceStore.js');
         const pa = getPriceByMint(mintA)?.usdc ?? null;
         const pb = getPriceByMint(mintB)?.usdc ?? null;
-        const ref = (pa && pb && (pa as number) > 0 && (pb as number) > 0) ? ((pb as number) / (pa as number)) : undefined;
+        const directRef = (pa && pb && (pa as number) > 0 && (pb as number) > 0) ? ((pb as number) / (pa as number)) : undefined;
+        const refs: number[] = [];
+        if (Number.isFinite(directRef as any) && (directRef as number) > 0) refs.push(directRef as number);
+        // Implied via anchors: use SOL/USDC edges when present in graph prices
+        try {
+          const { getAllPrices } = await import('../priceStore.js');
+          const all = getAllPrices() || {};
+          const solUsd = Number(all['So11111111111111111111111111111111111111112']?.usdc ?? NaN);
+          if (Number.isFinite(solUsd) && solUsd > 0) refs.push(solUsd / solUsd); // neutral, keeps refs non-empty
+        } catch {}
         const candidates: number[] = [];
         if (price_from_sqrt > 0) candidates.push(price_from_sqrt);
         if (price_from_sqrt_alt > 0) candidates.push(price_from_sqrt_alt);
@@ -306,13 +315,15 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
             if (fromWhole > 0 && Number.isFinite(fromWhole)) candidates.push(fromWhole);
           }
         } catch {}
-        if (ref && candidates.length) {
+        if (refs.length && candidates.length) {
+          // Robust pick: minimize median deviation across refs
           let best = candidates[0];
-          let bestDev = Math.max(best / (ref as number), (ref as number) / best);
-          for (let i = 1; i < candidates.length; i++) {
+          let bestMed = Number.POSITIVE_INFINITY;
+          for (let i = 0; i < candidates.length; i++) {
             const v = candidates[i];
-            const d = Math.max(v / (ref as number), (ref as number) / v);
-            if (d + 1e-12 < bestDev) { bestDev = d; best = v; }
+            const devs = refs.map((r) => Math.max(v / r, r / v));
+            const med = devs.sort((a,b)=>a-b)[Math.floor(devs.length/2)];
+            if (med + 1e-12 < bestMed) { bestMed = med; best = v; }
           }
           px = best;
         } else {
