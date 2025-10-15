@@ -390,58 +390,11 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     if ((hop.amountInRaw || 0n) <= 0n) {
       throw new Error('RAYDIUM_AMM_BUILD_FAILED: amount=0');
     }
-    // Best-effort: derive missing market/program from on-chain pool state
-    try {
-      if (!hop.market || !hop.serumProgramId) {
-        const connection = getConnection();
-        const poolPk = toPublicKey(hop.poolId);
-        const acc = await connection.getAccountInfo(poolPk);
-        if (acc?.data?.length) {
-          const rmod: any = await import('@raydium-io/raydium-sdk-v2');
-          const layouts = [
-            (rmod as any)?.LiquidityStateLayoutV4,
-            (rmod as any)?.liquidityStateV4Layout,
-            (rmod as any)?.LiquidityStateLayoutV5,
-            (rmod as any)?.liquidityStateV5Layout,
-          ].filter(Boolean);
-          for (const layout of layouts) {
-            try {
-              const state = layout.decode(acc.data);
-              const mk = state.marketId?.toBase58?.() || state.marketId?.toString?.() || '';
-              const mp = state.marketProgramId?.toBase58?.() || state.marketProgramId?.toString?.() || '';
-              if (mk && mp) {
-                hop.market = hop.market || mk;
-                hop.serumProgramId = hop.serumProgramId || mp;
-                break;
-              }
-            } catch {}
-          }
-        }
-      }
-    } catch {}
-    // Validate required fields for Raydium AMM build
-    const missing: string[] = [];
-    if (!hop.market) missing.push('market');
-    if (!hop.serumProgramId) missing.push('serumProgramId');
-    if (!hop.inputMint) missing.push('inputMint');
-    if (!hop.outputMint) missing.push('outputMint');
-    if (!Number.isFinite(Number(hop.inputDecimals))) missing.push('inputDecimals');
-    if (!Number.isFinite(Number(hop.outputDecimals))) missing.push('outputDecimals');
-    if (!hop.userSourceAta) missing.push('userSourceAta');
-    if (!hop.userDestAta) missing.push('userDestAta');
-    if (missing.length) {
-      const ver = resolveRaydiumAmmVersion(hop.programId);
-      throw new Error(`RAYDIUM_AMM_BUILD_FAILED: missing ${missing.join(',')} (version=${ver})`);
-    }
-
+    // Step 1: detect AMM version early (v4 vs v5 CPMM)
     const { getAssociatedPoolKeys, makeSwapFixedInInstruction } = await import('@raydium-io/raydium-sdk-v2');
     const kp = await ensureWallet(CONFIG.walletPath);
     // Force programId to configured AMM program when not provided or ambiguous
     let programId = toPublicKey(hop.programId, (CONFIG.raydium?.ammV4Program as any));
-    const marketId = toPublicKey(hop.market);
-    const marketProgramId = toPublicKey(hop.serumProgramId);
-
-    // Choose Raydium AMM version; default to 4, then try detect by decoding pool account
     let version: 4 | 5 = resolveRaydiumAmmVersion(hop.programId);
     try {
       const conn = getConnection();
@@ -460,6 +413,53 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
         }
       }
     } catch {}
+
+    // Step 2: derive market/program for v4 only (best-effort)
+    try {
+      if (version === 4 && (!hop.market || !hop.serumProgramId)) {
+        const connection = getConnection();
+        const poolPk = toPublicKey(hop.poolId);
+        const acc = await connection.getAccountInfo(poolPk);
+        if (acc?.data?.length) {
+          const rmod: any = await import('@raydium-io/raydium-sdk-v2');
+          const layouts = [
+            (rmod as any)?.LiquidityStateLayoutV4,
+            (rmod as any)?.liquidityStateV4Layout,
+          ].filter(Boolean);
+          for (const layout of layouts) {
+            try {
+              const state = layout.decode(acc.data);
+              const mk = state.marketId?.toBase58?.() || state.marketId?.toString?.() || '';
+              const mp = state.marketProgramId?.toBase58?.() || state.marketProgramId?.toString?.() || '';
+              if (mk && mp) {
+                hop.market = hop.market || mk;
+                hop.serumProgramId = hop.serumProgramId || mp;
+                break;
+              }
+            } catch {}
+          }
+        }
+      }
+    } catch {}
+
+    // Step 3: validate required fields (version-aware)
+    const missing: string[] = [];
+    if (!hop.inputMint) missing.push('inputMint');
+    if (!hop.outputMint) missing.push('outputMint');
+    if (!hop.userSourceAta) missing.push('userSourceAta');
+    if (!hop.userDestAta) missing.push('userDestAta');
+    if (version === 4) {
+      if (!hop.market) missing.push('market');
+      if (!hop.serumProgramId) missing.push('serumProgramId');
+      if (!Number.isFinite(Number(hop.inputDecimals))) missing.push('inputDecimals');
+      if (!Number.isFinite(Number(hop.outputDecimals))) missing.push('outputDecimals');
+    }
+    if (missing.length) {
+      throw new Error(`RAYDIUM_AMM_BUILD_FAILED: missing ${missing.join(',')} (version=${version})`);
+    }
+
+    const marketId = version === 4 ? toPublicKey(hop.market) : undefined as any;
+    const marketProgramId = version === 4 ? toPublicKey(hop.serumProgramId) : undefined as any;
 
     // Determine true base/quote from pool state when possible
     let baseMintPk: PublicKey | undefined;
@@ -488,18 +488,29 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     const baseDecimals = inputIsBase ? Number(hop.inputDecimals) : Number(hop.outputDecimals);
     const quoteDecimals = inputIsBase ? Number(hop.outputDecimals) : Number(hop.inputDecimals);
 
-    // Build pool keys with derived orientation
-    let poolKeys = (getAssociatedPoolKeys as any)({
-      version,
-      marketVersion: 3,
-      marketId,
-      baseMint,
-      quoteMint,
-      baseDecimals,
-      quoteDecimals,
-      programId,
-      marketProgramId,
-    });
+    // Build pool keys
+    let poolKeys: any;
+    if (version === 4) {
+      poolKeys = (getAssociatedPoolKeys as any)({
+        version,
+        marketVersion: 3,
+        marketId,
+        baseMint,
+        quoteMint,
+        baseDecimals,
+        quoteDecimals,
+        programId,
+        marketProgramId,
+      });
+    } else {
+      // Minimal skeleton for CPMM; we'll enrich from on-chain state next
+      poolKeys = {
+        id: toPublicKey(hop.poolId),
+        programId,
+        mintA: baseMint,
+        mintB: quoteMint,
+      } as any;
+    }
 
     // If SDK helper didn't populate vaults/auth/market keys (mint order or decimals mismatch),
     // derive them from on-chain AMM state (V4/V5).
