@@ -602,12 +602,33 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     const amountInBn = new BN(String(hop.amountInRaw ?? 0n));
     const minOutBn = new BN(String(hop.minOutRaw ?? 0n));
 
-    const ixInfo = (makeSwapFixedInInstruction as any)({
-      poolKeys,
-      userKeys,
-      amountIn: amountInBn,
-      minAmountOut: minOutBn,
-    }, version);
+    let ixInfo: any = null;
+    if (version === 5) {
+      // Try CPMM-specific builders in raydium-sdk-v2 (robust multi-name resolution)
+      try {
+        const sdkAny: any = await import('@raydium-io/raydium-sdk-v2');
+        const candidates: any[] = [
+          (sdkAny?.Cpmm && sdkAny.Cpmm.makeSwapFixedInInstruction),
+          (sdkAny?.Cpmm && sdkAny.Cpmm.makeSwapBaseInInstructions),
+          (sdkAny?.LiquidityV5 && sdkAny.LiquidityV5.makeSwapFixedInInstruction),
+          (sdkAny?.Liquidity && (sdkAny.Liquidity as any).makeSwapFixedInInstructionV5),
+        ].filter(Boolean);
+        for (const fn of candidates) {
+          try {
+            ixInfo = fn({ poolKeys, userKeys, amountIn: amountInBn, minAmountOut: minOutBn });
+            if (ixInfo) break;
+          } catch {}
+        }
+      } catch {}
+      if (!ixInfo) throw new Error('CPMM_SWAP_BUILDER_MISSING');
+    } else {
+      ixInfo = (makeSwapFixedInInstruction as any)({
+        poolKeys,
+        userKeys,
+        amountIn: amountInBn,
+        minAmountOut: minOutBn,
+      }, version);
+    }
     // Unwrap and normalize various Raydium SDK return shapes to actual TransactionInstructions
     const unwrapIxs = (val: any): any[] => {
       try {
@@ -671,7 +692,13 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
         norm.push(new TransactionInstruction({ programId: pid, keys, data }));
       } catch {}
     }
-    if (norm.length) { try { (await import('../../utils/txTrace.js')).writeDexFullDump('raydium','preflight', { kind: 'raydium.amm.build.norm', hop, count: norm.length, norm }).catch(()=>{}); } catch {}; return norm; }
+    if (norm.length) {
+      try {
+        const ixDataPrefix = norm.map(ix => (ix?.data && Buffer.isBuffer(ix.data)) ? (ix.data as Buffer).slice(0,8).toString('hex') : '');
+        (await import('../../utils/txTrace.js')).writeDexFullDump('raydium','preflight', { kind: 'raydium.amm.build.norm', hop, version, programId: (programId as any)?.toBase58?.() || String(programId), count: norm.length, ixDataPrefix, poolKeys, userKeys }).catch(()=>{});
+      } catch {}
+      return norm;
+    }
     try { logger.warn('ix.build raydium.amm.real unexpected shape', { cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
     throw new Error('RAYDIUM_AMM_BUILD_FAILED: bad_ix_shape');
   } catch (e) {
