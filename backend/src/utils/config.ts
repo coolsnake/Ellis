@@ -50,8 +50,16 @@ export const CONFIG = {
     apiUrl: process.env.ORCA_API_URL || 'https://api.orca.so/v2/solana/pools',
     pageSize: Number(process.env.ORCA_HTTP_PAGE_SIZE || 50),
     maxPages: Number(process.env.ORCA_HTTP_MAX_PAGES || 10),
+    // Mainnet-beta defaults from Orca docs
     programId: process.env.ORCA_WHIRLPOOLS_PROGRAM_ID || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc',
-    configPubkey: process.env.ORCA_WHIRLPOOLS_CONFIG || '7cSHePZUPCXKmgkkCm1cW8XkyRjB6rQAtv6vZ9VJ4N8S',
+    configPubkey: process.env.ORCA_WHIRLPOOLS_CONFIG || '2LecshUwdy9xi7meFgHtFJQNSKk4KdTrcpvaB56dP2NQ',
+    configExtensionPubkey: process.env.ORCA_WHIRLPOOLS_CONFIG_EXT || '777H5H3Tp9U11uRVRzFwM8BinfiakbaLT8vQpeuhvEiH',
+    // Optional: devnet overrides (left undefined by default)
+    devnet: {
+      programId: process.env.ORCA_WHIRLPOOLS_PROGRAM_ID_DEVNET,
+      configPubkey: process.env.ORCA_WHIRLPOOLS_CONFIG_DEVNET,
+      configExtensionPubkey: process.env.ORCA_WHIRLPOOLS_CONFIG_EXT_DEVNET,
+    },
     cacheTtlMs: Number(process.env.ORCA_CACHE_TTL_MS || 60_000),
     maxHttpRetries: Number(process.env.ORCA_HTTP_MAX_RETRIES || 2),
     httpBackoffMs: Number(process.env.ORCA_HTTP_BACKOFF_MS || 500),
@@ -313,8 +321,15 @@ export const CONFIG = {
   },
   // Raydium configuration (HTTP fetcher only; SDK kept for tx building and WS decode)
   raydium: {
+    // Classic AMM v4 program (mainnet)
     ammV4Program: process.env.RAYDIUM_AMM_V4_PROGRAM || '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8',
+    // Optional: AMM v5 program (set via env if needed)
+    ammV5Program: process.env.RAYDIUM_AMM_V5_PROGRAM,
+    // Concentrated Liquidity (CLMM) program (mainnet)
     clmmProgram: process.env.RAYDIUM_CLMM_PROGRAM || 'CAMMCzo5nKXjotvLkGQ6r1N1C8QXr8iY6pYwWf3V8mGk',
+    // Optional CLMM authority/observation id overrides (sdk will derive when unset)
+    clmmAuthority: process.env.RAYDIUM_CLMM_AUTHORITY,
+    clmmObservationId: process.env.RAYDIUM_CLMM_OBSERVATION_ID,
     cacheTtlMs: Number(process.env.RAYDIUM_CACHE_TTL_MS || 60_000),
     // HTTP controls
     concurrency: Number(process.env.RAYDIUM_HTTP_CONCURRENCY || process.env.RAYDIUM_SDK_CONCURRENCY || 8),
@@ -337,7 +352,12 @@ export const CONFIG = {
     mode: (process.env.METEORA_MODE as any) || 'http', // 'http' | 'sdk'
     apiUrl: process.env.METEORA_API_URL || 'https://dlmm-api.meteora.ag/pair/all_with_pagination',
     // Optional DLMM program id for websocket subscriptions
-    programId: process.env.METEORA_PROGRAM_ID,
+    programId: process.env.METEORA_PROGRAM_ID || 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo',
+    // Optional: Meteora balanced (DAMM) program ids (mainnet defaults)
+    amm: {
+      v1ProgramId: process.env.METEORA_AMM_V1_PROGRAM_ID || 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB',
+      v2ProgramId: process.env.METEORA_AMM_V2_PROGRAM_ID || 'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG',
+    },
     pageSize: Number(process.env.METEORA_HTTP_PAGE_SIZE || 50),
     maxPages: Number(process.env.METEORA_HTTP_MAX_PAGES || 10),
     cacheTtlMs: Number(process.env.METEORA_CACHE_TTL_MS || 60_000),

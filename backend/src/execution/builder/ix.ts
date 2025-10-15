@@ -79,7 +79,30 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
     const txb = await pool.swap(params);
     const tx = (toTx as any)(ctx, txb);
     const built = await tx.build();
-    return built.instructions || [];
+    // Robustly unwrap various SDK return shapes into raw TransactionInstructions
+    const unwrapIxs = (val: any): any[] => {
+      try {
+        if (!val) return [];
+        // Direct TransactionInstruction
+        if (val instanceof TransactionInstruction) return [val];
+        // Plain TI-shaped object
+        if (val && typeof val === 'object' && (val as any).programId && ((Array.isArray((val as any).keys)) || (typeof (val as any).keys?.length === 'number'))) {
+          return [val];
+        }
+        // Common shapes
+        if (Array.isArray((val as any).instructions)) return (val as any).instructions;
+        if ((val as any).innerTransaction && Array.isArray((val as any).innerTransaction.instructions)) return (val as any).innerTransaction.instructions;
+        if (Array.isArray((val as any).innerTransactions) && (val as any).innerTransactions.length) {
+          const flat: any[] = [];
+          for (const it of (val as any).innerTransactions) if (it && Array.isArray(it.instructions)) flat.push(...it.instructions);
+          return flat;
+        }
+      } catch {}
+      return [];
+    };
+    const raw = unwrapIxs(built);
+    const out = (raw && raw.length) ? raw : (built && (built as any).instructions ? (built as any).instructions : []);
+    return out || [];
   } catch (e) {
     try { logger.warn('ix.build orca.clmm fallback', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
     return [{ programId: hop.programId || 'whirlpool', type: 'orca.clmm.swap', keys: { poolId: hop.poolId }, data: { amountIn: hop.amountInRaw, minOut: hop.minOutRaw } }];
@@ -98,7 +121,8 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     const dynamicImport = async (spec: string): Promise<any | null> => {
       try { return await (Function('return import')())(spec); } catch { return null; }
     };
-    let mod: any = await dynamicImport('@meteora-ag/dlmm-sdk');
+    let mod: any = null;
+    if (!mod) mod = await dynamicImport('@meteora-ag/dlmm-sdk');
     if (!mod) mod = await dynamicImport('@meteora-ag/dlmm');
     if (!mod) mod = await dynamicImport('@meteora-ag/dlmm-sdk/dist/index.js');
     if (!mod) {
@@ -163,7 +187,6 @@ export function maybeCreateAtas(hop: DirectHop, create: boolean): any[] {
 export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]> {
   try { logger.debug('ix.build raydium.clmm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
   try {
-    // Validate required CLMM fields
     const missing: string[] = [];
     if (!hop.inputMint) missing.push('inputMint');
     if (!hop.outputMint) missing.push('outputMint');
@@ -175,9 +198,9 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
 
     const { ClmmInstrument } = await import('@raydium-io/raydium-sdk-v2');
     const kp = await ensureWallet(CONFIG.walletPath);
-    const poolId = toPublicKey(hop.poolId);
-    const programId = toPublicKey(hop.programId, (CONFIG.raydium?.clmmProgram as any));
-    const observationId = toPublicKey((CONFIG.raydium as any)?.clmmObservationId || PublicKey.default.toBase58());
+    const poolIdPk = toPublicKey(hop.poolId);
+    const programIdPk = toPublicKey(hop.programId, (CONFIG.raydium?.clmmProgram as any));
+    const observationIdPk = toPublicKey((CONFIG.raydium as any)?.clmmObservationId || PublicKey.default.toBase58());
 
     const ownerInfo = {
       wallet: kp.publicKey,
@@ -185,16 +208,15 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       tokenAccountB: toPublicKey(hop.userDestAta),
     };
 
-    // Minimal poolInfo/poolKeys for swapBaseIn; for real use, prefer full keys via SDK helper if available in version
-    const poolInfo = { id: poolId, programId, mintA: toPublicKey(hop.inputMint), mintB: toPublicKey(hop.outputMint), config: {} } as any;
+    const poolInfo = { id: poolIdPk, programId: programIdPk, mintA: toPublicKey(hop.inputMint), mintB: toPublicKey(hop.outputMint), config: {} } as any;
     const poolKeys = {
-      id: poolId,
-      programId,
+      id: poolIdPk,
+      programId: programIdPk,
       mintA: toPublicKey(hop.inputMint),
       mintB: toPublicKey(hop.outputMint),
       vault: { A: toPublicKey(hop.vaultA as any), B: toPublicKey(hop.vaultB as any) },
       authority: toPublicKey((CONFIG.raydium as any)?.clmmAuthority || PublicKey.default.toBase58()),
-      observationId,
+      observationId: observationIdPk,
       tickArrayLower: toPublicKey(hop.tickArrayLower as any),
       tickArrayUpper: toPublicKey(hop.tickArrayUpper as any),
     } as any;
@@ -202,7 +224,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     const res = (ClmmInstrument as any).makeSwapBaseInInstructions({
       poolInfo,
       poolKeys,
-      observationId,
+      observationId: observationIdPk,
       ownerInfo,
       inputMint: toPublicKey(hop.inputMint),
       amountIn: hop.amountInRaw,
@@ -210,17 +232,14 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       sqrtPriceLimitX64: hop.sqrtPriceLimitX64 ?? 0n,
       remainingAccounts: [],
     });
-    // Unwrap and reconstruct to local TransactionInstructions
-    const unwrapIxs = (val: any): any[] => {
+
+    const unwrap = (val: any): any[] => {
       try {
         if (!val) return [];
-        if (val instanceof TransactionInstruction) return [val];
-        if (val && typeof val === 'object' && (val as any).programId && ((Array.isArray((val as any).keys)) || (typeof (val as any).keys?.length === 'number'))) {
-          return [val];
-        }
-        if (Array.isArray(val.instructions) && val.instructions.length) return val.instructions;
+        if (Array.isArray(val)) return val;
+        if (Array.isArray(val.instructions)) return val.instructions;
         if (val.innerTransaction && Array.isArray(val.innerTransaction.instructions)) return val.innerTransaction.instructions;
-        if (Array.isArray(val.innerTransactions) && val.innerTransactions.length) {
+        if (Array.isArray(val.innerTransactions)) {
           const flat: any[] = [];
           for (const it of val.innerTransactions) if (it && Array.isArray(it.instructions)) flat.push(...it.instructions);
           return flat;
@@ -228,7 +247,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       } catch {}
       return [];
     };
-    const rawOut = unwrapIxs(res);
+
     const toPk = (v: any): PublicKey => {
       try {
         if (v instanceof PublicKey) return v;
@@ -241,10 +260,12 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
         return new PublicKey(PublicKey.default.toBase58());
       }
     };
+
+    const out = unwrap(res);
     const norm: TransactionInstruction[] = [];
-    for (const it of (rawOut || [])) {
+    for (const it of out) {
       try {
-        const pid = toPk((it as any)?.programId || programId);
+        const pid = programIdPk;
         const keysLike: any = (it as any)?.keys;
         const keyArr: any[] = Array.isArray(keysLike) ? keysLike : (keysLike && typeof keysLike.length === 'number' ? Array.from(keysLike) : []);
         const keys = keyArr.map((k: any) => ({ pubkey: toPk(k?.pubkey ?? k?.pubKey ?? k?.address), isSigner: !!k?.isSigner, isWritable: !!k?.isWritable }));
@@ -490,15 +511,10 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
         return new PublicKey(PublicKey.default.toBase58());
       }
     };
-    const toPkPrefer = (v: any, fb: PublicKey): PublicKey => {
-      const pk = toPk(v);
-      try { if (pk.toBase58() === PublicKey.default.toBase58() && fb) return fb; } catch {}
-      return pk;
-    };
     const norm: TransactionInstruction[] = [];
     for (const it of (rawOut || [])) {
       try {
-        const pid = toPkPrefer((it as any)?.programId, programId);
+        const pid = programId;
         const keysLike: any = (it as any)?.keys;
         const keyArr: any[] = Array.isArray(keysLike) ? keysLike : (keysLike && typeof keysLike.length === 'number' ? Array.from(keysLike) : []);
         const keys = keyArr.map((k: any) => ({ pubkey: toPk(k?.pubkey ?? k?.pubKey ?? k?.address), isSigner: !!k?.isSigner, isWritable: !!k?.isWritable }));

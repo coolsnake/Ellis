@@ -10,6 +10,24 @@ import { logTxTrace } from '../../utils/txTrace.js';
 export function createArbRouter(io: SocketIOServer): Router {
   const api = Router();
 
+  const toErrString = (e: any): string => {
+    try {
+      if (!e) return 'null';
+      if (typeof e === 'string') return e;
+      if (e instanceof Error) return e.message;
+      // Prefer InstructionError / logs details when present
+      const obj: any = e;
+      if (obj.InstructionError) {
+        try { return JSON.stringify(obj); } catch {}
+        return String(obj.InstructionError);
+      }
+      try { return JSON.stringify(obj); } catch {}
+      return String(obj);
+    } catch {
+      return 'err_format_failed';
+    }
+  };
+
   // In-memory execution timing rings and counters (bounded)
   const execStats: {
     buildMs: number[];
@@ -200,7 +218,8 @@ export function createArbRouter(io: SocketIOServer): Router {
       });
       try {
         if ((sim as any)?.err) {
-          logger.info('tx.preflight.err', { cat: 'tx', code: LogCode.TX_PREFLIGHT_ERR, ctx: { id, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, mode: (execCfg as any)?.mode, logCount: Array.isArray((sim as any)?.logs) ? (sim as any).logs.length : 0, error: String((sim as any)?.err) } as any });
+          const errStr = toErrString((sim as any)?.err);
+          logger.info('tx.preflight.err', { cat: 'tx', code: LogCode.TX_PREFLIGHT_ERR, ctx: { id, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, mode: (execCfg as any)?.mode, logCount: Array.isArray((sim as any)?.logs) ? (sim as any).logs.length : 0, error: errStr } as any });
         } else {
           logger.info('tx.preflight.ok', { cat: 'tx', code: LogCode.TX_PREFLIGHT_OK, ctx: { id, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, mode: (execCfg as any)?.mode, logCount: Array.isArray((sim as any)?.logs) ? (sim as any).logs.length : 0 } as any });
         }
@@ -300,7 +319,8 @@ export function createArbRouter(io: SocketIOServer): Router {
       try { emit('log', { level: 'info', message: 'pretrade:arb simulate result', timestamp: new Date().toISOString(), context: { cat: 'arb', code: 'PRETRADE.SIM.END', mode: (execCfg as any)?.mode, ...(sim as any)?.err ? { err: String((sim as any).err) } : {} } }); } catch {}
       try {
         if ((sim as any)?.err) {
-          logger.info('tx.preflight.err', { cat: 'tx', code: LogCode.TX_PREFLIGHT_ERR, ctx: { id, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode, logCount: Array.isArray((sim as any)?.logs) ? (sim as any).logs.length : 0, error: String((sim as any)?.err) } as any });
+          const errStr = toErrString((sim as any)?.err);
+          logger.info('tx.preflight.err', { cat: 'tx', code: LogCode.TX_PREFLIGHT_ERR, ctx: { id, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode, logCount: Array.isArray((sim as any)?.logs) ? (sim as any).logs.length : 0, error: errStr } as any });
         } else {
           logger.info('tx.preflight.ok', { cat: 'tx', code: LogCode.TX_PREFLIGHT_OK, ctx: { id, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode, logCount: Array.isArray((sim as any)?.logs) ? (sim as any).logs.length : 0 } as any });
         }
@@ -366,6 +386,42 @@ export function createArbRouter(io: SocketIOServer): Router {
       }
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Convenience: execute a single-hop Orca Whirlpool swap
+  // Body accepts either:
+  // - { path: [inputMint, outputMint], hopPoolIds: [poolId], size?: number, sizeUsd?: number, slippageBps?: number }
+  // or
+  // - { plan: { path, hops: [{ dex: 'orca', poolId }] }, ... }
+  api.post('/arb/execute/orca', async (req, res) => {
+    try {
+      const body = req.body || {};
+      // Normalize into generic /arb/execute input with dex set to orca.clmm
+      let payload: any = {};
+      if (body && body.plan && Array.isArray(body.plan?.hops)) {
+        payload = { ...body, plan: { ...body.plan, hops: (body.plan.hops || []).map((h: any) => ({ ...h, dex: 'orca', variant: 'clmm' })) } };
+      } else {
+        const path: string[] = Array.isArray(body.path) ? body.path : [];
+        const poolId: string | undefined = Array.isArray(body.hopPoolIds) ? body.hopPoolIds[0] : (body.poolId || body.whirlpoolId);
+        if (!path.length || !poolId) {
+          return res.status(400).json({ error: 'missing path or poolId' });
+        }
+        payload = {
+          path,
+          hopPoolIds: [String(poolId)],
+          dexes: ['orca.clmm'],
+          size: body.size,
+          sizeUsd: body.sizeUsd,
+          slippageBps: body.slippageBps,
+          forceDirect: body.forceDirect,
+        };
+      }
+      // Delegate to generic executor
+      req.body = payload;
+      return (api as any).handle({ ...req, url: '/arb/execute', originalUrl: '/arb/execute', path: '/arb/execute', method: 'POST' }, res, () => {});
+    } catch (e: any) {
+      return res.status(400).json({ error: String(e?.message || e) });
     }
   });
 

@@ -708,18 +708,6 @@ async fn main() -> anyhow::Result<()> {
                             // Interpret nodes to labels and compute best-of-parallel rates metadata
                             if nmcy.nodes.len() < 3 || nmcy.nodes.len() > max_hops { continue; }
                             let mut labels: Vec<String> = nmcy.nodes.iter().map(|&i| s.graph.g[NodeIndex::new(i)].clone()).collect();
-                            // Rotate to preferred anchor (SOL, then USDC) for readability
-                            let rotate_preferred = |mut v: Vec<String>| -> Vec<String> {
-                                let prefs = [
-                                    "So11111111111111111111111111111111111111112",
-                                    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-                                ];
-                                for p in prefs.iter() {
-                                    if let Some(pos) = v.iter().position(|x| x == p) { v.rotate_left(pos); break; }
-                                }
-                                v
-                            };
-                            labels = rotate_preferred(labels);
                             // Apply pruning to near-miss cycles as well (symmetric SOL<->stable and stable<->stable)
                             {
                                 let sol = "So11111111111111111111111111111111111111112";
@@ -1076,16 +1064,6 @@ async fn main() -> anyhow::Result<()> {
                             if let Some((a,b,c,prod)) = best {
                                 let mut nodes = vec![a,b,c];
                                 let mut labels: Vec<String> = nodes.iter().map(|&i| s.graph.g[NodeIndex::new(i)].clone()).collect();
-                                // Rotate both nodes and labels so preferred mint (SOL or USDC) starts the cycle
-                                let prefs = [
-                                    "So11111111111111111111111111111111111111112",
-                                    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-                                ];
-                                let mut rot: Option<usize> = None;
-                                for p in prefs.iter() {
-                                    if let Some(pos) = labels.iter().position(|x| x == p) { rot = Some(pos); break; }
-                                }
-                                if let Some(pos) = rot { nodes.rotate_left(pos); labels.rotate_left(pos); }
                                 // Prune triangle near-miss by SOL<->stable cap and stable<->stable
                                 {
                                     let sol = "So11111111111111111111111111111111111111112";

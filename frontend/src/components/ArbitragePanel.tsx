@@ -355,7 +355,8 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
             {(() => {
               const hops = summary.near_miss?.hop_dexes || [];
               const rates = summary.near_miss?.hop_rates || [];
-              const outs = (summary.near_miss as any)?.hop_outs as number[] | undefined;
+              // Derive amounts from hop_rates for display; ignore hop_outs to avoid scale confusion
+              const outs: number[] | undefined = undefined;
               const fees = (summary.near_miss as any)?.hop_fee_bps as number[] | undefined;
               const liqs = (summary.near_miss as any)?.hop_liquidity_display as number[] | undefined;
               const startMint = summary.near_miss?.path?.[0];
@@ -373,7 +374,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
                 const rate = Number.isFinite(rates[i % (rates.length || 1)]) ? rates[i % (rates.length || 1)] : undefined;
                 const fee = fees && Number.isFinite(fees[i % fees.length] as any) ? fees[i % fees.length] : undefined;
                 const liq = liqs && Number.isFinite(liqs[i % liqs.length] as any) ? liqs[i % liqs.length] : undefined;
-                const out = outs && Number.isFinite(outs[i % outs.length] as any) ? outs[i % outs.length] : undefined;
+                const out = undefined;
                 pieces.push(
                   <span key={`${m}-${i}`}>
                     <span className="font-semibold">{sym}</span>{i===0?` (${amt.toFixed(4)})`:''}
@@ -381,7 +382,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
                       <span>
                         {' '}
                         <span className={`px-1 rounded ${color}`}>
-                          {dex || '—'}{fee!=null ? ` · fee ${fee}bps` : ''}{liq!=null ? ` · liq ${fmt(liq, 2)}` : ''}{out!=null ? ` · → ${Number(out).toFixed(4)}` : (rate ? ` · ×${rate.toFixed(4)} → ${(amt * rate).toFixed(4)}` : '')}
+                          {dex || '—'}{fee!=null ? ` · fee ${fee}bps` : ''}{liq!=null ? ` · liq ${fmt(liq, 2)}` : ''}{rate ? ` · ×${rate.toFixed(4)} → ${(amt * rate).toFixed(4)}` : ''}
                         </span>
                         {' '}→{' '}
                       </span>
@@ -389,7 +390,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
                   </span>
                 );
                 if (i < pathArr.length - 1) {
-                  if (out != null) amt = Number(out); else if (rate) amt = amt * rate;
+                  if (rate) amt = amt * rate;
                 }
               }
               // closing hop to first (if present)
@@ -402,11 +403,11 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
                 const rate = Number.isFinite(rates[i]) ? rates[i] : undefined;
                 const fee = fees && Number.isFinite(fees[i] as any) ? fees[i] : undefined;
                 const liq = liqs && Number.isFinite(liqs[i] as any) ? liqs[i] : undefined;
-                const out = outs && Number.isFinite(outs[i] as any) ? outs[i] : undefined;
+                const out = undefined;
                 pieces.push(
                   <span key={`${last}-close`}>
                     <span className="font-semibold">{tokenMap[last] || (last.length > 6 ? `${last.slice(0,4)}…${last.slice(-4)}` : last)}</span>
-                    <span> <span className={`px-1 rounded ${color}`}>{dex || '—'}{fee!=null ? ` · fee ${fee}bps` : ''}{liq!=null ? ` · liq ${fmt(liq, 2)}` : ''}{out!=null ? ` · → ${Number(out).toFixed(4)}` : (rate ? ` · ×${rate.toFixed(4)} → ${(amt * (rate as number)).toFixed(4)}` : '')}</span> → </span>
+                    <span> <span className={`px-1 rounded ${color}`}>{dex || '—'}{fee!=null ? ` · fee ${fee}bps` : ''}{liq!=null ? ` · liq ${fmt(liq, 2)}` : ''}{rate ? ` · ×${rate.toFixed(4)} → ${(amt * (rate as number)).toFixed(4)}` : ''}</span> → </span>
                     <span className="font-semibold">{tokenMap[first] || (first.length > 6 ? `${first.slice(0,4)}…${first.slice(-4)}` : first)}</span>
                   </span>
                 );
