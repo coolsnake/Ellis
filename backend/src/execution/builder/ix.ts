@@ -358,12 +358,15 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       (poolKeys as any).marketAuthority = ensurePk((poolKeys as any).marketAuthority);
     } catch {}
 
+    const { u64 } = await import('@solana/spl-token');
+    const amountInU64 = new (u64 as any)(String(hop.amountInRaw ?? 0n));
+    const minOutU64 = new (u64 as any)(String(hop.minOutRaw ?? 0n));
+
     const ix = (makeSwapFixedInInstruction as any)({
       poolKeys,
       userKeys,
-      // Pass as decimal strings to ensure u64 constructor uses BN internally
-      amountIn: String(hop.amountInRaw ?? 0n),
-      minAmountOut: String(hop.minOutRaw ?? 0n),
+      amountIn: amountInU64,
+      minAmountOut: minOutU64,
     }, version);
 
     return [ix];

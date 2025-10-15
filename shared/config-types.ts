@@ -77,6 +77,12 @@ export interface ArbDetectorConfigPublic {
   max_sol_stable_hops?: number;
   drop_stable_stable_hops?: boolean;
   stable_mints?: string[];
+  // Graph edge selection (allow-list). When omitted, all are allowed by default.
+  edge_allow?: {
+    raydium?: { amm?: boolean; clmm?: boolean };
+    orca?: { amm?: boolean; clmm?: boolean };
+    meteora?: { amm?: boolean; clmm?: boolean };
+  };
 }
 
 export interface SystemConfigRequest {

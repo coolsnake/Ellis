@@ -15,6 +15,11 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
     maxTxSizeBytes: 1200,
     near_miss_enable: true,
     debug_top_n: 5,
+    edge_allow: {
+      raydium: { amm: true, clmm: true },
+      orca: { amm: true, clmm: true },
+      meteora: { amm: true, clmm: true },
+    },
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -31,6 +36,20 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
           ...(ex || {}),
           near_miss_enable: (det?.near_miss_enable ?? p.near_miss_enable),
           debug_top_n: (det?.debug_top_n ?? p.debug_top_n),
+          edge_allow: {
+            raydium: {
+              amm: det?.edge_allow?.raydium?.amm !== false,
+              clmm: det?.edge_allow?.raydium?.clmm !== false,
+            },
+            orca: {
+              amm: det?.edge_allow?.orca?.amm !== false,
+              clmm: det?.edge_allow?.orca?.clmm !== false,
+            },
+            meteora: {
+              amm: det?.edge_allow?.meteora?.amm !== false,
+              clmm: det?.edge_allow?.meteora?.clmm !== false,
+            },
+          },
         }));
       } catch {}
     })();
@@ -53,7 +72,7 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
     try {
       const [r1, r2] = await Promise.all([
         fetch(`${apiBase}${ROUTES.exec.config}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(execBody) }),
-        fetch(`${apiBase}${ROUTES.arb.config}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ near_miss_enable: !!cfg.near_miss_enable, debug_top_n: Number(cfg.debug_top_n || 0) }) }),
+        fetch(`${apiBase}${ROUTES.arb.config}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ near_miss_enable: !!cfg.near_miss_enable, debug_top_n: Number(cfg.debug_top_n || 0), edge_allow: cfg.edge_allow }) }),
       ]);
       if (!r1.ok || !r2.ok) throw new Error('Failed to save');
       onClose();
@@ -92,6 +111,28 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
               <label className="flex items-center gap-2 md:col-span-3"><input type="checkbox" checked={!!cfg.near_miss_enable} onChange={(e)=>set('near_miss_enable', e.target.checked)} />Enable near-miss output (arb-rs)</label>
               <div><label className="block text-sm mb-1">Debug Top-N Near Misses</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.debug_top_n} onChange={(e)=>set('debug_top_n', Number(e.target.value)||0)} /></div>
             </div>
+          </div>
+
+          <div className="bg-gray-700 rounded p-4">
+            <h3 className="text-lg font-semibold mb-3">Arb Graph Edges</h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="col-span-1 md:col-span-1">
+                <div className="font-semibold mb-2">Raydium</div>
+                <label className="flex items-center gap-2 mb-2"><input type="checkbox" checked={!!cfg.edge_allow?.raydium?.amm} onChange={(e)=>set('edge_allow', { ...cfg.edge_allow, raydium: { ...(cfg.edge_allow?.raydium||{}), amm: e.target.checked } })} />AMM</label>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.edge_allow?.raydium?.clmm} onChange={(e)=>set('edge_allow', { ...cfg.edge_allow, raydium: { ...(cfg.edge_allow?.raydium||{}), clmm: e.target.checked } })} />CLMM</label>
+              </div>
+              <div className="col-span-1 md:col-span-1">
+                <div className="font-semibold mb-2">Orca</div>
+                <label className="flex items-center gap-2 mb-2"><input type="checkbox" checked={!!cfg.edge_allow?.orca?.amm} onChange={(e)=>set('edge_allow', { ...cfg.edge_allow, orca: { ...(cfg.edge_allow?.orca||{}), amm: e.target.checked } })} />AMM</label>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.edge_allow?.orca?.clmm} onChange={(e)=>set('edge_allow', { ...cfg.edge_allow, orca: { ...(cfg.edge_allow?.orca||{}), clmm: e.target.checked } })} />CLMM</label>
+              </div>
+              <div className="col-span-1 md:col-span-1">
+                <div className="font-semibold mb-2">Meteora</div>
+                <label className="flex items-center gap-2 mb-2"><input type="checkbox" checked={!!cfg.edge_allow?.meteora?.amm} onChange={(e)=>set('edge_allow', { ...cfg.edge_allow, meteora: { ...(cfg.edge_allow?.meteora||{}), amm: e.target.checked } })} />AMM (Balanced)</label>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.edge_allow?.meteora?.clmm} onChange={(e)=>set('edge_allow', { ...cfg.edge_allow, meteora: { ...(cfg.edge_allow?.meteora||{}), clmm: e.target.checked } })} />CLMM (DLMM)</label>
+              </div>
+            </div>
+            <div className="text-xs opacity-70 mt-3">Uncheck to exclude edges from the arbitrage graph. Changes take effect on save.</div>
           </div>
 
           <div className="flex justify-end gap-3">

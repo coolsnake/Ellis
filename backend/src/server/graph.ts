@@ -76,6 +76,29 @@ export function listDroppedPools(): string[] {
   return Array.from(droppedPoolIds);
 }
 
+// Edge allowlist loaded from arb engine config (backend/config/arbConfig.json)
+type EdgeAllow = {
+  raydium?: { amm?: boolean; clmm?: boolean };
+  orca?: { amm?: boolean; clmm?: boolean };
+  meteora?: { amm?: boolean; clmm?: boolean };
+};
+async function loadEdgeAllow(): Promise<EdgeAllow> {
+  try {
+    const cfg: any = await readJson('backend/config/arbConfig.json', {} as any);
+    return (cfg && (cfg as any).edge_allow) ? (cfg as any).edge_allow as EdgeAllow : {} as EdgeAllow;
+  } catch {
+    return {} as EdgeAllow;
+  }
+}
+function isDexKindAllowed(dex: string, kind: 'amm'|'clmm', allow: EdgeAllow): boolean {
+  const d = String(dex || '').toLowerCase();
+  const k = String(kind || 'amm') as 'amm'|'clmm';
+  if (d.includes('raydium')) return (allow.raydium?.[k] !== false);
+  if (d.includes('orca')) return (allow.orca?.[k] !== false);
+  if (d.includes('meteora')) return (allow.meteora?.[k] !== false);
+  return true; // default allow
+}
+
 export function getGraphVersion(): { version: number; timestamp: number } {
   const version = lastSnapshot?.version || 0;
   const timestamp = lastSnapshot?.timestamp || 0;
@@ -244,6 +267,8 @@ export async function applyPoolUpdates(prev: PoolsPayload, next: PoolsPayload): 
     if (!lastSnapshot) { await rebuildGraphNow(undefined); return; }
     const priceStore = await import('./priceStore.js');
     const getUsd = (m: string): number | undefined => { try { return (priceStore as any).getPriceByMint(m)?.usdc ?? undefined; } catch { return undefined; } };
+    // Load edge allowlist for incremental updates as well
+    const edgeAllow = await loadEdgeAllow();
 
     const edgesMap = new Map(lastSnapshot.edges.map(e => [String(e.id), e]));
     const nodesMap = new Map(lastSnapshot.nodes.map(n => [String(n.id), n]));
@@ -278,6 +303,12 @@ export async function applyPoolUpdates(prev: PoolsPayload, next: PoolsPayload): 
       const changed = !pv || Number((p as any)?.updated_ms || 0) > Number((pv as any)?.updated_ms || 0);
       // Skip pools explicitly dropped at runtime
       if (droppedPoolIds.has(id)) continue;
+      // Skip when disallowed by allowlist
+      try {
+        const dex = String((p as any)?.dex || '');
+        const kind = ((p as any)?.pool_kind || (typeof (p as any)?.sqrt_price_x64 === 'number' ? 'clmm' : 'amm')) as 'amm'|'clmm';
+        if (!isDexKindAllowed(dex, kind, edgeAllow)) continue;
+      } catch {}
       if (!changed) continue;
       const [fwd, rev] = edgesFromPoolIncremental(p, getUsd);
       for (const e of [fwd, rev]) {
@@ -543,6 +574,9 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
 
       // impliedUsdViaEdges helper is defined later; reuse that one to avoid duplication
 
+      // Load edge allowlist once per snapshot build
+      const edgeAllow = await loadEdgeAllow();
+
       const addEdge = (
         mintA: string,
         mintB: string,
@@ -557,6 +591,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         poolKind?: 'amm' | 'clmm',
         direction?: 'forward' | 'reverse',
       ) => {
+        // Honor DEX/pool-kind allowlist
+        try { if (!isDexKindAllowed(dex, (poolKind as any) || 'amm', edgeAllow)) return; } catch {}
         // Honor runtime pool drops: skip any edges belonging to dropped pool ids (forward or reverse)
         try {
           const pid = String(poolId || '');

@@ -63,6 +63,15 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
     const t = toInstruction(ix);
     if (t) { try { sanitizeInstructionKeys(t); } catch {} realIxs.push(t); }
   }
+  try {
+    for (let i = 0; i < realIxs.length; i += 1) {
+      const it = realIxs[i] as any;
+      const pid = (it?.programId && typeof it.programId.toBase58 === 'function') ? it.programId.toBase58() : String(it?.programId);
+      const dataKind = Buffer.isBuffer(it?.data) ? `buffer:${(it?.data as Buffer).length}` : (it?.data ? typeof it.data : 'none');
+      const keyKinds = Array.isArray(it?.keys) ? (it.keys as any[]).map(k => (k?.pubkey && typeof k.pubkey.toBase58 === 'function') ? 'pk' : typeof k?.pubkey) : [];
+      try { logger.info('tx.preflight.ix', { idx: i, pid, data: dataKind, keys: keyKinds }); } catch {}
+    }
+  } catch {}
   const { blockhash } = await connection.getLatestBlockhash('finalized');
   const lookupTables = await loadLookupTables(connection, (opts?.lookupTableAddresses || []));
   const msg = new TransactionMessage({ payerKey: kp.publicKey, recentBlockhash: blockhash, instructions: realIxs }).compileToV0Message(lookupTables);

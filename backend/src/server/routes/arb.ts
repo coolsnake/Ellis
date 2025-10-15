@@ -4,7 +4,7 @@ import { logger } from '../../utils/logger.js';
 import { LogCode } from '../../utils/logging.js';
 import { emit } from '../realtime.js';
 import { setArbStreamEnabled } from '../realtime.js';
-import { writeJson } from '../../utils/fs.js';
+import { writeJson, readJson } from '../../utils/fs.js';
 import { logTxTrace } from '../../utils/txTrace.js';
 
 export function createArbRouter(io: SocketIOServer): Router {
@@ -24,8 +24,18 @@ export function createArbRouter(io: SocketIOServer): Router {
     try {
       const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
       const r = await fetch(`${host}/config`).catch(() => null);
-      res.status(r?.status || 503).json(r ? await r.json().catch(() => ({})) : { ok: false });
+      const remote = r ? await r.json().catch(() => ({})) : {};
+      // Merge in locally saved UI-only fields (e.g., edge_allow)
+      let local: any = {};
+      try { local = await readJson('backend/config/arbConfig.json', {} as any); } catch {}
+      const merged = { ...(remote || {}), ...(local || {}) };
+      res.status(r?.status || 200).json(merged);
     } catch {
+      // Fallback: serve local file if arb service unavailable
+      try {
+        const local = await readJson('backend/config/arbConfig.json', {} as any);
+        return res.status(200).json(local || {});
+      } catch {}
       res.status(503).json({ ok: false });
     }
   });
@@ -374,7 +384,10 @@ export function createArbRouter(io: SocketIOServer): Router {
       const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
       logger.debug(`api.request POST /arb-service/config`, { url: `${host}/config`, cat: 'api' });
       const started = Date.now();
-      const r = await (async () => { const ac = new AbortController(); const t = setTimeout(() => ac.abort('timeout'), 7000); try { return await fetch(`${host}/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(req.body || {}), signal: ac.signal }); } finally { clearTimeout(t); } })();
+      const toSend: any = { ...(req.body || {}) };
+      // Do not forward UI-only fields to arb-service
+      try { delete toSend.edge_allow; } catch {}
+      const r = await (async () => { const ac = new AbortController(); const t = setTimeout(() => ac.abort('timeout'), 7000); try { return await fetch(`${host}/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(toSend), signal: ac.signal }); } finally { clearTimeout(t); } })();
       logger.debug(`api.response POST /arb-service/config ${r.status} ${Date.now()-started}ms`, { status: r.status, cat: 'api' });
       let json: any = {};
       try { json = await r.json(); } catch { json = {}; }
@@ -384,9 +397,13 @@ export function createArbRouter(io: SocketIOServer): Router {
         emit('log', { level: r.ok ? 'info' : 'warn', message: `terminal: Arbitrage configuration ${r.ok ? 'updated' : 'update failed'} (${r.status})`, timestamp: new Date().toISOString() });
       } catch {}
       try { await writeJson('backend/config/arbConfig.json', { ...(req.body || {}), _savedAt: new Date().toISOString() }); } catch {}
+      // Trigger graph rebuild to apply edge_allow immediately
+      try { const g = await import('../graph.js'); (g as any).scheduleGraphRebuild?.(undefined, 50); } catch {}
       res.status(r.status).json(json);
     } catch (e: any) {
       try { await writeJson('backend/config/arbConfig.json', { ...(req.body || {}), _savedAt: new Date().toISOString() }); } catch {}
+      // Apply locally even if arb service unreachable
+      try { const g = await import('../graph.js'); (g as any).scheduleGraphRebuild?.(undefined, 50); } catch {}
       res.status(503).json({ ok: false, error: 'arb service unreachable; config saved locally' });
     }
   });
