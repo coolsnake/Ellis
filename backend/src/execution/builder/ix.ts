@@ -205,6 +205,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           // Derive or use provided bin arrays/reserves when missing
           let binArrayLower = hop.binArrayLower ? toPublicKey(hop.binArrayLower) : undefined;
           let binArrayUpper = hop.binArrayUpper ? toPublicKey(hop.binArrayUpper) : undefined;
+          let binArrayBitmapExtension: PublicKey | undefined = undefined;
           try {
             const helper = (dlmm as any)?.getBinArrayLowerUpperBinId || (dlmm as any)?.deriveBinArrayLowerUpperBinId;
             const deriveBinArray = (dlmm as any)?.deriveBinArray;
@@ -230,7 +231,6 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
             // Derive reserves (optional, best-effort)
             try { if (deriveReserve) { await deriveReserve(programId, poolPk, true); await deriveReserve(programId, poolPk, false); } } catch {}
             // Derive bitmap extension
-            let binArrayBitmapExtension: any = undefined;
             try {
               if (deriveBinArrayBitmapExtension) {
                 const ext = await deriveBinArrayBitmapExtension(programId, poolPk);
@@ -694,7 +694,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     }
     if (norm.length) {
       try {
-       const ixDataPrefix = norm.map(ix => ((ix as any)?.data && Buffer.isBuffer((ix as any).data)) ? ((ix as any).data as Buffer).subarray(0,8).toString('hex') : '');
+       const ixDataPrefix = norm.map(ix => ((ix as any)?.data && Buffer.isBuffer((ix as any).data)) ? ((ix as any).data as Buffer).subarray(0,8).toString() : '');
         (await import('../../utils/txTrace.js')).writeDexFullDump('raydium','preflight', { kind: 'raydium.amm.build.norm', hop, version, programId: (programId as any)?.toBase58?.() || String(programId), count: norm.length, ixDataPrefix, poolKeys, userKeys }).catch(()=>{});
       } catch {}
       return norm;
