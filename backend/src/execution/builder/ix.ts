@@ -331,17 +331,12 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       owner: kp.publicKey,
     };
 
-    // Normalize poolKeys shape to match Raydium SDK expectations
+    // Normalize poolKeys shape to match Raydium SDK expectations (PublicKey fields only)
     try {
       const ensurePk = (v: any) => (v && typeof v === 'object' && typeof v.toBase58 === 'function') ? v : (v ? toPublicKey(v) : undefined);
-      // mintLp should be an object with address: PublicKey
-      const mintLpAddr = (poolKeys as any)?.mintLp?.address ? ensurePk((poolKeys as any).mintLp.address) : undefined;
-      if (!mintLpAddr) {
-        const fromState = ensurePk((poolKeys as any)?.mintLp) || undefined;
-        (poolKeys as any).mintLp = { address: fromState };
-      } else {
-        (poolKeys as any).mintLp.address = mintLpAddr;
-      }
+      // Ensure mintLp is a PublicKey (not an object)
+      const mintLpPk = ensurePk((poolKeys as any)?.mintLp?.address || (poolKeys as any)?.mintLp);
+      (poolKeys as any).mintLp = mintLpPk;
       // Vaults must be { A: PublicKey, B: PublicKey }
       (poolKeys as any).vault = {
         A: ensurePk((poolKeys as any)?.vault?.A || (poolKeys as any)?.baseVault),
