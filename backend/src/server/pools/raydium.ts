@@ -195,6 +195,8 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
   const now = Date.now();
   const amm: AmmPool[] = [];
   const clmm: ClmmPool[] = [];
+  // Index AMM prices by oriented mint pair to aid CLMM magnitude selection (computed-only, no USD substitution)
+  const ammIndex = new Map<string, number>();
 
   const arr: any[] = Array.isArray(raw?.data?.data)
     ? raw.data.data
@@ -447,9 +449,53 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
           }
         }
       } catch {}
-      amm.push({ id, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps, price_a_per_b: Number.isFinite(price_sane) ? price_sane : 0, liquidity_base, updated_ms: now, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, pool_kind: 'amm', tvl_usd, amount_a_whole, amount_b_whole, amounts_are_whole, liquidity_display });
+      const pushedPrice = Number.isFinite(price_sane) ? price_sane : 0;
+      amm.push({ id, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps, price_a_per_b: pushedPrice, liquidity_base, updated_ms: now, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, pool_kind: 'amm', tvl_usd, amount_a_whole, amount_b_whole, amounts_are_whole, liquidity_display });
+      try { if (pushedPrice > 0) ammIndex.set(`${mintA}|${mintB}`, pushedPrice); } catch {}
     }
   }
+
+  // Optional magnitude alignment for CLMM using AMM (same DEX, same mints). This uses computed AMM price only.
+  try {
+    if (clmm.length && ammIndex.size) {
+      const { getPriceByMint } = await import('../priceStore.js');
+      const getRef = (a: string, b: string): number | undefined => {
+        try {
+          let pa = getPriceByMint(a)?.usdc ?? null;
+          let pb = getPriceByMint(b)?.usdc ?? null;
+          const STABLES = new Set<string>([
+            ...((((CONFIG as any)?.system as any)?.stableMints || []) as string[]),
+            'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+            'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN',
+          ]);
+          if (!(typeof pa === 'number' && pa > 0) && STABLES.has(a)) pa = 1;
+          if (!(typeof pb === 'number' && pb > 0) && STABLES.has(b)) pb = 1;
+          if (pa && pb && (pa as number) > 0 && (pb as number) > 0) return (pb as number) / (pa as number);
+        } catch {}
+        return undefined;
+      };
+      for (const p of clmm) {
+        try {
+          const keyF = `${p.mint_a}|${p.mint_b}`;
+          const keyR = `${p.mint_b}|${p.mint_a}`;
+          let ammF = ammIndex.get(keyF);
+          if (!(ammF && ammF > 0)) {
+            const ammR = ammIndex.get(keyR);
+            if (ammR && ammR > 0) ammF = 1 / ammR;
+          }
+          const cl = Number((p as any)?.price_a_per_b || 0);
+          if (ammF && ammF > 0 && cl && cl > 0) {
+            const ref = getRef(p.mint_a, p.mint_b);
+            if (typeof ref === 'number' && ref > 0) {
+              const devCl = Math.max(cl / ref, ref / cl);
+              const devAm = Math.max((ammF as number) / ref, ref / (ammF as number));
+              if (devAm + 1e-12 < devCl) { (p as any).price_a_per_b = ammF; }
+            }
+          }
+        } catch {}
+      }
+    }
+  } catch {}
 
   const ammCanon = canonicalizePairs(amm);
   const clmmCanon = canonicalizePairs(clmm);
