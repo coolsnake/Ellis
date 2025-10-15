@@ -281,13 +281,23 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         if (sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
           const two64 = Math.pow(2, 64);
           const ratio = sqrt / two64;
-          // Match Orca convention: sqrt encodes sqrt(B/A) in smallest units
-          // A-per-1-B (whole units) = 10^(decB - decA) / (ratio^2)
-          const scale = Math.pow(10, (decB as number) - (decA as number));
-          const cand1 = scale / (ratio * ratio); // forward A per 1 B
-          const cand2 = (ratio * ratio) / scale; // reciprocal
-          price_from_sqrt = Number.isFinite(cand1) && cand1 > 0 ? cand1 : 0;
-          price_from_sqrt_alt = Number.isFinite(cand2) && cand2 > 0 ? cand2 : 0;
+          // Candidate set from both scale directions to guard against vendor orientation nuances
+          const scale1 = Math.pow(10, (decB as number) - (decA as number));
+          const scale2 = Math.pow(10, (decA as number) - (decB as number));
+          const c1 = scale1 / (ratio * ratio);
+          const c2 = (ratio * ratio) / scale1;
+          const c3 = scale2 / (ratio * ratio);
+          const c4 = (ratio * ratio) / scale2;
+          // Pick a primary and alt; we will still evaluate full candidate set later
+          price_from_sqrt = Number.isFinite(c1) && c1 > 0 ? c1 : 0;
+          price_from_sqrt_alt = Number.isFinite(c2) && c2 > 0 ? c2 : 0;
+          try {
+            const extra: number[] = [];
+            if (Number.isFinite(c3) && c3 > 0) extra.push(c3);
+            if (Number.isFinite(c4) && c4 > 0) extra.push(c4);
+            // Append to candidates immediately if we already built the list
+            // (we add again below defensively)
+          } catch {}
         }
       } catch {}
       // Choose candidate closer to USD reference (when available): sqrt-derived vs incoming vs reserves-derived (decimals-aware)
@@ -312,6 +322,17 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         let usedWhole = false;
         if (price_from_sqrt > 0) candidates.push(price_from_sqrt);
         if (price_from_sqrt_alt > 0) candidates.push(price_from_sqrt_alt);
+        // Add alternate scale candidates as well
+        try {
+          if (sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
+            const ratio = sqrt / Math.pow(2, 64);
+            const scale2 = Math.pow(10, (decA as number) - (decB as number));
+            const c3 = scale2 / (ratio * ratio);
+            const c4 = (ratio * ratio) / scale2;
+            if (Number.isFinite(c3) && c3 > 0) candidates.push(c3);
+            if (Number.isFinite(c4) && c4 > 0) candidates.push(c4);
+          }
+        } catch {}
         // Do not include vendor-reported price; rely on sqrt/reserves only for CLMM
         try {
           // Reserves-derived using decimals (treat mintAmountA/B as atomic, convert to whole)
