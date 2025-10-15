@@ -1,7 +1,7 @@
 import type { DirectHop } from '../types.js';
 import { logger } from '../../utils/logger.js';
 import { LogCode } from '../../utils/logging.js';
-import { PublicKey } from '@solana/web3.js';
+import { PublicKey, TransactionInstruction } from '@solana/web3.js';
 import { getConnection, ensureWallet } from '../../wallet/wallet.js';
 import { CONFIG } from '../../utils/config.js';
 
@@ -362,14 +362,44 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     const amountInBn = new BN(String(hop.amountInRaw ?? 0n));
     const minOutBn = new BN(String(hop.minOutRaw ?? 0n));
 
-    const ix = (makeSwapFixedInInstruction as any)({
+    const ixInfo = (makeSwapFixedInInstruction as any)({
       poolKeys,
       userKeys,
       amountIn: amountInBn,
       minAmountOut: minOutBn,
     }, version);
+    // Unwrap various Raydium SDK return shapes to actual TransactionInstructions
+    const unwrapIxs = (val: any): TransactionInstruction[] => {
+      try {
+        if (!val) return [];
+        // Direct TransactionInstruction
+        if (val instanceof TransactionInstruction) return [val];
+        // Common shapes: { instructions: TransactionInstruction[] }
+        if (Array.isArray(val.instructions) && val.instructions.length) {
+          return val.instructions.filter((x: any) => x instanceof TransactionInstruction);
+        }
+        // { innerTransaction: { instructions: TransactionInstruction[] } }
+        if (val.innerTransaction && Array.isArray(val.innerTransaction.instructions)) {
+          return val.innerTransaction.instructions.filter((x: any) => x instanceof TransactionInstruction);
+        }
+        // { innerTransactions: Array<{ instructions: TransactionInstruction[] }> }
+        if (Array.isArray(val.innerTransactions) && val.innerTransactions.length) {
+          const flat: any[] = [];
+          for (const it of val.innerTransactions) {
+            if (it && Array.isArray(it.instructions)) {
+              flat.push(...it.instructions);
+            }
+          }
+          return flat.filter((x: any) => x instanceof TransactionInstruction);
+        }
+      } catch {}
+      return [];
+    };
 
-    return [ix];
+    const out = unwrapIxs(ixInfo);
+    if (out && out.length) return out;
+    try { logger.warn('ix.build raydium.amm.real unexpected shape', { cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
+    throw new Error('RAYDIUM_AMM_BUILD_FAILED: bad_ix_shape');
   } catch (e) {
     try { logger.warn('ix.build raydium.amm.real fallback', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
   }
