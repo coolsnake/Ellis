@@ -1,5 +1,7 @@
 import { Connection, PublicKey, TransactionMessage, VersionedTransaction, ComputeBudgetProgram, AddressLookupTableAccount, TransactionInstruction } from '@solana/web3.js';
 import { ensureWallet, getConnection } from '../wallet/wallet.js';
+import { writeDexFullDump } from '../utils/txTrace.js';
+import { CONFIG } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 
 export type SendOptions = {
@@ -7,6 +9,22 @@ export type SendOptions = {
   computeUnitPriceMicroLamports?: number;
   lookupTableAddresses?: string[];
 };
+function detectDexesFromPrograms(programIds: string[]): Array<'raydium' | 'orca' | 'meteora'> {
+  const set = new Set<'raydium' | 'orca' | 'meteora'>();
+  const rayAmmV4 = String((CONFIG as any)?.raydium?.ammV4Program || '').trim();
+  const rayAmmV5 = String((CONFIG as any)?.raydium?.ammV5Program || '').trim();
+  const rayClmm = String((CONFIG as any)?.raydium?.clmmProgram || '').trim();
+  const orcaPid = String((CONFIG as any)?.orca?.programId || '').trim();
+  const metPid = String((CONFIG as any)?.meteora?.programId || '').trim();
+  for (const pid of programIds) {
+    if (!pid) continue;
+    if (pid === rayAmmV4 || (rayAmmV5 && pid === rayAmmV5) || (rayClmm && pid === rayClmm)) set.add('raydium');
+    if (orcaPid && pid === orcaPid) set.add('orca');
+    if (metPid && pid === metPid) set.add('meteora');
+  }
+  return Array.from(set);
+}
+
 
 function toInstruction(ix: any): TransactionInstruction | null {
   try {
@@ -122,6 +140,22 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
   tx.sign([kp]);
   const wireBase64 = Buffer.from(tx.serialize()).toString('base64');
   const sim = await connection.simulateTransaction(tx, { sigVerify: true });
+  try {
+    const programs = realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId)));
+    const dexes = detectDexesFromPrograms(programs);
+    for (const d of dexes) {
+      await writeDexFullDump(d, 'preflight', {
+        kind: 'sender.preflight',
+        ixCount: realIxs.length,
+        skipped,
+        programs,
+        opts,
+        wireBase64,
+        logs: sim.value?.logs,
+        err: sim.value?.err || null,
+      });
+    }
+  } catch {}
   return { logs: sim.value?.logs, err: sim.value?.err, wireBase64 };
 }
 
@@ -146,6 +180,20 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
   const wireBase64 = Buffer.from(tx.serialize()).toString('base64');
   const sig = await connection.sendTransaction(tx, { skipPreflight: false, preflightCommitment: 'confirmed' });
   await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
+  try {
+    const programs = realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId)));
+    const dexes = detectDexesFromPrograms(programs);
+    for (const d of dexes) {
+      await writeDexFullDump(d, 'execute', {
+        kind: 'sender.execute',
+        ixCount: realIxs.length,
+        programs,
+        opts,
+        wireBase64,
+        signature: sig,
+      });
+    }
+  } catch {}
   return { signature: sig, wireBase64 };
 }
 

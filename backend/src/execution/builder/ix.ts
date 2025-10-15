@@ -61,24 +61,45 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
     const connection = getConnection();
     const kp = await ensureWallet(CONFIG.walletPath);
     const { WhirlpoolContext, buildWhirlpoolClient, swapQuoteByInputToken, SwapUtils, toTx } = await import('@orca-so/whirlpools-sdk');
+    try { logger.info('orca.whirlpool.import.ok', { cat: 'tx', ctx: { haveContext: !!WhirlpoolContext, haveClient: !!buildWhirlpoolClient, haveQuoteFn: !!swapQuoteByInputToken, haveSwapUtils: !!SwapUtils, haveToTx: !!toTx } as any }); } catch {}
     const BN = (await import('bn.js')).default as any;
     const { Percentage } = await import('@orca-so/common-sdk');
     const dummyWallet: any = { publicKey: kp.publicKey, signTransaction: async (tx: any) => tx, signAllTransactions: async (txs: any[]) => txs };
     const programId = toPublicKey(hop.programId, (CONFIG.orca?.programId as any));
+    try { logger.info('orca.whirlpool.program', { cat: 'tx', ctx: { programId: programId?.toBase58?.() || String(programId) } as any }); } catch {}
     const ctx = (WhirlpoolContext as any).from(connection as any, dummyWallet, programId);
+    try { logger.info('orca.whirlpool.ctx.ok', { cat: 'tx' }); } catch {}
     const client = (buildWhirlpoolClient as any)(ctx);
+    try { logger.info('orca.whirlpool.client.ok', { cat: 'tx' }); } catch {}
     const poolPk = toPublicKey(hop.poolId);
+    try { logger.info('orca.whirlpool.pool.prepare', { cat: 'tx', ctx: { pool: poolPk?.toBase58?.() || String(poolPk) } as any }); } catch {}
     const pool = await client.getPool(poolPk);
+    try { logger.info('orca.whirlpool.pool.ok', { cat: 'tx' }); } catch {}
     const inputMint = toPublicKey(hop.inputMint);
     const bps = computeSlippageBps(hop.amountInRaw, hop.minOutRaw);
     const slippage = (Percentage as any).fromFraction(bps, 10000);
+    try { logger.info('orca.whirlpool.slippage', { cat: 'tx', ctx: { amountInRaw: String(hop.amountInRaw ?? 0n), minOutRaw: String(hop.minOutRaw ?? 0n), bps } as any }); } catch {}
     const amountInBn = new BN(String(hop.amountInRaw ?? 0n));
+    try { logger.info('orca.whirlpool.input', { cat: 'tx', ctx: { inputMint: inputMint?.toBase58?.() || String(inputMint), amountIn: amountInBn?.toString?.() } as any }); } catch {}
     const quote = await (swapQuoteByInputToken as any)(pool, inputMint, amountInBn, slippage, ctx.program.programId, ctx.fetcher, true);
+    try {
+      const est = (quote as any)?.otherAmount ?? (quote as any)?.estimatedAmountOut ?? 0;
+      logger.info('orca.whirlpool.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: String(est) } as any });
+    } catch {}
     const params = (SwapUtils as any).getSwapParamsFromQuote(quote);
     try { if (hop.sqrtPriceLimitX64 && params && ('sqrtPriceLimit' in (params as any))) { (params as any).sqrtPriceLimit = hop.sqrtPriceLimitX64; } } catch {}
+    try {
+      const lim = (params as any)?.sqrtPriceLimit ?? 0;
+      logger.info('orca.whirlpool.params.ok', { cat: 'tx', ctx: { hasLimit: !!lim, sqrtPriceLimitX64: String(lim) } as any });
+    } catch {}
     const txb = await pool.swap(params);
+    try { logger.info('orca.whirlpool.swap.builder.ok', { cat: 'tx' }); } catch {}
     const tx = (toTx as any)(ctx, txb);
     const built = await tx.build();
+    try {
+      const count = Array.isArray((built as any)?.instructions) ? (built as any).instructions.length : 0;
+      logger.info('orca.whirlpool.tx.build.ok', { cat: 'tx', ctx: { instructionCount: count } as any });
+    } catch {}
     // Robustly unwrap various SDK return shapes into raw TransactionInstructions
     const unwrapIxs = (val: any): any[] => {
       try {
@@ -102,6 +123,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
     };
     const raw = unwrapIxs(built);
     const out = (raw && raw.length) ? raw : (built && (built as any).instructions ? (built as any).instructions : []);
+    try { logger.info('orca.whirlpool.ix.ready', { cat: 'tx', ctx: { count: Array.isArray(out) ? out.length : 0 } as any }); } catch {}
     return out || [];
   } catch (e) {
     try { logger.warn('ix.build orca.clmm fallback', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
