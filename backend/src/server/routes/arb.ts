@@ -450,14 +450,21 @@ export function createArbRouter(io: SocketIOServer): Router {
         payload = { ...body, plan: { ...body.plan, hops: (body.plan.hops || []).map((h: any) => ({ ...h, dex: 'orca', variant: 'clmm' })) } };
       } else {
         const path: string[] = Array.isArray(body.path) ? body.path : [];
-        const poolId: string | undefined = Array.isArray(body.hopPoolIds) ? body.hopPoolIds[0] : (body.poolId || body.whirlpoolId);
-        if (!path.length || !poolId) {
-          return res.status(400).json({ error: 'missing path or poolId' });
+        const hopPoolIdsIn: string[] = Array.isArray(body.hopPoolIds) ? (body.hopPoolIds as any[]).map((x: any) => String(x)) : [];
+        const fallbackPid: string | undefined = (body.poolId || body.whirlpoolId) ? String(body.poolId || body.whirlpoolId) : undefined;
+        const hopCount = Math.max(0, path.length - 1);
+        if (hopCount <= 0) return res.status(400).json({ error: 'invalid path' });
+        let ids: string[] = hopPoolIdsIn;
+        if (ids.length !== hopCount) {
+          if (!fallbackPid) return res.status(400).json({ error: 'missing hopPoolIds and poolId' });
+          ids = Array.from({ length: hopCount }, () => String(fallbackPid));
         }
+        if (ids.some((s) => !s)) return res.status(400).json({ error: 'invalid hopPoolIds' });
+        const dexes = Array.from({ length: hopCount }, () => 'orca.clmm');
         payload = {
           path,
-          hopPoolIds: [String(poolId)],
-          dexes: ['orca.clmm'],
+          hopPoolIds: ids,
+          dexes,
           size: body.size,
           sizeUsd: body.sizeUsd,
           slippageBps: body.slippageBps,
@@ -467,6 +474,42 @@ export function createArbRouter(io: SocketIOServer): Router {
       // Delegate to generic executor
       req.body = payload;
       return (api as any).handle({ ...req, url: '/arb/execute', originalUrl: '/arb/execute', path: '/arb/execute', method: 'POST' }, res, () => {});
+    } catch (e: any) {
+      return res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Convenience: preflight (simulate-send) a two-hop Orca Whirlpool swap
+  api.post('/arb/simulate-send/orca', async (req, res) => {
+    try {
+      const body = req.body || {};
+      let payload: any = {};
+      if (body && body.plan && Array.isArray(body.plan?.hops)) {
+        payload = { ...body, plan: { ...body.plan, hops: (body.plan.hops || []).map((h: any) => ({ ...h, dex: 'orca', variant: 'clmm' })) } };
+      } else {
+        const path: string[] = Array.isArray(body.path) ? body.path : [];
+        const hopPoolIdsIn: string[] = Array.isArray(body.hopPoolIds) ? (body.hopPoolIds as any[]).map((x: any) => String(x)) : [];
+        const fallbackPid: string | undefined = (body.poolId || body.whirlpoolId) ? String(body.poolId || body.whirlpoolId) : undefined;
+        const hopCount = Math.max(0, path.length - 1);
+        if (hopCount <= 0) return res.status(400).json({ error: 'invalid path' });
+        let ids: string[] = hopPoolIdsIn;
+        if (ids.length !== hopCount) {
+          if (!fallbackPid) return res.status(400).json({ error: 'missing hopPoolIds and poolId' });
+          ids = Array.from({ length: hopCount }, () => String(fallbackPid));
+        }
+        if (ids.some((s) => !s)) return res.status(400).json({ error: 'invalid hopPoolIds' });
+        const dexes = Array.from({ length: hopCount }, () => 'orca.clmm');
+        payload = {
+          path,
+          hopPoolIds: ids,
+          dexes,
+          size: body.size,
+          sizeUsd: body.sizeUsd,
+          slippageBps: body.slippageBps,
+        };
+      }
+      req.body = payload;
+      return (api as any).handle({ ...req, url: '/arb/simulate-send', originalUrl: '/arb/simulate-send', path: '/arb/simulate-send', method: 'POST' }, res, () => {});
     } catch (e: any) {
       return res.status(400).json({ error: String(e?.message || e) });
     }

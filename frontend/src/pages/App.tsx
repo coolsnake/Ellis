@@ -886,7 +886,10 @@ export const App: React.FC = () => {
             if (action === 'execute' && target === 'orca') {
               endpoint = '/arb/execute/orca';
             }
-
+            if (action === 'preflight' && target === 'orca') {
+              endpoint = '/arb/simulate-send/orca';
+            }
+            
             let body: any = null;
             if (target === 'multi') {
               body = await buildMultiHopBody();
@@ -902,13 +905,11 @@ export const App: React.FC = () => {
               return;
             }
 
-            // If executing, include forceDirect flag so backend always signs/sends
-            const enriched = action === 'execute' ? { ...body, forceDirect: true } : body;
-            const resp = await fetch(`${apiBase}${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(enriched) });
-            const json = await resp.json();
-            const ok = resp.ok && !json?.err;
-            const tag = action === 'execute' ? (json?.signature ? `sig=${json.signature}` : 'sent') : (action === 'preflight' ? (ok ? 'preflight ok' : 'preflight err') : 'built');
-            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: ok ? 'info' : 'error', message: `terminal: arb ${action} ${target || 'n/a'} → ${tag}` }) });
+            await fetch(`${apiBase}${endpoint}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body),
+            });
             return;
           }
         } catch (e: any) {
