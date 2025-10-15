@@ -490,10 +490,15 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
         return new PublicKey(PublicKey.default.toBase58());
       }
     };
+    const toPkPrefer = (v: any, fb: PublicKey): PublicKey => {
+      const pk = toPk(v);
+      try { if (pk.toBase58() === PublicKey.default.toBase58() && fb) return fb; } catch {}
+      return pk;
+    };
     const norm: TransactionInstruction[] = [];
     for (const it of (rawOut || [])) {
       try {
-        const pid = toPk((it as any)?.programId || programId);
+        const pid = toPkPrefer((it as any)?.programId, programId);
         const keysLike: any = (it as any)?.keys;
         const keyArr: any[] = Array.isArray(keysLike) ? keysLike : (keysLike && typeof keysLike.length === 'number' ? Array.from(keysLike) : []);
         const keys = keyArr.map((k: any) => ({ pubkey: toPk(k?.pubkey ?? k?.pubKey ?? k?.address), isSigner: !!k?.isSigner, isWritable: !!k?.isWritable }));
