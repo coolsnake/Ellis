@@ -197,6 +197,9 @@ let rayTimer: any | undefined;
 let orcaTimer: any | undefined;
 let meteoraTimer: any | undefined;
 let wsUnsubscribe: (() => void) | undefined;
+// Track current Connection instance and any pending close so new setups wait for a clean state
+let wsConn: any | undefined;
+let wsClosePromise: Promise<void> | null = null;
 let healthTimer: any | undefined;
 let lastWsEventMs: number = 0;
 let wsHealthy: boolean = false;
@@ -521,7 +524,12 @@ export function startRaydiumRefreshLoop(): void {
         let web3: any = null;
         try { const mod = ['@solana/web3.js'].join(''); web3 = await import(mod as any); } catch {}
         if (!web3) { logger.warn('pools.ws disabled: @solana/web3.js not available'); return; }
+        // If a previous unsubscribe initiated a websocket close, wait for it to finish before creating a new Connection
+        try { if (wsClosePromise) { await wsClosePromise.catch(() => {}); } } catch {}
+        wsClosePromise = null;
         const conn = new web3.Connection(CONFIG.rpcUrl, CONFIG.system.txCommitment as any);
+        // Record connection so we can actively close its underlying WS on unsubscribe
+        wsConn = conn;
         const rayAmm = new web3.PublicKey(String(CONFIG.raydium?.ammV4Program).trim());
         const rayClmm = new web3.PublicKey(String(CONFIG.raydium?.clmmProgram).trim());
         const orcaProg = new web3.PublicKey(String(CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc').trim());
@@ -1042,15 +1050,45 @@ export function startRaydiumRefreshLoop(): void {
 
         wsUnsubscribe = () => {
           try {
-            for (const s of subs) {
+            // Begin async teardown and websocket close; future setups will await wsClosePromise
+            wsClosePromise = (async () => {
               try {
-                if (s.kind === 'account') {
-                  (conn as any).removeAccountChangeListener(s.id).catch(() => {});
-                } else {
-                  (conn as any).removeProgramAccountChangeListener(s.id).catch(() => {});
+                // Best-effort await listener removals
+                const removals: Array<Promise<any>> = [];
+                for (const s of subs) {
+                  try {
+                    if (s.kind === 'account') {
+                      removals.push((conn as any).removeAccountChangeListener(s.id).catch(() => {}));
+                    } else {
+                      removals.push((conn as any).removeProgramAccountChangeListener(s.id).catch(() => {}));
+                    }
+                  } catch {}
                 }
-              } catch {}
-            }
+                if (removals.length) {
+                  try { await Promise.allSettled(removals); } catch {}
+                }
+                // Close underlying websocket if present to avoid CLOSING race on next subscribe
+                try {
+                  const wsAny = (wsConn as any)?._rpcWebSocket?._ws;
+                  const rs: number | undefined = Number(wsAny?.readyState);
+                  // 0 CONNECTING, 1 OPEN
+                  if (wsAny && (rs === 0 || rs === 1 || rs === 2)) {
+                    try { (wsConn as any)?._rpcWebSocket?.close?.(); } catch {}
+                  }
+                  // Wait until CLOSED (3) or socket disappears, with small timeout
+                  const deadline = Date.now() + Math.max(500, Number(((CONFIG.system as any)?.wsCloseWaitMs) || 2000));
+                  let cur = Number(wsAny?.readyState);
+                  while (wsAny && cur !== 3 && Date.now() < deadline) {
+                    await new Promise(r => setTimeout(r, 100));
+                    cur = Number(wsAny?.readyState);
+                  }
+                } catch {}
+              } finally {
+                try { wsConn = undefined; } catch {}
+              }
+            })();
+            // Detach immediately; actual close will be awaited by the next setup
+            wsClosePromise?.catch(() => {});
           } catch {}
         };
         logger.info('pools.ws subscriptions active');
