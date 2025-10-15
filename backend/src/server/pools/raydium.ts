@@ -290,7 +290,7 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
           price_from_sqrt_alt = Number.isFinite(cand2) && cand2 > 0 ? cand2 : 0;
         }
       } catch {}
-      // Choose candidate closer to USD reference (when available): sqrt-derived vs incoming vs reserves-whole
+      // Choose candidate closer to USD reference (when available): sqrt-derived vs incoming vs reserves-derived (decimals-aware)
       let px = 0;
       try {
         const { getPriceByMint } = await import('../priceStore.js');
@@ -314,11 +314,23 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         if (price_from_sqrt_alt > 0) candidates.push(price_from_sqrt_alt);
         // Do not include vendor-reported price; rely on sqrt/reserves only for CLMM
         try {
-          const wholeA = Number.isFinite(amount_a_whole as any) ? (amount_a_whole as number) : NaN;
-          const wholeB = Number.isFinite(amount_b_whole as any) ? (amount_b_whole as number) : NaN;
-          if (Number.isFinite(wholeA) && Number.isFinite(wholeB) && (wholeB as number) > 0) {
-            const fromWhole = (wholeA as number) / (wholeB as number);
-            if (fromWhole > 0 && Number.isFinite(fromWhole)) { candidates.push(fromWhole); usedWhole = true; }
+          // Reserves-derived using decimals (treat mintAmountA/B as atomic, convert to whole)
+          const hasDecs = Number.isFinite(decA) && Number.isFinite(decB);
+          const aAtomic = Number((it as any)?.mintAmountA ?? NaN);
+          const bAtomic = Number((it as any)?.mintAmountB ?? NaN);
+          const wholeAdec = (hasDecs && Number.isFinite(aAtomic)) ? (aAtomic / Math.pow(10, decA as number)) : NaN;
+          const wholeBdec = (hasDecs && Number.isFinite(bAtomic)) ? (bAtomic / Math.pow(10, decB as number)) : NaN;
+          if (Number.isFinite(wholeAdec) && Number.isFinite(wholeBdec) && (wholeBdec as number) > 0) {
+            const fromDec = (wholeAdec as number) / (wholeBdec as number);
+            if (fromDec > 0 && Number.isFinite(fromDec)) { candidates.push(fromDec); usedWhole = true; }
+          } else {
+            // Fallback: use whole amounts if they appear to be already whole
+            const wholeA = Number.isFinite(amount_a_whole as any) ? (amount_a_whole as number) : NaN;
+            const wholeB = Number.isFinite(amount_b_whole as any) ? (amount_b_whole as number) : NaN;
+            if (Number.isFinite(wholeA) && Number.isFinite(wholeB) && (wholeB as number) > 0) {
+              const fromWhole = (wholeA as number) / (wholeB as number);
+              if (fromWhole > 0 && Number.isFinite(fromWhole)) { candidates.push(fromWhole); usedWhole = true; }
+            }
           }
         } catch {}
         // Use USD references only to choose between pool-derived candidates; never substitute USD ref as price
@@ -377,7 +389,19 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         }
       } catch {}
       if (!ok) { try { logger.warn('raydium.clmm drop by sanity', { id, mint_a: mintA, mint_b: mintB, price_in: price, price_from_sqrt }); } catch {} } else {
-        clmm.push({ id, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps, sqrt_price_x64: Number.isFinite(sqrt) ? sqrt : 0, liquidity: Number.isFinite(liquidity) ? liquidity : 0, tick_spacing: Number.isFinite(tick) ? tick : 0, updated_ms: now, price_a_per_b: px > 0 ? px : undefined, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, pool_kind: 'clmm', tvl_usd, amount_a_whole, amount_b_whole, liquidity_display: tvl_usd });
+        // Populate pool_liquidity_raw as min(wholeA, wholeB) using decimals-aware amounts when available
+        let pool_liquidity_raw: number | undefined = undefined;
+        try {
+          const aAtomic = Number((it as any)?.mintAmountA ?? NaN);
+          const bAtomic = Number((it as any)?.mintAmountB ?? NaN);
+          if (Number.isFinite(decA) && Number.isFinite(decB) && Number.isFinite(aAtomic) && Number.isFinite(bAtomic)) {
+            const wa = aAtomic / Math.pow(10, decA as number);
+            const wb = bAtomic / Math.pow(10, decB as number);
+            const min = Math.min(wa, wb);
+            if (Number.isFinite(min) && min > 0) pool_liquidity_raw = min;
+          }
+        } catch {}
+        clmm.push({ id, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps, sqrt_price_x64: Number.isFinite(sqrt) ? sqrt : 0, liquidity: Number.isFinite(liquidity) ? liquidity : 0, tick_spacing: Number.isFinite(tick) ? tick : 0, updated_ms: now, price_a_per_b: px > 0 ? px : undefined, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, pool_kind: 'clmm', tvl_usd, amount_a_whole, amount_b_whole, pool_liquidity_raw, liquidity_display: tvl_usd });
       }
     } else {
       const tvl_usd = Number.isFinite(tvl) && tvl > 0 ? tvl : undefined;

@@ -358,11 +358,16 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       (poolKeys as any).marketAuthority = ensurePk((poolKeys as any).marketAuthority);
     } catch {}
 
+    // Raydium AMM expects BN for amounts
+    const BN = (await import('bn.js')).default as any;
+    const amountInBn = new BN(String(hop.amountInRaw ?? 0n));
+    const minOutBn = new BN(String(hop.minOutRaw ?? 0n));
+
     const ix = (makeSwapFixedInInstruction as any)({
       poolKeys,
       userKeys,
-      amountIn: hop.amountInRaw,
-      minAmountOut: hop.minOutRaw,
+      amountIn: amountInBn,
+      minAmountOut: minOutBn,
     }, version);
 
     return [ix];
