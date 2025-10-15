@@ -98,6 +98,14 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
   const all = [...budget, ...extraSetupIxs, ...hopIxs];
   // Approximate size
   const sizeBytes = all.length * 200;
+  try {
+    const programCounts: Record<string, number> = {};
+    for (const it of all) {
+      const pid = String((it as any)?.programId || 'unknown');
+      programCounts[pid] = (programCounts[pid] || 0) + 1;
+    }
+    logger.info('tx.build.detail', { cat: 'tx', ctx: { ixCount: all.length, programs: programCounts } as any });
+  } catch {}
   try { logger.info('tx.build.ok', { cat: 'tx', code: LogCode.TX_BUILD_OK, ctx: { ms: Date.now() - t0, ixCount: all.length, sizeBytes } as any }); } catch {}
   return { tx: { instructions: all, v: 0 }, ixCount: all.length, sizeBytes };
 }

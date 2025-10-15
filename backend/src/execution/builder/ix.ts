@@ -397,6 +397,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     };
 
     const out = unwrapIxs(ixInfo);
+    try { logger.info('ix.build raydium.amm.detail', { cat: 'tx', ctx: { got: Array.isArray(out) ? out.length : 0, shape: (ixInfo && typeof ixInfo === 'object' ? Object.keys(ixInfo) : String(typeof ixInfo)) } as any }); } catch {}
     if (out && out.length) return out;
     try { logger.warn('ix.build raydium.amm.real unexpected shape', { cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
     throw new Error('RAYDIUM_AMM_BUILD_FAILED: bad_ix_shape');

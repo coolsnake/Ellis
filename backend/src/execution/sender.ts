@@ -94,6 +94,9 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
     }
   } catch {}
   const { blockhash } = await connection.getLatestBlockhash('finalized');
+  try {
+    logger.info('tx.preflight.detail', { cat: 'tx', ctx: { ixCount: realIxs.length, programs: realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId))) } as any });
+  } catch {}
   const lookupTables = await loadLookupTables(connection, (opts?.lookupTableAddresses || []));
   const msg = new TransactionMessage({ payerKey: kp.publicKey, recentBlockhash: blockhash, instructions: realIxs }).compileToV0Message(lookupTables);
   const tx = new VersionedTransaction(msg);
@@ -114,6 +117,9 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
     if (t) { try { sanitizeInstructionKeys(t); } catch {} realIxs.push(t); }
   }
   const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
+  try {
+    logger.info('tx.send.detail', { cat: 'tx', ctx: { ixCount: realIxs.length, programs: realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId))) } as any });
+  } catch {}
   const lookupTables = await loadLookupTables(connection, (opts?.lookupTableAddresses || []));
   const msg = new TransactionMessage({ payerKey: kp.publicKey, recentBlockhash: blockhash, instructions: realIxs }).compileToV0Message(lookupTables);
   const tx = new VersionedTransaction(msg);
