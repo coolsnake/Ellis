@@ -98,9 +98,41 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
   try {
     // Attempt dynamic import of a DLMM SDK if available; otherwise construct minimal raw ix descriptor
     try { logger.info('meteora.dlmm.import.try', { cat: 'tx' }); } catch {}
-    const maybe: any = await (async () => { try { return await (Function('return import')())('@meteora-ag/dlmm-sdk'); } catch { return null; } })();
-    try { logger.info('meteora.dlmm.import.' + (maybe ? 'ok' : 'miss'), { cat: 'tx' }); } catch {}
-    if (maybe && maybe?.DLMM && maybe?.DLMM?.swapIx) {
+    const tryDynImport = async (spec: string): Promise<any | null> => {
+      try {
+        const fn: any = (Function('return import')());
+        return await fn(spec);
+      } catch {
+        return null;
+      }
+    };
+    let mod: any = await tryDynImport('@meteora-ag/dlmm-sdk');
+    if (!mod) mod = await tryDynImport('@meteora-ag/dlmm');
+    if (!mod) mod = await tryDynImport('@meteora-ag/dlmm-sdk/dist/index.js');
+    let importError: any = mod ? null : new Error('dynamic import failed');
+    if (!mod) {
+      // Fallback to createRequire for CJS packages from ESM context
+      try {
+        const m = await tryDynImport('module');
+        const createRequire = (m && (m as any).createRequire) || (m && (m as any).default && (m as any).default.createRequire);
+        const req = createRequire ? createRequire(import.meta.url) : undefined;
+        if (req) {
+          try { mod = req('@meteora-ag/dlmm-sdk'); } catch {}
+          if (!mod) { try { mod = req('@meteora-ag/dlmm'); } catch {} }
+        }
+      } catch (e) {
+        importError = e;
+      }
+    }
+    if (!mod) {
+      try { logger.warn('meteora.dlmm.import.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(importError?.message || importError) } as any }); } catch {}
+    } else {
+      try { logger.info('meteora.dlmm.import.ok', { cat: 'tx', ctx: { keys: Object.keys(mod || {}) } as any }); } catch {}
+    }
+    const maybe: any = mod;
+    const DLMMns: any = (maybe && (maybe as any).DLMM) ? (maybe as any).DLMM : maybe;
+    const swapIxFn: any = (DLMMns && (DLMMns as any).swapIx) ? (DLMMns as any).swapIx : (maybe && (maybe as any).swapIx ? (maybe as any).swapIx : undefined);
+    if (swapIxFn) {
       const connection = getConnection();
       const kp = await ensureWallet(CONFIG.walletPath);
       const poolPk = toPublicKey(hop.poolId);
@@ -128,7 +160,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         binArrayUpper: hop.binArrayUpper ? toPublicKey(hop.binArrayUpper) : undefined,
       } as any;
       try { logger.info('meteora.dlmm.swapIx.call', { cat: 'tx' }); } catch {}
-      const ix = await maybe.DLMM.swapIx(connection, kp.publicKey, params);
+      const ix = await swapIxFn(connection, kp.publicKey, params);
       // Meteora SDK returns a TransactionInstruction
       if (ix) {
         try { logger.info('meteora.dlmm.swapIx.ok', { cat: 'tx' }); } catch {}

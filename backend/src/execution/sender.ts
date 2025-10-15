@@ -92,9 +92,16 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
   // Compute budget ixs
   if (opts?.computeUnitLimit && opts.computeUnitLimit > 0) realIxs.push(ComputeBudgetProgram.setComputeUnitLimit({ units: Math.floor(opts.computeUnitLimit) }));
   if (opts?.computeUnitPriceMicroLamports && opts.computeUnitPriceMicroLamports > 0) realIxs.push(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: Math.floor(opts.computeUnitPriceMicroLamports) }));
+  let skipped = 0;
   for (const ix of instructions) {
-    const t = toInstruction(ix);
-    if (t) { try { sanitizeInstructionKeys(t); } catch {} realIxs.push(t); }
+    try {
+      const t = toInstruction(ix);
+      if (t) { try { sanitizeInstructionKeys(t); } catch {} realIxs.push(t); }
+      else { skipped += 1; try { logger.info('tx.ix.coerce.skip', { cat: 'tx', ctx: { reason: 'bad_shape', shape: (ix && typeof ix === 'object' ? Object.keys(ix) : typeof ix) } as any }); } catch {} }
+    } catch (e: any) {
+      skipped += 1;
+      try { logger.info('tx.ix.coerce.err', { cat: 'tx', ctx: { error: String(e?.message || e), shape: (ix && typeof ix === 'object' ? Object.keys(ix) : typeof ix) } as any }); } catch {}
+    }
   }
   try {
     for (let i = 0; i < realIxs.length; i += 1) {
@@ -107,7 +114,7 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
   } catch {}
   const { blockhash } = await connection.getLatestBlockhash('finalized');
   try {
-    logger.info('tx.preflight.detail', { cat: 'tx', ctx: { ixCount: realIxs.length, programs: realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId))) } as any });
+    logger.info('tx.preflight.detail', { cat: 'tx', ctx: { ixCount: realIxs.length, origCount: (instructions || []).length, skipped, programs: realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId))) } as any });
   } catch {}
   const lookupTables = await loadLookupTables(connection, (opts?.lookupTableAddresses || []));
   const msg = new TransactionMessage({ payerKey: kp.publicKey, recentBlockhash: blockhash, instructions: realIxs }).compileToV0Message(lookupTables);
