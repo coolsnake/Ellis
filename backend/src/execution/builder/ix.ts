@@ -141,39 +141,30 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
   try { logger.info('meteora.dlmm.build.start', { cat: 'tx', ctx: { poolId: hop.poolId, inputMint: hop.inputMint, outputMint: hop.outputMint, amountInRaw: String(hop.amountInRaw ?? 0n), minOutRaw: String(hop.minOutRaw ?? 0n) } }); } catch {}
   try {
     try { logger.info('meteora.dlmm.import.try', { cat: 'tx' }); } catch {}
-    const dynamicImport = async (spec: string): Promise<{ mod: any | null; err?: string }> => {
-      try { const m = await (Function('return import')())(spec); return { mod: m }; } catch (e: any) { return { mod: null, err: String(e?.message || e) }; }
-    };
     let mod: any = null;
-    const attempts: string[] = [
-      '@meteora-ag/dlmm',
-      '@meteora-ag/dlmm/ts-client',
-      '@meteora-ag/dlmm-sdk',
-      '@meteora-ag/dlmm-sdk-public',
-      '@meteora-ag/dlmm/dist/index.js',
-      '@meteora-ag/dlmm-sdk/dist/index.js',
-    ];
-    for (const spec of attempts) {
-      const { mod: m, err } = await dynamicImport(spec);
-      if (m) { mod = m; try { logger.info('meteora.dlmm.import.ok', { cat: 'tx', ctx: { spec, keys: Object.keys(m || {}) } }); } catch {} break; }
-      else { try { logger.warn('meteora.dlmm.import.fail', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { spec, error: err } }); } catch {} }
-    }
-    if (!mod) {
-      try {
-        const makeReq = async (): Promise<any | undefined> => {
-          const nodeModule = await dynamicImport('node:module');
-          const base = (nodeModule?.mod) ? nodeModule.mod : (await dynamicImport('module')).mod;
-          const cr = (base && (base as any).createRequire) || (base && (base as any).default && (base as any).default.createRequire);
-          return cr ? (cr as any)(import.meta.url) : undefined;
-        };
-        const req = await makeReq();
-        if (req) {
-          for (const spec of attempts) {
-            try { const m = req(spec); if (m) { mod = m; try { logger.info('meteora.dlmm.require.ok', { cat: 'tx', ctx: { spec, keys: Object.keys(m || {}) } }); } catch {}; break; } } catch (e: any) { try { logger.warn('meteora.dlmm.require.fail', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { spec, error: String(e?.message || e) } }); } catch {} }
+    try {
+      const nodeModule: any = await import('node:module');
+      const createRequire: any = (nodeModule && nodeModule.createRequire) || (nodeModule?.default && nodeModule.default.createRequire);
+      const req: any = createRequire ? createRequire(import.meta.url) : undefined;
+      if (req) {
+        const specs: string[] = [
+          '@meteora-ag/dlmm',
+          '@meteora-ag/dlmm/ts-client',
+          '@meteora-ag/dlmm-sdk',
+          '@meteora-ag/dlmm-sdk-public',
+          '@meteora-ag/dlmm/dist/index.js',
+          '@meteora-ag/dlmm-sdk/dist/index.js',
+        ];
+        for (const spec of specs) {
+          try {
+            const m = req(spec);
+            if (m) { mod = m; try { logger.info('meteora.dlmm.require.ok', { cat: 'tx', ctx: { spec, keys: Object.keys(m || {}) } }); } catch {}; break; }
+          } catch (e: any) {
+            try { logger.warn('meteora.dlmm.require.fail', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { spec, error: String(e?.message || e) } }); } catch {}
           }
         }
-      } catch {}
-    }
+      }
+    } catch {}
     if (!mod) {
       try { logger.warn('meteora.dlmm.import.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: 'ALL_IMPORTS_FAILED' } }); } catch {}
     } else {
