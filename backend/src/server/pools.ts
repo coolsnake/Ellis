@@ -525,6 +525,8 @@ export function startRaydiumRefreshLoop(): void {
         const rayClmm = new web3.PublicKey(String(CONFIG.raydium?.clmmProgram).trim());
         const orcaProg = new web3.PublicKey(String(CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc').trim());
         const subs: Array<{ kind: 'account' | 'program'; id: number }> = [];
+        // Track explicit targets so we can classify events for SPL Token vault accounts (e.g., Raydium AMM vaults)
+        const targetedSourceByAccount: Map<string, 'raydium' | 'orca' | 'meteora'> = new Map();
         // Debounce frequent program change bursts to at most one refresh per source per min gap
         const minGap = Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000);
         let lastRay = 0; let lastOrc = 0;
@@ -556,7 +558,8 @@ export function startRaydiumRefreshLoop(): void {
             const isMeteoraTarget = meteoraTargets.has(pk58);
             try {
               const shortPk = pk ? `${toB58Any(pk).slice(0,6)}…` : '';
-              const src = (owner === ownerRayAmm || owner === ownerRayClmm) ? 'raydium' : (owner === ownerOrca ? 'orca' : ((ownerMeteora && owner === ownerMeteora) || isMeteoraTarget ? 'meteora' : 'unknown'));
+              const mapped = targetedSourceByAccount.get(pk58);
+              const src = mapped || ((owner === ownerRayAmm || owner === ownerRayClmm) ? 'raydium' : (owner === ownerOrca ? 'orca' : ((ownerMeteora && owner === ownerMeteora) || isMeteoraTarget ? 'meteora' : 'unknown')));
               logger.debug('pools.ws event', { source: src, account: shortPk, cat: 'pools' });
               // Emit raw event snapshot (truncated) for audit
               const raw = {
@@ -795,6 +798,31 @@ export function startRaydiumRefreshLoop(): void {
             }
           }
         };
+        // Helper: attach Raydium AMM vault (token) accounts for a given AMM pool address
+        const attachRaydiumAmmVaults = async (poolAddr: string) => {
+          try {
+            const pk = new web3.PublicKey(poolAddr);
+            const acc = await conn.getAccountInfo(pk, CONFIG.system.txCommitment as any);
+            if (!acc?.data) return;
+            const rmod: any = await import('@raydium-io/raydium-sdk-v2').catch(() => null);
+            const ammLayout = rmod?.LiquidityStateLayoutV4 || rmod?.LIQUIDITY_STATE_LAYOUT_V4;
+            if (!ammLayout || typeof ammLayout.decode !== 'function') return;
+            let state: any = null;
+            try { state = ammLayout.decode(acc.data); } catch { state = null; }
+            const vA = state?.baseVault?.toBase58?.() || state?.vaultA?.toBase58?.();
+            const vB = state?.quoteVault?.toBase58?.() || state?.vaultB?.toBase58?.();
+            const vaults = Array.from(new Set([vA, vB].filter(Boolean)));
+            for (const v of vaults) {
+              try {
+                const vpk = new web3.PublicKey(v as string);
+                const id = await subscribeAccountWithRetry(vpk, handle);
+                subs.push({ kind: 'account', id });
+                targetedSourceByAccount.set(String(v), 'raydium');
+              } catch {}
+            }
+          } catch {}
+        };
+
         // Subscribe to Orca Whirlpool POOL accounts only: prefer graph edge pool ids, else derive PDAs from watchlist
         try {
           const { PublicKey } = web3;
@@ -854,6 +882,7 @@ export function startRaydiumRefreshLoop(): void {
               const pk = new PublicKey(addr);
               const id = await subscribeAccountWithRetry(pk, handle);
               subs.push({ kind: 'account', id }); attached++;
+              try { targetedSourceByAccount.set(pk.toBase58(), 'orca'); } catch {}
             } catch {}
             if (i < uniq.length - 1 && intervalMs > 0) { await sleep(intervalMs); }
           }
@@ -909,6 +938,10 @@ export function startRaydiumRefreshLoop(): void {
               const pk = new web3.PublicKey(addr);
               const id = await subscribeAccountWithRetry(pk, handle);
               subs.push({ kind: 'account', id }); attachedRay++;
+              try { targetedSourceByAccount.set(pk.toBase58(), 'raydium'); } catch {}
+              // Opportunistically attach AMM vault listeners for AMM pools
+              // Safe to call for any Raydium pool; function is a no-op for CLMM layouts
+              attachRaydiumAmmVaults(addr).catch(() => {});
             } catch {}
             if (i < uniqueRay.length - 1 && intervalMsRay > 0) { await sleepRay(intervalMsRay); }
           }
@@ -944,6 +977,7 @@ export function startRaydiumRefreshLoop(): void {
                 const pk = new web3.PublicKey(addr);
                 const id = await subscribeAccountWithRetry(pk, handle);
                 subs.push({ kind: 'account', id }); attached++;
+                try { targetedSourceByAccount.set(pk.toBase58(), 'meteora'); } catch {}
               } catch {}
               if (i < edgeIds.length - 1 && intervalMsMet > 0) { await sleepMet(intervalMsMet); }
             }
