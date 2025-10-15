@@ -206,30 +206,39 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           let binArrayLower = hop.binArrayLower ? toPublicKey(hop.binArrayLower) : undefined;
           let binArrayUpper = hop.binArrayUpper ? toPublicKey(hop.binArrayUpper) : undefined;
           try {
-            if (!binArrayLower || !binArrayUpper) {
-              const helper = (dlmm as any)?.getBinArrayLowerUpperBinId || (dlmm as any)?.deriveBinArrayLowerUpperBinId;
-              const deriveBinArray = (dlmm as any)?.deriveBinArray;
-              const getTokensMintFromPoolAddress = (dlmm as any)?.getTokensMintFromPoolAddress;
-              const deriveReserve = (dlmm as any)?.deriveReserve;
-              const getTokenProgramId = (dlmm as any)?.getTokenProgramId;
-              // Optional enrichment: resolve token programs and reserves for accounts list
-              try {
-                const mints = getTokensMintFromPoolAddress ? await getTokensMintFromPoolAddress(connection, poolPk) : undefined;
-                if (mints && getTokenProgramId) {
-                  await getTokenProgramId(connection, (mints as any).mintX || (mints as any).tokenXMint || hop.inputMint);
-                  await getTokenProgramId(connection, (mints as any).mintY || (mints as any).tokenYMint || hop.outputMint);
-                }
-              } catch {}
-              if (helper && deriveBinArray) {
-                const res = await helper(connection, poolPk).catch(() => null as any);
-                if (res && typeof res.lowerBinId === 'number' && typeof res.upperBinId === 'number') {
-                  try { const lowerPda = await deriveBinArray(programId, poolPk, res.lowerBinId); binArrayLower = lowerPda?.publicKey || lowerPda || binArrayLower; } catch {}
-                  try { const upperPda = await deriveBinArray(programId, poolPk, res.upperBinId); binArrayUpper = upperPda?.publicKey || upperPda || binArrayUpper; } catch {}
-                }
+            const helper = (dlmm as any)?.getBinArrayLowerUpperBinId || (dlmm as any)?.deriveBinArrayLowerUpperBinId;
+            const deriveBinArray = (dlmm as any)?.deriveBinArray;
+            const getTokensMintFromPoolAddress = (dlmm as any)?.getTokensMintFromPoolAddress;
+            const deriveReserve = (dlmm as any)?.deriveReserve;
+            const getTokenProgramId = (dlmm as any)?.getTokenProgramId;
+            const deriveBinArrayBitmapExtension = (dlmm as any)?.deriveBinArrayBitmapExtension;
+            // Optional enrichment: resolve token programs and reserves for accounts list
+            try {
+              const mints = getTokensMintFromPoolAddress ? await getTokensMintFromPoolAddress(connection, poolPk) : undefined;
+              if (mints && getTokenProgramId) {
+                await getTokenProgramId(connection, (mints as any).mintX || (mints as any).tokenXMint || hop.inputMint);
+                await getTokenProgramId(connection, (mints as any).mintY || (mints as any).tokenYMint || hop.outputMint);
               }
-              // Derive reserves (optional, best-effort)
-              try { if (deriveReserve) { await deriveReserve(programId, poolPk, true); await deriveReserve(programId, poolPk, false); } } catch {}
+            } catch {}
+            if ((!binArrayLower || !binArrayUpper) && helper && deriveBinArray) {
+              const res = await helper(connection, poolPk).catch(() => null as any);
+              if (res && typeof res.lowerBinId === 'number' && typeof res.upperBinId === 'number') {
+                try { const lowerPda = await deriveBinArray(programId, poolPk, res.lowerBinId); binArrayLower = lowerPda?.publicKey || lowerPda || binArrayLower; } catch {}
+                try { const upperPda = await deriveBinArray(programId, poolPk, res.upperBinId); binArrayUpper = upperPda?.publicKey || upperPda || binArrayUpper; } catch {}
+              }
             }
+            // Derive reserves (optional, best-effort)
+            try { if (deriveReserve) { await deriveReserve(programId, poolPk, true); await deriveReserve(programId, poolPk, false); } } catch {}
+            // Derive bitmap extension
+            let binArrayBitmapExtension: any = undefined;
+            try {
+              if (deriveBinArrayBitmapExtension) {
+                const ext = await deriveBinArrayBitmapExtension(programId, poolPk);
+                binArrayBitmapExtension = (ext && (ext as any).publicKey) ? (ext as any).publicKey : ext;
+              }
+            } catch {}
+            // Attach derived extension into accounts later
+            (accounts as any)._binArrayBitmapExtension = binArrayBitmapExtension;
           } catch {}
           const amountIn = new BN(String(hop.amountInRaw ?? 0n));
           const minOut = new BN(String(hop.minOutRaw ?? 0n));
@@ -248,6 +257,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           };
           if (binArrayLower) accounts.binArrayLower = binArrayLower;
           if (binArrayUpper) accounts.binArrayUpper = binArrayUpper;
+          if ((accounts as any)._binArrayBitmapExtension) accounts.binArrayBitmapExtension = (accounts as any)._binArrayBitmapExtension;
           if (typeof builder.accounts === 'function') builder = builder.accounts(accounts);
           const ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
           if (ix) { try { logger.info('meteora.dlmm.swap.ok', { cat: 'tx' }); } catch {}; return [ix]; }
