@@ -295,7 +295,12 @@ export function startDetectDrivenGraphPush(debounceMs = 0): void {
           try { logger.info('graph.rebuild.detect_driven', { last_detection_ms: lastDetectSeen, code: 'GRAPH.REBUILD.DETECT_DRIVEN' }); } catch {}
           try {
             const gmod: any = await import('./graph.js');
-            gmod.scheduleGraphRebuild(undefined, Math.max(0, debounceMs));
+            // Rebuild the graph and push to arb-rs upon detect completion
+            if (typeof gmod.rebuildGraphNow === 'function') {
+              await gmod.rebuildGraphNow(undefined, { pushToArb: true });
+            } else {
+              gmod.scheduleGraphRebuild(undefined, Math.max(0, debounceMs));
+            }
           } catch {}
         }
       } catch {}

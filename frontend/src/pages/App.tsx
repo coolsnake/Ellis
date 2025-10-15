@@ -882,7 +882,10 @@ export const App: React.FC = () => {
 
           if (['simulate','preflight','execute'].includes(action)) {
             const target = (parts[2] || '').toLowerCase();
-            const endpoint = action === 'simulate' ? '/arb/simulate' : (action === 'preflight' ? '/arb/simulate-send' : '/arb/execute');
+            let endpoint = action === 'simulate' ? '/arb/simulate' : (action === 'preflight' ? '/arb/simulate-send' : '/arb/execute');
+            if (action === 'execute' && target === 'orca') {
+              endpoint = '/arb/execute/orca';
+            }
 
             let body: any = null;
             if (target === 'multi') {

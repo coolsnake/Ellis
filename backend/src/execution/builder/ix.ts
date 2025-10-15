@@ -115,6 +115,7 @@ export function buildMeteoraDlmmSwapIx(hop: DirectHop): any[] {
 
 export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]> {
   try { logger.debug('ix.build meteora.dlmm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
+  try { const dump = { kind: 'meteora.dlmm.build.start', hop }; (await import('../../utils/txTrace.js')).writeDexFullDump('meteora','preflight', dump).catch(()=>{}); } catch {}
   try { logger.info('meteora.dlmm.build.start', { cat: 'tx', ctx: { poolId: hop.poolId, inputMint: hop.inputMint, outputMint: hop.outputMint, amountInRaw: String(hop.amountInRaw ?? 0n), minOutRaw: String(hop.minOutRaw ?? 0n) } }); } catch {}
   try {
     try { logger.info('meteora.dlmm.import.try', { cat: 'tx' }); } catch {}
@@ -122,8 +123,11 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       try { return await (Function('return import')())(spec); } catch { return null; }
     };
     let mod: any = null;
-    if (!mod) mod = await dynamicImport('@meteora-ag/dlmm-sdk');
+    // Prefer the examples package default import first
     if (!mod) mod = await dynamicImport('@meteora-ag/dlmm');
+    if (!mod) mod = await dynamicImport('@meteora-ag/dlmm-sdk');
+    if (!mod) mod = await dynamicImport('@meteora-ag/dlmm-sdk-public');
+    if (!mod) mod = await dynamicImport('@meteora-ag/dlmm/dist/index.js');
     if (!mod) mod = await dynamicImport('@meteora-ag/dlmm-sdk/dist/index.js');
     if (!mod) {
       try {
@@ -144,9 +148,10 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     if (!mod) {
       try { logger.warn('meteora.dlmm.import.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: 'ALL_IMPORTS_FAILED' } }); } catch {}
     } else {
-      try { logger.info('meteora.dlmm.import.ok', { cat: 'tx', ctx: { keys: Object.keys(mod || {}) } }); } catch {}
-      const DLMMns: any = (mod && (mod as any).DLMM) ? (mod as any).DLMM : mod;
-      const swapIxFn: any = (DLMMns && (DLMMns as any).swapIx) ? (DLMMns as any).swapIx : ((mod as any)?.swapIx);
+      const keys = (() => { try { return Object.keys(mod || {}); } catch { return []; } })();
+      try { logger.info('meteora.dlmm.import.ok', { cat: 'tx', ctx: { keys } }); } catch {}
+      const dlmm: any = (mod && (mod as any).default) ? (mod as any).default : ((mod as any).DLMM || mod);
+      const swapIxFn: any = (dlmm && typeof (dlmm as any).swapIx === 'function') ? (dlmm as any).swapIx : ((mod as any)?.swapIx);
       if (typeof swapIxFn === 'function') {
         const connection = getConnection();
         const kp = await ensureWallet(CONFIG.walletPath);
@@ -165,7 +170,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         } as any;
         try { logger.info('meteora.dlmm.swapIx.call', { cat: 'tx' }); } catch {}
         const ix = await swapIxFn(connection, kp.publicKey, params);
-        if (ix) { try { logger.info('meteora.dlmm.swapIx.ok', { cat: 'tx' }); } catch {}; return [ix]; }
+        if (ix) { try { logger.info('meteora.dlmm.swapIx.ok', { cat: 'tx' }); } catch {}; try { (await import('../../utils/txTrace.js')).writeDexFullDump('meteora','preflight', { kind: 'meteora.dlmm.ix.ok', hop, params, ix }).catch(()=>{}); } catch {}; return [ix]; }
         try { logger.warn('meteora.dlmm.swapIx.empty', { cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
       }
     }
@@ -187,6 +192,7 @@ export function maybeCreateAtas(hop: DirectHop, create: boolean): any[] {
 export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]> {
   try { logger.debug('ix.build raydium.clmm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
   try {
+    try { (await import('../../utils/txTrace.js')).writeDexFullDump('raydium','preflight', { kind: 'raydium.clmm.build.start', hop }).catch(()=>{}); } catch {}
     const missing: string[] = [];
     if (!hop.inputMint) missing.push('inputMint');
     if (!hop.outputMint) missing.push('outputMint');
@@ -232,6 +238,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       sqrtPriceLimitX64: hop.sqrtPriceLimitX64 ?? 0n,
       remainingAccounts: [],
     });
+    try { (await import('../../utils/txTrace.js')).writeDexFullDump('raydium','preflight', { kind: 'raydium.clmm.build.built', hop, poolKeys, ownerInfo, res }).catch(()=>{}); } catch {}
 
     const unwrap = (val: any): any[] => {
       try {
@@ -277,7 +284,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
         norm.push(new TransactionInstruction({ programId: pid, keys, data }));
       } catch {}
     }
-    if (norm.length) return norm as any[];
+    if (norm.length) { try { (await import('../../utils/txTrace.js')).writeDexFullDump('raydium','preflight', { kind: 'raydium.clmm.build.norm', hop, count: norm.length }).catch(()=>{}); } catch {}; return norm as any[]; }
   } catch (e) {
     try { logger.warn('ix.build raydium.clmm.real fallback', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
   }
@@ -287,6 +294,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
 export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> {
   try { logger.debug('ix.build raydium.amm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
   try {
+    try { (await import('../../utils/txTrace.js')).writeDexFullDump('raydium','preflight', { kind: 'raydium.amm.build.start', hop }).catch(()=>{}); } catch {}
     if ((hop.amountInRaw || 0n) <= 0n) {
       throw new Error('RAYDIUM_AMM_BUILD_FAILED: amount=0');
     }
@@ -337,14 +345,31 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     const { getAssociatedPoolKeys, makeSwapFixedInInstruction } = await import('@raydium-io/raydium-sdk-v2');
     const kp = await ensureWallet(CONFIG.walletPath);
     // Force programId to configured AMM program when not provided or ambiguous
-    const programId = toPublicKey(hop.programId, (CONFIG.raydium?.ammV4Program as any));
+    let programId = toPublicKey(hop.programId, (CONFIG.raydium?.ammV4Program as any));
     const marketId = toPublicKey(hop.market);
     const marketProgramId = toPublicKey(hop.serumProgramId);
 
-    // Choose Raydium AMM version; default to 4
-    const version = resolveRaydiumAmmVersion(hop.programId);
+    // Choose Raydium AMM version; default to 4, then try detect by decoding pool account
+    let version: 4 | 5 = resolveRaydiumAmmVersion(hop.programId);
+    try {
+      const conn = getConnection();
+      const accInfo = await conn.getAccountInfo(toPublicKey(hop.poolId));
+      if (accInfo?.data?.length) {
+        const sdk: any = await import('@raydium-io/raydium-sdk-v2');
+        const v5Layout = (sdk as any)?.LiquidityStateLayoutV5 || (sdk as any)?.liquidityStateV5Layout;
+        const v4Layout = (sdk as any)?.LiquidityStateLayoutV4 || (sdk as any)?.liquidityStateV4Layout;
+        try { if (v5Layout) { v5Layout.decode(accInfo.data); version = 5; } }
+        catch { try { if (v4Layout) { v4Layout.decode(accInfo.data); version = 4; } } catch {} }
+        if (version === 5) {
+          try {
+            const v5Pid = (CONFIG as any)?.raydium?.ammV5Program;
+            if (v5Pid) programId = toPublicKey(v5Pid);
+          } catch {}
+        }
+      }
+    } catch {}
 
-    // Build pool keys (requires correct base/quote mints & decimals per market)
+    // Build pool keys (initial attempt). We will patch orientation from on-chain state next.
     let poolKeys = (getAssociatedPoolKeys as any)({
       version,
       marketVersion: 3,
@@ -498,6 +523,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
 
     const rawOut = unwrapIxs(ixInfo);
     try { logger.info('ix.build raydium.amm.detail', { cat: 'tx', ctx: { got: Array.isArray(rawOut) ? rawOut.length : 0, shape: (ixInfo && typeof ixInfo === 'object' ? Object.keys(ixInfo) : String(typeof ixInfo)) } as any }); } catch {}
+    try { (await import('../../utils/txTrace.js')).writeDexFullDump('raydium','preflight', { kind: 'raydium.amm.build.ixInfo', hop, poolKeys, userKeys, ixInfo }).catch(()=>{}); } catch {}
     const toPk = (v: any): PublicKey => {
       try {
         if (v instanceof PublicKey) return v;
@@ -526,7 +552,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
         norm.push(new TransactionInstruction({ programId: pid, keys, data }));
       } catch {}
     }
-    if (norm.length) return norm;
+    if (norm.length) { try { (await import('../../utils/txTrace.js')).writeDexFullDump('raydium','preflight', { kind: 'raydium.amm.build.norm', hop, count: norm.length, norm }).catch(()=>{}); } catch {}; return norm; }
     try { logger.warn('ix.build raydium.amm.real unexpected shape', { cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
     throw new Error('RAYDIUM_AMM_BUILD_FAILED: bad_ix_shape');
   } catch (e) {

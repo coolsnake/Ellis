@@ -184,6 +184,7 @@ export function createArbRouter(io: SocketIOServer): Router {
       const { ResolveDirectSchema } = await import('../routes/schemas.js');
       const { buildDirectArbTx } = await import('../../execution/builder/tx.js');
       const { assembleAndSimulate } = await import('../../execution/sender.js');
+      const { writeDexFullDump } = await import('../../utils/txTrace.js');
       const { loadExecConfig } = await import('../execConfigStore.js');
 
       const input = req.body || {};
@@ -199,6 +200,16 @@ export function createArbRouter(io: SocketIOServer): Router {
         computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
         lookupTableAddresses: execCfg.lookupTableAddresses,
       } as any);
+      try {
+        await writeDexFullDump('raydium', 'preflight', {
+          id: Math.random().toString(36).slice(2,10),
+          path: plan.path,
+          hops: plan.hops,
+          exec: execCfg,
+          built,
+          sim,
+        });
+      } catch {}
       try { pushBounded(execStats.preflightMs, Date.now() - tPre0); } catch {}
 
       const id = Math.random().toString(36).slice(2,10);
@@ -254,6 +265,7 @@ export function createArbRouter(io: SocketIOServer): Router {
       const { ResolveDirectSchema } = await import('../routes/schemas.js');
       const { buildDirectArbTx } = await import('../../execution/builder/tx.js');
       const { assembleAndSend, assembleAndSimulate } = await import('../../execution/sender.js');
+      const { writeDexFullDump } = await import('../../utils/txTrace.js');
       const { addTxRecord } = await import('../txHistory.js');
       const { loadExecConfig } = await import('../execConfigStore.js');
 
@@ -298,6 +310,16 @@ export function createArbRouter(io: SocketIOServer): Router {
           computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
           lookupTableAddresses: execCfg.lookupTableAddresses,
         } as any);
+        try {
+          await writeDexFullDump('raydium', 'preflight', {
+            id,
+            path: plan.path,
+            hops: plan.hops,
+            exec: execCfg,
+            built,
+            sim,
+          });
+        } catch {}
       } catch (e: any) {
         try { logger.info('tx.preflight.err', { cat: 'tx', code: LogCode.TX_PREFLIGHT_ERR, ctx: { id, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode, error: String(e?.message || e) } as any }); } catch {}
         return res.status(400).json({ id, mode, error: 'preflight_throw' });
@@ -343,6 +365,16 @@ export function createArbRouter(io: SocketIOServer): Router {
           computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
           lookupTableAddresses: execCfg.lookupTableAddresses,
         } as any);
+        try {
+          await writeDexFullDump('raydium', 'execute', {
+            id,
+            path: plan.path,
+            hops: plan.hops,
+            exec: execCfg,
+            built,
+            send: sendRes,
+          });
+        } catch {}
         try { pushBounded(execStats.sendMs, Date.now() - tSend0); execStats.sendOk += 1; } catch {}
         const signatures: string[] = [sendRes.signature];
         const signature = signatures[signatures.length - 1] || null;

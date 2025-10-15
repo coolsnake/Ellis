@@ -36,13 +36,19 @@ async function appendJsonl(path: string, entry: Record<string, any>): Promise<vo
 export type TraceKind = keyof typeof FILES;
 
 export async function logTxTrace(kind: TraceKind, entry: Record<string, any>): Promise<void> {
-  const path = FILES[kind];
-  const payload = {
-    _kind: kind,
-    _ts: new Date().toISOString(),
-    ...entry,
-  };
-  await appendJsonl(path, payload);
+  const file = FILES[kind];
+  await appendJsonl(file, entry);
+}
+
+// New: write per-dex full dumps (overwrite on each save)
+export async function writeDexFullDump(dex: 'raydium' | 'orca' | 'meteora', phase: 'preflight' | 'execute', payload: Record<string, any>): Promise<void> {
+  const file = resolve(LOG_DIR_SAFE, `${dex}.${phase}.full.json`);
+  const dir = dirname(file);
+  if (!existsSync(dir)) {
+    await mkdir(dir, { recursive: true });
+  }
+  const data = JSON.stringify(payload, null, 2);
+  await writeFile(file, data, { encoding: 'utf8' });
 }
 
 

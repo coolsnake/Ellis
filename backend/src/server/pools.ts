@@ -447,7 +447,8 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
     if (force && !(refreshAllSources as any).__didInitialGraphPush) {
       const gmod: any = await import('./graph.js');
       try { await gmod.rebuildGraphNow(); } catch {}
-      try { await (gmod as any).enablePoolWebsocketRefreshes?.(); } catch {}
+      // Ensure websocket-based pool refreshes are enabled immediately after first graph build
+      try { const pools = await import('./pools.js'); (pools as any).enablePoolWebsocketRefreshes?.(); } catch {}
       (refreshAllSources as any).__didInitialGraphPush = true;
     }
   } catch {}
@@ -702,7 +703,20 @@ export function startRaydiumRefreshLoop(): void {
                   const sample = { amm: [], clmm: d.clmm.slice(0, 20) };
                   emit('pool-updates', { source: 'orca', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now() });
                   try { logger.debug('pools.delta orca.ws', { id: pk58.slice(0,6)+'…', updatedClmm: d.clmm.length, cat: 'pools' }); } catch {}
-                  // Graph rebuilds now orchestrated by refresh endpoint; avoid redundant triggers here
+                  // Trigger incremental graph apply when enabled; else schedule rebuild (debounced)
+                  try {
+                    const inc = !!((CONFIG.system as any)?.graphIncrementalMode);
+                    const gmod: any = await import('./graph.js');
+                    const prevSnap = orcaCache.data ? prev : { amm: [], clmm: [] };
+                    if (inc && (d.clmm.length || d.amm.length || d.addedClmm || d.removedClmm || d.addedAmm || d.removedAmm)) {
+                      // In detect-driven mode, apply updates without pushing to arb-rs now
+                      await gmod.applyPoolUpdates(prevSnap as any, next, { pushToArb: false });
+                    } else {
+                      const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
+                      const delta = d.amm.length + d.clmm.length + d.addedAmm + d.addedClmm + d.removedAmm + d.removedClmm;
+                      if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
+                    }
+                  } catch {}
                   ok = true;
                 }
               } catch (e:any) {
