@@ -19,6 +19,27 @@ function toInstruction(ix: any): TransactionInstruction | null {
   return null;
 }
 
+function sanitizeInstructionKeys(ix: TransactionInstruction): void {
+  try {
+    // Ensure programId is a PublicKey
+    if (!(ix.programId instanceof PublicKey)) {
+      ix.programId = new PublicKey((ix as any).programId);
+    }
+  } catch {}
+  try {
+    if (Array.isArray(ix.keys)) {
+      for (let i = 0; i < ix.keys.length; i += 1) {
+        const k = ix.keys[i] as any;
+        try {
+          if (!(k.pubkey instanceof PublicKey)) {
+            ix.keys[i] = { pubkey: new PublicKey(k.pubkey), isSigner: !!k.isSigner, isWritable: !!k.isWritable } as any;
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+}
+
 async function loadLookupTables(connection: Connection, addrs: string[]): Promise<AddressLookupTableAccount[]> {
   const out: AddressLookupTableAccount[] = [];
   for (const a of addrs) {
@@ -40,7 +61,7 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
   if (opts?.computeUnitPriceMicroLamports && opts.computeUnitPriceMicroLamports > 0) realIxs.push(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: Math.floor(opts.computeUnitPriceMicroLamports) }));
   for (const ix of instructions) {
     const t = toInstruction(ix);
-    if (t) realIxs.push(t);
+    if (t) { try { sanitizeInstructionKeys(t); } catch {} realIxs.push(t); }
   }
   const { blockhash } = await connection.getLatestBlockhash('finalized');
   const lookupTables = await loadLookupTables(connection, (opts?.lookupTableAddresses || []));
@@ -60,7 +81,7 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
   if (opts?.computeUnitPriceMicroLamports && opts.computeUnitPriceMicroLamports > 0) realIxs.push(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: Math.floor(opts.computeUnitPriceMicroLamports) }));
   for (const ix of instructions) {
     const t = toInstruction(ix);
-    if (t) realIxs.push(t);
+    if (t) { try { sanitizeInstructionKeys(t); } catch {} realIxs.push(t); }
   }
   const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
   const lookupTables = await loadLookupTables(connection, (opts?.lookupTableAddresses || []));
