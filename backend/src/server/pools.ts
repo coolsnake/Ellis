@@ -1222,6 +1222,41 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
         } catch {}
         try { logger.info('pools.delta raydium', { updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, cat: 'pools' }); } catch {}
       } catch {}
+      // Opportunistic price warmup (anchors + top-N pool mints) after first source completes
+      try {
+        const sys: any = (CONFIG as any)?.system || {};
+        const enable = sys.warmPricesOnStart !== false;
+        if (enable && !(refreshAllSources as any).__didWarmPricesOnce) {
+          const topN = Math.max(10, Number(sys.priceWarmTopN || 200));
+          const collect = (pp: { amm: any[]; clmm: any[] }) => {
+            const arr = [...(pp.amm || []), ...(pp.clmm || [])];
+            return arr.map(p => ({
+              mints: [String(p.mint_a || ''), String(p.mint_b || '')],
+              tvl: Number((p as any)?.tvl_usd ?? (p as any)?.liquidity_display ?? 0)
+            }));
+          };
+          const items = [
+            ...collect(raydiumCache.data || { amm: [], clmm: [] }),
+            ...collect(orcaCache.data || { amm: [], clmm: [] }),
+            ...collect(meteoraCache.data || { amm: [], clmm: [] }),
+            ...collect(metbalCache.data || { amm: [], clmm: [] }),
+          ];
+          const ranked = items.sort((a,b) => (b.tvl || 0) - (a.tvl || 0)).slice(0, topN);
+          const set = new Set<string>();
+          for (const it of ranked) { for (const m of (it.mints || [])) if (m) set.add(m); }
+          // Always include anchors
+          set.add('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+          set.add('So11111111111111111111111111111111111111112');
+          const ids = Array.from(set);
+          if (ids.length) {
+            const { fetchPricesByMints } = await import('../jupiter/jupiter.js');
+            const fresh = await fetchPricesByMints(ids, { catOverride: 'priceWarm', ignorePause: true });
+            const priceStore = await import('./priceStore.js');
+            priceStore.setPrices(fresh as any);
+            (refreshAllSources as any).__didWarmPricesOnce = true;
+          }
+        }
+      } catch {}
       // Graph rebuilds now orchestrated by refresh endpoint; avoid redundant triggers here
 
       return norm;

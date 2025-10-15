@@ -104,7 +104,7 @@ export async function fetchRaydiumPoolsRaw(): Promise<any> {
     const baseUrl = 'https://api-v3.raydium.io/pools/info/mint';
     const pageSize = Math.max(20, Number(((CONFIG as any)?.raydium?.pageSize) || (CONFIG.raydium as any)?.httpPageSize || 50));
     const maxPagesGlobal = Math.max(1, Number(((CONFIG as any)?.raydium?.maxPages) || 10));
-    const concurrency = Math.max(1, Math.min(3, Number(((CONFIG as any)?.raydium?.concurrency) || (CONFIG.raydium as any)?.sdkConcurrency || 8)));
+    const concurrency = Math.max(1, Math.min(8, Number(((CONFIG as any)?.raydium?.concurrency) || (CONFIG as any)?.raydium?.sdkConcurrency || 8)));
     const maxRetries = Math.max(0, Number(((CONFIG as any)?.raydium?.maxHttpRetries) || 2));
     const backoffMs = Math.max(50, Number(((CONFIG as any)?.raydium?.httpBackoffMs) || 300));
 

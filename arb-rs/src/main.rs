@@ -56,6 +56,8 @@ struct ArbConfig {
     drop_stable_stable_hops: bool,
     // Optional override list of stable mints; when unset or empty, defaults to {USDC, USDT}
     stable_mints: Option<Vec<String>>,
+    // When true, apply 10^k magnitude calibration on ingest (backend already calibrates)
+    calibrate_magnitude_on_ingest: bool,
 }
 
 #[derive(Default, serde::Serialize, Clone)]
@@ -310,10 +312,10 @@ async fn main() -> anyhow::Result<()> {
                             let fee = e.fee_bps.unwrap_or(0);
                             let liq = e.liquidity.unwrap_or(0.0);
                             let liq_disp = e.liquidity_display.unwrap_or(0.0);
-                            // Magnitude calibration using current graph edges as USD pivots (USDC/SOL)
+                            // Magnitude calibration using current graph edges as USD pivots (USDC/SOL) [optional]
                             let px_raw = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
                             let mut px = px_raw;
-                            if px > 0.0 {
+                            if px > 0.0 && s.config.calibrate_magnitude_on_ingest {
                                 let sol_mint: &str  = "So11111111111111111111111111111111111111112";
                                 let usdc_mint: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
                                 let get_usd = |mint: &str, graph: &ArbGraph| -> Option<f64> {
@@ -1822,6 +1824,7 @@ struct ConfigReq {
     max_sol_stable_hops: Option<usize>,
     drop_stable_stable_hops: Option<bool>,
     stable_mints: Option<Vec<String>>,
+    calibrate_magnitude_on_ingest: Option<bool>,
 }
 
 async fn set_config(
@@ -1872,6 +1875,7 @@ async fn set_config(
     if let Some(v) = cfg.max_sol_stable_hops { s.config.max_sol_stable_hops = Some(v); }
     if let Some(v) = cfg.drop_stable_stable_hops { s.config.drop_stable_stable_hops = v; }
     if let Some(v) = cfg.stable_mints { s.config.stable_mints = Some(v); }
+    if let Some(v) = cfg.calibrate_magnitude_on_ingest { s.config.calibrate_magnitude_on_ingest = v; }
     // Optional: extend ConfigReq to accept pruning fields without breaking existing clients
     // We tolerate presence via raw JSON by re-reading from persisted file later if needed.
     let _ = persist_config(&s.config).await;
@@ -1908,6 +1912,7 @@ fn default_config() -> ArbConfig {
         max_sol_stable_hops: Some(std::env::var("ARB_MAX_SOL_STABLE_HOPS").ok().and_then(|s| s.parse().ok()).unwrap_or(usize::MAX)),
         drop_stable_stable_hops: std::env::var("ARB_DROP_STABLE_STABLE_HOPS").ok().map(|v| v != "false").unwrap_or(false),
         stable_mints: None,
+        calibrate_magnitude_on_ingest: std::env::var("ARB_CALIBRATE_ON_INGEST").ok().map(|v| v == "true").unwrap_or(false),
     }
 }
 

@@ -10,11 +10,32 @@ export type SendOptions = {
 
 function toInstruction(ix: any): TransactionInstruction | null {
   try {
-    if (ix && typeof ix.programId !== 'undefined' && typeof ix.keys !== 'undefined') {
-      // Assume already a TransactionInstruction
-      if (ix instanceof TransactionInstruction) return ix;
-      // Best-effort: ignore plain objects; builders should return real ixs
-    }
+    if (!ix) return null;
+    if (ix instanceof TransactionInstruction) return ix;
+    const hasShape = typeof ix.programId !== 'undefined' && Array.isArray(ix.keys) && typeof ix === 'object';
+    if (!hasShape) return null;
+    // Attempt to coerce plain object shapes into a real TransactionInstruction
+    const coercePk = (v: any): PublicKey => {
+      if (v instanceof PublicKey) return v;
+      try { if (v && typeof v.toBase58 === 'function') return new PublicKey(v.toBase58()); } catch {}
+      return new PublicKey(String(v));
+    };
+    const programId = coercePk((ix as any).programId);
+    const keys = (ix.keys as any[]).map((k: any) => ({
+      pubkey: coercePk(k?.pubkey ?? k?.pubKey ?? k?.address),
+      isSigner: !!k?.isSigner,
+      isWritable: !!k?.isWritable,
+    }));
+    let data: Buffer = Buffer.alloc(0);
+    try {
+      const raw = (ix as any).data;
+      if (Buffer.isBuffer(raw)) data = raw as Buffer;
+      else if (raw && typeof raw === 'object' && typeof (raw as any).length === 'number') data = Buffer.from(raw as any);
+      else if (typeof raw === 'string') {
+        try { data = Buffer.from(raw, 'base64'); } catch { data = Buffer.from([]); }
+      }
+    } catch {}
+    return new TransactionInstruction({ programId, keys, data });
   } catch {}
   return null;
 }

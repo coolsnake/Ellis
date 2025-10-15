@@ -3,6 +3,7 @@ import { logger } from '../utils/logger.js';
 import { LogCode } from '../utils/logging.js';
 import { readJson } from '../utils/fs.js';
 import { notifyArbServiceRefresh, emit, pushArbGraphSnapshot, pushArbGraphDiff } from './realtime.js';
+import { computePriceForward } from './graph.pricing.js';
 import { CONFIG } from '../utils/config.js';
 import { getRaydiumPoolsNormalized, getOrcaPoolsCached, enablePoolWebsocketRefreshes, peekMeteoraPools, getMeteoraPoolsCached, peekMeteoraBalancedPools } from './pools.js';
 import { loadTokenMap } from '../utils/tokens.js';
@@ -202,8 +203,17 @@ function edgesFromPoolIncremental(p: AmmPool | ClmmPool, getUsd: (m: string) => 
   const w = weightFrom(liq, fee);
   const fwdRaw = Number((p as any)?.price_a_per_b);
   const fRaw = Number.isFinite(fwdRaw) && fwdRaw > 0 ? fwdRaw : undefined;
-  const mag = calibrateMagnitude(a, b, fRaw, getUsd);
-  const fwd = clampPriceInc(mag);
+  const fwd = computePriceForward(
+    a,
+    b,
+    fRaw,
+    (p as any)?.decimals_a,
+    (p as any)?.decimals_b,
+    undefined,
+    undefined,
+    getUsd,
+    undefined,
+  );
   const rev = fwd && fwd > 0 ? 1 / fwd : undefined;
   const kind = (p as any)?.pool_kind || (typeof (p as any)?.sqrt_price_x64 === 'number' ? 'clmm' : 'amm');
 
@@ -605,20 +615,6 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         // Require a valid positive price; skip edge entirely if not present
         const priceNum = Number(price_a_per_b);
 			if (!Number.isFinite(priceNum) || priceNum <= 0) return;
-			// Strict requirement: only include edges (and thus nodes) when BOTH tokens have a USD reference
-			// Treat configured stables as having a USD reference (assume 1.0) even if priceStore lacks quotes
-			try {
-				const pa = getPriceByMintVar(mintA)?.usdc ?? null;
-				const pb = getPriceByMintVar(mintB)?.usdc ?? null;
-				const STABLE_SET = new Set<string>([
-					...((((CONFIG as any)?.system as any)?.stableMints || []) as string[]),
-					'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-					'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN',
-				]);
-				const aHasUsd = (typeof pa === 'number' && pa > 0) || STABLE_SET.has(mintA);
-				const bHasUsd = (typeof pb === 'number' && pb > 0) || STABLE_SET.has(mintB);
-				if (!aHasUsd || !bHasUsd) return;
-			} catch {}
         // Optional pruning: drop stable<->stable edges entirely
         try {
           const dropSS = (CONFIG.system as any)?.dropStableStableEdges;
@@ -951,13 +947,26 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             // No USD reference: keep chosen price as-is; reciprocity tests will guard egregious cases
           }
         } catch {}
-        // Rescale to global decimals before orientation and clamping
+        // Unified orientation+rescale+clamp
         const ga = Number(decimalsByMint[p.mint_a] ?? decA);
         const gb = Number(decimalsByMint[p.mint_b] ?? decB);
         const poolDecA = Number((p as any)?.decimals_a ?? decA);
         const poolDecB = Number((p as any)?.decimals_b ?? decB);
-        oriented = rescalePriceByDecimals(oriented as number, poolDecA, poolDecB, ga, gb);
-        const fwdAmmRay = clampPrice((oriented && (oriented as number) > 0) ? (oriented as number) : undefined);
+        const fwdAmmRay = computePriceForward(
+          p.mint_a,
+          p.mint_b,
+          (chosen && chosen > 0) ? (chosen as number) : undefined,
+          poolDecA,
+          poolDecB,
+          ga,
+          gb,
+          (m) => { try { return getPriceByMintVar(m)?.usdc ?? undefined; } catch { return undefined; } },
+          (A, B) => {
+            const e = edgesMap[`${A}->${B}-Raydium`];
+            const v = Number(e?.price_a_per_b);
+            return Number.isFinite(v) && v > 0 ? v : undefined;
+          }
+        );
         const revAmmRay = (fwdAmmRay && fwdAmmRay > 0) ? (1 / fwdAmmRay) : undefined;
         addEdge(p.mint_a, p.mint_b, 'Raydium', p.fee_bps, liqParamAmm, fwdAmmRay, usd, pidAmm, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
         // Use a distinct id for reverse edge when poolId exists to avoid overwriting forward

@@ -2,6 +2,7 @@ import type { DirectHop } from '../types.js';
 import { PublicKey } from '@solana/web3.js';
 import { getConnection, ensureWallet } from '../../wallet/wallet.js';
 import { CONFIG } from '../../utils/config.js';
+import { peekRaydiumPools, peekMeteoraPools } from '../../server/pools.js';
 
 export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<bigint> {
   try {
@@ -24,7 +25,27 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
       const out = BigInt((quote as any)?.otherAmount ?? (quote as any)?.estimatedAmountOut ?? 0);
       if (out > 0n) return out;
     } else if (hop.dex === 'raydium') {
-      // Conservative fallback scaling using decimals difference
+      const sys: any = (CONFIG as any)?.system || {};
+      if (sys.quotes?.enableMinimalMath !== false) {
+        const id = hop.poolId.replace(/-rev$/, '');
+        const ray = peekRaydiumPools();
+        const p = (ray.amm || []).find((x: any) => String(x?.id||'')===id);
+        if (p) {
+          const feeBps = Number((p as any)?.fee_bps || (hop as any)?.fee_bps || 0);
+          const decIn = Number(hop.inputDecimals || (p as any)?.decimals_a || 0);
+          const decOut = Number(hop.outputDecimals || (p as any)?.decimals_b || 0);
+          const reserveA = Number((p as any)?.amount_a_whole ?? (p as any)?.reserveA ?? 0);
+          const reserveB = Number((p as any)?.amount_b_whole ?? (p as any)?.reserveB ?? 0);
+          if (reserveA > 0 && reserveB > 0) {
+            const amtIn = Number(amountInRaw) / Math.pow(10, decIn);
+            const fee = Math.max(0, 1 - (Math.min(9900, Math.max(0, feeBps))/10_000));
+            const amtInAfterFee = amtIn * fee;
+            const outWhole = (amtInAfterFee * reserveB) / (reserveA + amtInAfterFee);
+            const outRaw = BigInt(Math.floor(outWhole * Math.pow(10, decOut)));
+            if (outRaw > 0n) return outRaw;
+          }
+        }
+      }
       const delta = Number(hop.outputDecimals) - Number(hop.inputDecimals);
       if (delta >= 0) {
         const mul = Math.min(6, delta);
@@ -33,6 +54,25 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
       const div = Math.min(6, -delta);
       return amountInRaw / BigInt(10 ** div);
     } else if (hop.dex === 'meteora') {
+      const sys: any = (CONFIG as any)?.system || {};
+      if (sys.quotes?.enableMinimalMath !== false) {
+        const id = hop.poolId.replace(/-rev$/, '');
+        const met = peekMeteoraPools();
+        const p = (met.clmm || []).find((x: any) => String(x?.id||'')===id);
+        if (p) {
+          const feeBps = Number((p as any)?.fee_bps || 0);
+          const decIn = Number(hop.inputDecimals || (p as any)?.decimals_a || 0);
+          const decOut = Number(hop.outputDecimals || (p as any)?.decimals_b || 0);
+          const px = Number((p as any)?.price_a_per_b || 0); // A per 1 B
+          if (px > 0) {
+            const amtIn = Number(amountInRaw) / Math.pow(10, decIn);
+            const fee = Math.max(0, 1 - (Math.min(9900, Math.max(0, feeBps))/10_000));
+            const outWhole = (amtIn / px) * fee;
+            const outRaw = BigInt(Math.floor(outWhole * Math.pow(10, decOut)));
+            if (outRaw > 0n) return outRaw;
+          }
+        }
+      }
       const delta = Number(hop.outputDecimals) - Number(hop.inputDecimals);
       if (delta >= 0) {
         const mul = Math.min(6, delta);
