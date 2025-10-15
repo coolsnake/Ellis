@@ -520,7 +520,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             const swapped = (da === gb && db === ga);
             const mismatch = (da !== ga || db !== gb);
             if (mismatch) {
-              try { logger.debug('graph.decimals.mismatch', { mintA, mintB, poolDecA: da, poolDecB: db, expectedA: ga, expectedB: gb, swapped }); } catch {}
+              try { logger.info('graph.decimals.mismatch', { mintA, mintB, poolDecA: da, poolDecB: db, expectedA: ga, expectedB: gb, swapped }); } catch {}
             }
           }
         } catch {}
