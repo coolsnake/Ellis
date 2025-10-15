@@ -119,37 +119,42 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
   try { logger.info('meteora.dlmm.build.start', { cat: 'tx', ctx: { poolId: hop.poolId, inputMint: hop.inputMint, outputMint: hop.outputMint, amountInRaw: String(hop.amountInRaw ?? 0n), minOutRaw: String(hop.minOutRaw ?? 0n) } }); } catch {}
   try {
     try { logger.info('meteora.dlmm.import.try', { cat: 'tx' }); } catch {}
-    const dynamicImport = async (spec: string): Promise<any | null> => {
-      try { return await (Function('return import')())(spec); } catch { return null; }
+    const dynamicImport = async (spec: string): Promise<{ mod: any | null; err?: string }> => {
+      try { const m = await (Function('return import')())(spec); return { mod: m }; } catch (e: any) { return { mod: null, err: String(e?.message || e) }; }
     };
     let mod: any = null;
-    // Prefer the examples package default import first
-    if (!mod) mod = await dynamicImport('@meteora-ag/dlmm');
-    if (!mod) mod = await dynamicImport('@meteora-ag/dlmm-sdk');
-    if (!mod) mod = await dynamicImport('@meteora-ag/dlmm-sdk-public');
-    if (!mod) mod = await dynamicImport('@meteora-ag/dlmm/dist/index.js');
-    if (!mod) mod = await dynamicImport('@meteora-ag/dlmm-sdk/dist/index.js');
+    const attempts: string[] = [
+      '@meteora-ag/dlmm',
+      '@meteora-ag/dlmm/ts-client',
+      '@meteora-ag/dlmm-sdk',
+      '@meteora-ag/dlmm-sdk-public',
+      '@meteora-ag/dlmm/dist/index.js',
+      '@meteora-ag/dlmm-sdk/dist/index.js',
+    ];
+    for (const spec of attempts) {
+      const { mod: m, err } = await dynamicImport(spec);
+      if (m) { mod = m; try { logger.info('meteora.dlmm.import.ok', { cat: 'tx', ctx: { spec, keys: Object.keys(m || {}) } }); } catch {} break; }
+      else { try { logger.warn('meteora.dlmm.import.fail', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { spec, error: err } }); } catch {} }
+    }
     if (!mod) {
       try {
         const makeReq = async (): Promise<any | undefined> => {
           const nodeModule = await dynamicImport('node:module');
-          const base = nodeModule || await dynamicImport('module');
+          const base = (nodeModule?.mod) ? nodeModule.mod : (await dynamicImport('module')).mod;
           const cr = (base && (base as any).createRequire) || (base && (base as any).default && (base as any).default.createRequire);
-          return cr ? cr(import.meta.url) : undefined;
+          return cr ? (cr as any)(import.meta.url) : undefined;
         };
         const req = await makeReq();
         if (req) {
-          try { mod = req('@meteora-ag/dlmm-sdk'); } catch {}
-          if (!mod) { try { mod = req('@meteora-ag/dlmm'); } catch {} }
-          if (!mod) { try { mod = req('@meteora-ag/dlmm-sdk/dist/index.js'); } catch {} }
+          for (const spec of attempts) {
+            try { const m = req(spec); if (m) { mod = m; try { logger.info('meteora.dlmm.require.ok', { cat: 'tx', ctx: { spec, keys: Object.keys(m || {}) } }); } catch {}; break; } } catch (e: any) { try { logger.warn('meteora.dlmm.require.fail', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { spec, error: String(e?.message || e) } }); } catch {} }
+          }
         }
       } catch {}
     }
     if (!mod) {
       try { logger.warn('meteora.dlmm.import.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: 'ALL_IMPORTS_FAILED' } }); } catch {}
     } else {
-      const keys = (() => { try { return Object.keys(mod || {}); } catch { return []; } })();
-      try { logger.info('meteora.dlmm.import.ok', { cat: 'tx', ctx: { keys } }); } catch {}
       const dlmm: any = (mod && (mod as any).default) ? (mod as any).default : ((mod as any).DLMM || mod);
       const swapIxFn: any = (dlmm && typeof (dlmm as any).swapIx === 'function') ? (dlmm as any).swapIx : ((mod as any)?.swapIx);
       if (typeof swapIxFn === 'function') {

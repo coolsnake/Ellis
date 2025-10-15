@@ -201,14 +201,19 @@ export function createArbRouter(io: SocketIOServer): Router {
         lookupTableAddresses: execCfg.lookupTableAddresses,
       } as any);
       try {
-        await writeDexFullDump('raydium', 'preflight', {
-          id: Math.random().toString(36).slice(2,10),
-          path: plan.path,
-          hops: plan.hops,
-          exec: execCfg,
-          built,
-          sim,
-        });
+        const dexes = Array.from(new Set((plan.hops || []).map((h:any)=>String(h?.dex||'').toLowerCase())));
+        for (const d of dexes) {
+          if (d === 'raydium' || d === 'orca' || d === 'meteora') {
+            await writeDexFullDump(d as any, 'preflight', {
+              id: Math.random().toString(36).slice(2,10),
+              path: plan.path,
+              hops: plan.hops,
+              exec: execCfg,
+              built,
+              sim,
+            });
+          }
+        }
       } catch {}
       try { pushBounded(execStats.preflightMs, Date.now() - tPre0); } catch {}
 
@@ -311,14 +316,19 @@ export function createArbRouter(io: SocketIOServer): Router {
           lookupTableAddresses: execCfg.lookupTableAddresses,
         } as any);
         try {
-          await writeDexFullDump('raydium', 'preflight', {
-            id,
-            path: plan.path,
-            hops: plan.hops,
-            exec: execCfg,
-            built,
-            sim,
-          });
+          const dexes = Array.from(new Set((plan.hops || []).map((h:any)=>String(h?.dex||'').toLowerCase())));
+          for (const d of dexes) {
+            if (d === 'raydium' || d === 'orca' || d === 'meteora') {
+              await writeDexFullDump(d as any, 'preflight', {
+                id,
+                path: plan.path,
+                hops: plan.hops,
+                exec: execCfg,
+                built,
+                sim,
+              });
+            }
+          }
         } catch {}
       } catch (e: any) {
         try { logger.info('tx.preflight.err', { cat: 'tx', code: LogCode.TX_PREFLIGHT_ERR, ctx: { id, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode, error: String(e?.message || e) } as any }); } catch {}
@@ -366,14 +376,19 @@ export function createArbRouter(io: SocketIOServer): Router {
           lookupTableAddresses: execCfg.lookupTableAddresses,
         } as any);
         try {
-          await writeDexFullDump('raydium', 'execute', {
-            id,
-            path: plan.path,
-            hops: plan.hops,
-            exec: execCfg,
-            built,
-            send: sendRes,
-          });
+          const dexes = Array.from(new Set((plan.hops || []).map((h:any)=>String(h?.dex||'').toLowerCase())));
+          for (const d of dexes) {
+            if (d === 'raydium' || d === 'orca' || d === 'meteora') {
+              await writeDexFullDump(d as any, 'execute', {
+                id,
+                path: plan.path,
+                hops: plan.hops,
+                exec: execCfg,
+                built,
+                send: sendRes,
+              });
+            }
+          }
         } catch {}
         try { pushBounded(execStats.sendMs, Date.now() - tSend0); execStats.sendOk += 1; } catch {}
         const signatures: string[] = [sendRes.signature];
