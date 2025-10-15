@@ -171,21 +171,21 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       const dlmm: any = (mod && (mod as any).default) ? (mod as any).default : ((mod as any).DLMM || mod);
       const swapIxFn: any = (dlmm && typeof (dlmm as any).swapIx === 'function') ? (dlmm as any).swapIx : ((mod as any)?.swapIx);
       if (typeof swapIxFn === 'function') {
-        const connection = getConnection();
-        const kp = await ensureWallet(CONFIG.walletPath);
-        const poolPk = toPublicKey(hop.poolId);
+      const connection = getConnection();
+      const kp = await ensureWallet(CONFIG.walletPath);
+      const poolPk = toPublicKey(hop.poolId);
         const programId = toPublicKey(hop.programId as string, (CONFIG as any)?.meteora?.programId);
         try { logger.info('meteora.dlmm.params.prepare', { cat: 'tx', ctx: { pool: poolPk?.toBase58?.() || String(poolPk), programId: programId?.toBase58?.() || String(programId), userSourceAta: hop.userSourceAta, userDestAta: hop.userDestAta, hasBinLower: !!hop.binArrayLower, hasBinUpper: !!hop.binArrayUpper } }); } catch {}
-        const params = {
-          pool: poolPk,
-          programId,
-          userSourceAta: toPublicKey(hop.userSourceAta),
-          userDestAta: toPublicKey(hop.userDestAta),
-          amountIn: hop.amountInRaw,
-          minOut: hop.minOutRaw,
-          binArrayLower: hop.binArrayLower ? toPublicKey(hop.binArrayLower) : undefined,
-          binArrayUpper: hop.binArrayUpper ? toPublicKey(hop.binArrayUpper) : undefined,
-        } as any;
+      const params = {
+        pool: poolPk,
+        programId,
+        userSourceAta: toPublicKey(hop.userSourceAta),
+        userDestAta: toPublicKey(hop.userDestAta),
+        amountIn: hop.amountInRaw,
+        minOut: hop.minOutRaw,
+        binArrayLower: hop.binArrayLower ? toPublicKey(hop.binArrayLower) : undefined,
+        binArrayUpper: hop.binArrayUpper ? toPublicKey(hop.binArrayUpper) : undefined,
+      } as any;
         try { logger.info('meteora.dlmm.swapIx.call', { cat: 'tx' }); } catch {}
         const ix = await swapIxFn(connection, kp.publicKey, params);
         if (ix) { try { logger.info('meteora.dlmm.swapIx.ok', { cat: 'tx' }); } catch {}; try { (await import('../../utils/txTrace.js')).writeDexFullDump('meteora','preflight', { kind: 'meteora.dlmm.ix.ok', hop, params, ix }).catch(()=>{}); } catch {}; return [ix]; }
@@ -237,8 +237,8 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 binArrayBitmapExtension = (ext && (ext as any).publicKey) ? (ext as any).publicKey : ext;
               }
             } catch {}
-            // Attach derived extension into accounts later
-            (accounts as any)._binArrayBitmapExtension = binArrayBitmapExtension;
+            // Stash extension for later account mapping
+            // (will attach to accounts.binArrayBitmapExtension if defined)
           } catch {}
           const amountIn = new BN(String(hop.amountInRaw ?? 0n));
           const minOut = new BN(String(hop.minOutRaw ?? 0n));
@@ -257,7 +257,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           };
           if (binArrayLower) accounts.binArrayLower = binArrayLower;
           if (binArrayUpper) accounts.binArrayUpper = binArrayUpper;
-          if ((accounts as any)._binArrayBitmapExtension) accounts.binArrayBitmapExtension = (accounts as any)._binArrayBitmapExtension;
+          if (binArrayBitmapExtension) accounts.binArrayBitmapExtension = binArrayBitmapExtension;
           if (typeof builder.accounts === 'function') builder = builder.accounts(accounts);
           const ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
           if (ix) { try { logger.info('meteora.dlmm.swap.ok', { cat: 'tx' }); } catch {}; return [ix]; }
@@ -623,11 +623,11 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       if (!ixInfo) throw new Error('CPMM_SWAP_BUILDER_MISSING');
     } else {
       ixInfo = (makeSwapFixedInInstruction as any)({
-        poolKeys,
-        userKeys,
-        amountIn: amountInBn,
-        minAmountOut: minOutBn,
-      }, version);
+      poolKeys,
+      userKeys,
+      amountIn: amountInBn,
+      minAmountOut: minOutBn,
+    }, version);
     }
     // Unwrap and normalize various Raydium SDK return shapes to actual TransactionInstructions
     const unwrapIxs = (val: any): any[] => {
@@ -694,7 +694,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     }
     if (norm.length) {
       try {
-        const ixDataPrefix = norm.map(ix => (ix?.data && Buffer.isBuffer(ix.data)) ? (ix.data as Buffer).slice(0,8).toString('hex') : '');
+       const ixDataPrefix = norm.map(ix => ((ix as any)?.data && Buffer.isBuffer((ix as any).data)) ? ((ix as any).data as Buffer).subarray(0,8).toString('hex') : '');
         (await import('../../utils/txTrace.js')).writeDexFullDump('raydium','preflight', { kind: 'raydium.amm.build.norm', hop, version, programId: (programId as any)?.toBase58?.() || String(programId), count: norm.length, ixDataPrefix, poolKeys, userKeys }).catch(()=>{});
       } catch {}
       return norm;
