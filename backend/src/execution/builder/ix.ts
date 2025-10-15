@@ -390,19 +390,19 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       amountIn: amountInBn,
       minAmountOut: minOutBn,
     }, version);
-    // Unwrap various Raydium SDK return shapes to actual TransactionInstructions
-    const unwrapIxs = (val: any): TransactionInstruction[] => {
+    // Unwrap and normalize various Raydium SDK return shapes to actual TransactionInstructions
+    const unwrapIxs = (val: any): any[] => {
       try {
         if (!val) return [];
         // Direct TransactionInstruction
         if (val instanceof TransactionInstruction) return [val];
         // Common shapes: { instructions: TransactionInstruction[] }
         if (Array.isArray(val.instructions) && val.instructions.length) {
-          return val.instructions.filter((x: any) => x instanceof TransactionInstruction);
+          return val.instructions;
         }
         // { innerTransaction: { instructions: TransactionInstruction[] } }
         if (val.innerTransaction && Array.isArray(val.innerTransaction.instructions)) {
-          return val.innerTransaction.instructions.filter((x: any) => x instanceof TransactionInstruction);
+          return val.innerTransaction.instructions;
         }
         // { innerTransactions: Array<{ instructions: TransactionInstruction[] }> }
         if (Array.isArray(val.innerTransactions) && val.innerTransactions.length) {
@@ -412,15 +412,44 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
               flat.push(...it.instructions);
             }
           }
-          return flat.filter((x: any) => x instanceof TransactionInstruction);
+          return flat;
         }
       } catch {}
       return [];
     };
 
-    const out = unwrapIxs(ixInfo);
-    try { logger.info('ix.build raydium.amm.detail', { cat: 'tx', ctx: { got: Array.isArray(out) ? out.length : 0, shape: (ixInfo && typeof ixInfo === 'object' ? Object.keys(ixInfo) : String(typeof ixInfo)) } as any }); } catch {}
-    if (out && out.length) return out;
+    const rawOut = unwrapIxs(ixInfo);
+    try { logger.info('ix.build raydium.amm.detail', { cat: 'tx', ctx: { got: Array.isArray(rawOut) ? rawOut.length : 0, shape: (ixInfo && typeof ixInfo === 'object' ? Object.keys(ixInfo) : String(typeof ixInfo)) } as any }); } catch {}
+    const toPk = (v: any): PublicKey => {
+      try {
+        if (v instanceof PublicKey) return v;
+        const inner = (v && (v.address || v.pubkey || v.pubKey)) || v;
+        if (inner instanceof PublicKey) return inner;
+        if (inner && typeof inner.toBase58 === 'function') return new PublicKey(inner.toBase58());
+        if (typeof inner === 'string') return new PublicKey(inner);
+        return new PublicKey(String(inner));
+      } catch {
+        // Fallback to invalid key to surface error clearly later
+        return new PublicKey(PublicKey.default.toBase58());
+      }
+    };
+    const norm: TransactionInstruction[] = [];
+    for (const it of (rawOut || [])) {
+      try {
+        if (it instanceof TransactionInstruction) { norm.push(it); continue; }
+        const pid = toPk((it as any)?.programId || programId);
+        const keysLike: any = (it as any)?.keys;
+        const keyArr: any[] = Array.isArray(keysLike) ? keysLike : (keysLike && typeof keysLike.length === 'number' ? Array.from(keysLike) : []);
+        const keys = keyArr.map((k: any) => ({ pubkey: toPk(k?.pubkey ?? k?.pubKey ?? k?.address), isSigner: !!k?.isSigner, isWritable: !!k?.isWritable }));
+        let data: Buffer = Buffer.alloc(0);
+        const raw = (it as any)?.data;
+        if (Buffer.isBuffer(raw)) data = raw as Buffer;
+        else if (raw && typeof raw === 'object' && typeof (raw as any).length === 'number') data = Buffer.from(raw as any);
+        else if (typeof raw === 'string') { try { data = Buffer.from(raw, 'base64'); } catch { data = Buffer.from([]); } }
+        norm.push(new TransactionInstruction({ programId: pid, keys, data }));
+      } catch {}
+    }
+    if (norm.length) return norm;
     try { logger.warn('ix.build raydium.amm.real unexpected shape', { cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
     throw new Error('RAYDIUM_AMM_BUILD_FAILED: bad_ix_shape');
   } catch (e) {
