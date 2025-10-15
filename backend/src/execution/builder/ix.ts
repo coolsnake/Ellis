@@ -92,86 +92,62 @@ export function buildMeteoraDlmmSwapIx(hop: DirectHop): any[] {
 
 export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]> {
   try { logger.debug('ix.build meteora.dlmm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
+  try { logger.info('meteora.dlmm.build.start', { cat: 'tx', ctx: { poolId: hop.poolId, inputMint: hop.inputMint, outputMint: hop.outputMint, amountInRaw: String(hop.amountInRaw ?? 0n), minOutRaw: String(hop.minOutRaw ?? 0n) } }); } catch {}
   try {
-    logger.info('meteora.dlmm.build.start', { cat: 'tx', ctx: { poolId: hop.poolId, inputMint: hop.inputMint, outputMint: hop.outputMint, amountInRaw: String(hop.amountInRaw ?? 0n), minOutRaw: String(hop.minOutRaw ?? 0n) } });
-  } catch {}
-  try {
-    // Attempt dynamic import of a DLMM SDK if available; otherwise construct minimal raw ix descriptor
     try { logger.info('meteora.dlmm.import.try', { cat: 'tx' }); } catch {}
-    const tryDynImport = async (spec: string): Promise<any | null> => {
-      try {
-        const fn: any = (Function('return import')());
-        return await fn(spec);
-      } catch {
-        return null;
-      }
+    const dynamicImport = async (spec: string): Promise<any | null> => {
+      try { return await (Function('return import')())(spec); } catch { return null; }
     };
-    let mod: any = await tryDynImport('@meteora-ag/dlmm-sdk');
-    if (!mod) mod = await tryDynImport('@meteora-ag/dlmm');
-    if (!mod) mod = await tryDynImport('@meteora-ag/dlmm-sdk/dist/index.js');
-    let importError: any = mod ? null : new Error('dynamic import failed');
+    let mod: any = await dynamicImport('@meteora-ag/dlmm-sdk');
+    if (!mod) mod = await dynamicImport('@meteora-ag/dlmm');
+    if (!mod) mod = await dynamicImport('@meteora-ag/dlmm-sdk/dist/index.js');
     if (!mod) {
-      // Fallback to createRequire for CJS packages from ESM context
       try {
-        const m = await tryDynImport('module');
-        const createRequire = (m && (m as any).createRequire) || (m && (m as any).default && (m as any).default.createRequire);
-        const req = createRequire ? createRequire(import.meta.url) : undefined;
+        const makeReq = async (): Promise<any | undefined> => {
+          const nodeModule = await dynamicImport('node:module');
+          const base = nodeModule || await dynamicImport('module');
+          const cr = (base && (base as any).createRequire) || (base && (base as any).default && (base as any).default.createRequire);
+          return cr ? cr(import.meta.url) : undefined;
+        };
+        const req = await makeReq();
         if (req) {
           try { mod = req('@meteora-ag/dlmm-sdk'); } catch {}
           if (!mod) { try { mod = req('@meteora-ag/dlmm'); } catch {} }
+          if (!mod) { try { mod = req('@meteora-ag/dlmm-sdk/dist/index.js'); } catch {} }
         }
-      } catch (e) {
-        importError = e;
-      }
+      } catch {}
     }
     if (!mod) {
-      try { logger.warn('meteora.dlmm.import.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(importError?.message || importError) } as any }); } catch {}
+      try { logger.warn('meteora.dlmm.import.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: 'ALL_IMPORTS_FAILED' } }); } catch {}
     } else {
-      try { logger.info('meteora.dlmm.import.ok', { cat: 'tx', ctx: { keys: Object.keys(mod || {}) } as any }); } catch {}
-    }
-    const maybe: any = mod;
-    const DLMMns: any = (maybe && (maybe as any).DLMM) ? (maybe as any).DLMM : maybe;
-    const swapIxFn: any = (DLMMns && (DLMMns as any).swapIx) ? (DLMMns as any).swapIx : (maybe && (maybe as any).swapIx ? (maybe as any).swapIx : undefined);
-    if (swapIxFn) {
-      const connection = getConnection();
-      const kp = await ensureWallet(CONFIG.walletPath);
-      const poolPk = toPublicKey(hop.poolId);
-      // Allow fallback to configured program id when hop.programId is missing
-      const programId = toPublicKey(hop.programId as string, (CONFIG as any)?.meteora?.programId);
-      try {
-        logger.info('meteora.dlmm.params.prepare', { cat: 'tx', ctx: {
-          pool: poolPk?.toBase58?.() || String(poolPk),
-          programId: programId?.toBase58?.() || String(programId),
-          userSourceAta: hop.userSourceAta,
-          userDestAta: hop.userDestAta,
-          hasBinLower: !!hop.binArrayLower,
-          hasBinUpper: !!hop.binArrayUpper,
-        } });
-      } catch {}
-      const params = {
-        pool: poolPk,
-        programId,
-        userSourceAta: toPublicKey(hop.userSourceAta),
-        userDestAta: toPublicKey(hop.userDestAta),
-        amountIn: hop.amountInRaw,
-        minOut: hop.minOutRaw,
-        // Optional: bin arrays if required
-        binArrayLower: hop.binArrayLower ? toPublicKey(hop.binArrayLower) : undefined,
-        binArrayUpper: hop.binArrayUpper ? toPublicKey(hop.binArrayUpper) : undefined,
-      } as any;
-      try { logger.info('meteora.dlmm.swapIx.call', { cat: 'tx' }); } catch {}
-      const ix = await swapIxFn(connection, kp.publicKey, params);
-      // Meteora SDK returns a TransactionInstruction
-      if (ix) {
-        try { logger.info('meteora.dlmm.swapIx.ok', { cat: 'tx' }); } catch {}
-        return [ix];
+      try { logger.info('meteora.dlmm.import.ok', { cat: 'tx', ctx: { keys: Object.keys(mod || {}) } }); } catch {}
+      const DLMMns: any = (mod && (mod as any).DLMM) ? (mod as any).DLMM : mod;
+      const swapIxFn: any = (DLMMns && (DLMMns as any).swapIx) ? (DLMMns as any).swapIx : ((mod as any)?.swapIx);
+      if (typeof swapIxFn === 'function') {
+        const connection = getConnection();
+        const kp = await ensureWallet(CONFIG.walletPath);
+        const poolPk = toPublicKey(hop.poolId);
+        const programId = toPublicKey(hop.programId as string, (CONFIG as any)?.meteora?.programId);
+        try { logger.info('meteora.dlmm.params.prepare', { cat: 'tx', ctx: { pool: poolPk?.toBase58?.() || String(poolPk), programId: programId?.toBase58?.() || String(programId), userSourceAta: hop.userSourceAta, userDestAta: hop.userDestAta, hasBinLower: !!hop.binArrayLower, hasBinUpper: !!hop.binArrayUpper } }); } catch {}
+        const params = {
+          pool: poolPk,
+          programId,
+          userSourceAta: toPublicKey(hop.userSourceAta),
+          userDestAta: toPublicKey(hop.userDestAta),
+          amountIn: hop.amountInRaw,
+          minOut: hop.minOutRaw,
+          binArrayLower: hop.binArrayLower ? toPublicKey(hop.binArrayLower) : undefined,
+          binArrayUpper: hop.binArrayUpper ? toPublicKey(hop.binArrayUpper) : undefined,
+        } as any;
+        try { logger.info('meteora.dlmm.swapIx.call', { cat: 'tx' }); } catch {}
+        const ix = await swapIxFn(connection, kp.publicKey, params);
+        if (ix) { try { logger.info('meteora.dlmm.swapIx.ok', { cat: 'tx' }); } catch {}; return [ix]; }
+        try { logger.warn('meteora.dlmm.swapIx.empty', { cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
       }
-      try { logger.warn('meteora.dlmm.swapIx.empty', { cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
     }
   } catch (e) {
     try { logger.warn('ix.build meteora.dlmm.real fallback', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
   }
-  // If SDK path fails, prefer explicit error to avoid sending placeholders
   throw new Error('METEORA_DLMM_BUILD_FAILED');
 }
 
@@ -234,8 +210,53 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       sqrtPriceLimitX64: hop.sqrtPriceLimitX64 ?? 0n,
       remainingAccounts: [],
     });
-    const ixs = Array.isArray(res?.instructions) ? res.instructions : (res?.innerTransaction ? res.innerTransaction.instructions : []);
-    if (ixs && ixs.length) return ixs as any[];
+    // Unwrap and reconstruct to local TransactionInstructions
+    const unwrapIxs = (val: any): any[] => {
+      try {
+        if (!val) return [];
+        if (val instanceof TransactionInstruction) return [val];
+        if (val && typeof val === 'object' && (val as any).programId && ((Array.isArray((val as any).keys)) || (typeof (val as any).keys?.length === 'number'))) {
+          return [val];
+        }
+        if (Array.isArray(val.instructions) && val.instructions.length) return val.instructions;
+        if (val.innerTransaction && Array.isArray(val.innerTransaction.instructions)) return val.innerTransaction.instructions;
+        if (Array.isArray(val.innerTransactions) && val.innerTransactions.length) {
+          const flat: any[] = [];
+          for (const it of val.innerTransactions) if (it && Array.isArray(it.instructions)) flat.push(...it.instructions);
+          return flat;
+        }
+      } catch {}
+      return [];
+    };
+    const rawOut = unwrapIxs(res);
+    const toPk = (v: any): PublicKey => {
+      try {
+        if (v instanceof PublicKey) return v;
+        const inner = (v && (v.address || v.pubkey || v.pubKey)) || v;
+        if (inner instanceof PublicKey) return inner;
+        if (inner && typeof inner.toBase58 === 'function') return new PublicKey(inner.toBase58());
+        if (typeof inner === 'string') return new PublicKey(inner);
+        return new PublicKey(String(inner));
+      } catch {
+        return new PublicKey(PublicKey.default.toBase58());
+      }
+    };
+    const norm: TransactionInstruction[] = [];
+    for (const it of (rawOut || [])) {
+      try {
+        const pid = toPk((it as any)?.programId || programId);
+        const keysLike: any = (it as any)?.keys;
+        const keyArr: any[] = Array.isArray(keysLike) ? keysLike : (keysLike && typeof keysLike.length === 'number' ? Array.from(keysLike) : []);
+        const keys = keyArr.map((k: any) => ({ pubkey: toPk(k?.pubkey ?? k?.pubKey ?? k?.address), isSigner: !!k?.isSigner, isWritable: !!k?.isWritable }));
+        let data: Buffer = Buffer.alloc(0);
+        const raw = (it as any)?.data;
+        if (Buffer.isBuffer(raw)) data = raw as Buffer;
+        else if (raw && typeof raw === 'object' && typeof (raw as any).length === 'number') data = Buffer.from(raw as any);
+        else if (typeof raw === 'string') { try { data = Buffer.from(raw, 'base64'); } catch { data = Buffer.from([]); } }
+        norm.push(new TransactionInstruction({ programId: pid, keys, data }));
+      } catch {}
+    }
+    if (norm.length) return norm as any[];
   } catch (e) {
     try { logger.warn('ix.build raydium.clmm.real fallback', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
   }
@@ -428,6 +449,10 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
         if (!val) return [];
         // Direct TransactionInstruction
         if (val instanceof TransactionInstruction) return [val];
+        // Treat plain TI-shaped objects as a single instruction
+        if (val && typeof val === 'object' && (val as any).programId && ((Array.isArray((val as any).keys)) || (typeof (val as any).keys?.length === 'number'))) {
+          return [val];
+        }
         // Common shapes: { instructions: TransactionInstruction[] }
         if (Array.isArray(val.instructions) && val.instructions.length) {
           return val.instructions;
@@ -468,7 +493,6 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     const norm: TransactionInstruction[] = [];
     for (const it of (rawOut || [])) {
       try {
-        if (it instanceof TransactionInstruction) { norm.push(it); continue; }
         const pid = toPk((it as any)?.programId || programId);
         const keysLike: any = (it as any)?.keys;
         const keyArr: any[] = Array.isArray(keysLike) ? keysLike : (keysLike && typeof keysLike.length === 'number' ? Array.from(keysLike) : []);
