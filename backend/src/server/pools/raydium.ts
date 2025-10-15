@@ -281,11 +281,11 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         if (sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
           const two64 = Math.pow(2, 64);
           const ratio = sqrt / two64;
-          // Correct for Q64.64: price B/A = (ratio^2) * 10^(decB - decA)
-          // A-per-1-B = 1 / (B/A) = 10^(decA - decB) / (ratio^2)
-          const scale = Math.pow(10, (decA as number) - (decB as number));
-          const cand1 = scale / (ratio * ratio); // A per 1 B (preferred)
-          const cand2 = (ratio * ratio) / scale; // reciprocal alternative
+          // Match Orca convention: sqrt encodes sqrt(B/A) in smallest units
+          // A-per-1-B (whole units) = 10^(decB - decA) / (ratio^2)
+          const scale = Math.pow(10, (decB as number) - (decA as number));
+          const cand1 = scale / (ratio * ratio); // forward A per 1 B
+          const cand2 = (ratio * ratio) / scale; // reciprocal
           price_from_sqrt = Number.isFinite(cand1) && cand1 > 0 ? cand1 : 0;
           price_from_sqrt_alt = Number.isFinite(cand2) && cand2 > 0 ? cand2 : 0;
         }

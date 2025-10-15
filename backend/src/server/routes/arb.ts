@@ -243,6 +243,17 @@ export function createArbRouter(io: SocketIOServer): Router {
         return res.json({ id, mode, signature: null, ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
       }
 
+      // Ensure wallet is available and report address for diagnostics
+      try {
+        const { CONFIG } = await import('../../utils/config.js');
+        const walletMod: any = await import('../../wallet/wallet.js');
+        const kp = await walletMod.ensureWallet(CONFIG.walletPath);
+        try { logger.info('wallet.ready', { cat: 'wallet', ctx: { address: kp.publicKey.toBase58() } as any }); } catch {}
+      } catch (e: any) {
+        try { logger.info('wallet.missing', { cat: 'wallet', ctx: { error: String(e?.message || e) } as any }); } catch {}
+        return res.status(400).json({ id, mode, error: 'wallet_not_found' });
+      }
+
       // Atomic only: fail if oversized
       const maxBytes = Number(execCfg.maxTxSizeBytes || 0);
       if (maxBytes > 0 && built.sizeBytes > maxBytes) {
@@ -250,11 +261,18 @@ export function createArbRouter(io: SocketIOServer): Router {
       }
 
       // Require successful preflight before sending
-      const sim = await assembleAndSimulate(built.tx.instructions, {
-        computeUnitLimit: execCfg.computeUnitLimit,
-        computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
-        lookupTableAddresses: execCfg.lookupTableAddresses,
-      } as any);
+      try { logger.info('tx.preflight.start', { cat: 'tx', code: LogCode.TX_PREFLIGHT_START, ctx: { ixCount: built.ixCount, sizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode } as any }); } catch {}
+      let sim: any;
+      try {
+        sim = await assembleAndSimulate(built.tx.instructions, {
+          computeUnitLimit: execCfg.computeUnitLimit,
+          computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
+          lookupTableAddresses: execCfg.lookupTableAddresses,
+        } as any);
+      } catch (e: any) {
+        try { logger.info('tx.preflight.err', { cat: 'tx', code: LogCode.TX_PREFLIGHT_ERR, ctx: { id, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode, error: String(e?.message || e) } as any }); } catch {}
+        return res.status(400).json({ id, mode, error: 'preflight_throw' });
+      }
       await logTxTrace('preflight', {
         id, timeMs: Date.now(),
         path: plan.path,
