@@ -190,6 +190,70 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         const ix = await swapIxFn(connection, kp.publicKey, params);
         if (ix) { try { logger.info('meteora.dlmm.swapIx.ok', { cat: 'tx' }); } catch {}; try { (await import('../../utils/txTrace.js')).writeDexFullDump('meteora','preflight', { kind: 'meteora.dlmm.ix.ok', hop, params, ix }).catch(()=>{}); } catch {}; return [ix]; }
         try { logger.warn('meteora.dlmm.swapIx.empty', { cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
+      } else {
+        // Fallback to ts-client pattern: create Anchor program and build swap ix
+        try {
+          const connection = getConnection();
+          const kp = await ensureWallet(CONFIG.walletPath);
+          const poolPk = toPublicKey(hop.poolId);
+          const programId = toPublicKey(hop.programId as string, (CONFIG as any)?.meteora?.programId);
+          const BN = (await import('bn.js')).default as any;
+          const createProgram = (dlmm as any)?.createProgram || (mod as any)?.createProgram;
+          if (!createProgram) throw new Error('DLMM_CREATE_PROGRAM_MISSING');
+          const program = createProgram(connection, programId);
+          try { logger.info('meteora.dlmm.program.ok', { cat: 'tx' }); } catch {}
+          // Derive or use provided bin arrays/reserves when missing
+          let binArrayLower = hop.binArrayLower ? toPublicKey(hop.binArrayLower) : undefined;
+          let binArrayUpper = hop.binArrayUpper ? toPublicKey(hop.binArrayUpper) : undefined;
+          try {
+            if (!binArrayLower || !binArrayUpper) {
+              const helper = (dlmm as any)?.getBinArrayLowerUpperBinId || (dlmm as any)?.deriveBinArrayLowerUpperBinId;
+              const deriveBinArray = (dlmm as any)?.deriveBinArray;
+              const getTokensMintFromPoolAddress = (dlmm as any)?.getTokensMintFromPoolAddress;
+              const deriveReserve = (dlmm as any)?.deriveReserve;
+              const getTokenProgramId = (dlmm as any)?.getTokenProgramId;
+              // Optional enrichment: resolve token programs and reserves for accounts list
+              try {
+                const mints = getTokensMintFromPoolAddress ? await getTokensMintFromPoolAddress(connection, poolPk) : undefined;
+                if (mints && getTokenProgramId) {
+                  await getTokenProgramId(connection, (mints as any).mintX || (mints as any).tokenXMint || hop.inputMint);
+                  await getTokenProgramId(connection, (mints as any).mintY || (mints as any).tokenYMint || hop.outputMint);
+                }
+              } catch {}
+              if (helper && deriveBinArray) {
+                const res = await helper(connection, poolPk).catch(() => null as any);
+                if (res && typeof res.lowerBinId === 'number' && typeof res.upperBinId === 'number') {
+                  try { const lowerPda = await deriveBinArray(programId, poolPk, res.lowerBinId); binArrayLower = lowerPda?.publicKey || lowerPda || binArrayLower; } catch {}
+                  try { const upperPda = await deriveBinArray(programId, poolPk, res.upperBinId); binArrayUpper = upperPda?.publicKey || upperPda || binArrayUpper; } catch {}
+                }
+              }
+              // Derive reserves (optional, best-effort)
+              try { if (deriveReserve) { await deriveReserve(programId, poolPk, true); await deriveReserve(programId, poolPk, false); } } catch {}
+            }
+          } catch {}
+          const amountIn = new BN(String(hop.amountInRaw ?? 0n));
+          const minOut = new BN(String(hop.minOutRaw ?? 0n));
+          // Attempt common Anchor method names
+          const methods = (program as any)?.methods || {};
+          let builder: any = null;
+          if (typeof methods.swapExactIn === 'function') builder = methods.swapExactIn(amountIn, minOut);
+          else if (typeof methods.swap === 'function') builder = methods.swap(amountIn, minOut);
+          if (!builder) throw new Error('DLMM_SWAP_METHOD_MISSING');
+          // Accounts: rely on program-side PDA derivations; include user accounts and pool
+          const accounts: any = {
+            lbPair: poolPk,
+            user: kp.publicKey,
+            userTokenIn: toPublicKey(hop.userSourceAta),
+            userTokenOut: toPublicKey(hop.userDestAta),
+          };
+          if (binArrayLower) accounts.binArrayLower = binArrayLower;
+          if (binArrayUpper) accounts.binArrayUpper = binArrayUpper;
+          if (typeof builder.accounts === 'function') builder = builder.accounts(accounts);
+          const ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
+          if (ix) { try { logger.info('meteora.dlmm.swap.ok', { cat: 'tx' }); } catch {}; return [ix]; }
+        } catch (e: any) {
+          try { logger.warn('meteora.dlmm.tsclient.fallback.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
+        }
       }
     }
   } catch (e) {
@@ -387,15 +451,42 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       }
     } catch {}
 
-    // Build pool keys (initial attempt). We will patch orientation from on-chain state next.
+    // Determine true base/quote from pool state when possible
+    let baseMintPk: PublicKey | undefined;
+    let quoteMintPk: PublicKey | undefined;
+    try {
+      const acc = await getConnection().getAccountInfo(toPublicKey(hop.poolId));
+      if (acc?.data?.length) {
+        const sdk: any = await import('@raydium-io/raydium-sdk-v2');
+        const layout = version === 5
+          ? ((sdk as any)?.LiquidityStateLayoutV5 || (sdk as any)?.liquidityStateV5Layout)
+          : ((sdk as any)?.LiquidityStateLayoutV4 || (sdk as any)?.liquidityStateV4Layout);
+        try {
+          const st = layout.decode(acc.data);
+          const asPk = (v: any) => (v?.toBase58 ? v : (v ? toPublicKey(v) : undefined));
+          baseMintPk = asPk(st.baseMint || st.coinMint || st.mintA);
+          quoteMintPk = asPk(st.quoteMint || st.pcMint || st.mintB);
+        } catch {}
+      }
+    } catch {}
+
+    const inputMintPk = toPublicKey(hop.inputMint);
+    const outputMintPk = toPublicKey(hop.outputMint);
+    const baseMint = baseMintPk || inputMintPk;
+    const quoteMint = quoteMintPk || outputMintPk;
+    const inputIsBase = inputMintPk.toBase58() === baseMint.toBase58();
+    const baseDecimals = inputIsBase ? Number(hop.inputDecimals) : Number(hop.outputDecimals);
+    const quoteDecimals = inputIsBase ? Number(hop.outputDecimals) : Number(hop.inputDecimals);
+
+    // Build pool keys with derived orientation
     let poolKeys = (getAssociatedPoolKeys as any)({
       version,
       marketVersion: 3,
       marketId,
-      baseMint: toPublicKey(hop.inputMint),
-      quoteMint: toPublicKey(hop.outputMint),
-      baseDecimals: Number(hop.inputDecimals),
-      quoteDecimals: Number(hop.outputDecimals),
+      baseMint,
+      quoteMint,
+      baseDecimals,
+      quoteDecimals,
       programId,
       marketProgramId,
     });
@@ -465,8 +556,8 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     } catch {}
 
     const userKeys = {
-      tokenAccountIn: toPublicKey(hop.userSourceAta),
-      tokenAccountOut: toPublicKey(hop.userDestAta),
+      tokenAccountIn: inputIsBase ? toPublicKey(hop.userSourceAta) : toPublicKey(hop.userDestAta),
+      tokenAccountOut: inputIsBase ? toPublicKey(hop.userDestAta) : toPublicKey(hop.userSourceAta),
       owner: kp.publicKey,
     };
 
