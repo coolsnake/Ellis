@@ -12,7 +12,8 @@ function toInstruction(ix: any): TransactionInstruction | null {
   try {
     if (!ix) return null;
     if (ix instanceof TransactionInstruction) return ix;
-    const hasShape = typeof ix.programId !== 'undefined' && Array.isArray(ix.keys) && typeof ix === 'object';
+    const keysLike = (ix as any)?.keys;
+    const hasShape = typeof (ix as any)?.programId !== 'undefined' && (Array.isArray(keysLike) || (keysLike && typeof keysLike.length === 'number')) && typeof ix === 'object';
     if (!hasShape) return null;
     // Attempt to coerce plain object shapes into a real TransactionInstruction
     const coercePk = (v: any): PublicKey => {
@@ -21,7 +22,8 @@ function toInstruction(ix: any): TransactionInstruction | null {
       return new PublicKey(String(v));
     };
     const programId = coercePk((ix as any).programId);
-    const keys = (ix.keys as any[]).map((k: any) => ({
+    const keyArr: any[] = Array.isArray(keysLike) ? keysLike : Array.from(keysLike as any);
+    const keys = keyArr.map((k: any) => ({
       pubkey: coercePk(k?.pubkey ?? k?.pubKey ?? k?.address),
       isSigner: !!k?.isSigner,
       isWritable: !!k?.isWritable,

@@ -101,8 +101,10 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
   try {
     const programCounts: Record<string, number> = {};
     for (const it of all) {
-      const pid = String((it as any)?.programId || 'unknown');
-      programCounts[pid] = (programCounts[pid] || 0) + 1;
+      let pid = (it as any)?.programId;
+      try { if (pid && typeof pid.toBase58 === 'function') pid = pid.toBase58(); } catch {}
+      const key = String(pid || 'unknown');
+      programCounts[key] = (programCounts[key] || 0) + 1;
     }
     logger.info('tx.build.detail', { cat: 'tx', ctx: { ixCount: all.length, programs: programCounts } as any });
   } catch {}
