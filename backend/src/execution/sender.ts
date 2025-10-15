@@ -17,9 +17,19 @@ function toInstruction(ix: any): TransactionInstruction | null {
     if (!hasShape) return null;
     // Attempt to coerce plain object shapes into a real TransactionInstruction
     const coercePk = (v: any): PublicKey => {
-      if (v instanceof PublicKey) return v;
-      try { if (v && typeof v.toBase58 === 'function') return new PublicKey(v.toBase58()); } catch {}
-      return new PublicKey(String(v));
+      try {
+        if (v instanceof PublicKey) return v;
+        // Some SDKs wrap PublicKey under .address
+        const inner = (v && (v.address || v.pubkey || v.pubKey)) || v;
+        if (inner instanceof PublicKey) return inner;
+        if (inner && typeof inner.toBase58 === 'function') return new PublicKey(inner.toBase58());
+        if (typeof inner === 'string') return new PublicKey(inner);
+        // Last resort: stringify
+        return new PublicKey(String(inner));
+      } catch (e) {
+        // Throw through to caller; upstream will catch and drop this ix
+        throw e;
+      }
     };
     const programId = coercePk((ix as any).programId);
     const keyArr: any[] = Array.isArray(keysLike) ? keysLike : Array.from(keysLike as any);

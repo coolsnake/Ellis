@@ -515,6 +515,8 @@ export function startRaydiumRefreshLoop(): void {
     }
     try {
       const setup = async () => {
+        if (wsSetupActive) { try { logger.debug('pools.ws setup already active'); } catch {} return; }
+        wsSetupActive = true;
         let web3: any = null;
         try { const mod = ['@solana/web3.js'].join(''); web3 = await import(mod as any); } catch {}
         if (!web3) { logger.warn('pools.ws disabled: @solana/web3.js not available'); return; }
@@ -522,7 +524,7 @@ export function startRaydiumRefreshLoop(): void {
         const rayAmm = new web3.PublicKey(String(CONFIG.raydium?.ammV4Program).trim());
         const rayClmm = new web3.PublicKey(String(CONFIG.raydium?.clmmProgram).trim());
         const orcaProg = new web3.PublicKey(String(CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc').trim());
-        const subs: number[] = [];
+        const subs: Array<{ kind: 'account' | 'program'; id: number }> = [];
         // Debounce frequent program change bursts to at most one refresh per source per min gap
         const minGap = Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000);
         let lastRay = 0; let lastOrc = 0;
@@ -721,6 +723,78 @@ export function startRaydiumRefreshLoop(): void {
             }
           } catch {}
         };
+        // Helper: subscribe with retry/backoff to avoid calling while WS is closing
+        const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+        const subscribeAccountWithRetry = async (accountPk: any, cb: (pk: any, info: any) => void): Promise<number> => {
+          const maxAttempts = Math.max(1, Number(((CONFIG.system as any)?.wsSubscribeMaxAttempts) || 10));
+          const baseBackoffMs = Math.max(50, Number(((CONFIG.system as any)?.wsSubscribeBackoffMs) || 250));
+          let attempt = 0;
+          // Probe internal readyState if available to avoid subscribing during CLOSING/CLOSED
+          const waitUntilWsReady = async () => {
+            try {
+              const ws = (conn as any)?._rpcWebSocket?._ws;
+              let rs = Number(ws?.readyState);
+              // 0 CONNECTING, 1 OPEN, 2 CLOSING, 3 CLOSED
+              const deadline = Date.now() + Math.max(500, Number(((CONFIG.system as any)?.wsReadyWaitMs) || 3000));
+              while (ws && (rs === 2 || rs === 3) && Date.now() < deadline) {
+                await sleep(150);
+                rs = Number(ws?.readyState);
+              }
+            } catch {}
+          };
+          // Attempt loop
+          for (;;) {
+            await waitUntilWsReady();
+            try {
+              const id = await conn.onAccountChange(accountPk, (info: any) => { try { cb(accountPk, info); } catch {} });
+              return id as unknown as number;
+            } catch (e: any) {
+              const msg = String(e?.message || e);
+              const isWsState = msg.includes('socket was not') || msg.includes('readyState');
+              attempt += 1;
+              if (!isWsState || attempt >= maxAttempts) {
+                // Give up on non-WS errors or after exhausting retries
+                throw e;
+              }
+              const delay = Math.min(5000, Math.floor(baseBackoffMs * Math.pow(1.5, attempt - 1)));
+              try { logger.debug('pools.ws subscribe retry(account)', { attempt, delayMs: delay }); } catch {}
+              await sleep(delay);
+            }
+          }
+        };
+        const subscribeProgramWithRetry = async (programPk: any, cb: (ch: any) => void): Promise<number> => {
+          const maxAttempts = Math.max(1, Number(((CONFIG.system as any)?.wsSubscribeMaxAttempts) || 10));
+          const baseBackoffMs = Math.max(50, Number(((CONFIG.system as any)?.wsSubscribeBackoffMs) || 250));
+          let attempt = 0;
+          const waitUntilWsReady = async () => {
+            try {
+              const ws = (conn as any)?._rpcWebSocket?._ws;
+              let rs = Number(ws?.readyState);
+              const deadline = Date.now() + Math.max(500, Number(((CONFIG.system as any)?.wsReadyWaitMs) || 3000));
+              while (ws && (rs === 2 || rs === 3) && Date.now() < deadline) {
+                await sleep(150);
+                rs = Number(ws?.readyState);
+              }
+            } catch {}
+          };
+          for (;;) {
+            await waitUntilWsReady();
+            try {
+              const id = await conn.onProgramAccountChange(programPk, (ch: any) => { try { cb(ch); } catch {} });
+              return id as unknown as number;
+            } catch (e: any) {
+              const msg = String(e?.message || e);
+              const isWsState = msg.includes('socket was not') || msg.includes('readyState');
+              attempt += 1;
+              if (!isWsState || attempt >= maxAttempts) {
+                throw e;
+              }
+              const delay = Math.min(5000, Math.floor(baseBackoffMs * Math.pow(1.5, attempt - 1)));
+              try { logger.debug('pools.ws subscribe retry(program)', { attempt, delayMs: delay }); } catch {}
+              await sleep(delay);
+            }
+          }
+        };
         // Subscribe to Orca Whirlpool POOL accounts only: prefer graph edge pool ids, else derive PDAs from watchlist
         try {
           const { PublicKey } = web3;
@@ -778,8 +852,8 @@ export function startRaydiumRefreshLoop(): void {
             const addr = uniq[i];
             try {
               const pk = new PublicKey(addr);
-              const id = await conn.onAccountChange(pk, (info: any) => { handle(pk as any, info); });
-              subs.push(id as any); attached++;
+              const id = await subscribeAccountWithRetry(pk, handle);
+              subs.push({ kind: 'account', id }); attached++;
             } catch {}
             if (i < uniq.length - 1 && intervalMs > 0) { await sleep(intervalMs); }
           }
@@ -788,14 +862,20 @@ export function startRaydiumRefreshLoop(): void {
           // Subscribe at program level only if we had no targeted addresses and fallback is enabled
           if (attached === 0 && !!((CONFIG.system as any)?.wsFallbackPrograms)) {
             try { logger.info('pools.ws subscribe orca(program)', { source: 'orca', cat: 'pools' }); } catch {}
-            subs.push(conn.onProgramAccountChange(orcaProg, (ch) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
+            {
+              const id = await subscribeProgramWithRetry(orcaProg, (ch: any) => handle(ch.accountId, ch.accountInfo));
+              subs.push({ kind: 'program', id });
+            }
           }
         } catch (e:any) {
           logger.warn('pools.ws orca address subscribe failed', { error: String(e?.message || e) });
           // Fallback to program-level subscription (may include non-pool accounts) when enabled
           if (!!((CONFIG.system as any)?.wsFallbackPrograms)) {
             try { logger.info('pools.ws subscribe orca(fallback)', { source: 'orca', cat: 'pools' }); } catch {}
-            subs.push(conn.onProgramAccountChange(orcaProg, (ch) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
+            {
+              const id = await subscribeProgramWithRetry(orcaProg, (ch: any) => handle(ch.accountId, ch.accountInfo));
+              subs.push({ kind: 'program', id });
+            }
           }
         }
         // Raydium address-level subscriptions when we have known pool ids (from prior refresh)
@@ -827,8 +907,8 @@ export function startRaydiumRefreshLoop(): void {
             const addr = uniqueRay[i];
             try {
               const pk = new web3.PublicKey(addr);
-              const id = await conn.onAccountChange(pk, (info: any) => { handle(pk as any, info); });
-              subs.push(id as any); attachedRay++;
+              const id = await subscribeAccountWithRetry(pk, handle);
+              subs.push({ kind: 'account', id }); attachedRay++;
             } catch {}
             if (i < uniqueRay.length - 1 && intervalMsRay > 0) { await sleepRay(intervalMsRay); }
           }
@@ -837,9 +917,15 @@ export function startRaydiumRefreshLoop(): void {
           // Fallback to program-level if none attached and fallback is enabled
           if (attachedRay === 0 && !!((CONFIG.system as any)?.wsFallbackPrograms)) {
             try { logger.info('pools.ws subscribe raydium.amm(fallback)', { source: 'raydium', cat: 'pools' }); } catch {}
-            subs.push(conn.onProgramAccountChange(rayAmm, (ch) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
+            {
+              const idA = await subscribeProgramWithRetry(rayAmm, (ch: any) => handle(ch.accountId, ch.accountInfo));
+              subs.push({ kind: 'program', id: idA });
+            }
             try { logger.info('pools.ws subscribe raydium.clmm(fallback)', { source: 'raydium', cat: 'pools' }); } catch {}
-            subs.push(conn.onProgramAccountChange(rayClmm, (ch) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
+            {
+              const idC = await subscribeProgramWithRetry(rayClmm, (ch: any) => handle(ch.accountId, ch.accountInfo));
+              subs.push({ kind: 'program', id: idC });
+            }
           }
         } catch {}
         // Meteora targeted subscriptions from graph edges. If none yet, retry briefly for targets; fallback to program-level when configured.
@@ -856,8 +942,8 @@ export function startRaydiumRefreshLoop(): void {
               const addr = edgeIds[i];
               try {
                 const pk = new web3.PublicKey(addr);
-                const id = await conn.onAccountChange(pk, (info: any) => { handle(pk as any, info); });
-                subs.push(id as any); attached++;
+                const id = await subscribeAccountWithRetry(pk, handle);
+                subs.push({ kind: 'account', id }); attached++;
               } catch {}
               if (i < edgeIds.length - 1 && intervalMsMet > 0) { await sleepMet(intervalMsMet); }
             }
@@ -894,7 +980,10 @@ export function startRaydiumRefreshLoop(): void {
             const meteoraProg = String((CONFIG as any)?.meteora?.programId || '').trim();
             if (meteoraProg && !!((CONFIG.system as any)?.meteoraWsProgramFallback)) {
               try { logger.info('pools.ws subscribe meteora(program)', { source: 'meteora', cat: 'pools' }); } catch {}
-              subs.push(conn.onProgramAccountChange(new web3.PublicKey(meteoraProg), (ch: any) => handle(ch.accountId, ch.accountInfo)) as unknown as number);
+              {
+                const id = await subscribeProgramWithRetry(new web3.PublicKey(meteoraProg), (ch: any) => handle(ch.accountId, ch.accountInfo));
+                subs.push({ kind: 'program', id });
+              }
               attachedMeteoraPools = 1;
             }
           }
@@ -903,7 +992,19 @@ export function startRaydiumRefreshLoop(): void {
           attachedMeteoraPools = 0;
         }
 
-        wsUnsubscribe = () => { try { for (const id of subs) conn.removeAccountChangeListener(id as any).catch(() => {}); } catch {} };
+        wsUnsubscribe = () => {
+          try {
+            for (const s of subs) {
+              try {
+                if (s.kind === 'account') {
+                  (conn as any).removeAccountChangeListener(s.id).catch(() => {});
+                } else {
+                  (conn as any).removeProgramAccountChangeListener(s.id).catch(() => {});
+                }
+              } catch {}
+            }
+          } catch {}
+        };
         logger.info('pools.ws subscriptions active');
         // Immediately emit a ws-activity snapshot so UI reflects attached counts without waiting for first aggregate tick
         try { emit('ws-activity', { healthy: wsHealthy, lastEventMs: lastWsEventMs, orca: { attached: attachedOrcaPools, events: 0 }, raydium: { attached: attachedRaydiumPools, events: 0 }, meteora: { attached: attachedMeteoraPools, events: 0 } }); } catch {}
@@ -980,7 +1081,9 @@ export function startRaydiumRefreshLoop(): void {
           } catch {}
         }, aggPeriod);
       };
-      setup().catch((e: any) => logger.warn('pools.ws setup failed', { error: String(e?.message || e) }));
+      setup()
+        .catch((e: any) => logger.warn('pools.ws setup failed', { error: String(e?.message || e) }))
+        .finally(() => { wsSetupActive = false; });
     } catch (e: any) {
       logger.warn('pools.ws unavailable', { error: String(e?.message || e) });
     }

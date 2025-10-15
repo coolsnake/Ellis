@@ -93,13 +93,29 @@ export function buildMeteoraDlmmSwapIx(hop: DirectHop): any[] {
 export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]> {
   try { logger.debug('ix.build meteora.dlmm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
   try {
+    logger.info('meteora.dlmm.build.start', { cat: 'tx', ctx: { poolId: hop.poolId, inputMint: hop.inputMint, outputMint: hop.outputMint, amountInRaw: String(hop.amountInRaw ?? 0n), minOutRaw: String(hop.minOutRaw ?? 0n) } });
+  } catch {}
+  try {
     // Attempt dynamic import of a DLMM SDK if available; otherwise construct minimal raw ix descriptor
+    try { logger.info('meteora.dlmm.import.try', { cat: 'tx' }); } catch {}
     const maybe: any = await (async () => { try { return await (Function('return import')())('@meteora-ag/dlmm-sdk'); } catch { return null; } })();
+    try { logger.info('meteora.dlmm.import.' + (maybe ? 'ok' : 'miss'), { cat: 'tx' }); } catch {}
     if (maybe && maybe?.DLMM && maybe?.DLMM?.swapIx) {
       const connection = getConnection();
       const kp = await ensureWallet(CONFIG.walletPath);
       const poolPk = toPublicKey(hop.poolId);
-      const programId = toPublicKey(hop.programId as string);
+      // Allow fallback to configured program id when hop.programId is missing
+      const programId = toPublicKey(hop.programId as string, (CONFIG as any)?.meteora?.programId);
+      try {
+        logger.info('meteora.dlmm.params.prepare', { cat: 'tx', ctx: {
+          pool: poolPk?.toBase58?.() || String(poolPk),
+          programId: programId?.toBase58?.() || String(programId),
+          userSourceAta: hop.userSourceAta,
+          userDestAta: hop.userDestAta,
+          hasBinLower: !!hop.binArrayLower,
+          hasBinUpper: !!hop.binArrayUpper,
+        } });
+      } catch {}
       const params = {
         pool: poolPk,
         programId,
@@ -111,9 +127,14 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         binArrayLower: hop.binArrayLower ? toPublicKey(hop.binArrayLower) : undefined,
         binArrayUpper: hop.binArrayUpper ? toPublicKey(hop.binArrayUpper) : undefined,
       } as any;
+      try { logger.info('meteora.dlmm.swapIx.call', { cat: 'tx' }); } catch {}
       const ix = await maybe.DLMM.swapIx(connection, kp.publicKey, params);
       // Meteora SDK returns a TransactionInstruction
-      if (ix) return [ix];
+      if (ix) {
+        try { logger.info('meteora.dlmm.swapIx.ok', { cat: 'tx' }); } catch {}
+        return [ix];
+      }
+      try { logger.warn('meteora.dlmm.swapIx.empty', { cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
     }
   } catch (e) {
     try { logger.warn('ix.build meteora.dlmm.real fallback', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
@@ -241,6 +262,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
 
     const { getAssociatedPoolKeys, makeSwapFixedInInstruction } = await import('@raydium-io/raydium-sdk-v2');
     const kp = await ensureWallet(CONFIG.walletPath);
+    // Force programId to configured AMM program when not provided or ambiguous
     const programId = toPublicKey(hop.programId, (CONFIG.raydium?.ammV4Program as any));
     const marketId = toPublicKey(hop.market);
     const marketProgramId = toPublicKey(hop.serumProgramId);
@@ -331,7 +353,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       owner: kp.publicKey,
     };
 
-    // Normalize poolKeys shape to match Raydium SDK expectations (PublicKey fields only)
+    // Normalize poolKeys shape to match Raydium SDK expectations (PublicKey fields only) and enforce programId
     try {
       const ensurePk = (v: any) => (v && typeof v === 'object' && typeof v.toBase58 === 'function') ? v : (v ? toPublicKey(v) : undefined);
       // Ensure mintLp is a PublicKey (not an object)
@@ -344,7 +366,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       };
       // Coerce remaining PublicKey fields
       (poolKeys as any).id = ensurePk((poolKeys as any).id);
-      (poolKeys as any).programId = ensurePk((poolKeys as any).programId);
+      (poolKeys as any).programId = programId; // enforce configured program id
       (poolKeys as any).authority = ensurePk((poolKeys as any).authority);
       (poolKeys as any).openOrders = ensurePk((poolKeys as any).openOrders);
       (poolKeys as any).targetOrders = ensurePk((poolKeys as any).targetOrders);

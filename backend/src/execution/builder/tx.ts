@@ -32,6 +32,9 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
   for (const hop of plan.hops) {
     try { logger.debug('tx.build.hop', { cat: 'tx', code: LogCode.TX_BUILD_HOP, ctx: { dex: hop.dex, variant: hop.variant, poolId: hop.poolId } as any }); } catch {}
     try {
+      logger.info('tx.build.hop.start', { cat: 'tx', ctx: { dex: hop.dex, variant: hop.variant, poolId: hop.poolId, amountInRaw: String(hop.amountInRaw ?? 0n), minOutRaw: String(hop.minOutRaw ?? 0n) } as any });
+    } catch {}
+    try {
       // --- Pre-hop account prep: ATAs and optional SOL wrapping ---
       if (execCfg.createAtasInTx !== false) {
         const payer = owner;
@@ -85,7 +88,8 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
       if (hop.dex === 'raydium' && hop.variant === 'amm') { const ixs = await buildRaydiumAmmSwapIxReal(hop); hopIxs.push(...ixs); }
       else if (hop.dex === 'raydium' && hop.variant === 'clmm') { const ixs = await buildRaydiumClmmSwapIxReal(hop); hopIxs.push(...ixs); }
       else if (hop.dex === 'orca') { const ixs = await buildOrcaSwapIx(hop) as any[]; hopIxs.push(...ixs); }
-      else if (hop.dex === 'meteora') { const ixs = await buildMeteoraDlmmSwapIxReal(hop); hopIxs.push(...ixs); }
+      else if (hop.dex === 'meteora') { try { logger.info('tx.build.hop.meteora.real', { cat: 'tx', ctx: { poolId: hop.poolId } as any }); } catch {}; const ixs = await buildMeteoraDlmmSwapIxReal(hop); hopIxs.push(...ixs); }
+      try { logger.info('tx.build.hop.ok', { cat: 'tx', ctx: { dex: hop.dex, variant: hop.variant, poolId: hop.poolId } as any }); } catch {}
     } catch (e) {
       try { logger.error('tx.build.hop.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { dex: hop.dex, variant: hop.variant, poolId: hop.poolId, error: String((e as any)?.message || e) } as any }); } catch {}
       throw e;
