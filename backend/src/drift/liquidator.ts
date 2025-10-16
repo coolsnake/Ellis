@@ -138,6 +138,10 @@ export class DriftLiquidator {
   private scanCursor: number = 0; // deprecated; retained for minimal impact
   private pendingProbeQueue: string[] = [];
   private inProbeQueue: Set<string> = new Set();
+  private probeProcessing: boolean = false;
+  private probeTimestamps: number[] = [];
+  private currentPollMs: number = 1500;
+  private atRiskUsers: Map<string, { health: number; updatedAt: number }> = new Map();
 
   constructor(private config: LiquidatorConfig) {}
 
@@ -145,10 +149,28 @@ export class DriftLiquidator {
     return { ...this.state, config: this.config };
   }
 
+  private getProbeRps(): number {
+    try { return Math.max(1, Math.min(200, Number((this.config as any).probeRps ?? ((CONFIG as any)?.drift?.liquidator?.probeRps) ?? 50))); }
+    catch { return 50; }
+  }
+
+  private async acquireProbeToken(): Promise<void> {
+    while (true) {
+      const now = Date.now();
+      const cutoff = now - 1000;
+      while (this.probeTimestamps.length > 0 && this.probeTimestamps[0] <= cutoff) this.probeTimestamps.shift();
+      const cap = this.getProbeRps();
+      if (this.probeTimestamps.length < cap) { this.probeTimestamps.push(now); return; }
+      const waitMs = Math.max(5, (this.probeTimestamps[0] + 1000) - now);
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
+  }
+
   async start(): Promise<void> {
     if (this.timer) return;
     this.state.running = true;
     const pollMs = Math.max(500, Number(this.config.pollMs || 1500));
+    this.currentPollMs = pollMs;
     const cid = `liq-${this.config.name}-${Date.now().toString(36).slice(-5)}`;
     logger.info('drift.liquidator.start', { name: this.config.name, pollMs, dryRun: !!this.config.dryRun, cat: 'drift', code: 'DRIFT.LIQ.START', cid, span: 'start' });
     // Ensure Drift client is initialized
@@ -204,11 +226,23 @@ export class DriftLiquidator {
       }, everyMs);
     } catch {}
 
-    // HTTP discovery disabled (WS-only). Do not schedule any GPA/Anchor discovery timers.
+    // Discovery scheduling based on flags
     try {
-      if (this.discoveryTimer) { try { (globalThis as any).clearInterval(this.discoveryTimer); } catch {} }
-      this.discoveryTimer = null;
-      try { logger.info('drift.liquidator.discovery_http_disabled', { cat: 'drift' }); } catch {}
+      const liqCfg: any = (CONFIG as any)?.drift?.liquidator || {};
+      const wsOnly = (this.config.wsOnlyDiscovery === true) || (this.config.wsOnlyDiscovery === undefined && liqCfg.wsOnlyDiscovery === true);
+      const limitedHttp = (this.config.limitedHttpDiscovery === true) || (this.config.limitedHttpDiscovery === undefined && liqCfg.limitedHttpDiscovery === true);
+      if (wsOnly) {
+        if (this.discoveryTimer) { try { (globalThis as any).clearInterval(this.discoveryTimer); } catch {} }
+        this.discoveryTimer = null;
+        try { logger.info('drift.liquidator.discovery_http_disabled', { cat: 'drift' }); } catch {}
+      } else if (limitedHttp) {
+        const every = Math.max(15000, Number((this.config as any).discoveryIntervalMs ?? liqCfg.discoveryIntervalMs ?? 30000));
+        if (this.discoveryTimer) { try { (globalThis as any).clearInterval(this.discoveryTimer); } catch {} }
+        this.discoveryTimer = (globalThis as any).setInterval(() => {
+          this.tryRecentDiscovery().catch(() => {});
+        }, every);
+        try { logger.info('drift.liquidator.discovery_http_limited', { intervalMs: every, cat: 'drift' }); } catch {}
+      }
     } catch {}
   }
 
@@ -514,6 +548,7 @@ export class DriftLiquidator {
       const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
       if (!isFinite(total) || !isFinite(maint)) return;
       const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
+      const recoveryBuf = Number(((this.config as any).recoveryBuffer ?? ((CONFIG as any)?.drift?.liquidator?.recoveryBuffer) ?? 0.05));
       const health = maint > 0 ? (total - maint) / maint : Infinity;
       if (health < riskThresh) {
         this.addOrQueueCandidate({ userPk: pkStr, health, updatedAt: Date.now() } as any);
@@ -933,6 +968,7 @@ export class DriftLiquidator {
         exposures: exposuresWithSymbols,
         actionsLastMin: this.state.actionsLastMin,
         errorsLastMin: this.state.errorsLastMin,
+        users,
       }).catch(() => {});
     } catch {}
   }
@@ -1117,10 +1153,14 @@ export class DriftLiquidator {
   }
 
   private async processProbeQueue(): Promise<void> {
+    if (this.probeProcessing) return;
+    this.probeProcessing = true;
     try {
       const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
       const drift: any = (DriftService.getInstance() as any).client;
-      const cap = Math.max(1, Math.min(200, Number((this.config.maxProbesPerTick ?? ((CONFIG as any)?.drift?.liquidator?.maxProbesPerTick) ?? 40))));
+      const capCfg = Math.max(1, Math.min(200, Number((this.config.maxProbesPerTick ?? ((CONFIG as any)?.drift?.liquidator?.maxProbesPerTick) ?? 40))));
+      const perTickCap = Math.max(1, Math.floor(this.getProbeRps() * Math.max(200, Number(this.currentPollMs || 1000)) / 1000));
+      const cap = Math.min(capCfg, perTickCap);
       const slice = this.pendingProbeQueue.splice(0, cap);
       let probed = 0;
       let flagged = 0;
@@ -1141,6 +1181,8 @@ export class DriftLiquidator {
               this.subscribedUsers.add(key);
             }
           } catch {}
+          // Rate-limit the HTTP RPC call
+          await this.acquireProbeToken();
           const exists = await (user as any).exists?.();
           if (!exists) { this.inProbeQueue.delete(key); continue; }
           // Read positions and apply filters BEFORE collateral reads to short-circuit idle/out-of-scope users
@@ -1176,20 +1218,26 @@ export class DriftLiquidator {
             const ms = Math.max(15000, Number((this.config.outOfScopeCooldownMs ?? ((CONFIG as any)?.drift?.liquidator?.outOfScopeCooldownMs) ?? 60000)));
             this.outOfScopeUntil.set(key, Date.now() + ms);
             try { if (this.subscribedUsers.has(key)) { await (user as any)?.unsubscribe?.(); this.subscribedUsers.delete(key); } } catch {}
+            this.atRiskUsers.delete(key);
             this.inProbeQueue.delete(key);
             continue;
           }
+          // Index in-scope users for price-triggered scans
+          try { await this.refreshIndexForUser(user, key); } catch {}
           const total = Number((user as any)?.getTotalCollateral?.() || 0);
           const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
           if (!isFinite(total) || !isFinite(maint)) { this.inProbeQueue.delete(key); continue; }
           const health = maint > 0 ? (total - maint) / maint : Infinity;
           probed += 1;
           if (health < riskThresh) {
+            this.atRiskUsers.set(key, { health, updatedAt: Date.now() });
             this.addOrQueueCandidate({ userPk: key, health, updatedAt: Date.now() });
             flagged += 1;
-            try { await this.refreshIndexForUser(user, key); } catch {}
           } else {
             // Not at risk: optionally unsubscribe to minimize load
+            if (health >= (riskThresh + recoveryBuf)) {
+              this.atRiskUsers.delete(key);
+            }
             try {
               if (this.subscribedUsers.has(key) && typeof (user as any)?.unsubscribe === 'function') {
                 await (user as any).unsubscribe();
@@ -1201,11 +1249,13 @@ export class DriftLiquidator {
           this.inProbeQueue.delete(key);
         }
       }
-      try { logger.info('drift.liquidator.probe_result', { attempted: slice.length, probed, flagged, pending: this.pendingProbeQueue.length, cat: 'drift' }); } catch {}
-    } catch {}
+      try { logger.info('drift.liquidator.probe_result', { attempted: slice.length, probed, flagged, pending: this.pendingProbeQueue.length, rps: this.getProbeRps(), cat: 'drift' }); } catch {}
+    } catch {} finally {
+      this.probeProcessing = false;
+    }
   }
 
-  getQueueSnapshot(limit = 20): { candidatesQueued: number; top: Array<{ userPk: string; health: number; updatedAt: number }>; markets: number[]; exposures: Array<{ marketIndex: number; users: number; symbol?: string }>; actionsLastMin: number; errorsLastMin: number } {
+  getQueueSnapshot(limit = 20): { candidatesQueued: number; top: Array<{ userPk: string; health: number; updatedAt: number }>; markets: number[]; exposures: Array<{ marketIndex: number; users: number; symbol?: string }>; actionsLastMin: number; errorsLastMin: number; users: Array<{ userPk: string; health: number; updatedAt: number }> } {
     const top: Candidate[] = [];
     const arr = this.heap.toArray();
     const cap = Math.min(arr.length, Math.max(25, Number(limit) * 8));
@@ -1218,6 +1268,9 @@ export class DriftLiquidator {
     try {
       exposuresWithSymbols = exposuresCounts.map((e) => ({ ...e, symbol: indexToSymbol(Number(e.marketIndex)) }));
     } catch {}
+    const usersArr = Array.from(this.atRiskUsers.entries()).map(([k, v]) => ({ userPk: k, health: v.health, updatedAt: v.updatedAt }));
+    usersArr.sort((a, b) => a.health - b.health);
+    const usersLimit = Math.max(1, Math.min(500, Number(((CONFIG as any)?.drift?.liquidator?.usersListLimit) ?? 200)));
     return {
       candidatesQueued: this.state.candidatesQueued,
       top: top.map(t => ({ userPk: t.userPk, health: t.health, updatedAt: t.updatedAt })),
@@ -1225,6 +1278,7 @@ export class DriftLiquidator {
       exposures: exposuresWithSymbols,
       actionsLastMin: this.state.actionsLastMin,
       errorsLastMin: this.state.errorsLastMin,
+      users: usersArr.slice(0, usersLimit),
     };
   }
 }

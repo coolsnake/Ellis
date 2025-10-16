@@ -3,6 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { useSocket } from '../app/contexts/socket';
 
 type QueueItem = { userPk: string; health: number; updatedAt: number };
+type UserItem = { userPk: string; health: number; updatedAt: number };
 
 interface Props {
   apiBase: string;
@@ -13,7 +14,7 @@ interface Props {
 export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidatorKey = 'liq#default' }) => {
   const { socket: ctxSocket } = useSocket();
   const effectiveSocket = socket ?? ctxSocket;
-  const [queue, setQueue] = useState<{ candidatesQueued: number; top: QueueItem[]; markets: number[]; exposures?: Array<{ marketIndex: number; users: number; symbol?: string }>; actionsLastMin: number; errorsLastMin: number } | null>(null);
+  const [queue, setQueue] = useState<{ candidatesQueued: number; top: QueueItem[]; markets: number[]; exposures?: Array<{ marketIndex: number; users: number; symbol?: string }>; actionsLastMin: number; errorsLastMin: number; users?: UserItem[] } | null>(null);
   const [lastUpdate, setLastUpdate] = useState<number>(0);
 
   const fetchQueue = async () => {
@@ -51,6 +52,7 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
             exposures: Array.isArray(evt.exposures) ? evt.exposures : [],
             actionsLastMin: Number(evt.actionsLastMin || 0),
             errorsLastMin: Number(evt.errorsLastMin || 0),
+            users: Array.isArray(evt.users) ? evt.users : [],
           });
           setLastUpdate(now);
         }
@@ -101,6 +103,24 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
               <div key={`exp-${e.marketIndex}`} className="p-2 bg-gray-700 rounded flex items-center justify-between">
                 <span className="text-gray-300">{e.symbol || e.marketIndex}</span>
                 <span className="text-white font-mono">{e.users}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {Array.isArray(queue?.users) && (queue!.users!.length > 0) && (
+        <div className="mb-3">
+          <div className="text-gray-300 mb-1 text-sm">Users Under Threshold (actively monitored)</div>
+          <div className="space-y-1 max-h-56 overflow-auto">
+            {queue!.users!.map((u) => (
+              <div key={`user-${u.userPk}`} className="flex items-center justify-between p-2 bg-gray-700 rounded text-xs">
+                <div className="flex items-center space-x-2">
+                  <span className="text-white font-mono" title={u.userPk}>{u.userPk.slice(0, 4)}…{u.userPk.slice(-4)}</span>
+                  <span className="text-gray-400">health</span>
+                  <span className={`font-mono ${u.health < -0.5 ? 'text-red-300' : u.health < 0 ? 'text-yellow-300' : 'text-white'}`}>{formatPct(u.health)}</span>
+                </div>
+                <div className="text-gray-400">{timeAgo(u.updatedAt)}</div>
               </div>
             ))}
           </div>
