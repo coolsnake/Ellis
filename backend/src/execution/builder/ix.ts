@@ -61,25 +61,70 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
     const connection = getConnection();
     const kp = await ensureWallet(CONFIG.walletPath);
     const { WhirlpoolContext, buildWhirlpoolClient, swapQuoteByInputToken, SwapUtils, toTx } = await import('@orca-so/whirlpools-sdk');
+    try { logger.info('orca.whirlpool.import.ok', { cat: 'tx', ctx: { haveContext: !!WhirlpoolContext, haveClient: !!buildWhirlpoolClient, haveQuoteFn: !!swapQuoteByInputToken, haveSwapUtils: !!SwapUtils, haveToTx: !!toTx } as any }); } catch {}
     const BN = (await import('bn.js')).default as any;
     const { Percentage } = await import('@orca-so/common-sdk');
     const dummyWallet: any = { publicKey: kp.publicKey, signTransaction: async (tx: any) => tx, signAllTransactions: async (txs: any[]) => txs };
     const programId = toPublicKey(hop.programId, (CONFIG.orca?.programId as any));
+    try { logger.info('orca.whirlpool.program', { cat: 'tx', ctx: { programId: programId?.toBase58?.() || String(programId) } as any }); } catch {}
     const ctx = (WhirlpoolContext as any).from(connection as any, dummyWallet, programId);
+    try { logger.info('orca.whirlpool.ctx.ok', { cat: 'tx' }); } catch {}
     const client = (buildWhirlpoolClient as any)(ctx);
+    try { logger.info('orca.whirlpool.client.ok', { cat: 'tx' }); } catch {}
     const poolPk = toPublicKey(hop.poolId);
+    try { logger.info('orca.whirlpool.pool.prepare', { cat: 'tx', ctx: { pool: poolPk?.toBase58?.() || String(poolPk) } as any }); } catch {}
     const pool = await client.getPool(poolPk);
+    try { logger.info('orca.whirlpool.pool.ok', { cat: 'tx' }); } catch {}
     const inputMint = toPublicKey(hop.inputMint);
     const bps = computeSlippageBps(hop.amountInRaw, hop.minOutRaw);
     const slippage = (Percentage as any).fromFraction(bps, 10000);
+    try { logger.info('orca.whirlpool.slippage', { cat: 'tx', ctx: { amountInRaw: String(hop.amountInRaw ?? 0n), minOutRaw: String(hop.minOutRaw ?? 0n), bps } as any }); } catch {}
     const amountInBn = new BN(String(hop.amountInRaw ?? 0n));
+    try { logger.info('orca.whirlpool.input', { cat: 'tx', ctx: { inputMint: inputMint?.toBase58?.() || String(inputMint), amountIn: amountInBn?.toString?.() } as any }); } catch {}
     const quote = await (swapQuoteByInputToken as any)(pool, inputMint, amountInBn, slippage, ctx.program.programId, ctx.fetcher, true);
+    try {
+      const est = (quote as any)?.otherAmount ?? (quote as any)?.estimatedAmountOut ?? 0;
+      logger.info('orca.whirlpool.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: String(est) } as any });
+    } catch {}
     const params = (SwapUtils as any).getSwapParamsFromQuote(quote);
     try { if (hop.sqrtPriceLimitX64 && params && ('sqrtPriceLimit' in (params as any))) { (params as any).sqrtPriceLimit = hop.sqrtPriceLimitX64; } } catch {}
+    try {
+      const lim = (params as any)?.sqrtPriceLimit ?? 0;
+      logger.info('orca.whirlpool.params.ok', { cat: 'tx', ctx: { hasLimit: !!lim, sqrtPriceLimitX64: String(lim) } as any });
+    } catch {}
     const txb = await pool.swap(params);
+    try { logger.info('orca.whirlpool.swap.builder.ok', { cat: 'tx' }); } catch {}
     const tx = (toTx as any)(ctx, txb);
     const built = await tx.build();
-    return built.instructions || [];
+    try {
+      const count = Array.isArray((built as any)?.instructions) ? (built as any).instructions.length : 0;
+      logger.info('orca.whirlpool.tx.build.ok', { cat: 'tx', ctx: { instructionCount: count } as any });
+    } catch {}
+    // Robustly unwrap various SDK return shapes into raw TransactionInstructions
+    const unwrapIxs = (val: any): any[] => {
+      try {
+        if (!val) return [];
+        // Direct TransactionInstruction
+        if (val instanceof TransactionInstruction) return [val];
+        // Plain TI-shaped object
+        if (val && typeof val === 'object' && (val as any).programId && ((Array.isArray((val as any).keys)) || (typeof (val as any).keys?.length === 'number'))) {
+          return [val];
+        }
+        // Common shapes
+        if (Array.isArray((val as any).instructions)) return (val as any).instructions;
+        if ((val as any).innerTransaction && Array.isArray((val as any).innerTransaction.instructions)) return (val as any).innerTransaction.instructions;
+        if (Array.isArray((val as any).innerTransactions) && (val as any).innerTransactions.length) {
+          const flat: any[] = [];
+          for (const it of (val as any).innerTransactions) if (it && Array.isArray(it.instructions)) flat.push(...it.instructions);
+          return flat;
+        }
+      } catch {}
+      return [];
+    };
+    const raw = unwrapIxs(built);
+    const out = (raw && raw.length) ? raw : (built && (built as any).instructions ? (built as any).instructions : []);
+    try { logger.info('orca.whirlpool.ix.ready', { cat: 'tx', ctx: { count: Array.isArray(out) ? out.length : 0 } as any }); } catch {}
+    return out || [];
   } catch (e) {
     try { logger.warn('ix.build orca.clmm fallback', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
     return [{ programId: hop.programId || 'whirlpool', type: 'orca.clmm.swap', keys: { poolId: hop.poolId }, data: { amountIn: hop.amountInRaw, minOut: hop.minOutRaw } }];
@@ -92,14 +137,57 @@ export function buildMeteoraDlmmSwapIx(hop: DirectHop): any[] {
 
 export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]> {
   try { logger.debug('ix.build meteora.dlmm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
+  const connection = getConnection();
+  const kp = await ensureWallet(CONFIG.walletPath);
+  const poolPk = toPublicKey(hop.poolId);
+  const programId = toPublicKey(hop.programId as string, (CONFIG as any)?.meteora?.programId);
+  try { logger.info('meteora.dlmm.build.start', { cat: 'tx', ctx: { pool: poolPk?.toBase58?.() || String(poolPk), programId: programId?.toBase58?.() || String(programId), amountInRaw: String(hop.amountInRaw ?? 0n), minOutRaw: String(hop.minOutRaw ?? 0n) } as any }); } catch {}
+
+  // 1) Prefer CJS require to load Meteora modules (many ship as CJS)
+  let mod: any = null;
   try {
-    // Attempt dynamic import of a DLMM SDK if available; otherwise construct minimal raw ix descriptor
-    const maybe: any = await (async () => { try { return await (Function('return import')())('@meteora-ag/dlmm-sdk'); } catch { return null; } })();
-    if (maybe && maybe?.DLMM && maybe?.DLMM?.swapIx) {
-      const connection = getConnection();
-      const kp = await ensureWallet(CONFIG.walletPath);
-      const poolPk = toPublicKey(hop.poolId);
-      const programId = toPublicKey(hop.programId as string);
+    const m: any = await import('node:module');
+    const createRequire: any = (m && m.createRequire) || (m?.default && m.default.createRequire);
+    const req: any = createRequire ? createRequire(import.meta.url) : undefined;
+    if (req) {
+      const specs = [
+        '@meteora-ag/dlmm',
+        '@meteora-ag/dlmm/ts-client',
+        '@meteora-ag/dlmm-sdk',
+        '@meteora-ag/dlmm-sdk-public',
+        '@meteora-ag/dlmm/dist/index.js',
+        '@meteora-ag/dlmm-sdk/dist/index.js',
+      ];
+      for (const spec of specs) {
+        try { const m2 = req(spec); if (m2) { mod = m2; try { logger.info('meteora.dlmm.require.ok', { cat: 'tx', ctx: { spec, keys: Object.keys(m2 || {}) } }); } catch {}; break; } } catch (e: any) { try { logger.warn('meteora.dlmm.require.fail', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { spec, error: String(e?.message || e) } }); } catch {} }
+      }
+    }
+  } catch {}
+
+  // 2) Fallback: dynamic import
+  if (!mod) {
+    const dyn = (Function('return import')()) as any;
+    const specs = [
+      '@meteora-ag/dlmm',
+      '@meteora-ag/dlmm/ts-client',
+      '@meteora-ag/dlmm-sdk',
+      '@meteora-ag/dlmm-sdk-public',
+      '@meteora-ag/dlmm/dist/index.js',
+      '@meteora-ag/dlmm-sdk/dist/index.js',
+    ];
+    for (const spec of specs) {
+      try { const m2 = await dyn(spec); if (m2) { mod = m2; try { logger.info('meteora.dlmm.import.ok', { cat: 'tx', ctx: { spec, keys: Object.keys(m2 || {}) } }); } catch {}; break; } } catch (e: any) { try { logger.warn('meteora.dlmm.import.fail', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { spec, error: String(e?.message || e) } }); } catch {} }
+    }
+  }
+
+  if (!mod) { try { logger.warn('meteora.dlmm.import.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: 'ALL_IMPORTS_FAILED' } }); } catch {}; throw new Error('METEORA_DLMM_BUILD_FAILED'); }
+
+  // Resolve default export / namespace
+  const DLMM: any = (mod && (mod as any).default) ? (mod as any).default : (((mod as any).DLMM) || mod);
+
+  // 3) Fast path: if swapIx exists, use it
+  try {
+    if (typeof (DLMM as any)?.swapIx === 'function') {
       const params = {
         pool: poolPk,
         programId,
@@ -107,18 +195,66 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         userDestAta: toPublicKey(hop.userDestAta),
         amountIn: hop.amountInRaw,
         minOut: hop.minOutRaw,
-        // Optional: bin arrays if required
         binArrayLower: hop.binArrayLower ? toPublicKey(hop.binArrayLower) : undefined,
         binArrayUpper: hop.binArrayUpper ? toPublicKey(hop.binArrayUpper) : undefined,
       } as any;
-      const ix = await maybe.DLMM.swapIx(connection, kp.publicKey, params);
-      // Meteora SDK returns a TransactionInstruction
-      if (ix) return [ix];
+      try { logger.info('meteora.dlmm.swapIx.call', { cat: 'tx' }); } catch {}
+      const ix = await (DLMM as any).swapIx(connection, kp.publicKey, params);
+      if (ix) { try { logger.info('meteora.dlmm.swapIx.ok', { cat: 'tx' }); } catch {}; return [ix]; }
     }
-  } catch (e) {
-    try { logger.warn('ix.build meteora.dlmm.real fallback', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
+  } catch (e: any) { try { logger.warn('meteora.dlmm.swapIx.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {} }
+
+  // 4) ts-client fallback: Anchor program path
+  try {
+    const createProgram = (DLMM as any)?.createProgram || (mod as any)?.createProgram;
+    if (!createProgram) throw new Error('DLMM_CREATE_PROGRAM_MISSING');
+    const program = createProgram(connection, programId);
+    try { logger.info('meteora.dlmm.program.ok', { cat: 'tx' }); } catch {}
+
+    // Derive optional accounts
+    let binArrayLower: PublicKey | undefined = hop.binArrayLower ? toPublicKey(hop.binArrayLower) : undefined;
+    let binArrayUpper: PublicKey | undefined = hop.binArrayUpper ? toPublicKey(hop.binArrayUpper) : undefined;
+    let binArrayBitmapExtension: PublicKey | undefined = undefined;
+    try {
+      const getBinBounds = (DLMM as any)?.getBinArrayLowerUpperBinId || (DLMM as any)?.deriveBinArrayLowerUpperBinId;
+      const deriveBinArray = (DLMM as any)?.deriveBinArray;
+      const deriveBinArrayBitmapExtension = (DLMM as any)?.deriveBinArrayBitmapExtension;
+      if ((!binArrayLower || !binArrayUpper) && getBinBounds && deriveBinArray) {
+        const bounds = await getBinBounds(connection, poolPk).catch(() => null as any);
+        if (bounds && typeof bounds.lowerBinId === 'number' && typeof bounds.upperBinId === 'number') {
+          try { const lo = await deriveBinArray(programId, poolPk, bounds.lowerBinId); binArrayLower = (lo as any)?.publicKey || lo || binArrayLower; } catch {}
+          try { const hi = await deriveBinArray(programId, poolPk, bounds.upperBinId); binArrayUpper = (hi as any)?.publicKey || hi || binArrayUpper; } catch {}
+        }
+      }
+      try { if (deriveBinArrayBitmapExtension) { const ext = await deriveBinArrayBitmapExtension(programId, poolPk); binArrayBitmapExtension = (ext as any)?.publicKey || ext || undefined; } } catch {}
+    } catch {}
+
+    const BN = (await import('bn.js')).default as any;
+    const amountIn = new BN(String(hop.amountInRaw ?? 0n));
+    const minOut = new BN(String(hop.minOutRaw ?? 0n));
+    const methods = (program as any)?.methods || {};
+    let builder: any = null;
+    if (typeof methods.swapExactIn === 'function') builder = methods.swapExactIn(amountIn, minOut);
+    else if (typeof methods.swap === 'function') builder = methods.swap(amountIn, minOut);
+    if (!builder) throw new Error('DLMM_SWAP_METHOD_MISSING');
+
+    const accounts: any = {
+      lbPair: poolPk,
+      user: kp.publicKey,
+      userTokenIn: toPublicKey(hop.userSourceAta),
+      userTokenOut: toPublicKey(hop.userDestAta),
+    };
+    if (binArrayLower) accounts.binArrayLower = binArrayLower;
+    if (binArrayUpper) accounts.binArrayUpper = binArrayUpper;
+    if (binArrayBitmapExtension) accounts.binArrayBitmapExtension = binArrayBitmapExtension;
+    if (typeof builder.accounts === 'function') builder = builder.accounts(accounts);
+    const ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
+    if (ix) { try { logger.info('meteora.dlmm.swap.ok', { cat: 'tx' }); } catch {}; return [ix]; }
+    try { logger.warn('meteora.dlmm.tsclient.swap.empty', { cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
+  } catch (e: any) {
+    try { logger.warn('meteora.dlmm.tsclient.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
   }
-  // If SDK path fails, prefer explicit error to avoid sending placeholders
+
   throw new Error('METEORA_DLMM_BUILD_FAILED');
 }
 

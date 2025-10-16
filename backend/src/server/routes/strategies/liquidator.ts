@@ -20,7 +20,14 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
   api.post('/strategies/liquidator/start', async (req: Request, res: Response) => {
     try {
       const cfg = req.body as any;
-      const name = String(cfg?.name || '').trim();
+      let name = String(cfg?.name || '').trim();
+      if (!name) {
+        const keyIn = String(cfg?.key || '').trim();
+        if (keyIn) {
+          // accept liq#<name> or raw name
+          name = keyIn.startsWith('liq#') ? keyIn.slice(4) : keyIn;
+        }
+      }
       if (!name) return res.status(400).json({ error: 'name is required' });
       const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
       const runner = DriftLiquidatorRegistry.upsert({
@@ -57,7 +64,7 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
           await DriftLiquidatorRegistry.start(key);
         }
       } catch { await DriftLiquidatorRegistry.start(key); }
-      emit('log', { level: 'info', message: `drift: liquidator started ${cfg?.name || key}` , timestamp: new Date().toISOString(), context: { cat: 'drift' } });
+      emit('log', { level: 'info', message: `drift: liquidator started ${name}` , timestamp: new Date().toISOString(), context: { cat: 'drift' } });
       res.json({ ok: true, key });
     } catch (e: any) {
       logger.error('drift-liq: start failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
@@ -67,7 +74,12 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
 
   api.post('/strategies/liquidator/stop', async (req: Request, res: Response) => {
     try {
-      const { key } = req.body as { key: string };
+      const body = req.body as { key?: string; name?: string };
+      let key = String(body?.key || '').trim();
+      if (!key) {
+        const name = String(body?.name || '').trim();
+        if (name) key = (await import('../../../drift/liquidator.js') as any).DriftLiquidatorRegistry.keyOf({ name });
+      }
       const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
       const ok = await DriftLiquidatorRegistry.stop(key);
       res.json({ ok });
@@ -79,7 +91,12 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
 
   api.post('/strategies/liquidator/remove', async (req: Request, res: Response) => {
     try {
-      const { key } = req.body as { key: string };
+      const body = req.body as { key?: string; name?: string };
+      let key = String(body?.key || '').trim();
+      if (!key) {
+        const name = String(body?.name || '').trim();
+        if (name) key = (await import('../../../drift/liquidator.js') as any).DriftLiquidatorRegistry.keyOf({ name });
+      }
       const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
       const ok = await DriftLiquidatorRegistry.remove(key);
       res.json({ ok });
