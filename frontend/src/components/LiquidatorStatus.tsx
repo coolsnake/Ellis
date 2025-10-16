@@ -32,8 +32,7 @@ export const LiquidatorStatus: React.FC<{ apiBase: string }> = ({ apiBase }) => 
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 3000);
-    return () => { try { clearInterval(t); } catch {}; try { abortRef.current?.abort(); } catch {} };
+    return () => { try { abortRef.current?.abort(); } catch {} };
   }, [apiBase]);
 
   const act = async (kind: 'start' | 'stop' | 'remove', key: string) => {
