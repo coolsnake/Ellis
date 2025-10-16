@@ -1280,13 +1280,38 @@ export class DriftLiquidator {
           // Index in-scope users for price-triggered scans
           try { await this.refreshIndexForUser(user, key); } catch {}
           // Build lightweight positions summary for UI
-          let posSummary: Array<{ marketIndex: number; base: number }> = [];
+          let posSummary: Array<{ marketIndex: number; base: number; notional?: number; liqPrice?: number }> = [];
           try {
+            let BASE_PREC = 1_000_000_000; // default BASE_PRECISION
+            try {
+              const sdk: any = await import('@drift-labs/sdk');
+              const cst: any = (sdk as any).constants || (sdk as any);
+              const maybe = Number(cst?.BASE_PRECISION || cst?.BASE_PRECISION_EXP || cst?.BASE_PRECISION_EXPONENT);
+              // Prefer BASE_PRECISION; some SDKs expose exponent or alt names; fall back to 1e9
+              if (Number.isFinite(Number(cst?.BASE_PRECISION))) BASE_PREC = Number(cst.BASE_PRECISION);
+            } catch {}
             for (const p of positions) {
               try {
-                const base = Number(p?.baseAssetAmount?.toString?.() || p?.baseAssetAmount || 0);
+                const raw = Number(p?.baseAssetAmount?.toString?.() || p?.baseAssetAmount || 0);
                 const m = Number(p?.marketIndex ?? p?.market_index ?? p?.market?.index);
-                if (Number.isFinite(m) && base !== 0) posSummary.push({ marketIndex: m, base });
+                if (Number.isFinite(m) && raw !== 0) {
+                  const baseUi = raw / BASE_PREC;
+                  let notional: number | undefined = undefined;
+                  let liqPrice: number | undefined = undefined;
+                  try {
+                    const priceSample = DriftPriceService.getInstance().getPrice(Number(m));
+                    const cur = (priceSample?.mid ?? priceSample?.oracle ?? priceSample?.bid ?? priceSample?.ask);
+                    if (typeof cur === 'number' && isFinite(cur)) {
+                      notional = Math.abs(baseUi) * cur;
+                      const dist = this.computeDistanceToLiquidation(String(key), Number(m));
+                      if (typeof dist === 'number' && isFinite(dist)) {
+                        const sgn = Math.sign(baseUi) || 1;
+                        liqPrice = cur * (1 - sgn * dist);
+                      }
+                    }
+                  } catch {}
+                  posSummary.push({ marketIndex: m, base: baseUi, notional, liqPrice });
+                }
               } catch {}
             }
           } catch {}
@@ -1322,7 +1347,7 @@ export class DriftLiquidator {
     }
   }
 
-  getQueueSnapshot(limit = 20): { candidatesQueued: number; top: Array<{ userPk: string; health: number; updatedAt: number }>; markets: number[]; exposures: Array<{ marketIndex: number; users: number; symbol?: string }>; actionsLastMin: number; errorsLastMin: number; users: Array<{ userPk: string; health: number; updatedAt: number }> } {
+  getQueueSnapshot(limit = 20): { candidatesQueued: number; top: Array<{ userPk: string; health: number; updatedAt: number }>; markets: number[]; exposures: Array<{ marketIndex: number; users: number; symbol?: string }>; actionsLastMin: number; errorsLastMin: number; users: Array<{ userPk: string; health: number; updatedAt: number; positions?: Array<{ marketIndex: number; base: number; notional?: number; liqPrice?: number }> }> } {
     const top: Candidate[] = [];
     const arr = this.heap.toArray();
     const cap = Math.min(arr.length, Math.max(25, Number(limit) * 8));
