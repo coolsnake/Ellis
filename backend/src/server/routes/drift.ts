@@ -239,16 +239,12 @@ export function createDriftRouter(io: SocketIOServer): Router {
       const client: any = (svc as any)?.client;
       let user: any = null;
       try {
-        const { User, BulkAccountLoader } = await import('@drift-labs/sdk');
-        // Resolve the specific subaccount PDA and instantiate a User for it
+        const { User } = await import('@drift-labs/sdk');
+        // Resolve the specific subaccount PDA and instantiate a User for it via websocket subscription
         const userPk = await client?.getUserAccountPublicKey?.(Number(subId));
         if (userPk) {
-          // Prefer the shared loader from client init if available; otherwise create a lightweight one
-          const loader: any = (svc as any)?.loader || new BulkAccountLoader((svc as any)?.connection, 'confirmed', 1000);
-          user = new User({ driftClient: client, userAccountPublicKey: userPk, accountSubscription: { type: 'polling', accountLoader: loader } });
-          // Subscribe and force-fetch once to ensure balances are up-to-date immediately after deposits
+          user = new User({ driftClient: client, userAccountPublicKey: userPk, accountSubscription: { type: 'websocket' } });
           try { if (typeof user.subscribe === 'function') { await user.subscribe(); } } catch {}
-          try { if (typeof (user as any).fetchAccounts === 'function') { await (user as any).fetchAccounts(); } } catch {}
         }
       } catch {}
       // Fallback to active user if targeted subaccount is unavailable
