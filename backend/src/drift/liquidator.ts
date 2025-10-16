@@ -206,15 +206,21 @@ export class DriftLiquidator {
       const doEnum = (this.config as any)?.enumerateAllOnStart ?? liqCfg.enumerateAllOnStart;
       if (doEnum) {
         const max = Math.max(1000, Number((this.config as any)?.enumerateMax ?? liqCfg.enumerateMax ?? 200000));
+        try { logger.info('drift.liquidator.enumerate_helius_start', { max, cat: 'drift' }); } catch {}
         const list = await this.discoverUsersViaHeliusGpaV2(max);
         if (Array.isArray(list) && list.length > 0) {
           const set = new Set<string>(this.userKeys);
           const chunk = Math.max(100, Number((this.config as any)?.enumerateEnqueueChunk ?? liqCfg.enumerateEnqueueChunk ?? 1000));
           const delayMs = Math.max(0, Number((this.config as any)?.enumerateEnqueueDelayMs ?? liqCfg.enumerateEnqueueDelayMs ?? 200));
+          let enqueued = 0;
           for (let i = 0; i < list.length; i += chunk) {
             const slice = list.slice(i, i + chunk);
             for (const pk of slice) { this.enqueueProbe(pk); set.add(String(pk)); }
             this.userKeys = Array.from(set);
+            enqueued += slice.length;
+            if (enqueued % 20000 === 0 || enqueued === list.length) {
+              try { logger.info('drift.liquidator.enumerate_helius_progress', { enqueued, total: list.length, cat: 'drift' }); } catch {}
+            }
             if (delayMs > 0) { try { await new Promise(r => setTimeout(r, delayMs)); } catch {} }
           }
           try { logger.info('drift.liquidator.enumerate_helius_complete', { total: list.length, cat: 'drift' }); } catch {}
@@ -1218,8 +1224,16 @@ export class DriftLiquidator {
           await this.acquireProbeToken();
           const exists = await (user as any).exists?.();
           if (!exists) { this.inProbeQueue.delete(key); continue; }
-          // Read positions and apply filters BEFORE collateral reads to short-circuit idle/out-of-scope users
-          const positions = (user as any)?.getPerpPositions?.() || [];
+          // Ensure fresh accounts snapshot after subscribe (WS may take a moment to push first state)
+          try { if (typeof (user as any)?.fetchAccounts === 'function') { await (user as any).fetchAccounts(); } } catch {}
+          // Compute health early; if already under threshold, flag immediately
+          const total = Number((user as any)?.getTotalCollateral?.() || 0);
+          const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
+          if (!isFinite(total) || !isFinite(maint)) { this.inProbeQueue.delete(key); continue; }
+          const health = maint > 0 ? (total - maint) / maint : Infinity;
+          // Positions for scoping and indexing
+          let positions = (user as any)?.getPerpPositions?.() || [];
+          try { if (!Array.isArray(positions) || positions.length === 0) { const raw = (user as any)?.getUserAccount?.()?.perpPositions; if (Array.isArray(raw)) positions = raw; } } catch {}
           let hasActive = false;
           let inScope = false;
           const allowedMarkets: Set<number> | null = Array.isArray(this.config.probeMarketIndices) && this.config.probeMarketIndices.length > 0
@@ -1268,10 +1282,6 @@ export class DriftLiquidator {
               } catch {}
             }
           } catch {}
-          const total = Number((user as any)?.getTotalCollateral?.() || 0);
-          const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
-          if (!isFinite(total) || !isFinite(maint)) { this.inProbeQueue.delete(key); continue; }
-          const health = maint > 0 ? (total - maint) / maint : Infinity;
           probed += 1;
           if (health < riskThresh) {
             this.atRiskUsers.set(key, { health, updatedAt: Date.now(), positions: posSummary });
