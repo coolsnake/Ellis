@@ -126,8 +126,8 @@ export class DriftService {
     const subscription = subType === 'polling'
       ? { type: 'polling', accountLoader: new BulkAccountLoader(this.connection, 'confirmed', 1000) }
       : { type: 'websocket' };
-    // Prepare shared loader even when using websocket subscriptions for client internals
-    try { this.loader = new BulkAccountLoader(this.connection, 'confirmed', 1000); } catch {}
+    // Only prepare shared loader when polling is explicitly requested
+    try { this.loader = subType === 'polling' ? new BulkAccountLoader(this.connection, 'confirmed', 1000) : null; } catch { this.loader = null; }
     const programIdOpt = (CONFIG as any).drift?.programId ? { programID: new PublicKey((CONFIG as any).drift.programId) } : {};
     const marketOpts = typeof getMarketsAndOraclesForSubscription === 'function' ? (getMarketsAndOraclesForSubscription as any)(this.cluster) : {};
     this.client = await initialize({ connection: this.connection, wallet, opts: { env: this.cluster, accountSubscription: subscription, ...programIdOpt, ...marketOpts } });
@@ -158,7 +158,7 @@ export class DriftService {
       const userPk = await client.getUserAccountPublicKey?.(Number(subaccountId));
       if (userPk) {
         try {
-          const u = new User({ driftClient: client, userAccountPublicKey: userPk, accountSubscription: { type: 'polling', accountLoader: this.loader } });
+          const u = new User({ driftClient: client, userAccountPublicKey: userPk, accountSubscription: { type: 'websocket' } });
           const exists = await (u as any).exists?.();
           if (!exists && typeof client?.initializeUserAccount === 'function') {
             await client.initializeUserAccount(Number(subaccountId));
@@ -381,11 +381,9 @@ export class DriftService {
           // Avoid switching active user; instantiate a polling User for this subaccount
           let user: any = null;
           try {
-            const { User, BulkAccountLoader } = await loadSdk();
-            const loader = new BulkAccountLoader(this.connection!, 'confirmed', 1000);
-            user = new User({ driftClient: client, userAccountPublicKey: pk, accountSubscription: { type: 'polling', accountLoader: loader } });
+            const { User } = await loadSdk();
+            user = new User({ driftClient: client, userAccountPublicKey: pk, accountSubscription: { type: 'websocket' } });
             try { if (typeof (user as any).subscribe === 'function') { await (user as any).subscribe(); } } catch {}
-            try { if (typeof (user as any).fetchAccounts === 'function') { await (user as any).fetchAccounts(); } } catch {}
           } catch {}
           const totalCollateral = toUi(user?.getTotalCollateral?.());
           const maint = toUi(user?.getMaintenanceMarginRequirement?.());
