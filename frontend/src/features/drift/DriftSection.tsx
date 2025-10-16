@@ -27,6 +27,7 @@ export const DriftSection: React.FC<{
   const [spotIndex, setSpotIndex] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
+  const [liqUsers, setLiqUsers] = useState<Array<{ userPk: string; health: number; updatedAt: number; positions?: Array<{ marketIndex: number; base: number }> }>>([]);
 
   const selected = useMemo(
     () => p.driftSubaccounts.find((s: any) => Number(s.id) === Number(p.driftSelectedSubId)),
@@ -93,6 +94,21 @@ export const DriftSection: React.FC<{
     try { s.on('drift:user:balances', onBal); } catch {}
     return () => { try { s.off('drift:user:balances', onBal); } catch {} };
   }, [ctxSocket, p.driftSelectedSubId]);
+
+  // Listen for liquidation users list updates
+  useEffect(() => {
+    const s = ctxSocket;
+    if (!s) return;
+    const onLiq = (evt: any) => {
+      try {
+        if (evt && typeof evt === 'object' && evt.type === 'queue' && Array.isArray(evt.users)) {
+          setLiqUsers(evt.users as any);
+        }
+      } catch {}
+    };
+    try { s.on('drift-liquidation', onLiq); } catch {}
+    return () => { try { s.off('drift-liquidation', onLiq); } catch {} };
+  }, [ctxSocket]);
 
   const createSub = async () => {
     try {
@@ -313,6 +329,50 @@ export const DriftSection: React.FC<{
         <div className="mt-4 text-xs text-gray-400">
           {status?.cluster ? `Cluster: ${status.cluster}` : null}
           {status?.programId ? ` — Program: ${status.programId}` : null}
+        </div>
+      </div>
+
+      {/* Users panel spanning full width */}
+      <div className="p-3 bg-gray-800 rounded md:col-span-3">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-white font-semibold">Users</div>
+        </div>
+        <div className="overflow-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-gray-400">
+                <th className="text-left">User</th>
+                <th className="text-left">Health</th>
+                <th className="text-left">Updated</th>
+                <th className="text-left">Positions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {liqUsers.map((u) => (
+                <tr key={u.userPk} className="text-gray-300">
+                  <td title={u.userPk} className="font-mono">{u.userPk.slice(0, 6)}…{u.userPk.slice(-6)}</td>
+                  <td className={`${u.health < -0.5 ? 'text-red-300' : u.health < 0 ? 'text-yellow-300' : 'text-white'}`}>{(u.health * 100).toFixed(2)}%</td>
+                  <td className="text-gray-400">{(() => { const d = Date.now() - Number(u.updatedAt||0); return isFinite(d) ? (d < 60000 ? `${Math.max(0, Math.floor(d/1000))}s ago` : `${Math.floor(d/60000)}m ago`) : '-'; })()}</td>
+                  <td>
+                    {Array.isArray(u.positions) && u.positions.length > 0 ? (
+                      <div className="flex flex-wrap gap-2">
+                        {u.positions.map((p, i) => (
+                          <span key={`${u.userPk}-${p.marketIndex}-${i}`} className="px-2 py-0.5 bg-gray-700 rounded text-xs">
+                            m{p.marketIndex}: {Number(p.base).toLocaleString()}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="text-gray-500">-</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {liqUsers.length === 0 && (
+                <tr><td colSpan={4} className="text-gray-500">No users under threshold</td></tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>

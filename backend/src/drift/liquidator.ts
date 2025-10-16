@@ -141,7 +141,7 @@ export class DriftLiquidator {
   private probeProcessing: boolean = false;
   private probeTimestamps: number[] = [];
   private currentPollMs: number = 1500;
-  private atRiskUsers: Map<string, { health: number; updatedAt: number }> = new Map();
+  private atRiskUsers: Map<string, { health: number; updatedAt: number; positions?: Array<{ marketIndex: number; base: number }> }> = new Map();
 
   constructor(private config: LiquidatorConfig) {}
 
@@ -1013,7 +1013,10 @@ export class DriftLiquidator {
       }
       if (Array.isArray(userPks) && userPks.length > 0) {
         const max = 1000;
-        for (const pk of userPks.slice(0, max)) this.enqueueProbe(pk);
+        // Enqueue for probing and merge into discovery keys for scan scheduling
+        const set = new Set<string>(this.userKeys);
+        for (const pk of userPks.slice(0, max)) { this.enqueueProbe(pk); set.add(String(pk)); }
+        this.userKeys = Array.from(set);
         try { logger.info('drift.liquidator.dlob_seed', { users: Math.min(userPks.length, max), cat: 'drift' }); } catch {}
       } else {
         try { logger.info('drift.liquidator.dlob_seed_skipped', { reason: 'no_keys', cat: 'drift' }); } catch {}
@@ -1047,7 +1050,9 @@ export class DriftLiquidator {
       }
       if (makers.length > 0) {
         const max = Math.min(2000, makers.length);
-        for (const pk of makers.slice(0, max)) this.enqueueProbe(pk);
+        const set = new Set<string>(this.userKeys);
+        for (const pk of makers.slice(0, max)) { this.enqueueProbe(pk); set.add(String(pk)); }
+        this.userKeys = Array.from(set);
         try { logger.info('drift.liquidator.dlob_http_seed', { users: max, markets: indices.length, cat: 'drift' }); } catch {}
       } else {
         try { logger.info('drift.liquidator.dlob_http_seed_skipped', { reason: 'no_makers', cat: 'drift' }); } catch {}
@@ -1224,13 +1229,24 @@ export class DriftLiquidator {
           }
           // Index in-scope users for price-triggered scans
           try { await this.refreshIndexForUser(user, key); } catch {}
+          // Build lightweight positions summary for UI
+          let posSummary: Array<{ marketIndex: number; base: number }> = [];
+          try {
+            for (const p of positions) {
+              try {
+                const base = Number(p?.baseAssetAmount?.toString?.() || p?.baseAssetAmount || 0);
+                const m = Number(p?.marketIndex ?? p?.market_index ?? p?.market?.index);
+                if (Number.isFinite(m) && base !== 0) posSummary.push({ marketIndex: m, base });
+              } catch {}
+            }
+          } catch {}
           const total = Number((user as any)?.getTotalCollateral?.() || 0);
           const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
           if (!isFinite(total) || !isFinite(maint)) { this.inProbeQueue.delete(key); continue; }
           const health = maint > 0 ? (total - maint) / maint : Infinity;
           probed += 1;
           if (health < riskThresh) {
-            this.atRiskUsers.set(key, { health, updatedAt: Date.now() });
+            this.atRiskUsers.set(key, { health, updatedAt: Date.now(), positions: posSummary });
             this.addOrQueueCandidate({ userPk: key, health, updatedAt: Date.now() });
             flagged += 1;
           } else {
@@ -1268,7 +1284,7 @@ export class DriftLiquidator {
     try {
       exposuresWithSymbols = exposuresCounts.map((e) => ({ ...e, symbol: indexToSymbol(Number(e.marketIndex)) }));
     } catch {}
-    const usersArr = Array.from(this.atRiskUsers.entries()).map(([k, v]) => ({ userPk: k, health: v.health, updatedAt: v.updatedAt }));
+    const usersArr = Array.from(this.atRiskUsers.entries()).map(([k, v]) => ({ userPk: k, health: v.health, updatedAt: v.updatedAt, positions: v.positions }));
     usersArr.sort((a, b) => a.health - b.health);
     const usersLimit = Math.max(1, Math.min(500, Number(((CONFIG as any)?.drift?.liquidator?.usersListLimit) ?? 200)));
     return {
