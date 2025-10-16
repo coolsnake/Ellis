@@ -335,7 +335,7 @@ export class DriftLiquidator {
     // Unsubscribe all User websocket subscriptions
     try {
       for (const key of Array.from(this.subscribedUsers)) {
-        try { const u = this.userCache.get(String(key)); await (u as any)?.unsubscribe?.(); } catch {}
+        try { const u = this.userCache.get(String(key)); (u as any)?.unsubscribe?.(); } catch {}
       }
       this.subscribedUsers.clear();
     } catch {}
