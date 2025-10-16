@@ -1307,6 +1307,17 @@ export class DriftLiquidator {
           // Index in-scope users for price-triggered scans
           try { await this.refreshIndexForUser(user, key); } catch {}
           // Build lightweight positions summary for UI
+          // Compute quote precision and UI-scaled collateral metrics
+          let QUOTE_PREC = 1_000_000;
+          try {
+            const sdk: any = await import('@drift-labs/sdk');
+            const cst: any = (sdk as any).constants || (sdk as any);
+            if (Number.isFinite(Number(cst?.QUOTE_PRECISION))) QUOTE_PREC = Number(cst.QUOTE_PRECISION);
+          } catch {}
+          const totalUi = Number(total) / QUOTE_PREC;
+          const maintUi = Number(maint) / QUOTE_PREC;
+          let freeUi = 0;
+          try { freeUi = Number((user as any)?.getFreeCollateral?.()?.toString?.() || (user as any)?.getFreeCollateral?.() || 0) / QUOTE_PREC; } catch {}
           let posSummary: Array<{ marketIndex: number; symbol?: string; base: number; notional?: number; liqPrice?: number; profitability?: number }> = [];
           try {
             let BASE_PREC = 1_000_000_000; // default BASE_PRECISION
@@ -1369,6 +1380,7 @@ export class DriftLiquidator {
                 }
               }
             } catch {}
+            const exposureUsd = posSummary.reduce((s, p) => s + (typeof p.notional === 'number' ? Math.abs(p.notional) : 0), 0);
             const cfgAssume: any = (CONFIG as any)?.drift?.liquidator?.feeAssumptions || {};
             const minProfitability = Math.max(Number((this.config as any)?.minProfitability ?? ((CONFIG as any)?.drift?.liquidator?.minProfitability) ?? -Infinity), -Infinity);
             const minNotional = Math.max(0, Number((this.config as any)?.minNotional ?? ((CONFIG as any)?.drift?.liquidator?.minNotional) ?? 0));
@@ -1383,7 +1395,17 @@ export class DriftLiquidator {
               // If total collateral <= 0, likely bad debt
               if (skipReason === undefined && total <= 0) skipReason = 'NO_COLLATERAL';
             } catch {}
-            this.atRiskUsers.set(key, { health, updatedAt: Date.now(), positions: posSummary, profitability: userProfit, skipReason });
+            this.atRiskUsers.set(key, {
+              health,
+              updatedAt: Date.now(),
+              positions: posSummary,
+              profitability: userProfit,
+              skipReason,
+              collateralUsd: totalUi,
+              maintenanceUsd: maintUi,
+              freeUsd: freeUi,
+              exposureUsd,
+            } as any);
             this.addOrQueueCandidate({ userPk: key, health, updatedAt: Date.now() });
             flagged += 1;
           } else {
@@ -1413,7 +1435,7 @@ export class DriftLiquidator {
     }
   }
 
-  getQueueSnapshot(limit = 20): { candidatesQueued: number; top: Array<{ userPk: string; health: number; updatedAt: number }>; markets: number[]; exposures: Array<{ marketIndex: number; users: number; symbol?: string }>; actionsLastMin: number; errorsLastMin: number; users: Array<{ userPk: string; health: number; updatedAt: number; positions?: Array<{ marketIndex: number; symbol?: string; base: number; notional?: number; liqPrice?: number; profitability?: number }>; profitability?: number; skipReason?: string }> } {
+  getQueueSnapshot(limit = 20): { candidatesQueued: number; top: Array<{ userPk: string; health: number; updatedAt: number }>; markets: number[]; exposures: Array<{ marketIndex: number; users: number; symbol?: string }>; actionsLastMin: number; errorsLastMin: number; users: Array<{ userPk: string; health: number; updatedAt: number; positions?: Array<{ marketIndex: number; symbol?: string; base: number; notional?: number; liqPrice?: number; profitability?: number }>; profitability?: number; skipReason?: string; collateralUsd?: number; maintenanceUsd?: number; freeUsd?: number; exposureUsd?: number }> } {
     const top: Candidate[] = [];
     const arr = this.heap.toArray();
     const cap = Math.min(arr.length, Math.max(25, Number(limit) * 8));
@@ -1426,7 +1448,18 @@ export class DriftLiquidator {
     try {
       exposuresWithSymbols = exposuresCounts.map((e) => ({ ...e, symbol: indexToSymbol(Number(e.marketIndex)) }));
     } catch {}
-    const usersArr = Array.from(this.atRiskUsers.entries()).map(([k, v]) => ({ userPk: k, health: v.health, updatedAt: v.updatedAt, positions: v.positions, profitability: v.profitability, skipReason: v.skipReason }));
+    const usersArr = Array.from(this.atRiskUsers.entries()).map(([k, v]) => ({
+      userPk: k,
+      health: v.health,
+      updatedAt: v.updatedAt,
+      positions: v.positions,
+      profitability: (v as any).profitability,
+      skipReason: (v as any).skipReason,
+      collateralUsd: (v as any).collateralUsd,
+      maintenanceUsd: (v as any).maintenanceUsd,
+      freeUsd: (v as any).freeUsd,
+      exposureUsd: (v as any).exposureUsd,
+    }));
     usersArr.sort((a, b) => a.health - b.health);
     const usersLimit = Math.max(1, Math.min(500, Number(((CONFIG as any)?.drift?.liquidator?.usersListLimit) ?? 200)));
     return {

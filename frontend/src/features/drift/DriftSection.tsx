@@ -344,6 +344,9 @@ export const DriftSection: React.FC<{
                 <th className="text-left">User</th>
                 <th className="text-left">Health</th>
                 <th className="text-left">Updated</th>
+                <th className="text-left">Collateral</th>
+                <th className="text-left">Exposure</th>
+                <th className="text-left">C/E</th>
                 <th className="text-left">Profit</th>
                 <th className="text-left">Skip</th>
                 <th className="text-left">Positions</th>
@@ -355,6 +358,11 @@ export const DriftSection: React.FC<{
                   <td title={u.userPk} className="font-mono">{u.userPk.slice(0, 6)}…{u.userPk.slice(-6)}</td>
                   <td className={`${u.health < -0.5 ? 'text-red-300' : u.health < 0 ? 'text-yellow-300' : 'text-white'}`}>{(u.health * 100).toFixed(2)}%</td>
                   <td className="text-gray-400">{(() => { const d = Date.now() - Number(u.updatedAt||0); return isFinite(d) ? (d < 60000 ? `${Math.max(0, Math.floor(d/1000))}s ago` : `${Math.floor(d/60000)}m ago`) : '-'; })()}</td>
+                  <td>{typeof (u as any).collateralUsd === 'number' ? `$${((u as any).collateralUsd).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '-'}</td>
+                  <td>{typeof (u as any).exposureUsd === 'number' ? `$${((u as any).exposureUsd).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '-'}</td>
+                  <td>{(typeof (u as any).collateralUsd === 'number' && typeof (u as any).exposureUsd === 'number' && (u as any).exposureUsd > 0)
+                    ? (( (u as any).collateralUsd / (u as any).exposureUsd ).toFixed(2))
+                    : '-'}</td>
                   <td>
                     {typeof (u as any).profitability === 'number' ? (
                       <span className={`font-mono ${(u as any).profitability > 0 ? 'text-green-300' : 'text-yellow-300'}`}>
@@ -393,7 +401,7 @@ export const DriftSection: React.FC<{
                 </tr>
               ))}
               {liqUsers.length === 0 && (
-                <tr><td colSpan={6} className="text-gray-500">No users under threshold</td></tr>
+                <tr><td colSpan={8} className="text-gray-500">No users under threshold</td></tr>
               )}
             </tbody>
           </table>
