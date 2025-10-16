@@ -101,7 +101,7 @@ export const DriftSection: React.FC<{
     if (!s) return;
     const onLiq = (evt: any) => {
       try {
-        if (evt && typeof evt === 'object' && evt.type === 'queue' && Array.isArray(evt.users)) {
+        if (evt && typeof evt === 'object' && (evt.type === 'queue' || evt.type === 'stats') && Array.isArray(evt.users)) {
           setLiqUsers(evt.users as any);
         }
       } catch {}
@@ -344,6 +344,8 @@ export const DriftSection: React.FC<{
                 <th className="text-left">User</th>
                 <th className="text-left">Health</th>
                 <th className="text-left">Updated</th>
+                <th className="text-left">Profit</th>
+                <th className="text-left">Skip</th>
                 <th className="text-left">Positions</th>
               </tr>
             </thead>
@@ -354,11 +356,33 @@ export const DriftSection: React.FC<{
                   <td className={`${u.health < -0.5 ? 'text-red-300' : u.health < 0 ? 'text-yellow-300' : 'text-white'}`}>{(u.health * 100).toFixed(2)}%</td>
                   <td className="text-gray-400">{(() => { const d = Date.now() - Number(u.updatedAt||0); return isFinite(d) ? (d < 60000 ? `${Math.max(0, Math.floor(d/1000))}s ago` : `${Math.floor(d/60000)}m ago`) : '-'; })()}</td>
                   <td>
+                    {typeof (u as any).profitability === 'number' ? (
+                      <span className={`font-mono ${(u as any).profitability > 0 ? 'text-green-300' : 'text-yellow-300'}`}>
+                        {(((u as any).profitability) * 100).toFixed(2)}%
+                      </span>
+                    ) : <span className="text-gray-500">-</span>}
+                  </td>
+                  <td>
+                    {typeof (u as any).skipReason === 'string' && (u as any).skipReason ? (
+                      <span className="px-1.5 py-0.5 bg-gray-700 rounded text-[10px] uppercase tracking-wide">{(u as any).skipReason}</span>
+                    ) : <span className="text-gray-500">-</span>}
+                  </td>
+                  <td>
                     {Array.isArray(u.positions) && u.positions.length > 0 ? (
                       <div className="flex flex-wrap gap-2">
                         {u.positions.map((p, i) => (
-                          <span key={`${u.userPk}-${p.marketIndex}-${i}`} className="px-2 py-0.5 bg-gray-700 rounded text-xs">
-                            m{p.marketIndex}: {Number(p.base).toLocaleString()}
+                          <span key={`${u.userPk}-${p.marketIndex}-${i}`} className="px-2 py-0.5 bg-gray-700 rounded text-xs flex items-center gap-2">
+                            <span className="font-mono">{(p as any).symbol ?? `m${p.marketIndex}`}</span>
+                            <span>base <span className="text-white font-mono">{Number(p.base).toLocaleString(undefined, { maximumFractionDigits: 6 })}</span></span>
+                            {typeof (p as any).notional === 'number' && (
+                              <span>notional $<span className="text-white font-mono">{((p as any).notional as number).toFixed(2)}</span></span>
+                            )}
+                            {typeof (p as any).liqPrice === 'number' && (
+                              <span>liq <span className="text-white font-mono">{((p as any).liqPrice as number).toFixed(2)}</span></span>
+                            )}
+                            {typeof (p as any).profitability === 'number' && (
+                              <span>prof <span className={`font-mono ${((p as any).profitability as number) > 0 ? 'text-green-300' : 'text-yellow-300'}`}>{(((p as any).profitability as number) * 100).toFixed(2)}%</span></span>
+                            )}
                           </span>
                         ))}
                       </div>
@@ -369,7 +393,7 @@ export const DriftSection: React.FC<{
                 </tr>
               ))}
               {liqUsers.length === 0 && (
-                <tr><td colSpan={4} className="text-gray-500">No users under threshold</td></tr>
+                <tr><td colSpan={6} className="text-gray-500">No users under threshold</td></tr>
               )}
             </tbody>
           </table>

@@ -30,7 +30,7 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
       }
       if (!name) return res.status(400).json({ error: 'name is required' });
       const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
-      const runner = DriftLiquidatorRegistry.upsert({
+      DriftLiquidatorRegistry.upsert({
         name,
         enabled: true,
         pollMs: cfg?.pollMs,
@@ -57,15 +57,20 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
         statsIntervalMs: cfg?.statsIntervalMs,
       } as any);
       const key = (DriftLiquidatorRegistry as any).keyOf({ name });
-      // If already exists and running, don't start again
-      try {
-        const existing = (DriftLiquidatorRegistry as any).get?.(key);
-        if (!existing || !existing.getStatus?.().running) {
-          await DriftLiquidatorRegistry.start(key);
+      // Start asynchronously to avoid proxy timeouts; report status via logs/socket
+      setImmediate(async () => {
+        try {
+          const existing = (DriftLiquidatorRegistry as any).get?.(key);
+          if (!existing || !existing.getStatus?.().running) {
+            await DriftLiquidatorRegistry.start(key);
+          }
+          emit('log', { level: 'info', message: `drift: liquidator started ${name}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } });
+        } catch (e: any) {
+          logger.error('drift-liq: start async failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
+          try { emit('log', { level: 'error', message: `drift: liquidator start failed ${name}: ${String(e?.message || e)}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } }); } catch {}
         }
-      } catch { await DriftLiquidatorRegistry.start(key); }
-      emit('log', { level: 'info', message: `drift: liquidator started ${name}` , timestamp: new Date().toISOString(), context: { cat: 'drift' } });
-      res.json({ ok: true, key });
+      });
+      res.status(202).json({ ok: true, key, starting: true });
     } catch (e: any) {
       logger.error('drift-liq: start failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
       res.status(500).json({ error: String(e?.message || e) });
@@ -113,12 +118,20 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
       if (!name) return res.status(400).json({ error: 'name is required' });
       const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
       const key = (DriftLiquidatorRegistry as any).keyOf({ name });
-      // emulate update: stop, remove, upsert, start
-      try { await DriftLiquidatorRegistry.stop(key); } catch {}
-      try { DriftLiquidatorRegistry.remove(key); } catch {}
-      const runner = DriftLiquidatorRegistry.upsert({ ...(cfg || {}), name, enabled: true } as any);
-      try { await DriftLiquidatorRegistry.start(key); } catch {}
-      res.json({ ok: true, key });
+      // Perform update and restart asynchronously to avoid request timeouts
+      setImmediate(async () => {
+        try {
+          try { await DriftLiquidatorRegistry.stop(key); } catch {}
+          try { DriftLiquidatorRegistry.remove(key); } catch {}
+          DriftLiquidatorRegistry.upsert({ ...(cfg || {}), name, enabled: true } as any);
+          try { await DriftLiquidatorRegistry.start(key); } catch {}
+          emit('log', { level: 'info', message: `drift: liquidator updated ${name}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } });
+        } catch (e: any) {
+          logger.error('drift-liq: update async failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
+          try { emit('log', { level: 'error', message: `drift: liquidator update failed ${name}: ${String(e?.message || e)}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } }); } catch {}
+        }
+      });
+      res.status(202).json({ ok: true, key, updating: true });
     } catch (e: any) {
       logger.error('drift-liq: update failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
       res.status(500).json({ error: String(e?.message || e) });
