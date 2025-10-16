@@ -444,6 +444,11 @@ export const CONFIG = {
       discoveryIntervalMs: Number(process.env.DRIFT_LIQ_DISCOVERY_INTERVAL_MS || 30000),
       maxNewUsersPerTick: Number(process.env.DRIFT_LIQ_MAX_NEW_USERS_PER_TICK || 250),
       scanBatchSize: Number(process.env.DRIFT_LIQ_SCAN_BATCH_SIZE || 200),
+      // Helius GPA bootstrap enumeration (optional)
+      enumerateAllOnStart: (process.env.DRIFT_LIQ_ENUMERATE_ON_START || 'false') === 'true',
+      enumerateMax: Number(process.env.DRIFT_LIQ_ENUMERATE_MAX || 200000),
+      enumerateEnqueueChunk: Number(process.env.DRIFT_LIQ_ENUMERATE_ENQUEUE_CHUNK || 1000),
+      enumerateEnqueueDelayMs: Number(process.env.DRIFT_LIQ_ENUMERATE_ENQUEUE_DELAY_MS || 200),
     },
   }, 
   // (Saber removed)

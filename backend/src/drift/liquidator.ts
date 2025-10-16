@@ -200,6 +200,31 @@ export class DriftLiquidator {
     try { await this.initDlobSources(); } catch {}
     try { await this.seedFromDlobUserMap(); } catch {}
     try { await this.seedFromDlobHttp(); } catch {}
+    // Optional: bootstrap enumerate all Drift user accounts via Helius GPA
+    try {
+      const liqCfg: any = (CONFIG as any)?.drift?.liquidator || {};
+      const doEnum = (this.config as any)?.enumerateAllOnStart ?? liqCfg.enumerateAllOnStart;
+      if (doEnum) {
+        const max = Math.max(1000, Number((this.config as any)?.enumerateMax ?? liqCfg.enumerateMax ?? 200000));
+        const list = await this.discoverUsersViaHeliusGpaV2(max);
+        if (Array.isArray(list) && list.length > 0) {
+          const set = new Set<string>(this.userKeys);
+          const chunk = Math.max(100, Number((this.config as any)?.enumerateEnqueueChunk ?? liqCfg.enumerateEnqueueChunk ?? 1000));
+          const delayMs = Math.max(0, Number((this.config as any)?.enumerateEnqueueDelayMs ?? liqCfg.enumerateEnqueueDelayMs ?? 200));
+          for (let i = 0; i < list.length; i += chunk) {
+            const slice = list.slice(i, i + chunk);
+            for (const pk of slice) { this.enqueueProbe(pk); set.add(String(pk)); }
+            this.userKeys = Array.from(set);
+            if (delayMs > 0) { try { await new Promise(r => setTimeout(r, delayMs)); } catch {} }
+          }
+          try { logger.info('drift.liquidator.enumerate_helius_complete', { total: list.length, cat: 'drift' }); } catch {}
+        } else {
+          try { logger.info('drift.liquidator.enumerate_helius_empty', { cat: 'drift' }); } catch {}
+        }
+      }
+    } catch (e: any) {
+      try { logger.warn('drift.liquidator.enumerate_helius_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+    }
     try { await this.initPriceTriggers(); } catch {}
     this.timer = (globalThis as any).setInterval(() => {
       this.tick().catch((e) => logger.warn('drift.liquidator.tick_error', { error: String(e?.message || e), cat: 'drift', code: 'DRIFT.LIQ.TICK_ERROR' }));
