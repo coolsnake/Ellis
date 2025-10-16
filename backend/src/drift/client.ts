@@ -363,6 +363,8 @@ export class DriftService {
             const { User, BulkAccountLoader } = await loadSdk();
             const loader = new BulkAccountLoader(this.connection!, 'confirmed', 1000);
             user = new User({ driftClient: client, userAccountPublicKey: pk, accountSubscription: { type: 'polling', accountLoader: loader } });
+            try { if (typeof (user as any).subscribe === 'function') { await (user as any).subscribe(); } } catch {}
+            try { if (typeof (user as any).fetchAccounts === 'function') { await (user as any).fetchAccounts(); } } catch {}
           } catch {}
           const totalCollateral = Number(user?.getTotalCollateral?.() || 0);
           const maint = Number(user?.getMaintenanceMarginRequirement?.() || 0);
@@ -453,6 +455,7 @@ export class DriftService {
           const res = await withBackoff(async () => fn.call(client));
           const fallbackId = Number((CONFIG as any).drift?.defaultSubaccountId || 0);
           const id = Number((res?.subAccountId ?? res?.id) ?? fallbackId);
+          try { if (typeof client?.initializeUserAccount === 'function') { await client.initializeUserAccount(Number(id)); } } catch {}
           try { await this.ensureUserReady(id); } catch {}
           logger.info('drift.subaccount.created', { id, cat: 'drift' });
           this.invalidateSubaccountsCache();
@@ -461,6 +464,23 @@ export class DriftService {
           lastReason = `ADD_VARIANT_FAILED: ${String(e?.message || e)}`;
           logger.warn('drift.subaccount.create_attempt_failed', { error: lastReason, cat: 'drift' });
         }
+      }
+      // Try via userStats if exposed by SDK
+      try {
+        const userStats = (client as any)?.userStats;
+        if (userStats && typeof userStats.addSubAccount === 'function') {
+          const res = await withBackoff(async () => userStats.addSubAccount());
+          const fallbackId = Number((CONFIG as any).drift?.defaultSubaccountId || 0);
+          const id = Number((res?.subAccountId ?? res?.id) ?? fallbackId);
+          try { if (typeof client?.initializeUserAccount === 'function') { await client.initializeUserAccount(Number(id)); } } catch {}
+          try { await this.ensureUserReady(id); } catch {}
+          logger.info('drift.subaccount.created', { id, cat: 'drift' });
+          this.invalidateSubaccountsCache();
+          return { id };
+        }
+      } catch (e: any) {
+        lastReason = `USER_STATS_ADD_FAILED: ${String(e?.message || e)}`;
+        logger.warn('drift.subaccount.create_attempt_failed', { error: lastReason, cat: 'drift' });
       }
       // Fallback: attempt creating at a candidate id range without relying on userStats
       // Preferred creation path: initializeUserAccount using next id
