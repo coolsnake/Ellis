@@ -98,12 +98,14 @@ export const DriftSection: React.FC<{
     try {
       p.setDriftOpBusy(true);
       setError(null);
-      const res = await fetch(`${p.apiBase}${ROUTES.drift.subaccountCreate}`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+      const name = (p.driftNewSubName || '').trim();
+      const res = await fetch(`${p.apiBase}${ROUTES.drift.subaccountCreate}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(name ? { name } : {}) });
       if (!res.ok) throw new Error((await res.text()) || 'Create unavailable');
       const created = await res.json();
       await loadStatusAndSubs();
       await loadSubaccounts();
       if (created && typeof created.id === 'number') p.setDriftSelectedSubId(Number(created.id));
+      try { p.setDriftNewSubName(''); } catch {}
     } catch (e: any) {
       setError(String(e?.message || e));
     } finally {
@@ -165,6 +167,12 @@ export const DriftSection: React.FC<{
         <div className="flex items-center justify-between mb-2">
           <div className="text-white font-semibold">Subaccounts</div>
           <div className="flex items-center gap-2">
+            <input
+              className="px-2 py-1 bg-gray-700 rounded text-white text-sm placeholder-gray-400"
+              placeholder="Name (optional)"
+              value={p.driftNewSubName}
+              onChange={(e) => p.setDriftNewSubName(e.target.value)}
+            />
             <button className="px-2 py-1 bg-gray-700 rounded text-white text-sm" onClick={loadStatusAndSubs} disabled={loading}>Refresh</button>
             <button className="px-2 py-1 bg-blue-600 rounded text-white text-sm" onClick={createSub} disabled={p.driftOpBusy}>+ Create</button>
           </div>

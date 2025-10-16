@@ -617,21 +617,54 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     if (version === 5) {
       // Try CPMM-specific builders in raydium-sdk-v2 (robust multi-name resolution)
       try {
-        const sdkAny: any = await import('@raydium-io/raydium-sdk-v2');
-        const candidates: any[] = [
-          (sdkAny?.Cpmm && sdkAny.Cpmm.makeSwapFixedInInstruction),
-          (sdkAny?.Cpmm && sdkAny.Cpmm.makeSwapBaseInInstructions),
-          (sdkAny?.LiquidityV5 && sdkAny.LiquidityV5.makeSwapFixedInInstruction),
-          (sdkAny?.Liquidity && (sdkAny.Liquidity as any).makeSwapFixedInInstructionV5),
-        ].filter(Boolean);
-        for (const fn of candidates) {
+        const sdkMod: any = await import('@raydium-io/raydium-sdk-v2');
+        const sdkAny: any = (sdkMod && (sdkMod as any).default) ? (sdkMod as any).default : sdkMod;
+        try {
+          const keys = Object.keys(sdkAny || {});
+          const present = { Cpmm: !!(sdkAny as any)?.Cpmm, LiquidityV5: !!(sdkAny as any)?.LiquidityV5, Liquidity: !!(sdkAny as any)?.Liquidity } as any;
+          const pk = (v: any) => { try { return v && typeof v.toBase58 === 'function' ? v.toBase58() : (typeof v === 'string' ? v : undefined); } catch { return undefined; } };
+          const diagPool = { id: pk((poolKeys as any)?.id), programId: pk((poolKeys as any)?.programId), hasVaultA: !!((poolKeys as any)?.vault?.A), hasVaultB: !!((poolKeys as any)?.vault?.B), hasAuthority: !!((poolKeys as any)?.authority) } as any;
+          const diagUser = { in: pk((userKeys as any)?.tokenAccountIn), out: pk((userKeys as any)?.tokenAccountOut) } as any;
+          logger.info('raydium.amm.cpmm.sdk.keys', { cat: 'tx', ctx: { keys: keys.slice(0, 60), present, pool: diagPool, user: diagUser } as any });
+        } catch {}
+        const candidates: Array<{ name: string; fn: any }> = [
+          { name: 'Cpmm.makeSwapFixedInInstruction', fn: (sdkAny as any)?.Cpmm?.makeSwapFixedInInstruction },
+          { name: 'Cpmm.makeSwapBaseInInstructions', fn: (sdkAny as any)?.Cpmm?.makeSwapBaseInInstructions },
+          { name: 'LiquidityV5.makeSwapFixedInInstruction', fn: (sdkAny as any)?.LiquidityV5?.makeSwapFixedInInstruction },
+          { name: 'Liquidity.makeSwapFixedInInstructionV5', fn: ((sdkAny as any)?.Liquidity as any)?.makeSwapFixedInInstructionV5 },
+        ].filter((c) => typeof c.fn === 'function');
+        try { logger.info('raydium.amm.cpmm.builder.candidates', { cat: 'tx', ctx: { count: candidates.length, names: candidates.map(c => c.name) } as any }); } catch {}
+        let firstErr: string | null = null;
+        for (const cand of candidates) {
           try {
-            ixInfo = fn({ poolKeys, userKeys, amountIn: amountInBn, minAmountOut: minOutBn });
-            if (ixInfo) break;
-          } catch {}
+            try { logger.info('raydium.amm.cpmm.builder.try', { cat: 'tx', ctx: { fn: cand.name } as any }); } catch {}
+            ixInfo = cand.fn({ poolKeys, userKeys, amountIn: amountInBn, minAmountOut: minOutBn });
+            if (ixInfo) { try { logger.info('raydium.amm.cpmm.builder.ok', { cat: 'tx', ctx: { fn: cand.name } as any }); } catch {}; break; }
+          } catch (e: any) {
+            const msg = String(e?.message || e);
+            if (!firstErr) firstErr = msg;
+            try { logger.warn('raydium.amm.cpmm.builder.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { fn: cand.name, error: msg } as any }); } catch {}
+          }
         }
+        // Fallback: use generic Liquidity builder with version=5 if Cpmm-specific ones are missing
+        if (!ixInfo) {
+          try {
+            try { logger.info('raydium.amm.cpmm.builder.fallback.genericV5', { cat: 'tx' }); } catch {}
+            const genericRes = (makeSwapFixedInInstruction as any)({
+              poolKeys,
+              userKeys,
+              amountIn: amountInBn,
+              minAmountOut: minOutBn,
+            }, 5);
+            if (genericRes) ixInfo = genericRes;
+          } catch (e: any) {
+            const msg = String(e?.message || e);
+            if (!firstErr) firstErr = msg;
+            try { logger.warn('raydium.amm.cpmm.builder.fallback.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: msg } as any }); } catch {}
+          }
+        }
+        if (!ixInfo) throw new Error(`CPMM_SWAP_BUILDER_MISSING${firstErr ? ':' + firstErr : ''}`);
       } catch {}
-      if (!ixInfo) throw new Error('CPMM_SWAP_BUILDER_MISSING');
     } else {
       ixInfo = (makeSwapFixedInInstruction as any)({
       poolKeys,

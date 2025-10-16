@@ -236,9 +236,22 @@ export function createDriftRouter(io: SocketIOServer): Router {
       const svc = DriftService.getInstance();
       await svc.init();
       const client: any = (svc as any)?.client;
-      const user = client?.user;
+      let user: any = null;
+      try {
+        const { User, BulkAccountLoader } = await import('@drift-labs/sdk');
+        // Resolve the specific subaccount PDA and instantiate a User for it
+        const userPk = await client?.getUserAccountPublicKey?.(Number(subId));
+        if (userPk) {
+          // Prefer the shared loader from client init if available; otherwise create a lightweight one
+          const loader: any = (svc as any)?.loader || new BulkAccountLoader((svc as any)?.connection, 'confirmed', 1000);
+          user = new User({ driftClient: client, userAccountPublicKey: userPk, accountSubscription: { type: 'polling', accountLoader: loader } });
+          try { if (typeof user.subscribe === 'function') { await user.subscribe(); } } catch {}
+        }
+      } catch {}
+      // Fallback to active user if targeted subaccount is unavailable
+      if (!user) user = client?.user;
       const spotPositions = user?.getSpotPositions?.() || [];
-      const out: Array<{ marketIndex: number; balance: number; symbol?: string; mint?: string; decimals?: number }> = [];
+      const out: Array<{ marketIndex: number; balance: number; amount: number; symbol?: string; mint?: string; decimals?: number }> = [];
       for (const p of spotPositions) {
         try {
           const idx = Number(p?.marketIndex ?? p?.market_index ?? 0);
@@ -265,7 +278,7 @@ export function createDriftRouter(io: SocketIOServer): Router {
               }
             }
           } catch {}
-          out.push({ marketIndex: idx, balance: bal, symbol, mint, decimals });
+          out.push({ marketIndex: idx, balance: bal, amount: bal, symbol, mint, decimals });
         } catch {}
       }
       res.json({ balances: out });
