@@ -364,6 +364,14 @@ export class DriftService {
         const cap = Number.isFinite(max) && max > 0 && max < 16 ? max : 8;
         for (let i = 0; i < cap; i += 1) ids.push(i);
       } catch { for (let i = 0; i < 8; i += 1) ids.push(i); }
+      // Load quote precision for scaling UI values
+      let QUOTE_PREC = 1_000_000;
+      try {
+        const sdk: any = await import('@drift-labs/sdk');
+        const cst: any = (sdk as any).constants || (sdk as any);
+        QUOTE_PREC = Number(cst?.QUOTE_PRECISION ?? 1_000_000);
+      } catch {}
+      const toUi = (val: any): number => Number(val?.toString?.() || val || 0) / QUOTE_PREC;
       for (const id of ids) {
         try {
           const pk = await client.getUserAccountPublicKey?.(Number(id));
@@ -379,10 +387,10 @@ export class DriftService {
             try { if (typeof (user as any).subscribe === 'function') { await (user as any).subscribe(); } } catch {}
             try { if (typeof (user as any).fetchAccounts === 'function') { await (user as any).fetchAccounts(); } } catch {}
           } catch {}
-          const totalCollateral = Number(user?.getTotalCollateral?.() || 0);
-          const maint = Number(user?.getMaintenanceMarginRequirement?.() || 0);
-          const initReq = Number(user?.getInitialMarginRequirement?.() || 0);
-          const free = Number(user?.getFreeCollateral?.() || 0);
+          const totalCollateral = toUi(user?.getTotalCollateral?.());
+          const maint = toUi(user?.getMaintenanceMarginRequirement?.());
+          const initReq = toUi(user?.getInitialMarginRequirement?.());
+          const free = toUi(user?.getFreeCollateral?.());
           const lev = totalCollateral > 0 ? (Number(user?.getLeverage?.() || 0)) : 0;
           const positions: Array<{ marketIndex: number; base: number; entryPrice?: number }> = [];
           try {
@@ -505,9 +513,15 @@ export class DriftService {
         const cap = Number.isFinite(max) && max > 0 && max < 16 ? max : 8;
         for (let i = 0; i < cap; i += 1) candidateIds.push(i);
       } catch { for (let i = 0; i < 8; i += 1) candidateIds.push(i); }
-      // Dedup and try in order
+      // Dedup and try in order; skip ids that already have a user account
       const seenIds = new Set<number>();
-      candidateIds = candidateIds.filter((x) => (Number.isFinite(x) && !seenIds.has((seenIds.add(Number(x)), Number(x)))));
+      const existing = new Set<number>();
+      try {
+        for (const cid of candidateIds) {
+          try { const pk = await client.getUserAccountPublicKey?.(Number(cid)); if (pk) { const acc = await this.connection!.getAccountInfo(pk, 'confirmed'); if (acc) existing.add(Number(cid)); } } catch {}
+        }
+      } catch {}
+      candidateIds = candidateIds.filter((x) => (Number.isFinite(x) && !seenIds.has((seenIds.add(Number(x)), Number(x))) && !existing.has(Number(x))));
       for (const id of candidateIds) {
         try {
           if (typeof client?.initializeUserAccount === 'function') {

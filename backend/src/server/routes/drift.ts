@@ -92,7 +92,8 @@ export function createDriftRouter(io: SocketIOServer): Router {
       const { DriftService } = await import('../../drift/client.js');
       const svc = DriftService.getInstance();
       const created = await svc.createSubaccount(name);
-      const out = created || { id: Number((CONFIG as any).drift?.defaultSubaccountId || 0) };
+      if (!created) return res.status(500).json({ error: 'create subaccount unavailable' });
+      const out = created;
       try {
         const { readJson, writeJson } = await import('../../utils/fs.js');
         const pathMod = await import('path');
