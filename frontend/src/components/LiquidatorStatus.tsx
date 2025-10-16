@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ROUTES } from '../utils/routes';
 
 type LiquidatorItem = { key: string; status: { running: boolean; actionsLastMin?: number; errorsLastMin?: number } };
@@ -6,19 +6,34 @@ type LiquidatorItem = { key: string; status: { running: boolean; actionsLastMin?
 export const LiquidatorStatus: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [status, setStatus] = useState<{ liquidators?: LiquidatorItem[] } | null>(null);
   const [busy, setBusy] = useState(false);
+  const inflightRef = useRef(false);
+  const abortRef = useRef<AbortController | null>(null);
 
   const load = async () => {
     try {
-      const res = await fetch(`${apiBase}${ROUTES.strategies.liquidator.status}`);
+      if (inflightRef.current) return;
+      inflightRef.current = true;
+      // Abort any previous pending request and set a timeout to avoid piling up
+      try { abortRef.current?.abort(); } catch {}
+      const ac = new AbortController();
+      abortRef.current = ac;
+      const timeout = setTimeout(() => { try { ac.abort('timeout'); } catch {} }, 2500);
+      const res = await fetch(`${apiBase}${ROUTES.strategies.liquidator.status}`, { signal: ac.signal });
       const data = await res.json();
       setStatus(data || null);
+      clearTimeout(timeout);
+      if (abortRef.current === ac) abortRef.current = null;
+      inflightRef.current = false;
     } catch {}
+    finally {
+      inflightRef.current = false;
+    }
   };
 
   useEffect(() => {
     load();
     const t = setInterval(load, 3000);
-    return () => clearInterval(t);
+    return () => { try { clearInterval(t); } catch {}; try { abortRef.current?.abort(); } catch {} };
   }, [apiBase]);
 
   const act = async (kind: 'start' | 'stop' | 'remove', key: string) => {
