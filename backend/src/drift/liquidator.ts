@@ -137,8 +137,6 @@ export class DriftLiquidator {
   private lastDiscoverySlot: number = 0;
   private discoveredRecentUsers: Set<string> = new Set();
   private scanCursor: number = 0; // deprecated; retained for minimal impact
-  private pendingProbeQueue: string[] = [];
-  private inProbeQueue: Set<string> = new Set();
   private probeProcessing: boolean = false;
   private probeTimestamps: number[] = [];
   private currentPollMs: number = 1500;
@@ -157,6 +155,7 @@ export class DriftLiquidator {
 
   private async acquireProbeToken(): Promise<void> {
     while (true) {
+      if (this.abort) return;
       const now = Date.now();
       const cutoff = now - 1000;
       while (this.probeTimestamps.length > 0 && this.probeTimestamps[0] <= cutoff) this.probeTimestamps.shift();
@@ -169,6 +168,7 @@ export class DriftLiquidator {
 
   async start(): Promise<void> {
     if (this.timer) return;
+    this.abort = false;
     this.state.running = true;
     const pollMs = Math.max(500, Number(this.config.pollMs || 1500));
     this.currentPollMs = pollMs;
@@ -279,6 +279,7 @@ export class DriftLiquidator {
   }
 
   stop(): void {
+    this.abort = true;
     if (this.timer) (globalThis as any).clearInterval(this.timer);
     this.timer = null;
     if (this.statsTimer) { try { (globalThis as any).clearInterval(this.statsTimer); } catch {} this.statsTimer = null; }
@@ -292,6 +293,22 @@ export class DriftLiquidator {
         } catch {}
         this.eventSub = null;
       }
+    } catch {}
+    // Cleanup DLOB helpers and periodic seed timer
+    try {
+      const seed = (this as any)._dlobSeedTimer;
+      if (seed) { try { (globalThis as any).clearInterval(seed); } catch {} }
+      try { delete (this as any)._dlobSeedTimer; } catch {}
+    } catch {}
+    try {
+      const um = (this as any)._dlobUserMap;
+      if (um && typeof um.unsubscribe === 'function') { try { um.unsubscribe(); } catch {} }
+      try { delete (this as any)._dlobUserMap; } catch {}
+    } catch {}
+    try {
+      const os = (this as any)._dlobOrderSub;
+      if (os && typeof os.unsubscribe === 'function') { try { os.unsubscribe(); } catch {} }
+      try { delete (this as any)._dlobOrderSub; } catch {}
     } catch {}
     this.state.running = false;
     logger.info('drift.liquidator.stop', { name: this.config.name, cat: 'drift', code: 'DRIFT.LIQ.STOP', span: 'end' });
@@ -315,6 +332,13 @@ export class DriftLiquidator {
       }
       this.trackedMarkets.clear();
     } catch {}
+    // Unsubscribe all User websocket subscriptions
+    try {
+      for (const key of Array.from(this.subscribedUsers)) {
+        try { const u = this.userCache.get(String(key)); await (u as any)?.unsubscribe?.(); } catch {}
+      }
+      this.subscribedUsers.clear();
+    } catch {}
     // Clear internal state to avoid leaks
     try { this.heap.clear(); } catch {}
     try { this.inHeap.clear(); } catch {}
@@ -322,6 +346,8 @@ export class DriftLiquidator {
     try { this.marketScanInFlight.clear(); } catch {}
     try { this.userToMarkets.clear(); this.marketToUsers.clear(); } catch {}
     try { this.pendingProbeQueue = []; this.inProbeQueue.clear(); } catch {}
+    try { this.userCache.clear(); } catch {}
+    this.initialized = false;
   }
 
   async tick(): Promise<void> {
@@ -980,28 +1006,8 @@ export class DriftLiquidator {
       const now = Date.now();
       if (now - this.lastQueueEmitTs < 1000) return;
       this.lastQueueEmitTs = now;
-      const top: Candidate[] = [];
-      const arr = this.heap.toArray();
-      const cap = Math.min(arr.length, 200);
-      // Build a small heap from a capped copy to avoid O(n) copies when large
-      const small = new MinHeap<Candidate>((a, b) => a.health - b.health);
-      for (let i = 0; i < cap; i += 1) small.push(arr[i]);
-      for (let i = 0; i < 10; i += 1) { const c = small.pop(); if (!c) break; top.push(c); }
-      const exposuresCounts = Array.from(this.marketToUsers.entries()).map(([m, set]) => ({ marketIndex: Number(m), users: (set?.size || 0) }));
-      let exposuresWithSymbols: Array<{ marketIndex: number; users: number; symbol?: string }> = exposuresCounts;
-      try {
-        exposuresWithSymbols = exposuresCounts.map((e) => ({ ...e, symbol: indexToSymbol(Number(e.marketIndex)) }));
-      } catch {}
-      emit('drift-liquidation', {
-        type: 'queue',
-        candidatesQueued: this.state.candidatesQueued,
-        top: top.map(t => ({ userPk: t.userPk, health: t.health, updatedAt: t.updatedAt })),
-        markets: Array.from(this.trackedMarkets),
-        exposures: exposuresWithSymbols,
-        actionsLastMin: this.state.actionsLastMin,
-        errorsLastMin: this.state.errorsLastMin,
-        users,
-      }).catch(() => {});
+      const snapshot = this.getQueueSnapshot(20);
+      emit('drift-liquidation', { type: 'queue', ...snapshot }).catch(() => {});
     } catch {}
   }
 
@@ -1193,6 +1199,7 @@ export class DriftLiquidator {
 
   private async processProbeQueue(): Promise<void> {
     if (this.probeProcessing) return;
+    if (this.abort) return;
     this.probeProcessing = true;
     try {
       const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
@@ -1204,6 +1211,7 @@ export class DriftLiquidator {
       let probed = 0;
       let flagged = 0;
       for (const key of slice) {
+        if (this.abort) break;
         try {
           let user = this.userCache.get(key);
           if (!user) {

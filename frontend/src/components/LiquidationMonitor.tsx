@@ -41,7 +41,7 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
     const handler = (evt: any) => {
       try {
         if (!evt || typeof evt !== 'object') return;
-        if (evt.type === 'queue') {
+        if (evt.type === 'queue' || evt.type === 'stats') {
           // Debounce UI updates to at most ~1 Hz
           const now = Date.now();
           if (lastUpdate && (now - lastUpdate) < 750) return;

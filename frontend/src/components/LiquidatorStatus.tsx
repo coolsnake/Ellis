@@ -1,15 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { ROUTES } from '../utils/routes';
 
-type Liquidator = {
-  key: string;
-  running: boolean;
-  actionsLastMin?: number;
-  errorsLastMin?: number;
-};
+type LiquidatorItem = { key: string; status: { running: boolean; actionsLastMin?: number; errorsLastMin?: number } };
 
 export const LiquidatorStatus: React.FC<{ apiBase: string }> = ({ apiBase }) => {
-  const [status, setStatus] = useState<{ liquidators?: Liquidator[] } | null>(null);
+  const [status, setStatus] = useState<{ liquidators?: LiquidatorItem[] } | null>(null);
   const [busy, setBusy] = useState(false);
 
   const load = async () => {
@@ -42,7 +37,7 @@ export const LiquidatorStatus: React.FC<{ apiBase: string }> = ({ apiBase }) => 
     }
   };
 
-  const list = Array.isArray(status?.liquidators) ? (status!.liquidators as Liquidator[]) : [];
+  const list = Array.isArray(status?.liquidators) ? (status!.liquidators as LiquidatorItem[]) : [];
 
   return (
     <div className="bg-gray-800 rounded p-3">
@@ -53,7 +48,7 @@ export const LiquidatorStatus: React.FC<{ apiBase: string }> = ({ apiBase }) => 
       <div className="space-y-2 text-sm">
         {list.map((it) => (
           <div key={it.key} className="p-2 bg-gray-700 rounded flex items-center justify-between">
-            <div className="text-gray-200">{it.key} — {it.running ? 'running' : 'stopped'} · actions(1m)={it.actionsLastMin ?? 0} · errors(1m)={it.errorsLastMin ?? 0}</div>
+            <div className="text-gray-200">{it.key} — {it.status?.running ? 'running' : 'stopped'} · actions(1m)={it.status?.actionsLastMin ?? 0} · errors(1m)={it.status?.errorsLastMin ?? 0}</div>
             <div className="space-x-2">
               <button className="px-2 py-1 bg-green-600 text-white rounded text-xs" onClick={() => act('start', it.key)} disabled={busy}>Start</button>
               <button className="px-2 py-1 bg-yellow-600 text-white rounded text-xs" onClick={() => act('stop', it.key)} disabled={busy}>Stop</button>

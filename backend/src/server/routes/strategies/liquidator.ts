@@ -157,9 +157,14 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
 
   api.get('/strategies/liquidator/queue', async (req: Request, res: Response) => {
     try {
+      const key = String(req.query?.key || '').trim();
+      const limit = Number(req.query?.limit || 25);
       const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
-      const list = DriftLiquidatorRegistry.list();
-      res.json({ liquidators: list });
+      if (!key) return res.status(400).json({ error: 'key is required', queue: null });
+      const runner = DriftLiquidatorRegistry.get(key);
+      if (!runner) return res.json({ queue: null });
+      const snapshot = (runner as any).getQueueSnapshot?.(Number.isFinite(limit) ? limit : 25);
+      res.json({ queue: snapshot });
     } catch (e: any) {
       logger.error('drift-liq: queue failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
       res.status(500).json({ error: String(e?.message || e) });
