@@ -440,15 +440,27 @@ export class DriftService {
           return null;
         }
       } catch {}
-      // Try add subaccount via SDK if available
-      if (typeof client?.addSubAccount === 'function') {
-        const res = await withBackoff(async () => client.addSubAccount());
-        const fallbackId = Number((CONFIG as any).drift?.defaultSubaccountId || 0);
-        const id = Number((res?.subAccountId ?? res?.id) ?? fallbackId);
-        try { await this.ensureUserReady(id); } catch {}
-        logger.info('drift.subaccount.created', { id, cat: 'drift' });
-        this.invalidateSubaccountsCache();
-        return { id };
+      // Try add subaccount via SDK if available (cover common name variants)
+      const addVariants = [
+        client?.addSubAccount,
+        (client as any)?.createSubAccount,
+        (client as any)?.addSubaccount,
+        (client as any)?.createSubaccount,
+      ].filter((fn: any) => typeof fn === 'function');
+      if (addVariants.length > 0) {
+        try {
+          const fn: any = addVariants[0];
+          const res = await withBackoff(async () => fn.call(client));
+          const fallbackId = Number((CONFIG as any).drift?.defaultSubaccountId || 0);
+          const id = Number((res?.subAccountId ?? res?.id) ?? fallbackId);
+          try { await this.ensureUserReady(id); } catch {}
+          logger.info('drift.subaccount.created', { id, cat: 'drift' });
+          this.invalidateSubaccountsCache();
+          return { id };
+        } catch (e: any) {
+          lastReason = `ADD_VARIANT_FAILED: ${String(e?.message || e)}`;
+          logger.warn('drift.subaccount.create_attempt_failed', { error: lastReason, cat: 'drift' });
+        }
       }
       // Fallback: attempt creating at a candidate id range without relying on userStats
       // Preferred creation path: initializeUserAccount using next id
@@ -466,11 +478,11 @@ export class DriftService {
       for (const id of candidateIds) {
         try {
           if (typeof client?.initializeUserAccount === 'function') {
-            await withBackoff(async () => client.initializeUserAccount(Number(id), name || undefined));
+            await withBackoff(async () => client.initializeUserAccount(Number(id)));
           } else if (typeof client?.initializeUserIfNotExists === 'function') {
-            await withBackoff(async () => client.initializeUserIfNotExists(Number(id), name || undefined));
+            await withBackoff(async () => client.initializeUserIfNotExists(Number(id)));
           } else if (typeof client?.initializeUser === 'function') {
-            try { await withBackoff(async () => client.initializeUser(Number(id), name || undefined)); }
+            try { await withBackoff(async () => client.initializeUser(Number(id))); }
             catch { await withBackoff(async () => client.initializeUser()); }
           } else {
             lastReason = 'INIT_METHODS_UNAVAILABLE';
@@ -500,7 +512,7 @@ export class DriftService {
     } catch (e: any) {
       logger.error('drift.subaccount.create_failed', { error: String(e?.message || e), cat: 'drift' });
     }
-    logger.error('drift.subaccount.create_unavailable', { reason: lastReason || 'UNKNOWN', cat: 'drift' });
+    logger.error('drift.subaccount.create_unavailable', { reason: lastReason || 'NO_FREE_SLOT_OR_METHODS_UNAVAILABLE', cat: 'drift' });
     return null;
   }
 
