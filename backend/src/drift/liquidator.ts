@@ -130,6 +130,7 @@ export class DriftLiquidator {
   private targetCooldownUntil: Map<string, number> = new Map();
   private idleUntil: Map<string, number> = new Map();
   private outOfScopeUntil: Map<string, number> = new Map();
+  private healthyUntil: Map<string, number> = new Map();
   private eventSub: any | null = null;
   private lastDiscoveryUsedGpaV2 = false;
   private discoveryTimer: any | null = null;
@@ -1151,6 +1152,8 @@ export class DriftLiquidator {
       if (typeof idleUntil === 'number' && now < idleUntil) return;
       const oosUntil = this.outOfScopeUntil.get(key);
       if (typeof oosUntil === 'number' && now < oosUntil) return;
+      const healthyUntil = this.healthyUntil.get(key);
+      if (typeof healthyUntil === 'number' && now < healthyUntil) return;
       if (this.inProbeQueue.has(key)) return;
       this.pendingProbeQueue.push(key);
       this.inProbeQueue.add(key);
@@ -1254,6 +1257,11 @@ export class DriftLiquidator {
             if (health >= (riskThresh + recoveryBuf)) {
               this.atRiskUsers.delete(key);
             }
+            // Apply healthy cooldown to avoid immediate re-probing
+            try {
+              const ms = Math.max(15000, Number(((this.config as any)?.healthyCooldownMs ?? ((CONFIG as any)?.drift?.liquidator?.healthyCooldownMs) ?? 45000)));
+              this.healthyUntil.set(key, Date.now() + ms);
+            } catch {}
             try {
               if (this.subscribedUsers.has(key) && typeof (user as any)?.unsubscribe === 'function') {
                 await (user as any).unsubscribe();

@@ -430,6 +430,7 @@ export const CONFIG = {
       positionMaxAbsBase: process.env.DRIFT_LIQ_POSITION_MAX_ABS_BASE ? Number(process.env.DRIFT_LIQ_POSITION_MAX_ABS_BASE) : undefined,
       idleCooldownMs: Number(process.env.DRIFT_LIQ_IDLE_COOLDOWN_MS || 60000),
       outOfScopeCooldownMs: Number(process.env.DRIFT_LIQ_OOS_COOLDOWN_MS || 60000),
+      healthyCooldownMs: Number(process.env.DRIFT_LIQ_HEALTHY_COOLDOWN_MS || 120000),
       usePriceTriggers: (process.env.DRIFT_LIQ_USE_PRICE_TRIGGERS || 'true') !== 'false',
       priceTriggerDebounceMs: Number(process.env.DRIFT_LIQ_PRICE_DEBOUNCE_MS || 800),
       httpPollMs: Number(process.env.DRIFT_LIQ_HTTP_POLL_MS || 1200),

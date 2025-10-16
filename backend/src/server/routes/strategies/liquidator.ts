@@ -20,9 +20,11 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
   api.post('/strategies/liquidator/start', async (req: Request, res: Response) => {
     try {
       const cfg = req.body as any;
+      const name = String(cfg?.name || '').trim();
+      if (!name) return res.status(400).json({ error: 'name is required' });
       const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
       const runner = DriftLiquidatorRegistry.upsert({
-        name: cfg?.name || 'default',
+        name,
         enabled: true,
         pollMs: cfg?.pollMs,
         maxConcurrentTargets: cfg?.maxConcurrentTargets,
@@ -47,8 +49,14 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
         targetCooldownMs: cfg?.targetCooldownMs,
         statsIntervalMs: cfg?.statsIntervalMs,
       } as any);
-      const key = (DriftLiquidatorRegistry as any).keyOf(cfg?.name ? { name: cfg.name } : { name: 'default' });
-      await DriftLiquidatorRegistry.start(key);
+      const key = (DriftLiquidatorRegistry as any).keyOf({ name });
+      // If already exists and running, don't start again
+      try {
+        const existing = (DriftLiquidatorRegistry as any).get?.(key);
+        if (!existing || !existing.getStatus?.().running) {
+          await DriftLiquidatorRegistry.start(key);
+        }
+      } catch { await DriftLiquidatorRegistry.start(key); }
       emit('log', { level: 'info', message: `drift: liquidator started ${cfg?.name || key}` , timestamp: new Date().toISOString(), context: { cat: 'drift' } });
       res.json({ ok: true, key });
     } catch (e: any) {
@@ -84,12 +92,14 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
   api.post('/strategies/liquidator/update', async (req: Request, res: Response) => {
     try {
       const cfg = req.body as any;
+      const name = String(cfg?.name || '').trim();
+      if (!name) return res.status(400).json({ error: 'name is required' });
       const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
-      const key = (DriftLiquidatorRegistry as any).keyOf(cfg?.name ? { name: cfg.name } : { name: 'default' });
+      const key = (DriftLiquidatorRegistry as any).keyOf({ name });
       // emulate update: stop, remove, upsert, start
       try { await DriftLiquidatorRegistry.stop(key); } catch {}
       try { DriftLiquidatorRegistry.remove(key); } catch {}
-      const runner = DriftLiquidatorRegistry.upsert({ ...(cfg || {}), name: cfg?.name || 'default', enabled: true } as any);
+      const runner = DriftLiquidatorRegistry.upsert({ ...(cfg || {}), name, enabled: true } as any);
       try { await DriftLiquidatorRegistry.start(key); } catch {}
       res.json({ ok: true, key });
     } catch (e: any) {
@@ -114,11 +124,13 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
     try {
       // placeholder: no global config setter; emulate by update on default key
       const cfg = req.body as any;
+      const name = String(cfg?.name || '').trim();
+      if (!name) return res.status(400).json({ error: 'name is required' });
       const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
-      const key = (DriftLiquidatorRegistry as any).keyOf(cfg?.name ? { name: cfg.name } : { name: 'default' });
+      const key = (DriftLiquidatorRegistry as any).keyOf({ name });
       try { await DriftLiquidatorRegistry.stop(key); } catch {}
       try { DriftLiquidatorRegistry.remove(key); } catch {}
-      DriftLiquidatorRegistry.upsert({ ...(cfg || {}), name: cfg?.name || 'default', enabled: !!cfg?.enabled } as any);
+      DriftLiquidatorRegistry.upsert({ ...(cfg || {}), name, enabled: !!cfg?.enabled } as any);
       res.json({ ok: true, key });
     } catch (e: any) {
       logger.error('drift-liq: set config failed', { error: String(e?.message || e), stack: String(e?.stack || '') });

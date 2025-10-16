@@ -72,8 +72,10 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
     try {
       setSaving(true);
       setError(null);
+      const trimmed = String(form.name || '').trim();
+      if (!trimmed) throw new Error('Name is required');
       const body: any = {
-        name: String(form.name || 'default').trim() || 'default',
+        name: trimmed,
         dryRun: !!form.dryRun,
         pollMs: Math.max(200, Number(form.pollMs || 0)),
         maxConcurrentTargets: Math.max(1, Number(form.maxConcurrentTargets || 1)),
@@ -130,8 +132,8 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
           <div>
-            <div className="text-gray-400 mb-1">Name</div>
-            <input type="text" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.name} onChange={(e) => setForm((p: any) => ({ ...p, name: e.target.value }))} />
+            <div className="text-gray-400 mb-1">Name<span className="text-red-400"> *</span></div>
+            <input type="text" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.name} onChange={(e) => setForm((p: any) => ({ ...p, name: e.target.value }))} placeholder="e.g., liq-sol-perp" />
           </div>
           <label className="flex items-center gap-2 mt-6">
             <input type="checkbox" className="h-4 w-4" checked={!!form.dryRun} onChange={(e) => setForm((p: any) => ({ ...p, dryRun: e.target.checked }))} />
@@ -282,7 +284,7 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
 
         <div className="mt-4 flex justify-end gap-2">
           <button disabled={saving} onClick={onClose} className="px-4 py-2 bg-gray-700 text-white rounded hover:bg-gray-600 disabled:opacity-60">Cancel</button>
-          <button disabled={saving} onClick={handleSave} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-60">{saving ? 'Saving…' : 'Save & Start'}</button>
+          <button disabled={saving || !String(form.name||'').trim()} onClick={handleSave} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-60">{saving ? 'Saving…' : 'Save & Start'}</button>
         </div>
       </div>
     </div>
