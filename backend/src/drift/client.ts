@@ -178,10 +178,23 @@ export class DriftService {
       const user = client?.user || null;
       if (!user) return null;
       const id = Number((client?.getUserAccount?.()?.subAccountId) ?? (client?.activeUserId) ?? (CONFIG as any).drift?.defaultSubaccountId ?? 0);
-      const totalCollateral = Number(user?.getTotalCollateral?.() || 0);
-      const maint = Number(user?.getMaintenanceMarginRequirement?.() || 0);
-      const initReq = Number(user?.getInitialMarginRequirement?.() || 0);
-      const free = Number(user?.getFreeCollateral?.() || 0);
+      // Convert quote-precision values to UI units using SDK constants when available
+      let QUOTE_PREC = 1_000_000;
+      try {
+        const sdk: any = await import('@drift-labs/sdk');
+        const cst: any = (sdk as any).constants || (sdk as any);
+        QUOTE_PREC = Number(cst?.QUOTE_PRECISION ?? 1_000_000);
+      } catch {}
+      const toUi = (val: any): number => {
+        try {
+          // Prefer convertToNumber if available
+          return Number(val?.toString?.() || val || 0) / QUOTE_PREC;
+        } catch { return Number(val?.toString?.() || val || 0) / QUOTE_PREC; }
+      };
+      const totalCollateral = toUi(user?.getTotalCollateral?.());
+      const maint = toUi(user?.getMaintenanceMarginRequirement?.());
+      const initReq = toUi(user?.getInitialMarginRequirement?.());
+      const free = toUi(user?.getFreeCollateral?.());
       const lev = totalCollateral > 0 ? (Number(user?.getLeverage?.() || 0)) : 0;
       const positions: Array<{ marketIndex: number; base: number; entryPrice?: number }> = [];
       try {

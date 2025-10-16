@@ -254,86 +254,74 @@ export function createDriftRouter(io: SocketIOServer): Router {
       if (!user) user = client?.user;
       const spotPositions = user?.getSpotPositions?.() || [];
       const out: Array<{ marketIndex: number; balance: number; amount: number; symbol?: string; mint?: string; decimals?: number }> = [];
-      for (const p of spotPositions) {
+      // Load constants for correct scaling
+      let QUOTE_PREC = 1_000_000;
+      let QUOTE_INDEX = 0;
+      try {
+        const sdk: any = await import('@drift-labs/sdk');
+        const cst: any = (sdk as any).constants || (sdk as any);
+        QUOTE_PREC = Number(cst?.QUOTE_PRECISION ?? 1_000_000);
+        QUOTE_INDEX = Number(cst?.QUOTE_SPOT_MARKET_INDEX ?? 0);
+      } catch {}
+      const decodeSym = (val: any): string | undefined => {
         try {
-          const idx = Number(p?.marketIndex ?? p?.market_index ?? 0);
-          // Prefer SDK helper if available for accurate interest-accrued token amount
-          let bal = 0;
-          let usedHelper = false;
+          if (!val) return undefined;
+          if (typeof val === 'string') return val.replace(/\0+$/g, '').trim() || undefined;
+          if (Array.isArray(val)) return Buffer.from(val).toString('utf8').replace(/\0+$/g, '').trim() || undefined;
+          if (val?.data && Array.isArray(val.data)) return Buffer.from(Uint8Array.from(val.data)).toString('utf8').replace(/\0+$/g, '').trim() || undefined;
+          if (val?.byteLength && typeof val?.slice === 'function') return Buffer.from(Uint8Array.from(val)).toString('utf8').replace(/\0+$/g, '').trim() || undefined;
+        } catch {}
+        return undefined;
+      };
+      const pushFrom = async (posList: any[], userRef: any) => {
+        for (const p of posList) {
           try {
-            if (typeof (user as any)?.getTokenAmount === 'function') {
-              const v = await (user as any).getTokenAmount(idx);
-              bal = Number(v?.toString?.() || v || 0);
-              usedHelper = true;
-            }
-          } catch {}
-          if (!Number.isFinite(bal) || bal === 0) {
-            bal = Number(p?.scaledBalance?.toString?.() || 0) || Number(p?.balance || 0);
-          }
-          let symbol: string | undefined = undefined;
-          let mint: string | undefined = undefined;
-          let decimals: number | undefined = undefined;
-          // Try to derive decimals and token metadata from live spot market accounts first
-          try {
-            const acct = typeof (client as any)?.getSpotMarketAccount === 'function' ? (client as any).getSpotMarketAccount(idx) : null;
-            if (acct) {
-              decimals = Number(acct?.decimals ?? acct?.precision ?? acct?.tokenPrecision ?? 6);
-              symbol = String(acct?.name || acct?.symbol || '').trim() || symbol;
-              mint = String(acct?.mint || acct?.mintAddress || acct?.tokenMint || mint || '');
-            }
-          } catch {}
-          // Fallback to constants if live account missing
-          if (!Number.isFinite(decimals)) {
+            const idx = Number(p?.marketIndex ?? p?.market_index ?? 0);
+            // Prefer SDK helper returning raw integer token amount
+            let raw = 0;
+            try { if (typeof (userRef as any)?.getTokenAmount === 'function') { const v = await (userRef as any).getTokenAmount(idx); raw = Number(v?.toString?.() || v || 0); } } catch {}
+            if (!Number.isFinite(raw) || raw === 0) { raw = Number(p?.scaledBalance?.toString?.() || 0) || Number(p?.balance || 0); }
+            let symbol: string | undefined = undefined;
+            let mint: string | undefined = undefined;
+            let decimals: number | undefined = undefined;
             try {
-              const sdk: any = await import('@drift-labs/sdk');
-              const constants: any = (sdk as any).constants || (sdk as any);
-              const cluster = (CONFIG as any)?.drift?.cluster || 'mainnet-beta';
-              const byCluster = (obj: any) => obj?.[cluster] || obj?.[cluster.replace('-', '_')];
-              const list = byCluster(constants?.SPOT_MARKETS) || byCluster(constants?.SpotMarkets) || constants?.SPOT_MARKETS || constants?.SpotMarkets || [];
-              const found = Array.isArray(list) ? list.find((m: any) => Number(m?.marketIndex ?? m?.index ?? m?.market_index) === idx) : null;
-              if (found) {
-                symbol = symbol || (String(found?.symbol || found?.name || '').trim() || undefined);
-                mint = mint || String(found?.mint || found?.mintAddress || found?.address || '');
-                decimals = Number(found?.decimals ?? found?.precision ?? 6);
+              const acct = typeof (client as any)?.getSpotMarketAccount === 'function' ? (client as any).getSpotMarketAccount(idx) : null;
+              if (acct) {
+                decimals = Number(acct?.decimals ?? acct?.precision ?? acct?.tokenPrecision ?? 6);
+                symbol = decodeSym(acct?.name || acct?.symbol) || symbol;
+                mint = String(acct?.mint || acct?.mintAddress || acct?.tokenMint || mint || '');
               }
             } catch {}
-          }
-          // Scale to UI units only if we didn't use the helper above
-          if (!usedHelper) {
-            if (Number.isFinite(decimals)) {
-              const scale = Math.pow(10, Number(decimals));
-              if (scale > 0 && isFinite(scale)) bal = bal / scale;
+            if (!Number.isFinite(decimals)) {
+              try {
+                const sdk: any = await import('@drift-labs/sdk');
+                const constants: any = (sdk as any).constants || (sdk as any);
+                const cluster = (CONFIG as any)?.drift?.cluster || 'mainnet-beta';
+                const byCluster = (obj: any) => obj?.[cluster] || obj?.[cluster.replace('-', '_')];
+                const list = byCluster(constants?.SPOT_MARKETS) || byCluster(constants?.SpotMarkets) || constants?.SPOT_MARKETS || constants?.SpotMarkets || [];
+                const found = Array.isArray(list) ? list.find((m: any) => Number(m?.marketIndex ?? m?.index ?? m?.market_index) === idx) : null;
+                if (found) {
+                  symbol = symbol || decodeSym(found?.symbol || found?.name);
+                  mint = mint || String(found?.mint || found?.mintAddress || found?.address || '');
+                  decimals = Number(found?.decimals ?? found?.precision ?? 6);
+                }
+              } catch {}
             }
-          }
-          out.push({ marketIndex: idx, balance: bal, amount: bal, symbol, mint, decimals });
-        } catch {}
-      }
-      // Fallback: if nothing returned, try switching active user and reading via client's active user cache
+            let amount = raw;
+            if (Number(idx) === Number(QUOTE_INDEX)) amount = amount / QUOTE_PREC; else if (Number.isFinite(decimals)) { const scale = Math.pow(10, Number(decimals)); if (scale > 0 && isFinite(scale)) amount = amount / scale; }
+            if (amount > 0 || raw > 0) out.push({ marketIndex: idx, balance: amount, amount, symbol, mint, decimals });
+          } catch {}
+        }
+      };
+      await pushFrom(spotPositions, user);
+      // Fallback: switch and read from active user
       if (out.length === 0) {
-        try {
-          const { DriftService } = await import('../../drift/client.js');
-          const svc2 = DriftService.getInstance();
-          try { await svc2.switchSubaccount(Number(subId)); } catch {}
-          const activeUser = client?.user;
-          const alt = activeUser?.getSpotPositions?.() || [];
-          for (const p of alt) {
-            try {
-              const idx = Number(p?.marketIndex ?? p?.market_index ?? 0);
-              let bal = 0; let usedHelper = false;
-              try { if (typeof (activeUser as any)?.getTokenAmount === 'function') { const v = await (activeUser as any).getTokenAmount(idx); bal = Number(v?.toString?.() || v || 0); usedHelper = true; } } catch {}
-              if (!Number.isFinite(bal) || bal === 0) { bal = Number(p?.scaledBalance?.toString?.() || 0) || Number(p?.balance || 0); }
-              let symbol: string | undefined = undefined; let mint: string | undefined = undefined; let decimals: number | undefined = undefined;
-              try { const acct = typeof (client as any)?.getSpotMarketAccount === 'function' ? (client as any).getSpotMarketAccount(idx) : null; if (acct) { decimals = Number(acct?.decimals ?? acct?.precision ?? acct?.tokenPrecision ?? 6); symbol = String(acct?.name || acct?.symbol || '').trim() || symbol; mint = String(acct?.mint || acct?.mintAddress || acct?.tokenMint || mint || ''); } } catch {}
-              if (!Number.isFinite(decimals)) {
-                try { const sdk: any = await import('@drift-labs/sdk'); const constants: any = (sdk as any).constants || (sdk as any); const cluster = (CONFIG as any)?.drift?.cluster || 'mainnet-beta'; const byCluster = (obj: any) => obj?.[cluster] || obj?.[cluster.replace('-', '_')]; const list = byCluster(constants?.SPOT_MARKETS) || byCluster(constants?.SpotMarkets) || constants?.SPOT_MARKETS || constants?.SpotMarkets || []; const found = Array.isArray(list) ? list.find((m: any) => Number(m?.marketIndex ?? m?.index ?? m?.market_index) === idx) : null; if (found) { symbol = symbol || (String(found?.symbol || found?.name || '').trim() || undefined); mint = mint || String(found?.mint || found?.mintAddress || found?.address || ''); decimals = Number(found?.decimals ?? found?.precision ?? 6); } } catch {}
-              }
-              if (!usedHelper) { if (Number.isFinite(decimals)) { const scale = Math.pow(10, Number(decimals)); if (scale > 0 && isFinite(scale)) bal = bal / scale; } }
-              out.push({ marketIndex: idx, balance: bal, amount: bal, symbol, mint, decimals });
-            } catch {}
-          }
-        } catch {}
+        try { const svc2 = DriftService.getInstance(); await svc2.switchSubaccount(Number(subId)); } catch {}
+        const activeUser = client?.user;
+        const alt = activeUser?.getSpotPositions?.() || [];
+        await pushFrom(alt, activeUser);
       }
-      // Final fallback: probe all known spot markets for non-zero token amounts
+      // Final fallback: probe all spot indices
       if (out.length === 0) {
         try {
           const sdk: any = await import('@drift-labs/sdk');
@@ -342,26 +330,8 @@ export function createDriftRouter(io: SocketIOServer): Router {
           const byCluster = (obj: any) => obj?.[cluster] || obj?.[cluster.replace('-', '_')];
           const list = byCluster(constants?.SPOT_MARKETS) || byCluster(constants?.SpotMarkets) || constants?.SPOT_MARKETS || constants?.SpotMarkets || [];
           const indices: number[] = Array.isArray(list) ? list.map((m: any) => Number(m?.marketIndex ?? m?.index ?? m?.market_index)).filter((n: any) => Number.isFinite(n)) : [];
-          for (const idx of indices) {
-            try {
-              let bal = 0; let usedHelper = false;
-              if (typeof (user as any)?.getTokenAmount === 'function') {
-                try { const v = await (user as any).getTokenAmount(idx); bal = Number(v?.toString?.() || v || 0); usedHelper = true; } catch {}
-              }
-              if (!Number.isFinite(bal) || bal === 0) {
-                try { const pos = user?.getSpotPosition?.(idx); const raw = pos?.scaledBalance ?? pos?.balance; bal = Number(raw?.toString?.() || raw || 0); } catch {}
-              }
-              let symbol: string | undefined = undefined; let mint: string | undefined = undefined; let decimals: number | undefined = undefined;
-              try { const acct = typeof (client as any)?.getSpotMarketAccount === 'function' ? (client as any).getSpotMarketAccount(idx) : null; if (acct) { decimals = Number(acct?.decimals ?? acct?.precision ?? acct?.tokenPrecision ?? 6); symbol = String(acct?.name || acct?.symbol || '').trim() || symbol; mint = String(acct?.mint || acct?.mintAddress || acct?.tokenMint || mint || ''); } } catch {}
-              if (!Number.isFinite(decimals)) {
-                try { const found = Array.isArray(list) ? list.find((m: any) => Number(m?.marketIndex ?? m?.index ?? m?.market_index) === idx) : null; if (found) { symbol = symbol || (String(found?.symbol || found?.name || '').trim() || undefined); mint = mint || String(found?.mint || found?.mintAddress || found?.address || ''); decimals = Number(found?.decimals ?? found?.precision ?? 6); } } catch {}
-              }
-              if (bal > 0) {
-                if (!usedHelper) { if (Number.isFinite(decimals)) { const scale = Math.pow(10, Number(decimals)); if (scale > 0 && isFinite(scale)) bal = bal / scale; } }
-                out.push({ marketIndex: idx, balance: bal, amount: bal, symbol, mint, decimals });
-              }
-            } catch {}
-          }
+          const tempPos = indices.map((i) => ({ marketIndex: i }));
+          await pushFrom(tempPos as any[], user);
         } catch {}
       }
       try { logger.info('drift.route.sub.balances', { subaccountId: subId, count: out.length, cat: 'drift' }); } catch {}
