@@ -112,15 +112,36 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
       {Array.isArray(queue?.users) && (queue!.users!.length > 0) && (
         <div className="mb-3">
           <div className="text-gray-300 mb-1 text-sm">Users Under Threshold (actively monitored)</div>
-          <div className="space-y-1 max-h-56 overflow-auto">
+          <div className="space-y-2 max-h-80 overflow-auto">
             {queue!.users!.map((u) => (
-              <div key={`user-${u.userPk}`} className="flex items-center justify-between p-2 bg-gray-700 rounded text-xs">
-                <div className="flex items-center space-x-2">
-                  <span className="text-white font-mono" title={u.userPk}>{u.userPk.slice(0, 4)}…{u.userPk.slice(-4)}</span>
-                  <span className="text-gray-400">health</span>
-                  <span className={`font-mono ${u.health < -0.5 ? 'text-red-300' : u.health < 0 ? 'text-yellow-300' : 'text-white'}`}>{formatPct(u.health)}</span>
+              <div key={`user-${u.userPk}`} className="p-2 bg-gray-700 rounded text-xs">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    <span className="text-white font-mono" title={u.userPk}>{u.userPk.slice(0, 4)}…{u.userPk.slice(-4)}</span>
+                    <span className="text-gray-400">health</span>
+                    <span className={`font-mono ${u.health < -0.5 ? 'text-red-300' : u.health < 0 ? 'text-yellow-300' : 'text-white'}`}>{formatPct(u.health)}</span>
+                  </div>
+                  <div className="text-gray-400">{timeAgo(u.updatedAt)}</div>
                 </div>
-                <div className="text-gray-400">{timeAgo(u.updatedAt)}</div>
+                {Array.isArray((u as any).positions) && (u as any).positions.length > 0 && (
+                  <div className="mt-1 ml-2 space-y-1">
+                    {(u as any).positions.map((p: any) => (
+                      <div key={`pos-${u.userPk}-${p.marketIndex}`} className="flex items-center gap-3 text-[11px] text-gray-300">
+                        <span className="font-mono">{p.symbol ?? `m${p.marketIndex}`}</span>
+                        <span>base <span className="text-white font-mono">{(p.base ?? 0).toFixed(3)}</span></span>
+                        {typeof p.notional === 'number' && (
+                          <span>notional $<span className="text-white font-mono">{p.notional.toFixed(2)}</span></span>
+                        )}
+                        {typeof p.liqPrice === 'number' && (
+                          <span>liq <span className="text-white font-mono">{p.liqPrice.toFixed(2)}</span></span>
+                        )}
+                        {typeof p.profitability === 'number' && (
+                          <span>prof <span className={`font-mono ${p.profitability > 0 ? 'text-green-300' : 'text-yellow-300'}`}>{(p.profitability * 100).toFixed(2)}%</span></span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
           </div>
