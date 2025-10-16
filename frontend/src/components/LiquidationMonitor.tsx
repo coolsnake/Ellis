@@ -120,6 +120,15 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
                     <span className="text-white font-mono" title={u.userPk}>{u.userPk.slice(0, 4)}…{u.userPk.slice(-4)}</span>
                     <span className="text-gray-400">health</span>
                     <span className={`font-mono ${u.health < -0.5 ? 'text-red-300' : u.health < 0 ? 'text-yellow-300' : 'text-white'}`}>{formatPct(u.health)}</span>
+                    {typeof (u as any).profitability === 'number' && (
+                      <>
+                        <span className="text-gray-400">prof</span>
+                        <span className={`font-mono ${(u as any).profitability > 0 ? 'text-green-300' : 'text-yellow-300'}`}>{(((u as any).profitability) * 100).toFixed(2)}%</span>
+                      </>
+                    )}
+                    {typeof (u as any).skipReason === 'string' && (u as any).skipReason && (
+                      <span className="px-1.5 py-0.5 bg-gray-600 rounded text-[10px] uppercase tracking-wide">{(u as any).skipReason}</span>
+                    )}
                   </div>
                   <div className="text-gray-400">{timeAgo(u.updatedAt)}</div>
                 </div>

@@ -140,7 +140,7 @@ export class DriftLiquidator {
   private probeProcessing: boolean = false;
   private probeTimestamps: number[] = [];
   private currentPollMs: number = 1500;
-  private atRiskUsers: Map<string, { health: number; updatedAt: number; positions?: Array<{ marketIndex: number; base: number }> }> = new Map();
+  private atRiskUsers: Map<string, { health: number; updatedAt: number; positions?: Array<{ marketIndex: number; symbol?: string; base: number; notional?: number; liqPrice?: number; profitability?: number }>; profitability?: number; skipReason?: string }> = new Map();
 
   constructor(private config: LiquidatorConfig) {}
 
@@ -858,6 +858,33 @@ export class DriftLiquidator {
         logger.info('drift.liquidator.dryrun_target', { user: target.userPk, health: target.health, cat: 'drift' });
         return;
       }
+      // Profitability gate before attempting actions
+      try {
+        const assume: any = (CONFIG as any)?.drift?.liquidator || {};
+        const minProfitability = (this.config as any)?.minProfitability ?? assume.minProfitability;
+        const minNotional = (this.config as any)?.minNotional ?? assume.minNotional;
+        if (minProfitability !== undefined || minNotional !== undefined) {
+          const u = this.atRiskUsers.get(String(target.userPk));
+          if (u) {
+            // Compute attempt notional across positions at configured sizeFraction; take max
+            const sizeFraction = Math.max(0.001, Math.min(0.5, Number((this.config.perpSizeFraction ?? assume.perpSizeFraction ?? 0.05))));
+            let maxAttemptNotional = 0;
+            try {
+              for (const ps of (u.positions || [])) {
+                if (typeof ps.notional === 'number') maxAttemptNotional = Math.max(maxAttemptNotional, ps.notional * sizeFraction);
+              }
+            } catch {}
+            if (minNotional !== undefined && Number.isFinite(Number(minNotional)) && maxAttemptNotional < Number(minNotional)) {
+              logger.info('drift.liquidator.skip_target', { user: target.userPk, reason: 'SIZE_TOO_SMALL', attemptNotional: maxAttemptNotional, cat: 'drift' });
+              return;
+            }
+            if (minProfitability !== undefined && typeof u.profitability === 'number' && u.profitability < Number(minProfitability)) {
+              logger.info('drift.liquidator.skip_target', { user: target.userPk, reason: 'UNPROFITABLE', profitability: u.profitability, cat: 'drift' });
+              return;
+            }
+          }
+        }
+      } catch {}
       const drift: any = (DriftService.getInstance() as any).client;
       const marketsForUser = Array.from(this.userToMarkets.get(String(target.userPk)) || []);
       const perpMarkets = marketsForUser.length > 0 ? marketsForUser : [0, 1, 2];
@@ -1280,7 +1307,7 @@ export class DriftLiquidator {
           // Index in-scope users for price-triggered scans
           try { await this.refreshIndexForUser(user, key); } catch {}
           // Build lightweight positions summary for UI
-          let posSummary: Array<{ marketIndex: number; base: number; notional?: number; liqPrice?: number }> = [];
+          let posSummary: Array<{ marketIndex: number; symbol?: string; base: number; notional?: number; liqPrice?: number; profitability?: number }> = [];
           try {
             let BASE_PREC = 1_000_000_000; // default BASE_PRECISION
             try {
@@ -1298,7 +1325,10 @@ export class DriftLiquidator {
                   const baseUi = raw / BASE_PREC;
                   let notional: number | undefined = undefined;
                   let liqPrice: number | undefined = undefined;
+                  let profitability: number | undefined = undefined;
+                  let symbol: string | undefined = undefined;
                   try {
+                    symbol = (indexToSymbol(Number(m)) || '').split('-')[0] || undefined;
                     const priceSample = DriftPriceService.getInstance().getPrice(Number(m));
                     const cur = (priceSample?.mid ?? priceSample?.oracle ?? priceSample?.bid ?? priceSample?.ask);
                     if (typeof cur === 'number' && isFinite(cur)) {
@@ -1308,16 +1338,52 @@ export class DriftLiquidator {
                         const sgn = Math.sign(baseUi) || 1;
                         liqPrice = cur * (1 - sgn * dist);
                       }
+                      // Profitability heuristic
+                      const feeCfg: any = (CONFIG as any)?.drift?.liquidator?.feeAssumptions || {};
+                      const liqFeeRate = Math.max(0, Number(feeCfg.liqFeeRate ?? 0.01));
+                      const takerFeeRate = Math.max(0, Number(feeCfg.takerFeeRate ?? 0.0004));
+                      const slippageBp = Math.max(0, Number(feeCfg.slippageBp ?? 30));
+                      const oracleHaircutBp = Math.max(0, Number(feeCfg.oracleHaircutBp ?? 10));
+                      const sizeFraction = Math.max(0.001, Math.min(0.5, Number((this.config.perpSizeFraction ?? ((CONFIG as any)?.drift?.liquidator?.perpSizeFraction) ?? 0.05))));
+                      const slippageRate = slippageBp / 10_000;
+                      const oracleHaircutRate = oracleHaircutBp / 10_000;
+                      const attemptNotional = (notional || 0) * sizeFraction;
+                      const bonus = attemptNotional * liqFeeRate;
+                      const expectedFees = attemptNotional * (takerFeeRate + slippageRate + oracleHaircutRate);
+                      profitability = attemptNotional > 0 ? (bonus - expectedFees) / attemptNotional : undefined;
                     }
                   } catch {}
-                  posSummary.push({ marketIndex: m, base: baseUi, notional, liqPrice });
+                  posSummary.push({ marketIndex: m, symbol, base: baseUi, notional, liqPrice, profitability });
                 }
               } catch {}
             }
           } catch {}
           probed += 1;
           if (health < riskThresh) {
-            this.atRiskUsers.set(key, { health, updatedAt: Date.now(), positions: posSummary });
+            // Aggregate a user-level profitability (min across positions)
+            let userProfit: number | undefined = undefined;
+            try {
+              for (const ps of posSummary) {
+                if (typeof ps.profitability === 'number') {
+                  userProfit = (typeof userProfit === 'number') ? Math.min(userProfit, ps.profitability) : ps.profitability;
+                }
+              }
+            } catch {}
+            const cfgAssume: any = (CONFIG as any)?.drift?.liquidator?.feeAssumptions || {};
+            const minProfitability = Math.max(Number((this.config as any)?.minProfitability ?? ((CONFIG as any)?.drift?.liquidator?.minProfitability) ?? -Infinity), -Infinity);
+            const minNotional = Math.max(0, Number((this.config as any)?.minNotional ?? ((CONFIG as any)?.drift?.liquidator?.minNotional) ?? 0));
+            const sizeFraction = Math.max(0.001, Math.min(0.5, Number((this.config.perpSizeFraction ?? ((CONFIG as any)?.drift?.liquidator?.perpSizeFraction) ?? 0.05))));
+            let skipReason: string | undefined = undefined;
+            try {
+              // If all positions too small for an attempt, mark size
+              const anyLargeEnough = posSummary.some((ps) => typeof ps.notional === 'number' && (ps.notional as number) * sizeFraction >= minNotional);
+              if (!anyLargeEnough) skipReason = 'SIZE_TOO_SMALL';
+              // Check profitability gate if configured
+              if (skipReason === undefined && Number.isFinite(minProfitability) && typeof userProfit === 'number' && userProfit < minProfitability) skipReason = 'UNPROFITABLE';
+              // If total collateral <= 0, likely bad debt
+              if (skipReason === undefined && total <= 0) skipReason = 'NO_COLLATERAL';
+            } catch {}
+            this.atRiskUsers.set(key, { health, updatedAt: Date.now(), positions: posSummary, profitability: userProfit, skipReason });
             this.addOrQueueCandidate({ userPk: key, health, updatedAt: Date.now() });
             flagged += 1;
           } else {
@@ -1347,7 +1413,7 @@ export class DriftLiquidator {
     }
   }
 
-  getQueueSnapshot(limit = 20): { candidatesQueued: number; top: Array<{ userPk: string; health: number; updatedAt: number }>; markets: number[]; exposures: Array<{ marketIndex: number; users: number; symbol?: string }>; actionsLastMin: number; errorsLastMin: number; users: Array<{ userPk: string; health: number; updatedAt: number; positions?: Array<{ marketIndex: number; base: number; notional?: number; liqPrice?: number }> }> } {
+  getQueueSnapshot(limit = 20): { candidatesQueued: number; top: Array<{ userPk: string; health: number; updatedAt: number }>; markets: number[]; exposures: Array<{ marketIndex: number; users: number; symbol?: string }>; actionsLastMin: number; errorsLastMin: number; users: Array<{ userPk: string; health: number; updatedAt: number; positions?: Array<{ marketIndex: number; symbol?: string; base: number; notional?: number; liqPrice?: number; profitability?: number }>; profitability?: number; skipReason?: string }> } {
     const top: Candidate[] = [];
     const arr = this.heap.toArray();
     const cap = Math.min(arr.length, Math.max(25, Number(limit) * 8));
@@ -1360,7 +1426,7 @@ export class DriftLiquidator {
     try {
       exposuresWithSymbols = exposuresCounts.map((e) => ({ ...e, symbol: indexToSymbol(Number(e.marketIndex)) }));
     } catch {}
-    const usersArr = Array.from(this.atRiskUsers.entries()).map(([k, v]) => ({ userPk: k, health: v.health, updatedAt: v.updatedAt, positions: v.positions }));
+    const usersArr = Array.from(this.atRiskUsers.entries()).map(([k, v]) => ({ userPk: k, health: v.health, updatedAt: v.updatedAt, positions: v.positions, profitability: v.profitability, skipReason: v.skipReason }));
     usersArr.sort((a, b) => a.health - b.health);
     const usersLimit = Math.max(1, Math.min(500, Number(((CONFIG as any)?.drift?.liquidator?.usersListLimit) ?? 200)));
     return {
