@@ -259,10 +259,12 @@ export function createDriftRouter(io: SocketIOServer): Router {
           const idx = Number(p?.marketIndex ?? p?.market_index ?? 0);
           // Prefer SDK helper if available for accurate interest-accrued token amount
           let bal = 0;
+          let usedHelper = false;
           try {
             if (typeof (user as any)?.getTokenAmount === 'function') {
               const v = await (user as any).getTokenAmount(idx);
               bal = Number(v?.toString?.() || v || 0);
+              usedHelper = true;
             }
           } catch {}
           if (!Number.isFinite(bal) || bal === 0) {
@@ -296,14 +298,17 @@ export function createDriftRouter(io: SocketIOServer): Router {
               }
             } catch {}
           }
-          // Scale to UI units if decimals are known
-          if (Number.isFinite(decimals)) {
-            const scale = Math.pow(10, Number(decimals));
-            if (scale > 0 && isFinite(scale)) bal = bal / scale;
+          // Scale to UI units only if we didn't use the helper above
+          if (!usedHelper) {
+            if (Number.isFinite(decimals)) {
+              const scale = Math.pow(10, Number(decimals));
+              if (scale > 0 && isFinite(scale)) bal = bal / scale;
+            }
           }
           out.push({ marketIndex: idx, balance: bal, amount: bal, symbol, mint, decimals });
         } catch {}
       }
+      try { logger.info('drift.route.sub.balances', { subaccountId: subId, count: out.length, cat: 'drift' }); } catch {}
       res.json({ balances: out });
     } catch (e: any) {
       logger.error('drift: subaccount balances failed', { error: String(e?.message || e) });
