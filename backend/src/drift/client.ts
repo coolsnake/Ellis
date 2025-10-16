@@ -463,45 +463,63 @@ export class DriftService {
           return null;
         }
       } catch {}
-      // Try add subaccount via SDK if available (cover common name variants)
-      const addVariants = [
-        client?.addSubAccount,
-        (client as any)?.createSubAccount,
-        (client as any)?.addSubaccount,
-        (client as any)?.createSubaccount,
-      ].filter((fn: any) => typeof fn === 'function');
-      if (addVariants.length > 0) {
-        try {
-          const fn: any = addVariants[0];
-          const res = await withBackoff(async () => fn.call(client));
-          const fallbackId = Number((CONFIG as any).drift?.defaultSubaccountId || 0);
-          const id = Number((res?.subAccountId ?? res?.id) ?? fallbackId);
-          try { if (typeof client?.initializeUserAccount === 'function') { await client.initializeUserAccount(Number(id)); } } catch {}
-          try { await this.ensureUserReady(id); } catch {}
-          logger.info('drift.subaccount.created', { id, cat: 'drift' });
-          this.invalidateSubaccountsCache();
-          return { id };
-        } catch (e: any) {
-          lastReason = `ADD_VARIANT_FAILED: ${String(e?.message || e)}`;
-          logger.warn('drift.subaccount.create_attempt_failed', { error: lastReason, cat: 'drift' });
-        }
-      }
-      // Try via userStats if exposed by SDK
+      // Discover existing subaccount ids and compute next unused id
+      let maxCap = 8;
+      try { const { getMaxNumberOfSubAccounts } = await loadSdk(); const m = await getMaxNumberOfSubAccounts?.(); if (Number.isFinite(Number(m))) maxCap = Math.min(Math.max(Number(m), 1), 16); } catch {}
+      const existing = new Set<number>();
       try {
-        const userStats = (client as any)?.userStats;
-        if (userStats && typeof userStats.addSubAccount === 'function') {
-          const res = await withBackoff(async () => userStats.addSubAccount());
-          const fallbackId = Number((CONFIG as any).drift?.defaultSubaccountId || 0);
-          const id = Number((res?.subAccountId ?? res?.id) ?? fallbackId);
-          try { if (typeof client?.initializeUserAccount === 'function') { await client.initializeUserAccount(Number(id)); } } catch {}
-          try { await this.ensureUserReady(id); } catch {}
-          logger.info('drift.subaccount.created', { id, cat: 'drift' });
-          this.invalidateSubaccountsCache();
-          return { id };
+        for (let cid = 0; cid < maxCap; cid += 1) {
+          try {
+            const pk = await client.getUserAccountPublicKey?.(Number(cid));
+            if (pk) { const acc = await this.connection!.getAccountInfo(pk, 'confirmed'); if (acc) existing.add(Number(cid)); }
+          } catch {}
         }
-      } catch (e: any) {
-        lastReason = `USER_STATS_ADD_FAILED: ${String(e?.message || e)}`;
-        logger.warn('drift.subaccount.create_attempt_failed', { error: lastReason, cat: 'drift' });
+      } catch {}
+      const currentIds = Array.from(existing.values()).sort((a, b) => a - b);
+      const nextId = currentIds.length > 0 ? Math.min(currentIds[currentIds.length - 1] + 1, maxCap - 1) : 0;
+      if (existing.has(nextId)) {
+        // find first gap
+        let gap = -1;
+        for (let i = 0; i < maxCap; i += 1) { if (!existing.has(i)) { gap = i; break; } }
+        if (gap >= 0) {
+          (this as any)._nextCandidateId = gap;
+        }
+      } else {
+        (this as any)._nextCandidateId = nextId;
+      }
+      const candidate = Number((this as any)._nextCandidateId);
+      if (!Number.isFinite(candidate) || candidate < 0 || candidate >= maxCap) {
+        lastReason = 'NO_FREE_SLOT';
+      } else {
+        // Preferred: initialize specific next id, optionally with name
+        try {
+          if (typeof client?.initializeUserAccount === 'function') {
+            await withBackoff(async () => client.initializeUserAccount(candidate, name || undefined));
+          } else if (typeof client?.initializeUserIfNotExists === 'function') {
+            await withBackoff(async () => client.initializeUserIfNotExists(candidate, name || undefined));
+          } else if (typeof client?.initializeUser === 'function') {
+            try { await withBackoff(async () => client.initializeUser(candidate, name || undefined)); }
+            catch { await withBackoff(async () => client.initializeUser()); }
+          } else {
+            // Try addSubAccount variants (some SDK versions auto-pick next id)
+            const addVariants = [client?.addSubAccount, (client as any)?.createSubAccount, (client as any)?.addSubaccount, (client as any)?.createSubaccount].filter((fn: any) => typeof fn === 'function');
+            if (addVariants.length > 0) {
+              const fn: any = addVariants[0];
+              try { await withBackoff(async () => fn.call(client, name || undefined)); } catch (e: any) { lastReason = `ADD_VARIANT_FAILED: ${String(e?.message || e)}`; }
+            } else {
+              lastReason = 'INIT_METHODS_UNAVAILABLE';
+            }
+          }
+          // After init, ensure user mapping and switch
+          try { if (typeof client?.addUser === 'function') { await withBackoff(async () => client.addUser(candidate)); } } catch {}
+          try { if (typeof client?.switchActiveUser === 'function') { await withBackoff(async () => client.switchActiveUser(candidate)); } } catch {}
+          try { await this.ensureUserReady(candidate); } catch {}
+          logger.info('drift.subaccount.created', { id: candidate, cat: 'drift' });
+          this.invalidateSubaccountsCache();
+          return { id: candidate };
+        } catch (e: any) {
+          lastReason = String(e?.message || e) || lastReason;
+        }
       }
       // Fallback: attempt creating at a candidate id range without relying on userStats
       // Preferred creation path: initializeUserAccount using next id
@@ -515,13 +533,13 @@ export class DriftService {
       } catch { for (let i = 0; i < 8; i += 1) candidateIds.push(i); }
       // Dedup and try in order; skip ids that already have a user account
       const seenIds = new Set<number>();
-      const existing = new Set<number>();
+      const existing2 = new Set<number>();
       try {
         for (const cid of candidateIds) {
-          try { const pk = await client.getUserAccountPublicKey?.(Number(cid)); if (pk) { const acc = await this.connection!.getAccountInfo(pk, 'confirmed'); if (acc) existing.add(Number(cid)); } } catch {}
+          try { const pk = await client.getUserAccountPublicKey?.(Number(cid)); if (pk) { const acc = await this.connection!.getAccountInfo(pk, 'confirmed'); if (acc) existing2.add(Number(cid)); } } catch {}
         }
       } catch {}
-      candidateIds = candidateIds.filter((x) => (Number.isFinite(x) && !seenIds.has((seenIds.add(Number(x)), Number(x))) && !existing.has(Number(x))));
+      candidateIds = candidateIds.filter((x) => (Number.isFinite(x) && !seenIds.has((seenIds.add(Number(x)), Number(x))) && !existing2.has(Number(x))));
       for (const id of candidateIds) {
         try {
           if (typeof client?.initializeUserAccount === 'function') {
