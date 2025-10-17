@@ -238,6 +238,7 @@ export function createDriftRouter(io: SocketIOServer): Router {
       const svc = DriftService.getInstance();
       await svc.init();
       const client: any = (svc as any)?.client;
+      const debug = String((req.query as any)?.debug || '').trim() === '1';
       let sdkUser: any = null;
       try {
         const { User, getUserAccountPublicKey } = await import('@drift-labs/sdk');
@@ -251,6 +252,7 @@ export function createDriftRouter(io: SocketIOServer): Router {
           try { exists = await (candidate as any)?.exists?.(); } catch {}
           if (exists) {
             sdkUser = candidate;
+            try { if (debug) logger.info('drift.route.user.debug', { mode: 'pda', userPk: String(inputPk?.toBase58?.() || inputPk), cat: 'drift' }); } catch {}
           }
         } catch {}
         // If not, treat input as an authority and resolve PDA (optionally using subAccountId)
@@ -260,6 +262,7 @@ export function createDriftRouter(io: SocketIOServer): Router {
           const subId = Number(q?.subAccountId ?? q?.subaccountId ?? q?.subid ?? q?.id);
           if (Number.isFinite(subId)) {
             try { targetUserPk = await (client as any)?.getUserAccountPublicKey?.(Number(subId), inputPk) || await getUserAccountPublicKey((client as any)?.program?.programId, inputPk, Number(subId)); } catch {}
+            try { if (debug && targetUserPk) logger.info('drift.route.user.debug', { mode: 'authority+subId', authority: String(inputPk?.toBase58?.() || inputPk), subId: Number(subId), resolvedPk: String(targetUserPk?.toBase58?.() || targetUserPk), cat: 'drift' }); } catch {}
           }
           // Probe a few subaccounts if none specified or not found
           if (!targetUserPk) {
@@ -273,6 +276,7 @@ export function createDriftRouter(io: SocketIOServer): Router {
                 if (exists) { targetUserPk = p; break; }
               } catch {}
             }
+            try { if (debug && targetUserPk) logger.info('drift.route.user.debug', { mode: 'authority+probe', authority: String(inputPk?.toBase58?.() || inputPk), resolvedPk: String(targetUserPk?.toBase58?.() || targetUserPk), cat: 'drift' }); } catch {}
           }
           if (targetUserPk) {
             sdkUser = new User({ driftClient: client, userAccountPublicKey: targetUserPk, accountSubscription: { type: 'websocket' } });
@@ -295,11 +299,13 @@ export function createDriftRouter(io: SocketIOServer): Router {
         maintUi: toUi((sdkUser as any)?.getMaintenanceMarginRequirement?.()),
         freeUi: toUi((sdkUser as any)?.getFreeCollateral?.()),
       } as any;
+      try { if (debug) logger.info('drift.route.user.debug', { phase: 'collateral', total: collateral.totalUi, maint: collateral.maintUi, free: collateral.freeUi, cat: 'drift' }); } catch {}
 
       // Spot collateral
       const spotCollateral: Array<{ marketIndex: number; symbol?: string; amountUi: number; amountRaw: number; mint?: string; decimals?: number; balanceType?: 'deposit' | 'borrow' }> = [];
       try {
         const spots = (sdkUser as any)?.getSpotPositions?.() || [];
+        try { if (debug) logger.info('drift.route.user.debug', { phase: 'spots_count', count: Array.isArray(spots) ? spots.length : 0, cat: 'drift' }); } catch {}
         for (const sp of (spots || [])) {
           try {
             const idx = Number(sp?.marketIndex ?? sp?.market_index ?? sp?.market?.index);
@@ -337,6 +343,7 @@ export function createDriftRouter(io: SocketIOServer): Router {
             if (amountUi !== 0) {
               const balanceType: 'deposit' | 'borrow' = (amountRaw < 0 || amountUi < 0) ? 'borrow' : 'deposit';
               spotCollateral.push({ marketIndex: idx, symbol, amountUi, amountRaw, mint, decimals, balanceType });
+              try { if (debug) logger.info('drift.route.user.debug', { phase: 'spot_item', idx, symbol, mint, amountUi, amountRaw, balanceType, cat: 'drift' }); } catch {}
             }
           } catch {}
         }
@@ -357,6 +364,7 @@ export function createDriftRouter(io: SocketIOServer): Router {
         }
       } catch {}
 
+      try { if (debug) logger.info('drift.route.user.debug', { phase: 'done', spotCount: spotCollateral.length, perpCount: perpPositions.length, cat: 'drift' }); } catch {}
       res.json({ collateral, spotCollateral, perpPositions });
     } catch (e: any) {
       logger.error('drift: user snapshot failed', { error: String(e?.message || e) });

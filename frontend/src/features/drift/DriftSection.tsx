@@ -122,7 +122,25 @@ export const DriftSection: React.FC<{
                   if (typeof sum.exposureUsd === 'number') (u as any).exposureUsd = sum.exposureUsd;
                   if (typeof sum.collateralUsd === 'number') (u as any).collateralUsd = sum.collateralUsd;
                   if (typeof sum.profitability === 'number') (u as any).profitability = sum.profitability;
+                  if (typeof sum.maintenanceUsd === 'number') (u as any).maintenanceUsd = sum.maintenanceUsd;
+                  if (typeof sum.freeUsd === 'number') (u as any).freeUsd = sum.freeUsd;
+                  if (typeof sum.skipReason === 'string') (u as any).skipReason = sum.skipReason;
+                  if (Array.isArray(sum.positions)) (u as any).positions = sum.positions;
                   (arr[idx] as any) = u;
+                } else {
+                  const u: any = {
+                    userPk: key,
+                    health: (typeof sum.health === 'number') ? sum.health : 0,
+                    updatedAt: (typeof sum.updatedAt === 'number') ? sum.updatedAt : Date.now(),
+                  };
+                  if (typeof sum.exposureUsd === 'number') u.exposureUsd = sum.exposureUsd;
+                  if (typeof sum.collateralUsd === 'number') u.collateralUsd = sum.collateralUsd;
+                  if (typeof sum.maintenanceUsd === 'number') u.maintenanceUsd = sum.maintenanceUsd;
+                  if (typeof sum.freeUsd === 'number') u.freeUsd = sum.freeUsd;
+                  if (typeof sum.profitability === 'number') u.profitability = sum.profitability;
+                  if (typeof sum.skipReason === 'string') u.skipReason = sum.skipReason;
+                  if (Array.isArray(sum.positions)) u.positions = sum.positions;
+                  arr.unshift(u);
                 }
                 return arr;
               } catch { return prev; }

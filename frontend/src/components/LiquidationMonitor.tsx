@@ -55,23 +55,6 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
             users: Array.isArray(evt.users) ? evt.users : [],
           });
           setLastUpdate(now);
-        } else if (evt.type === 'user_summary' && evt.summary && typeof evt.summary === 'object') {
-          const now = Date.now();
-          setQueue((prev) => {
-            const s = evt.summary as any;
-            const userPk = String(s.userPk || s.user || '');
-            if (!userPk) return prev || null;
-            const next = prev ? { ...prev } : { candidatesQueued: 0, top: [], markets: [], exposures: [], actionsLastMin: 0, errorsLastMin: 0, users: [] as any[] };
-            const users = Array.isArray(next.users) ? next.users.slice() : [];
-            const idx = users.findIndex((u: any) => String(u.userPk) === userPk);
-            const merged = { userPk, health: Number(s.health), updatedAt: Number(s.updatedAt || Date.now()), positions: Array.isArray(s.positions) ? s.positions : undefined, profitability: (typeof s.profitability === 'number' ? s.profitability : undefined), skipReason: s.skipReason, collateralUsd: s.collateralUsd, maintenanceUsd: s.maintenanceUsd, freeUsd: s.freeUsd, exposureUsd: s.exposureUsd } as any;
-            if (idx >= 0) users[idx] = { ...users[idx], ...merged };
-            else users.push(merged);
-            users.sort((a: any, b: any) => (a.health ?? Infinity) - (b.health ?? Infinity));
-            next.users = users;
-            return next;
-          });
-          setLastUpdate(now);
         }
       } catch {}
     };
