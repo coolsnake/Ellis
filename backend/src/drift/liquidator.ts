@@ -161,6 +161,7 @@ export class DriftLiquidator {
   private discoveredRecentUsers: Set<string> = new Set();
   private scanCursor: number = 0; // deprecated; retained for minimal impact
   private probeProcessing: boolean = false;
+  private unsubscribingUsers: Set<string> = new Set();
   private probeTimestamps: number[] = [];
   private currentPollMs: number = 1500;
   private atRiskUsers: Map<string, { health: number; updatedAt: number; positions?: Array<{ marketIndex: number; symbol?: string; base: number; notional?: number; liqPrice?: number; profitability?: number }>; profitability?: number; skipReason?: string; collateralUsd?: number; maintenanceUsd?: number; freeUsd?: number; exposureUsd?: number }> = new Map();
@@ -335,12 +336,28 @@ export class DriftLiquidator {
     } catch {}
     try {
       const um = (this as any)._dlobUserMap;
-      if (um && typeof um.unsubscribe === 'function') { try { um.unsubscribe(); } catch {} }
+      if (um && typeof um.unsubscribe === 'function') {
+        try {
+          const race = Promise.race([
+            Promise.resolve().then(() => um.unsubscribe?.()).catch(() => {}),
+            new Promise<void>((resolve) => { try { (globalThis as any).setTimeout(resolve, 2000); } catch { resolve(); } }),
+          ]);
+          (race as any)?.catch?.(() => {});
+        } catch {}
+      }
       try { delete (this as any)._dlobUserMap; } catch {}
     } catch {}
     try {
       const os = (this as any)._dlobOrderSub;
-      if (os && typeof os.unsubscribe === 'function') { try { os.unsubscribe(); } catch {} }
+      if (os && typeof os.unsubscribe === 'function') {
+        try {
+          const race2 = Promise.race([
+            Promise.resolve().then(() => os.unsubscribe?.()).catch(() => {}),
+            new Promise<void>((resolve) => { try { (globalThis as any).setTimeout(resolve, 2000); } catch { resolve(); } }),
+          ]);
+          (race2 as any)?.catch?.(() => {});
+        } catch {}
+      }
       try { delete (this as any)._dlobOrderSub; } catch {}
     } catch {}
     this.state.running = false;
@@ -368,7 +385,7 @@ export class DriftLiquidator {
     // Unsubscribe all User websocket subscriptions
     try {
       for (const key of Array.from(this.subscribedUsers)) {
-        try { const u = this.userCache.get(String(key)); (u as any)?.unsubscribe?.(); } catch {}
+        try { const u = this.userCache.get(String(key)); const p = (async () => { try { await (u as any)?.unsubscribe?.(); } catch {} })(); (p as any)?.catch?.(() => {}); } catch {}
       }
       this.subscribedUsers.clear();
     } catch {}
@@ -617,7 +634,10 @@ export class DriftLiquidator {
       // Basic resilience: best-effort resubscribe on emitter error/close
       const tryResub = async () => {
         try {
-          await sub.unsubscribe();
+          await Promise.race([
+            sub.unsubscribe().catch(() => {}),
+            new Promise<void>((resolve) => { try { (globalThis as any).setTimeout(resolve, 2000); } catch { resolve(); } }),
+          ]);
         } catch {}
         try {
           await sub.subscribe();
@@ -1782,14 +1802,14 @@ export class DriftLiquidator {
             const ms = Math.max(15000, Number((this.config.idleCooldownMs ?? ((CONFIG as any)?.drift?.liquidator?.idleCooldownMs) ?? 60000)));
             this.idleUntil.set(key, Date.now() + ms);
             // Unsubscribe immediately to reduce load
-            try { if (this.subscribedUsers.has(key)) { await (user as any)?.unsubscribe?.(); this.subscribedUsers.delete(key); } } catch {}
+            try { await this.safeUnsubscribeUser(key, user); } catch {}
             this.inProbeQueue.delete(key);
             continue;
           }
           if (!inScope) {
             const ms = Math.max(15000, Number((this.config.outOfScopeCooldownMs ?? ((CONFIG as any)?.drift?.liquidator?.outOfScopeCooldownMs) ?? 60000)));
             this.outOfScopeUntil.set(key, Date.now() + ms);
-            try { if (this.subscribedUsers.has(key)) { await (user as any)?.unsubscribe?.(); this.subscribedUsers.delete(key); } } catch {}
+            try { await this.safeUnsubscribeUser(key, user); } catch {}
             this.atRiskUsers.delete(key);
             this.inProbeQueue.delete(key);
             continue;
@@ -1925,12 +1945,7 @@ export class DriftLiquidator {
               const ms = Math.max(15000, Number(((this.config as any)?.healthyCooldownMs ?? ((CONFIG as any)?.drift?.liquidator?.healthyCooldownMs) ?? 45000)));
               this.healthyUntil.set(key, Date.now() + ms);
             } catch {}
-            try {
-              if (this.subscribedUsers.has(key) && typeof (user as any)?.unsubscribe === 'function') {
-                await (user as any).unsubscribe();
-                this.subscribedUsers.delete(key);
-              }
-            } catch {}
+            try { await this.safeUnsubscribeUser(key, user); } catch {}
           }
         } catch {} finally {
           this.inProbeQueue.delete(key);
@@ -1939,6 +1954,21 @@ export class DriftLiquidator {
       try { logger.debug('drift.liquidator.probe_result', { attempted: slice.length, probed, flagged, pending: this.pendingProbeQueue.length, rps: this.getProbeRps(), cat: 'drift' }); } catch {}
     } catch {} finally {
       this.probeProcessing = false;
+    }
+  }
+
+  private async safeUnsubscribeUser(key: string, user: any, timeoutMs: number = 2000): Promise<void> {
+    try {
+      if (!this.subscribedUsers.has(key) || this.unsubscribingUsers.has(key)) return;
+      this.unsubscribingUsers.add(key);
+      const doUnsub = (async () => { try { await user?.unsubscribe?.(); } catch {} })();
+      await Promise.race([
+        doUnsub,
+        new Promise<void>((resolve) => { try { (globalThis as any).setTimeout(resolve, Math.max(250, Number(timeoutMs))); } catch { resolve(); } }),
+      ]);
+    } finally {
+      try { this.subscribedUsers.delete(key); } catch {}
+      try { this.unsubscribingUsers.delete(key); } catch {}
     }
   }
 
