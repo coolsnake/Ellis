@@ -1150,6 +1150,34 @@ export class DriftLiquidator {
           try { await (sdkUser as any)?.subscribe?.(); this.subscribedUsers.add(String(target.userPk)); } catch {}
         }
         try { await (sdkUser as any)?.fetchAccounts?.(); } catch {}
+        // Early bankruptcy handling: skip normal liquidation and optionally resolve
+        try {
+          const bankrupt = await this.isUserBankrupt(sdkUser);
+          if (bankrupt) {
+            try { logger.info('drift.liquidator.skip_target', { user: target.userPk, reason: 'BANKRUPT', cat: 'drift' }); } catch {}
+            try {
+              const resolvePerp = (DriftService.getInstance() as any)?.client?.resolvePerpBankruptcy;
+              if (typeof resolvePerp === 'function') {
+                let BASE_PREC = 1_000_000_000;
+                try { const sdk: any = await import('@drift-labs/sdk'); const cst: any = (sdk as any).constants || (sdk as any); if (Number.isFinite(Number(cst?.BASE_PRECISION))) BASE_PREC = Number(cst.BASE_PRECISION); } catch {}
+                const positions = (sdkUser as any)?.getPerpPositions?.() || [];
+                for (const p of (positions || [])) {
+                  try {
+                    const rawBase = Number(p?.baseAssetAmount?.toString?.() || p?.baseAssetAmount || 0);
+                    const m = Number(p?.marketIndex ?? p?.market_index ?? p?.market?.index);
+                    if (!Number.isFinite(m) || rawBase === 0) continue;
+                    await resolvePerp(userPublicKey, m);
+                    try { logger.info('drift.liquidator.bankruptcy_perp_resolve_ok', { user: target.userPk, marketIndex: m, cat: 'drift' }); } catch {}
+                  } catch (e: any) {
+                    try { logger.warn('drift.liquidator.bankruptcy_perp_resolve_failed', { user: target.userPk, error: String(e?.message || e), cat: 'drift' }); } catch {}
+                  }
+                }
+              }
+            } catch {}
+            this.recordAction();
+            return;
+          }
+        } catch {}
         // Collateral values (native + UI)
         let QUOTE_PREC = 1_000_000;
         try { const sdk: any = await import('@drift-labs/sdk'); const cst: any = (sdk as any).constants || (sdk as any); if (Number.isFinite(Number(cst?.QUOTE_PRECISION))) QUOTE_PREC = Number(cst.QUOTE_PRECISION); } catch {}
@@ -1274,6 +1302,22 @@ export class DriftLiquidator {
             errors += 1;
             try { logger.warn('drift.liquidator.force_cancel_batch_failed', { user: target.userPk, error: String(e?.message || e), cat: 'drift' }); } catch {}
           }
+        } else if (typeof drift?.forceCancelOrders === 'function' && userPublicKey) {
+          try {
+            let remaining = maxCancels;
+            while (remaining > 0) {
+              try {
+                await drift.forceCancelOrders({ userPublicKey: userPublicKey, marketType: 0, limit: batch });
+                batches += 1;
+                try { logger.info('drift.liquidator.force_cancel_batch_ok', { user: target.userPk, batchSize: batch, batches, cat: 'drift' }); } catch {}
+              } catch (e: any) {
+                errors += 1;
+                try { logger.warn('drift.liquidator.force_cancel_batch_failed', { user: target.userPk, error: String(e?.message || e), cat: 'drift' }); } catch {}
+              }
+              remaining -= batch;
+              if (remaining > 0) { try { await new Promise(r => setTimeout(r, 250)); } catch {} }
+            }
+          } catch {}
         } else {
           try { logger.info('drift.liquidator.force_cancel_unavailable', { user: target.userPk, cat: 'drift' }); } catch {}
         }
@@ -1286,9 +1330,10 @@ export class DriftLiquidator {
       try {
         const maxPerp = Math.max(1, Math.min(50, Number((this.config.maxPerpAttempts ?? ((CONFIG as any)?.drift?.liquidator?.maxPerpAttempts) ?? 3))));
         const baseSizeFrac = Math.max(0.001, Math.min(0.5, Number((this.config.perpSizeFraction ?? ((CONFIG as any)?.drift?.liquidator?.perpSizeFraction) ?? 0.05))));
-        // Prefer SDK BN; fallback to bn.js and polyfill toBuffer when missing
+        // Prefer SDK BN; fallback to Anchor BN, then bn.js and polyfill toBuffer when missing
         let BN: any = null;
         try { const sdk: any = await import('@drift-labs/sdk'); BN = (sdk as any)?.BN || (sdk as any)?.AnchorsBN || null; } catch {}
+        if (!BN) { try { const anchor: any = await import('@coral-xyz/anchor'); BN = (anchor as any)?.BN || (anchor as any)?.default?.BN || null; } catch {} }
         if (!BN) {
           try {
             const mod: any = await import('bn.js');
@@ -1543,6 +1588,25 @@ export class DriftLiquidator {
       return isFinite(distance) ? Math.max(0, distance) : null;
     } catch {
       return null;
+    }
+  }
+
+  private async isUserBankrupt(sdkUser: any): Promise<boolean> {
+    try {
+      let QUOTE_PREC = 1_000_000;
+      try {
+        const sdk: any = await import('@drift-labs/sdk');
+        const cst: any = (sdk as any).constants || (sdk as any);
+        if (Number.isFinite(Number(cst?.QUOTE_PRECISION))) QUOTE_PREC = Number(cst.QUOTE_PRECISION);
+      } catch {}
+      const toNum = (v: any): number => Number(v?.toString?.() || v || 0);
+      const assets = toNum((sdkUser as any)?.getAssetsValue?.()) / QUOTE_PREC;
+      const liabilities = toNum((sdkUser as any)?.getLiabilitiesValue?.()) / QUOTE_PREC;
+      const free = toNum((sdkUser as any)?.getFreeCollateral?.()) / QUOTE_PREC;
+      if (!isFinite(assets) || !isFinite(liabilities)) return false;
+      return (liabilities >= assets) && (free <= 0);
+    } catch {
+      return false;
     }
   }
 
