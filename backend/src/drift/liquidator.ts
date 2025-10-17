@@ -766,6 +766,14 @@ export class DriftLiquidator {
         }
       }
       this.userToMarkets.set(userPk, prev);
+      // Dynamically ensure price tracking for newly active markets
+      try {
+        const svc = DriftPriceService.getInstance();
+        const pollMs = Math.max(800, Number((this.config.httpPollMs ?? ((CONFIG as any)?.drift?.liquidator?.httpPollMs ?? 1200))));
+        for (const m of Array.from(prev)) {
+          try { svc.trackMarket(Number(m), pollMs); } catch {}
+        }
+      } catch {}
     } catch {}
   }
 
@@ -775,6 +783,12 @@ export class DriftLiquidator {
       if (!Number.isFinite(idx)) return;
       if (this.marketScanInFlight.has(idx)) return;
       this.marketScanInFlight.add(idx);
+      // Ensure price tracking is active for this market
+      try {
+        const svc = DriftPriceService.getInstance();
+        const pollMs = Math.max(800, Number((this.config.httpPollMs ?? ((CONFIG as any)?.drift?.liquidator?.httpPollMs ?? 1200))));
+        svc.trackMarket(idx, pollMs);
+      } catch {}
       const users = Array.from(this.marketToUsers.get(idx) || []);
       if (users.length === 0) { this.marketScanInFlight.delete(idx); return; }
       const drift: any = (DriftService.getInstance() as any).client;
