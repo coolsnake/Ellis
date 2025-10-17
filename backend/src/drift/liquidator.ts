@@ -163,6 +163,7 @@ export class DriftLiquidator {
   private scanCursor: number = 0; // deprecated; retained for minimal impact
   private probeProcessing: boolean = false;
   private unsubscribingUsers: Set<string> = new Set();
+  private liveMonitors: Map<string, any> = new Map();
   private probeTimestamps: number[] = [];
   private currentPollMs: number = 1500;
   private atRiskUsers: Map<string, { health: number; updatedAt: number; positions?: Array<{ marketIndex: number; symbol?: string; base: number; notional?: number; liqPrice?: number; profitability?: number }>; profitability?: number; skipReason?: string; collateralUsd?: number; maintenanceUsd?: number; freeUsd?: number; exposureUsd?: number }> = new Map();
@@ -999,6 +1000,7 @@ export class DriftLiquidator {
             freeUsd: freeUi,
             exposureUsd,
           } as any);
+          this.startLiveMonitor(String(key));
           // If still at-risk, queue candidate
           if (health < riskThresh) this.addOrQueueCandidate({ userPk: String(key), health, updatedAt: Date.now() });
           recomputed += 1;
@@ -2039,7 +2041,7 @@ export class DriftLiquidator {
               // If total collateral <= 0, likely bad debt
               if (skipReason === undefined && total <= 0) skipReason = 'NO_COLLATERAL';
             } catch {}
-            this.atRiskUsers.set(key, {
+          this.atRiskUsers.set(key, {
               health,
               updatedAt: Date.now(),
               positions: posSummary,
@@ -2050,12 +2052,14 @@ export class DriftLiquidator {
               freeUsd: freeUi,
               exposureUsd,
             } as any);
+          this.startLiveMonitor(key);
             this.addOrQueueCandidate({ userPk: key, health, updatedAt: Date.now() });
             flagged += 1;
           } else {
             // Not at risk: optionally unsubscribe to minimize load
             if (health >= (riskThresh + recoveryBuf)) {
               this.atRiskUsers.delete(key);
+              this.stopLiveMonitor(key);
             }
             // Apply healthy cooldown to avoid immediate re-probing
             try {
@@ -2072,6 +2076,43 @@ export class DriftLiquidator {
     } catch {} finally {
       this.probeProcessing = false;
     }
+  }
+
+  private startLiveMonitor(userPk: string): void {
+    try {
+      const key = String(userPk);
+      if (this.liveMonitors.has(key)) return;
+      const intervalMs = Math.max(3000, Number(((this.config as any)?.liveMonitorIntervalMs ?? ((CONFIG as any)?.drift?.liquidator?.refreshAccountsMs) ?? 12000)));
+      const t: any = (globalThis as any).setInterval(async () => {
+        try {
+          const drift: any = (DriftService.getInstance() as any).client;
+          let user = this.userCache.get(key);
+          if (!user) {
+            let pk: any = key; try { pk = new PublicKey(key); } catch {}
+            user = new User({ driftClient: drift, userAccountPublicKey: pk, accountSubscription: { type: 'websocket' } });
+            this.userCache.set(key, user);
+            try { await (user as any)?.subscribe?.(); this.subscribedUsers.add(key); } catch {}
+          }
+          try { await (user as any)?.fetchAccounts?.(); } catch {}
+          const total = Number((user as any)?.getTotalCollateral?.() || 0);
+          const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
+          const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
+          const health = maint > 0 ? (total - maint) / maint : Infinity;
+          if (!(health < riskThresh)) { this.stopLiveMonitor(key); this.healthyUntil.set(key, Date.now() + Math.max(8000, Number(((this.config as any)?.healthyCooldownMs ?? ((CONFIG as any)?.drift?.liquidator?.healthyCooldownMs) ?? 15000)))); return; }
+          this.addOrQueueCandidate({ userPk: key, health, updatedAt: Date.now() } as any);
+        } catch {}
+      }, intervalMs);
+      this.liveMonitors.set(key, t);
+    } catch {}
+  }
+
+  private stopLiveMonitor(userPk: string): void {
+    try {
+      const key = String(userPk);
+      const t = this.liveMonitors.get(key);
+      if (t) { try { (globalThis as any).clearInterval(t); } catch {} }
+      this.liveMonitors.delete(key);
+    } catch {}
   }
 
   private async safeUnsubscribeUser(key: string, user: any, timeoutMs: number = 2000): Promise<void> {

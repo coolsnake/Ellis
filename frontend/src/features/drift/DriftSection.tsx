@@ -386,12 +386,10 @@ export const DriftSection: React.FC<{
                 <th className="text-left">User</th>
                 <th className="text-left">Health</th>
                 <th className="text-left">Updated</th>
-                <th className="text-left">Collateral</th>
                 <th className="text-left">Exposure</th>
                 <th className="text-left">C/E</th>
                 <th className="text-left">Profit</th>
                 <th className="text-left">Skip</th>
-                <th className="text-left">Positions</th>
                 <th className="text-left">Actions</th>
               </tr>
             </thead>
@@ -402,7 +400,6 @@ export const DriftSection: React.FC<{
                   <td title={u.userPk} className="font-mono">{u.userPk.slice(0, 6)}…{u.userPk.slice(-6)}</td>
                   <td className={`${u.health < -0.5 ? 'text-red-300' : u.health < 0 ? 'text-yellow-300' : 'text-white'}`}>{(u.health * 100).toFixed(2)}%</td>
                   <td className="text-gray-400">{(() => { const d = Date.now() - Number(u.updatedAt||0); return isFinite(d) ? (d < 60000 ? `${Math.max(0, Math.floor(d/1000))}s ago` : `${Math.floor(d/60000)}m ago`) : '-'; })()}</td>
-                  <td>{(() => { const v = (u as any).collateralUsd; return (typeof v === 'number') ? `$${(v as number).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '-'; })()}</td>
                   <td>{(() => {
                     const ex = (u as any).exposureUsd;
                     if (typeof ex === 'number') return `$${(ex as number).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
@@ -441,9 +438,6 @@ export const DriftSection: React.FC<{
                       <span className="px-1.5 py-0.5 bg-gray-700 rounded text-[10px] uppercase tracking-wide">{(u as any).skipReason}</span>
                     ) : <span className="text-gray-500">-</span>}
                   </td>
-                  <td>
-                    <span className="text-gray-500">-</span>
-                  </td>
                   <td className="flex gap-2 items-center">
                     <button className="px-2 py-0.5 bg-gray-700 text-white rounded hover:bg-gray-600" onClick={() => toggleOpen(u.userPk)}>
                       {openUser === u.userPk ? 'Hide' : 'Show'}
@@ -453,7 +447,21 @@ export const DriftSection: React.FC<{
                 </tr>
                 {openUser === u.userPk && (
                   <tr className="bg-gray-900/60">
-                    <td colSpan={10} className="p-2">
+                    <td colSpan={8} className="p-2">
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+                        <div className="bg-gray-800 rounded p-2">
+                          <div className="text-gray-300">Total</div>
+                          <div className="font-mono text-white">{Number(userDetails[u.userPk]?.collateral?.totalUi || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+                        </div>
+                        <div className="bg-gray-800 rounded p-2">
+                          <div className="text-gray-300">Maintenance</div>
+                          <div className="font-mono text-white">{Number(userDetails[u.userPk]?.collateral?.maintUi || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+                        </div>
+                        <div className="bg-gray-800 rounded p-2">
+                          <div className="text-gray-300">Free</div>
+                          <div className="font-mono text-white">{Number(userDetails[u.userPk]?.collateral?.freeUi || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+                        </div>
+                      </div>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                         <div>
                           <div className="text-gray-300 mb-1">Collateral tokens</div>

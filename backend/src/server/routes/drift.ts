@@ -273,8 +273,19 @@ export function createDriftRouter(io: SocketIOServer): Router {
             const mktAcc = await client?.getSpotMarketAccount?.(idx);
             const decimals = Number(mktAcc?.decimals ?? 6);
             const mint = String(mktAcc?.mint ?? '');
-            const amountRaw = Number(sp?.scaledBalance?.toString?.() || sp?.balance || sp?.depositBalance || sp?.borrowBalance || 0);
-            const amountUi = amountRaw / Math.pow(10, decimals);
+            // Prefer SDK helper returning raw integer token amount
+            let raw = 0;
+            try {
+              if (typeof (sdkUser as any)?.getTokenAmount === 'function') {
+                const v = await (sdkUser as any).getTokenAmount(idx);
+                raw = Number(v?.toString?.() || v || 0);
+              }
+            } catch {}
+            if (!Number.isFinite(raw) || raw === 0) {
+              raw = Number(sp?.scaledBalance?.toString?.() || sp?.balance || sp?.depositBalance || sp?.borrowBalance || 0);
+            }
+            const amountRaw = raw;
+            const amountUi = Number.isFinite(amountRaw) ? (amountRaw / Math.pow(10, decimals)) : 0;
             const symbol = (mktAcc?.name || mktAcc?.symbol || '')?.toString?.()?.replace?.(/\0+$/g, '') || undefined;
             if (amountUi !== 0) spotCollateral.push({ marketIndex: idx, symbol, amountUi, amountRaw, mint });
           } catch {}
