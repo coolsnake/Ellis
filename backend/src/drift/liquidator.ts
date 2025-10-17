@@ -513,26 +513,6 @@ export class DriftLiquidator {
   private async tryRecentDiscovery(): Promise<void> {
     try {
       const drift: any = (DriftService.getInstance() as any).client;
-      // Parse user public key for SDK calls in this attempt scope
-      let userPublicKey: PublicKey | null = toPublicKey(target.userPk);
-      if (!userPublicKey) {
-        try { logger.warn('drift.liquidator.skip_target', { user: target.userPk, reason: 'INVALID_PUBKEY', cat: 'drift' }); } catch {}
-        return;
-      }
-      try { logger.debug('drift.liquidator.pubkey_ok', { user: target.userPk, pubkey: (userPublicKey as any)?.toBase58?.() || null, cat: 'drift' }); } catch {}
-      // Ensure user is in cache and refresh snapshot for accurate metrics
-      try {
-        let sdkUser = this.userCache.get(String(target.userPk));
-        if (!sdkUser) {
-          let pk: any = target.userPk;
-          try { pk = new PublicKey(String(target.userPk)); } catch {}
-          sdkUser = new User({ driftClient: drift, userAccountPublicKey: pk, accountSubscription: { type: 'websocket' } });
-          this.userCache.set(String(target.userPk), sdkUser);
-          try { await (sdkUser as any)?.subscribe?.(); this.subscribedUsers.add(String(target.userPk)); } catch {}
-        }
-        try { await (sdkUser as any)?.fetchAccounts?.(); } catch {}
-        try { await this.refreshIndexForUser(sdkUser, String(target.userPk)); } catch {}
-      } catch {}
       const conn: any = (DriftService.getInstance() as any).connection;
       const endpoint: string = String(conn?._rpcEndpoint || conn?.rpcEndpoint || '');
       if (!endpoint || !/helius/i.test(endpoint)) return;
@@ -1085,6 +1065,13 @@ export class DriftLiquidator {
         }
       } catch {}
       const drift: any = (DriftService.getInstance() as any).client;
+      // Parse user public key for SDK calls in this attempt scope
+      let userPublicKey: PublicKey | null = toPublicKey(target.userPk);
+      if (!userPublicKey) {
+        try { logger.warn('drift.liquidator.skip_target', { user: target.userPk, reason: 'INVALID_PUBKEY', cat: 'drift' }); } catch {}
+        return;
+      }
+      try { logger.debug('drift.liquidator.pubkey_ok', { user: target.userPk, pubkey: (userPublicKey as any)?.toBase58?.() || null, cat: 'drift' }); } catch {}
       // Precheck: compute current user health and skip if above execution gate
       try {
         const execGate = Number((this.config.executeHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.executeHealthThreshold) ?? 0));
