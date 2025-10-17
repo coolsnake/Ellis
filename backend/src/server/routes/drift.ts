@@ -263,7 +263,7 @@ export function createDriftRouter(io: SocketIOServer): Router {
       } as any;
 
       // Spot collateral
-      const spotCollateral: Array<{ marketIndex: number; symbol?: string; amountUi: number; amountRaw: number; mint?: string }> = [];
+      const spotCollateral: Array<{ marketIndex: number; symbol?: string; amountUi: number; amountRaw: number; mint?: string; decimals?: number }> = [];
       try {
         const spots = (sdkUser as any)?.getSpotPositions?.() || [];
         for (const sp of (spots || [])) {
@@ -286,8 +286,21 @@ export function createDriftRouter(io: SocketIOServer): Router {
             }
             const amountRaw = raw;
             const amountUi = Number.isFinite(amountRaw) ? (amountRaw / Math.pow(10, decimals)) : 0;
-            const symbol = (mktAcc?.name || mktAcc?.symbol || '')?.toString?.()?.replace?.(/\0+$/g, '') || undefined;
-            if (amountUi !== 0) spotCollateral.push({ marketIndex: idx, symbol, amountUi, amountRaw, mint });
+            let symbol = (mktAcc?.name || mktAcc?.symbol || '')?.toString?.()?.replace?.(/\0+$/g, '') || undefined;
+            if (!symbol || symbol === '0') {
+              try {
+                const sdk: any = await import('@drift-labs/sdk');
+                const constants: any = (sdk as any).constants || (sdk as any);
+                const cluster = (CONFIG as any)?.drift?.cluster || 'mainnet-beta';
+                const byCluster = (obj: any) => obj?.[cluster] || obj?.[cluster.replace('-', '_')];
+                const list = byCluster(constants?.SPOT_MARKETS) || byCluster(constants?.SpotMarkets) || constants?.SPOT_MARKETS || constants?.SpotMarkets || [];
+                const found = Array.isArray(list) ? list.find((m: any) => Number(m?.marketIndex ?? m?.index ?? m?.market_index) === idx) : null;
+                if (found) {
+                  symbol = String(found?.symbol || found?.name || symbol || '').replace(/\0+$/g, '') || symbol;
+                }
+              } catch {}
+            }
+            if (amountUi !== 0) spotCollateral.push({ marketIndex: idx, symbol, amountUi, amountRaw, mint, decimals });
           } catch {}
         }
       } catch {}

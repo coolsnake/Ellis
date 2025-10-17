@@ -164,6 +164,22 @@ export class DriftLiquidator {
   private probeProcessing: boolean = false;
   private unsubscribingUsers: Set<string> = new Set();
   private liveMonitors: Map<string, any> = new Map();
+  private drainRequested: boolean = false;
+
+  private requestImmediateDrain(): void {
+    try {
+      if (this.drainRequested) return;
+      this.drainRequested = true;
+      (globalThis as any).setTimeout(() => {
+        try {
+          const maxConc = Math.max(1, Number(this.config.maxConcurrentTargets || 2));
+          this.drainQueue(maxConc);
+        } catch {} finally {
+          this.drainRequested = false;
+        }
+      }, 0);
+    } catch {}
+  }
   private probeTimestamps: number[] = [];
   private currentPollMs: number = 1500;
   private atRiskUsers: Map<string, { health: number; updatedAt: number; positions?: Array<{ marketIndex: number; symbol?: string; base: number; notional?: number; liqPrice?: number; profitability?: number }>; profitability?: number; skipReason?: string; collateralUsd?: number; maintenanceUsd?: number; freeUsd?: number; exposureUsd?: number }> = new Map();
@@ -925,7 +941,14 @@ export class DriftLiquidator {
               const raw = Number(p?.baseAssetAmount?.toString?.() || p?.baseAssetAmount || 0);
               const m = Number(p?.marketIndex ?? p?.market_index ?? p?.market?.index);
               if (!Number.isFinite(m) || raw === 0) continue;
-              const baseUi = raw / BASE_PREC;
+              // Prefer market-specific base precision when available
+              let basePrecForMarket = BASE_PREC;
+              try {
+                const acct = await (DriftService.getInstance() as any)?.client?.getPerpMarketAccount?.(Number(m));
+                const maybe = Number(acct?.amm?.basePrecision ?? acct?.basePrecision);
+                if (Number.isFinite(maybe) && maybe > 0) basePrecForMarket = maybe;
+              } catch {}
+              const baseUi = raw / basePrecForMarket;
               const symbol = (indexToSymbol(Number(m)) || '').split('-')[0] || undefined;
               // Price sample for this market
               try {
@@ -989,7 +1012,7 @@ export class DriftLiquidator {
           if (skipReason === undefined && total <= 0) skipReason = 'NO_COLLATERAL';
 
           // Update at-risk entry
-          this.atRiskUsers.set(String(key), {
+          const summary = {
             health,
             updatedAt: Date.now(),
             positions: posSummary,
@@ -999,10 +1022,12 @@ export class DriftLiquidator {
             maintenanceUsd: maintUi,
             freeUsd: freeUi,
             exposureUsd,
-          } as any);
+          } as any;
+          this.atRiskUsers.set(String(key), summary);
+          try { const { emitUserSummary } = await import('../server/realtime.js'); emitUserSummary({ userPk: String(key), ...summary }); } catch {}
           this.startLiveMonitor(String(key));
-          // If still at-risk, queue candidate
-          if (health < riskThresh) this.addOrQueueCandidate({ userPk: String(key), health, updatedAt: Date.now() });
+          // If still at-risk, queue candidate and drain immediately
+          if (health < riskThresh) { this.addOrQueueCandidate({ userPk: String(key), health, updatedAt: Date.now() }); this.requestImmediateDrain(); }
           recomputed += 1;
         } catch {}
       }
@@ -1041,6 +1066,7 @@ export class DriftLiquidator {
       } catch {}
       this.heap.push(c);
       this.inHeap.add(key);
+      this.requestImmediateDrain();
     } catch {}
   }
 
@@ -2100,6 +2126,7 @@ export class DriftLiquidator {
           const health = maint > 0 ? (total - maint) / maint : Infinity;
           if (!(health < riskThresh)) { this.stopLiveMonitor(key); this.healthyUntil.set(key, Date.now() + Math.max(8000, Number(((this.config as any)?.healthyCooldownMs ?? ((CONFIG as any)?.drift?.liquidator?.healthyCooldownMs) ?? 15000)))); return; }
           this.addOrQueueCandidate({ userPk: key, health, updatedAt: Date.now() } as any);
+          this.requestImmediateDrain();
         } catch {}
       }, intervalMs);
       this.liveMonitors.set(key, t);

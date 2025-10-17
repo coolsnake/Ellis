@@ -64,6 +64,11 @@ export async function emit(event: string, payload: any) {
   ioRef?.emit(event, payload);
 }
 
+// Convenience emitter for live per-user summaries
+export function emitUserSummary(summary: any): void {
+  try { emit('drift-liquidation', { type: 'user_summary', summary }); } catch {}
+}
+
 // Gate: only push graph updates to arb-rs after user presses Start Arb
 let arbStreamEnabled = false;
 export function setArbStreamEnabled(enabled: boolean): void {

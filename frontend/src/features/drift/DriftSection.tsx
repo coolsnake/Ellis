@@ -103,6 +103,45 @@ export const DriftSection: React.FC<{
       try {
         if (evt && typeof evt === 'object' && (evt.type === 'queue' || evt.type === 'stats') && Array.isArray(evt.users)) {
           setLiqUsers(evt.users as any);
+          return;
+        }
+        // Live per-user summary: update row metrics and expanded details
+        if (evt && typeof evt === 'object' && evt.type === 'user_summary' && evt.summary) {
+          const sum = evt.summary as any;
+          const key = String(sum.userPk || sum.user || '');
+          if (key) {
+            // Update main table entry metrics if present
+            setLiqUsers((prev) => {
+              try {
+                const arr = Array.isArray(prev) ? [...prev] : [] as any[];
+                const idx = arr.findIndex((u) => String((u as any).userPk) === key);
+                if (idx >= 0) {
+                  const u = { ...(arr[idx] as any) };
+                  if (typeof sum.health === 'number') u.health = sum.health;
+                  if (typeof sum.updatedAt === 'number') u.updatedAt = sum.updatedAt;
+                  if (typeof sum.exposureUsd === 'number') (u as any).exposureUsd = sum.exposureUsd;
+                  if (typeof sum.collateralUsd === 'number') (u as any).collateralUsd = sum.collateralUsd;
+                  if (typeof sum.profitability === 'number') (u as any).profitability = sum.profitability;
+                  (arr[idx] as any) = u;
+                }
+                return arr;
+              } catch { return prev; }
+            });
+            // Update expanded details collateral summary if open or cached
+            setUserDetails((prev) => {
+              const cur = { ...(prev || {}) } as any;
+              const d = { ...(cur[key] || {}) };
+              d.collateral = {
+                totalUi: Number(sum.collateralUsd || 0),
+                maintUi: Number(sum.maintenanceUsd || 0),
+                freeUi: Number(sum.freeUsd || 0),
+              };
+              // Do not overwrite spotCollateral/perpPositions here (kept from HTTP fetch)
+              cur[key] = d;
+              return cur;
+            });
+          }
+          return;
         }
       } catch {}
     };
