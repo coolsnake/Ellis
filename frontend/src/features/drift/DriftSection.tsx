@@ -442,27 +442,7 @@ export const DriftSection: React.FC<{
                     ) : <span className="text-gray-500">-</span>}
                   </td>
                   <td>
-                    {Array.isArray(u.positions) && u.positions.length > 0 ? (
-                      <div className="flex flex-wrap gap-2">
-                        {u.positions.map((p, i) => (
-                          <span key={`${u.userPk}-${p.marketIndex}-${i}`} className="px-2 py-0.5 bg-gray-700 rounded text-xs flex items-center gap-2">
-                            <span className="font-mono">{(p as any).symbol ?? `m${p.marketIndex}`}</span>
-                            <span>base <span className="text-white font-mono">{Number(p.base).toLocaleString(undefined, { maximumFractionDigits: 6 })}</span></span>
-                            {typeof (p as any).notional === 'number' && (
-                              <span>notional $<span className="text-white font-mono">{((p as any).notional as number).toFixed(2)}</span></span>
-                            )}
-                            {typeof (p as any).liqPrice === 'number' && (
-                              <span>liq <span className="text-white font-mono">{((p as any).liqPrice as number).toFixed(2)}</span></span>
-                            )}
-                            {typeof (p as any).profitability === 'number' && (
-                              <span>prof <span className={`font-mono ${((p as any).profitability as number) > 0 ? 'text-green-300' : 'text-yellow-300'}`}>{(((p as any).profitability as number) * 100).toFixed(2)}%</span></span>
-                            )}
-                          </span>
-                        ))}
-                      </div>
-                    ) : (
-                      <span className="text-gray-500">-</span>
-                    )}
+                    <span className="text-gray-500">-</span>
                   </td>
                   <td className="flex gap-2 items-center">
                     <button className="px-2 py-0.5 bg-gray-700 text-white rounded hover:bg-gray-600" onClick={() => toggleOpen(u.userPk)}>

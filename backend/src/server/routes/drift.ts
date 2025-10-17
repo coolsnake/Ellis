@@ -229,6 +229,80 @@ export function createDriftRouter(io: SocketIOServer): Router {
     }
   });
 
+  // Detailed user snapshot (collateral + spot collateral + perp positions)
+  api.get('/drift/user/:pubkey', async (req: Request, res: Response) => {
+    try {
+      const pkStr = String(req.params.pubkey || '').trim();
+      if (!pkStr) return res.status(400).json({ error: 'pubkey required' });
+      const { DriftService } = await import('../../drift/client.js');
+      const svc = DriftService.getInstance();
+      await svc.init();
+      const client: any = (svc as any)?.client;
+      let sdkUser: any = null;
+      try {
+        const { User } = await import('@drift-labs/sdk');
+        const { PublicKey } = await import('@solana/web3.js');
+        const pk = new PublicKey(pkStr);
+        sdkUser = new User({ driftClient: client, userAccountPublicKey: pk, accountSubscription: { type: 'websocket' } });
+        try { await (sdkUser as any)?.subscribe?.(); } catch {}
+      } catch {}
+      if (!sdkUser) return res.status(404).json({ error: 'USER_NOT_FOUND' });
+      try { await (sdkUser as any)?.fetchAccounts?.(); } catch {}
+
+      // Collateral (quote precision)
+      let QUOTE_PREC = 1_000_000;
+      try { const sdk: any = await import('@drift-labs/sdk'); const cst: any = (sdk as any).constants || (sdk as any); if (Number.isFinite(Number(cst?.QUOTE_PRECISION))) QUOTE_PREC = Number(cst.QUOTE_PRECISION); } catch {}
+      const toUi = (v: any) => Number(v?.toString?.() || v || 0) / QUOTE_PREC;
+      const collateral = {
+        total: Number((sdkUser as any)?.getTotalCollateral?.() || 0),
+        maintenance: Number((sdkUser as any)?.getMaintenanceMarginRequirement?.() || 0),
+        free: Number((sdkUser as any)?.getFreeCollateral?.()?.toString?.() || (sdkUser as any)?.getFreeCollateral?.() || 0),
+        totalUi: toUi((sdkUser as any)?.getTotalCollateral?.()),
+        maintUi: toUi((sdkUser as any)?.getMaintenanceMarginRequirement?.()),
+        freeUi: toUi((sdkUser as any)?.getFreeCollateral?.()),
+      } as any;
+
+      // Spot collateral
+      const spotCollateral: Array<{ marketIndex: number; symbol?: string; amountUi: number; amountRaw: number; mint?: string }> = [];
+      try {
+        const spots = (sdkUser as any)?.getSpotPositions?.() || [];
+        for (const sp of (spots || [])) {
+          try {
+            const idx = Number(sp?.marketIndex ?? sp?.market_index ?? sp?.market?.index);
+            if (!Number.isFinite(idx)) continue;
+            const mktAcc = await client?.getSpotMarketAccount?.(idx);
+            const decimals = Number(mktAcc?.decimals ?? 6);
+            const mint = String(mktAcc?.mint ?? '');
+            const amountRaw = Number(sp?.scaledBalance?.toString?.() || sp?.balance || sp?.depositBalance || sp?.borrowBalance || 0);
+            const amountUi = amountRaw / Math.pow(10, decimals);
+            const symbol = (mktAcc?.name || mktAcc?.symbol || '')?.toString?.()?.replace?.(/\0+$/g, '') || undefined;
+            if (amountUi !== 0) spotCollateral.push({ marketIndex: idx, symbol, amountUi, amountRaw, mint });
+          } catch {}
+        }
+      } catch {}
+
+      // Perp positions (raw base)
+      const perpPositions: Array<{ marketIndex: number; baseRaw: number }> = [];
+      try {
+        let positions = (sdkUser as any)?.getPerpPositions?.() || [];
+        try { if (!Array.isArray(positions) || positions.length === 0) { const raw = (sdkUser as any)?.getUserAccount?.()?.perpPositions; if (Array.isArray(raw)) positions = raw; } } catch {}
+        for (const p of (positions || [])) {
+          try {
+            const rawBase = Number(p?.baseAssetAmount?.toString?.() || p?.baseAssetAmount || 0);
+            const m = Number(p?.marketIndex ?? p?.market_index ?? p?.market?.index);
+            if (!Number.isFinite(m) || rawBase === 0) continue;
+            perpPositions.push({ marketIndex: m, baseRaw: rawBase });
+          } catch {}
+        }
+      } catch {}
+
+      res.json({ collateral, spotCollateral, perpPositions });
+    } catch (e: any) {
+      logger.error('drift: user snapshot failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   api.get('/drift/subaccount/balances', async (req: Request, res: Response) => {
     try {
       const q = req.query as any;
