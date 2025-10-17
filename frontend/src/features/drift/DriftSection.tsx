@@ -110,6 +110,23 @@ export const DriftSection: React.FC<{
     return () => { try { s.off('drift-liquidation', onLiq); } catch {} };
   }, [ctxSocket]);
 
+  // Periodically poll queue for users to keep UI fresh even if socket events are sparse
+  useEffect(() => {
+    let id: any = null;
+    const key = (Array.isArray(p.ls) && p.ls.length > 0 && typeof p.ls[0]?.key === 'string') ? p.ls[0].key : 'liq#default';
+    const tick = async () => {
+      try {
+        const res = await fetch(`${p.apiBase}${ROUTES.strategies.liquidator.queue}?key=${encodeURIComponent(key)}&limit=200`);
+        const data = await res.json().catch(() => ({}));
+        const q = data?.queue;
+        if (q && Array.isArray(q.users)) setLiqUsers(q.users);
+      } catch {}
+    };
+    id = setInterval(tick, 3000);
+    tick();
+    return () => { try { clearInterval(id); } catch {} };
+  }, [p.apiBase, JSON.stringify(p.ls||[]) ]);
+
   const createSub = async () => {
     try {
       p.setDriftOpBusy(true);
@@ -175,6 +192,17 @@ export const DriftSection: React.FC<{
     } finally {
       p.setDriftOpBusy(false);
     }
+  };
+
+  const testUser = async (userPk: string) => {
+    try {
+      const key = (Array.isArray(p.ls) && p.ls.length > 0 && typeof p.ls[0]?.key === 'string') ? p.ls[0].key : 'liq#default';
+      await fetch(`${p.apiBase}${ROUTES.strategies.liquidator.test || '/strategies/liquidator/test'}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key, userPk })
+      });
+    } catch {}
   };
 
   return (
@@ -350,6 +378,7 @@ export const DriftSection: React.FC<{
                 <th className="text-left">Profit</th>
                 <th className="text-left">Skip</th>
                 <th className="text-left">Positions</th>
+                <th className="text-left">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -358,17 +387,39 @@ export const DriftSection: React.FC<{
                   <td title={u.userPk} className="font-mono">{u.userPk.slice(0, 6)}…{u.userPk.slice(-6)}</td>
                   <td className={`${u.health < -0.5 ? 'text-red-300' : u.health < 0 ? 'text-yellow-300' : 'text-white'}`}>{(u.health * 100).toFixed(2)}%</td>
                   <td className="text-gray-400">{(() => { const d = Date.now() - Number(u.updatedAt||0); return isFinite(d) ? (d < 60000 ? `${Math.max(0, Math.floor(d/1000))}s ago` : `${Math.floor(d/60000)}m ago`) : '-'; })()}</td>
-                  <td>{typeof (u as any).collateralUsd === 'number' ? `$${((u as any).collateralUsd).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '-'}</td>
-                  <td>{typeof (u as any).exposureUsd === 'number' ? `$${((u as any).exposureUsd).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '-'}</td>
-                  <td>{(typeof (u as any).collateralUsd === 'number' && typeof (u as any).exposureUsd === 'number' && (u as any).exposureUsd > 0)
-                    ? (( (u as any).collateralUsd / (u as any).exposureUsd ).toFixed(2))
-                    : '-'}</td>
+                  <td>{(() => { const v = (u as any).collateralUsd; return (typeof v === 'number') ? `$${(v as number).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '-'; })()}</td>
+                  <td>{(() => {
+                    const ex = (u as any).exposureUsd;
+                    if (typeof ex === 'number') return `$${(ex as number).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+                    // Fallback: sum abs(notional)
+                    let sum = 0;
+                    try { if (Array.isArray((u as any).positions)) for (const p of (u as any).positions) { if (typeof (p as any).notional === 'number') sum += Math.abs((p as any).notional as number); } } catch {}
+                    return sum > 0 ? `$${sum.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '-';
+                  })()}</td>
+                  <td>{(() => {
+                    const c = (u as any).collateralUsd;
+                    let ex = (u as any).exposureUsd;
+                    if (!(typeof ex === 'number')) {
+                      let sum = 0;
+                      try { if (Array.isArray((u as any).positions)) for (const p of (u as any).positions) { if (typeof (p as any).notional === 'number') sum += Math.abs((p as any).notional as number); } } catch {}
+                      ex = sum;
+                    }
+                    return (typeof c === 'number' && typeof ex === 'number' && ex > 0) ? (c / ex).toFixed(2) : '-';
+                  })()}</td>
                   <td>
-                    {typeof (u as any).profitability === 'number' ? (
-                      <span className={`font-mono ${(u as any).profitability > 0 ? 'text-green-300' : 'text-yellow-300'}`}>
-                        {(((u as any).profitability) * 100).toFixed(2)}%
-                      </span>
-                    ) : <span className="text-gray-500">-</span>}
+                    {(() => {
+                      let prof = (u as any).profitability;
+                      if (typeof prof !== 'number' && Array.isArray((u as any).positions)) {
+                        for (const p of (u as any).positions) {
+                          if (typeof (p as any).profitability === 'number') {
+                            prof = (typeof prof === 'number') ? Math.min(prof as number, (p as any).profitability as number) : (p as any).profitability;
+                          }
+                        }
+                      }
+                      return (typeof prof === 'number') ? (
+                        <span className={`font-mono ${(prof as number) > 0 ? 'text-green-300' : 'text-yellow-300'}`}>{(((prof as number)) * 100).toFixed(2)}%</span>
+                      ) : <span className="text-gray-500">-</span>;
+                    })()}
                   </td>
                   <td>
                     {typeof (u as any).skipReason === 'string' && (u as any).skipReason ? (
@@ -397,6 +448,9 @@ export const DriftSection: React.FC<{
                     ) : (
                       <span className="text-gray-500">-</span>
                     )}
+                  </td>
+                  <td>
+                    <button className="px-2 py-0.5 bg-blue-600 text-white rounded hover:bg-blue-700" onClick={() => testUser(u.userPk)}>Test</button>
                   </td>
                 </tr>
               ))}

@@ -74,6 +74,7 @@ export const ROUTES = {
       update: '/strategies/liquidator/update',
       config: '/strategies/liquidator/config',
       queue: '/strategies/liquidator/queue',
+      test: '/strategies/liquidator/test',
     },
   },
   wallet: {

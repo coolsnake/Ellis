@@ -873,6 +873,12 @@ export class DriftLiquidator {
               const baseUi = raw / BASE_PREC;
               const symbol = (indexToSymbol(Number(m)) || '').split('-')[0] || undefined;
               // Price sample for this market
+              try {
+                const svc = DriftPriceService.getInstance();
+                const pollMs = Math.max(800, Number((this.config.httpPollMs ?? ((CONFIG as any)?.drift?.liquidator?.httpPollMs ?? 1200))));
+                // Ensure we are tracking price for any market we observe in positions
+                try { svc.trackMarket(Number(m), pollMs); } catch {}
+              } catch {}
               const priceSample = DriftPriceService.getInstance().getPrice(Number(m));
               const cur = (priceSample?.mid ?? priceSample?.oracle ?? priceSample?.bid ?? priceSample?.ask);
               let notional: number | undefined = undefined;
