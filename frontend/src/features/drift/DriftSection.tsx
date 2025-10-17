@@ -212,7 +212,7 @@ export const DriftSection: React.FC<{
       if (openUser === userPk) { setOpenUser(null); return; }
       setOpenUser(userPk);
       if (!userDetails[userPk]) {
-        const r = await fetch(`${p.apiBase}/api/drift/user/${encodeURIComponent(userPk)}`);
+        const r = await fetch(`${p.apiBase}/drift/user/${encodeURIComponent(userPk)}`);
         const j = await r.json().catch(() => ({}));
         setUserDetails(prev => ({ ...prev, [userPk]: j }));
       }
