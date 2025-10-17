@@ -56,6 +56,22 @@ export type LiquidatorConfig = {
   // Attempt sizing caps
   maxAttemptNotional?: number; // USD cap across a target handling
 };
+function toPublicKey(val: any): PublicKey | null {
+  try {
+    if (val && typeof val === 'object' && typeof (val as any).toBase58 === 'function') return val as PublicKey;
+    if (typeof val === 'string') {
+      const s = val.trim();
+      if (s.length > 0) {
+        try { return new PublicKey(s); } catch {}
+        try { const bytes = bs58.decode(s); if (bytes && bytes.length === 32) return new PublicKey(bytes); } catch {}
+      }
+    }
+    if (val && (val as any).length === 32) {
+      try { return new PublicKey(Uint8Array.from(val as any)); } catch {}
+    }
+  } catch {}
+  return null;
+}
 
 export type LiquidatorRuntimeState = {
   running: boolean;
@@ -498,8 +514,11 @@ export class DriftLiquidator {
     try {
       const drift: any = (DriftService.getInstance() as any).client;
       // Parse user public key for SDK calls in this attempt scope
-      let userPubkey: PublicKey | null = null;
-      try { userPubkey = new PublicKey(target.userPk); } catch {}
+      let userPubkey: PublicKey | null = toPublicKey(target.userPk);
+      if (!userPubkey) {
+        try { logger.warn('drift.liquidator.skip_target', { user: target.userPk, reason: 'INVALID_PUBKEY', cat: 'drift' }); } catch {}
+        return;
+      }
       // Ensure user is in cache and refresh snapshot for accurate metrics
       try {
         let sdkUser = this.userCache.get(String(target.userPk));
@@ -1047,7 +1066,8 @@ export class DriftLiquidator {
 
   private async handleTarget(target: { userPk: string; health: number }): Promise<void> {
     try {
-      try { logger.info('drift.liquidator.attempt_start', { user: target.userPk, health: target.health, name: this.config?.name, cat: 'drift' }); } catch {}
+      // Received a test/queue attempt request
+      try { logger.info('drift.liquidator.attempt_received', { user: target.userPk, health: target.health, name: this.config?.name, cat: 'drift' }); } catch {}
       const dry = !!this.config.dryRun;
       if (dry) {
         this.recordAction();
@@ -1086,6 +1106,8 @@ export class DriftLiquidator {
           try { logger.info('drift.liquidator.skip_target', { user: target.userPk, reason: 'HEALTHY_EXEC_GATE', healthNow, execGate, cat: 'drift' }); } catch {}
           return;
         }
+        // Passed execution gate; mark formal start with the latest health
+        try { logger.info('drift.liquidator.attempt_start', { user: target.userPk, health: healthNow, execGate, name: this.config?.name, cat: 'drift' }); } catch {}
       } catch {}
       // Compute remaining notional cap (USD) if configured
       let remainingNotional = Infinity;
