@@ -288,7 +288,13 @@ export function createDriftRouter(io: SocketIOServer): Router {
 
       // Collateral (quote precision)
       let QUOTE_PREC = 1_000_000;
-      try { const sdk: any = await import('@drift-labs/sdk'); const cst: any = (sdk as any).constants || (sdk as any); if (Number.isFinite(Number(cst?.QUOTE_PRECISION))) QUOTE_PREC = Number(cst.QUOTE_PRECISION); } catch {}
+      let QUOTE_INDEX = 0;
+      try {
+        const sdk: any = await import('@drift-labs/sdk');
+        const cst: any = (sdk as any).constants || (sdk as any);
+        if (Number.isFinite(Number(cst?.QUOTE_PRECISION))) QUOTE_PREC = Number(cst.QUOTE_PRECISION);
+        if (Number.isFinite(Number(cst?.QUOTE_SPOT_MARKET_INDEX))) QUOTE_INDEX = Number(cst.QUOTE_SPOT_MARKET_INDEX);
+      } catch {}
       const toUi = (v: any) => Number(v?.toString?.() || v || 0) / QUOTE_PREC;
       const collateral = {
         total: Number((sdkUser as any)?.getTotalCollateral?.() || 0),
@@ -299,6 +305,18 @@ export function createDriftRouter(io: SocketIOServer): Router {
         freeUi: toUi((sdkUser as any)?.getFreeCollateral?.()),
       } as any;
       try { logger.info('drift.route.user.debug', { phase: 'collateral', total: collateral.totalUi, maint: collateral.maintUi, free: collateral.freeUi, cat: 'drift' }); } catch {}
+
+      // Helper to robustly decode market symbol/name
+      const decodeSym = (val: any): string | undefined => {
+        try {
+          if (!val) return undefined;
+          if (typeof val === 'string') return val.replace(/\0+$/g, '').trim() || undefined;
+          if (Array.isArray(val)) return Buffer.from(val).toString('utf8').replace(/\0+$/g, '').trim() || undefined;
+          if (val?.data && Array.isArray(val.data)) return Buffer.from(Uint8Array.from(val.data)).toString('utf8').replace(/\0+$/g, '').trim() || undefined;
+          if (val?.byteLength && typeof val?.slice === 'function') return Buffer.from(Uint8Array.from(val)).toString('utf8').replace(/\0+$/g, '').trim() || undefined;
+        } catch {}
+        return undefined;
+      };
 
       // Spot collateral
       const spotCollateral: Array<{ marketIndex: number; symbol?: string; amountUi: number; amountRaw: number; mint?: string; decimals?: number; balanceType?: 'deposit' | 'borrow' }> = [];
@@ -319,8 +337,8 @@ export function createDriftRouter(io: SocketIOServer): Router {
             const idx = Number(sp?.marketIndex ?? sp?.market_index ?? sp?.market?.index);
             if (!Number.isFinite(idx)) continue;
             const mktAcc = await client?.getSpotMarketAccount?.(idx);
-            const decimals = Number(mktAcc?.decimals ?? 6);
-            const mint = String(mktAcc?.mint ?? '');
+            let decimals = Number(mktAcc?.decimals ?? mktAcc?.precision ?? 6);
+            let mint = String(mktAcc?.mint || mktAcc?.mintAddress || '');
             // Prefer SDK helper returning raw integer token amount
             let raw = 0;
             try {
@@ -333,8 +351,13 @@ export function createDriftRouter(io: SocketIOServer): Router {
               raw = Number(sp?.scaledBalance?.toString?.() || sp?.balance || sp?.depositBalance || sp?.borrowBalance || 0);
             }
             const amountRaw = raw;
-            const amountUi = Number.isFinite(amountRaw) ? (amountRaw / Math.pow(10, decimals)) : 0;
-            let symbol = (mktAcc?.name || mktAcc?.symbol || '')?.toString?.()?.replace?.(/\0+$/g, '') || undefined;
+            // Scale amount using quote precision if quote index, else token decimals
+            let amountUi = 0;
+            if (Number.isFinite(amountRaw)) {
+              if (Number(idx) === Number(QUOTE_INDEX)) amountUi = amountRaw / QUOTE_PREC; else amountUi = amountRaw / Math.pow(10, Number(decimals));
+            }
+            // Decode symbol from account, with robust decoding
+            let symbol = decodeSym((mktAcc as any)?.name || (mktAcc as any)?.symbol) || undefined;
             if (!symbol || symbol === '0') {
               try {
                 const sdk: any = await import('@drift-labs/sdk');
@@ -342,9 +365,18 @@ export function createDriftRouter(io: SocketIOServer): Router {
                 const cluster = (CONFIG as any)?.drift?.cluster || 'mainnet-beta';
                 const byCluster = (obj: any) => obj?.[cluster] || obj?.[cluster.replace('-', '_')];
                 const list = byCluster(constants?.SPOT_MARKETS) || byCluster(constants?.SpotMarkets) || constants?.SPOT_MARKETS || constants?.SpotMarkets || [];
-                const found = Array.isArray(list) ? list.find((m: any) => Number(m?.marketIndex ?? m?.index ?? m?.market_index) === idx) : null;
+                // Try by index first
+                let found = Array.isArray(list) ? list.find((m: any) => Number(m?.marketIndex ?? m?.index ?? m?.market_index) === idx) : null;
+                // If not found, try by mint match
+                if (!found && mint) {
+                  found = Array.isArray(list) ? list.find((m: any) => String(m?.mint || m?.mintAddress || m?.address || '').toLowerCase() === String(mint).toLowerCase()) : null;
+                }
                 if (found) {
-                  symbol = String(found?.symbol || found?.name || symbol || '').replace(/\0+$/g, '') || symbol;
+                  symbol = decodeSym(found?.symbol || found?.name) || symbol;
+                  if (!Number.isFinite(decimals)) decimals = Number(found?.decimals ?? found?.precision ?? decimals ?? 6);
+                  if (!mint) mint = String(found?.mint || found?.mintAddress || found?.address || mint || '');
+                  // Recompute UI if decimals changed
+                  if (Number(idx) !== Number(QUOTE_INDEX)) amountUi = Number.isFinite(amountRaw) ? amountRaw / Math.pow(10, Number(decimals)) : amountUi;
                 }
               } catch {}
             }
