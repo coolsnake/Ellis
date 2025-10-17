@@ -889,11 +889,21 @@ export class DriftLiquidator {
     try {
       const positions = sdkUser?.getPerpPositions?.() || [];
       const active: number[] = [];
+      // Allowed markets gate: only index markets we target (probeMarketIndices > trackedMarketIndices > marketIndices > allowlist)
+      let allowed: Set<number> | null = null;
+      try {
+        const pref = (this.config as any)?.probeMarketIndices;
+        const tracked = (this.config as any)?.trackedMarketIndices;
+        if (Array.isArray(pref) && pref.length > 0) allowed = new Set<number>((pref as any[]).map((n: any) => Number(n)).filter(Number.isFinite));
+        else if (Array.isArray(tracked) && tracked.length > 0) allowed = new Set<number>((tracked as any[]).map((n: any) => Number(n)).filter(Number.isFinite));
+        else if (Array.isArray(this.config.marketIndices) && this.config.marketIndices.length > 0) allowed = new Set<number>((this.config.marketIndices as any[]).map((n: any) => Number(n)).filter(Number.isFinite));
+        else allowed = new Set<number>(getAllowlistIndices());
+      } catch {}
       for (const p of positions) {
         try {
           const base = Number(p?.baseAssetAmount?.toString?.() || p?.baseAssetAmount || 0);
           const idx = Number(p?.marketIndex ?? p?.market_index ?? p?.market?.index);
-          if (Number.isFinite(idx) && Math.abs(base) > 0) active.push(Number(idx));
+          if (Number.isFinite(idx) && Math.abs(base) > 0 && (!allowed || allowed.has(Number(idx)))) active.push(Number(idx));
         } catch {}
       }
       // Optionally include spot exposure (non-zero deposits or borrows) so users are indexed for price-trigger scans
@@ -907,7 +917,7 @@ export class DriftLiquidator {
             try {
               const raw = Number(sp?.scaledBalance?.toString?.() || sp?.scaledBalance || sp?.cumulativeDeposits || 0);
               const idx = Number(sp?.marketIndex ?? sp?.market_index ?? sp?.market?.index);
-              if (Number.isFinite(idx) && Number.isFinite(raw) && raw !== 0) active.push(Number(idx));
+              if (Number.isFinite(idx) && Number.isFinite(raw) && raw !== 0 && (!allowed || allowed.has(Number(idx)))) active.push(Number(idx));
             } catch {}
           }
         }

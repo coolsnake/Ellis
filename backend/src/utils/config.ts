@@ -401,8 +401,8 @@ export const CONFIG = {
     dlobWsUrl: process.env.DRIFT_DLOB_WS_URL || 'wss://dlob.drift.trade/ws',
     // Gate using websocket-driven prices (fallback to HTTP when disabled or stale)
     enableWsPrices: (process.env.DRIFT_ENABLE_WS_PRICES || 'true') !== 'false',
-    // Allow HTTP fallback alongside WS when false; safer default for reliability
-    wsOnlyPrices: (process.env.DRIFT_WS_ONLY_PRICES || 'false') === 'true',
+    // WS-only pricing by default; set DRIFT_WS_ONLY_PRICES=false to enable HTTP fallback
+    wsOnlyPrices: (process.env.DRIFT_WS_ONLY_PRICES || 'true') === 'true',
     // Consider WS prices fresh within this window
     priceStaleMs: Number(process.env.DRIFT_PRICE_STALE_MS || 3000),
     // WS connection heartbeat/reconnect tuning
