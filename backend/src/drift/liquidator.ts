@@ -1324,17 +1324,17 @@ export class DriftLiquidator {
             try {
               const attemptBaseRaw = Math.max(1, Math.floor(baseRawAbs * sizeFrac));
               let res: any = null;
-              if (BN) {
-                try {
+              try {
+                // Prefer fractional size if supported by SDK
+                res = await drift.liquidatePerp(userPublicKey, mkt, sizeFrac);
+              } catch (e: any) {
+                if (BN) {
+                  // Fallback to BN amount if fractional signature is not supported
                   const amt = new BN(Number(attemptBaseRaw));
                   res = await drift.liquidatePerp(userPublicKey, mkt, amt);
-                } catch (e: any) {
-                  const msg = String(e?.message || e || '');
-                  if (!/toBuffer|BN|amount|precision|number of arguments/i.test(msg)) throw e;
-                  res = await drift.liquidatePerp(userPublicKey, mkt, sizeFrac);
+                } else {
+                  throw e;
                 }
-              } else {
-                res = await drift.liquidatePerp(userPublicKey, mkt, sizeFrac);
               }
               const sig = typeof res === 'string' ? res : (res?.txSig || res?.signature || null);
               attempts += 1;
