@@ -1198,7 +1198,13 @@ export class DriftLiquidator {
             const rawBase = Number(p?.baseAssetAmount?.toString?.() || p?.baseAssetAmount || 0);
             const m = Number(p?.marketIndex ?? p?.market_index ?? p?.market?.index);
             if (!Number.isFinite(m) || rawBase === 0) continue;
-            const baseUi = rawBase / BASE_PREC;
+            let basePrecForMarket = BASE_PREC;
+            try {
+              const acc = await (DriftService.getInstance() as any)?.client?.getPerpMarketAccount?.(Number(m));
+              const maybe = Number(acc?.amm?.basePrecision ?? acc?.basePrecision);
+              if (Number.isFinite(maybe) && maybe > 0) basePrecForMarket = maybe;
+            } catch {}
+            const baseUi = rawBase / basePrecForMarket;
             const symbol = (indexToSymbol(Number(m)) || '').split('-')[0] || undefined;
             let priceSample = DriftPriceService.getInstance().getPrice(Number(m));
             let cur = (priceSample?.mid ?? priceSample?.oracle ?? priceSample?.bid ?? priceSample?.ask);
@@ -1242,6 +1248,24 @@ export class DriftLiquidator {
           }
         } catch {}
         const exposureUsd = posSummary.reduce((s, p) => s + (typeof p.notional === 'number' ? Math.abs(p.notional) : 0), 0);
+        // Spot collateral snapshot (amounts + UI conversion)
+        let spotCollateral: Array<{ marketIndex: number; symbol?: string; amountUi: number; amountRaw: number; mint?: string }> = [];
+        try {
+          const spots = (sdkUser as any)?.getSpotPositions?.() || [];
+          for (const sp of (spots || [])) {
+            try {
+              const idx = Number(sp?.marketIndex ?? sp?.market_index ?? sp?.market?.index);
+              if (!Number.isFinite(idx)) continue;
+              const mktAcc = await (DriftService.getInstance() as any)?.client?.getSpotMarketAccount?.(idx);
+              const decimals = Number(mktAcc?.decimals ?? 6);
+              const mint = String(mktAcc?.mint ?? '');
+              const amountRaw = Number(sp?.scaledBalance?.toString?.() || sp?.balance || sp?.depositBalance || sp?.borrowBalance || 0);
+              const amountUi = amountRaw / Math.pow(10, decimals);
+              const symbol = (mktAcc?.name || mktAcc?.symbol || '')?.toString?.()?.replace?.(/\0+$/g, '') || undefined;
+              spotCollateral.push({ marketIndex: idx, symbol, amountUi, amountRaw, mint });
+            } catch {}
+          }
+        } catch {}
         let userProfit: number | undefined = undefined;
         for (const ps of posSummary) { if (typeof ps.profitability === 'number') userProfit = (typeof userProfit === 'number') ? Math.min(userProfit, ps.profitability) : ps.profitability; }
         const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
@@ -1263,6 +1287,7 @@ export class DriftLiquidator {
           collateral: { total: total, maintenance: maint, free: free, totalUi, maintUi, freeUi },
           exposureUsd,
           positions: posSummary,
+          spotCollateral,
           config: cfgLog,
           cat: 'drift'
         } as any);
@@ -2034,7 +2059,7 @@ export class DriftLiquidator {
             }
             // Apply healthy cooldown to avoid immediate re-probing
             try {
-              const ms = Math.max(15000, Number(((this.config as any)?.healthyCooldownMs ?? ((CONFIG as any)?.drift?.liquidator?.healthyCooldownMs) ?? 45000)));
+              const ms = Math.max(8000, Number(((this.config as any)?.healthyCooldownMs ?? ((CONFIG as any)?.drift?.liquidator?.healthyCooldownMs) ?? 15000)));
               this.healthyUntil.set(key, Date.now() + ms);
             } catch {}
             try { await this.safeUnsubscribeUser(key, user); } catch {}

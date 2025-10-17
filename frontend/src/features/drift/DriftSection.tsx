@@ -205,6 +205,20 @@ export const DriftSection: React.FC<{
     } catch {}
   };
 
+  const [openUser, setOpenUser] = useState<string | null>(null);
+  const [userDetails, setUserDetails] = useState<Record<string, any>>({});
+  const toggleOpen = async (userPk: string) => {
+    try {
+      if (openUser === userPk) { setOpenUser(null); return; }
+      setOpenUser(userPk);
+      if (!userDetails[userPk]) {
+        const r = await fetch(`${p.apiBase}/api/drift/user/${encodeURIComponent(userPk)}`);
+        const j = await r.json().catch(() => ({}));
+        setUserDetails(prev => ({ ...prev, [userPk]: j }));
+      }
+    } catch {}
+  };
+
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
       <div className="p-3 bg-gray-800 rounded md:col-span-2">
@@ -383,7 +397,8 @@ export const DriftSection: React.FC<{
             </thead>
             <tbody>
               {liqUsers.map((u) => (
-                <tr key={u.userPk} className="text-gray-300">
+                <React.Fragment key={u.userPk}>
+                <tr className="text-gray-300">
                   <td title={u.userPk} className="font-mono">{u.userPk.slice(0, 6)}…{u.userPk.slice(-6)}</td>
                   <td className={`${u.health < -0.5 ? 'text-red-300' : u.health < 0 ? 'text-yellow-300' : 'text-white'}`}>{(u.health * 100).toFixed(2)}%</td>
                   <td className="text-gray-400">{(() => { const d = Date.now() - Number(u.updatedAt||0); return isFinite(d) ? (d < 60000 ? `${Math.max(0, Math.floor(d/1000))}s ago` : `${Math.floor(d/60000)}m ago`) : '-'; })()}</td>
@@ -449,10 +464,65 @@ export const DriftSection: React.FC<{
                       <span className="text-gray-500">-</span>
                     )}
                   </td>
-                  <td>
+                  <td className="flex gap-2 items-center">
+                    <button className="px-2 py-0.5 bg-gray-700 text-white rounded hover:bg-gray-600" onClick={() => toggleOpen(u.userPk)}>
+                      {openUser === u.userPk ? 'Hide' : 'Show'}
+                    </button>
                     <button className="px-2 py-0.5 bg-blue-600 text-white rounded hover:bg-blue-700" onClick={() => testUser(u.userPk)}>Test</button>
                   </td>
                 </tr>
+                {openUser === u.userPk && (
+                  <tr className="bg-gray-900/60">
+                    <td colSpan={10} className="p-2">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                          <div className="text-gray-300 mb-1">Collateral tokens</div>
+                          <div className="overflow-auto">
+                            <table className="w-full text-xs">
+                              <thead>
+                                <tr className="text-gray-400"><th className="text-left">Market</th><th className="text-left">Mint</th><th className="text-left">Amount</th></tr>
+                              </thead>
+                              <tbody>
+                                {(userDetails[u.userPk]?.spotCollateral || []).map((c: any, i: number) => (
+                                  <tr key={`col-${u.userPk}-${i}`} className="text-gray-300">
+                                    <td>{c.symbol || c.marketIndex}</td>
+                                    <td className="font-mono">{c.mint || '-'}</td>
+                                    <td className="font-mono">{Number(c.amountUi || 0).toLocaleString(undefined, { maximumFractionDigits: 9 })}</td>
+                                  </tr>
+                                ))}
+                                {!(userDetails[u.userPk]?.spotCollateral || []).length && (
+                                  <tr><td colSpan={3} className="text-gray-500">No collateral</td></tr>
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-gray-300 mb-1">Perp positions</div>
+                          <div className="overflow-auto">
+                            <table className="w-full text-xs">
+                              <thead>
+                                <tr className="text-gray-400"><th className="text-left">Market</th><th className="text-left">Base (raw)</th></tr>
+                              </thead>
+                              <tbody>
+                                {(userDetails[u.userPk]?.perpPositions || []).map((pp: any, i: number) => (
+                                  <tr key={`pp-${u.userPk}-${i}`} className="text-gray-300">
+                                    <td>{pp.marketIndex}</td>
+                                    <td className="font-mono">{Number(pp.baseRaw || 0).toLocaleString()}</td>
+                                  </tr>
+                                ))}
+                                {!(userDetails[u.userPk]?.perpPositions || []).length && (
+                                  <tr><td colSpan={2} className="text-gray-500">No perp positions</td></tr>
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                </React.Fragment>
               ))}
               {liqUsers.length === 0 && (
                 <tr><td colSpan={8} className="text-gray-500">No users under threshold</td></tr>
