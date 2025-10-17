@@ -2,6 +2,7 @@
 import { logger } from '../utils/logger.js';
 import { DriftService } from './client.js';
 import { DriftPriceService } from './price.js';
+import { fetchDlobL2 } from './marketdata.js';
 import { getAllowlistIndices, indexToSymbol } from './marketMapping.js';
 import { CONFIG } from '../utils/config.js';
 import { emit } from '../server/realtime.js';
@@ -369,6 +370,19 @@ export class DriftLiquidator {
       if (!this.initialized) { try { await this.initDiscovery(); this.initialized = true; } catch {} }
       const candidates = await this.findUnhealthyCandidates();
       try { await this.processProbeQueue(); } catch {}
+      // Opportunistically refresh a small set of stale at-risk users to keep UI metrics fresh
+      try {
+        const now = Date.now();
+        let refreshed = 0;
+        for (const [key, v] of Array.from(this.atRiskUsers.entries())) {
+          if (refreshed >= 25) break;
+          if (!v || typeof v.updatedAt !== 'number') continue;
+          if ((now - v.updatedAt) > Math.max(5000, Number(((this.config as any)?.refreshAccountsMs ?? ((CONFIG as any)?.drift?.liquidator?.refreshAccountsMs) ?? 15000)))) {
+            this.enqueueProbe(String(key));
+            refreshed += 1;
+          }
+        }
+      } catch {}
       // Incremental updates: add candidates, avoid rebuilding entire heap
       for (const c of candidates) this.addOrQueueCandidate({ userPk: c.userPk, health: c.health, updatedAt: Date.now() } as any);
       this.state.candidatesQueued = this.heap.size();
@@ -444,7 +458,11 @@ export class DriftLiquidator {
   private async discoverUsersViaHeliusGpaV2(maxDiscover: number): Promise<string[]> {
     const out: string[] = [];
     try {
-      const drift: any = (DriftService.getInstance() as any).client;
+      const driftSvc = DriftService.getInstance();
+      const drift: any = (driftSvc as any).client;
+      // Parse user public key for SDK calls
+      let userPubkey: PublicKey | null = null;
+      try { userPubkey = new PublicKey(target.userPk); } catch {}
       const conn: any = (DriftService.getInstance() as any).connection;
       const endpoint: string = String(conn?._rpcEndpoint || conn?.rpcEndpoint || '');
       if (!endpoint || !/helius/i.test(endpoint)) return out;
@@ -480,6 +498,19 @@ export class DriftLiquidator {
   private async tryRecentDiscovery(): Promise<void> {
     try {
       const drift: any = (DriftService.getInstance() as any).client;
+      // Ensure user is in cache and refresh snapshot for accurate metrics
+      try {
+        let sdkUser = this.userCache.get(String(target.userPk));
+        if (!sdkUser) {
+          let pk: any = target.userPk;
+          try { pk = new PublicKey(String(target.userPk)); } catch {}
+          sdkUser = new User({ driftClient: drift, userAccountPublicKey: pk, accountSubscription: { type: 'websocket' } });
+          this.userCache.set(String(target.userPk), sdkUser);
+          try { await (sdkUser as any)?.subscribe?.(); this.subscribedUsers.add(String(target.userPk)); } catch {}
+        }
+        try { await (sdkUser as any)?.fetchAccounts?.(); } catch {}
+        try { await this.refreshIndexForUser(sdkUser, String(target.userPk)); } catch {}
+      } catch {}
       const conn: any = (DriftService.getInstance() as any).connection;
       const endpoint: string = String(conn?._rpcEndpoint || conn?.rpcEndpoint || '');
       if (!endpoint || !/helius/i.test(endpoint)) return;
@@ -880,7 +911,18 @@ export class DriftLiquidator {
                 try { svc.trackMarket(Number(m), pollMs); } catch {}
               } catch {}
               const priceSample = DriftPriceService.getInstance().getPrice(Number(m));
-              const cur = (priceSample?.mid ?? priceSample?.oracle ?? priceSample?.bid ?? priceSample?.ask);
+              let cur = (priceSample?.mid ?? priceSample?.oracle ?? priceSample?.bid ?? priceSample?.ask);
+              if (!(typeof cur === 'number' && isFinite(cur))) {
+                try {
+                  const l2 = await fetchDlobL2(Number(m));
+                  if (l2) {
+                    const mid = (typeof l2.bid?.[0]?.price === 'number' && typeof l2.ask?.[0]?.price === 'number')
+                      ? (l2.bid[0].price + l2.ask[0].price) / 2
+                      : undefined;
+                    cur = (typeof mid === 'number') ? mid : (typeof l2.oracle === 'number' ? l2.oracle : cur);
+                  }
+                } catch {}
+              }
               let notional: number | undefined = undefined;
               let liqPrice: number | undefined = undefined;
               let profitability: number | undefined = undefined;
@@ -1073,17 +1115,17 @@ export class DriftLiquidator {
         const maxCancels = Math.max(1, Math.min(200, Number((this.config.maxCancels ?? ((CONFIG as any)?.drift?.liquidator?.maxCancels) ?? 20))));
         const batch = Math.min(maxCancels, 10);
         try { logger.info('drift.liquidator.force_cancel_begin', { user: target.userPk, maxCancels, batch, cat: 'drift' }); } catch {}
-        if (typeof drift?.forceCancelOrders === 'function') {
+        if (typeof drift?.forceCancelOrders === 'function' && userPubkey) {
           let remaining = maxCancels;
           while (remaining > 0) {
-            try { await drift.forceCancelOrders({ userPublicKey: target.userPk, marketType: 0, limit: batch }); } catch {}
+            try { await drift.forceCancelOrders({ userPublicKey: userPubkey, marketType: 0, limit: batch }); } catch {}
             remaining -= batch;
             if (remaining > 0) { try { await new Promise(r => setTimeout(r, 250)); } catch {} }
           }
-        } else if (typeof drift?.forceCancelOrdersForUsers === 'function') {
+        } else if (typeof drift?.forceCancelOrdersForUsers === 'function' && userPubkey) {
           try {
             await drift.forceCancelOrdersForUsers({
-              users: [target.userPk],
+              users: [userPubkey],
               marketType: 0,
               maxCancels: maxCancels,
             });
@@ -1097,7 +1139,7 @@ export class DriftLiquidator {
       try {
         const maxPerp = Math.max(1, Math.min(50, Number((this.config.maxPerpAttempts ?? ((CONFIG as any)?.drift?.liquidator?.maxPerpAttempts) ?? 3))));
         const baseSizeFrac = Math.max(0.001, Math.min(0.5, Number((this.config.perpSizeFraction ?? ((CONFIG as any)?.drift?.liquidator?.perpSizeFraction) ?? 0.05))));
-        if (typeof drift?.liquidatePerp === 'function') {
+        if (typeof drift?.liquidatePerp === 'function' && userPubkey) {
           let attempts = 0;
           for (const idx of perpMarkets) {
             if (attempts >= maxPerp) break;
@@ -1113,7 +1155,7 @@ export class DriftLiquidator {
             try { logger.info('drift.liquidator.perp_attempt', { user: target.userPk, marketIndex: mkt, posNotional: posN, baseSizeFrac, sizeFrac, remainingNotional: Number.isFinite(remainingNotional) && remainingNotional !== Infinity ? remainingNotional : null, cat: 'drift' }); } catch {}
             if (sizeFrac <= 0) break;
             try {
-              await drift.liquidatePerp(target.userPk, mkt, sizeFrac);
+              await drift.liquidatePerp(userPubkey, mkt, sizeFrac);
               attempts += 1;
               if (Number.isFinite(remainingNotional) && remainingNotional !== Infinity) {
                 remainingNotional = Math.max(0, remainingNotional - (posN * sizeFrac));
@@ -1122,7 +1164,7 @@ export class DriftLiquidator {
               }
             } catch {}
           }
-        } else if (typeof drift?.liquidatePerpBatch === 'function') {
+        } else if (typeof drift?.liquidatePerpBatch === 'function' && userPubkey) {
           try {
             // If we only have batch available, compute a conservative global fraction to obey the cap
             let sizeFraction = baseSizeFrac;
@@ -1132,7 +1174,7 @@ export class DriftLiquidator {
               try { logger.info('drift.liquidator.perp_batch_attempt', { user: target.userPk, markets: perpMarkets, sumNotional: sumN, sizeFraction, remainingNotional, cat: 'drift' }); } catch {}
             }
             if (sizeFraction > 0) {
-              await drift.liquidatePerpBatch({ users: [target.userPk], markets: perpMarkets, sizeFraction });
+              await drift.liquidatePerpBatch({ users: [userPubkey], markets: perpMarkets, sizeFraction });
             }
           } catch {}
         }
@@ -1146,7 +1188,7 @@ export class DriftLiquidator {
           // Cap fully consumed; skip spot
           try { logger.info('drift.liquidator.spot_skip_cap', { user: target.userPk, cat: 'drift' }); } catch {}
         } else {
-        if (typeof drift?.liquidateSpot === 'function') {
+        if (typeof drift?.liquidateSpot === 'function' && userPubkey) {
           const maxSpot = Math.max(1, Math.min(50, Number((this.config.maxSpotAttempts ?? ((CONFIG as any)?.drift?.liquidator?.maxSpotAttempts) ?? 2))));
           const sizeFrac = Math.max(0.001, Math.min(0.5, Number((this.config.spotSizeFraction ?? ((CONFIG as any)?.drift?.liquidator?.spotSizeFraction) ?? 0.05))));
           const spots = [0];
@@ -1155,7 +1197,7 @@ export class DriftLiquidator {
             if (attempts >= maxSpot) break;
               try { logger.info('drift.liquidator.spot_attempt', { user: target.userPk, spotMarketIndex: Number(s), sizeFraction: sizeFrac, cat: 'drift' }); } catch {}
             try {
-              await drift.liquidateSpot(target.userPk, Number(s), sizeFrac);
+                await drift.liquidateSpot(userPubkey, Number(s), sizeFrac);
               attempts += 1;
             } catch {}
           }
@@ -1177,6 +1219,7 @@ export class DriftLiquidator {
     try {
       try { logger.info('drift.liquidator.test_request', { user: String(userPk), name: this.config?.name, cat: 'drift' }); } catch {}
       await this.handleTarget({ userPk: String(userPk), health: 0 });
+      try { this.maybeEmitQueue(); } catch {}
       try { logger.info('drift.liquidator.test_complete', { user: String(userPk), name: this.config?.name, cat: 'drift' }); } catch {}
       return { ok: true };
     } catch (e: any) {
@@ -1561,8 +1604,25 @@ export class DriftLiquidator {
                   let symbol: string | undefined = undefined;
                   try {
                     symbol = (indexToSymbol(Number(m)) || '').split('-')[0] || undefined;
+                    // Ensure price tracking and attempt immediate price sampling
+                    try {
+                      const svc = DriftPriceService.getInstance();
+                      const pollMs = Math.max(800, Number((this.config.httpPollMs ?? ((CONFIG as any)?.drift?.liquidator?.httpPollMs ?? 1200))));
+                      svc.trackMarket(Number(m), pollMs);
+                    } catch {}
                     const priceSample = DriftPriceService.getInstance().getPrice(Number(m));
-                    const cur = (priceSample?.mid ?? priceSample?.oracle ?? priceSample?.bid ?? priceSample?.ask);
+                    let cur = (priceSample?.mid ?? priceSample?.oracle ?? priceSample?.bid ?? priceSample?.ask);
+                    if (!(typeof cur === 'number' && isFinite(cur))) {
+                      try {
+                        const l2 = await fetchDlobL2(Number(m));
+                        if (l2) {
+                          const mid = (typeof l2.bid?.[0]?.price === 'number' && typeof l2.ask?.[0]?.price === 'number')
+                            ? (l2.bid[0].price + l2.ask[0].price) / 2
+                            : undefined;
+                          cur = (typeof mid === 'number') ? mid : (typeof l2.oracle === 'number' ? l2.oracle : cur);
+                        }
+                      } catch {}
+                    }
                     if (typeof cur === 'number' && isFinite(cur)) {
                       notional = Math.abs(baseUi) * cur;
                       const dist = this.computeDistanceToLiquidation(String(key), Number(m));
