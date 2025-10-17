@@ -21,7 +21,7 @@ const CONSOLIDATED_LOG_PATH = process.env.CONSOLIDATED_LOG_PATH || resolve(LOG_D
 export const CONFIG = {
   port: Number(process.env.PORT || 3001),
   rpcUrl: process.env.SOLANA_RPC_URL || 'https://mainnet.helius-rpc.com/?api-key=4673beb7-dcca-4942-91ac-c69babdf1f02',
-  websocketIntervalMs: Number(process.env.WEBSOCKET_INTERVAL_MS || 800),
+  websocketIntervalMs: Number(process.env.WEBSOCKET_INTERVAL_MS || 400),
   walletPath: process.env.WALLET_PATH || resolve(WALLET_DIR, 'keypair.json'),
   strategyConfigPath: process.env.STRATEGY_CONFIG_PATH || resolve(CONFIG_DIR, 'strategy.json'),
   // Expose centralized config file paths for Linux deployments
@@ -440,7 +440,7 @@ export const CONFIG = {
       usePriceTriggers: (process.env.DRIFT_LIQ_USE_PRICE_TRIGGERS || 'true') !== 'false',
       priceTriggerDebounceMs: Number(process.env.DRIFT_LIQ_PRICE_DEBOUNCE_MS || 400),
       httpPollMs: Number(process.env.DRIFT_LIQ_HTTP_POLL_MS || 800),
-      maxUsersPerPriceTick: Number(process.env.DRIFT_LIQ_MAX_USERS_PER_PRICE_TICK || 60),
+      maxUsersPerPriceTick: Number(process.env.DRIFT_LIQ_MAX_USERS_PER_PRICE_TICK || 200),
       targetCooldownMs: Number(process.env.DRIFT_LIQ_TARGET_COOLDOWN_MS || 6000),
       statsIntervalMs: Number(process.env.DRIFT_LIQ_STATS_INTERVAL_MS || 10000),
       usersListLimit: Number(process.env.DRIFT_LIQ_USERS_LIST_LIMIT || 300),
