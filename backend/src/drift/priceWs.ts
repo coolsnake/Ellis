@@ -188,16 +188,24 @@ export class DriftDlobWs {
     try {
       const bidsArr: any[] = Array.isArray((raw as any).bids) ? (raw as any).bids : (Array.isArray((raw as any).bid) ? (raw as any).bid : []);
       const asksArr: any[] = Array.isArray((raw as any).asks) ? (raw as any).asks : (Array.isArray((raw as any).ask) ? (raw as any).ask : []);
+      // DLOB WS may emit micro-priced values (price * 1e6). Normalize to UI units.
+      const scaleIfMicro = (v: number | undefined): number | undefined => {
+        if (typeof v !== 'number' || !isFinite(v)) return undefined;
+        return Math.abs(v) > 1e6 ? v / 1e6 : v;
+      };
       const parsePx = (x: any): number => Number((Array.isArray(x) ? x[0] : (x?.price)) ?? NaN);
-      const bidPx = bidsArr.length > 0 ? parsePx(bidsArr[0]) : undefined;
-      const askPx = asksArr.length > 0 ? parsePx(asksArr[0]) : undefined;
+      const bidRaw = bidsArr.length > 0 ? parsePx(bidsArr[0]) : undefined;
+      const askRaw = asksArr.length > 0 ? parsePx(asksArr[0]) : undefined;
+      const bidPx = scaleIfMicro(bidRaw);
+      const askPx = scaleIfMicro(askRaw);
       const mid = (typeof bidPx === 'number' && isFinite(bidPx) && typeof askPx === 'number' && isFinite(askPx)) ? (bidPx + askPx) / 2 : undefined;
+      const oraclePx = scaleIfMicro((raw as any)?.oracle as any);
       return {
         marketIndex: Number(marketIndex),
         bid: (typeof bidPx === 'number' && isFinite(bidPx)) ? bidPx : undefined,
         ask: (typeof askPx === 'number' && isFinite(askPx)) ? askPx : undefined,
         mid,
-        oracle: (typeof (raw as any)?.oracle === 'number') ? (raw as any).oracle : undefined,
+        oracle: (typeof oraclePx === 'number' && isFinite(oraclePx)) ? oraclePx : undefined,
         symbol: (raw as any)?.symbol,
         updatedAt: Date.now(),
       };

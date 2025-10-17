@@ -505,23 +505,46 @@ export const DriftSection: React.FC<{
                         <div>
                           <div className="text-gray-300 mb-1">Collateral tokens</div>
                           <div className="overflow-auto">
-                            <table className="w-full text-xs">
-                              <thead>
-                                <tr className="text-gray-400"><th className="text-left">Market</th><th className="text-left">Mint</th><th className="text-left">Amount</th></tr>
-                              </thead>
-                              <tbody>
-                                {(userDetails[u.userPk]?.spotCollateral || []).map((c: any, i: number) => (
-                                  <tr key={`col-${u.userPk}-${i}`} className="text-gray-300">
-                                    <td>{c.symbol || c.marketIndex}</td>
-                                    <td className="font-mono">{c.mint || '-'}</td>
-                                    <td className="font-mono">{Number(c.amountUi || 0).toLocaleString(undefined, { maximumFractionDigits: 9 })}</td>
-                                  </tr>
-                                ))}
-                                {!(userDetails[u.userPk]?.spotCollateral || []).length && (
-                                  <tr><td colSpan={3} className="text-gray-500">No collateral</td></tr>
-                                )}
-                              </tbody>
-                            </table>
+                            <div className="mb-3">
+                              <div className="text-gray-400 text-xs mb-1">Spot collateral — Deposits</div>
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="text-gray-400"><th className="text-left">Market</th><th className="text-left">Mint</th><th className="text-left">Amount</th></tr>
+                                </thead>
+                                <tbody>
+                                  {(userDetails[u.userPk]?.spotCollateral || []).filter((c: any) => Number(c?.amountUi || 0) > 0).map((c: any, i: number) => (
+                                    <tr key={`col-dep-${u.userPk}-${i}`} className="text-gray-300">
+                                      <td>{c.symbol || c.marketIndex}</td>
+                                      <td className="font-mono">{c.mint || '-'}</td>
+                                      <td className="font-mono text-green-300">{Number(c.amountUi || 0).toLocaleString(undefined, { maximumFractionDigits: 9 })}</td>
+                                    </tr>
+                                  ))}
+                                  {!((userDetails[u.userPk]?.spotCollateral || []).some((c: any) => Number(c?.amountUi || 0) > 0)) && (
+                                    <tr><td colSpan={3} className="text-gray-500">No deposits</td></tr>
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
+                            <div>
+                              <div className="text-gray-400 text-xs mb-1">Spot collateral — Borrows</div>
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="text-gray-400"><th className="text-left">Market</th><th className="text-left">Mint</th><th className="text-left">Amount</th></tr>
+                                </thead>
+                                <tbody>
+                                  {(userDetails[u.userPk]?.spotCollateral || []).filter((c: any) => Number(c?.amountUi || 0) < 0).map((c: any, i: number) => (
+                                    <tr key={`col-bor-${u.userPk}-${i}`} className="text-gray-300">
+                                      <td>{c.symbol || c.marketIndex}</td>
+                                      <td className="font-mono">{c.mint || '-'}</td>
+                                      <td className="font-mono text-red-300">{Math.abs(Number(c.amountUi || 0)).toLocaleString(undefined, { maximumFractionDigits: 9 })}</td>
+                                    </tr>
+                                  ))}
+                                  {!((userDetails[u.userPk]?.spotCollateral || []).some((c: any) => Number(c?.amountUi || 0) < 0)) && (
+                                    <tr><td colSpan={3} className="text-gray-500">No borrows</td></tr>
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
                           </div>
                         </div>
                         <div>

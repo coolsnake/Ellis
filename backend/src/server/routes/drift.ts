@@ -263,7 +263,7 @@ export function createDriftRouter(io: SocketIOServer): Router {
       } as any;
 
       // Spot collateral
-      const spotCollateral: Array<{ marketIndex: number; symbol?: string; amountUi: number; amountRaw: number; mint?: string; decimals?: number }> = [];
+      const spotCollateral: Array<{ marketIndex: number; symbol?: string; amountUi: number; amountRaw: number; mint?: string; decimals?: number; balanceType?: 'deposit' | 'borrow' }> = [];
       try {
         const spots = (sdkUser as any)?.getSpotPositions?.() || [];
         for (const sp of (spots || [])) {
@@ -277,7 +277,7 @@ export function createDriftRouter(io: SocketIOServer): Router {
             let raw = 0;
             try {
               if (typeof (sdkUser as any)?.getTokenAmount === 'function') {
-                const v = await (sdkUser as any).getTokenAmount(idx);
+                const v = (sdkUser as any).getTokenAmount(idx);
                 raw = Number(v?.toString?.() || v || 0);
               }
             } catch {}
@@ -300,7 +300,10 @@ export function createDriftRouter(io: SocketIOServer): Router {
                 }
               } catch {}
             }
-            if (amountUi !== 0) spotCollateral.push({ marketIndex: idx, symbol, amountUi, amountRaw, mint, decimals });
+            if (amountUi !== 0) {
+              const balanceType: 'deposit' | 'borrow' = (amountRaw < 0 || amountUi < 0) ? 'borrow' : 'deposit';
+              spotCollateral.push({ marketIndex: idx, symbol, amountUi, amountRaw, mint, decimals, balanceType });
+            }
           } catch {}
         }
       } catch {}
@@ -348,7 +351,7 @@ export function createDriftRouter(io: SocketIOServer): Router {
       // Fallback to active user if targeted subaccount is unavailable
       if (!user) user = client?.user;
       const spotPositions = user?.getSpotPositions?.() || [];
-      const out: Array<{ marketIndex: number; balance: number; amount: number; symbol?: string; mint?: string; decimals?: number }> = [];
+      const out: Array<{ marketIndex: number; balance: number; amount: number; amountRaw?: number; balanceType?: 'deposit' | 'borrow'; symbol?: string; mint?: string; decimals?: number }> = [];
       // Load constants for correct scaling
       let QUOTE_PREC = 1_000_000;
       let QUOTE_INDEX = 0;
@@ -372,10 +375,16 @@ export function createDriftRouter(io: SocketIOServer): Router {
         for (const p of posList) {
           try {
             const idx = Number(p?.marketIndex ?? p?.market_index ?? 0);
-            // Prefer SDK helper returning raw integer token amount
+            // Prefer SDK helper returning raw integer token amount (signed)
             let raw = 0;
-            try { if (typeof (userRef as any)?.getTokenAmount === 'function') { const v = await (userRef as any).getTokenAmount(idx); raw = Number(v?.toString?.() || v || 0); } } catch {}
-            if (!Number.isFinite(raw) || raw === 0) { raw = Number(p?.scaledBalance?.toString?.() || 0) || Number(p?.balance || 0); }
+            try {
+              if (typeof (userRef as any)?.getTokenAmount === 'function') {
+                const v = (userRef as any).getTokenAmount(idx);
+                raw = Number(v?.toString?.() || v || 0);
+              }
+            } catch {}
+            if (!Number.isFinite(raw)) { raw = 0; }
+            if (raw === 0) { raw = Number(p?.scaledBalance?.toString?.() || 0) || Number(p?.balance || 0); }
             let symbol: string | undefined = undefined;
             let mint: string | undefined = undefined;
             let decimals: number | undefined = undefined;
@@ -404,7 +413,9 @@ export function createDriftRouter(io: SocketIOServer): Router {
             }
             let amount = raw;
             if (Number(idx) === Number(QUOTE_INDEX)) amount = amount / QUOTE_PREC; else if (Number.isFinite(decimals)) { const scale = Math.pow(10, Number(decimals)); if (scale > 0 && isFinite(scale)) amount = amount / scale; }
-            if (amount > 0 || raw > 0) out.push({ marketIndex: idx, balance: amount, amount, symbol, mint, decimals });
+            const balanceType: 'deposit' | 'borrow' = (amount < 0 || raw < 0) ? 'borrow' : 'deposit';
+            // Include both deposits and borrows when non-zero
+            if (amount !== 0 || raw !== 0) out.push({ marketIndex: idx, balance: amount, amount, amountRaw: raw, balanceType, symbol, mint, decimals });
           } catch {}
         }
       };

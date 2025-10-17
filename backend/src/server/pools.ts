@@ -1053,10 +1053,14 @@ export function startRaydiumRefreshLoop(): void {
             // Begin async teardown and websocket close; future setups will await wsClosePromise
             wsClosePromise = (async () => {
               try {
-                // Best-effort await listener removals
+                // Best-effort await listener removals, but avoid calling into RPC when WS is CLOSING/CLOSED
                 const removals: Array<Promise<any>> = [];
+                const wsAny = (wsConn as any)?._rpcWebSocket?._ws;
+                const ready: number = Number(wsAny?.readyState);
+                const canRpc = (ready === 0 || ready === 1); // CONNECTING or OPEN
                 for (const s of subs) {
                   try {
+                    if (!canRpc) continue;
                     if (s.kind === 'account') {
                       removals.push((conn as any).removeAccountChangeListener(s.id).catch(() => {}));
                     } else {
@@ -1064,23 +1068,23 @@ export function startRaydiumRefreshLoop(): void {
                     }
                   } catch {}
                 }
-                if (removals.length) {
+                if (canRpc && removals.length) {
                   try { await Promise.allSettled(removals); } catch {}
                 }
                 // Close underlying websocket if present to avoid CLOSING race on next subscribe
                 try {
-                  const wsAny = (wsConn as any)?._rpcWebSocket?._ws;
-                  const rs: number | undefined = Number(wsAny?.readyState);
-                  // 0 CONNECTING, 1 OPEN
-                  if (wsAny && (rs === 0 || rs === 1 || rs === 2)) {
+                  const wsAny2 = (wsConn as any)?._rpcWebSocket?._ws;
+                  const rs: number | undefined = Number(wsAny2?.readyState);
+                  // 0 CONNECTING, 1 OPEN, 2 CLOSING
+                  if (wsAny2 && (rs === 0 || rs === 1 || rs === 2)) {
                     try { (wsConn as any)?._rpcWebSocket?.close?.(); } catch {}
                   }
                   // Wait until CLOSED (3) or socket disappears, with small timeout
                   const deadline = Date.now() + Math.max(500, Number(((CONFIG.system as any)?.wsCloseWaitMs) || 2000));
-                  let cur = Number(wsAny?.readyState);
-                  while (wsAny && cur !== 3 && Date.now() < deadline) {
+                  let cur = Number(wsAny2?.readyState);
+                  while (wsAny2 && cur !== 3 && Date.now() < deadline) {
                     await new Promise(r => setTimeout(r, 100));
-                    cur = Number(wsAny?.readyState);
+                    cur = Number(wsAny2?.readyState);
                   }
                 } catch {}
               } finally {

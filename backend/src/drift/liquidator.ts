@@ -336,11 +336,16 @@ export class DriftLiquidator {
     this.timer = null;
     if (this.statsTimer) { try { (globalThis as any).clearInterval(this.statsTimer); } catch {} this.statsTimer = null; }
     if (this.discoveryTimer) { try { (globalThis as any).clearInterval(this.discoveryTimer); } catch {} this.discoveryTimer = null; }
-    // Cleanup event subscriptions
+    // Cleanup event subscriptions (avoid RPC during WS CLOSING/CLOSED)
     try {
       if (this.eventSub) {
         try {
-          const maybe = (this.eventSub as any).unsubscribe?.();
+          // If the underlying connection exposes _rpcWebSocket, ensure it's not closing before unsubscribe
+          const drift: any = (DriftService.getInstance() as any).client;
+          const ws: any = drift?.connection?._rpcWebSocket?._ws;
+          const rs: number = Number(ws?.readyState);
+          const canRpc = (rs === 0 || rs === 1); // CONNECTING or OPEN
+          const maybe = canRpc ? (this.eventSub as any).unsubscribe?.() : null;
           if (maybe && typeof (maybe as any).then === 'function') { (maybe as Promise<any>).catch(() => {}); }
         } catch {}
         this.eventSub = null;
@@ -400,10 +405,19 @@ export class DriftLiquidator {
       }
       this.trackedMarkets.clear();
     } catch {}
-    // Unsubscribe all User websocket subscriptions
+    // Unsubscribe all User websocket subscriptions (skip when WS not ready)
     try {
+      const drift: any = (DriftService.getInstance() as any).client;
+      const ws: any = drift?.connection?._rpcWebSocket?._ws;
+      const rs: number = Number(ws?.readyState);
+      const canRpc = (rs === 0 || rs === 1);
       for (const key of Array.from(this.subscribedUsers)) {
-        try { const u = this.userCache.get(String(key)); const p = (async () => { try { await (u as any)?.unsubscribe?.(); } catch {} })(); (p as any)?.catch?.(() => {}); } catch {}
+        try {
+          if (!canRpc) continue;
+          const u = this.userCache.get(String(key));
+          const p = (async () => { try { await (u as any)?.unsubscribe?.(); } catch {} })();
+          (p as any)?.catch?.(() => {});
+        } catch {}
       }
       this.subscribedUsers.clear();
     } catch {}
@@ -622,6 +636,46 @@ export class DriftLiquidator {
         (this as any)[`_onPrice_liq_${idx}`] = onPrice;
         try { svc.onPrice(idx, onPrice as any); } catch {}
       }
+    } catch {}
+  }
+
+  private ensurePriceTriggerForMarket(marketIndex: number): void {
+    try {
+      const liqCfg: any = (CONFIG as any)?.drift?.liquidator || {};
+      if (this.config.usePriceTriggers === false || (this.config.usePriceTriggers === undefined && liqCfg.usePriceTriggers === false)) return;
+      const idx = Number(marketIndex);
+      if (!Number.isFinite(idx)) return;
+      // If already registered, ensure tracking and return
+      const existingHandler = (this as any)[`_onPrice_liq_${idx}`];
+      if (existingHandler) {
+        try {
+          const svc = DriftPriceService.getInstance();
+          const pollMs = Math.max(800, Number((this.config.httpPollMs ?? liqCfg.httpPollMs ?? 1200)));
+          svc.trackMarket(idx, pollMs);
+        } catch {}
+        this.trackedMarkets.add(idx);
+        return;
+      }
+      const svc = DriftPriceService.getInstance();
+      const pollMs = Math.max(800, Number((this.config.httpPollMs ?? liqCfg.httpPollMs ?? 1200)));
+      try { svc.trackMarket(idx, pollMs); } catch {}
+      const debounceMs = Math.max(600, Math.min(5000, Number((this.config.priceTriggerDebounceMs ?? liqCfg.priceTriggerDebounceMs ?? ((CONFIG as any)?.websocketIntervalMs) ?? 800))));
+      const onPrice = () => {
+        const prev: any = this.priceTriggerTimers.get(idx);
+        if (prev) { try { (globalThis as any).clearTimeout(prev); } catch {} }
+        const t: any = (globalThis as any).setTimeout(() => {
+          this.partialUpdateForMarket(Number(idx))
+            .then(() => {
+              this.state.candidatesQueued = this.heap.size();
+              this.drainQueue(Math.max(1, Number(this.config.maxConcurrentTargets || 2)));
+            })
+            .catch(() => {});
+        }, debounceMs);
+        this.priceTriggerTimers.set(idx, t);
+      };
+      (this as any)[`_onPrice_liq_${idx}`] = onPrice;
+      try { svc.onPrice(idx, onPrice as any); } catch {}
+      this.trackedMarkets.add(idx);
     } catch {}
   }
 
@@ -850,12 +904,10 @@ export class DriftLiquidator {
         }
       }
       this.userToMarkets.set(userPk, prev);
-      // Dynamically ensure price tracking for newly active markets
+      // Dynamically ensure price triggers for newly active markets
       try {
-        const svc = DriftPriceService.getInstance();
-        const pollMs = Math.max(800, Number((this.config.httpPollMs ?? ((CONFIG as any)?.drift?.liquidator?.httpPollMs ?? 1200))));
         for (const m of Array.from(prev)) {
-          try { svc.trackMarket(Number(m), pollMs); } catch {}
+          try { this.ensurePriceTriggerForMarket(Number(m)); } catch {}
         }
       } catch {}
     } catch {}
@@ -886,6 +938,19 @@ export class DriftLiquidator {
         slice.push(users[(start + i) % users.length]);
       }
       this.lastMarketPagination.set(idx, (start + slice.length) % users.length);
+
+      // Always include currently at-risk users for this market on every price tick
+      try {
+        if (this.atRiskUsers.size > 0) {
+          const setExisting = new Set<string>(slice.map((s) => String(s)));
+          for (const u of users) {
+            if (this.atRiskUsers.has(String(u)) && !setExisting.has(String(u))) {
+              slice.push(String(u));
+              setExisting.add(String(u));
+            }
+          }
+        }
+      } catch {}
 
       // Recompute health/exposure/profitability for slice using WS-cached user state and current prices
       let recomputed = 0;
