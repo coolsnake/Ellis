@@ -37,6 +37,7 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
         maxConcurrentTargets: cfg?.maxConcurrentTargets,
         dryRun: cfg?.dryRun,
         subaccountId: cfg?.subaccountId,
+        executeHealthThreshold: cfg?.executeHealthThreshold,
         maxAttemptNotional: cfg?.maxAttemptNotional,
         discoverAllUsers: cfg?.discoverAllUsers,
         maxDiscoveredUsers: cfg?.maxDiscoveredUsers,

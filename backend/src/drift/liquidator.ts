@@ -20,6 +20,8 @@ export type LiquidatorConfig = {
   dryRun?: boolean;
   // Account selection
   subaccountId?: number;
+  // Execution gate: only attempt when healthMaint <= this (default 0)
+  executeHealthThreshold?: number;
   // Discovery
   usersAllowlist?: string[];
   userCacheMax?: number;
@@ -460,9 +462,6 @@ export class DriftLiquidator {
     try {
       const driftSvc = DriftService.getInstance();
       const drift: any = (driftSvc as any).client;
-      // Parse user public key for SDK calls
-      let userPubkey: PublicKey | null = null;
-      try { userPubkey = new PublicKey(target.userPk); } catch {}
       const conn: any = (DriftService.getInstance() as any).connection;
       const endpoint: string = String(conn?._rpcEndpoint || conn?.rpcEndpoint || '');
       if (!endpoint || !/helius/i.test(endpoint)) return out;
@@ -498,6 +497,9 @@ export class DriftLiquidator {
   private async tryRecentDiscovery(): Promise<void> {
     try {
       const drift: any = (DriftService.getInstance() as any).client;
+      // Parse user public key for SDK calls in this attempt scope
+      let userPubkey: PublicKey | null = null;
+      try { userPubkey = new PublicKey(target.userPk); } catch {}
       // Ensure user is in cache and refresh snapshot for accurate metrics
       try {
         let sdkUser = this.userCache.get(String(target.userPk));
@@ -1062,9 +1064,9 @@ export class DriftLiquidator {
         }
       } catch {}
       const drift: any = (DriftService.getInstance() as any).client;
-      // Precheck: compute current user health and skip if healthy
+      // Precheck: compute current user health and skip if above execution gate
       try {
-        const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
+        const execGate = Number((this.config.executeHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.executeHealthThreshold) ?? 0));
         let healthNow: number | null = null;
         let user = this.userCache.get(String(target.userPk));
         if (!user) {
@@ -1080,8 +1082,8 @@ export class DriftLiquidator {
           const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
           if (isFinite(total) && isFinite(maint) && maint > 0) healthNow = (total - maint) / maint;
         } catch {}
-        if (typeof healthNow === 'number' && isFinite(healthNow) && healthNow >= riskThresh) {
-          try { logger.info('drift.liquidator.skip_target', { user: target.userPk, reason: 'HEALTHY', healthNow, threshold: riskThresh, cat: 'drift' }); } catch {}
+        if (typeof healthNow === 'number' && isFinite(healthNow) && healthNow > execGate) {
+          try { logger.info('drift.liquidator.skip_target', { user: target.userPk, reason: 'HEALTHY_EXEC_GATE', healthNow, execGate, cat: 'drift' }); } catch {}
           return;
         }
       } catch {}
@@ -1173,6 +1175,7 @@ export class DriftLiquidator {
         let userProfit: number | undefined = undefined;
         for (const ps of posSummary) { if (typeof ps.profitability === 'number') userProfit = (typeof userProfit === 'number') ? Math.min(userProfit, ps.profitability) : ps.profitability; }
         const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
+        const execGate = Number((this.config.executeHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.executeHealthThreshold) ?? 0));
         const healthNow = (isFinite(total) && isFinite(maint) && maint > 0) ? (total - maint) / maint : null;
         const cfgAssume: any = (CONFIG as any)?.drift?.liquidator || {};
         const cfgLog = {
@@ -1186,7 +1189,7 @@ export class DriftLiquidator {
         };
         logger.info('drift.liquidator.target_snapshot', {
           user: target.userPk,
-          healthNow, threshold: riskThresh,
+          healthNow, thresholds: { risk: riskThresh, execute: execGate },
           collateral: { total: total, maintenance: maint, free: free, totalUi, maintUi, freeUi },
           exposureUsd,
           positions: posSummary,
@@ -1208,7 +1211,7 @@ export class DriftLiquidator {
             logger.info('drift.liquidator.decision', { user: target.userPk, proceed: false, reason: 'UNPROFITABLE', gate: { minProfitability, profitability: userProfit }, cat: 'drift' } as any);
             return;
           }
-          logger.info('drift.liquidator.decision', { user: target.userPk, proceed: true, reason: 'OK', gate: { minNotional, minProfitability }, cat: 'drift' } as any);
+          logger.info('drift.liquidator.decision', { user: target.userPk, proceed: true, reason: 'OK', gate: { minNotional, minProfitability, attemptNotional: maxAttemptNotionalLocal, profitability: userProfit }, cat: 'drift' } as any);
         } catch {}
       } catch {}
       const marketsForUser = Array.from(this.userToMarkets.get(String(target.userPk)) || []);

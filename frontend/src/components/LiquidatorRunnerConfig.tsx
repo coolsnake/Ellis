@@ -21,6 +21,7 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
     // Account selection & sizing cap
     subaccountId: initialConfig?.subaccountId ?? '',
     maxAttemptNotional: initialConfig?.maxAttemptNotional ?? '',
+    executeHealthThreshold: initialConfig?.executeHealthThreshold ?? 0,
 
     // Discovery (WS)
     usersAllowlistCsv: Array.isArray(initialConfig?.usersAllowlist) ? initialConfig.usersAllowlist.join(',') : '',
@@ -96,6 +97,7 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
         // Account selection & sizing cap
         subaccountId: String(form.subaccountId ?? '').trim() === '' ? undefined : Math.max(0, Number(form.subaccountId)),
         maxAttemptNotional: String(form.maxAttemptNotional ?? '').trim() === '' ? undefined : Math.max(0, Number(form.maxAttemptNotional)),
+        executeHealthThreshold: Number.isFinite(Number(form.executeHealthThreshold)) ? Number(form.executeHealthThreshold) : undefined,
 
         usersAllowlist: String(form.usersAllowlistCsv || '').split(',').map((s) => s.trim()).filter(Boolean),
         userCacheMax: Math.max(50, Number(form.userCacheMax || 50)),
@@ -188,6 +190,11 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
             <div className="text-gray-400 mb-1">Max Attempt Notional (USD)</div>
             <input type="text" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.maxAttemptNotional}
               onChange={(e) => setForm((p: any) => ({ ...p, maxAttemptNotional: e.target.value }))} placeholder="e.g. 500" />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Execute Health Threshold (&lt;= triggers execution)</div>
+            <input type="number" step={0.001} className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.executeHealthThreshold}
+              onChange={(e) => setForm((p: any) => ({ ...p, executeHealthThreshold: Number(e.target.value) }))} placeholder="0" />
           </div>
 
           <div className="md:col-span-2 border-t border-gray-700 pt-3 font-semibold text-gray-200">General</div>
