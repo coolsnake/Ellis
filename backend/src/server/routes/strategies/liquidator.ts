@@ -203,6 +203,25 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
     }
   });
 
+  // One-off test liquidation for a specific user under a given liquidator key
+  api.post('/strategies/liquidator/test', async (req: Request, res: Response) => {
+    try {
+      const { key, userPk } = req.body as { key?: string; userPk?: string };
+      if (!key) return res.status(400).json({ error: 'key is required' });
+      if (!userPk) return res.status(400).json({ error: 'userPk is required' });
+      const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
+      const runner = DriftLiquidatorRegistry.get(String(key));
+      if (!runner) return res.status(404).json({ error: 'liquidator not found' });
+      try { emit('log', { level: 'info', message: `drift:liquidator test requested key=${key} user=${userPk}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } }); } catch {}
+      const out = await (runner as any).testTarget?.(String(userPk));
+      const ok = !!(out && (out.ok !== false));
+      res.json({ ok });
+    } catch (e: any) {
+      logger.error('drift-liq: test failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   return api;
 }
 
