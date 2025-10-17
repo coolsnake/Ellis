@@ -401,6 +401,8 @@ export const CONFIG = {
     dlobWsUrl: process.env.DRIFT_DLOB_WS_URL || 'wss://dlob.drift.trade/ws',
     // Gate using websocket-driven prices (fallback to HTTP when disabled or stale)
     enableWsPrices: (process.env.DRIFT_ENABLE_WS_PRICES || 'true') !== 'false',
+    // Allow HTTP fallback alongside WS when false; safer default for reliability
+    wsOnlyPrices: (process.env.DRIFT_WS_ONLY_PRICES || 'false') === 'true',
     // Consider WS prices fresh within this window
     priceStaleMs: Number(process.env.DRIFT_PRICE_STALE_MS || 3000),
     // WS connection heartbeat/reconnect tuning
@@ -428,15 +430,15 @@ export const CONFIG = {
       // Max total USD notional to attempt per target handling (across perp attempts)
       maxAttemptNotional: process.env.DRIFT_LIQ_MAX_ATTEMPT_NOTIONAL ? Number(process.env.DRIFT_LIQ_MAX_ATTEMPT_NOTIONAL) : undefined,
       // New discovery/scan defaults
-      probeRps: Number(process.env.DRIFT_LIQ_PROBE_RPS || 50),
+      probeRps: Number(process.env.DRIFT_LIQ_PROBE_RPS || 100),
       riskHealthThreshold: Number(process.env.DRIFT_LIQ_RISK_HEALTH || 0.1),
-      maxProbesPerTick: Number(process.env.DRIFT_LIQ_MAX_PROBES || 40),
+      maxProbesPerTick: Number(process.env.DRIFT_LIQ_MAX_PROBES || 100),
       userCacheMax: Number(process.env.DRIFT_LIQ_USER_CACHE_MAX || 500),
       positionMinAbsBase: Number(process.env.DRIFT_LIQ_POSITION_MIN_ABS_BASE || 0),
       positionMaxAbsBase: process.env.DRIFT_LIQ_POSITION_MAX_ABS_BASE ? Number(process.env.DRIFT_LIQ_POSITION_MAX_ABS_BASE) : undefined,
-      idleCooldownMs: Number(process.env.DRIFT_LIQ_IDLE_COOLDOWN_MS || 45000),
-      outOfScopeCooldownMs: Number(process.env.DRIFT_LIQ_OOS_COOLDOWN_MS || 45000),
-      healthyCooldownMs: Number(process.env.DRIFT_LIQ_HEALTHY_COOLDOWN_MS || 15000),
+      idleCooldownMs: Number(process.env.DRIFT_LIQ_IDLE_COOLDOWN_MS || 15000),
+      outOfScopeCooldownMs: Number(process.env.DRIFT_LIQ_OOS_COOLDOWN_MS || 15000),
+      healthyCooldownMs: Number(process.env.DRIFT_LIQ_HEALTHY_COOLDOWN_MS || 5000),
       usePriceTriggers: (process.env.DRIFT_LIQ_USE_PRICE_TRIGGERS || 'true') !== 'false',
       priceTriggerDebounceMs: Number(process.env.DRIFT_LIQ_PRICE_DEBOUNCE_MS || 400),
       httpPollMs: Number(process.env.DRIFT_LIQ_HTTP_POLL_MS || 800),
@@ -445,6 +447,7 @@ export const CONFIG = {
       statsIntervalMs: Number(process.env.DRIFT_LIQ_STATS_INTERVAL_MS || 10000),
       usersListLimit: Number(process.env.DRIFT_LIQ_USERS_LIST_LIMIT || 300),
       recoveryBuffer: Number(process.env.DRIFT_LIQ_RECOVERY_BUFFER || 0.03),
+      indexSpotExposure: (process.env.DRIFT_LIQ_INDEX_SPOT_EXPOSURE || 'false') === 'true',
       // Re-fetch SDK user accounts at most this often for at-risk users (ms)
       refreshAccountsMs: Number(process.env.DRIFT_LIQ_REFRESH_ACCOUNTS_MS || 12000),
       wsOnlyDiscovery: (process.env.DRIFT_LIQ_WS_ONLY_DISCOVERY || 'true') === 'true',

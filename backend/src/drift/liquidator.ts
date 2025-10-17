@@ -602,10 +602,22 @@ export class DriftLiquidator {
     try {
       const liqCfg: any = (CONFIG as any)?.drift?.liquidator || {};
       if (this.config.usePriceTriggers === false || (this.config.usePriceTriggers === undefined && liqCfg.usePriceTriggers === false)) return;
-      // Resolve markets to track: prefer explicit marketIndices; drop marketsAllowlist
+      // Resolve markets to track: prefer explicit probeMarketIndices, then trackedMarketIndices, then marketIndices
       let indices: number[] = [];
       try {
-        if (Array.isArray(this.config.marketIndices) && this.config.marketIndices.length > 0) {
+        const a = (this.config as any)?.probeMarketIndices;
+        if (Array.isArray(a) && a.length > 0) {
+          indices = (a as any[]).map((n: any) => Number(n)).filter((n) => Number.isFinite(n));
+        }
+      } catch {}
+      try {
+        if (indices.length === 0) {
+          const b = (this.config as any)?.trackedMarketIndices;
+          if (Array.isArray(b) && b.length > 0) indices = (b as any[]).map((n: any) => Number(n)).filter((n) => Number.isFinite(n));
+        }
+      } catch {}
+      try {
+        if (indices.length === 0 && Array.isArray(this.config.marketIndices) && this.config.marketIndices.length > 0) {
           indices = (this.config.marketIndices as any[]).map((n: any) => Number(n)).filter((n) => Number.isFinite(n));
         }
       } catch {}
@@ -620,6 +632,7 @@ export class DriftLiquidator {
       for (const idx of indices) {
         try { svc.trackMarket(idx, Math.max(800, Number((this.config.httpPollMs ?? liqCfg.httpPollMs ?? 1200)))); } catch {}
         this.trackedMarkets.add(Number(idx));
+        try { logger.info('drift.liquidator.track_market_add', { marketIndex: Number(idx), tracked: this.trackedMarkets.size, cat: 'drift' }); } catch {}
         const onPrice = () => {
           // One-shot throttle: if a timer exists, let it run; else schedule
           if (this.priceTriggerTimers.has(idx)) return;
@@ -883,6 +896,22 @@ export class DriftLiquidator {
           if (Number.isFinite(idx) && Math.abs(base) > 0) active.push(Number(idx));
         } catch {}
       }
+      // Optionally include spot exposure (non-zero deposits or borrows) so users are indexed for price-trigger scans
+      try {
+        const cfgAny: any = (CONFIG as any)?.drift?.liquidator || {};
+        const includeSpot = ((this.config as any)?.indexSpotExposure !== undefined) ? !!(this.config as any).indexSpotExposure : !!cfgAny.indexSpotExposure;
+        if (includeSpot) {
+          const ua = (sdkUser as any)?.getUserAccount?.();
+          const spot = (ua && Array.isArray((ua as any).spotPositions)) ? (ua as any).spotPositions : [];
+          for (const sp of spot) {
+            try {
+              const raw = Number(sp?.scaledBalance?.toString?.() || sp?.scaledBalance || sp?.cumulativeDeposits || 0);
+              const idx = Number(sp?.marketIndex ?? sp?.market_index ?? sp?.market?.index);
+              if (Number.isFinite(idx) && Number.isFinite(raw) && raw !== 0) active.push(Number(idx));
+            } catch {}
+          }
+        }
+      } catch {}
       // If markets are specified in config, filter to those
       try {
         const conf = this.config;
