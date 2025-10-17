@@ -140,7 +140,8 @@ export class DriftLiquidator {
   private probeProcessing: boolean = false;
   private probeTimestamps: number[] = [];
   private currentPollMs: number = 1500;
-  private atRiskUsers: Map<string, { health: number; updatedAt: number; positions?: Array<{ marketIndex: number; symbol?: string; base: number; notional?: number; liqPrice?: number; profitability?: number }>; profitability?: number; skipReason?: string }> = new Map();
+  private atRiskUsers: Map<string, { health: number; updatedAt: number; positions?: Array<{ marketIndex: number; symbol?: string; base: number; notional?: number; liqPrice?: number; profitability?: number }>; profitability?: number; skipReason?: string; collateralUsd?: number; maintenanceUsd?: number; freeUsd?: number; exposureUsd?: number }> = new Map();
+  private userLastRefresh: Map<string, number> = new Map();
 
   constructor(private config: LiquidatorConfig) {}
 
@@ -787,10 +788,127 @@ export class DriftLiquidator {
         slice.push(users[(start + i) % users.length]);
       }
       this.lastMarketPagination.set(idx, (start + slice.length) % users.length);
-      for (const pkStr of slice) { this.enqueueProbe(pkStr); }
+
+      // Recompute health/exposure/profitability for slice using WS-cached user state and current prices
+      let recomputed = 0;
+      for (const key of slice) {
+        try {
+          let user = this.userCache.get(String(key));
+          if (!user) {
+            // Instantiate and subscribe on-demand (WS only)
+            let pk: any = key;
+            try { if (typeof key === 'string') pk = new PublicKey(key); } catch {}
+            user = new User({ driftClient: drift, userAccountPublicKey: pk, accountSubscription: { type: 'websocket' } });
+            this.userCache.set(String(key), user);
+            try { await (user as any)?.subscribe?.(); this.subscribedUsers.add(String(key)); } catch {}
+          }
+          // Occasional truth refresh
+          try {
+            const last = this.userLastRefresh.get(String(key)) || 0;
+            if ((Date.now() - last) > Math.max(10000, Number((this.config as any)?.refreshAccountsMs ?? ((CONFIG as any)?.drift?.liquidator?.refreshAccountsMs) ?? 20000))) {
+              try { await (user as any)?.fetchAccounts?.(); } catch {}
+              this.userLastRefresh.set(String(key), Date.now());
+            }
+          } catch {}
+
+          // Collateral/maintenance (quote precision)
+          const total = Number((user as any)?.getTotalCollateral?.() || 0);
+          const maint = Number((user as any)?.getMaintenanceMarginRequirement?.() || 0);
+          const riskThresh = Number((this.config.riskHealthThreshold ?? ((CONFIG as any)?.drift?.liquidator?.riskHealthThreshold) ?? 0));
+          const health = maint > 0 ? (total - maint) / maint : Infinity;
+          // Quote precision to UI
+          let QUOTE_PREC = 1_000_000;
+          try {
+            const sdk: any = await import('@drift-labs/sdk');
+            const cst: any = (sdk as any).constants || (sdk as any);
+            if (Number.isFinite(Number(cst?.QUOTE_PRECISION))) QUOTE_PREC = Number(cst.QUOTE_PRECISION);
+          } catch {}
+          const totalUi = total / QUOTE_PREC;
+          const maintUi = maint / QUOTE_PREC;
+          let freeUi = 0;
+          try { freeUi = Number((user as any)?.getFreeCollateral?.()?.toString?.() || (user as any)?.getFreeCollateral?.() || 0) / QUOTE_PREC; } catch {}
+
+          // Positions and pricing
+          let BASE_PREC = 1_000_000_000;
+          try {
+            const sdk: any = await import('@drift-labs/sdk');
+            const cst: any = (sdk as any).constants || (sdk as any);
+            if (Number.isFinite(Number(cst?.BASE_PRECISION))) BASE_PREC = Number(cst.BASE_PRECISION);
+          } catch {}
+          let positions = (user as any)?.getPerpPositions?.() || [];
+          try { if (!Array.isArray(positions) || positions.length === 0) { const raw = (user as any)?.getUserAccount?.()?.perpPositions; if (Array.isArray(raw)) positions = raw; } } catch {}
+          const posSummary: Array<{ marketIndex: number; symbol?: string; base: number; notional?: number; liqPrice?: number; profitability?: number }> = [];
+          for (const p of positions) {
+            try {
+              const raw = Number(p?.baseAssetAmount?.toString?.() || p?.baseAssetAmount || 0);
+              const m = Number(p?.marketIndex ?? p?.market_index ?? p?.market?.index);
+              if (!Number.isFinite(m) || raw === 0) continue;
+              const baseUi = raw / BASE_PREC;
+              const symbol = (indexToSymbol(Number(m)) || '').split('-')[0] || undefined;
+              // Price sample for this market
+              const priceSample = DriftPriceService.getInstance().getPrice(Number(m));
+              const cur = (priceSample?.mid ?? priceSample?.oracle ?? priceSample?.bid ?? priceSample?.ask);
+              let notional: number | undefined = undefined;
+              let liqPrice: number | undefined = undefined;
+              let profitability: number | undefined = undefined;
+              if (typeof cur === 'number' && isFinite(cur)) {
+                notional = Math.abs(baseUi) * cur;
+                const dist = this.computeDistanceToLiquidation(String(key), Number(m));
+                if (typeof dist === 'number' && isFinite(dist)) {
+                  const sgn = Math.sign(baseUi) || 1;
+                  liqPrice = cur * (1 - sgn * dist);
+                }
+                const feeCfg: any = (CONFIG as any)?.drift?.liquidator?.feeAssumptions || {};
+                const liqFeeRate = Math.max(0, Number(feeCfg.liqFeeRate ?? 0.01));
+                const takerFeeRate = Math.max(0, Number(feeCfg.takerFeeRate ?? 0.0004));
+                const slippageBp = Math.max(0, Number(feeCfg.slippageBp ?? 30));
+                const oracleHaircutBp = Math.max(0, Number(feeCfg.oracleHaircutBp ?? 10));
+                const sizeFraction = Math.max(0.001, Math.min(0.5, Number((this.config.perpSizeFraction ?? ((CONFIG as any)?.drift?.liquidator?.perpSizeFraction) ?? 0.05))));
+                const slippageRate = slippageBp / 10_000;
+                const oracleHaircutRate = oracleHaircutBp / 10_000;
+                const attemptNotional = (notional || 0) * sizeFraction;
+                const bonus = attemptNotional * liqFeeRate;
+                const expectedFees = attemptNotional * (takerFeeRate + slippageRate + oracleHaircutRate);
+                profitability = attemptNotional > 0 ? (bonus - expectedFees) / attemptNotional : undefined;
+              }
+              posSummary.push({ marketIndex: m, symbol, base: baseUi, notional, liqPrice, profitability });
+            } catch {}
+          }
+          const exposureUsd = posSummary.reduce((s, p) => s + (typeof p.notional === 'number' ? Math.abs(p.notional) : 0), 0);
+          // Gate reason precompute
+          const minProfitability = Math.max(Number((this.config as any)?.minProfitability ?? ((CONFIG as any)?.drift?.liquidator?.minProfitability) ?? -Infinity), -Infinity);
+          const minNotional = Math.max(0, Number((this.config as any)?.minNotional ?? ((CONFIG as any)?.drift?.liquidator?.minNotional) ?? 0));
+          const sizeFraction = Math.max(0.001, Math.min(0.5, Number((this.config.perpSizeFraction ?? ((CONFIG as any)?.drift?.liquidator?.perpSizeFraction) ?? 0.05))));
+          let userProfit: number | undefined = undefined;
+          for (const ps of posSummary) {
+            if (typeof ps.profitability === 'number') userProfit = (typeof userProfit === 'number') ? Math.min(userProfit, ps.profitability) : ps.profitability;
+          }
+          let skipReason: string | undefined = undefined;
+          const anyLargeEnough = posSummary.some((ps) => typeof ps.notional === 'number' && (ps.notional as number) * sizeFraction >= minNotional);
+          if (!anyLargeEnough) skipReason = 'SIZE_TOO_SMALL';
+          if (skipReason === undefined && Number.isFinite(minProfitability) && typeof userProfit === 'number' && userProfit < minProfitability) skipReason = 'UNPROFITABLE';
+          if (skipReason === undefined && total <= 0) skipReason = 'NO_COLLATERAL';
+
+          // Update at-risk entry
+          this.atRiskUsers.set(String(key), {
+            health,
+            updatedAt: Date.now(),
+            positions: posSummary,
+            profitability: userProfit,
+            skipReason,
+            collateralUsd: totalUi,
+            maintenanceUsd: maintUi,
+            freeUsd: freeUi,
+            exposureUsd,
+          } as any);
+          // If still at-risk, queue candidate
+          if (health < riskThresh) this.addOrQueueCandidate({ userPk: String(key), health, updatedAt: Date.now() });
+          recomputed += 1;
+        } catch {}
+      }
       this.state.candidatesQueued = this.heap.size();
       this.maybeEmitQueue();
-      try { logger.info('drift.liquidator.market_scan', { marketIndex: idx, trackedUsers: users.length, sampled: slice.length, cat: 'drift' }); } catch {}
+      try { logger.info('drift.liquidator.market_recompute', { marketIndex: idx, trackedUsers: users.length, recomputed, cat: 'drift' }); } catch {}
     } catch {
     } finally {
       try { this.marketScanInFlight.delete(Number(marketIndex)); } catch {}

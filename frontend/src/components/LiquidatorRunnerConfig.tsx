@@ -51,6 +51,9 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
     positionMaxAbsBase: initialConfig?.positionMaxAbsBase ?? '',
     idleCooldownMs: initialConfig?.idleCooldownMs ?? 60000,
     outOfScopeCooldownMs: initialConfig?.outOfScopeCooldownMs ?? 60000,
+    // Profitability gate
+    minNotional: initialConfig?.minNotional ?? '',
+    minProfitability: initialConfig?.minProfitability ?? '',
   });
 
   useEffect(() => {
@@ -108,6 +111,9 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
         positionMaxAbsBase: String(form.positionMaxAbsBase ?? '').trim() === '' ? undefined : Math.max(0, Number(form.positionMaxAbsBase)),
         idleCooldownMs: Math.max(1000, Number(form.idleCooldownMs || 0)),
         outOfScopeCooldownMs: Math.max(1000, Number(form.outOfScopeCooldownMs || 0)),
+        // Profitability gate (optional)
+        minNotional: String(form.minNotional ?? '').trim() === '' ? undefined : Math.max(0, Number(form.minNotional)),
+        minProfitability: String(form.minProfitability ?? '').trim() === '' ? undefined : Number(form.minProfitability),
       };
       const res = await fetch(`${apiBase}${ROUTES.strategies.liquidator.start}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       if (!res.ok) throw new Error(await res.text());
@@ -258,6 +264,16 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
           <div>
             <div className="text-gray-400 mb-1">Max Probes per Tick</div>
             <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.maxProbesPerTick} onChange={(e) => setForm((p: any) => ({ ...p, maxProbesPerTick: Number(e.target.value) }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Min Notional (USD) to Attempt (optional)</div>
+            <input type="text" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.minNotional}
+              onChange={(e) => setForm((p: any) => ({ ...p, minNotional: e.target.value }))} placeholder="e.g. 100" />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Min Profitability (fraction, optional)</div>
+            <input type="text" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.minProfitability}
+              onChange={(e) => setForm((p: any) => ({ ...p, minProfitability: e.target.value }))} placeholder="e.g. 0.002 for 0.2%" />
           </div>
            
           <div>
