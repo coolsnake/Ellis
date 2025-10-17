@@ -380,7 +380,7 @@ export function createDriftRouter(io: SocketIOServer): Router {
                 }
               } catch {}
             }
-            // Log raw entries even if zero to diagnose
+      // Log raw entries even if zero to diagnose
             try {
               const scaled = String(sp?.scaledBalance?.toString?.() || sp?.scaledBalance || sp?.balance || sp?.depositBalance || sp?.borrowBalance || '0');
               logger.info('drift.route.user.debug', { phase: 'spot_raw', idx, decimals, mint, symbol, scaledBalance: scaled, computedAmountRaw: amountRaw, computedAmountUi: amountUi, cat: 'drift' });
@@ -391,6 +391,40 @@ export function createDriftRouter(io: SocketIOServer): Router {
               try { logger.info('drift.route.user.debug', { phase: 'spot_item', idx, symbol, mint, amountUi, amountRaw, balanceType, cat: 'drift' }); } catch {}
             }
           } catch {}
+        }
+      } catch {}
+
+      // Deduplicate by marketIndex (sum signed raw amounts), then recompute UI and balanceType
+      try {
+        if (Array.isArray(spotCollateral) && spotCollateral.length > 1) {
+          const before = spotCollateral.length;
+          const byIdx = new Map<number, { marketIndex: number; symbol?: string; mint?: string; decimals?: number; amountRaw: number }>();
+          for (const e of spotCollateral) {
+            try {
+              const idx = Number(e.marketIndex);
+              if (!Number.isFinite(idx)) continue;
+              const cur = byIdx.get(idx) || { marketIndex: idx, symbol: undefined, mint: undefined, decimals: e.decimals, amountRaw: 0 };
+              // Prefer non-empty symbol/mint/decimals from latest non-empty
+              cur.symbol = cur.symbol || e.symbol;
+              cur.mint = cur.mint || e.mint;
+              if (!Number.isFinite(cur.decimals as any)) cur.decimals = e.decimals;
+              cur.amountRaw += Number(e.amountRaw || 0);
+              byIdx.set(idx, cur);
+            } catch {}
+          }
+          const dedup: Array<{ marketIndex: number; symbol?: string; amountUi: number; amountRaw: number; mint?: string; decimals?: number; balanceType?: 'deposit' | 'borrow' }> = [];
+          for (const v of Array.from(byIdx.values())) {
+            try {
+              const idx = v.marketIndex;
+              const decimals = Number(v.decimals ?? 6);
+              const raw = Number(v.amountRaw || 0);
+              const ui = Number.isFinite(raw) ? (Number(idx) === Number(QUOTE_INDEX) ? raw / QUOTE_PREC : raw / Math.pow(10, decimals)) : 0;
+              const balanceType: 'deposit' | 'borrow' = (raw < 0 || ui < 0) ? 'borrow' : 'deposit';
+              dedup.push({ marketIndex: idx, symbol: v.symbol, amountUi: ui, amountRaw: raw, mint: v.mint, decimals, balanceType });
+            } catch {}
+          }
+          spotCollateral.splice(0, spotCollateral.length, ...dedup);
+          try { logger.info('drift.route.user.debug', { phase: 'spot_dedup', before, after: spotCollateral.length, cat: 'drift' }); } catch {}
         }
       } catch {}
 
