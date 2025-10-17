@@ -12,12 +12,15 @@ interface Props {
 export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onClose, onSaved, initialConfig }) => {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState<{ markets: Array<{ marketIndex: number; symbol?: string }> } | null>(null);
+  const [status, setStatus] = useState<{ markets: Array<{ marketIndex: number; symbol?: string }>; subaccounts?: Array<{ id: number; freeCollateral?: number; totalCollateral?: number }> } | null>(null);
   const [form, setForm] = useState<any>({
     name: initialConfig?.name || '',
     dryRun: initialConfig?.dryRun ?? true,
     pollMs: initialConfig?.pollMs ?? 1500,
     maxConcurrentTargets: initialConfig?.maxConcurrentTargets ?? 2,
+    // Account selection & sizing cap
+    subaccountId: initialConfig?.subaccountId ?? '',
+    maxAttemptNotional: initialConfig?.maxAttemptNotional ?? '',
 
     // Discovery (WS)
     usersAllowlistCsv: Array.isArray(initialConfig?.usersAllowlist) ? initialConfig.usersAllowlist.join(',') : '',
@@ -63,7 +66,15 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
         const res = await fetch(`${apiBase}${ROUTES.drift.status}`);
         const data = await res.json();
         if (!alive) return;
-        setStatus({ markets: Array.isArray(data?.markets) ? data.markets : [] });
+        const markets = Array.isArray(data?.markets) ? data.markets : [];
+        const subs = Array.isArray(data?.subaccounts) ? data.subaccounts : [];
+        setStatus({ markets, subaccounts: subs });
+        // Default subaccount selection if not provided
+        try {
+          if ((form.subaccountId === '' || form.subaccountId === undefined || form.subaccountId === null) && subs.length > 0) {
+            setForm((p: any) => ({ ...p, subaccountId: Number(subs[0]?.id ?? 0) }));
+          }
+        } catch {}
       } catch {}
     })();
     return () => { alive = false; };
@@ -82,6 +93,9 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
         dryRun: !!form.dryRun,
         pollMs: Math.max(200, Number(form.pollMs || 0)),
         maxConcurrentTargets: Math.max(1, Number(form.maxConcurrentTargets || 1)),
+        // Account selection & sizing cap
+        subaccountId: String(form.subaccountId ?? '').trim() === '' ? undefined : Math.max(0, Number(form.subaccountId)),
+        maxAttemptNotional: String(form.maxAttemptNotional ?? '').trim() === '' ? undefined : Math.max(0, Number(form.maxAttemptNotional)),
 
         usersAllowlist: String(form.usersAllowlistCsv || '').split(',').map((s) => s.trim()).filter(Boolean),
         userCacheMax: Math.max(50, Number(form.userCacheMax || 50)),
@@ -153,6 +167,27 @@ export const LiquidatorRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onCl
           <div>
             <div className="text-gray-400 mb-1">Max Concurrent Targets</div>
             <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.maxConcurrentTargets} onChange={(e) => setForm((p: any) => ({ ...p, maxConcurrentTargets: Number(e.target.value) }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Subaccount</div>
+            {Array.isArray(status?.subaccounts) && status?.subaccounts?.length ? (
+              <select className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={String(form.subaccountId ?? '')}
+                onChange={(e) => setForm((p: any) => ({ ...p, subaccountId: Number(e.target.value) }))}>
+                {status!.subaccounts!.map((s) => (
+                  <option key={`sub-${s.id}`} value={String(s.id)}>
+                    {`Subaccount ${s.id}${typeof s.totalCollateral === 'number' ? ` — Collat ${Number(s.totalCollateral).toFixed(2)}` : ''}`}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.subaccountId}
+                onChange={(e) => setForm((p: any) => ({ ...p, subaccountId: Number(e.target.value) }))} placeholder="e.g. 0" />
+            )}
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Max Attempt Notional (USD)</div>
+            <input type="text" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.maxAttemptNotional}
+              onChange={(e) => setForm((p: any) => ({ ...p, maxAttemptNotional: e.target.value }))} placeholder="e.g. 500" />
           </div>
 
           <div className="md:col-span-2 border-t border-gray-700 pt-3 font-semibold text-gray-200">General</div>

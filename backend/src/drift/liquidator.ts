@@ -17,6 +17,8 @@ export type LiquidatorConfig = {
   pollMs?: number;
   maxConcurrentTargets?: number;
   dryRun?: boolean;
+  // Account selection
+  subaccountId?: number;
   // Discovery
   usersAllowlist?: string[];
   userCacheMax?: number;
@@ -48,6 +50,8 @@ export type LiquidatorConfig = {
   // Discovery modes
   wsOnlyDiscovery?: boolean; // if true, disable HTTP discovery entirely
   limitedHttpDiscovery?: boolean; // if true, allow tiny HTTP discovery for initial seeding
+  // Attempt sizing caps
+  maxAttemptNotional?: number; // USD cap across a target handling
 };
 
 export type LiquidatorRuntimeState = {
@@ -178,6 +182,15 @@ export class DriftLiquidator {
     // Ensure Drift client is initialized
     try {
       await DriftService.getInstance().init();
+    } catch {}
+    // Ensure configured subaccount is active for liquidation actions
+    try {
+      const subId = Number((this.config as any)?.subaccountId ?? ((CONFIG as any)?.drift?.liquidator?.subaccountId) ?? ((CONFIG as any)?.drift?.defaultSubaccountId));
+      if (Number.isFinite(subId)) {
+        const svc = DriftService.getInstance();
+        await svc.switchSubaccount(Number(subId));
+        try { logger.info('drift.liquidator.subaccount_selected', { name: this.config.name, subaccountId: Number(subId), cat: 'drift' }); } catch {}
+      }
     } catch {}
     // Preflight: ensure wallet has some SOL for fees unless dryRun
     try {
@@ -984,6 +997,7 @@ export class DriftLiquidator {
 
   private async handleTarget(target: { userPk: string; health: number }): Promise<void> {
     try {
+      try { logger.info('drift.liquidator.attempt_start', { user: target.userPk, health: target.health, name: this.config?.name, cat: 'drift' }); } catch {}
       const dry = !!this.config.dryRun;
       if (dry) {
         this.recordAction();
@@ -1017,13 +1031,42 @@ export class DriftLiquidator {
           }
         }
       } catch {}
+      // Best-effort: ensure configured subaccount is active before taking actions
+      try {
+        const subId = Number((this.config as any)?.subaccountId ?? ((CONFIG as any)?.drift?.liquidator?.subaccountId) ?? ((CONFIG as any)?.drift?.defaultSubaccountId));
+        if (Number.isFinite(subId)) {
+          await (DriftService.getInstance() as any).switchSubaccount(Number(subId));
+          try { logger.info('drift.liquidator.ensure_subaccount', { user: target.userPk, subaccountId: Number(subId), cat: 'drift' }); } catch {}
+        }
+      } catch {}
       const drift: any = (DriftService.getInstance() as any).client;
+      // Compute remaining notional cap (USD) if configured
+      let remainingNotional = Infinity;
+      try {
+        const assume: any = (CONFIG as any)?.drift?.liquidator || {};
+        const maxAttemptNotional = (this.config as any)?.maxAttemptNotional ?? assume.maxAttemptNotional;
+        if (Number.isFinite(Number(maxAttemptNotional)) && Number(maxAttemptNotional) > 0) {
+          remainingNotional = Number(maxAttemptNotional);
+        }
+        try { logger.info('drift.liquidator.cap_state', { user: target.userPk, maxAttemptNotional: Number.isFinite(remainingNotional) && remainingNotional !== Infinity ? remainingNotional : null, cat: 'drift' }); } catch {}
+      } catch {}
+      // Build notional lookup by market for this user (perp positions only)
+      const userSummary = this.atRiskUsers.get(String(target.userPk));
+      const posNotionalByMarket: Map<number, number> = new Map();
+      try {
+        for (const ps of (userSummary?.positions || [])) {
+          const idx = Number(ps?.marketIndex);
+          const n = Math.abs(Number(ps?.notional || 0));
+          if (Number.isFinite(idx) && Number.isFinite(n) && n > 0) posNotionalByMarket.set(idx, n);
+        }
+      } catch {}
       const marketsForUser = Array.from(this.userToMarkets.get(String(target.userPk)) || []);
       const perpMarkets = marketsForUser.length > 0 ? marketsForUser : [0, 1, 2];
       // Step 1: force-cancel orders (best-effort, capped)
       try {
         const maxCancels = Math.max(1, Math.min(200, Number((this.config.maxCancels ?? ((CONFIG as any)?.drift?.liquidator?.maxCancels) ?? 20))));
         const batch = Math.min(maxCancels, 10);
+        try { logger.info('drift.liquidator.force_cancel_begin', { user: target.userPk, maxCancels, batch, cat: 'drift' }); } catch {}
         if (typeof drift?.forceCancelOrders === 'function') {
           let remaining = maxCancels;
           while (remaining > 0) {
@@ -1040,29 +1083,51 @@ export class DriftLiquidator {
             });
           } catch {}
         }
+        try { logger.info('drift.liquidator.force_cancel_end', { user: target.userPk, cat: 'drift' }); } catch {}
       } catch (e: any) {
         this.recordError(e);
       }
-      // Step 2: attempt perp liquidation (best-effort, capped)
+      // Step 2: attempt perp liquidation (best-effort, capped and obeying maxAttemptNotional when set)
       try {
+        const maxPerp = Math.max(1, Math.min(50, Number((this.config.maxPerpAttempts ?? ((CONFIG as any)?.drift?.liquidator?.maxPerpAttempts) ?? 3))));
+        const baseSizeFrac = Math.max(0.001, Math.min(0.5, Number((this.config.perpSizeFraction ?? ((CONFIG as any)?.drift?.liquidator?.perpSizeFraction) ?? 0.05))));
         if (typeof drift?.liquidatePerp === 'function') {
-          const maxPerp = Math.max(1, Math.min(50, Number((this.config.maxPerpAttempts ?? ((CONFIG as any)?.drift?.liquidator?.maxPerpAttempts) ?? 3))));
-          const sizeFrac = Math.max(0.001, Math.min(0.5, Number((this.config.perpSizeFraction ?? ((CONFIG as any)?.drift?.liquidator?.perpSizeFraction) ?? 0.05))));
           let attempts = 0;
           for (const idx of perpMarkets) {
             if (attempts >= maxPerp) break;
+            const mkt = Number(idx);
+            const posN = Number(posNotionalByMarket.get(mkt) || 0);
+            if (!Number.isFinite(posN) || posN <= 0) continue;
+            // Cap fraction to respect remainingNotional when set
+            let sizeFrac = baseSizeFrac;
+            if (Number.isFinite(remainingNotional) && remainingNotional !== Infinity) {
+              const allowed = remainingNotional / posN;
+              sizeFrac = Math.min(baseSizeFrac, Math.max(0, allowed));
+            }
+            try { logger.info('drift.liquidator.perp_attempt', { user: target.userPk, marketIndex: mkt, posNotional: posN, baseSizeFrac, sizeFrac, remainingNotional: Number.isFinite(remainingNotional) && remainingNotional !== Infinity ? remainingNotional : null, cat: 'drift' }); } catch {}
+            if (sizeFrac <= 0) break;
             try {
-              await drift.liquidatePerp(target.userPk, Number(idx), sizeFrac);
+              await drift.liquidatePerp(target.userPk, mkt, sizeFrac);
               attempts += 1;
+              if (Number.isFinite(remainingNotional) && remainingNotional !== Infinity) {
+                remainingNotional = Math.max(0, remainingNotional - (posN * sizeFrac));
+                try { logger.info('drift.liquidator.perp_attempt_done', { user: target.userPk, marketIndex: mkt, consumed: posN * sizeFrac, remainingNotional, cat: 'drift' }); } catch {}
+                if (remainingNotional <= 0) break;
+              }
             } catch {}
           }
         } else if (typeof drift?.liquidatePerpBatch === 'function') {
           try {
-            await drift.liquidatePerpBatch({
-              users: [target.userPk],
-              markets: perpMarkets,
-              sizeFraction: Math.max(0.001, Math.min(0.5, Number((this.config.perpSizeFraction ?? ((CONFIG as any)?.drift?.liquidator?.perpSizeFraction) ?? 0.05)))),
-            });
+            // If we only have batch available, compute a conservative global fraction to obey the cap
+            let sizeFraction = baseSizeFrac;
+            if (Number.isFinite(remainingNotional) && remainingNotional !== Infinity) {
+              const sumN = perpMarkets.reduce((s: number, idx: number) => s + (Number(posNotionalByMarket.get(Number(idx)) || 0)), 0);
+              if (sumN > 0) sizeFraction = Math.min(baseSizeFrac, Math.max(0, remainingNotional / sumN));
+              try { logger.info('drift.liquidator.perp_batch_attempt', { user: target.userPk, markets: perpMarkets, sumNotional: sumN, sizeFraction, remainingNotional, cat: 'drift' }); } catch {}
+            }
+            if (sizeFraction > 0) {
+              await drift.liquidatePerpBatch({ users: [target.userPk], markets: perpMarkets, sizeFraction });
+            }
           } catch {}
         }
       } catch (e: any) {
@@ -1071,6 +1136,10 @@ export class DriftLiquidator {
       }
       // Step 3: attempt spot liquidation (best-effort, capped)
       try {
+        if (Number.isFinite(remainingNotional) && remainingNotional !== Infinity && remainingNotional <= 0) {
+          // Cap fully consumed; skip spot
+          try { logger.info('drift.liquidator.spot_skip_cap', { user: target.userPk, cat: 'drift' }); } catch {}
+        } else {
         if (typeof drift?.liquidateSpot === 'function') {
           const maxSpot = Math.max(1, Math.min(50, Number((this.config.maxSpotAttempts ?? ((CONFIG as any)?.drift?.liquidator?.maxSpotAttempts) ?? 2))));
           const sizeFrac = Math.max(0.001, Math.min(0.5, Number((this.config.spotSizeFraction ?? ((CONFIG as any)?.drift?.liquidator?.spotSizeFraction) ?? 0.05))));
@@ -1078,11 +1147,13 @@ export class DriftLiquidator {
           let attempts = 0;
           for (const s of spots) {
             if (attempts >= maxSpot) break;
+              try { logger.info('drift.liquidator.spot_attempt', { user: target.userPk, spotMarketIndex: Number(s), sizeFraction: sizeFrac, cat: 'drift' }); } catch {}
             try {
               await drift.liquidateSpot(target.userPk, Number(s), sizeFrac);
               attempts += 1;
             } catch {}
           }
+        }
         }
       } catch (e: any) {
         this.recordError(e);
@@ -1093,6 +1164,18 @@ export class DriftLiquidator {
     } catch (e: any) {
       this.recordError(e);
       this.applyCooldownForTarget(target.userPk);
+    }
+  }
+
+  async testTarget(userPk: string): Promise<{ ok: boolean }> {
+    try {
+      try { logger.info('drift.liquidator.test_request', { user: String(userPk), name: this.config?.name, cat: 'drift' }); } catch {}
+      await this.handleTarget({ userPk: String(userPk), health: 0 });
+      try { logger.info('drift.liquidator.test_complete', { user: String(userPk), name: this.config?.name, cat: 'drift' }); } catch {}
+      return { ok: true };
+    } catch (e: any) {
+      try { logger.error('drift.liquidator.test_failed', { user: String(userPk), error: String(e?.message || e), cat: 'drift' }); } catch {}
+      return { ok: false };
     }
   }
 

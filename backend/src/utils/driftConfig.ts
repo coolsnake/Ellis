@@ -1,6 +1,9 @@
 import { CONFIG } from './config.js';
 
 export type LiquidatorCfg = {
+  // Account selection and sizing caps
+  subaccountId?: number;
+  maxAttemptNotional?: number;
   discoverAllUsers?: boolean;
   maxDiscoveredUsers?: number;
   usersAllowlist?: string[];

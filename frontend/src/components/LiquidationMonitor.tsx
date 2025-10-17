@@ -70,6 +70,18 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
     return `${Math.floor(d / 60000)}m ago`;
   };
 
+  const testUser = async (userPk: string) => {
+    try {
+      await fetch(`${apiBase}/strategies/liquidator/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: liquidatorKey, userPk })
+      });
+      // Force-refresh shortly after triggering test
+      setTimeout(fetchQueue, 800);
+    } catch {}
+  };
+
   return (
     <div className="bg-gray-800 rounded-lg p-4">
       <div className="flex items-center justify-between mb-3">
@@ -130,7 +142,10 @@ export const LiquidationMonitor: React.FC<Props> = ({ apiBase, socket, liquidato
                       <span className="px-1.5 py-0.5 bg-gray-600 rounded text-[10px] uppercase tracking-wide">{(u as any).skipReason}</span>
                     )}
                   </div>
-                  <div className="text-gray-400">{timeAgo(u.updatedAt)}</div>
+                  <div className="flex items-center gap-2">
+                    <button className="px-2 py-0.5 bg-blue-600 text-white rounded hover:bg-blue-700" onClick={() => testUser(u.userPk)}>Test</button>
+                    <div className="text-gray-400">{timeAgo(u.updatedAt)}</div>
+                  </div>
                 </div>
                 {Array.isArray((u as any).positions) && (u as any).positions.length > 0 && (
                   <div className="mt-1 ml-2 space-y-1">

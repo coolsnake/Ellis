@@ -36,6 +36,8 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
         pollMs: cfg?.pollMs,
         maxConcurrentTargets: cfg?.maxConcurrentTargets,
         dryRun: cfg?.dryRun,
+        subaccountId: cfg?.subaccountId,
+        maxAttemptNotional: cfg?.maxAttemptNotional,
         discoverAllUsers: cfg?.discoverAllUsers,
         maxDiscoveredUsers: cfg?.maxDiscoveredUsers,
         usersAllowlist: Array.isArray(cfg?.usersAllowlist) ? cfg?.usersAllowlist : (typeof cfg?.usersAllowlistCsv === 'string' ? String(cfg?.usersAllowlistCsv).split(',').map((s: string) => s.trim()).filter(Boolean) : undefined),
@@ -134,6 +136,23 @@ export function createLiquidatorRouter(_io: SocketIOServer): Router {
       res.status(202).json({ ok: true, key, updating: true });
     } catch (e: any) {
       logger.error('drift-liq: update failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Trigger a one-off test liquidation attempt for a specific user under a given liquidator
+  api.post('/strategies/liquidator/test', async (req: Request, res: Response) => {
+    try {
+      const { key, userPk } = req.body as { key?: string; userPk?: string };
+      if (!key) return res.status(400).json({ error: 'key is required' });
+      if (!userPk) return res.status(400).json({ error: 'userPk is required' });
+      const { DriftLiquidatorRegistry } = await import('../../../drift/liquidator.js');
+      const runner = DriftLiquidatorRegistry.get(String(key));
+      if (!runner) return res.status(404).json({ error: 'liquidator not found' });
+      const ok = await (runner as any).testTarget?.(String(userPk));
+      res.json({ ok: !!ok });
+    } catch (e: any) {
+      logger.error('drift-liq: test failed', { error: String(e?.message || e) });
       res.status(500).json({ error: String(e?.message || e) });
     }
   });

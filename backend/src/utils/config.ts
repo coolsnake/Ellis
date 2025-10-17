@@ -421,6 +421,10 @@ export const CONFIG = {
       pollMs: Number(process.env.DRIFT_LIQUIDATOR_POLL_MS || 1500),
       maxConcurrentTargets: Number(process.env.DRIFT_LIQUIDATOR_MAX_CONCURRENT || 2),
       dryRun: (process.env.DRIFT_LIQUIDATOR_DRY_RUN || 'true') === 'true',
+      // Subaccount to perform liquidation actions (falls back to defaultSubaccountId when unset)
+      subaccountId: process.env.DRIFT_LIQ_SUBACCOUNT_ID ? Number(process.env.DRIFT_LIQ_SUBACCOUNT_ID) : undefined,
+      // Max total USD notional to attempt per target handling (across perp attempts)
+      maxAttemptNotional: process.env.DRIFT_LIQ_MAX_ATTEMPT_NOTIONAL ? Number(process.env.DRIFT_LIQ_MAX_ATTEMPT_NOTIONAL) : undefined,
       // New discovery/scan defaults
       probeRps: Number(process.env.DRIFT_LIQ_PROBE_RPS || 50),
       riskHealthThreshold: Number(process.env.DRIFT_LIQ_RISK_HEALTH || 0.1),
