@@ -303,8 +303,17 @@ export function createDriftRouter(io: SocketIOServer): Router {
       // Spot collateral
       const spotCollateral: Array<{ marketIndex: number; symbol?: string; amountUi: number; amountRaw: number; mint?: string; decimals?: number; balanceType?: 'deposit' | 'borrow' }> = [];
       try {
-        const spots = (sdkUser as any)?.getSpotPositions?.() || [];
+        let spots = (sdkUser as any)?.getSpotPositions?.() || [];
         try { logger.info('drift.route.user.debug', { phase: 'spots_count', count: Array.isArray(spots) ? spots.length : 0, cat: 'drift' }); } catch {}
+        // Fallback: raw userAccount spotPositions if filtered list is empty
+        if (!Array.isArray(spots) || spots.length === 0) {
+          try {
+            const ua = (sdkUser as any)?.getUserAccount?.();
+            const rawSpots = Array.isArray(ua?.spotPositions) ? ua.spotPositions : [];
+            try { logger.info('drift.route.user.debug', { phase: 'spots_raw_count', count: rawSpots.length, cat: 'drift' }); } catch {}
+            spots = rawSpots;
+          } catch {}
+        }
         for (const sp of (spots || [])) {
           try {
             const idx = Number(sp?.marketIndex ?? sp?.market_index ?? sp?.market?.index);
@@ -339,6 +348,11 @@ export function createDriftRouter(io: SocketIOServer): Router {
                 }
               } catch {}
             }
+            // Log raw entries even if zero to diagnose
+            try {
+              const scaled = String(sp?.scaledBalance?.toString?.() || sp?.scaledBalance || sp?.balance || sp?.depositBalance || sp?.borrowBalance || '0');
+              logger.info('drift.route.user.debug', { phase: 'spot_raw', idx, decimals, mint, symbol, scaledBalance: scaled, computedAmountRaw: amountRaw, computedAmountUi: amountUi, cat: 'drift' });
+            } catch {}
             if (amountUi !== 0) {
               const balanceType: 'deposit' | 'borrow' = (amountRaw < 0 || amountUi < 0) ? 'borrow' : 'deposit';
               spotCollateral.push({ marketIndex: idx, symbol, amountUi, amountRaw, mint, decimals, balanceType });

@@ -621,15 +621,19 @@ export class DriftLiquidator {
         try { svc.trackMarket(idx, Math.max(800, Number((this.config.httpPollMs ?? liqCfg.httpPollMs ?? 1200)))); } catch {}
         this.trackedMarkets.add(Number(idx));
         const onPrice = () => {
-          const prev: any = this.priceTriggerTimers.get(idx);
-          if (prev) { try { (globalThis as any).clearTimeout(prev); } catch {} }
+          // One-shot throttle: if a timer exists, let it run; else schedule
+          if (this.priceTriggerTimers.has(idx)) return;
           const t: any = (globalThis as any).setTimeout(() => {
-            this.partialUpdateForMarket(Number(idx))
-              .then(() => {
-                this.state.candidatesQueued = this.heap.size();
-                this.drainQueue(Math.max(1, Number(this.config.maxConcurrentTargets || 2)));
-              })
-              .catch(() => {});
+            try {
+              this.partialUpdateForMarket(Number(idx))
+                .then(() => {
+                  this.state.candidatesQueued = this.heap.size();
+                  this.drainQueue(Math.max(1, Number(this.config.maxConcurrentTargets || 2)));
+                })
+                .catch(() => {});
+            } finally {
+              try { this.priceTriggerTimers.delete(idx); } catch {}
+            }
           }, debounceMs);
           this.priceTriggerTimers.set(idx, t);
         };
@@ -661,15 +665,18 @@ export class DriftLiquidator {
       try { svc.trackMarket(idx, pollMs); } catch {}
       const debounceMs = Math.max(600, Math.min(5000, Number((this.config.priceTriggerDebounceMs ?? liqCfg.priceTriggerDebounceMs ?? ((CONFIG as any)?.websocketIntervalMs) ?? 800))));
       const onPrice = () => {
-        const prev: any = this.priceTriggerTimers.get(idx);
-        if (prev) { try { (globalThis as any).clearTimeout(prev); } catch {} }
+        if (this.priceTriggerTimers.has(idx)) return;
         const t: any = (globalThis as any).setTimeout(() => {
-          this.partialUpdateForMarket(Number(idx))
-            .then(() => {
-              this.state.candidatesQueued = this.heap.size();
-              this.drainQueue(Math.max(1, Number(this.config.maxConcurrentTargets || 2)));
-            })
-            .catch(() => {});
+          try {
+            this.partialUpdateForMarket(Number(idx))
+              .then(() => {
+                this.state.candidatesQueued = this.heap.size();
+                this.drainQueue(Math.max(1, Number(this.config.maxConcurrentTargets || 2)));
+              })
+              .catch(() => {});
+          } finally {
+            try { this.priceTriggerTimers.delete(idx); } catch {}
+          }
         }, debounceMs);
         this.priceTriggerTimers.set(idx, t);
       };
