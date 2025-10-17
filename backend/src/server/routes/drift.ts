@@ -240,11 +240,45 @@ export function createDriftRouter(io: SocketIOServer): Router {
       const client: any = (svc as any)?.client;
       let sdkUser: any = null;
       try {
-        const { User } = await import('@drift-labs/sdk');
+        const { User, getUserAccountPublicKey } = await import('@drift-labs/sdk');
         const { PublicKey } = await import('@solana/web3.js');
-        const pk = new PublicKey(pkStr);
-        sdkUser = new User({ driftClient: client, userAccountPublicKey: pk, accountSubscription: { type: 'websocket' } });
-        try { await (sdkUser as any)?.subscribe?.(); } catch {}
+        const inputPk = new PublicKey(pkStr);
+        // First, try treating input as a user account PDA directly
+        try {
+          const candidate = new User({ driftClient: client, userAccountPublicKey: inputPk, accountSubscription: { type: 'websocket' } });
+          try { await (candidate as any)?.subscribe?.(); } catch {}
+          let exists = false;
+          try { exists = await (candidate as any)?.exists?.(); } catch {}
+          if (exists) {
+            sdkUser = candidate;
+          }
+        } catch {}
+        // If not, treat input as an authority and resolve PDA (optionally using subAccountId)
+        if (!sdkUser) {
+          let targetUserPk: any = null;
+          const q = req.query as any;
+          const subId = Number(q?.subAccountId ?? q?.subaccountId ?? q?.subid ?? q?.id);
+          if (Number.isFinite(subId)) {
+            try { targetUserPk = await (client as any)?.getUserAccountPublicKey?.(Number(subId), inputPk) || await getUserAccountPublicKey((client as any)?.program?.programId, inputPk, Number(subId)); } catch {}
+          }
+          // Probe a few subaccounts if none specified or not found
+          if (!targetUserPk) {
+            for (let i = 0; i < 4; i++) {
+              try {
+                const p = await getUserAccountPublicKey((client as any)?.program?.programId, inputPk, i);
+                const candidate = new User({ driftClient: client, userAccountPublicKey: p, accountSubscription: { type: 'websocket' } });
+                try { await (candidate as any)?.subscribe?.(); } catch {}
+                let exists = false;
+                try { exists = await (candidate as any)?.exists?.(); } catch {}
+                if (exists) { targetUserPk = p; break; }
+              } catch {}
+            }
+          }
+          if (targetUserPk) {
+            sdkUser = new User({ driftClient: client, userAccountPublicKey: targetUserPk, accountSubscription: { type: 'websocket' } });
+            try { await (sdkUser as any)?.subscribe?.(); } catch {}
+          }
+        }
       } catch {}
       if (!sdkUser) return res.status(404).json({ error: 'USER_NOT_FOUND' });
       try { await (sdkUser as any)?.fetchAccounts?.(); } catch {}
