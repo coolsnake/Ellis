@@ -1,6 +1,8 @@
 // @ts-nocheck
 import { Connection } from '@solana/web3.js';
 import { logger } from '../utils/logger.js';
+import * as path from 'path';
+import { promises as fs } from 'fs';
 
 export type DriftAttemptIn = {
   sig: string;
@@ -103,18 +105,12 @@ function extractDriftFillStats(logs: string[]): { baseFilled?: number; quoteFill
 // Persistence / aggregation
 type AttemptRecord = DriftAttemptIn & DriftAttemptOut & { ts: number };
 const attemptsStore: AttemptRecord[] = [];
-const fsPath = (() => {
-  try {
-    const p = (await import('path')).default;
-    return p.resolve(process.cwd(), 'logs', 'keeper_attempts.jsonl');
-  } catch { return undefined; }
-})();
+const fsPath = path.resolve(process.cwd(), 'logs', 'keeper_attempts.jsonl');
 
 async function appendJsonl(obj: any) {
   try {
-    if (!fsPath) return;
-    const fs = (await import('fs')).promises;
-    await fs.mkdir((await import('path')).default.dirname(fsPath), { recursive: true } as any).catch(() => {});
+    const dir = path.dirname(fsPath);
+    await fs.mkdir(dir, { recursive: true } as any).catch(() => {});
     await fs.appendFile(fsPath, JSON.stringify(obj) + '\n');
   } catch {}
 }
