@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ROUTES } from '../utils/routes';
+import { useSocketExtraEvents } from '../app/hooks/useSocketExtraEvents';
 
 type FillerItem = { key: string; status: { running: boolean; fillsLastMin?: number } };
 
@@ -44,6 +45,46 @@ export const FillerStatus: React.FC<{ apiBase: string }> = ({ apiBase }) => {
     load();
     return () => { try { abortRef.current?.abort(); } catch {} };
   }, [apiBase]);
+
+  // Subscribe to socket updates so bots appear without manual refresh
+  useSocketExtraEvents({
+    onFillerUpdate: async (payload: any) => {
+      try {
+        if (payload && typeof payload === 'object') {
+          setStatus(payload);
+          // Refresh metrics for updated list
+          const list = Array.isArray(payload?.fillers) ? payload.fillers as any[] : [];
+          const ms: Record<string, any> = {};
+          await Promise.all(list.map(async (it: any) => {
+            try {
+              const r = await fetch(`${apiBase}${ROUTES.strategies.filler.metrics}?bot=${encodeURIComponent(it.key)}`);
+              ms[it.key] = await r.json();
+            } catch {}
+          }));
+          setMetrics(ms);
+        }
+      } catch {}
+    },
+  });
+
+  // Background metrics refresh (not realtime): every 20s
+  useEffect(() => {
+    const id = setInterval(async () => {
+      try {
+        const list = Array.isArray(status?.fillers) ? status!.fillers as any[] : [];
+        if (list.length === 0) return;
+        const ms: Record<string, any> = {};
+        await Promise.all(list.map(async (it: any) => {
+          try {
+            const r = await fetch(`${apiBase}${ROUTES.strategies.filler.metrics}?bot=${encodeURIComponent(it.key)}&windowMs=60000`);
+            ms[it.key] = await r.json();
+          } catch {}
+        }));
+        setMetrics(ms);
+      } catch {}
+    }, 20000);
+    return () => { try { clearInterval(id); } catch {} };
+  }, [apiBase, JSON.stringify(status?.fillers || [])]);
 
   const act = async (kind: 'start' | 'stop' | 'remove', key: string) => {
     try {

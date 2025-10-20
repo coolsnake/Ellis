@@ -70,6 +70,10 @@ export function createTriggerRouter(_io: SocketIOServer): Router {
             await DriftTriggerRegistry.start(key);
           }
           emit('log', { level: 'info', message: `drift: trigger started ${name}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } });
+          try {
+            const listNow = (DriftTriggerRegistry as any).list?.();
+            _io.emit('trigger-update', { triggers: listNow });
+          } catch {}
         } catch (e: any) {
           logger.error('drift-trigger: start async failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
           try { emit('log', { level: 'error', message: `drift: trigger start failed ${name}: ${String(e?.message || e)}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } }); } catch {}
@@ -93,6 +97,10 @@ export function createTriggerRouter(_io: SocketIOServer): Router {
       }
       const { DriftTriggerRegistry } = await import('../../../drift/triggerRunner.js');
       const ok = await DriftTriggerRegistry.stop(key);
+      try {
+        const listNow = (DriftTriggerRegistry as any).list?.();
+        _io.emit('trigger-update', { triggers: listNow });
+      } catch {}
       res.json({ ok });
     } catch (e: any) {
       logger.error('drift-trigger: stop failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
@@ -110,6 +118,10 @@ export function createTriggerRouter(_io: SocketIOServer): Router {
       }
       const { DriftTriggerRegistry } = await import('../../../drift/triggerRunner.js');
       const ok = await DriftTriggerRegistry.remove(key);
+      try {
+        const listNow = (DriftTriggerRegistry as any).list?.();
+        _io.emit('trigger-update', { triggers: listNow });
+      } catch {}
       res.json({ ok });
     } catch (e: any) {
       logger.error('drift-trigger: remove failed', { error: String(e?.message || e), stack: String(e?.stack || '') });

@@ -59,6 +59,10 @@ export function createFillerRouter(_io: SocketIOServer): Router {
             await DriftFillerRegistry.start(key);
           }
           emit('log', { level: 'info', message: `drift: filler started ${name}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } });
+          try {
+            const listNow = (DriftFillerRegistry as any).list?.();
+            _io.emit('filler-update', { fillers: listNow });
+          } catch {}
         } catch (e: any) {
           logger.error('drift-filler: start async failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
           try { emit('log', { level: 'error', message: `drift: filler start failed ${name}: ${String(e?.message || e)}`, timestamp: new Date().toISOString(), context: { cat: 'drift' } }); } catch {}
@@ -81,6 +85,10 @@ export function createFillerRouter(_io: SocketIOServer): Router {
       }
       const { DriftFillerRegistry } = await import('../../../drift/fillerRunner.js');
       const ok = await DriftFillerRegistry.stop(key);
+      try {
+        const listNow = (DriftFillerRegistry as any).list?.();
+        _io.emit('filler-update', { fillers: listNow });
+      } catch {}
       res.json({ ok });
     } catch (e: any) {
       logger.error('drift-filler: stop failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
@@ -98,6 +106,10 @@ export function createFillerRouter(_io: SocketIOServer): Router {
       }
       const { DriftFillerRegistry } = await import('../../../drift/fillerRunner.js');
       const ok = await DriftFillerRegistry.remove(key);
+      try {
+        const listNow = (DriftFillerRegistry as any).list?.();
+        _io.emit('filler-update', { fillers: listNow });
+      } catch {}
       res.json({ ok });
     } catch (e: any) {
       logger.error('drift-filler: remove failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
