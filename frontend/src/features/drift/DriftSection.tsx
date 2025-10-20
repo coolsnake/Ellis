@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { LiquidationMonitor } from '../drift';
+import { LiquidationMonitor, TriggerStatus } from '../drift';
 import { LiquidatorStatus } from '../../components/LiquidatorStatus';
 import { ROUTES } from '../../utils/routes';
 import { useSocket } from '../../app/contexts/socket';
@@ -423,6 +423,9 @@ export const DriftSection: React.FC<{
         </div>
         <div className="mb-3">
           <LiquidatorStatus apiBase={p.apiBase} />
+        </div>
+        <div className="mb-3">
+          <TriggerStatus apiBase={p.apiBase} />
         </div>
         <div className="mt-3 grid grid-cols-1 gap-3">
           {p.ls.map((x) => (

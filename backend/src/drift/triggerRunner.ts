@@ -142,7 +142,18 @@ export class DriftTriggerRunner {
     } catch (e: any) {
       logger.info('drift.trigger.warn event_subscribe_failed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, err: String(e?.message || e) });
     }
-    this.userMap = new UserMap({ connection: this.connection, program: this.client.program, eventSubscriber: this.eventSubscriber || undefined });
+    // Create UserMap with robust signature handling (SDK variations)
+    try {
+      this.userMap = new UserMap({ connection: this.connection, program: this.client.program, eventSubscriber: this.eventSubscriber || undefined });
+    } catch (e1: any) {
+      logger.info('drift.trigger.warn usermap_ctor_object_failed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, err: String(e1?.message || e1) });
+      try {
+        this.userMap = new UserMap(this.connection, this.client.program, this.eventSubscriber || undefined);
+      } catch (e2: any) {
+        logger.info('drift.trigger.warn usermap_ctor_tuple_failed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, err: String(e2?.message || e2) });
+        this.userMap = new UserMap(this.connection, this.client.program);
+      }
+    }
     await this.userMap.subscribe();
     logger.info('drift.trigger.usermap_subscribed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name });
     this.dlobSubscriber = new DLOBSubscriber({ dlobSource: this.userMap, slotSource: this.slotSubscriber, updateFrequency: Math.max(200, this.state.loopIntervalMs - 250), driftClient: this.client });
