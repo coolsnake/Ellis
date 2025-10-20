@@ -585,24 +585,45 @@ export class DriftFillerRunner {
               }
             }
 
-            // If we are going to try AMM (vAMM node or no makers), ensure order meets AMM min order size
+            // If we are going to try AMM (vAMM node or no makers), ensure remaining size meets AMM min and is crossing
             try {
               const usingAmm = (typeof node?.node?.isVammNode === 'function' && node.node.isVammNode()) || !(Array.isArray(node?.makerNodes) && node.makerNodes.length > 0);
-              const minSz = (market as any)?.amm?.minOrderSize;
-              const baseAmt = (node?.node?.order as any)?.baseAssetAmount;
-              if (usingAmm && minSz && baseAmt && typeof baseAmt.lt === 'function' && baseAmt.lt(minSz)) {
-                try {
-                  logger.info('drift.filler.skip_below_min_order', {
-                    cat: FILLER_CAT,
-                    subcat: FILLER_SUBCAT,
-                    marketIndex: idx,
-                    orderBase: String((baseAmt as any)?.toString?.() || baseAmt || ''),
-                    minOrder: String((minSz as any)?.toString?.() || minSz || ''),
-                    taker: String(node?.node?.userAccount || ''),
-                    orderId: String(node?.node?.order?.orderId || ''),
-                  });
-                } catch {}
-                continue;
+              const o = node?.node?.order;
+              const minSz = (market as any)?.amm?.minOrderSize; // BN
+              if (usingAmm && o) {
+                const { BN, getVariant } = this.sdk;
+                const base = (o as any)?.baseAssetAmount;         // BN
+                const filled = (o as any)?.baseAssetAmountFilled || new BN(0); // BN
+                const remaining = (base && typeof base.sub === 'function') ? base.sub(filled) : null;
+                if (minSz && remaining && typeof remaining.lt === 'function' && remaining.lt(minSz)) {
+                  try {
+                    logger.info('drift.filler.skip_below_min_order', {
+                      cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx,
+                      remaining: String((remaining as any)?.toString?.() || remaining || ''),
+                      minOrder: String((minSz as any)?.toString?.() || minSz || ''),
+                      taker: String(node?.node?.userAccount || ''), orderId: String(o?.orderId || ''),
+                    });
+                  } catch {}
+                  continue;
+                }
+                // Cheap crossing check for AMM-only limit orders
+                const otype = o?.orderType ? String(getVariant(o.orderType)).toLowerCase() : undefined;
+                const dir = o?.direction ? String(getVariant(o.direction)).toLowerCase() : undefined; // 'long' | 'short'
+                const isLimit = !!otype && otype.includes('limit');
+                const priceBn = (o as any)?.price;
+                if (isLimit && priceBn && typeof priceBn.lt === 'function' && typeof vAsk?.lt === 'function' && typeof vBid?.lt === 'function') {
+                  const notCrossing = (dir === 'long' && priceBn.lt(vAsk)) || (dir === 'short' && priceBn.gt(vBid));
+                  if (notCrossing) {
+                    try {
+                      logger.debug('drift.filler.skip_not_crossing_amm', {
+                        cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx, dir,
+                        orderPrice: String(priceBn?.toString?.() || ''), vBid: String(vBid?.toString?.() || ''), vAsk: String(vAsk?.toString?.() || ''),
+                        taker: String(node?.node?.userAccount || ''), orderId: String(o?.orderId || ''),
+                      });
+                    } catch {}
+                    continue;
+                  }
+                }
               }
             } catch {}
 
