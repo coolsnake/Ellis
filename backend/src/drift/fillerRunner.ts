@@ -393,13 +393,12 @@ export class DriftFillerRunner {
               }
             }
 
-            // Identify order type and trigger condition; skip trigger orders until triggered
+            // Identify order type; skip true trigger orders (TriggerMarket/TriggerLimit) until triggered
             const o = node?.node?.order;
             let orderTypeStr: string | undefined = undefined;
-            let triggerCondStr: string | undefined = undefined;
             try { orderTypeStr = o?.orderType ? String(getVariant(o.orderType)) : undefined; } catch {}
-            try { triggerCondStr = o?.triggerCondition ? String(getVariant(o.triggerCondition)) : undefined; } catch {}
-            if ((orderTypeStr && orderTypeStr.toLowerCase().includes('trigger')) || triggerCondStr) {
+            const isTriggerType = !!orderTypeStr && ['triggermarket', 'triggerlimit'].includes(orderTypeStr.toLowerCase());
+            if (isTriggerType) {
               try {
                 const key = idx;
                 const now = Date.now();
@@ -412,13 +411,13 @@ export class DriftFillerRunner {
                     cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx,
                     taker: String(node?.node?.userAccount || ''),
                     orderId: String(node?.node?.order?.orderId || ''),
-                    orderType: orderTypeStr, triggerCondition: triggerCondStr,
+                    orderType: orderTypeStr,
                     countInWindow: rec.n,
                   });
                 } else {
                   logger.debug('drift.filler.skip_trigger_order', {
                     cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx,
-                    orderType: orderTypeStr, triggerCondition: triggerCondStr,
+                    orderType: orderTypeStr,
                   });
                 }
               } catch {}
