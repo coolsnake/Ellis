@@ -20,6 +20,6 @@
     }
   },
   "include": ["src", "config/**/*.json"],
-  "exclude": ["node_modules", "dist", "src/drift/filler.ts", "src/drift/trigger.ts"]
+  "exclude": ["node_modules", "dist", "src/drift/**"]
 }
 
