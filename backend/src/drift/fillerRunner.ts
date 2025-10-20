@@ -262,13 +262,23 @@ export class DriftFillerRunner {
         return false;
       }
 
-      const tx = new Transaction();
-      tx.add(...ixs);
-      tx.feePayer = this.client.wallet.publicKey;
-      tx.recentBlockhash = bh.blockhash;
+      const submit = async (prio: number, updIx: any, bhObj: any): Promise<string> => {
+        const toSend = new Transaction();
+        toSend.add(
+          ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
+          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: prio }),
+          fillIx,
+          ...(updIx ? [updIx] : []),
+          revertIx,
+        );
+        toSend.feePayer = this.client.wallet.publicKey;
+        toSend.recentBlockhash = bhObj.blockhash;
+        toSend.sign(this.client.wallet.payer);
+        return DriftService.getInstance().sendRawTransaction(toSend.serialize(), { skipPreflight: true, preflightCommitment: 'processed' });
+      };
+
       try {
-        tx.sign(this.client.wallet.payer);
-        const sigTx = await DriftService.getInstance().sendRawTransaction(tx.serialize(), { skipPreflight: false, preflightCommitment: 'confirmed' });
+        const sigTx = await submit(priority, updateFillerIx, bh);
         this.fillsInWindow.push(Date.now());
         logger.info('drift.filler.ok', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, sig: sigTx, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
         // async track
@@ -289,6 +299,39 @@ export class DriftFillerRunner {
         } catch {}
         return true;
       } catch (e: any) {
+        const msg = String(e?.message || e || '');
+        if (/0x185f|RevertFill/i.test(msg)) {
+          try {
+            const [bh2, upd2] = await Promise.all([
+              withRpcLimit(() => this.connection.getLatestBlockhash({ commitment: 'processed' })),
+              (async () => { try { return await (this.client.getUpdateFillerIx?.() ?? this.client.getUpdateUserIdleIx?.()); } catch { return null; } })(),
+            ]);
+            const boosted = Math.max(priority, 3000);
+            const sigTx = await submit(boosted, upd2 ?? updateFillerIx, bh2);
+            this.fillsInWindow.push(Date.now());
+            logger.info('drift.filler.ok', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, sig: sigTx, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
+            try {
+              const { trackDriftAttempt } = await import('./txTracker.js');
+              const makerKeys = Array.isArray(makers) ? makers : [];
+              trackDriftAttempt(this.connection as any, {
+                sig: sigTx,
+                action: 'fill',
+                marketIndex,
+                taker: takerPkStr,
+                makers: makerKeys,
+                orderId: String(nodeToFill?.node?.order?.orderId || ''),
+                priorityFeeMicroLamports: boosted,
+                cuLimit: Number(this.config.cuLimit || 0),
+                bot: (this as any)?.state?.name ? `fil#${(this as any).state.name}` : undefined,
+              }).catch(() => {});
+            } catch {}
+            return true;
+          } catch (e2: any) {
+            logger.info('drift.filler.error send_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), err: String(e2?.message || e2) });
+            return false;
+          }
+        }
+        // Market paused or other error
         logger.info('drift.filler.error send_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), err: String(e?.message || e) });
         return false;
       }
@@ -339,6 +382,14 @@ export class DriftFillerRunner {
         const idx = Number(market?.marketIndex || 0);
         if (!this.inAllowlist(idx)) continue;
         const slotBn = new BN(slot);
+        // Skip paused markets
+        try {
+          const statusStr = (() => { try { return String(getVariant((market as any)?.status)).toLowerCase(); } catch { return 'unknown'; } })();
+          if (statusStr !== 'active') {
+            try { logger.info('drift.filler.skip_paused_market', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx, status: statusStr }); } catch {}
+            continue;
+          }
+        } catch {}
         const mmOraclePriceData = this.client.getMMOracleDataForPerpMarket?.(idx);
         const vAsk = calculateAskPrice(market, mmOraclePriceData, slotBn);
         const vBid = calculateBidPrice(market, mmOraclePriceData, slotBn);
