@@ -183,32 +183,40 @@ export class DriftFillerRunner {
           takerWrapper = tmp;
         } catch {}
       }
-      // Ensure taker user account is hydrated
+      // Ensure taker user account is hydrated (wrapper first)
       let takerUa = takerWrapper?.getUserAccount?.();
       if (!takerUa) {
-        for (let i = 0; i < 8 && !takerUa; i += 1) {
+        for (let i = 0; i < 4 && !takerUa; i += 1) {
           try { await takerWrapper?.fetchAccounts?.(); } catch {}
           try { takerUa = takerWrapper?.getUserAccount?.(); } catch {}
-          if (!takerUa) { try { await new Promise((r) => setTimeout(r, 60)); } catch {} }
+          if (!takerUa) { try { await new Promise((r) => setTimeout(r, 40)); } catch {} }
         }
       }
-      // Additionally ensure underlying subscriber has dataAndSlot to avoid SDK 'dataAndSlot' reads
+      // Additionally ensure underlying subscriber has dataAndSlot, but do not hard-fail on missing
       try {
         let ok = !!(takerWrapper as any)?.userAccountSubscriber?.dataAndSlot?.data;
-        for (let i = 0; i < 6 && !ok; i += 1) {
+        for (let i = 0; i < 3 && !ok; i += 1) {
           try { await takerWrapper?.fetchAccounts?.(); } catch {}
           ok = !!(takerWrapper as any)?.userAccountSubscriber?.dataAndSlot?.data;
-          if (!ok) { try { await new Promise((r) => setTimeout(r, 50)); } catch {} }
-        }
-        if (!ok) {
-          try { logger.info('drift.filler.skip_unhydrated_taker', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, marketIndex }); } catch {}
-          return false;
+          if (!ok) { try { await new Promise((r) => setTimeout(r, 40)); } catch {} }
         }
       } catch {}
+      // Fallback 1: fetch raw on-chain account via Anchor coder
       if (!takerUa) {
         try { takerUa = await this.client.program.account.user.fetch(new PublicKey(takerPkStr)); } catch {}
       }
-      if (!takerUa) return false;
+      // Fallback 2: batched decoder in DriftService (avoids wrapper entirely)
+      if (!takerUa) {
+        try {
+          const svc = DriftService.getInstance() as any;
+          const decoded = await svc.fetchUsersDecoded?.([takerPkStr]);
+          takerUa = decoded?.get?.(takerPkStr) || takerUa;
+        } catch {}
+      }
+      if (!takerUa) {
+        try { logger.info('drift.filler.skip_missing_taker', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, marketIndex }); } catch {}
+        return false;
+      }
 
       // If taker has a referrer configured but referrer stats do not exist, skip to avoid 6030
       try {
@@ -253,6 +261,12 @@ export class DriftFillerRunner {
       } catch {}
 
       const makerInfos: any[] = [];
+      // Batch-decode makers once to reduce round-trips
+      let makersDecoded: Map<string, any> | null = null;
+      try {
+        const svc = DriftService.getInstance() as any;
+        makersDecoded = await (svc.fetchUsersDecoded?.(makers) || null);
+      } catch {}
       for (const m of makers) {
         try {
           let makerUa: any = null;
@@ -288,10 +302,15 @@ export class DriftFillerRunner {
               ok = !!(makerWrapper as any)?.userAccountSubscriber?.dataAndSlot?.data;
               if (!ok) { try { await new Promise((r) => setTimeout(r, 40)); } catch {} }
             }
-            if (!ok) continue;
+            if (!ok && !makerUa) {
+              // Keep trying via decode fallbacks below
+            }
           } catch {}
           if (!makerUa) {
             try { makerUa = await this.client.program.account.user.fetch(new PublicKey(m)); } catch {}
+          }
+          if (!makerUa && makersDecoded) {
+            try { makerUa = makersDecoded.get(m) || makerUa; } catch {}
           }
           if (!makerUa) continue;
           const makerAuth = makerUa?.authority;

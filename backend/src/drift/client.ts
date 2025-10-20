@@ -280,6 +280,32 @@ export class DriftService {
   hasWarmRefStats(pk: string | PublicKey): boolean {
     return this.warmRefStats.has(String(pk));
   }
+  async fetchUsersDecoded(pks: (string | PublicKey)[]): Promise<Map<string, any>> {
+    await this.init();
+    try {
+      const { PublicKey } = await import('@solana/web3.js');
+      const keys = pks.map((k) => (typeof k === 'string' ? new PublicKey(k) : k));
+      const infos = await this.getReadConnection().getMultipleAccountsInfo(keys, 'processed');
+      const out = new Map<string, any>();
+      let coder: any = null;
+      try { coder = (this.client as any)?.program?.coder?.accounts || null; } catch {}
+      for (let i = 0; i < keys.length; i += 1) {
+        try {
+          const info = infos?.[i];
+          if (!info?.data) continue;
+          let ua: any = null;
+          try { ua = coder?.decode?.('User', info.data); } catch {}
+          if (!ua) {
+            try { ua = (this.client as any)?.program?.account?.user?.coder?.accounts?.decode?.('User', info.data); } catch {}
+          }
+          if (ua) out.set(keys[i].toBase58(), ua);
+        } catch {}
+      }
+      return out;
+    } catch {
+      return new Map<string, any>();
+    }
+  }
   async ensureRefStatsReady(referrerAuth: PublicKey): Promise<PublicKey | null> {
     await this.init();
     try {
@@ -315,13 +341,20 @@ export class DriftService {
       }
     } catch {}
 
-    const collectFromDlob = () => {
+    const collectFromDlob = async () => {
       try {
         const dlob = dlobSubscriber?.getDLOB?.();
         if (!dlob) return;
         const found: Set<string> = new Set();
-        // Heuristic: scan a small set of common markets; adjust as needed or wire allowlist
-        const indices = [0, 1, 2, 31, 45];
+        // Build market index list dynamically from SDK
+        let indices: number[] = [];
+        try {
+          const perps = await this.client?.getPerpMarketAccounts?.();
+          if (Array.isArray(perps)) {
+            indices = perps.map((m: any) => Number(m?.marketIndex ?? m?.market_index ?? m?.idx)).filter((n: any) => Number.isFinite(n));
+          }
+        } catch {}
+        if (!Array.isArray(indices) || indices.length === 0) { indices = [0, 1, 2, 31, 45]; }
         for (const mi of indices) {
           try {
             const nodes = dlob.getRestingLimitOrderNodes?.(mi) || [];
@@ -338,10 +371,10 @@ export class DriftService {
 
     const step = async () => {
       try {
-        collectFromDlob();
-        const batch = this.prefetchQueue.splice(0, 200);
+        await collectFromDlob();
+        const batch = this.prefetchQueue.splice(0, 500);
         const groups: string[][] = [];
-        const conc = 8;
+        const conc = 16;
         for (let i = 0; i < batch.length; i += conc) groups.push(batch.slice(i, i + conc));
         for (const grp of groups) {
           await Promise.all(grp.map(async (pk) => {
@@ -379,7 +412,7 @@ export class DriftService {
     };
 
     if (this.prefetchTimer) { try { clearInterval(this.prefetchTimer); } catch {} }
-    this.prefetchTimer = setInterval(() => { step().catch(() => {}); }, 400);
+    this.prefetchTimer = setInterval(() => { step().catch(() => {}); }, 150);
   }
 
   async sendRawTransaction(raw: Buffer | Uint8Array, opts?: any): Promise<string> {
