@@ -255,6 +255,22 @@ export class DriftFillerRunner {
         const sigTx = await DriftService.getInstance().sendRawTransaction(tx.serialize(), { skipPreflight: false, preflightCommitment: 'confirmed' });
         this.fillsInWindow.push(Date.now());
         logger.info('drift.filler.ok', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, sig: sigTx, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
+        // async track
+        try {
+          const { trackDriftAttempt } = await import('./txTracker.js');
+          const makerKeys = Array.isArray(makers) ? makers : [];
+          trackDriftAttempt(this.connection as any, {
+            sig: sigTx,
+            action: 'fill',
+            marketIndex,
+            taker: takerPkStr,
+            makers: makerKeys,
+            orderId: String(nodeToFill?.node?.order?.orderId || ''),
+            priorityFeeMicroLamports: Number(this.config.priorityFeeMicroLamports || 0),
+            cuLimit: Number(this.config.cuLimit || 0),
+            bot: (this as any)?.state?.name ? `fil#${(this as any).state.name}` : undefined,
+          }).catch(() => {});
+        } catch {}
         return true;
       } catch (e: any) {
         logger.info('drift.filler.error send_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), err: String(e?.message || e) });

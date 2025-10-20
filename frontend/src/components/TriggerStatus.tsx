@@ -5,6 +5,7 @@ type TriggerItem = { key: string; status: { running: boolean; triggersLastMin?: 
 
 export const TriggerStatus: React.FC<{ apiBase: string }> = ({ apiBase }) => {
   const [status, setStatus] = useState<{ triggers?: TriggerItem[] } | null>(null);
+  const [metrics, setMetrics] = useState<Record<string, any>>({});
   const [busy, setBusy] = useState(false);
   const inflightRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -23,6 +24,16 @@ export const TriggerStatus: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       clearTimeout(timeout);
       if (abortRef.current === ac) abortRef.current = null;
       inflightRef.current = false;
+      // Load metrics for each bot key (1m)
+      const list = Array.isArray(data?.triggers) ? data.triggers as any[] : [];
+      const ms: Record<string, any> = {};
+      await Promise.all(list.map(async (it: any) => {
+        try {
+          const r = await fetch(`${apiBase}${ROUTES.strategies.trigger.metrics}?bot=${encodeURIComponent(it.key)}`);
+          ms[it.key] = await r.json();
+        } catch {}
+      }));
+      setMetrics(ms);
     } catch {}
     finally {
       inflightRef.current = false;
@@ -61,7 +72,14 @@ export const TriggerStatus: React.FC<{ apiBase: string }> = ({ apiBase }) => {
       <div className="space-y-2 text-sm">
         {list.map((it) => (
           <div key={it.key} className="p-2 bg-gray-700 rounded flex items-center justify-between">
-            <div className="text-gray-200">{it.key} — {it.status?.running ? 'running' : 'stopped'} · triggers(1m)={it.status?.triggersLastMin ?? 0}</div>
+            <div className="text-gray-200">
+              <div>{it.key} — {it.status?.running ? 'running' : 'stopped'} · triggers(1m)={it.status?.triggersLastMin ?? 0}</div>
+              {metrics[it.key] && (
+                <div className="text-xs text-gray-300 mt-0.5">
+                  attempts(1m)={metrics[it.key].attempts ?? 0} · successes(1m)={metrics[it.key].successes ?? 0} · cost(1m)={(metrics[it.key].costSol ?? 0).toFixed(6)} SOL
+                </div>
+              )}
+            </div>
             <div className="space-x-2">
               <button className="px-2 py-1 bg-green-600 text-white rounded text-xs" onClick={() => act('start', it.key)} disabled={busy}>Start</button>
               <button className="px-2 py-1 bg-yellow-600 text-white rounded text-xs" onClick={() => act('stop', it.key)} disabled={busy}>Stop</button>

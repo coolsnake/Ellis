@@ -390,6 +390,20 @@ export class DriftTriggerRunner {
               const sigTx = await DriftService.getInstance().sendRawTransaction(tx.serialize(), { skipPreflight: false, preflightCommitment: 'confirmed' });
               this.triggersInWindow.push(Date.now());
               logger.info('drift.trigger.ok', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, sig: sigTx, marketType: typeStr, marketIndex: idx, user: userPkStr, orderId });
+              // async track
+              try {
+                const { trackDriftAttempt } = await import('./txTracker.js');
+                trackDriftAttempt(this.connection as any, {
+                  sig: sigTx,
+                  action: 'trigger',
+                  marketIndex: idx,
+                  taker: userPkStr,
+                  orderId,
+                  priorityFeeMicroLamports: Number(this.config.priorityFeeMicroLamports || 0),
+                  cuLimit: Number(this.config.cuLimit || 0),
+                  bot: (this as any)?.state?.name ? `trg#${(this as any).state.name}` : undefined,
+                }).catch(() => {});
+              } catch {}
             } catch (e: any) {
               const logs = (e?.logs && Array.isArray(e.logs)) ? e.logs : undefined;
               logger.info('drift.trigger.error send_failed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, user: userPkStr, orderId, err: String(e?.message || e), logs });

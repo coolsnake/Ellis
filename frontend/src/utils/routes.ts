@@ -82,12 +82,14 @@ export const ROUTES = {
       stop: '/strategies/trigger/stop',
       remove: '/strategies/trigger/remove',
       update: '/strategies/trigger/update',
+      metrics: '/strategies/trigger/metrics',
     },
     filler: {
       status: '/strategies/filler/status',
       start: '/strategies/filler/start',
       stop: '/strategies/filler/stop',
       remove: '/strategies/filler/remove',
+      metrics: '/strategies/filler/metrics',
     },
   },
   wallet: {

@@ -17,6 +17,20 @@ export function createFillerRouter(_io: SocketIOServer): Router {
     }
   });
 
+  // Metrics endpoint (1m window by default)
+  api.get('/strategies/filler/metrics', async (req: Request, res: Response) => {
+    try {
+      const windowMs = Number.isFinite(Number(req.query.windowMs)) ? Number(req.query.windowMs) : 60_000;
+      const bot = String(req.query.bot || '').trim() || undefined;
+      const { getMetrics } = await import('../../../drift/txTracker.js');
+      const m = getMetrics({ windowMs, action: 'fill', bot });
+      res.json({ windowMs, bot, ...m });
+    } catch (e: any) {
+      logger.error('drift-filler: metrics failed', { error: String(e?.message || e), stack: String(e?.stack || '') });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   api.post('/strategies/filler/start', async (req: Request, res: Response) => {
     try {
       const cfg = (req.body || {}) as any;
