@@ -224,7 +224,7 @@ export class DriftTriggerRunner {
 
 			let totalNodesPlanned = 0;
 			let marketsWithNodes = 0;
-			const nodeSamples: Array<{ m: number; t: string; u: string; id: string }> = [];
+			const nodeSamples: Array<{ m: number; t: string; u: string; id: string; cond?: string; otype?: string; ordTp?: string; oracle?: string; trig?: string }> = [];
 
 			const tryOneMarket = async (market: any, type: any) => {
         const idx = Number(market?.marketIndex || 0);
@@ -287,7 +287,7 @@ export class DriftTriggerRunner {
             const orderId = String(node?.node?.order?.orderId || '');
             const userPkStr = String(node?.node?.userAccount || '');
 						if (nodeSamples.length < 5) {
-							const o = n?.node?.order;
+							const o = node?.node?.order;
 							nodeSamples.push({
 								m: idx,
 								t: typeStr,
