@@ -33,6 +33,7 @@ import { createSwapRouter } from './routes/swap.js';
 import { createDriftRouter } from './routes/drift.js';
 import { createLeveragedGridRouter } from './routes/strategies/leveragedGrid.js';
 import { createLiquidatorRouter } from './routes/strategies/liquidator.js';
+import { createTriggerRouter } from './routes/strategies/trigger.js';
 import { createPoolsRouter } from './routes/pools.js';
 import { createArbRouter } from './routes/arb.js';
 
@@ -134,7 +135,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   api.use(createDriftRouter(io));
   api.use(createLeveragedGridRouter(io));
   api.use(createLiquidatorRouter(io));
-  api.use((await import('./routes/strategies/trigger.js')).createTriggerRouter(io));
+  api.use(createTriggerRouter(io));
   api.use(createPoolsRouter(io));
   api.use(createArbRouter(io));
 
