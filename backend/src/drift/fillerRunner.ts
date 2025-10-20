@@ -51,6 +51,7 @@ export class DriftFillerRunner {
 
   private nodesCooldown: Map<string, number> = new Map();
   private fillsInWindow: number[] = [];
+  private skipLogCount: Map<number, { n: number; ts: number }> = new Map();
 
   constructor(cfg: FillerConfig) {
     const allowlist = Array.isArray(cfg?.marketsAllowlist)
@@ -130,7 +131,7 @@ export class DriftFillerRunner {
 
   private async initDiscovery(): Promise<void> {
     const svc = DriftService.getInstance();
-    const infra = await (svc as any).getSharedInfra({ includeIdle: false, updateFrequency: Math.max(400, this.state.loopIntervalMs - 300) });
+    const infra = await (svc as any).getSharedInfra({ includeIdle: true, updateFrequency: Math.max(400, this.state.loopIntervalMs - 300) });
     this.slotSubscriber = (infra as any).slotSubscriber;
     this.eventSubscriber = (infra as any).eventSubscriber;
     this.userMap = (infra as any).userMap;
@@ -323,15 +324,26 @@ export class DriftFillerRunner {
             try { triggerCondStr = o?.triggerCondition ? String(getVariant(o.triggerCondition)) : undefined; } catch {}
             if ((orderTypeStr && orderTypeStr.toLowerCase().includes('trigger')) || triggerCondStr) {
               try {
-                logger.info('drift.filler.skip_trigger_order', {
-                  cat: FILLER_CAT,
-                  subcat: FILLER_SUBCAT,
-                  marketIndex: idx,
-                  taker: String(node?.node?.userAccount || ''),
-                  orderId: String(node?.node?.order?.orderId || ''),
-                  orderType: orderTypeStr,
-                  triggerCondition: triggerCondStr,
-                });
+                const key = idx;
+                const now = Date.now();
+                const rec = this.skipLogCount.get(key) || { n: 0, ts: now };
+                if (now - rec.ts > 10000) { rec.n = 0; rec.ts = now; }
+                rec.n += 1;
+                this.skipLogCount.set(key, rec);
+                if (rec.n <= 5 || rec.n % 100 === 0) {
+                  logger.info('drift.filler.skip_trigger_order', {
+                    cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx,
+                    taker: String(node?.node?.userAccount || ''),
+                    orderId: String(node?.node?.order?.orderId || ''),
+                    orderType: orderTypeStr, triggerCondition: triggerCondStr,
+                    countInWindow: rec.n,
+                  });
+                } else {
+                  logger.debug('drift.filler.skip_trigger_order', {
+                    cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx,
+                    orderType: orderTypeStr, triggerCondition: triggerCondStr,
+                  });
+                }
               } catch {}
               continue;
             }

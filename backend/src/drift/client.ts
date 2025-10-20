@@ -49,6 +49,7 @@ export class DriftService {
   private sharedEventSubscriber: any | null = null;
   private sharedUserMap: any | null = null;
   private sharedDlobSubscriber: any | null = null;
+  private sharedOrderSubscriber: any | null = null;
   private txQueueInFlight = 0;
   private txQueue: Array<() => void> = [];
   private maxTxInFlight = 2;
@@ -157,7 +158,7 @@ export class DriftService {
     logger.info('drift.sdk.ready', { pubkey: this.walletKp.publicKey?.toBase58?.(), ms: Date.now() - t0, cat: 'drift', code: 'DRIFT.SDK.READY' });
   }
 
-  async getSharedInfra(opts?: { includeIdle?: boolean; updateFrequency?: number }): Promise<{ slotSubscriber: any; eventSubscriber: any; userMap: any; dlobSubscriber: any }> {
+  async getSharedInfra(opts?: { includeIdle?: boolean; updateFrequency?: number; preferOrderSubscriber?: boolean }): Promise<{ slotSubscriber: any; eventSubscriber: any; userMap: any; dlobSubscriber: any; orderSubscriber?: any }> {
     await this.init();
     let sdk: any = null;
     try { sdk = await import('@drift-labs/sdk'); } catch {}
@@ -189,19 +190,28 @@ export class DriftService {
           driftClient: drift,
           connection,
           subscriptionConfig: umSubCfg,
-          includeIdle: !!opts?.includeIdle,
+          includeIdle: true,
           disableSyncOnTotalAccountsChange: false,
         });
       } catch {
-        try { this.sharedUserMap = new (sdk as any).UserMap({ driftClient: drift, subscriptionConfig: { type: 'websocket' } }); } catch {}
+        try { this.sharedUserMap = new (sdk as any).UserMap({ driftClient: drift, subscriptionConfig: { type: 'websocket' }, includeIdle: true }); } catch {}
       }
       try { await this.sharedUserMap?.subscribe?.(); } catch {}
     }
 
-    if (!this.sharedDlobSubscriber && sdk?.DLOBSubscriber && this.sharedUserMap && this.sharedSlotSubscriber) {
+    // Optional OrderSubscriber for improved DLOB order coverage
+    if (!this.sharedOrderSubscriber && (sdk as any)?.OrderSubscriber) {
+      try {
+        this.sharedOrderSubscriber = new (sdk as any).OrderSubscriber(connection, program);
+        try { await this.sharedOrderSubscriber?.subscribe?.(); } catch {}
+      } catch {}
+    }
+
+    const dlobSource = (opts?.preferOrderSubscriber && this.sharedOrderSubscriber) ? this.sharedOrderSubscriber : this.sharedUserMap;
+    if (!this.sharedDlobSubscriber && sdk?.DLOBSubscriber && dlobSource && this.sharedSlotSubscriber) {
       try {
         this.sharedDlobSubscriber = new (sdk as any).DLOBSubscriber({
-          dlobSource: this.sharedUserMap,
+          dlobSource,
           slotSource: this.sharedSlotSubscriber,
           updateFrequency: Math.max(200, Number(opts?.updateFrequency ?? 600)),
           driftClient: drift,
@@ -216,6 +226,7 @@ export class DriftService {
       eventSubscriber: this.sharedEventSubscriber,
       userMap: this.sharedUserMap,
       dlobSubscriber: this.sharedDlobSubscriber,
+      orderSubscriber: this.sharedOrderSubscriber,
     };
   }
 

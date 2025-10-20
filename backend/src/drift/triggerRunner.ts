@@ -106,6 +106,13 @@ export class DriftTriggerRunner {
     this.sdk = await import('@drift-labs/sdk');
     await this.initDiscovery();
 
+    try {
+      if ((this as any)._condStatsTimer) { try { clearInterval((this as any)._condStatsTimer); } catch {} }
+      (this as any)._condStatsTimer = setInterval(() => {
+        this.reportConditionalOrderStats().catch(() => {});
+      }, 30000);
+    } catch {}
+
     const tick = async () => {
       if (this.abort || this.inLoop) return;
       this.inLoop = true;
@@ -124,17 +131,49 @@ export class DriftTriggerRunner {
     }
     this.state.running = false;
     this.abort = true;
+    try { if ((this as any)._condStatsTimer) { clearInterval((this as any)._condStatsTimer); (this as any)._condStatsTimer = null; } } catch {}
     logger.info('drift.trigger.stopped', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name });
   }
 
   private async initDiscovery(): Promise<void> {
     const svc = DriftService.getInstance();
-    const infra = await (svc as any).getSharedInfra({ includeIdle: true, updateFrequency: Math.max(200, this.state.loopIntervalMs - 250) });
+    const infra = await (svc as any).getSharedInfra({ includeIdle: true, updateFrequency: Math.max(200, this.state.loopIntervalMs - 250), preferOrderSubscriber: true });
     this.slotSubscriber = (infra as any).slotSubscriber;
     this.eventSubscriber = (infra as any).eventSubscriber;
     this.userMap = (infra as any).userMap;
     this.dlobSubscriber = (infra as any).dlobSubscriber;
     logger.info('drift.trigger.dlob_subscribed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name, shared: true });
+  }
+
+  private async reportConditionalOrderStats(): Promise<void> {
+    try {
+      const counts = new Map<number, number>();
+      let scanned = 0;
+      const maxScan = 5000;
+      const iter: any = (this as any).userMap?.values?.();
+      if (iter && typeof iter[Symbol.iterator] === 'function') {
+        for (const u of iter as Iterable<any>) {
+          if (this.abort) break;
+          if (scanned >= maxScan) break;
+          scanned += 1;
+          try {
+            const ua = (u as any)?.getUserAccount?.();
+            const orders: any[] = Array.isArray(ua?.orders) ? ua.orders : [];
+            for (const ord of orders) {
+              try {
+                const ot = ord?.orderType ? (this.sdk as any).getVariant(ord.orderType) : undefined;
+                const mi = Number(ord?.marketIndex ?? ord?.market_index ?? -1);
+                if (typeof ot === 'string' && ot.toLowerCase().includes('trigger') && Number.isFinite(mi) && mi >= 0) {
+                  counts.set(mi, 1 + (counts.get(mi) || 0));
+                }
+              } catch {}
+            }
+          } catch {}
+        }
+      }
+      const sample = Array.from(counts.entries()).slice(0, 10).map(([m, c]) => ({ m, c }));
+      logger.info('drift.trigger.cond_orders_stats', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, scanned, markets: counts.size, sample });
+    } catch {}
   }
 
   private signatureForNode(nodeToTrigger: any): string {
