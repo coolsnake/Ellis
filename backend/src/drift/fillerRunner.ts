@@ -486,6 +486,17 @@ export class DriftFillerRunner {
           }
         } catch {}
         const mmOraclePriceData = this.client.getMMOracleDataForPerpMarket?.(idx);
+        // Skip markets with stale oracle data to avoid zero-fills due to SafeMM checks
+        try {
+          const od = this.client.getOracleDataForPerpMarket?.(idx);
+          const odSlot = Number((od as any)?.slot?.toString?.() || 0);
+          const curSlot = this.slotSubscriber?.getSlot?.() ?? 0;
+          const maxDelay = Math.max(0, Number(((CONFIG as any)?.drift?.maxOracleDelaySlots) ?? 40));
+          if (odSlot > 0 && (curSlot - odSlot) > maxDelay) {
+            try { logger.info('drift.filler.skip_oracle_stale', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx, oracleDelay: (curSlot - odSlot), maxDelay }); } catch {}
+            continue;
+          }
+        } catch {}
         const vAsk = calculateAskPrice(market, mmOraclePriceData, slotBn);
         const vBid = calculateBidPrice(market, mmOraclePriceData, slotBn);
 
@@ -573,6 +584,27 @@ export class DriftFillerRunner {
                 // fall through to attempt AMM fill
               }
             }
+
+            // If we are going to try AMM (vAMM node or no makers), ensure order meets AMM min order size
+            try {
+              const usingAmm = (typeof node?.node?.isVammNode === 'function' && node.node.isVammNode()) || !(Array.isArray(node?.makerNodes) && node.makerNodes.length > 0);
+              const minSz = (market as any)?.amm?.minOrderSize;
+              const baseAmt = (node?.node?.order as any)?.baseAssetAmount;
+              if (usingAmm && minSz && baseAmt && typeof baseAmt.lt === 'function' && baseAmt.lt(minSz)) {
+                try {
+                  logger.info('drift.filler.skip_below_min_order', {
+                    cat: FILLER_CAT,
+                    subcat: FILLER_SUBCAT,
+                    marketIndex: idx,
+                    orderBase: String((baseAmt as any)?.toString?.() || baseAmt || ''),
+                    minOrder: String((minSz as any)?.toString?.() || minSz || ''),
+                    taker: String(node?.node?.userAccount || ''),
+                    orderId: String(node?.node?.order?.orderId || ''),
+                  });
+                } catch {}
+                continue;
+              }
+            } catch {}
 
             // Identify order type; skip true trigger orders (TriggerMarket/TriggerLimit) until triggered
             const o = node?.node?.order;
