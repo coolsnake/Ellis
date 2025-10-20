@@ -138,7 +138,7 @@ export class DriftTriggerRunner {
 
   private async initDiscovery(): Promise<void> {
     const svc = DriftService.getInstance();
-    const infra = await (svc as any).getSharedInfra({ includeIdle: true, updateFrequency: Math.max(200, this.state.loopIntervalMs - 250), preferOrderSubscriber: true });
+    const infra = await (svc as any).getSharedInfra({ includeIdle: false, updateFrequency: Math.max(200, this.state.loopIntervalMs - 250), preferOrderSubscriber: true });
     this.slotSubscriber = (infra as any).slotSubscriber;
     this.eventSubscriber = (infra as any).eventSubscriber;
     this.userMap = (infra as any).userMap;

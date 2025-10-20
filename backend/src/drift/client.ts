@@ -201,8 +201,8 @@ export class DriftService {
           slotSubscriber: this.sharedSlotSubscriber,
           eventSubscriber: this.sharedEventSubscriber,
           subscriptionConfig: umSubCfg,
-          includeIdle: true,
-          disableSyncOnTotalAccountsChange: false,
+          includeIdle: !!(opts?.includeIdle),
+          disableSyncOnTotalAccountsChange: true,
         });
       } catch {
         try {
@@ -211,7 +211,7 @@ export class DriftService {
             slotSubscriber: this.sharedSlotSubscriber,
             eventSubscriber: this.sharedEventSubscriber,
             subscriptionConfig: { type: 'websocket' },
-            includeIdle: true,
+            includeIdle: !!(opts?.includeIdle),
           });
         } catch {}
       }
@@ -226,6 +226,7 @@ export class DriftService {
             driftClient: drift,
             slotSubscriber: this.sharedSlotSubscriber,
             eventSubscriber: this.sharedEventSubscriber,
+            resyncIntervalMs: Number(((CONFIG as any)?.drift?.orderResyncIntervalMs) ?? 15000),
           });
         } catch {
           // fallback to legacy constructor
