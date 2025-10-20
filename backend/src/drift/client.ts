@@ -55,6 +55,12 @@ export class DriftService {
   private txQueue: Array<() => void> = [];
   private maxTxInFlight = 2;
   private minTxGapMs = 200;
+  // Warm user prefetch infra
+  private warmUsers: Map<string, { user: any; ts: number }> = new Map();
+  private prefetchRunning = false;
+  private prefetchTimer: any | null = null;
+  private prefetchQueue: string[] = [];
+  private pollLoaderWarm: any | null = null;
 
   static getInstance(): DriftService {
     if (!this.instance) this.instance = new DriftService();
@@ -257,6 +263,86 @@ export class DriftService {
       dlobSubscriber: this.sharedDlobSubscriber,
       orderSubscriber: this.sharedOrderSubscriber,
     };
+  }
+
+  // Warm user cache helpers
+  getWarmUser(pubkey: string): any | null {
+    const w = this.warmUsers.get(pubkey);
+    return w?.user || null;
+  }
+  enqueueUsersForPrefetch(pks: string[]): void {
+    for (const pk of pks) {
+      if (!pk) continue;
+      if (!this.warmUsers.has(pk)) this.prefetchQueue.push(pk);
+    }
+  }
+  async startUserPrefetcher(dlobSubscriber: any, userMap: any): Promise<void> {
+    await this.init();
+    if (this.prefetchRunning) return;
+    this.prefetchRunning = true;
+    // Prepare polling loader for stability
+    try {
+      const { BulkAccountLoader } = await loadSdk();
+      if (!this.pollLoaderWarm) this.pollLoaderWarm = new BulkAccountLoader(this.connection!, 'confirmed', 1000);
+    } catch {}
+
+    const collectFromDlob = () => {
+      try {
+        const dlob = dlobSubscriber?.getDLOB?.();
+        if (!dlob) return;
+        const found: Set<string> = new Set();
+        // Heuristic: scan a small set of common markets; adjust as needed or wire allowlist
+        const indices = [0, 1, 2, 31, 45];
+        for (const mi of indices) {
+          try {
+            const nodes = dlob.getRestingLimitOrderNodes?.(mi) || [];
+            for (const n of nodes) {
+              const taker = String(n?.userAccount || ''); if (taker) found.add(taker);
+              const makers = Array.isArray(n?.makerNodes) ? n.makerNodes : [];
+              for (const mn of makers) { const mk = String(mn?.userAccount || ''); if (mk) found.add(mk); }
+            }
+          } catch {}
+        }
+        this.enqueueUsersForPrefetch(Array.from(found));
+      } catch {}
+    };
+
+    const step = async () => {
+      try {
+        collectFromDlob();
+        const batch = this.prefetchQueue.splice(0, 200);
+        const groups: string[][] = [];
+        const conc = 8;
+        for (let i = 0; i < batch.length; i += conc) groups.push(batch.slice(i, i + conc));
+        for (const grp of groups) {
+          await Promise.all(grp.map(async (pk) => {
+            try {
+              try { await userMap.mustGet(pk); } catch {}
+              if (!this.warmUsers.has(pk)) {
+                let sdk: any = null;
+                try { sdk = await import('@drift-labs/sdk'); } catch {}
+                const { PublicKey } = await import('@solana/web3.js');
+                const u = new (sdk as any).User({
+                  driftClient: this.client,
+                  userAccountPublicKey: new PublicKey(pk),
+                  accountSubscription: this.pollLoaderWarm ? { type: 'polling', accountLoader: this.pollLoaderWarm } : { type: 'websocket' },
+                });
+                try { await u.subscribe?.(); } catch {}
+                // Bound LRU
+                if (this.warmUsers.size >= 5000) {
+                  const oldest = [...this.warmUsers.entries()].sort((a, b) => a[1].ts - b[1].ts)[0]?.[0];
+                  if (oldest) { try { await this.warmUsers.get(oldest)?.user?.unsubscribe?.(); } catch {} this.warmUsers.delete(oldest); }
+                }
+                this.warmUsers.set(pk, { user: u, ts: Date.now() });
+              }
+            } catch {}
+          }));
+        }
+      } catch {}
+    };
+
+    if (this.prefetchTimer) { try { clearInterval(this.prefetchTimer); } catch {} }
+    this.prefetchTimer = setInterval(() => { step().catch(() => {}); }, 400);
   }
 
   async sendRawTransaction(raw: Buffer | Uint8Array, opts?: any): Promise<string> {

@@ -142,6 +142,8 @@ export class DriftFillerRunner {
     this.dlobSubscriber = (infra as any).dlobSubscriber;
     this.orderSubscriber = (infra as any).orderSubscriber;
     logger.info('drift.filler.usermap_dlob_ready', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name, shared: true });
+    // Start user prefetcher once shared infra is ready
+    try { await (svc as any).startUserPrefetcher?.(this.dlobSubscriber, this.userMap); } catch {}
   }
 
   private signatureForNode(nodeToFill: any): string {
@@ -167,7 +169,9 @@ export class DriftFillerRunner {
         try { this.pollLoader = new (this.sdk as any).BulkAccountLoader(this.connection, 'confirmed', 1000); } catch {}
       }
       let takerWrapper: any = null;
-      try { takerWrapper = await this.userMap.mustGet(takerPkStr); } catch {}
+      try {
+        takerWrapper = (DriftService.getInstance() as any).getWarmUser?.(takerPkStr) || await this.userMap.mustGet(takerPkStr);
+      } catch {}
       if (!takerWrapper) {
         try {
           const tmp = new User({
@@ -192,6 +196,24 @@ export class DriftFillerRunner {
         try { takerUa = await this.client.program.account.user.fetch(new PublicKey(takerPkStr)); } catch {}
       }
       if (!takerUa) return false;
+
+      // If taker has a referrer configured but referrer stats do not exist, skip to avoid 6030
+      try {
+        const { getUserStatsAccountPublicKey } = this.sdk;
+        const ref = (takerUa as any)?.referrerInfo?.referrer;
+        if (ref) {
+          try {
+            const refStatsPk = getUserStatsAccountPublicKey(this.client.program.programId, ref);
+            if (refStatsPk) {
+              const info = await withRpcLimit(() => this.connection.getAccountInfo(refStatsPk, 'processed'));
+              if (!info) {
+                try { logger.info('drift.filler.skip_missing_referrer_stats', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, marketIndex }); } catch {}
+                return false;
+              }
+            }
+          } catch {}
+        }
+      } catch {}
 
       const makersRaw: string[] = Array.isArray(nodeToFill?.makerNodes)
         ? nodeToFill.makerNodes.map((mn: any) => String(mn?.userAccount || '')).filter(Boolean)
@@ -222,7 +244,9 @@ export class DriftFillerRunner {
         try {
           let makerUa: any = null;
           let makerWrapper: any = null;
-          try { makerWrapper = await this.userMap.mustGet(m); } catch {}
+          try {
+            makerWrapper = (DriftService.getInstance() as any).getWarmUser?.(m) || await this.userMap.mustGet(m);
+          } catch {}
           if (!makerWrapper) {
             try {
               const tmp = new User({
@@ -279,8 +303,8 @@ export class DriftFillerRunner {
       const ixs = [
         ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
         ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priority }),
-        fillIx,
         ...(updateFillerIx ? [updateFillerIx] : []),
+        fillIx,
         revertIx,
       ];
 
@@ -294,9 +318,22 @@ export class DriftFillerRunner {
         toSend.add(
           ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
           ComputeBudgetProgram.setComputeUnitPrice({ microLamports: prio }),
-          fillIx,
           ...(updIx ? [updIx] : []),
+          fillIx,
           revertIx,
+        );
+        toSend.feePayer = this.client.wallet.publicKey;
+        toSend.recentBlockhash = bhObj.blockhash;
+        toSend.sign(this.client.wallet.payer);
+        return DriftService.getInstance().sendRawTransaction(toSend.serialize(), { skipPreflight: true, preflightCommitment: 'processed' });
+      };
+
+      const submitFillOnly = async (prio: number, bhObj: any): Promise<string> => {
+        const toSend = new Transaction();
+        toSend.add(
+          ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
+          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: prio }),
+          fillIx,
         );
         toSend.feePayer = this.client.wallet.publicKey;
         toSend.recentBlockhash = bhObj.blockhash;
@@ -334,7 +371,13 @@ export class DriftFillerRunner {
               (async () => { try { return await (this.client.getUpdateFillerIx?.() ?? this.client.getUpdateUserIdleIx?.()); } catch { return null; } })(),
             ]);
             const boosted = Math.max(priority, 3000);
-            const sigTx = await submit(boosted, upd2 ?? updateFillerIx, bh2);
+            let sigTx: string;
+            if (upd2 ?? updateFillerIx) {
+              sigTx = await submit(boosted, (upd2 ?? updateFillerIx), bh2);
+            } else {
+              // Fallback: submit fill-only to avoid slot mismatch on revert
+              sigTx = await submitFillOnly(boosted, bh2);
+            }
             this.fillsInWindow.push(Date.now());
             logger.info('drift.filler.ok', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, sig: sigTx, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
             try {
@@ -449,6 +492,18 @@ export class DriftFillerRunner {
             marketIndex: idx,
             nodes: nodesToFill.length,
           });
+        } catch {}
+
+        // Enqueue taker/maker accounts for prefetch warming
+        try {
+          const svc = DriftService.getInstance() as any;
+          const keys: string[] = [];
+          for (const n of nodesToFill) {
+            const t = String(n?.node?.userAccount || ''); if (t) keys.push(t);
+            const mks = Array.isArray(n?.makerNodes) ? n.makerNodes : [];
+            for (const mn of mks) { const mk = String(mn?.userAccount || ''); if (mk) keys.push(mk); }
+          }
+          svc.enqueueUsersForPrefetch?.(keys);
         } catch {}
 
         // Diagnostics: maker vs non-maker nodes
