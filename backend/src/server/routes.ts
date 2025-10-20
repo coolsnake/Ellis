@@ -34,6 +34,7 @@ import { createDriftRouter } from './routes/drift.js';
 import { createLeveragedGridRouter } from './routes/strategies/leveragedGrid.js';
 import { createLiquidatorRouter } from './routes/strategies/liquidator.js';
 import { createTriggerRouter } from './routes/strategies/trigger.js';
+import { createFillerRouter } from './routes/strategies/filler.js';
 import { createPoolsRouter } from './routes/pools.js';
 import { createArbRouter } from './routes/arb.js';
 
@@ -136,7 +137,6 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   api.use(createLeveragedGridRouter(io));
   api.use(createLiquidatorRouter(io));
   api.use(createTriggerRouter(io));
-  const { createFillerRouter } = await import('./routes/strategies/filler.js');
   api.use(createFillerRouter(io));
   api.use(createPoolsRouter(io));
   api.use(createArbRouter(io));
