@@ -174,7 +174,15 @@ export class DriftFillerRunner {
           takerWrapper = tmp;
         } catch {}
       }
-      const takerUa = takerWrapper?.getUserAccount?.();
+      // Ensure taker user account is hydrated
+      let takerUa = takerWrapper?.getUserAccount?.();
+      if (!takerUa) {
+        for (let i = 0; i < 3 && !takerUa; i += 1) {
+          try { await takerWrapper?.fetchAccounts?.(); } catch {}
+          try { takerUa = takerWrapper?.getUserAccount?.(); } catch {}
+          if (!takerUa) { try { await new Promise((r) => setTimeout(r, 25)); } catch {} }
+        }
+      }
       if (!takerUa) return false;
 
       const makersRaw: string[] = Array.isArray(nodeToFill?.makerNodes)
@@ -218,7 +226,15 @@ export class DriftFillerRunner {
               makerWrapper = tmp;
             } catch {}
           }
+          // Ensure maker account is hydrated
           makerUa = makerWrapper?.getUserAccount?.();
+          if (!makerUa) {
+            for (let i = 0; i < 2 && !makerUa; i += 1) {
+              try { await makerWrapper?.fetchAccounts?.(); } catch {}
+              try { makerUa = makerWrapper?.getUserAccount?.(); } catch {}
+              if (!makerUa) { try { await new Promise((r) => setTimeout(r, 20)); } catch {} }
+            }
+          }
           if (!makerUa) continue;
           const makerAuth = makerUa?.authority;
           let makerStats = null;
