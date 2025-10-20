@@ -128,33 +128,34 @@ export class DriftTriggerRunner {
 
   private async initDiscovery(): Promise<void> {
     const { SlotSubscriber, EventSubscriber, UserMap, DLOBSubscriber } = this.sdk;
+    const drift = this.client;
+    const driftConn = drift?.connection || this.connection;
+    const program = drift?.program;
+
     try {
-      this.slotSubscriber = new SlotSubscriber(this.connection);
+      this.slotSubscriber = new SlotSubscriber(driftConn);
       await this.slotSubscriber.subscribe();
       logger.info('drift.trigger.slot_subscribed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name });
     } catch (e: any) {
       logger.info('drift.trigger.warn slot_subscribe_failed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, err: String(e?.message || e) });
     }
     try {
-      this.eventSubscriber = new EventSubscriber(this.connection, this.client.program);
+      this.eventSubscriber = new EventSubscriber(driftConn, program);
       await this.eventSubscriber.subscribe();
       logger.info('drift.trigger.event_subscribed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name });
     } catch (e: any) {
       logger.info('drift.trigger.warn event_subscribe_failed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, err: String(e?.message || e) });
     }
-    // Create UserMap with robust signature handling (SDK variations)
-    const accountSubscription = (() => {
-      try { return this.client.userAccountSubscriptionConfig || this.client.accountSubscription || { type: 'websocket' }; } catch { return { type: 'websocket' }; }
-    })();
+    // UserMap: mirror liquidator pattern; avoid passing accountSubscription unless necessary
     try {
-      this.userMap = new UserMap({ connection: this.connection, program: this.client.program, eventSubscriber: this.eventSubscriber || undefined, accountSubscription });
+      this.userMap = new UserMap({ connection: driftConn, program, eventSubscriber: this.eventSubscriber || undefined });
     } catch (e1: any) {
       logger.info('drift.trigger.warn usermap_ctor_object_failed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, err: String(e1?.message || e1) });
       try {
-        this.userMap = new UserMap(this.connection, this.client.program, this.eventSubscriber || undefined);
+        this.userMap = new UserMap(driftConn, program, this.eventSubscriber || undefined);
       } catch (e2: any) {
         logger.info('drift.trigger.warn usermap_ctor_tuple_failed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, err: String(e2?.message || e2) });
-        this.userMap = new UserMap(this.connection, this.client.program);
+        this.userMap = new UserMap(driftConn, program);
       }
     }
     await this.userMap.subscribe();
@@ -163,10 +164,9 @@ export class DriftTriggerRunner {
       dlobSource: this.userMap,
       slotSource: this.slotSubscriber,
       updateFrequency: Math.max(200, this.state.loopIntervalMs - 250),
-      driftClient: this.client,
-      // Provide a minimal subscription config if required by SDK variant
+      driftClient: drift,
       userMapSubscriptionConfig: (() => {
-        try { return this.client.userAccountSubscriptionConfig || undefined; } catch { return undefined; }
+        try { return drift.userAccountSubscriptionConfig || undefined; } catch { return undefined; }
       })(),
     });
     await this.dlobSubscriber.subscribe();
