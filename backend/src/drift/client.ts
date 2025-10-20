@@ -198,12 +198,22 @@ export class DriftService {
         this.sharedUserMap = new (sdk as any).UserMap({
           driftClient: drift,
           connection,
+          slotSubscriber: this.sharedSlotSubscriber,
+          eventSubscriber: this.sharedEventSubscriber,
           subscriptionConfig: umSubCfg,
           includeIdle: true,
           disableSyncOnTotalAccountsChange: false,
         });
       } catch {
-        try { this.sharedUserMap = new (sdk as any).UserMap({ driftClient: drift, subscriptionConfig: { type: 'websocket' }, includeIdle: true }); } catch {}
+        try {
+          this.sharedUserMap = new (sdk as any).UserMap({
+            driftClient: drift,
+            slotSubscriber: this.sharedSlotSubscriber,
+            eventSubscriber: this.sharedEventSubscriber,
+            subscriptionConfig: { type: 'websocket' },
+            includeIdle: true,
+          });
+        } catch {}
       }
       try { await this.sharedUserMap?.subscribe?.(); } catch {}
     }
@@ -211,7 +221,16 @@ export class DriftService {
     // Optional OrderSubscriber for improved DLOB order coverage
     if (!this.sharedOrderSubscriber && (sdk as any)?.OrderSubscriber) {
       try {
-        this.sharedOrderSubscriber = new (sdk as any).OrderSubscriber(connection, program);
+        try {
+          this.sharedOrderSubscriber = new (sdk as any).OrderSubscriber({
+            driftClient: drift,
+            slotSubscriber: this.sharedSlotSubscriber,
+            eventSubscriber: this.sharedEventSubscriber,
+          });
+        } catch {
+          // fallback to legacy constructor
+          this.sharedOrderSubscriber = new (sdk as any).OrderSubscriber(connection, program);
+        }
         try { await this.sharedOrderSubscriber?.subscribe?.(); } catch {}
       } catch {}
     }
@@ -222,7 +241,7 @@ export class DriftService {
         this.sharedDlobSubscriber = new (sdk as any).DLOBSubscriber({
           dlobSource,
           slotSource: this.sharedSlotSubscriber,
-          updateFrequency: Math.max(200, Number(opts?.updateFrequency ?? 600)),
+          updateFrequency: Math.max(200, Number(opts?.updateFrequency ?? 300)),
           driftClient: drift,
           userMapSubscriptionConfig: (() => { try { return drift.userAccountSubscriptionConfig || undefined; } catch { return undefined; } })(),
         });
