@@ -143,8 +143,11 @@ export class DriftTriggerRunner {
       logger.info('drift.trigger.warn event_subscribe_failed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, err: String(e?.message || e) });
     }
     // Create UserMap with robust signature handling (SDK variations)
+    const accountSubscription = (() => {
+      try { return this.client.userAccountSubscriptionConfig || this.client.accountSubscription || { type: 'websocket' }; } catch { return { type: 'websocket' }; }
+    })();
     try {
-      this.userMap = new UserMap({ connection: this.connection, program: this.client.program, eventSubscriber: this.eventSubscriber || undefined });
+      this.userMap = new UserMap({ connection: this.connection, program: this.client.program, eventSubscriber: this.eventSubscriber || undefined, accountSubscription });
     } catch (e1: any) {
       logger.info('drift.trigger.warn usermap_ctor_object_failed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, err: String(e1?.message || e1) });
       try {
@@ -156,7 +159,16 @@ export class DriftTriggerRunner {
     }
     await this.userMap.subscribe();
     logger.info('drift.trigger.usermap_subscribed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name });
-    this.dlobSubscriber = new DLOBSubscriber({ dlobSource: this.userMap, slotSource: this.slotSubscriber, updateFrequency: Math.max(200, this.state.loopIntervalMs - 250), driftClient: this.client });
+    this.dlobSubscriber = new DLOBSubscriber({
+      dlobSource: this.userMap,
+      slotSource: this.slotSubscriber,
+      updateFrequency: Math.max(200, this.state.loopIntervalMs - 250),
+      driftClient: this.client,
+      // Provide a minimal subscription config if required by SDK variant
+      userMapSubscriptionConfig: (() => {
+        try { return this.client.userAccountSubscriptionConfig || undefined; } catch { return undefined; }
+      })(),
+    });
     await this.dlobSubscriber.subscribe();
     logger.info('drift.trigger.dlob_subscribed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name });
   }
