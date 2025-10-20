@@ -291,7 +291,10 @@ export class DriftFillerRunner {
 
     try {
       const dlob = this.dlobSubscriber?.getDLOB?.();
-      if (!dlob) return;
+      if (!dlob) {
+        logger.info('drift.filler.warn dlob_unavailable', { cat: FILLER_CAT, subcat: FILLER_SUBCAT });
+        return;
+      }
 
       const {
         MarketType, BN,
@@ -302,17 +305,40 @@ export class DriftFillerRunner {
       const stateAcc = this.client.getStateAccount?.();
       const perps = await this.client.getPerpMarketAccounts?.();
 
+      try {
+        logger.info('drift.filler.loop_begin', {
+          cat: FILLER_CAT,
+          subcat: FILLER_SUBCAT,
+          slot,
+          perpsCount: Array.isArray(perps) ? perps.length : 0,
+          allowlistSize: Array.isArray(this.state.marketsAllowlist) ? this.state.marketsAllowlist.length : 0,
+        });
+      } catch {}
+
       let totalPlanned = 0;
       let sent = 0;
       const sample: Array<{ m: number; taker: string; id: string; makers: number }> = [];
 
       for (const market of (Array.isArray(perps) ? perps : [])) {
+        const mStart = Date.now();
         const idx = Number(market?.marketIndex || 0);
         if (!this.inAllowlist(idx)) continue;
         const slotBn = new BN(slot);
         const mmOraclePriceData = this.client.getMMOracleDataForPerpMarket?.(idx);
         const vAsk = calculateAskPrice(market, mmOraclePriceData, slotBn);
         const vBid = calculateBidPrice(market, mmOraclePriceData, slotBn);
+
+        try {
+          logger.info('drift.filler.market_scan', {
+            cat: FILLER_CAT,
+            subcat: FILLER_SUBCAT,
+            marketIndex: idx,
+            oraclePx: String((mmOraclePriceData as any)?.price?.toString?.() || (mmOraclePriceData as any)?.price || ''),
+            vBid: String((vBid as any)?.toString?.() || vBid || ''),
+            vAsk: String((vAsk as any)?.toString?.() || vAsk || ''),
+            slot,
+          });
+        } catch {}
 
         const nodesToFill = dlob.findNodesToFill(
           idx, vBid, vAsk, slot,
@@ -323,14 +349,45 @@ export class DriftFillerRunner {
 
         totalPlanned += nodesToFill.length;
 
+        try {
+          logger.info('drift.filler.market_nodes', {
+            cat: FILLER_CAT,
+            subcat: FILLER_SUBCAT,
+            marketIndex: idx,
+            nodes: nodesToFill.length,
+          });
+        } catch {}
+
         for (const node of nodesToFill) {
           try {
             if (!node?.node?.order) continue;
-            if (typeof node?.node?.isVammNode === 'function' && node.node.isVammNode()) continue;
+            if (typeof node?.node?.isVammNode === 'function' && node.node.isVammNode()) {
+              try {
+                logger.info('drift.filler.skip_vamm_node', {
+                  cat: FILLER_CAT,
+                  subcat: FILLER_SUBCAT,
+                  marketIndex: idx,
+                  taker: String(node?.node?.userAccount || ''),
+                  orderId: String(node?.node?.order?.orderId || ''),
+                });
+              } catch {}
+              continue;
+            }
 
             const sig = this.signatureForNode(node);
             const last = this.nodesCooldown.get(sig) || 0;
-            if (last + COOLDOWN_MS > Date.now()) continue;
+            if (last + COOLDOWN_MS > Date.now()) {
+              try {
+                logger.info('drift.filler.cooldown_skip', {
+                  cat: FILLER_CAT,
+                  subcat: FILLER_SUBCAT,
+                  marketIndex: idx,
+                  signature: sig,
+                  orderId: String(node?.node?.order?.orderId || ''),
+                });
+              } catch {}
+              continue;
+            }
             this.nodesCooldown.set(sig, Date.now());
 
             if (sample.length < 5) {
@@ -342,10 +399,33 @@ export class DriftFillerRunner {
               });
             }
 
+            try {
+              logger.info('drift.filler.try_fill', {
+                cat: FILLER_CAT,
+                subcat: FILLER_SUBCAT,
+                marketIndex: idx,
+                taker: String(node?.node?.userAccount || ''),
+                orderId: String(node?.node?.order?.orderId || ''),
+                makerCount: Array.isArray(node?.makerNodes) ? node.makerNodes.length : 0,
+                cuLimit: Math.max(200_000, Number(this.config.cuLimit ?? 1_000_000)),
+                priority: Math.max(0, Number(this.config.priorityFeeMicroLamports ?? 0)),
+                dryRun: !!this.state.dryRun,
+              });
+            } catch {}
+
             const ok = await this.tryFillNode(idx, node);
             if (ok) sent += 1;
           } catch {}
         }
+
+        try {
+          logger.info('drift.filler.market_done', {
+            cat: FILLER_CAT,
+            subcat: FILLER_SUBCAT,
+            marketIndex: idx,
+            ms: Date.now() - mStart,
+          });
+        } catch {}
       }
 
       const dur = Date.now() - t0;
@@ -353,6 +433,16 @@ export class DriftFillerRunner {
         cat: FILLER_CAT, subcat: FILLER_SUBCAT,
         ms: dur, totalNodesPlanned: totalPlanned, sent, fillsLastMin: this.getStatus().fillsLastMin, sample,
       });
+      if (totalPlanned === 0) {
+        try {
+          logger.info('drift.filler.loop_noop', {
+            cat: FILLER_CAT,
+            subcat: FILLER_SUBCAT,
+            slot,
+            perpsCount: Array.isArray(perps) ? perps.length : 0,
+          });
+        } catch {}
+      }
     } catch (e: any) {
       this.state.lastError = String(e?.message || e);
       logger.info('drift.filler.error loop_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, err: this.state.lastError });
