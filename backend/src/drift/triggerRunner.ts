@@ -357,11 +357,22 @@ export class DriftTriggerRunner {
               continue;
             }
 
+          // Refresh snapshot and ensure the target order still exists to avoid stale attempts
+          try { await (user as any).fetchAccounts?.(); } catch {}
+          try {
+            const ua = user.getUserAccount?.();
+            const wantId = String(node.node.order?.orderId || '');
+            const stillExists = Array.isArray(ua?.orders) && ua.orders.some((o: any) => String(o?.orderId || '') === wantId);
+            if (!stillExists) {
+              logger.info('drift.trigger.skip_missing_order', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, user: userPkStr, orderId });
+              continue;
+            }
+          } catch {}
+
             const ixs = [
               ComputeBudgetProgram.setComputeUnitLimit({ units: Number(this.config.cuLimit ?? 220_000) }),
               ComputeBudgetProgram.setComputeUnitPrice({ microLamports: Math.max(0, Number(this.config.priorityFeeMicroLamports ?? 0)) }),
               await this.client.getTriggerOrderIx(new PublicKey(userPkStr), user.getUserAccount(), node.node.order),
-              await this.client.getRevertFillIx(),
             ];
 
             if (this.state.dryRun) {
@@ -380,7 +391,8 @@ export class DriftTriggerRunner {
               this.triggersInWindow.push(Date.now());
               logger.info('drift.trigger.ok', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, sig: sigTx, marketType: typeStr, marketIndex: idx, user: userPkStr, orderId });
             } catch (e: any) {
-              logger.info('drift.trigger.error send_failed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, user: userPkStr, orderId, err: String(e?.message || e) });
+              const logs = (e?.logs && Array.isArray(e.logs)) ? e.logs : undefined;
+              logger.info('drift.trigger.error send_failed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, user: userPkStr, orderId, err: String(e?.message || e), logs });
             }
           }
         } catch (e: any) {
