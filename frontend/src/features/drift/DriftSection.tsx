@@ -4,6 +4,31 @@ import { LiquidatorStatus } from '../../components/LiquidatorStatus';
 import { ROUTES } from '../../utils/routes';
 import { useSocket } from '../../app/contexts/socket';
 
+const TriggerStatusBadge: React.FC<{ apiBase: string }> = ({ apiBase }) => {
+  const [st, setSt] = useState<any>(null);
+  useEffect(() => {
+    let id: any = null;
+    const tick = async () => {
+      try { const r = await fetch(`${apiBase}${ROUTES.drift.triggerStatus}`); const j = await r.json().catch(() => ({})); setSt(j || {}); } catch {}
+    };
+    id = setInterval(tick, 3000);
+    tick();
+    return () => { try { clearInterval(id); } catch {} };
+  }, [apiBase]);
+  const running = !!st?.running;
+  const lastMs = Number(st?.lastRunMs || 0);
+  const errors = Number(st?.errors || 0);
+  const triggers = Number(st?.triggers || 0);
+  return (
+    <div className={`px-2 py-1 rounded ${running ? 'bg-green-800 text-green-200' : 'bg-gray-700 text-gray-300'}`}>
+      Trigger: {running ? 'running' : 'stopped'}
+      <span className="ml-2 text-gray-400">last {lastMs ? `${lastMs}ms` : '-'}</span>
+      <span className="ml-2">triggers {isFinite(triggers) ? triggers : 0}</span>
+      <span className="ml-2">errors {isFinite(errors) ? errors : 0}</span>
+    </div>
+  );
+};
+
 export const DriftSection: React.FC<{
   apiBase: string;
   driftSubaccounts: any[];
@@ -18,6 +43,7 @@ export const DriftSection: React.FC<{
   setDriftSubaccounts: (list: any[]) => void;
   ls: Array<{ key: string }>;
   onOpenLiqRunner?: () => void;
+  onOpenTriggerRunner?: () => void;
 }> = (p) => {
   const { socket: ctxSocket } = useSocket();
   const [status, setStatus] = useState<any>(null);
@@ -415,10 +441,16 @@ export const DriftSection: React.FC<{
             {!!p.onOpenLiqRunner && (
               <button className="px-2 py-1 bg-purple-600 text-white rounded text-sm" onClick={() => p.onOpenLiqRunner?.()}>+ New Liquidator</button>
             )}
+          {!!p.onOpenTriggerRunner && (
+            <button className="px-2 py-1 bg-indigo-600 text-white rounded text-sm" onClick={() => p.onOpenTriggerRunner?.()}>+ New Trigger</button>
+          )}
           </div>
         </div>
         <div className="mb-3">
           <LiquidatorStatus apiBase={p.apiBase} />
+          <div className="mt-2 text-xs text-gray-300 flex items-center gap-3">
+            <TriggerStatusBadge apiBase={p.apiBase} />
+          </div>
         </div>
         <div className="mt-3 grid grid-cols-1 gap-3">
           {p.ls.map((x) => (
