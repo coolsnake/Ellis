@@ -330,6 +330,16 @@ app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
   if (!res.headersSent) res.status(500).json({ error: 'Internal Server Error' });
 });
 
+// Harden process-level rejections to avoid crashing the service on transient RPC timeouts
+try {
+  process.on('unhandledRejection', (reason: any) => {
+    try { logger.warn('process.unhandledRejection', { error: String((reason && reason.stack) || reason || ''), cat: 'server' }); } catch {}
+  });
+  process.on('uncaughtException', (err: any) => {
+    try { logger.error('process.uncaughtException', { error: String(err?.stack || err || ''), cat: 'server' }); } catch {}
+  });
+} catch {}
+
 const priceFeed = createPriceFeed(io);
 priceFeed.setEnabled(false);
 // Initialize target tick time basis

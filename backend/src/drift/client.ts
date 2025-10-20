@@ -155,7 +155,10 @@ export class DriftService {
       ? { type: 'polling', accountLoader: new BulkAccountLoader(this.connection, 'confirmed', 1000) }
       : { type: 'websocket' };
     // Only prepare shared loader when polling is explicitly requested
-    try { this.loader = subType === 'polling' ? new BulkAccountLoader(this.connection, 'confirmed', 1000) : null; } catch { this.loader = null; }
+    try {
+      this.loader = subType === 'polling' ? new BulkAccountLoader(this.connection, 'confirmed', 1000) : null;
+      try { (this.loader as any)?.on?.('error', (e: any) => { try { logger.warn('drift.loader.error', { error: String(e?.message || e), cat: 'drift' }); } catch {} }); } catch {}
+    } catch { this.loader = null; }
     const programIdOpt = (CONFIG as any).drift?.programId ? { programID: new PublicKey((CONFIG as any).drift.programId) } : {};
     const marketOpts = typeof getMarketsAndOraclesForSubscription === 'function' ? (getMarketsAndOraclesForSubscription as any)(this.cluster) : {};
     this.client = await initialize({ connection: this.connection, wallet, opts: { env: this.cluster, accountSubscription: subscription, ...programIdOpt, ...marketOpts } });
@@ -306,7 +309,10 @@ export class DriftService {
     // Prepare polling loader for stability
     try {
       const { BulkAccountLoader } = await loadSdk();
-      if (!this.pollLoaderWarm) this.pollLoaderWarm = new BulkAccountLoader(this.connection!, 'confirmed', 1000);
+      if (!this.pollLoaderWarm) {
+        this.pollLoaderWarm = new BulkAccountLoader(this.connection!, 'confirmed', 1000);
+        try { (this.pollLoaderWarm as any)?.on?.('error', (e: any) => { try { logger.warn('drift.pollLoaderWarm.error', { error: String(e?.message || e), cat: 'drift' }); } catch {} }); } catch {}
+      }
     } catch {}
 
     const collectFromDlob = () => {
