@@ -160,15 +160,21 @@ export class DriftFillerRunner {
   private async tryFillNode(marketIndex: number, nodeToFill: any): Promise<boolean> {
     try {
       const takerPkStr = String(nodeToFill?.node?.userAccount || '');
-      let taker: any = null;
-      let takerUa: any = null;
-      try { taker = await this.userMap.mustGet(takerPkStr); } catch {}
-      if (taker && typeof taker.getUserAccount === 'function') {
-        try { takerUa = taker.getUserAccount(); } catch {}
+      const { User, getUserAccountPublicKey } = this.sdk;
+      let takerWrapper: any = null;
+      try { takerWrapper = await this.userMap.mustGet(takerPkStr); } catch {}
+      if (!takerWrapper) {
+        try {
+          const tmp = new User({
+            driftClient: this.client,
+            userAccountPublicKey: new PublicKey(takerPkStr),
+            accountSubscription: { type: 'websocket' },
+          });
+          try { await tmp.subscribe?.(); } catch {}
+          takerWrapper = tmp;
+        } catch {}
       }
-      if (!takerUa) {
-        try { takerUa = await this.client.program.account.user.fetch(new PublicKey(takerPkStr)); } catch {}
-      }
+      const takerUa = takerWrapper?.getUserAccount?.();
       if (!takerUa) return false;
 
       const makersRaw: string[] = Array.isArray(nodeToFill?.makerNodes)
@@ -199,13 +205,20 @@ export class DriftFillerRunner {
       for (const m of makers) {
         try {
           let makerUa: any = null;
-          try {
-            const makerUser = await this.userMap.mustGet(m);
-            if (makerUser && typeof makerUser.getUserAccount === 'function') makerUa = makerUser.getUserAccount();
-          } catch {}
-          if (!makerUa) {
-            try { makerUa = await this.client.program.account.user.fetch(new PublicKey(m)); } catch {}
+          let makerWrapper: any = null;
+          try { makerWrapper = await this.userMap.mustGet(m); } catch {}
+          if (!makerWrapper) {
+            try {
+              const tmp = new User({
+                driftClient: this.client,
+                userAccountPublicKey: new PublicKey(m),
+                accountSubscription: { type: 'websocket' },
+              });
+              try { await tmp.subscribe?.(); } catch {}
+              makerWrapper = tmp;
+            } catch {}
           }
+          makerUa = makerWrapper?.getUserAccount?.();
           if (!makerUa) continue;
           const makerAuth = makerUa?.authority;
           let makerStats = null;
@@ -223,14 +236,25 @@ export class DriftFillerRunner {
         } catch {}
       }
 
-      const takerUserPk = new PublicKey(takerPkStr);
+      const takerUserPk = await getUserAccountPublicKey(this.client.program.programId, takerUa.authority, takerUa.subAccountId);
       const cuLimit = Math.max(200_000, Number(this.config.cuLimit ?? 1_000_000));
       const priority = Math.max(0, Number(this.config.priorityFeeMicroLamports ?? 0));
+      // Build all dependent instructions and fetch blockhash in parallel to minimize delay
+      const updateFillerIxP = (async () => {
+        try { return await (this.client.getUpdateFillerIx?.() ?? this.client.getUpdateUserIdleIx?.()); } catch { return null; }
+      })();
+      const fillIxP = this.client.getFillPerpOrderIx(takerUserPk, takerUa, nodeToFill.node.order, makerInfos);
+      const revertIxP = this.client.getRevertFillIx();
+      const blockhashP = withRpcLimit(() => this.connection.getLatestBlockhash({ commitment: 'processed' }));
+
+      const [updateFillerIx, fillIx, revertIx, bh] = await Promise.all([updateFillerIxP, fillIxP, revertIxP, blockhashP]);
+
       const ixs = [
         ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
         ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priority }),
-        await this.client.getFillPerpOrderIx(takerUserPk, takerUa, nodeToFill.node.order, makerInfos),
-        await this.client.getRevertFillIx(),
+        fillIx,
+        ...(updateFillerIx ? [updateFillerIx] : []),
+        revertIx,
       ];
 
       if (this.state.dryRun) {
@@ -241,8 +265,7 @@ export class DriftFillerRunner {
       const tx = new Transaction();
       tx.add(...ixs);
       tx.feePayer = this.client.wallet.publicKey;
-      const { blockhash } = await withRpcLimit(() => this.connection.getLatestBlockhash({ commitment: 'confirmed' }));
-      tx.recentBlockhash = blockhash;
+      tx.recentBlockhash = bh.blockhash;
       try {
         tx.sign(this.client.wallet.payer);
         const sigTx = await DriftService.getInstance().sendRawTransaction(tx.serialize(), { skipPreflight: false, preflightCommitment: 'confirmed' });
