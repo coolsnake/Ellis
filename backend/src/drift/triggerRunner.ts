@@ -2,6 +2,7 @@ import { PublicKey, ComputeBudgetProgram, Transaction } from '@solana/web3.js';
 import { RunnerRegistry } from '../utils/runnerRegistry.js';
 import { DriftService } from './client.js';
 import { logger } from '../utils/logger.js';
+import { CONFIG } from '../utils/config.js';
 
 export type TriggerConfig = {
   name: string;
@@ -146,17 +147,23 @@ export class DriftTriggerRunner {
     } catch (e: any) {
       logger.info('drift.trigger.warn event_subscribe_failed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, err: String(e?.message || e) });
     }
-    // UserMap: mirror liquidator pattern; avoid passing accountSubscription unless necessary
+    // UserMap: use current SDK config-object signature
+    const subType = String(((CONFIG as any)?.drift?.subscriptionType || 'websocket')).toLowerCase();
+    const umSubCfg: any = subType === 'polling'
+      ? { type: 'polling', frequency: 1000 }
+      : { type: 'websocket', resubTimeoutMs: 10000 };
     try {
-      this.userMap = new UserMap({ connection: driftConn, program, eventSubscriber: this.eventSubscriber || undefined });
+      this.userMap = new UserMap({
+        driftClient: drift,
+        connection: driftConn,
+        subscriptionConfig: umSubCfg,
+        includeIdle: false,
+        disableSyncOnTotalAccountsChange: false,
+      });
     } catch (e1: any) {
-      logger.info('drift.trigger.warn usermap_ctor_object_failed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, err: String(e1?.message || e1) });
-      try {
-        this.userMap = new UserMap(driftConn, program, this.eventSubscriber || undefined);
-      } catch (e2: any) {
-        logger.info('drift.trigger.warn usermap_ctor_tuple_failed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, err: String(e2?.message || e2) });
-        this.userMap = new UserMap(driftConn, program);
-      }
+      logger.info('drift.trigger.warn usermap_ctor_config_failed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, err: String(e1?.message || e1), subType });
+      // Last resort: attempt minimal object
+      this.userMap = new UserMap({ driftClient: drift, subscriptionConfig: { type: 'websocket' } });
     }
     await this.userMap.subscribe();
     logger.info('drift.trigger.usermap_subscribed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name });
