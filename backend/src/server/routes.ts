@@ -134,6 +134,7 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   api.use(createDriftRouter(io));
   api.use(createLeveragedGridRouter(io));
   api.use(createLiquidatorRouter(io));
+  api.use((await import('./routes/strategies/trigger.js')).createTriggerRouter(io));
   api.use(createPoolsRouter(io));
   api.use(createArbRouter(io));
 

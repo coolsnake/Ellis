@@ -11,6 +11,7 @@ import { WatchlistSection } from '../features/wallet/WatchlistSection';
 import { ConfigsSection } from '../features/configs/ConfigsSection';
 // removed legacy LiquidatorConfig modal
 import { LiquidatorRunnerConfig } from '../components/LiquidatorRunnerConfig';
+import { TriggerRunnerConfig } from '../components/TriggerRunnerConfig';
 import { ThresholdStrategyConfig } from '../components/ThresholdStrategyConfig';
 import { AddTokenForm } from '../components/AddTokenForm';
 import { FeeConfig } from '../components/FeeConfig';
@@ -92,6 +93,7 @@ export const App: React.FC = () => {
   // removed legacy inline liquidator fields (use +Liquidator modal instead)
   const [liqStatus, setLiqStatus] = useState<any>(null);
   const [showLiqRunnerConfig, setShowLiqRunnerConfig] = useState<boolean>(false);
+  const [showTriggerRunnerConfig, setShowTriggerRunnerConfig] = useState<boolean>(false);
 
   // Default to same-origin behind nginx; allow overrides via env
   const apiBase = useMemo(() => (import.meta as any).env?.VITE_API_BASE ?? '/api', []);
@@ -1409,6 +1411,8 @@ export const App: React.FC = () => {
           onCloseOpportunity={() => setShowOpportunityConfig(false)}
           showLiqRunnerConfig={showLiqRunnerConfig}
           onCloseLiqRunner={() => setShowLiqRunnerConfig(false)}
+          showTriggerRunnerConfig={showTriggerRunnerConfig}
+          onCloseTriggerRunner={() => setShowTriggerRunnerConfig(false)}
         />
         <CollapsibleSection title={"Drift"} storageKey="panel:drift">
           <DriftSection
@@ -1425,6 +1429,7 @@ export const App: React.FC = () => {
             setDriftSubaccounts={(list)=>setDriftSubaccounts(list)}
             ls={liqStatus?.liquidators || []}
             onOpenLiqRunner={() => setShowLiqRunnerConfig(true)}
+            onOpenTriggerRunner={() => setShowTriggerRunnerConfig(true)}
           />
         </CollapsibleSection>
         <CollapsibleSection title={"Positions"} storageKey="panel:positions">

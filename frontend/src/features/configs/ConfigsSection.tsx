@@ -7,6 +7,7 @@ import { ArbEngineConfig } from '../../components/ArbEngineConfig';
 import { OpportunityConfig } from '../../components/OpportunityConfig';
 import { GraphConfig } from '../../components/GraphConfig';
 import { LiquidatorRunnerConfig } from '../../components/LiquidatorRunnerConfig';
+import { TriggerRunnerConfig } from '../../components/TriggerRunnerConfig';
 
 export const ConfigsSection: React.FC<{
   apiBase: string;
@@ -26,6 +27,8 @@ export const ConfigsSection: React.FC<{
   onCloseOpportunity?: () => void;
   showLiqRunnerConfig: boolean;
   onCloseLiqRunner: () => void;
+  showTriggerRunnerConfig?: boolean;
+  onCloseTriggerRunner?: () => void;
 }> = (p) => {
   const { system } = useSystem();
   return (
@@ -41,6 +44,7 @@ export const ConfigsSection: React.FC<{
       {p.showEngineConfig && (<ArbEngineConfig apiBase={p.apiBase} onClose={p.onCloseEngine} />)}
       {p.showOpportunityConfig && (<OpportunityConfig apiBase={p.apiBase} onClose={p.onCloseOpportunity!} />)}
       {p.showLiqRunnerConfig && (<LiquidatorRunnerConfig apiBase={p.apiBase} onClose={p.onCloseLiqRunner} />)}
+      {p.showTriggerRunnerConfig && (<TriggerRunnerConfig apiBase={p.apiBase} onClose={p.onCloseTriggerRunner!} />)}
     </>
   );
 };

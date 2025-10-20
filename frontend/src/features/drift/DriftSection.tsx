@@ -18,6 +18,7 @@ export const DriftSection: React.FC<{
   setDriftSubaccounts: (list: any[]) => void;
   ls: Array<{ key: string }>;
   onOpenLiqRunner?: () => void;
+  onOpenTriggerRunner?: () => void;
 }> = (p) => {
   const { socket: ctxSocket } = useSocket();
   const [status, setStatus] = useState<any>(null);
@@ -414,6 +415,9 @@ export const DriftSection: React.FC<{
           <div className="flex items-center gap-2">
             {!!p.onOpenLiqRunner && (
               <button className="px-2 py-1 bg-purple-600 text-white rounded text-sm" onClick={() => p.onOpenLiqRunner?.()}>+ New Liquidator</button>
+            )}
+            {!!p.onOpenTriggerRunner && (
+              <button className="px-2 py-1 bg-amber-600 text-white rounded text-sm" onClick={() => p.onOpenTriggerRunner?.()}>+ New Trigger Bot</button>
             )}
           </div>
         </div>

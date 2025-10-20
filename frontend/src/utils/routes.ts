@@ -76,6 +76,13 @@ export const ROUTES = {
       queue: '/strategies/liquidator/queue',
       test: '/strategies/liquidator/test',
     },
+    trigger: {
+      status: '/strategies/trigger/status',
+      start: '/strategies/trigger/start',
+      stop: '/strategies/trigger/stop',
+      remove: '/strategies/trigger/remove',
+      update: '/strategies/trigger/update',
+    },
   },
   wallet: {
     base: '/wallet',
