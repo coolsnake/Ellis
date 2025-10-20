@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { LiquidationMonitor, TriggerStatus } from '../drift';
+import { LiquidationMonitor, TriggerStatus, FillerStatus } from '../drift';
 import { LiquidatorStatus } from '../../components/LiquidatorStatus';
 import { ROUTES } from '../../utils/routes';
 import { useSocket } from '../../app/contexts/socket';
@@ -19,6 +19,7 @@ export const DriftSection: React.FC<{
   ls: Array<{ key: string }>;
   onOpenLiqRunner?: () => void;
   onOpenTriggerRunner?: () => void;
+  onOpenFillerRunner?: () => void;
 }> = (p) => {
   const { socket: ctxSocket } = useSocket();
   const [status, setStatus] = useState<any>(null);
@@ -411,13 +412,16 @@ export const DriftSection: React.FC<{
 
       <div className="p-3 bg-gray-800 rounded">
         <div className="flex items-center justify-between mb-2">
-          <div className="text-white font-semibold">Liquidations</div>
+          <div className="text-white font-semibold">Liquidations & Bots</div>
           <div className="flex items-center gap-2">
             {!!p.onOpenLiqRunner && (
               <button className="px-2 py-1 bg-purple-600 text-white rounded text-sm" onClick={() => p.onOpenLiqRunner?.()}>+ New Liquidator</button>
             )}
             {!!p.onOpenTriggerRunner && (
               <button className="px-2 py-1 bg-amber-600 text-white rounded text-sm" onClick={() => p.onOpenTriggerRunner?.()}>+ New Trigger Bot</button>
+            )}
+            {!!p.onOpenFillerRunner && (
+              <button className="px-2 py-1 bg-sky-600 text-white rounded text-sm" onClick={() => p.onOpenFillerRunner?.()}>+ New Filler Bot</button>
             )}
           </div>
         </div>
@@ -426,6 +430,9 @@ export const DriftSection: React.FC<{
         </div>
         <div className="mb-3">
           <TriggerStatus apiBase={p.apiBase} />
+        </div>
+        <div className="mb-3">
+          <FillerStatus apiBase={p.apiBase} />
         </div>
         <div className="mt-3 grid grid-cols-1 gap-3">
           {p.ls.map((x) => (

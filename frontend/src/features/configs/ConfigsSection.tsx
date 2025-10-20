@@ -8,6 +8,7 @@ import { OpportunityConfig } from '../../components/OpportunityConfig';
 import { GraphConfig } from '../../components/GraphConfig';
 import { LiquidatorRunnerConfig } from '../../components/LiquidatorRunnerConfig';
 import { TriggerRunnerConfig } from '../../components/TriggerRunnerConfig';
+import { FillerRunnerConfig } from '../../components/FillerRunnerConfig';
 
 export const ConfigsSection: React.FC<{
   apiBase: string;
@@ -29,6 +30,8 @@ export const ConfigsSection: React.FC<{
   onCloseLiqRunner: () => void;
   showTriggerRunnerConfig?: boolean;
   onCloseTriggerRunner?: () => void;
+  showFillerRunnerConfig: boolean;
+  onCloseFillerRunner: () => void;
 }> = (p) => {
   const { system } = useSystem();
   return (
@@ -45,6 +48,7 @@ export const ConfigsSection: React.FC<{
       {p.showOpportunityConfig && (<OpportunityConfig apiBase={p.apiBase} onClose={p.onCloseOpportunity!} />)}
       {p.showLiqRunnerConfig && (<LiquidatorRunnerConfig apiBase={p.apiBase} onClose={p.onCloseLiqRunner} />)}
       {p.showTriggerRunnerConfig && (<TriggerRunnerConfig apiBase={p.apiBase} onClose={p.onCloseTriggerRunner!} />)}
+      {p.showFillerRunnerConfig && (<FillerRunnerConfig apiBase={p.apiBase} onClose={p.onCloseFillerRunner} />)}
     </>
   );
 };

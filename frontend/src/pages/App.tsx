@@ -42,6 +42,7 @@ type LogEvent = { level: string; message: string; timestamp: string; context?: R
 
 export const App: React.FC = () => {
   const { system, setSystem } = useSystem();
+  const [showFillerRunnerConfig, setShowFillerRunnerConfig] = useState(false);
   const { wallet, setWallet, walletTokens, setWalletTokens, prices, setPrices } = useWallet();
   const { logsByWindow, setLogsByWindow } = useLogs();
   const { status: driftStatus, setStatus: setDriftStatus, subaccounts: driftSubaccounts, setSubaccounts: setDriftSubaccounts, selectedSubId: driftSelectedSubId, setSelectedSubId: setDriftSelectedSubId, subBalances: driftSubBalances, setSubBalances: setDriftSubBalances, spotMarkets: driftSpotMarkets, setSpotMarkets: setDriftSpotMarkets, action: driftAction, setAction: setDriftAction, amount: driftAmount, setAmount: setDriftAmount, spotIndex: driftSpotIndex, setSpotIndex: setDriftSpotIndex } = useDrift();
@@ -1413,6 +1414,8 @@ export const App: React.FC = () => {
           onCloseLiqRunner={() => setShowLiqRunnerConfig(false)}
           showTriggerRunnerConfig={showTriggerRunnerConfig}
           onCloseTriggerRunner={() => setShowTriggerRunnerConfig(false)}
+          showFillerRunnerConfig={showFillerRunnerConfig}
+          onCloseFillerRunner={() => setShowFillerRunnerConfig(false)}
         />
         <CollapsibleSection title={"Drift"} storageKey="panel:drift">
           <DriftSection
@@ -1430,6 +1433,7 @@ export const App: React.FC = () => {
             ls={liqStatus?.liquidators || []}
             onOpenLiqRunner={() => setShowLiqRunnerConfig(true)}
             onOpenTriggerRunner={() => setShowTriggerRunnerConfig(true)}
+            onOpenFillerRunner={() => setShowFillerRunnerConfig(true)}
           />
         </CollapsibleSection>
         <CollapsibleSection title={"Positions"} storageKey="panel:positions">
