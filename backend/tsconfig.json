@@ -20,6 +20,6 @@
     }
   },
   "include": ["src", "config/**/*.json"],
-  "exclude": ["node_modules", "dist"]
+  "exclude": ["node_modules", "dist", "src/drift/trigger.ts"]
 }
 
