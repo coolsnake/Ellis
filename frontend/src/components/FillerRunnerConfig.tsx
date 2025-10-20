@@ -23,6 +23,7 @@ export const FillerRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onClose,
     selectedMarketIndices: Array.isArray(initialConfig?.marketsAllowlist) ? (initialConfig.marketsAllowlist as any[]) : [],
     marketsAllowlistCsv: Array.isArray(initialConfig?.marketsAllowlist) ? (initialConfig.marketsAllowlist as any[]).join(',') : '',
     maxMakersPerFill: initialConfig?.maxMakersPerFill ?? 2,
+    allowAmmFills: initialConfig?.allowAmmFills ?? true,
   });
 
   useEffect(() => {
@@ -65,6 +66,7 @@ export const FillerRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onClose,
         priorityFeeMicroLamports: Math.max(0, Number(form.priorityFeeMicroLamports || 0)),
         marketsAllowlist: allowlist,
         maxMakersPerFill: Math.max(0, Number(form.maxMakersPerFill || 0)),
+        allowAmmFills: !!form.allowAmmFills,
       };
       const res = await fetch(`${apiBase}${ROUTES.strategies.filler.start}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       if (!res.ok) throw new Error(await res.text());
@@ -166,6 +168,10 @@ export const FillerRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onClose,
             <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.maxMakersPerFill}
               onChange={(e) => setForm((p: any) => ({ ...p, maxMakersPerFill: Math.max(0, Number(e.target.value)) }))} />
           </div>
+          <label className="flex items-center gap-2 mt-6">
+            <input type="checkbox" className="h-4 w-4" checked={!!form.allowAmmFills} onChange={(e) => setForm((p: any) => ({ ...p, allowAmmFills: e.target.checked }))} />
+            <span className="text-gray-300">Allow AMM/JIT Fills</span>
+          </label>
         </div>
 
         <div className="mt-4 flex justify-end gap-2">

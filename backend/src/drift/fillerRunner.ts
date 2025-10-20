@@ -15,6 +15,7 @@ export type FillerConfig = {
   priorityFeeMicroLamports?: number; // default 0
   marketsAllowlist?: Array<number> | string[]; // optional allowlist
   maxMakersPerFill?: number; // default 2
+  allowAmmFills?: boolean; // default true
 };
 
 type FillerRuntimeState = {
@@ -131,7 +132,7 @@ export class DriftFillerRunner {
 
   private async initDiscovery(): Promise<void> {
     const svc = DriftService.getInstance();
-    const infra = await (svc as any).getSharedInfra({ includeIdle: true, updateFrequency: Math.max(400, this.state.loopIntervalMs - 300) });
+    const infra = await (svc as any).getSharedInfra({ includeIdle: true, updateFrequency: Math.max(400, this.state.loopIntervalMs - 300), preferOrderSubscriber: true });
     this.slotSubscriber = (infra as any).slotSubscriber;
     this.eventSubscriber = (infra as any).eventSubscriber;
     this.userMap = (infra as any).userMap;
@@ -164,6 +165,46 @@ export class DriftFillerRunner {
         : [];
       const maxMakers = Math.max(0, Number(this.config.maxMakersPerFill ?? 2));
       const makers = makersRaw.slice(0, maxMakers);
+
+      // Require maker nodes only when AMM-only fills are disabled
+      const allowAmm = this.config.allowAmmFills !== false; // default allow
+      if ((!Array.isArray(nodeToFill?.makerNodes) || nodeToFill.makerNodes.length === 0) && !allowAmm) {
+        try {
+          logger.debug('drift.filler.skip_no_makers', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
+        } catch {}
+        return false;
+      }
+
+      // Cheap precheck for crossing vs current virtual bid/ask; skip if clearly not crossing
+      try {
+        const { BN, calculateAskPrice, calculateBidPrice, getVariant } = this.sdk;
+        const slotNow = this.slotSubscriber?.getSlot?.() ?? 0;
+        const slotBn = new BN(slotNow);
+        const market = this.client.getPerpMarketAccount?.(Number(marketIndex));
+        const mmOraclePriceData = this.client.getMMOracleDataForPerpMarket?.(Number(marketIndex));
+        const vAsk = calculateAskPrice(market, mmOraclePriceData, slotBn);
+        const vBid = calculateBidPrice(market, mmOraclePriceData, slotBn);
+        const o = nodeToFill?.node?.order;
+        const otype = o?.orderType ? String(getVariant(o.orderType)).toLowerCase() : undefined;
+        const dir = o?.direction ? String(getVariant(o.direction)).toLowerCase() : undefined; // 'long' | 'short'
+        const priceBn = o?.price;
+        const isLimit = !!otype && otype.includes('limit');
+        if (isLimit && priceBn && typeof priceBn?.lt === 'function' && typeof vAsk?.lt === 'function' && typeof vBid?.lt === 'function') {
+          if (dir === 'long') {
+            // require taker limit >= vAsk; if price < vAsk, it's not crossing
+            if (priceBn.lt(vAsk)) {
+              try { logger.debug('drift.filler.skip_not_crossing', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, side: 'long', marketIndex, orderPrice: String(priceBn?.toString?.() || ''), vAsk: String(vAsk?.toString?.() || '') }); } catch {}
+              return false;
+            }
+          } else if (dir === 'short') {
+            // require taker limit <= vBid; if price > vBid, it's not crossing
+            if (priceBn.gt(vBid)) {
+              try { logger.debug('drift.filler.skip_not_crossing', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, side: 'short', marketIndex, orderPrice: String(priceBn?.toString?.() || ''), vBid: String(vBid?.toString?.() || '') }); } catch {}
+              return false;
+            }
+          }
+        }
+      } catch {}
 
       const makerInfos: any[] = [];
       for (const m of makers) {
@@ -297,6 +338,16 @@ export class DriftFillerRunner {
             subcat: FILLER_SUBCAT,
             marketIndex: idx,
             nodes: nodesToFill.length,
+          });
+        } catch {}
+
+        // Diagnostics: maker vs non-maker nodes
+        try {
+          const withMakers = nodesToFill.filter((n: any) => Array.isArray(n?.makerNodes) && n.makerNodes.length > 0).length;
+          const withoutMakers = nodesToFill.length - withMakers;
+          logger.info('drift.filler.market_nodes_breakdown', {
+            cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx,
+            nodes: nodesToFill.length, withMakers, withoutMakers,
           });
         } catch {}
 

@@ -35,6 +35,7 @@ export function createFillerRouter(_io: SocketIOServer): Router {
             ? String(cfg?.marketsAllowlistCsv).split(',').map((s: string) => Number(s.trim())).filter((n: any) => Number.isFinite(n))
             : undefined),
         maxMakersPerFill: Math.max(0, Number(cfg?.maxMakersPerFill ?? 2)),
+        allowAmmFills: (cfg?.allowAmmFills === undefined ? true : !!cfg?.allowAmmFills),
       } as any);
       const key = (DriftFillerRegistry as any).keyOf({ name });
       setImmediate(async () => {
