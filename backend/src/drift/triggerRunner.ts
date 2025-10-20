@@ -211,6 +211,7 @@ export class DriftTriggerRunner {
 			const perp = await this.client.getPerpMarketAccounts?.();
 			const spot = await this.client.getSpotMarketAccounts?.();
 
+			const userCount = typeof this.userMap?.size === 'function' ? Number(this.userMap.size()) : 0;
 			logger.info('drift.trigger.markets', {
 				cat: TRIGGER_CAT,
 				subcat: TRIGGER_SUBCAT,
@@ -218,6 +219,7 @@ export class DriftTriggerRunner {
 				perpCount: Array.isArray(perp) ? perp.length : 0,
 				spotCount: Array.isArray(spot) ? spot.length : 0,
 				allowlistSize: Array.isArray(this.state.marketsAllowlist) ? this.state.marketsAllowlist.length : 0,
+				users: userCount,
 			});
 
 			let totalNodesPlanned = 0;
@@ -240,9 +242,25 @@ export class DriftTriggerRunner {
             triggerPx = getTriggerPrice(market, freshest, nowSec, useMedianTriggerPrice(this.client.getStateAccount()));
           }
 
-          const nodes = dlob.findNodesToTrigger(idx, slot, triggerPx, type, stateAcc);
+					const nodes = dlob.findNodesToTrigger(idx, slot, triggerPx, type, stateAcc);
 					totalNodesPlanned += Array.isArray(nodes) ? nodes.length : 0;
 					if (Array.isArray(nodes) && nodes.length > 0) marketsWithNodes += 1;
+
+					let condAbove = 0, condBelow = 0, typeTrigMkt = 0, typeTrigLmt = 0;
+					if (Array.isArray(nodes)) {
+						for (const n of nodes) {
+							try {
+								const o = n?.node?.order;
+								const cond = o?.triggerCondition ? getVariant(o.triggerCondition) : undefined;
+								const ot = o?.orderType ? getVariant(o.orderType) : undefined;
+								if (cond === 'above') condAbove += 1;
+								else if (cond === 'below') condBelow += 1;
+								if (ot === 'triggerMarket') typeTrigMkt += 1;
+								else if (ot === 'triggerLimit') typeTrigLmt += 1;
+							} catch {}
+						}
+					}
+
 					logger.info('drift.trigger.market_scan', {
 						cat: TRIGGER_CAT,
 						subcat: TRIGGER_SUBCAT,
@@ -252,6 +270,10 @@ export class DriftTriggerRunner {
 						triggerPrice: String((triggerPx as any)?.toString?.() || triggerPx || ''),
 						oraclePrice: String(oracleData?.price?.toString?.() || ''),
 						slot,
+						condAbove,
+						condBelow,
+						typeTrigMkt,
+						typeTrigLmt,
 					});
 
           for (const node of nodes) {
@@ -264,7 +286,20 @@ export class DriftTriggerRunner {
             this.nodesCooldown.set(sig, Date.now());
             const orderId = String(node?.node?.order?.orderId || '');
             const userPkStr = String(node?.node?.userAccount || '');
-						if (nodeSamples.length < 5) nodeSamples.push({ m: idx, t: typeStr, u: userPkStr, id: orderId });
+						if (nodeSamples.length < 5) {
+							const o = n?.node?.order;
+							nodeSamples.push({
+								m: idx,
+								t: typeStr,
+								u: userPkStr,
+								id: orderId,
+								cond: o?.triggerCondition ? getVariant(o.triggerCondition) : undefined,
+								otype: o?.orderType ? getVariant(o.orderType) : undefined,
+								ordTp: String(o?.triggerPrice?.toString?.() || ''),
+								oracle: String(oracleData?.price?.toString?.() || ''),
+								trig: String((triggerPx as any)?.toString?.() || ''),
+							});
+						}
 
             logger.info('drift.trigger.try', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, marketType: typeStr, marketIndex: idx, user: userPkStr, orderId, onChainPrice: String(oracleData?.price?.toString?.() || '') });
 
@@ -318,6 +353,7 @@ export class DriftTriggerRunner {
 				subcat: TRIGGER_SUBCAT,
 				ms: dur,
 				slot,
+				users: userCount,
 				totalNodesPlanned,
 				marketsWithNodes,
 				triggersLastMin: this.getStatus().triggersLastMin,
