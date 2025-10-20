@@ -566,7 +566,8 @@ export class DriftService {
 
       // Preflight: ensure wallet has SOL for fees
       try {
-        const balLamports = await this.connection!.getBalance(this.walletKp!.publicKey, 'confirmed');
+        const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+        const balLamports = await withRpcLimit(() => this.connection!.getBalance(this.walletKp!.publicKey, 'confirmed'));
         const minLamports = 0.01 * 1_000_000_000; // ~0.01 SOL
         if (balLamports < minLamports) {
           lastReason = `INSUFFICIENT_SOL balance=${(balLamports/1_000_000_000).toFixed(6)} required>=0.01`;

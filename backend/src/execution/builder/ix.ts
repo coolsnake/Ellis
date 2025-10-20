@@ -336,7 +336,8 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       if (!hop.market || !hop.serumProgramId) {
         const connection = getConnection();
         const poolPk = toPublicKey(hop.poolId);
-        const acc = await connection.getAccountInfo(poolPk);
+        const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+        const acc = await withRpcLimit(() => connection.getAccountInfo(poolPk));
         if (acc?.data?.length) {
           const rmod: any = await import('@raydium-io/raydium-sdk-v2');
           const layouts = [
@@ -405,7 +406,8 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       const needAuth = !poolKeys?.authority;
       if (needVaults || needMarket || needAuth) {
         const connection = getConnection();
-        const acc = await connection.getAccountInfo(toPublicKey(hop.poolId));
+        const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+        const acc = await withRpcLimit(() => connection.getAccountInfo(toPublicKey(hop.poolId)));
         if (acc?.data?.length) {
           const sdkLayouts: any = await import('@raydium-io/raydium-sdk-v2');
           const layouts = [

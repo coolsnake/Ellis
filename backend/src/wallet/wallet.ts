@@ -79,7 +79,9 @@ export async function getBalances(address: PublicKey, opts?: { force?: boolean }
         lastErr = e;
         const msg = String(e?.message || e);
         if (msg.includes('429') || msg.toLowerCase().includes('too many requests') || msg.toLowerCase().includes('fetch failed')) {
-          const delay = 500 * Math.pow(2, i);
+          const base = 500 * Math.pow(2, i);
+          const jitter = 1 + (Math.random() * 0.2 - 0.1); // +/-10% jitter to avoid herding
+          const delay = Math.round(base * jitter);
           logger.warn(`[${new Date().toISOString()}] rpc.429 retry delay=${delay}ms attempt=${i + 1}`);
           try { emit('log', { level: 'warn', message: `arb:429 source=rpc kind=wallet attempt=${i + 1}` , timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
           await new Promise((r) => setTimeout(r, delay));
