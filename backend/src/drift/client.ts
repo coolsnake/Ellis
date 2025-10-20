@@ -45,6 +45,14 @@ export class DriftService {
   private subaccountsCache: { data: SubaccountInfo[]; ts: number } | null = null;
   private loader: any | null = null;
   private lastTxAtMs: number = 0;
+  private sharedSlotSubscriber: any | null = null;
+  private sharedEventSubscriber: any | null = null;
+  private sharedUserMap: any | null = null;
+  private sharedDlobSubscriber: any | null = null;
+  private txQueueInFlight = 0;
+  private txQueue: Array<() => void> = [];
+  private maxTxInFlight = 2;
+  private minTxGapMs = 200;
 
   static getInstance(): DriftService {
     if (!this.instance) this.instance = new DriftService();
@@ -147,6 +155,91 @@ export class DriftService {
       }
     } catch {}
     logger.info('drift.sdk.ready', { pubkey: this.walletKp.publicKey?.toBase58?.(), ms: Date.now() - t0, cat: 'drift', code: 'DRIFT.SDK.READY' });
+  }
+
+  async getSharedInfra(opts?: { includeIdle?: boolean; updateFrequency?: number }): Promise<{ slotSubscriber: any; eventSubscriber: any; userMap: any; dlobSubscriber: any }> {
+    await this.init();
+    let sdk: any = null;
+    try { sdk = await import('@drift-labs/sdk'); } catch {}
+    const drift: any = this.client;
+    const connection = drift?.connection || this.connection;
+    const program = drift?.program;
+
+    if (!this.sharedSlotSubscriber && sdk?.SlotSubscriber) {
+      try {
+        this.sharedSlotSubscriber = new (sdk as any).SlotSubscriber(connection);
+        await this.sharedSlotSubscriber.subscribe();
+      } catch {}
+    }
+
+    if (!this.sharedEventSubscriber && sdk?.EventSubscriber) {
+      try {
+        this.sharedEventSubscriber = new (sdk as any).EventSubscriber(connection, program);
+        await this.sharedEventSubscriber.subscribe();
+      } catch {}
+    }
+
+    if (!this.sharedUserMap && sdk?.UserMap) {
+      const subType = String(((CONFIG as any)?.drift?.subscriptionType || 'websocket')).toLowerCase();
+      const umSubCfg: any = subType === 'polling'
+        ? { type: 'polling', frequency: 1000 }
+        : { type: 'websocket', resubTimeoutMs: 10000 };
+      try {
+        this.sharedUserMap = new (sdk as any).UserMap({
+          driftClient: drift,
+          connection,
+          subscriptionConfig: umSubCfg,
+          includeIdle: !!opts?.includeIdle,
+          disableSyncOnTotalAccountsChange: false,
+        });
+      } catch {
+        try { this.sharedUserMap = new (sdk as any).UserMap({ driftClient: drift, subscriptionConfig: { type: 'websocket' } }); } catch {}
+      }
+      try { await this.sharedUserMap?.subscribe?.(); } catch {}
+    }
+
+    if (!this.sharedDlobSubscriber && sdk?.DLOBSubscriber && this.sharedUserMap && this.sharedSlotSubscriber) {
+      try {
+        this.sharedDlobSubscriber = new (sdk as any).DLOBSubscriber({
+          dlobSource: this.sharedUserMap,
+          slotSource: this.sharedSlotSubscriber,
+          updateFrequency: Math.max(200, Number(opts?.updateFrequency ?? 600)),
+          driftClient: drift,
+          userMapSubscriptionConfig: (() => { try { return drift.userAccountSubscriptionConfig || undefined; } catch { return undefined; } })(),
+        });
+        await this.sharedDlobSubscriber.subscribe();
+      } catch {}
+    }
+
+    return {
+      slotSubscriber: this.sharedSlotSubscriber,
+      eventSubscriber: this.sharedEventSubscriber,
+      userMap: this.sharedUserMap,
+      dlobSubscriber: this.sharedDlobSubscriber,
+    };
+  }
+
+  async sendRawTransaction(raw: Buffer | Uint8Array, opts?: any): Promise<string> {
+    await this.init();
+    const doSend = async (): Promise<string> => {
+      const now = Date.now();
+      const wait = Math.max(0, this.lastTxAtMs + this.minTxGapMs - now);
+      if (wait > 0) { await new Promise((r) => setTimeout(r, wait)); }
+      const sig = await this.connection!.sendRawTransaction(raw as any, opts || { skipPreflight: false, preflightCommitment: 'confirmed' });
+      this.lastTxAtMs = Date.now();
+      return sig;
+    };
+    if (this.txQueueInFlight >= this.maxTxInFlight) {
+      await new Promise<void>((resolve) => this.txQueue.push(resolve));
+    }
+    this.txQueueInFlight += 1;
+    try {
+      return await doSend();
+    } finally {
+      this.txQueueInFlight -= 1;
+      const next = this.txQueue.shift();
+      if (next) next();
+    }
   }
 
   private async ensureUserReady(subaccountId: number): Promise<void> {

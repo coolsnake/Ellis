@@ -36,6 +36,7 @@ export class DriftTriggerRunner {
   private config: TriggerConfig;
   private state: TriggerRuntimeState;
   private abort = false;
+  private inLoop: boolean = false;
 
   private sdk: any | null = null;
   private client: any | null = null;
@@ -105,11 +106,13 @@ export class DriftTriggerRunner {
     this.sdk = await import('@drift-labs/sdk');
     await this.initDiscovery();
 
-    this.timer = setInterval(() => {
-      this.loop().catch((e) => {
-        this.state.lastError = String(e?.message || e);
-      });
-    }, this.state.loopIntervalMs);
+    const tick = async () => {
+      if (this.abort || this.inLoop) return;
+      this.inLoop = true;
+      try { await this.loop(); }
+      finally { this.inLoop = false; }
+    };
+    this.timer = setInterval(() => { tick().catch(() => {}); }, this.state.loopIntervalMs);
 
     logger.info('drift.trigger.started', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name, loopMs: this.state.loopIntervalMs });
   }
@@ -121,63 +124,17 @@ export class DriftTriggerRunner {
     }
     this.state.running = false;
     this.abort = true;
-    try { this.dlobSubscriber?.unsubscribe?.(); } catch {}
-    try { this.userMap?.unsubscribe?.(); } catch {}
-    try { this.eventSubscriber?.unsubscribe?.(); } catch {}
     logger.info('drift.trigger.stopped', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name });
   }
 
   private async initDiscovery(): Promise<void> {
-    const { SlotSubscriber, EventSubscriber, UserMap, DLOBSubscriber } = this.sdk;
-    const drift = this.client;
-    const driftConn = drift?.connection || this.connection;
-    const program = drift?.program;
-
-    try {
-      this.slotSubscriber = new SlotSubscriber(driftConn);
-      await this.slotSubscriber.subscribe();
-      logger.info('drift.trigger.slot_subscribed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name });
-    } catch (e: any) {
-      logger.info('drift.trigger.warn slot_subscribe_failed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, err: String(e?.message || e) });
-    }
-    try {
-      this.eventSubscriber = new EventSubscriber(driftConn, program);
-      await this.eventSubscriber.subscribe();
-      logger.info('drift.trigger.event_subscribed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name });
-    } catch (e: any) {
-      logger.info('drift.trigger.warn event_subscribe_failed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, err: String(e?.message || e) });
-    }
-    // UserMap: use current SDK config-object signature
-    const subType = String(((CONFIG as any)?.drift?.subscriptionType || 'websocket')).toLowerCase();
-    const umSubCfg: any = subType === 'polling'
-      ? { type: 'polling', frequency: 1000 }
-      : { type: 'websocket', resubTimeoutMs: 10000 };
-    try {
-      this.userMap = new UserMap({
-        driftClient: drift,
-        connection: driftConn,
-        subscriptionConfig: umSubCfg,
-        includeIdle: true,
-        disableSyncOnTotalAccountsChange: false,
-      });
-    } catch (e1: any) {
-      logger.info('drift.trigger.warn usermap_ctor_config_failed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, err: String(e1?.message || e1), subType });
-      // Last resort: attempt minimal object
-      this.userMap = new UserMap({ driftClient: drift, subscriptionConfig: { type: 'websocket' } });
-    }
-    await this.userMap.subscribe();
-    logger.info('drift.trigger.usermap_subscribed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name });
-    this.dlobSubscriber = new DLOBSubscriber({
-      dlobSource: this.userMap,
-      slotSource: this.slotSubscriber,
-      updateFrequency: Math.max(200, this.state.loopIntervalMs - 250),
-      driftClient: drift,
-      userMapSubscriptionConfig: (() => {
-        try { return drift.userAccountSubscriptionConfig || undefined; } catch { return undefined; }
-      })(),
-    });
-    await this.dlobSubscriber.subscribe();
-    logger.info('drift.trigger.dlob_subscribed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name });
+    const svc = DriftService.getInstance();
+    const infra = await (svc as any).getSharedInfra({ includeIdle: true, updateFrequency: Math.max(200, this.state.loopIntervalMs - 250) });
+    this.slotSubscriber = (infra as any).slotSubscriber;
+    this.eventSubscriber = (infra as any).eventSubscriber;
+    this.userMap = (infra as any).userMap;
+    this.dlobSubscriber = (infra as any).dlobSubscriber;
+    logger.info('drift.trigger.dlob_subscribed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name, shared: true });
   }
 
   private signatureForNode(nodeToTrigger: any): string {
@@ -380,7 +337,7 @@ export class DriftTriggerRunner {
             tx.recentBlockhash = blockhash;
             try {
               tx.sign(this.client.wallet.payer);
-              const sigTx = await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: false, preflightCommitment: 'confirmed' });
+              const sigTx = await DriftService.getInstance().sendRawTransaction(tx.serialize(), { skipPreflight: false, preflightCommitment: 'confirmed' });
               this.triggersInWindow.push(Date.now());
               logger.info('drift.trigger.ok', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, sig: sigTx, marketType: typeStr, marketIndex: idx, user: userPkStr, orderId });
             } catch (e: any) {

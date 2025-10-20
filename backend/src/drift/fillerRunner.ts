@@ -38,6 +38,7 @@ export class DriftFillerRunner {
   private config: FillerConfig;
   private state: FillerRuntimeState;
   private abort = false;
+  private inLoop: boolean = false;
 
   private sdk: any | null = null;
   private client: any | null = null;
@@ -106,11 +107,13 @@ export class DriftFillerRunner {
     this.sdk = await import('@drift-labs/sdk');
     await this.initDiscovery();
 
-    this.timer = setInterval(() => {
-      this.loop().catch((e) => {
-        this.state.lastError = String(e?.message || e);
-      });
-    }, this.state.loopIntervalMs);
+    const tick = async () => {
+      if (this.abort || this.inLoop) return;
+      this.inLoop = true;
+      try { await this.loop(); }
+      finally { this.inLoop = false; }
+    };
+    this.timer = setInterval(() => { tick().catch(() => {}); }, this.state.loopIntervalMs);
 
     logger.info('drift.filler.started', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name, loopMs: this.state.loopIntervalMs });
   }
@@ -122,80 +125,17 @@ export class DriftFillerRunner {
     }
     this.state.running = false;
     this.abort = true;
-    try { this.dlobSubscriber?.unsubscribe?.(); } catch {}
-    try { this.userMap?.unsubscribe?.(); } catch {}
-    try { this.eventSubscriber?.unsubscribe?.(); } catch {}
     logger.info('drift.filler.stopped', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name });
   }
 
   private async initDiscovery(): Promise<void> {
-    const { SlotSubscriber, EventSubscriber, UserMap, DLOBSubscriber } = this.sdk;
-    const drift = this.client;
-    const driftConn = drift?.connection || this.connection;
-    const program = drift?.program;
-
-    // Try to borrow infra from any running trigger runner to avoid duplicating UserMap/DLOB
-    let borrowed = false;
-    try {
-      const mod = await import('./triggerRunner.js');
-      const reg = (mod as any).DriftTriggerRegistry;
-      const list: Array<{ key: string }> = reg?.list?.() || [];
-      let inst: any | null = null;
-      for (const it of list) {
-        const r = reg.get?.(it.key);
-        if (r && r.getStatus?.().running) { inst = r; break; }
-        if (!inst) inst = r;
-      }
-      if (inst) {
-        this.slotSubscriber = (inst as any).slotSubscriber || null;
-        this.eventSubscriber = (inst as any).eventSubscriber || null;
-        this.userMap = (inst as any).userMap || null;
-        this.dlobSubscriber = (inst as any).dlobSubscriber || null;
-        borrowed = !!(this.slotSubscriber && this.userMap && this.dlobSubscriber);
-      }
-    } catch {}
-
-    if (!borrowed) {
-      try {
-        this.slotSubscriber = new SlotSubscriber(driftConn);
-        await this.slotSubscriber.subscribe();
-        logger.info('drift.filler.slot_subscribed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name });
-      } catch (e: any) {
-        logger.info('drift.filler.warn slot_subscribe_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, err: String(e?.message || e) });
-      }
-      try {
-        this.eventSubscriber = new EventSubscriber(driftConn, program);
-        await this.eventSubscriber.subscribe();
-        logger.info('drift.filler.event_subscribed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name });
-      } catch (e: any) {
-        logger.info('drift.filler.warn event_subscribe_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, err: String(e?.message || e) });
-      }
-      const subType = String(((CONFIG as any)?.drift?.subscriptionType || 'websocket')).toLowerCase();
-      const umSubCfg: any = subType === 'polling' ? { type: 'polling', frequency: 1000 } : { type: 'websocket', resubTimeoutMs: 10000 };
-      try {
-        this.userMap = new UserMap({
-          driftClient: drift,
-          connection: driftConn,
-          subscriptionConfig: umSubCfg,
-          includeIdle: false,
-          disableSyncOnTotalAccountsChange: false,
-        });
-      } catch {
-        this.userMap = new UserMap({ driftClient: drift, subscriptionConfig: { type: 'websocket' } });
-      }
-      await this.userMap.subscribe();
-      this.dlobSubscriber = new DLOBSubscriber({
-        dlobSource: this.userMap,
-        slotSource: this.slotSubscriber,
-        updateFrequency: Math.max(400, this.state.loopIntervalMs - 300),
-        driftClient: drift,
-        userMapSubscriptionConfig: (() => { try { return drift.userAccountSubscriptionConfig || undefined; } catch { return undefined; } })(),
-      });
-      await this.dlobSubscriber.subscribe();
-      logger.info('drift.filler.usermap_dlob_ready', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name });
-    } else {
-      logger.info('drift.filler.borrowed_infra', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, borrowed: true });
-    }
+    const svc = DriftService.getInstance();
+    const infra = await (svc as any).getSharedInfra({ includeIdle: false, updateFrequency: Math.max(400, this.state.loopIntervalMs - 300) });
+    this.slotSubscriber = (infra as any).slotSubscriber;
+    this.eventSubscriber = (infra as any).eventSubscriber;
+    this.userMap = (infra as any).userMap;
+    this.dlobSubscriber = (infra as any).dlobSubscriber;
+    logger.info('drift.filler.usermap_dlob_ready', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name, shared: true });
   }
 
   private signatureForNode(nodeToFill: any): string {
@@ -270,7 +210,7 @@ export class DriftFillerRunner {
       tx.recentBlockhash = blockhash;
       try {
         tx.sign(this.client.wallet.payer);
-        const sigTx = await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: false, preflightCommitment: 'confirmed' });
+        const sigTx = await DriftService.getInstance().sendRawTransaction(tx.serialize(), { skipPreflight: false, preflightCommitment: 'confirmed' });
         this.fillsInWindow.push(Date.now());
         logger.info('drift.filler.ok', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, sig: sigTx, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
         return true;

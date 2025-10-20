@@ -284,9 +284,14 @@ export class DriftLiquidator {
       try { logger.warn('drift.liquidator.enumerate_helius_failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
     }
     try { await this.initPriceTriggers(); } catch {}
-    this.timer = (globalThis as any).setInterval(() => {
-      this.tick().catch((e) => logger.warn('drift.liquidator.tick_error', { error: String(e?.message || e), cat: 'drift', code: 'DRIFT.LIQ.TICK_ERROR' }));
-    }, pollMs);
+    const guardedTick = async () => {
+      if (this.abort || (this as any)._inTick) return;
+      (this as any)._inTick = true;
+      try { await this.tick(); }
+      catch (e: any) { logger.warn('drift.liquidator.tick_error', { error: String(e?.message || e), cat: 'drift', code: 'DRIFT.LIQ.TICK_ERROR' }); }
+      finally { (this as any)._inTick = false; }
+    };
+    this.timer = (globalThis as any).setInterval(() => { guardedTick().catch(() => {}); }, pollMs);
     // Periodic stats emission
     try {
       if (this.statsTimer) { try { (globalThis as any).clearInterval(this.statsTimer); } catch {} }
@@ -336,21 +341,8 @@ export class DriftLiquidator {
     this.timer = null;
     if (this.statsTimer) { try { (globalThis as any).clearInterval(this.statsTimer); } catch {} this.statsTimer = null; }
     if (this.discoveryTimer) { try { (globalThis as any).clearInterval(this.discoveryTimer); } catch {} this.discoveryTimer = null; }
-    // Cleanup event subscriptions (avoid RPC during WS CLOSING/CLOSED)
-    try {
-      if (this.eventSub) {
-        try {
-          // If the underlying connection exposes _rpcWebSocket, ensure it's not closing before unsubscribe
-          const drift: any = (DriftService.getInstance() as any).client;
-          const ws: any = drift?.connection?._rpcWebSocket?._ws;
-          const rs: number = Number(ws?.readyState);
-          const canRpc = (rs === 0 || rs === 1); // CONNECTING or OPEN
-          const maybe = canRpc ? (this.eventSub as any).unsubscribe?.() : null;
-          if (maybe && typeof (maybe as any).then === 'function') { (maybe as Promise<any>).catch(() => {}); }
-        } catch {}
-        this.eventSub = null;
-      }
-    } catch {}
+    // Do not unsubscribe shared event subscriber owned by DriftService
+    try { this.eventSub = null; } catch {}
     // Cleanup DLOB helpers and periodic seed timer
     try {
       const seed = (this as any)._dlobSeedTimer;
@@ -702,15 +694,9 @@ export class DriftLiquidator {
   private async initEventSubscriptions(): Promise<void> {
     try {
       if (this.config?.useEventSubscriptions === false) return;
-      const drift: any = (DriftService.getInstance() as any).client;
-      if (!EventSubscriber || !drift?.program || !drift?.connection) return;
-      const sub = new EventSubscriber(drift.connection, drift.program);
-      try {
-        await sub.subscribe();
-      } catch (e: any) {
-        logger.warn('drift.liquidator.event_sub_error', { error: String(e?.message || e), cat: 'drift' });
-        return;
-      }
+      const infra = await DriftService.getInstance().getSharedInfra({ includeIdle: true });
+      const sub = (infra as any).eventSubscriber;
+      if (!sub) return;
       this.eventSub = sub;
       // Listen for position updates and order events to prioritize scanning affected users
       const onUserEvent = async (ev: any) => {
@@ -723,22 +709,6 @@ export class DriftLiquidator {
       try { sub.eventEmitter?.on?.('UserPositionUpdateRecord', onUserEvent); } catch {}
       try { sub.eventEmitter?.on?.('OrderRecord', onUserEvent); } catch {}
       try { sub.eventEmitter?.on?.('LiquidationRecord', onUserEvent); } catch {}
-      // Basic resilience: best-effort resubscribe on emitter error/close
-      const tryResub = async () => {
-        try {
-          await Promise.race([
-            sub.unsubscribe().catch(() => {}),
-            new Promise<void>((resolve) => { try { (globalThis as any).setTimeout(resolve, 2000); } catch { resolve(); } }),
-          ]);
-        } catch {}
-        try {
-          await sub.subscribe();
-        } catch (e: any) {
-          logger.warn('drift.liquidator.event_sub_resub_failed', { error: String(e?.message || e), cat: 'drift' });
-        }
-      };
-      try { sub.eventEmitter?.on?.('error', tryResub as any); } catch {}
-      try { sub.eventEmitter?.on?.('close', tryResub as any); } catch {}
     } catch {}
   }
 
