@@ -95,8 +95,9 @@ export async function getBalances(address: PublicKey, opts?: { force?: boolean }
   const task = (async () => {
     const balanceLamports = await withBackoff<number>(() => withRpcLimit(() => connection.getBalance(address)));
     // Fetch both legacy SPL and Token-2022 accounts, then aggregate by mint
-    const legacyP = withBackoff<any>(() => withRpcLimit(() => connection.getParsedTokenAccountsByOwner(address, { programId: TOKEN_PROGRAM_ID })));
-    const token22P = withBackoff<any>(() => withRpcLimit(() => connection.getParsedTokenAccountsByOwner(address, { programId: TOKEN_2022_PROGRAM_ID }))).catch(() => ({ value: [] }));
+    // Heavier RPCs (parsedTokenAccounts) get higher weight to reduce concurrency
+    const legacyP = withBackoff<any>(() => withRpcLimit(() => connection.getParsedTokenAccountsByOwner(address, { programId: TOKEN_PROGRAM_ID }), 2));
+    const token22P = withBackoff<any>(() => withRpcLimit(() => connection.getParsedTokenAccountsByOwner(address, { programId: TOKEN_2022_PROGRAM_ID }), 2)).catch(() => ({ value: [] }));
     const [legacy, token22] = await Promise.all([legacyP, token22P]);
     const allAccounts = [...(legacy?.value || []), ...((token22 as any)?.value || [])];
     const tokens: Record<string, number> = {};

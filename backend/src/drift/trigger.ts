@@ -469,9 +469,9 @@ export class TriggerBot implements Bot {
 		}
 
 		const recentBlockhash =
-			await this.driftClient.connection.getLatestBlockhash({
+			await (await import('../utils/rpcLimiter.js')).withRpcLimit(() => this.driftClient.connection.getLatestBlockhash({
 				commitment: 'confirmed',
-			});
+			}));
 
 		return recentBlockhash.blockhash;
 	}

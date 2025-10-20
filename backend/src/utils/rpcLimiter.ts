@@ -12,6 +12,10 @@ const capacity = Math.max(
     Number(process.env.RPC_BURST || Math.ceil(maxRps / 4))
   )
 );
+// Enforce a small inter-request gap to avoid micro-bursts when tokens accrue
+const minGapMs = Math.max(0, Number(process.env.RPC_MIN_GAP_MS || 20));
+let lastDispatchMs = 0;
+let gapChain: Promise<void> = Promise.resolve();
 
 function refill(): void {
   const now = Date.now();
@@ -33,6 +37,16 @@ export async function acquireRpcSlots(weight = 1): Promise<void> {
     refill();
     if (tokens >= need) {
       tokens -= need;
+      // Sequence callers to preserve a minimum gap between dispatches
+      const prev = gapChain;
+      gapChain = (async () => {
+        try { await prev; } catch {}
+        const now = Date.now();
+        const waitMs = Math.max(0, (lastDispatchMs + minGapMs) - now);
+        if (waitMs > 0) await sleep(waitMs);
+        lastDispatchMs = Date.now();
+      })();
+      await gapChain;
       return;
     }
     // Compute wait until enough tokens accrue

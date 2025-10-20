@@ -181,10 +181,11 @@ export class GridTrader {
       const { getConnection } = await import('../wallet/wallet.js');
       const connection = getConnection();
       const commitment: any = (CONFIG as any).system?.txCommitment || 'confirmed';
-      const transaction = await connection.getTransaction(signature, {
+      const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+      const transaction = await withRpcLimit(() => connection.getTransaction(signature, {
         commitment,
         maxSupportedTransactionVersion: 0
-      });
+      }));
       
       if (!transaction) {
         logger.warn('Transaction not found', { signature });
