@@ -29,11 +29,11 @@ import {
 } from '@drift-labs/sdk';
 import { Mutex, tryAcquire, E_ALREADY_LOCKED } from 'async-mutex';
 
-import { logger } from '../logger';
-import { Bot } from '../types';
-import { getErrorCode } from '../error';
-import { webhookMessage } from '../webhook';
-import { GlobalConfig, TriggerConfig } from '../config';
+import { logger } from '../utils/logger';
+// local Bot type not used; remove import or adjust when adopting common Bot type
+// getErrorCode helper unavailable in this codebase; keep error handling using message text
+// webhookMessage not available in this codebase; use logger instead
+import { CONFIG } from '../utils/config';
 import { FeedIdToCrankInfo } from './pythCranker';
 import { PrometheusExporter } from '@opentelemetry/exporter-prometheus';
 import { Counter, Histogram, Meter, ObservableGauge } from '@opentelemetry/api';
@@ -731,30 +731,11 @@ export class TriggerBot implements Bot {
 						.catch((error) => {
 							nodeToTrigger.node.haveTrigger = false;
 
-							const errorCode = getErrorCode(error);
-							if (
-								errorCode &&
-								!errorCodesToSuppress.includes(errorCode) &&
-								!(error as Error).message.includes(
-									'Transaction was not confirmed'
-								)
-							) {
-								if (errorCode) {
-									this.errorCounter!.add(1, {
-										errorCode: errorCode.toString(),
-									});
-								}
-								logger.error(
-									`Error (${errorCode}) triggering ${marketTypeStr} order for user ${nodeToTrigger.node.userAccount.toString()}-${nodeToTrigger.node.order.orderId.toString()}`
-								);
-								logger.error(error);
-								webhookMessage(
-									`[${
-										this.name
-									}]: :x: Error (${errorCode}) triggering ${marketTypeStr} order for user (account: ${nodeToTrigger.node.userAccount.toString()}) ${marketTypeStr} order: ${nodeToTrigger.node.order.orderId.toString()}\n${
-										error.stack ? error.stack : error.message
-									}`
-								);
+							const msg = (error as any)?.message || String(error);
+							if (!String(msg || '').includes('Transaction was not confirmed')) {
+								try { this.errorCounter!.add(1, { errorCode: 'unknown' }); } catch {}
+								logger.error(`Error triggering ${marketTypeStr} order for user ${nodeToTrigger.node.userAccount.toString()}-${nodeToTrigger.node.order.orderId.toString()}`);
+								logger.error(String(error));
 							}
 						})
 						.finally(() => {
