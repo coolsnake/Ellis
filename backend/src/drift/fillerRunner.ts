@@ -192,6 +192,19 @@ export class DriftFillerRunner {
           if (!takerUa) { try { await new Promise((r) => setTimeout(r, 60)); } catch {} }
         }
       }
+      // Additionally ensure underlying subscriber has dataAndSlot to avoid SDK 'dataAndSlot' reads
+      try {
+        let ok = !!(takerWrapper as any)?.userAccountSubscriber?.dataAndSlot?.data;
+        for (let i = 0; i < 6 && !ok; i += 1) {
+          try { await takerWrapper?.fetchAccounts?.(); } catch {}
+          ok = !!(takerWrapper as any)?.userAccountSubscriber?.dataAndSlot?.data;
+          if (!ok) { try { await new Promise((r) => setTimeout(r, 50)); } catch {} }
+        }
+        if (!ok) {
+          try { logger.info('drift.filler.skip_unhydrated_taker', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, marketIndex }); } catch {}
+          return false;
+        }
+      } catch {}
       if (!takerUa) {
         try { takerUa = await this.client.program.account.user.fetch(new PublicKey(takerPkStr)); } catch {}
       }
@@ -267,6 +280,16 @@ export class DriftFillerRunner {
               if (!makerUa) { try { await new Promise((r) => setTimeout(r, 40)); } catch {} }
             }
           }
+          // Ensure subscriber hydration present
+          try {
+            let ok = !!(makerWrapper as any)?.userAccountSubscriber?.dataAndSlot?.data;
+            for (let i = 0; i < 4 && !ok; i += 1) {
+              try { await makerWrapper?.fetchAccounts?.(); } catch {}
+              ok = !!(makerWrapper as any)?.userAccountSubscriber?.dataAndSlot?.data;
+              if (!ok) { try { await new Promise((r) => setTimeout(r, 40)); } catch {} }
+            }
+            if (!ok) continue;
+          } catch {}
           if (!makerUa) {
             try { makerUa = await this.client.program.account.user.fetch(new PublicKey(m)); } catch {}
           }
