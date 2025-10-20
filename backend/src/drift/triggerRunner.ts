@@ -200,18 +200,31 @@ export class DriftTriggerRunner {
     this.state.lastRunAt = t0;
 
     try {
-      const dlob = this.dlobSubscriber?.getDLOB?.();
+			const dlob = this.dlobSubscriber?.getDLOB?.();
       if (!dlob) return;
 
       const { MarketType, isVariant, getVariant, BN, getTriggerPrice, useMedianTriggerPrice } = this.sdk;
 
-      const slot = this.slotSubscriber?.getSlot?.() ?? 0;
-      const stateAcc = this.client.getStateAccount?.();
+			const slot = this.slotSubscriber?.getSlot?.() ?? 0;
+			const stateAcc = this.client.getStateAccount?.();
 
-      const perp = await this.client.getPerpMarketAccounts?.();
-      const spot = await this.client.getSpotMarketAccounts?.();
+			const perp = await this.client.getPerpMarketAccounts?.();
+			const spot = await this.client.getSpotMarketAccounts?.();
 
-      const tryOneMarket = async (market: any, type: any) => {
+			logger.info('drift.trigger.markets', {
+				cat: TRIGGER_CAT,
+				subcat: TRIGGER_SUBCAT,
+				slot,
+				perpCount: Array.isArray(perp) ? perp.length : 0,
+				spotCount: Array.isArray(spot) ? spot.length : 0,
+				allowlistSize: Array.isArray(this.state.marketsAllowlist) ? this.state.marketsAllowlist.length : 0,
+			});
+
+			let totalNodesPlanned = 0;
+			let marketsWithNodes = 0;
+			const nodeSamples: Array<{ m: number; t: string; u: string; id: string }> = [];
+
+			const tryOneMarket = async (market: any, type: any) => {
         const idx = Number(market?.marketIndex || 0);
         if (!this.inAllowlist(idx)) return;
         const typeStr = getVariant(type);
@@ -228,16 +241,30 @@ export class DriftTriggerRunner {
           }
 
           const nodes = dlob.findNodesToTrigger(idx, slot, triggerPx, type, stateAcc);
+					totalNodesPlanned += Array.isArray(nodes) ? nodes.length : 0;
+					if (Array.isArray(nodes) && nodes.length > 0) marketsWithNodes += 1;
+					logger.info('drift.trigger.market_scan', {
+						cat: TRIGGER_CAT,
+						subcat: TRIGGER_SUBCAT,
+						marketIndex: idx,
+						marketType: typeStr,
+						nodes: Array.isArray(nodes) ? nodes.length : 0,
+						triggerPrice: String((triggerPx as any)?.toString?.() || triggerPx || ''),
+						oraclePrice: String(oracleData?.price?.toString?.() || ''),
+						slot,
+					});
 
           for (const node of nodes) {
             const sig = this.signatureForNode(node);
             const last = this.nodesCooldown.get(sig) || 0;
             if (last + COOLDOWN_MS > Date.now()) {
+							logger.info('drift.trigger.cooldown_skip', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, marketType: typeStr, marketIndex: idx, signature: sig });
               continue;
             }
             this.nodesCooldown.set(sig, Date.now());
             const orderId = String(node?.node?.order?.orderId || '');
             const userPkStr = String(node?.node?.userAccount || '');
+						if (nodeSamples.length < 5) nodeSamples.push({ m: idx, t: typeStr, u: userPkStr, id: orderId });
 
             logger.info('drift.trigger.try', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, marketType: typeStr, marketIndex: idx, user: userPkStr, orderId, onChainPrice: String(oracleData?.price?.toString?.() || '') });
 
@@ -284,8 +311,18 @@ export class DriftTriggerRunner {
         ...(Array.isArray(spot) ? spot.map((m: any) => tryOneMarket(m, MarketType.SPOT)) : []),
       ]);
 
-      const dur = Date.now() - t0;
-      logger.info('drift.trigger.loop', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, ms: dur, name: this.state.name });
+			const dur = Date.now() - t0;
+			logger.info('drift.trigger.loop', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, ms: dur, name: this.state.name });
+			logger.info('drift.trigger.loop_summary', {
+				cat: TRIGGER_CAT,
+				subcat: TRIGGER_SUBCAT,
+				ms: dur,
+				slot,
+				totalNodesPlanned,
+				marketsWithNodes,
+				triggersLastMin: this.getStatus().triggersLastMin,
+				sample: nodeSamples,
+			});
     } catch (e: any) {
       this.state.lastError = String(e?.message || e);
       logger.info('drift.trigger.error loop_failed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, err: this.state.lastError });
