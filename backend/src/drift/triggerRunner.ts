@@ -157,7 +157,7 @@ export class DriftTriggerRunner {
         driftClient: drift,
         connection: driftConn,
         subscriptionConfig: umSubCfg,
-        includeIdle: false,
+        includeIdle: true,
         disableSyncOnTotalAccountsChange: false,
       });
     } catch (e1: any) {
@@ -238,7 +238,8 @@ export class DriftTriggerRunner {
 							if (!ua) { sampledUsers += 1; continue; }
 							const open = Number(ua?.openOrders || 0);
 							totalOpenOrders += open;
-							const ordersArr: any[] = Array.isArray(ua?.orders) ? ua.orders : [];
+				const ordersArr: any[] = Array.isArray(ua?.orders) ? ua.orders : [];
+				// Include expired/cancelled to improve visibility of presence; filter when counting conditional triggers
 							for (const ord of ordersArr) {
 								try {
 									const ot = ord?.orderType ? getVariant(ord.orderType) : undefined;
@@ -285,7 +286,13 @@ export class DriftTriggerRunner {
             triggerPx = getTriggerPrice(market, freshest, nowSec, useMedianTriggerPrice(this.client.getStateAccount()));
           }
 
+					// Compute both median-based and raw oracle trigger price paths to compare
 					const nodes = dlob.findNodesToTrigger(idx, slot, triggerPx, type, stateAcc);
+					let nodesRaw = [] as any[];
+					try {
+						const rawTrigger = isVariant(type, 'perp') ? freshest : freshest;
+						nodesRaw = dlob.findNodesToTrigger(idx, slot, rawTrigger, type, stateAcc) || [];
+					} catch {}
 					totalNodesPlanned += Array.isArray(nodes) ? nodes.length : 0;
 					if (Array.isArray(nodes) && nodes.length > 0) marketsWithNodes += 1;
 
@@ -310,6 +317,7 @@ export class DriftTriggerRunner {
 						marketIndex: idx,
 						marketType: typeStr,
 						nodes: Array.isArray(nodes) ? nodes.length : 0,
+						nodesRaw: Array.isArray(nodesRaw) ? nodesRaw.length : 0,
 						triggerPrice: String((triggerPx as any)?.toString?.() || triggerPx || ''),
 						oraclePrice: String(oracleData?.price?.toString?.() || ''),
 						slot,
