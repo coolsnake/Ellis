@@ -299,6 +299,7 @@ export class DriftFillerRunner {
       const {
         MarketType, BN,
         calculateAskPrice, calculateBidPrice,
+        getVariant,
       } = this.sdk;
 
       const slot = this.slotSubscriber?.getSlot?.() ?? 0;
@@ -374,6 +375,27 @@ export class DriftFillerRunner {
               continue;
             }
 
+            // Identify order type and trigger condition; skip trigger orders until triggered
+            const o = node?.node?.order;
+            let orderTypeStr: string | undefined = undefined;
+            let triggerCondStr: string | undefined = undefined;
+            try { orderTypeStr = o?.orderType ? String(getVariant(o.orderType)) : undefined; } catch {}
+            try { triggerCondStr = o?.triggerCondition ? String(getVariant(o.triggerCondition)) : undefined; } catch {}
+            if ((orderTypeStr && orderTypeStr.toLowerCase().includes('trigger')) || triggerCondStr) {
+              try {
+                logger.info('drift.filler.skip_trigger_order', {
+                  cat: FILLER_CAT,
+                  subcat: FILLER_SUBCAT,
+                  marketIndex: idx,
+                  taker: String(node?.node?.userAccount || ''),
+                  orderId: String(node?.node?.order?.orderId || ''),
+                  orderType: orderTypeStr,
+                  triggerCondition: triggerCondStr,
+                });
+              } catch {}
+              continue;
+            }
+
             const sig = this.signatureForNode(node);
             const last = this.nodesCooldown.get(sig) || 0;
             if (last + COOLDOWN_MS > Date.now()) {
@@ -398,6 +420,20 @@ export class DriftFillerRunner {
                 makers: Array.isArray(node?.makerNodes) ? node.makerNodes.length : 0,
               });
             }
+
+            // Node info extra logging to aid diagnosis
+            try {
+              logger.info('drift.filler.node_info', {
+                cat: FILLER_CAT,
+                subcat: FILLER_SUBCAT,
+                marketIndex: idx,
+                taker: String(node?.node?.userAccount || ''),
+                orderId: String(node?.node?.order?.orderId || ''),
+                makerCount: Array.isArray(node?.makerNodes) ? node.makerNodes.length : 0,
+                orderType: orderTypeStr,
+                triggerCondition: triggerCondStr,
+              });
+            } catch {}
 
             try {
               logger.info('drift.filler.try_fill', {
