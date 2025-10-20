@@ -50,6 +50,7 @@ export class DriftFillerRunner {
   eventSubscriber: any | null = null;
   userMap: any | null = null;
   dlobSubscriber: any | null = null;
+  orderSubscriber: any | null = null;
 
   private nodesCooldown: Map<string, number> = new Map();
   private fillsInWindow: number[] = [];
@@ -138,6 +139,7 @@ export class DriftFillerRunner {
     this.eventSubscriber = (infra as any).eventSubscriber;
     this.userMap = (infra as any).userMap;
     this.dlobSubscriber = (infra as any).dlobSubscriber;
+    this.orderSubscriber = (infra as any).orderSubscriber;
     logger.info('drift.filler.usermap_dlob_ready', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name, shared: true });
   }
 
@@ -158,8 +160,16 @@ export class DriftFillerRunner {
   private async tryFillNode(marketIndex: number, nodeToFill: any): Promise<boolean> {
     try {
       const takerPkStr = String(nodeToFill?.node?.userAccount || '');
-      const taker = await this.userMap.mustGet(takerPkStr);
-      if (!taker) return false;
+      let taker: any = null;
+      let takerUa: any = null;
+      try { taker = await this.userMap.mustGet(takerPkStr); } catch {}
+      if (taker && typeof taker.getUserAccount === 'function') {
+        try { takerUa = taker.getUserAccount(); } catch {}
+      }
+      if (!takerUa) {
+        try { takerUa = await this.client.program.account.user.fetch(new PublicKey(takerPkStr)); } catch {}
+      }
+      if (!takerUa) return false;
 
       const makersRaw: string[] = Array.isArray(nodeToFill?.makerNodes)
         ? nodeToFill.makerNodes.map((mn: any) => String(mn?.userAccount || '')).filter(Boolean)
@@ -176,43 +186,27 @@ export class DriftFillerRunner {
         return false;
       }
 
-      // Cheap precheck for crossing vs current virtual bid/ask; skip if clearly not crossing
+      // Relax precheck: rely on DLOB to surface crossable nodes; only log diagnostics
       try {
-        const { BN, calculateAskPrice, calculateBidPrice, getVariant } = this.sdk;
-        const slotNow = this.slotSubscriber?.getSlot?.() ?? 0;
-        const slotBn = new BN(slotNow);
-        const market = this.client.getPerpMarketAccount?.(Number(marketIndex));
-        const mmOraclePriceData = this.client.getMMOracleDataForPerpMarket?.(Number(marketIndex));
-        const vAsk = calculateAskPrice(market, mmOraclePriceData, slotBn);
-        const vBid = calculateBidPrice(market, mmOraclePriceData, slotBn);
+        const { getVariant } = this.sdk;
         const o = nodeToFill?.node?.order;
         const otype = o?.orderType ? String(getVariant(o.orderType)).toLowerCase() : undefined;
-        const dir = o?.direction ? String(getVariant(o.direction)).toLowerCase() : undefined; // 'long' | 'short'
-        const priceBn = o?.price;
-        const isLimit = !!otype && otype.includes('limit');
-        if (isLimit && priceBn && typeof priceBn?.lt === 'function' && typeof vAsk?.lt === 'function' && typeof vBid?.lt === 'function') {
-          if (dir === 'long') {
-            // require taker limit >= vAsk; if price < vAsk, it's not crossing
-            if (priceBn.lt(vAsk)) {
-              try { logger.debug('drift.filler.skip_not_crossing', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, side: 'long', marketIndex, orderPrice: String(priceBn?.toString?.() || ''), vAsk: String(vAsk?.toString?.() || '') }); } catch {}
-              return false;
-            }
-          } else if (dir === 'short') {
-            // require taker limit <= vBid; if price > vBid, it's not crossing
-            if (priceBn.gt(vBid)) {
-              try { logger.debug('drift.filler.skip_not_crossing', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, side: 'short', marketIndex, orderPrice: String(priceBn?.toString?.() || ''), vBid: String(vBid?.toString?.() || '') }); } catch {}
-              return false;
-            }
-          }
-        }
+        const dir = o?.direction ? String(getVariant(o.direction)).toLowerCase() : undefined;
+        try { logger.debug('drift.filler.precheck', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, dir, otype }); } catch {}
       } catch {}
 
       const makerInfos: any[] = [];
       for (const m of makers) {
         try {
-          const makerUser = await this.userMap.mustGet(m);
-          if (!makerUser) continue;
-          const makerUa = makerUser.getUserAccount?.();
+          let makerUa: any = null;
+          try {
+            const makerUser = await this.userMap.mustGet(m);
+            if (makerUser && typeof makerUser.getUserAccount === 'function') makerUa = makerUser.getUserAccount();
+          } catch {}
+          if (!makerUa) {
+            try { makerUa = await this.client.program.account.user.fetch(new PublicKey(m)); } catch {}
+          }
+          if (!makerUa) continue;
           const makerAuth = makerUa?.authority;
           let makerStats = null;
           try {
@@ -229,9 +223,7 @@ export class DriftFillerRunner {
         } catch {}
       }
 
-      const { getUserAccountPublicKey } = this.sdk;
-      const takerUa = taker.getUserAccount?.();
-      const takerUserPk = await getUserAccountPublicKey(this.client.program.programId, takerUa.authority, takerUa.subAccountId);
+      const takerUserPk = new PublicKey(takerPkStr);
       const cuLimit = Math.max(200_000, Number(this.config.cuLimit ?? 1_000_000));
       const priority = Math.max(0, Number(this.config.priorityFeeMicroLamports ?? 0));
       const ixs = [
