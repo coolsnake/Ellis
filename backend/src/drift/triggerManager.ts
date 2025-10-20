@@ -31,9 +31,16 @@ export class TriggerManager {
     await userMap.subscribe();
 
     const runtimeSpec = { driftEnv: (drift as any).cluster };
-    const { TriggerBot } = await import('./trigger.js');
+    let TriggerCtor: any;
+    try {
+      const mod = await import('./trigger.js');
+      TriggerCtor = (mod as any).TriggerBot;
+    } catch {
+      const mod = await import('./trigger_lean.js');
+      TriggerCtor = (mod as any).TriggerBot;
+    }
 
-    this.trig = new (TriggerBot as any)(
+    this.trig = new (TriggerCtor as any)(
       drift.client, slotSub, blockhashSub, userMap, runtimeSpec, cfg || {}, globalCfg || {}, priority
     );
 
