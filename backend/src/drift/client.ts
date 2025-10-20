@@ -45,6 +45,7 @@ export class DriftService {
   private subaccountsCache: { data: SubaccountInfo[]; ts: number } | null = null;
   private loader: any | null = null;
   private lastTxAtMs: number = 0;
+  private readConnection: Connection | null = null;
   private sharedSlotSubscriber: any | null = null;
   private sharedEventSubscriber: any | null = null;
   private sharedUserMap: any | null = null;
@@ -58,6 +59,13 @@ export class DriftService {
   static getInstance(): DriftService {
     if (!this.instance) this.instance = new DriftService();
     return this.instance;
+  }
+  getReadConnection(): Connection {
+    if (!this.readConnection) {
+      const url: string = String(((CONFIG as any)?.readRpcUrl) || (CONFIG as any)?.rpcUrl);
+      this.readConnection = new Connection(url, 'processed');
+    }
+    return this.readConnection;
   }
   private async toSpotNativeAmount(client: any, spotMarketIndex: number, uiAmount: number): Promise<number> {
     try {
@@ -480,7 +488,7 @@ export class DriftService {
         try {
           const pk = await client.getUserAccountPublicKey?.(Number(id));
           if (!pk) continue;
-          const info = await this.connection!.getAccountInfo(pk, 'confirmed');
+          const info = await this.getReadConnection().getAccountInfo(pk, 'confirmed');
           if (!info) continue;
           // Avoid switching active user; instantiate a polling User for this subaccount
           let user: any = null;
@@ -638,7 +646,7 @@ export class DriftService {
       const existing2 = new Set<number>();
       try {
         for (const cid of candidateIds) {
-          try { const pk = await client.getUserAccountPublicKey?.(Number(cid)); if (pk) { const acc = await this.connection!.getAccountInfo(pk, 'confirmed'); if (acc) existing2.add(Number(cid)); } } catch {}
+          try { const pk = await client.getUserAccountPublicKey?.(Number(cid)); if (pk) { const acc = await this.getReadConnection().getAccountInfo(pk, 'confirmed'); if (acc) existing2.add(Number(cid)); } } catch {}
         }
       } catch {}
       candidateIds = candidateIds.filter((x) => (Number.isFinite(x) && !seenIds.has((seenIds.add(Number(x)), Number(x))) && !existing2.has(Number(x))));

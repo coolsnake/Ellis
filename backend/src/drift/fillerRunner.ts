@@ -367,20 +367,37 @@ export class DriftFillerRunner {
           });
         } catch {}
 
+        let iter = 0;
         for (const node of nodesToFill) {
+          iter += 1;
+          if ((iter % 50) === 0) { try { await new Promise((r) => setImmediate(r)); } catch {} }
           try {
             if (!node?.node?.order) continue;
+            const allowAmm = this.config.allowAmmFills !== false; // default allow
             if (typeof node?.node?.isVammNode === 'function' && node.node.isVammNode()) {
-              try {
-                logger.info('drift.filler.skip_vamm_node', {
-                  cat: FILLER_CAT,
-                  subcat: FILLER_SUBCAT,
-                  marketIndex: idx,
-                  taker: String(node?.node?.userAccount || ''),
-                  orderId: String(node?.node?.order?.orderId || ''),
-                });
-              } catch {}
-              continue;
+              if (!allowAmm) {
+                try {
+                  logger.info('drift.filler.skip_vamm_node', {
+                    cat: FILLER_CAT,
+                    subcat: FILLER_SUBCAT,
+                    marketIndex: idx,
+                    taker: String(node?.node?.userAccount || ''),
+                    orderId: String(node?.node?.order?.orderId || ''),
+                  });
+                } catch {}
+                continue;
+              } else {
+                try {
+                  logger.debug('drift.filler.amm_fill_candidate', {
+                    cat: FILLER_CAT,
+                    subcat: FILLER_SUBCAT,
+                    marketIndex: idx,
+                    taker: String(node?.node?.userAccount || ''),
+                    orderId: String(node?.node?.order?.orderId || ''),
+                  });
+                } catch {}
+                // fall through to attempt AMM fill
+              }
             }
 
             // Identify order type and trigger condition; skip trigger orders until triggered

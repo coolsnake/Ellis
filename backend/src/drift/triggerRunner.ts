@@ -323,7 +323,10 @@ export class DriftTriggerRunner {
 						typeTrigLmt,
 					});
 
+          let iter = 0;
           for (const node of nodes) {
+            iter += 1;
+            if ((iter % 50) === 0) { try { await new Promise((r) => setImmediate(r)); } catch {} }
             const sig = this.signatureForNode(node);
             const last = this.nodesCooldown.get(sig) || 0;
             if (last + COOLDOWN_MS > Date.now()) {
