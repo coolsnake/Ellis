@@ -61,6 +61,10 @@ export class DriftService {
   private prefetchTimer: any | null = null;
   private prefetchQueue: string[] = [];
   private pollLoaderWarm: any | null = null;
+  // Referrer stats warm cache
+  private warmRefStats: Set<string> = new Set();
+  private missingRefStats: Map<string, number> = new Map();
+  private refStatsTtlMs = 5 * 60_000;
 
   static getInstance(): DriftService {
     if (!this.instance) this.instance = new DriftService();
@@ -270,6 +274,25 @@ export class DriftService {
     const w = this.warmUsers.get(pubkey);
     return w?.user || null;
   }
+  hasWarmRefStats(pk: string | PublicKey): boolean {
+    return this.warmRefStats.has(String(pk));
+  }
+  async ensureRefStatsReady(referrerAuth: PublicKey): Promise<PublicKey | null> {
+    await this.init();
+    try {
+      let sdk: any = null;
+      try { sdk = await import('@drift-labs/sdk'); } catch {}
+      const pk: PublicKey = (sdk as any).getUserStatsAccountPublicKey(this.client.program.programId, referrerAuth);
+      const key = pk.toBase58();
+      if (this.warmRefStats.has(key)) return pk;
+      const missAt = this.missingRefStats.get(key);
+      if (missAt && Date.now() - missAt < this.refStatsTtlMs) return null;
+      const info = await this.getReadConnection().getAccountInfo(pk, 'processed');
+      if (info) { this.warmRefStats.add(key); return pk; }
+      this.missingRefStats.set(key, Date.now());
+      return null;
+    } catch { return null; }
+  }
   enqueueUsersForPrefetch(pks: string[]): void {
     for (const pk of pks) {
       if (!pk) continue;
@@ -334,6 +357,14 @@ export class DriftService {
                   if (oldest) { try { await this.warmUsers.get(oldest)?.user?.unsubscribe?.(); } catch {} this.warmUsers.delete(oldest); }
                 }
                 this.warmUsers.set(pk, { user: u, ts: Date.now() });
+                // Warm referrer stats if present
+                try {
+                  const ua = (u as any).getUserAccount?.();
+                  const ref = ua?.referrerInfo?.referrer;
+                  if (ref && String(ref) !== '11111111111111111111111111111111') {
+                    await this.ensureRefStatsReady(ref);
+                  }
+                } catch {}
               }
             } catch {}
           }));

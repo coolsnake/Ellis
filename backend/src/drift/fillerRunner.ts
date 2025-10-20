@@ -292,20 +292,45 @@ export class DriftFillerRunner {
       const priority = Math.max(0, Number(this.config.priorityFeeMicroLamports ?? 0));
       // Build all dependent instructions and fetch blockhash in parallel to minimize delay
       const updateFillerIxP = (async () => {
-        try { return await (this.client.getUpdateFillerIx?.() ?? this.client.getUpdateUserIdleIx?.()); } catch { return null; }
+        for (let i = 0; i < 3; i += 1) {
+          try {
+            const ix = await (this.client.getUpdateFillerIx?.() ?? this.client.getUpdateUserIdleIx?.());
+            if (ix) return ix;
+          } catch {}
+          try { await new Promise((r) => setTimeout(r, 20)); } catch {}
+        }
+        return null;
       })();
       const fillIxP = this.client.getFillPerpOrderIx(takerUserPk, takerUa, nodeToFill.node.order, makerInfos);
       const revertIxP = this.client.getRevertFillIx();
       const blockhashP = withRpcLimit(() => this.connection.getLatestBlockhash({ commitment: 'processed' }));
 
-      const [updateFillerIx, fillIx, revertIx, bh] = await Promise.all([updateFillerIxP, fillIxP, revertIxP, blockhashP]);
+      let [updateFillerIx, fillIx, revertIx, bh] = await Promise.all([updateFillerIxP, fillIxP, revertIxP, blockhashP]);
+
+      // If taker has a valid referrer stats account, append it as a remaining account to the fill ix
+      try {
+        const ref = (takerUa as any)?.referrerInfo?.referrer;
+        if (ref && String(ref) !== '11111111111111111111111111111111') {
+          const svc = DriftService.getInstance() as any;
+          const refStatsPk = await svc.ensureRefStatsReady?.(ref);
+          if (refStatsPk) {
+            const exists = Array.isArray((fillIx as any)?.keys) && (fillIx as any).keys.some((k: any) => String(k?.pubkey || '') === String(refStatsPk));
+            if (!exists && Array.isArray((fillIx as any)?.keys)) {
+              (fillIx as any).keys.push({ pubkey: refStatsPk, isSigner: false, isWritable: true });
+            }
+          } else {
+            try { logger.info('drift.filler.skip_missing_referrer_stats', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, marketIndex }); } catch {}
+            return false;
+          }
+        }
+      } catch {}
 
       const ixs = [
         ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
         ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priority }),
         ...(updateFillerIx ? [updateFillerIx] : []),
         fillIx,
-        revertIx,
+        ...(updateFillerIx ? [revertIx] : []),
       ];
 
       if (this.state.dryRun) {
@@ -320,7 +345,7 @@ export class DriftFillerRunner {
           ComputeBudgetProgram.setComputeUnitPrice({ microLamports: prio }),
           ...(updIx ? [updIx] : []),
           fillIx,
-          revertIx,
+          ...(updIx ? [revertIx] : []),
         );
         toSend.feePayer = this.client.wallet.publicKey;
         toSend.recentBlockhash = bhObj.blockhash;
