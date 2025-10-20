@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { ComputeBudgetProgram, PublicKey, Transaction } from '@solana/web3.js';
+import { withRpcLimit } from '../utils/rpcLimiter.js';
 import { RunnerRegistry } from '../utils/runnerRegistry.js';
 import { DriftService } from './client.js';
 import { logger } from '../utils/logger.js';
@@ -248,7 +249,7 @@ export class DriftFillerRunner {
       const tx = new Transaction();
       tx.add(...ixs);
       tx.feePayer = this.client.wallet.publicKey;
-      const { blockhash } = await this.connection.getLatestBlockhash({ commitment: 'confirmed' });
+      const { blockhash } = await withRpcLimit(() => this.connection.getLatestBlockhash({ commitment: 'confirmed' }));
       tx.recentBlockhash = blockhash;
       try {
         tx.sign(this.client.wallet.payer);

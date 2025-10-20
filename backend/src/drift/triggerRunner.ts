@@ -3,6 +3,7 @@ import { RunnerRegistry } from '../utils/runnerRegistry.js';
 import { DriftService } from './client.js';
 import { logger } from '../utils/logger.js';
 import { CONFIG } from '../utils/config.js';
+import { withRpcLimit } from '../utils/rpcLimiter.js';
 
 export type TriggerConfig = {
   name: string;
@@ -386,8 +387,8 @@ export class DriftTriggerRunner {
             const tx = new Transaction();
             tx.add(...ixs);
             tx.feePayer = this.client.wallet.publicKey;
-            const { blockhash } = await this.connection.getLatestBlockhash({ commitment: 'confirmed' });
-            tx.recentBlockhash = blockhash;
+            const bh: any = await withRpcLimit(() => this.connection.getLatestBlockhash({ commitment: 'confirmed' }));
+            tx.recentBlockhash = (bh as any)?.blockhash;
             try {
               tx.sign(this.client.wallet.payer);
               const sigTx = await DriftService.getInstance().sendRawTransaction(tx.serialize(), { skipPreflight: false, preflightCommitment: 'confirmed' });

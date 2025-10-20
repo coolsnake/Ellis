@@ -1,5 +1,6 @@
 import { Connection, PublicKey, TransactionMessage, VersionedTransaction, ComputeBudgetProgram, AddressLookupTableAccount, TransactionInstruction } from '@solana/web3.js';
 import { ensureWallet, getConnection } from '../wallet/wallet.js';
+import { withRpcLimit } from '../utils/rpcLimiter.js';
 import { writeDexFullDump } from '../utils/txTrace.js';
 import { CONFIG } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
@@ -130,7 +131,7 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
       try { logger.info('tx.preflight.ix', { idx: i, pid, data: dataKind, keys: keyKinds }); } catch {}
     }
   } catch {}
-  const { blockhash } = await connection.getLatestBlockhash('finalized');
+  const { blockhash } = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
   try {
     logger.info('tx.preflight.detail', { cat: 'tx', ctx: { ixCount: realIxs.length, origCount: (instructions || []).length, skipped, programs: realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId))) } as any });
   } catch {}
@@ -169,7 +170,7 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
     const t = toInstruction(ix);
     if (t) { try { sanitizeInstructionKeys(t); } catch {} realIxs.push(t); }
   }
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized');
+  const { blockhash, lastValidBlockHeight } = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
   try {
     logger.info('tx.send.detail', { cat: 'tx', ctx: { ixCount: realIxs.length, programs: realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId))) } as any });
   } catch {}
@@ -178,8 +179,8 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
   const tx = new VersionedTransaction(msg);
   tx.sign([kp]);
   const wireBase64 = Buffer.from(tx.serialize()).toString('base64');
-  const sig = await connection.sendTransaction(tx, { skipPreflight: false, preflightCommitment: 'confirmed' });
-  await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
+  const sig = await withRpcLimit(() => connection.sendTransaction(tx, { skipPreflight: false, preflightCommitment: 'confirmed' }));
+  await withRpcLimit(() => connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed'));
   try {
     const programs = realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId)));
     const dexes = detectDexesFromPrograms(programs);

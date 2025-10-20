@@ -237,7 +237,8 @@ export class DriftLiquidator {
         const conn: any = driftSvc?.connection || driftSvc?.client?.connection;
         const kp: any = driftSvc?.walletKp;
         if (conn && kp?.publicKey) {
-          const bal = await conn.getBalance(kp.publicKey, (CONFIG as any)?.system?.txCommitment || 'confirmed');
+          const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+          const bal = await withRpcLimit(() => conn.getBalance(kp.publicKey, (CONFIG as any)?.system?.txCommitment || 'confirmed'));
           if (bal < 0.001 * 1_000_000_000) {
             logger.warn('drift.liquidator.preflight_insufficient_sol', { lamports: bal, cat: 'drift' });
             // Force dryRun to avoid tx failures

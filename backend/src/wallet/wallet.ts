@@ -6,6 +6,7 @@ import { CONFIG } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 import { emit } from '../server/realtime.js';
 import { getTokenAccountManager } from './tokenAccountManager.js';
+import { withRpcLimit } from '../utils/rpcLimiter.js';
 import { getFeeCalculator, type FeeConfig } from '../utils/feeCalculator.js';
 import { logTxTrace } from '../utils/txTrace.js';
 
@@ -90,10 +91,10 @@ export async function getBalances(address: PublicKey, opts?: { force?: boolean }
   }
 
   const task = (async () => {
-    const balanceLamports = await withBackoff<number>(() => connection.getBalance(address));
+    const balanceLamports = await withBackoff<number>(() => withRpcLimit(() => connection.getBalance(address)));
     // Fetch both legacy SPL and Token-2022 accounts, then aggregate by mint
-    const legacyP = withBackoff<any>(() => connection.getParsedTokenAccountsByOwner(address, { programId: TOKEN_PROGRAM_ID }));
-    const token22P = withBackoff<any>(() => connection.getParsedTokenAccountsByOwner(address, { programId: TOKEN_2022_PROGRAM_ID })).catch(() => ({ value: [] }));
+    const legacyP = withBackoff<any>(() => withRpcLimit(() => connection.getParsedTokenAccountsByOwner(address, { programId: TOKEN_PROGRAM_ID })));
+    const token22P = withBackoff<any>(() => withRpcLimit(() => connection.getParsedTokenAccountsByOwner(address, { programId: TOKEN_2022_PROGRAM_ID }))).catch(() => ({ value: [] }));
     const [legacy, token22] = await Promise.all([legacyP, token22P]);
     const allAccounts = [...(legacy?.value || []), ...((token22 as any)?.value || [])];
     const tokens: Record<string, number> = {};
@@ -187,8 +188,8 @@ export async function wrapSol(amountSol: number): Promise<string> {
   const tx = new Transaction();
   tx.add(SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: ata.address, lamports }));
   tx.add(createSyncNativeInstruction(ata.address));
-  const sig = await connection.sendTransaction(tx, [kp], { skipPreflight: false });
-  await connection.confirmTransaction(sig, 'confirmed');
+  const sig = await withRpcLimit(() => connection.sendTransaction(tx, [kp], { skipPreflight: false }));
+  await withRpcLimit(() => connection.confirmTransaction(sig, 'confirmed'));
   return sig;
 }
 
@@ -198,8 +199,8 @@ export async function unwrapSol(): Promise<string> {
   const ata = await getOrCreateAssociatedTokenAccount(connection, kp, NATIVE_MINT, kp.publicKey);
   const tx = new Transaction();
   tx.add(createCloseAccountInstruction(ata.address, kp.publicKey, kp.publicKey));
-  const sig = await connection.sendTransaction(tx, [kp], { skipPreflight: false });
-  await connection.confirmTransaction(sig, 'confirmed');
+  const sig = await withRpcLimit(() => connection.sendTransaction(tx, [kp], { skipPreflight: false }));
+  await withRpcLimit(() => connection.confirmTransaction(sig, 'confirmed'));
   return sig;
 }
 
@@ -234,8 +235,8 @@ export async function signAndSendSerializedTransaction(
     
     // Fallback to original versioned transaction
     tx.sign([signer]);
-    const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
-    await connection.confirmTransaction(sig, 'confirmed');
+    const sig = await withRpcLimit(() => connection.sendRawTransaction(tx.serialize(), { skipPreflight: false }));
+    await withRpcLimit(() => connection.confirmTransaction(sig, 'confirmed'));
     try {
       const id = Math.random().toString(36).slice(2,10);
       await logTxTrace('send', {

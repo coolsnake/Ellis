@@ -12,7 +12,8 @@ export function createDebugRouter(_io: SocketIOServer): Router {
       const { Connection, PublicKey, Keypair } = await import('@solana/web3.js');
       const conn = new Connection(CONFIG.rpcUrl, 'confirmed');
       const pk = new PublicKey(id);
-      const info = await conn.getAccountInfo(pk, { commitment: 'confirmed' } as any);
+      const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+      const info = await withRpcLimit(() => conn.getAccountInfo(pk, { commitment: 'confirmed' } as any));
       const onchain: any = {};
       try {
         if (info?.data && info.data.length >= 72) {

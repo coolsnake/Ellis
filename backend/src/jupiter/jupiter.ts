@@ -341,7 +341,7 @@ export async function executeSwap(
   try {
     const { getConnection } = await import('../wallet/wallet.js');
     const connection = getConnection();
-    const tx = await connection.getTransaction(sig, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 });
+  const tx = await (await import('../utils/rpcLimiter.js')).withRpcLimit(() => connection.getTransaction(sig, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 }));
     const meta: any = tx?.meta;
     if (meta) {
       const pre = meta.preTokenBalances || [];

@@ -1,5 +1,6 @@
 import { executionCache } from '../cache.js';
 import { Connection, PublicKey } from '@solana/web3.js';
+import { withRpcLimit } from '../../utils/rpcLimiter.js';
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, getMint } from '@solana/spl-token';
 import { CONFIG } from '../../utils/config.js';
 import { loadJupiterTokenMap } from '../../utils/tokens.js';
@@ -14,7 +15,7 @@ export async function getTokenMeta(mintStr: string): Promise<{ decimals: number;
   let decimals: number | undefined;
   try {
     const [acc, jmap] = await Promise.all([
-      mint ? conn.getAccountInfo(mint).catch(() => null) : Promise.resolve(null),
+      mint ? withRpcLimit(() => conn.getAccountInfo(mint)).catch(() => null) : Promise.resolve(null),
       loadJupiterTokenMap().catch(() => ({} as any)),
     ]);
     const owner = acc?.owner?.toBase58?.();

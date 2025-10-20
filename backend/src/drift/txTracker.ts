@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { Connection } from '@solana/web3.js';
+import { withRpcLimit } from '../utils/rpcLimiter.js';
 import { logger } from '../utils/logger.js';
 import * as path from 'path';
 import { promises as fs } from 'fs';
@@ -29,7 +30,7 @@ export type DriftAttemptOut = {
 
 export async function trackDriftAttempt(conn: Connection, a: DriftAttemptIn): Promise<DriftAttemptOut | null> {
   try {
-    const tx = await conn.getTransaction(a.sig, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' });
+    const tx = await withRpcLimit(() => conn.getTransaction(a.sig, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' }));
     if (!tx || !tx.meta) return null;
     const logs: string[] = tx.meta.logMessages || [];
     const feeLamports = Number(tx.meta.fee || 0);

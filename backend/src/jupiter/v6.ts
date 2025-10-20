@@ -95,7 +95,9 @@ export async function buildCombinedTransaction(
     const { value } = await connection.getAddressLookupTable(new web3.PublicKey(addr));
     if (value) alts.push(value);
   }
-  const { blockhash } = await connection.getLatestBlockhash('finalized');
+  const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+  const bh: any = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
+  const blockhash = (bh as any)?.blockhash as string;
   const msg = new web3.TransactionMessage({ payerKey: payer, recentBlockhash: blockhash, instructions: allIxs }).compileToV0Message(alts);
   return new web3.VersionedTransaction(msg);
 }

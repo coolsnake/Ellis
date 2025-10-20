@@ -824,13 +824,14 @@ export function startRaydiumRefreshLoop(): void {
         const attachRaydiumAmmVaults = async (poolAddr: string) => {
           try {
             const pk = new web3.PublicKey(poolAddr);
-            const acc = await conn.getAccountInfo(pk, CONFIG.system.txCommitment as any);
-            if (!acc?.data) return;
+            const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+            const acc: any = await withRpcLimit(() => conn.getAccountInfo(pk, CONFIG.system.txCommitment as any));
+            if (!acc || !acc.data) return;
             const rmod: any = await import('@raydium-io/raydium-sdk-v2').catch(() => null);
             const ammLayout = rmod?.LiquidityStateLayoutV4 || rmod?.LIQUIDITY_STATE_LAYOUT_V4;
             if (!ammLayout || typeof ammLayout.decode !== 'function') return;
             let state: any = null;
-            try { state = ammLayout.decode(acc.data); } catch { state = null; }
+            try { state = ammLayout.decode((acc as any).data); } catch { state = null; }
             const vA = state?.baseVault?.toBase58?.() || state?.vaultA?.toBase58?.();
             const vB = state?.quoteVault?.toBase58?.() || state?.vaultB?.toBase58?.();
             const vaults = Array.from(new Set([vA, vB].filter(Boolean)));

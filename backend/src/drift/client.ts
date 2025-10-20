@@ -63,6 +63,7 @@ export class DriftService {
   getReadConnection(): Connection {
     if (!this.readConnection) {
       const url: string = String(((CONFIG as any)?.readRpcUrl) || (CONFIG as any)?.rpcUrl);
+      // Wrap underlying fetch to honor rate limiter for high-throughput calls
       this.readConnection = new Connection(url, 'processed');
     }
     return this.readConnection;
@@ -488,7 +489,7 @@ export class DriftService {
         try {
           const pk = await client.getUserAccountPublicKey?.(Number(id));
           if (!pk) continue;
-          const info = await this.getReadConnection().getAccountInfo(pk, 'confirmed');
+          const info = await (await import('../utils/rpcLimiter.js')).withRpcLimit(() => this.getReadConnection().getAccountInfo(pk, 'confirmed'));
           if (!info) continue;
           // Avoid switching active user; instantiate a polling User for this subaccount
           let user: any = null;
@@ -581,7 +582,7 @@ export class DriftService {
         for (let cid = 0; cid < maxCap; cid += 1) {
           try {
             const pk = await client.getUserAccountPublicKey?.(Number(cid));
-            if (pk) { const acc = await this.connection!.getAccountInfo(pk, 'confirmed'); if (acc) existing.add(Number(cid)); }
+            if (pk) { const acc = await (await import('../utils/rpcLimiter.js')).withRpcLimit(() => this.connection!.getAccountInfo(pk, 'confirmed')); if (acc) existing.add(Number(cid)); }
           } catch {}
         }
       } catch {}
@@ -646,7 +647,7 @@ export class DriftService {
       const existing2 = new Set<number>();
       try {
         for (const cid of candidateIds) {
-          try { const pk = await client.getUserAccountPublicKey?.(Number(cid)); if (pk) { const acc = await this.getReadConnection().getAccountInfo(pk, 'confirmed'); if (acc) existing2.add(Number(cid)); } } catch {}
+          try { const pk = await client.getUserAccountPublicKey?.(Number(cid)); if (pk) { const acc = await (await import('../utils/rpcLimiter.js')).withRpcLimit(() => this.getReadConnection().getAccountInfo(pk, 'confirmed')); if (acc) existing2.add(Number(cid)); } } catch {}
         }
       } catch {}
       candidateIds = candidateIds.filter((x) => (Number.isFinite(x) && !seenIds.has((seenIds.add(Number(x)), Number(x))) && !existing2.has(Number(x))));
