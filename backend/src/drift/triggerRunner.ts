@@ -222,6 +222,49 @@ export class DriftTriggerRunner {
 				users: userCount,
 			});
 
+			// Sample a subset of users for visibility: open orders and conditional orders per market
+			try {
+				const sampleLimit = 25;
+				let sampledUsers = 0;
+				let totalOpenOrders = 0;
+				let totalConditionalOrders = 0;
+				const condByMarket = new Map<number, number>();
+				const iter: any = this.userMap?.values?.();
+				if (iter && typeof iter[Symbol.iterator] === 'function') {
+					for (const u of iter as Iterable<any>) {
+						if (sampledUsers >= sampleLimit) break;
+						try {
+							const ua = u?.getUserAccount?.();
+							if (!ua) { sampledUsers += 1; continue; }
+							const open = Number(ua?.openOrders || 0);
+							totalOpenOrders += open;
+							const ordersArr: any[] = Array.isArray(ua?.orders) ? ua.orders : [];
+							for (const ord of ordersArr) {
+								try {
+									const ot = ord?.orderType ? getVariant(ord.orderType) : undefined;
+									const isTrigger = typeof ot === 'string' && ot.toLowerCase().includes('trigger');
+									if (isTrigger) {
+										totalConditionalOrders += 1;
+										const mi = Number(ord?.marketIndex || ord?.market_index || -1);
+										if (Number.isFinite(mi) && mi >= 0) condByMarket.set(mi, 1 + (condByMarket.get(mi) || 0));
+									}
+								} catch {}
+							}
+							sampledUsers += 1;
+						} catch { sampledUsers += 1; }
+					}
+				}
+				const condMarketsSample = Array.from(condByMarket.entries()).slice(0, 10).map(([m, c]) => ({ m, condSample: c }));
+				logger.info('drift.trigger.user_sample', {
+					cat: TRIGGER_CAT,
+					subcat: TRIGGER_SUBCAT,
+					sampledUsers,
+					totalOpenOrders,
+					totalConditionalOrders,
+					condMarketsSample,
+				});
+			} catch {}
+
 			let totalNodesPlanned = 0;
 			let marketsWithNodes = 0;
 			const nodeSamples: Array<{ m: number; t: string; u: string; id: string; cond?: string; otype?: string; ordTp?: string; oracle?: string; trig?: string }> = [];
