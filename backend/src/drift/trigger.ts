@@ -1,33 +1,81 @@
 import {
-    DriftClient,
-    PerpMarketAccount,
-    SpotMarketAccount,
-    SlotSubscriber,
-    NodeToTrigger,
-    UserMap,
-    MarketType,
-    DLOBSubscriber,
-    PublicKey,
-    BlockhashSubscriber,
-    PriorityFeeSubscriber,
-    isVariant,
-    getVariant,
-    convertToNumber,
-    BN,
-    getTriggerPrice,
-    useMedianTriggerPrice,
+	DriftClient,
+	PerpMarketAccount,
+	SpotMarketAccount,
+	SlotSubscriber,
+	NodeToTrigger,
+	UserMap,
+	MarketType,
+	DLOBSubscriber,
+	PublicKey,
+	BlockhashSubscriber,
+	PriorityFeeSubscriber,
+	isVariant,
+	getVariant,
+	SpotMarketConfig,
+	PerpMarketConfig,
+	MainnetSpotMarkets,
+	DevnetSpotMarkets,
+	MainnetPerpMarkets,
+	DevnetPerpMarkets,
+	getFeedIdUint8Array,
+	getPythPullOraclePublicKey,
+	convertToNumber,
+	BN,
+	convertToBN,
+	PRICE_PRECISION,
+	getTriggerPrice,
+	useMedianTriggerPrice,
 } from '@drift-labs/sdk';
+import { Mutex, tryAcquire, E_ALREADY_LOCKED } from 'async-mutex';
 
-import { logger } from '../utils/logger';
-import { CONFIG } from '../utils/config';
+import { logger } from '../logger';
+import { Bot } from '../types';
+import { getErrorCode } from '../error';
+import { webhookMessage } from '../webhook';
+import { GlobalConfig, TriggerConfig } from '../config';
+import { FeedIdToCrankInfo } from './pythCranker';
+import { PrometheusExporter } from '@opentelemetry/exporter-prometheus';
+import { Counter, Histogram, Meter, ObservableGauge } from '@opentelemetry/api';
 import {
-    AddressLookupTableAccount,
-    ComputeBudgetProgram,
-    TransactionInstruction,
-    VersionedTransaction,
+	ExplicitBucketHistogramAggregation,
+	InstrumentType,
+	MeterProvider,
+	View,
+} from '@opentelemetry/sdk-metrics-base';
+import { RuntimeSpec, metricAttrFromUserAccount } from '../metrics';
+import {
+	chunks,
+	getNodeToTriggerSignature,
+	simulateAndGetTxWithCUs,
+} from '../utils';
+import {
+	AddressLookupTableAccount,
+	ComputeBudgetProgram,
+	TransactionInstruction,
 } from '@solana/web3.js';
+import { PriceUpdateAccount } from '@pythnetwork/pyth-solana-receiver/lib/PythSolanaReceiver';
+import {
+	PythLazerPriceFeedArray,
+	PythLazerSubscriber,
+} from '../pythLazerSubscriber';
+import { PriceServiceConnection } from '@pythnetwork/price-service-client';
 
 const TRIGGER_ORDER_COOLDOWN_MS = 10000; // time to wait between triggering an order
+
+const errorCodesToSuppress = [
+	6111, // Error Message: OrderNotTriggerable.
+	6112, // Error Message: OrderDidNotSatisfyTriggerCondition.
+];
+
+enum METRIC_TYPES {
+	sdk_call_duration_histogram = 'sdk_call_duration_histogram',
+	try_trigger_duration_histogram = 'try_trigger_duration_histogram',
+	runtime_specs = 'runtime_specs',
+	mutex_busy = 'mutex_busy',
+	errors = 'errors',
+	trigger_attempts = 'trigger_attempts',
+}
 
 function getPythLazerFeedIdChunks(
 	spotMarkets: SpotMarketConfig[],
@@ -107,15 +155,15 @@ function getPythPullFeedIdsToCrank(
 	return [feedIdsToCrank, marketIdToFeedId];
 }
 
-export class TriggerBot {
+export class TriggerBot implements Bot {
 	public readonly name: string;
 	public readonly dryRun: boolean;
 	public readonly defaultIntervalMs: number = 1000;
 
 	private driftClient: DriftClient;
 	private slotSubscriber: SlotSubscriber;
-    private globalConfig: any;
-    private triggerConfig: any;
+	private globalConfig: GlobalConfig;
+	private triggerConfig: TriggerConfig;
 	private dlobSubscriber?: DLOBSubscriber;
 	private blockhashSubscriber: BlockhashSubscriber;
 	private lookupTableAccounts?: AddressLookupTableAccount[];
@@ -173,8 +221,8 @@ export class TriggerBot {
 		blockhashSubscriber: BlockhashSubscriber,
 		userMap: UserMap,
 		runtimeSpec: RuntimeSpec,
-        config: any,
-        globalConfig: any,
+		config: TriggerConfig,
+		globalConfig: GlobalConfig,
 		priorityFeeSubscriber: PriorityFeeSubscriber
 	) {
 		this.name = config.botId;
@@ -187,19 +235,102 @@ export class TriggerBot {
 		this.slotSubscriber = slotSubscriber;
 		this.blockhashSubscriber = blockhashSubscriber;
 
-        // Metrics disabled in lean build
-        this.metricsPort = undefined;
+		this.metricsPort = config.metricsPort;
+		if (this.metricsPort) {
+			this.initializeMetrics();
+		}
 		this.priorityFeeSubscriber = priorityFeeSubscriber;
 		this.priorityFeeSubscriber.updateAddresses([
 			new PublicKey('8BnEgHoWFysVcuFFX7QztDmzuH8r5ZFvyP3sYwn1XTh6'), // Openbook SOL/USDC
 			new PublicKey('8UJgxaiQx5nTrdDgph5FiahMmzduuLTLf5WmsPegYA6W'), // sol-perp
 		]);
 
-		logger.info(`[${this.name}] init dryRun=${this.dryRun} intervalMs=${this.defaultIntervalMs} feeMult=${this.triggerConfig.triggerPriorityFeeMultiplier ?? 1.0}`);
-		logger.info(`[${this.name}] oracle.updateWithTrigger=${this.updateOracleWithTrigger}`);
+		if (
+			this.globalConfig.lazerEndpoints &&
+			this.globalConfig.lazerToken &&
+			this.globalConfig.hermesEndpoint
+		) {
+			logger.info('Updating pyth oracles with trigger');
+			this.updateOracleWithTrigger = true;
 
-        // Oracle updates disabled in lean build
-        this.updateOracleWithTrigger = false;
+			this.pythPullDecodeFunc = this.driftClient
+				.getReceiverProgram()
+				.account.priceUpdateV2.coder.accounts.decodeUnchecked.bind(
+					this.driftClient.getReceiverProgram().account.priceUpdateV2.coder
+						.accounts
+				);
+			this.pythLazerDecodeFunc =
+				this.driftClient.program.account.pythLazerOracle.coder.accounts.decodeUnchecked.bind(
+					this.driftClient.program.account.pythLazerOracle.coder.accounts
+				);
+
+			const spotMarkets =
+				this.globalConfig.driftEnv === 'mainnet-beta'
+					? MainnetSpotMarkets
+					: DevnetSpotMarkets;
+			const perpMarkets =
+				this.globalConfig.driftEnv === 'mainnet-beta'
+					? MainnetPerpMarkets
+					: DevnetPerpMarkets;
+			this.pythLazerClient = new PythLazerSubscriber(
+				this.globalConfig.lazerEndpoints,
+				this.globalConfig.lazerToken,
+				getPythLazerFeedIdChunks(spotMarkets, perpMarkets, 1),
+				this.globalConfig.driftEnv
+			);
+
+			this.pythPullClient = new PriceServiceConnection(
+				this.globalConfig.hermesEndpoint,
+				{
+					timeout: 10_000,
+				}
+			);
+			[this.pythPullFeedIdsToCrank, this.marketIdToPythPullFeedId] =
+				getPythPullFeedIdsToCrank(
+					this.driftClient.program.programId,
+					spotMarkets,
+					perpMarkets
+				);
+
+			for (const market of [...spotMarkets, ...perpMarkets]) {
+				const isSpotMarket = 'precision' in market;
+				const marketId = isSpotMarket
+					? `spot-${market.marketIndex}`
+					: `perp-${market.marketIndex}`;
+				const oracleSource = getVariant(market.oracleSource);
+				let oracleSourceType: 'pull' | 'lazer';
+				if (oracleSource.toLowerCase().includes('lazer')) {
+					oracleSourceType = 'lazer';
+				} else if (oracleSource.toLowerCase().includes('pull')) {
+					oracleSourceType = 'pull';
+				} else {
+					logger.warn(
+						`Not updating oracle pre-trigger for market ${marketId} with oracleSource ${oracleSource}`
+					);
+					continue;
+				}
+				if (oracleSource.toLowerCase().includes('1k')) {
+					this.marketIdToMultiplier.set(marketId, {
+						oracleSource: oracleSourceType,
+						multiplier: 1000,
+					});
+				} else if (oracleSource.toLowerCase().includes('1m')) {
+					this.marketIdToMultiplier.set(marketId, {
+						oracleSource: oracleSourceType,
+						multiplier: 1000000,
+					});
+				} else {
+					this.marketIdToMultiplier.set(marketId, {
+						oracleSource: oracleSourceType,
+						multiplier: 1,
+					});
+				}
+			}
+		} else {
+			logger.info(
+				'Not updating pyth oracles with trigger (globalConfig missing lazerEndpoints, lazerToken, or hermesEndpoint)'
+			);
+		}
 	}
 
 	private initializeMetrics() {
@@ -284,12 +415,8 @@ export class TriggerBot {
 		});
 		await this.dlobSubscriber.subscribe();
 
-		logger.info(`[${this.name}] DLOB subscribed interval=${this.defaultIntervalMs - 500}ms`);
-
 		this.lookupTableAccounts =
 			await this.driftClient.fetchAllLookupTableAccounts();
-
-		logger.info(`[${this.name}] LUT count=${Array.isArray(this.lookupTableAccounts) ? this.lookupTableAccounts.length : 0}`);
 
 		if (
 			this.updateOracleWithTrigger &&
@@ -336,8 +463,17 @@ export class TriggerBot {
 	}
 
 	private async getBlockhashForTx(): Promise<string> {
-    const recentBlockhash = await this.driftClient.connection.getLatestBlockhash({ commitment: 'confirmed' });
-    return recentBlockhash.blockhash;
+		const cachedBlockhash = this.blockhashSubscriber.getLatestBlockhash(10);
+		if (cachedBlockhash) {
+			return cachedBlockhash.blockhash as string;
+		}
+
+		const recentBlockhash =
+			await this.driftClient.connection.getLatestBlockhash({
+				commitment: 'confirmed',
+			});
+
+		return recentBlockhash.blockhash;
 	}
 
 	private getOffChainOraclePrice(
@@ -471,9 +607,6 @@ export class TriggerBot {
 				this.driftClient.getStateAccount()
 			);
 
-			logger.info(`[${this.name}] market=${marketTypeStr}-${marketIndex} triggerPrice=${Number(triggerPrice) / 1e6} offChain=${!!offChainPrice}`);
-			logger.info(`[${this.name}] market=${marketTypeStr}-${marketIndex} nodesToTrigger=${nodesToTrigger.length}`);
-
 			for (const nodeToTrigger of nodesToTrigger) {
 				const now = Date.now();
 				const nodeToFillSignature = getNodeToTriggerSignature(nodeToTrigger);
@@ -521,7 +654,7 @@ export class TriggerBot {
 				cuUnits += activePositions * 15_000;
 				cuUnits += openOrders * 5_000;
 
-			let ixs = [
+				let ixs = [
 					ComputeBudgetProgram.setComputeUnitLimit({
 						units: cuUnits,
 					}),
@@ -533,11 +666,6 @@ export class TriggerBot {
 						),
 					}),
 				];
-			logger.info(`[${this.name}] tx plan cuUnits=${cuUnits} prioFee=${Math.floor(
-				this.priorityFeeSubscriber.getCustomStrategyResult() *
-				this.driftClient.txSender.getSuggestedPriorityFeeMultiplier() *
-				(this.triggerConfig.triggerPriorityFeeMultiplier ?? 1.0)
-			)}`);
 				if (offChainPrice) {
 					ixs = await this.getOracleUpdateIxs(marketType, marketIndex, ixs);
 				}
@@ -571,11 +699,14 @@ export class TriggerBot {
 					)!.blockhash as string,
 				});
 
-			if (resp.simError) {
-				logger.info(`[${this.name}] sim.fail ${marketTypeStr}-${marketIndex} user=${nodeToTrigger.node.userAccount.toString()}-${nodeToTrigger.node.order.orderId.toString()} err=${JSON.stringify(resp.simError)}`);
+				if (resp.simError) {
+					logger.error(
+						`Error (${JSON.stringify(
+							resp.simError
+						)}) triggering ${marketTypeStr} order for user ${nodeToTrigger.node.userAccount.toString()}-${nodeToTrigger.node.order.orderId.toString()}`
+					);
 					continue;
 				} else {
-				logger.info(`[${this.name}] sim.ok cuEst=${resp.cuEstimate}`);
 					this.driftClient
 						.sendTransaction(resp.tx)
 						.then((txSig) => {
@@ -583,16 +714,39 @@ export class TriggerBot {
 								marketType: marketTypeStr,
 								auth: this.driftClient.wallet.publicKey.toString(),
 							});
-						logger.info(`[${this.name}] triggered ok sig=${txSig.txSig} cuUnits=${cuUnits}`);
+							logger.info(
+								`Triggered ${marketTypeStr}. user: ${nodeToTrigger.node.userAccount.toString()}-${nodeToTrigger.node.order.orderId.toString()}: ${
+									txSig.txSig
+								}, cuUnits: ${cuUnits}, activePositions: ${activePositions}, openOrders: ${openOrders}`
+							);
 						})
 						.catch((error) => {
 							nodeToTrigger.node.haveTrigger = false;
 
-							const msg = (error as any)?.message || String(error);
-							if (!String(msg || '').includes('Transaction was not confirmed')) {
-								try { this.errorCounter!.add(1, { errorCode: 'unknown' }); } catch {}
-								logger.error(`Error triggering ${marketTypeStr} order for user ${nodeToTrigger.node.userAccount.toString()}-${nodeToTrigger.node.order.orderId.toString()}`);
-								logger.error(String(error));
+							const errorCode = getErrorCode(error);
+							if (
+								errorCode &&
+								!errorCodesToSuppress.includes(errorCode) &&
+								!(error as Error).message.includes(
+									'Transaction was not confirmed'
+								)
+							) {
+								if (errorCode) {
+									this.errorCounter!.add(1, {
+										errorCode: errorCode.toString(),
+									});
+								}
+								logger.error(
+									`Error (${errorCode}) triggering ${marketTypeStr} order for user ${nodeToTrigger.node.userAccount.toString()}-${nodeToTrigger.node.order.orderId.toString()}`
+								);
+								logger.error(error);
+								webhookMessage(
+									`[${
+										this.name
+									}]: :x: Error (${errorCode}) triggering ${marketTypeStr} order for user (account: ${nodeToTrigger.node.userAccount.toString()}) ${marketTypeStr} order: ${nodeToTrigger.node.order.orderId.toString()}\n${
+										error.stack ? error.stack : error.message
+									}`
+								);
 							}
 						})
 						.finally(() => {

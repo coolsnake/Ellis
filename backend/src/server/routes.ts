@@ -137,36 +137,6 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
   api.use(createPoolsRouter(io));
   api.use(createArbRouter(io));
 
-  // Trigger bot routes
-  api.post('/drift/trigger/start', async (req, res) => {
-    try {
-      const { TriggerManager } = await import('../drift/triggerManager.js');
-      (registerRoutes as any)._trigMgr = (registerRoutes as any)._trigMgr || new TriggerManager();
-      const cfg = req.body || {};
-      const { CONFIG } = await import('../utils/config.js');
-      await (registerRoutes as any)._trigMgr.start(cfg, CONFIG.drift);
-      res.json({ ok: true });
-    } catch (e: any) {
-      res.status(500).json({ error: String(e?.message || e) });
-    }
-  });
-  api.post('/drift/trigger/stop', async (_req, res) => {
-    try {
-      await (registerRoutes as any)._trigMgr?.stop?.();
-      res.json({ ok: true });
-    } catch (e: any) {
-      res.status(500).json({ error: String(e?.message || e) });
-    }
-  });
-  api.get('/drift/trigger/status', async (_req, res) => {
-    try {
-      const s = (registerRoutes as any)._trigMgr?.status?.() || { running: false };
-      res.json(s);
-    } catch (e: any) {
-      res.status(500).json({ error: String(e?.message || e) });
-    }
-  });
-
   // --- Direct execution config and routes ---
   api.get('/exec/config', async (_req, res) => {
     try {

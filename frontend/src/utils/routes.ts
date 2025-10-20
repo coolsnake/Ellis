@@ -58,9 +58,6 @@ export const ROUTES = {
     subaccountWithdraw: '/drift/subaccount/withdraw',
     subaccountTransfer: '/drift/subaccount/transfer',
     spotMarkets: '/drift/spot-markets',
-    triggerStart: '/drift/trigger/start',
-    triggerStop: '/drift/trigger/stop',
-    triggerStatus: '/drift/trigger/status',
   },
   strategies: {
     leveragedGrid: {

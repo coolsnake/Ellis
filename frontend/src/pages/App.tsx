@@ -11,7 +11,6 @@ import { WatchlistSection } from '../features/wallet/WatchlistSection';
 import { ConfigsSection } from '../features/configs/ConfigsSection';
 // removed legacy LiquidatorConfig modal
 import { LiquidatorRunnerConfig } from '../components/LiquidatorRunnerConfig';
-import { TriggerRunnerConfig } from '../components/TriggerRunnerConfig';
 import { ThresholdStrategyConfig } from '../components/ThresholdStrategyConfig';
 import { AddTokenForm } from '../components/AddTokenForm';
 import { FeeConfig } from '../components/FeeConfig';
@@ -93,8 +92,6 @@ export const App: React.FC = () => {
   // removed legacy inline liquidator fields (use +Liquidator modal instead)
   const [liqStatus, setLiqStatus] = useState<any>(null);
   const [showLiqRunnerConfig, setShowLiqRunnerConfig] = useState<boolean>(false);
-  const [showTriggerRunnerConfig, setShowTriggerRunnerConfig] = useState<boolean>(false);
-  const [triggerStatus, setTriggerStatus] = useState<{ running?: boolean } | null>(null);
 
   // Default to same-origin behind nginx; allow overrides via env
   const apiBase = useMemo(() => (import.meta as any).env?.VITE_API_BASE ?? '/api', []);
@@ -119,21 +116,6 @@ export const App: React.FC = () => {
       }
     }
   }, []);
-
-  // Poll trigger status basic
-  useEffect(() => {
-    let id: any = null;
-    const tick = async () => {
-      try {
-        const r = await fetch(`${apiBase}${ROUTES.drift.triggerStatus}`);
-        const j = await r.json().catch(() => ({}));
-        setTriggerStatus(j);
-      } catch {}
-    };
-    id = setInterval(tick, 3000);
-    tick();
-    return () => { try { clearInterval(id); } catch {} };
-  }, [apiBase]);
 
   // Save collapsed state to localStorage whenever it changes
   useEffect(() => {
@@ -1443,12 +1425,8 @@ export const App: React.FC = () => {
             setDriftSubaccounts={(list)=>setDriftSubaccounts(list)}
             ls={liqStatus?.liquidators || []}
             onOpenLiqRunner={() => setShowLiqRunnerConfig(true)}
-            onOpenTriggerRunner={() => setShowTriggerRunnerConfig(true)}
           />
         </CollapsibleSection>
-        {showTriggerRunnerConfig && (
-          <TriggerRunnerConfig apiBase={apiBase} onClose={() => setShowTriggerRunnerConfig(false)} />
-        )}
         <CollapsibleSection title={"Positions"} storageKey="panel:positions">
           {/* Grid summary per strategy */}
           {gridPositionsSummary.length > 0 && (

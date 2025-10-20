@@ -541,24 +541,6 @@ export const CONFIG = {
       enumerateEnqueueChunk: Number(process.env.DRIFT_LIQ_ENUMERATE_ENQUEUE_CHUNK || 1000),
       enumerateEnqueueDelayMs: Number(process.env.DRIFT_LIQ_ENUMERATE_ENQUEUE_DELAY_MS || 200),
     },
-    // Trigger bot defaults (UI may override on start)
-    trigger: {
-      enabled: false,
-      botId: 'trigger-bot',
-      dryRun: true,
-      intervalMs: 1000,
-      triggerPriorityFeeMultiplier: 1.0,
-      priorityFeeAddresses: [
-        '8BnEgHoWFysVcuFFX7QztDmzuH8r5ZFvyP3sYwn1XTh6',
-        '8UJgxaiQx5nTrdDgph5FiahMmzduuLTLf5WmsPegYA6W',
-      ],
-      updateOracleWithTrigger: false,
-      oracleSource: 'auto',
-      triggerCooldownMs: 10000,
-      metricsPort: undefined,
-      logDetail: 'basic',
-      marketIndices: [],
-    },
   }, 
   // (Saber removed)
   // Meteora Balanced (mAMM) configuration
