@@ -374,7 +374,7 @@ export class DriftService {
         await collectFromDlob();
         const batch = this.prefetchQueue.splice(0, 500);
         const groups: string[][] = [];
-        const conc = 16;
+        const conc = 8;
         for (let i = 0; i < batch.length; i += conc) groups.push(batch.slice(i, i + conc));
         for (const grp of groups) {
           await Promise.all(grp.map(async (pk) => {
@@ -387,7 +387,7 @@ export class DriftService {
                 const u = new (sdk as any).User({
                   driftClient: this.client,
                   userAccountPublicKey: new PublicKey(pk),
-                  accountSubscription: this.pollLoaderWarm ? { type: 'polling', accountLoader: this.pollLoaderWarm } : { type: 'websocket' },
+                  accountSubscription: { type: 'websocket' },
                 });
                 try { await u.subscribe?.(); } catch {}
                 // Bound LRU
@@ -412,7 +412,7 @@ export class DriftService {
     };
 
     if (this.prefetchTimer) { try { clearInterval(this.prefetchTimer); } catch {} }
-    this.prefetchTimer = setInterval(() => { step().catch(() => {}); }, 150);
+    this.prefetchTimer = setInterval(() => { step().catch(() => {}); }, 400);
   }
 
   async sendRawTransaction(raw: Buffer | Uint8Array, opts?: any): Promise<string> {

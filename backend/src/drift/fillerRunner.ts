@@ -193,32 +193,37 @@ export class DriftFillerRunner {
     try {
       const takerPkStr = String(nodeToFill?.node?.userAccount || '');
       const { getUserAccountPublicKey } = this.sdk;
-      // Prefer warm user or shared userMap; avoid creating new polling subscribers in hot path
-      let takerUa: any = null;
-      try {
-        const warm = (DriftService.getInstance() as any).getWarmUser?.(takerPkStr);
-        takerUa = warm?.getUserAccount?.() || null;
-      } catch {}
-      if (!takerUa) {
+      // Bounded, non-blocking taker hydration
+      const getTakerUaQuick = async (): Promise<any | null> => {
+        // Warm cache
         try {
-          const wrap = await this.userMap.mustGet(takerPkStr);
-          takerUa = wrap?.getUserAccount?.();
+          const warm = (DriftService.getInstance() as any).getWarmUser?.(takerPkStr);
+          const ua = warm?.getUserAccount?.();
+          if (ua) return ua;
         } catch {}
-      }
-      // Fallback 1: fetch raw on-chain account via Anchor coder
-      if (!takerUa) {
-        try { takerUa = await this.client.program.account.user.fetch(new PublicKey(takerPkStr)); } catch {}
-      }
-      // Fallback 2: batched decoder in DriftService (avoids wrapper entirely)
-      if (!takerUa) {
+        // userMap mustGet with timeout
         try {
+          const wrap = await Promise.race([
+            this.userMap.mustGet(takerPkStr),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('UA_TIMEOUT')), 250)),
+          ]).catch(() => null);
+          const ua = (wrap as any)?.getUserAccount?.();
+          if (ua) return ua;
+        } catch {}
+        // Batched decode with timeout
+        try {
+          const { withRpcTimeout } = await import('../utils/rpcLimiter.js');
           const svc = DriftService.getInstance() as any;
-          const decoded = await svc.fetchUsersDecoded?.([takerPkStr]);
-          takerUa = decoded?.get?.(takerPkStr) || takerUa;
+          const decoded = await withRpcTimeout((svc.fetchUsersDecoded?.([takerPkStr]) || Promise.resolve(new Map())) as Promise<Map<string, any>>, 300, 'ua_decode');
+          const ua = decoded?.get?.(takerPkStr) || null;
+          if (ua) return ua;
         } catch {}
-      }
+        return null;
+      };
+
+      const takerUa = await getTakerUaQuick();
       if (!takerUa) {
-        try { logger.info('drift.filler.skip_missing_taker', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, marketIndex }); } catch {}
+        try { logger.debug('drift.filler.skip_taker_hydration_timeout', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, marketIndex }); } catch {}
         return false;
       }
 
@@ -265,12 +270,15 @@ export class DriftFillerRunner {
       } catch {}
 
       const makerInfos: any[] = [];
-      // Batch-decode makers once to reduce round-trips
+      // Batch-decode makers once to reduce round-trips (bounded timeout)
       let makersDecoded: Map<string, any> | null = null;
       try {
         const svc = DriftService.getInstance() as any;
-        makersDecoded = await (svc.fetchUsersDecoded?.(makers) || null);
-      } catch {}
+        if (makers.length > 0) {
+          const { withRpcTimeout } = await import('../utils/rpcLimiter.js');
+          makersDecoded = await withRpcTimeout((svc.fetchUsersDecoded?.(makers) || Promise.resolve(new Map())) as Promise<Map<string, any>>, 300, 'mk_decode');
+        }
+      } catch { makersDecoded = null; }
       for (const m of makers) {
         try {
           let makerUa: any = null;
@@ -278,15 +286,6 @@ export class DriftFillerRunner {
             const warm = (DriftService.getInstance() as any).getWarmUser?.(m);
             makerUa = warm?.getUserAccount?.() || null;
           } catch {}
-          if (!makerUa) {
-            try {
-              const wrap = await this.userMap.mustGet(m);
-              makerUa = wrap?.getUserAccount?.();
-            } catch {}
-          }
-          if (!makerUa) {
-            try { makerUa = await this.client.program.account.user.fetch(new PublicKey(m)); } catch {}
-          }
           if (!makerUa && makersDecoded) {
             try { makerUa = makersDecoded.get(m) || makerUa; } catch {}
           }
