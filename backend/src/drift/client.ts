@@ -55,8 +55,8 @@ export class DriftService {
   private txQueue: Array<() => void> = [];
   private maxTxInFlight = 2;
   private minTxGapMs = 200;
-  // Warm user prefetch infra
-  private warmUsers: Map<string, { user: any; ts: number }> = new Map();
+  // Warm user prefetch infra (store live SDK User or decoded UA)
+  private warmUsers: Map<string, { user?: any; ua?: any; ts: number }> = new Map();
   private prefetchRunning = false;
   private prefetchTimer: any | null = null;
   private prefetchQueue: string[] = [];
@@ -275,7 +275,10 @@ export class DriftService {
   // Warm user cache helpers
   getWarmUser(pubkey: string): any | null {
     const w = this.warmUsers.get(pubkey);
-    return w?.user || null;
+    if (!w) return null;
+    if ((w as any).user) return (w as any).user;
+    if ((w as any).ua) return { getUserAccount: () => (w as any).ua };
+    return null;
   }
   hasWarmRefStats(pk: string | PublicKey): boolean {
     return this.warmRefStats.has(String(pk));
@@ -366,7 +369,8 @@ export class DriftService {
             }
           } catch {}
         }
-        this.enqueueUsersForPrefetch(Array.from(found));
+        const MAX_KEYS = 1000;
+        this.enqueueUsersForPrefetch(Array.from(found).slice(0, MAX_KEYS));
       } catch {}
     };
 
@@ -374,43 +378,34 @@ export class DriftService {
       try {
         await collectFromDlob();
         const batch = this.prefetchQueue.splice(0, 200);
-        const groups: string[][] = [];
-        const conc = 4;
-        for (let i = 0; i < batch.length; i += conc) groups.push(batch.slice(i, i + conc));
-        for (const grp of groups) {
-          await Promise.all(grp.map(async (pk) => {
+        if (batch.length === 0) return;
+        const chunkSize = 50;
+        for (let i = 0; i < batch.length; i += chunkSize) {
+          const chunk = batch.slice(i, i + chunkSize);
+          let decoded: Map<string, any> = new Map();
+          try { decoded = await this.fetchUsersDecoded(chunk); } catch { decoded = new Map(); }
+          for (const pk of chunk) {
             try {
-              try { await userMap.mustGet(pk); } catch {}
-              if (!this.warmUsers.has(pk)) {
-                let sdk: any = null;
-                try { sdk = await import('@drift-labs/sdk'); } catch {}
-                const { PublicKey } = await import('@solana/web3.js');
-                const subCfg: any = this.pollLoaderWarm
-                  ? { type: 'polling', accountLoader: this.pollLoaderWarm }
-                  : { type: 'websocket' };
-                const u = new (sdk as any).User({
-                  driftClient: this.client,
-                  userAccountPublicKey: new PublicKey(pk),
-                  accountSubscription: subCfg,
-                });
-                try { await u.subscribe?.(); } catch {}
-                // Bound LRU
-                if (this.warmUsers.size >= 1500) {
-                  const oldest = [...this.warmUsers.entries()].sort((a, b) => a[1].ts - b[1].ts)[0]?.[0];
-                  if (oldest) { try { await this.warmUsers.get(oldest)?.user?.unsubscribe?.(); } catch {} this.warmUsers.delete(oldest); }
+              const ua = decoded.get(pk);
+              if (!ua) continue;
+              // LRU bound
+              if (this.warmUsers.size >= 500) {
+                const oldest = [...this.warmUsers.entries()].sort((a, b) => a[1].ts - b[1].ts)[0]?.[0];
+                if (oldest) {
+                  try { await (this.warmUsers.get(oldest) as any)?.user?.unsubscribe?.(); } catch {}
+                  this.warmUsers.delete(oldest);
                 }
-                this.warmUsers.set(pk, { user: u, ts: Date.now() });
-                // Warm referrer stats if present
-                try {
-                  const ua = (u as any).getUserAccount?.();
-                  const ref = ua?.referrerInfo?.referrer;
-                  if (ref && String(ref) !== '11111111111111111111111111111111') {
-                    await this.ensureRefStatsReady(ref);
-                  }
-                } catch {}
               }
+              this.warmUsers.set(pk, { ua, ts: Date.now() });
+              // Warm referrer stats if present
+              try {
+                const ref = ua?.referrerInfo?.referrer;
+                if (ref && String(ref) !== '11111111111111111111111111111111') {
+                  await this.ensureRefStatsReady(ref);
+                }
+              } catch {}
             } catch {}
-          }));
+          }
         }
       } catch {}
     };
