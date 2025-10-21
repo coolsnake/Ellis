@@ -346,9 +346,13 @@ export class DriftFillerRunner {
       const revertIxP = this.client.getRevertFillIx();
       // Prefer cached blockhash; only fetch live if no cache available
       const cachedBhEarly = (() => { try { return this.blockhashSubscriber?.getLatestBlockhash?.(5)?.blockhash; } catch { return undefined; } })();
-      let updateFillerIx: any, fillIx: any, revertIx: any, bh: any;
+      let updateFillerIx: any = null, fillIx: any, revertIx: any = null, bh: any;
+      // Always await fill ix (required), but time-bound update/revert so they don't block the first send
+      const { withRpcTimeout } = await import('../utils/rpcLimiter.js');
       if (cachedBhEarly) {
-        [updateFillerIx, fillIx, revertIx] = await Promise.all([updateFillerIxP, fillIxP, revertIxP]);
+        fillIx = await fillIxP;
+        try { updateFillerIx = await withRpcTimeout(updateFillerIxP as any, 400, 'upd_ix'); } catch { updateFillerIx = null; }
+        try { revertIx = await withRpcTimeout(revertIxP as any, 400, 'rev_ix'); } catch { revertIx = null; }
       } else {
         const blockhashP = (async () => {
           try {
@@ -358,7 +362,9 @@ export class DriftFillerRunner {
             return await withRpcLimit(() => this.connection.getLatestBlockhash({ commitment: 'processed' }));
           }
         })();
-        [updateFillerIx, fillIx, revertIx, bh] = await Promise.all([updateFillerIxP, fillIxP, revertIxP, blockhashP]);
+        [fillIx, bh] = await Promise.all([fillIxP, blockhashP]);
+        try { updateFillerIx = await withRpcTimeout(updateFillerIxP as any, 400, 'upd_ix'); } catch { updateFillerIx = null; }
+        try { revertIx = await withRpcTimeout(revertIxP as any, 400, 'rev_ix'); } catch { revertIx = null; }
       }
 
       // If taker has a valid referrer stats account, append it as a remaining account to the fill ix (do not block if missing)
@@ -390,6 +396,7 @@ export class DriftFillerRunner {
         fillIx,
         ...(updateFillerIx ? [revertIx] : []),
       ];
+      const buildMode = updateFillerIx ? 'fill_with_update_ready' : 'fill_only_deadline';
 
       if (this.state.dryRun) {
         logger.info('drift.filler.dry_run', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), marketIndex });
@@ -425,9 +432,9 @@ export class DriftFillerRunner {
 
       const dispatch = async () => {
         try {
-          const vtxFillOnly = toV0Tx(ixsFillOnly as any);
-          try { logger.info('drift.filler.try_sent', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), cuLimit, priority: effectivePriority }); } catch {}
-          const sigTx = await sendV0(vtxFillOnly);
+          const vtxPrimary = toV0Tx((updateFillerIx ? ixsWithUpdate : ixsFillOnly) as any);
+          try { logger.info('drift.filler.try_sent', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), cuLimit, priority: effectivePriority, buildMode }); } catch {}
+          const sigTx = await sendV0(vtxPrimary);
           this.fillsInWindow.push(Date.now());
           logger.info('drift.filler.ok', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, sig: sigTx, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
           try {
