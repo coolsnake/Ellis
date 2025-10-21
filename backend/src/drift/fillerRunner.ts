@@ -393,12 +393,13 @@ export class DriftFillerRunner {
         return vtx;
       };
       const sendV0 = async (vtx: VersionedTransaction): Promise<string> => {
+        const raw = vtx.serialize();
+        const opts: any = { skipPreflight: true, preflightCommitment: 'processed', maxRetries: 0 };
         try {
           const { withRpcRetry } = await import('../utils/rpcLimiter.js');
-          const raw = vtx.serialize();
-          return await withRpcRetry(() => DriftService.getInstance().sendRawTransaction(raw, { skipPreflight: true, preflightCommitment: 'processed' }), { timeoutMs: 4000, retries: 2, baseMs: 250, maxMs: 1200, label: 'sendTx' });
+          return await withRpcRetry(() => DriftService.getInstance().sendRawTransaction(raw, opts), { timeoutMs: 1500, retries: 1, baseMs: 150, maxMs: 600, label: 'sendTx.fast' });
         } catch {
-          return DriftService.getInstance().sendRawTransaction(vtx.serialize(), { skipPreflight: true, preflightCommitment: 'processed' });
+          return DriftService.getInstance().sendRawTransaction(raw, opts);
         }
       };
 
@@ -766,7 +767,7 @@ export class DriftFillerRunner {
                 orderId: String(node?.node?.order?.orderId || ''),
                 makerCount: Array.isArray(node?.makerNodes) ? node.makerNodes.length : 0,
                 cuLimit: Math.max(220_000, Math.min(800_000, Number(this.config.cuLimit ?? 300_000))),
-                priority: Math.floor(Math.max(0, Number(this.config.priorityFeeMicroLamports ?? 0))),
+                priority: Math.max(10_000, Number(((CONFIG as any)?.fees?.fillerPriorityFloorMicroLamports) ?? 15_000)),
                 dryRun: !!this.state.dryRun,
               });
             } catch {}
