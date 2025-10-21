@@ -99,7 +99,7 @@ export async function fetchPricesByMints(mints: string[], options?: { catOverrid
   const attempt = async (attemptIndex: number) => {
     logger.debug(`jup.price.fetch ids=${ids.length} attempt=${attemptIndex + 1}`, { cat: options?.catOverride || 'jupiter' });
     try { if (poolsFlow) emit('log', { level: 'info', message: `pools:jup.price.fetch ids=${ids.length}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
-    try { if (poolsFlow) logger.info(`pools:jup.price.fetch ids=${ids.length}`, { cat: options?.catOverride || 'pools' }); } catch {}
+    try { if (poolsFlow) logger.debug(`pools:jup.price.fetch ids=${ids.length}`, { cat: options?.catOverride || 'pools' }); } catch {}
     const t0 = Date.now();
     await jupiterLimiter.acquire(false);
     const res = await fetch(url.toString(), { headers: { accept: 'application/json' } });
@@ -151,7 +151,7 @@ export async function fetchPricesByMints(mints: string[], options?: { catOverrid
     mint: mint.slice(0, 8) + '...', // Truncate mint for readability
     usdPrice: priceData.usdPrice
   }));
-  logger.info(`jup.price.quote_received mints=${mints.length} sol_price=${solUsd}`, {
+  logger.debug(`jup.price.quote_received mints=${mints.length} sol_price=${solUsd}`, {
     cat: options?.catOverride || 'jupiter',
     prices: pricesReceived
   });
