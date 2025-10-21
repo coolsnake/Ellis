@@ -323,7 +323,7 @@ export class DriftFillerRunner {
       const dynFromSub = Number(this.priorityFeeSubscriber?.getCustomStrategyResult?.() || basePriority);
       const floor = Math.max(10_000, Number(((CONFIG as any)?.fees?.fillerPriorityFloorMicroLamports) ?? 15_000));
       const effectivePriority = Math.max(floor, Math.floor(Math.max(basePriority, dynFromSub * suggestedMul)));
-      // Build all dependent instructions and fetch blockhash in parallel to minimize delay
+      // Build all dependent instructions and (optionally) fetch blockhash in parallel to minimize delay
       const updateFillerIxP = (async () => {
         for (let i = 0; i < 3; i += 1) {
           try {
@@ -336,17 +336,22 @@ export class DriftFillerRunner {
       })();
       const fillIxP = this.client.getFillPerpOrderIx(takerUserPk, takerUa, nodeToFill.node.order, makerInfos);
       const revertIxP = this.client.getRevertFillIx();
-      // Use retry+timeout for blockhash fetch to avoid long hangs
-      const blockhashP = (async () => {
-        try {
-          const { withRpcRetry } = await import('../utils/rpcLimiter.js');
-          return await withRpcRetry(() => this.connection.getLatestBlockhash({ commitment: 'processed' }), { timeoutMs: 2000, retries: 3, baseMs: 200, maxMs: 1200, label: 'blockhash' });
-        } catch {
-          return await withRpcLimit(() => this.connection.getLatestBlockhash({ commitment: 'processed' }));
-        }
-      })();
-
-      let [updateFillerIx, fillIx, revertIx, bh] = await Promise.all([updateFillerIxP, fillIxP, revertIxP, blockhashP]);
+      // Prefer cached blockhash; only fetch live if no cache available
+      const cachedBhEarly = (() => { try { return this.blockhashSubscriber?.getLatestBlockhash?.(5)?.blockhash; } catch { return undefined; } })();
+      let updateFillerIx: any, fillIx: any, revertIx: any, bh: any;
+      if (cachedBhEarly) {
+        [updateFillerIx, fillIx, revertIx] = await Promise.all([updateFillerIxP, fillIxP, revertIxP]);
+      } else {
+        const blockhashP = (async () => {
+          try {
+            const { withRpcRetry } = await import('../utils/rpcLimiter.js');
+            return await withRpcRetry(() => this.connection.getLatestBlockhash({ commitment: 'processed' }), { timeoutMs: 1200, retries: 1, baseMs: 150, maxMs: 600, label: 'blockhash.fast' });
+          } catch {
+            return await withRpcLimit(() => this.connection.getLatestBlockhash({ commitment: 'processed' }));
+          }
+        })();
+        [updateFillerIx, fillIx, revertIx, bh] = await Promise.all([updateFillerIxP, fillIxP, revertIxP, blockhashP]);
+      }
 
       // If taker has a valid referrer stats account, append it as a remaining account to the fill ix
       try {
@@ -385,7 +390,7 @@ export class DriftFillerRunner {
       }
 
       const cachedBh = (() => { try { return this.blockhashSubscriber?.getLatestBlockhash?.(5)?.blockhash; } catch { return undefined; } })();
-      const recentBlockhash = String(cachedBh || (bh as any)?.blockhash);
+      const recentBlockhash = String(cachedBh || cachedBhEarly || (bh as any)?.blockhash);
       const toV0Tx = (instructions: any[]) => {
         const msg = new TransactionMessage({ payerKey: this.client.wallet.publicKey, recentBlockhash, instructions }).compileToV0Message(this.lookupTableAccounts || []);
         const vtx = new VersionedTransaction(msg);
@@ -426,6 +431,41 @@ export class DriftFillerRunner {
           } catch {}
         } catch (e: any) {
           const msg = String(e?.message || e || '');
+          // If blockhash expired/not found, refresh and resend once quickly
+          if (/blockhash.*(not.*found|expired)|Transaction.*expired/i.test(msg)) {
+            try {
+              const { withRpcRetry } = await import('../utils/rpcLimiter.js');
+              const bh2 = await withRpcRetry(() => this.connection.getLatestBlockhash({ commitment: 'processed' }), { timeoutMs: 1200, retries: 1, baseMs: 150, maxMs: 600, label: 'blockhash.retry' });
+              const bh2Str = String((bh2 as any)?.blockhash);
+              const ixsRetry = [
+                ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
+                ComputeBudgetProgram.setComputeUnitPrice({ microLamports: effectivePriority }),
+                fillIx,
+              ];
+              const msgRetry = new TransactionMessage({ payerKey: this.client.wallet.publicKey, recentBlockhash: bh2Str, instructions: ixsRetry }).compileToV0Message(this.lookupTableAccounts || []);
+              const vRetry = new VersionedTransaction(msgRetry);
+              vRetry.sign([this.client.wallet.payer]);
+              const sigTx = await sendV0(vRetry);
+              this.fillsInWindow.push(Date.now());
+              logger.info('drift.filler.ok', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, sig: sigTx, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
+              try {
+                const { trackDriftAttempt } = await import('./txTracker.js');
+                const makerKeys = Array.isArray(makers) ? makers : [];
+                trackDriftAttempt(this.connection as any, {
+                  sig: sigTx,
+                  action: 'fill',
+                  marketIndex,
+                  taker: takerPkStr,
+                  makers: makerKeys,
+                  orderId: String(nodeToFill?.node?.order?.orderId || ''),
+                  priorityFeeMicroLamports: effectivePriority,
+                  cuLimit,
+                  bot: (this as any)?.state?.name ? `fil#${(this as any).state.name}` : undefined,
+                }).catch(() => {});
+              } catch {}
+              return;
+            } catch {}
+          }
           if (/0x185f|RevertFill/i.test(msg)) {
             try {
               const [bh2, upd2] = await Promise.all([
