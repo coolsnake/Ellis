@@ -395,7 +395,7 @@ export const CONFIG = {
   },
   // Jito configuration (optional; disabled by default)
   jito: {
-    enabled: (process.env.JITO_ENABLED || 'false') === 'true',
+    enabled: (process.env.JITO_ENABLED || 'true') === 'true',
     blockEngineUrl: process.env.JITO_BE_URL || 'https://mainnet.block-engine.jito.wtf',
     tipPayerKeypath: process.env.JITO_TIP_PAYER_PATH || null,
     bundleTimeoutMs: Number(process.env.JITO_BUNDLE_TIMEOUT_MS || 1200),

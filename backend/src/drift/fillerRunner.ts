@@ -121,8 +121,8 @@ export class DriftFillerRunner {
     }
 
     this.sdk = await import('@drift-labs/sdk');
-    // Configure throttle early
-    try { (svc as any).configureTxThrottle?.({ minGapMs: 0, maxInFlight: 8 }); } catch {}
+    // Configure throttle early (conservative defaults to reduce timeouts/429s)
+    try { (svc as any).configureTxThrottle?.({ minGapMs: 100, maxInFlight: 4 }); } catch {}
 
     const tick = async () => {
       if (this.abort || this.inLoop) return;
