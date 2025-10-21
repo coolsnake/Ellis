@@ -192,44 +192,19 @@ export class DriftFillerRunner {
   private async tryFillNode(marketIndex: number, nodeToFill: any): Promise<boolean> {
     try {
       const takerPkStr = String(nodeToFill?.node?.userAccount || '');
-      const { User, getUserAccountPublicKey } = this.sdk;
-      // Ensure a polling loader exists for ad-hoc wrappers to avoid WS flakiness
-      if (!this.pollLoader) {
-        try { this.pollLoader = new (this.sdk as any).BulkAccountLoader(this.connection, 'confirmed', 1000); } catch {}
-      }
-      let takerWrapper: any = null;
+      const { getUserAccountPublicKey } = this.sdk;
+      // Prefer warm user or shared userMap; avoid creating new polling subscribers in hot path
+      let takerUa: any = null;
       try {
-        takerWrapper = (DriftService.getInstance() as any).getWarmUser?.(takerPkStr) || await this.userMap.mustGet(takerPkStr);
+        const warm = (DriftService.getInstance() as any).getWarmUser?.(takerPkStr);
+        takerUa = warm?.getUserAccount?.() || null;
       } catch {}
-      if (!takerWrapper) {
+      if (!takerUa) {
         try {
-          const tmp = new User({
-            driftClient: this.client,
-            userAccountPublicKey: new PublicKey(takerPkStr),
-            accountSubscription: this.pollLoader ? { type: 'polling', accountLoader: this.pollLoader } : { type: 'websocket' },
-          });
-          try { await tmp.subscribe?.(); } catch {}
-          takerWrapper = tmp;
+          const wrap = await this.userMap.mustGet(takerPkStr);
+          takerUa = wrap?.getUserAccount?.();
         } catch {}
       }
-      // Ensure taker user account is hydrated (wrapper first)
-      let takerUa = takerWrapper?.getUserAccount?.();
-      if (!takerUa) {
-        for (let i = 0; i < 4 && !takerUa; i += 1) {
-          try { await takerWrapper?.fetchAccounts?.(); } catch {}
-          try { takerUa = takerWrapper?.getUserAccount?.(); } catch {}
-          if (!takerUa) { try { await new Promise((r) => setTimeout(r, 40)); } catch {} }
-        }
-      }
-      // Additionally ensure underlying subscriber has dataAndSlot, but do not hard-fail on missing
-      try {
-        let ok = !!(takerWrapper as any)?.userAccountSubscriber?.dataAndSlot?.data;
-        for (let i = 0; i < 3 && !ok; i += 1) {
-          try { await takerWrapper?.fetchAccounts?.(); } catch {}
-          ok = !!(takerWrapper as any)?.userAccountSubscriber?.dataAndSlot?.data;
-          if (!ok) { try { await new Promise((r) => setTimeout(r, 40)); } catch {} }
-        }
-      } catch {}
       // Fallback 1: fetch raw on-chain account via Anchor coder
       if (!takerUa) {
         try { takerUa = await this.client.program.account.user.fetch(new PublicKey(takerPkStr)); } catch {}
@@ -299,42 +274,16 @@ export class DriftFillerRunner {
       for (const m of makers) {
         try {
           let makerUa: any = null;
-          let makerWrapper: any = null;
           try {
-            makerWrapper = (DriftService.getInstance() as any).getWarmUser?.(m) || await this.userMap.mustGet(m);
+            const warm = (DriftService.getInstance() as any).getWarmUser?.(m);
+            makerUa = warm?.getUserAccount?.() || null;
           } catch {}
-          if (!makerWrapper) {
+          if (!makerUa) {
             try {
-              const tmp = new User({
-                driftClient: this.client,
-                userAccountPublicKey: new PublicKey(m),
-                accountSubscription: this.pollLoader ? { type: 'polling', accountLoader: this.pollLoader } : { type: 'websocket' },
-              });
-              try { await tmp.subscribe?.(); } catch {}
-              makerWrapper = tmp;
+              const wrap = await this.userMap.mustGet(m);
+              makerUa = wrap?.getUserAccount?.();
             } catch {}
           }
-          // Ensure maker account is hydrated
-          makerUa = makerWrapper?.getUserAccount?.();
-          if (!makerUa) {
-            for (let i = 0; i < 5 && !makerUa; i += 1) {
-              try { await makerWrapper?.fetchAccounts?.(); } catch {}
-              try { makerUa = makerWrapper?.getUserAccount?.(); } catch {}
-              if (!makerUa) { try { await new Promise((r) => setTimeout(r, 40)); } catch {} }
-            }
-          }
-          // Ensure subscriber hydration present
-          try {
-            let ok = !!(makerWrapper as any)?.userAccountSubscriber?.dataAndSlot?.data;
-            for (let i = 0; i < 4 && !ok; i += 1) {
-              try { await makerWrapper?.fetchAccounts?.(); } catch {}
-              ok = !!(makerWrapper as any)?.userAccountSubscriber?.dataAndSlot?.data;
-              if (!ok) { try { await new Promise((r) => setTimeout(r, 40)); } catch {} }
-            }
-            if (!ok && !makerUa) {
-              // Keep trying via decode fallbacks below
-            }
-          } catch {}
           if (!makerUa) {
             try { makerUa = await this.client.program.account.user.fetch(new PublicKey(m)); } catch {}
           }
@@ -800,8 +749,8 @@ export class DriftFillerRunner {
                 taker: String(node?.node?.userAccount || ''),
                 orderId: String(node?.node?.order?.orderId || ''),
                 makerCount: Array.isArray(node?.makerNodes) ? node.makerNodes.length : 0,
-                cuLimit: Math.max(200_000, Number(this.config.cuLimit ?? 1_000_000)),
-                priority: Math.max(0, Number(this.config.priorityFeeMicroLamports ?? 0)),
+                cuLimit: Math.max(220_000, Math.min(800_000, Number(this.config.cuLimit ?? 300_000))),
+                priority: Math.floor(Math.max(0, Number(this.config.priorityFeeMicroLamports ?? 0))),
                 dryRun: !!this.state.dryRun,
               });
             } catch {}
