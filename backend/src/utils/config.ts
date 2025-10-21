@@ -402,10 +402,16 @@ export const CONFIG = {
   },
   // RPC send fallback configuration
   rpcSend: {
-    secondaryRpcUrls: (process.env.RPC_SECONDARY_URLS || '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean),
+    secondaryRpcUrls: (() => {
+      const raw = String(process.env.RPC_SECONDARY_URLS || '');
+      const arr = raw.split(',').map((s) => s.trim()).filter(Boolean);
+      if (arr.length > 0) return arr;
+      // Defaults: Solana mainnet public RPC and Jito public RPC
+      return [
+        'https://api.mainnet-beta.solana.com',
+        'https://rpc.jito.wtf/'
+      ];
+    })(),
     sendTimeoutMs: Number(process.env.RPC_SEND_TIMEOUT_MS || 1200),
     sendRetries: Number(process.env.RPC_SEND_RETRIES || 1),
   },

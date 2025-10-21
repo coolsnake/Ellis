@@ -37,9 +37,31 @@ export async function sendBundleOrTx(
       // Attempt dynamic import to avoid a hard dependency
       const jito: any = await import('@jito-foundation/jito-ts').catch(() => null);
       if (jito?.SearcherClient) {
-        try { logger.info('tx.jito.attempt', { cat: 'tx' }); } catch {}
-        // TODO: Wire a real SearcherClient here when available in the runtime
-        // For now, we fall through to normal send if not fully configured
+        try {
+          // Determine tip payer: prefer configured path; else use the standard Drift wallet
+          let tipSource = 'drift_wallet';
+          try {
+            const cfgPath = (CONFIG as any)?.jito?.tipPayerKeypath;
+            if (cfgPath && String(cfgPath).length > 0) tipSource = 'path';
+          } catch {}
+          // If using the standard wallet, ensure DriftService is initialized and obtain payer
+          if (tipSource === 'drift_wallet') {
+            try {
+              const { DriftService } = await import('../drift/client.js');
+              const svc: any = DriftService.getInstance();
+              await (svc as any).init?.();
+              const kp = (svc as any).walletKp || (svc as any).client?.wallet?.payer;
+              if (kp) {
+                logger.info('tx.jito.tip_payer', { cat: 'tx', source: 'drift_wallet' });
+              }
+            } catch {}
+          } else {
+            logger.info('tx.jito.tip_payer', { cat: 'tx', source: 'path' });
+          }
+          logger.info('tx.jito.attempt', { cat: 'tx' });
+        } catch {}
+        // If a SearcherClient is available in your environment, initialize and submit the bundle here.
+        // Placeholder: fall through to normal send if not fully configured.
       }
     } catch {}
   }
