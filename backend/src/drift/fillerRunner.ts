@@ -685,7 +685,7 @@ export class DriftFillerRunner {
                 rec.n += 1;
                 this.skipLogCount.set(key, rec);
                 if (rec.n <= 5 || rec.n % 100 === 0) {
-                  logger.info('drift.filler.skip_trigger_order', {
+                  logger.debug('drift.filler.skip_trigger_order', {
                     cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx,
                     taker: String(node?.node?.userAccount || ''),
                     orderId: String(node?.node?.order?.orderId || ''),
