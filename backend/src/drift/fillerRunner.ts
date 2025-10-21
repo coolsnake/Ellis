@@ -33,7 +33,7 @@ type FillerRuntimeState = {
 
 const FILLER_CAT = 'drift';
 const FILLER_SUBCAT = 'filler';
-const COOLDOWN_MS = 1_000;
+const COOLDOWN_MS = 250;
 
 export class DriftFillerRunner {
   private timer: any | null = null;
@@ -70,7 +70,7 @@ export class DriftFillerRunner {
       name: String(cfg?.name || 'default'),
       dryRun: !!cfg?.dryRun,
       subaccountId: Number.isFinite(Number(cfg?.subaccountId)) ? Number(cfg?.subaccountId) : (0 as number),
-      loopIntervalMs: Math.max(500, Number(cfg?.intervalMs ?? 1200)),
+      loopIntervalMs: Math.max(250, Number(cfg?.intervalMs ?? 300)),
       fillsLastMin: 0,
       marketsAllowlist: allowlist,
     };
@@ -114,8 +114,8 @@ export class DriftFillerRunner {
 
     this.sdk = await import('@drift-labs/sdk');
     await this.initDiscovery();
-    // Relax tx throttle for filler hot path
-    try { (svc as any).configureTxThrottle?.({ minGapMs: 50, maxInFlight: 4 }); } catch {}
+    // Relax tx throttle for filler hot path (more aggressive)
+    try { (svc as any).configureTxThrottle?.({ minGapMs: 0, maxInFlight: 8 }); } catch {}
 
     const tick = async () => {
       if (this.abort || this.inLoop) return;
@@ -123,7 +123,17 @@ export class DriftFillerRunner {
       try { await this.loop(); }
       finally { this.inLoop = false; }
     };
+    // Backstop timer
     this.timer = setInterval(() => { tick().catch(() => {}); }, this.state.loopIntervalMs);
+    // Slot-driven tick
+    try {
+      const onSlot = () => { try { setImmediate(() => { tick().catch(() => {}); }); } catch { /* noop */ } };
+      if (typeof (this.slotSubscriber?.onSlotChange) === 'function') {
+        this.slotSubscriber.onSlotChange(onSlot, 1);
+      } else {
+        this.slotSubscriber?.eventEmitter?.on?.('slotUpdate', onSlot);
+      }
+    } catch {}
 
     logger.info('drift.filler.started', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name, loopMs: this.state.loopIntervalMs });
   }
@@ -140,7 +150,7 @@ export class DriftFillerRunner {
 
   private async initDiscovery(): Promise<void> {
     const svc = DriftService.getInstance();
-    const infra = await (svc as any).getSharedInfra({ includeIdle: false, updateFrequency: Math.max(400, this.state.loopIntervalMs - 300), preferOrderSubscriber: true });
+    const infra = await (svc as any).getSharedInfra({ includeIdle: false, updateFrequency: Math.max(150, Math.floor(this.state.loopIntervalMs / 2)), preferOrderSubscriber: true });
     this.slotSubscriber = (infra as any).slotSubscriber;
     this.eventSubscriber = (infra as any).eventSubscriber;
     this.userMap = (infra as any).userMap;
@@ -311,7 +321,8 @@ export class DriftFillerRunner {
       const basePriority = Math.max(0, Number(this.config.priorityFeeMicroLamports ?? 0));
       const suggestedMul = Number(this.client?.txSender?.getSuggestedPriorityFeeMultiplier?.() || 1.0);
       const dynFromSub = Number(this.priorityFeeSubscriber?.getCustomStrategyResult?.() || basePriority);
-      const effectivePriority = Math.floor(Math.max(basePriority, dynFromSub * suggestedMul));
+      const floor = Math.max(10_000, Number(((CONFIG as any)?.fees?.fillerPriorityFloorMicroLamports) ?? 15_000));
+      const effectivePriority = Math.max(floor, Math.floor(Math.max(basePriority, dynFromSub * suggestedMul)));
       // Build all dependent instructions and fetch blockhash in parallel to minimize delay
       const updateFillerIxP = (async () => {
         for (let i = 0; i < 3; i += 1) {
@@ -420,7 +431,7 @@ export class DriftFillerRunner {
                 withRpcLimit(() => this.connection.getLatestBlockhash({ commitment: 'processed' })),
                 (async () => { try { return await (this.client.getUpdateFillerIx?.() ?? this.client.getUpdateUserIdleIx?.()); } catch { return null; } })(),
               ]);
-              const boosted = Math.max(effectivePriority, 3000);
+              const boosted = Math.max(effectivePriority, 30_000);
               const bh2Str = String(this.blockhashSubscriber?.getLatestBlockhash?.(5)?.blockhash || (bh2 as any)?.blockhash);
               let sigTx: string;
               if (upd2 || updateFillerIx) {

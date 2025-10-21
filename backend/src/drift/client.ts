@@ -64,7 +64,7 @@ export class DriftService {
   // Referrer stats warm cache
   private warmRefStats: Set<string> = new Set();
   private missingRefStats: Map<string, number> = new Map();
-  private refStatsTtlMs = 5 * 60_000;
+  private refStatsTtlMs = 60_000;
 
   static getInstance(): DriftService {
     if (!this.instance) this.instance = new DriftService();

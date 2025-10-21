@@ -41,14 +41,14 @@ export function createFillerRouter(_io: SocketIOServer): Router {
         enabled: true,
         dryRun: !!cfg?.dryRun,
         subaccountId: Number.isFinite(Number(cfg?.subaccountId)) ? Number(cfg?.subaccountId) : undefined,
-        intervalMs: Math.max(300, Number(cfg?.intervalMs ?? 1200)),
-        cuLimit: Math.max(100_000, Number(cfg?.cuLimit ?? 1_000_000)),
-        priorityFeeMicroLamports: Math.max(0, Number(cfg?.priorityFeeMicroLamports ?? 0)),
+        intervalMs: Math.max(200, Number(cfg?.intervalMs ?? 300)),
+        cuLimit: Math.max(220_000, Math.min(800_000, Number(cfg?.cuLimit ?? 600_000))),
+        priorityFeeMicroLamports: Math.max(0, Number(cfg?.priorityFeeMicroLamports ?? 15_000)),
         marketsAllowlist: Array.isArray(cfg?.marketsAllowlist)
           ? cfg.marketsAllowlist : (typeof cfg?.marketsAllowlistCsv === 'string'
             ? String(cfg?.marketsAllowlistCsv).split(',').map((s: string) => Number(s.trim())).filter((n: any) => Number.isFinite(n))
             : undefined),
-        maxMakersPerFill: Math.max(0, Number(cfg?.maxMakersPerFill ?? 2)),
+        maxMakersPerFill: Math.max(0, Number(cfg?.maxMakersPerFill ?? 1)),
         allowAmmFills: (cfg?.allowAmmFills === undefined ? true : !!cfg?.allowAmmFills),
       } as any);
       const key = (DriftFillerRegistry as any).keyOf({ name });
