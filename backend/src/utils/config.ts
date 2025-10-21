@@ -21,6 +21,8 @@ const CONSOLIDATED_LOG_PATH = process.env.CONSOLIDATED_LOG_PATH || resolve(LOG_D
 export const CONFIG = {
   port: Number(process.env.PORT || 3001),
   rpcUrl: process.env.SOLANA_RPC_URL || 'https://mainnet.helius-rpc.com/?api-key=4673beb7-dcca-4942-91ac-c69babdf1f02',
+  // Optional separate read RPC for high-throughput reads
+  readRpcUrl: process.env.SOLANA_RPC_READ_URL || undefined,
   websocketIntervalMs: Number(process.env.WEBSOCKET_INTERVAL_MS || 400),
   walletPath: process.env.WALLET_PATH || resolve(WALLET_DIR, 'keypair.json'),
   strategyConfigPath: process.env.STRATEGY_CONFIG_PATH || resolve(CONFIG_DIR, 'strategy.json'),
@@ -391,6 +393,22 @@ export const CONFIG = {
     jupiterSlippageBps: Number(process.env.JUPITER_SLIPPAGE_BPS || 50),
     jupiterMaxSlippageBps: Number(process.env.JUPITER_MAX_SLIPPAGE_BPS || 500),
   },
+  // Jito configuration (optional; disabled by default)
+  jito: {
+    enabled: (process.env.JITO_ENABLED || 'false') === 'true',
+    blockEngineUrl: process.env.JITO_BE_URL || 'https://mainnet.block-engine.jito.wtf',
+    tipPayerKeypath: process.env.JITO_TIP_PAYER_PATH || null,
+    bundleTimeoutMs: Number(process.env.JITO_BUNDLE_TIMEOUT_MS || 1200),
+  },
+  // RPC send fallback configuration
+  rpcSend: {
+    secondaryRpcUrls: (process.env.RPC_SECONDARY_URLS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+    sendTimeoutMs: Number(process.env.RPC_SEND_TIMEOUT_MS || 1200),
+    sendRetries: Number(process.env.RPC_SEND_RETRIES || 1),
+  },
   // Drift configuration
   drift: {
     cluster: (process.env.DRIFT_CLUSTER as any) || 'mainnet-beta',
@@ -491,6 +509,28 @@ export const CONFIG = {
       '78:2Z-PERP'
     )).split(',').map(s => s.trim()).filter(Boolean),
     defaultSubaccountId: Number(process.env.DRIFT_DEFAULT_SUBACCOUNT_ID || 0),
+    // Optional periodic ALT refresh for v0 transaction size optimization
+    altRefreshMs: Number(process.env.DRIFT_ALT_REFRESH_MS || 300_000),
+    // Floor for filler priority fee micro-lamports
+    fillerPriorityFloorMicroLamports: Number(process.env.DRIFT_FILLER_FLOOR_MICRO || 15000),
+    // Max tolerated oracle delay in slots before skipping a market
+    maxOracleDelaySlots: Number(process.env.DRIFT_MAX_ORACLE_DELAY_SLOTS || 40),
+    // Optional per-market fee multipliers; accepts JSON or semi-colon CSV (k=v;k=v)
+    feeMultipliers: (() => {
+      const raw = process.env.DRIFT_FEE_MULTIPLIERS || '';
+      if (!raw) return {} as Record<string, number>;
+      try { return JSON.parse(raw); } catch {}
+      try {
+        const out: Record<string, number> = {};
+        for (const kv of raw.split(';')) {
+          const [k, v] = kv.split('=');
+          const key = (k || '').trim();
+          const val = Number((v || '').trim());
+          if (key && Number.isFinite(val)) out[key] = val;
+        }
+        return out;
+      } catch { return {} as Record<string, number>; }
+    })(),
     // Risk defaults
     maxLeverage: Number(process.env.DRIFT_MAX_LEVERAGE || 3),
     liquidationBufferPct: Number(process.env.DRIFT_LIQ_BUFFER_PCT || 0.25),

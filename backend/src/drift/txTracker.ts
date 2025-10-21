@@ -124,6 +124,8 @@ export function recordAttempt(rec: AttemptRecord): void {
 export function getMetrics(params: { windowMs: number; action?: 'fill' | 'trigger'; bot?: string }): {
   attempts: number;
   successes: number;
+  failures: number;
+  failureRate: number;
   costLamports: number;
   costSol: number;
   revenueQuote: number; // only for fills
@@ -140,8 +142,10 @@ export function getMetrics(params: { windowMs: number; action?: 'fill' | 'trigge
     costLamports += Number(r.lamportsPaid || 0);
     if (r.action === 'fill') revenueQuote += Number(r.fillerRewardQuote || 0);
   }
+  const failures = Math.max(0, attempts - successes);
+  const failureRate = attempts > 0 ? failures / attempts : 0;
   const costSol = costLamports / 1_000_000_000;
-  return { attempts, successes, costLamports, costSol, revenueQuote };
+  return { attempts, successes, failures, failureRate, costLamports, costSol, revenueQuote };
 }
 
 

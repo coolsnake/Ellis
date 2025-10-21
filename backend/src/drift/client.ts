@@ -416,20 +416,50 @@ export class DriftService {
 
   async sendRawTransaction(raw: Buffer | Uint8Array, opts?: any): Promise<string> {
     await this.init();
-    const doSend = async (): Promise<string> => {
+
+    const tryWithTimeout = async (conn: Connection, payload: Buffer | Uint8Array, ms: number): Promise<string> => {
+      const p = conn.sendRawTransaction(payload as any, opts || { skipPreflight: false, preflightCommitment: 'confirmed' });
+      return await Promise.race<string>([
+        p,
+        new Promise<string>((_, rej) => setTimeout(() => rej(new Error('SEND_TIMEOUT')), Math.max(250, ms))) as any,
+      ]);
+    };
+
+    const primarySend = async (): Promise<string> => {
       const now = Date.now();
       const wait = Math.max(0, this.lastTxAtMs + this.minTxGapMs - now);
       if (wait > 0) { await new Promise((r) => setTimeout(r, wait)); }
-      const sig = await this.connection!.sendRawTransaction(raw as any, opts || { skipPreflight: false, preflightCommitment: 'confirmed' });
+      const sig = await tryWithTimeout(this.connection!, raw, Number(((CONFIG as any)?.rpcSend?.sendTimeoutMs) ?? 1200));
       this.lastTxAtMs = Date.now();
       return sig;
     };
+
+    // Respect in-flight queue limits for primary
     if (this.txQueueInFlight >= this.maxTxInFlight) {
       await new Promise<void>((resolve) => this.txQueue.push(resolve));
     }
     this.txQueueInFlight += 1;
     try {
-      return await doSend();
+      try {
+        return await primarySend();
+      } catch (ePrimary: any) {
+        // Secondary RPC fallback (tight timeouts, best-effort)
+        const secondaries: string[] = Array.isArray((CONFIG as any)?.rpcSend?.secondaryRpcUrls) ? (CONFIG as any).rpcSend.secondaryRpcUrls : [];
+        let lastErr: any = ePrimary;
+        for (const url of secondaries) {
+          try {
+            const alt = new Connection(String(url), 'processed');
+            const sig = await tryWithTimeout(alt, raw, Number(((CONFIG as any)?.rpcSend?.sendTimeoutMs) ?? 1200));
+            try { logger.info('tx.send.fallback_ok', { cat: 'tx', url }); } catch {}
+            return sig;
+          } catch (eAlt: any) {
+            lastErr = eAlt;
+            try { logger.warn('tx.send.fallback_fail', { cat: 'tx', url, err: String(eAlt?.message || eAlt) }); } catch {}
+            continue;
+          }
+        }
+        throw lastErr;
+      }
     } finally {
       this.txQueueInFlight -= 1;
       const next = this.txQueue.shift();

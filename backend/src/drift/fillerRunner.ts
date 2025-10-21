@@ -59,6 +59,10 @@ export class DriftFillerRunner {
   private nodesCooldown: Map<string, number> = new Map();
   private fillsInWindow: number[] = [];
   private skipLogCount: Map<number, { n: number; ts: number }> = new Map();
+  private altRefreshTimer: any | null = null;
+  private dlobUnavailableCount: number = 0;
+  private wsNudgeTimer: any | null = null;
+  private dlobWsFallback: any | null = null;
 
   constructor(cfg: FillerConfig) {
     const allowlist = Array.isArray(cfg?.marketsAllowlist)
@@ -151,6 +155,8 @@ export class DriftFillerRunner {
       clearInterval(this.timer as NodeJS.Timeout);
       this.timer = null;
     }
+    if (this.altRefreshTimer) { try { clearInterval(this.altRefreshTimer); } catch {} this.altRefreshTimer = null; }
+    if (this.wsNudgeTimer) { try { clearInterval(this.wsNudgeTimer); } catch {} this.wsNudgeTimer = null; }
     this.state.running = false;
     this.abort = true;
     logger.info('drift.filler.stopped', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name });
@@ -191,6 +197,16 @@ export class DriftFillerRunner {
     } catch {}
     // Preload ALTs for v0
     try { this.lookupTableAccounts = await (this.client?.fetchAllLookupTableAccounts?.()); } catch { this.lookupTableAccounts = []; }
+    // Periodic ALT refresh
+    try {
+      const every = Math.max(60_000, Number(((CONFIG as any)?.drift?.altRefreshMs) ?? 300_000));
+      if (this.altRefreshTimer) { try { clearInterval(this.altRefreshTimer); } catch {} }
+      this.altRefreshTimer = setInterval(async () => {
+        try { this.lookupTableAccounts = await (this.client?.fetchAllLookupTableAccounts?.()); } catch {}
+      }, every);
+    } catch {}
+    // Prepare WS fallback (lazy start on degradation)
+    try { this.dlobWsFallback = null; } catch {}
   }
 
   private signatureForNode(nodeToFill: any): string {
@@ -329,8 +345,13 @@ export class DriftFillerRunner {
       const basePriority = Math.max(0, Number(this.config.priorityFeeMicroLamports ?? 0));
       const suggestedMul = Number(this.client?.txSender?.getSuggestedPriorityFeeMultiplier?.() || 1.0);
       const dynFromSub = Number(this.priorityFeeSubscriber?.getCustomStrategyResult?.() || basePriority);
-      const floor = Math.max(10_000, Number(((CONFIG as any)?.fees?.fillerPriorityFloorMicroLamports) ?? 15_000));
+      const floor = Math.max(10_000, Number(((CONFIG as any)?.drift?.fillerPriorityFloorMicroLamports) ?? ((CONFIG as any)?.fees?.fillerPriorityFloorMicroLamports) ?? 15_000));
       const effectivePriority = Math.max(floor, Math.floor(Math.max(basePriority, dynFromSub * suggestedMul)));
+      // Apply per-market multiplier and clamp
+      const marketKey = `perp-${marketIndex}`;
+      const mulCfg = Number((((CONFIG as any)?.drift?.feeMultipliers || {}) as Record<string, number>)[marketKey] ?? 1.0);
+      const MAX_MICRO = 200_000;
+      const priorityForSend = Math.min(MAX_MICRO, Math.max(floor, Math.floor(effectivePriority * (Number.isFinite(mulCfg) ? mulCfg : 1.0))));
       // Build all dependent instructions and (optionally) fetch blockhash in parallel to minimize delay
       const updateFillerIxP = (async () => {
         for (let i = 0; i < 3; i += 1) {
@@ -414,12 +435,12 @@ export class DriftFillerRunner {
 
       const ixsFillOnly = [
         ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
-        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: effectivePriority }),
+        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityForSend }),
         fillIx,
       ];
       const ixsWithUpdate = [
         ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
-        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: effectivePriority }),
+        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityForSend }),
         ...(updateFillerIx ? [updateFillerIx] : []),
         fillIx,
         ...(updateFillerIx ? [revertIx] : []),
@@ -449,19 +470,19 @@ export class DriftFillerRunner {
             new Promise<T>((_, rej) => setTimeout(() => rej(new Error('SEND_TIMEOUT')), ms)) as any,
           ]);
         };
+        // Prefer Jito bundle (opt-in), then fallback to fast RPC twice
         try {
-          // One fast attempt with tight client-side timeout, no global rpc limiter
-          return await withTimeout(fastSend(), 1200);
-        } catch {
-          // Immediate second attempt with its own short timeout
-          return await withTimeout(fastSend(), 1200);
-        }
+          const { sendBundleOrTx } = await import('../execution/jitoSender.js');
+          return await withTimeout(sendBundleOrTx(this.connection as any, vtx, { priorityFeeMicroLamports: effectivePriority, cuLimit }), 1200);
+        } catch {}
+        try { return await withTimeout(fastSend(), 1200); } catch {}
+        return await withTimeout(fastSend(), 1200);
       };
 
       const dispatch = async () => {
         try {
           const vtxPrimary = toV0Tx((updateFillerIx ? ixsWithUpdate : ixsFillOnly) as any);
-          try { logger.info('drift.filler.try_sent', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), cuLimit, priority: effectivePriority, buildMode }); } catch {}
+          try { logger.info('drift.filler.try_sent', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), cuLimit, priority: priorityForSend, buildMode }); } catch {}
           const sigTx = await sendV0(vtxPrimary);
           this.fillsInWindow.push(Date.now());
           logger.info('drift.filler.ok', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, sig: sigTx, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
@@ -475,7 +496,7 @@ export class DriftFillerRunner {
               taker: takerPkStr,
               makers: makerKeys,
               orderId: String(nodeToFill?.node?.order?.orderId || ''),
-              priorityFeeMicroLamports: effectivePriority,
+              priorityFeeMicroLamports: priorityForSend,
               cuLimit,
               bot: (this as any)?.state?.name ? `fil#${(this as any).state.name}` : undefined,
             }).catch(() => {});
@@ -490,13 +511,13 @@ export class DriftFillerRunner {
               const bh2Str = String((bh2 as any)?.blockhash);
               const ixsRetry = [
                 ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
-                ComputeBudgetProgram.setComputeUnitPrice({ microLamports: effectivePriority }),
+                ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityForSend }),
                 fillIx,
               ];
               const msgRetry = new TransactionMessage({ payerKey: this.client.wallet.publicKey, recentBlockhash: bh2Str, instructions: ixsRetry }).compileToV0Message(this.lookupTableAccounts || []);
               const vRetry = new VersionedTransaction(msgRetry);
               vRetry.sign([this.client.wallet.payer]);
-              try { logger.info('drift.filler.try_sent', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), cuLimit, priority: effectivePriority, reason: 'blockhash_refresh' }); } catch {}
+              try { logger.info('drift.filler.try_sent', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), cuLimit, priority: priorityForSend, reason: 'blockhash_refresh' }); } catch {}
               const sigTx = await sendV0(vRetry);
               this.fillsInWindow.push(Date.now());
               logger.info('drift.filler.ok', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, sig: sigTx, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
@@ -510,7 +531,7 @@ export class DriftFillerRunner {
                   taker: takerPkStr,
                   makers: makerKeys,
                   orderId: String(nodeToFill?.node?.order?.orderId || ''),
-                  priorityFeeMicroLamports: effectivePriority,
+                  priorityFeeMicroLamports: priorityForSend,
                   cuLimit,
                   bot: (this as any)?.state?.name ? `fil#${(this as any).state.name}` : undefined,
                 }).catch(() => {});
@@ -524,7 +545,7 @@ export class DriftFillerRunner {
                 withRpcLimit(() => this.connection.getLatestBlockhash({ commitment: 'processed' })),
                 (async () => { try { return await (this.client.getUpdateFillerIx?.() ?? this.client.getUpdateUserIdleIx?.()); } catch { return null; } })(),
               ]);
-              const boosted = Math.max(effectivePriority, 30_000);
+              const boosted = Math.max(priorityForSend, 30_000);
               const bh2Str = String(this.blockhashSubscriber?.getLatestBlockhash?.(5)?.blockhash || (bh2 as any)?.blockhash);
               let sigTx: string;
               if (upd2 || updateFillerIx) {
@@ -574,10 +595,52 @@ export class DriftFillerRunner {
               } catch {}
             } catch (e2: any) {
               logger.info('drift.filler.error send_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), err: String(e2?.message || e2) });
+              // Record failed revert attempt as well
+              try {
+                const { recordAttempt } = await import('./txTracker.js');
+                const makerKeys = Array.isArray(makers) ? makers : [];
+                recordAttempt({
+                  ts: Date.now(),
+                  sig: 'FAILED',
+                  action: 'fill',
+                  marketIndex,
+                  taker: takerPkStr,
+                  makers: makerKeys,
+                  orderId: String(nodeToFill?.node?.order?.orderId || ''),
+                  priorityFeeMicroLamports: Math.max(priorityForSend, 30_000),
+                  cuLimit,
+                  bot: (this as any)?.state?.name ? `fil#${(this as any).state.name}` : undefined,
+                  success: false,
+                  feeLamports: 0,
+                  priorityLamports: 0,
+                  lamportsPaid: 0,
+                } as any);
+              } catch {}
             }
           } else {
             logger.info('drift.filler.error send_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), err: msg });
           }
+          // Record failed attempt for metrics
+          try {
+            const { recordAttempt } = await import('./txTracker.js');
+            const makerKeys = Array.isArray(makers) ? makers : [];
+            recordAttempt({
+              ts: Date.now(),
+              sig: 'FAILED',
+              action: 'fill',
+              marketIndex,
+              taker: takerPkStr,
+              makers: makerKeys,
+              orderId: String(nodeToFill?.node?.order?.orderId || ''),
+              priorityFeeMicroLamports: priorityForSend,
+              cuLimit,
+              bot: (this as any)?.state?.name ? `fil#${(this as any).state.name}` : undefined,
+              success: false,
+              feeLamports: 0,
+              priorityLamports: 0,
+              lamportsPaid: 0,
+            } as any);
+          } catch {}
         }
       };
 
@@ -606,7 +669,38 @@ export class DriftFillerRunner {
       const dlob = this.dlobSubscriber?.getDLOB?.();
       if (!dlob) {
         logger.info('drift.filler.warn dlob_unavailable', { cat: FILLER_CAT, subcat: FILLER_SUBCAT });
+        this.dlobUnavailableCount = (this.dlobUnavailableCount || 0) + 1;
+        if (this.dlobUnavailableCount >= 3) {
+          try { await this.initDiscovery(); } catch {}
+          try {
+            if (!this.wsNudgeTimer) {
+              this.wsNudgeTimer = setInterval(() => {
+                try {
+                  if (!this.inLoop && !this.abort) setImmediate(() => { this.loop().catch(() => {}); });
+                } catch {}
+              }, 1000);
+            }
+          } catch {}
+          // Start WS fallback to nudge when orderbooks update
+          try {
+            if (!this.dlobWsFallback) {
+              const { DlobFallback } = await import('./dlobFallback.js');
+              const markets = Array.isArray(await this.client.getPerpMarketAccounts?.())
+                ? (await this.client.getPerpMarketAccounts?.()).map((m: any) => Number(m?.marketIndex || 0)).filter((n: any) => Number.isFinite(n))
+                : [0,1,2];
+              const onNudge = () => { try { if (!this.inLoop && !this.abort) setImmediate(() => { this.loop().catch(() => {}); }); } catch {} };
+              this.dlobWsFallback = new DlobFallback(onNudge);
+              await this.dlobWsFallback.start(markets);
+            }
+          } catch {}
+        }
         return;
+      } else {
+        this.dlobUnavailableCount = 0;
+        // If WS fallback was running, optionally keep it or stop to reduce load
+        // We keep it running as a nudge source; to stop it uncomment the following lines:
+        // try { this.dlobWsFallback?.stop?.(); } catch {}
+        // this.dlobWsFallback = null;
       }
 
       const {
