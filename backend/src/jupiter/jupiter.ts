@@ -33,7 +33,7 @@ export async function fetchTokenPrices(symbols: string[], options?: { catOverrid
   url.searchParams.set('ids', ids.join(','));
 
   const attempt = async (attemptIndex: number) => {
-    logger.info(`jup.price.fetch ids=${ids.length} attempt=${attemptIndex + 1}`, { cat: options?.catOverride || 'jupiter' });
+    logger.debug(`jup.price.fetch ids=${ids.length} attempt=${attemptIndex + 1}`, { cat: options?.catOverride || 'jupiter' });
     const t0 = Date.now();
     await jupiterLimiter.acquire(false);
     const res = await fetch(url.toString(), { headers: { accept: 'application/json' } });
@@ -46,7 +46,7 @@ export async function fetchTokenPrices(symbols: string[], options?: { catOverrid
       throw new Error('429');
     }
     if (!res.ok) throw new Error(`price fetch failed: ${res.status}`);
-    logger.info(`jup.price.ok status=${res.status} duration=${Date.now() - t0}ms`, { cat: options?.catOverride || 'jupiter' });
+    logger.debug(`jup.price.ok status=${res.status} duration=${Date.now() - t0}ms`, { cat: options?.catOverride || 'jupiter' });
     return (await res.json()) as Record<string, { usdPrice: number; decimals: number; blockId: number; priceChange24h?: number }>;
   };
 
@@ -71,7 +71,7 @@ export async function fetchTokenPrices(symbols: string[], options?: { catOverrid
     mint: mint.slice(0, 8) + '...', // Truncate mint for readability
     usdPrice: priceData.usdPrice
   }));
-  logger.info(`jup.price.quote_received tokens=${symbols.length} sol_price=${solUsd}`, {
+  logger.debug(`jup.price.quote_received tokens=${symbols.length} sol_price=${solUsd}`, {
     cat: options?.catOverride || 'jupiter',
     prices: pricesReceived
   });
@@ -97,7 +97,7 @@ export async function fetchPricesByMints(mints: string[], options?: { catOverrid
   const key = ids.slice().sort().join(',');
 
   const attempt = async (attemptIndex: number) => {
-    logger.info(`jup.price.fetch ids=${ids.length} attempt=${attemptIndex + 1}`, { cat: options?.catOverride || 'jupiter' });
+    logger.debug(`jup.price.fetch ids=${ids.length} attempt=${attemptIndex + 1}`, { cat: options?.catOverride || 'jupiter' });
     try { if (poolsFlow) emit('log', { level: 'info', message: `pools:jup.price.fetch ids=${ids.length}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
     try { if (poolsFlow) logger.info(`pools:jup.price.fetch ids=${ids.length}`, { cat: options?.catOverride || 'pools' }); } catch {}
     const t0 = Date.now();
@@ -108,7 +108,7 @@ export async function fetchPricesByMints(mints: string[], options?: { catOverrid
       const delay = 500 * Math.pow(2, attemptIndex);
       logger.info(`[${new Date().toISOString()}] jup.429 retry delay=${delay}ms`, { cat: options?.catOverride || 'jupiter' });
       try { if (poolsFlow) emit('log', { level: 'warn', message: `pools:jup.price.429 delay=${delay}ms`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
-      try { if (poolsFlow) logger.info(`pools:jup.price.429 delay=${delay}ms`, { cat: options?.catOverride || 'pools' }); } catch {}
+      try { if (poolsFlow) logger.warn(`pools:jup.price.429 delay=${delay}ms`, { cat: options?.catOverride || 'pools' }); } catch {}
       try { emit('log', { level: 'warn', message: `arb:429 source=jupiter kind=price ids=${ids.length}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
       await new Promise((r) => setTimeout(r, delay));
       throw new Error('429');
@@ -156,7 +156,7 @@ export async function fetchPricesByMints(mints: string[], options?: { catOverrid
     prices: pricesReceived
   });
   try { if (poolsFlow) emit('log', { level: 'info', message: `pools:jup.price.ok mints=${mints.length}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
-  try { if (poolsFlow) logger.info(`pools:jup.price.ok mints=${mints.length}`, { cat: options?.catOverride || 'pools' }); } catch {}
+  try { if (poolsFlow) logger.debug(`pools:jup.price.ok mints=${mints.length}`, { cat: options?.catOverride || 'pools' }); } catch {}
 
   const out: Record<string, { usdc: number | null; sol: number | null }> = {};
   for (const mint of mints) {
