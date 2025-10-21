@@ -336,7 +336,8 @@ export class DriftService {
     try {
       const { BulkAccountLoader } = await loadSdk();
       if (!this.pollLoaderWarm) {
-        this.pollLoaderWarm = new BulkAccountLoader(this.connection!, 'confirmed', 1000);
+        // Use a slightly slower polling frequency to reduce provider load
+        this.pollLoaderWarm = new BulkAccountLoader(this.connection!, 'confirmed', 1500);
         try { (this.pollLoaderWarm as any)?.on?.('error', (e: any) => { try { logger.warn('drift.pollLoaderWarm.error', { error: String(e?.message || e), cat: 'drift' }); } catch {} }); } catch {}
       }
     } catch {}
@@ -372,9 +373,9 @@ export class DriftService {
     const step = async () => {
       try {
         await collectFromDlob();
-        const batch = this.prefetchQueue.splice(0, 500);
+        const batch = this.prefetchQueue.splice(0, 200);
         const groups: string[][] = [];
-        const conc = 8;
+        const conc = 4;
         for (let i = 0; i < batch.length; i += conc) groups.push(batch.slice(i, i + conc));
         for (const grp of groups) {
           await Promise.all(grp.map(async (pk) => {
@@ -384,14 +385,17 @@ export class DriftService {
                 let sdk: any = null;
                 try { sdk = await import('@drift-labs/sdk'); } catch {}
                 const { PublicKey } = await import('@solana/web3.js');
+                const subCfg: any = this.pollLoaderWarm
+                  ? { type: 'polling', accountLoader: this.pollLoaderWarm }
+                  : { type: 'websocket' };
                 const u = new (sdk as any).User({
                   driftClient: this.client,
                   userAccountPublicKey: new PublicKey(pk),
-                  accountSubscription: { type: 'websocket' },
+                  accountSubscription: subCfg,
                 });
                 try { await u.subscribe?.(); } catch {}
                 // Bound LRU
-                if (this.warmUsers.size >= 5000) {
+                if (this.warmUsers.size >= 1500) {
                   const oldest = [...this.warmUsers.entries()].sort((a, b) => a[1].ts - b[1].ts)[0]?.[0];
                   if (oldest) { try { await this.warmUsers.get(oldest)?.user?.unsubscribe?.(); } catch {} this.warmUsers.delete(oldest); }
                 }
@@ -412,7 +416,7 @@ export class DriftService {
     };
 
     if (this.prefetchTimer) { try { clearInterval(this.prefetchTimer); } catch {} }
-    this.prefetchTimer = setInterval(() => { step().catch(() => {}); }, 400);
+    this.prefetchTimer = setInterval(() => { step().catch(() => {}); }, 600);
   }
 
   async sendRawTransaction(raw: Buffer | Uint8Array, opts?: any): Promise<string> {
