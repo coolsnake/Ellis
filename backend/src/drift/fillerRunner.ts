@@ -1,6 +1,8 @@
 // @ts-nocheck
 import { ComputeBudgetProgram, PublicKey, TransactionMessage, VersionedTransaction, AddressLookupTableAccount } from '@solana/web3.js';
 import { withRpcLimit } from '../utils/rpcLimiter.js';
+import { buildTipIx, selectTipLamports, fetchTipAccount } from '../execution/jitoTip.js';
+import { sendToBlockEngine } from '../execution/jitoClient.js';
 import { RunnerRegistry } from '../utils/runnerRegistry.js';
 import { DriftService } from './client.js';
 import { logger } from '../utils/logger.js';
@@ -435,16 +437,46 @@ export class DriftFillerRunner {
         }
       } catch {}
 
+      // Optionally append Jito tip inside the same transaction (no ALT), then add fill
+      let ixsFill: any[] = [fillIx];
+      try {
+        if ((CONFIG as any)?.jito?.enabled) {
+          // Default tipAccount: if not configured, use the bot wallet (payer) as recipient
+          let tipAccountStr = String((CONFIG as any)?.jito?.tipAccount || '');
+          if (!tipAccountStr) {
+            try { tipAccountStr = this.client.wallet.publicKey?.toBase58?.() || ''; } catch {}
+          }
+          if (!tipAccountStr) {
+            // Best-effort fetch from BE tip accounts endpoint (if available)
+            try { tipAccountStr = String(await fetchTipAccount((CONFIG as any)?.jito?.blockEngineUrl) || ''); } catch {}
+          }
+          if (tipAccountStr) {
+            const priorityLamportsEst = Math.floor((priorityForSend * Math.max(220_000, cuLimit)) / 1_000_000);
+            const tipLamports = await selectTipLamports((CONFIG as any).jito, priorityLamportsEst);
+            const tipPk = new PublicKey(tipAccountStr);
+            const tipIx = buildTipIx(this.client.wallet.publicKey, tipPk, tipLamports);
+            ixsFill = [tipIx, fillIx];
+          }
+          // Optional: add 'dont-front' read-only account to the first ix
+          try {
+            if ((CONFIG as any)?.jito?.useDontFrontAccount && Array.isArray(ixsFill?.[0]?.keys)) {
+              const acc = new PublicKey('jitodontfront111111111111111111111111111111');
+              ixsFill[0].keys.push({ pubkey: acc, isSigner: false, isWritable: false });
+            }
+          } catch {}
+        }
+      } catch {}
+
       const ixsFillOnly = [
         ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
         ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityForSend }),
-        fillIx,
+        ...ixsFill,
       ];
       const ixsWithUpdate = [
         ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
         ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityForSend }),
         ...(updateFillerIx ? [updateFillerIx] : []),
-        fillIx,
+        ...ixsFill,
         ...(updateFillerIx ? [revertIx] : []),
       ];
       const buildMode = updateFillerIx ? 'fill_with_update_ready' : (usedNoMakersFallback ? 'fill_minimal_nomakers' : 'fill_only_deadline');
@@ -465,11 +497,20 @@ export class DriftFillerRunner {
       const sendV0 = async (vtx: VersionedTransaction): Promise<string> => {
         const raw = vtx.serialize();
         const opts: any = { skipPreflight: true, preflightCommitment: 'processed', maxRetries: 0 };
-        try {
-          const { sendBundleOrTx } = await import('../execution/jitoSender.js');
-          return await sendBundleOrTx(this.connection as any, vtx, { priorityFeeMicroLamports: priorityForSend, cuLimit });
-        } catch {}
-        return await DriftService.getInstance().sendRawTransaction(raw, opts);
+        const t0send = Date.now();
+        if ((CONFIG as any)?.jito?.enabled) {
+          const base64 = Buffer.from(raw).toString('base64');
+          try {
+            const sig = await sendToBlockEngine(base64, { beUrl: (CONFIG as any)?.jito?.blockEngineUrl, timeoutMs: (CONFIG as any)?.jito?.bundleTimeoutMs });
+            try { logger.info('drift.filler.sent_via', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, path: 'jito-be', ms: Date.now() - t0send }); } catch {}
+            return sig;
+          } catch (e: any) {
+            try { logger.warn('drift.filler.jito_be_fail', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, err: String(e?.message || e) }); } catch {}
+          }
+        }
+        const sig = await DriftService.getInstance().sendRawTransaction(raw, opts);
+        try { logger.info('drift.filler.sent_via', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, path: 'rpc', ms: Date.now() - t0send }); } catch {}
+        return sig;
       };
 
       const dispatch = async () => {

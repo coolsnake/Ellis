@@ -13,7 +13,7 @@ export const ExecutionConfigModal: React.FC<Props> = ({ apiBase = '/api', onClos
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState<any>({
-    jito: { enabled: false, blockEngineUrl: '', tipPayerKeypath: '', bundleTimeoutMs: 1200 },
+    jito: { enabled: false, blockEngineUrl: '', tipPayerKeypath: '', bundleTimeoutMs: 1200, tipMode: 'dynamic', fixedTipLamports: 10000, tipShare: 0.3, useDontFrontAccount: false, tipAccount: '' },
     rpcSend: { secondaryRpcUrls: '', sendTimeoutMs: 1200 },
     drift: {
       altRefreshMs: 300000,
@@ -44,6 +44,11 @@ export const ExecutionConfigModal: React.FC<Props> = ({ apiBase = '/api', onClos
             blockEngineUrl: String(jito.blockEngineUrl || ''),
             tipPayerKeypath: String(jito.tipPayerKeypath || ''),
             bundleTimeoutMs: Number.isFinite(Number(jito.bundleTimeoutMs)) ? Number(jito.bundleTimeoutMs) : 1200,
+            tipMode: String(jito.tipMode || 'dynamic'),
+            fixedTipLamports: Number.isFinite(Number(jito.fixedTipLamports)) ? Number(jito.fixedTipLamports) : 10000,
+            tipShare: Number.isFinite(Number(jito.tipShare)) ? Number(jito.tipShare) : 0.3,
+            useDontFrontAccount: !!jito.useDontFrontAccount,
+            tipAccount: String(jito.tipAccount || ''),
           },
           rpcSend: {
             secondaryRpcUrls,
@@ -87,6 +92,11 @@ export const ExecutionConfigModal: React.FC<Props> = ({ apiBase = '/api', onClos
           blockEngineUrl: String(form.jito.blockEngineUrl || ''),
           tipPayerKeypath: String(form.jito.tipPayerKeypath || ''),
           bundleTimeoutMs: Math.max(250, Number(form.jito.bundleTimeoutMs || 1200)),
+          tipMode: String(form.jito.tipMode || 'dynamic'),
+          fixedTipLamports: Math.max(0, Number(form.jito.fixedTipLamports || 0)),
+          tipShare: Math.max(0, Math.min(1, Number(form.jito.tipShare || 0.3))),
+          useDontFrontAccount: !!form.jito.useDontFrontAccount,
+          tipAccount: String(form.jito.tipAccount || ''),
         },
         rpcSend: {
           secondaryRpcUrls,
@@ -117,6 +127,35 @@ export const ExecutionConfigModal: React.FC<Props> = ({ apiBase = '/api', onClos
           <h2 className="text-2xl font-bold text-white">Execution Configuration</h2>
           <button onClick={onClose} className="px-3 py-1 bg-gray-600 text-white rounded hover:bg-gray-700">Close</button>
         </div>
+          {/* Jito tip config */}
+          <div>
+            <div className="text-gray-400 mb-1">Tip Mode</div>
+            <select className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.jito.tipMode}
+              onChange={(e)=>setForm((p:any)=>({...p, jito:{...p.jito, tipMode:e.target.value}}))}>
+              <option value="dynamic">dynamic</option>
+              <option value="fixed">fixed</option>
+            </select>
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Fixed Tip (lamports)</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.jito.fixedTipLamports}
+              onChange={(e)=>setForm((p:any)=>({...p, jito:{...p.jito, fixedTipLamports:Number(e.target.value)}}))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Tip Share (0..1)</div>
+            <input type="number" step="0.05" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.jito.tipShare}
+              onChange={(e)=>setForm((p:any)=>({...p, jito:{...p.jito, tipShare:Number(e.target.value)}}))} />
+          </div>
+          <label className="flex items-center gap-2">
+            <input type="checkbox" className="h-4 w-4" checked={!!form.jito.useDontFrontAccount}
+              onChange={(e)=>setForm((p:any)=>({...p, jito:{...p.jito, useDontFrontAccount:e.target.checked}}))} />
+            <span className="text-gray-300">Use Jito “don’t front” account</span>
+          </label>
+          <div>
+            <div className="text-gray-400 mb-1">Tip Account (pubkey)</div>
+            <input type="text" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.jito.tipAccount}
+              onChange={(e)=>setForm((p:any)=>({...p, jito:{...p.jito, tipAccount:e.target.value}}))} placeholder="TIP_RECIPIENT_PUBKEY" />
+          </div>
 
         {error && <div className="mb-4 p-3 rounded bg-red-900 text-red-200 text-sm">{error}</div>}
 
