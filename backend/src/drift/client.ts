@@ -438,6 +438,18 @@ export class DriftService {
     }
   }
 
+  configureTxThrottle(opts: { minGapMs?: number; maxInFlight?: number }): void {
+    try {
+      if (Number.isFinite(Number(opts?.minGapMs))) {
+        this.minTxGapMs = Math.max(0, Number(opts!.minGapMs));
+      }
+      if (Number.isFinite(Number(opts?.maxInFlight))) {
+        this.maxTxInFlight = Math.max(1, Number(opts!.maxInFlight));
+      }
+      try { logger.info('drift.tx.throttle_config', { minGapMs: this.minTxGapMs, maxInFlight: this.maxTxInFlight, cat: 'drift' }); } catch {}
+    } catch {}
+  }
+
   private async ensureUserReady(subaccountId: number): Promise<void> {
     await this.init();
     const client: any = this.client;

@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { ComputeBudgetProgram, PublicKey, Transaction } from '@solana/web3.js';
+import { ComputeBudgetProgram, PublicKey, TransactionMessage, VersionedTransaction, AddressLookupTableAccount } from '@solana/web3.js';
 import { withRpcLimit } from '../utils/rpcLimiter.js';
 import { RunnerRegistry } from '../utils/runnerRegistry.js';
 import { DriftService } from './client.js';
@@ -46,6 +46,9 @@ export class DriftFillerRunner {
   private client: any | null = null;
   private connection: any | null = null;
   private pollLoader: any | null = null;
+  private blockhashSubscriber: any | null = null;
+  private priorityFeeSubscriber: any | null = null;
+  private lookupTableAccounts: AddressLookupTableAccount[] | null = null;
 
   slotSubscriber: any | null = null;
   eventSubscriber: any | null = null;
@@ -111,6 +114,8 @@ export class DriftFillerRunner {
 
     this.sdk = await import('@drift-labs/sdk');
     await this.initDiscovery();
+    // Relax tx throttle for filler hot path
+    try { (svc as any).configureTxThrottle?.({ minGapMs: 50, maxInFlight: 4 }); } catch {}
 
     const tick = async () => {
       if (this.abort || this.inLoop) return;
@@ -144,6 +149,30 @@ export class DriftFillerRunner {
     logger.info('drift.filler.usermap_dlob_ready', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name, shared: true });
     // Start user prefetcher once shared infra is ready
     try { await (svc as any).startUserPrefetcher?.(this.dlobSubscriber, this.userMap); } catch {}
+    // Initialize blockhash subscriber and priority fee strategy
+    try {
+      const { BlockhashSubscriber, PriorityFeeSubscriber } = this.sdk || {};
+      if (BlockhashSubscriber) {
+        this.blockhashSubscriber = new BlockhashSubscriber(this.connection);
+        await this.blockhashSubscriber.subscribe();
+      }
+      if (PriorityFeeSubscriber) {
+        this.priorityFeeSubscriber = new PriorityFeeSubscriber({
+          connection: this.connection,
+          fallbackPriorityFeeMicroLamports: Math.max(1000, Number(((CONFIG as any)?.fees?.priorityFee) || 1000)),
+        });
+        await this.priorityFeeSubscriber.subscribe();
+        try {
+          this.priorityFeeSubscriber.updateAddresses([
+            new PublicKey('8BnEgHoWFysVcuFFX7QztDmzuH8r5ZFvyP3sYwn1XTh6'),
+            new PublicKey('8UJgxaiQx5nTrdDgph5FiahMmzduuLTLf5WmsPegYA6W'),
+            this.client?.program?.programId,
+          ].filter(Boolean));
+        } catch {}
+      }
+    } catch {}
+    // Preload ALTs for v0
+    try { this.lookupTableAccounts = await (this.client?.fetchAllLookupTableAccounts?.()); } catch { this.lookupTableAccounts = []; }
   }
 
   private signatureForNode(nodeToFill: any): string {
@@ -239,7 +268,7 @@ export class DriftFillerRunner {
       const makersRaw: string[] = Array.isArray(nodeToFill?.makerNodes)
         ? nodeToFill.makerNodes.map((mn: any) => String(mn?.userAccount || '')).filter(Boolean)
         : [];
-      const maxMakers = Math.max(0, Number(this.config.maxMakersPerFill ?? 2));
+      const maxMakers = Math.max(0, Number(this.config.maxMakersPerFill ?? 1));
       const makers = makersRaw.slice(0, maxMakers);
 
       // Require maker nodes only when AMM-only fills are disabled
@@ -330,8 +359,11 @@ export class DriftFillerRunner {
       }
 
       const takerUserPk = await getUserAccountPublicKey(this.client.program.programId, takerUa.authority, takerUa.subAccountId);
-      const cuLimit = Math.max(200_000, Number(this.config.cuLimit ?? 1_000_000));
-      const priority = Math.max(0, Number(this.config.priorityFeeMicroLamports ?? 0));
+      const cuLimit = Math.max(220_000, Math.min(800_000, Number(this.config.cuLimit ?? 300_000)));
+      const basePriority = Math.max(0, Number(this.config.priorityFeeMicroLamports ?? 0));
+      const suggestedMul = Number(this.client?.txSender?.getSuggestedPriorityFeeMultiplier?.() || 1.0);
+      const dynFromSub = Number(this.priorityFeeSubscriber?.getCustomStrategyResult?.() || basePriority);
+      const effectivePriority = Math.floor(Math.max(basePriority, dynFromSub * suggestedMul));
       // Build all dependent instructions and fetch blockhash in parallel to minimize delay
       const updateFillerIxP = (async () => {
         for (let i = 0; i < 3; i += 1) {
@@ -375,9 +407,14 @@ export class DriftFillerRunner {
         }
       } catch {}
 
-      const ixs = [
+      const ixsFillOnly = [
         ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
-        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priority }),
+        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: effectivePriority }),
+        fillIx,
+      ];
+      const ixsWithUpdate = [
+        ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
+        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: effectivePriority }),
         ...(updateFillerIx ? [updateFillerIx] : []),
         fillIx,
         ...(updateFillerIx ? [revertIx] : []),
@@ -388,49 +425,27 @@ export class DriftFillerRunner {
         return false;
       }
 
-      const submit = async (prio: number, updIx: any, bhObj: any): Promise<string> => {
-        const toSend = new Transaction();
-        toSend.add(
-          ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
-          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: prio }),
-          ...(updIx ? [updIx] : []),
-          fillIx,
-          ...(updIx ? [revertIx] : []),
-        );
-        toSend.feePayer = this.client.wallet.publicKey;
-        toSend.recentBlockhash = bhObj.blockhash;
-        toSend.sign(this.client.wallet.payer);
-        // Wrap send with retry for transient network/RPC glitches
-        try {
-          const { withRpcRetry } = await import('../utils/rpcLimiter.js');
-          const raw = toSend.serialize();
-          return await withRpcRetry(() => DriftService.getInstance().sendRawTransaction(raw, { skipPreflight: true, preflightCommitment: 'processed' }), { timeoutMs: 4000, retries: 2, baseMs: 250, maxMs: 1200, label: 'sendTx' });
-        } catch {
-          return DriftService.getInstance().sendRawTransaction(toSend.serialize(), { skipPreflight: true, preflightCommitment: 'processed' });
-        }
+      const cachedBh = (() => { try { return this.blockhashSubscriber?.getLatestBlockhash?.(5)?.blockhash; } catch { return undefined; } })();
+      const recentBlockhash = String(cachedBh || (bh as any)?.blockhash);
+      const toV0Tx = (instructions: any[]) => {
+        const msg = new TransactionMessage({ payerKey: this.client.wallet.publicKey, recentBlockhash, instructions }).compileToV0Message(this.lookupTableAccounts || []);
+        const vtx = new VersionedTransaction(msg);
+        vtx.sign([this.client.wallet.payer]);
+        return vtx;
       };
-
-      const submitFillOnly = async (prio: number, bhObj: any): Promise<string> => {
-        const toSend = new Transaction();
-        toSend.add(
-          ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
-          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: prio }),
-          fillIx,
-        );
-        toSend.feePayer = this.client.wallet.publicKey;
-        toSend.recentBlockhash = bhObj.blockhash;
-        toSend.sign(this.client.wallet.payer);
+      const sendV0 = async (vtx: VersionedTransaction): Promise<string> => {
         try {
           const { withRpcRetry } = await import('../utils/rpcLimiter.js');
-          const raw = toSend.serialize();
+          const raw = vtx.serialize();
           return await withRpcRetry(() => DriftService.getInstance().sendRawTransaction(raw, { skipPreflight: true, preflightCommitment: 'processed' }), { timeoutMs: 4000, retries: 2, baseMs: 250, maxMs: 1200, label: 'sendTx' });
         } catch {
-          return DriftService.getInstance().sendRawTransaction(toSend.serialize(), { skipPreflight: true, preflightCommitment: 'processed' });
+          return DriftService.getInstance().sendRawTransaction(vtx.serialize(), { skipPreflight: true, preflightCommitment: 'processed' });
         }
       };
 
       try {
-        const sigTx = await submit(priority, updateFillerIx, bh);
+        const vtxFillOnly = toV0Tx(ixsFillOnly as any);
+        const sigTx = await sendV0(vtxFillOnly);
         this.fillsInWindow.push(Date.now());
         logger.info('drift.filler.ok', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, sig: sigTx, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
         // async track
@@ -458,13 +473,30 @@ export class DriftFillerRunner {
               withRpcLimit(() => this.connection.getLatestBlockhash({ commitment: 'processed' })),
               (async () => { try { return await (this.client.getUpdateFillerIx?.() ?? this.client.getUpdateUserIdleIx?.()); } catch { return null; } })(),
             ]);
-            const boosted = Math.max(priority, 3000);
+            const boosted = Math.max(effectivePriority, 3000);
+            const bh2Str = String(this.blockhashSubscriber?.getLatestBlockhash?.(5)?.blockhash || (bh2 as any)?.blockhash);
             let sigTx: string;
-            if (upd2 ?? updateFillerIx) {
-              sigTx = await submit(boosted, (upd2 ?? updateFillerIx), bh2);
+            if (upd2 || updateFillerIx) {
+              const ixsUpd = [
+                ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
+                ComputeBudgetProgram.setComputeUnitPrice({ microLamports: boosted }),
+                ...(upd2 ? [upd2] : (updateFillerIx ? [updateFillerIx] : [])),
+                fillIx,
+                ...(upd2 ? [await this.client.getRevertFillIx()] : (updateFillerIx ? [revertIx] : [])),
+              ];
+              const msg = new TransactionMessage({ payerKey: this.client.wallet.publicKey, recentBlockhash: bh2Str, instructions: ixsUpd }).compileToV0Message(this.lookupTableAccounts || []);
+              const vUpd = new VersionedTransaction(msg);
+              vUpd.sign([this.client.wallet.payer]);
+              sigTx = await sendV0(vUpd);
             } else {
-              // Fallback: submit fill-only to avoid slot mismatch on revert
-              sigTx = await submitFillOnly(boosted, bh2);
+              const msg = new TransactionMessage({ payerKey: this.client.wallet.publicKey, recentBlockhash: bh2Str, instructions: [
+                ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
+                ComputeBudgetProgram.setComputeUnitPrice({ microLamports: boosted }),
+                fillIx,
+              ] }).compileToV0Message(this.lookupTableAccounts || []);
+              const vFill = new VersionedTransaction(msg);
+              vFill.sign([this.client.wallet.payer]);
+              sigTx = await sendV0(vFill);
             }
             this.fillsInWindow.push(Date.now());
             logger.info('drift.filler.ok', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, sig: sigTx, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
