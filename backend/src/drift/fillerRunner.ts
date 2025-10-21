@@ -63,6 +63,8 @@ export class DriftFillerRunner {
   private dlobUnavailableCount: number = 0;
   private wsNudgeTimer: any | null = null;
   private dlobWsFallback: any | null = null;
+  // Per-loop stats
+  private _loopStatsTmp: any | null = null;
 
   constructor(cfg: FillerConfig) {
     const allowlist = Array.isArray(cfg?.marketsAllowlist)
@@ -665,6 +667,29 @@ export class DriftFillerRunner {
     let processedNodes = 0;
     let budgetExceeded = false;
 
+    // Initialize per-loop stats snapshot
+    const loopStats: any = {
+      marketsTotal: 0,
+      marketsPaused: 0,
+      marketsOracleStale: 0,
+      nodesPlanned: 0,
+      nodesProcessed: 0,
+      nodesSent: 0,
+      makersBreakdown: { withMakers: 0, withoutMakers: 0 },
+      budget: { exhausted: false, processedNodes: 0 },
+      skips: {
+        vammDisallowed: 0,
+        ammBelowMin: 0,
+        ammNotCrossing: 0,
+        triggerOrder: 0,
+        cooldown: 0,
+        takerHydration: 0,
+        missingRefStats: 0,
+        noMakers: 0,
+      },
+    };
+    this._loopStatsTmp = loopStats;
+
     try {
       const dlob = this.dlobSubscriber?.getDLOB?.();
       if (!dlob) {
@@ -732,12 +757,14 @@ export class DriftFillerRunner {
         const mStart = Date.now();
         const idx = Number(market?.marketIndex || 0);
         if (!this.inAllowlist(idx)) continue;
+        loopStats.marketsTotal += 1;
         const slotBn = new BN(slot);
         // Skip paused markets
         try {
           const statusStr = (() => { try { return String(getVariant((market as any)?.status)).toLowerCase(); } catch { return 'unknown'; } })();
           if (statusStr !== 'active') {
             try { logger.info('drift.filler.skip_paused_market', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx, status: statusStr }); } catch {}
+            loopStats.marketsPaused += 1;
             continue;
           }
         } catch {}
@@ -750,6 +777,7 @@ export class DriftFillerRunner {
           const maxDelay = Math.max(0, Number(((CONFIG as any)?.drift?.maxOracleDelaySlots) ?? 40));
           if (odSlot > 0 && (curSlot - odSlot) > maxDelay) {
             try { logger.info('drift.filler.skip_oracle_stale', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx, oracleDelay: (curSlot - odSlot), maxDelay }); } catch {}
+            loopStats.marketsOracleStale += 1;
             continue;
           }
         } catch {}
@@ -776,6 +804,7 @@ export class DriftFillerRunner {
         ) || [];
 
         totalPlanned += nodesToFill.length;
+        loopStats.nodesPlanned += nodesToFill.length;
 
         try {
           logger.debug('drift.filler.market_nodes', {
@@ -806,6 +835,8 @@ export class DriftFillerRunner {
             cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx,
             nodes: nodesToFill.length, withMakers, withoutMakers,
           });
+          loopStats.makersBreakdown.withMakers += withMakers;
+          loopStats.makersBreakdown.withoutMakers += withoutMakers;
         } catch {}
 
         let iter = 0;
@@ -813,6 +844,8 @@ export class DriftFillerRunner {
           if ((Date.now() - t0) > LOOP_BUDGET_MS || processedNodes >= MAX_NODES_PER_LOOP) {
             budgetExceeded = true;
             try { logger.debug('drift.filler.loop_budget_exhausted', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, processedNodes, ms: Date.now() - t0 }); } catch {}
+            loopStats.budget.exhausted = true;
+            loopStats.budget.processedNodes = processedNodes;
             break;
           }
           iter += 1;
@@ -820,6 +853,7 @@ export class DriftFillerRunner {
           try {
             if (!node?.node?.order) continue;
             processedNodes += 1;
+            loopStats.nodesProcessed += 1;
             const allowAmm = this.config.allowAmmFills !== false; // default allow
             if (typeof node?.node?.isVammNode === 'function' && node.node.isVammNode()) {
               if (!allowAmm) {
@@ -832,6 +866,7 @@ export class DriftFillerRunner {
                     orderId: String(node?.node?.order?.orderId || ''),
                   });
                 } catch {}
+                loopStats.skips.vammDisallowed += 1;
                 continue;
               } else {
                 try {
@@ -866,6 +901,7 @@ export class DriftFillerRunner {
                       taker: String(node?.node?.userAccount || ''), orderId: String(o?.orderId || ''),
                     });
                   } catch {}
+                  loopStats.skips.ammBelowMin += 1;
                   continue;
                 }
                 // Cheap crossing check for AMM-only limit orders
@@ -883,6 +919,7 @@ export class DriftFillerRunner {
                         taker: String(node?.node?.userAccount || ''), orderId: String(o?.orderId || ''),
                       });
                     } catch {}
+                    loopStats.skips.ammNotCrossing += 1;
                     continue;
                   }
                 }
@@ -917,6 +954,7 @@ export class DriftFillerRunner {
                   });
                 }
               } catch {}
+              loopStats.skips.triggerOrder += 1;
               continue;
             }
 
@@ -932,6 +970,7 @@ export class DriftFillerRunner {
                   orderId: String(node?.node?.order?.orderId || ''),
                 });
               } catch {}
+              loopStats.skips.cooldown += 1;
               continue;
             }
             this.nodesCooldown.set(sig, Date.now());
@@ -974,7 +1013,7 @@ export class DriftFillerRunner {
             } catch {}
 
             const ok = await this.tryFillNode(idx, node);
-            if (ok) sent += 1;
+            if (ok) { sent += 1; loopStats.nodesSent += 1; }
           } catch {}
         }
 
@@ -991,7 +1030,20 @@ export class DriftFillerRunner {
       const dur = Date.now() - t0;
       logger.info('drift.filler.loop', {
         cat: FILLER_CAT, subcat: FILLER_SUBCAT,
-        ms: dur, totalNodesPlanned: totalPlanned, sent, fillsLastMin: this.getStatus().fillsLastMin, sample,
+        ms: dur,
+        totalNodesPlanned: totalPlanned,
+        sent,
+        fillsLastMin: this.getStatus().fillsLastMin,
+        sample,
+        marketsTotal: loopStats.marketsTotal,
+        marketsPaused: loopStats.marketsPaused,
+        marketsOracleStale: loopStats.marketsOracleStale,
+        nodesProcessed: loopStats.nodesProcessed,
+        makersWith: loopStats.makersBreakdown.withMakers,
+        makersWithout: loopStats.makersBreakdown.withoutMakers,
+        budgetExhausted: loopStats.budget.exhausted,
+        budgetProcessed: loopStats.budget.processedNodes,
+        skips: loopStats.skips,
       });
       if (totalPlanned === 0) {
         try {
