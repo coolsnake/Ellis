@@ -465,26 +465,20 @@ export class DriftFillerRunner {
       const sendV0 = async (vtx: VersionedTransaction): Promise<string> => {
         const raw = vtx.serialize();
         const opts: any = { skipPreflight: true, preflightCommitment: 'processed', maxRetries: 0 };
-        const fastSend = () => DriftService.getInstance().sendRawTransaction(raw, opts);
-        const withTimeout = async <T>(p: Promise<T>, ms: number): Promise<T> => {
-          return await Promise.race<T>([
-            p,
-            new Promise<T>((_, rej) => setTimeout(() => rej(new Error('SEND_TIMEOUT')), ms)) as any,
-          ]);
-        };
-        // Prefer Jito bundle (opt-in), then fallback to fast RPC twice
         try {
           const { sendBundleOrTx } = await import('../execution/jitoSender.js');
-          return await withTimeout(sendBundleOrTx(this.connection as any, vtx, { priorityFeeMicroLamports: effectivePriority, cuLimit }), 1200);
+          return await sendBundleOrTx(this.connection as any, vtx, { priorityFeeMicroLamports: priorityForSend, cuLimit });
         } catch {}
-        try { return await withTimeout(fastSend(), 1200); } catch {}
-        return await withTimeout(fastSend(), 1200);
+        return await DriftService.getInstance().sendRawTransaction(raw, opts);
       };
 
       const dispatch = async () => {
         try {
           const vtxPrimary = toV0Tx((updateFillerIx ? ixsWithUpdate : ixsFillOnly) as any);
-          try { logger.info('drift.filler.try_sent', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), cuLimit, priority: priorityForSend, buildMode }); } catch {}
+          try {
+            const bhSource = cachedBh ? 'cached' : (cachedBhEarly ? 'cached_early' : ((bh as any)?.blockhash ? 'fetched' : 'unknown'));
+            logger.info('drift.filler.try_sent', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), cuLimit, priority: priorityForSend, buildMode, bhSource, lookups: Array.isArray(this.lookupTableAccounts) ? this.lookupTableAccounts.length : 0, sendPath: ((CONFIG as any)?.jito?.enabled ? 'jito-first' : 'rpc') });
+          } catch {}
           const sigTx = await sendV0(vtxPrimary);
           this.fillsInWindow.push(Date.now());
           logger.info('drift.filler.ok', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, sig: sigTx, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
@@ -505,6 +499,14 @@ export class DriftFillerRunner {
           } catch {}
         } catch (e: any) {
           const msg = String(e?.message || e || '');
+          const classifySendErr = (er: any): string => {
+            const m = String(er?.message || er || '').toLowerCase();
+            if (m.includes('timeout')) return 'timeout';
+            if (m.includes('429') || m.includes('rate')) return 'rate_limited';
+            if (m.includes('blockhash') && (m.includes('expired') || m.includes('not'))) return 'blockhash';
+            if (m.includes('insufficient') && m.includes('lamports')) return 'insufficient_fee';
+            return 'unknown';
+          };
           // If blockhash expired/not found, refresh and resend once quickly
           if (/blockhash.*(not.*found|expired)|Transaction.*expired/i.test(msg)) {
             try {
@@ -620,7 +622,12 @@ export class DriftFillerRunner {
               } catch {}
             }
           } else {
-            logger.info('drift.filler.error send_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), err: msg });
+            try {
+              const bhSource = cachedBh ? 'cached' : (cachedBhEarly ? 'cached_early' : ((bh as any)?.blockhash ? 'fetched' : 'unknown'));
+              logger.info('drift.filler.error send_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), err: msg, code: classifySendErr(e), bhSource, priority: priorityForSend });
+            } catch {
+              logger.info('drift.filler.error send_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), err: msg });
+            }
           }
           // Record failed attempt for metrics
           try {
@@ -802,9 +809,20 @@ export class DriftFillerRunner {
           MarketType.PERP, mmOraclePriceData,
           stateAcc, this.client.getPerpMarketAccount?.(idx)
         ) || [];
+        // Prefilter: drop trigger orders to avoid wasting budget
+        const isTriggerNode = (n: any): boolean => {
+          try {
+            const o = n?.node?.order;
+            const t = o?.orderType ? String(getVariant(o.orderType)).toLowerCase() : '';
+            return t === 'triggermarket' || t === 'triggerlimit';
+          } catch { return false; }
+        };
+        const prefiltered = nodesToFill.filter((n: any) => !isTriggerNode(n));
+        const droppedTriggers = nodesToFill.length - prefiltered.length;
+        if (droppedTriggers > 0) { loopStats.skips.triggerOrder += droppedTriggers; }
 
-        totalPlanned += nodesToFill.length;
-        loopStats.nodesPlanned += nodesToFill.length;
+        totalPlanned += prefiltered.length;
+        loopStats.nodesPlanned += prefiltered.length;
 
         try {
           logger.debug('drift.filler.market_nodes', {
@@ -829,18 +847,18 @@ export class DriftFillerRunner {
 
         // Diagnostics: maker vs non-maker nodes
         try {
-          const withMakers = nodesToFill.filter((n: any) => Array.isArray(n?.makerNodes) && n.makerNodes.length > 0).length;
-          const withoutMakers = nodesToFill.length - withMakers;
+          const withMakers = prefiltered.filter((n: any) => Array.isArray(n?.makerNodes) && n.makerNodes.length > 0).length;
+          const withoutMakers = prefiltered.length - withMakers;
           logger.debug('drift.filler.market_nodes_breakdown', {
             cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx,
-            nodes: nodesToFill.length, withMakers, withoutMakers,
+            nodes: prefiltered.length, withMakers, withoutMakers,
           });
           loopStats.makersBreakdown.withMakers += withMakers;
           loopStats.makersBreakdown.withoutMakers += withoutMakers;
         } catch {}
 
         let iter = 0;
-        for (const node of nodesToFill) {
+        for (const node of prefiltered) {
           if ((Date.now() - t0) > LOOP_BUDGET_MS || processedNodes >= MAX_NODES_PER_LOOP) {
             budgetExceeded = true;
             try { logger.debug('drift.filler.loop_budget_exhausted', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, processedNodes, ms: Date.now() - t0 }); } catch {}
@@ -852,8 +870,6 @@ export class DriftFillerRunner {
           if ((iter % 50) === 0) { try { await new Promise((r) => setImmediate(r)); } catch {} }
           try {
             if (!node?.node?.order) continue;
-            processedNodes += 1;
-            loopStats.nodesProcessed += 1;
             const allowAmm = this.config.allowAmmFills !== false; // default allow
             if (typeof node?.node?.isVammNode === 'function' && node.node.isVammNode()) {
               if (!allowAmm) {
@@ -1011,6 +1027,11 @@ export class DriftFillerRunner {
                 dryRun: !!this.state.dryRun,
               });
             } catch {}
+
+            // Count budget once node is eligible for a send attempt
+            processedNodes += 1;
+            loopStats.nodesProcessed += 1;
+            loopStats.eligibleNodes = (loopStats.eligibleNodes || 0) + 1;
 
             const ok = await this.tryFillNode(idx, node);
             if (ok) { sent += 1; loopStats.nodesSent += 1; }
