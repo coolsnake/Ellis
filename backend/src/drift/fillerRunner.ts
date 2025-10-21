@@ -391,88 +391,94 @@ export class DriftFillerRunner {
         }
       };
 
-      try {
-        const vtxFillOnly = toV0Tx(ixsFillOnly as any);
-        const sigTx = await sendV0(vtxFillOnly);
-        this.fillsInWindow.push(Date.now());
-        logger.info('drift.filler.ok', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, sig: sigTx, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
-        // async track
+      const dispatch = async () => {
         try {
-          const { trackDriftAttempt } = await import('./txTracker.js');
-          const makerKeys = Array.isArray(makers) ? makers : [];
-          trackDriftAttempt(this.connection as any, {
-            sig: sigTx,
-            action: 'fill',
-            marketIndex,
-            taker: takerPkStr,
-            makers: makerKeys,
-            orderId: String(nodeToFill?.node?.order?.orderId || ''),
-            priorityFeeMicroLamports: Number(this.config.priorityFeeMicroLamports || 0),
-            cuLimit: Number(this.config.cuLimit || 0),
-            bot: (this as any)?.state?.name ? `fil#${(this as any).state.name}` : undefined,
-          }).catch(() => {});
-        } catch {}
-        return true;
-      } catch (e: any) {
-        const msg = String(e?.message || e || '');
-        if (/0x185f|RevertFill/i.test(msg)) {
+          const vtxFillOnly = toV0Tx(ixsFillOnly as any);
+          const sigTx = await sendV0(vtxFillOnly);
+          this.fillsInWindow.push(Date.now());
+          logger.info('drift.filler.ok', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, sig: sigTx, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
           try {
-            const [bh2, upd2] = await Promise.all([
-              withRpcLimit(() => this.connection.getLatestBlockhash({ commitment: 'processed' })),
-              (async () => { try { return await (this.client.getUpdateFillerIx?.() ?? this.client.getUpdateUserIdleIx?.()); } catch { return null; } })(),
-            ]);
-            const boosted = Math.max(effectivePriority, 3000);
-            const bh2Str = String(this.blockhashSubscriber?.getLatestBlockhash?.(5)?.blockhash || (bh2 as any)?.blockhash);
-            let sigTx: string;
-            if (upd2 || updateFillerIx) {
-              const ixsUpd = [
-                ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
-                ComputeBudgetProgram.setComputeUnitPrice({ microLamports: boosted }),
-                ...(upd2 ? [upd2] : (updateFillerIx ? [updateFillerIx] : [])),
-                fillIx,
-                ...(upd2 ? [await this.client.getRevertFillIx()] : (updateFillerIx ? [revertIx] : [])),
-              ];
-              const msg = new TransactionMessage({ payerKey: this.client.wallet.publicKey, recentBlockhash: bh2Str, instructions: ixsUpd }).compileToV0Message(this.lookupTableAccounts || []);
-              const vUpd = new VersionedTransaction(msg);
-              vUpd.sign([this.client.wallet.payer]);
-              sigTx = await sendV0(vUpd);
-            } else {
-              const msg = new TransactionMessage({ payerKey: this.client.wallet.publicKey, recentBlockhash: bh2Str, instructions: [
-                ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
-                ComputeBudgetProgram.setComputeUnitPrice({ microLamports: boosted }),
-                fillIx,
-              ] }).compileToV0Message(this.lookupTableAccounts || []);
-              const vFill = new VersionedTransaction(msg);
-              vFill.sign([this.client.wallet.payer]);
-              sigTx = await sendV0(vFill);
-            }
-            this.fillsInWindow.push(Date.now());
-            logger.info('drift.filler.ok', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, sig: sigTx, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
+            const { trackDriftAttempt } = await import('./txTracker.js');
+            const makerKeys = Array.isArray(makers) ? makers : [];
+            trackDriftAttempt(this.connection as any, {
+              sig: sigTx,
+              action: 'fill',
+              marketIndex,
+              taker: takerPkStr,
+              makers: makerKeys,
+              orderId: String(nodeToFill?.node?.order?.orderId || ''),
+              priorityFeeMicroLamports: effectivePriority,
+              cuLimit,
+              bot: (this as any)?.state?.name ? `fil#${(this as any).state.name}` : undefined,
+            }).catch(() => {});
+          } catch {}
+        } catch (e: any) {
+          const msg = String(e?.message || e || '');
+          if (/0x185f|RevertFill/i.test(msg)) {
             try {
-              const { trackDriftAttempt } = await import('./txTracker.js');
-              const makerKeys = Array.isArray(makers) ? makers : [];
-              trackDriftAttempt(this.connection as any, {
-                sig: sigTx,
-                action: 'fill',
-                marketIndex,
-                taker: takerPkStr,
-                makers: makerKeys,
-                orderId: String(nodeToFill?.node?.order?.orderId || ''),
-                priorityFeeMicroLamports: boosted,
-                cuLimit: Number(this.config.cuLimit || 0),
-                bot: (this as any)?.state?.name ? `fil#${(this as any).state.name}` : undefined,
-              }).catch(() => {});
-            } catch {}
-            return true;
-          } catch (e2: any) {
-            logger.info('drift.filler.error send_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), err: String(e2?.message || e2) });
-            return false;
+              const [bh2, upd2] = await Promise.all([
+                withRpcLimit(() => this.connection.getLatestBlockhash({ commitment: 'processed' })),
+                (async () => { try { return await (this.client.getUpdateFillerIx?.() ?? this.client.getUpdateUserIdleIx?.()); } catch { return null; } })(),
+              ]);
+              const boosted = Math.max(effectivePriority, 3000);
+              const bh2Str = String(this.blockhashSubscriber?.getLatestBlockhash?.(5)?.blockhash || (bh2 as any)?.blockhash);
+              let sigTx: string;
+              if (upd2 || updateFillerIx) {
+                const ixsUpd = [
+                  ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
+                  ComputeBudgetProgram.setComputeUnitPrice({ microLamports: boosted }),
+                  ...(upd2 ? [upd2] : (updateFillerIx ? [updateFillerIx] : [])),
+                  fillIx,
+                  ...(upd2 ? [await this.client.getRevertFillIx()] : (updateFillerIx ? [revertIx] : [])),
+                ];
+                const msgUpd = new TransactionMessage({ payerKey: this.client.wallet.publicKey, recentBlockhash: bh2Str, instructions: ixsUpd }).compileToV0Message(this.lookupTableAccounts || []);
+                const vUpd = new VersionedTransaction(msgUpd);
+                vUpd.sign([this.client.wallet.payer]);
+                sigTx = await sendV0(vUpd);
+              } else {
+                const msgFo = new TransactionMessage({
+                  payerKey: this.client.wallet.publicKey,
+                  recentBlockhash: bh2Str,
+                  instructions: [
+                    ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
+                    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: boosted }),
+                    fillIx,
+                  ],
+                }).compileToV0Message(this.lookupTableAccounts || []);
+                const vFill = new VersionedTransaction(msgFo);
+                vFill.sign([this.client.wallet.payer]);
+                sigTx = await sendV0(vFill);
+              }
+              this.fillsInWindow.push(Date.now());
+              logger.info('drift.filler.ok', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, sig: sigTx, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
+              try {
+                const { trackDriftAttempt } = await import('./txTracker.js');
+                const makerKeys = Array.isArray(makers) ? makers : [];
+                trackDriftAttempt(this.connection as any, {
+                  sig: sigTx,
+                  action: 'fill',
+                  marketIndex,
+                  taker: takerPkStr,
+                  makers: makerKeys,
+                  orderId: String(nodeToFill?.node?.order?.orderId || ''),
+                  priorityFeeMicroLamports: boosted,
+                  cuLimit,
+                  bot: (this as any)?.state?.name ? `fil#${(this as any).state.name}` : undefined,
+                }).catch(() => {});
+              } catch {}
+            } catch (e2: any) {
+              logger.info('drift.filler.error send_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), err: String(e2?.message || e2) });
+            }
+          } else {
+            logger.info('drift.filler.error send_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), err: msg });
           }
         }
-        // Market paused or other error
-        logger.info('drift.filler.error send_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), err: String(e?.message || e) });
-        return false;
-      }
+      };
+
+      // Fire-and-continue; do not await
+      dispatch().catch(() => {});
+      try { logger.debug('drift.filler.dispatched', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), blockhash: recentBlockhash }); } catch {}
+      return true;
     } catch (e: any) {
       logger.info('drift.filler.warn fill_node_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, err: String(e?.message || e) });
       return false;
