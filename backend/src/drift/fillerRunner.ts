@@ -400,11 +400,19 @@ export class DriftFillerRunner {
       const sendV0 = async (vtx: VersionedTransaction): Promise<string> => {
         const raw = vtx.serialize();
         const opts: any = { skipPreflight: true, preflightCommitment: 'processed', maxRetries: 0 };
+        const fastSend = () => DriftService.getInstance().sendRawTransaction(raw, opts);
+        const withTimeout = async <T>(p: Promise<T>, ms: number): Promise<T> => {
+          return await Promise.race<T>([
+            p,
+            new Promise<T>((_, rej) => setTimeout(() => rej(new Error('SEND_TIMEOUT')), ms)) as any,
+          ]);
+        };
         try {
-          const { withRpcRetry } = await import('../utils/rpcLimiter.js');
-          return await withRpcRetry(() => DriftService.getInstance().sendRawTransaction(raw, opts), { timeoutMs: 1500, retries: 1, baseMs: 150, maxMs: 600, label: 'sendTx.fast' });
+          // One fast attempt with tight client-side timeout, no global rpc limiter
+          return await withTimeout(fastSend(), 1200);
         } catch {
-          return DriftService.getInstance().sendRawTransaction(raw, opts);
+          // Immediate second attempt
+          return await fastSend();
         }
       };
 
