@@ -387,7 +387,15 @@ export class DriftTriggerRunner {
             const tx = new Transaction();
             tx.add(...ixs);
             tx.feePayer = this.client.wallet.publicKey;
-            const bh: any = await withRpcLimit(() => this.connection.getLatestBlockhash({ commitment: 'confirmed' }));
+            // Use retry+timeout for blockhash to avoid long stalls
+            const bh: any = await (async () => {
+              try {
+                const { withRpcRetry } = await import('../utils/rpcLimiter.js');
+                return await withRpcRetry(() => this.connection.getLatestBlockhash({ commitment: 'confirmed' }), { timeoutMs: 2000, retries: 3, baseMs: 200, maxMs: 1200, label: 'blockhash' });
+              } catch {
+                return await withRpcLimit(() => this.connection.getLatestBlockhash({ commitment: 'confirmed' }));
+              }
+            })();
             tx.recentBlockhash = (bh as any)?.blockhash;
             try {
               tx.sign(this.client.wallet.payer);

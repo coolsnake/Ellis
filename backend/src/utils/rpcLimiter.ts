@@ -61,4 +61,55 @@ export async function withRpcLimit<T>(fn: () => Promise<T>, weight = 1): Promise
   return await fn();
 }
 
+// Wrap a promise with a timeout guard. Note: this does not cancel the underlying request.
+export async function withRpcTimeout<T>(p: Promise<T>, timeoutMs: number, label?: string): Promise<T> {
+  if (!(Number.isFinite(timeoutMs) && timeoutMs! > 0)) return p;
+  return await Promise.race([
+    p,
+    new Promise<T>((_, reject) => {
+      setTimeout(() => reject(new Error(`RPC_TIMEOUT${label ? `:${label}` : ''}`)), Number(timeoutMs));
+    }),
+  ]);
+}
+
+// Retry helper for RPC calls combining rate limit, timeout, and backoff retries
+export async function withRpcRetry<T>(fn: () => Promise<T>, opts?: { weight?: number; timeoutMs?: number; retries?: number; baseMs?: number; maxMs?: number; classify?: (err: unknown) => boolean; label?: string }): Promise<T> {
+  const retries = Math.max(0, Number(opts?.retries ?? 3));
+  const baseMs = Math.max(100, Number(opts?.baseMs ?? 300));
+  const maxMs = Math.max(baseMs, Number(opts?.maxMs ?? 4000));
+  const timeoutMs = Math.max(250, Number(opts?.timeoutMs ?? 2500));
+  const weight = Math.max(1, Number(opts?.weight ?? 1));
+  const classify = opts?.classify || ((e: unknown) => {
+    const msg = String((e as any)?.message || e || '').toLowerCase();
+    return (
+      msg.includes('timeout') ||
+      msg.includes('timed out') ||
+      msg.includes('rpc_timeout') ||
+      msg.includes('fetch failed') ||
+      msg.includes('etimedout') ||
+      msg.includes('econnreset') ||
+      msg.includes('socket hang up') ||
+      msg.includes('502') ||
+      msg.includes('503') ||
+      msg.includes('504')
+    );
+  });
+  let lastErr: any;
+  for (let i = 0; i <= retries; i += 1) {
+    try {
+      await acquireRpcSlots(weight);
+      const res = await withRpcTimeout(fn(), timeoutMs, opts?.label);
+      return res;
+    } catch (e: any) {
+      lastErr = e;
+      if (i === retries) break;
+      if (!classify(e)) break;
+      const delay = Math.min(maxMs, baseMs * Math.pow(2, i));
+      await new Promise((r) => setTimeout(r, delay));
+      continue;
+    }
+  }
+  throw lastErr;
+}
+
 

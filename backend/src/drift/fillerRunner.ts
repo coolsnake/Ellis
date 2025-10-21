@@ -345,7 +345,15 @@ export class DriftFillerRunner {
       })();
       const fillIxP = this.client.getFillPerpOrderIx(takerUserPk, takerUa, nodeToFill.node.order, makerInfos);
       const revertIxP = this.client.getRevertFillIx();
-      const blockhashP = withRpcLimit(() => this.connection.getLatestBlockhash({ commitment: 'processed' }));
+      // Use retry+timeout for blockhash fetch to avoid long hangs
+      const blockhashP = (async () => {
+        try {
+          const { withRpcRetry } = await import('../utils/rpcLimiter.js');
+          return await withRpcRetry(() => this.connection.getLatestBlockhash({ commitment: 'processed' }), { timeoutMs: 2000, retries: 3, baseMs: 200, maxMs: 1200, label: 'blockhash' });
+        } catch {
+          return await withRpcLimit(() => this.connection.getLatestBlockhash({ commitment: 'processed' }));
+        }
+      })();
 
       let [updateFillerIx, fillIx, revertIx, bh] = await Promise.all([updateFillerIxP, fillIxP, revertIxP, blockhashP]);
 
@@ -392,7 +400,14 @@ export class DriftFillerRunner {
         toSend.feePayer = this.client.wallet.publicKey;
         toSend.recentBlockhash = bhObj.blockhash;
         toSend.sign(this.client.wallet.payer);
-        return DriftService.getInstance().sendRawTransaction(toSend.serialize(), { skipPreflight: true, preflightCommitment: 'processed' });
+        // Wrap send with retry for transient network/RPC glitches
+        try {
+          const { withRpcRetry } = await import('../utils/rpcLimiter.js');
+          const raw = toSend.serialize();
+          return await withRpcRetry(() => DriftService.getInstance().sendRawTransaction(raw, { skipPreflight: true, preflightCommitment: 'processed' }), { timeoutMs: 4000, retries: 2, baseMs: 250, maxMs: 1200, label: 'sendTx' });
+        } catch {
+          return DriftService.getInstance().sendRawTransaction(toSend.serialize(), { skipPreflight: true, preflightCommitment: 'processed' });
+        }
       };
 
       const submitFillOnly = async (prio: number, bhObj: any): Promise<string> => {
@@ -405,7 +420,13 @@ export class DriftFillerRunner {
         toSend.feePayer = this.client.wallet.publicKey;
         toSend.recentBlockhash = bhObj.blockhash;
         toSend.sign(this.client.wallet.payer);
-        return DriftService.getInstance().sendRawTransaction(toSend.serialize(), { skipPreflight: true, preflightCommitment: 'processed' });
+        try {
+          const { withRpcRetry } = await import('../utils/rpcLimiter.js');
+          const raw = toSend.serialize();
+          return await withRpcRetry(() => DriftService.getInstance().sendRawTransaction(raw, { skipPreflight: true, preflightCommitment: 'processed' }), { timeoutMs: 4000, retries: 2, baseMs: 250, maxMs: 1200, label: 'sendTx' });
+        } catch {
+          return DriftService.getInstance().sendRawTransaction(toSend.serialize(), { skipPreflight: true, preflightCommitment: 'processed' });
+        }
       };
 
       try {

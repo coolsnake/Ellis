@@ -341,7 +341,14 @@ export async function executeSwap(
   try {
     const { getConnection } = await import('../wallet/wallet.js');
     const connection = getConnection();
-  const tx = await (await import('../utils/rpcLimiter.js')).withRpcLimit(() => connection.getTransaction(sig, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 }));
+  const tx = await (async () => {
+    try {
+      const { withRpcRetry } = await import('../utils/rpcLimiter.js');
+      return await withRpcRetry(() => connection.getTransaction(sig, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 }), { timeoutMs: 3000, retries: 3, baseMs: 200, maxMs: 1500, label: 'getTx' });
+    } catch {
+      return await (await import('../utils/rpcLimiter.js')).withRpcLimit(() => connection.getTransaction(sig, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 }));
+    }
+  })();
     const meta: any = tx?.meta;
     if (meta) {
       const pre = meta.preTokenBalances || [];
