@@ -113,8 +113,7 @@ export class DriftFillerRunner {
     }
 
     this.sdk = await import('@drift-labs/sdk');
-    await this.initDiscovery();
-    // Relax tx throttle for filler hot path (more aggressive)
+    // Configure throttle early
     try { (svc as any).configureTxThrottle?.({ minGapMs: 0, maxInFlight: 8 }); } catch {}
 
     const tick = async () => {
@@ -123,19 +122,28 @@ export class DriftFillerRunner {
       try { await this.loop(); }
       finally { this.inLoop = false; }
     };
-    // Backstop timer
+    // Start backstop timer immediately
     this.timer = setInterval(() => { tick().catch(() => {}); }, this.state.loopIntervalMs);
-    // Slot-driven tick
-    try {
-      const onSlot = () => { try { setImmediate(() => { tick().catch(() => {}); }); } catch { /* noop */ } };
-      if (typeof (this.slotSubscriber?.onSlotChange) === 'function') {
-        this.slotSubscriber.onSlotChange(onSlot, 1);
-      } else {
-        this.slotSubscriber?.eventEmitter?.on?.('slotUpdate', onSlot);
-      }
-    } catch {}
-
     logger.info('drift.filler.started', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name, loopMs: this.state.loopIntervalMs });
+
+    // Kick off discovery in the background with a timeout; attach slot tick when ready
+    setImmediate(async () => {
+      try {
+        const { withRpcTimeout } = await import('../utils/rpcLimiter.js');
+        await withRpcTimeout(this.initDiscovery(), 5000, 'initDiscovery');
+      } catch (e: any) {
+        try { logger.warn('drift.filler.discovery_degraded', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, err: String(e?.message || e) }); } catch {}
+      }
+      // Slot-driven tick once slotSubscriber is available
+      try {
+        const onSlot = () => { try { setImmediate(() => { tick().catch(() => {}); }); } catch { /* noop */ } };
+        if (typeof (this.slotSubscriber?.onSlotChange) === 'function') {
+          this.slotSubscriber.onSlotChange(onSlot, 1);
+        } else {
+          this.slotSubscriber?.eventEmitter?.on?.('slotUpdate', onSlot);
+        }
+      } catch {}
+    });
   }
 
   stop(): void {
