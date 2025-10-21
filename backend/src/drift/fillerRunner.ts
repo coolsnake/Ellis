@@ -545,7 +545,7 @@ export class DriftFillerRunner {
         const vBid = calculateBidPrice(market, mmOraclePriceData, slotBn);
 
         try {
-          logger.info('drift.filler.market_scan', {
+          logger.debug('drift.filler.market_scan', {
             cat: FILLER_CAT,
             subcat: FILLER_SUBCAT,
             marketIndex: idx,
@@ -566,7 +566,7 @@ export class DriftFillerRunner {
         totalPlanned += nodesToFill.length;
 
         try {
-          logger.info('drift.filler.market_nodes', {
+          logger.debug('drift.filler.market_nodes', {
             cat: FILLER_CAT,
             subcat: FILLER_SUBCAT,
             marketIndex: idx,
@@ -590,7 +590,7 @@ export class DriftFillerRunner {
         try {
           const withMakers = nodesToFill.filter((n: any) => Array.isArray(n?.makerNodes) && n.makerNodes.length > 0).length;
           const withoutMakers = nodesToFill.length - withMakers;
-          logger.info('drift.filler.market_nodes_breakdown', {
+          logger.debug('drift.filler.market_nodes_breakdown', {
             cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx,
             nodes: nodesToFill.length, withMakers, withoutMakers,
           });
@@ -761,7 +761,7 @@ export class DriftFillerRunner {
         }
 
         try {
-          logger.info('drift.filler.market_done', {
+          logger.debug('drift.filler.market_done', {
             cat: FILLER_CAT,
             subcat: FILLER_SUBCAT,
             marketIndex: idx,

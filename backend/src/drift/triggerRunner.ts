@@ -209,7 +209,7 @@ export class DriftTriggerRunner {
 			const spot = await this.client.getSpotMarketAccounts?.();
 
 			const userCount = typeof this.userMap?.size === 'function' ? Number(this.userMap.size()) : 0;
-			logger.info('drift.trigger.markets', {
+			logger.debug('drift.trigger.markets', {
 				cat: TRIGGER_CAT,
 				subcat: TRIGGER_SUBCAT,
 				slot,
@@ -308,7 +308,7 @@ export class DriftTriggerRunner {
 						}
 					}
 
-					logger.info('drift.trigger.market_scan', {
+					logger.debug('drift.trigger.market_scan', {
 						cat: TRIGGER_CAT,
 						subcat: TRIGGER_SUBCAT,
 						marketIndex: idx,
