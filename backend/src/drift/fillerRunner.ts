@@ -439,6 +439,8 @@ export class DriftFillerRunner {
 
       // Optionally append Jito tip inside the same transaction (no ALT), then add fill
       let ixsFill: any[] = [fillIx];
+      let plannedTipLamports: number | undefined = undefined;
+      let plannedTipAccount: string | undefined = undefined;
       try {
         if ((CONFIG as any)?.jito?.enabled) {
           // Default tipAccount: if not configured, use the bot wallet (payer) as recipient
@@ -456,6 +458,8 @@ export class DriftFillerRunner {
             const tipPk = new PublicKey(tipAccountStr);
             const tipIx = buildTipIx(this.client.wallet.publicKey, tipPk, tipLamports);
             ixsFill = [tipIx, fillIx];
+            plannedTipLamports = tipLamports;
+            plannedTipAccount = tipPk.toBase58();
           }
           // Optional: add 'dont-front' read-only account to the first ix
           try {
@@ -480,6 +484,32 @@ export class DriftFillerRunner {
         ...(updateFillerIx ? [revertIx] : []),
       ];
       const buildMode = updateFillerIx ? 'fill_with_update_ready' : (usedNoMakersFallback ? 'fill_minimal_nomakers' : 'fill_only_deadline');
+
+      // Plan log for transaction build
+      try {
+        const bhSourcePlan = cachedBh ? 'cached' : (cachedBhEarly ? 'cached_early' : ((bh as any)?.blockhash ? 'fetched' : 'unknown'));
+        const lookupCount = Array.isArray(this.lookupTableAccounts) ? this.lookupTableAccounts.length : 0;
+        const priorityLamportsEst = Math.floor((priorityForSend * Math.max(220_000, cuLimit)) / 1_000_000);
+        logger.info('drift.filler.tx_plan', {
+          cat: FILLER_CAT,
+          subcat: FILLER_SUBCAT,
+          marketIndex,
+          taker: takerPkStr,
+          orderId: String(nodeToFill?.node?.order?.orderId || ''),
+          buildMode,
+          updateIx: !!updateFillerIx,
+          makerInfos: Array.isArray(makerInfos) ? makerInfos.length : 0,
+          allowAmm,
+          cuLimit,
+          priority: priorityForSend,
+          priorityLamportsEst,
+          bhSource: bhSourcePlan,
+          lookupTables: lookupCount,
+          sendPreferred: ((CONFIG as any)?.jito?.enabled ? 'jito-be' : 'rpc'),
+          tipLamports: plannedTipLamports,
+          tipAccount: plannedTipAccount,
+        });
+      } catch {}
 
       if (this.state.dryRun) {
         logger.info('drift.filler.dry_run', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), marketIndex });
@@ -518,7 +548,22 @@ export class DriftFillerRunner {
           const vtxPrimary = toV0Tx((updateFillerIx ? ixsWithUpdate : ixsFillOnly) as any);
           try {
             const bhSource = cachedBh ? 'cached' : (cachedBhEarly ? 'cached_early' : ((bh as any)?.blockhash ? 'fetched' : 'unknown'));
-            logger.info('drift.filler.try_sent', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), cuLimit, priority: priorityForSend, buildMode, bhSource, lookups: Array.isArray(this.lookupTableAccounts) ? this.lookupTableAccounts.length : 0, sendPath: ((CONFIG as any)?.jito?.enabled ? 'jito-first' : 'rpc') });
+            const lookupCount = Array.isArray(this.lookupTableAccounts) ? this.lookupTableAccounts.length : 0;
+            logger.info('drift.filler.try_sent', {
+              cat: FILLER_CAT,
+              subcat: FILLER_SUBCAT,
+              marketIndex,
+              taker: takerPkStr,
+              orderId: String(nodeToFill?.node?.order?.orderId || ''),
+              cuLimit,
+              priority: priorityForSend,
+              buildMode,
+              bhSource,
+              lookups: lookupCount,
+              sendPath: ((CONFIG as any)?.jito?.enabled ? 'jito-first' : 'rpc'),
+              tipLamports: plannedTipLamports,
+              tipAccount: plannedTipAccount,
+            });
           } catch {}
           const sigTx = await sendV0(vtxPrimary);
           this.fillsInWindow.push(Date.now());
