@@ -361,7 +361,7 @@ export class DriftFillerRunner {
         [updateFillerIx, fillIx, revertIx, bh] = await Promise.all([updateFillerIxP, fillIxP, revertIxP, blockhashP]);
       }
 
-      // If taker has a valid referrer stats account, append it as a remaining account to the fill ix
+      // If taker has a valid referrer stats account, append it as a remaining account to the fill ix (do not block if missing)
       try {
         const ref = (takerUa as any)?.referrerInfo?.referrer;
         if (ref && String(ref) !== '11111111111111111111111111111111') {
@@ -373,8 +373,7 @@ export class DriftFillerRunner {
               (fillIx as any).keys.push({ pubkey: refStatsPk, isSigner: false, isWritable: true });
             }
           } else {
-            try { logger.info('drift.filler.skip_missing_referrer_stats', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, marketIndex }); } catch {}
-            return false;
+            try { logger.info('drift.filler.missing_referrer_stats_proceed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, marketIndex }); } catch {}
           }
         }
       } catch {}
@@ -427,6 +426,7 @@ export class DriftFillerRunner {
       const dispatch = async () => {
         try {
           const vtxFillOnly = toV0Tx(ixsFillOnly as any);
+          try { logger.info('drift.filler.try_sent', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), cuLimit, priority: effectivePriority }); } catch {}
           const sigTx = await sendV0(vtxFillOnly);
           this.fillsInWindow.push(Date.now());
           logger.info('drift.filler.ok', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, sig: sigTx, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
@@ -461,6 +461,7 @@ export class DriftFillerRunner {
               const msgRetry = new TransactionMessage({ payerKey: this.client.wallet.publicKey, recentBlockhash: bh2Str, instructions: ixsRetry }).compileToV0Message(this.lookupTableAccounts || []);
               const vRetry = new VersionedTransaction(msgRetry);
               vRetry.sign([this.client.wallet.payer]);
+              try { logger.info('drift.filler.try_sent', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), cuLimit, priority: effectivePriority, reason: 'blockhash_refresh' }); } catch {}
               const sigTx = await sendV0(vRetry);
               this.fillsInWindow.push(Date.now());
               logger.info('drift.filler.ok', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, sig: sigTx, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
@@ -502,6 +503,7 @@ export class DriftFillerRunner {
                 const msgUpd = new TransactionMessage({ payerKey: this.client.wallet.publicKey, recentBlockhash: bh2Str, instructions: ixsUpd }).compileToV0Message(this.lookupTableAccounts || []);
                 const vUpd = new VersionedTransaction(msgUpd);
                 vUpd.sign([this.client.wallet.payer]);
+                try { logger.info('drift.filler.try_sent', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), cuLimit, priority: boosted, reason: 'revert_retry' }); } catch {}
                 sigTx = await sendV0(vUpd);
               } else {
                 const msgFo = new TransactionMessage({
@@ -515,6 +517,7 @@ export class DriftFillerRunner {
                 }).compileToV0Message(this.lookupTableAccounts || []);
                 const vFill = new VersionedTransaction(msgFo);
                 vFill.sign([this.client.wallet.payer]);
+                try { logger.info('drift.filler.try_sent', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), cuLimit, priority: boosted, reason: 'revert_retry' }); } catch {}
                 sigTx = await sendV0(vFill);
               }
               this.fillsInWindow.push(Date.now());
@@ -558,6 +561,12 @@ export class DriftFillerRunner {
     const t0 = Date.now();
     this.state.lastRunAt = t0;
 
+    // Loop time and work budgets to keep each tick responsive
+    const LOOP_BUDGET_MS = Math.max(150, Number(((CONFIG as any)?.drift?.loopTimeBudgetMs) ?? 300));
+    const MAX_NODES_PER_LOOP = Math.max(50, Number(((CONFIG as any)?.drift?.maxNodesPerLoop) ?? 200));
+    let processedNodes = 0;
+    let budgetExceeded = false;
+
     try {
       const dlob = this.dlobSubscriber?.getDLOB?.();
       if (!dlob) {
@@ -590,6 +599,7 @@ export class DriftFillerRunner {
       const sample: Array<{ m: number; taker: string; id: string; makers: number }> = [];
 
       for (const market of (Array.isArray(perps) ? perps : [])) {
+        if (budgetExceeded) break;
         const mStart = Date.now();
         const idx = Number(market?.marketIndex || 0);
         if (!this.inAllowlist(idx)) continue;
@@ -671,10 +681,16 @@ export class DriftFillerRunner {
 
         let iter = 0;
         for (const node of nodesToFill) {
+          if ((Date.now() - t0) > LOOP_BUDGET_MS || processedNodes >= MAX_NODES_PER_LOOP) {
+            budgetExceeded = true;
+            try { logger.debug('drift.filler.loop_budget_exhausted', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, processedNodes, ms: Date.now() - t0 }); } catch {}
+            break;
+          }
           iter += 1;
           if ((iter % 50) === 0) { try { await new Promise((r) => setImmediate(r)); } catch {} }
           try {
             if (!node?.node?.order) continue;
+            processedNodes += 1;
             const allowAmm = this.config.allowAmmFills !== false; // default allow
             if (typeof node?.node?.isVammNode === 'function' && node.node.isVammNode()) {
               if (!allowAmm) {
