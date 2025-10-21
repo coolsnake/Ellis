@@ -105,7 +105,7 @@ export const FillerRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onClose,
           </div>
           <div>
             <div className="text-gray-400 mb-1">Compute Unit Limit</div>
-            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.cerLimit} onChange={(e) => setForm((p: any) => ({ ...p, cuLimit: Number(e.target.value) }))} />
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.cuLimit} onChange={(e) => setForm((p: any) => ({ ...p, cuLimit: Number(e.target.value) }))} />
           </div>
           <div>
             <div className="text-gray-400 mb-1">Priority Fee (µ-lamports)</div>

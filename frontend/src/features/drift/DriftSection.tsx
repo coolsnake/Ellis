@@ -20,6 +20,7 @@ export const DriftSection: React.FC<{
   onOpenLiqRunner?: () => void;
   onOpenTriggerRunner?: () => void;
   onOpenFillerRunner?: () => void;
+  onOpenExecConfig?: () => void;
 }> = (p) => {
   const { socket: ctxSocket } = useSocket();
   const [status, setStatus] = useState<any>(null);
@@ -422,6 +423,9 @@ export const DriftSection: React.FC<{
             )}
             {!!p.onOpenFillerRunner && (
               <button className="px-2 py-1 bg-sky-600 text-white rounded text-sm" onClick={() => p.onOpenFillerRunner?.()}>+ New Filler Bot</button>
+            )}
+            {!!p.onOpenExecConfig && (
+              <button className="px-2 py-1 bg-gray-700 text-white rounded text-sm" onClick={() => p.onOpenExecConfig?.()}>Execution Config</button>
             )}
           </div>
         </div>

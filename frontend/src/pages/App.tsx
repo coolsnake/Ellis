@@ -17,6 +17,7 @@ import { AddTokenForm } from '../components/AddTokenForm';
 import { FeeConfig } from '../components/FeeConfig';
 import { ArbitrageSection } from '../features/arbitrage/ArbitrageSection';
 import { DriftSection } from '../features/drift/DriftSection';
+import { ExecutionConfigModal } from '../components/ExecutionConfigModal';
 import { ArbConfig } from '../components/ArbConfig';
 import { DataFetchConfig } from '../components/DataFetchConfig';
 import { ArbEngineConfig } from '../components/ArbEngineConfig';
@@ -95,6 +96,7 @@ export const App: React.FC = () => {
   const [liqStatus, setLiqStatus] = useState<any>(null);
   const [showLiqRunnerConfig, setShowLiqRunnerConfig] = useState<boolean>(false);
   const [showTriggerRunnerConfig, setShowTriggerRunnerConfig] = useState<boolean>(false);
+  const [showExecConfig, setShowExecConfig] = useState<boolean>(false);
 
   // Default to same-origin behind nginx; allow overrides via env
   const apiBase = useMemo(() => (import.meta as any).env?.VITE_API_BASE ?? '/api', []);
@@ -1434,6 +1436,7 @@ export const App: React.FC = () => {
             onOpenLiqRunner={() => setShowLiqRunnerConfig(true)}
             onOpenTriggerRunner={() => setShowTriggerRunnerConfig(true)}
             onOpenFillerRunner={() => setShowFillerRunnerConfig(true)}
+            onOpenExecConfig={() => setShowExecConfig(true)}
           />
         </CollapsibleSection>
         <CollapsibleSection title={"Positions"} storageKey="panel:positions">
@@ -2167,6 +2170,14 @@ export const App: React.FC = () => {
       )}
       {showEngineConfig && (
         <ArbEngineConfig apiBase={apiBase} onClose={() => setShowEngineConfig(false)} />
+      )}
+      {showExecConfig && (
+        <ExecutionConfigModal apiBase={apiBase} onClose={() => setShowExecConfig(false)} onSaved={async () => {
+          try {
+            const sys = await fetch(`${apiBase}${ROUTES.system.base}`).then(r => r.json());
+            setSystem(sys);
+          } catch {}
+        }} />
       )}
     </div>
   );
