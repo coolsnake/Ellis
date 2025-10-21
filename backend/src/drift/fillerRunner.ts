@@ -349,8 +349,22 @@ export class DriftFillerRunner {
       let updateFillerIx: any = null, fillIx: any, revertIx: any = null, bh: any;
       // Always await fill ix (required), but time-bound update/revert so they don't block the first send
       const { withRpcTimeout } = await import('../utils/rpcLimiter.js');
+      let usedNoMakersFallback = false;
       if (cachedBhEarly) {
-        fillIx = await fillIxP;
+        try {
+          fillIx = await withRpcTimeout(fillIxP as any, 500, 'fill_ix');
+        } catch {
+          // Fallback: minimal fill without makers
+          try {
+            const emptyMakers: any[] = [];
+            fillIx = await this.client.getFillPerpOrderIx(takerUserPk, takerUa, nodeToFill.node.order, emptyMakers);
+            usedNoMakersFallback = true;
+            try { logger.info('drift.filler.build_fallback_nomakers', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') }); } catch {}
+          } catch (e: any) {
+            try { logger.info('drift.filler.build_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, err: String(e?.message || e) }); } catch {}
+            return false;
+          }
+        }
         try { updateFillerIx = await withRpcTimeout(updateFillerIxP as any, 400, 'upd_ix'); } catch { updateFillerIx = null; }
         try { revertIx = await withRpcTimeout(revertIxP as any, 400, 'rev_ix'); } catch { revertIx = null; }
       } else {
@@ -362,7 +376,21 @@ export class DriftFillerRunner {
             return await withRpcLimit(() => this.connection.getLatestBlockhash({ commitment: 'processed' }));
           }
         })();
-        [fillIx, bh] = await Promise.all([fillIxP, blockhashP]);
+        try {
+          [fillIx, bh] = await Promise.all([withRpcTimeout(fillIxP as any, 500, 'fill_ix'), blockhashP]);
+        } catch {
+          // Fallback: ensure bh is available then build minimal fill
+          try { bh = await blockhashP; } catch {}
+          try {
+            const emptyMakers: any[] = [];
+            fillIx = await this.client.getFillPerpOrderIx(takerUserPk, takerUa, nodeToFill.node.order, emptyMakers);
+            usedNoMakersFallback = true;
+            try { logger.info('drift.filler.build_fallback_nomakers', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') }); } catch {}
+          } catch (e: any) {
+            try { logger.info('drift.filler.build_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, err: String(e?.message || e) }); } catch {}
+            return false;
+          }
+        }
         try { updateFillerIx = await withRpcTimeout(updateFillerIxP as any, 400, 'upd_ix'); } catch { updateFillerIx = null; }
         try { revertIx = await withRpcTimeout(revertIxP as any, 400, 'rev_ix'); } catch { revertIx = null; }
       }
@@ -396,7 +424,7 @@ export class DriftFillerRunner {
         fillIx,
         ...(updateFillerIx ? [revertIx] : []),
       ];
-      const buildMode = updateFillerIx ? 'fill_with_update_ready' : 'fill_only_deadline';
+      const buildMode = updateFillerIx ? 'fill_with_update_ready' : (usedNoMakersFallback ? 'fill_minimal_nomakers' : 'fill_only_deadline');
 
       if (this.state.dryRun) {
         logger.info('drift.filler.dry_run', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), marketIndex });
@@ -425,8 +453,8 @@ export class DriftFillerRunner {
           // One fast attempt with tight client-side timeout, no global rpc limiter
           return await withTimeout(fastSend(), 1200);
         } catch {
-          // Immediate second attempt
-          return await fastSend();
+          // Immediate second attempt with its own short timeout
+          return await withTimeout(fastSend(), 1200);
         }
       };
 
