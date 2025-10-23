@@ -371,7 +371,21 @@ export class DriftFillerRunner {
           } catch {}
           try {
             if (typeof this.client.getUpdateUserIdleIx === 'function') {
-              const ix = await this.client.getUpdateUserIdleIx(takerUserPk, takerUa, this.client.wallet.publicKey);
+              // Prefer passing the filler bot's Drift user account, not the raw wallet pubkey
+              let subId: number = 0;
+              try { subId = Number.isFinite(Number(this.state.subaccountId)) ? Number(this.state.subaccountId) : 0; } catch { subId = 0; }
+              let fillerUserPk: any = null;
+              try {
+                const { getUserAccountPublicKey } = this.sdk;
+                fillerUserPk = await getUserAccountPublicKey(this.client.program.programId, this.client.wallet.publicKey, subId);
+              } catch {}
+              const ix = await this.client.getUpdateUserIdleIx(takerUserPk, takerUa, fillerUserPk || this.client.wallet.publicKey);
+              // Safety: if the resulting ix appears to reference the wallet twice (as both authority and filler), skip it
+              try {
+                const walletStr = this.client.wallet.publicKey?.toBase58?.();
+                const dupCount = Array.isArray((ix as any)?.keys) ? (ix as any).keys.filter((k: any) => String(k?.pubkey || '') === String(walletStr)).length : 0;
+                if (dupCount > 1) return null;
+              } catch {}
               if (ix) return ix;
             }
           } catch {}
@@ -416,22 +430,39 @@ export class DriftFillerRunner {
       } else {
         const blockhashP = (async () => {
           try {
-            const { withRpcRetry } = await import('../utils/rpcLimiter.js');
-            return await withRpcRetry(() => this.connection.getLatestBlockhash({ commitment: 'processed' }), { timeoutMs: 1200, retries: 1, baseMs: 150, maxMs: 600, label: 'blockhash.fast' });
+            const { withRpcRetry, withRpcTimeout } = await import('../utils/rpcLimiter.js');
+            const p = withRpcRetry(
+              () => this.connection.getLatestBlockhash({ commitment: 'processed' }),
+              { timeoutMs: 900, retries: 1, baseMs: 120, maxMs: 500, label: 'blockhash.fast' }
+            );
+            // Hard cap total BH wait
+            return await withRpcTimeout(p, 1200, 'blockhash.hardcap');
           } catch {
-            return await withRpcLimit(() => this.connection.getLatestBlockhash({ commitment: 'processed' }));
+            return null as any;
           }
         })();
         try {
-          [fillIx, bh] = await Promise.all([withRpcTimeout(fillIxP as any, 500, 'fill_ix'), blockhashP]);
+          const res = await Promise.all([withRpcTimeout(fillIxP as any, 500, 'fill_ix'), blockhashP]);
+          fillIx = res[0];
+          bh = res[1];
+          if (!bh || !(bh as any)?.blockhash) {
+            try { logger.info('drift.filler.skip_bh_slow', { cat: FILLER_CAT, subcat: FILLER_SUBCAT }); } catch {}
+            return false;
+          }
           timings.fillPri = Date.now();
+          timings.bh = timings.fillPri;
         } catch {
-          // Fallback: ensure bh is available then build minimal fill
-          try { bh = await blockhashP; } catch {}
+          // Fallback: build minimal fill, but only proceed if BH arrived within cap
+          let bhRes: any = null;
+          try { bhRes = await blockhashP; } catch { bhRes = null; }
+          if (!bhRes || !(bhRes as any)?.blockhash) {
+            try { logger.info('drift.filler.skip_bh_slow', { cat: FILLER_CAT, subcat: FILLER_SUBCAT }); } catch {}
+            return false;
+          }
+          bh = bhRes;
           timings.bh = Date.now();
           try {
             const emptyMakers: any[] = [];
-            // Bound fallback as well
             fillIx = await withRpcTimeout(
               this.client.getFillPerpOrderIx(takerUserPk, takerUa, nodeToFill.node.order, emptyMakers) as any,
               800,
