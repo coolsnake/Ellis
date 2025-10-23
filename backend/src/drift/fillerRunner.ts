@@ -117,6 +117,22 @@ export class DriftFillerRunner {
       throw new Error('Drift client or connection unavailable');
     }
 
+    // Start a blockhash warmer immediately (before discovery) to avoid early defers
+    try {
+      if (this.bhWarmTimer) { try { clearInterval(this.bhWarmTimer); } catch {} this.bhWarmTimer = null; }
+      const step = async () => {
+        try {
+          const { withRpcRetry, withRpcTimeout } = await import('../utils/rpcLimiter.js');
+          const p = withRpcRetry(() => this.connection.getLatestBlockhash({ commitment: 'processed' }), { timeoutMs: 700, retries: 0, baseMs: 100, maxMs: 300, label: 'bh.warm.start' });
+          const res = await withRpcTimeout(p, 900, 'bh.warmcap.start');
+          const bh = String((res as any)?.blockhash || '');
+          if (bh) { this.bhCacheStr = bh; this.bhCacheTs = Date.now(); }
+        } catch {}
+      };
+      step().catch(() => {});
+      this.bhWarmTimer = setInterval(() => { step().catch(() => {}); }, Math.max(300, Number(((CONFIG as any)?.drift?.blockhashWarmMs) ?? 400)));
+    } catch {}
+
     try {
       if (Number.isFinite(this.state.subaccountId)) {
         await (svc as any).switchSubaccount?.(Number(this.state.subaccountId));
@@ -399,7 +415,9 @@ export class DriftFillerRunner {
       // Prefer cached blockhash; only fetch live if no cache available
       const cachedBhEarly = (() => {
         try {
-          return this.blockhashSubscriber?.getLatestBlockhash?.(150)?.blockhash || this.bhCacheStr;
+          const fromSub = this.blockhashSubscriber?.getLatestBlockhash?.(150)?.blockhash;
+          // As a last resort, accept any warmed blockhash if Jito is enabled (BE will validate at landing)
+          return fromSub || this.bhCacheStr;
         } catch { return this.bhCacheStr; }
       })();
       let updateFillerIx: any = null, fillIx: any, revertIx: any = null, bh: any;
