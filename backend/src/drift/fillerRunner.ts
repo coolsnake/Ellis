@@ -234,6 +234,8 @@ export class DriftFillerRunner {
     try {
       const takerPkStr = String(nodeToFill?.node?.userAccount || '');
       const { getUserAccountPublicKey } = this.sdk;
+      const t0 = Date.now();
+      const timings: any = { t0, hyd: 0, mk: 0, fillPri: 0, fillFb: 0, bh: 0, upd: 0, rev: 0, tip: 0, compile: 0 };
       // Bounded, non-blocking taker hydration
       const getTakerUaQuick = async (): Promise<any | null> => {
         // Warm cache
@@ -263,6 +265,7 @@ export class DriftFillerRunner {
       };
 
       const takerUa = await getTakerUaQuick();
+      timings.hyd = Date.now();
       if (!takerUa) {
         try { logger.debug('drift.filler.skip_taker_hydration_timeout', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, marketIndex }); } catch {}
         return false;
@@ -343,6 +346,7 @@ export class DriftFillerRunner {
           });
         } catch {}
       }
+      timings.mk = Date.now();
 
       const takerUserPk = await getUserAccountPublicKey(this.client.program.programId, takerUa.authority, takerUa.subAccountId);
       const cuLimit = Math.max(220_000, Math.min(800_000, Number(this.config.cuLimit ?? 300_000)));
@@ -386,20 +390,29 @@ export class DriftFillerRunner {
       if (cachedBhEarly) {
         try {
           fillIx = await withRpcTimeout(fillIxP as any, 500, 'fill_ix');
+          timings.fillPri = Date.now();
         } catch {
           // Fallback: minimal fill without makers
           try {
             const emptyMakers: any[] = [];
-            fillIx = await this.client.getFillPerpOrderIx(takerUserPk, takerUa, nodeToFill.node.order, emptyMakers);
+            // Bound fallback as well to prevent multi-second stalls
+            fillIx = await withRpcTimeout(
+              this.client.getFillPerpOrderIx(takerUserPk, takerUa, nodeToFill.node.order, emptyMakers) as any,
+              800,
+              'fill_ix_fb'
+            );
             usedNoMakersFallback = true;
             try { logger.info('drift.filler.build_fallback_nomakers', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') }); } catch {}
+            timings.fillFb = Date.now();
           } catch (e: any) {
             try { logger.info('drift.filler.build_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, err: String(e?.message || e) }); } catch {}
             return false;
           }
         }
         try { updateFillerIx = await withRpcTimeout(updateFillerIxP as any, 400, 'upd_ix'); } catch { updateFillerIx = null; }
+        timings.upd = Date.now();
         try { revertIx = await withRpcTimeout(revertIxP as any, 400, 'rev_ix'); } catch { revertIx = null; }
+        timings.rev = Date.now();
       } else {
         const blockhashP = (async () => {
           try {
@@ -411,21 +424,31 @@ export class DriftFillerRunner {
         })();
         try {
           [fillIx, bh] = await Promise.all([withRpcTimeout(fillIxP as any, 500, 'fill_ix'), blockhashP]);
+          timings.fillPri = Date.now();
         } catch {
           // Fallback: ensure bh is available then build minimal fill
           try { bh = await blockhashP; } catch {}
+          timings.bh = Date.now();
           try {
             const emptyMakers: any[] = [];
-            fillIx = await this.client.getFillPerpOrderIx(takerUserPk, takerUa, nodeToFill.node.order, emptyMakers);
+            // Bound fallback as well
+            fillIx = await withRpcTimeout(
+              this.client.getFillPerpOrderIx(takerUserPk, takerUa, nodeToFill.node.order, emptyMakers) as any,
+              800,
+              'fill_ix_fb'
+            );
             usedNoMakersFallback = true;
             try { logger.info('drift.filler.build_fallback_nomakers', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') }); } catch {}
+            timings.fillFb = Date.now();
           } catch (e: any) {
             try { logger.info('drift.filler.build_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, err: String(e?.message || e) }); } catch {}
             return false;
           }
         }
         try { updateFillerIx = await withRpcTimeout(updateFillerIxP as any, 400, 'upd_ix'); } catch { updateFillerIx = null; }
+        timings.upd = Date.now();
         try { revertIx = await withRpcTimeout(revertIxP as any, 400, 'rev_ix'); } catch { revertIx = null; }
+        timings.rev = Date.now();
       }
 
       // If taker has a valid referrer stats account, append it as a remaining account to the fill ix (do not block if missing)
@@ -474,6 +497,7 @@ export class DriftFillerRunner {
           } catch {}
         }
       } catch {}
+      timings.tip = Date.now();
 
       const ixsFillOnly = [
         ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
@@ -515,6 +539,30 @@ export class DriftFillerRunner {
         });
       } catch {}
 
+      // Emit build timing breakdown before dispatch
+      try {
+        const total = Date.now() - t0;
+        logger.info('drift.filler.build_timing', {
+          cat: FILLER_CAT,
+          subcat: FILLER_SUBCAT,
+          marketIndex,
+          taker: takerPkStr,
+          orderId: String(nodeToFill?.node?.order?.orderId || ''),
+          ms_total: total,
+          ms_hyd: Math.max(0, timings.hyd - t0),
+          ms_mk: Math.max(0, timings.mk - (timings.hyd || t0)),
+          ms_fillPri: Math.max(0, timings.fillPri - (timings.mk || timings.hyd || t0)),
+          ms_fillFb: Math.max(0, timings.fillFb - (timings.fillPri || timings.mk || timings.hyd || t0)),
+          ms_bh: Math.max(0, timings.bh - (timings.fillFb || timings.fillPri || timings.mk || timings.hyd || t0)),
+          ms_upd: Math.max(0, timings.upd - (timings.bh || timings.fillFb || timings.fillPri || timings.mk || timings.hyd || t0)),
+          ms_rev: Math.max(0, timings.rev - (timings.upd || timings.bh || timings.fillFb || timings.fillPri || timings.mk || timings.hyd || t0)),
+          ms_tip: Math.max(0, timings.tip - (timings.rev || timings.upd || timings.bh || timings.fillFb || timings.fillPri || timings.mk || timings.hyd || t0)),
+          ms_compile: Math.max(0, timings.compile - (timings.tip || timings.rev || timings.upd || timings.bh || timings.fillFb || timings.fillPri || timings.mk || timings.hyd || t0)),
+          bhSource: (() => { const cachedBh = (() => { try { return this.blockhashSubscriber?.getLatestBlockhash?.(5)?.blockhash; } catch { return undefined; } })(); return cachedBh ? 'cached' : (cachedBhEarly ? 'cached_early' : ((bh as any)?.blockhash ? 'fetched' : 'unknown')); })(),
+          usedNoMakersFallback,
+        });
+      } catch {}
+
       if (this.state.dryRun) {
         logger.info('drift.filler.dry_run', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || ''), marketIndex });
         return false;
@@ -526,6 +574,7 @@ export class DriftFillerRunner {
         const msg = new TransactionMessage({ payerKey: this.client.wallet.publicKey, recentBlockhash, instructions }).compileToV0Message(this.lookupTableAccounts || []);
         const vtx = new VersionedTransaction(msg);
         vtx.sign([this.client.wallet.payer]);
+        timings.compile = Date.now();
         return vtx;
       };
       const sendV0 = async (vtx: VersionedTransaction): Promise<string> => {
