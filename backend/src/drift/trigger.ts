@@ -60,6 +60,7 @@ import {
 	PythLazerSubscriber,
 } from '../pythLazerSubscriber';
 import { PriceServiceConnection } from '@pythnetwork/price-service-client';
+import { OracleUpdater } from './oracles/oracleUpdater.js';
 
 const TRIGGER_ORDER_COOLDOWN_MS = 10000; // time to wait between triggering an order
 
@@ -204,6 +205,7 @@ export class TriggerBot implements Bot {
 	private pythLazerClient?: PythLazerSubscriber;
 	private pythPullFeedIdsToCrank: FeedIdToCrankInfo[] = [];
 	private pythPullClient?: PriceServiceConnection;
+	private oracleUpdater?: OracleUpdater;
 
 	// map from marketId (i.e. perp-0 or spot-0) to pyth feed id
 	private marketIdToPythPullFeedId: Map<string, string> = new Map();
@@ -291,6 +293,11 @@ export class TriggerBot implements Bot {
 					spotMarkets,
 					perpMarkets
 				);
+
+			// Shared updater for reuse later (even if we still keep the existing code paths here)
+			try {
+				this.oracleUpdater = new OracleUpdater({ sdk: require('@drift-labs/sdk'), driftClient: this.driftClient, cluster: this.globalConfig.driftEnv });
+			} catch {}
 
 			for (const market of [...spotMarkets, ...perpMarkets]) {
 				const isSpotMarket = 'precision' in market;

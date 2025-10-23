@@ -595,6 +595,15 @@ export const CONFIG = {
       enumerateEnqueueDelayMs: Number(process.env.DRIFT_LIQ_ENUMERATE_ENQUEUE_DELAY_MS || 200),
     },
   }, 
+  // Pyth oracle update configuration
+  pyth: {
+    hermesEndpoint: process.env.PYTH_HERMES_ENDPOINT || undefined,
+    updatePolicy: (process.env.PYTH_UPDATE_POLICY as any) || 'stale', // 'stale' | 'always' | 'off'
+    updateTimeoutMs: Number(process.env.PYTH_UPDATE_TIMEOUT_MS || 1000),
+    // Lazer (optional; not wired here yet)
+    lazerEndpoints: process.env.PYTH_LAZER_ENDPOINTS || undefined,
+    lazerToken: process.env.PYTH_LAZER_TOKEN || undefined,
+  },
   // (Saber removed)
   // Meteora Balanced (mAMM) configuration
   meteoraBalanced: {

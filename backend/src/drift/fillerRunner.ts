@@ -6,6 +6,7 @@ import { startTipFeed, getCachedTipInfo } from '../execution/jitoTipCache.js';
 import { sendToBlockEngine } from '../execution/jitoClient.js';
 import { RunnerRegistry } from '../utils/runnerRegistry.js';
 import { DriftService } from './client.js';
+import { OracleUpdater } from './oracles/oracleUpdater.js';
 import { logger } from '../utils/logger.js';
 import { CONFIG } from '../utils/config.js';
 
@@ -58,6 +59,7 @@ export class DriftFillerRunner {
   userMap: any | null = null;
   dlobSubscriber: any | null = null;
   orderSubscriber: any | null = null;
+  private oracleUpdater: OracleUpdater | null = null;
 
   private nodesCooldown: Map<string, number> = new Map();
   private fillsInWindow: number[] = [];
@@ -198,6 +200,11 @@ export class DriftFillerRunner {
     this.dlobSubscriber = (infra as any).dlobSubscriber;
     this.orderSubscriber = (infra as any).orderSubscriber;
     logger.info('drift.filler.usermap_dlob_ready', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name, shared: true });
+    try {
+      if (!this.oracleUpdater) {
+        this.oracleUpdater = new OracleUpdater({ sdk: this.sdk, driftClient: this.client, cluster: (CONFIG as any)?.drift?.cluster || 'mainnet-beta' });
+      }
+    } catch {}
     // Start user prefetcher once shared infra is ready
     try { await (svc as any).startUserPrefetcher?.(this.dlobSubscriber, this.userMap); } catch {}
     // Initialize blockhash subscriber and priority fee strategy
@@ -412,6 +419,17 @@ export class DriftFillerRunner {
       })();
       const fillIxP = this.client.getFillPerpOrderIx(takerUserPk, takerUa, nodeToFill.node.order, makerInfos);
       const revertIxP = this.client.getRevertFillIx();
+      // Build optional oracle update instructions (Pyth Pull) if enabled
+      let oracleUpdateIxs: any[] = [];
+      try {
+        const od = this.client.getOracleDataForPerpMarket?.(marketIndex);
+        const odSlot = Number((od as any)?.slot?.toString?.() || 0);
+        const curSlot = this.slotSubscriber?.getSlot?.() ?? 0;
+        if (this.oracleUpdater) {
+          const upd = await this.oracleUpdater.getOracleUpdateIxsForPerp({ marketIndex, currentSlot: Number(curSlot), oracleSlot: Number(odSlot) });
+          if (Array.isArray(upd) && upd.length > 0) oracleUpdateIxs = upd;
+        }
+      } catch {}
       // Prefer cached blockhash; only fetch live if no cache available
       const cachedBhEarly = (() => {
         try {
@@ -509,12 +527,14 @@ export class DriftFillerRunner {
       const ixsFillOnly = [
         ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
         ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityForSend }),
+        ...oracleUpdateIxs,
         ...ixsFill,
       ];
       const ixsWithUpdate = [
         ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
         ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityForSend }),
         ...(updateFillerIx ? [updateFillerIx] : []),
+        ...oracleUpdateIxs,
         ...ixsFill,
         ...(updateFillerIx ? [revertIx] : []),
       ];
