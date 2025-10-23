@@ -397,7 +397,7 @@ export class DriftFillerRunner {
       // Prefer cached blockhash; only fetch live if no cache available
       const cachedBhEarly = (() => {
         try {
-          return this.blockhashSubscriber?.getLatestBlockhash?.(60)?.blockhash || this.bhCacheStr;
+          return this.blockhashSubscriber?.getLatestBlockhash?.(150)?.blockhash || this.bhCacheStr;
         } catch { return this.bhCacheStr; }
       })();
       let updateFillerIx: any = null, fillIx: any, revertIx: any = null, bh: any;
@@ -557,10 +557,11 @@ export class DriftFillerRunner {
 
       const cachedBh = (() => {
         try {
-          return this.blockhashSubscriber?.getLatestBlockhash?.(60)?.blockhash || this.bhCacheStr;
+          return this.blockhashSubscriber?.getLatestBlockhash?.(150)?.blockhash || this.bhCacheStr;
         } catch { return this.bhCacheStr; }
       })();
       const recentBlockhash = String(cachedBh || cachedBhEarly || (bh as any)?.blockhash);
+      try { if (recentBlockhash) { this.bhCacheStr = recentBlockhash; this.bhCacheTs = Date.now(); } } catch {}
       const toV0Tx = (instructions: any[]) => {
         const msg = new TransactionMessage({ payerKey: this.client.wallet.publicKey, recentBlockhash, instructions }).compileToV0Message(this.lookupTableAccounts || []);
         const vtx = new VersionedTransaction(msg);
