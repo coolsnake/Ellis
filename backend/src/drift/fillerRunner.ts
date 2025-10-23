@@ -1,7 +1,8 @@
 // @ts-nocheck
 import { ComputeBudgetProgram, PublicKey, TransactionMessage, VersionedTransaction, AddressLookupTableAccount } from '@solana/web3.js';
 import { withRpcLimit } from '../utils/rpcLimiter.js';
-import { buildTipIx, selectTipLamports, fetchTipAccount } from '../execution/jitoTip.js';
+import { buildTipIx } from '../execution/jitoTip.js';
+import { startTipFeed, getCachedTipInfo } from '../execution/jitoTipCache.js';
 import { sendToBlockEngine } from '../execution/jitoClient.js';
 import { RunnerRegistry } from '../utils/runnerRegistry.js';
 import { DriftService } from './client.js';
@@ -209,6 +210,8 @@ export class DriftFillerRunner {
         try { this.lookupTableAccounts = await (this.client?.fetchAllLookupTableAccounts?.()); } catch {}
       }, every);
     } catch {}
+    // Start Jito tip feed cache (non-blocking)
+    try { startTipFeed(Math.max(10_000, Number(((CONFIG as any)?.jito?.tipRefreshMs) ?? 15_000))); } catch {}
     // Prepare WS fallback (lazy start on degradation)
     try { this.dlobWsFallback = null; } catch {}
   }
@@ -265,19 +268,16 @@ export class DriftFillerRunner {
         return false;
       }
 
-      // If taker has a referrer configured but referrer stats do not exist, skip to avoid 6030
+      // If taker has a referrer configured but referrer stats do not exist, skip (use cache-assisted check)
       try {
-        const { getUserStatsAccountPublicKey } = this.sdk;
         const ref = (takerUa as any)?.referrerInfo?.referrer;
         if (ref) {
           try {
-            const refStatsPk = getUserStatsAccountPublicKey(this.client.program.programId, ref);
-            if (refStatsPk) {
-              const info = await withRpcLimit(() => this.connection.getAccountInfo(refStatsPk, 'processed'));
-              if (!info) {
-                try { logger.info('drift.filler.skip_missing_referrer_stats', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, marketIndex }); } catch {}
-                return false;
-              }
+            const svc = DriftService.getInstance() as any;
+            const ok = await (svc.ensureRefStatsReady?.(ref));
+            if (!ok) {
+              try { logger.info('drift.filler.skip_missing_referrer_stats', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, taker: takerPkStr, marketIndex }); } catch {}
+              return false;
             }
           } catch {}
         }
@@ -360,8 +360,16 @@ export class DriftFillerRunner {
       const updateFillerIxP = (async () => {
         for (let i = 0; i < 3; i += 1) {
           try {
-            const ix = await (this.client.getUpdateFillerIx?.() ?? this.client.getUpdateUserIdleIx?.());
-            if (ix) return ix;
+            if (typeof this.client.getUpdateFillerIx === 'function') {
+              const ix = await this.client.getUpdateFillerIx();
+              if (ix) return ix;
+            }
+          } catch {}
+          try {
+            if (typeof this.client.getUpdateUserIdleIx === 'function') {
+              const ix = await this.client.getUpdateUserIdleIx(takerUserPk, takerUa, this.client.wallet.publicKey);
+              if (ix) return ix;
+            }
           } catch {}
           try { await new Promise((r) => setTimeout(r, 20)); } catch {}
         }
@@ -443,24 +451,20 @@ export class DriftFillerRunner {
       let plannedTipAccount: string | undefined = undefined;
       try {
         if ((CONFIG as any)?.jito?.enabled) {
-          // Default tipAccount: if not configured, use the bot wallet (payer) as recipient
-          let tipAccountStr = String((CONFIG as any)?.jito?.tipAccount || '');
-          if (!tipAccountStr) {
-            try { tipAccountStr = this.client.wallet.publicKey?.toBase58?.() || ''; } catch {}
-          }
-          if (!tipAccountStr) {
-            // Best-effort fetch from BE tip accounts endpoint (if available)
-            try { tipAccountStr = String(await fetchTipAccount((CONFIG as any)?.jito?.blockEngineUrl) || ''); } catch {}
-          }
-          if (tipAccountStr) {
-            const priorityLamportsEst = Math.floor((priorityForSend * Math.max(220_000, cuLimit)) / 1_000_000);
-            const tipLamports = await selectTipLamports((CONFIG as any).jito, priorityLamportsEst);
-            const tipPk = new PublicKey(tipAccountStr);
-            const tipIx = buildTipIx(this.client.wallet.publicKey, tipPk, tipLamports);
-            ixsFill = [tipIx, fillIx];
-            plannedTipLamports = tipLamports;
-            plannedTipAccount = tipPk.toBase58();
-          }
+          // Read from cache (fallback to payer if not ready)
+          const cached = getCachedTipInfo();
+          const tipPk = (cached?.tipAccount) || this.client.wallet.publicKey;
+          const priorityLamportsEst = Math.floor((priorityForSend * Math.max(220_000, cuLimit)) / 1_000_000);
+          const cfg = (CONFIG as any)?.jito || {};
+          const fixed = Number(cfg?.fixedTipLamports ?? 0);
+          const share = Number(cfg?.tipShare ?? 0.3);
+          const floor = Number(cached?.tipFloorLamports ?? 0);
+          const estShare = Math.floor((priorityLamportsEst * share) / Math.max(1 - share, 0.01));
+          const tipLamports = Math.max(1000, fixed > 0 ? fixed : (floor || estShare));
+          const tipIx = buildTipIx(this.client.wallet.publicKey, tipPk, tipLamports);
+          ixsFill = [tipIx, fillIx];
+          plannedTipLamports = tipLamports;
+          plannedTipAccount = tipPk.toBase58();
           // Optional: add 'dont-front' read-only account to the first ix
           try {
             if ((CONFIG as any)?.jito?.useDontFrontAccount && Array.isArray(ixsFill?.[0]?.keys)) {
@@ -633,7 +637,13 @@ export class DriftFillerRunner {
             try {
               const [bh2, upd2] = await Promise.all([
                 withRpcLimit(() => this.connection.getLatestBlockhash({ commitment: 'processed' })),
-                (async () => { try { return await (this.client.getUpdateFillerIx?.() ?? this.client.getUpdateUserIdleIx?.()); } catch { return null; } })(),
+                (async () => {
+                  try {
+                    if (typeof this.client.getUpdateFillerIx === 'function') return await this.client.getUpdateFillerIx();
+                    if (typeof this.client.getUpdateUserIdleIx === 'function') return await this.client.getUpdateUserIdleIx(takerUserPk, takerUa, this.client.wallet.publicKey);
+                    return null;
+                  } catch { return null; }
+                })(),
               ]);
               const boosted = Math.max(priorityForSend, 30_000);
               const bh2Str = String(this.blockhashSubscriber?.getLatestBlockhash?.(5)?.blockhash || (bh2 as any)?.blockhash);
