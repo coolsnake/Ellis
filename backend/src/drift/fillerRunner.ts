@@ -66,6 +66,9 @@ export class DriftFillerRunner {
   private dlobUnavailableCount: number = 0;
   private wsNudgeTimer: any | null = null;
   private dlobWsFallback: any | null = null;
+  private bhWarmTimer: any | null = null;
+  private bhCacheStr: string | undefined = undefined;
+  private bhCacheTs: number = 0;
   // Per-loop stats
   private _loopStatsTmp: any | null = null;
 
@@ -160,6 +163,7 @@ export class DriftFillerRunner {
       clearInterval(this.timer as NodeJS.Timeout);
       this.timer = null;
     }
+    if (this.bhWarmTimer) { try { clearInterval(this.bhWarmTimer); } catch {} this.bhWarmTimer = null; }
     if (this.altRefreshTimer) { try { clearInterval(this.altRefreshTimer); } catch {} this.altRefreshTimer = null; }
     if (this.wsNudgeTimer) { try { clearInterval(this.wsNudgeTimer); } catch {} this.wsNudgeTimer = null; }
     this.state.running = false;
@@ -209,6 +213,21 @@ export class DriftFillerRunner {
       this.altRefreshTimer = setInterval(async () => {
         try { this.lookupTableAccounts = await (this.client?.fetchAllLookupTableAccounts?.()); } catch {}
       }, every);
+    } catch {}
+    // Blockhash warmer (processed, tight timeouts)
+    try {
+      if (this.bhWarmTimer) { try { clearInterval(this.bhWarmTimer); } catch {} this.bhWarmTimer = null; }
+      const step = async () => {
+        try {
+          const { withRpcRetry, withRpcTimeout } = await import('../utils/rpcLimiter.js');
+          const p = withRpcRetry(() => this.connection.getLatestBlockhash({ commitment: 'processed' }), { timeoutMs: 700, retries: 0, baseMs: 100, maxMs: 300, label: 'bh.warm' });
+          const res = await withRpcTimeout(p, 900, 'bh.warmcap');
+          const bh = String((res as any)?.blockhash || '');
+          if (bh) { this.bhCacheStr = bh; this.bhCacheTs = Date.now(); }
+        } catch {}
+      };
+      step().catch(() => {});
+      this.bhWarmTimer = setInterval(() => { step().catch(() => {}); }, Math.max(300, Number(((CONFIG as any)?.drift?.blockhashWarmMs) ?? 400)));
     } catch {}
     // Start Jito tip feed cache (non-blocking)
     try { startTipFeed(Math.max(10_000, Number(((CONFIG as any)?.jito?.tipRefreshMs) ?? 15_000))); } catch {}
@@ -396,7 +415,11 @@ export class DriftFillerRunner {
       const fillIxP = this.client.getFillPerpOrderIx(takerUserPk, takerUa, nodeToFill.node.order, makerInfos);
       const revertIxP = this.client.getRevertFillIx();
       // Prefer cached blockhash; only fetch live if no cache available
-      const cachedBhEarly = (() => { try { return this.blockhashSubscriber?.getLatestBlockhash?.(5)?.blockhash; } catch { return undefined; } })();
+      const cachedBhEarly = (() => {
+        try {
+          return this.blockhashSubscriber?.getLatestBlockhash?.(60)?.blockhash || this.bhCacheStr;
+        } catch { return this.bhCacheStr; }
+      })();
       let updateFillerIx: any = null, fillIx: any, revertIx: any = null, bh: any;
       // Always await fill ix (required), but time-bound update/revert so they don't block the first send
       const { withRpcTimeout } = await import('../utils/rpcLimiter.js');
@@ -428,58 +451,9 @@ export class DriftFillerRunner {
         try { revertIx = await withRpcTimeout(revertIxP as any, 400, 'rev_ix'); } catch { revertIx = null; }
         timings.rev = Date.now();
       } else {
-        const blockhashP = (async () => {
-          try {
-            const { withRpcRetry, withRpcTimeout } = await import('../utils/rpcLimiter.js');
-            const p = withRpcRetry(
-              () => this.connection.getLatestBlockhash({ commitment: 'processed' }),
-              { timeoutMs: 900, retries: 1, baseMs: 120, maxMs: 500, label: 'blockhash.fast' }
-            );
-            // Hard cap total BH wait
-            return await withRpcTimeout(p, 1200, 'blockhash.hardcap');
-          } catch {
-            return null as any;
-          }
-        })();
-        try {
-          const res = await Promise.all([withRpcTimeout(fillIxP as any, 500, 'fill_ix'), blockhashP]);
-          fillIx = res[0];
-          bh = res[1];
-          if (!bh || !(bh as any)?.blockhash) {
-            try { logger.info('drift.filler.skip_bh_slow', { cat: FILLER_CAT, subcat: FILLER_SUBCAT }); } catch {}
-            return false;
-          }
-          timings.fillPri = Date.now();
-          timings.bh = timings.fillPri;
-        } catch {
-          // Fallback: build minimal fill, but only proceed if BH arrived within cap
-          let bhRes: any = null;
-          try { bhRes = await blockhashP; } catch { bhRes = null; }
-          if (!bhRes || !(bhRes as any)?.blockhash) {
-            try { logger.info('drift.filler.skip_bh_slow', { cat: FILLER_CAT, subcat: FILLER_SUBCAT }); } catch {}
-            return false;
-          }
-          bh = bhRes;
-          timings.bh = Date.now();
-          try {
-            const emptyMakers: any[] = [];
-            fillIx = await withRpcTimeout(
-              this.client.getFillPerpOrderIx(takerUserPk, takerUa, nodeToFill.node.order, emptyMakers) as any,
-              800,
-              'fill_ix_fb'
-            );
-            usedNoMakersFallback = true;
-            try { logger.info('drift.filler.build_fallback_nomakers', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') }); } catch {}
-            timings.fillFb = Date.now();
-          } catch (e: any) {
-            try { logger.info('drift.filler.build_failed', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, err: String(e?.message || e) }); } catch {}
-            return false;
-          }
-        }
-        try { updateFillerIx = await withRpcTimeout(updateFillerIxP as any, 400, 'upd_ix'); } catch { updateFillerIx = null; }
-        timings.upd = Date.now();
-        try { revertIx = await withRpcTimeout(revertIxP as any, 400, 'rev_ix'); } catch { revertIx = null; }
-        timings.rev = Date.now();
+        // No fresh cached blockhash; defer quickly to avoid stalling the loop
+        try { logger.info('drift.filler.defer_no_cached_bh', { cat: FILLER_CAT, subcat: FILLER_SUBCAT }); } catch {}
+        return false;
       }
 
       // If taker has a valid referrer stats account, append it as a remaining account to the fill ix (do not block if missing)
@@ -599,7 +573,11 @@ export class DriftFillerRunner {
         return false;
       }
 
-      const cachedBh = (() => { try { return this.blockhashSubscriber?.getLatestBlockhash?.(5)?.blockhash; } catch { return undefined; } })();
+      const cachedBh = (() => {
+        try {
+          return this.blockhashSubscriber?.getLatestBlockhash?.(60)?.blockhash || this.bhCacheStr;
+        } catch { return this.bhCacheStr; }
+      })();
       const recentBlockhash = String(cachedBh || cachedBhEarly || (bh as any)?.blockhash);
       const toV0Tx = (instructions: any[]) => {
         const msg = new TransactionMessage({ payerKey: this.client.wallet.publicKey, recentBlockhash, instructions }).compileToV0Message(this.lookupTableAccounts || []);
