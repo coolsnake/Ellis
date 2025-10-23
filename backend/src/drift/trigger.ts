@@ -59,7 +59,7 @@ import {
 	PythLazerPriceFeedArray,
 	PythLazerSubscriber,
 } from '../pythLazerSubscriber';
-import { PriceServiceConnection } from '@pythnetwork/price-service-client';
+import { HermesClient } from '@pythnetwork/hermes-client';
 import { OracleUpdater } from './oracles/oracleUpdater.js';
 
 const TRIGGER_ORDER_COOLDOWN_MS = 10000; // time to wait between triggering an order
@@ -204,7 +204,7 @@ export class TriggerBot implements Bot {
 
 	private pythLazerClient?: PythLazerSubscriber;
 	private pythPullFeedIdsToCrank: FeedIdToCrankInfo[] = [];
-	private pythPullClient?: PriceServiceConnection;
+	private pythPullClient?: HermesClient;
 	private oracleUpdater?: OracleUpdater;
 
 	// map from marketId (i.e. perp-0 or spot-0) to pyth feed id
@@ -281,7 +281,7 @@ export class TriggerBot implements Bot {
 				this.globalConfig.driftEnv
 			);
 
-			this.pythPullClient = new PriceServiceConnection(
+			this.pythPullClient = new HermesClient(
 				this.globalConfig.hermesEndpoint,
 				{
 					timeout: 10_000,

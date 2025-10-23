@@ -2,6 +2,6 @@
   "dependencies": {
     "@coral-xyz/anchor": "^0.29.0",
     "@orca-so/whirlpools-sdk": "^0.16.0",
-    "@pythnetwork/price-service-client": "^2.6.0"
+    "@pythnetwork/hermes-client": "^1.0.0"
   }
 }

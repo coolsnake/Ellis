@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { PriceServiceConnection } from '@pythnetwork/price-service-client';
+import { HermesClient } from '@pythnetwork/hermes-client';
 import { CONFIG } from '../../utils/config.js';
 
 type UpdatePolicy = 'stale' | 'always' | 'off';
@@ -8,7 +8,7 @@ export class OracleUpdater {
   private sdk: any;
   private driftClient: any;
   private cluster: string;
-  private priceService?: PriceServiceConnection;
+  private priceService?: HermesClient;
   private marketIndexToFeedId: Map<number, string> = new Map();
   private policy: UpdatePolicy;
   private timeoutMs: number;
@@ -27,7 +27,7 @@ export class OracleUpdater {
     try {
       const hermes = (CONFIG as any)?.pyth?.hermesEndpoint;
       if (hermes) {
-        this.priceService = new PriceServiceConnection(String(hermes), { timeout: this.timeoutMs });
+        this.priceService = new HermesClient(String(hermes), { timeout: this.timeoutMs });
       }
     } catch {}
   }
