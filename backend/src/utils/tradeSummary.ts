@@ -22,6 +22,7 @@ type TradeSummary = {
 
 const LOG_DIR_SAFE = (CONFIG as any)?.logDir || resolve('backend', 'logs');
 const FILE_PATH = resolve(LOG_DIR_SAFE, 'trade_summaries.jsonl');
+const FILLER_TXS_PATH = resolve(LOG_DIR_SAFE, 'fillertxs.jsonl');
 
 export async function writeTradeSummary(s: TradeSummary): Promise<void> {
   const line = JSON.stringify(s) + '\n';
@@ -68,6 +69,17 @@ export async function logTrade(entry: Record<string, any>): Promise<void> {
     const event = (entry.event || '').toString();
     const sig = entry.sig ? ` sig=${entry.sig}` : '';
     emit('log', { level: 'info', message: `trade:${event} ${entry.pair || ''}${sig}`, timestamp: new Date().toLocaleTimeString(), context: { cat: 'trade' } });
+  } catch {}
+}
+
+export async function logFillerTx(entry: Record<string, any>): Promise<void> {
+  const line = JSON.stringify(entry) + '\n';
+  const dir = dirname(FILLER_TXS_PATH);
+  if (!existsSync(dir)) await mkdir(dir, { recursive: true });
+  await writeFile(FILLER_TXS_PATH, line, { encoding: 'utf8', flag: 'a' });
+  try {
+    const sig = entry.sig ? ` sig=${entry.sig}` : '';
+    emit('log', { level: 'info', message: `filler:tx ${entry.action || ''}${sig}`, timestamp: new Date().toLocaleTimeString(), context: { cat: 'filler' } });
   } catch {}
 }
 

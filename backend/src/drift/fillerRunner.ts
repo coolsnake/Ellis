@@ -69,6 +69,8 @@ export class DriftFillerRunner {
   private bhWarmTimer: any | null = null;
   private bhCacheStr: string | undefined = undefined;
   private bhCacheTs: number = 0;
+  private beFailCount: number = 0;
+  private beCoolUntilMs: number = 0;
   // Per-loop stats
   private _loopStatsTmp: any | null = null;
 
@@ -569,23 +571,48 @@ export class DriftFillerRunner {
         timings.compile = Date.now();
         return vtx;
       };
-      const sendV0 = async (vtx: VersionedTransaction): Promise<string> => {
+      const sendV0 = async (vtx: VersionedTransaction, preferJito: boolean, hadTip: boolean): Promise<string> => {
         const raw = vtx.serialize();
         const opts: any = { skipPreflight: true, preflightCommitment: 'processed', maxRetries: 0 };
         const t0send = Date.now();
-        if ((CONFIG as any)?.jito?.enabled) {
-          const base64 = Buffer.from(raw).toString('base64');
+        const now = Date.now();
+        const beEnabled = !!((CONFIG as any)?.jito?.enabled) && preferJito && hadTip && now >= this.beCoolUntilMs;
+        const raceRpc = !!((CONFIG as any)?.jito?.raceRpc);
+        const base64 = Buffer.from(raw).toString('base64');
+        const rpcSend = async () => {
+          const sig = await DriftService.getInstance().sendRawTransaction(raw, opts);
+          try { logger.info('drift.filler.sent_via', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, path: 'rpc', ms: Date.now() - t0send }); } catch {}
+          return sig;
+        };
+        const beSend = async () => {
+          const sig = await sendToBlockEngine(base64, { beUrl: (CONFIG as any)?.jito?.blockEngineUrl, timeoutMs: (CONFIG as any)?.jito?.bundleTimeoutMs });
+          this.beFailCount = 0; this.beCoolUntilMs = 0;
+          try { logger.info('drift.filler.sent_via', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, path: 'jito-be', ms: Date.now() - t0send }); } catch {}
+          return sig;
+        };
+        if (beEnabled && raceRpc) {
           try {
-            const sig = await sendToBlockEngine(base64, { beUrl: (CONFIG as any)?.jito?.blockEngineUrl, timeoutMs: (CONFIG as any)?.jito?.bundleTimeoutMs });
-            try { logger.info('drift.filler.sent_via', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, path: 'jito-be', ms: Date.now() - t0send }); } catch {}
-            return sig;
+            return await Promise.any([
+              beSend().catch((e) => { this.beFailCount += 1; throw e; }),
+              rpcSend(),
+            ]);
           } catch (e: any) {
+            if (this.beFailCount >= 3) { this.beCoolUntilMs = Date.now() + 60_000; }
+            try { logger.warn('drift.filler.jito_be_fail', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, err: String(e?.message || e) }); } catch {}
+            // If race failed entirely, bubble up
+            throw e;
+          }
+        }
+        if (beEnabled) {
+          try {
+            return await beSend();
+          } catch (e: any) {
+            this.beFailCount += 1;
+            if (this.beFailCount >= 3) { this.beCoolUntilMs = Date.now() + 60_000; }
             try { logger.warn('drift.filler.jito_be_fail', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, err: String(e?.message || e) }); } catch {}
           }
         }
-        const sig = await DriftService.getInstance().sendRawTransaction(raw, opts);
-        try { logger.info('drift.filler.sent_via', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, path: 'rpc', ms: Date.now() - t0send }); } catch {}
-        return sig;
+        return await rpcSend();
       };
 
       const dispatch = async () => {
@@ -605,12 +632,14 @@ export class DriftFillerRunner {
               buildMode,
               bhSource,
               lookups: lookupCount,
-              sendPath: ((CONFIG as any)?.jito?.enabled ? 'jito-first' : 'rpc'),
+              sendPath: (((CONFIG as any)?.jito?.enabled && plannedTipLamports && plannedTipAccount) ? 'jito-first' : 'rpc'),
               tipLamports: plannedTipLamports,
               tipAccount: plannedTipAccount,
             });
           } catch {}
-          const sigTx = await sendV0(vtxPrimary);
+          const preferJito = !!((CONFIG as any)?.jito?.enabled);
+          const hadTip = !!(plannedTipLamports && plannedTipAccount);
+          const sigTx = await sendV0(vtxPrimary, preferJito, hadTip);
           this.fillsInWindow.push(Date.now());
           logger.info('drift.filler.ok', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, sig: sigTx, marketIndex, taker: takerPkStr, orderId: String(nodeToFill?.node?.order?.orderId || '') });
           try {

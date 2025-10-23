@@ -2,6 +2,7 @@
 import { Connection } from '@solana/web3.js';
 import { withRpcLimit } from '../utils/rpcLimiter.js';
 import { logger } from '../utils/logger.js';
+import { logFillerTx } from '../utils/tradeSummary.js';
 import * as path from 'path';
 import { promises as fs } from 'fs';
 
@@ -74,6 +75,28 @@ export async function trackDriftAttempt(conn: Connection, a: DriftAttemptIn): Pr
     } catch {}
 
     try { recordAttempt({ ts: Date.now(), ...a, ...out }); } catch {}
+
+    // Persist a filler tx record for easy post-hoc analysis
+    try {
+      await logFillerTx({
+        ts: new Date().toISOString(),
+        action: a.action,
+        sig: a.sig,
+        marketIndex: a.marketIndex,
+        taker: a.taker,
+        makers: a.makers,
+        orderId: a.orderId,
+        success: out.success,
+        baseFilled: out.baseFilled ?? null,
+        quoteFilled: out.quoteFilled ?? null,
+        fillerRewardQuote: out.fillerRewardQuote ?? null,
+        feeLamports: out.feeLamports,
+        priorityLamports: out.priorityLamports,
+        lamportsPaid: out.lamportsPaid,
+        cuConsumed: out.cuConsumed ?? null,
+        bot: a.bot,
+      });
+    } catch {}
 
     return out;
   } catch (e: any) {
