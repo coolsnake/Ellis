@@ -459,27 +459,29 @@ export class DriftFillerRunner {
       let plannedTipAccount: string | undefined = undefined;
       try {
         if ((CONFIG as any)?.jito?.enabled) {
-          // Read from cache (fallback to payer if not ready)
+          // Read from cache; only include tip if a valid BE tip account is known
           const cached = getCachedTipInfo();
-          const tipPk = (cached?.tipAccount) || this.client.wallet.publicKey;
-          const priorityLamportsEst = Math.floor((priorityForSend * Math.max(220_000, cuLimit)) / 1_000_000);
-          const cfg = (CONFIG as any)?.jito || {};
-          const fixed = Number(cfg?.fixedTipLamports ?? 0);
-          const share = Number(cfg?.tipShare ?? 0.3);
-          const floor = Number(cached?.tipFloorLamports ?? 0);
-          const estShare = Math.floor((priorityLamportsEst * share) / Math.max(1 - share, 0.01));
-          const tipLamports = Math.max(1000, fixed > 0 ? fixed : (floor || estShare));
-          const tipIx = buildTipIx(this.client.wallet.publicKey, tipPk, tipLamports);
-          ixsFill = [tipIx, fillIx];
-          plannedTipLamports = tipLamports;
-          plannedTipAccount = tipPk.toBase58();
-          // Optional: add 'dont-front' read-only account to the first ix
-          try {
-            if ((CONFIG as any)?.jito?.useDontFrontAccount && Array.isArray(ixsFill?.[0]?.keys)) {
-              const acc = new PublicKey('jitodontfront111111111111111111111111111111');
-              ixsFill[0].keys.push({ pubkey: acc, isSigner: false, isWritable: false });
-            }
-          } catch {}
+          const tipPk = cached?.tipAccount;
+          if (tipPk && String(tipPk?.toBase58?.()) !== String(this.client.wallet.publicKey?.toBase58?.())) {
+            const priorityLamportsEst = Math.floor((priorityForSend * Math.max(220_000, cuLimit)) / 1_000_000);
+            const cfg = (CONFIG as any)?.jito || {};
+            const fixed = Number(cfg?.fixedTipLamports ?? 0);
+            const share = Number(cfg?.tipShare ?? 0.3);
+            const floor = Number(cached?.tipFloorLamports ?? 0);
+            const estShare = Math.floor((priorityLamportsEst * share) / Math.max(1 - share, 0.01));
+            const tipLamports = Math.max(1000, fixed > 0 ? fixed : (floor || estShare));
+            const tipIx = buildTipIx(this.client.wallet.publicKey, tipPk, tipLamports);
+            ixsFill = [tipIx, fillIx];
+            plannedTipLamports = tipLamports;
+            plannedTipAccount = tipPk.toBase58();
+            // Optional: add 'dont-front' read-only account to the first ix
+            try {
+              if ((CONFIG as any)?.jito?.useDontFrontAccount && Array.isArray(ixsFill?.[0]?.keys)) {
+                const acc = new PublicKey('jitodontfront111111111111111111111111111111');
+                ixsFill[0].keys.push({ pubkey: acc, isSigner: false, isWritable: false });
+              }
+            } catch {}
+          }
         }
       } catch {}
       timings.tip = Date.now();
