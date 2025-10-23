@@ -388,26 +388,6 @@ export class DriftFillerRunner {
               if (ix) return ix;
             }
           } catch {}
-          try {
-            if (typeof this.client.getUpdateUserIdleIx === 'function') {
-              // Prefer passing the filler bot's Drift user account, not the raw wallet pubkey
-              let subId: number = 0;
-              try { subId = Number.isFinite(Number(this.state.subaccountId)) ? Number(this.state.subaccountId) : 0; } catch { subId = 0; }
-              let fillerUserPk: any = null;
-              try {
-                const { getUserAccountPublicKey } = this.sdk;
-                fillerUserPk = await getUserAccountPublicKey(this.client.program.programId, this.client.wallet.publicKey, subId);
-              } catch {}
-              const ix = await this.client.getUpdateUserIdleIx(takerUserPk, takerUa, fillerUserPk || this.client.wallet.publicKey);
-              // Safety: if the resulting ix appears to reference the wallet twice (as both authority and filler), skip it
-              try {
-                const walletStr = this.client.wallet.publicKey?.toBase58?.();
-                const dupCount = Array.isArray((ix as any)?.keys) ? (ix as any).keys.filter((k: any) => String(k?.pubkey || '') === String(walletStr)).length : 0;
-                if (dupCount > 1) return null;
-              } catch {}
-              if (ix) return ix;
-            }
-          } catch {}
           try { await new Promise((r) => setTimeout(r, 20)); } catch {}
         }
         return null;
