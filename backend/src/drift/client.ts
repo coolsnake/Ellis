@@ -82,8 +82,20 @@ export class DriftService {
   getReadConnection(): Connection {
     if (!this.readConnection) {
       const url: string = String(((CONFIG as any)?.readRpcUrl) || (CONFIG as any)?.rpcUrl);
-      // Wrap underlying fetch to honor rate limiter for high-throughput calls
-      this.readConnection = new Connection(url, 'processed');
+      // Custom fetch to tag 429s and disable internal 429 retry loop
+      const customFetch = async (info: any, init: any) => {
+        const baseFetch: any = (globalThis as any).fetch || (await import('node-fetch')).default;
+        const res: any = await baseFetch(info, init);
+        try {
+          if (res && typeof res.status === 'number' && res.status === 429) {
+            let method: string | undefined;
+            try { method = JSON.parse(String(init?.body || '{}'))?.method; } catch {}
+            try { logger.warn('rpc.429', { method, url: String(info), cat: 'rpc' }); } catch {}
+          }
+        } catch {}
+        return res as any;
+      };
+      this.readConnection = new Connection(url, { commitment: 'processed', disableRetryOnRateLimit: true, fetch: customFetch } as any);
     }
     return this.readConnection;
   }
@@ -152,7 +164,20 @@ export class DriftService {
   async init(): Promise<void> {
     if (this.client) return;
     this.walletKp = await ensureWallet(CONFIG.walletPath);
-    this.connection = new Connection(CONFIG.rpcUrl, 'confirmed');
+    // Custom fetch to tag 429s and disable internal 429 retry loop
+    const customFetch = async (info: any, init: any) => {
+      const baseFetch: any = (globalThis as any).fetch || (await import('node-fetch')).default;
+      const res: any = await baseFetch(info, init);
+      try {
+        if (res && typeof res.status === 'number' && res.status === 429) {
+          let method: string | undefined;
+          try { method = JSON.parse(String(init?.body || '{}'))?.method; } catch {}
+          try { logger.warn('rpc.429', { method, url: String(info), cat: 'rpc' }); } catch {}
+        }
+      } catch {}
+      return res as any;
+    };
+    this.connection = new Connection(CONFIG.rpcUrl, { commitment: 'confirmed', disableRetryOnRateLimit: true, fetch: customFetch } as any);
     const t0 = Date.now();
     logger.info('drift.sdk.init', { rpcUrl: CONFIG.rpcUrl, cluster: this.cluster, cat: 'drift', code: 'DRIFT.SDK.INIT' });
     const { initialize, Wallet, BulkAccountLoader, getMarketsAndOraclesForSubscription } = await loadSdk();
