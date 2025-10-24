@@ -522,9 +522,33 @@ export class DriftTriggerRunner {
               let sigTx: string;
               if (preferSender) {
                 try { sigTx = await senderSend(); }
-                catch { sigTx = await (preferBE ? (raceRpc ? Promise.any([ beSend(), rpcSend() ]) : beSend()) : rpcSend()); }
+                catch {
+                  const firstFulfilled = async <T>(arr: Array<Promise<T>>): Promise<T> => {
+                    return new Promise<T>((resolve, reject) => {
+                      let rejected = 0;
+                      let lastErr: any;
+                      const n = arr.length;
+                      if (n === 0) { reject(new Error('EMPTY_PROMISE_LIST')); return; }
+                      for (const p of arr) {
+                        Promise.resolve(p).then(resolve, (e) => { rejected += 1; lastErr = e; if (rejected === n) reject(lastErr); });
+                      }
+                    });
+                  };
+                  sigTx = await (preferBE ? (raceRpc ? firstFulfilled([ beSend(), rpcSend() ]) : beSend()) : rpcSend());
+                }
               } else if (preferBE && raceRpc) {
-                sigTx = await Promise.any([ beSend(), rpcSend() ]);
+                const firstFulfilled = async <T>(arr: Array<Promise<T>>): Promise<T> => {
+                  return new Promise<T>((resolve, reject) => {
+                    let rejected = 0;
+                    let lastErr: any;
+                    const n = arr.length;
+                    if (n === 0) { reject(new Error('EMPTY_PROMISE_LIST')); return; }
+                    for (const p of arr) {
+                      Promise.resolve(p).then(resolve, (e) => { rejected += 1; lastErr = e; if (rejected === n) reject(lastErr); });
+                    }
+                  });
+                };
+                sigTx = await firstFulfilled([ beSend(), rpcSend() ]);
               } else if (preferBE) {
                 try { sigTx = await beSend(); } catch { sigTx = await rpcSend(); }
               } else {
