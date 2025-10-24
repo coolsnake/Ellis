@@ -429,10 +429,10 @@ export const CONFIG = {
       const raw = String(process.env.RPC_SECONDARY_URLS || '');
       const arr = raw.split(',').map((s) => s.trim()).filter(Boolean);
       if (arr.length > 0) return arr;
-      // Defaults: Solana mainnet public RPC and Jito public RPC
+      // Defaults: Solana mainnet public RPC and Ankr public RPC
       return [
         'https://api.mainnet-beta.solana.com',
-        'https://rpc.jito.wtf/'
+        'https://rpc.ankr.com/solana'
       ];
     })(),
     sendTimeoutMs: Number(process.env.RPC_SEND_TIMEOUT_MS || 2000),

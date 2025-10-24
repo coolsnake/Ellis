@@ -443,6 +443,7 @@ export class DriftService {
       try {
         return await primarySend();
       } catch (ePrimary: any) {
+        try { logger.warn('tx.send.primary_fail', { cat: 'tx', url: (CONFIG as any)?.rpcUrl, err: String(ePrimary?.message || ePrimary) }); } catch {}
         // Secondary RPC fallback (tight timeouts, best-effort)
         const secondaries: string[] = Array.isArray((CONFIG as any)?.rpcSend?.secondaryRpcUrls) ? (CONFIG as any).rpcSend.secondaryRpcUrls : [];
         let lastErr: any = ePrimary;
