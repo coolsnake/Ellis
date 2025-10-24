@@ -71,6 +71,7 @@ export class DriftService {
   private infraWatchdogTimer: any | null = null;
   private lastSlotTs: number = 0;
   private _slotTsHandler: any | null = null;
+  private _lastResubMs: number = 0;
 
   static getInstance(): DriftService {
     if (!this.instance) this.instance = new DriftService();
@@ -242,11 +243,15 @@ export class DriftService {
 
     try {
       const slotStaleMs = Math.max(5000, Number(((CONFIG as any)?.drift?.slotStaleMs) ?? 15000));
+      const resubCooldownMs = Math.max(5000, Number(((CONFIG as any)?.drift?.resubCooldownMs) ?? 10000));
       if (!this.infraWatchdogTimer) {
         this.infraWatchdogTimer = setInterval(async () => {
           try {
-            const stale = !this.lastSlotTs || (Date.now() - this.lastSlotTs) > slotStaleMs;
-            if (stale) {
+            const now = Date.now();
+            const stale = !this.lastSlotTs || (now - this.lastSlotTs) > slotStaleMs;
+            const cooled = (now - this._lastResubMs) >= resubCooldownMs;
+            if (stale && cooled) {
+              this._lastResubMs = now;
               try { await (this.sharedSlotSubscriber as any)?.subscribe?.(); } catch {}
               try { await (this.sharedEventSubscriber as any)?.subscribe?.(); } catch {}
               try { await (this.sharedUserMap as any)?.subscribe?.(); } catch {}
