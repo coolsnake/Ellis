@@ -125,7 +125,7 @@ export class DriftFillerRunner {
       const step = async () => {
         try {
           const { withRpcRetry, withRpcTimeout } = await import('../utils/rpcLimiter.js');
-          const p = withRpcRetry(() => this.connection.getLatestBlockhash({ commitment: 'processed' }), { timeoutMs: 700, retries: 0, baseMs: 100, maxMs: 300, label: 'bh.warm.start' });
+          const p = withRpcRetry(() => this.connection.getLatestBlockhash({ commitment: 'confirmed' }), { timeoutMs: 700, retries: 0, baseMs: 100, maxMs: 300, label: 'bh.warm.start' });
           const res = await withRpcTimeout(p, 900, 'bh.warmcap.start');
           const bh = String((res as any)?.blockhash || '');
           if (bh) { this.bhCacheStr = bh; this.bhCacheTs = Date.now(); }
@@ -245,7 +245,7 @@ export class DriftFillerRunner {
       const step = async () => {
         try {
           const { withRpcRetry, withRpcTimeout } = await import('../utils/rpcLimiter.js');
-          const p = withRpcRetry(() => this.connection.getLatestBlockhash({ commitment: 'processed' }), { timeoutMs: 700, retries: 0, baseMs: 100, maxMs: 300, label: 'bh.warm' });
+          const p = withRpcRetry(() => this.connection.getLatestBlockhash({ commitment: 'confirmed' }), { timeoutMs: 700, retries: 0, baseMs: 100, maxMs: 300, label: 'bh.warm' });
           const res = await withRpcTimeout(p, 900, 'bh.warmcap');
           const bh = String((res as any)?.blockhash || '');
           if (bh) { this.bhCacheStr = bh; this.bhCacheTs = Date.now(); }
@@ -253,6 +253,29 @@ export class DriftFillerRunner {
       };
       step().catch(() => {});
       this.bhWarmTimer = setInterval(() => { step().catch(() => {}); }, Math.max(300, Number(((CONFIG as any)?.drift?.blockhashWarmMs) ?? 400)));
+    } catch {}
+    // Sender / RPC connection warming ping
+    try {
+      if (this.wsNudgeTimer) { try { clearInterval(this.wsNudgeTimer); } catch {} this.wsNudgeTimer = null; }
+      const pingEveryMs = Math.max(30_000, Number(((CONFIG as any)?.sender?.pingIntervalMs) ?? 60_000));
+      const doPing = async () => {
+        try {
+          // Warm Sender endpoint
+          if ((CONFIG as any)?.sender?.enabled) {
+            let endpoint: string = String(((CONFIG as any)?.sender?.endpoint) || 'https://sender.helius-rpc.com/fast');
+            const params: string[] = [];
+            const scfg = (CONFIG as any)?.sender || {};
+            if (scfg?.apiKey) params.push(`api-key=${encodeURIComponent(String(scfg.apiKey))}`);
+            if (scfg?.swqosOnly) params.push('swqos_only=true');
+            if (params.length > 0) endpoint += (endpoint.includes('?') ? '&' : '?') + params.join('&');
+            try { await fetch(endpoint.replace(/\/fast$/, '/ping'), { method: 'GET' }); } catch {}
+          }
+          // Warm Helius RPC via a cheap call
+          try { await this.connection.getBlockHeight('processed'); } catch {}
+        } catch {}
+      };
+      doPing().catch(() => {});
+      this.wsNudgeTimer = setInterval(() => { doPing().catch(() => {}); }, pingEveryMs);
     } catch {}
     // Start Jito tip feed cache (non-blocking)
     try { startTipFeed(Math.max(10_000, Number(((CONFIG as any)?.jito?.tipRefreshMs) ?? 15_000))); } catch {}
@@ -521,6 +544,23 @@ export class DriftFillerRunner {
             } catch {}
           }
         }
+        // Ensure a tip exists when using Helius Sender; fall back to configured static tip accounts
+        if ((CONFIG as any)?.sender?.enabled) {
+          if (!(plannedTipLamports && plannedTipAccount)) {
+            const scfg = (CONFIG as any).sender || {};
+            const accounts: string[] = Array.isArray(scfg.tipAccounts) ? scfg.tipAccounts : [];
+            const chosen = accounts.length > 0 ? accounts[Math.floor(Math.random() * accounts.length)] : undefined;
+            if (chosen) {
+              const tipPk2 = new PublicKey(chosen);
+              const minTip = Math.max(1000, Number(scfg.minTipLamports || 1_000_000));
+              const tipIx2 = buildTipIx(this.client.wallet.publicKey, tipPk2, minTip);
+              // Prepend tip to any existing instructions
+              ixsFill = [tipIx2, ...ixsFill];
+              plannedTipLamports = minTip;
+              plannedTipAccount = tipPk2.toBase58();
+            }
+          }
+        }
       } catch {}
       timings.tip = Date.now();
 
@@ -617,6 +657,31 @@ export class DriftFillerRunner {
         const beEnabled = !!((CONFIG as any)?.jito?.enabled) && preferJito && hadTip && now >= this.beCoolUntilMs;
         const raceRpc = !!((CONFIG as any)?.jito?.raceRpc);
         const base64 = Buffer.from(raw).toString('base64');
+        const senderSend = async () => {
+          const scfg = (CONFIG as any)?.sender || {};
+          let endpoint: string = String(scfg?.endpoint || 'https://sender.helius-rpc.com/fast');
+          const params: string[] = [];
+          if (scfg?.apiKey) params.push(`api-key=${encodeURIComponent(String(scfg.apiKey))}`);
+          if (scfg?.swqosOnly) params.push('swqos_only=true');
+          if (params.length > 0) endpoint += (endpoint.includes('?') ? '&' : '?') + params.join('&');
+          const body = {
+            jsonrpc: '2.0',
+            id: String(Date.now()),
+            method: 'sendTransaction',
+            params: [ base64, { encoding: 'base64', skipPreflight: true, maxRetries: 0 } ],
+          } as any;
+          const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          const json = await res.json().catch(() => ({} as any));
+          if ((json as any)?.error) throw new Error(String((json as any).error?.message || 'SENDER_ERROR'));
+          const sig = String((json as any)?.result || '');
+          if (!sig) throw new Error('SENDER_NO_RESULT');
+          try { logger.info('drift.filler.sent_via', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, path: 'sender', ms: Date.now() - t0send }); } catch {}
+          return sig;
+        };
         const rpcSend = async () => {
           const sig = await DriftService.getInstance().sendRawTransaction(raw, opts);
           try { logger.info('drift.filler.sent_via', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, path: 'rpc', ms: Date.now() - t0send }); } catch {}
@@ -628,6 +693,15 @@ export class DriftFillerRunner {
           try { logger.info('drift.filler.sent_via', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, path: 'jito-be', ms: Date.now() - t0send }); } catch {}
           return sig;
         };
+        // Prefer Sender when enabled (it already dual-routes to validators and Jito)
+        if ((CONFIG as any)?.sender?.enabled) {
+          try {
+            return await senderSend();
+          } catch (e: any) {
+            try { logger.warn('drift.filler.sender_fail', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, err: String(e?.message || e) }); } catch {}
+            // Continue to BE/RPC fallbacks
+          }
+        }
         if (beEnabled && raceRpc) {
           try {
             return await Promise.any([
@@ -670,7 +744,7 @@ export class DriftFillerRunner {
               buildMode,
               bhSource,
               lookups: lookupCount,
-              sendPath: (((CONFIG as any)?.jito?.enabled && plannedTipLamports && plannedTipAccount) ? 'jito-first' : 'rpc'),
+              sendPath: ((CONFIG as any)?.sender?.enabled ? 'sender-first' : (((CONFIG as any)?.jito?.enabled && plannedTipLamports && plannedTipAccount) ? 'jito-first' : 'rpc')),
               tipLamports: plannedTipLamports,
               tipAccount: plannedTipAccount,
             });
@@ -709,7 +783,7 @@ export class DriftFillerRunner {
           if (/blockhash.*(not.*found|expired)|Transaction.*expired/i.test(msg)) {
             try {
               const { withRpcRetry } = await import('../utils/rpcLimiter.js');
-              const bh2 = await withRpcRetry(() => this.connection.getLatestBlockhash({ commitment: 'processed' }), { timeoutMs: 1200, retries: 1, baseMs: 150, maxMs: 600, label: 'blockhash.retry' });
+              const bh2 = await withRpcRetry(() => this.connection.getLatestBlockhash({ commitment: 'confirmed' }), { timeoutMs: 1200, retries: 1, baseMs: 150, maxMs: 600, label: 'blockhash.retry' });
               const bh2Str = String((bh2 as any)?.blockhash);
               const ixsRetry = [
                 ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
@@ -744,7 +818,7 @@ export class DriftFillerRunner {
           if (/0x185f|RevertFill/i.test(msg)) {
             try {
               const [bh2, upd2] = await Promise.all([
-                withRpcLimit(() => this.connection.getLatestBlockhash({ commitment: 'processed' })),
+                withRpcLimit(() => this.connection.getLatestBlockhash({ commitment: 'confirmed' })),
                 (async () => {
                   try {
                     if (typeof this.client.getUpdateFillerIx === 'function') return await this.client.getUpdateFillerIx();

@@ -18,9 +18,25 @@ const ARB_LOG_DIR = process.env.ARB_LOG_DIR;
 const CONSOLIDATED_LOG_MAX = Number(process.env.CONSOLIDATED_LOG_MAX || 2000);
 const CONSOLIDATED_LOG_PATH = process.env.CONSOLIDATED_LOG_PATH || resolve(LOG_DIR, 'consolidated-session.json');
 
+// Derive RPC URL and extract API key (used for Sender when not explicitly provided)
+const RPC_URL = process.env.SOLANA_RPC_URL || 'https://mainnet.helius-rpc.com/?api-key=4673beb7-dcca-4942-91ac-c69babdf1f02';
+function extractApiKeyFromUrl(url: string): string {
+  try {
+    const u = new URL(String(url));
+    const key = u.searchParams.get('api-key');
+    return key || '';
+  } catch {
+    try {
+      const m = String(url).match(/[?&]api-key=([^&#]+)/i);
+      return m?.[1] || '';
+    } catch { return ''; }
+  }
+}
+const SENDER_API_KEY = process.env.SENDER_API_KEY || extractApiKeyFromUrl(RPC_URL);
+
 export const CONFIG = {
   port: Number(process.env.PORT || 3001),
-  rpcUrl: process.env.SOLANA_RPC_URL || 'https://mainnet.helius-rpc.com/?api-key=4673beb7-dcca-4942-91ac-c69babdf1f02',
+  rpcUrl: RPC_URL,
   // Optional separate read RPC for high-throughput reads
   readRpcUrl: process.env.SOLANA_RPC_READ_URL || undefined,
   websocketIntervalMs: Number(process.env.WEBSOCKET_INTERVAL_MS || 400),
@@ -421,6 +437,32 @@ export const CONFIG = {
     })(),
     sendTimeoutMs: Number(process.env.RPC_SEND_TIMEOUT_MS || 2000),
     sendRetries: Number(process.env.RPC_SEND_RETRIES || 2),
+  },
+  // Helius Sender configuration
+  sender: {
+    enabled: (process.env.SENDER_ENABLED || 'true') === 'true',
+    endpoint: process.env.SENDER_ENDPOINT || 'https://sender.helius-rpc.com/fast',
+    apiKey: SENDER_API_KEY,
+    swqosOnly: (process.env.SENDER_SWQOS_ONLY || 'false') === 'true',
+    minTipLamports: Number(process.env.SENDER_MIN_TIP_LAMPORTS || 1_000_000), // 0.001 SOL
+    tipAccounts: (() => {
+      const raw = String(process.env.SENDER_TIP_ACCOUNTS || '');
+      const arr = raw.split(',').map((s) => s.trim()).filter(Boolean);
+      if (arr.length > 0) return arr;
+      // Default Helius tip accounts
+      return [
+        '4ACfpUFoaSD9bfPdeu6DBt89gB6ENTeHBXCAi87NhDEE',
+        'D2L6yPZ2FmmmTKPgzaMKdhu6EWZcTpLy1Vhx8uvZe7NZ',
+        '9bnz4RShgq1hAnLnZbP8kbgBg1kEmcJBYQq3gQbmnSta',
+        '5VY91ws6B2hMmBFRsXkoAAdsPHBJwRfBht4DXox3xkwn',
+        '2nyhqdwKcJZR2vcqCyrYsaPVdAnFoJjiksCXJ7hfEYgD',
+        '2q5pghRs6arqVjRvT5gfgWfWcHWmw1ZuCzphgd5KfWGJ',
+        'wyvPkWjVZz1M8fHQnMMCDTQDbkManefNNhweYk5WkcF',
+        '3KCKozbAaF75qEU33jtzozcJ29yJuaLJTy2jFdzUY8bT',
+        '4vieeGHPYPG2MmyPRcYjdiDmmhN3ww7hsFNap8pVN3Ey',
+        '4TQLFNWK8AovT1gFvda5jfw2oJeRMKEmw7aH6MGBJ3or',
+      ];
+    })(),
   },
   // Drift configuration
   drift: {
