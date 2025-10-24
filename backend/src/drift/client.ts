@@ -68,6 +68,9 @@ export class DriftService {
   // Infra lifecycle controls
   private forceActive: boolean = false;
   private activeBots: Set<string> = new Set();
+  private infraWatchdogTimer: any | null = null;
+  private lastSlotTs: number = 0;
+  private _slotTsHandler: any | null = null;
 
   static getInstance(): DriftService {
     if (!this.instance) this.instance = new DriftService();
@@ -218,6 +221,47 @@ export class DriftService {
       try { await (this.sharedEventSubscriber as any)?.subscribe?.(); } catch {}
     }
 
+    // Wire slot timestamp listener and start watchdog for stale resubscribe
+    try {
+      if (this.sharedSlotSubscriber) {
+        // initialize timestamp
+        if (!this.lastSlotTs) this.lastSlotTs = Date.now();
+        if (!this._slotTsHandler) {
+          const onSlot = () => { this.lastSlotTs = Date.now(); };
+          try {
+            if (typeof (this.sharedSlotSubscriber as any).onSlotChange === 'function') {
+              (this.sharedSlotSubscriber as any).onSlotChange(onSlot, 1);
+            } else {
+              (this.sharedSlotSubscriber as any)?.eventEmitter?.on?.('slotUpdate', onSlot);
+            }
+          } catch {}
+          this._slotTsHandler = onSlot;
+        }
+      }
+    } catch {}
+
+    try {
+      const slotStaleMs = Math.max(5000, Number(((CONFIG as any)?.drift?.slotStaleMs) ?? 15000));
+      if (!this.infraWatchdogTimer) {
+        this.infraWatchdogTimer = setInterval(async () => {
+          try {
+            const stale = !this.lastSlotTs || (Date.now() - this.lastSlotTs) > slotStaleMs;
+            if (stale) {
+              try { await (this.sharedSlotSubscriber as any)?.subscribe?.(); } catch {}
+              try { await (this.sharedEventSubscriber as any)?.subscribe?.(); } catch {}
+              try { await (this.sharedUserMap as any)?.subscribe?.(); } catch {}
+              try {
+                const dl: any = this.sharedDlobSubscriber;
+                const has = dl && typeof dl.getDLOB === 'function' ? !!dl.getDLOB() : true;
+                if (dl && typeof dl.subscribe === 'function' && !has) { await dl.subscribe(); }
+              } catch {}
+              try { logger.warn('drift.subs.resubscribe', { cat: 'drift', reason: 'slot_stale' }); } catch {}
+            }
+          } catch {}
+        }, 2500);
+      }
+    } catch {}
+
     if (!this.sharedUserMap && sdk?.UserMap) {
       const subType = String(((CONFIG as any)?.drift?.subscriptionType || 'websocket')).toLowerCase();
       const umSubCfg: any = subType === 'polling'
@@ -336,7 +380,8 @@ export class DriftService {
     } catch {}
   }
 
-  getInfraStatus(): { active: boolean; forceActive: boolean; bots: number; has: { slotSubscriber: boolean; eventSubscriber: boolean; userMap: boolean; dlobSubscriber: boolean; orderSubscriber: boolean } } {
+  getInfraStatus(): { active: boolean; forceActive: boolean; bots: number; has: { slotSubscriber: boolean; eventSubscriber: boolean; userMap: boolean; dlobSubscriber: boolean; orderSubscriber: boolean }; lastSlotAtMs?: number; slotStale?: boolean } {
+    const slotStaleMs = Math.max(5000, Number(((CONFIG as any)?.drift?.slotStaleMs) ?? 15000));
     return {
       active: !!(this.sharedSlotSubscriber || this.sharedEventSubscriber || this.sharedUserMap || this.sharedDlobSubscriber || this.sharedOrderSubscriber),
       forceActive: this.forceActive,
@@ -348,6 +393,8 @@ export class DriftService {
         dlobSubscriber: !!this.sharedDlobSubscriber,
         orderSubscriber: !!this.sharedOrderSubscriber,
       },
+      lastSlotAtMs: this.lastSlotTs || undefined,
+      slotStale: !!(this.lastSlotTs && (Date.now() - this.lastSlotTs) > slotStaleMs),
     };
   }
 
@@ -356,6 +403,15 @@ export class DriftService {
     try { if (this.prefetchTimer) { clearInterval(this.prefetchTimer); this.prefetchTimer = null; } } catch {}
     try { if (this.pollLoaderWarm) { try { (this.pollLoaderWarm as any)?.removeAllListeners?.(); } catch {} this.pollLoaderWarm = null; } } catch {}
     try { const mod = await import('../utils/blockhash.js'); (mod as any)?.stopSharedBlockhash?.(); } catch {}
+    // Stop infra watchdog and detach slot listener
+    try { if (this.infraWatchdogTimer) { clearInterval(this.infraWatchdogTimer); this.infraWatchdogTimer = null; } } catch {}
+    try {
+      if (this._slotTsHandler && (this.sharedSlotSubscriber as any)?.eventEmitter?.off) {
+        (this.sharedSlotSubscriber as any).eventEmitter.off('slotUpdate', this._slotTsHandler);
+      }
+    } catch {}
+    this._slotTsHandler = null;
+    this.lastSlotTs = 0;
     // Unsubscribe subscribers in safe order
     try { await (this.sharedDlobSubscriber as any)?.unsubscribe?.(); } catch {}
     try { await (this.sharedOrderSubscriber as any)?.unsubscribe?.(); } catch {}
