@@ -4,7 +4,7 @@ import { useSocketExtraEvents } from '../app/hooks/useSocketExtraEvents';
 
 type FillerItem = { key: string; status: { running: boolean; fillsLastMin?: number } };
 
-export const FillerStatus: React.FC<{ apiBase: string }> = ({ apiBase }) => {
+export const FillerStatus: React.FC<{ apiBase: string; hideHeader?: boolean }> = ({ apiBase, hideHeader = false }) => {
   const [status, setStatus] = useState<{ fillers?: FillerItem[] } | null>(null);
   const [metrics, setMetrics] = useState<Record<string, any>>({});
   const [busy, setBusy] = useState(false);
@@ -106,20 +106,33 @@ export const FillerStatus: React.FC<{ apiBase: string }> = ({ apiBase }) => {
 
   return (
     <div className="bg-gray-800 rounded p-3">
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="text-white font-semibold">Filler Bots</h3>
-        <button className="px-2 py-1 bg-gray-700 text-white rounded text-sm" onClick={load} disabled={busy}>Refresh</button>
-      </div>
+      {!hideHeader && (
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-white font-semibold">Filler Bots</h3>
+          <button className="px-2 py-1 bg-gray-700 text-white rounded text-sm" onClick={load} disabled={busy}>Refresh</button>
+        </div>
+      )}
       <div className="space-y-2 text-sm">
         {list.map((it) => (
           <div key={it.key} className="p-2 bg-gray-700 rounded flex items-center justify-between">
             <div className="text-gray-200">
               <div>{it.key} — {it.status?.running ? 'running' : 'stopped'} · fills(1m)={it.status?.fillsLastMin ?? 0}</div>
-              {metrics[it.key] && (
-                <div className="text-xs text-gray-300 mt-0.5">
-                  attempts(1m)={metrics[it.key].attempts ?? 0} · successes(1m)={metrics[it.key].successes ?? 0} · cost(1m)={(metrics[it.key].costSol ?? 0).toFixed(6)} SOL · revenue(1m)={(metrics[it.key].revenueQuote ?? 0).toLocaleString()} q
-                </div>
-              )}
+              {(() => {
+                const m = metrics[it.key];
+                if (!m) return null;
+                const attempts = Number(m.attempts ?? 0);
+                const successes = Number(m.successes ?? 0);
+                const successRate = attempts > 0 ? ((successes / attempts) * 100).toFixed(1) : '0.0';
+                const avgBuildMs = Number(m.avgBuildMs ?? m.avgBuildTimeMs ?? 0);
+                const avgLatencyMs = Number(m.avgLatencyMs ?? 0);
+                const costSol = Number(m.costSol ?? 0);
+                const revenue = Number(m.revenueQuote ?? 0);
+                return (
+                  <div className="text-xs text-gray-300 mt-0.5">
+                    attempts(1m)={attempts} · successes(1m)={successes} · successRate={successRate}% · avgBuildMs={avgBuildMs || '-'} · latencyMs={avgLatencyMs || '-'} · cost(1m)={costSol.toFixed(6)} SOL · revenue(1m)={revenue.toLocaleString()} q
+                  </div>
+                );
+              })()}
               {(it.status as any)?.minMakerCountPerNode !== undefined && (
                 <div className="text-xs text-gray-400 mt-0.5">
                   young={(it.status as any).skipYoungOrderMs ?? 0}ms · makers≥{(it.status as any).minMakerCountPerNode ?? 0} req={((it.status as any).requireExistingMakers ? 'Y' : 'N')} · tipFloorMin={(it.status as any).minTipFloorToAttemptLamports ?? 0} · jitTTL={(it.status as any).denyJitTakersTtlMs ?? 0}ms

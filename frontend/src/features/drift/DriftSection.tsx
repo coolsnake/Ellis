@@ -279,9 +279,12 @@ export const DriftSection: React.FC<{
     } catch {}
   };
 
+  const [open, setOpen] = useState<{ liq: boolean; trig: boolean; fill: boolean }>({ liq: true, trig: true, fill: true });
+
   return (
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-      <div className="p-3 bg-gray-800 rounded md:col-span-2">
+    <div className="grid grid-cols-1 gap-4">
+      {/* Subaccounts — full width */}
+      <div className="p-3 bg-gray-800 rounded">
         <div className="flex items-center justify-between mb-2">
           <div className="text-white font-semibold">Subaccounts</div>
           <div className="flex items-center gap-2">
@@ -293,6 +296,9 @@ export const DriftSection: React.FC<{
             />
             <button className="px-2 py-1 bg-gray-700 rounded text-white text-sm" onClick={loadStatusAndSubs} disabled={loading}>Refresh</button>
             <button className="px-2 py-1 bg-blue-600 rounded text-white text-sm" onClick={createSub} disabled={p.driftOpBusy}>+ Create</button>
+            {!!p.onOpenExecConfig && (
+              <button className="px-2 py-1 bg-gray-700 text-white rounded text-sm" onClick={() => p.onOpenExecConfig?.()}>Execution Config</button>
+            )}
           </div>
         </div>
         {error && <div className="mb-2 text-sm text-red-300">{error}</div>}
@@ -409,213 +415,233 @@ export const DriftSection: React.FC<{
             </table>
           </div>
         </div>
-      </div>
-
-      <div className="p-3 bg-gray-800 rounded">
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-white font-semibold">Liquidations & Bots</div>
-          <div className="flex items-center gap-2">
-            {!!p.onOpenLiqRunner && (
-              <button className="px-2 py-1 bg-purple-600 text-white rounded text-sm" onClick={() => p.onOpenLiqRunner?.()}>+ New Liquidator</button>
-            )}
-            {!!p.onOpenTriggerRunner && (
-              <button className="px-2 py-1 bg-amber-600 text-white rounded text-sm" onClick={() => p.onOpenTriggerRunner?.()}>+ New Trigger Bot</button>
-            )}
-            {!!p.onOpenFillerRunner && (
-              <button className="px-2 py-1 bg-sky-600 text-white rounded text-sm" onClick={() => p.onOpenFillerRunner?.()}>+ New Filler Bot</button>
-            )}
-            {!!p.onOpenExecConfig && (
-              <button className="px-2 py-1 bg-gray-700 text-white rounded text-sm" onClick={() => p.onOpenExecConfig?.()}>Execution Config</button>
-            )}
-          </div>
-        </div>
-        <div className="mb-3">
-          <LiquidatorStatus apiBase={p.apiBase} />
-        </div>
-        <div className="mb-3">
-          <TriggerStatus apiBase={p.apiBase} />
-        </div>
-        <div className="mb-3">
-          <FillerStatus apiBase={p.apiBase} />
-        </div>
-        <div className="mt-3 grid grid-cols-1 gap-3">
-          {p.ls.map((x) => (
-            <LiquidationMonitor key={x.key} apiBase={p.apiBase} liquidatorKey={x.key} />
-          ))}
-        </div>
         <div className="mt-4 text-xs text-gray-400">
           {status?.cluster ? `Cluster: ${status.cluster}` : null}
           {status?.programId ? ` — Program: ${status.programId}` : null}
         </div>
       </div>
 
-      {/* Users panel spanning full width */}
-      <div className="p-3 bg-gray-800 rounded md:col-span-3">
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-white font-semibold">Users</div>
+      {/* Liquidators section */}
+      <div className="bg-gray-800 rounded">
+        <div className="p-3 flex items-center justify-between">
+          <div className="text-white font-semibold">Liquidators</div>
+          <div className="flex items-center gap-2">
+            {!!p.onOpenLiqRunner && (
+              <button className="px-2 py-1 bg-purple-600 text-white rounded text-sm" onClick={() => p.onOpenLiqRunner?.()}>+ New Liquidator</button>
+            )}
+            <button className="px-2 py-1 bg-gray-700 text-white rounded text-sm" onClick={() => setOpen((o) => ({ ...o, liq: !o.liq }))}>{open.liq ? 'Hide' : 'Show'}</button>
+          </div>
         </div>
-        <div className="overflow-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-gray-400">
-                <th className="text-left">User</th>
-                <th className="text-left">Health</th>
-                <th className="text-left">Updated</th>
-                <th className="text-left">Exposure</th>
-                <th className="text-left">C/E</th>
-                <th className="text-left">Profit</th>
-                <th className="text-left">Skip</th>
-                <th className="text-left">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {liqUsers.map((u) => (
-                <React.Fragment key={u.userPk}>
-                <tr className="text-gray-300">
-                  <td title={u.userPk} className="font-mono">{u.userPk.slice(0, 6)}…{u.userPk.slice(-6)}</td>
-                  <td className={`${u.health < -0.5 ? 'text-red-300' : u.health < 0 ? 'text-yellow-300' : 'text-white'}`}>{(u.health * 100).toFixed(2)}%</td>
-                  <td className="text-gray-400">{(() => { const d = Date.now() - Number(u.updatedAt||0); return isFinite(d) ? (d < 60000 ? `${Math.max(0, Math.floor(d/1000))}s ago` : `${Math.floor(d/60000)}m ago`) : '-'; })()}</td>
-                  <td>{(() => {
-                    const ex = (u as any).exposureUsd;
-                    if (typeof ex === 'number') return `$${(ex as number).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
-                    // Fallback: sum abs(notional)
-                    let sum = 0;
-                    try { if (Array.isArray((u as any).positions)) for (const p of (u as any).positions) { if (typeof (p as any).notional === 'number') sum += Math.abs((p as any).notional as number); } } catch {}
-                    return sum > 0 ? `$${sum.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '-';
-                  })()}</td>
-                  <td>{(() => {
-                    const c = (u as any).collateralUsd;
-                    let ex = (u as any).exposureUsd;
-                    if (!(typeof ex === 'number')) {
-                      let sum = 0;
-                      try { if (Array.isArray((u as any).positions)) for (const p of (u as any).positions) { if (typeof (p as any).notional === 'number') sum += Math.abs((p as any).notional as number); } } catch {}
-                      ex = sum;
-                    }
-                    return (typeof c === 'number' && typeof ex === 'number' && ex > 0) ? (c / ex).toFixed(2) : '-';
-                  })()}</td>
-                  <td>
-                    {(() => {
-                      let prof = (u as any).profitability;
-                      if (typeof prof !== 'number' && Array.isArray((u as any).positions)) {
-                        for (const p of (u as any).positions) {
-                          if (typeof (p as any).profitability === 'number') {
-                            prof = (typeof prof === 'number') ? Math.min(prof as number, (p as any).profitability as number) : (p as any).profitability;
-                          }
-                        }
-                      }
-                      return (typeof prof === 'number') ? (
-                        <span className={`font-mono ${(prof as number) > 0 ? 'text-green-300' : 'text-yellow-300'}`}>{(((prof as number)) * 100).toFixed(2)}%</span>
-                      ) : <span className="text-gray-500">-</span>;
-                    })()}
-                  </td>
-                  <td>
-                    {typeof (u as any).skipReason === 'string' && (u as any).skipReason ? (
-                      <span className="px-1.5 py-0.5 bg-gray-700 rounded text-[10px] uppercase tracking-wide">{(u as any).skipReason}</span>
-                    ) : <span className="text-gray-500">-</span>}
-                  </td>
-                  <td className="flex gap-2 items-center">
-                    <button className="px-2 py-0.5 bg-gray-700 text-white rounded hover:bg-gray-600" onClick={() => toggleOpen(u.userPk)}>
-                      {openUser === u.userPk ? 'Hide' : 'Show'}
-                    </button>
-                    <button className="px-2 py-0.5 bg-blue-600 text-white rounded hover:bg-blue-700" onClick={() => testUser(u.userPk)}>Test</button>
-                  </td>
-                </tr>
-                {openUser === u.userPk && (
-                  <tr className="bg-gray-900/60">
-                    <td colSpan={8} className="p-2">
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
-                        <div className="bg-gray-800 rounded p-2">
-                          <div className="text-gray-300">Total</div>
-                          <div className="font-mono text-white">{Number(userDetails[u.userPk]?.collateral?.totalUi || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
-                        </div>
-                        <div className="bg-gray-800 rounded p-2">
-                          <div className="text-gray-300">Maintenance</div>
-                          <div className="font-mono text-white">{Number(userDetails[u.userPk]?.collateral?.maintUi || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
-                        </div>
-                        <div className="bg-gray-800 rounded p-2">
-                          <div className="text-gray-300">Free</div>
-                          <div className="font-mono text-white">{Number(userDetails[u.userPk]?.collateral?.freeUi || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <div>
-                          <div className="text-gray-300 mb-1">Collateral tokens</div>
-                          <div className="overflow-auto">
-                            <div className="mb-3">
-                              <div className="text-gray-400 text-xs mb-1">Spot collateral — Deposits</div>
-                              <table className="w-full text-xs">
-                                <thead>
-                                  <tr className="text-gray-400"><th className="text-left">Market</th><th className="text-left">Mint</th><th className="text-left">Amount</th></tr>
-                                </thead>
-                                <tbody>
-                                  {(userDetails[u.userPk]?.spotCollateral || []).filter((c: any) => Number(c?.amountUi || 0) > 0).map((c: any, i: number) => (
-                                    <tr key={`col-dep-${u.userPk}-${i}`} className="text-gray-300">
-                                      <td>{c.symbol || c.marketIndex}</td>
-                                      <td className="font-mono">{c.mint || '-'}</td>
-                                      <td className="font-mono text-green-300">{Number(c.amountUi || 0).toLocaleString(undefined, { maximumFractionDigits: 9 })}</td>
-                                    </tr>
-                                  ))}
-                                  {!((userDetails[u.userPk]?.spotCollateral || []).some((c: any) => Number(c?.amountUi || 0) > 0)) && (
-                                    <tr><td colSpan={3} className="text-gray-500">No deposits</td></tr>
-                                  )}
-                                </tbody>
-                              </table>
-                            </div>
-                            <div>
-                              <div className="text-gray-400 text-xs mb-1">Spot collateral — Borrows</div>
-                              <table className="w-full text-xs">
-                                <thead>
-                                  <tr className="text-gray-400"><th className="text-left">Market</th><th className="text-left">Mint</th><th className="text-left">Amount</th></tr>
-                                </thead>
-                                <tbody>
-                                  {(userDetails[u.userPk]?.spotCollateral || []).filter((c: any) => Number(c?.amountUi || 0) < 0).map((c: any, i: number) => (
-                                    <tr key={`col-bor-${u.userPk}-${i}`} className="text-gray-300">
-                                      <td>{c.symbol || c.marketIndex}</td>
-                                      <td className="font-mono">{c.mint || '-'}</td>
-                                      <td className="font-mono text-red-300">{Math.abs(Number(c.amountUi || 0)).toLocaleString(undefined, { maximumFractionDigits: 9 })}</td>
-                                    </tr>
-                                  ))}
-                                  {!((userDetails[u.userPk]?.spotCollateral || []).some((c: any) => Number(c?.amountUi || 0) < 0)) && (
-                                    <tr><td colSpan={3} className="text-gray-500">No borrows</td></tr>
-                                  )}
-                                </tbody>
-                              </table>
-                            </div>
-                          </div>
-                        </div>
-                        <div>
-                          <div className="text-gray-300 mb-1">Perp positions</div>
-                          <div className="overflow-auto">
-                            <table className="w-full text-xs">
-                              <thead>
-                                <tr className="text-gray-400"><th className="text-left">Market</th><th className="text-left">Base (raw)</th></tr>
-                              </thead>
-                              <tbody>
-                                {(userDetails[u.userPk]?.perpPositions || []).map((pp: any, i: number) => (
-                                  <tr key={`pp-${u.userPk}-${i}`} className="text-gray-300">
-                                    <td>{pp.marketIndex}</td>
-                                    <td className="font-mono">{Number(pp.baseRaw || 0).toLocaleString()}</td>
-                                  </tr>
-                                ))}
-                                {!(userDetails[u.userPk]?.perpPositions || []).length && (
-                                  <tr><td colSpan={2} className="text-gray-500">No perp positions</td></tr>
-                                )}
-                              </tbody>
-                            </table>
-                          </div>
-                        </div>
-                      </div>
-                    </td>
-                  </tr>
-                )}
-                </React.Fragment>
+        {open.liq && (
+          <div className="px-3 pb-3 space-y-3">
+            <LiquidatorStatus apiBase={p.apiBase} hideHeader />
+            <div className="grid grid-cols-1 gap-3">
+              {p.ls.map((x) => (
+                <LiquidationMonitor key={x.key} apiBase={p.apiBase} liquidatorKey={x.key} />
               ))}
-              {liqUsers.length === 0 && (
-                <tr><td colSpan={8} className="text-gray-500">No users under threshold</td></tr>
-              )}
-            </tbody>
-          </table>
+            </div>
+            <div className="mt-2">
+              <div className="text-white font-semibold mb-2">Users</div>
+              <div className="overflow-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-gray-400">
+                      <th className="text-left">User</th>
+                      <th className="text-left">Health</th>
+                      <th className="text-left">Updated</th>
+                      <th className="text-left">Exposure</th>
+                      <th className="text-left">C/E</th>
+                      <th className="text-left">Profit</th>
+                      <th className="text-left">Skip</th>
+                      <th className="text-left">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {liqUsers.map((u) => (
+                      <React.Fragment key={u.userPk}>
+                        <tr className="text-gray-300">
+                          <td title={u.userPk} className="font-mono">{u.userPk.slice(0, 6)}…{u.userPk.slice(-6)}</td>
+                          <td className={`${u.health < -0.5 ? 'text-red-300' : u.health < 0 ? 'text-yellow-300' : 'text-white'}`}>{(u.health * 100).toFixed(2)}%</td>
+                          <td className="text-gray-400">{(() => { const d = Date.now() - Number(u.updatedAt||0); return isFinite(d) ? (d < 60000 ? `${Math.max(0, Math.floor(d/1000))}s ago` : `${Math.floor(d/60000)}m ago`) : '-'; })()}</td>
+                          <td>{(() => {
+                            const ex = (u as any).exposureUsd;
+                            if (typeof ex === 'number') return `$${(ex as number).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+                            let sum = 0;
+                            try { if (Array.isArray((u as any).positions)) for (const p of (u as any).positions) { if (typeof (p as any).notional === 'number') sum += Math.abs((p as any).notional as number); } } catch {}
+                            return sum > 0 ? `$${sum.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '-';
+                          })()}</td>
+                          <td>{(() => {
+                            const c = (u as any).collateralUsd;
+                            let ex = (u as any).exposureUsd;
+                            if (!(typeof ex === 'number')) {
+                              let sum = 0;
+                              try { if (Array.isArray((u as any).positions)) for (const p of (u as any).positions) { if (typeof (p as any).notional === 'number') sum += Math.abs((p as any).notional as number); } } catch {}
+                              ex = sum;
+                            }
+                            return (typeof c === 'number' && typeof ex === 'number' && ex > 0) ? (c / ex).toFixed(2) : '-';
+                          })()}</td>
+                          <td>
+                            {(() => {
+                              let prof = (u as any).profitability;
+                              if (typeof prof !== 'number' && Array.isArray((u as any).positions)) {
+                                for (const p of (u as any).positions) {
+                                  if (typeof (p as any).profitability === 'number') {
+                                    prof = (typeof prof === 'number') ? Math.min(prof as number, (p as any).profitability as number) : (p as any).profitability;
+                                  }
+                                }
+                              }
+                              return (typeof prof === 'number') ? (
+                                <span className={`font-mono ${(prof as number) > 0 ? 'text-green-300' : 'text-yellow-300'}`}>{(((prof as number)) * 100).toFixed(2)}%</span>
+                              ) : <span className="text-gray-500">-</span>;
+                            })()}
+                          </td>
+                          <td>
+                            {typeof (u as any).skipReason === 'string' && (u as any).skipReason ? (
+                              <span className="px-1.5 py-0.5 bg-gray-700 rounded text-[10px] uppercase tracking-wide">{(u as any).skipReason}</span>
+                            ) : <span className="text-gray-500">-</span>}
+                          </td>
+                          <td className="flex gap-2 items-center">
+                            <button className="px-2 py-0.5 bg-gray-700 text-white rounded hover:bg-gray-600" onClick={() => toggleOpen(u.userPk)}>
+                              {openUser === u.userPk ? 'Hide' : 'Show'}
+                            </button>
+                            <button className="px-2 py-0.5 bg-blue-600 text-white rounded hover:bg-blue-700" onClick={() => testUser(u.userPk)}>Test</button>
+                          </td>
+                        </tr>
+                        {openUser === u.userPk && (
+                          <tr className="bg-gray-900/60">
+                            <td colSpan={8} className="p-2">
+                              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+                                <div className="bg-gray-800 rounded p-2">
+                                  <div className="text-gray-300">Total</div>
+                                  <div className="font-mono text-white">{Number(userDetails[u.userPk]?.collateral?.totalUi || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+                                </div>
+                                <div className="bg-gray-800 rounded p-2">
+                                  <div className="text-gray-300">Maintenance</div>
+                                  <div className="font-mono text-white">{Number(userDetails[u.userPk]?.collateral?.maintUi || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+                                </div>
+                                <div className="bg-gray-800 rounded p-2">
+                                  <div className="text-gray-300">Free</div>
+                                  <div className="font-mono text-white">{Number(userDetails[u.userPk]?.collateral?.freeUi || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+                                </div>
+                              </div>
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div>
+                                  <div className="text-gray-300 mb-1">Collateral tokens</div>
+                                  <div className="overflow-auto">
+                                    <div className="mb-3">
+                                      <div className="text-gray-400 text-xs mb-1">Spot collateral — Deposits</div>
+                                      <table className="w-full text-xs">
+                                        <thead>
+                                          <tr className="text-gray-400"><th className="text-left">Market</th><th className="text-left">Mint</th><th className="text-left">Amount</th></tr>
+                                        </thead>
+                                        <tbody>
+                                          {(userDetails[u.userPk]?.spotCollateral || []).filter((c: any) => Number(c?.amountUi || 0) > 0).map((c: any, i: number) => (
+                                            <tr key={`col-dep-${u.userPk}-${i}`} className="text-gray-300">
+                                              <td>{c.symbol || c.marketIndex}</td>
+                                              <td className="font-mono">{c.mint || '-'}</td>
+                                              <td className="font-mono text-green-300">{Number(c.amountUi || 0).toLocaleString(undefined, { maximumFractionDigits: 9 })}</td>
+                                            </tr>
+                                          ))}
+                                          {!((userDetails[u.userPk]?.spotCollateral || []).some((c: any) => Number(c?.amountUi || 0) > 0)) && (
+                                            <tr><td colSpan={3} className="text-gray-500">No deposits</td></tr>
+                                          )}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                    <div>
+                                      <div className="text-gray-400 text-xs mb-1">Spot collateral — Borrows</div>
+                                      <table className="w-full text-xs">
+                                        <thead>
+                                          <tr className="text-gray-400"><th className="text-left">Market</th><th className="text-left">Mint</th><th className="text-left">Amount</th></tr>
+                                        </thead>
+                                        <tbody>
+                                          {(userDetails[u.userPk]?.spotCollateral || []).filter((c: any) => Number(c?.amountUi || 0) < 0).map((c: any, i: number) => (
+                                            <tr key={`col-bor-${u.userPk}-${i}`} className="text-gray-300">
+                                              <td>{c.symbol || c.marketIndex}</td>
+                                              <td className="font-mono">{c.mint || '-'}</td>
+                                              <td className="font-mono text-red-300">{Math.abs(Number(c.amountUi || 0)).toLocaleString(undefined, { maximumFractionDigits: 9 })}</td>
+                                            </tr>
+                                          ))}
+                                          {!((userDetails[u.userPk]?.spotCollateral || []).some((c: any) => Number(c?.amountUi || 0) < 0)) && (
+                                            <tr><td colSpan={3} className="text-gray-500">No borrows</td></tr>
+                                          )}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </div>
+                                </div>
+                                <div>
+                                  <div className="text-gray-300 mb-1">Perp positions</div>
+                                  <div className="overflow-auto">
+                                    <table className="w-full text-xs">
+                                      <thead>
+                                        <tr className="text-gray-400"><th className="text-left">Market</th><th className="text-left">Base (raw)</th></tr>
+                                      </thead>
+                                      <tbody>
+                                        {(userDetails[u.userPk]?.perpPositions || []).map((pp: any, i: number) => (
+                                          <tr key={`pp-${u.userPk}-${i}`} className="text-gray-300">
+                                            <td>{pp.marketIndex}</td>
+                                            <td className="font-mono">{Number(pp.baseRaw || 0).toLocaleString()}</td>
+                                          </tr>
+                                        ))}
+                                        {!(userDetails[u.userPk]?.perpPositions || []).length && (
+                                          <tr><td colSpan={2} className="text-gray-500">No perp positions</td></tr>
+                                        )}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    ))}
+                    {liqUsers.length === 0 && (
+                      <tr><td colSpan={8} className="text-gray-500">No users under threshold</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Triggers section */}
+      <div className="bg-gray-800 rounded">
+        <div className="p-3 flex items-center justify-between">
+          <div className="text-white font-semibold">Triggers</div>
+          <div className="flex items-center gap-2">
+            {!!p.onOpenTriggerRunner && (
+              <button className="px-2 py-1 bg-amber-600 text-white rounded text-sm" onClick={() => p.onOpenTriggerRunner?.()}>+ New Trigger Bot</button>
+            )}
+            <button className="px-2 py-1 bg-gray-700 text-white rounded text-sm" onClick={() => setOpen((o) => ({ ...o, trig: !o.trig }))}>{open.trig ? 'Hide' : 'Show'}</button>
+          </div>
         </div>
+        {open.trig && (
+          <div className="px-3 pb-3">
+            <TriggerStatus apiBase={p.apiBase} hideHeader />
+          </div>
+        )}
+      </div>
+
+      {/* Fillers section */}
+      <div className="bg-gray-800 rounded">
+        <div className="p-3 flex items-center justify-between">
+          <div className="text-white font-semibold">Fillers</div>
+          <div className="flex items-center gap-2">
+            {!!p.onOpenFillerRunner && (
+              <button className="px-2 py-1 bg-sky-600 text-white rounded text-sm" onClick={() => p.onOpenFillerRunner?.()}>+ New Filler Bot</button>
+            )}
+            <button className="px-2 py-1 bg-gray-700 text-white rounded text-sm" onClick={() => setOpen((o) => ({ ...o, fill: !o.fill }))}>{open.fill ? 'Hide' : 'Show'}</button>
+          </div>
+        </div>
+        {open.fill && (
+          <div className="px-3 pb-3">
+            <FillerStatus apiBase={p.apiBase} hideHeader />
+          </div>
+        )}
       </div>
     </div>
   );
