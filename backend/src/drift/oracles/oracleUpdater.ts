@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { HermesClient } from '@pythnetwork/hermes-client';
 import { CONFIG } from '../../utils/config.js';
+import { logger } from '../../utils/logger.js';
 
 type UpdatePolicy = 'stale' | 'always' | 'off';
 
@@ -21,6 +22,7 @@ export class OracleUpdater {
     this.timeoutMs = Math.max(200, Number(((CONFIG as any)?.pyth?.updateTimeoutMs) ?? 300));
     this.initializeClients();
     this.buildPerpFeedMap();
+    try { logger.info('drift.oracle.updater.init', { cat: 'drift', cluster: this.cluster, policy: this.policy, hasHermes: !!this.priceService, feedMapSize: this.marketIndexToFeedId.size }); } catch {}
   }
 
   private initializeClients(): void {
@@ -58,18 +60,19 @@ export class OracleUpdater {
   // Returns TransactionInstruction[] to prepend before a fill, or []
   async getOracleUpdateIxsForPerp(params: { marketIndex: number; currentSlot: number; oracleSlot: number | null | undefined }): Promise<any[]> {
     try {
-      if (this.policy === 'off') return [];
+      if (this.policy === 'off') { try { logger.info('drift.oracle.update_ixs.skip', { cat: 'drift', reason: 'policy_off', marketIndex: Number(params.marketIndex) }); } catch {}; return []; }
       const feedId = this.marketIndexToFeedId.get(Number(params.marketIndex));
-      if (!feedId || !this.priceService) return [];
+      if (!feedId || !this.priceService) { try { logger.info('drift.oracle.update_ixs.skip', { cat: 'drift', reason: 'no_feed_or_service', marketIndex: Number(params.marketIndex) }); } catch {}; return []; }
       if (this.policy === 'stale') {
         const od = Number(params.oracleSlot ?? 0);
         const cur = Number(params.currentSlot ?? 0);
         // Only update when not already from the current slot
-        if (od > 0 && cur > 0 && od >= cur) return [];
+        if (od > 0 && cur > 0 && od >= cur) { try { logger.info('drift.oracle.update_ixs.stale_skip', { cat: 'drift', marketIndex: Number(params.marketIndex), od, cur }); } catch {}; return []; }
       }
       const vaas = await this.priceService.getLatestVaas([feedId]);
-      if (!Array.isArray(vaas) || !vaas[0]) return [];
+      if (!Array.isArray(vaas) || !vaas[0]) { try { logger.info('drift.oracle.update_ixs.skip', { cat: 'drift', reason: 'no_vaas', marketIndex: Number(params.marketIndex) }); } catch {}; return []; }
       const ixs = await this.driftClient.getPostPythPullOracleUpdateAtomicIxs(vaas[0], feedId);
+      if (Array.isArray(ixs) && ixs.length > 0) { try { logger.info('drift.oracle.update_ixs.ready', { cat: 'drift', marketIndex: Number(params.marketIndex), count: ixs.length, policy: this.policy }); } catch {} }
       return Array.isArray(ixs) ? ixs : [];
     } catch {
       return [];

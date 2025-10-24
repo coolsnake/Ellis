@@ -1,4 +1,5 @@
 import { CONFIG } from '../utils/config.js';
+import { logger } from '../utils/logger.js';
 import type { DriftMarketRef } from './types.js';
 
 function readAllowlist(): string[] {
@@ -30,11 +31,13 @@ export function parseAllowlistMarkets(): DriftMarketRef[] {
       if (Number.isFinite(marketIndex as number)) out.push({ marketIndex: Number(marketIndex), symbol });
     }
     const seen = new Set<number>();
-    return out.filter(m => {
+    const uniq = out.filter(m => {
       if (seen.has(m.marketIndex)) return false;
       seen.add(m.marketIndex);
       return true;
     }).sort((a, b) => a.marketIndex - b.marketIndex);
+    try { logger.info('drift.markets.allowlist_parsed', { cat: 'drift', count: uniq.length, rawCount: out.length, sample: uniq.slice(0, 8) }); } catch {}
+    return uniq;
   } catch { return []; }
 }
 

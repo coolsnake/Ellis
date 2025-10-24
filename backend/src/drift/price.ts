@@ -31,6 +31,7 @@ export class DriftPriceService {
   private constructor() {
     try {
       const enableWs = !!getDriftConfig().enableWsPrices;
+      try { logger.info('drift.price.ws_enabled', { cat: 'drift', enabled: enableWs }); } catch {}
       if (enableWs) {
         this.ws = new DriftDlobWs();
         this.ws.on('l2', (u: any) => {
@@ -72,6 +73,7 @@ export class DriftPriceService {
     // Prefer WS when enabled
     const cfg = getDriftConfig();
     const enableWs = !!cfg.enableWsPrices;
+    try { logger.info('drift.price.track_market', { cat: 'drift', marketIndex: idx, intervalMs, mode: (enableWs && this.ws) ? 'ws' : 'http' }); } catch {}
     if (enableWs && this.ws) {
       try { this.ws.subscribeMarket(idx); } catch {}
       // Staleness watchdog: if WS stalls, ensure HTTP fallback polling (unless wsOnlyPrices)

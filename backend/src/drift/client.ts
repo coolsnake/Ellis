@@ -1,5 +1,6 @@
 // NOTE: type coverage tightened for key SDK surfaces only; keeping any for dynamic SDK
 import { Keypair, PublicKey, Connection } from '@solana/web3.js';
+import { createHash } from 'crypto';
 import { CONFIG } from '../utils/config.js';
 import { ensureWallet } from '../wallet/wallet.js';
 import type { DriftStatus, SubaccountInfo, DriftMarketRef, DriftCluster } from './types.js';
@@ -72,6 +73,7 @@ export class DriftService {
   private lastSlotTs: number = 0;
   private _slotTsHandler: any | null = null;
   private _lastResubMs: number = 0;
+  private lastPrefetchSlot: number = 0;
 
   static getInstance(): DriftService {
     if (!this.instance) this.instance = new DriftService();
@@ -448,6 +450,61 @@ export class DriftService {
   hasWarmRefStats(pk: string | PublicKey): boolean {
     return this.warmRefStats.has(String(pk));
   }
+  private computeAnchorDiscriminatorB58(name: string): string | null {
+    try {
+      const label = `account:${name}`;
+      const hash = createHash('sha256').update(label).digest();
+      const first8 = hash.slice(0, 8);
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const bs58 = (require('bs58') as any)?.default || require('bs58');
+      return bs58.encode(first8);
+    } catch {
+      return null;
+    }
+  }
+  private async fetchUsersViaHeliusGpaV2(limit: number, changedOnly = true): Promise<Map<string, any>> {
+    const out = new Map<string, any>();
+    try {
+      await this.init();
+      const drift: any = this.client;
+      const conn: any = this.connection;
+      const endpoint: string = String((conn as any)?._rpcEndpoint || (conn as any)?.rpcEndpoint || '');
+      if (!/helius/i.test(endpoint)) return out;
+      const programId: string = String(drift?.program?.programId?.toBase58?.() || drift?.program?.programId || '');
+      if (!programId) return out;
+      const discr = this.computeAnchorDiscriminatorB58('User');
+      const filters: any[] = discr ? [{ memcmp: { offset: 0, bytes: discr } }] : [];
+      const params: any = { encoding: 'base64', filters, limit: Math.max(100, Math.min(10000, Number(limit || 1200))) };
+      if (changedOnly && this.lastPrefetchSlot > 0) { (params as any).changedSinceSlot = Number(this.lastPrefetchSlot); }
+      const body: any = { jsonrpc: '2.0', id: 1, method: 'getProgramAccountsV2', params: [programId, params] };
+      const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const json = await res.json().catch(() => ({}));
+      const list = Array.isArray(json?.result?.accounts) ? json.result.accounts : (Array.isArray(json?.result) ? json.result : []);
+      if (!Array.isArray(list) || list.length === 0) {
+        try { this.lastPrefetchSlot = Number(await this.getReadConnection().getSlot('processed')); } catch {}
+        return out;
+      }
+      let coder: any = null;
+      try { coder = drift?.program?.coder?.accounts || null; } catch {}
+      for (const a of list) {
+        try {
+          const pk = String(a?.pubkey || a?.account || '');
+          const enc = a?.account?.data;
+          const b64 = Array.isArray(enc) ? enc[0] : (typeof enc === 'string' ? enc : null);
+          if (!pk || !b64) continue;
+          const raw = Buffer.from(b64, 'base64');
+          let ua: any = null;
+          try { ua = coder?.decode?.('User', raw); } catch {}
+          if (!ua) {
+            try { ua = drift?.program?.account?.user?.coder?.accounts?.decode?.('User', raw); } catch {}
+          }
+          if (ua) out.set(pk, ua);
+        } catch {}
+      }
+      try { this.lastPrefetchSlot = Number(await this.getReadConnection().getSlot('processed')); } catch {}
+    } catch {}
+    return out;
+  }
   async fetchUsersDecoded(pks: (string | PublicKey)[]): Promise<Map<string, any>> {
     await this.init();
     try {
@@ -553,8 +610,36 @@ export class DriftService {
       } catch {}
     };
 
+    const method = String((driftCfg?.prefetchMethod || 'maci')).toLowerCase();
     const step = async () => {
       try {
+        if (method === 'gpa') {
+          const limit = Math.max(100, Number(driftCfg?.prefetchGpaLimit ?? 1200));
+          const changedOnly = (driftCfg?.prefetchGpaChangedOnly !== false);
+          const decoded = await this.fetchUsersViaHeliusGpaV2(limit, changedOnly);
+          if (decoded && decoded.size > 0) {
+            for (const [pk, ua] of decoded.entries()) {
+              try {
+                if (this.warmUsers.size >= 500) {
+                  const oldest = [...this.warmUsers.entries()].sort((a, b) => a[1].ts - b[1].ts)[0]?.[0];
+                  if (oldest) {
+                    try { await (this.warmUsers.get(oldest) as any)?.user?.unsubscribe?.(); } catch {}
+                    this.warmUsers.delete(oldest);
+                  }
+                }
+                this.warmUsers.set(pk, { ua, ts: Date.now() });
+                try {
+                  const ref = ua?.referrerInfo?.referrer;
+                  if (ref && String(ref) !== '11111111111111111111111111111111') {
+                    await this.ensureRefStatsReady(ref);
+                  }
+                } catch {}
+              } catch {}
+            }
+          }
+          return;
+        }
+        // Default MACI path
         await collectFromDlob();
         const batch = this.prefetchQueue.splice(0, batchMax);
         if (batch.length === 0) return;
@@ -567,7 +652,6 @@ export class DriftService {
             try {
               const ua = decoded.get(pk);
               if (!ua) continue;
-              // LRU bound
               if (this.warmUsers.size >= 500) {
                 const oldest = [...this.warmUsers.entries()].sort((a, b) => a[1].ts - b[1].ts)[0]?.[0];
                 if (oldest) {
@@ -576,7 +660,6 @@ export class DriftService {
                 }
               }
               this.warmUsers.set(pk, { ua, ts: Date.now() });
-              // Warm referrer stats if present
               try {
                 const ref = ua?.referrerInfo?.referrer;
                 if (ref && String(ref) !== '11111111111111111111111111111111') {

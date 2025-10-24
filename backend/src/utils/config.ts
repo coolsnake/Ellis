@@ -576,10 +576,14 @@ export const CONFIG = {
     orderResyncIntervalMs: Number(process.env.DRIFT_ORDER_RESYNC_MS || 15000),
     // User prefetcher controls
     prefetchEnabled: (process.env.DRIFT_PREFETCH_ENABLED || 'true') !== 'false',
+    // Method: 'maci' (getMultipleAccountsInfo) or 'gpa' (Helius GPA v2)
+    prefetchMethod: (process.env.DRIFT_PREFETCH_METHOD as any) || 'maci',
     prefetchIntervalMs: Number(process.env.DRIFT_PREFETCH_INTERVAL_MS || 3000),
     prefetchBatchMax: Number(process.env.DRIFT_PREFETCH_BATCH_MAX || 60),
     prefetchChunkSize: Number(process.env.DRIFT_PREFETCH_CHUNK_SIZE || 20),
     prefetchQueueCap: Number(process.env.DRIFT_PREFETCH_QUEUE_CAP || 5000),
+    prefetchGpaLimit: Number(process.env.DRIFT_PREFETCH_GPA_LIMIT || 1200),
+    prefetchGpaChangedOnly: (process.env.DRIFT_PREFETCH_GPA_CHANGED_ONLY || 'true') !== 'false',
     // Floor for filler priority fee micro-lamports
     fillerPriorityFloorMicroLamports: Number(process.env.DRIFT_FILLER_FLOOR_MICRO || 15000),
     // Max tolerated oracle delay in slots before skipping a market
