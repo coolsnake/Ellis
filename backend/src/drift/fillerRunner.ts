@@ -21,6 +21,12 @@ export type FillerConfig = {
   marketsAllowlist?: Array<number> | string[]; // optional allowlist
   maxMakersPerFill?: number; // default 2
   allowAmmFills?: boolean; // default true
+  // Heuristics to avoid JIT place-and-make fills
+  skipYoungOrderMs?: number;
+  requireExistingMakers?: boolean;
+  minMakerCountPerNode?: number;
+  denyJitTakersTtlMs?: number;
+  minTipFloorToAttemptLamports?: number;
 };
 
 type FillerRuntimeState = {
@@ -50,7 +56,7 @@ export class DriftFillerRunner {
   private client: any | null = null;
   private connection: any | null = null;
   private pollLoader: any | null = null;
-  private blockhashSubscriber: any | null = null;
+  private blockhashSubscriber: any | null = null; // legacy; superseded by shared utils/blockhash
   private priorityFeeSubscriber: any | null = null;
   private lookupTableAccounts: AddressLookupTableAccount[] | null = null;
 
@@ -58,6 +64,10 @@ export class DriftFillerRunner {
   eventSubscriber: any | null = null;
   userMap: any | null = null;
   dlobSubscriber: any | null = null;
+
+  // Runtime maps for JIT-avoidance heuristics
+  private nodeSeenAtMs: Map<string, number> = new Map();
+  private jitTakerCooldown: Map<string, number> = new Map();
   orderSubscriber: any | null = null;
   private oracleUpdater: OracleUpdater | null = null;
 
@@ -96,7 +106,17 @@ export class DriftFillerRunner {
   getStatus(): FillerRuntimeState {
     const cutoff = Date.now() - 60_000;
     this.fillsInWindow = this.fillsInWindow.filter((t) => t >= cutoff);
-    return { ...this.state, fillsLastMin: this.fillsInWindow.length };
+    // Expose heuristic settings for UI visibility (typed as any to avoid widening FillerRuntimeState)
+    return {
+      ...this.state,
+      fillsLastMin: this.fillsInWindow.length,
+    } as any as FillerRuntimeState & {
+      skipYoungOrderMs?: number;
+      requireExistingMakers?: boolean;
+      minMakerCountPerNode?: number;
+      denyJitTakersTtlMs?: number;
+      minTipFloorToAttemptLamports?: number;
+    };
   }
 
   async start(): Promise<void> {
@@ -120,21 +140,7 @@ export class DriftFillerRunner {
       throw new Error('Drift client or connection unavailable');
     }
 
-    // Start a blockhash warmer immediately (before discovery) to avoid early defers
-    try {
-      if (this.bhWarmTimer) { try { clearInterval(this.bhWarmTimer); } catch {} this.bhWarmTimer = null; }
-      const step = async () => {
-        try {
-          const { withRpcRetry, withRpcTimeout } = await import('../utils/rpcLimiter.js');
-          const p = withRpcRetry(() => this.connection.getLatestBlockhash({ commitment: 'confirmed' }), { timeoutMs: 700, retries: 0, baseMs: 100, maxMs: 300, label: 'bh.warm.start' });
-          const res = await withRpcTimeout(p, 900, 'bh.warmcap.start');
-          const bh = String((res as any)?.blockhash || '');
-          if (bh) { this.bhCacheStr = bh; this.bhCacheTs = Date.now(); }
-        } catch {}
-      };
-      step().catch(() => {});
-      this.bhWarmTimer = setInterval(() => { step().catch(() => {}); }, Math.max(300, Number(((CONFIG as any)?.drift?.blockhashWarmMs) ?? 400)));
-    } catch {}
+    // Shared blockhash warmer is initialized via DriftService.getSharedInfra
 
     try {
       if (Number.isFinite(this.state.subaccountId)) {
@@ -211,9 +217,12 @@ export class DriftFillerRunner {
     // Initialize blockhash subscriber and priority fee strategy
     try {
       const { BlockhashSubscriber, PriorityFeeSubscriber } = this.sdk || {};
+      // Shared blockhash warmer is started from DriftService.getSharedInfra; keep SDK subscriber optional
       if (BlockhashSubscriber) {
-        this.blockhashSubscriber = new BlockhashSubscriber(this.connection);
-        await this.blockhashSubscriber.subscribe();
+        try {
+          this.blockhashSubscriber = new BlockhashSubscriber(this.connection);
+          await this.blockhashSubscriber.subscribe();
+        } catch {}
       }
       if (PriorityFeeSubscriber) {
         this.priorityFeeSubscriber = new PriorityFeeSubscriber({
@@ -443,9 +452,7 @@ export class DriftFillerRunner {
       // Prefer cached blockhash; only fetch live if no cache available
       const cachedBhEarly = (() => {
         try {
-          const fromSub = this.blockhashSubscriber?.getLatestBlockhash?.(150)?.blockhash;
-          // As a last resort, accept any warmed blockhash if Jito is enabled (BE will validate at landing)
-          return fromSub || this.bhCacheStr;
+          return (globalThis as any).__bh_shared_cached || this.blockhashSubscriber?.getLatestBlockhash?.(150)?.blockhash || this.bhCacheStr;
         } catch { return this.bhCacheStr; }
       })();
       let updateFillerIx: any = null, fillIx: any, revertIx: any = null, bh: any;
@@ -625,7 +632,7 @@ export class DriftFillerRunner {
 
       const cachedBh = (() => {
         try {
-          return this.blockhashSubscriber?.getLatestBlockhash?.(150)?.blockhash || this.bhCacheStr;
+          return (globalThis as any).__bh_shared_cached || this.blockhashSubscriber?.getLatestBlockhash?.(150)?.blockhash || this.bhCacheStr;
         } catch { return this.bhCacheStr; }
       })();
       const recentBlockhash = String(cachedBh || cachedBhEarly || (bh as any)?.blockhash);
@@ -804,6 +811,11 @@ export class DriftFillerRunner {
             } catch {}
           }
           if (/0x185f|RevertFill/i.test(msg)) {
+            // Mark taker on cooldown; likely JIT preemption for place-and-make
+            try {
+              const ttl = Math.max(5000, Number(this.config.denyJitTakersTtlMs ?? 15000));
+              this.jitTakerCooldown.set(takerPkStr, Date.now() + ttl);
+            } catch {}
             try {
               const [bh2, upd2] = await Promise.all([
                 withRpcLimit(() => this.connection.getLatestBlockhash({ commitment: 'confirmed' })),
@@ -816,7 +828,7 @@ export class DriftFillerRunner {
                 })(),
               ]);
               const boosted = Math.max(priorityForSend, 30_000);
-              const bh2Str = String(this.blockhashSubscriber?.getLatestBlockhash?.(5)?.blockhash || (bh2 as any)?.blockhash);
+              const bh2Str = String((globalThis as any).__bh_shared_cached || this.blockhashSubscriber?.getLatestBlockhash?.(5)?.blockhash || (bh2 as any)?.blockhash);
               let sigTx: string;
               if (upd2 || updateFillerIx) {
                 const ixsUpd = [
@@ -1123,8 +1135,64 @@ export class DriftFillerRunner {
           loopStats.makersBreakdown.withoutMakers += withoutMakers;
         } catch {}
 
+        // Additional JIT-avoidance prefilters
+        const requireMakers = (this.config.requireExistingMakers !== false);
+        const minMakers = Math.max(0, Number(this.config.minMakerCountPerNode ?? 1));
+        const skipYoungMs = Math.max(0, Number(this.config.skipYoungOrderMs ?? 0));
+        const minTipFloor = Math.max(0, Number(this.config.minTipFloorToAttemptLamports ?? 0));
+        const filtered = prefiltered.filter((node: any) => {
+          try {
+            const nowMs = Date.now();
+            const sig = this.signatureForNode(node);
+            if (!this.nodeSeenAtMs.has(sig)) this.nodeSeenAtMs.set(sig, nowMs);
+            const firstSeen = this.nodeSeenAtMs.get(sig) || nowMs;
+            const ageMs = nowMs - firstSeen;
+
+            // Age gate
+            if (skipYoungMs > 0 && ageMs < skipYoungMs) {
+              try { logger.debug('drift.filler.skip_young_order', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx, ageMs }); } catch {}
+              (loopStats.skips as any).young = ((loopStats.skips as any).young || 0) + 1;
+              return false;
+            }
+
+            // Taker cooldown (recent JIT preemption)
+            const takerPk = String(node?.node?.userAccount || '');
+            const untilMs = this.jitTakerCooldown.get(takerPk) || 0;
+            if (untilMs > nowMs) {
+              try { logger.debug('drift.filler.skip_jit_taker_cooldown', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx, taker: takerPk }); } catch {}
+              (loopStats.skips as any).jitCooldown = ((loopStats.skips as any).jitCooldown || 0) + 1;
+              return false;
+            }
+
+            // Require existing makers
+            if (requireMakers) {
+              const makersLen = Array.isArray(node?.makerNodes) ? node.makerNodes.length : 0;
+              if (makersLen < minMakers) {
+                try { logger.debug('drift.filler.skip_no_makers', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx, makersLen, minMakers }); } catch {}
+                (loopStats.skips as any).noMakers = ((loopStats.skips as any).noMakers || 0) + 1;
+                return false;
+              }
+            }
+
+            // Skip when Jito tip floor is high (optional)
+            if (minTipFloor > 0) {
+              try {
+                const { tipFloorLamports } = getCachedTipInfo();
+                const floor = Number(tipFloorLamports || 0);
+                if (floor >= minTipFloor) {
+                  logger.debug('drift.filler.skip_tip_floor_high', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, marketIndex: idx, floor, minTipFloor });
+                  (loopStats.skips as any).tipFloor = ((loopStats.skips as any).tipFloor || 0) + 1;
+                  return false;
+                }
+              } catch {}
+            }
+
+            return true;
+          } catch { return true; }
+        });
+
         let iter = 0;
-        for (const node of prefiltered) {
+        for (const node of filtered) {
           if ((Date.now() - t0) > LOOP_BUDGET_MS || processedNodes >= MAX_NODES_PER_LOOP) {
             budgetExceeded = true;
             try { logger.debug('drift.filler.loop_budget_exhausted', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, processedNodes, ms: Date.now() - t0 }); } catch {}

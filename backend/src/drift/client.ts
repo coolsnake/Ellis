@@ -188,6 +188,13 @@ export class DriftService {
     const connection = drift?.connection || this.connection;
     const program = drift?.program;
 
+    // Start shared blockhash cache/warmer once for all bots
+    try {
+      const { startSharedBlockhash } = await import('../utils/blockhash.js');
+      const intervalMs = Math.max(300, Number(((CONFIG as any)?.drift?.blockhashWarmMs) ?? 400));
+      startSharedBlockhash(connection, { intervalMs });
+    } catch {}
+
     if (!this.sharedSlotSubscriber && sdk?.SlotSubscriber) {
       try {
         this.sharedSlotSubscriber = new (sdk as any).SlotSubscriber(connection);

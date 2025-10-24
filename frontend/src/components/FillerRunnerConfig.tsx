@@ -24,6 +24,12 @@ export const FillerRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onClose,
     marketsAllowlistCsv: Array.isArray(initialConfig?.marketsAllowlist) ? (initialConfig.marketsAllowlist as any[]).join(',') : '',
     maxMakersPerFill: initialConfig?.maxMakersPerFill ?? 2,
     allowAmmFills: initialConfig?.allowAmmFills ?? true,
+    // NEW heuristics
+    skipYoungOrderMs: initialConfig?.skipYoungOrderMs ?? 0,
+    requireExistingMakers: initialConfig?.requireExistingMakers ?? true,
+    minMakerCountPerNode: initialConfig?.minMakerCountPerNode ?? 1,
+    denyJitTakersTtlMs: initialConfig?.denyJitTakersTtlMs ?? 15000,
+    minTipFloorToAttemptLamports: initialConfig?.minTipFloorToAttemptLamports ?? 0,
   });
 
   useEffect(() => {
@@ -67,6 +73,12 @@ export const FillerRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onClose,
         marketsAllowlist: allowlist,
         maxMakersPerFill: Math.max(0, Number(form.maxMakersPerFill || 0)),
         allowAmmFills: !!form.allowAmmFills,
+        // NEW heuristics
+        skipYoungOrderMs: Math.max(0, Number(form.skipYoungOrderMs || 0)),
+        requireExistingMakers: !!form.requireExistingMakers,
+        minMakerCountPerNode: Math.max(0, Number(form.minMakerCountPerNode || 0)),
+        denyJitTakersTtlMs: Math.max(0, Number(form.denyJitTakersTtlMs || 0)),
+        minTipFloorToAttemptLamports: Math.max(0, Number(form.minTipFloorToAttemptLamports || 0)),
       };
       const res = await fetch(`${apiBase}${ROUTES.strategies.filler.start}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       if (!res.ok) throw new Error(await res.text());
@@ -172,6 +184,32 @@ export const FillerRunnerConfig: React.FC<Props> = ({ apiBase = '/api', onClose,
             <input type="checkbox" className="h-4 w-4" checked={!!form.allowAmmFills} onChange={(e) => setForm((p: any) => ({ ...p, allowAmmFills: e.target.checked }))} />
             <span className="text-gray-300">Allow AMM/JIT Fills</span>
           </label>
+
+          <div>
+            <div className="text-gray-400 mb-1">Skip Young Order (ms)</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.skipYoungOrderMs}
+              onChange={(e) => setForm((p: any) => ({ ...p, skipYoungOrderMs: Math.max(0, Number(e.target.value)) }))} />
+          </div>
+          <label className="flex items-center gap-2 mt-6">
+            <input type="checkbox" className="h-4 w-4" checked={!!form.requireExistingMakers}
+              onChange={(e) => setForm((p: any) => ({ ...p, requireExistingMakers: e.target.checked }))} />
+            <span className="text-gray-300">Require Existing Makers</span>
+          </label>
+          <div>
+            <div className="text-gray-400 mb-1">Min Maker Count Per Node</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.minMakerCountPerNode}
+              onChange={(e) => setForm((p: any) => ({ ...p, minMakerCountPerNode: Math.max(0, Number(e.target.value)) }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Deny JIT Takers TTL (ms)</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.denyJitTakersTtlMs}
+              onChange={(e) => setForm((p: any) => ({ ...p, denyJitTakersTtlMs: Math.max(0, Number(e.target.value)) }))} />
+          </div>
+          <div>
+            <div className="text-gray-400 mb-1">Min Tip Floor to Attempt (lamports)</div>
+            <input type="number" className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white" value={form.minTipFloorToAttemptLamports}
+              onChange={(e) => setForm((p: any) => ({ ...p, minTipFloorToAttemptLamports: Math.max(0, Number(e.target.value)) }))} />
+          </div>
         </div>
 
         <div className="mt-4 flex justify-end gap-2">

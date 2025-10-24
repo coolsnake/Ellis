@@ -120,6 +120,11 @@ export const FillerStatus: React.FC<{ apiBase: string }> = ({ apiBase }) => {
                   attempts(1m)={metrics[it.key].attempts ?? 0} · successes(1m)={metrics[it.key].successes ?? 0} · cost(1m)={(metrics[it.key].costSol ?? 0).toFixed(6)} SOL · revenue(1m)={(metrics[it.key].revenueQuote ?? 0).toLocaleString()} q
                 </div>
               )}
+              {(it.status as any)?.minMakerCountPerNode !== undefined && (
+                <div className="text-xs text-gray-400 mt-0.5">
+                  young={(it.status as any).skipYoungOrderMs ?? 0}ms · makers≥{(it.status as any).minMakerCountPerNode ?? 0} req={((it.status as any).requireExistingMakers ? 'Y' : 'N')} · tipFloorMin={(it.status as any).minTipFloorToAttemptLamports ?? 0} · jitTTL={(it.status as any).denyJitTakersTtlMs ?? 0}ms
+                </div>
+              )}
             </div>
             <div className="space-x-2">
               <button className="px-2 py-1 bg-green-600 text-white rounded text-xs" onClick={() => act('start', it.key)} disabled={busy}>Start</button>

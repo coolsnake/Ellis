@@ -50,6 +50,12 @@ export function createFillerRouter(_io: SocketIOServer): Router {
             : undefined),
         maxMakersPerFill: Math.max(0, Number(cfg?.maxMakersPerFill ?? 1)),
         allowAmmFills: (cfg?.allowAmmFills === undefined ? true : !!cfg?.allowAmmFills),
+        // NEW heuristics
+        skipYoungOrderMs: Math.max(0, Number(cfg?.skipYoungOrderMs ?? 0)),
+        requireExistingMakers: (cfg?.requireExistingMakers === undefined ? true : !!cfg?.requireExistingMakers),
+        minMakerCountPerNode: Math.max(0, Number(cfg?.minMakerCountPerNode ?? 1)),
+        denyJitTakersTtlMs: Math.max(0, Number(cfg?.denyJitTakersTtlMs ?? 15000)),
+        minTipFloorToAttemptLamports: Math.max(0, Number(cfg?.minTipFloorToAttemptLamports ?? 0)),
       } as any);
       const key = (DriftFillerRegistry as any).keyOf({ name });
       setImmediate(async () => {

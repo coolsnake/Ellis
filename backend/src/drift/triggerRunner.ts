@@ -1,9 +1,12 @@
-import { PublicKey, ComputeBudgetProgram, Transaction } from '@solana/web3.js';
+import { PublicKey, ComputeBudgetProgram, Transaction, TransactionMessage, VersionedTransaction, AddressLookupTableAccount } from '@solana/web3.js';
 import { RunnerRegistry } from '../utils/runnerRegistry.js';
 import { DriftService } from './client.js';
 import { logger } from '../utils/logger.js';
 import { CONFIG } from '../utils/config.js';
 import { withRpcLimit } from '../utils/rpcLimiter.js';
+import { buildTipIx } from '../execution/jitoTip.js';
+import { startTipFeed, getCachedTipInfo } from '../execution/jitoTipCache.js';
+import { sendToBlockEngine } from '../execution/jitoClient.js';
 
 export type TriggerConfig = {
   name: string;
@@ -14,6 +17,7 @@ export type TriggerConfig = {
   cuLimit?: number; // default 220_000 tailored
   priorityFeeMicroLamports?: number; // default 0 (provider strategy may boost)
   marketsAllowlist?: Array<number> | string[]; // market indices allowlist
+  triggerPriorityFeeMultiplier?: number; // scales dynamic priority fee (default 1.0)
 };
 
 type TriggerRuntimeState = {
@@ -47,6 +51,8 @@ export class DriftTriggerRunner {
   private eventSubscriber: any | null = null;
   private userMap: any | null = null;
   private dlobSubscriber: any | null = null;
+  private priorityFeeSubscriber: any | null = null;
+  private lookupTableAccounts: AddressLookupTableAccount[] | null = null;
 
   private nodesCooldown: Map<string, number> = new Map();
   private triggersInWindow: number[] = [];
@@ -123,6 +129,16 @@ export class DriftTriggerRunner {
     this.timer = setInterval(() => { tick().catch(() => {}); }, this.state.loopIntervalMs);
 
     logger.info('drift.trigger.started', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name, loopMs: this.state.loopIntervalMs });
+
+    // Also drive ticks via slot updates for lower latency
+    try {
+      const onSlot = () => { try { setImmediate(() => { if (!this.inLoop && !this.abort) this.loop().catch(() => {}); }); } catch {} };
+      if (typeof (this.slotSubscriber?.onSlotChange) === 'function') {
+        this.slotSubscriber.onSlotChange(onSlot, 1);
+      } else {
+        this.slotSubscriber?.eventEmitter?.on?.('slotUpdate', onSlot);
+      }
+    } catch {}
   }
 
   stop(): void {
@@ -144,6 +160,33 @@ export class DriftTriggerRunner {
     this.userMap = (infra as any).userMap;
     this.dlobSubscriber = (infra as any).dlobSubscriber;
     logger.info('drift.trigger.dlob_subscribed', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name, shared: true });
+
+    // Warm user prefetcher once shared infra is ready
+    try { await (svc as any).startUserPrefetcher?.(this.dlobSubscriber, this.userMap); } catch {}
+
+    // Initialize priority fee strategy
+    try {
+      const { PriorityFeeSubscriber } = this.sdk || {};
+      if (PriorityFeeSubscriber) {
+        this.priorityFeeSubscriber = new PriorityFeeSubscriber({
+          connection: this.connection,
+          fallbackPriorityFeeMicroLamports: Math.max(1000, Number(((CONFIG as any)?.fees?.priorityFee) || 1000)),
+        });
+        await this.priorityFeeSubscriber.subscribe();
+        try { this.priorityFeeSubscriber.updateAddresses([ this.client?.program?.programId ].filter(Boolean)); } catch {}
+      }
+    } catch {}
+
+    // Preload ALTs for v0
+    try { this.lookupTableAccounts = await (this.client?.fetchAllLookupTableAccounts?.()); } catch { this.lookupTableAccounts = []; }
+    // Periodic ALT refresh
+    try {
+      const every = Math.max(60_000, Number(((CONFIG as any)?.drift?.altRefreshMs) ?? 300_000));
+      setInterval(async () => { try { this.lookupTableAccounts = await (this.client?.fetchAllLookupTableAccounts?.()); } catch {} }, every);
+    } catch {}
+
+    // Start Jito tip feed cache (non-blocking)
+    try { startTipFeed(Math.max(10_000, Number(((CONFIG as any)?.jito?.tipRefreshMs) ?? 15_000))); } catch {}
   }
 
   private async reportConditionalOrderStats(): Promise<void> {
@@ -373,36 +416,123 @@ export class DriftTriggerRunner {
             }
           } catch {}
 
-            const ixs = [
-              ComputeBudgetProgram.setComputeUnitLimit({ units: Number(this.config.cuLimit ?? 220_000) }),
-              ComputeBudgetProgram.setComputeUnitPrice({ microLamports: Math.max(0, Number(this.config.priorityFeeMicroLamports ?? 0)) }),
+            // Dynamic CU limit
+            let cuUnits = Math.max(100_000, Number(this.config.cuLimit ?? 220_000));
+            try {
+              const activePositions = user.getActivePerpPositions().length + user.getActiveSpotPositions().length;
+              const openOrders = user.getUserAccount().openOrders;
+              cuUnits += activePositions * 15_000;
+              cuUnits += openOrders * 5_000;
+            } catch {}
+
+            // Dynamic priority fee
+            const suggestedMul = Number(this.client?.txSender?.getSuggestedPriorityFeeMultiplier?.() || 1.0);
+            const subPriority = Number(this.priorityFeeSubscriber?.getCustomStrategyResult?.() || 0);
+            const baseCfg = Math.max(0, Number(this.config.priorityFeeMicroLamports ?? 0));
+            const mul = Number(this.config.triggerPriorityFeeMultiplier ?? 1.0);
+            const priority = Math.floor(Math.max(baseCfg, subPriority * suggestedMul) * mul);
+
+            // Build ixs
+            let ixs: any[] = [
+              ComputeBudgetProgram.setComputeUnitLimit({ units: cuUnits }),
+              ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priority }),
               await this.client.getTriggerOrderIx(new PublicKey(userPkStr), user.getUserAccount(), node.node.order),
             ];
+
+            // Tip prepend (Jito or Sender fallback)
+            let plannedTipLamports: number | undefined, plannedTipAccount: string | undefined;
+            try {
+              if ((CONFIG as any)?.jito?.enabled) {
+                const cached = getCachedTipInfo();
+                const tipPk = cached?.tipAccount;
+                if (tipPk && String(tipPk?.toBase58?.()) !== String(this.client.wallet.publicKey?.toBase58?.())) {
+                  const priorityLamportsEst = Math.floor((priority * Math.max(220_000, cuUnits)) / 1_000_000);
+                  const cfg = (CONFIG as any)?.jito || {};
+                  const fixed = Number(cfg?.fixedTipLamports ?? 0);
+                  const share = Number(cfg?.tipShare ?? 0.3);
+                  const floor = Number(cached?.tipFloorLamports ?? 0);
+                  const estShare = Math.floor((priorityLamportsEst * share) / Math.max(1 - share, 0.01));
+                  const tipLamports = Math.max(1000, fixed > 0 ? fixed : (floor || estShare));
+                  ixs = [buildTipIx(this.client.wallet.publicKey, tipPk, tipLamports), ...ixs];
+                  plannedTipLamports = tipLamports;
+                  plannedTipAccount = tipPk.toBase58();
+                }
+              }
+              if ((CONFIG as any)?.sender?.enabled && !(plannedTipLamports && plannedTipAccount)) {
+                const scfg = (CONFIG as any).sender || {};
+                const accounts: string[] = Array.isArray(scfg.tipAccounts) ? scfg.tipAccounts : [];
+                const chosen = accounts.length > 0 ? accounts[Math.floor(Math.random() * accounts.length)] : undefined;
+                if (chosen) {
+                  const tipPk2 = new PublicKey(chosen);
+                  const minTip = Math.max(1000, Number(scfg.minTipLamports || 1_000_000));
+                  ixs = [buildTipIx(this.client.wallet.publicKey, tipPk2, minTip), ...ixs];
+                  plannedTipLamports = minTip;
+                  plannedTipAccount = tipPk2.toBase58();
+                }
+              }
+            } catch {}
 
             if (this.state.dryRun) {
               logger.info('drift.trigger.dry_run', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, user: userPkStr, orderId, marketIndex: idx, marketType: typeStr });
               continue;
             }
-
-            const tx = new Transaction();
-            tx.add(...ixs);
-            tx.feePayer = this.client.wallet.publicKey;
-            // Use retry+timeout for blockhash to avoid long stalls
-            const bh: any = await (async () => {
+            // Blockhash from shared cache, quick fallback
+            const { getCachedBlockhash } = await import('../utils/blockhash.js');
+            let bhStr = getCachedBlockhash(200);
+            if (!bhStr) {
               try {
                 const { withRpcRetry } = await import('../utils/rpcLimiter.js');
-                return await withRpcRetry(() => this.connection.getLatestBlockhash({ commitment: 'confirmed' }), { timeoutMs: 2000, retries: 3, baseMs: 200, maxMs: 1200, label: 'blockhash' });
-              } catch {
-                return await withRpcLimit(() => this.connection.getLatestBlockhash({ commitment: 'confirmed' }));
-              }
-            })();
-            tx.recentBlockhash = (bh as any)?.blockhash;
+                const live = await withRpcRetry(() => this.connection.getLatestBlockhash({ commitment: 'confirmed' }), { timeoutMs: 1200, retries: 1, baseMs: 150, maxMs: 600, label: 'blockhash' });
+                bhStr = String((live as any)?.blockhash || '');
+              } catch {}
+            }
+            if (!bhStr) { logger.info('drift.trigger.defer_no_cached_bh', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT }); continue; }
+
+            // v0 compile with ALTs
+            const msg = new TransactionMessage({ payerKey: this.client.wallet.publicKey, recentBlockhash: bhStr, instructions: ixs }).compileToV0Message(this.lookupTableAccounts || []);
+            const vtx = new VersionedTransaction(msg);
+            vtx.sign([this.client.wallet.payer]);
+
+            // Sender/Jito/RPC send path
+            const raw = vtx.serialize();
+            const base64 = Buffer.from(raw).toString('base64');
+            const rpcSend = async () => DriftService.getInstance().sendRawTransaction(raw, { skipPreflight: true, preflightCommitment: 'processed', maxRetries: 0 });
+            const beSend = async () => sendToBlockEngine(base64, { beUrl: (CONFIG as any)?.jito?.blockEngineUrl, timeoutMs: (CONFIG as any)?.jito?.bundleTimeoutMs });
+            const senderSend = async () => {
+              const scfg = (CONFIG as any)?.sender || {};
+              let endpoint: string = String(scfg?.endpoint || 'https://sender.helius-rpc.com/fast');
+              const params: string[] = [];
+              if (scfg?.apiKey) params.push(`api-key=${encodeURIComponent(String(scfg.apiKey))}`);
+              if (scfg?.swqosOnly) params.push('swqos_only=true');
+              if (params.length > 0) endpoint += (endpoint.includes('?') ? '&' : '?') + params.join('&');
+              const body = { jsonrpc: '2.0', id: String(Date.now()), method: 'sendTransaction', params: [ base64, { encoding: 'base64', skipPreflight: true, maxRetries: 0 } ] } as any;
+              const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+              const json = await res.json().catch(() => ({} as any));
+              if ((json as any)?.error) throw new Error(String((json as any).error?.message || 'SENDER_ERROR'));
+              const sig = String((json as any)?.result || '');
+              if (!sig) throw new Error('SENDER_NO_RESULT');
+              return sig;
+            };
+
+            const preferSender = !!((CONFIG as any)?.sender?.enabled);
+            const preferBE = !!((CONFIG as any)?.jito?.enabled) && !!(plannedTipLamports && plannedTipAccount);
+            const raceRpc = !!((CONFIG as any)?.jito?.raceRpc);
+
             try {
-              tx.sign(this.client.wallet.payer);
-              const sigTx = await DriftService.getInstance().sendRawTransaction(tx.serialize(), { skipPreflight: false, preflightCommitment: 'confirmed' });
+              let sigTx: string;
+              if (preferSender) {
+                try { sigTx = await senderSend(); }
+                catch { sigTx = await (preferBE ? (raceRpc ? Promise.any([ beSend(), rpcSend() ]) : beSend()) : rpcSend()); }
+              } else if (preferBE && raceRpc) {
+                sigTx = await Promise.any([ beSend(), rpcSend() ]);
+              } else if (preferBE) {
+                try { sigTx = await beSend(); } catch { sigTx = await rpcSend(); }
+              } else {
+                sigTx = await rpcSend();
+              }
+
               this.triggersInWindow.push(Date.now());
               logger.info('drift.trigger.ok', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, sig: sigTx, marketType: typeStr, marketIndex: idx, user: userPkStr, orderId });
-              // async track
               try {
                 const { trackDriftAttempt } = await import('./txTracker.js');
                 trackDriftAttempt(this.connection as any, {
@@ -411,8 +541,8 @@ export class DriftTriggerRunner {
                   marketIndex: idx,
                   taker: userPkStr,
                   orderId,
-                  priorityFeeMicroLamports: Number(this.config.priorityFeeMicroLamports || 0),
-                  cuLimit: Number(this.config.cuLimit || 0),
+                  priorityFeeMicroLamports: priority,
+                  cuLimit: cuUnits,
                   bot: (this as any)?.state?.name ? `trg#${(this as any).state.name}` : undefined,
                 }).catch(() => {});
               } catch {}
