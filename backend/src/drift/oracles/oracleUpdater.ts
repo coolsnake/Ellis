@@ -17,8 +17,8 @@ export class OracleUpdater {
     this.sdk = params.sdk;
     this.driftClient = params.driftClient;
     this.cluster = params.cluster || (CONFIG as any)?.drift?.cluster || 'mainnet-beta';
-    this.policy = ((CONFIG as any)?.pyth?.updatePolicy || 'stale') as UpdatePolicy;
-    this.timeoutMs = Math.max(300, Number(((CONFIG as any)?.pyth?.updateTimeoutMs) ?? 1000));
+    this.policy = ((CONFIG as any)?.pyth?.updatePolicy || 'off') as UpdatePolicy;
+    this.timeoutMs = Math.max(200, Number(((CONFIG as any)?.pyth?.updateTimeoutMs) ?? 300));
     this.initializeClients();
     this.buildPerpFeedMap();
   }

@@ -73,6 +73,7 @@ export class DriftFillerRunner {
   private bhCacheTs: number = 0;
   private beFailCount: number = 0;
   private beCoolUntilMs: number = 0;
+  private lastUpdateFillerMs: number = 0;
   // Per-loop stats
   private _loopStatsTmp: any | null = null;
 
@@ -305,27 +306,19 @@ export class DriftFillerRunner {
       const timings: any = { t0, hyd: 0, mk: 0, fillPri: 0, fillFb: 0, bh: 0, upd: 0, rev: 0, tip: 0, compile: 0 };
       // Bounded, non-blocking taker hydration
       const getTakerUaQuick = async (): Promise<any | null> => {
-        // Warm cache
+        // Warm cache first
         try {
           const warm = (DriftService.getInstance() as any).getWarmUser?.(takerPkStr);
           const ua = warm?.getUserAccount?.();
           if (ua) return ua;
         } catch {}
-        // userMap mustGet with timeout
+        // Try userMap quickly, but keep very tight bound
         try {
           const wrap = await Promise.race([
             this.userMap.mustGet(takerPkStr),
-            new Promise((_, rej) => setTimeout(() => rej(new Error('UA_TIMEOUT')), 250)),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('UA_TIMEOUT')), 80)),
           ]).catch(() => null);
           const ua = (wrap as any)?.getUserAccount?.();
-          if (ua) return ua;
-        } catch {}
-        // Batched decode with timeout
-        try {
-          const { withRpcTimeout } = await import('../utils/rpcLimiter.js');
-          const svc = DriftService.getInstance() as any;
-          const decoded = await withRpcTimeout((svc.fetchUsersDecoded?.([takerPkStr]) || Promise.resolve(new Map())) as Promise<Map<string, any>>, 300, 'ua_decode');
-          const ua = decoded?.get?.(takerPkStr) || null;
           if (ua) return ua;
         } catch {}
         return null;
@@ -378,15 +371,7 @@ export class DriftFillerRunner {
       } catch {}
 
       const makerInfos: any[] = [];
-      // Batch-decode makers once to reduce round-trips (bounded timeout)
-      let makersDecoded: Map<string, any> | null = null;
-      try {
-        const svc = DriftService.getInstance() as any;
-        if (makers.length > 0) {
-          const { withRpcTimeout } = await import('../utils/rpcLimiter.js');
-          makersDecoded = await withRpcTimeout((svc.fetchUsersDecoded?.(makers) || Promise.resolve(new Map())) as Promise<Map<string, any>>, 300, 'mk_decode');
-        }
-      } catch { makersDecoded = null; }
+      // Makers must be warm; do not decode via RPC in the hot path
       for (const m of makers) {
         try {
           let makerUa: any = null;
@@ -394,9 +379,6 @@ export class DriftFillerRunner {
             const warm = (DriftService.getInstance() as any).getWarmUser?.(m);
             makerUa = warm?.getUserAccount?.() || null;
           } catch {}
-          if (!makerUa && makersDecoded) {
-            try { makerUa = makersDecoded.get(m) || makerUa; } catch {}
-          }
           if (!makerUa) continue;
           const makerAuth = makerUa?.authority;
           let makerStats = null;
@@ -429,14 +411,19 @@ export class DriftFillerRunner {
       const priorityForSend = Math.min(MAX_MICRO, Math.max(floor, Math.floor(effectivePriority * (Number.isFinite(mulCfg) ? mulCfg : 1.0))));
       // Build all dependent instructions and (optionally) fetch blockhash in parallel to minimize delay
       const updateFillerIxP = (async () => {
-        for (let i = 0; i < 3; i += 1) {
+        // Cooldown update filler to avoid high-latency path on every fill
+        const nowMs = Date.now();
+        const cdMs = Math.max(10_000, Number(((CONFIG as any)?.drift?.updateFillerCooldownMs) ?? 30_000));
+        const shouldUpdate = (nowMs - this.lastUpdateFillerMs) >= cdMs;
+        if (!shouldUpdate) return null;
+        for (let i = 0; i < 2; i += 1) {
           try {
             if (typeof this.client.getUpdateFillerIx === 'function') {
               const ix = await this.client.getUpdateFillerIx();
               if (ix) return ix;
             }
           } catch {}
-          try { await new Promise((r) => setTimeout(r, 20)); } catch {}
+          try { await new Promise((r) => setTimeout(r, 10)); } catch {}
         }
         return null;
       })();
@@ -467,7 +454,7 @@ export class DriftFillerRunner {
       let usedNoMakersFallback = false;
       if (cachedBhEarly) {
         try {
-          fillIx = await withRpcTimeout(fillIxP as any, 500, 'fill_ix');
+          fillIx = await withRpcTimeout(fillIxP as any, 180, 'fill_ix');
           timings.fillPri = Date.now();
         } catch {
           // Fallback: minimal fill without makers
@@ -476,7 +463,7 @@ export class DriftFillerRunner {
             // Bound fallback as well to prevent multi-second stalls
             fillIx = await withRpcTimeout(
               this.client.getFillPerpOrderIx(takerUserPk, takerUa, nodeToFill.node.order, emptyMakers) as any,
-              800,
+              280,
               'fill_ix_fb'
             );
             usedNoMakersFallback = true;
@@ -487,10 +474,11 @@ export class DriftFillerRunner {
             return false;
           }
         }
-        try { updateFillerIx = await withRpcTimeout(updateFillerIxP as any, 400, 'upd_ix'); } catch { updateFillerIx = null; }
+        try { updateFillerIx = await withRpcTimeout(updateFillerIxP as any, 200, 'upd_ix'); } catch { updateFillerIx = null; }
         timings.upd = Date.now();
-        try { revertIx = await withRpcTimeout(revertIxP as any, 400, 'rev_ix'); } catch { revertIx = null; }
+        try { revertIx = await withRpcTimeout(revertIxP as any, 200, 'rev_ix'); } catch { revertIx = null; }
         timings.rev = Date.now();
+        if (updateFillerIx) { this.lastUpdateFillerMs = Date.now(); }
       } else {
         // No fresh cached blockhash; defer quickly to avoid stalling the loop
         try { logger.info('drift.filler.defer_no_cached_bh', { cat: FILLER_CAT, subcat: FILLER_SUBCAT }); } catch {}
