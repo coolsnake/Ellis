@@ -440,7 +440,7 @@ export const CONFIG = {
   },
   // Helius Sender configuration
   sender: {
-    enabled: (process.env.SENDER_ENABLED || 'true') === 'true',
+    enabled: (process.env.SENDER_ENABLED || 'false') === 'true',
     endpoint: process.env.SENDER_ENDPOINT || 'https://sender.helius-rpc.com/fast',
     apiKey: SENDER_API_KEY,
     swqosOnly: (process.env.SENDER_SWQOS_ONLY || 'false') === 'true',
