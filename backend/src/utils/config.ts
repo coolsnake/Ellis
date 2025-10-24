@@ -566,6 +566,20 @@ export const CONFIG = {
     defaultSubaccountId: Number(process.env.DRIFT_DEFAULT_SUBACCOUNT_ID || 0),
     // Optional periodic ALT refresh for v0 transaction size optimization
     altRefreshMs: Number(process.env.DRIFT_ALT_REFRESH_MS || 300_000),
+    // Shared blockhash warmer interval (ms)
+    blockhashWarmMs: Number(process.env.DRIFT_BLOCKHASH_WARM_MS || 400),
+    // Watchdog: consider slot stale after this many ms and attempt resubscribe
+    slotStaleMs: Number(process.env.DRIFT_SLOT_STALE_MS || 15000),
+    // Cooldown between consecutive watchdog-driven resubscribe attempts
+    resubCooldownMs: Number(process.env.DRIFT_RESUB_COOLDOWN_MS || 10000),
+    // Shared OrderSubscriber resync interval
+    orderResyncIntervalMs: Number(process.env.DRIFT_ORDER_RESYNC_MS || 15000),
+    // User prefetcher controls
+    prefetchEnabled: (process.env.DRIFT_PREFETCH_ENABLED || 'true') !== 'false',
+    prefetchIntervalMs: Number(process.env.DRIFT_PREFETCH_INTERVAL_MS || 3000),
+    prefetchBatchMax: Number(process.env.DRIFT_PREFETCH_BATCH_MAX || 60),
+    prefetchChunkSize: Number(process.env.DRIFT_PREFETCH_CHUNK_SIZE || 20),
+    prefetchQueueCap: Number(process.env.DRIFT_PREFETCH_QUEUE_CAP || 5000),
     // Floor for filler priority fee micro-lamports
     fillerPriorityFloorMicroLamports: Number(process.env.DRIFT_FILLER_FLOOR_MICRO || 15000),
     // Max tolerated oracle delay in slots before skipping a market

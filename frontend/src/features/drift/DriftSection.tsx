@@ -31,6 +31,8 @@ export const DriftSection: React.FC<{
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [liqUsers, setLiqUsers] = useState<Array<{ userPk: string; health: number; updatedAt: number; positions?: Array<{ marketIndex: number; base: number }> }>>([]);
+  const [infra, setInfra] = useState<any>(null);
+  const [infraBusy, setInfraBusy] = useState<boolean>(false);
 
   const selected = useMemo(
     () => p.driftSubaccounts.find((s: any) => Number(s.id) === Number(p.driftSelectedSubId)),
@@ -41,13 +43,16 @@ export const DriftSection: React.FC<{
     try {
       setLoading(true);
       setError(null);
-      const [stRes, mkRes] = await Promise.all([
+      const [stRes, mkRes, infraRes] = await Promise.all([
         fetch(`${p.apiBase}${ROUTES.drift.status}`),
         fetch(`${p.apiBase}${ROUTES.drift.spotMarkets}`),
+        fetch(`${p.apiBase}${ROUTES.drift.infraStatus}`).catch(() => null as any),
       ]);
       const st = await stRes.json().catch(() => ({}));
       const mk = await mkRes.json().catch(() => ({}));
+      const si = infraRes ? (await infraRes.json().catch(() => ({}))) : null;
       setStatus(st || null);
+      setInfra(si || null);
       if (Array.isArray(st?.subaccounts)) p.setDriftSubaccounts(st.subaccounts);
       if (Array.isArray(mk?.markets)) setSpotMarkets(mk.markets);
       // Default selection if needed
@@ -83,6 +88,20 @@ export const DriftSection: React.FC<{
   };
 
   useEffect(() => { loadStatusAndSubs(); loadSubaccounts(); }, []);
+  useEffect(() => {
+    // Poll infra status occasionally for live indicators
+    let id: any = null;
+    const tick = async () => {
+      try {
+        const r = await fetch(`${p.apiBase}${ROUTES.drift.infraStatus}`);
+        const j = await r.json().catch(() => ({}));
+        setInfra(j || null);
+      } catch {}
+    };
+    id = setInterval(tick, 5000);
+    tick();
+    return () => { try { clearInterval(id); } catch {} };
+  }, [p.apiBase]);
   useEffect(() => { loadBalances(p.driftSelectedSubId); }, [p.apiBase, p.driftSelectedSubId]);
   useEffect(() => {
     const s = ctxSocket;
@@ -295,6 +314,27 @@ export const DriftSection: React.FC<{
               onChange={(e) => p.setDriftNewSubName(e.target.value)}
             />
             <button className="px-2 py-1 bg-gray-700 rounded text-white text-sm" onClick={loadStatusAndSubs} disabled={loading}>Refresh</button>
+            {/* Drift Infra Controls */}
+            <div className="flex items-center gap-1">
+              <span className={`px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide ${infra?.active ? 'bg-green-700 text-white' : 'bg-gray-700 text-gray-300'}`} title={infra?.forceActive ? 'Force active' : ''}>
+                {infra?.active ? 'Infra: ON' : 'Infra: OFF'}{infra?.forceActive ? ' (forced)' : ''}
+              </span>
+              {!!infra?.lastSlotAtMs && (
+                <span className={`px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide ${infra?.slotStale ? 'bg-red-700 text-white' : 'bg-gray-700 text-gray-300'}`} title={`Last slot at ${new Date(infra.lastSlotAtMs).toLocaleTimeString()}`}>
+                  {infra?.slotStale ? 'SLOT STALE' : 'SLOT OK'}
+                </span>
+              )}
+              <button
+                className="px-2 py-1 bg-gray-700 text-white rounded text-sm disabled:opacity-50"
+                onClick={async () => { try { setInfraBusy(true); await fetch(`${p.apiBase}${ROUTES.drift.infraActivate}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }); await loadStatusAndSubs(); } finally { setInfraBusy(false); } }}
+                disabled={infraBusy}
+              >Activate</button>
+              <button
+                className="px-2 py-1 bg-gray-700 text-white rounded text-sm disabled:opacity-50"
+                onClick={async () => { try { setInfraBusy(true); await fetch(`${p.apiBase}${ROUTES.drift.infraDeactivate}`, { method: 'POST' }); await loadStatusAndSubs(); } finally { setInfraBusy(false); } }}
+                disabled={infraBusy}
+              >Deactivate</button>
+            </div>
             <button className="px-2 py-1 bg-blue-600 rounded text-white text-sm" onClick={createSub} disabled={p.driftOpBusy}>+ Create</button>
             {!!p.onOpenExecConfig && (
               <button className="px-2 py-1 bg-gray-700 text-white rounded text-sm" onClick={() => p.onOpenExecConfig?.()}>Execution Config</button>

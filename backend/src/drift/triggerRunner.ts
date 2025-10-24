@@ -315,6 +315,9 @@ export class DriftTriggerRunner {
 			let marketsWithNodes = 0;
 			const nodeSamples: Array<{ m: number; t: string; u: string; id: string; cond?: string; otype?: string; ordTp?: string; oracle?: string; trig?: string }> = [];
 
+			// Per-loop in-memory cache to avoid redundant UA reads and refreshes per user
+			const uaCache = new Map<string, any>();
+
 			const tryOneMarket = async (market: any, type: any) => {
         const idx = Number(market?.marketIndex || 0);
         if (!this.inAllowlist(idx)) return;
@@ -409,17 +412,18 @@ export class DriftTriggerRunner {
               continue;
             }
 
-          // Refresh snapshot and ensure the target order still exists to avoid stale attempts
-          try { await (user as any).fetchAccounts?.(); } catch {}
-          try {
-            const ua = user.getUserAccount?.();
-            const wantId = String(node.node.order?.orderId || '');
-            const stillExists = Array.isArray(ua?.orders) && ua.orders.some((o: any) => String(o?.orderId || '') === wantId);
-            if (!stillExists) {
-              logger.info('drift.trigger.skip_missing_order', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, user: userPkStr, orderId });
-              continue;
-            }
-          } catch {}
+            // Ensure the target order still exists using the latest cached UA from subscriptions;
+            // avoid per-node RPC refreshes which can trigger 429s under load.
+            try {
+              let ua = uaCache.get(userPkStr);
+              if (!ua) { ua = user.getUserAccount?.(); uaCache.set(userPkStr, ua); }
+              const wantId = String(node.node.order?.orderId || '');
+              const stillExists = Array.isArray(ua?.orders) && ua.orders.some((o: any) => String(o?.orderId || '') === wantId);
+              if (!stillExists) {
+                logger.info('drift.trigger.skip_missing_order', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, user: userPkStr, orderId });
+                continue;
+              }
+            } catch {}
 
             // Dynamic CU limit
             let cuUnits = Math.max(100_000, Number(this.config.cuLimit ?? 220_000));

@@ -448,7 +448,10 @@ export class DriftService {
     try {
       const { PublicKey } = await import('@solana/web3.js');
       const keys = pks.map((k) => (typeof k === 'string' ? new PublicKey(k) : k));
-      const infos = await this.getReadConnection().getMultipleAccountsInfo(keys, 'processed');
+      const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+      // Gate large multi-account fetches to avoid RPC bursts; weight scales with chunk size
+      const weight = Math.max(1, Math.ceil(keys.length / 5));
+      const infos = await withRpcLimit(() => this.getReadConnection().getMultipleAccountsInfo(keys, 'processed'), weight);
       const out = new Map<string, any>();
       let coder: any = null;
       try { coder = (this.client as any)?.program?.coder?.accounts || null; } catch {}
@@ -479,21 +482,27 @@ export class DriftService {
       if (this.warmRefStats.has(key)) return pk;
       const missAt = this.missingRefStats.get(key);
       if (missAt && Date.now() - missAt < this.refStatsTtlMs) return null;
-      const info = await this.getReadConnection().getAccountInfo(pk, 'processed');
+      const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+      const info = await withRpcLimit(() => this.getReadConnection().getAccountInfo(pk, 'processed'));
       if (info) { this.warmRefStats.add(key); return pk; }
       this.missingRefStats.set(key, Date.now());
       return null;
     } catch { return null; }
   }
   enqueueUsersForPrefetch(pks: string[]): void {
+    const driftCfg: any = ((CONFIG as any)?.drift || {});
+    const cap = Math.max(1000, Number(driftCfg?.prefetchQueueCap ?? 5000));
     for (const pk of pks) {
       if (!pk) continue;
+      if (this.prefetchQueue.length >= cap) break;
       if (!this.warmUsers.has(pk)) this.prefetchQueue.push(pk);
     }
   }
   async startUserPrefetcher(dlobSubscriber: any, userMap: any): Promise<void> {
     await this.init();
     if (this.prefetchRunning) return;
+    const driftCfg: any = ((CONFIG as any)?.drift || {});
+    if (driftCfg?.prefetchEnabled === false) return;
     this.prefetchRunning = true;
     // Prepare polling loader for stability
     try {
@@ -504,6 +513,11 @@ export class DriftService {
         try { (this.pollLoaderWarm as any)?.on?.('error', (e: any) => { try { logger.warn('drift.pollLoaderWarm.error', { error: String(e?.message || e), cat: 'drift' }); } catch {} }); } catch {}
       }
     } catch {}
+
+    // Prefetch pacing config
+    const intervalMs = Math.max(1500, Number(driftCfg?.prefetchIntervalMs ?? 3000));
+    const batchMax = Math.max(10, Number(driftCfg?.prefetchBatchMax ?? 60));
+    const chunkSizeCfg = Math.max(10, Number(driftCfg?.prefetchChunkSize ?? 20));
 
     const collectFromDlob = async () => {
       try {
@@ -537,9 +551,9 @@ export class DriftService {
     const step = async () => {
       try {
         await collectFromDlob();
-        const batch = this.prefetchQueue.splice(0, 200);
+        const batch = this.prefetchQueue.splice(0, batchMax);
         if (batch.length === 0) return;
-        const chunkSize = 50;
+        const chunkSize = chunkSizeCfg;
         for (let i = 0; i < batch.length; i += chunkSize) {
           const chunk = batch.slice(i, i + chunkSize);
           let decoded: Map<string, any> = new Map();
@@ -571,7 +585,7 @@ export class DriftService {
     };
 
     if (this.prefetchTimer) { try { clearInterval(this.prefetchTimer); } catch {} }
-    this.prefetchTimer = setInterval(() => { step().catch(() => {}); }, 600);
+    this.prefetchTimer = setInterval(() => { step().catch(() => {}); }, intervalMs);
   }
 
   async sendRawTransaction(raw: Buffer | Uint8Array, opts?: any): Promise<string> {
