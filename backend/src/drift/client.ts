@@ -65,6 +65,9 @@ export class DriftService {
   private warmRefStats: Set<string> = new Set();
   private missingRefStats: Map<string, number> = new Map();
   private refStatsTtlMs = 60_000;
+  // Infra lifecycle controls
+  private forceActive: boolean = false;
+  private activeBots: Set<string> = new Set();
 
   static getInstance(): DriftService {
     if (!this.instance) this.instance = new DriftService();
@@ -192,7 +195,8 @@ export class DriftService {
     try {
       const { startSharedBlockhash } = await import('../utils/blockhash.js');
       const intervalMs = Math.max(300, Number(((CONFIG as any)?.drift?.blockhashWarmMs) ?? 400));
-      startSharedBlockhash(connection, { intervalMs });
+      // Prefer read RPC for frequent blockhash fetches to reduce contention/timeouts on primary
+      startSharedBlockhash(this.getReadConnection(), { intervalMs });
     } catch {}
 
     if (!this.sharedSlotSubscriber && sdk?.SlotSubscriber) {
@@ -200,6 +204,9 @@ export class DriftService {
         this.sharedSlotSubscriber = new (sdk as any).SlotSubscriber(connection);
         await this.sharedSlotSubscriber.subscribe();
       } catch {}
+    } else {
+      // Best-effort resubscribe if previously unsubscribed
+      try { await (this.sharedSlotSubscriber as any)?.subscribe?.(); } catch {}
     }
 
     if (!this.sharedEventSubscriber && sdk?.EventSubscriber) {
@@ -207,6 +214,8 @@ export class DriftService {
         this.sharedEventSubscriber = new (sdk as any).EventSubscriber(connection, program);
         await this.sharedEventSubscriber.subscribe();
       } catch {}
+    } else {
+      try { await (this.sharedEventSubscriber as any)?.subscribe?.(); } catch {}
     }
 
     if (!this.sharedUserMap && sdk?.UserMap) {
@@ -236,6 +245,8 @@ export class DriftService {
         } catch {}
       }
       try { await this.sharedUserMap?.subscribe?.(); } catch {}
+    } else {
+      try { await (this.sharedUserMap as any)?.subscribe?.(); } catch {}
     }
 
     // Optional OrderSubscriber for improved DLOB order coverage
@@ -254,6 +265,8 @@ export class DriftService {
         }
         try { await this.sharedOrderSubscriber?.subscribe?.(); } catch {}
       } catch {}
+    } else {
+      try { await (this.sharedOrderSubscriber as any)?.subscribe?.(); } catch {}
     }
 
     const dlobSource = (opts?.preferOrderSubscriber && this.sharedOrderSubscriber) ? this.sharedOrderSubscriber : this.sharedUserMap;
@@ -268,6 +281,16 @@ export class DriftService {
         });
         await this.sharedDlobSubscriber.subscribe();
       } catch {}
+    } else {
+      try {
+        // If present but inactive, re-subscribe
+        const dl: any = this.sharedDlobSubscriber;
+        if (dl && typeof dl.subscribe === 'function') {
+          // If getDLOB exists and returns falsy, attempt to resubscribe
+          const has = typeof dl.getDLOB === 'function' ? !!dl.getDLOB() : true;
+          if (!has) { await dl.subscribe(); }
+        }
+      } catch {}
     }
 
     return {
@@ -277,6 +300,80 @@ export class DriftService {
       dlobSubscriber: this.sharedDlobSubscriber,
       orderSubscriber: this.sharedOrderSubscriber,
     };
+  }
+
+  // Infra manager: manual activation and bot-aware teardown
+  async activate(opts?: { includeIdle?: boolean; updateFrequency?: number; preferOrderSubscriber?: boolean }): Promise<void> {
+    this.forceActive = true;
+    await this.init();
+    const infra = await this.getSharedInfra(opts);
+    try { await this.startUserPrefetcher(infra.dlobSubscriber, infra.userMap); } catch {}
+    try { logger.info('drift.infra.activated', { cat: 'drift' }); } catch {}
+  }
+
+  deactivate(): void {
+    this.forceActive = false;
+    this.maybeTeardownInfra();
+    try { logger.info('drift.infra.deactivated', { cat: 'drift' }); } catch {}
+  }
+
+  registerBot(key: string): void {
+    try {
+      const k = String(key || '').trim();
+      if (!k) return;
+      this.activeBots.add(k);
+      try { logger.debug('drift.infra.bot_register', { key: k, total: this.activeBots.size, cat: 'drift' }); } catch {}
+    } catch {}
+  }
+
+  unregisterBot(key: string): void {
+    try {
+      const k = String(key || '').trim();
+      if (!k) return;
+      this.activeBots.delete(k);
+      try { logger.debug('drift.infra.bot_unregister', { key: k, total: this.activeBots.size, cat: 'drift' }); } catch {}
+      this.maybeTeardownInfra();
+    } catch {}
+  }
+
+  getInfraStatus(): { active: boolean; forceActive: boolean; bots: number; has: { slotSubscriber: boolean; eventSubscriber: boolean; userMap: boolean; dlobSubscriber: boolean; orderSubscriber: boolean } } {
+    return {
+      active: !!(this.sharedSlotSubscriber || this.sharedEventSubscriber || this.sharedUserMap || this.sharedDlobSubscriber || this.sharedOrderSubscriber),
+      forceActive: this.forceActive,
+      bots: this.activeBots.size,
+      has: {
+        slotSubscriber: !!this.sharedSlotSubscriber,
+        eventSubscriber: !!this.sharedEventSubscriber,
+        userMap: !!this.sharedUserMap,
+        dlobSubscriber: !!this.sharedDlobSubscriber,
+        orderSubscriber: !!this.sharedOrderSubscriber,
+      },
+    };
+  }
+
+  private async teardownInfra(): Promise<void> {
+    // Stop timers and shared blockhash warmer
+    try { if (this.prefetchTimer) { clearInterval(this.prefetchTimer); this.prefetchTimer = null; } } catch {}
+    try { if (this.pollLoaderWarm) { try { (this.pollLoaderWarm as any)?.removeAllListeners?.(); } catch {} this.pollLoaderWarm = null; } } catch {}
+    try { const mod = await import('../utils/blockhash.js'); (mod as any)?.stopSharedBlockhash?.(); } catch {}
+    // Unsubscribe subscribers in safe order
+    try { await (this.sharedDlobSubscriber as any)?.unsubscribe?.(); } catch {}
+    try { await (this.sharedOrderSubscriber as any)?.unsubscribe?.(); } catch {}
+    try { await (this.sharedUserMap as any)?.unsubscribe?.(); } catch {}
+    try { await (this.sharedEventSubscriber as any)?.unsubscribe?.(); } catch {}
+    try { await (this.sharedSlotSubscriber as any)?.unsubscribe?.(); } catch {}
+    this.sharedDlobSubscriber = null;
+    this.sharedOrderSubscriber = null;
+    this.sharedUserMap = null;
+    this.sharedEventSubscriber = null;
+    this.sharedSlotSubscriber = null;
+  }
+
+  private maybeTeardownInfra(): void {
+    if (this.forceActive) return;
+    if (this.activeBots.size > 0) return;
+    // Fire-and-forget teardown
+    this.teardownInfra().catch(() => {});
   }
 
   // Warm user cache helpers

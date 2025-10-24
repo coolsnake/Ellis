@@ -52,6 +52,7 @@ export class DriftFillerRunner {
   private state: FillerRuntimeState;
   private abort = false;
   private inLoop: boolean = false;
+  private botKey: string;
 
   private sdk: any | null = null;
   private client: any | null = null;
@@ -102,6 +103,7 @@ export class DriftFillerRunner {
       fillsLastMin: 0,
       marketsAllowlist: allowlist,
     };
+    this.botKey = `fil#${this.state.name}`;
   }
 
   getStatus(): FillerRuntimeState {
@@ -131,7 +133,11 @@ export class DriftFillerRunner {
       allowlist: this.state.marketsAllowlist,
     });
 
-    try { await DriftService.getInstance().init(); } catch {}
+    try {
+      const svc = DriftService.getInstance() as any;
+      (svc as any).registerBot?.(this.botKey);
+      await (svc as any).init?.();
+    } catch {}
     const svc: any = DriftService.getInstance();
     this.connection = (svc as any).connection;
     this.client = (svc as any).client;
@@ -197,6 +203,7 @@ export class DriftFillerRunner {
     this.state.running = false;
     this.abort = true;
     logger.info('drift.filler.stopped', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name });
+    try { (DriftService.getInstance() as any).unregisterBot?.(this.botKey); } catch {}
   }
 
   private async initDiscovery(): Promise<void> {
@@ -437,15 +444,21 @@ export class DriftFillerRunner {
         }
       } catch {}
       // Prefer cached blockhash; only fetch live if no cache available
-      const cachedBhEarly = (() => {
+      let cachedBhEarly = (() => {
         try {
-          return this.bhCacheStr;
+          return getCachedBlockhash(200) || this.bhCacheStr;
         } catch { return this.bhCacheStr; }
       })();
       let updateFillerIx: any = null, fillIx: any, revertIx: any = null, bh: any;
       // Always await fill ix (required), but time-bound update/revert so they don't block the first send
       const { withRpcTimeout } = await import('../utils/rpcLimiter.js');
       let usedNoMakersFallback = false;
+      if (!cachedBhEarly) {
+        try {
+          const bhStr = await getFreshBlockhashOrFetch(250);
+          if (bhStr) { this.bhCacheStr = bhStr; this.bhCacheTs = Date.now(); cachedBhEarly = bhStr; timings.bh = Date.now(); }
+        } catch {}
+      }
       if (cachedBhEarly) {
         try {
           fillIx = await withRpcTimeout(fillIxP as any, 180, 'fill_ix');
@@ -619,7 +632,7 @@ export class DriftFillerRunner {
 
       const cachedBh = (() => {
         try {
-          return getCachedBlockhash(150) || this.bhCacheStr;
+          return getCachedBlockhash(250) || this.bhCacheStr;
         } catch { return this.bhCacheStr; }
       })();
       const recentBlockhash = String(cachedBh || cachedBhEarly || (bh as any)?.blockhash);
@@ -764,9 +777,8 @@ export class DriftFillerRunner {
           // If blockhash expired/not found, refresh and resend once quickly
           if (/blockhash.*(not.*found|expired)|Transaction.*expired/i.test(msg)) {
             try {
-              const { withRpcRetry } = await import('../utils/rpcLimiter.js');
-              const bh2 = await withRpcRetry(() => this.connection.getLatestBlockhash({ commitment: 'confirmed' }), { timeoutMs: 1200, retries: 1, baseMs: 150, maxMs: 600, label: 'blockhash.retry' });
-              const bh2Str = String((bh2 as any)?.blockhash);
+              const { getFreshBlockhashOrFetch } = await import('../utils/blockhash.js');
+              const bh2Str = String(await getFreshBlockhashOrFetch(350) || '');
               const ixsRetry = [
                 ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
                 ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityForSend }),
@@ -805,7 +817,7 @@ export class DriftFillerRunner {
             } catch {}
             try {
               const [bh2, upd2] = await Promise.all([
-                withRpcLimit(() => this.connection.getLatestBlockhash({ commitment: 'confirmed' })),
+                (async () => { try { const { getFreshBlockhashOrFetch } = await import('../utils/blockhash.js'); const v = await getFreshBlockhashOrFetch(300); return { blockhash: v }; } catch { return { blockhash: undefined as any }; } })(),
                 (async () => {
                   try {
                     if (typeof this.client.getUpdateFillerIx === 'function') return await this.client.getUpdateFillerIx();

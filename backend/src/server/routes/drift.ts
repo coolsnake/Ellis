@@ -9,6 +9,49 @@ export function createDriftRouter(io: SocketIOServer): Router {
   // serialize subaccount mutations to reduce concurrent RPC bursts
   const subMutex = new Map<number, Promise<any>>();
 
+  api.get('/drift/infra/status', async (_req: Request, res: Response) => {
+    try {
+      const { DriftService } = await import('../../drift/client.js');
+      const svc = DriftService.getInstance() as any;
+      const s = svc.getInfraStatus?.() || { active: false, forceActive: false, bots: 0, has: {} };
+      res.json(s);
+    } catch (e: any) {
+      logger.error('drift: infra status failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.post('/drift/infra/activate', async (req: Request, res: Response) => {
+    try {
+      const { DriftService } = await import('../../drift/client.js');
+      const svc = DriftService.getInstance() as any;
+      const opts = (req.body || {}) as any;
+      await svc.activate?.({
+        includeIdle: !!opts?.includeIdle,
+        updateFrequency: Number.isFinite(Number(opts?.updateFrequency)) ? Number(opts.updateFrequency) : undefined,
+        preferOrderSubscriber: (opts?.preferOrderSubscriber === undefined ? true : !!opts?.preferOrderSubscriber),
+      });
+      try { emit('log', { level: 'info', message: 'drift: infra activated', timestamp: new Date().toISOString(), context: { cat: 'drift' } }); } catch {}
+      res.json({ ok: true });
+    } catch (e: any) {
+      logger.error('drift: infra activate failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.post('/drift/infra/deactivate', async (_req: Request, res: Response) => {
+    try {
+      const { DriftService } = await import('../../drift/client.js');
+      const svc = DriftService.getInstance() as any;
+      svc.deactivate?.();
+      try { emit('log', { level: 'info', message: 'drift: infra deactivated', timestamp: new Date().toISOString(), context: { cat: 'drift' } }); } catch {}
+      res.json({ ok: true });
+    } catch (e: any) {
+      logger.error('drift: infra deactivate failed', { error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   api.get('/drift/status', async (_req: Request, res: Response) => {
     try {
       const t0 = Date.now();

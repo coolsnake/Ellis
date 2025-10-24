@@ -42,6 +42,7 @@ export class DriftTriggerRunner {
   private state: TriggerRuntimeState;
   private abort = false;
   private inLoop: boolean = false;
+  private botKey: string;
 
   private sdk: any | null = null;
   private client: any | null = null;
@@ -73,6 +74,7 @@ export class DriftTriggerRunner {
       triggersLastMin: 0,
       marketsAllowlist: allowlist,
     };
+    this.botKey = `trg#${this.state.name}`;
   }
 
   getStatus(): TriggerRuntimeState {
@@ -89,7 +91,9 @@ export class DriftTriggerRunner {
     logger.info('drift.trigger.start', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name, dryRun: this.state.dryRun, loopMs: this.state.loopIntervalMs, allowlist: this.state.marketsAllowlist });
 
     try {
-      await DriftService.getInstance().init();
+      const svc = DriftService.getInstance() as any;
+      (svc as any).registerBot?.(this.botKey);
+      await (svc as any).init?.();
     } catch {}
     const svc: any = DriftService.getInstance();
     this.connection = (svc as any).connection;
@@ -150,6 +154,7 @@ export class DriftTriggerRunner {
     this.abort = true;
     try { if ((this as any)._condStatsTimer) { clearInterval((this as any)._condStatsTimer); (this as any)._condStatsTimer = null; } } catch {}
     logger.info('drift.trigger.stopped', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name });
+    try { (DriftService.getInstance() as any).unregisterBot?.(this.botKey); } catch {}
   }
 
   private async initDiscovery(): Promise<void> {
@@ -476,15 +481,11 @@ export class DriftTriggerRunner {
               logger.info('drift.trigger.dry_run', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, user: userPkStr, orderId, marketIndex: idx, marketType: typeStr });
               continue;
             }
-            // Blockhash from shared cache, quick fallback
-            const { getCachedBlockhash } = await import('../utils/blockhash.js');
-            let bhStr = getCachedBlockhash(200);
+            // Blockhash from shared cache, resilient refresh with fallback across RPCs
+            const { getCachedBlockhash, getFreshBlockhashOrFetch } = await import('../utils/blockhash.js');
+            let bhStr = getCachedBlockhash(250);
             if (!bhStr) {
-              try {
-                const { withRpcRetry } = await import('../utils/rpcLimiter.js');
-                const live = await withRpcRetry(() => this.connection.getLatestBlockhash({ commitment: 'confirmed' }), { timeoutMs: 1200, retries: 1, baseMs: 150, maxMs: 600, label: 'blockhash' });
-                bhStr = String((live as any)?.blockhash || '');
-              } catch {}
+              try { bhStr = String(await getFreshBlockhashOrFetch(300) || ''); } catch {}
             }
             if (!bhStr) { logger.info('drift.trigger.defer_no_cached_bh', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT }); continue; }
 
