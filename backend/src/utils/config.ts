@@ -584,6 +584,10 @@ export const CONFIG = {
     prefetchQueueCap: Number(process.env.DRIFT_PREFETCH_QUEUE_CAP || 5000),
     prefetchGpaLimit: Number(process.env.DRIFT_PREFETCH_GPA_LIMIT || 1200),
     prefetchGpaChangedOnly: (process.env.DRIFT_PREFETCH_GPA_CHANGED_ONLY || 'true') !== 'false',
+    // Subscription pacing
+    subscribeSpacingMs: Number(process.env.DRIFT_SUBSCRIBE_SPACING_MS || 100),
+    // Prefetch soft-start (currently unused by code paths; reserved)
+    prefetchStartDelayMs: Number(process.env.DRIFT_PREFETCH_START_DELAY_MS || 4000),
     // Floor for filler priority fee micro-lamports
     fillerPriorityFloorMicroLamports: Number(process.env.DRIFT_FILLER_FLOOR_MICRO || 15000),
     // Max tolerated oracle delay in slots before skipping a market

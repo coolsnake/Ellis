@@ -205,23 +205,29 @@ export class DriftService {
       startSharedBlockhash(this.getReadConnection(), { intervalMs });
     } catch {}
 
+    // Gentle pacing between subscription attaches to avoid startup bursts
+    const spacing = Math.max(0, Number(((CONFIG as any)?.drift?.subscribeSpacingMs) ?? 100));
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, Math.max(0, ms)));
+
     if (!this.sharedSlotSubscriber && sdk?.SlotSubscriber) {
       try {
         this.sharedSlotSubscriber = new (sdk as any).SlotSubscriber(connection);
         await this.sharedSlotSubscriber.subscribe();
+        await sleep(spacing);
       } catch {}
     } else {
       // Best-effort resubscribe if previously unsubscribed
-      try { await (this.sharedSlotSubscriber as any)?.subscribe?.(); } catch {}
+      try { await (this.sharedSlotSubscriber as any)?.subscribe?.(); await sleep(spacing); } catch {}
     }
 
     if (!this.sharedEventSubscriber && sdk?.EventSubscriber) {
       try {
         this.sharedEventSubscriber = new (sdk as any).EventSubscriber(connection, program);
         await this.sharedEventSubscriber.subscribe();
+        await sleep(spacing);
       } catch {}
     } else {
-      try { await (this.sharedEventSubscriber as any)?.subscribe?.(); } catch {}
+      try { await (this.sharedEventSubscriber as any)?.subscribe?.(); await sleep(spacing); } catch {}
     }
 
     // Wire slot timestamp listener and start watchdog for stale resubscribe
@@ -295,9 +301,9 @@ export class DriftService {
           });
         } catch {}
       }
-      try { await this.sharedUserMap?.subscribe?.(); } catch {}
+      try { await this.sharedUserMap?.subscribe?.(); await sleep(spacing); } catch {}
     } else {
-      try { await (this.sharedUserMap as any)?.subscribe?.(); } catch {}
+      try { await (this.sharedUserMap as any)?.subscribe?.(); await sleep(spacing); } catch {}
     }
 
     // Optional OrderSubscriber for improved DLOB order coverage
@@ -314,10 +320,10 @@ export class DriftService {
           // fallback to legacy constructor
           this.sharedOrderSubscriber = new (sdk as any).OrderSubscriber(connection, program);
         }
-        try { await this.sharedOrderSubscriber?.subscribe?.(); } catch {}
+        try { await this.sharedOrderSubscriber?.subscribe?.(); await sleep(spacing); } catch {}
       } catch {}
     } else {
-      try { await (this.sharedOrderSubscriber as any)?.subscribe?.(); } catch {}
+      try { await (this.sharedOrderSubscriber as any)?.subscribe?.(); await sleep(spacing); } catch {}
     }
 
     const dlobSource = (opts?.preferOrderSubscriber && this.sharedOrderSubscriber) ? this.sharedOrderSubscriber : this.sharedUserMap;
@@ -331,6 +337,7 @@ export class DriftService {
           userMapSubscriptionConfig: (() => { try { return drift.userAccountSubscriptionConfig || undefined; } catch { return undefined; } })(),
         });
         await this.sharedDlobSubscriber.subscribe();
+        await sleep(spacing);
       } catch {}
     } else {
       try {
@@ -339,7 +346,7 @@ export class DriftService {
         if (dl && typeof dl.subscribe === 'function') {
           // If getDLOB exists and returns falsy, attempt to resubscribe
           const has = typeof dl.getDLOB === 'function' ? !!dl.getDLOB() : true;
-          if (!has) { await dl.subscribe(); }
+          if (!has) { await dl.subscribe(); await sleep(spacing); }
         }
       } catch {}
     }
@@ -474,11 +481,38 @@ export class DriftService {
       if (!programId) return out;
       const discr = this.computeAnchorDiscriminatorB58('User');
       const filters: any[] = discr ? [{ memcmp: { offset: 0, bytes: discr } }] : [];
-      const params: any = { encoding: 'base64', filters, limit: Math.max(100, Math.min(10000, Number(limit || 1200))) };
+      const lmt = Math.max(100, Math.min(10000, Number(limit || 1200)));
+      const params: any = { encoding: 'base64', filters, limit: lmt };
       if (changedOnly && this.lastPrefetchSlot > 0) { (params as any).changedSinceSlot = Number(this.lastPrefetchSlot); }
       const body: any = { jsonrpc: '2.0', id: 1, method: 'getProgramAccountsV2', params: [programId, params] };
-      const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      const json = await res.json().catch(() => ({}));
+
+      const { acquireRpcSlots, withRpcTimeout } = await import('../utils/rpcLimiter.js');
+      const weight = Math.max(1, Math.ceil(lmt / 250));
+      let json: any = null;
+      let delayMs = 500;
+
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        await acquireRpcSlots(weight);
+        const res: any = await withRpcTimeout(
+          fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+          2500,
+          'helius.gpa'
+        );
+
+        if (res?.status === 429) {
+          const retryAfter = Number(res.headers?.get?.('retry-after') || 0) * 1000;
+          const jitter = 1 + (Math.random() * 0.2 - 0.1);
+          const wait = Math.min(6000, Math.max(500, retryAfter || Math.round(delayMs * jitter)));
+          delayMs = Math.min(6000, Math.round(delayMs * 2));
+          try { logger.warn('drift.prefetch.429', { delayMs: wait, attempt: attempt + 1, limit: lmt, changedOnly, cat: 'drift' }); } catch {}
+          await new Promise((r) => setTimeout(r, wait));
+          continue;
+        }
+
+        json = await res.json().catch(() => ({}));
+        break;
+      }
+
       const list = Array.isArray(json?.result?.accounts) ? json.result.accounts : (Array.isArray(json?.result) ? json.result : []);
       if (!Array.isArray(list) || list.length === 0) {
         try { this.lastPrefetchSlot = Number(await this.getReadConnection().getSlot('processed')); } catch {}
