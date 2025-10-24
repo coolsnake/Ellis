@@ -783,7 +783,7 @@ export class DriftService {
         let lastErr: any = ePrimary;
         for (const url of secondaries) {
           try {
-            const alt = new Connection(String(url), 'processed');
+            const alt = new Connection(String(url), { commitment: 'processed', disableRetryOnRateLimit: true } as any);
             const sig = await tryWithTimeout(alt, raw, Number(((CONFIG as any)?.rpcSend?.sendTimeoutMs) ?? 1200));
             try { logger.info('tx.send.fallback_ok', { cat: 'tx', url }); } catch {}
             return sig;

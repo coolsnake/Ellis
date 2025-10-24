@@ -10,7 +10,7 @@ export function createDebugRouter(_io: SocketIOServer): Router {
       const id = String(req.params.id || '');
       if (!id) return res.status(400).json({ error: 'id required' });
       const { Connection, PublicKey, Keypair } = await import('@solana/web3.js');
-      const conn = new Connection(CONFIG.rpcUrl, 'confirmed');
+      const conn = new Connection(CONFIG.rpcUrl, { commitment: 'confirmed', disableRetryOnRateLimit: true } as any);
       const pk = new PublicKey(id);
       const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
       const info = await withRpcLimit(() => conn.getAccountInfo(pk, { commitment: 'confirmed' } as any));

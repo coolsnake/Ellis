@@ -15,8 +15,20 @@ const getBalancesCache: Record<string, { ts: number; data: { sol: number; tokens
 
 export function getConnection(): Connection {
   const url = CONFIG.rpcUrl || clusterApiUrl('mainnet-beta');
-  // Stick to 2-arg signature for compatibility
-  return new Connection(url, 'confirmed');
+  // Disable internal 429 retry and tag 429s for attribution
+  const customFetch = async (info: any, init: any) => {
+    const baseFetch: any = (globalThis as any).fetch || (await import('node-fetch')).default;
+    const res: any = await baseFetch(info, init);
+    try {
+      if (res && typeof res.status === 'number' && res.status === 429) {
+        let method: string | undefined;
+        try { method = JSON.parse(String(init?.body || '{}'))?.method; } catch {}
+        try { logger.warn('rpc.429', { method, url: String(info), cat: 'rpc' }); } catch {}
+      }
+    } catch {}
+    return res as any;
+  };
+  return new Connection(url, { commitment: 'confirmed', disableRetryOnRateLimit: true, fetch: customFetch } as any);
 }
 
 export async function generateAndSaveWallet(filePath: string): Promise<Keypair> {

@@ -106,7 +106,7 @@ async function fetchLatestBlockhashWithFallback(timeoutMs: number, label: string
   });
   for (const url of urls) {
     try {
-      const alt = new Connection(String(url), 'processed');
+      const alt = new Connection(String(url), { commitment: 'processed', disableRetryOnRateLimit: true } as any);
       const res = await withRpcTimeout(
         alt.getLatestBlockhash({ commitment: 'processed' }),
         Math.max(250, Math.min(2000, timeoutMs)),

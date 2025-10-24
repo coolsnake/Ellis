@@ -29,7 +29,7 @@ export async function resolveMint(symbolOrMint: string): Promise<{ mint: string;
   if (input.length > 30) {
     // Try to fetch decimals on-chain for accurate handling
     try {
-      const conn = new Connection(CONFIG.rpcUrl, 'confirmed');
+      const conn = new Connection(CONFIG.rpcUrl, { commitment: 'confirmed', disableRetryOnRateLimit: true } as any);
       const mintInfo = await getMint(conn, new PublicKey(input));
       const decimals = Number(mintInfo.decimals ?? 6);
       const out = { mint: input, decimals };

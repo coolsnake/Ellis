@@ -8,7 +8,7 @@ import { loadJupiterTokenMap } from '../../utils/tokens.js';
 export async function getTokenMeta(mintStr: string): Promise<{ decimals: number; program: 'spl-token'|'token-2022' }> {
   const cached = executionCache.getTokenMeta(mintStr);
   if (cached) return cached;
-  const conn = new Connection(CONFIG.rpcUrl, 'confirmed');
+  const conn = new Connection(CONFIG.rpcUrl, { commitment: 'confirmed', disableRetryOnRateLimit: true } as any);
   let mint: PublicKey | null = null;
   try { mint = new PublicKey(mintStr); } catch {}
   let program: 'spl-token'|'token-2022' = 'spl-token';
