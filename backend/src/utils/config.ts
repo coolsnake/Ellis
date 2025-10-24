@@ -576,8 +576,8 @@ export const CONFIG = {
     orderResyncIntervalMs: Number(process.env.DRIFT_ORDER_RESYNC_MS || 15000),
     // User prefetcher controls
     prefetchEnabled: (process.env.DRIFT_PREFETCH_ENABLED || 'true') !== 'false',
-    // Method: 'maci' (getMultipleAccountsInfo) or 'gpa' (Helius GPA v2)
-    prefetchMethod: (process.env.DRIFT_PREFETCH_METHOD as any) || 'maci',
+    // Method: 'maci' (getMultipleAccountsInfo), 'gpa' (Helius GPA v2), or 'auto'
+    prefetchMethod: (process.env.DRIFT_PREFETCH_METHOD as any) || 'auto',
     prefetchIntervalMs: Number(process.env.DRIFT_PREFETCH_INTERVAL_MS || 3000),
     prefetchBatchMax: Number(process.env.DRIFT_PREFETCH_BATCH_MAX || 60),
     prefetchChunkSize: Number(process.env.DRIFT_PREFETCH_CHUNK_SIZE || 20),

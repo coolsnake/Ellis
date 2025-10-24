@@ -644,7 +644,12 @@ export class DriftService {
       } catch {}
     };
 
-    const method = String((driftCfg?.prefetchMethod || 'maci')).toLowerCase();
+    // Choose prefetch method: auto => use GPA on Helius endpoints, else MACI
+    const cfgMethodRaw = String((driftCfg?.prefetchMethod || 'auto')).toLowerCase();
+    const rpcEndpoint: string = String((this.connection as any)?._rpcEndpoint || (this.connection as any)?.rpcEndpoint || '');
+    const autoPick = /helius/i.test(rpcEndpoint) ? 'gpa' : 'maci';
+    const method = cfgMethodRaw === 'auto' ? autoPick : cfgMethodRaw;
+    try { logger.info('drift.prefetch.start', { method, rpc: rpcEndpoint.includes('helius') ? 'helius' : 'other', cat: 'drift' }); } catch {}
     const step = async () => {
       try {
         if (method === 'gpa') {
