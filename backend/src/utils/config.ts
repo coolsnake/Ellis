@@ -583,6 +583,9 @@ export const CONFIG = {
     prefetchChunkSize: Number(process.env.DRIFT_PREFETCH_CHUNK_SIZE || 20),
     prefetchQueueCap: Number(process.env.DRIFT_PREFETCH_QUEUE_CAP || 5000),
     prefetchGpaLimit: Number(process.env.DRIFT_PREFETCH_GPA_LIMIT || 1200),
+    // GPA pagination controls
+    prefetchGpaPageSize: Number(process.env.DRIFT_PREFETCH_GPA_PAGE_SIZE || 2000),
+    prefetchGpaMaxPages: Number(process.env.DRIFT_PREFETCH_GPA_MAX_PAGES || 5),
     prefetchGpaChangedOnly: (process.env.DRIFT_PREFETCH_GPA_CHANGED_ONLY || 'true') !== 'false',
     // Subscription pacing
     subscribeSpacingMs: Number(process.env.DRIFT_SUBSCRIBE_SPACING_MS || 100),

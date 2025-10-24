@@ -481,59 +481,67 @@ export class DriftService {
       if (!programId) return out;
       const discr = this.computeAnchorDiscriminatorB58('User');
       const filters: any[] = discr ? [{ memcmp: { offset: 0, bytes: discr } }] : [];
-      const lmt = Math.max(100, Math.min(10000, Number(limit || 1200)));
-      const params: any = { encoding: 'base64', filters, limit: lmt };
-      if (changedOnly && this.lastPrefetchSlot > 0) { (params as any).changedSinceSlot = Number(this.lastPrefetchSlot); }
-      const body: any = { jsonrpc: '2.0', id: 1, method: 'getProgramAccountsV2', params: [programId, params] };
+      const driftCfg: any = ((CONFIG as any)?.drift || {});
+      const pageSize = Math.max(100, Math.min(10000, Number(driftCfg?.prefetchGpaPageSize ?? 2000)));
+      const maxPages = Math.max(1, Number(driftCfg?.prefetchGpaMaxPages ?? 5));
+      const totalLimit = Math.max(100, Math.min(100000, Number(limit || (pageSize * maxPages))));
 
       const { acquireRpcSlots, withRpcTimeout } = await import('../utils/rpcLimiter.js');
-      const weight = Math.max(1, Math.ceil(lmt / 250));
-      let json: any = null;
       let delayMs = 500;
-
-      for (let attempt = 0; attempt < 4; attempt += 1) {
-        await acquireRpcSlots(weight);
-        const res: any = await withRpcTimeout(
-          fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
-          2500,
-          'helius.gpa'
-        );
-
-        if (res?.status === 429) {
-          const retryAfter = Number(res.headers?.get?.('retry-after') || 0) * 1000;
-          const jitter = 1 + (Math.random() * 0.2 - 0.1);
-          const wait = Math.min(6000, Math.max(500, retryAfter || Math.round(delayMs * jitter)));
-          delayMs = Math.min(6000, Math.round(delayMs * 2));
-          try { logger.warn('drift.prefetch.429', { delayMs: wait, attempt: attempt + 1, limit: lmt, changedOnly, cat: 'drift' }); } catch {}
-          await new Promise((r) => setTimeout(r, wait));
-          continue;
-        }
-
-        json = await res.json().catch(() => ({}));
-        break;
-      }
-
-      const list = Array.isArray(json?.result?.accounts) ? json.result.accounts : (Array.isArray(json?.result) ? json.result : []);
-      if (!Array.isArray(list) || list.length === 0) {
-        try { this.lastPrefetchSlot = Number(await this.getReadConnection().getSlot('processed')); } catch {}
-        return out;
-      }
+      let paginationKey: any = undefined;
+      let fetched = 0;
+      let page = 0;
       let coder: any = null;
       try { coder = drift?.program?.coder?.accounts || null; } catch {}
-      for (const a of list) {
-        try {
-          const pk = String(a?.pubkey || a?.account || '');
-          const enc = a?.account?.data;
-          const b64 = Array.isArray(enc) ? enc[0] : (typeof enc === 'string' ? enc : null);
-          if (!pk || !b64) continue;
-          const raw = Buffer.from(b64, 'base64');
-          let ua: any = null;
-          try { ua = coder?.decode?.('User', raw); } catch {}
-          if (!ua) {
-            try { ua = drift?.program?.account?.user?.coder?.accounts?.decode?.('User', raw); } catch {}
+
+      while (page < maxPages && fetched < totalLimit) {
+        const remaining = totalLimit - fetched;
+        const lmt = Math.min(pageSize, remaining);
+        const params: any = { encoding: 'base64', filters, limit: lmt };
+        if (changedOnly && this.lastPrefetchSlot > 0) { (params as any).changedSinceSlot = Number(this.lastPrefetchSlot); }
+        if (paginationKey) { (params as any).paginationKey = paginationKey; }
+        const body: any = { jsonrpc: '2.0', id: 1, method: 'getProgramAccountsV2', params: [programId, params] };
+
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          await acquireRpcSlots(Math.max(1, Math.ceil(lmt / 250)));
+          const res: any = await withRpcTimeout(
+            fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+            3000,
+            'helius.gpa.page'
+          );
+          if (res?.status === 429) {
+            const retryAfter = Number(res.headers?.get?.('retry-after') || 0) * 1000;
+            const jitter = 1 + (Math.random() * 0.2 - 0.1);
+            const wait = Math.min(6000, Math.max(500, retryAfter || Math.round(delayMs * jitter)));
+            delayMs = Math.min(6000, Math.round(delayMs * 2));
+            try { logger.warn('drift.prefetch.429', { delayMs: wait, attempt: attempt + 1, page, limit: lmt, changedOnly, cat: 'drift' }); } catch {}
+            await new Promise((r) => setTimeout(r, wait));
+            continue;
           }
-          if (ua) out.set(pk, ua);
-        } catch {}
+          const json = await res.json().catch(() => ({}));
+          const list = Array.isArray(json?.result?.accounts) ? json.result.accounts : (Array.isArray(json?.result) ? json.result : []);
+          if (!Array.isArray(list) || list.length === 0) { page = maxPages; break; }
+          for (const a of list) {
+            try {
+              const pk = String(a?.pubkey || a?.account || '');
+              const enc = a?.account?.data;
+              const b64 = Array.isArray(enc) ? enc[0] : (typeof enc === 'string' ? enc : null);
+              if (!pk || !b64) continue;
+              const raw = Buffer.from(b64, 'base64');
+              let ua: any = null;
+              try { ua = coder?.decode?.('User', raw); } catch {}
+              if (!ua) { try { ua = drift?.program?.account?.user?.coder?.accounts?.decode?.('User', raw); } catch {} }
+              if (ua) {
+                if (!out.has(pk)) { out.set(pk, ua); fetched += 1; }
+              }
+            } catch {}
+          }
+          paginationKey = json?.result?.paginationKey || null;
+          try { logger.info('drift.prefetch.gpa_page', { page: page + 1, fetchedInPage: list?.length || 0, totalFetched: fetched, hasMore: !!paginationKey, cat: 'drift' }); } catch {}
+          break;
+        }
+        if (!paginationKey) break;
+        page += 1;
       }
       try { this.lastPrefetchSlot = Number(await this.getReadConnection().getSlot('processed')); } catch {}
     } catch {}
