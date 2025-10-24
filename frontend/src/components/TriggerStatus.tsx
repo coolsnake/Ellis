@@ -95,7 +95,10 @@ export const TriggerStatus: React.FC<{ apiBase: string; hideHeader?: boolean }> 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ key })
       });
+      // Immediate refresh for responsiveness
       await load();
+      // Short backoff refresh to catch async backend state
+      setTimeout(() => { try { load(); } catch {} }, 800);
     } catch {
     } finally {
       setBusy(false);

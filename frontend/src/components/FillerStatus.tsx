@@ -96,6 +96,7 @@ export const FillerStatus: React.FC<{ apiBase: string; hideHeader?: boolean }> =
         body: JSON.stringify({ key })
       });
       await load();
+      setTimeout(() => { try { load(); } catch {} }, 800);
     } catch {
     } finally {
       setBusy(false);

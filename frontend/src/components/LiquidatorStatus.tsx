@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ROUTES } from '../utils/routes';
+import { useSocketExtraEvents } from '../app/hooks/useSocketExtraEvents';
 
 type LiquidatorItem = { key: string; status: { running: boolean; actionsLastMin?: number; errorsLastMin?: number } };
 
@@ -45,6 +46,7 @@ export const LiquidatorStatus: React.FC<{ apiBase: string; hideHeader?: boolean 
         body: JSON.stringify({ key })
       });
       await load();
+      setTimeout(() => { try { load(); } catch {} }, 800);
     } catch {
     } finally {
       setBusy(false);
@@ -52,6 +54,17 @@ export const LiquidatorStatus: React.FC<{ apiBase: string; hideHeader?: boolean 
   };
 
   const list = Array.isArray(status?.liquidators) ? (status!.liquidators as LiquidatorItem[]) : [];
+
+  // Subscribe to socket updates so bots appear without manual refresh
+  useSocketExtraEvents({
+    onLiquidatorUpdate: async (payload: any) => {
+      try {
+        if (payload && typeof payload === 'object') {
+          setStatus(payload);
+        }
+      } catch {}
+    },
+  });
 
   return (
     <div className="bg-gray-800 rounded p-3">

@@ -4,6 +4,7 @@ import { withRpcLimit } from '../utils/rpcLimiter.js';
 import { buildTipIx } from '../execution/jitoTip.js';
 import { startTipFeed, getCachedTipInfo } from '../execution/jitoTipCache.js';
 import { sendToBlockEngine } from '../execution/jitoClient.js';
+import { getCachedBlockhash } from '../utils/blockhash.js';
 import { RunnerRegistry } from '../utils/runnerRegistry.js';
 import { DriftService } from './client.js';
 import { OracleUpdater } from './oracles/oracleUpdater.js';
@@ -249,21 +250,7 @@ export class DriftFillerRunner {
         try { this.lookupTableAccounts = await (this.client?.fetchAllLookupTableAccounts?.()); } catch {}
       }, every);
     } catch {}
-    // Blockhash warmer (processed, tight timeouts)
-    try {
-      if (this.bhWarmTimer) { try { clearInterval(this.bhWarmTimer); } catch {} this.bhWarmTimer = null; }
-      const step = async () => {
-        try {
-          const { withRpcRetry, withRpcTimeout } = await import('../utils/rpcLimiter.js');
-          const p = withRpcRetry(() => this.connection.getLatestBlockhash({ commitment: 'confirmed' }), { timeoutMs: 700, retries: 0, baseMs: 100, maxMs: 300, label: 'bh.warm' });
-          const res = await withRpcTimeout(p, 900, 'bh.warmcap');
-          const bh = String((res as any)?.blockhash || '');
-          if (bh) { this.bhCacheStr = bh; this.bhCacheTs = Date.now(); }
-        } catch {}
-      };
-      step().catch(() => {});
-      this.bhWarmTimer = setInterval(() => { step().catch(() => {}); }, Math.max(300, Number(((CONFIG as any)?.drift?.blockhashWarmMs) ?? 400)));
-    } catch {}
+    // Blockhash warming is provided by shared utils/blockhash via DriftService
     // Sender / RPC connection warming ping
     try {
       if (this.wsNudgeTimer) { try { clearInterval(this.wsNudgeTimer); } catch {} this.wsNudgeTimer = null; }
@@ -452,7 +439,7 @@ export class DriftFillerRunner {
       // Prefer cached blockhash; only fetch live if no cache available
       const cachedBhEarly = (() => {
         try {
-          return (globalThis as any).__bh_shared_cached || this.blockhashSubscriber?.getLatestBlockhash?.(150)?.blockhash || this.bhCacheStr;
+          return this.bhCacheStr;
         } catch { return this.bhCacheStr; }
       })();
       let updateFillerIx: any = null, fillIx: any, revertIx: any = null, bh: any;
@@ -577,7 +564,7 @@ export class DriftFillerRunner {
 
       // Plan log for transaction build
       try {
-        const bhSourcePlan = cachedBh ? 'cached' : (cachedBhEarly ? 'cached_early' : ((bh as any)?.blockhash ? 'fetched' : 'unknown'));
+        const bhSourcePlan = (() => { const cached = (() => { try { return getCachedBlockhash(5); } catch { return undefined; } })(); return cached ? 'cached' : (cachedBhEarly ? 'cached_early' : ((bh as any)?.blockhash ? 'fetched' : 'unknown')); })();
         const lookupCount = Array.isArray(this.lookupTableAccounts) ? this.lookupTableAccounts.length : 0;
         const priorityLamportsEst = Math.floor((priorityForSend * Math.max(220_000, cuLimit)) / 1_000_000);
         logger.info('drift.filler.tx_plan', {
@@ -620,7 +607,7 @@ export class DriftFillerRunner {
           ms_rev: Math.max(0, timings.rev - (timings.upd || timings.bh || timings.fillFb || timings.fillPri || timings.mk || timings.hyd || t0)),
           ms_tip: Math.max(0, timings.tip - (timings.rev || timings.upd || timings.bh || timings.fillFb || timings.fillPri || timings.mk || timings.hyd || t0)),
           ms_compile: Math.max(0, timings.compile - (timings.tip || timings.rev || timings.upd || timings.bh || timings.fillFb || timings.fillPri || timings.mk || timings.hyd || t0)),
-          bhSource: (() => { const cachedBh = (() => { try { return this.blockhashSubscriber?.getLatestBlockhash?.(5)?.blockhash; } catch { return undefined; } })(); return cachedBh ? 'cached' : (cachedBhEarly ? 'cached_early' : ((bh as any)?.blockhash ? 'fetched' : 'unknown')); })(),
+          bhSource: (() => { const cached = (() => { try { return getCachedBlockhash(5); } catch { return undefined; } })(); return cached ? 'cached' : (cachedBhEarly ? 'cached_early' : ((bh as any)?.blockhash ? 'fetched' : 'unknown')); })(),
           usedNoMakersFallback,
         });
       } catch {}
@@ -632,7 +619,7 @@ export class DriftFillerRunner {
 
       const cachedBh = (() => {
         try {
-          return (globalThis as any).__bh_shared_cached || this.blockhashSubscriber?.getLatestBlockhash?.(150)?.blockhash || this.bhCacheStr;
+          return getCachedBlockhash(150) || this.bhCacheStr;
         } catch { return this.bhCacheStr; }
       })();
       const recentBlockhash = String(cachedBh || cachedBhEarly || (bh as any)?.blockhash);
