@@ -599,6 +599,9 @@ export const CONFIG = {
     warmupTimeoutMs: Number(process.env.DRIFT_WARMUP_TIMEOUT_MS || 30000),
     // Subscription pacing
     subscribeSpacingMs: Number(process.env.DRIFT_SUBSCRIBE_SPACING_MS || 100),
+    // Loop logging mode: when true, suppress per-loop info logs and emit periodic summaries
+    loopSummaryOnly: (process.env.DRIFT_LOOP_SUMMARY_ONLY || 'false') === 'true',
+    loopSummaryIntervalMs: Number(process.env.DRIFT_LOOP_SUMMARY_INTERVAL_MS || 10000),
     // Prefetch soft-start (currently unused by code paths; reserved)
     prefetchStartDelayMs: Number(process.env.DRIFT_PREFETCH_START_DELAY_MS || 4000),
     // Floor for filler priority fee micro-lamports

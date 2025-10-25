@@ -269,9 +269,12 @@ logger.on('log', (event: any) => {
   if (!cat && /server|backend|routes registered|listening on/i.test(msg)) cat = 'server';
   const enriched = { ...event, timestamp: ts(), cat: (cat || 'other').toLowerCase() } as any;
   try { recordSessionLog({ level: String(event?.level || 'info'), message: msg, timestamp: enriched.timestamp, context: event?.context, cat: enriched.cat }); } catch {}
-  // simple de-dup: drop identical consecutive messages within 800ms
+  // simple de-dup: drop identical consecutive messages within a short window
   const now = Date.now();
-  if (lastLogSig && lastLogSig.msg === msg && lastLogSig.level === (event?.level || 'info') && (now - lastLogSig.ts) < 800) {
+  // Allow high-frequency strategy logs (filler/trigger loops) to pass through
+  const isHighFreqStrategy = /^drift\.(filler|trigger)\.(loop|loop_begin)/i.test(msg);
+  const dedupWindowMs = isHighFreqStrategy ? 0 : 800;
+  if (lastLogSig && lastLogSig.msg === msg && lastLogSig.level === (event?.level || 'info') && (now - lastLogSig.ts) < dedupWindowMs) {
     return;
   }
   lastLogSig = { msg, level: event?.level || 'info', ts: now };

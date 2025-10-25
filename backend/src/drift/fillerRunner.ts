@@ -88,6 +88,8 @@ export class DriftFillerRunner {
   private lastUpdateFillerMs: number = 0;
   // Per-loop stats
   private _loopStatsTmp: any | null = null;
+  private _summary: { since: number; loops: number; planned: number; sent: number; processed: number; skipped: Record<string, number>; markets: { total: number; paused: number; oracleStale: number } } | null = null;
+  private _summaryTimer: any | null = null;
 
   constructor(cfg: FillerConfig) {
     const allowlist = Array.isArray(cfg?.marketsAllowlist)
@@ -186,6 +188,34 @@ export class DriftFillerRunner {
       };
       this.timer = setInterval(() => { tick().catch(() => {}); }, this.state.loopIntervalMs);
       logger.info('drift.filler.started', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name, loopMs: this.state.loopIntervalMs });
+      // Start periodic summary logger when enabled
+      try {
+        const driftCfg: any = (CONFIG as any)?.drift || {};
+        const summaryOnly = !!driftCfg?.loopSummaryOnly;
+        const every = Math.max(2000, Number(driftCfg?.loopSummaryIntervalMs ?? 10000));
+        if (summaryOnly) {
+          if (this._summaryTimer) { try { clearInterval(this._summaryTimer); } catch {} this._summaryTimer = null; }
+          if (!this._summary) this._summary = { since: Date.now(), loops: 0, planned: 0, sent: 0, processed: 0, skipped: {}, markets: { total: 0, paused: 0, oracleStale: 0 } };
+          this._summaryTimer = setInterval(() => {
+            try {
+              const s = this._summary!;
+              logger.info('drift.filler.loop_summary_10s', {
+                cat: FILLER_CAT,
+                subcat: FILLER_SUBCAT,
+                name: this.state.name,
+                windowMs: Date.now() - s.since,
+                loops: s.loops,
+                planned: s.planned,
+                processed: s.processed,
+                sent: s.sent,
+                skipped: s.skipped,
+                markets: s.markets,
+              });
+              this._summary = { since: Date.now(), loops: 0, planned: 0, sent: 0, processed: 0, skipped: {}, markets: { total: 0, paused: 0, oracleStale: 0 } };
+            } catch {}
+          }, every);
+        }
+      } catch {}
       // Slot-driven tick once slotSubscriber is available
       try {
         const onSlot = () => { try { setImmediate(() => { tick().catch(() => {}); }); } catch { /* noop */ } };
@@ -1013,13 +1043,20 @@ export class DriftFillerRunner {
       const perps = await this.client.getPerpMarketAccounts?.();
 
       try {
-        logger.info('drift.filler.loop_begin', {
-          cat: FILLER_CAT,
-          subcat: FILLER_SUBCAT,
-          slot,
-          perpsCount: Array.isArray(perps) ? perps.length : 0,
-          allowlistSize: Array.isArray(this.state.marketsAllowlist) ? this.state.marketsAllowlist.length : 0,
-        });
+        const driftCfg: any = (CONFIG as any)?.drift || {};
+        if (!driftCfg?.loopSummaryOnly) {
+          logger.info('drift.filler.loop_begin', {
+            cat: FILLER_CAT,
+            subcat: FILLER_SUBCAT,
+            slot,
+            perpsCount: Array.isArray(perps) ? perps.length : 0,
+            allowlistSize: Array.isArray(this.state.marketsAllowlist) ? this.state.marketsAllowlist.length : 0,
+          });
+        }
+        if (this._summary) {
+          this._summary.loops += 1;
+          this._summary.markets.total += Array.isArray(perps) ? perps.length : 0;
+        }
       } catch {}
 
       let totalPlanned = 0;
@@ -1372,23 +1409,38 @@ export class DriftFillerRunner {
       }
 
       const dur = Date.now() - t0;
-      logger.info('drift.filler.loop', {
-        cat: FILLER_CAT, subcat: FILLER_SUBCAT,
-        ms: dur,
-        totalNodesPlanned: totalPlanned,
-        sent,
-        fillsLastMin: this.getStatus().fillsLastMin,
-        sample,
-        marketsTotal: loopStats.marketsTotal,
-        marketsPaused: loopStats.marketsPaused,
-        marketsOracleStale: loopStats.marketsOracleStale,
-        nodesProcessed: loopStats.nodesProcessed,
-        makersWith: loopStats.makersBreakdown.withMakers,
-        makersWithout: loopStats.makersBreakdown.withoutMakers,
-        budgetExhausted: loopStats.budget.exhausted,
-        budgetProcessed: loopStats.budget.processedNodes,
-        skips: loopStats.skips,
-      });
+      try {
+        const driftCfg: any = (CONFIG as any)?.drift || {};
+        if (!driftCfg?.loopSummaryOnly) {
+          logger.info('drift.filler.loop', {
+            cat: FILLER_CAT, subcat: FILLER_SUBCAT,
+            ms: dur,
+            totalNodesPlanned: totalPlanned,
+            sent,
+            fillsLastMin: this.getStatus().fillsLastMin,
+            sample,
+            marketsTotal: loopStats.marketsTotal,
+            marketsPaused: loopStats.marketsPaused,
+            marketsOracleStale: loopStats.marketsOracleStale,
+            nodesProcessed: loopStats.nodesProcessed,
+            makersWith: loopStats.makersBreakdown.withMakers,
+            makersWithout: loopStats.makersBreakdown.withoutMakers,
+            budgetExhausted: loopStats.budget.exhausted,
+            budgetProcessed: loopStats.budget.processedNodes,
+            skips: loopStats.skips,
+          });
+        }
+        if (this._summary) {
+          this._summary.planned += totalPlanned;
+          this._summary.processed += loopStats.nodesProcessed;
+          this._summary.sent += sent;
+          this._summary.markets.paused += loopStats.marketsPaused;
+          this._summary.markets.oracleStale += loopStats.marketsOracleStale;
+          for (const [k, v] of Object.entries(loopStats.skips || {})) {
+            (this._summary.skipped as any)[k] = ((this._summary.skipped as any)[k] || 0) + Number(v || 0);
+          }
+        }
+      } catch {}
       if (totalPlanned === 0) {
         try {
           logger.info('drift.filler.loop_noop', {
