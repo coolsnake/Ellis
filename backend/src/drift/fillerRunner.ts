@@ -162,24 +162,30 @@ export class DriftFillerRunner {
     // Configure throttle early (reduced gaps, higher concurrency for lower latency)
     try { (svc as any).configureTxThrottle?.({ minGapMs: 30, maxInFlight: 8 }); } catch {}
 
-    const tick = async () => {
-      if (this.abort || this.inLoop) return;
-      this.inLoop = true;
-      try { await this.loop(); }
-      finally { this.inLoop = false; }
-    };
-    // Start backstop timer immediately
-    this.timer = setInterval(() => { tick().catch(() => {}); }, this.state.loopIntervalMs);
-    logger.info('drift.filler.started', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name, loopMs: this.state.loopIntervalMs });
-
-    // Kick off discovery in the background with a timeout; attach slot tick when ready
+    // Kick off discovery after infra warmup, then start timers
     setImmediate(async () => {
       try {
+        const driftCfg: any = (CONFIG as any)?.drift || {};
+        const svcGate: any = DriftService.getInstance();
+        const requireWarm = driftCfg?.warmupRequireBeforeBots !== false;
+        if (requireWarm) {
+          const ok = await (svcGate as any).waitForWarmup?.(Number(driftCfg?.warmupTimeoutMs ?? 30000));
+          try { logger.info('drift.filler.warmup_gate', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name, ok }); } catch {}
+        }
         const { withRpcTimeout } = await import('../utils/rpcLimiter.js');
         await withRpcTimeout(this.initDiscovery(), 5000, 'initDiscovery');
       } catch (e: any) {
         try { logger.warn('drift.filler.discovery_degraded', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, err: String(e?.message || e) }); } catch {}
       }
+      // Start backstop loop timer only after discovery
+      const tick = async () => {
+        if (this.abort || this.inLoop) return;
+        this.inLoop = true;
+        try { await this.loop(); }
+        finally { this.inLoop = false; }
+      };
+      this.timer = setInterval(() => { tick().catch(() => {}); }, this.state.loopIntervalMs);
+      logger.info('drift.filler.started', { cat: FILLER_CAT, subcat: FILLER_SUBCAT, name: this.state.name, loopMs: this.state.loopIntervalMs });
       // Slot-driven tick once slotSubscriber is available
       try {
         const onSlot = () => { try { setImmediate(() => { tick().catch(() => {}); }); } catch { /* noop */ } };

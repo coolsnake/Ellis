@@ -115,6 +115,15 @@ export class DriftTriggerRunner {
     }
 
     this.sdk = await import('@drift-labs/sdk');
+    // Require infra warmup before proceeding if configured
+    try {
+      const driftCfg: any = (CONFIG as any)?.drift || {};
+      const requireWarm = driftCfg?.warmupRequireBeforeBots !== false;
+      if (requireWarm) {
+        const ok = await (svc as any).waitForWarmup?.(Number(driftCfg?.warmupTimeoutMs ?? 30000));
+        try { logger.info('drift.trigger.warmup_gate', { cat: TRIGGER_CAT, subcat: TRIGGER_SUBCAT, name: this.state.name, ok }); } catch {}
+      }
+    } catch {}
     await this.initDiscovery();
 
     try {

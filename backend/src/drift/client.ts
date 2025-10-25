@@ -74,6 +74,11 @@ export class DriftService {
   private _slotTsHandler: any | null = null;
   private _lastResubMs: number = 0;
   private lastPrefetchSlot: number = 0;
+  // Warmup state
+  private warmupInProgress: boolean = false;
+  private warmupDone: boolean = false;
+  private warmupPromise: Promise<void> | null = null;
+  private lastWarmupAtMs: number = 0;
 
   static getInstance(): DriftService {
     if (!this.instance) this.instance = new DriftService();
@@ -385,12 +390,82 @@ export class DriftService {
     };
   }
 
+  // One-shot warmup to prepare infra and perform optional GPA bootstrap
+  async warmup(opts?: { includeIdle?: boolean; updateFrequency?: number; preferOrderSubscriber?: boolean }): Promise<void> {
+    const driftCfg: any = ((CONFIG as any)?.drift || {});
+    if (this.warmupDone) return;
+    if (this.warmupInProgress && this.warmupPromise) { await this.warmupPromise; return; }
+    this.warmupInProgress = true;
+    this.warmupPromise = (async () => {
+      const t0 = Date.now();
+      try {
+        await this.init();
+        const infra = await this.getSharedInfra({ includeIdle: !!opts?.includeIdle, updateFrequency: opts?.updateFrequency, preferOrderSubscriber: (opts?.preferOrderSubscriber ?? true) });
+        try { await this.startUserPrefetcher(infra.dlobSubscriber, infra.userMap); } catch {}
+        // Optional GPA bootstrap on Helius endpoints
+        try {
+          const rpcEndpoint: string = String((this.connection as any)?._rpcEndpoint || (this.connection as any)?.rpcEndpoint || '');
+          const doGpa = driftCfg?.warmupGpaBootstrap !== false && /helius/i.test(rpcEndpoint) && driftCfg?.prefetchEnabled !== false;
+          if (doGpa) {
+            const max = Math.max(100, Number(driftCfg?.warmupGpaLimit ?? driftCfg?.prefetchGpaLimit ?? 1200));
+            try { logger.info('drift.warmup.gpa_start', { limit: max, cat: 'drift' }); } catch {}
+            const decoded = await this.fetchUsersViaHeliusGpaV2(max, /*changedOnly*/ false);
+            if (decoded && decoded.size > 0) {
+              for (const [pk, ua] of decoded.entries()) {
+                try {
+                  // Evict oldest if over soft limit
+                  if (this.warmUsers.size >= 500) {
+                    const oldest = [...this.warmUsers.entries()].sort((a, b) => a[1].ts - b[1].ts)[0]?.[0];
+                    if (oldest) { try { await (this.warmUsers.get(oldest) as any)?.user?.unsubscribe?.(); } catch {} this.warmUsers.delete(oldest); }
+                  }
+                  this.warmUsers.set(pk, { ua, ts: Date.now() });
+                  try {
+                    const ref = ua?.referrerInfo?.referrer;
+                    if (ref && String(ref) !== '11111111111111111111111111111111') { await this.ensureRefStatsReady(ref); }
+                  } catch {}
+                } catch {}
+              }
+              try { logger.info('drift.warmup.gpa_done', { decoded: decoded.size, cat: 'drift' }); } catch {}
+            } else {
+              try { logger.info('drift.warmup.gpa_empty', { cat: 'drift' }); } catch {}
+            }
+          }
+        } catch {}
+        this.warmupDone = true;
+        this.lastWarmupAtMs = Date.now();
+        try { logger.info('drift.warmup.ok', { ms: this.lastWarmupAtMs - t0, cat: 'drift' }); } catch {}
+      } catch (e: any) {
+        try { logger.warn('drift.warmup.failed', { err: String(e?.message || e), cat: 'drift' }); } catch {}
+      } finally {
+        this.warmupInProgress = false;
+      }
+    })();
+    try { await this.warmupPromise; } catch {}
+  }
+
+  async waitForWarmup(timeoutMs?: number): Promise<boolean> {
+    const driftCfg: any = ((CONFIG as any)?.drift || {});
+    if (this.warmupDone) return true;
+    // If warmup is disabled, consider ready
+    if (driftCfg?.warmupEnabled === false) return true;
+    try { await this.warmup(); } catch {}
+    if (this.warmupDone) return true;
+    const ms = Math.max(1000, Number(timeoutMs ?? driftCfg?.warmupTimeoutMs ?? 30000));
+    try {
+      await Promise.race([
+        (async () => { while (!this.warmupDone) { await new Promise((r) => setTimeout(r, 200)); } })(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('WARMUP_TIMEOUT')), ms)),
+      ]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   // Infra manager: manual activation and bot-aware teardown
   async activate(opts?: { includeIdle?: boolean; updateFrequency?: number; preferOrderSubscriber?: boolean }): Promise<void> {
     this.forceActive = true;
-    await this.init();
-    const infra = await this.getSharedInfra(opts);
-    try { await this.startUserPrefetcher(infra.dlobSubscriber, infra.userMap); } catch {}
+    await this.warmup(opts);
     try { logger.info('drift.infra.activated', { cat: 'drift' }); } catch {}
   }
 

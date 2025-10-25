@@ -587,6 +587,16 @@ export const CONFIG = {
     prefetchGpaPageSize: Number(process.env.DRIFT_PREFETCH_GPA_PAGE_SIZE || 2000),
     prefetchGpaMaxPages: Number(process.env.DRIFT_PREFETCH_GPA_MAX_PAGES || 5),
     prefetchGpaChangedOnly: (process.env.DRIFT_PREFETCH_GPA_CHANGED_ONLY || 'true') !== 'false',
+    // Infra warmup controls
+    warmupEnabled: (process.env.DRIFT_WARMUP_ENABLED || 'true') !== 'false',
+    // When true, bots will await warmup completion before starting their loops
+    warmupRequireBeforeBots: (process.env.DRIFT_WARMUP_REQUIRE_BEFORE_BOTS || 'true') !== 'false',
+    // Perform a one-time GPA bootstrap (Helius only) during warmup
+    warmupGpaBootstrap: (process.env.DRIFT_WARMUP_GPA_BOOTSTRAP || 'true') !== 'false',
+    // Cap for GPA bootstrap during warmup (falls back to prefetchGpaLimit if unset)
+    warmupGpaLimit: Number(process.env.DRIFT_WARMUP_GPA_LIMIT || process.env.DRIFT_PREFETCH_GPA_LIMIT || 20000),
+    // Overall warmup timeout (bots will proceed after this even if warmup incomplete)
+    warmupTimeoutMs: Number(process.env.DRIFT_WARMUP_TIMEOUT_MS || 30000),
     // Subscription pacing
     subscribeSpacingMs: Number(process.env.DRIFT_SUBSCRIBE_SPACING_MS || 100),
     // Prefetch soft-start (currently unused by code paths; reserved)
