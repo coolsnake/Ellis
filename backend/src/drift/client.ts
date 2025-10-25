@@ -409,11 +409,11 @@ export class DriftService {
           if (doGpa) {
             const max = Math.max(100, Number(driftCfg?.warmupGpaLimit ?? driftCfg?.prefetchGpaLimit ?? 1200));
             try { logger.info('drift.warmup.gpa_start', { limit: max, cat: 'drift' }); } catch {}
-            const decoded = await this.fetchUsersViaHeliusGpaV2(max, /*changedOnly*/ false);
+            let decoded: Map<string, any> | null = null;
+            try { decoded = await this.fetchUsersViaHeliusGpaV2(max, /*changedOnly*/ false); } catch { decoded = null; }
             if (decoded && decoded.size > 0) {
               for (const [pk, ua] of decoded.entries()) {
                 try {
-                  // Evict oldest if over soft limit
                   if (this.warmUsers.size >= 500) {
                     const oldest = [...this.warmUsers.entries()].sort((a, b) => a[1].ts - b[1].ts)[0]?.[0];
                     if (oldest) { try { await (this.warmUsers.get(oldest) as any)?.user?.unsubscribe?.(); } catch {} this.warmUsers.delete(oldest); }
@@ -427,7 +427,31 @@ export class DriftService {
               }
               try { logger.info('drift.warmup.gpa_done', { decoded: decoded.size, cat: 'drift' }); } catch {}
             } else {
-              try { logger.info('drift.warmup.gpa_empty', { cat: 'drift' }); } catch {}
+              // Fallback: enumerate keys (cheap) then fetch via MACI in small chunks
+              try {
+                const fastKeys = await this.enumerateUserPubkeysViaHeliusGpaV2(Math.min(1000, max), false);
+                if (Array.isArray(fastKeys) && fastKeys.length > 0) {
+                  try { logger.info('drift.warmup.enumerate_ok', { keys: fastKeys.length, cat: 'drift' }); } catch {}
+                  const chunkSize = Math.max(10, Number(driftCfg?.prefetchChunkSize ?? 20));
+                  for (let i = 0; i < Math.min(fastKeys.length, max); i += chunkSize) {
+                    const slice = fastKeys.slice(i, i + chunkSize);
+                    let map = new Map<string, any>();
+                    try { map = await this.fetchUsersDecoded(slice); } catch { map = new Map(); }
+                    for (const [pk, ua] of map.entries()) {
+                      try {
+                        if (this.warmUsers.size >= 500) {
+                          const oldest = [...this.warmUsers.entries()].sort((a, b) => a[1].ts - b[1].ts)[0]?.[0];
+                          if (oldest) { try { await (this.warmUsers.get(oldest) as any)?.user?.unsubscribe?.(); } catch {} this.warmUsers.delete(oldest); }
+                        }
+                        this.warmUsers.set(pk, { ua, ts: Date.now() });
+                      } catch {}
+                    }
+                  }
+                  try { logger.info('drift.warmup.fallback_done', { warmed: this.warmUsers.size, cat: 'drift' }); } catch {}
+                } else {
+                  try { logger.info('drift.warmup.gpa_empty', { cat: 'drift' }); } catch {}
+                }
+              } catch {}
             }
           }
         } catch {}
@@ -597,13 +621,13 @@ export class DriftService {
       while (page < maxPages && fetched < totalLimit) {
         const remaining = totalLimit - fetched;
         const lmt = Math.min(pageSize, remaining);
-        const params: any = { encoding: 'base64', filters, limit: lmt };
+        const params: any = { encoding: 'base64', filters, limit: lmt, commitment: 'processed' };
         if (changedOnly && this.lastPrefetchSlot > 0) { (params as any).changedSinceSlot = Number(this.lastPrefetchSlot); }
         if (paginationKey) { (params as any).paginationKey = paginationKey; }
         const body: any = { jsonrpc: '2.0', id: 1, method: 'getProgramAccountsV2', params: [programId, params] };
 
         for (let attempt = 0; attempt < 4; attempt += 1) {
-          await acquireRpcSlots(Math.max(1, Math.ceil(lmt / 250)));
+          await acquireRpcSlots(1);
           const res: any = await withRpcTimeout(
             fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
             3000,
@@ -642,6 +666,53 @@ export class DriftService {
         }
         if (!paginationKey) break;
         page += 1;
+      }
+      try { this.lastPrefetchSlot = Number(await this.getReadConnection().getSlot('processed')); } catch {}
+    } catch {}
+    return out;
+  }
+
+  private async enumerateUserPubkeysViaHeliusGpaV2(limit: number, changedOnly = false): Promise<string[]> {
+    const out: string[] = [];
+    try {
+      await this.init();
+      const drift: any = this.client;
+      const conn: any = this.connection;
+      const endpoint: string = String((conn as any)?._rpcEndpoint || (conn as any)?.rpcEndpoint || '');
+      if (!/helius/i.test(endpoint)) return out;
+      const programId: string = String(drift?.program?.programId?.toBase58?.() || drift?.program?.programId || '');
+      if (!programId) return out;
+      const discr = this.computeAnchorDiscriminatorB58('User');
+      const filters: any[] = discr ? [{ memcmp: { offset: 0, bytes: discr } }] : [];
+      const driftCfg: any = ((CONFIG as any)?.drift || {});
+      const pageSize = Math.max(500, Math.min(10000, Number(driftCfg?.prefetchGpaPageSize ?? 2000)));
+      const totalLimit = Math.max(100, Math.min(200000, Number(limit || pageSize)));
+      const { acquireRpcSlots, withRpcTimeout } = await import('../utils/rpcLimiter.js');
+      let paginationKey: any = undefined;
+      let fetched = 0;
+      while (fetched < totalLimit) {
+        const remaining = totalLimit - fetched;
+        const lmt = Math.min(pageSize, remaining);
+        const params: any = { encoding: 'base64', filters, dataSlice: { offset: 0, length: 0 }, limit: lmt, commitment: 'processed' };
+        if (changedOnly && this.lastPrefetchSlot > 0) { (params as any).changedSinceSlot = Number(this.lastPrefetchSlot); }
+        if (paginationKey) { (params as any).paginationKey = paginationKey; }
+        const body: any = { jsonrpc: '2.0', id: 1, method: 'getProgramAccountsV2', params: [programId, params] };
+        await acquireRpcSlots(1);
+        const res: any = await withRpcTimeout(
+          fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+          3000,
+          'helius.gpa.keys'
+        );
+        const json = await res.json().catch(() => ({}));
+        const accounts = json?.result?.accounts || json?.result || [];
+        if (!Array.isArray(accounts) || accounts.length === 0) break;
+        for (const a of accounts) {
+          const pk = String(a?.pubkey || a?.account || '');
+          if (pk && out.length < totalLimit) { out.push(pk); fetched += 1; }
+        }
+        paginationKey = json?.result?.paginationKey || null;
+        try { logger.info('drift.warmup.enumerate_page', { count: accounts?.length || 0, total: out.length, hasMore: !!paginationKey, cat: 'drift' }); } catch {}
+        if (!paginationKey) break;
       }
       try { this.lastPrefetchSlot = Number(await this.getReadConnection().getSlot('processed')); } catch {}
     } catch {}
@@ -821,6 +892,8 @@ export class DriftService {
 
     if (this.prefetchTimer) { try { clearInterval(this.prefetchTimer); } catch {} }
     this.prefetchTimer = setInterval(() => { step().catch(() => {}); }, intervalMs);
+    // Run an immediate step to avoid waiting for the first interval
+    try { step().catch(() => {}); } catch {}
   }
 
   async sendRawTransaction(raw: Buffer | Uint8Array, opts?: any): Promise<string> {
