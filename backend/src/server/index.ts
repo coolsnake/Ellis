@@ -566,6 +566,25 @@ server.listen(CONFIG.port, () => {
   } catch {}
   // Start optional arb-rs stdout/stderr forwarding over WS
   try { setupRustLogForwarding(); } catch {}
+  // Auto warmup Drift infra on startup so prefetch/GPA begins before any bot
+  try {
+    const driftCfg: any = (CONFIG as any)?.drift || {};
+    const enabled = driftCfg?.warmupEnabled !== false;
+    if (enabled) {
+      const delayMs = Math.max(0, Number(driftCfg?.prefetchStartDelayMs ?? 4000));
+      setTimeout(() => {
+        import('../drift/client.js')
+          .then(async ({ DriftService }) => {
+            try {
+              const svc = DriftService.getInstance();
+              await (svc as any).warmup?.({ includeIdle: false, updateFrequency: 300, preferOrderSubscriber: true });
+            } catch {}
+          })
+          .catch(() => {});
+    }
+      , delayMs);
+    }
+  } catch {}
 });
 
 
