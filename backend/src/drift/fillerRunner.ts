@@ -353,9 +353,9 @@ export class DriftFillerRunner {
         } catch {}
         // Try userMap quickly, but keep very tight bound
         try {
-          const wrap = await Promise.race([
+            const wrap = await Promise.race([
             this.userMap.mustGet(takerPkStr),
-            new Promise((_, rej) => setTimeout(() => rej(new Error('UA_TIMEOUT')), 80)),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('UA_TIMEOUT')), 180)),
           ]).catch(() => null);
           const ua = (wrap as any)?.getUserAccount?.();
           if (ua) return ua;
@@ -496,7 +496,7 @@ export class DriftFillerRunner {
       }
       if (cachedBhEarly) {
         try {
-          fillIx = await withRpcTimeout(fillIxP as any, 110, 'fill_ix');
+          fillIx = await withRpcTimeout(fillIxP as any, 220, 'fill_ix');
           timings.fillPri = Date.now();
         } catch {
           // Fallback: minimal fill without makers

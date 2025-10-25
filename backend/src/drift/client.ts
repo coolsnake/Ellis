@@ -104,6 +104,13 @@ export class DriftService {
     }
     return this.readConnection;
   }
+  private getHeliusConn(): Connection {
+    const primary = this.connection!;
+    const read = this.getReadConnection();
+    const p = String((primary as any)?._rpcEndpoint || (primary as any)?.rpcEndpoint || '');
+    const r = String((read as any)?._rpcEndpoint || (read as any)?.rpcEndpoint || '');
+    return /helius/i.test(p) ? primary : (/helius/i.test(r) ? read : primary);
+  }
   private async toSpotNativeAmount(client: any, spotMarketIndex: number, uiAmount: number): Promise<number> {
     try {
       if (typeof client?.convertToSpotPrecision === 'function') {
@@ -404,10 +411,13 @@ export class DriftService {
         try { await this.startUserPrefetcher(infra.dlobSubscriber, infra.userMap); } catch {}
         // Optional GPA bootstrap on Helius endpoints
         try {
-          const rpcEndpoint: string = String((this.connection as any)?._rpcEndpoint || (this.connection as any)?.rpcEndpoint || '');
+          const heliusConn: any = this.getHeliusConn();
+          const rpcEndpoint: string = String(heliusConn?._rpcEndpoint || heliusConn?.rpcEndpoint || '');
           const doGpa = driftCfg?.warmupGpaBootstrap !== false && /helius/i.test(rpcEndpoint) && driftCfg?.prefetchEnabled !== false;
           if (doGpa) {
-            const max = Math.max(100, Number(driftCfg?.warmupGpaLimit ?? driftCfg?.prefetchGpaLimit ?? 1200));
+            const rawLim = driftCfg?.warmupGpaLimit ?? driftCfg?.prefetchGpaLimit ?? 1200;
+            const limNum = Number(rawLim);
+            const max = Math.max(100, Number.isFinite(limNum) ? limNum : 1200);
             try { logger.info('drift.warmup.gpa_start', { limit: max, cat: 'drift' }); } catch {}
             let decoded: Map<string, any> | null = null;
             try { decoded = await this.fetchUsersViaHeliusGpaV2(max, /*changedOnly*/ false); } catch { decoded = null; }
@@ -429,7 +439,7 @@ export class DriftService {
             } else {
               // Fallback: enumerate keys (cheap) then fetch via MACI in small chunks
               try {
-                const fastKeys = await this.enumerateUserPubkeysViaHeliusGpaV2(Math.min(1000, max), false);
+                const fastKeys = await this.enumerateUserPubkeysViaHeliusGpaV2(max, false);
                 if (Array.isArray(fastKeys) && fastKeys.length > 0) {
                   try { logger.info('drift.warmup.enumerate_ok', { keys: fastKeys.length, cat: 'drift' }); } catch {}
                   const chunkSize = Math.max(10, Number(driftCfg?.prefetchChunkSize ?? 20));
@@ -598,7 +608,7 @@ export class DriftService {
     try {
       await this.init();
       const drift: any = this.client;
-      const conn: any = this.connection;
+      const conn: any = this.getHeliusConn();
       const endpoint: string = String((conn as any)?._rpcEndpoint || (conn as any)?.rpcEndpoint || '');
       if (!/helius/i.test(endpoint)) return out;
       const programId: string = String(drift?.program?.programId?.toBase58?.() || drift?.program?.programId || '');
@@ -677,7 +687,7 @@ export class DriftService {
     try {
       await this.init();
       const drift: any = this.client;
-      const conn: any = this.connection;
+      const conn: any = this.getHeliusConn();
       const endpoint: string = String((conn as any)?._rpcEndpoint || (conn as any)?.rpcEndpoint || '');
       if (!/helius/i.test(endpoint)) return out;
       const programId: string = String(drift?.program?.programId?.toBase58?.() || drift?.program?.programId || '');
