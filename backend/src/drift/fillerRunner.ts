@@ -44,7 +44,7 @@ type FillerRuntimeState = {
 
 const FILLER_CAT = 'drift';
 const FILLER_SUBCAT = 'filler';
-const COOLDOWN_MS = 250;
+const COOLDOWN_MS = 100;
 
 export class DriftFillerRunner {
   private timer: any | null = null;
@@ -159,8 +159,8 @@ export class DriftFillerRunner {
     }
 
     this.sdk = await import('@drift-labs/sdk');
-    // Configure throttle early (conservative defaults to reduce timeouts/429s)
-    try { (svc as any).configureTxThrottle?.({ minGapMs: 100, maxInFlight: 4 }); } catch {}
+    // Configure throttle early (reduced gaps, higher concurrency for lower latency)
+    try { (svc as any).configureTxThrottle?.({ minGapMs: 30, maxInFlight: 8 }); } catch {}
 
     const tick = async () => {
       if (this.abort || this.inLoop) return;
@@ -208,7 +208,7 @@ export class DriftFillerRunner {
 
   private async initDiscovery(): Promise<void> {
     const svc = DriftService.getInstance();
-    const infra = await (svc as any).getSharedInfra({ includeIdle: false, updateFrequency: Math.max(150, Math.floor(this.state.loopIntervalMs / 2)), preferOrderSubscriber: true });
+    const infra = await (svc as any).getSharedInfra({ includeIdle: false, updateFrequency: Math.max(100, Math.floor(this.state.loopIntervalMs / 2)), preferOrderSubscriber: true });
     this.slotSubscriber = (infra as any).slotSubscriber;
     this.eventSubscriber = (infra as any).eventSubscriber;
     this.userMap = (infra as any).userMap;
@@ -413,23 +413,22 @@ export class DriftFillerRunner {
       const MAX_MICRO = 200_000;
       const priorityForSend = Math.min(MAX_MICRO, Math.max(floor, Math.floor(effectivePriority * (Number.isFinite(mulCfg) ? mulCfg : 1.0))));
       // Build all dependent instructions and (optionally) fetch blockhash in parallel to minimize delay
-      const updateFillerIxP = (async () => {
-        // Cooldown update filler to avoid high-latency path on every fill
+      const enableUpdateFiller = !!((CONFIG as any)?.drift?.enableUpdateFiller);
+      const updateBudgetMs = Math.max(0, Number(((CONFIG as any)?.drift?.updateIxBudgetMs) ?? 60));
+      const updateFillerIxP = enableUpdateFiller ? (async () => {
         const nowMs = Date.now();
         const cdMs = Math.max(10_000, Number(((CONFIG as any)?.drift?.updateFillerCooldownMs) ?? 30_000));
         const shouldUpdate = (nowMs - this.lastUpdateFillerMs) >= cdMs;
         if (!shouldUpdate) return null;
-        for (let i = 0; i < 2; i += 1) {
-          try {
-            if (typeof this.client.getUpdateFillerIx === 'function') {
-              const ix = await this.client.getUpdateFillerIx();
-              if (ix) return ix;
-            }
-          } catch {}
-          try { await new Promise((r) => setTimeout(r, 10)); } catch {}
-        }
+        try {
+          const { withRpcTimeout } = await import('../utils/rpcLimiter.js');
+          if (typeof this.client.getUpdateFillerIx === 'function') {
+            const ix = await withRpcTimeout(this.client.getUpdateFillerIx(), updateBudgetMs, 'upd_ix_fast');
+            return ix || null;
+          }
+        } catch {}
         return null;
-      })();
+      })() : Promise.resolve(null);
       const fillIxP = this.client.getFillPerpOrderIx(takerUserPk, takerUa, nodeToFill.node.order, makerInfos);
       const revertIxP = this.client.getRevertFillIx();
       // Build optional oracle update instructions (Pyth Pull) if enabled
@@ -461,7 +460,7 @@ export class DriftFillerRunner {
       }
       if (cachedBhEarly) {
         try {
-          fillIx = await withRpcTimeout(fillIxP as any, 180, 'fill_ix');
+          fillIx = await withRpcTimeout(fillIxP as any, 110, 'fill_ix');
           timings.fillPri = Date.now();
         } catch {
           // Fallback: minimal fill without makers
@@ -470,7 +469,7 @@ export class DriftFillerRunner {
             // Bound fallback as well to prevent multi-second stalls
             fillIx = await withRpcTimeout(
               this.client.getFillPerpOrderIx(takerUserPk, takerUa, nodeToFill.node.order, emptyMakers) as any,
-              280,
+              180,
               'fill_ix_fb'
             );
             usedNoMakersFallback = true;
@@ -481,9 +480,9 @@ export class DriftFillerRunner {
             return false;
           }
         }
-        try { updateFillerIx = await withRpcTimeout(updateFillerIxP as any, 200, 'upd_ix'); } catch { updateFillerIx = null; }
+        try { updateFillerIx = await withRpcTimeout(updateFillerIxP as any, updateBudgetMs, 'upd_ix'); } catch { updateFillerIx = null; }
         timings.upd = Date.now();
-        try { revertIx = await withRpcTimeout(revertIxP as any, 200, 'rev_ix'); } catch { revertIx = null; }
+        try { if (updateFillerIx) { revertIx = await withRpcTimeout(revertIxP as any, 110, 'rev_ix'); } else { revertIx = null; } } catch { revertIx = null; }
         timings.rev = Date.now();
         if (updateFillerIx) { this.lastUpdateFillerMs = Date.now(); }
       } else {
@@ -514,7 +513,8 @@ export class DriftFillerRunner {
       let plannedTipLamports: number | undefined = undefined;
       let plannedTipAccount: string | undefined = undefined;
       try {
-        if ((CONFIG as any)?.jito?.enabled) {
+        const allowTips = !!((CONFIG as any)?.jito?.allowTips);
+        if ((CONFIG as any)?.jito?.enabled && allowTips) {
           // Read from cache; only include tip if a valid BE tip account is known
           const cached = getCachedTipInfo();
           const tipPk = cached?.tipAccount;
@@ -539,23 +539,7 @@ export class DriftFillerRunner {
             } catch {}
           }
         }
-        // Ensure a tip exists when using Helius Sender; fall back to configured static tip accounts
-        if ((CONFIG as any)?.sender?.enabled) {
-          if (!(plannedTipLamports && plannedTipAccount)) {
-            const scfg = (CONFIG as any).sender || {};
-            const accounts: string[] = Array.isArray(scfg.tipAccounts) ? scfg.tipAccounts : [];
-            const chosen = accounts.length > 0 ? accounts[Math.floor(Math.random() * accounts.length)] : undefined;
-            if (chosen) {
-              const tipPk2 = new PublicKey(chosen);
-              const minTip = Math.max(1000, Number(scfg.minTipLamports || 1_000_000));
-              const tipIx2 = buildTipIx(this.client.wallet.publicKey, tipPk2, minTip);
-              // Prepend tip to any existing instructions
-              ixsFill = [tipIx2, ...ixsFill];
-              plannedTipLamports = minTip;
-              plannedTipAccount = tipPk2.toBase58();
-            }
-          }
-        }
+        // Do not enforce tips for Sender; Sender can be used without tipping per requirement
       } catch {}
       timings.tip = Date.now();
 
