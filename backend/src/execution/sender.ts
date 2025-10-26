@@ -179,7 +179,7 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
   const tx = new VersionedTransaction(msg);
   tx.sign([kp]);
   const wireBase64 = Buffer.from(tx.serialize()).toString('base64');
-  const sig = await withRpcLimit(() => connection.sendTransaction(tx, { skipPreflight: false, preflightCommitment: 'confirmed' }));
+  const sig = await withRpcLimit(() => connection.sendTransaction(tx, { skipPreflight: true, preflightCommitment: 'confirmed' }));
   await withRpcLimit(() => connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed'));
   try {
     const programs = realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId)));

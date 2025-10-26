@@ -591,14 +591,32 @@ export class DriftService {
   hasWarmRefStats(pk: string | PublicKey): boolean {
     return this.warmRefStats.has(String(pk));
   }
+  private base58Encode(bytes: Uint8Array): string {
+    const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+    if (!bytes || bytes.length === 0) return '';
+    const digits: number[] = [0];
+    for (let i = 0; i < bytes.length; i += 1) {
+      let carry = bytes[i];
+      for (let j = 0; j < digits.length; j += 1) {
+        const x = (digits[j] << 8) + carry;
+        digits[j] = x % 58;
+        carry = (x / 58) | 0;
+      }
+      while (carry > 0) {
+        digits.push(carry % 58);
+        carry = (carry / 58) | 0;
+      }
+    }
+    // deal with leading zeros
+    for (let k = 0; k < bytes.length && bytes[k] === 0; k += 1) digits.push(0);
+    return digits.reverse().map((d) => ALPHABET[d]).join('');
+  }
   private computeAnchorDiscriminatorB58(name: string): string | null {
     try {
       const label = `account:${name}`;
       const hash = createHash('sha256').update(label).digest();
       const first8 = hash.slice(0, 8);
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const bs58 = (require('bs58') as any)?.default || require('bs58');
-      return bs58.encode(first8);
+      return this.base58Encode(first8);
     } catch {
       return null;
     }
@@ -652,7 +670,19 @@ export class DriftService {
             await new Promise((r) => setTimeout(r, wait));
             continue;
           }
-          const json = await res.json().catch(() => ({}));
+          let json = await res.json().catch(() => ({}));
+          // Helius may not support getProgramAccountsV2 on some endpoints; fallback to getProgramAccounts
+          if ((json as any)?.error || (!Array.isArray(json?.result?.accounts) && !Array.isArray(json?.result))) {
+            try {
+              const bodyV1: any = { jsonrpc: '2.0', id: 1, method: 'getProgramAccounts', params: [programId, params] };
+              const res2: any = await withRpcTimeout(
+                fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(bodyV1) }),
+                3000,
+                'helius.gpa.page.fallback'
+              );
+              json = await res2.json().catch(() => ({}));
+            } catch {}
+          }
           const list = Array.isArray(json?.result?.accounts) ? json.result.accounts : (Array.isArray(json?.result) ? json.result : []);
           if (!Array.isArray(list) || list.length === 0) { page = maxPages; break; }
           for (const a of list) {
@@ -713,7 +743,19 @@ export class DriftService {
           3000,
           'helius.gpa.keys'
         );
-        const json = await res.json().catch(() => ({}));
+        let json = await res.json().catch(() => ({}));
+        // Fallback to getProgramAccounts if V2 unsupported
+        if ((json as any)?.error || (!Array.isArray(json?.result?.accounts) && !Array.isArray(json?.result))) {
+          try {
+            const bodyV1: any = { jsonrpc: '2.0', id: 1, method: 'getProgramAccounts', params: [programId, params] };
+            const res2: any = await withRpcTimeout(
+              fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(bodyV1) }),
+              3000,
+              'helius.gpa.keys.fallback'
+            );
+            json = await res2.json().catch(() => ({}));
+          } catch {}
+        }
         const accounts = json?.result?.accounts || json?.result || [];
         if (!Array.isArray(accounts) || accounts.length === 0) break;
         for (const a of accounts) {

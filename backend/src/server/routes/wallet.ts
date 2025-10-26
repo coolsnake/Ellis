@@ -66,8 +66,9 @@ export function createWalletRouter(io: SocketIOServer): Router {
       const { token, destination, amount } = req.body as { token: string; destination: string; amount: number };
       const kp = await ensureWallet(CONFIG.walletPath);
       if (!token || token.toUpperCase() === 'SOL') {
-        const connection = new (await import('@solana/web3.js')).Connection(CONFIG.rpcUrl, 'confirmed');
         const { LAMPORTS_PER_SOL, SystemProgram, Transaction, PublicKey, ComputeBudgetProgram } = await import('@solana/web3.js');
+        const { getConnection } = await import('../../wallet/wallet.js');
+        const connection = getConnection();
         const tx = new Transaction().add(
           SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: new PublicKey(destination), lamports: Math.round(amount * LAMPORTS_PER_SOL) })
         );
@@ -81,7 +82,7 @@ export function createWalletRouter(io: SocketIOServer): Router {
             ComputeBudgetProgram.setComputeUnitPrice({ microLamports: calculatedFees.priorityFee })
           );
         } catch {}
-        const sig = await connection.sendTransaction(tx, [kp]);
+        const sig = await connection.sendTransaction(tx, [kp], { skipPreflight: true });
         await connection.confirmTransaction(sig, 'confirmed');
         res.json({ signature: sig });
         try { addWalletHistory({ type: 'send', time: new Date().toISOString(), token: 'SOL', amount, destination, signature: sig }); } catch {}

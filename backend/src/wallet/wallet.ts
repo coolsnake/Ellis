@@ -14,6 +14,12 @@ import { logTxTrace } from '../utils/txTrace.js';
 const getBalancesCache: Record<string, { ts: number; data: { sol: number; tokens: Record<string, number> } | null; inFlight: Promise<{ sol: number; tokens: Record<string, number> }> | null }> = {};
 
 export function getConnection(): Connection {
+  // Reuse a single process-wide primary connection
+  // Lazily initialized to preserve startup cost
+  // Module-level cache
+  // eslint-disable-next-line @typescript-eslint/init-declarations
+  // @ts-ignore - hoisted initialization below
+  if ((getConnection as any).__PRIMARY_CONN) return (getConnection as any).__PRIMARY_CONN as Connection;
   const url = CONFIG.rpcUrl || clusterApiUrl('mainnet-beta');
   // Disable internal 429 retry and tag 429s for attribution
   const customFetch = async (info: any, init: any) => {
@@ -28,7 +34,9 @@ export function getConnection(): Connection {
     } catch {}
     return res as any;
   };
-  return new Connection(url, { commitment: 'confirmed', disableRetryOnRateLimit: true, fetch: customFetch } as any);
+  const conn = new Connection(url, { commitment: 'confirmed', disableRetryOnRateLimit: true, fetch: customFetch } as any);
+  (getConnection as any).__PRIMARY_CONN = conn;
+  return conn;
 }
 
 export async function generateAndSaveWallet(filePath: string): Promise<Keypair> {
@@ -203,7 +211,7 @@ export async function wrapSol(amountSol: number): Promise<string> {
   const tx = new Transaction();
   tx.add(SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: ata.address, lamports }));
   tx.add(createSyncNativeInstruction(ata.address));
-  const sig = await withRpcLimit(() => connection.sendTransaction(tx, [kp], { skipPreflight: false }));
+  const sig = await withRpcLimit(() => connection.sendTransaction(tx, [kp], { skipPreflight: true }));
   await withRpcLimit(() => connection.confirmTransaction(sig, 'confirmed'));
   return sig;
 }
@@ -214,7 +222,7 @@ export async function unwrapSol(): Promise<string> {
   const ata = await getOrCreateAssociatedTokenAccount(connection, kp, NATIVE_MINT, kp.publicKey);
   const tx = new Transaction();
   tx.add(createCloseAccountInstruction(ata.address, kp.publicKey, kp.publicKey));
-  const sig = await withRpcLimit(() => connection.sendTransaction(tx, [kp], { skipPreflight: false }));
+  const sig = await withRpcLimit(() => connection.sendTransaction(tx, [kp], { skipPreflight: true }));
   await withRpcLimit(() => connection.confirmTransaction(sig, 'confirmed'));
   return sig;
 }
@@ -250,7 +258,7 @@ export async function signAndSendSerializedTransaction(
     
     // Fallback to original versioned transaction
     tx.sign([signer]);
-    const sig = await withRpcLimit(() => connection.sendRawTransaction(tx.serialize(), { skipPreflight: false }));
+    const sig = await withRpcLimit(() => connection.sendRawTransaction(tx.serialize(), { skipPreflight: true }));
     await withRpcLimit(() => connection.confirmTransaction(sig, 'confirmed'));
     try {
       const id = Math.random().toString(36).slice(2,10);
