@@ -34,11 +34,37 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
           const layout = (rmod as any)?.Clmm?.PoolStateLayout || (rmod as any)?.CLMM?.POOL_STATE_LAYOUT || (rmod as any)?.PoolStateLayout;
           const state = layout && typeof layout.decode === 'function' ? layout.decode(acc.data) : null;
           if (state) {
-            // populate oracle if present in state
+            // resolve program id once for PDA derivations
+            let programId: any;
+            try { programId = new web3.PublicKey(hop.programId); } catch {
+              try { const { CONFIG } = await import('../../utils/config.js'); programId = new web3.PublicKey(String((CONFIG as any)?.raydium?.clmmProgram || '')); } catch {}
+            }
+            if (!programId) { try { programId = new web3.PublicKey('CAMMCzo5nKXjotvLkGQ6r1N1C8QXr8iY6pYwWf3V8mGk'); } catch {} }
+            // populate oracle if present in state; else derive via SDK/PDA
             try {
               const o = (state as any).oracle?.toBase58?.() || String((state as any).oracle || '');
               if (o && !hop.oracle) hop.oracle = o;
             } catch {}
+            if (!hop.oracle) {
+              try {
+                const util = (rmod as any)?.Clmm || (rmod as any)?.CLMM;
+                const getOracle = util?.getOracleAddress || util?.oraclePda || util?.getPdaOracle;
+                if (typeof getOracle === 'function') {
+                  const res = await getOracle({ programId, poolId: poolPk });
+                  const pk = (res && (res.publicKey || res)) || null;
+                  if (pk) hop.oracle = pk.toBase58?.() || String(pk);
+                }
+              } catch {}
+            }
+            if (!hop.oracle) {
+              try {
+                const [oPk] = (web3.PublicKey as any).findProgramAddressSync([
+                  Buffer.from('oracle'),
+                  poolPk.toBuffer(),
+                ], programId);
+                if (oPk) hop.oracle = oPk.toBase58?.() || String(oPk);
+              } catch {}
+            }
             // derive tick arrays using current tick and spacing
             const spacing = Number(hop.tickSpacing || (state as any).tickSpacing || (state as any).tick_spacing || 0);
             const curTick = Number((state as any).tickCurrent ?? (state as any).tick_current ?? 0);
@@ -47,14 +73,7 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
               const block = TICK_ARRAY_SIZE * spacing;
               const startLower = Math.floor((curTick - spacing) / block) * block;
               const startUpper = Math.floor((curTick + spacing) / block) * block;
-              // resolve program id
-              let programId: any;
-              try {
-                programId = new web3.PublicKey(hop.programId);
-              } catch {
-                try { const { CONFIG } = await import('../../utils/config.js'); programId = new web3.PublicKey(String((CONFIG as any)?.raydium?.clmmProgram || '')); } catch {}
-              }
-              if (!programId) programId = new web3.PublicKey('CAMMCzo5nKXjotvLkGQ6r1N1C8QXr8iY6pYwWf3V8mGk');
+              // programId resolved above
               let lowerPk: any = null; let upperPk: any = null;
               // Prefer SDK helper if available
               try {

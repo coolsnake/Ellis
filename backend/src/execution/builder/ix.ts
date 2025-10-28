@@ -370,7 +370,17 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     // As of newer DLMM IDLs, this account is required. Fail early if not derivable.
     if (!binArrayBitmapExtension) throw new Error('BIN_ARRAY_BITMAP_EXTENSION_DERIVE_FAILED');
     accounts.binArrayBitmapExtension = binArrayBitmapExtension;
-    if (typeof builder.accounts === 'function') builder = builder.accounts(accounts);
+
+    // Extend with host/referral fee handling and reserves when available
+    const acctBase: any = { ...accounts, hostFeeIn: null };
+    try {
+      if (hop.vaultA) acctBase.reserveX = toPublicKey(hop.vaultA as any);
+      if (hop.vaultB) acctBase.reserveY = toPublicKey(hop.vaultB as any);
+    } catch {}
+
+    // Prefer accountsPartial so optional nulls are honored
+    if (typeof (builder as any).accountsPartial === 'function') builder = (builder as any).accountsPartial(acctBase);
+    else if (typeof (builder as any).accounts === 'function') builder = (builder as any).accounts(acctBase);
     const ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
     if (ix) { try { logger.info('meteora.dlmm.swap.ok', { cat: 'tx' }); } catch {}; return [ix]; }
     try { logger.warn('meteora.dlmm.tsclient.swap.empty', { cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}

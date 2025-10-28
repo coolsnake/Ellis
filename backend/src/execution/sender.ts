@@ -30,41 +30,51 @@ function detectDexesFromPrograms(programIds: string[]): Array<'raydium' | 'orca'
 function toInstruction(ix: any): TransactionInstruction | null {
   try {
     if (!ix) return null;
-    // Fast-path: already a TransactionInstruction from our web3 copy
-    if (ix instanceof TransactionInstruction) return ix;
+    // Helper to normalize any PublicKey-like input (including foreign web3 copies)
+    const normalizePk = (v: any): PublicKey => {
+      if (v instanceof PublicKey) return v;
+      const inner = (v && (v.address || v.pubkey || v.pubKey || v.publicKey)) || v;
+      if (inner instanceof PublicKey) return inner;
+      // Try extracting raw bytes from BN-like internals first (avoid calling foreign toBase58/toBuffer)
+      try {
+        const maybeBn = (inner && (inner._bn || inner.bn || inner.value)) as any;
+        if (maybeBn && typeof maybeBn === 'object') {
+          if (typeof maybeBn.toArrayLike === 'function') {
+            const bytes = maybeBn.toArrayLike(Uint8Array, 'be', 32);
+            return new PublicKey(bytes);
+          }
+          if (typeof maybeBn.toArray === 'function') {
+            const arr = maybeBn.toArray('be', 32);
+            return new PublicKey(Uint8Array.from(arr));
+          }
+        }
+      } catch {}
+      // Try direct byte accessors
+      try { if (inner && typeof inner.toBytes === 'function') { return new PublicKey(inner.toBytes()); } } catch {}
+      try { if (inner && typeof inner.toBuffer === 'function') { return new PublicKey(inner.toBuffer()); } } catch {}
+      // Fallbacks
+      if (typeof inner === 'string') return new PublicKey(inner);
+      try { if (typeof (inner as any)?.toBase58 === 'function') return new PublicKey((inner as any).toBase58()); } catch {}
+      return new PublicKey(String(inner));
+    };
+    // If it's already a TransactionInstruction (possibly even from our web3), clone into our TI with normalized keys
+    if (ix instanceof TransactionInstruction) {
+      const src: any = ix;
+      const keysSrc: any[] = Array.isArray(src.keys) ? src.keys : Array.from(src.keys || []);
+      return new TransactionInstruction({
+        programId: normalizePk(src.programId),
+        keys: keysSrc.map((k: any) => ({ pubkey: normalizePk(k?.pubkey ?? k?.pubKey ?? k?.address), isSigner: !!k?.isSigner, isWritable: !!k?.isWritable })),
+        data: Buffer.isBuffer(src.data) ? src.data : (src.data instanceof Uint8Array ? Buffer.from(src.data) : Buffer.from([])),
+      });
+    }
     const ctorName: string | undefined = (ix && ix.constructor && ix.constructor.name) ? ix.constructor.name : undefined;
     // If it's a TI from a different web3.js copy, coerce by shape
     if (ctorName === 'TransactionInstruction' && typeof (ix as any).programId !== 'undefined') {
       const foreign = ix as any;
-      const coercePkForeign = (v: any): PublicKey => {
-        if (v instanceof PublicKey) return v;
-        const inner = (v && (v.address || v.pubkey || v.pubKey || v.publicKey)) || v;
-        if (inner instanceof PublicKey) return inner;
-        // Try BN-like path without invoking foreign PublicKey methods
-        try {
-          const bn = (inner && (inner._bn || inner.bn || inner.value)) as any;
-          if (bn && typeof bn === 'object') {
-            if (typeof bn.toArrayLike === 'function') {
-              const bytes = bn.toArrayLike(Uint8Array, 'be', 32);
-              return new PublicKey(bytes);
-            }
-            if (typeof bn.toArray === 'function') {
-              const arr = bn.toArray('be', 32);
-              return new PublicKey(Uint8Array.from(arr));
-            }
-          }
-        } catch {}
-        // Fallbacks that may call foreign methods; wrap in try to avoid crashing
-        try { if (inner && typeof inner.toBytes === 'function') { const b = inner.toBytes(); return new PublicKey(b); } } catch {}
-        try { if (inner && typeof inner.toBuffer === 'function') { const b = inner.toBuffer(); return new PublicKey(b); } } catch {}
-        try { if (inner && typeof inner.toBase58 === 'function') { return new PublicKey(inner.toBase58()); } } catch {}
-        if (typeof inner === 'string') return new PublicKey(inner);
-        return new PublicKey(String(inner));
-      };
-      const programId = coercePkForeign(foreign.programId);
+      const programId = normalizePk(foreign.programId);
       const keysSrc: any[] = Array.isArray(foreign.keys) ? foreign.keys : Array.from(foreign.keys || []);
       const keys = keysSrc.map((k: any) => ({
-        pubkey: coercePkForeign(k?.pubkey ?? k?.pubKey ?? k?.address),
+        pubkey: normalizePk(k?.pubkey ?? k?.pubKey ?? k?.address),
         isSigner: !!k?.isSigner,
         isWritable: !!k?.isWritable,
       }));
@@ -79,43 +89,10 @@ function toInstruction(ix: any): TransactionInstruction | null {
     const hasShape = typeof (ix as any)?.programId !== 'undefined' && (Array.isArray(keysLike) || (keysLike && typeof keysLike.length === 'number')) && typeof ix === 'object';
     if (!hasShape) return null;
     // Attempt to coerce plain object shapes into a real TransactionInstruction
-    const coercePk = (v: any): PublicKey => {
-      try {
-        if (v instanceof PublicKey) return v;
-        // Some SDKs wrap PublicKey under various props
-        const inner = (v && (v.address || v.pubkey || v.pubKey || v.publicKey)) || v;
-        if (inner instanceof PublicKey) return inner;
-        // Try extracting raw bytes from BN-like internals first to avoid foreign toBase58()
-        try {
-          const maybeBn = (inner && (inner._bn || inner.bn || inner.value)) as any;
-          if (maybeBn && typeof maybeBn === 'object') {
-            if (typeof maybeBn.toArrayLike === 'function') {
-              const bytes = maybeBn.toArrayLike(Uint8Array, 'be', 32);
-              return new PublicKey(bytes);
-            }
-            if (typeof maybeBn.toArray === 'function') {
-              const arr = maybeBn.toArray('be', 32);
-              return new PublicKey(Uint8Array.from(arr));
-            }
-          }
-        } catch {}
-        // Try direct byte accessors
-        try { if (inner && typeof inner.toBytes === 'function') { const b = inner.toBytes(); return new PublicKey(b); } } catch {}
-        try { if (inner && typeof inner.toBuffer === 'function') { const b = inner.toBuffer(); return new PublicKey(b); } } catch {}
-        // Fallbacks: string representations
-        if (typeof inner === 'string') return new PublicKey(inner);
-        if (typeof inner?.toBase58 === 'function') return new PublicKey(inner.toBase58());
-        // Last resort
-        return new PublicKey(String(inner));
-      } catch (e) {
-        // Throw through to caller; upstream will catch and drop this ix
-        throw e;
-      }
-    };
-    const programId = coercePk((ix as any).programId);
+    const programId = normalizePk((ix as any).programId);
     const keyArr: any[] = Array.isArray(keysLike) ? keysLike : Array.from(keysLike as any);
     const keys = keyArr.map((k: any) => ({
-      pubkey: coercePk(k?.pubkey ?? k?.pubKey ?? k?.address),
+      pubkey: normalizePk(k?.pubkey ?? k?.pubKey ?? k?.address),
       isSigner: !!k?.isSigner,
       isWritable: !!k?.isWritable,
     }));
