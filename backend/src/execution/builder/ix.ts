@@ -355,7 +355,9 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     const minOut = new BN(String(hop.minOutRaw ?? 0n));
     const methods = (program as any)?.methods || {};
     let builder: any = null;
-    if (typeof methods.swapExactIn === 'function') builder = methods.swapExactIn(amountIn, minOut);
+    // Prefer swap2 with RemainingAccountsInfo for broader compatibility (bin arrays, token-2022)
+    if (typeof methods.swap2 === 'function') builder = methods.swap2(amountIn, minOut, { slices: [] });
+    else if (typeof methods.swapExactIn === 'function') builder = methods.swapExactIn(amountIn, minOut);
     else if (typeof methods.swap === 'function') builder = methods.swap(amountIn, minOut);
     if (!builder) throw new Error('DLMM_SWAP_METHOD_MISSING');
 
@@ -387,9 +389,64 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       if (hop.vaultB) acctBase.reserveY = toPublicKey(hop.vaultB as any);
     } catch {}
 
+    // Add token mints, programs and oracle if available/derivable
+    try {
+      const tokenProg = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+      acctBase.tokenXProgram = tokenProg;
+      acctBase.tokenYProgram = tokenProg;
+    } catch {}
+    try {
+      const getTokensMintFromPoolAddress = (DLMM as any)?.getTokensMintFromPoolAddress;
+      if (getTokensMintFromPoolAddress) {
+        const mints = await getTokensMintFromPoolAddress(connection, poolPk).catch(() => null as any);
+        const x = (mints as any)?.tokenXMint || (mints as any)?.x || (mints as any)?.a;
+        const y = (mints as any)?.tokenYMint || (mints as any)?.y || (mints as any)?.b;
+        if (x) acctBase.tokenXMint = (x as any).publicKey || x;
+        if (y) acctBase.tokenYMint = (y as any).publicKey || y;
+      }
+    } catch {}
+    try {
+      const deriveOracle = (DLMM as any)?.deriveOracle;
+      if (deriveOracle) {
+        const orc = await deriveOracle(programId, poolPk).catch(() => null as any);
+        if (orc) acctBase.oracle = (orc as any).publicKey || orc;
+      }
+    } catch {}
+
     // Prefer accountsPartial so optional nulls are honored
     if (typeof (builder as any).accountsPartial === 'function') builder = (builder as any).accountsPartial(acctBase);
     else if (typeof (builder as any).accounts === 'function') builder = (builder as any).accounts(acctBase);
+
+    // Supply remaining accounts for bin arrays when swap2 is used
+    try {
+      if (typeof methods.swap2 === 'function') {
+        // Determine direction: swapForY means input mint equals tokenY
+        let swapForY = false;
+        try {
+          const inMint = toPublicKey(hop.inputMint);
+          const y = acctBase.tokenYMint ? (acctBase.tokenYMint.publicKey || acctBase.tokenYMint) : undefined;
+          if (y && inMint && typeof (y as any).equals === 'function') swapForY = (y as any).equals(inMint);
+        } catch {}
+        const getBinArrayForSwap = (DLMM as any)?.getBinArrayForSwap;
+        if (getBinArrayForSwap && acctBase?.lbPair && acctBase?.oracle) {
+          try {
+            const dlmmProgram = program; // pass through program wrapper context via 'this' binding pattern if needed
+            // Some implementations require constructing a class wrapper; fallback to coverage
+          } catch {}
+        }
+        const getBinArrayKeysCoverage = (DLMM as any)?.getBinArrayKeysCoverage || (DLMM as any)?.getBinArrayAccountMetasCoverage;
+        if (getBinArrayKeysCoverage) {
+          try {
+            const cov = await getBinArrayKeysCoverage(programId, poolPk).catch(() => null as any);
+            const metas: any[] = (cov as any)?.metas || (cov as any)?.accountMetas || [];
+            const binMetas = metas.filter((m: any) => m && (m.name?.includes('bin_array') || m.name?.includes('binArray')) && (m.pubkey || m.publicKey || m.address)).map((m: any) => ({ pubkey: m.pubkey || m.publicKey || m.address, isSigner: false, isWritable: true }));
+            if (Array.isArray(binMetas) && binMetas.length && typeof (builder as any).remainingAccounts === 'function') {
+              builder = (builder as any).remainingAccounts(binMetas);
+            }
+          } catch {}
+        }
+      }
+    } catch {}
     const ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
     if (ix) { try { logger.info('meteora.dlmm.swap.ok', { cat: 'tx' }); } catch {}; return [ix]; }
     try { logger.warn('meteora.dlmm.tsclient.swap.empty', { cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
@@ -475,7 +532,6 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     // Final validation after derivation attempt
     const missing: string[] = [];
     if (!hop.tickArrayLower || !hop.tickArrayUpper) missing.push('tickArrayLower/Upper');
-    if (!hop.oracle) missing.push('oracle');
     if (missing.length) throw new Error(`RAYDIUM_CLMM_BUILD_FAILED: missing ${missing.join(',')}`);
 
     const { ClmmInstrument } = await import('@raydium-io/raydium-sdk-v2');
@@ -492,7 +548,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
 
     // Minimal poolInfo/poolKeys for swapBaseIn; for real use, prefer full keys via SDK helper if available in version
     const poolInfo = { id: poolId, programId, mintA: toPublicKey(hop.inputMint), mintB: toPublicKey(hop.outputMint), config: {} } as any;
-    const poolKeys = {
+    const poolKeys: any = {
       id: poolId,
       programId,
       mintA: toPublicKey(hop.inputMint),
@@ -500,10 +556,12 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       vault: { A: toPublicKey(hop.vaultA as any), B: toPublicKey(hop.vaultB as any) },
       authority: toPublicKey((CONFIG.raydium as any)?.clmmAuthority || PublicKey.default.toBase58()),
       observationId,
-      tickArrayLower: toPublicKey(hop.tickArrayLower as any),
-      tickArrayUpper: toPublicKey(hop.tickArrayUpper as any),
-    } as any;
+    };
+    try { if (hop.tickArrayLower) (poolKeys as any).tickArrayLower = toPublicKey(hop.tickArrayLower); } catch {}
+    try { if (hop.tickArrayUpper) (poolKeys as any).tickArrayUpper = toPublicKey(hop.tickArrayUpper); } catch {}
 
+    const remaining: any[] = [];
+    try { if (hop.oracle) remaining.push({ pubkey: toPublicKey(hop.oracle), isWritable: false, isSigner: false }); } catch {}
     const res = (ClmmInstrument as any).makeSwapBaseInInstructions({
       poolInfo,
       poolKeys,
@@ -513,7 +571,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       amountIn: hop.amountInRaw,
       amountOutMin: hop.minOutRaw,
       sqrtPriceLimitX64: hop.sqrtPriceLimitX64 ?? 0n,
-      remainingAccounts: [],
+      remainingAccounts: remaining,
     });
     const ixs = Array.isArray(res?.instructions) ? res.instructions : (res?.innerTransaction ? res.innerTransaction.instructions : []);
     if (ixs && ixs.length) return ixs as any[];
