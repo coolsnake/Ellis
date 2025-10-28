@@ -72,47 +72,47 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
                 if (oPk) hop.oracle = oPk.toBase58?.() || String(oPk);
               } catch {}
             }
-            // derive tick arrays using SDK helpers (TICK_ARRAY_SIZE = 60)
-            const spacing = Number(hop.tickSpacing || (state as any).tickSpacing || (state as any).tick_spacing || 0);
-            // Prefer explicit tickCurrent; else approximate from sqrtPrice
-            let curTick = Number((state as any).tickCurrent ?? (state as any).tick_current ?? NaN);
-            if (!Number.isFinite(curTick)) {
-              try {
-                const sqrt = Number((state as any).sqrtPriceX64 ?? (state as any).sqrt_price_x64 ?? (state as any).sqrtPrice ?? 0);
-                if (sqrt > 0 && Number.isFinite(sqrt) && spacing > 0) {
-                  const ratio = sqrt / Math.pow(2, 64);
-                  const approxPrice = ratio * ratio;
-                  const tickApprox = Math.floor(Math.log(approxPrice) / Math.log(1.0001));
-                  if (Number.isFinite(tickApprox)) curTick = tickApprox;
+            // Derive tick arrays using Raydium SDK compute info and bitmaps (TICK_ARRAY_SIZE = 60)
+            try {
+              const sdk: any = await import('@raydium-io/raydium-sdk-v2');
+              const { Raydium, PoolUtils } = sdk as any;
+              const TickUtils = (sdk as any)?.TickUtils || (sdk as any)?.CLMM?.TickUtils || (sdk as any)?.Clmm?.TickUtils;
+              const getPdaTickArrayAddress = (sdk as any)?.getPdaTickArrayAddress || (sdk as any)?.CLMM?.getPdaTickArrayAddress || (sdk as any)?.Clmm?.getPdaTickArrayAddress;
+              const { getConnection } = await import('../../wallet/wallet.js');
+              const rconn = getConnection();
+              const ray = await Raydium.load({ connection: rconn, disableFeatureCheck: true, disableLoadToken: true });
+              const apiRes = await (ray as any).api.fetchPoolById({ ids: id }).catch(() => null as any);
+              const poolInfo = Array.isArray(apiRes?.data) ? apiRes.data.find((x: any) => String(x?.id || '') === id) : (Array.isArray(apiRes) ? apiRes[0] : null);
+              if (poolInfo) {
+                const comp = await (PoolUtils as any).fetchComputeClmmInfo({ connection: ray.connection, poolInfo });
+                const tickCurrent = Number(comp.tickCurrent ?? comp.tick_current);
+                const spacing = Number(comp.tickSpacing ?? comp.tick_spacing);
+                const start = TickUtils?.getTickArrayStartIndexByTick ? TickUtils.getTickArrayStartIndexByTick(tickCurrent, spacing) : (Math.floor(tickCurrent / (60 * spacing)) * (60 * spacing));
+                const initArr: number[] = (TickUtils as any).getInitializedTickArrayInRange(
+                  comp.tickArrayBitmapArray ?? comp.tickArrayBitmap ?? [],
+                  comp.exTickArrayBitmap ?? comp.exTickarrayBitmap ?? [],
+                  spacing,
+                  start,
+                  7,
+                ) || [start];
+                const lowers = initArr.filter((s: number) => s <= start).sort((a: number, b: number) => b - a);
+                const uppers = initArr.filter((s: number) => s >= start).sort((a: number, b: number) => a - b);
+                const lowerStart = lowers[0] ?? start;
+                const upperStart = uppers[0] ?? start;
+                const pid = comp.programId || programId;
+                const ppk = comp.id || poolPk;
+                if (!hop.tickArrayLower) {
+                  const lr = getPdaTickArrayAddress?.(pid, ppk, lowerStart);
+                  const lpk = (lr && (lr.publicKey || lr)) || null;
+                  if (lpk) hop.tickArrayLower = lpk.toBase58?.() || String(lpk);
                 }
-              } catch {}
-            }
-            if (Number.isFinite(spacing) && spacing > 0 && Number.isFinite(curTick)) {
-              try {
-                const sdk: any = await import('@raydium-io/raydium-sdk-v2');
-                const TickUtils = (sdk as any)?.TickUtils || (sdk as any)?.CLMM?.TickUtils || (sdk as any)?.Clmm?.TickUtils;
-                const getPdaTickArrayAddress = (sdk as any)?.getPdaTickArrayAddress || (sdk as any)?.CLMM?.getPdaTickArrayAddress || (sdk as any)?.Clmm?.getPdaTickArrayAddress;
-                const start = TickUtils?.getTickArrayStartIndexByTick ? TickUtils.getTickArrayStartIndexByTick(curTick, spacing) : (Math.floor(curTick / (60 * spacing)) * (60 * spacing));
-                const size = Number((TickUtils as any)?.TICK_ARRAY_SIZE ?? 60);
-                const span = size * spacing;
-                const lowerStart = start - span;
-                const upperStart = start + span;
-                try {
-                  if (!hop.tickArrayLower) {
-                    const rL = getPdaTickArrayAddress?.(programId, poolPk, lowerStart);
-                    const pkL = (rL && (rL.publicKey || rL)) || null;
-                    if (pkL) hop.tickArrayLower = pkL.toBase58?.() || String(pkL);
-                  }
-                } catch {}
-                try {
-                  if (!hop.tickArrayUpper) {
-                    const rU = getPdaTickArrayAddress?.(programId, poolPk, upperStart);
-                    const pkU = (rU && (rU.publicKey || rU)) || null;
-                    if (pkU) hop.tickArrayUpper = pkU.toBase58?.() || String(pkU);
-                  }
-                } catch {}
-              } catch {}
-            }
+                if (!hop.tickArrayUpper) {
+                  const ur = getPdaTickArrayAddress?.(pid, ppk, upperStart);
+                  const upk = (ur && (ur.publicKey || ur)) || null;
+                  if (upk) hop.tickArrayUpper = upk.toBase58?.() || String(upk);
+                }
+              }
+            } catch {}
           }
         }
       } catch {}

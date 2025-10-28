@@ -32,9 +32,9 @@ function toInstruction(ix: any): TransactionInstruction | null {
     if (!ix) return null;
     // Helper to normalize any PublicKey-like input (including foreign web3 copies)
     const normalizePk = (v: any): PublicKey => {
-      if (v instanceof PublicKey) return v;
+        if (v instanceof PublicKey) return v;
       const inner = (v && (v.address || v.pubkey || v.pubKey || v.publicKey)) || v;
-      if (inner instanceof PublicKey) return inner;
+        if (inner instanceof PublicKey) return inner;
       // Try extracting raw bytes from BN-like internals first (avoid calling foreign toBase58/toBuffer)
       try {
         const maybeBn = (inner && (inner._bn || inner.bn || inner.value)) as any;
@@ -53,9 +53,9 @@ function toInstruction(ix: any): TransactionInstruction | null {
       try { if (inner && typeof inner.toBytes === 'function') { return new PublicKey(inner.toBytes()); } } catch {}
       try { if (inner && typeof inner.toBuffer === 'function') { return new PublicKey(inner.toBuffer()); } } catch {}
       // Fallbacks
-      if (typeof inner === 'string') return new PublicKey(inner);
+        if (typeof inner === 'string') return new PublicKey(inner);
       try { if (typeof (inner as any)?.toBase58 === 'function') return new PublicKey((inner as any).toBase58()); } catch {}
-      return new PublicKey(String(inner));
+        return new PublicKey(String(inner));
     };
     // If it's already a TransactionInstruction (possibly even from our web3), clone into our TI with normalized keys
     if (ix instanceof TransactionInstruction) {

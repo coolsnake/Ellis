@@ -60,27 +60,35 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
   try {
     const connection = getConnection();
     const kp = await ensureWallet(CONFIG.walletPath);
-    const { swapInstructions, setWhirlpoolsConfig, setNativeMintWrappingStrategy } = await import('@orca-so/whirlpools');
+    const { createSolanaRpc } = await import('@solana/kit');
+    const { swapInstructions, setWhirlpoolsConfig, setNativeMintWrappingStrategy, setPayerFromBytes } = await import('@orca-so/whirlpools');
     try {
+      const rpc = createSolanaRpc(CONFIG.rpcUrl);
+      await setPayerFromBytes(kp.secretKey);
       await setWhirlpoolsConfig('solanaMainnet');
       setNativeMintWrappingStrategy('ata');
-    } catch {}
-    const poolPk = toPublicKey(hop.poolId);
-    const bps = computeSlippageBps(hop.amountInRaw, hop.minOutRaw);
-    try { logger.info('orca.whirlpool.program', { cat: 'tx', ctx: { programId: 'whirlpool(high-level)' } as any }); } catch {}
-    try { logger.info('orca.whirlpool.ctx.ok', { cat: 'tx' }); } catch {}
-    try { logger.info('orca.whirlpool.client.ok', { cat: 'tx' }); } catch {}
-    try { logger.info('orca.whirlpool.pool.prepare', { cat: 'tx', ctx: { pool: poolPk?.toBase58?.() || String(poolPk) } as any }); } catch {}
-    const inputMint = toPublicKey(hop.inputMint);
-    try { logger.info('orca.whirlpool.slippage', { cat: 'tx', ctx: { amountInRaw: String(hop.amountInRaw ?? 0n), minOutRaw: String(hop.minOutRaw ?? 0n), bps } as any }); } catch {}
-    try { logger.info('orca.whirlpool.input', { cat: 'tx', ctx: { inputMint: inputMint?.toBase58?.() || String(inputMint), amountIn: String(hop.amountInRaw ?? 0n) } as any }); } catch {}
-    const rpc: any = connection as any; // @solana/kit Rpc-compatible methods are present on Connection
-    const params: any = { inputAmount: BigInt(String(hop.amountInRaw ?? 0n)), mint: inputMint.toBase58?.() || String(inputMint) };
-    const res = await swapInstructions(rpc, params, poolPk.toBase58?.() || String(poolPk), bps, { address: kp.publicKey } as any);
-    try { logger.info('orca.whirlpool.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: String((res as any)?.quote?.estimatedAmountOut ?? 0) } as any }); } catch {}
-    const out = Array.isArray((res as any)?.instructions) ? (res as any).instructions : [];
-    try { logger.info('orca.whirlpool.ix.ready', { cat: 'tx', ctx: { count: Array.isArray(out) ? out.length : 0 } as any }); } catch {}
-    return out;
+      const poolAddr = String(hop.poolId);
+      const inputMint = String(hop.inputMint);
+      const bps = computeSlippageBps(hop.amountInRaw, hop.minOutRaw);
+      try { logger.info('orca.whirlpool.program', { cat: 'tx', ctx: { programId: 'whirlpool(high-level)' } as any }); } catch {}
+      try { logger.info('orca.whirlpool.ctx.ok', { cat: 'tx' }); } catch {}
+      try { logger.info('orca.whirlpool.client.ok', { cat: 'tx' }); } catch {}
+      try { logger.info('orca.whirlpool.pool.prepare', { cat: 'tx', ctx: { pool: poolAddr } as any }); } catch {}
+      try { logger.info('orca.whirlpool.slippage', { cat: 'tx', ctx: { amountInRaw: String(hop.amountInRaw ?? 0n), minOutRaw: String(hop.minOutRaw ?? 0n), bps } as any }); } catch {}
+      try { logger.info('orca.whirlpool.input', { cat: 'tx', ctx: { inputMint, amountIn: String(hop.amountInRaw ?? 0n) } as any }); } catch {}
+      const res: any = await swapInstructions(
+        rpc as any,
+        { inputAmount: BigInt(String(hop.amountInRaw ?? 0n)), mint: inputMint } as any,
+        poolAddr,
+        bps
+      );
+      try { logger.info('orca.whirlpool.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: String((res as any)?.quote?.estimatedAmountOut ?? 0) } as any }); } catch {}
+      const out = Array.isArray((res as any)?.instructions) ? (res as any).instructions : [];
+      try { logger.info('orca.whirlpool.ix.ready', { cat: 'tx', ctx: { count: Array.isArray(out) ? out.length : 0 } as any }); } catch {}
+      return out;
+    } catch (inner) {
+      throw inner;
+    }
   } catch (e) {
     try { logger.warn('ix.build orca.clmm fallback', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
     // Shape a minimal, coercible instruction to aid diagnostics in preflight
@@ -390,31 +398,22 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     if (typeof (builder as any).accountsPartial === 'function') builder = (builder as any).accountsPartial(acctBase);
     else if (typeof (builder as any).accounts === 'function') builder = (builder as any).accounts(acctBase);
 
-    // Supply remaining accounts for bin arrays when swap2 is used
+    // Supply remaining accounts for bin arrays when swap2 is used, using documented helpers
     try {
-      if (typeof methods.swap2 === 'function') {
-        // Determine direction: swapForY means input mint equals tokenY
-        let swapForY = false;
-        try {
-          const inMint = toPublicKey(hop.inputMint);
-          const y = acctBase.tokenYMint ? (acctBase.tokenYMint.publicKey || acctBase.tokenYMint) : undefined;
-          if (y && inMint && typeof (y as any).equals === 'function') swapForY = (y as any).equals(inMint);
-        } catch {}
-        const getBinArrayForSwap = (DLMM as any)?.getBinArrayForSwap;
-        if (getBinArrayForSwap && acctBase?.lbPair && acctBase?.oracle) {
+      if (typeof (methods as any)?.swap2 === 'function') {
+        const getBounds = (DLMM as any)?.getBinArrayLowerUpperBinId;
+        const getMetas = (DLMM as any)?.getBinArrayAccountMetasCoverage;
+        if (getBounds && getMetas) {
           try {
-            const dlmmProgram = program; // pass through program wrapper context via 'this' binding pattern if needed
-            // Some implementations require constructing a class wrapper; fallback to coverage
-          } catch {}
-        }
-        const getBinArrayKeysCoverage = (DLMM as any)?.getBinArrayKeysCoverage || (DLMM as any)?.getBinArrayAccountMetasCoverage;
-        if (getBinArrayKeysCoverage) {
-          try {
-            const cov = await getBinArrayKeysCoverage(programId, poolPk).catch(() => null as any);
-            const metas: any[] = (cov as any)?.metas || (cov as any)?.accountMetas || [];
-            const binMetas = metas.filter((m: any) => m && (m.name?.includes('bin_array') || m.name?.includes('binArray')) && (m.pubkey || m.publicKey || m.address)).map((m: any) => ({ pubkey: m.pubkey || m.publicKey || m.address, isSigner: false, isWritable: true }));
-            if (Array.isArray(binMetas) && binMetas.length && typeof (builder as any).remainingAccounts === 'function') {
-              builder = (builder as any).remainingAccounts(binMetas);
+            const bounds = await getBounds(connection, poolPk).catch(() => null as any);
+            const lo = Number(bounds?.lowerBinId);
+            const hi = Number(bounds?.upperBinId);
+            if (Number.isFinite(lo) && Number.isFinite(hi)) {
+              const BN = (await import('bn.js')).default as any;
+              const metas = getMetas(new BN(lo), new BN(hi), poolPk, programId) || [];
+              if (Array.isArray(metas) && metas.length && typeof (builder as any).remainingAccounts === 'function') {
+                builder = (builder as any).remainingAccounts(metas);
+              }
             }
           } catch {}
         }
@@ -467,43 +466,42 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
               const o = (state as any).oracle?.toBase58?.() || String((state as any).oracle || '');
               if (o && !hop.oracle) hop.oracle = o;
             } catch {}
-            const spacing = Number(hop.tickSpacing || (state as any).tickSpacing || (state as any).tick_spacing || 0);
-            let curTick = Number((state as any).tickCurrent ?? (state as any).tick_current ?? NaN);
-            if (!Number.isFinite(curTick)) {
-              try {
-                const sqrt = Number((state as any).sqrtPriceX64 ?? (state as any).sqrt_price_x64 ?? (state as any).sqrtPrice ?? 0);
-                if (sqrt > 0 && Number.isFinite(sqrt) && spacing > 0) {
-                  const ratio = sqrt / Math.pow(2, 64);
-                  const approxPrice = ratio * ratio;
-                  const tickApprox = Math.floor(Math.log(approxPrice) / Math.log(1.0001));
-                  if (Number.isFinite(tickApprox)) curTick = tickApprox;
-                }
-              } catch {}
-            }
-            if (Number.isFinite(spacing) && spacing > 0 && Number.isFinite(curTick)) {
-              let programId: any;
-              try { programId = new web3.PublicKey(hop.programId); } catch { programId = new web3.PublicKey((CONFIG.raydium as any)?.clmmProgram || 'CAMMCzo5nKXjotvLkGQ6r1N1C8QXr8iY6pYwWf3V8mGk'); }
-              try {
-                const sdk: any = await import('@raydium-io/raydium-sdk-v2');
-                const TickUtils = (sdk as any)?.TickUtils || (sdk as any)?.CLMM?.TickUtils || (sdk as any)?.Clmm?.TickUtils;
-                const getPdaTickArrayAddress = (sdk as any)?.getPdaTickArrayAddress || (sdk as any)?.CLMM?.getPdaTickArrayAddress || (sdk as any)?.Clmm?.getPdaTickArrayAddress;
-                const start = TickUtils?.getTickArrayStartIndexByTick ? TickUtils.getTickArrayStartIndexByTick(curTick, spacing) : (Math.floor(curTick / (60 * spacing)) * (60 * spacing));
-                const size = Number((TickUtils as any)?.TICK_ARRAY_SIZE ?? 60);
-                const span = size * spacing;
-                const lowerStart = start - span;
-                const upperStart = start + span;
+            try {
+              const { Raydium, PoolUtils } = rmod as any;
+              const TickUtils = (rmod as any)?.TickUtils || (rmod as any)?.CLMM?.TickUtils || (rmod as any)?.Clmm?.TickUtils;
+              const getPdaTickArrayAddress = (rmod as any)?.getPdaTickArrayAddress || (rmod as any)?.CLMM?.getPdaTickArrayAddress || (rmod as any)?.Clmm?.getPdaTickArrayAddress;
+              const ray = await Raydium.load({ connection: conn, disableFeatureCheck: true, disableLoadToken: true });
+              const apiRes = await (ray as any).api.fetchPoolById({ ids: poolPk.toBase58?.() || String(poolPk) }).catch(() => null as any);
+              const poolInfo = Array.isArray(apiRes?.data) ? apiRes.data.find((x: any) => String(x?.id || '') === (poolPk.toBase58?.() || String(poolPk))) : (Array.isArray(apiRes) ? apiRes[0] : null);
+              if (poolInfo) {
+                const comp = await (PoolUtils as any).fetchComputeClmmInfo({ connection: ray.connection, poolInfo });
+                const programIdPk = comp.programId || new web3.PublicKey(hop.programId || (CONFIG.raydium as any)?.clmmProgram);
+                const tickCurrent = Number(comp.tickCurrent ?? comp.tick_current);
+                const spacing = Number(comp.tickSpacing ?? comp.tick_spacing);
+                const start = TickUtils?.getTickArrayStartIndexByTick ? TickUtils.getTickArrayStartIndexByTick(tickCurrent, spacing) : (Math.floor(tickCurrent / (60 * spacing)) * (60 * spacing));
+                const initArr: number[] = (TickUtils as any).getInitializedTickArrayInRange(
+                  comp.tickArrayBitmapArray ?? comp.tickArrayBitmap ?? [],
+                  comp.exTickArrayBitmap ?? comp.exTickarrayBitmap ?? [],
+                  spacing,
+                  start,
+                  7,
+                ) || [start];
+                const lowers = initArr.filter((s: number) => s <= start).sort((a: number, b: number) => b - a);
+                const uppers = initArr.filter((s: number) => s >= start).sort((a: number, b: number) => a - b);
+                const lowerStart = lowers[0] ?? start;
+                const upperStart = uppers[0] ?? start;
                 if (!hop.tickArrayLower) {
-                  const rL = getPdaTickArrayAddress?.(programId, poolPk, lowerStart);
-                  const pkL = (rL && (rL.publicKey || rL)) || null;
-                  if (pkL) hop.tickArrayLower = pkL.toBase58?.() || String(pkL);
+                  const lr = getPdaTickArrayAddress?.(programIdPk, poolPk, lowerStart);
+                  const lpk = (lr && (lr.publicKey || lr)) || null;
+                  if (lpk) hop.tickArrayLower = lpk.toBase58?.() || String(lpk);
                 }
                 if (!hop.tickArrayUpper) {
-                  const rU = getPdaTickArrayAddress?.(programId, poolPk, upperStart);
-                  const pkU = (rU && (rU.publicKey || rU)) || null;
-                  if (pkU) hop.tickArrayUpper = pkU.toBase58?.() || String(pkU);
+                  const ur = getPdaTickArrayAddress?.(programIdPk, poolPk, upperStart);
+                  const upk = (ur && (ur.publicKey || ur)) || null;
+                  if (upk) hop.tickArrayUpper = upk.toBase58?.() || String(upk);
                 }
-              } catch {}
-            }
+              }
+            } catch {}
           }
         }
       } catch {}
@@ -613,7 +611,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
 
     const { getAssociatedPoolKeys, makeSwapFixedInInstruction } = await import('@raydium-io/raydium-sdk-v2');
     const kp = await ensureWallet(CONFIG.walletPath);
-    const programId = toPublicKey(hop.programId, (CONFIG.raydium?.ammV4Program as any));
+    const ammProgramId = toPublicKey(hop.programId, (CONFIG.raydium?.ammV4Program as any));
     const marketId = toPublicKey(hop.market);
     const marketProgramId = toPublicKey(hop.serumProgramId);
 
@@ -629,7 +627,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       quoteMint: toPublicKey(hop.outputMint),
       baseDecimals: Number(hop.inputDecimals),
       quoteDecimals: Number(hop.outputDecimals),
-      programId,
+      programId: ammProgramId,
       marketProgramId,
     });
 
@@ -675,7 +673,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
             poolKeys = {
               ...poolKeys,
               id: toPublicKey(hop.poolId),
-              programId,
+              programId: ammProgramId,
               authority: authority || poolKeys?.authority,
               openOrders: openOrders || poolKeys?.openOrders,
               targetOrders: targetOrders || poolKeys?.targetOrders,
@@ -717,7 +715,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       };
       // Coerce remaining PublicKey fields
       (poolKeys as any).id = ensurePk((poolKeys as any).id);
-      (poolKeys as any).programId = ensurePk((poolKeys as any).programId);
+      (poolKeys as any).programId = ensurePk(ammProgramId);
       (poolKeys as any).authority = ensurePk((poolKeys as any).authority);
       (poolKeys as any).openOrders = ensurePk((poolKeys as any).openOrders);
       (poolKeys as any).targetOrders = ensurePk((poolKeys as any).targetOrders);
@@ -802,7 +800,8 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
 
       const coerceOne = (ixAny: any): TransactionInstruction => {
         if (ixAny instanceof TransactionInstruction) return ixAny;
-        const programId = normalizePkLoose(ixAny?.programId);
+        // Force our known Raydium AMM program id to avoid foreign PublicKey/BN issues
+        const programId = ammProgramId;
         const keysLike = ixAny?.keys;
         let keyArr: any[] = [];
         try {
