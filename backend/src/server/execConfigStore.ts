@@ -26,7 +26,7 @@ const defaults: ExecConfig = {
   computeUnitPriceMicroLamports: 1000,
   createAtasInTx: true,
   dynamicCompute: true,
-  maxTxSizeBytes: 1200,
+  maxTxSizeBytes: 0,
   wrapSolInTx: true,
   lookupTableAddresses: undefined,
 };

@@ -30,6 +30,13 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
         const conn = getConnection();
         const poolPk = new web3.PublicKey(id);
         const acc = await withRpcLimit(() => conn.getAccountInfo(poolPk));
+        try {
+          // Prefer on-chain account owner as authoritative program id
+          if (acc?.owner && typeof (acc.owner as any).toBase58 === 'function') {
+            const ownerPid = (acc.owner as any).toBase58();
+            if (ownerPid && (!hop.programId || hop.programId !== ownerPid)) hop.programId = ownerPid;
+          }
+        } catch {}
         if (acc?.data?.length) {
           const layout = (rmod as any)?.Clmm?.PoolStateLayout || (rmod as any)?.CLMM?.POOL_STATE_LAYOUT || (rmod as any)?.PoolStateLayout;
           const state = layout && typeof layout.decode === 'function' ? layout.decode(acc.data) : null;
@@ -67,43 +74,61 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
             }
             // derive tick arrays using current tick and spacing
             const spacing = Number(hop.tickSpacing || (state as any).tickSpacing || (state as any).tick_spacing || 0);
-            const curTick = Number((state as any).tickCurrent ?? (state as any).tick_current ?? 0);
+            // Prefer explicit tickCurrent when present; otherwise approximate from sqrtPriceX64 if exposed
+            let curTick = Number((state as any).tickCurrent ?? (state as any).tick_current ?? NaN);
+            if (!Number.isFinite(curTick)) {
+              try {
+                const sqrt = Number((state as any).sqrtPriceX64 ?? (state as any).sqrt_price_x64 ?? (state as any).sqrtPrice ?? 0);
+                if (sqrt > 0 && Number.isFinite(sqrt) && spacing > 0) {
+                  const ratio = sqrt / Math.pow(2, 64);
+                  // tick ≈ log_1.0001(price); price ~ ratio^2 adjusted by decimals; we only need bucket index
+                  const approxPrice = ratio * ratio;
+                  const tickApprox = Math.floor(Math.log(approxPrice) / Math.log(1.0001));
+                  if (Number.isFinite(tickApprox)) curTick = tickApprox;
+                }
+              } catch {}
+            }
             if (Number.isFinite(spacing) && spacing > 0 && Number.isFinite(curTick)) {
               const TICK_ARRAY_SIZE = 88; // Raydium CLMM standard
               const block = TICK_ARRAY_SIZE * spacing;
-              const startLower = Math.floor((curTick - spacing) / block) * block;
-              const startUpper = Math.floor((curTick + spacing) / block) * block;
+              const center = Math.floor(curTick / block) * block;
               // programId resolved above
               let lowerPk: any = null; let upperPk: any = null;
-              // Prefer SDK helper if available
-              try {
-                const util = (rmod as any)?.Clmm || (rmod as any)?.CLMM;
-                const getPda = util?.getTickArrayAddress || util?.tickArrayPda || util?.getPdaTickArray;
-                if (typeof getPda === 'function') {
-                  const resL = await getPda({ programId, poolId: poolPk, startIndex: startLower });
-                  const resU = await getPda({ programId, poolId: poolPk, startIndex: startUpper });
-                  // some SDKs return { publicKey }, others return PublicKey
-                  lowerPk = (resL && (resL.publicKey || resL)) || null;
-                  upperPk = (resU && (resU.publicKey || resU)) || null;
-                }
-              } catch {}
-              // Fallback manual PDA derivation
-              if (!lowerPk || !upperPk) {
-                const i32le = (n: number) => { const b = Buffer.alloc(4); b.writeInt32LE(n, 0); return b; };
+              const util = (rmod as any)?.Clmm || (rmod as any)?.CLMM;
+              const getPda = util?.getTickArrayAddress || util?.tickArrayPda || util?.getPdaTickArray;
+              const deriveAddr = async (startIdx: number): Promise<any | null> => {
                 try {
-                  const [l] = web3.PublicKey.findProgramAddressSync([
-                    Buffer.from('tick_array'),
-                    poolPk.toBuffer(),
-                    i32le(startLower),
-                  ], programId);
-                  const [u] = web3.PublicKey.findProgramAddressSync([
-                    Buffer.from('tick_array'),
-                    poolPk.toBuffer(),
-                    i32le(startUpper),
-                  ], programId);
-                  lowerPk = lowerPk || l;
-                  upperPk = upperPk || u;
+                  if (typeof getPda === 'function') {
+                    const res = await getPda({ programId, poolId: poolPk, startIndex: startIdx });
+                    const pk = (res && (res.publicKey || res)) || null;
+                    if (pk) return pk;
+                  }
                 } catch {}
+                try {
+                  const i32le = (n: number) => { const b = Buffer.alloc(4); b.writeInt32LE(n, 0); return b; };
+                  const [addr] = web3.PublicKey.findProgramAddressSync([
+                    Buffer.from('tick_array'),
+                    poolPk.toBuffer(),
+                    i32le(startIdx),
+                  ], programId);
+                  return addr;
+                } catch { return null; }
+              };
+              const exists = async (pk: any): Promise<boolean> => {
+                try { const info = await withRpcLimit(() => conn.getAccountInfo(pk)); return !!(info && info.data && info.data.length > 0); } catch { return false; }
+              };
+              // Find nearest lower and upper arrays that exist, scanning up to +/-3 blocks
+              const candidates: number[] = [0, -1, 1, -2, 2, -3, 3].map(d => center + d * block);
+              for (const s of candidates) {
+                if (!lowerPk && s <= curTick) {
+                  const pk = await deriveAddr(s);
+                  if (pk && await exists(pk)) lowerPk = pk;
+                }
+                if (!upperPk && s >= curTick) {
+                  const pk = await deriveAddr(s);
+                  if (pk && await exists(pk)) upperPk = pk;
+                }
+                if (lowerPk && upperPk) break;
               }
               if (!hop.tickArrayLower && lowerPk) hop.tickArrayLower = lowerPk.toBase58?.() || String(lowerPk);
               if (!hop.tickArrayUpper && upperPk) hop.tickArrayUpper = upperPk.toBase58?.() || String(upperPk);
