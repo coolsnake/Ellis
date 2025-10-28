@@ -265,6 +265,9 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           attempts.push(() => deriveBinArrayBitmapExtension(program, poolPk));
           attempts.push(() => deriveBinArrayBitmapExtension(connection, programId, poolPk));
           attempts.push(() => deriveBinArrayBitmapExtension(connection, poolPk, programId));
+          attempts.push(() => deriveBinArrayBitmapExtension({ programId, lbPair: poolPk }));
+          attempts.push(() => deriveBinArrayBitmapExtension({ program, lbPair: poolPk }));
+          attempts.push(() => deriveBinArrayBitmapExtension({ connection, programId, lbPair: poolPk }));
         }
         // Fallbacks via coverage helpers, if available
         const getKeysCoverage = (DLMM as any)?.getBinArrayKeysCoverage || (DLMM as any)?.getBinArrayAccountMetasCoverage;
@@ -278,12 +281,69 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
             const found = metas.find((m: any) => (m?.name === 'binArrayBitmapExtension') && (m?.pubkey || m?.publicKey || m?.address));
             return found?.pubkey || found?.publicKey || found?.address;
           });
+          attempts.push(async () => {
+            const res = await getKeysCoverage(connection, programId, poolPk);
+            if (!res) return undefined;
+            if ((res as any)?.binArrayBitmapExtension) return (res as any).binArrayBitmapExtension;
+            if ((res as any)?.accounts?.binArrayBitmapExtension) return (res as any).accounts.binArrayBitmapExtension;
+            const metas: any[] = (res as any)?.metas || (res as any)?.accountMetas || [];
+            const found = metas.find((m: any) => (m?.name === 'binArrayBitmapExtension') && (m?.pubkey || m?.publicKey || m?.address));
+            return found?.pubkey || found?.publicKey || found?.address;
+          });
+          attempts.push(async () => {
+            const res = await getKeysCoverage({ programId, lbPair: poolPk });
+            if (!res) return undefined;
+            return (res as any)?.binArrayBitmapExtension || (res as any)?.accounts?.binArrayBitmapExtension;
+          });
+          attempts.push(async () => {
+            const res = await getKeysCoverage({ connection, programId, lbPair: poolPk });
+            if (!res) return undefined;
+            return (res as any)?.binArrayBitmapExtension || (res as any)?.accounts?.binArrayBitmapExtension;
+          });
+        }
+        const chunkFetch = (DLMM as any)?.chunkedFetchMultipleBinArrayBitmapExtensionAccount;
+        if (chunkFetch) {
+          attempts.push(async () => {
+            const arr = await chunkFetch(connection, programId, [poolPk]);
+            const first = Array.isArray(arr) ? arr[0] : undefined;
+            return first?.publicKey || first?.address || first;
+          });
+          attempts.push(async () => {
+            const arr = await chunkFetch(programId, [poolPk]);
+            const first = Array.isArray(arr) ? arr[0] : undefined;
+            return first?.publicKey || first?.address || first;
+          });
+          attempts.push(async () => {
+            const arr = await chunkFetch({ connection, programId, lbPairs: [poolPk] });
+            const first = Array.isArray(arr) ? arr[0] : undefined;
+            return first?.publicKey || first?.address || first;
+          });
         }
         for (const fn of attempts) {
           try {
             const val = await fn();
             const pk = coercePk(val);
             if (pk) { binArrayBitmapExtension = pk; break; }
+          } catch {}
+        }
+        // Last resort: compute PDA via common seed candidates
+        if (!binArrayBitmapExtension) {
+          try {
+            const seedCandidates = [
+              'bin_array_bitmap_extension',
+              'binarray_bitmap_extension',
+              'bin_array_bitmap_ext',
+              'binarray_bitmap_ext',
+            ];
+            for (const s of seedCandidates) {
+              try {
+                const [addr] = await (PublicKey as any).findProgramAddress([
+                  Buffer.from(s),
+                  poolPk.toBuffer(),
+                ], programId);
+                if (addr) { binArrayBitmapExtension = addr; break; }
+              } catch {}
+            }
           } catch {}
         }
         if (binArrayBitmapExtension) { try { logger.info('meteora.dlmm.derive.ext.ok', { cat: 'tx', ctx: { ext: binArrayBitmapExtension?.toBase58?.() } as any }); } catch {} }
@@ -333,12 +393,68 @@ export function maybeCreateAtas(hop: DirectHop, create: boolean): any[] {
 export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]> {
   try { logger.debug('ix.build raydium.clmm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
   try {
-    // Validate required CLMM fields
+    // Ensure required CLMM fields; derive oracle/tick arrays on the fly if missing
+    const preMissing: string[] = [];
+    if (!hop.inputMint) preMissing.push('inputMint');
+    if (!hop.outputMint) preMissing.push('outputMint');
+    if (!hop.userSourceAta) preMissing.push('userSourceAta');
+    if (!hop.userDestAta) preMissing.push('userDestAta');
+    if (preMissing.length) throw new Error(`RAYDIUM_CLMM_BUILD_FAILED: missing ${preMissing.join(',')}`);
+
+    if (!hop.tickArrayLower || !hop.tickArrayUpper || !hop.oracle) {
+      try {
+        const web3: any = await import('@solana/web3.js');
+        const { getConnection } = await import('../../wallet/wallet.js');
+        const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+        const rmod: any = await import('@raydium-io/raydium-sdk-v2').catch(() => null);
+        const poolPk = toPublicKey(hop.poolId);
+        const conn = getConnection();
+        const acc = await withRpcLimit(() => conn.getAccountInfo(poolPk));
+        if (acc?.data?.length) {
+          const layout = (rmod as any)?.Clmm?.PoolStateLayout || (rmod as any)?.CLMM?.POOL_STATE_LAYOUT || (rmod as any)?.PoolStateLayout;
+          const state = layout && typeof layout.decode === 'function' ? layout.decode(acc.data) : null;
+          if (state) {
+            try {
+              const o = (state as any).oracle?.toBase58?.() || String((state as any).oracle || '');
+              if (o && !hop.oracle) hop.oracle = o;
+            } catch {}
+            const spacing = Number(hop.tickSpacing || (state as any).tickSpacing || (state as any).tick_spacing || 0);
+            const curTick = Number((state as any).tickCurrent ?? (state as any).tick_current ?? 0);
+            if (Number.isFinite(spacing) && spacing > 0 && Number.isFinite(curTick)) {
+              const TICK_ARRAY_SIZE = 88;
+              const block = TICK_ARRAY_SIZE * spacing;
+              const startLower = Math.floor((curTick - spacing) / block) * block;
+              const startUpper = Math.floor((curTick + spacing) / block) * block;
+              let programId: any;
+              try { programId = new web3.PublicKey(hop.programId); } catch { programId = new web3.PublicKey((CONFIG.raydium as any)?.clmmProgram || 'CAMMCzo5nKXjotvLkGQ6r1N1C8QXr8iY6pYwWf3V8mGk'); }
+              let lowerPk: any = null; let upperPk: any = null;
+              try {
+                const util = (rmod as any)?.Clmm || (rmod as any)?.CLMM;
+                const getPda = util?.getTickArrayAddress || util?.tickArrayPda || util?.getPdaTickArray;
+                if (typeof getPda === 'function') {
+                  const resL = await getPda({ programId, poolId: poolPk, startIndex: startLower });
+                  const resU = await getPda({ programId, poolId: poolPk, startIndex: startUpper });
+                  lowerPk = (resL && (resL.publicKey || resL)) || null;
+                  upperPk = (resU && (resU.publicKey || resU)) || null;
+                }
+              } catch {}
+              if (!lowerPk || !upperPk) {
+                const i32le = (n: number) => { const b = Buffer.alloc(4); b.writeInt32LE(n, 0); return b; };
+                try {
+                  const [l] = web3.PublicKey.findProgramAddressSync([Buffer.from('tick_array'), poolPk.toBuffer(), i32le(startLower)], programId);
+                  const [u] = web3.PublicKey.findProgramAddressSync([Buffer.from('tick_array'), poolPk.toBuffer(), i32le(startUpper)], programId);
+                  lowerPk = lowerPk || l; upperPk = upperPk || u;
+                } catch {}
+              }
+              if (!hop.tickArrayLower && lowerPk) hop.tickArrayLower = lowerPk.toBase58?.() || String(lowerPk);
+              if (!hop.tickArrayUpper && upperPk) hop.tickArrayUpper = upperPk.toBase58?.() || String(upperPk);
+            }
+          }
+        }
+      } catch {}
+    }
+    // Final validation after derivation attempt
     const missing: string[] = [];
-    if (!hop.inputMint) missing.push('inputMint');
-    if (!hop.outputMint) missing.push('outputMint');
-    if (!hop.userSourceAta) missing.push('userSourceAta');
-    if (!hop.userDestAta) missing.push('userDestAta');
     if (!hop.tickArrayLower || !hop.tickArrayUpper) missing.push('tickArrayLower/Upper');
     if (!hop.oracle) missing.push('oracle');
     if (missing.length) throw new Error(`RAYDIUM_CLMM_BUILD_FAILED: missing ${missing.join(',')}`);

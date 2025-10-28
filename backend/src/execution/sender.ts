@@ -82,12 +82,30 @@ function toInstruction(ix: any): TransactionInstruction | null {
     const coercePk = (v: any): PublicKey => {
       try {
         if (v instanceof PublicKey) return v;
-        // Some SDKs wrap PublicKey under .address
-        const inner = (v && (v.address || v.pubkey || v.pubKey)) || v;
+        // Some SDKs wrap PublicKey under various props
+        const inner = (v && (v.address || v.pubkey || v.pubKey || v.publicKey)) || v;
         if (inner instanceof PublicKey) return inner;
-        if (inner && typeof inner.toBase58 === 'function') return new PublicKey(inner.toBase58());
+        // Try extracting raw bytes from BN-like internals first to avoid foreign toBase58()
+        try {
+          const maybeBn = (inner && (inner._bn || inner.bn || inner.value)) as any;
+          if (maybeBn && typeof maybeBn === 'object') {
+            if (typeof maybeBn.toArrayLike === 'function') {
+              const bytes = maybeBn.toArrayLike(Uint8Array, 'be', 32);
+              return new PublicKey(bytes);
+            }
+            if (typeof maybeBn.toArray === 'function') {
+              const arr = maybeBn.toArray('be', 32);
+              return new PublicKey(Uint8Array.from(arr));
+            }
+          }
+        } catch {}
+        // Try direct byte accessors
+        try { if (inner && typeof inner.toBytes === 'function') { const b = inner.toBytes(); return new PublicKey(b); } } catch {}
+        try { if (inner && typeof inner.toBuffer === 'function') { const b = inner.toBuffer(); return new PublicKey(b); } } catch {}
+        // Fallbacks: string representations
         if (typeof inner === 'string') return new PublicKey(inner);
-        // Last resort: stringify
+        if (typeof inner?.toBase58 === 'function') return new PublicKey(inner.toBase58());
+        // Last resort
         return new PublicKey(String(inner));
       } catch (e) {
         // Throw through to caller; upstream will catch and drop this ix

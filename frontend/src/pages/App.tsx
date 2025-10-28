@@ -814,7 +814,7 @@ export const App: React.FC = () => {
         const action = (parts[1] || '').toLowerCase();
 
         const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-        const USDT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
+        const USDT = 'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN';
 
         const pickPoolId = async (dex: 'raydium'|'orca'|'meteora'): Promise<string | null> => {
           const resp = await fetch(`${apiBase}/arb/pools/${dex}?sort=tvl`);
