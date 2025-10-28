@@ -60,78 +60,27 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
   try {
     const connection = getConnection();
     const kp = await ensureWallet(CONFIG.walletPath);
-    const { WhirlpoolContext, buildWhirlpoolClient, swapQuoteByInputToken, SwapUtils, toTx } = await import('@orca-so/whirlpools-sdk');
-    try { logger.info('orca.whirlpool.import.ok', { cat: 'tx', ctx: { haveContext: !!WhirlpoolContext, haveClient: !!buildWhirlpoolClient, haveQuoteFn: !!swapQuoteByInputToken, haveSwapUtils: !!SwapUtils, haveToTx: !!toTx } as any }); } catch {}
-    const BN = (await import('bn.js')).default as any;
-    const { Percentage } = await import('@orca-so/common-sdk');
-    const dummyWallet: any = { publicKey: kp.publicKey, signTransaction: async (tx: any) => tx, signAllTransactions: async (txs: any[]) => txs };
-    const programId = toPublicKey(hop.programId, (CONFIG.orca?.programId as any));
-    try { logger.info('orca.whirlpool.program', { cat: 'tx', ctx: { programId: programId?.toBase58?.() || String(programId) } as any }); } catch {}
-    const ctx = (WhirlpoolContext as any).from(connection as any, dummyWallet, programId);
-    try { logger.info('orca.whirlpool.ctx.ok', { cat: 'tx' }); } catch {}
-    const client = (buildWhirlpoolClient as any)(ctx);
-    try { logger.info('orca.whirlpool.client.ok', { cat: 'tx' }); } catch {}
+    const { swapInstructions, setWhirlpoolsConfig, setNativeMintWrappingStrategy } = await import('@orca-so/whirlpools');
+    try {
+      await setWhirlpoolsConfig('solanaMainnet');
+      setNativeMintWrappingStrategy('ata');
+    } catch {}
     const poolPk = toPublicKey(hop.poolId);
-    try { logger.info('orca.whirlpool.pool.prepare', { cat: 'tx', ctx: { pool: poolPk?.toBase58?.() || String(poolPk) } as any }); } catch {}
-    const pool = await client.getPool(poolPk);
-    try { logger.info('orca.whirlpool.pool.ok', { cat: 'tx' }); } catch {}
-    const inputMint = toPublicKey(hop.inputMint);
     const bps = computeSlippageBps(hop.amountInRaw, hop.minOutRaw);
-    const slippage = (Percentage as any).fromFraction(bps, 10000);
+    try { logger.info('orca.whirlpool.program', { cat: 'tx', ctx: { programId: 'whirlpool(high-level)' } as any }); } catch {}
+    try { logger.info('orca.whirlpool.ctx.ok', { cat: 'tx' }); } catch {}
+    try { logger.info('orca.whirlpool.client.ok', { cat: 'tx' }); } catch {}
+    try { logger.info('orca.whirlpool.pool.prepare', { cat: 'tx', ctx: { pool: poolPk?.toBase58?.() || String(poolPk) } as any }); } catch {}
+    const inputMint = toPublicKey(hop.inputMint);
     try { logger.info('orca.whirlpool.slippage', { cat: 'tx', ctx: { amountInRaw: String(hop.amountInRaw ?? 0n), minOutRaw: String(hop.minOutRaw ?? 0n), bps } as any }); } catch {}
-    const amountInBn = new BN(String(hop.amountInRaw ?? 0n));
-    try { logger.info('orca.whirlpool.input', { cat: 'tx', ctx: { inputMint: inputMint?.toBase58?.() || String(inputMint), amountIn: amountInBn?.toString?.() } as any }); } catch {}
-    const quote = await (swapQuoteByInputToken as any)(pool, inputMint, amountInBn, slippage, ctx.program.programId, ctx.fetcher, true);
-    try {
-      const est = (quote as any)?.otherAmount ?? (quote as any)?.estimatedAmountOut ?? 0;
-      logger.info('orca.whirlpool.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: String(est) } as any });
-    } catch {}
-    const params = (SwapUtils as any).getSwapParamsFromQuote(
-      quote,
-      ctx,
-      pool,
-      toPublicKey(hop.userSourceAta),
-      toPublicKey(hop.userDestAta),
-      kp.publicKey,
-    );
-    try { if (hop.sqrtPriceLimitX64 && params && ('sqrtPriceLimit' in (params as any))) { (params as any).sqrtPriceLimit = hop.sqrtPriceLimitX64; } } catch {}
-    try {
-      const lim = (params as any)?.sqrtPriceLimit ?? 0;
-      logger.info('orca.whirlpool.params.ok', { cat: 'tx', ctx: { hasLimit: !!lim, sqrtPriceLimitX64: String(lim) } as any });
-    } catch {}
-    const txb = await pool.swap(params);
-    try { logger.info('orca.whirlpool.swap.builder.ok', { cat: 'tx' }); } catch {}
-    // The SDK returns a TransactionBuilder; compress to Instruction shape
-    const built = (txb && typeof (txb as any).compressIx === 'function') ? (txb as any).compressIx(true) : txb;
-    try {
-      const count = Array.isArray((built as any)?.instructions) ? (built as any).instructions.length : 0;
-      logger.info('orca.whirlpool.tx.build.ok', { cat: 'tx', ctx: { instructionCount: count } as any });
-    } catch {}
-    // Robustly unwrap various SDK return shapes into raw TransactionInstructions
-    const unwrapIxs = (val: any): any[] => {
-      try {
-        if (!val) return [];
-        // Direct TransactionInstruction
-        if (val instanceof TransactionInstruction) return [val];
-        // Plain TI-shaped object
-        if (val && typeof val === 'object' && (val as any).programId && ((Array.isArray((val as any).keys)) || (typeof (val as any).keys?.length === 'number'))) {
-          return [val];
-        }
-        // Common shapes
-        if (Array.isArray((val as any).instructions)) return (val as any).instructions;
-        if ((val as any).innerTransaction && Array.isArray((val as any).innerTransaction.instructions)) return (val as any).innerTransaction.instructions;
-        if (Array.isArray((val as any).innerTransactions) && (val as any).innerTransactions.length) {
-          const flat: any[] = [];
-          for (const it of (val as any).innerTransactions) if (it && Array.isArray(it.instructions)) flat.push(...it.instructions);
-          return flat;
-        }
-      } catch {}
-      return [];
-    };
-    const raw = unwrapIxs(built);
-    const out = (raw && raw.length) ? raw : (built && (built as any).instructions ? (built as any).instructions : []);
+    try { logger.info('orca.whirlpool.input', { cat: 'tx', ctx: { inputMint: inputMint?.toBase58?.() || String(inputMint), amountIn: String(hop.amountInRaw ?? 0n) } as any }); } catch {}
+    const rpc: any = connection as any; // @solana/kit Rpc-compatible methods are present on Connection
+    const params: any = { inputAmount: BigInt(String(hop.amountInRaw ?? 0n)), mint: inputMint.toBase58?.() || String(inputMint) };
+    const res = await swapInstructions(rpc, params, poolPk.toBase58?.() || String(poolPk), bps, { address: kp.publicKey } as any);
+    try { logger.info('orca.whirlpool.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: String((res as any)?.quote?.estimatedAmountOut ?? 0) } as any }); } catch {}
+    const out = Array.isArray((res as any)?.instructions) ? (res as any).instructions : [];
     try { logger.info('orca.whirlpool.ix.ready', { cat: 'tx', ctx: { count: Array.isArray(out) ? out.length : 0 } as any }); } catch {}
-    return out || [];
+    return out;
   } catch (e) {
     try { logger.warn('ix.build orca.clmm fallback', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
     // Shape a minimal, coercible instruction to aid diagnostics in preflight
@@ -376,7 +325,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         const acc = await connection.getAccountInfo(binArrayBitmapExtension);
         bitmapOwnerOk = !!acc && acc.owner && acc.owner.equals && acc.owner.equals(programId);
         if (bitmapOwnerOk) {
-          accounts.binArrayBitmapExtension = binArrayBitmapExtension;
+    accounts.binArrayBitmapExtension = binArrayBitmapExtension;
         } else {
           try { logger.warn('meteora.dlmm.ext.skip_wrong_owner', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { owner: acc?.owner?.toBase58?.(), expected: programId?.toBase58?.() } }); } catch {}
         }
@@ -413,6 +362,20 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         const y = (mints as any)?.tokenYMint || (mints as any)?.y || (mints as any)?.b;
         if (x) acctBase.tokenXMint = (x as any).publicKey || x;
         if (y) acctBase.tokenYMint = (y as any).publicKey || y;
+      }
+    } catch {}
+    // Derive reserves if not already provided
+    try {
+      const deriveReserve = (DLMM as any)?.deriveReserve;
+      if (typeof deriveReserve === 'function') {
+        if (!acctBase.reserveX) {
+          const rx = await deriveReserve(programId, poolPk, true).catch(() => null as any);
+          if (rx) acctBase.reserveX = (rx as any).publicKey || rx;
+        }
+        if (!acctBase.reserveY) {
+          const ry = await deriveReserve(programId, poolPk, false).catch(() => null as any);
+          if (ry) acctBase.reserveY = (ry as any).publicKey || ry;
+        }
       }
     } catch {}
     try {
@@ -505,35 +468,41 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
               if (o && !hop.oracle) hop.oracle = o;
             } catch {}
             const spacing = Number(hop.tickSpacing || (state as any).tickSpacing || (state as any).tick_spacing || 0);
-            const curTick = Number((state as any).tickCurrent ?? (state as any).tick_current ?? 0);
-            if (Number.isFinite(spacing) && spacing > 0 && Number.isFinite(curTick)) {
-              const TICK_ARRAY_SIZE = 88;
-              const block = TICK_ARRAY_SIZE * spacing;
-              const startLower = Math.floor((curTick - spacing) / block) * block;
-              const startUpper = Math.floor((curTick + spacing) / block) * block;
-              let programId: any;
-              try { programId = new web3.PublicKey(hop.programId); } catch { programId = new web3.PublicKey((CONFIG.raydium as any)?.clmmProgram || 'CAMMCzo5nKXjotvLkGQ6r1N1C8QXr8iY6pYwWf3V8mGk'); }
-              let lowerPk: any = null; let upperPk: any = null;
+            let curTick = Number((state as any).tickCurrent ?? (state as any).tick_current ?? NaN);
+            if (!Number.isFinite(curTick)) {
               try {
-                const util = (rmod as any)?.Clmm || (rmod as any)?.CLMM;
-                const getPda = util?.getTickArrayAddress || util?.tickArrayPda || util?.getPdaTickArray;
-                if (typeof getPda === 'function') {
-                  const resL = await getPda({ programId, poolId: poolPk, startIndex: startLower });
-                  const resU = await getPda({ programId, poolId: poolPk, startIndex: startUpper });
-                  lowerPk = (resL && (resL.publicKey || resL)) || null;
-                  upperPk = (resU && (resU.publicKey || resU)) || null;
+                const sqrt = Number((state as any).sqrtPriceX64 ?? (state as any).sqrt_price_x64 ?? (state as any).sqrtPrice ?? 0);
+                if (sqrt > 0 && Number.isFinite(sqrt) && spacing > 0) {
+                  const ratio = sqrt / Math.pow(2, 64);
+                  const approxPrice = ratio * ratio;
+                  const tickApprox = Math.floor(Math.log(approxPrice) / Math.log(1.0001));
+                  if (Number.isFinite(tickApprox)) curTick = tickApprox;
                 }
               } catch {}
-              if (!lowerPk || !upperPk) {
-                const i32le = (n: number) => { const b = Buffer.alloc(4); b.writeInt32LE(n, 0); return b; };
-                try {
-                  const [l] = web3.PublicKey.findProgramAddressSync([Buffer.from('tick_array'), poolPk.toBuffer(), i32le(startLower)], programId);
-                  const [u] = web3.PublicKey.findProgramAddressSync([Buffer.from('tick_array'), poolPk.toBuffer(), i32le(startUpper)], programId);
-                  lowerPk = lowerPk || l; upperPk = upperPk || u;
-                } catch {}
-              }
-              if (!hop.tickArrayLower && lowerPk) hop.tickArrayLower = lowerPk.toBase58?.() || String(lowerPk);
-              if (!hop.tickArrayUpper && upperPk) hop.tickArrayUpper = upperPk.toBase58?.() || String(upperPk);
+            }
+            if (Number.isFinite(spacing) && spacing > 0 && Number.isFinite(curTick)) {
+              let programId: any;
+              try { programId = new web3.PublicKey(hop.programId); } catch { programId = new web3.PublicKey((CONFIG.raydium as any)?.clmmProgram || 'CAMMCzo5nKXjotvLkGQ6r1N1C8QXr8iY6pYwWf3V8mGk'); }
+              try {
+                const sdk: any = await import('@raydium-io/raydium-sdk-v2');
+                const TickUtils = (sdk as any)?.TickUtils || (sdk as any)?.CLMM?.TickUtils || (sdk as any)?.Clmm?.TickUtils;
+                const getPdaTickArrayAddress = (sdk as any)?.getPdaTickArrayAddress || (sdk as any)?.CLMM?.getPdaTickArrayAddress || (sdk as any)?.Clmm?.getPdaTickArrayAddress;
+                const start = TickUtils?.getTickArrayStartIndexByTick ? TickUtils.getTickArrayStartIndexByTick(curTick, spacing) : (Math.floor(curTick / (60 * spacing)) * (60 * spacing));
+                const size = Number((TickUtils as any)?.TICK_ARRAY_SIZE ?? 60);
+                const span = size * spacing;
+                const lowerStart = start - span;
+                const upperStart = start + span;
+                if (!hop.tickArrayLower) {
+                  const rL = getPdaTickArrayAddress?.(programId, poolPk, lowerStart);
+                  const pkL = (rL && (rL.publicKey || rL)) || null;
+                  if (pkL) hop.tickArrayLower = pkL.toBase58?.() || String(pkL);
+                }
+                if (!hop.tickArrayUpper) {
+                  const rU = getPdaTickArrayAddress?.(programId, poolPk, upperStart);
+                  const pkU = (rU && (rU.publicKey || rU)) || null;
+                  if (pkU) hop.tickArrayUpper = pkU.toBase58?.() || String(pkU);
+                }
+              } catch {}
             }
           }
         }
@@ -800,8 +769,70 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       return [];
     };
 
-    const out = unwrapIxs(ixInfo);
+    let out = unwrapIxs(ixInfo);
     try { logger.info('ix.build raydium.amm.detail', { cat: 'tx', ctx: { got: Array.isArray(out) ? out.length : 0, shape: (ixInfo && typeof ixInfo === 'object' ? Object.keys(ixInfo) : String(typeof ixInfo)) } as any }); } catch {}
+    // Coerce any foreign TI-shaped objects into our local TransactionInstruction to avoid cross-web3 issues
+    try {
+      const normalizePkLoose = (v: any): PublicKey => {
+        try {
+          if (v instanceof PublicKey) return v;
+          const inner = (v && (v.address || v.pubkey || v.pubKey || v.publicKey)) || v;
+          if (inner instanceof PublicKey) return inner;
+          // Prefer byte-based paths to avoid foreign toBase58
+          try { if (inner && typeof inner.toBytes === 'function') return new PublicKey(inner.toBytes()); } catch {}
+          try { if (inner && typeof inner.toBuffer === 'function') return new PublicKey(inner.toBuffer()); } catch {}
+          // BN-like internals
+          try {
+            const bn = (inner && (inner._bn || inner.bn || inner.value)) as any;
+            if (bn && typeof bn === 'object') {
+              if (typeof bn.toArrayLike === 'function') return new PublicKey(bn.toArrayLike(Uint8Array, 'be', 32));
+              if (typeof bn.toArray === 'function') return new PublicKey(Uint8Array.from(bn.toArray('be', 32)));
+            }
+          } catch {}
+          // Direct byte array
+          try { if (Array.isArray(inner) && inner.length >= 32) return new PublicKey(Uint8Array.from(inner)); } catch {}
+          // String fallback
+          if (typeof inner === 'string') return new PublicKey(inner);
+          return new PublicKey(String(inner));
+        } catch (e) {
+          // Final fallback to existing helper
+          return toPublicKey(v);
+        }
+      };
+
+      const coerceOne = (ixAny: any): TransactionInstruction => {
+        if (ixAny instanceof TransactionInstruction) return ixAny;
+        const programId = normalizePkLoose(ixAny?.programId);
+        const keysLike = ixAny?.keys;
+        let keyArr: any[] = [];
+        try {
+          if (Array.isArray(keysLike)) keyArr = keysLike;
+          else if (keysLike && typeof (keysLike as any)[Symbol.iterator] === 'function') keyArr = Array.from(keysLike as any);
+          else if (keysLike && typeof (keysLike as any).length === 'number') keyArr = Array.from({ length: Number((keysLike as any).length) }, (_, i) => (keysLike as any)[i]);
+          else if (keysLike && typeof keysLike === 'object') {
+            const vals = Object.values(keysLike as any);
+            if (vals.length && (vals[0] as any) && ((vals[0] as any).pubkey || (vals[0] as any).pubKey || (vals[0] as any).address)) keyArr = vals as any[];
+          }
+        } catch {}
+        const keys = keyArr.map((k: any) => ({
+          pubkey: normalizePkLoose(k?.pubkey ?? k?.pubKey ?? k?.address),
+          isSigner: !!k?.isSigner,
+          isWritable: !!k?.isWritable,
+        }));
+        let data: Buffer = Buffer.alloc(0);
+        const raw = ixAny?.data;
+        try {
+          if (Buffer.isBuffer(raw)) data = raw as Buffer;
+          else if (raw instanceof Uint8Array) data = Buffer.from(raw);
+          else if (raw && typeof raw === 'object' && typeof (raw as any).length === 'number') data = Buffer.from(Array.from(raw as any));
+          else if (typeof raw === 'string') { try { data = Buffer.from(raw, 'base64'); } catch {} }
+        } catch {}
+        return new TransactionInstruction({ programId, keys, data });
+      };
+      if (Array.isArray(out) && out.length) {
+        out = out.map(coerceOne);
+      }
+    } catch {}
     if (out && out.length) return out;
     try { logger.warn('ix.build raydium.amm.real unexpected shape', { cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
     throw new Error('RAYDIUM_AMM_BUILD_FAILED: bad_ix_shape');

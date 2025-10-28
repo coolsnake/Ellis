@@ -92,20 +92,19 @@ function toInstruction(ix: any): TransactionInstruction | null {
       return new TransactionInstruction({ programId, keys, data });
     }
     const keysLike = (ix as any)?.keys;
-    const keysIterable = !!(keysLike && typeof (keysLike as any)[Symbol.iterator] === 'function');
-    const hasShape = typeof (ix as any)?.programId !== 'undefined'
-      && (Array.isArray(keysLike) || keysIterable || (keysLike && typeof (keysLike as any).length === 'number'))
-      && typeof ix === 'object';
-    if (!hasShape) return null;
-    // Attempt to coerce plain object shapes into a real TransactionInstruction
+    // Attempt to coerce plain object shapes into a real TransactionInstruction (very permissive)
+    if (typeof (ix as any)?.programId === 'undefined' || typeof ix !== 'object') return null;
     const programId = normalizePk((ix as any).programId);
-    const keyArr: any[] = Array.isArray(keysLike)
-      ? keysLike
-      : (keysIterable
-          ? Array.from(keysLike as any)
-          : ((keysLike && typeof (keysLike as any).length === 'number')
-              ? Array.from({ length: Number((keysLike as any).length) }, (_, i) => (keysLike as any)[i])
-              : []));
+    let keyArr: any[] = [];
+    try {
+      if (Array.isArray(keysLike)) keyArr = keysLike;
+      else if (keysLike && typeof (keysLike as any)[Symbol.iterator] === 'function') keyArr = Array.from(keysLike as any);
+      else if (keysLike && typeof (keysLike as any).length === 'number') keyArr = Array.from({ length: Number((keysLike as any).length) }, (_, i) => (keysLike as any)[i]);
+      else if (keysLike && typeof keysLike === 'object') {
+        const vals = Object.values(keysLike as any);
+        if (vals.length && (vals[0] as any) && ((vals[0] as any).pubkey || (vals[0] as any).pubKey || (vals[0] as any).address)) keyArr = vals as any[];
+      }
+    } catch {}
     const keys = keyArr.map((k: any) => ({
       pubkey: normalizePk(k?.pubkey ?? k?.pubKey ?? k?.address),
       isSigner: !!k?.isSigner,
