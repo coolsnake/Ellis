@@ -72,7 +72,13 @@ function toInstruction(ix: any): TransactionInstruction | null {
     if (ctorName === 'TransactionInstruction' && typeof (ix as any).programId !== 'undefined') {
       const foreign = ix as any;
       const programId = normalizePk(foreign.programId);
-      const keysSrc: any[] = Array.isArray(foreign.keys) ? foreign.keys : Array.from(foreign.keys || []);
+      const keysSrc: any[] = Array.isArray(foreign.keys)
+        ? foreign.keys
+        : ((foreign.keys && typeof (foreign.keys as any)[Symbol.iterator] === 'function')
+            ? Array.from(foreign.keys as any)
+            : ((foreign.keys && typeof (foreign.keys as any).length === 'number')
+                ? Array.from({ length: Number((foreign.keys as any).length) }, (_, i) => (foreign.keys as any)[i])
+                : []));
       const keys = keysSrc.map((k: any) => ({
         pubkey: normalizePk(k?.pubkey ?? k?.pubKey ?? k?.address),
         isSigner: !!k?.isSigner,
@@ -86,11 +92,20 @@ function toInstruction(ix: any): TransactionInstruction | null {
       return new TransactionInstruction({ programId, keys, data });
     }
     const keysLike = (ix as any)?.keys;
-    const hasShape = typeof (ix as any)?.programId !== 'undefined' && (Array.isArray(keysLike) || (keysLike && typeof keysLike.length === 'number')) && typeof ix === 'object';
+    const keysIterable = !!(keysLike && typeof (keysLike as any)[Symbol.iterator] === 'function');
+    const hasShape = typeof (ix as any)?.programId !== 'undefined'
+      && (Array.isArray(keysLike) || keysIterable || (keysLike && typeof (keysLike as any).length === 'number'))
+      && typeof ix === 'object';
     if (!hasShape) return null;
     // Attempt to coerce plain object shapes into a real TransactionInstruction
     const programId = normalizePk((ix as any).programId);
-    const keyArr: any[] = Array.isArray(keysLike) ? keysLike : Array.from(keysLike as any);
+    const keyArr: any[] = Array.isArray(keysLike)
+      ? keysLike
+      : (keysIterable
+          ? Array.from(keysLike as any)
+          : ((keysLike && typeof (keysLike as any).length === 'number')
+              ? Array.from({ length: Number((keysLike as any).length) }, (_, i) => (keysLike as any)[i])
+              : []));
     const keys = keyArr.map((k: any) => ({
       pubkey: normalizePk(k?.pubkey ?? k?.pubKey ?? k?.address),
       isSigner: !!k?.isSigner,

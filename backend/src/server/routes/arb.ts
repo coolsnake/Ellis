@@ -300,10 +300,10 @@ export function createArbRouter(io: SocketIOServer): Router {
         return res.status(400).json({ id, mode, error: 'wallet_not_found' });
       }
 
-      // Atomic only: fail if oversized
+      // Size gate: warn only; let v0 serialization/RPC enforce true limits
       const maxBytes = Number(execCfg.maxTxSizeBytes || 0);
       if (maxBytes > 0 && built.sizeBytes > maxBytes) {
-        return res.status(400).json({ id, mode, error: 'tx_too_large', ixCount: built.ixCount, txSizeBytes: built.sizeBytes, maxTxSizeBytes: maxBytes });
+        try { logger.info('tx.size.warn', { cat: 'tx', ctx: { ixCount: built.ixCount, txSizeBytes: built.sizeBytes, maxTxSizeBytes: maxBytes } as any }); } catch {}
       }
 
       // Require successful preflight before sending

@@ -96,22 +96,44 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
               let lowerPk: any = null; let upperPk: any = null;
               const util = (rmod as any)?.Clmm || (rmod as any)?.CLMM;
               const getPda = util?.getTickArrayAddress || util?.tickArrayPda || util?.getPdaTickArray;
-              const deriveAddr = async (startIdx: number): Promise<any | null> => {
+              const deriveAddrs = (startIdx: number): any[] => {
+                const out: any[] = [];
                 try {
                   if (typeof getPda === 'function') {
-                    const res = await getPda({ programId, poolId: poolPk, startIndex: startIdx });
-                    const pk = (res && (res.publicKey || res)) || null;
-                    if (pk) return pk;
+                    out.push(getPda({ programId, poolId: poolPk, startIndex: startIdx }));
                   }
                 } catch {}
                 try {
                   const i32le = (n: number) => { const b = Buffer.alloc(4); b.writeInt32LE(n, 0); return b; };
-                  const [addr] = web3.PublicKey.findProgramAddressSync([
+                  const i32be = (n: number) => { const b = Buffer.alloc(4); b.writeInt32BE(n, 0); return b; };
+                  out.push(web3.PublicKey.findProgramAddressSync([
                     Buffer.from('tick_array'),
                     poolPk.toBuffer(),
                     i32le(startIdx),
-                  ], programId);
-                  return addr;
+                  ], programId)[0]);
+                  out.push(web3.PublicKey.findProgramAddressSync([
+                    Buffer.from('tickarray'),
+                    poolPk.toBuffer(),
+                    i32le(startIdx),
+                  ], programId)[0]);
+                  out.push(web3.PublicKey.findProgramAddressSync([
+                    Buffer.from('tick_array'),
+                    poolPk.toBuffer(),
+                    i32be(startIdx),
+                  ], programId)[0]);
+                  out.push(web3.PublicKey.findProgramAddressSync([
+                    Buffer.from('tickarray'),
+                    poolPk.toBuffer(),
+                    i32be(startIdx),
+                  ], programId)[0]);
+                } catch {}
+                return out;
+              };
+              const coercePk = async (v: any): Promise<any | null> => {
+                try {
+                  const maybe = await Promise.resolve(v);
+                  const pk = (maybe && (maybe.publicKey || maybe)) || null;
+                  return pk || null;
                 } catch { return null; }
               };
               const exists = async (pk: any): Promise<boolean> => {
@@ -121,12 +143,18 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
               const candidates: number[] = [0, -1, 1, -2, 2, -3, 3].map(d => center + d * block);
               for (const s of candidates) {
                 if (!lowerPk && s <= curTick) {
-                  const pk = await deriveAddr(s);
-                  if (pk && await exists(pk)) lowerPk = pk;
+                  const list = deriveAddrs(s);
+                  for (const cand of list) {
+                    const pk = await coercePk(cand);
+                    if (pk && await exists(pk)) { lowerPk = pk; break; }
+                  }
                 }
                 if (!upperPk && s >= curTick) {
-                  const pk = await deriveAddr(s);
-                  if (pk && await exists(pk)) upperPk = pk;
+                  const list = deriveAddrs(s);
+                  for (const cand of list) {
+                    const pk = await coercePk(cand);
+                    if (pk && await exists(pk)) { upperPk = pk; break; }
+                  }
                 }
                 if (lowerPk && upperPk) break;
               }
