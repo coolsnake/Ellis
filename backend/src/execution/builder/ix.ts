@@ -101,8 +101,8 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
     } catch {}
     const txb = await pool.swap(params);
     try { logger.info('orca.whirlpool.swap.builder.ok', { cat: 'tx' }); } catch {}
-    const tx = (toTx as any)(ctx, txb);
-    const built = await tx.build();
+    // The SDK returns a TransactionBuilder; compress to Instruction shape
+    const built = (txb && typeof (txb as any).compressIx === 'function') ? (txb as any).compressIx(true) : txb;
     try {
       const count = Array.isArray((built as any)?.instructions) ? (built as any).instructions.length : 0;
       logger.info('orca.whirlpool.tx.build.ok', { cat: 'tx', ctx: { instructionCount: count } as any });

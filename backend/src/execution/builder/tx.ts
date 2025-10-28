@@ -27,6 +27,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
   const owner = (await ensureWallet(CONFIG.walletPath)).publicKey;
   // Optional basic preflight checks (balances/ATAs) can be added here in future
   const execCfg = await loadExecConfig().catch(() => ({ createAtasInTx: true, wrapSolInTx: true } as any));
+  const modeOverride: 'direct' | 'simulate' | undefined = (cb as any)?.__modeOverride;
   let performedWrap = false;
   let willUnwrap = false;
   for (const hop of plan.hops) {
@@ -74,7 +75,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
       // - In simulate mode, fall back to placeholder descriptors so build succeeds
       // - In direct mode, fail fast with a descriptive error
       if ((hop.amountInRaw || 0n) <= 0n) {
-        const mode: any = (execCfg as any)?.mode || 'simulate';
+        const mode: any = modeOverride || (execCfg as any)?.mode || 'simulate';
         if (mode !== 'direct') {
           if (hop.dex === 'raydium' && hop.variant === 'amm') { hopIxs.push(...buildRaydiumAmmSwapIx(hop)); continue; }
           else if (hop.dex === 'raydium' && hop.variant === 'clmm') { hopIxs.push(...buildRaydiumClmmSwapIx(hop)); continue; }
