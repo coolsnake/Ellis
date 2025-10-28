@@ -32,15 +32,15 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
         const poolPk = new web3.PublicKey(id);
         const acc = await withRpcLimit(() => conn.getAccountInfo(poolPk));
         try {
-          const ownerB58 = acc?.owner?.toBase58?.();
-          logger.info('raydium.clmm.resolver.pool', { cat: 'tx', ctx: { pool: id, owner: ownerB58, programId: hop.programId } as any });
-        } catch {}
-        try {
-          // Prefer on-chain account owner as authoritative program id
+          // Prefer on-chain account owner as authoritative program id (overwrite unconditionally)
           if (acc?.owner && typeof (acc.owner as any).toBase58 === 'function') {
             const ownerPid = (acc.owner as any).toBase58();
-            if (ownerPid && (!hop.programId || hop.programId !== ownerPid)) hop.programId = ownerPid;
+            if (ownerPid) hop.programId = ownerPid;
           }
+        } catch {}
+        try {
+          const ownerB58 = acc?.owner?.toBase58?.();
+          logger.info('raydium.clmm.resolver.pool', { cat: 'tx', ctx: { pool: id, owner: ownerB58, programId: hop.programId } as any });
         } catch {}
         if (acc?.data?.length) {
           const layout = (rmod as any)?.Clmm?.PoolStateLayout || (rmod as any)?.CLMM?.POOL_STATE_LAYOUT || (rmod as any)?.PoolStateLayout;

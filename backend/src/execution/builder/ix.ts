@@ -83,6 +83,20 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
         bps
       );
       try { logger.info('orca.whirlpool.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: String((res as any)?.quote?.estimatedAmountOut ?? 0) } as any }); } catch {}
+      // Guard: trade not enabled yet
+      try {
+        const tradeTs: any = (res as any)?.tradeEnableTimestamp;
+        if (typeof tradeTs === 'bigint') {
+          const nowSec = BigInt(Math.floor(Date.now() / 1000));
+          try { logger.info('orca.whirlpool.trade.ts', { cat: 'tx', ctx: { tradeEnableTimestamp: tradeTs.toString() } as any }); } catch {}
+          if (tradeTs > nowSec) throw new Error(`ORCA_TRADE_DISABLED: enabled_at=${tradeTs.toString()}`);
+        }
+      } catch (guardErr) { throw guardErr; }
+      // Guard: zero estimated out
+      try {
+        const estOut = BigInt(String((res as any)?.quote?.estimatedAmountOut ?? 0));
+        if (estOut === 0n) throw new Error('ORCA_QUOTE_ZERO: no tradable amount');
+      } catch (guardErr) { throw guardErr; }
       const rawIxs = Array.isArray((res as any)?.instructions) ? (res as any).instructions : [];
       const normalizeIx = (ix: any): any => {
         try {
@@ -106,15 +120,9 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
       throw inner;
     }
   } catch (e) {
-    try { logger.warn('ix.build orca.clmm fallback', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
-    // Shape a minimal, coercible instruction to aid diagnostics in preflight
-    return [{
-      programId: (hop.programId || (CONFIG as any)?.orca?.programId || 'whirlpool') as any,
-      keys: [
-        { pubkey: hop.poolId, isSigner: false, isWritable: false },
-      ],
-      data: Buffer.alloc(0),
-    }];
+    try { logger.warn('ix.build orca.clmm err', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
+    // Propagate error so caller can abort rather than sending a broken placeholder
+    throw e;
   }
 }
 export function buildMeteoraDlmmSwapIx(hop: DirectHop): any[] {
@@ -420,25 +428,23 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     if (typeof (builder as any).accountsPartial === 'function') builder = (builder as any).accountsPartial(acctBase);
     else if (typeof (builder as any).accounts === 'function') builder = (builder as any).accounts(acctBase);
 
-    // Supply remaining accounts for bin arrays when swap2 is used, using documented helpers
+    // Supply remaining accounts for bin arrays using documented helpers (applies to swap and swap2)
     try {
-      if (builder && (builder as any)?._ixMethod && String((builder as any)._ixMethod).includes('swap2')) {
-        const getBounds = (DLMM as any)?.getBinArrayLowerUpperBinId;
-        const getMetas = (DLMM as any)?.getBinArrayAccountMetasCoverage;
-        if (getBounds && getMetas) {
-          try {
-            const bounds = await getBounds(connection, poolPk).catch(() => null as any);
-            const lo = Number(bounds?.lowerBinId);
-            const hi = Number(bounds?.upperBinId);
-            if (Number.isFinite(lo) && Number.isFinite(hi)) {
-              const BN = (await import('bn.js')).default as any;
-              const metas = getMetas(new BN(lo), new BN(hi), poolPk, programId) || [];
-              if (Array.isArray(metas) && metas.length && typeof (builder as any).remainingAccounts === 'function') {
-                builder = (builder as any).remainingAccounts(metas);
-              }
+      const getBounds = (DLMM as any)?.getBinArrayLowerUpperBinId;
+      const getMetas = (DLMM as any)?.getBinArrayAccountMetasCoverage;
+      if (getBounds && getMetas) {
+        try {
+          const bounds = await getBounds(connection, poolPk).catch(() => null as any);
+          const lo = Number(bounds?.lowerBinId);
+          const hi = Number(bounds?.upperBinId);
+          if (Number.isFinite(lo) && Number.isFinite(hi)) {
+            const BN = (await import('bn.js')).default as any;
+            const metas = getMetas(new BN(lo), new BN(hi), poolPk, programId) || [];
+            if (Array.isArray(metas) && metas.length && typeof (builder as any).remainingAccounts === 'function') {
+              builder = (builder as any).remainingAccounts(metas);
             }
-          } catch {}
-        }
+          }
+        } catch {}
       }
     } catch {}
     const ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
@@ -484,6 +490,8 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
           const layout = (rmod as any)?.Clmm?.PoolStateLayout || (rmod as any)?.CLMM?.POOL_STATE_LAYOUT || (rmod as any)?.PoolStateLayout;
           const state = layout && typeof layout.decode === 'function' ? layout.decode(acc.data) : null;
           if (state) {
+            // Force programId to owner of pool account
+            try { const ownerPid = acc?.owner?.toBase58?.(); if (ownerPid) hop.programId = ownerPid; } catch {}
             try {
               const o = (state as any).oracle?.toBase58?.() || String((state as any).oracle || '');
               if (o && !hop.oracle) hop.oracle = o;
@@ -878,8 +886,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       };
 
       const coerceOne = (ixAny: any): TransactionInstruction => {
-        if (ixAny instanceof TransactionInstruction) return ixAny;
-        // Force our known Raydium AMM program id to avoid foreign PublicKey/BN issues
+        // Always build a fresh TI using our known program id to avoid foreign instances
         const programId = ammProgramId;
         const keysLike = ixAny?.keys;
         let keyArr: any[] = [];
