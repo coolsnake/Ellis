@@ -121,7 +121,9 @@ function toInstruction(ix: any): TransactionInstruction | null {
       }
     } catch {}
     return new TransactionInstruction({ programId, keys, data });
-  } catch {}
+  } catch (e: any) {
+    try { logger.info('tx.ix.coerce.err', { cat: 'tx', ctx: { error: String(e?.message || e), shape: (ix && typeof ix === 'object' ? Object.keys(ix) : typeof ix) } as any }); } catch {}
+  }
   return null;
 }
 

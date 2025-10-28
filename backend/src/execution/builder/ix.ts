@@ -83,7 +83,23 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
         bps
       );
       try { logger.info('orca.whirlpool.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: String((res as any)?.quote?.estimatedAmountOut ?? 0) } as any }); } catch {}
-      const out = Array.isArray((res as any)?.instructions) ? (res as any).instructions : [];
+      const rawIxs = Array.isArray((res as any)?.instructions) ? (res as any).instructions : [];
+      const normalizeIx = (ix: any): any => {
+        try {
+          const programId = ix?.programId || ix?.programAddress || (ix?.program && (ix.program.address || ix.program)) || '';
+          const accounts = Array.isArray(ix?.accounts) ? ix.accounts : (Array.isArray(ix?.keys) ? ix.keys : []);
+          const keys = accounts.map((a: any) => ({
+            pubkey: a?.address || a?.pubkey || a?.pubKey || a?.pubKeyAddress || a?.pubkeyAddress,
+            isSigner: !!a?.isSigner,
+            isWritable: !!a?.isWritable,
+          }));
+          const data = ix?.data || new Uint8Array();
+          return { programId, keys, data };
+        } catch {
+          return ix;
+        }
+      };
+      const out = rawIxs.map(normalizeIx);
       try { logger.info('orca.whirlpool.ix.ready', { cat: 'tx', ctx: { count: Array.isArray(out) ? out.length : 0 } as any }); } catch {}
       return out;
     } catch (inner) {
@@ -312,11 +328,6 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     const minOut = new BN(String(hop.minOutRaw ?? 0n));
     const methods = (program as any)?.methods || {};
     let builder: any = null;
-    // Prefer swap2 with RemainingAccountsInfo for broader compatibility (bin arrays, token-2022)
-    if (typeof methods.swap2 === 'function') builder = methods.swap2(amountIn, minOut, { slices: [] });
-    else if (typeof methods.swapExactIn === 'function') builder = methods.swapExactIn(amountIn, minOut);
-    else if (typeof methods.swap === 'function') builder = methods.swap(amountIn, minOut);
-    if (!builder) throw new Error('DLMM_SWAP_METHOD_MISSING');
 
     const accounts: any = {
       lbPair: poolPk,
@@ -394,13 +405,24 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       }
     } catch {}
 
+    // Choose swap variant now that token program IDs are known
+    try {
+      const tokenKeg = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+      const isToken2022 = (p: any) => { try { return p && typeof p.equals === 'function' && !p.equals(tokenKeg); } catch { return false; } };
+      const needs2022 = isToken2022(acctBase.tokenXProgram) || isToken2022(acctBase.tokenYProgram);
+      if (needs2022 && typeof (methods as any)?.swap2 === 'function') builder = methods.swap2(amountIn, minOut, { slices: [] });
+      else if (typeof (methods as any)?.swap === 'function') builder = methods.swap(amountIn, minOut);
+      else if (typeof (methods as any)?.swapExactIn === 'function') builder = methods.swapExactIn(amountIn, minOut);
+      else throw new Error('DLMM_SWAP_METHOD_MISSING');
+    } catch {}
+
     // Prefer accountsPartial so optional nulls are honored
     if (typeof (builder as any).accountsPartial === 'function') builder = (builder as any).accountsPartial(acctBase);
     else if (typeof (builder as any).accounts === 'function') builder = (builder as any).accounts(acctBase);
 
     // Supply remaining accounts for bin arrays when swap2 is used, using documented helpers
     try {
-      if (typeof (methods as any)?.swap2 === 'function') {
+      if (builder && (builder as any)?._ixMethod && String((builder as any)._ixMethod).includes('swap2')) {
         const getBounds = (DLMM as any)?.getBinArrayLowerUpperBinId;
         const getMetas = (DLMM as any)?.getBinArrayAccountMetasCoverage;
         if (getBounds && getMetas) {
@@ -506,6 +528,8 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
         }
       } catch {}
     }
+    // Diagnostic log for arrays before final validation
+    try { logger.info('raydium.clmm.builder.arrays', { cat: 'tx', ctx: { pool: hop.poolId, lower: hop.tickArrayLower, upper: hop.tickArrayUpper } as any }); } catch {}
     // Final validation after derivation attempt
     const missing: string[] = [];
     if (!hop.tickArrayLower || !hop.tickArrayUpper) missing.push('tickArrayLower/Upper');
@@ -769,6 +793,61 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
 
     let out = unwrapIxs(ixInfo);
     try { logger.info('ix.build raydium.amm.detail', { cat: 'tx', ctx: { got: Array.isArray(out) ? out.length : 0, shape: (ixInfo && typeof ixInfo === 'object' ? Object.keys(ixInfo) : String(typeof ixInfo)) } as any }); } catch {}
+    // Fallback: coerce top-level ixInfo if unwrap produced no TIs
+    if ((!out || out.length === 0) && ixInfo && typeof ixInfo === 'object' && (ixInfo as any).programId && (ixInfo as any).keys) {
+      try {
+        const normalizePkLoose = (v: any): PublicKey => {
+          try {
+            if (v instanceof PublicKey) return v;
+            const inner = (v && (v.address || v.pubkey || v.pubKey || v.publicKey)) || v;
+            if (inner instanceof PublicKey) return inner;
+            try { if (inner && typeof inner.toBytes === 'function') return new PublicKey(inner.toBytes()); } catch {}
+            try { if (inner && typeof inner.toBuffer === 'function') return new PublicKey(inner.toBuffer()); } catch {}
+            try {
+              const bn = (inner && (inner._bn || inner.bn || inner.value)) as any;
+              if (bn && typeof bn === 'object') {
+                if (typeof bn.toArrayLike === 'function') return new PublicKey(bn.toArrayLike(Uint8Array, 'be', 32));
+                if (typeof bn.toArray === 'function') return new PublicKey(Uint8Array.from(bn.toArray('be', 32)));
+              }
+            } catch {}
+            try { if (Array.isArray(inner) && inner.length >= 32) return new PublicKey(Uint8Array.from(inner)); } catch {}
+            if (typeof inner === 'string') return new PublicKey(inner);
+            return new PublicKey(String(inner));
+          } catch (e) {
+            return toPublicKey(v);
+          }
+        };
+        const coerceTop = (ixAny: any): TransactionInstruction => {
+          const programId = ammProgramId;
+          const keysLike = ixAny?.keys;
+          let keyArr: any[] = [];
+          try {
+            if (Array.isArray(keysLike)) keyArr = keysLike;
+            else if (keysLike && typeof (keysLike as any)[Symbol.iterator] === 'function') keyArr = Array.from(keysLike as any);
+            else if (keysLike && typeof (keysLike as any).length === 'number') keyArr = Array.from({ length: Number((keysLike as any).length) }, (_, i) => (keysLike as any)[i]);
+            else if (keysLike && typeof keysLike === 'object') {
+              const vals = Object.values(keysLike as any);
+              if (vals.length && (vals[0] as any) && ((vals[0] as any).pubkey || (vals[0] as any).pubKey || (vals[0] as any).address)) keyArr = vals as any[];
+            }
+          } catch {}
+          const keys = keyArr.map((k: any) => ({
+            pubkey: normalizePkLoose(k?.pubkey ?? k?.pubKey ?? k?.address),
+            isSigner: !!k?.isSigner,
+            isWritable: !!k?.isWritable,
+          }));
+          let data: Buffer = Buffer.alloc(0);
+          const raw = ixAny?.data;
+          try {
+            if (Buffer.isBuffer(raw)) data = raw as Buffer;
+            else if (raw instanceof Uint8Array) data = Buffer.from(raw);
+            else if (raw && typeof raw === 'object' && typeof (raw as any).length === 'number') data = Buffer.from(Array.from(raw as any));
+            else if (typeof raw === 'string') { try { data = Buffer.from(raw, 'base64'); } catch {} }
+          } catch {}
+          return new TransactionInstruction({ programId, keys, data });
+        };
+        out = [coerceTop(ixInfo)];
+      } catch {}
+    }
     // Coerce any foreign TI-shaped objects into our local TransactionInstruction to avoid cross-web3 issues
     try {
       const normalizePkLoose = (v: any): PublicKey => {

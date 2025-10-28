@@ -1,6 +1,7 @@
 import type { DirectHop } from '../../execution/types.js';
 import { executionCache } from '../cache.js';
 import { peekRaydiumPools } from '../../server/pools.js';
+import { logger } from '../../utils/logger.js';
 
 export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
   const stat = executionCache.getStatic(hop.poolId);
@@ -30,6 +31,10 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
         const conn = getConnection();
         const poolPk = new web3.PublicKey(id);
         const acc = await withRpcLimit(() => conn.getAccountInfo(poolPk));
+        try {
+          const ownerB58 = acc?.owner?.toBase58?.();
+          logger.info('raydium.clmm.resolver.pool', { cat: 'tx', ctx: { pool: id, owner: ownerB58, programId: hop.programId } as any });
+        } catch {}
         try {
           // Prefer on-chain account owner as authoritative program id
           if (acc?.owner && typeof (acc.owner as any).toBase58 === 'function') {
