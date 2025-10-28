@@ -515,6 +515,225 @@ export function createArbRouter(io: SocketIOServer): Router {
     }
   });
 
+  // Convenience: execute a single-hop Raydium AMM swap
+  api.post('/arb/execute/raydium-amm', async (req, res) => {
+    try {
+      const body = req.body || {};
+      let payload: any = {};
+      if (body && body.plan && Array.isArray(body.plan?.hops)) {
+        payload = { ...body, plan: { ...body.plan, hops: (body.plan.hops || []).map((h: any) => ({ ...h, dex: 'raydium', variant: 'amm' })) } };
+      } else {
+        const path: string[] = Array.isArray(body.path) ? body.path : [];
+        const hopPoolIdsIn: string[] = Array.isArray(body.hopPoolIds) ? (body.hopPoolIds as any[]).map((x: any) => String(x)) : [];
+        const fallbackPid: string | undefined = body.poolId ? String(body.poolId) : undefined;
+        const hopCount = Math.max(0, path.length - 1);
+        if (hopCount <= 0) return res.status(400).json({ error: 'invalid path' });
+        let ids: string[] = hopPoolIdsIn;
+        if (ids.length !== hopCount) {
+          if (!fallbackPid) return res.status(400).json({ error: 'missing hopPoolIds and poolId' });
+          ids = Array.from({ length: hopCount }, () => String(fallbackPid));
+        }
+        if (ids.some((s) => !s)) return res.status(400).json({ error: 'invalid hopPoolIds' });
+        const dexes = Array.from({ length: hopCount }, () => 'raydium.amm');
+        payload = {
+          path,
+          hopPoolIds: ids,
+          dexes,
+          size: body.size,
+          sizeUsd: body.sizeUsd,
+          slippageBps: body.slippageBps,
+          forceDirect: body.forceDirect,
+        };
+      }
+      req.body = payload;
+      return (api as any).handle({ ...req, url: '/arb/execute', originalUrl: '/arb/execute', path: '/arb/execute', method: 'POST' }, res, () => {});
+    } catch (e: any) {
+      return res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Convenience: preflight (simulate-send) a single-hop Raydium AMM swap
+  api.post('/arb/simulate-send/raydium-amm', async (req, res) => {
+    try {
+      const body = req.body || {};
+      let payload: any = {};
+      if (body && body.plan && Array.isArray(body.plan?.hops)) {
+        payload = { ...body, plan: { ...body.plan, hops: (body.plan.hops || []).map((h: any) => ({ ...h, dex: 'raydium', variant: 'amm' })) } };
+      } else {
+        const path: string[] = Array.isArray(body.path) ? body.path : [];
+        const hopPoolIdsIn: string[] = Array.isArray(body.hopPoolIds) ? (body.hopPoolIds as any[]).map((x: any) => String(x)) : [];
+        const fallbackPid: string | undefined = body.poolId ? String(body.poolId) : undefined;
+        const hopCount = Math.max(0, path.length - 1);
+        if (hopCount <= 0) return res.status(400).json({ error: 'invalid path' });
+        let ids: string[] = hopPoolIdsIn;
+        if (ids.length !== hopCount) {
+          if (!fallbackPid) return res.status(400).json({ error: 'missing hopPoolIds and poolId' });
+          ids = Array.from({ length: hopCount }, () => String(fallbackPid));
+        }
+        if (ids.some((s) => !s)) return res.status(400).json({ error: 'invalid hopPoolIds' });
+        const dexes = Array.from({ length: hopCount }, () => 'raydium.amm');
+        payload = {
+          path,
+          hopPoolIds: ids,
+          dexes,
+          size: body.size,
+          sizeUsd: body.sizeUsd,
+          slippageBps: body.slippageBps,
+        };
+      }
+      req.body = payload;
+      return (api as any).handle({ ...req, url: '/arb/simulate-send', originalUrl: '/arb/simulate-send', path: '/arb/simulate-send', method: 'POST' }, res, () => {});
+    } catch (e: any) {
+      return res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Convenience: execute a single-hop Raydium CLMM swap
+  api.post('/arb/execute/raydium-clmm', async (req, res) => {
+    try {
+      const body = req.body || {};
+      let payload: any = {};
+      if (body && body.plan && Array.isArray(body.plan?.hops)) {
+        payload = { ...body, plan: { ...body.plan, hops: (body.plan.hops || []).map((h: any) => ({ ...h, dex: 'raydium', variant: 'clmm' })) } };
+      } else {
+        const path: string[] = Array.isArray(body.path) ? body.path : [];
+        const hopPoolIdsIn: string[] = Array.isArray(body.hopPoolIds) ? (body.hopPoolIds as any[]).map((x: any) => String(x)) : [];
+        const fallbackPid: string | undefined = body.poolId ? String(body.poolId) : undefined;
+        const hopCount = Math.max(0, path.length - 1);
+        if (hopCount <= 0) return res.status(400).json({ error: 'invalid path' });
+        let ids: string[] = hopPoolIdsIn;
+        if (ids.length !== hopCount) {
+          if (!fallbackPid) return res.status(400).json({ error: 'missing hopPoolIds and poolId' });
+          ids = Array.from({ length: hopCount }, () => String(fallbackPid));
+        }
+        if (ids.some((s) => !s)) return res.status(400).json({ error: 'invalid hopPoolIds' });
+        const dexes = Array.from({ length: hopCount }, () => 'raydium.clmm');
+        payload = {
+          path,
+          hopPoolIds: ids,
+          dexes,
+          size: body.size,
+          sizeUsd: body.sizeUsd,
+          slippageBps: body.slippageBps,
+          forceDirect: body.forceDirect,
+        };
+      }
+      req.body = payload;
+      return (api as any).handle({ ...req, url: '/arb/execute', originalUrl: '/arb/execute', path: '/arb/execute', method: 'POST' }, res, () => {});
+    } catch (e: any) {
+      return res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Convenience: preflight (simulate-send) a single-hop Raydium CLMM swap
+  api.post('/arb/simulate-send/raydium-clmm', async (req, res) => {
+    try {
+      const body = req.body || {};
+      let payload: any = {};
+      if (body && body.plan && Array.isArray(body.plan?.hops)) {
+        payload = { ...body, plan: { ...body.plan, hops: (body.plan.hops || []).map((h: any) => ({ ...h, dex: 'raydium', variant: 'clmm' })) } };
+      } else {
+        const path: string[] = Array.isArray(body.path) ? body.path : [];
+        const hopPoolIdsIn: string[] = Array.isArray(body.hopPoolIds) ? (body.hopPoolIds as any[]).map((x: any) => String(x)) : [];
+        const fallbackPid: string | undefined = body.poolId ? String(body.poolId) : undefined;
+        const hopCount = Math.max(0, path.length - 1);
+        if (hopCount <= 0) return res.status(400).json({ error: 'invalid path' });
+        let ids: string[] = hopPoolIdsIn;
+        if (ids.length !== hopCount) {
+          if (!fallbackPid) return res.status(400).json({ error: 'missing hopPoolIds and poolId' });
+          ids = Array.from({ length: hopCount }, () => String(fallbackPid));
+        }
+        if (ids.some((s) => !s)) return res.status(400).json({ error: 'invalid hopPoolIds' });
+        const dexes = Array.from({ length: hopCount }, () => 'raydium.clmm');
+        payload = {
+          path,
+          hopPoolIds: ids,
+          dexes,
+          size: body.size,
+          sizeUsd: body.sizeUsd,
+          slippageBps: body.slippageBps,
+        };
+      }
+      req.body = payload;
+      return (api as any).handle({ ...req, url: '/arb/simulate-send', originalUrl: '/arb/simulate-send', path: '/arb/simulate-send', method: 'POST' }, res, () => {});
+    } catch (e: any) {
+      return res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Convenience: execute a single-hop Meteora DLMM swap
+  api.post('/arb/execute/meteora', async (req, res) => {
+    try {
+      const body = req.body || {};
+      let payload: any = {};
+      if (body && body.plan && Array.isArray(body.plan?.hops)) {
+        payload = { ...body, plan: { ...body.plan, hops: (body.plan.hops || []).map((h: any) => ({ ...h, dex: 'meteora', variant: 'dlmm' })) } };
+      } else {
+        const path: string[] = Array.isArray(body.path) ? body.path : [];
+        const hopPoolIdsIn: string[] = Array.isArray(body.hopPoolIds) ? (body.hopPoolIds as any[]).map((x: any) => String(x)) : [];
+        const fallbackPid: string | undefined = body.poolId ? String(body.poolId) : undefined;
+        const hopCount = Math.max(0, path.length - 1);
+        if (hopCount <= 0) return res.status(400).json({ error: 'invalid path' });
+        let ids: string[] = hopPoolIdsIn;
+        if (ids.length !== hopCount) {
+          if (!fallbackPid) return res.status(400).json({ error: 'missing hopPoolIds and poolId' });
+          ids = Array.from({ length: hopCount }, () => String(fallbackPid));
+        }
+        if (ids.some((s) => !s)) return res.status(400).json({ error: 'invalid hopPoolIds' });
+        const dexes = Array.from({ length: hopCount }, () => 'meteora');
+        payload = {
+          path,
+          hopPoolIds: ids,
+          dexes,
+          size: body.size,
+          sizeUsd: body.sizeUsd,
+          slippageBps: body.slippageBps,
+          forceDirect: body.forceDirect,
+        };
+      }
+      req.body = payload;
+      return (api as any).handle({ ...req, url: '/arb/execute', originalUrl: '/arb/execute', path: '/arb/execute', method: 'POST' }, res, () => {});
+    } catch (e: any) {
+      return res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Convenience: preflight (simulate-send) a single-hop Meteora DLMM swap
+  api.post('/arb/simulate-send/meteora', async (req, res) => {
+    try {
+      const body = req.body || {};
+      let payload: any = {};
+      if (body && body.plan && Array.isArray(body.plan?.hops)) {
+        payload = { ...body, plan: { ...body.plan, hops: (body.plan.hops || []).map((h: any) => ({ ...h, dex: 'meteora', variant: 'dlmm' })) } };
+      } else {
+        const path: string[] = Array.isArray(body.path) ? body.path : [];
+        const hopPoolIdsIn: string[] = Array.isArray(body.hopPoolIds) ? (body.hopPoolIds as any[]).map((x: any) => String(x)) : [];
+        const fallbackPid: string | undefined = body.poolId ? String(body.poolId) : undefined;
+        const hopCount = Math.max(0, path.length - 1);
+        if (hopCount <= 0) return res.status(400).json({ error: 'invalid path' });
+        let ids: string[] = hopPoolIdsIn;
+        if (ids.length !== hopCount) {
+          if (!fallbackPid) return res.status(400).json({ error: 'missing hopPoolIds and poolId' });
+          ids = Array.from({ length: hopCount }, () => String(fallbackPid));
+        }
+        if (ids.some((s) => !s)) return res.status(400).json({ error: 'invalid hopPoolIds' });
+        const dexes = Array.from({ length: hopCount }, () => 'meteora');
+        payload = {
+          path,
+          hopPoolIds: ids,
+          dexes,
+          size: body.size,
+          sizeUsd: body.sizeUsd,
+          slippageBps: body.slippageBps,
+        };
+      }
+      req.body = payload;
+      return (api as any).handle({ ...req, url: '/arb/simulate-send', originalUrl: '/arb/simulate-send', path: '/arb/simulate-send', method: 'POST' }, res, () => {});
+    } catch (e: any) {
+      return res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
   api.get('/arb/tx-history', async (_req: Request, res: Response) => {
     try {
       const { getTxHistory } = await import('../txHistory.js');

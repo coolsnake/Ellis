@@ -73,6 +73,7 @@ export class DriftService {
   private lastSlotTs: number = 0;
   private _slotTsHandler: any | null = null;
   private _lastResubMs: number = 0;
+  private _staleCount: number = 0;
   private lastPrefetchSlot: number = 0;
   // Warmup state
   private warmupInProgress: boolean = false;
@@ -250,11 +251,17 @@ export class DriftService {
       try {
         this.sharedSlotSubscriber = new (sdk as any).SlotSubscriber(connection);
         await this.sharedSlotSubscriber.subscribe();
+        // Ensure slot timestamp listener is wired to the current emitter
+        this.wireSlotTsListener(true);
         await sleep(spacing);
       } catch {}
     } else {
       // Best-effort resubscribe if previously unsubscribed
-      try { await (this.sharedSlotSubscriber as any)?.subscribe?.(); await sleep(spacing); } catch {}
+      try {
+        await (this.sharedSlotSubscriber as any)?.subscribe?.();
+        this.wireSlotTsListener(true);
+        await sleep(spacing);
+      } catch {}
     }
 
     if (!this.sharedEventSubscriber && sdk?.EventSubscriber) {
@@ -270,19 +277,8 @@ export class DriftService {
     // Wire slot timestamp listener and start watchdog for stale resubscribe
     try {
       if (this.sharedSlotSubscriber) {
-        // initialize timestamp
         if (!this.lastSlotTs) this.lastSlotTs = Date.now();
-        if (!this._slotTsHandler) {
-          const onSlot = () => { this.lastSlotTs = Date.now(); };
-          try {
-            if (typeof (this.sharedSlotSubscriber as any).onSlotChange === 'function') {
-              (this.sharedSlotSubscriber as any).onSlotChange(onSlot, 1);
-            } else {
-              (this.sharedSlotSubscriber as any)?.eventEmitter?.on?.('slotUpdate', onSlot);
-            }
-          } catch {}
-          this._slotTsHandler = onSlot;
-        }
+        this.wireSlotTsListener(false);
       }
     } catch {}
 
@@ -294,19 +290,45 @@ export class DriftService {
           try {
             const now = Date.now();
             const stale = !this.lastSlotTs || (now - this.lastSlotTs) > slotStaleMs;
+            if (!stale) { this._staleCount = 0; return; }
             const cooled = (now - this._lastResubMs) >= resubCooldownMs;
-            if (stale && cooled) {
-              this._lastResubMs = now;
-              try { await (this.sharedSlotSubscriber as any)?.subscribe?.(); } catch {}
-              try { await (this.sharedEventSubscriber as any)?.subscribe?.(); } catch {}
-              try { await (this.sharedUserMap as any)?.subscribe?.(); } catch {}
-              try {
-                const dl: any = this.sharedDlobSubscriber;
-                const has = dl && typeof dl.getDLOB === 'function' ? !!dl.getDLOB() : true;
-                if (dl && typeof dl.subscribe === 'function' && !has) { await dl.subscribe(); }
-              } catch {}
-              try { logger.warn('drift.subs.resubscribe', { cat: 'drift', reason: 'slot_stale' }); } catch {}
+            if (!cooled) return;
+            this._lastResubMs = now;
+
+            // Heartbeat: try a quick slot fetch; if successful, mark fresh and skip resubscribe
+            try {
+              const { withRpcTimeout } = await import('../utils/rpcLimiter.js');
+              const hbSlot = await withRpcTimeout(this.getReadConnection().getSlot('processed'), 1500, 'slot.heartbeat');
+              if (Number.isFinite(Number(hbSlot))) {
+                this.lastSlotTs = Date.now();
+                this._staleCount = 0;
+                return;
+              }
+            } catch {}
+
+            // Escalating resubscribe: start with slot only, then event, then userMap, then DLOB
+            const stage = Math.min(3, Math.max(0, this._staleCount));
+            try {
+              if (stage >= 0) {
+                try { await (this.sharedSlotSubscriber as any)?.subscribe?.(); this.wireSlotTsListener(true); } catch {}
+              }
+              if (stage >= 1) {
+                try { await (this.sharedEventSubscriber as any)?.subscribe?.(); } catch {}
+              }
+              if (stage >= 2) {
+                try { await (this.sharedUserMap as any)?.subscribe?.(); } catch {}
+              }
+              if (stage >= 3) {
+                try {
+                  const dl: any = this.sharedDlobSubscriber;
+                  const has = dl && typeof dl.getDLOB === 'function' ? !!dl.getDLOB() : true;
+                  if (dl && typeof dl.subscribe === 'function' && !has) { await dl.subscribe(); }
+                } catch {}
+              }
+            } finally {
+              this._staleCount = Math.min(4, this._staleCount + 1);
             }
+            try { logger.warn('drift.subs.resubscribe', { cat: 'drift', reason: 'slot_stale', stage }); } catch {}
           } catch {}
         }, 2500);
       }
@@ -546,6 +568,28 @@ export class DriftService {
     };
   }
 
+  // Re-wire slot timestamp listener to the current SlotSubscriber emitter. When force=true,
+  // detach the previous handler from any existing emitter before attaching a new one.
+  // Also nudges freshness immediately to avoid flapping right after resubscribe.
+  private wireSlotTsListener(force?: boolean): void {
+    try {
+      if (!this.sharedSlotSubscriber) return;
+      const onSlot = () => { this.lastSlotTs = Date.now(); };
+      if (force && this._slotTsHandler) {
+        try { (this.sharedSlotSubscriber as any)?.eventEmitter?.off?.('slotUpdate', this._slotTsHandler); } catch {}
+      }
+      try {
+        if (typeof (this.sharedSlotSubscriber as any).onSlotChange === 'function') {
+          (this.sharedSlotSubscriber as any).onSlotChange(onSlot, 1);
+        } else {
+          (this.sharedSlotSubscriber as any)?.eventEmitter?.on?.('slotUpdate', onSlot);
+        }
+      } catch {}
+      this._slotTsHandler = onSlot;
+      this.lastSlotTs = Date.now();
+    } catch {}
+  }
+
   private async teardownInfra(): Promise<void> {
     // Stop timers and shared blockhash warmer
     try { if (this.prefetchTimer) { clearInterval(this.prefetchTimer); this.prefetchTimer = null; } } catch {}
@@ -560,6 +604,7 @@ export class DriftService {
     } catch {}
     this._slotTsHandler = null;
     this.lastSlotTs = 0;
+    this._staleCount = 0;
     // Unsubscribe subscribers in safe order
     try { await (this.sharedDlobSubscriber as any)?.unsubscribe?.(); } catch {}
     try { await (this.sharedOrderSubscriber as any)?.unsubscribe?.(); } catch {}

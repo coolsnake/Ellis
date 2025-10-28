@@ -99,7 +99,7 @@ app.use('/api', (req: Request, res: Response, next: NextFunction) => {
         const user = parsed?.user || '(unknown)';
         const ip = (req.headers['x-forwarded-for'] as string) || req.ip;
         const ua = (req.headers['user-agent'] as string) || '';
-        logger.info('auth.login', { user, ip, ua, cat: 'auth' });
+        logger.debug('auth.login', { user, ip, ua, cat: 'auth' });
       }
     } catch {}
     return next();
@@ -170,7 +170,7 @@ io.on('connection', (socket) => {
     // Prefer X-Forwarded-For from reverse proxy when present
     const forwarded = (socket.handshake && socket.handshake.headers && (socket.handshake.headers['x-forwarded-for'] as string)) || '';
     const ip = forwarded || (socket.handshake && (socket.handshake.address as any)) || (socket.conn && (socket.conn.remoteAddress as any)) || '';
-    logger.info('auth.socket_connected', { user: user || '(unknown)', ip, ua, id: socket.id, cat: 'auth' });
+    logger.debug('auth.socket_connected', { user: user || '(unknown)', ip, ua, id: socket.id, cat: 'auth' });
   } catch {}
   socket.emit('system', { status: 'connected', version: '1.0.0', uptimeMs: Date.now() - systemStatus.startTimeMs, lastPriceUpdateMs: systemStatus.lastPriceUpdateMs });
   try {
