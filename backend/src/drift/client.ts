@@ -586,7 +586,6 @@ export class DriftService {
         }
       } catch {}
       this._slotTsHandler = onSlot;
-      this.lastSlotTs = Date.now();
     } catch {}
   }
 

@@ -86,7 +86,14 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
       const est = (quote as any)?.otherAmount ?? (quote as any)?.estimatedAmountOut ?? 0;
       logger.info('orca.whirlpool.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: String(est) } as any });
     } catch {}
-    const params = (SwapUtils as any).getSwapParamsFromQuote(quote);
+    const params = (SwapUtils as any).getSwapParamsFromQuote(
+      quote,
+      ctx,
+      pool,
+      toPublicKey(hop.userSourceAta),
+      toPublicKey(hop.userDestAta),
+      kp.publicKey,
+    );
     try { if (hop.sqrtPriceLimitX64 && params && ('sqrtPriceLimit' in (params as any))) { (params as any).sqrtPriceLimit = hop.sqrtPriceLimitX64; } } catch {}
     try {
       const lim = (params as any)?.sqrtPriceLimit ?? 0;
@@ -127,7 +134,14 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
     return out || [];
   } catch (e) {
     try { logger.warn('ix.build orca.clmm fallback', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
-    return [{ programId: hop.programId || 'whirlpool', type: 'orca.clmm.swap', keys: { poolId: hop.poolId }, data: { amountIn: hop.amountInRaw, minOut: hop.minOutRaw } }];
+    // Shape a minimal, coercible instruction to aid diagnostics in preflight
+    return [{
+      programId: (hop.programId || (CONFIG as any)?.orca?.programId || 'whirlpool') as any,
+      keys: [
+        { pubkey: hop.poolId, isSigner: false, isWritable: false },
+      ],
+      data: Buffer.alloc(0),
+    }];
   }
 }
 export function buildMeteoraDlmmSwapIx(hop: DirectHop): any[] {
@@ -226,7 +240,54 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           try { const hi = await deriveBinArray(programId, poolPk, bounds.upperBinId); binArrayUpper = (hi as any)?.publicKey || hi || binArrayUpper; } catch {}
         }
       }
-      try { if (deriveBinArrayBitmapExtension) { const ext = await deriveBinArrayBitmapExtension(programId, poolPk); binArrayBitmapExtension = (ext as any)?.publicKey || ext || undefined; } } catch {}
+      try {
+        // Robustly attempt to derive the bitmap extension PDA across SDK variants
+        const coercePk = (val: any): PublicKey | undefined => {
+          try {
+            if (!val) return undefined;
+            if (val instanceof PublicKey) return val;
+            if ((val as any)?.publicKey instanceof PublicKey) return (val as any).publicKey as PublicKey;
+            if ((val as any)?.address instanceof PublicKey) return (val as any).address as PublicKey;
+            if (typeof (val as any)?.toBase58 === 'function') return val as PublicKey;
+            if (typeof val === 'string') return new PublicKey(val);
+            if (Array.isArray(val) && val.length && (val[0] instanceof PublicKey)) return val[0] as PublicKey;
+            if ((val as any)?.publicKey && typeof (val as any).publicKey === 'string') return new PublicKey((val as any).publicKey);
+            if ((val as any)?.address && typeof (val as any).address === 'string') return new PublicKey((val as any).address);
+          } catch {}
+          return undefined;
+        };
+        const attempts: Array<() => Promise<any>> = [];
+        if (deriveBinArrayBitmapExtension) {
+          attempts.push(() => deriveBinArrayBitmapExtension(programId, poolPk));
+          attempts.push(() => deriveBinArrayBitmapExtension(poolPk, programId));
+          attempts.push(() => deriveBinArrayBitmapExtension(programId.toBase58?.() || String(programId), poolPk));
+          attempts.push(() => deriveBinArrayBitmapExtension(poolPk, programId.toBase58?.() || String(programId)));
+          attempts.push(() => deriveBinArrayBitmapExtension(program, poolPk));
+          attempts.push(() => deriveBinArrayBitmapExtension(connection, programId, poolPk));
+          attempts.push(() => deriveBinArrayBitmapExtension(connection, poolPk, programId));
+        }
+        // Fallbacks via coverage helpers, if available
+        const getKeysCoverage = (DLMM as any)?.getBinArrayKeysCoverage || (DLMM as any)?.getBinArrayAccountMetasCoverage;
+        if (getKeysCoverage) {
+          attempts.push(async () => {
+            const res = await getKeysCoverage(programId, poolPk);
+            if (!res) return undefined;
+            if ((res as any)?.binArrayBitmapExtension) return (res as any).binArrayBitmapExtension;
+            if ((res as any)?.accounts?.binArrayBitmapExtension) return (res as any).accounts.binArrayBitmapExtension;
+            const metas: any[] = (res as any)?.metas || (res as any)?.accountMetas || [];
+            const found = metas.find((m: any) => (m?.name === 'binArrayBitmapExtension') && (m?.pubkey || m?.publicKey || m?.address));
+            return found?.pubkey || found?.publicKey || found?.address;
+          });
+        }
+        for (const fn of attempts) {
+          try {
+            const val = await fn();
+            const pk = coercePk(val);
+            if (pk) { binArrayBitmapExtension = pk; break; }
+          } catch {}
+        }
+        if (binArrayBitmapExtension) { try { logger.info('meteora.dlmm.derive.ext.ok', { cat: 'tx', ctx: { ext: binArrayBitmapExtension?.toBase58?.() } as any }); } catch {} }
+      } catch {}
     } catch {}
 
     const BN = (await import('bn.js')).default as any;
@@ -246,7 +307,9 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     };
     if (binArrayLower) accounts.binArrayLower = binArrayLower;
     if (binArrayUpper) accounts.binArrayUpper = binArrayUpper;
-    if (binArrayBitmapExtension) accounts.binArrayBitmapExtension = binArrayBitmapExtension;
+    // As of newer DLMM IDLs, this account is required. Fail early if not derivable.
+    if (!binArrayBitmapExtension) throw new Error('BIN_ARRAY_BITMAP_EXTENSION_DERIVE_FAILED');
+    accounts.binArrayBitmapExtension = binArrayBitmapExtension;
     if (typeof builder.accounts === 'function') builder = builder.accounts(accounts);
     const ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
     if (ix) { try { logger.info('meteora.dlmm.swap.ok', { cat: 'tx' }); } catch {}; return [ix]; }
