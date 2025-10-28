@@ -436,7 +436,7 @@ server.listen(CONFIG.port, () => {
         for (const p of placeholders) {
           try { await writeJson((await import('path')).resolve(cacheDir, p.name), p.data); } catch {}
         }
-        try { logger.info('cache.dir ready', { dir: cacheDir, cat: 'server' }); } catch {}
+        try { logger.debug('cache.dir ready', { dir: cacheDir, cat: 'server' }); } catch {}
       }
     } catch {}
     try { await initWalletHistory(); } catch {}

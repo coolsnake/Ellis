@@ -42,6 +42,15 @@ export const ROUTES = {
     simulate: '/arb/simulate',
     simulateSend: '/arb/simulate-send',
     execute: '/arb/execute',
+    // Single-hop convenience endpoints
+    simulateSendRaydiumAmm: '/arb/simulate-send/raydium-amm',
+    executeRaydiumAmm: '/arb/execute/raydium-amm',
+    simulateSendRaydiumClmm: '/arb/simulate-send/raydium-clmm',
+    executeRaydiumClmm: '/arb/execute/raydium-clmm',
+    simulateSendOrca: '/arb/simulate-send/orca',
+    executeOrca: '/arb/execute/orca',
+    simulateSendMeteora: '/arb/simulate-send/meteora',
+    executeMeteora: '/arb/execute/meteora',
   },
   exec: {
     config: '/exec/config',

@@ -917,6 +917,50 @@ export const App: React.FC = () => {
             });
             return;
           }
++
++          // New: single-hop helpers for UI terminal
++          if (action === 'singlehop') {
++            const mode = (parts[2] || '').toLowerCase(); // sim|exec
++            const target = (parts[3] || '').toLowerCase(); // ray-amm|ray-clmm|orca|meteora
++            const sizeUsd = Number(parts[4] || 1);
++            const slippageBps = Number(parts[5] || 50);
++            const poolId = parts[6];
++            if (!['sim','exec'].includes(mode) || !['ray-amm','ray-clmm','orca','meteora'].includes(target)) {
++              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: arb singlehop sim|exec ray-amm|ray-clmm|orca|meteora [SIZE_USD] [SLIPPAGE_BPS] [POOL_ID]' }) });
++              return;
++            }
++            // Pick pool if not provided
++            const dexForPick = target.startsWith('ray') ? 'raydium' : (target as any);
++            const pid = poolId || await pickPoolId(dexForPick as any);
++            if (!pid) {
++              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: no USDC/USDT pool found for ${target}` }) });
++              return;
++            }
++            const route = ((): string => {
++              if (mode === 'sim') {
++                if (target === 'ray-amm') return ROUTES.arb.simulateSendRaydiumAmm;
++                if (target === 'ray-clmm') return ROUTES.arb.simulateSendRaydiumClmm;
++                if (target === 'orca') return ROUTES.arb.simulateSendOrca;
++                return ROUTES.arb.simulateSendMeteora;
++              }
++              if (target === 'ray-amm') return ROUTES.arb.executeRaydiumAmm;
++              if (target === 'ray-clmm') return ROUTES.arb.executeRaydiumClmm;
++              if (target === 'orca') return ROUTES.arb.executeOrca;
++              return ROUTES.arb.executeMeteora;
++            })();
++            const payload: any = { path: [USDC, USDT], poolId: pid, sizeUsd, slippageBps };
++            if (mode === 'exec') payload.forceDirect = true;
++            try {
++              const resp = await fetch(`${apiBase}${route}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
++              const json = await resp.json();
++              if (!resp.ok) throw new Error(json?.error || 'request failed');
++              const msg = mode === 'sim' ? `singlehop ${target} sim OK pool=${pid}` : `singlehop ${target} exec signature=${json?.signature || '(n/a)'} pool=${pid}`;
++              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: ${msg}` }) });
++            } catch (e: any) {
++              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: arb singlehop failed ${String(e?.message || e)}` }) });
++            }
++            return;
++          }
         } catch (e: any) {
           await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: arb failed ${String(e?.message || e)}` }) });
           return;
