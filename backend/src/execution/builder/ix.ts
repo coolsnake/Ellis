@@ -367,9 +367,18 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     };
     if (binArrayLower) accounts.binArrayLower = binArrayLower;
     if (binArrayUpper) accounts.binArrayUpper = binArrayUpper;
-    // As of newer DLMM IDLs, this account is required. Fail early if not derivable.
-    if (!binArrayBitmapExtension) throw new Error('BIN_ARRAY_BITMAP_EXTENSION_DERIVE_FAILED');
-    accounts.binArrayBitmapExtension = binArrayBitmapExtension;
+    // Only include bitmap extension if it exists and is owned by program; IDL marks it optional
+    try {
+      if (binArrayBitmapExtension) {
+        const acc = await connection.getAccountInfo(binArrayBitmapExtension);
+        const ownerOk = !!acc && acc.owner && acc.owner.equals && acc.owner.equals(programId);
+        if (ownerOk) {
+          accounts.binArrayBitmapExtension = binArrayBitmapExtension;
+        } else {
+          try { logger.warn('meteora.dlmm.ext.skip_wrong_owner', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { owner: acc?.owner?.toBase58?.(), expected: programId?.toBase58?.() } }); } catch {}
+        }
+      }
+    } catch {}
 
     // Extend with host/referral fee handling and reserves when available
     const acctBase: any = { ...accounts, hostFeeIn: null };

@@ -813,8 +813,8 @@ export const App: React.FC = () => {
       if (ns === 'arb') {
         const action = (parts[1] || '').toLowerCase();
 
+        const SOL = 'So11111111111111111111111111111111111111112';
         const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-        const USDT = 'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN';
 
         const pickPoolId = async (dex: 'raydium'|'orca'|'meteora'): Promise<string | null> => {
           const resp = await fetch(`${apiBase}/arb/pools/${dex}?sort=tvl`);
@@ -823,7 +823,7 @@ export const App: React.FC = () => {
           const match = list.find((p: any) => {
             const a = String(p?.mint_a || p?.mintA || '').trim();
             const b = String(p?.mint_b || p?.mintB || '').trim();
-            return (a === USDC && b === USDT) || (a === USDT && b === USDC);
+            return (a === SOL && b === USDC) || (a === USDC && b === SOL);
           });
           return match ? String(match.id) : null;
         };
@@ -922,11 +922,11 @@ export const App: React.FC = () => {
           if (action === 'singlehop') {
             const mode = (parts[2] || '').toLowerCase(); // sim|exec
             const target = (parts[3] || '').toLowerCase(); // ray-amm|ray-clmm|orca|meteora
-            const sizeUsd = Number(parts[4] || 1);
+            const sizeSol = Number(parts[4] || 0.01);
             const slippageBps = Number(parts[5] || 50);
             const poolId = parts[6];
             if (!['sim','exec'].includes(mode) || !['ray-amm','ray-clmm','orca','meteora'].includes(target)) {
-              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: arb singlehop sim|exec ray-amm|ray-clmm|orca|meteora [SIZE_USD] [SLIPPAGE_BPS] [POOL_ID]' }) });
+              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: arb singlehop sim|exec ray-amm|ray-clmm|orca|meteora [SIZE_SOL] [SLIPPAGE_BPS] [POOL_ID]' }) });
               return;
             }
             // Pick pool if not provided
@@ -948,7 +948,8 @@ export const App: React.FC = () => {
               if (target === 'orca') return ROUTES.arb.executeOrca;
               return ROUTES.arb.executeMeteora;
             })();
-            const payload: any = { path: [USDC, USDT], poolId: pid, sizeUsd, slippageBps };
+            const sizeAtoms = Math.max(0, Math.round(sizeSol * 1_000_000_000));
+            const payload: any = { path: [SOL, USDC], poolId: pid, size: sizeAtoms, slippageBps };
             if (mode === 'exec') payload.forceDirect = true;
             try {
               const resp = await fetch(`${apiBase}${route}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
