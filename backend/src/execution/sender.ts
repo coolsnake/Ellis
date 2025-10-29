@@ -200,7 +200,16 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
   for (const ix of instructions) {
     try {
       const t = toInstruction(ix);
-      if (t) { try { sanitizeInstructionKeys(t); } catch {} realIxs.push(t); }
+      if (t) {
+        // Skip obviously empty instructions (no keys and no data)
+        try {
+          const noKeys = !Array.isArray((t as any).keys) || (t as any).keys.length === 0;
+          const noData = !(t as any).data || ((t as any).data as Buffer).length === 0;
+          if (noKeys && noData) { skipped += 1; try { logger.info('tx.ix.coerce.skip', { cat: 'tx', ctx: { reason: 'empty_ix' } }); } catch {} ; continue; }
+        } catch {}
+        try { sanitizeInstructionKeys(t); } catch {}
+        realIxs.push(t);
+      }
       else { skipped += 1; try { logger.info('tx.ix.coerce.skip', { cat: 'tx', ctx: { reason: 'bad_shape', shape: (ix && typeof ix === 'object' ? Object.keys(ix) : typeof ix) } as any }); } catch {} }
     } catch (e: any) {
       skipped += 1;
@@ -273,6 +282,12 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
       } catch (fatal) { throw fatal; }
       continue;
     }
+    // Skip obviously empty instructions (no keys and no data)
+    try {
+      const noKeys = !Array.isArray((t as any).keys) || (t as any).keys.length === 0;
+      const noData = !(t as any).data || ((t as any).data as Buffer).length === 0;
+      if (noKeys && noData) { try { logger.info('tx.ix.coerce.skip', { cat: 'tx', ctx: { reason: 'empty_ix' } }); } catch {}; continue; }
+    } catch {}
     try { sanitizeInstructionKeys(t); } catch {}
     realIxs.push(t);
   }

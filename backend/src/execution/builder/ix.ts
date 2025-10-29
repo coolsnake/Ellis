@@ -468,19 +468,19 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     };
     if (binArrayLower) accounts.binArrayLower = binArrayLower;
     if (binArrayUpper) accounts.binArrayUpper = binArrayUpper;
-    // Always include bitmap extension PDA if we can derive it.
-    // Meteora swap requires it for extended pools; pass it even if not yet initialized.
+    // Include bitmap extension PDA only if it exists and is owned by the DLMM program
     try {
       if (binArrayBitmapExtension) {
         try {
           const acc = await connection.getAccountInfo(binArrayBitmapExtension);
           if (!acc) {
             try { logger.warn('meteora.dlmm.ext.missing_on_chain', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { expected: programId?.toBase58?.() } }); } catch {}
-          } else if (!(acc.owner && typeof acc.owner.equals === 'function' && acc.owner.equals(programId))) {
+          } else if (acc.owner && typeof acc.owner.equals === 'function' && acc.owner.equals(programId)) {
+            accounts.binArrayBitmapExtension = binArrayBitmapExtension;
+          } else {
             try { logger.warn('meteora.dlmm.ext.owner_mismatch', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { owner: acc.owner?.toBase58?.(), expected: programId?.toBase58?.() } }); } catch {}
           }
         } catch {}
-        accounts.binArrayBitmapExtension = binArrayBitmapExtension;
       }
     } catch {}
 

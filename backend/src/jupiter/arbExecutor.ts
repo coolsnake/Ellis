@@ -140,7 +140,13 @@ export async function executePlanWithJupiterStrict(args: ExecuteArgs): Promise<{
     const outputMint = plan.path[i + 1];
     const includeDexes = Array.isArray(args.hopDexes) ? mapDexToJupIncludes(args.hopDexes[i] || '') : [];
     try { logger.info('jupiter.trade.hop.start', { cat: 'jupiter', hop: i, inputMint, outputMint, inAmount: curIn, includeDexes }); } catch {}
-    const q = await getV6Quote(inputMint, outputMint, curIn, slippageBps, { onlyDirectRoutes: true, includeDexes });
+    let q: any;
+    try {
+      q = await getV6Quote(inputMint, outputMint, curIn, slippageBps, { onlyDirectRoutes: true, includeDexes });
+    } catch (e: any) {
+      try { logger.info('jupiter.trade.hop.quote.err', { cat: 'jupiter', hop: i, error: String(e?.message || e) }); } catch {}
+      throw e;
+    }
     if (args.strictMinOut && strictMinOuts && Number.isFinite(strictMinOuts[i] as any)) {
       const t = Math.max(0, Math.floor(Number(strictMinOuts[i])));
       try { (q as any).otherAmountThreshold = String(t); } catch {}

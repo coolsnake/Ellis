@@ -1,4 +1,5 @@
 import { logger } from '../utils/logger.js';
+import { jupiterLimiter, onApiResult } from './rateLimiter.js';
 
 export type V6Quote = any;
 
@@ -18,18 +19,39 @@ export async function getV6Quote(
   if (opts?.onlyDirectRoutes) url.searchParams.set('onlyDirectRoutes', 'true');
   if (opts?.includeDexes && opts.includeDexes.length) url.searchParams.set('includeDexes', opts.includeDexes.join(','));
   if (opts?.excludeDexes && opts.excludeDexes.length) url.searchParams.set('excludeDexes', opts.excludeDexes.join(','));
-  const started = Date.now();
-  logger.debug(`api.request GET ${url.pathname}`, { url: url.toString(), cat: 'api' });
-  const res = await fetch(url.toString(), { headers: { accept: 'application/json' } });
-  const dur = Date.now() - started;
-  logger.debug(`api.response GET ${url.pathname} ${res.status} ${dur}ms`, { status: res.status, durationMs: dur, url: url.toString(), cat: 'api' });
-  if (res.status === 429) {
-    try { const { emit } = await import('../server/realtime.js'); emit('log', { level: 'warn', message: `arb:429 source=jupiter kind=v6_quote in=${inputMint} out=${outputMint}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
-    logger.warn('jup.v6.quote 429', { in: inputMint, out: outputMint });
-    throw new Error('429');
+  const attempt = async (i: number) => {
+    await jupiterLimiter.acquire(false);
+    const started = Date.now();
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort('timeout'), 7000);
+    try {
+      logger.debug(`api.request GET ${url.pathname}`, { url: url.toString(), cat: 'api' });
+      const res = await fetch(url.toString(), { headers: { accept: 'application/json' }, signal: ac.signal as any });
+      const dur = Date.now() - started;
+      try { onApiResult(res.status ?? 0, dur); } catch {}
+      logger.debug(`api.response GET ${url.pathname} ${res.status} ${dur}ms`, { status: res.status, durationMs: dur, url: url.toString(), cat: 'api' });
+      if (res.status === 429) {
+        try { const { emit } = await import('../server/realtime.js'); emit('log', { level: 'warn', message: `arb:429 source=jupiter kind=v6_quote in=${inputMint} out=${outputMint}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+        throw new Error('429');
+      }
+      if (!res.ok) throw new Error(`v6 quote failed ${res.status}`);
+      return await res.json();
+    } finally {
+      clearTimeout(t);
+    }
+  };
+  let lastErr: any;
+  for (let i = 0; i < 3; i += 1) {
+    try { return await attempt(i); }
+    catch (e: any) {
+      lastErr = e;
+      const msg = String(e?.message || e);
+      if (msg.includes('429')) { await new Promise(r => setTimeout(r, 400 * (i + 1))); continue; }
+      if (msg.includes('timeout') || msg.includes('fetch failed')) { await new Promise(r => setTimeout(r, 500 * (i + 1))); continue; }
+      break;
+    }
   }
-  if (!res.ok) throw new Error(`v6 quote failed ${res.status}`);
-  return await res.json();
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
 export async function getSwapInstructions(quoteResponse: any, userPublicKey: string, wrapAndUnwrapSol: boolean = true) {

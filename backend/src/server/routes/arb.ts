@@ -190,7 +190,10 @@ export function createArbRouter(io: SocketIOServer): Router {
           if (src.inputMint)  plan.hops[i].inputMint  = String(src.inputMint);
           if (src.outputMint) plan.hops[i].outputMint = String(src.outputMint);
           if (src.amountInRaw !== undefined && src.amountInRaw !== null) {
-            try { plan.hops[i].amountInRaw = BigInt(String(src.amountInRaw)); } catch {}
+            try {
+              const v = BigInt(String(src.amountInRaw));
+              if (v > 0n) plan.hops[i].amountInRaw = v; // ignore zero overrides
+            } catch {}
           }
           if (src.minOutRaw !== undefined && src.minOutRaw !== null) {
             try { plan.hops[i].minOutRaw = BigInt(String(src.minOutRaw)); } catch {}
@@ -247,7 +250,10 @@ export function createArbRouter(io: SocketIOServer): Router {
           if (src.inputMint)  plan.hops[i].inputMint  = String(src.inputMint);
           if (src.outputMint) plan.hops[i].outputMint = String(src.outputMint);
           if (src.amountInRaw !== undefined && src.amountInRaw !== null) {
-            try { plan.hops[i].amountInRaw = BigInt(String(src.amountInRaw)); } catch {}
+            try {
+              const v = BigInt(String(src.amountInRaw));
+              if (v > 0n) plan.hops[i].amountInRaw = v; // ignore zero overrides
+            } catch {}
           }
           if (src.minOutRaw !== undefined && src.minOutRaw !== null) {
             try { plan.hops[i].minOutRaw = BigInt(String(src.minOutRaw)); } catch {}
@@ -348,16 +354,21 @@ export function createArbRouter(io: SocketIOServer): Router {
       const body = req.body || {};
       const path: string[] = Array.isArray(body.path) ? body.path : [];
       if (!Array.isArray(path) || path.length < 2) return res.status(400).json({ error: 'invalid path' });
-      const size = Number.isFinite(body.size) ? Number(body.size) : undefined;
+      const sizeTokens = Number.isFinite(body.size) ? Number(body.size) : undefined;
       const sizeUsd = Number.isFinite(body.sizeUsd) ? Number(body.sizeUsd) : undefined;
       const slippageBps = Number.isFinite(body.slippageBps) ? Number(body.slippageBps) : undefined;
       const hopDexes: string[] | undefined = Array.isArray(body.hopDexes) ? body.hopDexes : undefined;
       const hopRatesUi: number[] | undefined = Array.isArray(body.hopRates) ? body.hopRates : undefined;
       const hopMinOutsAtoms: number[] | undefined = Array.isArray(body.hopMinOutsAtoms) ? body.hopMinOutsAtoms : undefined;
       const strictMinOut = body.strictMinOut !== false;
-      try { logger.info('jupiter.trade.api.execute', { cat: 'jupiter', pathLen: path.length, size, sizeUsd, slippageBps, strictMinOut, hopDexesLen: Array.isArray(hopDexes) ? hopDexes.length : 0 }); } catch {}
+      // Convert token size to atoms
+      let sizeAtoms: number | undefined = undefined;
+      if (Number.isFinite(sizeTokens)) {
+        try { const { resolveMint } = await import('../../utils/tokens.js'); const dec0 = (await resolveMint(path[0])).decimals ?? 6; sizeAtoms = Math.max(0, Math.floor(Number(sizeTokens) * Math.pow(10, dec0))); } catch {}
+      }
+      try { logger.info('jupiter.trade.api.execute', { cat: 'jupiter', pathLen: path.length, size: sizeTokens, sizeUsd, slippageBps, strictMinOut, hopDexesLen: Array.isArray(hopDexes) ? hopDexes.length : 0 }); } catch {}
       const { executePlanWithJupiterStrict } = await import('../../jupiter/arbExecutor.js');
-      const r = await executePlanWithJupiterStrict({ plan: { path }, sizeAtoms: size, sizeUsd, slippageBps, hopDexes, hopRatesUi, hopMinOutsAtoms, strictMinOut });
+      const r = await executePlanWithJupiterStrict({ plan: { path }, sizeAtoms, sizeUsd, slippageBps, hopDexes, hopRatesUi, hopMinOutsAtoms, strictMinOut });
       res.json({ signature: r.signature });
     } catch (e: any) {
       try { logger.info('jupiter.trade.api.execute.err', { cat: 'jupiter', error: String(e?.message || e) }); } catch {}
@@ -395,9 +406,18 @@ export function createArbRouter(io: SocketIOServer): Router {
           const hopDexes: string[] = Array.isArray((input as any)?.dexes)
             ? (input as any).dexes
             : (Array.isArray((plan as any)?.hops) ? (plan as any).hops.map((h: any) => String(h?.dex || '')) : []);
+          // Convert size (tokens) to atoms for plan start mint
+          let sizeAtoms: number | undefined = undefined;
+          try {
+            if (Number.isFinite((input as any)?.size as any)) {
+              const { resolveMint } = await import('../../utils/tokens.js');
+              const dec0 = (await resolveMint(plan.path[0])).decimals ?? 6;
+              sizeAtoms = Math.max(0, Math.floor(Number((input as any).size) * Math.pow(10, dec0)));
+            }
+          } catch {}
           const signature = (await executePlanWithJupiterStrict({
             plan,
-            sizeAtoms: Number.isFinite((input as any)?.size as any) ? Number((input as any).size) : undefined,
+            sizeAtoms,
             sizeUsd: Number.isFinite((input as any)?.sizeUsd as any) ? Number((input as any).sizeUsd) : undefined,
             slippageBps: Number.isFinite((input as any)?.slippageBps as any) ? Number((input as any).slippageBps) : undefined,
             hopDexes,
