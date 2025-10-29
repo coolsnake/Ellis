@@ -476,72 +476,11 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     if (!hop.userSourceAta) preMissing.push('userSourceAta');
     if (!hop.userDestAta) preMissing.push('userDestAta');
     if (preMissing.length) throw new Error(`RAYDIUM_CLMM_BUILD_FAILED: missing ${preMissing.join(',')}`);
-
-    if (!hop.tickArrayLower || !hop.tickArrayUpper || !hop.oracle) {
-      try {
-        const web3: any = await import('@solana/web3.js');
-        const { getConnection } = await import('../../wallet/wallet.js');
-        const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
-        const rmod: any = await import('@raydium-io/raydium-sdk-v2').catch(() => null);
-        const poolPk = toPublicKey(hop.poolId);
-        const conn = getConnection();
-        const acc = await withRpcLimit(() => conn.getAccountInfo(poolPk));
-        if (acc?.data?.length) {
-          const layout = (rmod as any)?.Clmm?.PoolStateLayout || (rmod as any)?.CLMM?.POOL_STATE_LAYOUT || (rmod as any)?.PoolStateLayout;
-          const state = layout && typeof layout.decode === 'function' ? layout.decode(acc.data) : null;
-          if (state) {
-            // Force programId to owner of pool account
-            try { const ownerPid = acc?.owner?.toBase58?.(); if (ownerPid) hop.programId = ownerPid; } catch {}
-            try {
-              const o = (state as any).oracle?.toBase58?.() || String((state as any).oracle || '');
-              if (o && !hop.oracle) hop.oracle = o;
-            } catch {}
-            try {
-              const { Raydium, PoolUtils } = rmod as any;
-              const TickUtils = (rmod as any)?.TickUtils || (rmod as any)?.CLMM?.TickUtils || (rmod as any)?.Clmm?.TickUtils;
-              const getPdaTickArrayAddress = (rmod as any)?.getPdaTickArrayAddress || (rmod as any)?.CLMM?.getPdaTickArrayAddress || (rmod as any)?.Clmm?.getPdaTickArrayAddress;
-              const ray = await Raydium.load({ connection: conn, disableFeatureCheck: true, disableLoadToken: true });
-              const apiRes = await (ray as any).api.fetchPoolById({ ids: poolPk.toBase58?.() || String(poolPk) }).catch(() => null as any);
-              const poolInfo = Array.isArray(apiRes?.data) ? apiRes.data.find((x: any) => String(x?.id || '') === (poolPk.toBase58?.() || String(poolPk))) : (Array.isArray(apiRes) ? apiRes[0] : null);
-              if (poolInfo) {
-                const comp = await (PoolUtils as any).fetchComputeClmmInfo({ connection: ray.connection, poolInfo });
-                const programIdPk = comp.programId || new web3.PublicKey(hop.programId || (CONFIG.raydium as any)?.clmmProgram);
-                const tickCurrent = Number(comp.tickCurrent ?? comp.tick_current);
-                const spacing = Number(comp.tickSpacing ?? comp.tick_spacing);
-                const start = TickUtils?.getTickArrayStartIndexByTick ? TickUtils.getTickArrayStartIndexByTick(tickCurrent, spacing) : (Math.floor(tickCurrent / (60 * spacing)) * (60 * spacing));
-                const initArr: number[] = (TickUtils as any).getInitializedTickArrayInRange(
-                  comp.tickArrayBitmapArray ?? comp.tickArrayBitmap ?? [],
-                  comp.exTickArrayBitmap ?? comp.exTickarrayBitmap ?? [],
-                  spacing,
-                  start,
-                  7,
-                ) || [start];
-                const lowers = initArr.filter((s: number) => s <= start).sort((a: number, b: number) => b - a);
-                const uppers = initArr.filter((s: number) => s >= start).sort((a: number, b: number) => a - b);
-                const lowerStart = lowers[0] ?? start;
-                const upperStart = uppers[0] ?? start;
-                if (!hop.tickArrayLower) {
-                  const lr = getPdaTickArrayAddress?.(programIdPk, poolPk, lowerStart);
-                  const lpk = (lr && (lr.publicKey || lr)) || null;
-                  if (lpk) hop.tickArrayLower = lpk.toBase58?.() || String(lpk);
-                }
-                if (!hop.tickArrayUpper) {
-                  const ur = getPdaTickArrayAddress?.(programIdPk, poolPk, upperStart);
-                  const upk = (ur && (ur.publicKey || ur)) || null;
-                  if (upk) hop.tickArrayUpper = upk.toBase58?.() || String(upk);
-                }
-              }
-            } catch {}
-          }
-        }
-      } catch {}
-    }
-    // Diagnostic log for arrays before final validation
+    // Final validation - require cache-provided arrays/oracle
     try { logger.info('raydium.clmm.builder.arrays', { cat: 'tx', ctx: { pool: hop.poolId, lower: hop.tickArrayLower, upper: hop.tickArrayUpper } as any }); } catch {}
-    // Final validation after derivation attempt
     const missing: string[] = [];
-    if (!hop.tickArrayLower || !hop.tickArrayUpper) missing.push('tickArrayLower/Upper');
-    if (missing.length) throw new Error(`RAYDIUM_CLMM_BUILD_FAILED: missing ${missing.join(',')}`);
+    if (!hop.tickArrayLower || !hop.tickArrayUpper || !hop.oracle) missing.push('tickArrayLower/Upper/oracle');
+    if (missing.length) throw new Error(`RAYDIUM_CLMM_BUILD_FAILED: CACHE_MISS: missing ${missing.join(',')}`);
 
     const { ClmmInstrument } = await import('@raydium-io/raydium-sdk-v2');
     const kp = await ensureWallet(CONFIG.walletPath);

@@ -26,6 +26,8 @@ import { startRaydiumRefreshLoop } from './pools.js';
 import util from 'util';
 import { ensureDir, writeJson } from '../utils/fs.js';
 import { setupRustLogForwarding, shutdownRustProcess } from './arbProcess.js';
+import { loadClmmCacheFromDisk } from '../execution/clmmCache.js';
+import { startClmmRefreshLoop } from './tasks/refreshClmm.js';
 
 const app = express();
 // Respect X-Forwarded-* from Nginx
@@ -414,6 +416,8 @@ server.listen(CONFIG.port, () => {
 
   // Post-listen initialization: run migrations and history load without blocking readiness
   setImmediate(async () => {
+      // Load precomputed CLMM cache from disk
+      try { await loadClmmCacheFromDisk(); logger.info('clmm.cache.loaded'); } catch {}
       // Removed auto verified fetch; use manual /watchlist/fetch-verified endpoint
       // Removed auto tokens refresh; use manual /watchlist/bootstrap-pools endpoint
       try {
@@ -549,6 +553,20 @@ server.listen(CONFIG.port, () => {
   // try { if ((CONFIG as any)?.system?.autoStartPools) { startRaydiumRefreshLoop(); } } catch {}
 
   // Removed background verified fetch; use manual endpoint
+
+  // Start CLMM refresh loop targeting known Raydium CLMM pools (list may change as pools are fetched)
+  try {
+    const getTargetPools = () => {
+      try {
+        const { peekRaydiumPools } = require('./pools.js');
+        const pools = typeof peekRaydiumPools === 'function' ? peekRaydiumPools() : { clmm: [] };
+        const ids = Array.isArray(pools?.clmm) ? pools.clmm.map((p: any) => String(p?.id || '')).filter(Boolean) : [];
+        return ids;
+      } catch { return []; }
+    };
+    const intervalMs = Math.max(5000, Number((CONFIG as any)?.pools?.clmmRefreshIntervalMs || 10000));
+    startClmmRefreshLoop(getTargetPools, intervalMs);
+  } catch {}
 
   // Start graph stream on first socket connect, or after configured delay
   try {
