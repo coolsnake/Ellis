@@ -2,6 +2,7 @@ import { getConnection, ensureWallet, signAndSendSerializedTransaction } from '.
 import { resolveMint } from '../utils/tokens.js';
 import { getV6Quote, getSwapInstructions, buildCombinedTransaction } from './v6.js';
 import { CONFIG } from '../utils/config.js';
+import { logger } from '../utils/logger.js';
 
 type PlanLike = { path: string[] };
 type ExecuteArgs = {
@@ -51,17 +52,29 @@ export async function executeRoundtripWithJupiter(params: { sizeSol?: number; sl
   const slippageBps = Math.max(1, Number(params.slippageBps ?? (CONFIG.fees?.jupiterSlippageBps ?? 50)));
   const conn = getConnection();
   const kp = await ensureWallet(CONFIG.walletPath);
+  try { logger.info('jupiter.trade.roundtrip.start', { cat: 'jupiter', sizeSol, slippageBps }); } catch {}
 
   const sol = (await resolveMint('SOL')).mint;
   const usdc = (await resolveMint('USDC')).mint;
   const amtLamports = Math.round(sizeSol * 1e9);
 
   const q1 = await getV6Quote(sol, usdc, amtLamports, slippageBps, { onlyDirectRoutes: true, includeDexes: [] });
+  try {
+    const out1 = Number(q1?.outAmount || 0);
+    logger.info('jupiter.trade.roundtrip.leg1.quote', { cat: 'jupiter', inMint: sol, outMint: usdc, inAmount: amtLamports, outAmount: out1, routePlanLen: Array.isArray(q1?.routePlan) ? q1.routePlan.length : 0 });
+  } catch {}
   const i1 = await getSwapInstructions(q1, kp.publicKey.toBase58(), (CONFIG as any)?.system?.wrapAndUnwrapSol !== false);
 
   const amtUsdc = Math.max(0, Math.floor(Number(q1?.outAmount || 0)));
   const q2 = await getV6Quote(usdc, sol, amtUsdc, slippageBps, { onlyDirectRoutes: true, includeDexes: [] });
+  try {
+    const out2 = Number(q2?.outAmount || 0);
+    logger.info('jupiter.trade.roundtrip.leg2.quote', { cat: 'jupiter', inMint: usdc, outMint: sol, inAmount: amtUsdc, outAmount: out2, routePlanLen: Array.isArray(q2?.routePlan) ? q2.routePlan.length : 0 });
+  } catch {}
   const i2 = await getSwapInstructions(q2, kp.publicKey.toBase58(), (CONFIG as any)?.system?.wrapAndUnwrapSol !== false);
+
+  const ixCount = ((i1?.setupInstructions?.length || 0) + (i1?.swapInstruction ? 1 : 0) + (i1?.cleanupInstructions?.length || 0))
+    + ((i2?.setupInstructions?.length || 0) + (i2?.swapInstruction ? 1 : 0) + (i2?.cleanupInstructions?.length || 0));
 
   const tx = await buildCombinedTransaction(
     conn,
@@ -71,7 +84,17 @@ export async function executeRoundtripWithJupiter(params: { sizeSol?: number; sl
     []
   );
   const wire = Buffer.from(tx.serialize()).toString('base64');
-  const signature = await signAndSendSerializedTransaction(wire, kp, undefined, 'swap');
+  try { logger.info('jupiter.trade.roundtrip.tx.built', { cat: 'jupiter', ixCount }); } catch {}
+  const signature = await (async () => {
+    try {
+      const sig = await signAndSendSerializedTransaction(wire, kp, undefined, 'swap');
+      try { logger.info('jupiter.trade.roundtrip.send.ok', { cat: 'jupiter', signature: sig }); } catch {}
+      return sig;
+    } catch (e: any) {
+      try { logger.info('jupiter.trade.roundtrip.send.err', { cat: 'jupiter', error: String(e?.message || e) }); } catch {}
+      throw e;
+    }
+  })();
   return { signature };
 }
 
@@ -81,6 +104,17 @@ export async function executePlanWithJupiterStrict(args: ExecuteArgs): Promise<{
   const slippageBps = Math.max(1, Number(args.slippageBps ?? (CONFIG.fees?.jupiterSlippageBps ?? 50)));
   const plan = args.plan;
   if (!Array.isArray(plan?.path) || plan.path.length < 2) throw new Error('invalid_plan');
+  try {
+    logger.info('jupiter.trade.strict.start', {
+      cat: 'jupiter',
+      pathLen: plan.path.length,
+      sizeAtoms: Number(args.sizeAtoms || 0),
+      sizeUsd: Number(args.sizeUsd || 0),
+      slippageBps,
+      strictMinOut: args.strictMinOut !== false,
+      hopDexes: Array.isArray(args.hopDexes) ? args.hopDexes : undefined,
+    });
+  } catch {}
 
   let sizeAtoms = Math.max(0, Math.floor(Number(args.sizeAtoms || 0)));
   if (!sizeAtoms && args.sizeUsd && args.sizeUsd > 0) sizeAtoms = await deriveSizeAtomsFromUsd(plan.path, args.sizeUsd);
@@ -105,12 +139,22 @@ export async function executePlanWithJupiterStrict(args: ExecuteArgs): Promise<{
     const inputMint = plan.path[i];
     const outputMint = plan.path[i + 1];
     const includeDexes = Array.isArray(args.hopDexes) ? mapDexToJupIncludes(args.hopDexes[i] || '') : [];
+    try { logger.info('jupiter.trade.hop.start', { cat: 'jupiter', hop: i, inputMint, outputMint, inAmount: curIn, includeDexes }); } catch {}
     const q = await getV6Quote(inputMint, outputMint, curIn, slippageBps, { onlyDirectRoutes: true, includeDexes });
     if (args.strictMinOut && strictMinOuts && Number.isFinite(strictMinOuts[i] as any)) {
       const t = Math.max(0, Math.floor(Number(strictMinOuts[i])));
       try { (q as any).otherAmountThreshold = String(t); } catch {}
+      try { logger.info('jupiter.trade.hop.minout.override', { cat: 'jupiter', hop: i, minOutRaw: t }); } catch {}
     }
+    try {
+      const outAmt = Number(q?.outAmount || 0);
+      logger.info('jupiter.trade.hop.quote', { cat: 'jupiter', hop: i, routePlanLen: Array.isArray(q?.routePlan) ? q.routePlan.length : 0, inAmount: curIn, outAmount: outAmt });
+    } catch {}
     const instr = await getSwapInstructions(q, kp.publicKey.toBase58(), (CONFIG as any)?.system?.wrapAndUnwrapSol !== false);
+    try {
+      const ixCount = (instr?.setupInstructions?.length || 0) + (instr?.cleanupInstructions?.length || 0) + (instr?.swapInstruction ? 1 : 0);
+      logger.info('jupiter.trade.hop.instructions', { cat: 'jupiter', hop: i, ixCount });
+    } catch {}
     legs.push({ instructions: instr });
     curIn = Math.max(0, Math.floor(Number(q?.outAmount || 0)));
   }
@@ -123,7 +167,20 @@ export async function executePlanWithJupiterStrict(args: ExecuteArgs): Promise<{
     []
   );
   const wire = Buffer.from(tx.serialize()).toString('base64');
-  const signature = await signAndSendSerializedTransaction(wire, kp, undefined, 'swap');
+  try {
+    const totalIxCount = legs.reduce((a, leg) => a + ((leg?.instructions?.setupInstructions?.length || 0) + (leg?.instructions?.cleanupInstructions?.length || 0) + (leg?.instructions?.swapInstruction ? 1 : 0)), 0);
+    logger.info('jupiter.trade.tx.built', { cat: 'jupiter', legs: legs.length, ixCount: totalIxCount });
+  } catch {}
+  const signature = await (async () => {
+    try {
+      const sig = await signAndSendSerializedTransaction(wire, kp, undefined, 'swap');
+      try { logger.info('jupiter.trade.send.ok', { cat: 'jupiter', signature: sig }); } catch {}
+      return sig;
+    } catch (e: any) {
+      try { logger.info('jupiter.trade.send.err', { cat: 'jupiter', error: String(e?.message || e) }); } catch {}
+      throw e;
+    }
+  })();
   return { signature };
 }
 

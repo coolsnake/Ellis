@@ -99,6 +99,27 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       return hop;
     }
   }));
+  // Validate upstream-provided path alignment for Orca hops: inputMint must be a pool token
+  try {
+    const { peekOrcaPools } = await import('../../server/pools.js');
+    const orca = peekOrcaPools();
+    const byId = new Map<string, any>((orca.clmm || []).map((p: any) => [String(p.id), p]));
+    for (const h of hops) {
+      if (h.dex !== 'orca') continue;
+      const id = String(h.poolId || '').replace(/-rev$/, '');
+      if (!id) continue;
+      const p = byId.get(id);
+      if (!p) continue;
+      const mintA = String((p as any)?.mint_a || '');
+      const mintB = String((p as any)?.mint_b || '');
+      if (h.inputMint !== mintA && h.inputMint !== mintB) {
+        try { logger.warn('tx.resolve.orca.input_mint_mismatch', { cat: 'tx', ctx: { pool: id, inputMint: h.inputMint, mintA, mintB } }); } catch {}
+        throw new Error(`ORCA_WRONG_INPUT_MINT_FOR_POOL: pool=${id}, in=${h.inputMint}, a=${mintA}, b=${mintB}`);
+      }
+    }
+  } catch (e) {
+    throw e;
+  }
   // Set amounts and minOuts using per-hop quotes; propagate through hops
   try {
     const slippage = typeof input.slippageBps === 'number' ? input.slippageBps : cfg.slippageBpsDefault;

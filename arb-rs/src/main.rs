@@ -589,6 +589,29 @@ async fn main() -> anyhow::Result<()> {
                         rotate_to_start(&labels, &canon_labels, &mut hop_dexes);
                         rotate_to_start_num(&labels, &canon_labels, &mut hop_rates);
                         rotate_to_start_num(&labels, &canon_labels, &mut hop_outs);
+                        // Validate alignment: each hop_pool_ids[i] must correspond to an edge between canon_labels[i] -> canon_labels[(i+1)%n]
+                        {
+                            let n = canon_labels.len();
+                            let mut aligned = true;
+                            for i in 0..n {
+                                let src = &canon_labels[i];
+                                let dst = &canon_labels[(i + 1) % n];
+                                let pid = hop_pool_ids.get(i).cloned().unwrap_or_default();
+                                let dex_i = hop_dexes.get(i).cloned().unwrap_or_default();
+                                if pid.is_empty() || dex_i == "Link" { continue; }
+                                if let (Some(&u), Some(&v)) = (s.graph.map.get(src), s.graph.map.get(dst)) {
+                                    let mut ok = false;
+                                    for e in s.graph.g.edges_connecting(u, v) {
+                                        if e.weight().pool_id == pid { ok = true; break; }
+                                    }
+                                    if !ok { aligned = false; break; }
+                                } else { aligned = false; break; }
+                            }
+                            if !aligned {
+                                tracing::warn!("arb.detect.cycle.misaligned path={} pools=[{}]", canon_labels.join("->"), hop_pool_ids.join(","));
+                                continue;
+                            }
+                        }
                         let key = canon_labels.join("->");
                         if seen.contains(&key) { continue; }
                         seen.insert(key);
@@ -811,6 +834,28 @@ async fn main() -> anyhow::Result<()> {
                                 let fees_str = hop_fee_bps.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
                                 let pools_str = hop_pool_ids.join(",");
                                 tracing::info!(target = "arb_rs", "arb.near_miss path={} profit_bps={} net_bps={} hops={} rates=[{}] outs=[{}] fees=[{}] pools=[{}] product={:.8} slack={:.8}", path_str, profit_bps, net_bps, nlen, rates_str, outs_str, fees_str, pools_str, rate_prod, nmcy.slack);
+                            }
+                            // Validate alignment for near-miss arrays: hop_pool_ids[i] must map to edge labels[i] -> labels[(i+1)%nlen]
+                            {
+                                let mut aligned = true;
+                                for i in 0..nlen {
+                                    let src = &labels[i];
+                                    let dst = &labels[(i + 1) % nlen];
+                                    let pid = hop_pool_ids.get(i).cloned().unwrap_or_default();
+                                    let dex_i = hop_dexes.get(i).cloned().unwrap_or_default();
+                                    if pid.is_empty() || dex_i == "Link" { continue; }
+                                    if let (Some(&u), Some(&v)) = (s.graph.map.get(src), s.graph.map.get(dst)) {
+                                        let mut ok = false;
+                                        for e in s.graph.g.edges_connecting(u, v) {
+                                            if e.weight().pool_id == pid { ok = true; break; }
+                                        }
+                                        if !ok { aligned = false; break; }
+                                    } else { aligned = false; break; }
+                                }
+                                if !aligned {
+                                    tracing::warn!("arb.near_miss.misaligned path={} pools=[{}]", labels.join("->"), hop_pool_ids.join(","));
+                                    continue;
+                                }
                             }
                             let mut near = Opportunity {
                                 path: labels.clone(),

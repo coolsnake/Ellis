@@ -169,7 +169,34 @@ export function createArbRouter(io: SocketIOServer): Router {
       const { loadExecConfig } = await import('../execConfigStore.js');
       const input = req.body || {};
       const parsed = ResolveDirectSchema.parse(input);
-      const plan = input?.plan && Array.isArray(input.plan?.hops) ? input.plan : await resolveDirectPlan(parsed as any, {} as any);
+      // Build a resolve input from provided plan (if any), otherwise use parsed arrays
+      const basePlan = (input && (input as any).plan && Array.isArray((input as any).plan?.hops)) ? (input as any).plan : undefined;
+      const resolveInput = basePlan
+        ? {
+            path: basePlan.path,
+            hopPoolIds: basePlan.hops.map((h: any) => String(h.poolId)),
+            dexes: basePlan.hops.map((h: any) => String(h.dex)),
+            size: (input as any).size,
+            sizeUsd: (input as any).sizeUsd,
+            slippageBps: (input as any).slippageBps,
+          }
+        : (parsed as any);
+      // Always resolve using the quote’s path/pools/dexes -> fills mints, decimals, and amounts
+      const plan = await resolveDirectPlan(resolveInput as any, {} as any);
+      // Apply optional per-hop overrides from the provided quote/plan
+      if (basePlan) {
+        for (let i = 0; i < plan.hops.length && i < basePlan.hops.length; i += 1) {
+          const src = basePlan.hops[i] as any;
+          if (src.inputMint)  plan.hops[i].inputMint  = String(src.inputMint);
+          if (src.outputMint) plan.hops[i].outputMint = String(src.outputMint);
+          if (src.amountInRaw !== undefined && src.amountInRaw !== null) {
+            try { plan.hops[i].amountInRaw = BigInt(String(src.amountInRaw)); } catch {}
+          }
+          if (src.minOutRaw !== undefined && src.minOutRaw !== null) {
+            try { plan.hops[i].minOutRaw = BigInt(String(src.minOutRaw)); } catch {}
+          }
+        }
+      }
       const execCfg = await loadExecConfig();
       const tBuild0 = Date.now();
       const built = await buildDirectArbTx(plan, [], {} as any);
@@ -202,7 +229,31 @@ export function createArbRouter(io: SocketIOServer): Router {
 
       const input = req.body || {};
       const parsed = ResolveDirectSchema.parse(input);
-      const plan = input?.plan && Array.isArray(input.plan?.hops) ? input.plan : await resolveDirectPlan(parsed as any, {} as any);
+      const basePlan = (input && (input as any).plan && Array.isArray((input as any).plan?.hops)) ? (input as any).plan : undefined;
+      const resolveInput = basePlan
+        ? {
+            path: basePlan.path,
+            hopPoolIds: basePlan.hops.map((h: any) => String(h.poolId)),
+            dexes: basePlan.hops.map((h: any) => String(h.dex)),
+            size: (input as any).size,
+            sizeUsd: (input as any).sizeUsd,
+            slippageBps: (input as any).slippageBps,
+          }
+        : (parsed as any);
+      const plan = await resolveDirectPlan(resolveInput as any, {} as any);
+      if (basePlan) {
+        for (let i = 0; i < plan.hops.length && i < basePlan.hops.length; i += 1) {
+          const src = basePlan.hops[i] as any;
+          if (src.inputMint)  plan.hops[i].inputMint  = String(src.inputMint);
+          if (src.outputMint) plan.hops[i].outputMint = String(src.outputMint);
+          if (src.amountInRaw !== undefined && src.amountInRaw !== null) {
+            try { plan.hops[i].amountInRaw = BigInt(String(src.amountInRaw)); } catch {}
+          }
+          if (src.minOutRaw !== undefined && src.minOutRaw !== null) {
+            try { plan.hops[i].minOutRaw = BigInt(String(src.minOutRaw)); } catch {}
+          }
+        }
+      }
       const built = await buildDirectArbTx(plan, [], {} as any);
       const execCfg = await loadExecConfig();
       try { emit('log', { level: 'info', message: 'pretrade:arb tx built', timestamp: new Date().toISOString(), context: { cat: 'tx', code: 'PRETRADE.TX.BUILT', mode: (execCfg as any)?.mode } }); } catch {}
@@ -281,10 +332,12 @@ export function createArbRouter(io: SocketIOServer): Router {
       const body = req.body || {};
       const sizeSol = Number.isFinite(body?.sizeSol) ? Number(body.sizeSol) : 0.01;
       const slippageBps = Number.isFinite(body?.slippageBps) ? Number(body.slippageBps) : 50;
+      try { logger.info('jupiter.trade.api.roundtrip', { cat: 'jupiter', sizeSol, slippageBps }); } catch {}
       const { executeRoundtripWithJupiter } = await import('../../jupiter/arbExecutor.js');
       const r = await executeRoundtripWithJupiter({ sizeSol, slippageBps });
       res.json({ signature: r.signature });
     } catch (e: any) {
+      try { logger.info('jupiter.trade.api.roundtrip.err', { cat: 'jupiter', error: String(e?.message || e) }); } catch {}
       res.status(400).json({ error: String(e?.message || e) });
     }
   });
@@ -302,10 +355,12 @@ export function createArbRouter(io: SocketIOServer): Router {
       const hopRatesUi: number[] | undefined = Array.isArray(body.hopRates) ? body.hopRates : undefined;
       const hopMinOutsAtoms: number[] | undefined = Array.isArray(body.hopMinOutsAtoms) ? body.hopMinOutsAtoms : undefined;
       const strictMinOut = body.strictMinOut !== false;
+      try { logger.info('jupiter.trade.api.execute', { cat: 'jupiter', pathLen: path.length, size, sizeUsd, slippageBps, strictMinOut, hopDexesLen: Array.isArray(hopDexes) ? hopDexes.length : 0 }); } catch {}
       const { executePlanWithJupiterStrict } = await import('../../jupiter/arbExecutor.js');
       const r = await executePlanWithJupiterStrict({ plan: { path }, sizeAtoms: size, sizeUsd, slippageBps, hopDexes, hopRatesUi, hopMinOutsAtoms, strictMinOut });
       res.json({ signature: r.signature });
     } catch (e: any) {
+      try { logger.info('jupiter.trade.api.execute.err', { cat: 'jupiter', error: String(e?.message || e) }); } catch {}
       res.status(400).json({ error: String(e?.message || e) });
     }
   });

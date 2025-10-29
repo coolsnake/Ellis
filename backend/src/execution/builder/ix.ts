@@ -468,24 +468,24 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     };
     if (binArrayLower) accounts.binArrayLower = binArrayLower;
     if (binArrayUpper) accounts.binArrayUpper = binArrayUpper;
-    // Only include bitmap extension if it exists and is owned by program; IDL marks it optional
-    let bitmapOwnerOk = false;
+    // Always include bitmap extension PDA if we can derive it.
+    // Meteora swap requires it for extended pools; pass it even if not yet initialized.
     try {
       if (binArrayBitmapExtension) {
-        const acc = await connection.getAccountInfo(binArrayBitmapExtension);
-        bitmapOwnerOk = !!acc && acc.owner && acc.owner.equals && acc.owner.equals(programId);
-        if (bitmapOwnerOk) {
-    accounts.binArrayBitmapExtension = binArrayBitmapExtension;
-        } else {
-          try { logger.warn('meteora.dlmm.ext.skip_wrong_owner', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { owner: acc?.owner?.toBase58?.(), expected: programId?.toBase58?.() } }); } catch {}
-        }
+        try {
+          const acc = await connection.getAccountInfo(binArrayBitmapExtension);
+          if (!acc) {
+            try { logger.warn('meteora.dlmm.ext.missing_on_chain', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { expected: programId?.toBase58?.() } }); } catch {}
+          } else if (!(acc.owner && typeof acc.owner.equals === 'function' && acc.owner.equals(programId))) {
+            try { logger.warn('meteora.dlmm.ext.owner_mismatch', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { owner: acc.owner?.toBase58?.(), expected: programId?.toBase58?.() } }); } catch {}
+          }
+        } catch {}
+        accounts.binArrayBitmapExtension = binArrayBitmapExtension;
       }
     } catch {}
 
     // Extend with host/referral fee handling and reserves when available
     const acctBase: any = { ...accounts, hostFeeIn: null };
-    // Explicitly set optional extension account to null when not owned
-    if (!bitmapOwnerOk && !acctBase.binArrayBitmapExtension) acctBase.binArrayBitmapExtension = null;
     try {
       if (hop.vaultA) acctBase.reserveX = toPublicKey(hop.vaultA as any);
       if (hop.vaultB) acctBase.reserveY = toPublicKey(hop.vaultB as any);

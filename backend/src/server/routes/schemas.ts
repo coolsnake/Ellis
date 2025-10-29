@@ -17,10 +17,19 @@ const DirectArraysSchema = z.object({
   }
 });
 
+const HopOverrideSchema = z.object({
+  dex: z.string(),
+  poolId: z.string(),
+  inputMint: z.string().optional(),
+  outputMint: z.string().optional(),
+  amountInRaw: z.union([z.string(), z.number()]).optional(),
+  minOutRaw: z.union([z.string(), z.number()]).optional(),
+});
+
 const PlanSchema = z.object({
   plan: z.object({
     path: z.array(z.string()).min(2),
-    hops: z.array(z.object({ dex: z.string(), poolId: z.string() })),
+    hops: z.array(HopOverrideSchema),
   }),
   size: z.number().optional(),
   sizeUsd: z.number().optional(),
