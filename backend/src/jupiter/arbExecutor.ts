@@ -147,6 +147,21 @@ export async function executePlanWithJupiterStrict(args: ExecuteArgs): Promise<{
       try { logger.info('jupiter.trade.hop.quote.err', { cat: 'jupiter', hop: i, error: String(e?.message || e) }); } catch {}
       throw e;
     }
+    // Enforce DEX selection post-quote when API doesn't support includeDexes (legacy fallback)
+    try {
+      if (includeDexes && includeDexes.length) {
+        const plan = Array.isArray((q as any)?.routePlan) ? (q as any).routePlan : [];
+        const allowed = new Set(includeDexes.map(s => String(s).toLowerCase()));
+        const labels: string[] = plan.map((p: any) => String(p?.swapInfo?.label || '').toLowerCase());
+        const ok = labels.length > 0 && labels.every(l => Array.from(allowed).some(a => l.includes(a.toLowerCase())));
+        if (!ok) {
+          try { logger.info('jupiter.trade.hop.dex_mismatch', { cat: 'jupiter', hop: i, labels, includeDexes }); } catch {}
+          throw new Error('dex_mismatch');
+        }
+      }
+    } catch (e) {
+      throw e;
+    }
     if (args.strictMinOut && strictMinOuts && Number.isFinite(strictMinOuts[i] as any)) {
       const t = Math.max(0, Math.floor(Number(strictMinOuts[i])));
       try { (q as any).otherAmountThreshold = String(t); } catch {}

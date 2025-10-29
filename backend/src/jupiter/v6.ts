@@ -10,6 +10,50 @@ export async function getV6Quote(
   slippageBps: number,
   opts?: { onlyDirectRoutes?: boolean; includeDexes?: string[]; excludeDexes?: string[] }
 ): Promise<V6Quote> {
+  // Prefer legacy lite quote by default
+  const legacyUrl = new URL('https://lite-api.jup.ag/swap/v1/quote');
+  legacyUrl.searchParams.set('inputMint', inputMint);
+  legacyUrl.searchParams.set('outputMint', outputMint);
+  legacyUrl.searchParams.set('amount', String(amount));
+  legacyUrl.searchParams.set('slippageBps', String(slippageBps));
+  legacyUrl.searchParams.set('restrictIntermediateTokens', 'true');
+  if (opts?.onlyDirectRoutes) legacyUrl.searchParams.set('onlyDirectRoutes', 'true');
+
+  const attemptLegacy = async (i: number) => {
+    await jupiterLimiter.acquire(false);
+    const started = Date.now();
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort('timeout'), 7000);
+    try {
+      logger.debug(`api.request GET /swap/v1/quote`, { url: legacyUrl.toString(), cat: 'api' });
+      const res = await fetch(legacyUrl.toString(), { headers: { accept: 'application/json' }, signal: ac.signal as any });
+      const dur = Date.now() - started;
+      try { onApiResult(res.status ?? 0, dur); } catch {}
+      logger.debug(`api.response GET /swap/v1/quote ${res.status} ${dur}ms`, { status: res.status, durationMs: dur, url: legacyUrl.toString(), cat: 'api' });
+      if (res.status === 429) {
+        try { const { emit } = await import('../server/realtime.js'); emit('log', { level: 'warn', message: `arb:429 source=jupiter kind=legacy_quote in=${inputMint} out=${outputMint}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+        throw new Error('429');
+      }
+      if (!res.ok) throw new Error(`legacy quote failed ${res.status}`);
+      return await res.json();
+    } finally {
+      clearTimeout(t);
+    }
+  };
+
+  let lastErr: any;
+  for (let i = 0; i < 3; i += 1) {
+    try { return await attemptLegacy(i); }
+    catch (e: any) {
+      lastErr = e;
+      const msg = String(e?.message || e);
+      if (msg.includes('429')) { await new Promise(r => setTimeout(r, 400 * (i + 1))); continue; }
+      if (msg.includes('timeout') || msg.includes('fetch failed')) { await new Promise(r => setTimeout(r, 500 * (i + 1))); continue; }
+      break;
+    }
+  }
+
+  // Fallback to v6 quote API when legacy fails persistently
   const url = new URL('https://quote-api.jup.ag/v6/quote');
   url.searchParams.set('inputMint', inputMint);
   url.searchParams.set('outputMint', outputMint);
@@ -40,7 +84,7 @@ export async function getV6Quote(
       clearTimeout(t);
     }
   };
-  let lastErr: any;
+  lastErr = undefined;
   for (let i = 0; i < 3; i += 1) {
     try { return await attempt(i); }
     catch (e: any) {
