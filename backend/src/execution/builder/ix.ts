@@ -62,6 +62,27 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
     const kp = await ensureWallet(CONFIG.walletPath);
     const { createSolanaRpc } = await import('@solana/kit');
     const { swapInstructions, setWhirlpoolsConfig, setNativeMintWrappingStrategy, setPayerFromBytes } = await import('@orca-so/whirlpools');
+    // Precheck: ensure pool contains input mint to avoid zero-out quotes
+    try {
+      const sdkAny: any = await import('@orca-so/whirlpools-sdk').catch(() => null);
+      if (sdkAny && hop.poolId && hop.inputMint) {
+        const { PublicKey } = await import('@solana/web3.js');
+        const pk = new PublicKey(String(hop.poolId));
+        const acc = await connection.getAccountInfo(pk);
+        const ParsableWhirlpool = (sdkAny as any).ParsableWhirlpool;
+        const parsed = acc ? (ParsableWhirlpool as any).parse(pk, acc) : null;
+        if (parsed) {
+          const mintA = parsed.tokenMintA?.toBase58?.();
+          const mintB = parsed.tokenMintB?.toBase58?.();
+          const inMint = String(hop.inputMint);
+          if (inMint !== mintA && inMint !== mintB) {
+            throw new Error('ORCA_WRONG_INPUT_MINT_FOR_POOL');
+          }
+        }
+      }
+    } catch (preErr) {
+      throw preErr;
+    }
     try {
       const rpc = createSolanaRpc(CONFIG.rpcUrl);
       await setPayerFromBytes(kp.secretKey);

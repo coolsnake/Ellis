@@ -126,6 +126,19 @@ export function createArbRouter(io: SocketIOServer): Router {
     }
   });
 
+  // Trigger a one-off Raydium CLMM static precompute for a pool id
+  api.post('/arb/clmm/refresh', async (req: Request, res: Response) => {
+    try {
+      const poolId = String((req.body && (req.body as any).poolId) || (req.query && (req.query as any).poolId) || '');
+      if (!poolId) return res.status(400).json({ error: 'poolId required' });
+      const { refreshRaydiumClmm } = await import('../tasks/refreshClmm.js');
+      await refreshRaydiumClmm(poolId);
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   api.post('/arb/start', async (req, res) => {
     try {
       const body = req.body || {};

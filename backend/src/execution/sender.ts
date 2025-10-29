@@ -52,10 +52,22 @@ function toInstruction(ix: any): TransactionInstruction | null {
       // Try direct byte accessors
       try { if (inner && typeof inner.toBytes === 'function') { return new PublicKey(inner.toBytes()); } } catch {}
       try { if (inner && typeof inner.toBuffer === 'function') { return new PublicKey(inner.toBuffer()); } } catch {}
+      // Handle array-like 32-byte input
+      try { if (Array.isArray(inner) && inner.length === 32) { return new PublicKey(Uint8Array.from(inner)); } } catch {}
+      // Handle common wrapped shapes: { value | bytes | data }
+      try {
+        const wrapped: any = (inner && ((inner as any).value ?? (inner as any).bytes ?? (inner as any).data)) as any;
+        if (wrapped) {
+          if (typeof wrapped === 'string') return new PublicKey(wrapped);
+          if (wrapped instanceof Uint8Array) return new PublicKey(wrapped);
+          if (Array.isArray(wrapped) && wrapped.length === 32) return new PublicKey(Uint8Array.from(wrapped));
+        }
+      } catch {}
       // Fallbacks
         if (typeof inner === 'string') return new PublicKey(inner);
       try { if (typeof (inner as any)?.toBase58 === 'function') return new PublicKey((inner as any).toBase58()); } catch {}
-        return new PublicKey(String(inner));
+      // As a last resort, throw so caller treats this as uncoercible
+      throw new Error('UNCOERCIBLE_PUBKEY');
     };
     // If it's already a TransactionInstruction (possibly even from our web3), clone into our TI with normalized keys
     if (ix instanceof TransactionInstruction) {
@@ -224,7 +236,18 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
   if (opts?.computeUnitPriceMicroLamports && opts.computeUnitPriceMicroLamports > 0) realIxs.push(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: Math.floor(opts.computeUnitPriceMicroLamports) }));
   for (const ix of instructions) {
     const t = toInstruction(ix);
-    if (t) { try { sanitizeInstructionKeys(t); } catch {} realIxs.push(t); }
+    if (!t) {
+      try {
+        const pidRaw: any = (ix && ((ix as any).programId || (ix as any).programAddress)) || '';
+        const typ: string = String(((ix as any)?.type) || '').toLowerCase();
+        const pidStr: string = (typeof pidRaw === 'string') ? pidRaw : (pidRaw?.toBase58?.() || '');
+        const looksDex = /raydium|orca|meteora/.test(typ) || (typeof pidStr === 'string' && pidStr.length >= 32);
+        if (looksDex) throw new Error(`TX_ASSEMBLY_FAILED: cannot coerce DEX ix (type=${typ || 'unknown'})`);
+      } catch (fatal) { throw fatal; }
+      continue;
+    }
+    try { sanitizeInstructionKeys(t); } catch {}
+    realIxs.push(t);
   }
   const { blockhash, lastValidBlockHeight } = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
   try {
