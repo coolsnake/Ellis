@@ -165,14 +165,16 @@ export async function executePlanWithJupiterStrict(args: ExecuteArgs): Promise<{
         }
       }
     } catch (e) { throw e; }
-    if (args.strictMinOut && strictMinOuts && Number.isFinite(strictMinOuts[i] as any)) {
-      const t = Math.max(0, Math.floor(Number(strictMinOuts[i])));
-      try { (q as any).otherAmountThreshold = String(t); } catch {}
-      try { logger.info('jupiter.trade.hop.minout.override', { cat: 'jupiter', hop: i, minOutRaw: t }); } catch {}
-    }
     try {
       const outAmt = Number(q?.outAmount || 0);
       logger.info('jupiter.trade.hop.quote', { cat: 'jupiter', hop: i, routePlanLen: Array.isArray(q?.routePlan) ? q.routePlan.length : 0, inAmount: curIn, outAmount: outAmt });
+      if (args.strictMinOut) {
+        const marginBps = Math.max(0, Math.min(Number(slippageBps), 200));
+        const proposed = Math.max(0, Math.floor(outAmt * (1 - marginBps / 10_000)));
+        const minOutRaw = Math.min(proposed, outAmt);
+        try { (q as any).otherAmountThreshold = String(minOutRaw); } catch {}
+        try { logger.info('jupiter.trade.hop.minout.set', { cat: 'jupiter', hop: i, outRaw: outAmt, minOutRaw, marginBps }); } catch {}
+      }
     } catch {}
     const instr = await getSwapInstructions(q, kp.publicKey.toBase58(), (CONFIG as any)?.system?.wrapAndUnwrapSol !== false);
     try {

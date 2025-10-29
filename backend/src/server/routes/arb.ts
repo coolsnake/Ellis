@@ -350,6 +350,8 @@ export function createArbRouter(io: SocketIOServer): Router {
       try { pushBounded(execStats.preflightMs, Date.now() - tPre0); } catch {}
 
       const id = Math.random().toString(36).slice(2,10);
+      try { logger.info('tx.intent', { cat: 'tx', ctx: { id, intent } as any }); } catch {}
+      try { logger.info('tx.ixs', { cat: 'tx', ctx: { id, ixCount: built.ixCount, items: ixs } as any }); } catch {}
       await logTxTrace('preflight', {
         id, timeMs: Date.now(),
         path: plan.path,
@@ -571,6 +573,10 @@ export function createArbRouter(io: SocketIOServer): Router {
       if (maxBytes > 0 && built.sizeBytes > maxBytes) {
         try { logger.info('tx.size.warn', { cat: 'tx', ctx: { ixCount: built.ixCount, txSizeBytes: built.sizeBytes, maxTxSizeBytes: maxBytes } as any }); } catch {}
       }
+
+      // Log intent and ix summary for execution path
+      try { logger.info('tx.intent', { cat: 'tx', ctx: { id, intent } as any }); } catch {}
+      try { logger.info('tx.ixs', { cat: 'tx', ctx: { id, ixCount: built.ixCount, items: ixs } as any }); } catch {}
 
       // Require successful preflight before sending
       try { logger.info('tx.preflight.start', { cat: 'tx', code: LogCode.TX_PREFLIGHT_START, ctx: { ixCount: built.ixCount, sizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode } as any }); } catch {}
