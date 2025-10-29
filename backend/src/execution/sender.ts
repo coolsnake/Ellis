@@ -4,6 +4,7 @@ import { withRpcLimit } from '../utils/rpcLimiter.js';
 import { writeDexFullDump } from '../utils/txTrace.js';
 import { CONFIG } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
+const TX_DEBUG_COERCION = !!((CONFIG as any)?.tx?.debugIxCoercion);
 
 export type SendOptions = {
   computeUnitLimit?: number;
@@ -71,6 +72,7 @@ function toInstruction(ix: any): TransactionInstruction | null {
     };
     // If it's already a TransactionInstruction (possibly even from our web3), clone into our TI with normalized keys
     if (ix instanceof TransactionInstruction) {
+      try { if (TX_DEBUG_COERCION) logger.debug('tx.ix.coerce.path', { path: 'same_TI' }); } catch {}
       const src: any = ix;
       const keysSrc: any[] = Array.isArray(src.keys) ? src.keys : Array.from(src.keys || []);
       return new TransactionInstruction({
@@ -82,6 +84,7 @@ function toInstruction(ix: any): TransactionInstruction | null {
     const ctorName: string | undefined = (ix && ix.constructor && ix.constructor.name) ? ix.constructor.name : undefined;
     // If it's a TI from a different web3.js copy, coerce by shape
     if (ctorName === 'TransactionInstruction' && typeof (ix as any).programId !== 'undefined') {
+      try { if (TX_DEBUG_COERCION) logger.debug('tx.ix.coerce.path', { path: 'foreign_TI', ctorName }); } catch {}
       const foreign = ix as any;
       const programId = normalizePk(foreign.programId);
       const keysSrc: any[] = Array.isArray(foreign.keys)
@@ -132,6 +135,7 @@ function toInstruction(ix: any): TransactionInstruction | null {
         try { data = Buffer.from(raw, 'base64'); } catch { data = Buffer.from([]); }
       }
     } catch {}
+    try { if (TX_DEBUG_COERCION) logger.debug('tx.ix.coerce.path', { path: 'plain_object', keys: keys.length, dataLen: data.length }); } catch {}
     return new TransactionInstruction({ programId, keys, data });
   } catch (e: any) {
     try { logger.info('tx.ix.coerce.err', { cat: 'tx', ctx: { error: String(e?.message || e), shape: (ix && typeof ix === 'object' ? Object.keys(ix) : typeof ix) } as any }); } catch {}
@@ -172,6 +176,19 @@ async function loadLookupTables(connection: Connection, addrs: string[]): Promis
   return out;
 }
 
+function summarizeSimError(logs?: string[], err?: any): { ix?: number; custom?: number; hint?: string } {
+  try {
+    if (err && err.InstructionError && Array.isArray(err.InstructionError)) {
+      const ix = Number(err.InstructionError[0]);
+      const detail = err.InstructionError[1];
+      const custom = Number(detail?.Custom);
+      return { ix, custom, hint: custom ? `custom=${custom}` : undefined };
+    }
+    const last = Array.isArray(logs) ? [...logs].reverse().find(l => /error|failed|custom program error/i.test(l)) : undefined;
+    return { hint: last };
+  } catch { return {}; }
+}
+
 export async function assembleAndSimulate(instructions: any[], opts?: SendOptions): Promise<{ logs?: string[]; err?: any; wireBase64?: string }> {
   const connection = getConnection();
   const kp = await ensureWallet((await import('../utils/config.js')).CONFIG.walletPath);
@@ -200,8 +217,12 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
     }
   } catch {}
   const { blockhash } = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
+  const txId = Math.random().toString(36).slice(2, 10);
   try {
-    logger.info('tx.preflight.detail', { cat: 'tx', ctx: { ixCount: realIxs.length, origCount: (instructions || []).length, skipped, programs: realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId))) } as any });
+    logger.info('tx.preflight.start', { cat: 'tx', ctx: { txId, ixCount: realIxs.length } as any });
+  } catch {}
+  try {
+    logger.info('tx.preflight.detail', { cat: 'tx', ctx: { txId, ixCount: realIxs.length, origCount: (instructions || []).length, skipped, programs: realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId))) } as any });
   } catch {}
   const lookupTables = await loadLookupTables(connection, (opts?.lookupTableAddresses || []));
   const msg = new TransactionMessage({ payerKey: kp.publicKey, recentBlockhash: blockhash, instructions: realIxs }).compileToV0Message(lookupTables);
@@ -209,6 +230,9 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
   tx.sign([kp]);
   const wireBase64 = Buffer.from(tx.serialize()).toString('base64');
   const sim = await connection.simulateTransaction(tx, { sigVerify: true });
+  if (sim.value?.err) {
+    try { logger.error('tx.preflight.summary', { cat: 'tx', ctx: { txId, ...summarizeSimError(sim.value?.logs, sim.value?.err) } as any }); } catch {}
+  }
   try {
     const programs = realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId)));
     const dexes = detectDexesFromPrograms(programs);
@@ -242,7 +266,10 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
         const typ: string = String(((ix as any)?.type) || '').toLowerCase();
         const pidStr: string = (typeof pidRaw === 'string') ? pidRaw : (pidRaw?.toBase58?.() || '');
         const looksDex = /raydium|orca|meteora/.test(typ) || (typeof pidStr === 'string' && pidStr.length >= 32);
-        if (looksDex) throw new Error(`TX_ASSEMBLY_FAILED: cannot coerce DEX ix (type=${typ || 'unknown'})`);
+        if (looksDex) {
+          try { logger.error('tx.ix.coerce.fatal', { cat: 'tx', ctx: { type: typ || 'unknown', pid: pidStr || '(unknown)' } }); } catch {}
+          throw new Error(`TX_ASSEMBLY_FAILED: cannot coerce DEX ix (type=${typ || 'unknown'})`);
+        }
       } catch (fatal) { throw fatal; }
       continue;
     }
@@ -251,7 +278,9 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
   }
   const { blockhash, lastValidBlockHeight } = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
   try {
-    logger.info('tx.send.detail', { cat: 'tx', ctx: { ixCount: realIxs.length, programs: realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId))) } as any });
+    const txId = Math.random().toString(36).slice(2, 10);
+    logger.info('tx.send.start', { cat: 'tx', ctx: { txId, ixCount: realIxs.length } as any });
+    logger.info('tx.send.detail', { cat: 'tx', ctx: { txId, ixCount: realIxs.length, programs: realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId))) } as any });
   } catch {}
   const lookupTables = await loadLookupTables(connection, (opts?.lookupTableAddresses || []));
   const msg = new TransactionMessage({ payerKey: kp.publicKey, recentBlockhash: blockhash, instructions: realIxs }).compileToV0Message(lookupTables);

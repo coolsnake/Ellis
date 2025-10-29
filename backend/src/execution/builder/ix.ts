@@ -76,6 +76,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
           const mintB = parsed.tokenMintB?.toBase58?.();
           const inMint = String(hop.inputMint);
           if (inMint !== mintA && inMint !== mintB) {
+            try { logger.warn('orca.whirlpool.input_mint_mismatch', { cat: 'tx', ctx: { pool: String(hop.poolId), inputMint: inMint, mintA, mintB } }); } catch {}
             throw new Error('ORCA_WRONG_INPUT_MINT_FOR_POOL');
           }
         }
@@ -449,6 +450,21 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     if (typeof (builder as any).accountsPartial === 'function') builder = (builder as any).accountsPartial(acctBase);
     else if (typeof (builder as any).accounts === 'function') builder = (builder as any).accounts(acctBase);
 
+    // Log key accounts for DLMM swap for observability
+    try {
+      const to58 = (x: any) => (x && typeof x.toBase58 === 'function') ? x.toBase58() : (typeof x === 'string' ? x : undefined);
+      logger.info('meteora.dlmm.accounts', { cat: 'tx', ctx: {
+        pool: to58(poolPk),
+        tokenXProgram: to58((acctBase as any)?.tokenXProgram),
+        tokenYProgram: to58((acctBase as any)?.tokenYProgram),
+        reserveX: to58((acctBase as any)?.reserveX),
+        reserveY: to58((acctBase as any)?.reserveY),
+        binArrayLower: to58(binArrayLower),
+        binArrayUpper: to58(binArrayUpper),
+        bitmapExt: to58((acctBase as any)?.binArrayBitmapExtension) || null
+      }});
+    } catch {}
+
     // Supply remaining accounts for bin arrays using documented helpers (applies to swap and swap2)
     try {
       const getBounds = (DLMM as any)?.getBinArrayLowerUpperBinId;
@@ -502,6 +518,17 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     const missing: string[] = [];
     if (!hop.tickArrayLower || !hop.tickArrayUpper || !hop.oracle) missing.push('tickArrayLower/Upper/oracle');
     if (missing.length) throw new Error(`RAYDIUM_CLMM_BUILD_FAILED: CACHE_MISS: missing ${missing.join(',')}`);
+    try {
+      logger.info('raydium.clmm.accounts', { cat: 'tx', ctx: {
+        pool: hop.poolId,
+        programId: hop.programId,
+        oracle: hop.oracle,
+        lower: hop.tickArrayLower,
+        upper: hop.tickArrayUpper,
+        vaultA: hop.vaultA,
+        vaultB: hop.vaultB,
+      }});
+    } catch {}
 
     const { ClmmInstrument } = await import('@raydium-io/raydium-sdk-v2');
     const kp = await ensureWallet(CONFIG.walletPath);
@@ -761,6 +788,18 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
 
     let out = unwrapIxs(ixInfo);
     try { logger.info('ix.build raydium.amm.detail', { cat: 'tx', ctx: { got: Array.isArray(out) ? out.length : 0, shape: (ixInfo && typeof ixInfo === 'object' ? Object.keys(ixInfo) : String(typeof ixInfo)) } as any }); } catch {}
+    // Report key material for observability when we have poolKeys
+    try {
+      const key = (v: any) => (v && typeof v.toBase58 === 'function') ? v.toBase58() : (v ? String(v) : '');
+      logger.info('raydium.amm.keys', { cat: 'tx', ctx: {
+        id: key((poolKeys as any)?.id),
+        programId: key((poolKeys as any)?.programId),
+        vaultA: key((poolKeys as any)?.vault?.A),
+        vaultB: key((poolKeys as any)?.vault?.B),
+        marketId: key((poolKeys as any)?.marketId),
+        marketProgramId: key((poolKeys as any)?.marketProgramId)
+      }});
+    } catch {}
     // Fallback: coerce top-level ixInfo if unwrap produced no TIs
     if ((!out || out.length === 0) && ixInfo && typeof ixInfo === 'object' && (ixInfo as any).programId && (ixInfo as any).keys) {
       try {
