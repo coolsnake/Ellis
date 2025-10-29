@@ -147,21 +147,24 @@ export async function executePlanWithJupiterStrict(args: ExecuteArgs): Promise<{
       try { logger.info('jupiter.trade.hop.quote.err', { cat: 'jupiter', hop: i, error: String(e?.message || e) }); } catch {}
       throw e;
     }
-    // Enforce DEX selection post-quote when API doesn't support includeDexes (legacy fallback)
+    // DEX enforcement: strict only when v6 was used; warn-only when legacy lite was used
     try {
       if (includeDexes && includeDexes.length) {
         const plan = Array.isArray((q as any)?.routePlan) ? (q as any).routePlan : [];
-        const allowed = new Set(includeDexes.map(s => String(s).toLowerCase()));
-        const labels: string[] = plan.map((p: any) => String(p?.swapInfo?.label || '').toLowerCase());
-        const ok = labels.length > 0 && labels.every(l => Array.from(allowed).some(a => l.includes(a.toLowerCase())));
-        if (!ok) {
-          try { logger.info('jupiter.trade.hop.dex_mismatch', { cat: 'jupiter', hop: i, labels, includeDexes }); } catch {}
-          throw new Error('dex_mismatch');
+        const labels: string[] = plan.map((p: any) => String(p?.swapInfo?.label || '').toLowerCase()).filter(Boolean);
+        const allowed = includeDexes.map(s => String(s).toLowerCase());
+        const matched = labels.length === 0 || labels.every(l => allowed.some(a => l.includes(a)));
+        const src = String((q as any).__source || 'unknown');
+        if (!matched) {
+          if (src === 'v6') {
+            try { logger.info('jupiter.trade.hop.dex_mismatch', { cat: 'jupiter', hop: i, labels, includeDexes, source: src }); } catch {}
+            throw new Error('dex_mismatch');
+          } else {
+            try { logger.info('jupiter.trade.hop.dex_mismatch_legacy', { cat: 'jupiter', hop: i, labels, includeDexes, source: src }); } catch {}
+          }
         }
       }
-    } catch (e) {
-      throw e;
-    }
+    } catch (e) { throw e; }
     if (args.strictMinOut && strictMinOuts && Number.isFinite(strictMinOuts[i] as any)) {
       const t = Math.max(0, Math.floor(Number(strictMinOuts[i])));
       try { (q as any).otherAmountThreshold = String(t); } catch {}

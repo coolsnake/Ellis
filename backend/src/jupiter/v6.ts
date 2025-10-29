@@ -18,6 +18,19 @@ export async function getV6Quote(
   legacyUrl.searchParams.set('slippageBps', String(slippageBps));
   legacyUrl.searchParams.set('restrictIntermediateTokens', 'true');
   if (opts?.onlyDirectRoutes) legacyUrl.searchParams.set('onlyDirectRoutes', 'true');
+  if (opts?.includeDexes && opts.includeDexes.length) {
+    const toLiteLabel = (s: string) => {
+      const v = String(s).toLowerCase();
+      if (v.includes('raydiumclmm') || v.includes('raydium clmm')) return 'Raydium CLMM';
+      if (v === 'raydium') return 'Raydium';
+      if (v.includes('meteora') && v.includes('dlmm')) return 'Meteora DLMM';
+      if (v.includes('meteora')) return 'Meteora DLMM';
+      if (v.includes('orca') && !v.includes('whirlpool')) return 'Orca Whirlpool';
+      return s;
+    };
+    const val = opts.includeDexes.map(toLiteLabel).map(x => String(x).replace(/\s+/g, '+')).join(',');
+    if (val) legacyUrl.searchParams.set('dexes', val);
+  }
 
   const attemptLegacy = async (i: number) => {
     await jupiterLimiter.acquire(false);
@@ -43,7 +56,11 @@ export async function getV6Quote(
 
   let lastErr: any;
   for (let i = 0; i < 3; i += 1) {
-    try { return await attemptLegacy(i); }
+    try {
+      const json = await attemptLegacy(i);
+      try { Object.defineProperty(json, '__source', { value: 'lite', enumerable: false }); } catch {}
+      return json;
+    }
     catch (e: any) {
       lastErr = e;
       const msg = String(e?.message || e);
@@ -86,7 +103,11 @@ export async function getV6Quote(
   };
   lastErr = undefined;
   for (let i = 0; i < 3; i += 1) {
-    try { return await attempt(i); }
+    try {
+      const json = await attempt(i);
+      try { Object.defineProperty(json, '__source', { value: 'v6', enumerable: false }); } catch {}
+      return json;
+    }
     catch (e: any) {
       lastErr = e;
       const msg = String(e?.message || e);
@@ -99,9 +120,9 @@ export async function getV6Quote(
 }
 
 export async function getSwapInstructions(quoteResponse: any, userPublicKey: string, wrapAndUnwrapSol: boolean = true) {
-  const url = 'https://quote-api.jup.ag/v6/swap-instructions';
+  const url = 'https://lite-api.jup.ag/swap/v1/swap-instructions';
   const started = Date.now();
-  logger.debug(`api.request POST /v6/swap-instructions`, { url, cat: 'api' });
+  logger.debug(`api.request POST /swap/v1/swap-instructions`, { url, cat: 'api' });
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -116,13 +137,13 @@ export async function getSwapInstructions(quoteResponse: any, userPublicKey: str
     })
   });
   const dur = Date.now() - started;
-  logger.debug(`api.response POST /v6/swap-instructions ${res.status} ${dur}ms`, { status: res.status, durationMs: dur, url, cat: 'api' });
+  logger.debug(`api.response POST /swap/v1/swap-instructions ${res.status} ${dur}ms`, { status: res.status, durationMs: dur, url, cat: 'api' });
   if (res.status === 429) {
-    try { const { emit } = await import('../server/realtime.js'); emit('log', { level: 'warn', message: 'arb:429 source=jupiter kind=v6_swap_instructions', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
-    logger.warn('jup.v6.swap_instructions 429');
+    try { const { emit } = await import('../server/realtime.js'); emit('log', { level: 'warn', message: 'arb:429 source=jupiter kind=legacy_swap_instructions', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+    logger.warn('jup.legacy.swap_instructions 429');
     throw new Error('429');
   }
-  if (!res.ok) throw new Error(`v6 swap-instructions failed ${res.status}`);
+  if (!res.ok) throw new Error(`legacy swap-instructions failed ${res.status}`);
   return await res.json();
 }
 
