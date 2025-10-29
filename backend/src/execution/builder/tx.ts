@@ -47,9 +47,12 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
         if (!hop.userDestAta) {
           try { hop.userDestAta = deriveAta(owner, new PublicKey(hop.outputMint), hop.outputTokenProgram).toBase58(); } catch {}
         }
-        // Create ATAs if still missing (emit real create-ATA ixs)
-        if (!hop.userSourceAta) hopIxs.push(buildCreateAtaIx(owner, owner, new PublicKey(hop.inputMint), hop.inputTokenProgram));
-        if (!hop.userDestAta) hopIxs.push(buildCreateAtaIx(owner, owner, new PublicKey(hop.outputMint), hop.outputTokenProgram));
+        // Ensure destination ATA exists (idempotent; safe if already exists)
+        hopIxs.push(buildCreateAtaIx(owner, owner, new PublicKey(hop.outputMint), hop.outputTokenProgram));
+        // Ensure source ATA exists unless input is SOL (WSOL wrap path ensures source when needed)
+        if (!isSolMint(hop.inputMint)) {
+          hopIxs.push(buildCreateAtaIx(owner, owner, new PublicKey(hop.inputMint), hop.inputTokenProgram));
+        }
       }
       // SOL wrapping/unwrap if configured
       const wrapSol = (execCfg.wrapSolInTx !== false) && (CONFIG.system.wrapAndUnwrapSol !== false);

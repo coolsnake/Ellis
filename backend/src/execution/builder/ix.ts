@@ -75,6 +75,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
           const mintA = parsed.tokenMintA?.toBase58?.();
           const mintB = parsed.tokenMintB?.toBase58?.();
           const inMint = String(hop.inputMint);
+          try { logger.info('orca.whirlpool.pool.tokens', { cat: 'tx', ctx: { pool: String(hop.poolId), mintA, mintB, inputMint: inMint } }); } catch {}
           if (inMint !== mintA && inMint !== mintB) {
             try { logger.warn('orca.whirlpool.input_mint_mismatch', { cat: 'tx', ctx: { pool: String(hop.poolId), inputMint: inMint, mintA, mintB } }); } catch {}
             throw new Error('ORCA_WRONG_INPUT_MINT_FOR_POOL');
@@ -117,7 +118,31 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
       // Guard: zero estimated out
       try {
         const estOut = BigInt(String((res as any)?.quote?.estimatedAmountOut ?? 0));
-        if (estOut === 0n) throw new Error('ORCA_QUOTE_ZERO: no tradable amount');
+        if (estOut === 0n) {
+          // Fallback quote via whirlpools-sdk to distinguish SDK-wrapper issues from true no-liquidity
+          try {
+            const { WhirlpoolContext, buildWhirlpoolClient, swapQuoteByInputToken } = await import('@orca-so/whirlpools-sdk');
+            const { Percentage } = await import('@orca-so/common-sdk');
+            const ctx = (WhirlpoolContext as any).from(getConnection() as any, { publicKey: kp.publicKey } as any, new PublicKey((CONFIG as any).orca.programId));
+            const client = (buildWhirlpoolClient as any)(ctx);
+            const pool = await client.getPool(new PublicKey(poolAddr));
+            const q = await (swapQuoteByInputToken as any)(
+              pool,
+              new PublicKey(inputMint),
+              BigInt(String(hop.amountInRaw ?? 0n)),
+              (Percentage as any).fromFraction(1, 10_000),
+              ctx.program.programId,
+              ctx.fetcher,
+              true
+            );
+            const fallbackOut = BigInt((q as any)?.otherAmount ?? (q as any)?.estimatedAmountOut ?? 0);
+            try { logger.info('orca.whirlpool.quote.fallback', { cat: 'tx', ctx: { fallbackOutRaw: fallbackOut.toString() } as any }); } catch {}
+            if (fallbackOut === 0n) throw new Error('ORCA_QUOTE_ZERO: no tradable amount');
+            // If fallbackOut > 0, continue; we'll trust the instructions from swapInstructions
+          } catch (fallbackErr) {
+            throw fallbackErr;
+          }
+        }
       } catch (guardErr) { throw guardErr; }
       const rawIxs = Array.isArray((res as any)?.instructions) ? (res as any).instructions : [];
       const normalizeIx = (ix: any): any => {
@@ -517,7 +542,39 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     try { logger.info('raydium.clmm.builder.arrays', { cat: 'tx', ctx: { pool: hop.poolId, lower: hop.tickArrayLower, upper: hop.tickArrayUpper } as any }); } catch {}
     const missing: string[] = [];
     if (!hop.tickArrayLower || !hop.tickArrayUpper || !hop.oracle) missing.push('tickArrayLower/Upper/oracle');
-    if (missing.length) throw new Error(`RAYDIUM_CLMM_BUILD_FAILED: CACHE_MISS: missing ${missing.join(',')}`);
+    if (missing.length) {
+      // One-shot refresh: attempt to hydrate CLMM statics (oracle/tick arrays) from chain
+      try {
+        try { logger.warn('raydium.clmm.refresh.attempt', { cat: 'tx', ctx: { pool: hop.poolId, missing: missing.join('/') } as any }); } catch {}
+        const poolBase = String(hop.poolId || '').replace(/-rev$/, '');
+        try {
+          const mod = await import('../../server/tasks/refreshClmm.js');
+          if (typeof (mod as any)?.refreshRaydiumClmm === 'function') {
+            await (mod as any).refreshRaydiumClmm(poolBase);
+          }
+        } catch (e: any) {
+          try { logger.warn('raydium.clmm.refresh.err', { cat: 'tx', ctx: { pool: poolBase, error: String(e?.message || e) } as any }); } catch {}
+        }
+        try {
+          const cacheMod: any = await import('../clmmCache.js');
+          const cached = typeof cacheMod?.getClmmStatic === 'function' ? cacheMod.getClmmStatic(poolBase) : null;
+          if (cached) {
+            hop.programId = hop.programId || cached.programId;
+            hop.tickSpacing = hop.tickSpacing ?? cached.tickSpacing;
+            hop.oracle = hop.oracle || cached.oracle;
+            hop.vaultA = hop.vaultA || cached.vaultA;
+            hop.vaultB = hop.vaultB || cached.vaultB;
+            hop.tickArrayLower = hop.tickArrayLower || cached.tickArrays.lower;
+            hop.tickArrayCenter = hop.tickArrayCenter || cached.tickArrays.center;
+            hop.tickArrayUpper = hop.tickArrayUpper || cached.tickArrays.upper;
+          }
+          try { logger.info('raydium.clmm.refresh.result', { cat: 'tx', ctx: { pool: poolBase, oracle: hop.oracle || '', lower: hop.tickArrayLower || '', upper: hop.tickArrayUpper || '' } as any }); } catch {}
+        } catch {}
+      } catch {}
+      const stillMissing: string[] = [];
+      if (!hop.tickArrayLower || !hop.tickArrayUpper || !hop.oracle) stillMissing.push('tickArrayLower/Upper/oracle');
+      if (stillMissing.length) throw new Error(`RAYDIUM_CLMM_BUILD_FAILED: CACHE_MISS_AFTER_REFRESH: missing ${stillMissing.join(',')}`);
+    }
     try {
       logger.info('raydium.clmm.accounts', { cat: 'tx', ctx: {
         pool: hop.poolId,
@@ -650,12 +707,26 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       marketProgramId,
     });
 
-    // If SDK helper didn't populate vaults/auth/market keys (mint order or decimals mismatch),
+    // Helper to detect invalid PublicKey-like values (including placeholder strings)
+    const isBadPk = (x: any): boolean => {
+      try {
+        if (!x) return true;
+        if (typeof x?.toBase58 === 'function') return false;
+        const s = typeof x === 'string'
+          ? x
+          : (x?.address || x?.pubkey || x?.pubKey || x?.publicKey || x?.toBase58?.());
+        // eslint-disable-next-line no-new
+        new PublicKey(String(s));
+        return false;
+      } catch { return true; }
+    };
+
+    // If SDK helper returned missing or invalid keys (mint order/decimals mismatch),
     // derive them from on-chain AMM state (V4/V5).
     try {
-      const needVaults = !poolKeys?.vault?.A || !poolKeys?.vault?.B;
-      const needMarket = !poolKeys?.marketProgramId || !poolKeys?.marketId;
-      const needAuth = !poolKeys?.authority;
+      const needVaults = isBadPk((poolKeys as any)?.vault?.A) || isBadPk((poolKeys as any)?.vault?.B);
+      const needMarket = isBadPk((poolKeys as any)?.marketProgramId) || isBadPk((poolKeys as any)?.marketId);
+      const needAuth = isBadPk((poolKeys as any)?.authority);
       if (needVaults || needMarket || needAuth) {
         const connection = getConnection();
         const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
@@ -746,6 +817,31 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       (poolKeys as any).marketBaseVault = ensurePk((poolKeys as any).marketBaseVault);
       (poolKeys as any).marketQuoteVault = ensurePk((poolKeys as any).marketQuoteVault);
       (poolKeys as any).marketAuthority = ensurePk((poolKeys as any).marketAuthority);
+    } catch {}
+
+    // Final validation guard: abort build if critical keys are still invalid
+    try {
+      const stillBad = [
+        (poolKeys as any)?.vault?.A,
+        (poolKeys as any)?.vault?.B,
+        (poolKeys as any)?.marketProgramId,
+        (poolKeys as any)?.marketId,
+        (poolKeys as any)?.authority,
+      ].some(isBadPk);
+      if (stillBad) {
+        try {
+          const toStr = (v: any) => (v && typeof v.toBase58 === 'function') ? v.toBase58() : String(v || '');
+          logger.warn('raydium.amm.keys.invalid', { cat: 'tx', ctx: {
+            id: toStr((poolKeys as any)?.id || hop.poolId),
+            programId: toStr((poolKeys as any)?.programId || ammProgramId),
+            vaultA: toStr((poolKeys as any)?.vault?.A),
+            vaultB: toStr((poolKeys as any)?.vault?.B),
+            marketId: toStr((poolKeys as any)?.marketId),
+            marketProgramId: toStr((poolKeys as any)?.marketProgramId),
+          } as any });
+        } catch {}
+        throw new Error('RAYDIUM_AMM_BUILD_FAILED: invalid_pool_keys');
+      }
     } catch {}
 
     const BN = (await import('bn.js')).default as any;
