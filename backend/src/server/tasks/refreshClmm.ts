@@ -6,13 +6,15 @@ import { getClmmStatic, setClmmStatic, saveClmmCacheToDisk } from '../../executi
 
 async function decodeClmmState(connection: Connection, poolPk: PublicKey): Promise<{ programId: PublicKey; oracle: PublicKey | null; vaultA: PublicKey | null; vaultB: PublicKey | null; tickCurrent: number; tickSpacing: number } | null> {
   const acc = await connection.getAccountInfo(poolPk);
-  if (!acc?.data?.length) return null;
+  if (!acc?.data?.length) { try { logger.warn('clmm.decode.no_account', { pool: poolPk.toBase58?.() || String(poolPk) }); } catch {}; return null; }
   const programId = acc.owner;
   try {
-    const sdk: any = await import('@raydium-io/raydium-sdk-v2');
+    const sdk: any = await import('@raydium-io/raydium-sdk-v2').catch((e: any) => { try { logger.warn('clmm.decode.sdk_import_fail', { pool: poolPk.toBase58?.(), error: String(e?.message || e) }); } catch {}; return null; });
+    if (!sdk) return null;
     const layout = (sdk as any)?.Clmm?.PoolStateLayout || (sdk as any)?.CLMM?.POOL_STATE_LAYOUT || (sdk as any)?.PoolStateLayout;
-    if (!layout?.decode) return null;
-    const state = layout.decode(acc.data);
+    if (!layout?.decode) { try { logger.warn('clmm.decode.layout_missing', { pool: poolPk.toBase58?.() }); } catch {}; return null; }
+    let state: any = null;
+    try { state = layout.decode(acc.data); } catch (e: any) { try { logger.warn('clmm.decode.fail', { pool: poolPk.toBase58?.(), error: String(e?.message || e) }); } catch {}; return null; }
     const asPk = (v: any): PublicKey | null => {
       try {
         if (!v) return null;
@@ -28,6 +30,7 @@ async function decodeClmmState(connection: Connection, poolPk: PublicKey): Promi
     const vaultB = asPk((state as any).vaultB || (state as any).tokenVaultB || (state as any).quoteVault);
     const tickCurrent = Number((state as any).tickCurrent ?? (state as any).tick_current ?? 0);
     const tickSpacing = Number((state as any).tickSpacing ?? (state as any).tick_spacing ?? 1);
+    try { logger.info('clmm.decode.ok', { pool: poolPk.toBase58?.(), owner: programId?.toBase58?.(), tickCurrent, tickSpacing, oracle: oracle?.toBase58?.(), vA: vaultA?.toBase58?.(), vB: vaultB?.toBase58?.() }); } catch {}
     return { programId, oracle, vaultA, vaultB, tickCurrent, tickSpacing };
   } catch {
     return null;
@@ -47,9 +50,9 @@ async function accountExists(connection: Connection, owner: PublicKey, addr: Pub
 export async function refreshRaydiumClmm(poolIdStr: string): Promise<void> {
   const connection = getConnection();
   const poolPk = new PublicKey(poolIdStr);
-
+  try { logger.info('clmm.refresh.start', { pool: poolIdStr }); } catch {}
   const decoded = await decodeClmmState(connection, poolPk);
-  if (!decoded) return;
+  if (!decoded) { try { logger.warn('clmm.refresh.decode_nil', { pool: poolIdStr }); } catch {}; return; }
 
   const { programId, oracle, vaultA, vaultB, tickCurrent, tickSpacing } = decoded;
 
@@ -64,6 +67,7 @@ export async function refreshRaydiumClmm(poolIdStr: string): Promise<void> {
   try { lowerPk = await deriveTickArrayPda(programId, poolPk, lowerStart); } catch {}
   try { centerPk = await deriveTickArrayPda(programId, poolPk, centerStart); } catch {}
   try { upperPk = await deriveTickArrayPda(programId, poolPk, upperStart); } catch {}
+  try { logger.info('clmm.refresh.bounds', { pool: poolIdStr, centerStart, lowerStart, upperStart, owner: programId.toBase58?.() }); } catch {}
 
   // Validate existence; step outward once if missing
   if (!(await accountExists(connection, programId, lowerPk))) {
@@ -78,6 +82,7 @@ export async function refreshRaydiumClmm(poolIdStr: string): Promise<void> {
       if (await accountExists(connection, programId, alt)) upperPk = alt;
     } catch {}
   }
+  try { logger.info('clmm.refresh.arrays', { pool: poolIdStr, lower: lowerPk?.toBase58?.(), center: centerPk?.toBase58?.(), upper: upperPk?.toBase58?.() }); } catch {}
 
   const staticInfo = {
     programId: programId.toBase58(),

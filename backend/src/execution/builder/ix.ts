@@ -119,28 +119,17 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
       try {
         const estOut = BigInt(String((res as any)?.quote?.estimatedAmountOut ?? 0));
         if (estOut === 0n) {
-          // Fallback quote via whirlpools-sdk to distinguish SDK-wrapper issues from true no-liquidity
+          // Fallback: reuse our resolver's quote to confirm zero vs SDK-wrapper quirk
           try {
-            const { WhirlpoolContext, buildWhirlpoolClient, swapQuoteByInputToken } = await import('@orca-so/whirlpools-sdk');
-            const { Percentage } = await import('@orca-so/common-sdk');
-            const ctx = (WhirlpoolContext as any).from(getConnection() as any, { publicKey: kp.publicKey } as any, new PublicKey((CONFIG as any).orca.programId));
-            const client = (buildWhirlpoolClient as any)(ctx);
-            const pool = await client.getPool(new PublicKey(poolAddr));
-            const q = await (swapQuoteByInputToken as any)(
-              pool,
-              new PublicKey(inputMint),
-              BigInt(String(hop.amountInRaw ?? 0n)),
-              (Percentage as any).fromFraction(1, 10_000),
-              ctx.program.programId,
-              ctx.fetcher,
-              true
-            );
-            const fallbackOut = BigInt((q as any)?.otherAmount ?? (q as any)?.estimatedAmountOut ?? 0);
-            try { logger.info('orca.whirlpool.quote.fallback', { cat: 'tx', ctx: { fallbackOutRaw: fallbackOut.toString() } as any }); } catch {}
+            const { quoteHopOut } = await import('../resolver/quotes.js');
+            const fallbackOut = await quoteHopOut(hop as any, BigInt(String(hop.amountInRaw ?? 0n)));
+            try { logger.info('orca.whirlpool.quote.fallback', { cat: 'tx', ctx: { fallbackOutRaw: String(fallbackOut) } as any }); } catch {}
             if (fallbackOut === 0n) throw new Error('ORCA_QUOTE_ZERO: no tradable amount');
             // If fallbackOut > 0, continue; we'll trust the instructions from swapInstructions
           } catch (fallbackErr) {
-            throw fallbackErr;
+            // Do not surface fallback-specific errors; retain original zero-quote semantics
+            try { logger.warn('orca.whirlpool.quote.fallback.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String((fallbackErr as any)?.message || fallbackErr) } }); } catch {}
+            throw new Error('ORCA_QUOTE_ZERO: no tradable amount');
           }
         }
       } catch (guardErr) { throw guardErr; }
@@ -263,10 +252,20 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       const deriveBinArrayBitmapExtension = (DLMM as any)?.deriveBinArrayBitmapExtension;
       if ((!binArrayLower || !binArrayUpper) && getBinBounds && deriveBinArray) {
         const bounds = await getBinBounds(connection, poolPk).catch(() => null as any);
-        if (bounds && typeof bounds.lowerBinId === 'number' && typeof bounds.upperBinId === 'number') {
-          try { const lo = await deriveBinArray(programId, poolPk, bounds.lowerBinId); binArrayLower = (lo as any)?.publicKey || lo || binArrayLower; } catch {}
-          try { const hi = await deriveBinArray(programId, poolPk, bounds.upperBinId); binArrayUpper = (hi as any)?.publicKey || hi || binArrayUpper; } catch {}
-        }
+        const toNum = (v: any): number => {
+          try {
+            if (v && typeof v.toNumber === 'function') return v.toNumber();
+            if (typeof v === 'bigint') return Number(v);
+            if (typeof v === 'number') return v;
+            const s = (v && typeof v.toString === 'function') ? v.toString() : String(v);
+            const n = Number(s);
+            return Number.isFinite(n) ? n : NaN;
+          } catch { return NaN; }
+        };
+        const loNum = toNum(bounds?.lowerBinId);
+        const hiNum = toNum(bounds?.upperBinId);
+        if (Number.isFinite(loNum)) { try { const lo = await deriveBinArray(programId, poolPk, loNum); binArrayLower = (lo as any)?.publicKey || lo || binArrayLower; } catch {} }
+        if (Number.isFinite(hiNum)) { try { const hi = await deriveBinArray(programId, poolPk, hiNum); binArrayUpper = (hi as any)?.publicKey || hi || binArrayUpper; } catch {} }
       }
       try {
         // Robustly attempt to derive the bitmap extension PDA across SDK variants
@@ -492,22 +491,37 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
 
     // Supply remaining accounts for bin arrays using documented helpers (applies to swap and swap2)
     try {
-      const getBounds = (DLMM as any)?.getBinArrayLowerUpperBinId;
-      const getMetas = (DLMM as any)?.getBinArrayAccountMetasCoverage;
-      if (getBounds && getMetas) {
-        try {
+      let added = false;
+      try {
+        const getBounds = (DLMM as any)?.getBinArrayLowerUpperBinId;
+        const getMetas = (DLMM as any)?.getBinArrayAccountMetasCoverage;
+        if (getBounds && getMetas) {
+          const bnjs = await import('bn.js').catch(() => null as any);
+          const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
           const bounds = await getBounds(connection, poolPk).catch(() => null as any);
-          const lo = Number(bounds?.lowerBinId);
-          const hi = Number(bounds?.upperBinId);
-          if (Number.isFinite(lo) && Number.isFinite(hi)) {
-            const BN = (await import('bn.js')).default as any;
-            const metas = getMetas(new BN(lo), new BN(hi), poolPk, programId) || [];
-            if (Array.isArray(metas) && metas.length && typeof (builder as any).remainingAccounts === 'function') {
-              builder = (builder as any).remainingAccounts(metas);
-            }
+          const toNum = (v: any): number => {
+            try { if (v && typeof v.toNumber === 'function') return v.toNumber(); const s = (v && typeof v.toString === 'function') ? v.toString() : String(v); const n = Number(s); return Number.isFinite(n) ? n : NaN; } catch { return NaN; }
+          };
+          const loNum = toNum(bounds?.lowerBinId);
+          const hiNum = toNum(bounds?.upperBinId);
+          if (Number.isFinite(loNum) && Number.isFinite(hiNum) && BN && typeof (builder as any).remainingAccounts === 'function') {
+            const metas = getMetas(new BN(String(loNum)), new BN(String(hiNum)), poolPk, programId) || [];
+            if (Array.isArray(metas) && metas.length) { builder = (builder as any).remainingAccounts(metas); added = true; }
+          }
+        }
+      } catch {}
+      // Fallback: try generic keys coverage without explicit bounds
+      if (!added) {
+        try {
+          const getCoverage = (DLMM as any)?.getBinArrayKeysCoverage || (DLMM as any)?.getBinArrayAccountMetasCoverage;
+          if (getCoverage && typeof (builder as any).remainingAccounts === 'function') {
+            const cov = await getCoverage(programId, poolPk).catch(() => null as any) || await getCoverage(connection, programId, poolPk).catch(() => null as any) || await getCoverage({ programId, lbPair: poolPk }).catch(() => null as any);
+            const metas = (cov && ((cov as any).metas || (cov as any).accountMetas)) || (Array.isArray(cov) ? cov : []);
+            if (Array.isArray(metas) && metas.length) { builder = (builder as any).remainingAccounts(metas); added = true; }
           }
         } catch {}
       }
+      try { if (added) { logger.info('meteora.dlmm.remaining.ok', { cat: 'tx' }); } } catch {}
     } catch {}
     const ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
     if (ix) { try { logger.info('meteora.dlmm.swap.ok', { cat: 'tx' }); } catch {}; return [ix]; }
@@ -721,67 +735,61 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       } catch { return true; }
     };
 
-    // If SDK helper returned missing or invalid keys (mint order/decimals mismatch),
-    // derive them from on-chain AMM state (V4/V5).
+    // Decode AMM state from chain (always) to override any placeholder keys returned by SDK
     try {
-      const needVaults = isBadPk((poolKeys as any)?.vault?.A) || isBadPk((poolKeys as any)?.vault?.B);
-      const needMarket = isBadPk((poolKeys as any)?.marketProgramId) || isBadPk((poolKeys as any)?.marketId);
-      const needAuth = isBadPk((poolKeys as any)?.authority);
-      if (needVaults || needMarket || needAuth) {
-        const connection = getConnection();
-        const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
-        const acc = await withRpcLimit(() => connection.getAccountInfo(toPublicKey(hop.poolId)));
-        if (acc?.data?.length) {
-          const sdkLayouts: any = await import('@raydium-io/raydium-sdk-v2');
-          const layouts = [
-            (sdkLayouts as any)?.LiquidityStateLayoutV4,
-            (sdkLayouts as any)?.liquidityStateV4Layout,
-            (sdkLayouts as any)?.LiquidityStateLayoutV5,
-            (sdkLayouts as any)?.liquidityStateV5Layout,
-          ].filter(Boolean);
-          let state: any = null;
-          for (const layout of layouts) {
-            try { state = layout.decode(acc.data); break; } catch {}
-          }
-          if (state) {
-            // Normalize fields across versions
-            const asPk = (v: any) => (v?.toBase58 ? v : (v ? toPublicKey(v) : undefined));
-            const baseVault = asPk(state.baseVault || state.coinVault || state.vaultA);
-            const quoteVault = asPk(state.quoteVault || state.pcVault || state.vaultB);
-            const authority = asPk(state.owner || state.ammAuthority || state.authority);
-            const openOrders = asPk(state.openOrders);
-            const targetOrders = asPk(state.targetOrders);
-            const lpMint = asPk(state.lpMint);
-            const marketPk = asPk(state.marketId);
-            const marketProg = asPk(state.marketProgramId);
-            const marketEventQueue = asPk(state.marketEventQueue);
-            const marketBids = asPk(state.marketBids);
-            const marketAsks = asPk(state.marketAsks);
-            const marketBaseVault = asPk(state.marketBaseVault || state.baseVault);
-            const marketQuoteVault = asPk(state.marketQuoteVault || state.quoteVault);
-            const marketAuthority = asPk(state.marketAuthority);
-            poolKeys = {
-              ...poolKeys,
-              id: toPublicKey(hop.poolId),
-              programId: ammProgramId,
-              authority: authority || poolKeys?.authority,
-              openOrders: openOrders || poolKeys?.openOrders,
-              targetOrders: targetOrders || poolKeys?.targetOrders,
-              vault: {
-                A: baseVault || (poolKeys?.vault ? poolKeys.vault.A : undefined),
-                B: quoteVault || (poolKeys?.vault ? poolKeys.vault.B : undefined),
-              },
-              mintLp: lpMint || poolKeys?.mintLp,
-              marketProgramId: marketProg || poolKeys?.marketProgramId,
-              marketId: marketPk || poolKeys?.marketId,
-              marketEventQueue: marketEventQueue || poolKeys?.marketEventQueue,
-              marketBids: marketBids || poolKeys?.marketBids,
-              marketAsks: marketAsks || poolKeys?.marketAsks,
-              marketBaseVault: marketBaseVault || poolKeys?.marketBaseVault,
-              marketQuoteVault: marketQuoteVault || poolKeys?.marketQuoteVault,
-              marketAuthority: marketAuthority || poolKeys?.marketAuthority,
-            } as any;
-          }
+      const connection = getConnection();
+      const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+      const acc = await withRpcLimit(() => connection.getAccountInfo(toPublicKey(hop.poolId)));
+      if (acc?.data?.length) {
+        const sdkLayouts: any = await import('@raydium-io/raydium-sdk-v2');
+        const layouts = [
+          (sdkLayouts as any)?.LiquidityStateLayoutV4,
+          (sdkLayouts as any)?.liquidityStateV4Layout,
+          (sdkLayouts as any)?.LiquidityStateLayoutV5,
+          (sdkLayouts as any)?.liquidityStateV5Layout,
+        ].filter(Boolean);
+        let state: any = null;
+        for (const layout of layouts) {
+          try { state = layout.decode(acc.data); break; } catch {}
+        }
+        if (state) {
+          // Normalize fields across versions
+          const asPk = (v: any) => (v?.toBase58 ? v : (v ? toPublicKey(v) : undefined));
+          const baseVault = asPk(state.baseVault || state.coinVault || state.vaultA);
+          const quoteVault = asPk(state.quoteVault || state.pcVault || state.vaultB);
+          const authority = asPk(state.owner || state.ammAuthority || state.authority);
+          const openOrders = asPk(state.openOrders);
+          const targetOrders = asPk(state.targetOrders);
+          const lpMint = asPk(state.lpMint);
+          const marketPk = asPk(state.marketId);
+          const marketProg = asPk(state.marketProgramId);
+          const marketEventQueue = asPk(state.marketEventQueue);
+          const marketBids = asPk(state.marketBids);
+          const marketAsks = asPk(state.marketAsks);
+          const marketBaseVault = asPk(state.marketBaseVault || state.baseVault);
+          const marketQuoteVault = asPk(state.marketQuoteVault || state.quoteVault);
+          const marketAuthority = asPk(state.marketAuthority);
+          poolKeys = {
+            ...poolKeys,
+            id: toPublicKey(hop.poolId),
+            programId: ammProgramId,
+            authority: authority || (poolKeys as any)?.authority,
+            openOrders: openOrders || (poolKeys as any)?.openOrders,
+            targetOrders: targetOrders || (poolKeys as any)?.targetOrders,
+            vault: {
+              A: baseVault || ((poolKeys as any)?.vault ? (poolKeys as any).vault.A : undefined),
+              B: quoteVault || ((poolKeys as any)?.vault ? (poolKeys as any).vault.B : undefined),
+            },
+            mintLp: lpMint || (poolKeys as any)?.mintLp,
+            marketProgramId: marketProg || (poolKeys as any)?.marketProgramId,
+            marketId: marketPk || (poolKeys as any)?.marketId,
+            marketEventQueue: marketEventQueue || (poolKeys as any)?.marketEventQueue,
+            marketBids: marketBids || (poolKeys as any)?.marketBids,
+            marketAsks: marketAsks || (poolKeys as any)?.marketAsks,
+            marketBaseVault: marketBaseVault || (poolKeys as any)?.marketBaseVault,
+            marketQuoteVault: marketQuoteVault || (poolKeys as any)?.marketQuoteVault,
+            marketAuthority: marketAuthority || (poolKeys as any)?.marketAuthority,
+          } as any;
         }
       }
     } catch {}
@@ -817,6 +825,17 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       (poolKeys as any).marketBaseVault = ensurePk((poolKeys as any).marketBaseVault);
       (poolKeys as any).marketQuoteVault = ensurePk((poolKeys as any).marketQuoteVault);
       (poolKeys as any).marketAuthority = ensurePk((poolKeys as any).marketAuthority);
+    } catch {}
+
+    // Fallback Serum/OpenBook program id if decode failed and placeholder/system id was present
+    try {
+      const sysPid = '11111111111111111111111111111111';
+      const serumV3 = '9xQeWvG816bUx9EPfDdLVQH7QycGepbhujHWy8S9UvS';
+      const got = (poolKeys as any)?.marketProgramId;
+      const s = (got && typeof got.toBase58 === 'function') ? got.toBase58() : String(got || '');
+      if (!s || s === sysPid) {
+        (poolKeys as any).marketProgramId = new PublicKey(serumV3);
+      }
     } catch {}
 
     // Final validation guard: abort build if critical keys are still invalid
