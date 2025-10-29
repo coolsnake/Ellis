@@ -9,10 +9,22 @@ async function decodeClmmState(connection: Connection, poolPk: PublicKey): Promi
   if (!acc?.data?.length) { try { logger.warn('clmm.decode.no_account', { pool: poolPk.toBase58?.() || String(poolPk) }); } catch {}; return null; }
   const programId = acc.owner;
   try {
-    const sdk: any = await import('@raydium-io/raydium-sdk-v2').catch((e: any) => { try { logger.warn('clmm.decode.sdk_import_fail', { pool: poolPk.toBase58?.(), error: String(e?.message || e) }); } catch {}; return null; });
+    let sdk: any = await import('@raydium-io/raydium-sdk-v2').catch((e: any) => { try { logger.warn('clmm.decode.sdk_import_fail', { pool: poolPk.toBase58?.(), error: String(e?.message || e) }); } catch {}; return null; });
+    if (!sdk) {
+      // Fallback: attempt CommonJS require
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const m: any = await import('node:module');
+        const createRequire: any = (m && (m as any).createRequire) || ((m as any)?.default && (m as any).default.createRequire);
+        const req: any = createRequire ? createRequire(import.meta.url) : null;
+        if (req) {
+          try { sdk = req('@raydium-io/raydium-sdk-v2'); try { logger.info('clmm.decode.require.ok', { pool: poolPk.toBase58?.() }); } catch {} } catch (re: any) { try { logger.warn('clmm.decode.require_fail', { pool: poolPk.toBase58?.(), error: String(re?.message || re) }); } catch {} }
+        }
+      } catch {}
+    }
     if (!sdk) return null;
-    const layout = (sdk as any)?.Clmm?.PoolStateLayout || (sdk as any)?.CLMM?.POOL_STATE_LAYOUT || (sdk as any)?.PoolStateLayout;
-    if (!layout?.decode) { try { logger.warn('clmm.decode.layout_missing', { pool: poolPk.toBase58?.() }); } catch {}; return null; }
+    const layout = (sdk as any)?.Clmm?.PoolStateLayout || (sdk as any)?.CLMM?.POOL_STATE_LAYOUT || (sdk as any)?.PoolStateLayout || (sdk as any)?.CLMM?.PoolStateLayout || (sdk as any)?.Clmm?.POOL_STATE_LAYOUT;
+    if (!layout?.decode) { try { logger.warn('clmm.decode.layout_missing', { pool: poolPk.toBase58?.(), keys: Object.keys(sdk || {}) }); } catch {}; return null; }
     let state: any = null;
     try { state = layout.decode(acc.data); } catch (e: any) { try { logger.warn('clmm.decode.fail', { pool: poolPk.toBase58?.(), error: String(e?.message || e) }); } catch {}; return null; }
     const asPk = (v: any): PublicKey | null => {

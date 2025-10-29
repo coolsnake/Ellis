@@ -119,13 +119,40 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
       try {
         const estOut = BigInt(String((res as any)?.quote?.estimatedAmountOut ?? 0));
         if (estOut === 0n) {
-          // Fallback: reuse our resolver's quote to confirm zero vs SDK-wrapper quirk
+          // Fallback 1: reuse our resolver's quote to confirm zero vs SDK-wrapper quirk
           try {
             const { quoteHopOut } = await import('../resolver/quotes.js');
             const fallbackOut = await quoteHopOut(hop as any, BigInt(String(hop.amountInRaw ?? 0n)));
             try { logger.info('orca.whirlpool.quote.fallback', { cat: 'tx', ctx: { fallbackOutRaw: String(fallbackOut) } as any }); } catch {}
-            if (fallbackOut === 0n) throw new Error('ORCA_QUOTE_ZERO: no tradable amount');
-            // If fallbackOut > 0, continue; we'll trust the instructions from swapInstructions
+            if (fallbackOut > 0n) {
+              // proceed trusting instructions; do not throw
+            } else {
+              // Fallback 2: call whirlpools-sdk directly with BN amount (avoids eq errors)
+              try {
+                const { WhirlpoolContext, buildWhirlpoolClient, swapQuoteByInputToken } = await import('@orca-so/whirlpools-sdk');
+                const { Percentage } = await import('@orca-so/common-sdk');
+                const BN = (await import('bn.js')).default as any;
+                const ctx = (WhirlpoolContext as any).from(getConnection() as any, { publicKey: kp.publicKey } as any, new PublicKey((CONFIG as any).orca.programId));
+                const client = (buildWhirlpoolClient as any)(ctx);
+                const pool = await client.getPool(new PublicKey(poolAddr));
+                const amtBn = new BN(String(hop.amountInRaw ?? 0n));
+                const q2 = await (swapQuoteByInputToken as any)(
+                  pool,
+                  new PublicKey(inputMint),
+                  amtBn,
+                  (Percentage as any).fromFraction(1, 10_000),
+                  ctx.program.programId,
+                  ctx.fetcher,
+                  true
+                );
+                const fb2 = BigInt((q2 as any)?.otherAmount ?? (q2 as any)?.estimatedAmountOut ?? 0);
+                try { logger.info('orca.whirlpool.quote.fallback2', { cat: 'tx', ctx: { fallbackOutRaw: fb2.toString() } as any }); } catch {}
+                if (fb2 === 0n) throw new Error('ORCA_QUOTE_ZERO: no tradable amount');
+              } catch (fb2Err) {
+                try { logger.warn('orca.whirlpool.quote.fallback2.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String((fb2Err as any)?.message || fb2Err) } }); } catch {}
+                throw new Error('ORCA_QUOTE_ZERO: no tradable amount');
+              }
+            }
           } catch (fallbackErr) {
             // Do not surface fallback-specific errors; retain original zero-quote semantics
             try { logger.warn('orca.whirlpool.quote.fallback.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String((fallbackErr as any)?.message || fallbackErr) } }); } catch {}
@@ -492,6 +519,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     // Supply remaining accounts for bin arrays using documented helpers (applies to swap and swap2)
     try {
       let added = false;
+      let binMetas: any[] | undefined = undefined;
       try {
         const getBounds = (DLMM as any)?.getBinArrayLowerUpperBinId;
         const getMetas = (DLMM as any)?.getBinArrayAccountMetasCoverage;
@@ -506,7 +534,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           const hiNum = toNum(bounds?.upperBinId);
           if (Number.isFinite(loNum) && Number.isFinite(hiNum) && BN && typeof (builder as any).remainingAccounts === 'function') {
             const metas = getMetas(new BN(String(loNum)), new BN(String(hiNum)), poolPk, programId) || [];
-            if (Array.isArray(metas) && metas.length) { builder = (builder as any).remainingAccounts(metas); added = true; }
+            if (Array.isArray(metas) && metas.length) { builder = (builder as any).remainingAccounts(metas); added = true; binMetas = metas; }
           }
         }
       } catch {}
@@ -517,13 +545,35 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           if (getCoverage && typeof (builder as any).remainingAccounts === 'function') {
             const cov = await getCoverage(programId, poolPk).catch(() => null as any) || await getCoverage(connection, programId, poolPk).catch(() => null as any) || await getCoverage({ programId, lbPair: poolPk }).catch(() => null as any);
             const metas = (cov && ((cov as any).metas || (cov as any).accountMetas)) || (Array.isArray(cov) ? cov : []);
-            if (Array.isArray(metas) && metas.length) { builder = (builder as any).remainingAccounts(metas); added = true; }
+            if (Array.isArray(metas) && metas.length) { builder = (builder as any).remainingAccounts(metas); added = true; binMetas = metas; }
           }
         } catch {}
       }
       try { if (added) { logger.info('meteora.dlmm.remaining.ok', { cat: 'tx' }); } } catch {}
+      (builder as any).__binMetas = binMetas;
     } catch {}
     const ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
+    // Safety net: inject bin metas into instruction if builder.remainingAccounts did not attach them
+    try {
+      const metas: any[] | undefined = (builder as any).__binMetas;
+      if (ix && Array.isArray(metas) && metas.length && Array.isArray((ix as any).keys)) {
+        const existing = new Set<string>();
+        try { for (const k of (ix as any).keys as any[]) { const s = (k?.pubkey && typeof k.pubkey.toBase58 === 'function') ? k.pubkey.toBase58() : String(k?.pubkey); if (s) existing.add(s); } } catch {}
+        let injected = 0;
+        for (const m of metas) {
+          try {
+            const pk = (m?.pubkey && typeof m.pubkey.toBase58 === 'function') ? m.pubkey : new (await import('@solana/web3.js')).PublicKey(String(m?.pubkey));
+            const s = (pk && typeof pk.toBase58 === 'function') ? pk.toBase58() : undefined;
+            if (s && !existing.has(s)) {
+              (ix as any).keys.push({ pubkey: pk, isWritable: !!m?.isWritable, isSigner: !!m?.isSigner });
+              existing.add(s);
+              injected += 1;
+            }
+          } catch {}
+        }
+        if (injected > 0) { try { logger.info('meteora.dlmm.remaining.inject', { cat: 'tx', ctx: { added: injected } as any }); } catch {} }
+      }
+    } catch {}
     if (ix) { try { logger.info('meteora.dlmm.swap.ok', { cat: 'tx' }); } catch {}; return [ix]; }
     try { logger.warn('meteora.dlmm.tsclient.swap.empty', { cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
   } catch (e: any) {
@@ -729,6 +779,8 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
         const s = typeof x === 'string'
           ? x
           : (x?.address || x?.pubkey || x?.pubKey || x?.publicKey || x?.toBase58?.());
+        // Heuristic: Raydium SDK sometimes emits placeholder-like keys starting with many '1'
+        try { if (typeof s === 'string' && /^11111/.test(s)) return true; } catch {}
         // eslint-disable-next-line no-new
         new PublicKey(String(s));
         return false;
