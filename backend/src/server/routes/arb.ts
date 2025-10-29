@@ -323,65 +323,7 @@ export function createArbRouter(io: SocketIOServer): Router {
         } catch { return { pid: String(ix?.programId || ''), dataLen: 0, accounts: [] }; }
       });
 
-      // Build intent + pool cache + ix summaries for tracing
-      const { executionCache } = await import('../../execution/cache.js');
-      const intent = {
-        path: plan.path,
-        hops: (plan.hops || []).map((h: any) => ({
-          dex: h.dex, variant: h.variant, poolId: h.poolId, programId: h.programId,
-          inputMint: h.inputMint, outputMint: h.outputMint,
-          inputDecimals: h.inputDecimals, outputDecimals: h.outputDecimals,
-          inputTokenProgram: h.inputTokenProgram, outputTokenProgram: h.outputTokenProgram,
-          amountInRaw: (typeof h.amountInRaw === 'bigint') ? h.amountInRaw.toString() : String(h.amountInRaw || 0),
-          minOutRaw: (typeof h.minOutRaw === 'bigint') ? h.minOutRaw.toString() : String(h.minOutRaw || 0),
-          userSourceAta: h.userSourceAta, userDestAta: h.userDestAta,
-          ...(h.vaultA ? { vaultA: h.vaultA } : {}),
-          ...(h.vaultB ? { vaultB: h.vaultB } : {}),
-          ...(h.tickSpacing ? { tickSpacing: h.tickSpacing } : {}),
-          ...(h.sqrtPriceLimitX64 ? { sqrtPriceLimitX64: String(h.sqrtPriceLimitX64) } : {}),
-          ...(h.oracle ? { oracle: h.oracle } : {}),
-          ...(h.tickArrayLower ? { tickArrayLower: h.tickArrayLower } : {}),
-          ...(h.tickArrayCenter ? { tickArrayCenter: h.tickArrayCenter } : {}),
-          ...(h.tickArrayUpper ? { tickArrayUpper: h.tickArrayUpper } : {}),
-          // Raydium AMM/Serum
-          ...(h.ammAuthority ? { ammAuthority: h.ammAuthority } : {}),
-          ...(h.ammOpenOrders ? { ammOpenOrders: h.ammOpenOrders } : {}),
-          ...(h.ammTargetOrders ? { ammTargetOrders: h.ammTargetOrders } : {}),
-          ...(h.serumProgramId ? { serumProgramId: h.serumProgramId } : {}),
-          ...(h.market ? { market: h.market } : {}),
-          ...(h.bids ? { bids: h.bids } : {}),
-          ...(h.asks ? { asks: h.asks } : {}),
-          ...(h.eventQueue ? { eventQueue: h.eventQueue } : {}),
-          ...(h.coinVault ? { coinVault: h.coinVault } : {}),
-          ...(h.pcVault ? { pcVault: h.pcVault } : {}),
-          ...(h.vaultSigner ? { vaultSigner: h.vaultSigner } : {}),
-          // Meteora DLMM
-          ...(h.binStep ? { binStep: h.binStep } : {}),
-          ...(h.activeId ? { activeId: h.activeId } : {}),
-          ...(h.binArrayLower ? { binArrayLower: h.binArrayLower } : {}),
-          ...(h.binArrayUpper ? { binArrayUpper: h.binArrayUpper } : {}),
-          ...(h.reserveX ? { reserveX: h.reserveX } : {}),
-          ...(h.reserveY ? { reserveY: h.reserveY } : {}),
-        })),
-        poolCache: (plan.hops || []).map((h: any) => ({
-          poolId: h.poolId,
-          programId: h.programId,
-          static: executionCache.getStatic(h.poolId) || null,
-          hot: executionCache.getHot(h.poolId) || null,
-        })),
-      } as any;
-      const ixs = (Array.isArray((built as any)?.tx?.instructions) ? (built as any).tx.instructions : []).map((ix: any) => {
-        try {
-          const pid = (ix?.programId && typeof ix.programId.toBase58 === 'function') ? ix.programId.toBase58() : String(ix?.programId || '');
-          const keysSrc: any[] = Array.isArray(ix?.keys) ? ix.keys : [];
-          const accounts = keysSrc.map((k: any) => {
-            const pk = (k?.pubkey && typeof k.pubkey.toBase58 === 'function') ? k.pubkey.toBase58() : String(k?.pubkey || '');
-            return { pk, s: !!k?.isSigner, w: !!k?.isWritable };
-          });
-          const dataLen = (ix?.data && typeof (ix.data as any).length === 'number') ? Number((ix.data as any).length) : 0;
-          return { pid, dataLen, accounts };
-        } catch { return { pid: String(ix?.programId || ''), dataLen: 0, accounts: [] }; }
-      });
+      // (duplicate block removed)
       try { emit('log', { level: 'info', message: 'pretrade:arb tx built', timestamp: new Date().toISOString(), context: { cat: 'tx', code: 'PRETRADE.TX.BUILT', mode: (execCfg as any)?.mode } }); } catch {}
       try { logger.info('tx.preflight.start', { cat: 'tx', code: LogCode.TX_PREFLIGHT_START, ctx: { ixCount: built.ixCount, sizeBytes: built.sizeBytes, mode: (execCfg as any)?.mode } as any }); } catch {}
       const tPre0 = Date.now();
@@ -515,6 +457,65 @@ export function createArbRouter(io: SocketIOServer): Router {
       const plan = input?.plan && Array.isArray(input.plan?.hops) ? input.plan : await resolveDirectPlan(parsed as any, {} as any);
       const built = await buildDirectArbTx(plan, [], {} as any);
       const execCfg = await loadExecConfig();
+      // Build intent + pool cache + ix summaries for tracing
+      const { executionCache } = await import('../../execution/cache.js');
+      const intent = {
+        path: plan.path,
+        hops: (plan.hops || []).map((h: any) => ({
+          dex: h.dex, variant: h.variant, poolId: h.poolId, programId: h.programId,
+          inputMint: h.inputMint, outputMint: h.outputMint,
+          inputDecimals: h.inputDecimals, outputDecimals: h.outputDecimals,
+          inputTokenProgram: h.inputTokenProgram, outputTokenProgram: h.outputTokenProgram,
+          amountInRaw: (typeof h.amountInRaw === 'bigint') ? h.amountInRaw.toString() : String(h.amountInRaw || 0),
+          minOutRaw: (typeof h.minOutRaw === 'bigint') ? h.minOutRaw.toString() : String(h.minOutRaw || 0),
+          userSourceAta: h.userSourceAta, userDestAta: h.userDestAta,
+          ...(h.vaultA ? { vaultA: h.vaultA } : {}),
+          ...(h.vaultB ? { vaultB: h.vaultB } : {}),
+          ...(h.tickSpacing ? { tickSpacing: h.tickSpacing } : {}),
+          ...(h.sqrtPriceLimitX64 ? { sqrtPriceLimitX64: String(h.sqrtPriceLimitX64) } : {}),
+          ...(h.oracle ? { oracle: h.oracle } : {}),
+          ...(h.tickArrayLower ? { tickArrayLower: h.tickArrayLower } : {}),
+          ...(h.tickArrayCenter ? { tickArrayCenter: h.tickArrayCenter } : {}),
+          ...(h.tickArrayUpper ? { tickArrayUpper: h.tickArrayUpper } : {}),
+          // Raydium AMM/Serum
+          ...(h.ammAuthority ? { ammAuthority: h.ammAuthority } : {}),
+          ...(h.ammOpenOrders ? { ammOpenOrders: h.ammOpenOrders } : {}),
+          ...(h.ammTargetOrders ? { ammTargetOrders: h.ammTargetOrders } : {}),
+          ...(h.serumProgramId ? { serumProgramId: h.serumProgramId } : {}),
+          ...(h.market ? { market: h.market } : {}),
+          ...(h.bids ? { bids: h.bids } : {}),
+          ...(h.asks ? { asks: h.asks } : {}),
+          ...(h.eventQueue ? { eventQueue: h.eventQueue } : {}),
+          ...(h.coinVault ? { coinVault: h.coinVault } : {}),
+          ...(h.pcVault ? { pcVault: h.pcVault } : {}),
+          ...(h.vaultSigner ? { vaultSigner: h.vaultSigner } : {}),
+          // Meteora DLMM
+          ...(h.binStep ? { binStep: h.binStep } : {}),
+          ...(h.activeId ? { activeId: h.activeId } : {}),
+          ...(h.binArrayLower ? { binArrayLower: h.binArrayLower } : {}),
+          ...(h.binArrayUpper ? { binArrayUpper: h.binArrayUpper } : {}),
+          ...(h.reserveX ? { reserveX: h.reserveX } : {}),
+          ...(h.reserveY ? { reserveY: h.reserveY } : {}),
+        })),
+        poolCache: (plan.hops || []).map((h: any) => ({
+          poolId: h.poolId,
+          programId: h.programId,
+          static: executionCache.getStatic(h.poolId) || null,
+          hot: executionCache.getHot(h.poolId) || null,
+        })),
+      } as any;
+      const ixs = (Array.isArray((built as any)?.tx?.instructions) ? (built as any).tx.instructions : []).map((ix: any) => {
+        try {
+          const pid = (ix?.programId && typeof ix.programId.toBase58 === 'function') ? ix.programId.toBase58() : String(ix?.programId || '');
+          const keysSrc: any[] = Array.isArray(ix?.keys) ? ix.keys : [];
+          const accounts = keysSrc.map((k: any) => {
+            const pk = (k?.pubkey && typeof k.pubkey.toBase58 === 'function') ? k.pubkey.toBase58() : String(k?.pubkey || '');
+            return { pk, s: !!k?.isSigner, w: !!k?.isWritable };
+          });
+          const dataLen = (ix?.data && typeof (ix.data as any).length === 'number') ? Number((ix.data as any).length) : 0;
+          return { pid, dataLen, accounts };
+        } catch { return { pid: String(ix?.programId || ''), dataLen: 0, accounts: [] }; }
+      });
       try { emit('log', { level: 'info', message: 'pretrade:arb tx built', timestamp: new Date().toISOString(), context: { cat: 'tx', code: 'PRETRADE.TX.BUILT', mode: (execCfg as any)?.mode } }); } catch {}
       try { logger.info('tx.build.ok', { cat: 'tx', code: LogCode.TX_BUILD_OK, ctx: { ixCount: built.ixCount, sizeBytes: built.sizeBytes, mode: (execCfg as any)?.mode } as any }); } catch {}
 
