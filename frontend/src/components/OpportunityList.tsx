@@ -221,6 +221,22 @@ export function OpportunityList(
                 } catch {}
               }}>Execute Direct</button>
                 ); })()}
+              {(() => {
+                const pathClosed = op.path && op.path.length ? [...op.path, op.path[0]] : op.path;
+                return (
+              <button className="px-1 py-0.5 border rounded" onClick={async()=>{
+                try {
+                  setSimLogs(null); setSimErr(null);
+                  const body: any = { path: pathClosed, sizeUsd: sendMode==='USD'? Number(sendAmount)||0 : undefined, size: sendMode==='TOKENS'? Number(sendAmount)||0 : undefined };
+                  body.hopDexes = Array.isArray((op as any)?.hop_dexes) ? (op as any).hop_dexes : [];
+                  body.hopRates = Array.isArray((op as any)?.hop_rates) ? (op as any).hop_rates : [];
+                  body.strictMinOut = true;
+                  const r = await fetch(`${apiBase}${ROUTES.arb.jupiterExecute}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                  const j = await r.json().catch(()=>({}));
+                  if (!r.ok) setSimErr(String((j && (j.error || j.err)) || 'send_failed'));
+                } catch {}
+              }}>Execute via Jupiter (strict)</button>
+                ); })()}
             </div>
             {(simErr || (simLogs && simLogs.length)) && (
               <div className="mt-1 p-2 bg-black/30 rounded text-[11px]">

@@ -838,8 +838,8 @@ export const App: React.FC = () => {
             path: [USDC, USDT, USDC],
             hopPoolIds: [pid, pid],
             dexes: [dexKey, dexKey],
-            // Use raw atoms to avoid dependency on price feed for initial size
-            size: 1_000_000, // 1 USDC (6 decimals)
+            // Use token units; backend resolver converts to atoms using decimals
+            size: 1,
             slippageBps: 50,
           };
         };
@@ -853,14 +853,15 @@ export const App: React.FC = () => {
             path: [USDC, USDT, USDC, USDT, USDC],
             hopPoolIds: [ray, orc, met, ray],
             dexes: ['raydium-amm', 'orca', 'meteora', 'raydium-amm'],
-            size: 1_000_000,
+            size: 1,
             slippageBps: 50,
           };
         };
 
         try {
           if (action === 'mode') {
-            const mode = (parts[2] || '').toLowerCase() === 'direct' ? 'direct' : 'simulate';
+            const raw = (parts[2] || '').toLowerCase();
+            const mode = ['direct','simulate','jupiter'].includes(raw) ? raw : 'simulate';
             await fetch(`${apiBase}/exec/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) });
             if (mode === 'direct') {
               await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: 'tx.arbmode = direct' }) });
@@ -918,6 +919,19 @@ export const App: React.FC = () => {
             return;
           }
 
+          // Jupiter helpers
+          if (action === 'jup' || action === 'jupiter') {
+            const sub = (parts[2] || '').toLowerCase(); // roundtrip
+            if (sub === 'roundtrip' || sub === 'rt') {
+              const sizeSol = Number(parts[3] || 0.01);
+              const slippageBps = Number(parts[4] || 50);
+              await fetch(`${apiBase}${ROUTES.arb.jupiterRoundtrip}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sizeSol, slippageBps }) });
+              return;
+            }
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: arb jup roundtrip [SIZE_SOL] [SLIPPAGE_BPS]' }) });
+            return;
+          }
+
           // New: single-hop helpers for UI terminal
           if (action === 'singlehop') {
             const mode = (parts[2] || '').toLowerCase(); // sim|exec
@@ -948,8 +962,7 @@ export const App: React.FC = () => {
               if (target === 'orca') return ROUTES.arb.executeOrca;
               return ROUTES.arb.executeMeteora;
             })();
-            const sizeAtoms = Math.max(0, Math.round(sizeSol * 1_000_000_000));
-            const payload: any = { path: [SOL, USDC], poolId: pid, size: sizeAtoms, slippageBps };
+            const payload: any = { path: [SOL, USDC], poolId: pid, size: sizeSol, slippageBps };
             if (mode === 'exec') payload.forceDirect = true;
             try {
               const resp = await fetch(`${apiBase}${route}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
@@ -967,7 +980,7 @@ export const App: React.FC = () => {
           return;
         }
 
-        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: arb commands: mode direct|simulate | pools usdc-usdt | simulate|preflight|execute ray|orca|meteora|multi' }) });
+        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: arb commands: mode direct|simulate|jupiter | pools usdc-usdt | jup roundtrip [SIZE_SOL] [SLIPPAGE_BPS] | simulate|preflight|execute ray|orca|meteora|multi' }) });
         return;
       }
       if (ns === 'swap') {
@@ -1051,7 +1064,7 @@ export const App: React.FC = () => {
           'api: start | stop | reset',
           'ticktime: MS (set target tick time in ms)',
           'swap: AMOUNT FROM TO',
-          'arb: mode direct|simulate | pools usdc-usdt | simulate|preflight|execute ray|orca|meteora|multi',
+          'arb: mode direct|simulate|jupiter | pools usdc-usdt | jup roundtrip [SIZE_SOL] [SLIPPAGE_BPS] | simulate|preflight|execute ray|orca|meteora|multi',
           'config: reset | ticktime MS',
           'help — show this help'
         ];

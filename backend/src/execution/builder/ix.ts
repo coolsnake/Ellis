@@ -258,7 +258,57 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       } as any;
       try { logger.info('meteora.dlmm.swapIx.call', { cat: 'tx' }); } catch {}
       const ix = await (DLMM as any).swapIx(connection, kp.publicKey, params);
-      if (ix) { try { logger.info('meteora.dlmm.swapIx.ok', { cat: 'tx' }); } catch {}; return [ix]; }
+      if (ix) {
+        // Safety net: attempt to attach remaining bin-array metas when using fast-path ix
+        try {
+          let metas: any[] | undefined;
+          try {
+            const getBounds = (DLMM as any)?.getBinArrayLowerUpperBinId;
+            const getMetas = (DLMM as any)?.getBinArrayAccountMetasCoverage;
+            if (getBounds && getMetas) {
+              const bnjs = await import('bn.js').catch(() => null as any);
+              const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
+              const bounds = await getBounds(connection, poolPk).catch(() => null as any);
+              const toNum = (v: any): number => {
+                try { if (v && typeof v.toNumber === 'function') return v.toNumber(); const s = (v && typeof v.toString === 'function') ? v.toString() : String(v); const n = Number(s); return Number.isFinite(n) ? n : NaN; } catch { return NaN; }
+              };
+              const loNum = toNum(bounds?.lowerBinId);
+              const hiNum = toNum(bounds?.upperBinId);
+              if (Number.isFinite(loNum) && Number.isFinite(hiNum) && BN) {
+                metas = getMetas(new BN(String(loNum)), new BN(String(hiNum)), poolPk, programId) || [];
+              }
+            }
+          } catch {}
+          if (!metas || !metas.length) {
+            try {
+              const getCoverage = (DLMM as any)?.getBinArrayKeysCoverage || (DLMM as any)?.getBinArrayAccountMetasCoverage;
+              if (getCoverage) {
+                const cov = await getCoverage(programId, poolPk).catch(() => null as any) || await getCoverage(connection, programId, poolPk).catch(() => null as any) || await getCoverage({ programId, lbPair: poolPk }).catch(() => null as any);
+                metas = (cov && ((cov as any).metas || (cov as any).accountMetas)) || (Array.isArray(cov) ? cov : []);
+              }
+            } catch {}
+          }
+          if (Array.isArray(metas) && metas.length && Array.isArray((ix as any).keys)) {
+            const existing = new Set<string>();
+            try { for (const k of (ix as any).keys as any[]) { const s = (k?.pubkey && typeof k.pubkey.toBase58 === 'function') ? k.pubkey.toBase58() : String(k?.pubkey); if (s) existing.add(s); } } catch {}
+            let injected = 0;
+            for (const m of metas) {
+              try {
+                const pk = (m?.pubkey && typeof m.pubkey.toBase58 === 'function') ? m.pubkey : new (await import('@solana/web3.js')).PublicKey(String(m?.pubkey));
+                const s = (pk && typeof pk.toBase58 === 'function') ? pk.toBase58() : undefined;
+                if (s && !existing.has(s)) {
+                  (ix as any).keys.push({ pubkey: pk, isWritable: !!m?.isWritable, isSigner: !!m?.isSigner });
+                  existing.add(s);
+                  injected += 1;
+                }
+              } catch {}
+            }
+            if (injected > 0) { try { logger.info('meteora.dlmm.remaining.inject', { cat: 'tx', ctx: { added: injected } as any }); } catch {} }
+          }
+        } catch {}
+        try { logger.info('meteora.dlmm.swapIx.ok', { cat: 'tx' }); } catch {}
+        return [ix];
+      }
     }
   } catch (e: any) { try { logger.warn('meteora.dlmm.swapIx.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {} }
 

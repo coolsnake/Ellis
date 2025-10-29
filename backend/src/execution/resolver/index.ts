@@ -102,25 +102,33 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
   // Set amounts and minOuts using per-hop quotes; propagate through hops
   try {
     const slippage = typeof input.slippageBps === 'number' ? input.slippageBps : cfg.slippageBpsDefault;
-    // Determine initial input size: prefer raw size; else compute from sizeUsd using priceStore (USD → tokens)
+    // Determine initial input size:
+    // - interpret input.size as tokens (UI units) of the start mint
+    // - otherwise compute from sizeUsd using priceStore (USD → tokens)
     let curIn = 0n;
-    const rawSize = Number.isFinite(input.size as any) ? Math.floor(Number(input.size)) : 0;
-    if (rawSize > 0) {
-      curIn = BigInt(Math.max(0, rawSize));
-    } else if (Number.isFinite(input.sizeUsd as any) && Number(input.sizeUsd) > 0 && hops.length > 0) {
-      try {
-        const startMint = hops[0].inputMint;
-        const decimals = Number(hops[0].inputDecimals ?? 0);
-        const { getPriceByMint } = await import('../../server/priceStore.js');
-        const usdPx = Number((getPriceByMint(startMint)?.usdc) ?? 0); // USD per 1 token
-        if (usdPx > 0) {
-          // atoms = (usdAmt * 10^decimals) / usdPx, with micro precision for stability
-          const usdAmtMicro = BigInt(Math.round(Number(input.sizeUsd) * 1_000_000));
-          const usdPxMicro  = BigInt(Math.round(usdPx * 1_000_000));
-          const scale       = (10n ** BigInt(Math.max(0, Math.min(12, decimals))));
-          curIn = (usdAmtMicro * scale) / usdPxMicro;
-        }
-      } catch {}
+    if (hops.length > 0) {
+      const decimals = Number(hops[0].inputDecimals ?? 0);
+      const sizeTokens = Number.isFinite(input.size as any) ? Number(input.size) : 0;
+      if (sizeTokens > 0) {
+        // Convert tokens → raw atoms with micro precision to avoid float rounding
+        const sizeMicro = BigInt(Math.round(sizeTokens * 1_000_000));
+        const mul = (decimals >= 6) ? (10n ** BigInt(decimals - 6)) : 1n;
+        const div = (decimals < 6) ? (10n ** BigInt(6 - decimals)) : 1n;
+        curIn = (sizeMicro * mul) / div;
+      } else if (Number.isFinite(input.sizeUsd as any) && Number(input.sizeUsd) > 0) {
+        try {
+          const startMint = hops[0].inputMint;
+          const { getPriceByMint } = await import('../../server/priceStore.js');
+          const usdPx = Number((getPriceByMint(startMint)?.usdc) ?? 0); // USD per 1 token
+          if (usdPx > 0) {
+            // atoms = (usdAmt * 10^decimals) / usdPx, with micro precision for stability
+            const usdAmtMicro = BigInt(Math.round(Number(input.sizeUsd) * 1_000_000));
+            const usdPxMicro  = BigInt(Math.round(usdPx * 1_000_000));
+            const scale       = (10n ** BigInt(Math.max(0, Math.min(12, decimals))));
+            curIn = (usdAmtMicro * scale) / usdPxMicro;
+          }
+        } catch {}
+      }
     }
     // If still zero and a defaultQuoteSizeUsd is configured, convert USD→atoms using start mint
     if (curIn === 0n && hops.length > 0) {

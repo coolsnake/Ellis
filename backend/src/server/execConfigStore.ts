@@ -3,7 +3,7 @@ import { CONFIG } from '../utils/config.js';
 import { ensureDir, readJson, writeJson } from '../utils/fs.js';
 
 export type ExecConfig = {
-  mode: 'direct' | 'simulate';
+  mode: 'direct' | 'simulate' | 'jupiter';
   slippageBpsDefault: number;
   computeUnitLimit: number;
   computeUnitPriceMicroLamports: number;

@@ -275,6 +275,41 @@ export function createArbRouter(io: SocketIOServer): Router {
     }
   });
 
+  // Jupiter: atomic roundtrip SOL->USDC->SOL
+  api.post('/arb/jupiter/roundtrip', async (req, res) => {
+    try {
+      const body = req.body || {};
+      const sizeSol = Number.isFinite(body?.sizeSol) ? Number(body.sizeSol) : 0.01;
+      const slippageBps = Number.isFinite(body?.slippageBps) ? Number(body.slippageBps) : 50;
+      const { executeRoundtripWithJupiter } = await import('../../jupiter/arbExecutor.js');
+      const r = await executeRoundtripWithJupiter({ sizeSol, slippageBps });
+      res.json({ signature: r.signature });
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Jupiter: atomic path execute with per-hop DEX enforcement and strict min-outs
+  api.post('/arb/jupiter/execute', async (req, res) => {
+    try {
+      const body = req.body || {};
+      const path: string[] = Array.isArray(body.path) ? body.path : [];
+      if (!Array.isArray(path) || path.length < 2) return res.status(400).json({ error: 'invalid path' });
+      const size = Number.isFinite(body.size) ? Number(body.size) : undefined;
+      const sizeUsd = Number.isFinite(body.sizeUsd) ? Number(body.sizeUsd) : undefined;
+      const slippageBps = Number.isFinite(body.slippageBps) ? Number(body.slippageBps) : undefined;
+      const hopDexes: string[] | undefined = Array.isArray(body.hopDexes) ? body.hopDexes : undefined;
+      const hopRatesUi: number[] | undefined = Array.isArray(body.hopRates) ? body.hopRates : undefined;
+      const hopMinOutsAtoms: number[] | undefined = Array.isArray(body.hopMinOutsAtoms) ? body.hopMinOutsAtoms : undefined;
+      const strictMinOut = body.strictMinOut !== false;
+      const { executePlanWithJupiterStrict } = await import('../../jupiter/arbExecutor.js');
+      const r = await executePlanWithJupiterStrict({ plan: { path }, sizeAtoms: size, sizeUsd, slippageBps, hopDexes, hopRatesUi, hopMinOutsAtoms, strictMinOut });
+      res.json({ signature: r.signature });
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
   api.post('/arb/execute', async (req, res) => {
     try {
       try { emit('log', { level: 'info', message: 'pretrade:arb execute start', timestamp: new Date().toISOString(), context: { cat: 'arb', code: 'PRETRADE.EXEC.START' } }); } catch {}
@@ -298,6 +333,26 @@ export function createArbRouter(io: SocketIOServer): Router {
       const id = Math.random().toString(36).slice(2,10);
       const mode = (execCfg.mode || 'simulate');
       const forceDirect = !!(input && (input as any).forceDirect);
+      // Jupiter execution mode: build and send via Jupiter v6 strict legs
+      if (mode === 'jupiter' && !forceDirect) {
+        try {
+          const { executePlanWithJupiterStrict } = await import('../../jupiter/arbExecutor.js');
+          const hopDexes: string[] = Array.isArray((input as any)?.dexes)
+            ? (input as any).dexes
+            : (Array.isArray((plan as any)?.hops) ? (plan as any).hops.map((h: any) => String(h?.dex || '')) : []);
+          const signature = (await executePlanWithJupiterStrict({
+            plan,
+            sizeAtoms: Number.isFinite((input as any)?.size as any) ? Number((input as any).size) : undefined,
+            sizeUsd: Number.isFinite((input as any)?.sizeUsd as any) ? Number((input as any).sizeUsd) : undefined,
+            slippageBps: Number.isFinite((input as any)?.slippageBps as any) ? Number((input as any).slippageBps) : undefined,
+            hopDexes,
+            strictMinOut: true,
+          })).signature;
+          return res.json({ id, mode, signature, ixCount: 0, txSizeBytes: 0 });
+        } catch (e: any) {
+          return res.status(400).json({ id, mode, error: 'jupiter_exec_failed' });
+        }
+      }
       if (mode !== 'direct' && !forceDirect) {
         return res.json({ id, mode, signature: null, ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
       }

@@ -2,13 +2,22 @@ import { logger } from '../utils/logger.js';
 
 export type V6Quote = any;
 
-export async function getV6Quote(inputMint: string, outputMint: string, amount: number, slippageBps: number): Promise<V6Quote> {
+export async function getV6Quote(
+  inputMint: string,
+  outputMint: string,
+  amount: number,
+  slippageBps: number,
+  opts?: { onlyDirectRoutes?: boolean; includeDexes?: string[]; excludeDexes?: string[] }
+): Promise<V6Quote> {
   const url = new URL('https://quote-api.jup.ag/v6/quote');
   url.searchParams.set('inputMint', inputMint);
   url.searchParams.set('outputMint', outputMint);
   url.searchParams.set('amount', String(amount));
   url.searchParams.set('slippageBps', String(slippageBps));
   url.searchParams.set('restrictIntermediateTokens', 'true');
+  if (opts?.onlyDirectRoutes) url.searchParams.set('onlyDirectRoutes', 'true');
+  if (opts?.includeDexes && opts.includeDexes.length) url.searchParams.set('includeDexes', opts.includeDexes.join(','));
+  if (opts?.excludeDexes && opts.excludeDexes.length) url.searchParams.set('excludeDexes', opts.excludeDexes.join(','));
   const started = Date.now();
   logger.debug(`api.request GET ${url.pathname}`, { url: url.toString(), cat: 'api' });
   const res = await fetch(url.toString(), { headers: { accept: 'application/json' } });
