@@ -19,17 +19,13 @@ export async function getV6Quote(
   legacyUrl.searchParams.set('restrictIntermediateTokens', 'true');
   if (opts?.onlyDirectRoutes) legacyUrl.searchParams.set('onlyDirectRoutes', 'true');
   if (opts?.includeDexes && opts.includeDexes.length) {
-    const toLiteLabel = (s: string) => {
-      const v = String(s).toLowerCase();
-      if (v.includes('raydiumclmm') || v.includes('raydium clmm')) return 'Raydium CLMM';
-      if (v === 'raydium') return 'Raydium';
-      if (v.includes('meteora') && v.includes('dlmm')) return 'Meteora DLMM';
-      if (v.includes('meteora')) return 'Meteora DLMM';
-      if (v.includes('orca') && !v.includes('whirlpool')) return 'Orca Whirlpool';
-      return s;
-    };
-    const val = opts.includeDexes.map(toLiteLabel).map(x => String(x).replace(/\s+/g, '+')).join(',');
-    if (val) legacyUrl.searchParams.set('dexes', val);
+    try {
+      const { buildDexesParam } = await import('./labels.js');
+      const val = await buildDexesParam(opts.includeDexes);
+      if (val) legacyUrl.searchParams.set('dexes', val);
+    } catch (e: any) {
+      try { logger.info('jup.labels.build.err', { cat: 'jupiter', error: String(e?.message || e) }); } catch {}
+    }
   }
 
   const attemptLegacy = async (i: number) => {
@@ -47,7 +43,12 @@ export async function getV6Quote(
         try { const { emit } = await import('../server/realtime.js'); emit('log', { level: 'warn', message: `arb:429 source=jupiter kind=legacy_quote in=${inputMint} out=${outputMint}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
         throw new Error('429');
       }
-      if (!res.ok) throw new Error(`legacy quote failed ${res.status}`);
+      if (!res.ok) {
+        let bodyText = '';
+        try { bodyText = await res.text(); } catch {}
+        try { logger.info('jup.legacy.quote.err', { cat: 'jupiter', status: res.status, body: (bodyText && typeof bodyText === 'string') ? bodyText.slice(0, 200) : '' }); } catch {}
+        throw new Error(`legacy quote failed ${res.status}`);
+      }
       return await res.json();
     } finally {
       clearTimeout(t);
