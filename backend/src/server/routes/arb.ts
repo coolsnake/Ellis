@@ -363,10 +363,12 @@ export function createArbRouter(io: SocketIOServer): Router {
       } as any;
       const ixs = (Array.isArray((built as any)?.tx?.instructions) ? (built as any).tx.instructions : []).map((ix: any) => {
         try {
-          const pid = (ix?.programId && typeof ix.programId.toBase58 === 'function') ? ix.programId.toBase58() : String(ix?.programId || '');
+          const pidLike = (ix?.programId) ?? (ix?.programAddress) ?? (ix?.program && (ix.program.address || ix.program));
+          const pid = (pidLike && typeof pidLike.toBase58 === 'function') ? pidLike.toBase58() : String(pidLike || '');
           const keysSrc: any[] = Array.isArray(ix?.keys) ? ix.keys : [];
           const accounts = keysSrc.map((k: any) => {
-            const pk = (k?.pubkey && typeof k.pubkey.toBase58 === 'function') ? k.pubkey.toBase58() : String(k?.pubkey || '');
+            const pkLike = (k?.pubkey) ?? (k?.pubKey) ?? (k?.address);
+            const pk = (pkLike && typeof pkLike.toBase58 === 'function') ? pkLike.toBase58() : String(pkLike || '');
             return { pk, s: !!k?.isSigner, w: !!k?.isWritable };
           });
           const dataLen = (ix?.data && typeof (ix.data as any).length === 'number') ? Number((ix.data as any).length) : 0;
@@ -593,10 +595,12 @@ export function createArbRouter(io: SocketIOServer): Router {
       
       const ixs = (Array.isArray((built as any)?.tx?.instructions) ? (built as any).tx.instructions : []).map((ix: any) => {
         try {
-          const pid = (ix?.programId && typeof ix.programId.toBase58 === 'function') ? ix.programId.toBase58() : String(ix?.programId || '');
+          const pidLike = (ix?.programId) ?? (ix?.programAddress) ?? (ix?.program && (ix.program.address || ix.program));
+          const pid = (pidLike && typeof pidLike.toBase58 === 'function') ? pidLike.toBase58() : String(pidLike || '');
           const keysSrc: any[] = Array.isArray(ix?.keys) ? ix.keys : [];
           const accounts = keysSrc.map((k: any) => {
-            const pk = (k?.pubkey && typeof k.pubkey.toBase58 === 'function') ? k.pubkey.toBase58() : String(k?.pubkey || '');
+            const pkLike = (k?.pubkey) ?? (k?.pubKey) ?? (k?.address);
+            const pk = (pkLike && typeof pkLike.toBase58 === 'function') ? pkLike.toBase58() : String(pkLike || '');
             return { pk, s: !!k?.isSigner, w: !!k?.isWritable };
           });
           const dataLen = (ix?.data && typeof (ix.data as any).length === 'number') ? Number((ix.data as any).length) : 0;

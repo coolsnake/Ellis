@@ -108,8 +108,14 @@ function toInstruction(ix: any): TransactionInstruction | null {
     }
     const keysLike = (ix as any)?.keys;
     // Attempt to coerce plain object shapes into a real TransactionInstruction (very permissive)
-    if (typeof (ix as any)?.programId === 'undefined' || typeof ix !== 'object') return null;
-    const programId = normalizePk((ix as any).programId);
+    if (typeof ix !== 'object') return null;
+    // Support alternative pid fields seen in various SDKs: programAddress, program.address, program
+    const pidLike = (ix as any)?.programId
+      ?? (ix as any)?.programAddress
+      ?? (((ix as any)?.program && (((ix as any).program as any).address || (ix as any).program)) as any)
+      ?? undefined;
+    if (!pidLike) return null;
+    const programId = normalizePk(pidLike);
     let keyArr: any[] = [];
     try {
       if (Array.isArray(keysLike)) keyArr = keysLike;

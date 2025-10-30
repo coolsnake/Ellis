@@ -458,6 +458,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     const amountIn = new BN(String(hop.amountInRaw ?? 0n));
     const minOut = new BN(String(hop.minOutRaw ?? 0n));
     const methods = (program as any)?.methods || {};
+    const setupIxs: TransactionInstruction[] = [];
     let builder: any = null;
 
     const accounts: any = {
@@ -473,12 +474,69 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       if (binArrayBitmapExtension) {
         accounts.binArrayBitmapExtension = binArrayBitmapExtension;
         // Observability only; do not gate on presence/owner
+        let needsBitmapExtensionInit = false;
         try {
           const acc = await connection.getAccountInfo(binArrayBitmapExtension);
           if (!acc) {
+            needsBitmapExtensionInit = true;
             try { logger.warn('meteora.dlmm.ext.missing_on_chain', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { expected: programId?.toBase58?.() } }); } catch {}
           } else if (acc.owner && typeof acc.owner.equals === 'function' && !acc.owner.equals(programId)) {
             try { logger.warn('meteora.dlmm.ext.owner_mismatch', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { owner: acc.owner?.toBase58?.(), expected: programId?.toBase58?.() } }); } catch {}
+          }
+        } catch {}
+
+        // Best-effort: if extension missing, try to prepend an updateBinArray ix to initialize it
+        try {
+          if (needsBitmapExtensionInit) {
+            try { logger.info('meteora.dlmm.bitmap_ext.init.start', { cat: 'tx' }); } catch {}
+            const getBounds = (DLMM as any)?.getBinArrayLowerUpperBinId || (DLMM as any)?.deriveBinArrayLowerUpperBinId;
+            const getCoverage = (DLMM as any)?.getBinArrayAccountMetasCoverage || (DLMM as any)?.getBinArrayKeysCoverage;
+            const bounds = getBounds ? await getBounds(connection, poolPk).catch(() => null as any) : null;
+            const bnjs = await import('bn.js').catch(() => null as any);
+            const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
+            const toNum = (v: any): number => { try { if (v && typeof v.toNumber === 'function') return v.toNumber(); const s = (v && typeof v.toString === 'function') ? v.toString() : String(v); const n = Number(s); return Number.isFinite(n) ? n : NaN; } catch { return NaN; } };
+            const loNum = toNum(bounds?.lowerBinId);
+            const hiNum = toNum(bounds?.upperBinId);
+
+            let updBuilder: any = null;
+            // Try multiple signatures across SDK variants
+            try { if (typeof (methods as any)?.updateBinArray === 'function') updBuilder = (methods as any).updateBinArray(); } catch {}
+            try { if (!updBuilder && typeof (methods as any)?.updateBinArray === 'function' && Number.isFinite(loNum) && Number.isFinite(hiNum) && BN) updBuilder = (methods as any).updateBinArray(new BN(String(loNum)), new BN(String(hiNum))); } catch {}
+            try { if (!updBuilder && typeof (methods as any)?.updateBinArray === 'function' && Number.isFinite(loNum) && Number.isFinite(hiNum)) updBuilder = (methods as any).updateBinArray(loNum, hiNum); } catch {}
+
+            if (updBuilder) {
+              // Supply accounts and metas if possible
+              try { if (typeof updBuilder.accountsPartial === 'function') updBuilder = updBuilder.accountsPartial({ ...accounts }); else if (typeof updBuilder.accounts === 'function') updBuilder = updBuilder.accounts({ ...accounts }); } catch {}
+              try {
+                if (getCoverage && typeof updBuilder.remainingAccounts === 'function') {
+                  const cov = await getCoverage(programId, poolPk).catch(() => null as any) || await getCoverage(connection, programId, poolPk).catch(() => null as any) || await getCoverage({ programId, lbPair: poolPk }).catch(() => null as any);
+                  const metas = (cov && ((cov as any).metas || (cov as any).accountMetas)) || (Array.isArray(cov) ? cov : []);
+                  if (Array.isArray(metas) && metas.length) updBuilder = updBuilder.remainingAccounts(metas);
+                }
+              } catch {}
+              try {
+                const updIx = (typeof updBuilder.instruction === 'function') ? await updBuilder.instruction() : null;
+                if (updIx) { setupIxs.push(updIx as TransactionInstruction); try { logger.info('meteora.dlmm.bitmap_ext.init.ok', { cat: 'tx' }); } catch {} }
+              } catch (e: any) { try { logger.warn('meteora.dlmm.bitmap_ext.init.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {} }
+            } else {
+              // Fallback: try top-level helper if present
+              const updateFn = (DLMM as any)?.updateBinArray || (mod as any)?.updateBinArray;
+              if (typeof updateFn === 'function') {
+                const attempts: Array<() => Promise<any>> = [];
+                attempts.push(() => updateFn(connection, programId, poolPk));
+                attempts.push(() => updateFn(programId, poolPk));
+                attempts.push(() => updateFn(program, poolPk));
+                attempts.push(() => updateFn({ connection, programId, lbPair: poolPk }));
+                for (const fn of attempts) {
+                  try {
+                    const maybeIx = await fn();
+                    if (maybeIx) { setupIxs.push(maybeIx as TransactionInstruction); try { logger.info('meteora.dlmm.bitmap_ext.init.ok', { cat: 'tx' }); } catch {} break; }
+                  } catch {}
+                }
+              } else {
+                try { logger.warn('meteora.dlmm.bitmap_ext.init.unavailable', { cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
+              }
+            }
           }
         } catch {}
       }
@@ -624,7 +682,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         if (injected > 0) { try { logger.info('meteora.dlmm.remaining.inject', { cat: 'tx', ctx: { added: injected } as any }); } catch {} }
       }
     } catch {}
-    if (ix) { try { logger.info('meteora.dlmm.swap.ok', { cat: 'tx' }); } catch {}; return [ix]; }
+    if (ix) { try { logger.info('meteora.dlmm.swap.ok', { cat: 'tx' }); } catch {}; return [...setupIxs, ix]; }
     try { logger.warn('meteora.dlmm.tsclient.swap.empty', { cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
   } catch (e: any) {
     try { logger.warn('meteora.dlmm.tsclient.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
