@@ -519,9 +519,8 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
                       const body: any = { path: pathClosed };
                       if (sendMode === 'USD') body.sizeUsd = Number(sendAmount)||0; else body.size = Number(sendAmount)||0;
                       body.hopDexes = Array.isArray(nm?.hop_dexes) ? nm.hop_dexes : [];
-                      body.hopRates = Array.isArray(nm?.hop_rates) ? nm.hop_rates : [];
                       body.strictMinOut = true;
-                      const r = await fetch(`${apiBase}${ROUTES.arb.jupiterExecute}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                      const r = await fetch(`${apiBase}${ROUTES.arb.jupiterAggregateExecute}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
                       const j = await r.json().catch(()=>({}));
                       if (!r.ok) setNmSimErr(String((j && (j.error || j.err)) || 'send_failed'));
                     } catch (e: any) {

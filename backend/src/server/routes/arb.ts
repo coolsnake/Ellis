@@ -260,11 +260,56 @@ export function createArbRouter(io: SocketIOServer): Router {
           }
         }
       }
+      // Build intent early so we log even if build fails
+      const { executionCache } = await import('../../execution/cache.js');
+      const earlyIntent = {
+        path: plan.path,
+        hops: (plan.hops || []).map((h: any) => ({
+          dex: h.dex, variant: h.variant, poolId: h.poolId, programId: h.programId,
+          inputMint: h.inputMint, outputMint: h.outputMint,
+          inputDecimals: h.inputDecimals, outputDecimals: h.outputDecimals,
+          inputTokenProgram: h.inputTokenProgram, outputTokenProgram: h.outputTokenProgram,
+          amountInRaw: (typeof h.amountInRaw === 'bigint') ? h.amountInRaw.toString() : String(h.amountInRaw || 0),
+          minOutRaw: (typeof h.minOutRaw === 'bigint') ? h.minOutRaw.toString() : String(h.minOutRaw || 0),
+          userSourceAta: h.userSourceAta, userDestAta: h.userDestAta,
+          ...(h.vaultA ? { vaultA: h.vaultA } : {}),
+          ...(h.vaultB ? { vaultB: h.vaultB } : {}),
+          ...(h.tickSpacing ? { tickSpacing: h.tickSpacing } : {}),
+          ...(h.sqrtPriceLimitX64 ? { sqrtPriceLimitX64: String(h.sqrtPriceLimitX64) } : {}),
+          ...(h.oracle ? { oracle: h.oracle } : {}),
+          ...(h.tickArrayLower ? { tickArrayLower: h.tickArrayLower } : {}),
+          ...(h.tickArrayCenter ? { tickArrayCenter: h.tickArrayCenter } : {}),
+          ...(h.tickArrayUpper ? { tickArrayUpper: h.tickArrayUpper } : {}),
+          ...(h.binStep ? { binStep: h.binStep } : {}),
+          ...(h.activeId ? { activeId: h.activeId } : {}),
+          ...(h.binArrayLower ? { binArrayLower: h.binArrayLower } : {}),
+          ...(h.binArrayUpper ? { binArrayUpper: h.binArrayUpper } : {}),
+          ...(h.reserveX ? { reserveX: h.reserveX } : {}),
+          ...(h.reserveY ? { reserveY: h.reserveY } : {}),
+        })),
+        poolCache: (plan.hops || []).map((h: any) => {
+          const st = executionCache.getStatic(h.poolId) || null;
+          const hotRaw: any = executionCache.getHot(h.poolId) || null;
+          const hot = hotRaw ? {
+            sqrtPriceX64: (typeof hotRaw.sqrtPriceX64 === 'bigint') ? hotRaw.sqrtPriceX64.toString() : hotRaw.sqrtPriceX64,
+            currentTickIndex: hotRaw.currentTickIndex,
+            activeId: hotRaw.activeId,
+            tickArrays: hotRaw.tickArrays,
+            binArrays: hotRaw.binArrays,
+          } : null;
+          return { poolId: h.poolId, programId: h.programId, static: st, hot };
+        }),
+      } as any;
+      const id = Math.random().toString(36).slice(2,10);
+      try { logger.info('tx.intents', { cat: 'tx', ctx: { id, intent: earlyIntent } as any }); } catch {}
+      try { emit('log', { level: 'info', message: 'tx.intents', context: { cat: 'tx', id, intent: earlyIntent } }); } catch {}
+
+      // use early id
+
       const built = await buildDirectArbTx(plan, [], {} as any);
       const execCfg = await loadExecConfig();
 
       // Build intent + pool cache + ix summaries for tracing
-      const { executionCache } = await import('../../execution/cache.js');
       const intent = {
         path: plan.path,
         hops: (plan.hops || []).map((h: any) => ({
@@ -355,7 +400,7 @@ export function createArbRouter(io: SocketIOServer): Router {
       } catch {}
       try { pushBounded(execStats.preflightMs, Date.now() - tPre0); } catch {}
 
-      const id = Math.random().toString(36).slice(2,10);
+      // reuse early id
       try { logger.info('tx.intents', { cat: 'tx', ctx: { id, intent } as any }); } catch {}
       try { logger.info('tx.ixs', { cat: 'tx', ctx: { id, ixCount: built.ixCount, items: ixs } as any }); } catch {}
       try { emit('log', { level: 'info', message: 'tx.intents', context: { cat: 'tx', id, intent } }); } catch {}
@@ -500,9 +545,7 @@ export function createArbRouter(io: SocketIOServer): Router {
       const input = req.body || {};
       const parsed = ResolveDirectSchema.parse(input);
       const plan = input?.plan && Array.isArray(input.plan?.hops) ? input.plan : await resolveDirectPlan(parsed as any, {} as any);
-      const built = await buildDirectArbTx(plan, [], {} as any);
-      const execCfg = await loadExecConfig();
-      // Build intent + pool cache + ix summaries for tracing
+      // Build intent early so we log even if build fails
       const { executionCache } = await import('../../execution/cache.js');
       const intent = {
         path: plan.path,
@@ -522,19 +565,6 @@ export function createArbRouter(io: SocketIOServer): Router {
           ...(h.tickArrayLower ? { tickArrayLower: h.tickArrayLower } : {}),
           ...(h.tickArrayCenter ? { tickArrayCenter: h.tickArrayCenter } : {}),
           ...(h.tickArrayUpper ? { tickArrayUpper: h.tickArrayUpper } : {}),
-          // Raydium AMM/Serum
-          ...(h.ammAuthority ? { ammAuthority: h.ammAuthority } : {}),
-          ...(h.ammOpenOrders ? { ammOpenOrders: h.ammOpenOrders } : {}),
-          ...(h.ammTargetOrders ? { ammTargetOrders: h.ammTargetOrders } : {}),
-          ...(h.serumProgramId ? { serumProgramId: h.serumProgramId } : {}),
-          ...(h.market ? { market: h.market } : {}),
-          ...(h.bids ? { bids: h.bids } : {}),
-          ...(h.asks ? { asks: h.asks } : {}),
-          ...(h.eventQueue ? { eventQueue: h.eventQueue } : {}),
-          ...(h.coinVault ? { coinVault: h.coinVault } : {}),
-          ...(h.pcVault ? { pcVault: h.pcVault } : {}),
-          ...(h.vaultSigner ? { vaultSigner: h.vaultSigner } : {}),
-          // Meteora DLMM
           ...(h.binStep ? { binStep: h.binStep } : {}),
           ...(h.activeId ? { activeId: h.activeId } : {}),
           ...(h.binArrayLower ? { binArrayLower: h.binArrayLower } : {}),
@@ -555,6 +585,12 @@ export function createArbRouter(io: SocketIOServer): Router {
           return { poolId: h.poolId, programId: h.programId, static: st, hot };
         }),
       } as any;
+      const id = Math.random().toString(36).slice(2,10);
+      try { logger.info('tx.intents', { cat: 'tx', ctx: { id, intent } as any }); } catch {}
+      try { emit('log', { level: 'info', message: 'tx.intents', context: { cat: 'tx', id, intent } }); } catch {}
+      const built = await buildDirectArbTx(plan, [], {} as any);
+      const execCfg = await loadExecConfig();
+      
       const ixs = (Array.isArray((built as any)?.tx?.instructions) ? (built as any).tx.instructions : []).map((ix: any) => {
         try {
           const pid = (ix?.programId && typeof ix.programId.toBase58 === 'function') ? ix.programId.toBase58() : String(ix?.programId || '');
@@ -570,7 +606,7 @@ export function createArbRouter(io: SocketIOServer): Router {
       try { emit('log', { level: 'info', message: 'pretrade:arb tx built', timestamp: new Date().toISOString(), context: { cat: 'tx', code: 'PRETRADE.TX.BUILT', mode: (execCfg as any)?.mode } }); } catch {}
       try { logger.info('tx.build.ok', { cat: 'tx', code: LogCode.TX_BUILD_OK, ctx: { ixCount: built.ixCount, sizeBytes: built.sizeBytes, mode: (execCfg as any)?.mode } as any }); } catch {}
 
-      const id = Math.random().toString(36).slice(2,10);
+      // id already defined above
       const mode = (execCfg.mode || 'simulate');
       const forceDirect = !!(input && (input as any).forceDirect);
       // Jupiter execution mode: build and send via Jupiter v6 strict legs
