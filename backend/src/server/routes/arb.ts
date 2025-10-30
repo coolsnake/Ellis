@@ -303,12 +303,18 @@ export function createArbRouter(io: SocketIOServer): Router {
           ...(h.reserveX ? { reserveX: h.reserveX } : {}),
           ...(h.reserveY ? { reserveY: h.reserveY } : {}),
         })),
-        poolCache: (plan.hops || []).map((h: any) => ({
-          poolId: h.poolId,
-          programId: h.programId,
-          static: executionCache.getStatic(h.poolId) || null,
-          hot: executionCache.getHot(h.poolId) || null,
-        })),
+        poolCache: (plan.hops || []).map((h: any) => {
+          const st = executionCache.getStatic(h.poolId) || null;
+          const hotRaw: any = executionCache.getHot(h.poolId) || null;
+          const hot = hotRaw ? {
+            sqrtPriceX64: (typeof hotRaw.sqrtPriceX64 === 'bigint') ? hotRaw.sqrtPriceX64.toString() : hotRaw.sqrtPriceX64,
+            currentTickIndex: hotRaw.currentTickIndex,
+            activeId: hotRaw.activeId,
+            tickArrays: hotRaw.tickArrays,
+            binArrays: hotRaw.binArrays,
+          } : null;
+          return { poolId: h.poolId, programId: h.programId, static: st, hot };
+        }),
       } as any;
       const ixs = (Array.isArray((built as any)?.tx?.instructions) ? (built as any).tx.instructions : []).map((ix: any) => {
         try {
@@ -350,8 +356,10 @@ export function createArbRouter(io: SocketIOServer): Router {
       try { pushBounded(execStats.preflightMs, Date.now() - tPre0); } catch {}
 
       const id = Math.random().toString(36).slice(2,10);
-      try { logger.info('tx.intent', { cat: 'tx', ctx: { id, intent } as any }); } catch {}
+      try { logger.info('tx.intents', { cat: 'tx', ctx: { id, intent } as any }); } catch {}
       try { logger.info('tx.ixs', { cat: 'tx', ctx: { id, ixCount: built.ixCount, items: ixs } as any }); } catch {}
+      try { emit('log', { level: 'info', message: 'tx.intents', context: { cat: 'tx', id, intent } }); } catch {}
+      try { emit('log', { level: 'info', message: 'tx.ixs', context: { cat: 'tx', id, ixCount: built.ixCount, items: ixs } }); } catch {}
       await logTxTrace('preflight', {
         id, timeMs: Date.now(),
         path: plan.path,
@@ -442,6 +450,41 @@ export function createArbRouter(io: SocketIOServer): Router {
     }
   });
 
+  // Jupiter: aggregate end-to-end execution (single aggregator instruction)
+  api.post('/arb/jupiter/aggregate-execute', async (req, res) => {
+    try {
+      const body = req.body || {};
+      const path: string[] = Array.isArray(body.path) ? body.path : [];
+      if (!Array.isArray(path) || path.length < 2) return res.status(400).json({ error: 'invalid path' });
+      const inputMint = String(path[0]);
+      const outputMint = String(path[path.length - 1]);
+
+      // Convert token size (if provided) to atoms using input mint decimals
+      let sizeAtoms: number | undefined;
+      if (Number.isFinite(body.size)) {
+        try { const { resolveMint } = await import('../../utils/tokens.js'); const dec0 = (await resolveMint(inputMint)).decimals ?? 6; sizeAtoms = Math.max(0, Math.floor(Number(body.size) * Math.pow(10, dec0))); } catch {}
+      }
+      const sizeUsd = Number.isFinite(body.sizeUsd) ? Number(body.sizeUsd) : undefined;
+      const slippageBps = Number.isFinite(body.slippageBps) ? Number(body.slippageBps) : undefined;
+
+      // Derive DEX family whitelist from hopDexes (Raydium/Orca/Meteora)
+      const hopDexes: string[] = Array.isArray(body.hopDexes) ? body.hopDexes : [];
+      const families = Array.from(new Set(hopDexes.map((x: string) => {
+        const v = String(x || '').toLowerCase();
+        if (v.includes('ray')) return 'Raydium';
+        if (v.includes('orca')) return 'Orca';
+        if (v.includes('meteora')) return 'Meteora';
+        return x;
+      })));
+
+      const { executeAggregateWithJupiter } = await import('../../jupiter/arbExecutor.js');
+      const r = await executeAggregateWithJupiter({ inputMint, outputMint, sizeAtoms, sizeUsd, slippageBps, dexWhitelist: families, wrapAndUnwrapSol: (body.wrapAndUnwrapSol !== false) });
+      res.json({ signature: r.signature });
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
   api.post('/arb/execute', async (req, res) => {
     try {
       try { emit('log', { level: 'info', message: 'pretrade:arb execute start', timestamp: new Date().toISOString(), context: { cat: 'arb', code: 'PRETRADE.EXEC.START' } }); } catch {}
@@ -499,12 +542,18 @@ export function createArbRouter(io: SocketIOServer): Router {
           ...(h.reserveX ? { reserveX: h.reserveX } : {}),
           ...(h.reserveY ? { reserveY: h.reserveY } : {}),
         })),
-        poolCache: (plan.hops || []).map((h: any) => ({
-          poolId: h.poolId,
-          programId: h.programId,
-          static: executionCache.getStatic(h.poolId) || null,
-          hot: executionCache.getHot(h.poolId) || null,
-        })),
+        poolCache: (plan.hops || []).map((h: any) => {
+          const st = executionCache.getStatic(h.poolId) || null;
+          const hotRaw: any = executionCache.getHot(h.poolId) || null;
+          const hot = hotRaw ? {
+            sqrtPriceX64: (typeof hotRaw.sqrtPriceX64 === 'bigint') ? hotRaw.sqrtPriceX64.toString() : hotRaw.sqrtPriceX64,
+            currentTickIndex: hotRaw.currentTickIndex,
+            activeId: hotRaw.activeId,
+            tickArrays: hotRaw.tickArrays,
+            binArrays: hotRaw.binArrays,
+          } : null;
+          return { poolId: h.poolId, programId: h.programId, static: st, hot };
+        }),
       } as any;
       const ixs = (Array.isArray((built as any)?.tx?.instructions) ? (built as any).tx.instructions : []).map((ix: any) => {
         try {
@@ -575,8 +624,10 @@ export function createArbRouter(io: SocketIOServer): Router {
       }
 
       // Log intent and ix summary for execution path
-      try { logger.info('tx.intent', { cat: 'tx', ctx: { id, intent } as any }); } catch {}
+      try { logger.info('tx.intents', { cat: 'tx', ctx: { id, intent } as any }); } catch {}
       try { logger.info('tx.ixs', { cat: 'tx', ctx: { id, ixCount: built.ixCount, items: ixs } as any }); } catch {}
+      try { emit('log', { level: 'info', message: 'tx.intents', context: { cat: 'tx', id, intent } }); } catch {}
+      try { emit('log', { level: 'info', message: 'tx.ixs', context: { cat: 'tx', id, ixCount: built.ixCount, items: ixs } }); } catch {}
 
       // Require successful preflight before sending
       try { logger.info('tx.preflight.start', { cat: 'tx', code: LogCode.TX_PREFLIGHT_START, ctx: { ixCount: built.ixCount, sizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode } as any }); } catch {}

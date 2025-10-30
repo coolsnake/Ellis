@@ -216,3 +216,62 @@ export async function executePlanWithJupiterStrict(args: ExecuteArgs): Promise<{
 }
 
 
+export async function executeAggregateWithJupiter(args: {
+  inputMint: string;
+  outputMint: string;
+  sizeAtoms?: number;
+  sizeUsd?: number;
+  slippageBps?: number;
+  dexWhitelist?: string[];
+  wrapAndUnwrapSol?: boolean;
+}): Promise<{ signature: string }> {
+  const conn = getConnection();
+  const kp = await ensureWallet(CONFIG.walletPath);
+  const slippageBps = Math.max(1, Number(args.slippageBps ?? (CONFIG.fees?.jupiterSlippageBps ?? 50)));
+
+  // Determine input atoms
+  let sizeAtoms = Math.max(0, Math.floor(Number(args.sizeAtoms || 0)));
+  if (!sizeAtoms && args.sizeUsd && args.sizeUsd > 0) {
+    const { getPriceByMint } = await import('../server/priceStore.js');
+    const dec0 = (await resolveMint(args.inputMint)).decimals ?? 6;
+    const px = Number(getPriceByMint(args.inputMint)?.usdc ?? 0);
+    if (px > 0) sizeAtoms = Math.floor((args.sizeUsd / px) * Math.pow(10, dec0));
+  }
+  if (!sizeAtoms) throw new Error('missing_input_amount');
+
+  // One end-to-end quote using lite (default), with optional dex whitelist and multi-pool allowed
+  const quote = await getV6Quote(
+    args.inputMint,
+    args.outputMint,
+    sizeAtoms,
+    slippageBps,
+    { includeDexes: (args.dexWhitelist || []).slice(), onlyDirectRoutes: false }
+  );
+  try {
+    const outRaw = Number(quote?.outAmount || 0);
+    const marginBps = Math.max(0, Math.min(slippageBps, 200));
+    const minOutRaw = Math.min(outRaw, Math.floor(outRaw * (1 - marginBps / 10_000)));
+    (quote as any).otherAmountThreshold = String(minOutRaw);
+    try { logger.info('jupiter.trade.aggregate.minout.set', { cat: 'jupiter', outRaw, minOutRaw, marginBps }); } catch {}
+  } catch {}
+
+  const instr = await getSwapInstructions(
+    quote,
+    kp.publicKey.toBase58(),
+    (CONFIG as any)?.system?.wrapAndUnwrapSol !== false
+  );
+
+  const tx = await buildCombinedTransaction(
+    conn,
+    kp.publicKey,
+    [{ instructions: instr }],
+    (CONFIG.fees?.jupiterPriorityFee as any) || undefined,
+    []
+  );
+  const wire = Buffer.from(tx.serialize()).toString('base64');
+  const signature = await signAndSendSerializedTransaction(wire, kp, undefined, 'swap');
+  try { logger.info('jupiter.trade.aggregate.send.ok', { cat: 'jupiter', signature }); } catch {}
+  return { signature };
+}
+
+
