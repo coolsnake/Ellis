@@ -175,19 +175,27 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
     }
     const { quoteHopOut, applyMinOut } = await import('./quotes.js');
     for (let i = 0; i < hops.length; i++) {
+      // Always set current hop input
       hops[i].amountInRaw = curIn;
-      const out = await quoteHopOut(hops[i], curIn);
-      // Optional extra bps for Token-2022 hops
+
+      // Quote per-hop; never let one failure abort subsequent hops
+      let out = 0n;
+      try {
+        out = await quoteHopOut(hops[i], curIn);
+      } catch {}
+
+      // Compute effective slippage and minOut even if out=0n
+      let eff = slippage;
       try {
         const sys = (CONFIG.system as any) || {};
         const bump = Number(sys.token2022ExtraSlippageBps ?? 0);
         const is2022 = (hops[i].inputTokenProgram === 'token-2022') || (hops[i].outputTokenProgram === 'token-2022');
-        const eff = Math.max(0, Math.min(9900, slippage + (is2022 ? bump : 0)));
-        hops[i].minOutRaw = applyMinOut(out, eff);
-      } catch {
-        hops[i].minOutRaw = applyMinOut(out, slippage);
-      }
-      curIn = out > 0n ? out : curIn;
+        eff = Math.max(0, Math.min(9900, eff + (is2022 ? bump : 0)));
+      } catch {}
+      try { hops[i].minOutRaw = applyMinOut(out, eff); } catch { hops[i].minOutRaw = 0n; }
+
+      // Only advance curIn when we have a positive quote
+      if (out > 0n) curIn = out;
     }
   } catch {}
   logger.info('tx.resolve.ok', { cat: 'tx', code: LogCode.TX_RESOLVE_OK, ctx: { ms: Date.now() - t0, hops: hops.length } as any });

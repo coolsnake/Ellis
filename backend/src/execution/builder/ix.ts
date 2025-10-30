@@ -468,16 +468,16 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     };
     if (binArrayLower) accounts.binArrayLower = binArrayLower;
     if (binArrayUpper) accounts.binArrayUpper = binArrayUpper;
-    // Include bitmap extension PDA only if it exists and is owned by the DLMM program
+    // Always include the bitmap extension PDA if derived; program can create/verify it
     try {
       if (binArrayBitmapExtension) {
+        accounts.binArrayBitmapExtension = binArrayBitmapExtension;
+        // Observability only; do not gate on presence/owner
         try {
           const acc = await connection.getAccountInfo(binArrayBitmapExtension);
           if (!acc) {
             try { logger.warn('meteora.dlmm.ext.missing_on_chain', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { expected: programId?.toBase58?.() } }); } catch {}
-          } else if (acc.owner && typeof acc.owner.equals === 'function' && acc.owner.equals(programId)) {
-            accounts.binArrayBitmapExtension = binArrayBitmapExtension;
-          } else {
+          } else if (acc.owner && typeof acc.owner.equals === 'function' && !acc.owner.equals(programId)) {
             try { logger.warn('meteora.dlmm.ext.owner_mismatch', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { owner: acc.owner?.toBase58?.(), expected: programId?.toBase58?.() } }); } catch {}
           }
         } catch {}

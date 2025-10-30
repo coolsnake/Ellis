@@ -230,7 +230,7 @@ export function OpportunityList(
                   const body: any = { path: pathClosed, sizeUsd: sendMode==='USD'? Number(sendAmount)||0 : undefined, size: sendMode==='TOKENS'? Number(sendAmount)||0 : undefined };
                   body.hopDexes = Array.isArray((op as any)?.hop_dexes) ? (op as any).hop_dexes : [];
                   body.strictMinOut = true;
-                  const r = await fetch(`${apiBase}${ROUTES.arb.jupiterAggregateExecute}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+                  const r = await fetch(`${apiBase}${ROUTES.arb.jupiterExecute}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
                   const j = await r.json().catch(()=>({}));
                   if (!r.ok) setSimErr(String((j && (j.error || j.err)) || 'send_failed'));
                 } catch {}

@@ -31,7 +31,8 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
   const modeOverride: 'direct' | 'simulate' | undefined = (cb as any)?.__modeOverride;
   let performedWrap = false;
   let willUnwrap = false;
-  for (const hop of plan.hops) {
+  for (let i = 0; i < plan.hops.length; i++) {
+    const hop = plan.hops[i];
     try { logger.debug('tx.build.hop', { cat: 'tx', code: LogCode.TX_BUILD_HOP, ctx: { traceId, dex: hop.dex, variant: hop.variant, poolId: hop.poolId } as any }); } catch {}
     try {
       logger.info('tx.build.hop.start', { cat: 'tx', ctx: { traceId, dex: hop.dex, variant: hop.variant, poolId: hop.poolId, inputMint: hop.inputMint, outputMint: hop.outputMint, amountInRaw: String(hop.amountInRaw ?? 0n), minOutRaw: String(hop.minOutRaw ?? 0n), userSourceAta: hop.userSourceAta ? 'set' : 'missing', userDestAta: hop.userDestAta ? 'set' : 'missing' } as any });
@@ -75,7 +76,16 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
         }
       }
 
-      // Guard: if amount is zero, avoid invoking real SDK builders
+      // Defensive amount propagation fallback: if later hop is zero, try to use previous hop's output
+      if ((hop.amountInRaw || 0n) <= 0n && i > 0) {
+        try {
+          const prev = plan.hops[i - 1] as any;
+          const candidate: bigint = (prev?.minOutRaw && prev.minOutRaw > 0n) ? prev.minOutRaw : (prev?.amountInRaw || 0n);
+          if (candidate > 0n) hop.amountInRaw = candidate;
+        } catch {}
+      }
+
+      // Guard: if amount is still zero, avoid invoking real SDK builders
       // - In simulate mode, insert a non-executable placeholder (no programId) so assembly skips it
       // - In direct mode, fail fast with a descriptive error
       if ((hop.amountInRaw || 0n) <= 0n) {

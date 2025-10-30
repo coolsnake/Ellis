@@ -27,20 +27,34 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
     } else if (hop.dex === 'raydium') {
       const sys: any = (CONFIG as any)?.system || {};
       if (sys.quotes?.enableMinimalMath !== false) {
+        const isRev = /-rev$/.test(hop.poolId || '');
         const id = hop.poolId.replace(/-rev$/, '');
         const ray = peekRaydiumPools();
         const p = (ray.amm || []).find((x: any) => String(x?.id||'')===id);
         if (p) {
           const feeBps = Number((p as any)?.fee_bps || (hop as any)?.fee_bps || 0);
-          const decIn = Number(hop.inputDecimals || (p as any)?.decimals_a || 0);
-          const decOut = Number(hop.outputDecimals || (p as any)?.decimals_b || 0);
-          const reserveA = Number((p as any)?.amount_a_whole ?? (p as any)?.reserveA ?? 0);
-          const reserveB = Number((p as any)?.amount_b_whole ?? (p as any)?.reserveB ?? 0);
-          if (reserveA > 0 && reserveB > 0) {
+          // Align reserves/decimals with hop direction
+          const decIn = Number(
+            hop.inputDecimals ?? (isRev ? (p as any)?.decimals_b : (p as any)?.decimals_a) ?? 0
+          );
+          const decOut = Number(
+            hop.outputDecimals ?? (isRev ? (p as any)?.decimals_a : (p as any)?.decimals_b) ?? 0
+          );
+          const reserveInWhole = Number(
+            isRev
+              ? ((p as any)?.amount_b_whole ?? (p as any)?.reserveB ?? 0)
+              : ((p as any)?.amount_a_whole ?? (p as any)?.reserveA ?? 0)
+          );
+          const reserveOutWhole = Number(
+            isRev
+              ? ((p as any)?.amount_a_whole ?? (p as any)?.reserveA ?? 0)
+              : ((p as any)?.amount_b_whole ?? (p as any)?.reserveB ?? 0)
+          );
+          if (reserveInWhole > 0 && reserveOutWhole > 0) {
             const amtIn = Number(amountInRaw) / Math.pow(10, decIn);
             const fee = Math.max(0, 1 - (Math.min(9900, Math.max(0, feeBps))/10_000));
             const amtInAfterFee = amtIn * fee;
-            const outWhole = (amtInAfterFee * reserveB) / (reserveA + amtInAfterFee);
+            const outWhole = (amtInAfterFee * reserveOutWhole) / (reserveInWhole + amtInAfterFee);
             const outRaw = BigInt(Math.floor(outWhole * Math.pow(10, decOut)));
             if (outRaw > 0n) return outRaw;
           }
