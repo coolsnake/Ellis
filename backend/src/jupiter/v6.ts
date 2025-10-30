@@ -45,8 +45,13 @@ export async function getV6Quote(
       }
       if (!res.ok) {
         let bodyText = '';
+        let errorCode: string | undefined;
         try { bodyText = await res.text(); } catch {}
+        try { const obj = JSON.parse(bodyText || '{}'); errorCode = obj?.errorCode; } catch {}
         try { logger.info('jup.legacy.quote.err', { cat: 'jupiter', status: res.status, body: (bodyText && typeof bodyText === 'string') ? bodyText.slice(0, 200) : '' }); } catch {}
+        if (res.status === 400 && errorCode === 'COULD_NOT_FIND_ANY_ROUTE') {
+          throw new Error('NO_DIRECT_ROUTE');
+        }
         throw new Error(`legacy quote failed ${res.status}`);
       }
       return await res.json();

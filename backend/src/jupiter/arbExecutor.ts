@@ -144,7 +144,12 @@ export async function executePlanWithJupiterStrict(args: ExecuteArgs): Promise<{
     try {
       q = await getV6Quote(inputMint, outputMint, curIn, slippageBps, { onlyDirectRoutes: true, includeDexes });
     } catch (e: any) {
-      try { logger.info('jupiter.trade.hop.quote.err', { cat: 'jupiter', hop: i, error: String(e?.message || e) }); } catch {}
+      const msg = String(e?.message || e);
+      if (msg === 'NO_DIRECT_ROUTE') {
+        try { logger.info('jupiter.trade.hop.no_direct_route', { cat: 'jupiter', hop: i, inputMint, outputMint, includeDexes }); } catch {}
+      } else {
+        try { logger.info('jupiter.trade.hop.quote.err', { cat: 'jupiter', hop: i, error: msg }); } catch {}
+      }
       throw e;
     }
     // DEX enforcement: strict only when v6 was used; warn-only when legacy lite was used
