@@ -796,16 +796,61 @@ export function startRaydiumRefreshLoop(): void {
                     // Resolve decimals
                     let decA: number | undefined; let decB: number | undefined;
                     try { const tok = await import('../utils/tokens.js'); const a = await (tok as any).resolveMint(tokenX); const b = await (tok as any).resolveMint(tokenY); decA = Number(a?.decimals); decB = Number(b?.decimals); } catch {}
-                    // Compute A-per-1-B from active bin
+                    // Prefer reserves-based price if available; fallback to activeId/binStep
                     let price_a_per_b: number | undefined;
                     try {
-                      if (Number.isFinite(decA as any) && Number.isFinite(decB as any)) {
+                      // Try extracting reserves with multiple candidate field names
+                      const rx = Number(state?.reserveX ?? state?.reserve_x ?? state?.reserve_x_amount ?? state?.tokenXBalance ?? state?.tokenBalanceX ?? 0);
+                      const ry = Number(state?.reserveY ?? state?.reserve_y ?? state?.reserve_y_amount ?? state?.tokenYBalance ?? state?.tokenBalanceY ?? 0);
+                      if (Number.isFinite(rx) && Number.isFinite(ry) && rx > 0 && ry > 0 && Number.isFinite(decA as any) && Number.isFinite(decB as any)) {
+                        const wholeA = rx / Math.pow(10, decA as number);
+                        const wholeB = ry / Math.pow(10, decB as number);
+                        if (wholeA > 0 && wholeB > 0) price_a_per_b = wholeA / wholeB;
+                      }
+                    } catch {}
+                    try {
+                      if (!(price_a_per_b && price_a_per_b > 0) && Number.isFinite(decA as any) && Number.isFinite(decB as any)) {
                         const f = Math.pow(1.0001, binStep as number);
                         if (f > 0) {
                           const bPerA = Math.pow(f, activeId as number) * Math.pow(10, (decA as number) - (decB as number));
                           const cand = [bPerA > 0 ? (1 / bPerA) : 0, bPerA].filter(v => Number.isFinite(v) && v > 0);
                           price_a_per_b = cand[0];
                         }
+                      }
+                    } catch {}
+
+                    // Subscribe bin-array accounts to capture reserve changes within active bin
+                    try {
+                      const poolPk = new web3.PublicKey(poolId);
+                      let metas: any[] | undefined;
+                      const getBounds = (DLMM as any)?.getBinArrayLowerUpperBinId;
+                      const getMetas = (DLMM as any)?.getBinArrayAccountMetasCoverage || (DLMM as any)?.getBinArrayKeysCoverage;
+                      if (getBounds && getMetas) {
+                        const bnjs = await import('bn.js').catch(() => null as any);
+                        const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
+                        const bounds = await getBounds(conn, poolPk).catch(() => null as any);
+                        const toNum = (v: any): number => { try { if (v && typeof v.toNumber === 'function') return v.toNumber(); const s = (v && typeof v.toString === 'function') ? v.toString() : String(v); const n = Number(s); return Number.isFinite(n) ? n : NaN; } catch { return NaN; } };
+                        const loNum = toNum(bounds?.lowerBinId);
+                        const hiNum = toNum(bounds?.upperBinId);
+                        if (BN && Number.isFinite(loNum) && Number.isFinite(hiNum)) {
+                          try {
+                            metas = getMetas.length === 3
+                              ? getMetas(new BN(String(loNum)), new BN(String(hiNum)), poolPk)
+                              : await getMetas(conn, new web3.PublicKey((CONFIG as any)?.meteora?.programId), poolPk).catch(() => null as any);
+                          } catch {}
+                        }
+                      }
+                      const keys: string[] = Array.isArray(metas)
+                        ? metas.map((m: any) => (m?.pubkey?.toBase58?.() || m?.pubkey || m?.pubKey || m?.address)).filter(Boolean)
+                        : [];
+                      for (const k of keys) {
+                        try {
+                          if (targetedSourceByAccount.has(k)) continue;
+                          const vpk = new web3.PublicKey(k);
+                          const id = await subscribeAccountWithRetry(vpk, handle);
+                          subs.push({ kind: 'account', id });
+                          targetedSourceByAccount.set(k, 'meteora');
+                        } catch {}
                       }
                     } catch {}
                     // Upsert minimal item

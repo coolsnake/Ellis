@@ -70,7 +70,7 @@ export function useSocketEvents(opts?: Options): void {
         if (levelOrder[currentLevel] < (levelOrder as any)[eventLevel]) return;
         const id = catToWindowId.get(cat) || 'system';
         // Per-frame buffered merge; cap 300 entries per window
-        const store: any = (window as any).__ls_log_buffer__ || ((window as any).__ls_log_buffer__ = { buf: new Map<string, LogEvent[]>(), scheduled: false });
+        const store: any = (window as any).__ls_log_buffer__ || ((window as any).__ls_log_buffer__ = { buf: new Map<string, LogEvent[]>(), scheduled: false, seq: 0 });
         // Throttle high-rate graph logs to avoid main-thread jank
         try {
           if (cat === 'graph') {
@@ -80,6 +80,12 @@ export function useSocketEvents(opts?: Options): void {
             (window as any).__ls_last_graph_at = now;
           }
         } catch {}
+        // Assign a stable local key for React row identity
+        try {
+          store.seq = Number(store.seq || 0) + 1;
+          (evt as any).__k = `${evt.timestamp}|${(evt as any).code || ''}|${(evt as any).cid || ''}|${evt.message}|${store.seq}`;
+        } catch {}
+
         const list = store.buf.get(id) || [];
         list.push(evt);
         store.buf.set(id, list);
@@ -91,8 +97,10 @@ export function useSocketEvents(opts?: Options): void {
                 const next: any = { ...(prev as any) };
                 for (const [wid, items] of store.buf.entries()) {
                   const base = Array.isArray(next[wid]) ? next[wid] : [];
-                  const merged = items.concat(base);
-                  next[wid] = merged.length > 300 ? merged.slice(0, 300) : merged;
+                  // Append new items at the end; keep last 300 entries
+                  const merged = base.length ? base.concat(items) : items;
+                  const len = merged.length;
+                  next[wid] = len > 300 ? merged.slice(len - 300) : merged;
                 }
                 return next;
               });
