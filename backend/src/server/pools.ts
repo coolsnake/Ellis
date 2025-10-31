@@ -621,7 +621,7 @@ export function startRaydiumRefreshLoop(): void {
                     const gmod: any = await import('./graph.js');
                     const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
                     if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
-                      await gmod.applyPoolUpdates(prev as any, next, { pushToArb: false });
+                      await gmod.applyPoolUpdates(prev as any, next, { pushToArb: true });
                     } else {
                       const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
                       const delta = d.clmm.length;
@@ -658,7 +658,7 @@ export function startRaydiumRefreshLoop(): void {
                           const gmod: any = await import('./graph.js');
                           const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
                           if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
-                            await gmod.applyPoolUpdates(prev as any, next, { pushToArb: false });
+                            await gmod.applyPoolUpdates(prev as any, next, { pushToArb: true });
                           } else {
                             const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
                             const delta = d.amm.length;
@@ -729,8 +729,8 @@ export function startRaydiumRefreshLoop(): void {
                     const gmod: any = await import('./graph.js');
                     const prevSnap = orcaCache.data ? prev : { amm: [], clmm: [] };
                     if (inc && (d.clmm.length || d.amm.length || d.addedClmm || d.removedClmm || d.addedAmm || d.removedAmm)) {
-                      // In detect-driven mode, apply updates without pushing to arb-rs now
-                      await gmod.applyPoolUpdates(prevSnap as any, next, { pushToArb: false });
+                      // Push diffs immediately so arb-rs uses latest on next loop
+                      await gmod.applyPoolUpdates(prevSnap as any, next, { pushToArb: true });
                     } else {
                       const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
                       const delta = d.amm.length + d.clmm.length + d.addedAmm + d.addedClmm + d.removedAmm + d.removedClmm;
@@ -1295,7 +1295,7 @@ export async function getMeteoraBalancedPoolsCached(force = false): Promise<Pool
         try {
           const gmod: any = await import('./graph.js');
           if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
-            await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: false });
+            await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: true });
           }
         } catch {}
       } catch {}
@@ -1419,7 +1419,7 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
         try {
           const gmod: any = await import('./graph.js');
           if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
-            await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: false });
+            await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: true });
           } else {
             const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
             const delta = d.amm.length + d.clmm.length + d.addedAmm + d.addedClmm + d.removedAmm + d.removedClmm;
