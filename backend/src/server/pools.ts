@@ -595,19 +595,31 @@ export function startRaydiumRefreshLoop(): void {
                       const mintA = ((state as any).mintA || (state as any).tokenMintA)?.toBase58?.() || '';
                       const mintB = ((state as any).mintB || (state as any).tokenMintB)?.toBase58?.() || '';
                       const sqrt = Number((state as any).sqrtPriceX64 ?? (state as any).sqrt_price_x64 ?? (state as any).sqrtPrice ?? 0);
-                      // Approximate A per 1 B from sqrtPriceX64 (Q64.64): price = (sqrt / 2^64)^2
-                      const pxFromSqrt = (() => {
+                      // Derive A per 1 B using sqrtPrice and decimals:
+                      // price_B_per_A = (ratio^2) * 10^(decA - decB)
+                      // price_A_per_B = 1 / price_B_per_A
+                      const price_a_per_b = await (async () => {
                         try {
-                          if (!Number.isFinite(sqrt) || sqrt <= 0) return 0;
+                          if (!Number.isFinite(sqrt) || sqrt <= 0) return undefined;
+                          let decA: number | undefined; let decB: number | undefined;
+                          try {
+                            const tok = await import('../utils/tokens.js');
+                            const a = await (tok as any).resolveMint(mintA);
+                            const b = await (tok as any).resolveMint(mintB);
+                            decA = Number(a?.decimals);
+                            decB = Number(b?.decimals);
+                          } catch {}
+                          if (!Number.isFinite(decA as any) || !Number.isFinite(decB as any)) return undefined;
                           const ratio = sqrt / Math.pow(2, 64);
-                          const px = ratio * ratio;
-                          return Number.isFinite(px) && px > 0 ? px : 0;
-                        } catch { return 0; }
+                          const priceBperA = (ratio * ratio) * Math.pow(10, (decA as number) - (decB as number));
+                          const aPerB = priceBperA > 0 ? (1 / priceBperA) : 0;
+                          return (aPerB > 0 && Number.isFinite(aPerB)) ? aPerB : undefined;
+                        } catch { return undefined; }
                       })();
                       const liq = Number((state as any).liquidity ?? 0);
                       const tick = Number((state as any).tickSpacing ?? (state as any).tick_spacing ?? 0);
                       const fee = Number((state as any).feeRate ?? (state as any).fee_rate ?? 0);
-                      const item: ClmmPool = { id: pk58, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps: fee, sqrt_price_x64: sqrt, liquidity: liq, tick_spacing: tick, updated_ms: Date.now(), pool_kind: 'clmm', liquidity_display: liq, price_a_per_b: pxFromSqrt } as any;
+                      const item: ClmmPool = { id: pk58, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps: fee, sqrt_price_x64: sqrt, liquidity: liq, tick_spacing: tick, updated_ms: Date.now(), pool_kind: 'clmm', liquidity_display: liq, price_a_per_b } as any;
                       const prev = raydiumCache.data || { amm: [], clmm: [] };
                       const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
                       const idx = next.clmm.findIndex(p => p.id === item.id);
@@ -642,9 +654,22 @@ export function startRaydiumRefreshLoop(): void {
                         // Reserves may be BN; best-effort convert to number
                         const rA = Number((state.baseReserve || state.reserveA || state.vaultA || 0).toString ? (state.baseReserve.toString()) : (state.baseReserve || 0));
                         const rB = Number((state.quoteReserve || state.reserveB || state.vaultB || 0).toString ? (state.quoteReserve.toString()) : (state.quoteReserve || 0));
-                        const price = (rB > 0 && rA > 0) ? (rA / rB) : 0;
+                        let price_a_per_b: number | undefined;
+                        try {
+                          let decA: number | undefined; let decB: number | undefined;
+                          try {
+                            const tok = await import('../utils/tokens.js');
+                            const a = await (tok as any).resolveMint(mintA);
+                            const b = await (tok as any).resolveMint(mintB);
+                            decA = Number(a?.decimals);
+                            decB = Number(b?.decimals);
+                          } catch {}
+                          const wholeA = Number.isFinite(decA as any) ? (rA / Math.pow(10, decA as number)) : rA;
+                          const wholeB = Number.isFinite(decB as any) ? (rB / Math.pow(10, decB as number)) : rB;
+                          if (wholeA > 0 && wholeB > 0) price_a_per_b = wholeA / wholeB;
+                        } catch {}
                         const liqBase = (rA > 0 && rB > 0) ? Math.min(rA, rB) : 0;
-                        const item: AmmPool = { id: pk58, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps: Number((state as any).tradeFeeRate || (state as any).feeRate || 0), price_a_per_b: price, liquidity_base: liqBase, updated_ms: Date.now(), pool_kind: 'amm', liquidity_display: liqBase } as any;
+                        const item: AmmPool = { id: pk58, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps: Number((state as any).tradeFeeRate || (state as any).feeRate || 0), price_a_per_b, liquidity_base: liqBase, updated_ms: Date.now(), pool_kind: 'amm', liquidity_display: liqBase } as any;
                         const prev = raydiumCache.data || { amm: [], clmm: [] };
                         const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
                         const idx = next.amm.findIndex(p => p.id === item.id);
