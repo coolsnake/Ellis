@@ -576,6 +576,12 @@ server.listen(CONFIG.port, () => {
     setTimeout(startGraph, delayMs);
     io.on('connection', () => startGraph());
   } catch {}
+  // Start transaction confirmation tracking
+  try {
+    import('./txHistory.js')
+      .then(({ startTxConfirmationTask }) => { try { startTxConfirmationTask(io); } catch {} })
+      .catch(() => {});
+  } catch {}
   // Start detect-driven graph push cadence when enabled
   try {
     if ((CONFIG as any)?.system?.detectDrivenGraphPush) {

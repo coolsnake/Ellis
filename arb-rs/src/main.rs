@@ -36,6 +36,8 @@ struct ArbConfig {
     max_detections_without_exec: usize,
     // TTL window for detection history bookkeeping
     detection_history_ttl_ms: u64,
+    // TTL for opportunities before they expire (default 30s)
+    opportunity_ttl_ms: u64,
     debug_emit_subthreshold: bool,
     debug_top_n: usize,
     near_miss_enable: bool,
@@ -1258,12 +1260,22 @@ async fn main() -> anyhow::Result<()> {
                 };
                 let mut merged: Vec<Opportunity> = Vec::new();
                 // Always keep current detections, but enforce detection cap unless executed
-                for m in opps.into_iter() {
+                for mut m in opps.into_iter() {
                     let s = loop_state.read().await;
                     let key = keyify_opportunity(&m.path, &m.dexes);
                     let executed = s.executed_keys.contains(&key);
                     let count = s.detection_counts.get(&key).map(|(c,_)| *c).unwrap_or(0) as usize;
-                    if executed || count < s.config.max_detections_without_exec { merged.push(m); }
+                    if executed || count < s.config.max_detections_without_exec {
+                        // Set timestamps for new detections
+                        if m.first_seen_ms.is_none() {
+                            m.first_seen_ms = Some(now_ms_val);
+                        }
+                        m.last_verified_ms = Some(now_ms_val);
+                        if m.detected_ms.is_none() {
+                            m.detected_ms = Some(now_ms_val);
+                        }
+                        merged.push(m);
+                    }
                 }
                 // Retain prior ones if within adaptive TTL and not duplicated
                 for mut o in prev.into_iter() {
@@ -1282,6 +1294,15 @@ async fn main() -> anyhow::Result<()> {
                         !executed && (s.detection_counts.get(&key).map(|(c,_)| (*c as usize) >= s.config.max_detections_without_exec).unwrap_or(false))
                     };
                     if over_cap { continue; }
+                    // Apply opportunity TTL check
+                    let opp_ttl = {
+                        let s = loop_state.read().await;
+                        s.config.opportunity_ttl_ms
+                    };
+                    let last_verified = o.last_verified_ms.unwrap_or(o.detected_ms.unwrap_or(first));
+                    if now_ms_val.saturating_sub(last_verified) > opp_ttl {
+                        continue; // Expired opportunity
+                    }
                     // extend TTL up to 3× (1x base + up to +2x for stability)
                     let ttl = base_ttl.saturating_mul(1 + det.min(2));
                     let is_dup = merged.iter().any(|x| x.path == o.path && x.dexes == o.dexes);
@@ -1309,8 +1330,10 @@ async fn main() -> anyhow::Result<()> {
                         if let Some(prev_o) = s.opportunities.iter().find(|p| p.path == m.path && p.dexes == m.dexes) {
                             m.first_seen_ms = prev_o.first_seen_ms.or(prev_o.detected_ms).or(m.detected_ms);
                             m.detections = Some(prev_o.detections.unwrap_or(1) + 1);
+                            m.last_verified_ms = Some(now_ms_val); // Update verification timestamp
                         } else {
                             m.first_seen_ms = m.first_seen_ms.or(m.detected_ms);
+                            m.last_verified_ms = m.last_verified_ms.or(m.detected_ms);
                             m.detections = Some(1);
                         }
                     }
@@ -1408,6 +1431,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/config", post(set_config).get(get_config))
         .route("/arb/start", post(arb_start))
         .route("/arb/graph/version", get(arb_graph_version))
+        .route("/arb/graph/ack", post(arb_graph_ack))
         .route("/arb/graph/snapshot", post(arb_graph_snapshot))
         .route("/arb/graph/update", post(arb_graph_update))
         .route("/metrics", get(metrics_prom))
@@ -1833,6 +1857,7 @@ struct ConfigReq {
     quote_size_usd: Option<f64>,
     max_detections_without_exec: Option<usize>,
     detection_history_ttl_ms: Option<u64>,
+    opportunity_ttl_ms: Option<u64>,
     debug_emit_subthreshold: Option<bool>,
     debug_top_n: Option<usize>,
     near_miss_enable: Option<bool>,
@@ -1867,7 +1892,7 @@ async fn set_config(
         if cfg.quote_size_usd.is_some() { keys.push("quote_size_usd"); }
         if cfg.max_detections_without_exec.is_some() { keys.push("max_detections_without_exec"); }
         if cfg.detection_history_ttl_ms.is_some() { keys.push("detection_history_ttl_ms"); }
-        
+        if cfg.opportunity_ttl_ms.is_some() { keys.push("opportunity_ttl_ms"); }
         if cfg.debug_emit_subthreshold.is_some() { keys.push("debug_emit_subthreshold"); }
         if cfg.debug_top_n.is_some() { keys.push("debug_top_n"); }
         if cfg.near_miss_enable.is_some() { keys.push("near_miss_enable"); }
@@ -1884,6 +1909,7 @@ async fn set_config(
     if let Some(v) = cfg.quote_size_usd { s.config.quote_size_usd = v; }
     if let Some(v) = cfg.max_detections_without_exec { s.config.max_detections_without_exec = v; }
     if let Some(v) = cfg.detection_history_ttl_ms { s.config.detection_history_ttl_ms = v; }
+    if let Some(v) = cfg.opportunity_ttl_ms { s.config.opportunity_ttl_ms = v; }
     if let Some(v) = cfg.debug_emit_subthreshold { s.config.debug_emit_subthreshold = v; }
     if let Some(v) = cfg.debug_top_n { s.config.debug_top_n = v; }
     if let Some(v) = cfg.near_miss_enable { s.config.near_miss_enable = v; }
@@ -1917,10 +1943,11 @@ fn default_config() -> ArbConfig {
         max_profit_bps: 20000,
         min_notional_usd: 0.0,
         max_hops: 4,
-        max_idle_ms: std::env::var("ARB_IDLE_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(500),
+        max_idle_ms: std::env::var("ARB_IDLE_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(100),
         quote_size_usd: 100.0,
         max_detections_without_exec: std::env::var("ARB_MAX_DETECTIONS").ok().and_then(|s| s.parse().ok()).unwrap_or(3),
         detection_history_ttl_ms: std::env::var("ARB_DETECTION_TTL_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(120_000),
+        opportunity_ttl_ms: std::env::var("ARB_OPPORTUNITY_TTL_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(30_000),
         debug_emit_subthreshold: std::env::var("ARB_DEBUG_SUBTHRESHOLD").ok().map(|v| v == "true").unwrap_or(false),
         debug_top_n: std::env::var("ARB_DEBUG_TOP_N").ok().and_then(|s| s.parse().ok()).unwrap_or(5),
         near_miss_enable: std::env::var("ARB_NEAR_MISS_ENABLE").ok().map(|v| v != "false").unwrap_or(true),
@@ -2198,9 +2225,63 @@ async fn events_json(State(state): State<Arc<RwLock<AppState>>>) -> Json<EventsR
 #[derive(serde::Serialize)]
 struct GraphVersionResponse { version: u64, timestamp: u64 }
 
+#[derive(serde::Deserialize)]
+struct GraphAckReq {
+    version: Option<u64>,
+    timeout_ms: Option<u64>,
+}
+
+#[derive(serde::Serialize)]
+struct GraphAckResponse {
+    ok: bool,
+    current_version: u64,
+    current_timestamp: u64,
+    acked: bool,
+}
+
 async fn arb_graph_version(State(state): State<Arc<RwLock<AppState>>>) -> Json<GraphVersionResponse> {
     let s = state.read().await;
     Json(GraphVersionResponse { version: s.last_graph_version, timestamp: s.last_graph_ts })
+}
+
+async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: HeaderMap, Json(req): Json<GraphAckReq>) -> Json<GraphAckResponse> {
+    if !auth_ok(Some(&headers)) { 
+        return Json(GraphAckResponse { ok: false, current_version: 0, current_timestamp: 0, acked: false });
+    }
+    let want_version = req.version.unwrap_or(0);
+    let timeout_ms = req.timeout_ms.unwrap_or(2500);
+    let start = std::time::Instant::now();
+    let mut last_version = 0u64;
+    
+    // Poll until version is >= want_version or timeout
+    loop {
+        let s = state.read().await;
+        last_version = s.last_graph_version;
+        let current_ts = s.last_graph_ts;
+        drop(s);
+        
+        if want_version > 0 && last_version >= want_version {
+            return Json(GraphAckResponse { 
+                ok: true, 
+                current_version: last_version, 
+                current_timestamp: current_ts, 
+                acked: true 
+            });
+        }
+        
+        if start.elapsed().as_millis() as u64 >= timeout_ms {
+            break;
+        }
+        
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    
+    Json(GraphAckResponse { 
+        ok: true, 
+        current_version: last_version, 
+        current_timestamp: 0, 
+        acked: false 
+    })
 }
 
 // trigger_refresh removed with local mode deprecation

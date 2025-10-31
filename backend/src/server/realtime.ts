@@ -212,24 +212,35 @@ async function processArbQueue(): Promise<void> {
       if (!sent) {
         try { logger.error('arb.push giveup', { kind: job.kind, attempts: attempt }); } catch {}
       }
-      // Ack by polling /arb/graph/version until target version observed or timeout
+      // Ack by calling /arb/graph/ack endpoint (more efficient than polling)
       const wantVersion: number = Number((job.kind === 'snapshot' ? job.payload?.version : job.payload?.version) || 0);
       const start = Date.now();
       const timeoutMs = Number((((globalThis as any)?.process?.env?.ARB_ACK_TIMEOUT_MS) || 2500));
       let acked = false;
-      while (Date.now() - start < timeoutMs) {
+      if (wantVersion > 0) {
         try {
           // eslint-disable-next-line no-undef
           const ac = new AbortController();
-          const t = setTimeout(() => ac.abort('timeout'), 2000);
-          const r = await fetch(`${host}/arb/graph/version`, { headers: { accept: 'application/json' }, signal: ac.signal }).finally(() => clearTimeout(t));
+          const t = setTimeout(() => ac.abort('timeout'), timeoutMs + 500);
+          const r = await fetch(`${host}/arb/graph/ack`, {
+            method: 'POST',
+            headers: { 
+              'content-type': 'application/json',
+              ...(auth ? { authorization: `Bearer ${auth}` } : {}),
+            },
+            body: JSON.stringify({ version: wantVersion, timeout_ms: timeoutMs }),
+            signal: ac.signal,
+          }).finally(() => clearTimeout(t));
           if (r?.ok) {
             const j: any = await r.json().catch(() => ({}));
-            const cur = Number(j?.version || 0);
-            if (wantVersion > 0 && cur >= wantVersion) { acked = true; break; }
+            acked = j?.acked === true;
           }
-        } catch {}
-        await new Promise((r) => setTimeout(r, 250));
+        } catch (e: any) {
+          try { logger.debug('arb.push ack failed', { kind: job.kind, error: String(e?.message || e) }); } catch {}
+        }
+      } else {
+        // No version specified, consider it acked immediately
+        acked = true;
       }
       try {
         if (acked) pushSuccess += 1; else pushFailed += 1;

@@ -6,6 +6,7 @@ import { emit } from '../realtime.js';
 import { setArbStreamEnabled } from '../realtime.js';
 import { writeJson, readJson } from '../../utils/fs.js';
 import { logTxTrace } from '../../utils/txTrace.js';
+import { CONFIG } from '../../utils/config.js';
 
 export function createArbRouter(io: SocketIOServer): Router {
   const api = Router();
@@ -812,6 +813,36 @@ export function createArbRouter(io: SocketIOServer): Router {
         return res.status(400).json({ id, mode, error: 'preflight_failed', logs: (sim as any)?.logs || [], ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
       }
       try { execStats.preflightOk += 1; } catch {}
+
+      // Pre-execution slippage check: re-quote immediately before sending
+      try {
+        const { resolveDirectPlan } = await import('../../execution/resolver/index.js');
+        const { quoteHopOut } = await import('../../execution/resolver/quotes.js');
+        const slippageCheckBps = Number(execCfg.slippageBpsDefault || 50);
+        const maxSlippageBps = Number(((CONFIG as any)?.system?.maxAllowedSlippageBps) || 200); // 2% max slippage
+        
+        let currentAmount = plan.hops[0]?.amountInRaw || 0n;
+        let originalAmountOut = 0n;
+        for (let i = 0; i < plan.hops.length; i++) {
+          const hop = plan.hops[i];
+          const out = await quoteHopOut(hop, currentAmount);
+          if (i === plan.hops.length - 1) originalAmountOut = out;
+          if (out > 0n) currentAmount = out;
+        }
+        
+        // Compare with originally planned output
+        const expectedOut = plan.hops[plan.hops.length - 1]?.minOutRaw || 0n;
+        if (originalAmountOut > 0n && expectedOut > 0n) {
+          const actualSlippageBps = Number((expectedOut - originalAmountOut) * 10000n / expectedOut);
+          if (actualSlippageBps > maxSlippageBps) {
+            try { logger.warn('tx.slippage.exceeded', { cat: 'tx', ctx: { id, expectedSlippage: slippageCheckBps, actualSlippageBps, maxAllowed: maxSlippageBps } as any }); } catch {}
+            return res.status(400).json({ id, mode, error: 'slippage_exceeded', actualSlippageBps, maxAllowed: maxSlippageBps });
+          }
+        }
+      } catch (e: any) {
+        try { logger.warn('tx.slippage.check.failed', { cat: 'tx', ctx: { id, error: String(e?.message || e) } as any }); } catch {}
+        // Continue execution if slippage check fails (non-fatal)
+      }
 
       // Proceed to send (no chunking)
       try {

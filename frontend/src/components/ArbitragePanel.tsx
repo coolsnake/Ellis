@@ -139,15 +139,16 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
   }, []);
 
   // Subscribe to backend-bridged opportunities stream
-  // Throttle opportunities updates and skip redundant signatures (1000ms)
+  // Throttle opportunities updates with reduced latency for critical updates (200ms for summary, 100ms for critical signals)
   useEffect(() => {
     if (!effectiveSocket) return;
     let lastAt = 0;
     let lastSig = '';
-    const applyBulk = (payload: { items?: Opportunity[]; summary?: OpportunitiesSummary }) => {
+    const applyBulk = (payload: { items?: Opportunity[]; summary?: OpportunitiesSummary }, isCritical = false) => {
       try {
         const now = Date.now();
-        if (now - lastAt < 1000) return;
+        const throttleMs = isCritical ? 100 : 200; // Reduced from 1000ms
+        if (now - lastAt < throttleMs) return;
         const sig = (() => {
           try {
             const count = Array.isArray((payload as any)?.items) ? ((payload as any).items as any[]).length : 0;
@@ -159,13 +160,23 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
         if (sig === lastSig) return;
         lastSig = sig;
         lastAt = now;
-        enqueueFrame(() => {
+        const updateFn = () => {
           if (Array.isArray(payload?.items)) setItems(payload.items as Opportunity[]);
           if (payload && typeof payload === 'object' && 'summary' in payload) setSummary((payload as any).summary || null);
-        });
+        };
+        if (isCritical) {
+          enqueueCritical(updateFn);
+        } else {
+          enqueueFrame(updateFn);
+        }
       } catch {}
     };
-    const onOpps = (payload: { items?: Opportunity[]; summary?: OpportunitiesSummary }) => { applyBulk(payload); try { requestExecStats(); } catch {} };
+    const onOpps = (payload: { items?: Opportunity[]; summary?: OpportunitiesSummary }) => { 
+      // Check if update is critical (new opportunities detected)
+      const hasNewOpps = Array.isArray(payload?.items) && payload.items.length > 0;
+      applyBulk(payload, hasNewOpps); 
+      try { requestExecStats(); } catch {} 
+    };
     // Optional: critical fast-path if backend emits "arb:signal"; fallback derives from bulk head
     const onSignal = (sig: { items?: Opportunity[] }) => {
       try {

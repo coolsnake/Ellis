@@ -42,8 +42,11 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
     const inputMint = path[i];
     const outputMint = path[i+1];
     // lightweight placeholders; per-DEX resolvers will fill in accounts/state
-    const tokenInMeta = executionCache.getTokenMeta(inputMint) || await getTokenMeta(inputMint);
-    const tokenOutMeta = executionCache.getTokenMeta(outputMint) || await getTokenMeta(outputMint);
+    // Parallelize token metadata lookups for better performance
+    const [tokenInMeta, tokenOutMeta] = await Promise.all([
+      Promise.resolve(executionCache.getTokenMeta(inputMint) || getTokenMeta(inputMint)),
+      Promise.resolve(executionCache.getTokenMeta(outputMint) || getTokenMeta(outputMint)),
+    ]);
     // Token-2022 gating with mode controls
     const sys = (CONFIG.system as any) || {};
     const mode = String(sys.token2022Mode || 'block');

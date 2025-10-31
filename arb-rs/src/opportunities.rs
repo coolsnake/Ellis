@@ -22,6 +22,7 @@ pub struct Opportunity {
     #[serde(skip_serializing_if = "Option::is_none")] pub bottleneck: Option<BottleneckEdge>,
     #[serde(skip_serializing_if = "Option::is_none")] pub detected_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")] pub first_seen_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")] pub last_verified_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")] pub detections: Option<u64>,
     // Optional debug for near-miss
     #[serde(skip_serializing_if = "Option::is_none")] pub bf_slack_log: Option<f64>,
