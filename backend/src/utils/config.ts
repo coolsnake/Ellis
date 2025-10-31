@@ -191,6 +191,8 @@ export const CONFIG = {
     meteoraWsRetryDelayMs: Number(process.env.METEORA_WS_RETRY_DELAY_MS || 600),
     // Meteora program-level fallback (default false)
     meteoraWsProgramFallback: (process.env.METEORA_WS_PROGRAM_FALLBACK || 'false') === 'true',
+    // Program-level fallback only when explicitly allowed (default false)
+    wsFallbackAllowZeroTargets: (process.env.WS_FALLBACK_ALLOW_ZERO_TARGETS || 'false') === 'true',
     // Limit how many new targeted pool websocket subscriptions we attach per second
     // Default aligns with common RPC free-tier limits; increase when provider allows more
     wsAttachPerSec: Number(process.env.WS_ATTACH_PER_SEC || 10),

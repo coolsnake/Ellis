@@ -745,13 +745,111 @@ export function startRaydiumRefreshLoop(): void {
               // Do not fallback to HTTP refresh when user subscribed; leave updates to manual refresh
             } else if ((ownerMeteora && owner === ownerMeteora) || isMeteoraTarget) {
               try { wsCounts.meteora = (wsCounts.meteora || 0) + 1; } catch {}
-              // Without on-chain parsers, fall back to a debounced full refresh for Meteora
-              const minGap = Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000);
-              const last = (getMeteoraPoolsCached as any).__lastForceAt || 0;
-              const nowMs = Date.now();
-              if (nowMs - last >= minGap) {
-                (getMeteoraPoolsCached as any).__lastForceAt = nowMs;
-                getMeteoraPoolsCached(true).catch(() => {});
+              const pk58 = toB58Any(pk);
+              // Try on-chain decode via Meteora DLMM SDK; fallback to HTTP refresh if unavailable
+              let updated = false;
+              try {
+                const poolId = pk58;
+                // Lazy-load DLMM module (CJS or ESM)
+                let mod: any = (handle as any).__dlmmMod || null;
+                if (!mod) {
+                  try {
+                    const mmod: any = await import('node:module');
+                    const createRequire: any = (mmod && (mmod as any).createRequire) || (mmod?.default && (mmod as any).default.createRequire);
+                    const req: any = createRequire ? createRequire(import.meta.url) : undefined;
+                    if (req && !mod) {
+                      const specs = ['@meteora-ag/dlmm','@meteora-ag/dlmm/ts-client','@meteora-ag/dlmm-sdk','@meteora-ag/dlmm-sdk-public','@meteora-ag/dlmm/dist/index.js','@meteora-ag/dlmm-sdk/dist/index.js'];
+                      for (const spec of specs) { try { const m2 = req(spec); if (m2) { mod = m2; break; } } catch {} }
+                    }
+                  } catch {}
+                  if (!mod) {
+                    try {
+                      const dyn = (Function('return import')()) as any;
+                      const specs = ['@meteora-ag/dlmm','@meteora-ag/dlmm/ts-client','@meteora-ag/dlmm-sdk','@meteora-ag/dlmm-sdk-public','@meteora-ag/dlmm/dist/index.js','@meteora-ag/dlmm-sdk/dist/index.js'];
+                      for (const spec of specs) { try { const m2 = await dyn(spec); if (m2) { mod = m2; break; } } catch {} }
+                    } catch {}
+                  }
+                  (handle as any).__dlmmMod = mod;
+                }
+                const DLMM: any = mod && (mod as any).default ? (mod as any).default : (((mod as any)?.DLMM) || mod);
+                if (DLMM) {
+                  // Attempt multiple state accessors for robustness across SDK variants
+                  const getStateFns = [
+                    (DLMM as any).getLbPairState,
+                    (DLMM as any).getLbPair,
+                    (DLMM as any).lbPairState,
+                  ].filter((f: any) => typeof f === 'function');
+                  let state: any = null;
+                  for (const fn of getStateFns) {
+                    try { state = await fn(conn, new web3.PublicKey(poolId)); if (state) break; } catch {}
+                  }
+                  // Fallback: try reading minimal fields via generic accessors
+                  let tokenX: string | undefined;
+                  let tokenY: string | undefined;
+                  let activeId: number | undefined;
+                  let binStep: number | undefined;
+                  try { tokenX = state?.tokenXMint?.toBase58?.() || state?.mint_x || state?.tokenXMint || state?.tokenA || undefined; } catch {}
+                  try { tokenY = state?.tokenYMint?.toBase58?.() || state?.mint_y || state?.tokenYMint || state?.tokenB || undefined; } catch {}
+                  try { activeId = Number(state?.activeId ?? state?.active_id); } catch {}
+                  try { binStep = Number(state?.binStep ?? state?.bin_step); } catch {}
+                  if (tokenX && tokenY && Number.isFinite(activeId as any) && Number.isFinite(binStep as any)) {
+                    // Resolve decimals
+                    let decA: number | undefined; let decB: number | undefined;
+                    try { const tok = await import('../utils/tokens.js'); const a = await (tok as any).resolveMint(tokenX); const b = await (tok as any).resolveMint(tokenY); decA = Number(a?.decimals); decB = Number(b?.decimals); } catch {}
+                    // Compute A-per-1-B from active bin
+                    let price_a_per_b: number | undefined;
+                    try {
+                      if (Number.isFinite(decA as any) && Number.isFinite(decB as any)) {
+                        const f = Math.pow(1.0001, binStep as number);
+                        if (f > 0) {
+                          const bPerA = Math.pow(f, activeId as number) * Math.pow(10, (decA as number) - (decB as number));
+                          const cand = [bPerA > 0 ? (1 / bPerA) : 0, bPerA].filter(v => Number.isFinite(v) && v > 0);
+                          price_a_per_b = cand[0];
+                        }
+                      }
+                    } catch {}
+                    // Upsert minimal item
+                    const prev = meteoraCache.data || { amm: [], clmm: [] };
+                    const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() } as any;
+                    const idx = next.clmm.findIndex(p => p.id === poolId);
+                    const item: ClmmPool = {
+                      id: poolId,
+                      dex: 'Meteora',
+                      mint_a: tokenX,
+                      mint_b: tokenY,
+                      fee_bps: 0,
+                      sqrt_price_x64: 0,
+                      liquidity: 0,
+                      tick_spacing: Number.isFinite(binStep as any) ? (binStep as number) : 0,
+                      updated_ms: Date.now(),
+                      price_a_per_b: (price_a_per_b && price_a_per_b > 0) ? price_a_per_b : undefined,
+                      pool_kind: 'clmm',
+                    } as any;
+                    if (idx >= 0) next.clmm[idx] = { ...next.clmm[idx], ...item }; else next.clmm.push(item);
+                    const d = diffNormalizedPools(prev, next);
+                    meteoraCache.data = next; meteoraCache.ts = Date.now();
+                    try { emit('pool-updates', { source: 'meteora', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: [], clmm: d.clmm.slice(0, 20) }, ts: Date.now() }); } catch {}
+                    // Apply incrementally and push to arb-rs
+                    try {
+                      const gmod: any = await import('./graph.js');
+                      const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
+                      if (hasDelta && typeof gmod.applyPoolUpdates === 'function') {
+                        await gmod.applyPoolUpdates(prev as any, next as any, { pushToArb: true });
+                      }
+                    } catch {}
+                    updated = true;
+                  }
+                }
+              } catch {}
+              if (!updated) {
+                // Fallback: debounced HTTP refresh
+                const minGap = Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000);
+                const last = (getMeteoraPoolsCached as any).__lastForceAt || 0;
+                const nowMs = Date.now();
+                if (nowMs - last >= minGap) {
+                  (getMeteoraPoolsCached as any).__lastForceAt = nowMs;
+                  getMeteoraPoolsCached(true).catch(() => {});
+                }
               }
               return;
             } else if (pk) {
@@ -923,8 +1021,8 @@ export function startRaydiumRefreshLoop(): void {
           }
           attachedOrcaPools = attached;
           logger.info('pools.ws subscribe orca.pools', { attached, target: uniq.length, source: 'orca' });
-          // Subscribe at program level only if we had no targeted addresses and fallback is enabled
-          if (attached === 0 && !!((CONFIG.system as any)?.wsFallbackPrograms)) {
+          // Subscribe at program level only if we had no targeted addresses and explicit fallback is allowed
+          if (attached === 0 && !!((CONFIG.system as any)?.wsFallbackPrograms) && ((CONFIG.system as any)?.wsFallbackAllowZeroTargets === true)) {
             try { logger.info('pools.ws subscribe orca(program)', { source: 'orca', cat: 'pools' }); } catch {}
             {
               const id = await subscribeProgramWithRetry(orcaProg, (ch: any) => handle(ch.accountId, ch.accountInfo));
@@ -933,8 +1031,8 @@ export function startRaydiumRefreshLoop(): void {
           }
         } catch (e:any) {
           logger.warn('pools.ws orca address subscribe failed', { error: String(e?.message || e) });
-          // Fallback to program-level subscription (may include non-pool accounts) when enabled
-          if (!!((CONFIG.system as any)?.wsFallbackPrograms)) {
+          // Fallback to program-level subscription (may include non-pool accounts) only when explicitly allowed
+          if (!!((CONFIG.system as any)?.wsFallbackPrograms) && ((CONFIG.system as any)?.wsFallbackAllowZeroTargets === true)) {
             try { logger.info('pools.ws subscribe orca(fallback)', { source: 'orca', cat: 'pools' }); } catch {}
             {
               const id = await subscribeProgramWithRetry(orcaProg, (ch: any) => handle(ch.accountId, ch.accountInfo));
@@ -982,8 +1080,8 @@ export function startRaydiumRefreshLoop(): void {
           }
           attachedRaydiumPools = attachedRay;
           logger.info('pools.ws subscribe raydium.pools', { attached: attachedRay, target: uniqueRay.length });
-          // Fallback to program-level if none attached and fallback is enabled
-          if (attachedRay === 0 && !!((CONFIG.system as any)?.wsFallbackPrograms)) {
+          // Fallback to program-level if none attached and explicit fallback is allowed
+          if (attachedRay === 0 && !!((CONFIG.system as any)?.wsFallbackPrograms) && ((CONFIG.system as any)?.wsFallbackAllowZeroTargets === true)) {
             try { logger.info('pools.ws subscribe raydium.amm(fallback)', { source: 'raydium', cat: 'pools' }); } catch {}
             {
               const idA = await subscribeProgramWithRetry(rayAmm, (ch: any) => handle(ch.accountId, ch.accountInfo));

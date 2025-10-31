@@ -268,7 +268,7 @@ function edgeChangedSimple(a: GraphEdge, b: GraphEdge): boolean {
   const pxb  = Number(b.price_a_per_b ?? 0);
   const wa   = Number(a.weight ?? 0);
   const wb   = Number(b.weight ?? 0);
-  const eps = 1e-6;
+  const eps = 1e-8;
   if (Math.abs(liqa - liqb) > eps) return true;
   if (Math.abs(pxa - pxb) > eps) return true;
   if (Math.abs(wa - wb) > eps) return true;
