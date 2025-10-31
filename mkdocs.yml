@@ -22,6 +22,7 @@ nav:
     - Simulate Execution: how-to/simulate-execution.md
     - Backtest/Sandbox: how-to/backtest-or-sandbox.md
     - Monitoring & Alerts: how-to/setup-alerts-logging.md
+    - Detect-driven Graph Push: how-to/detect-driven-graph-push.md
   - Troubleshooting: troubleshooting/index.md
   - Reference:
     - Config Files: reference/config-files.md

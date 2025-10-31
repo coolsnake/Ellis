@@ -118,6 +118,36 @@ export function getGraphPushStatsRaw(): { ackMs: number[]; success: number; fail
   return { ackMs: graphPushStats.ackMs.slice(), success: graphPushStats.success, failed: graphPushStats.failed };
 }
 
+// Diff coalescing (debounce/merge) to reduce push/ack churn under high update rates
+let arbDiffBuffer: any | null = null;
+let arbDiffTimer: NodeJS.Timeout | null = null;
+let arbDiffWaiters: Array<{ resolve: () => void; reject: (e: any) => void }> = [];
+const getDiffCoalesceMs = (): number => {
+  try { const v = Number(((globalThis as any)?.process?.env?.ARB_DIFF_COALESCE_MS) || 50); return Number.isFinite(v) ? Math.max(0, v) : 0; } catch { return 0; }
+};
+function mergeArraysUnique<T>(a: T[] | undefined, b: T[] | undefined, keyFn?: (x: T) => string): T[] {
+  const out: T[] = [];
+  const seen = new Set<string>();
+  const push = (x: T) => {
+    if (!keyFn) { out.push(x); return; }
+    const k = keyFn(x);
+    if (!seen.has(k)) { seen.add(k); out.push(x); }
+  };
+  for (const x of (a || [])) push(x);
+  for (const x of (b || [])) push(x);
+  return out;
+}
+function coalesceDiff(acc: any | null, nxt: any): any {
+  if (!acc) return { ...(nxt || {}) };
+  const version = Math.max(Number(acc.version || 0), Number(nxt.version || 0));
+  const timestamp = Math.max(Number(acc.timestamp || 0), Number(nxt.timestamp || 0), Date.now());
+  const keyEdge = (e: any) => String((e?.pool_id) || `${e?.source}|${e?.target}|${e?.dex}`);
+  const removedEdgeIds = Array.from(new Set([...(acc.removedEdgeIds || []), ...(nxt.removedEdgeIds || [])].map((s: any) => String(s))));
+  const addedEdges = mergeArraysUnique(acc.addedEdges, nxt.addedEdges, keyEdge);
+  const updatedEdges = mergeArraysUnique(acc.updatedEdges, nxt.updatedEdges, keyEdge);
+  return { version, timestamp, addedNodes: [], updatedNodes: [], removedNodeIds: [], addedEdges, updatedEdges, removedEdgeIds };
+}
+
 async function fetchArbMetrics(): Promise<{ last_detection_ms: number }> {
   try {
     // Skip network during unit tests to avoid timeouts
@@ -243,10 +273,26 @@ export async function pushArbGraphDiff(diff: any): Promise<void> {
   return new Promise((resolve, reject) => {
     // Suppress until explicitly enabled
     try { if (!arbStreamEnabled) { logger.debug('arb.push gated', { kind: 'diff' }); resolve(); return; } } catch {}
-    // Coalesce pending diffs to avoid backlog under high churn; keep snapshots
-    try {
-      arbQueue = arbQueue.filter((j) => j.kind === 'snapshot');
-    } catch {}
+    const coalesceMs = getDiffCoalesceMs();
+    if (coalesceMs > 0) {
+      try { arbDiffBuffer = coalesceDiff(arbDiffBuffer, diff); } catch { arbDiffBuffer = diff; }
+      arbDiffWaiters.push({ resolve, reject });
+      if (!arbDiffTimer) {
+        arbDiffTimer = setTimeout(() => {
+          const payload = arbDiffBuffer; arbDiffBuffer = null; const waiters = arbDiffWaiters; arbDiffWaiters = [];
+          arbDiffTimer = null;
+          // Drop any queued diffs, keep snapshots
+          try { arbQueue = arbQueue.filter((j) => j.kind === 'snapshot'); } catch {}
+          // Enqueue single coalesced diff and fanout resolution after ack
+          arbQueue.push({ kind: 'diff', payload, resolve: () => { try { for (const w of waiters) w.resolve(); } catch {} }, reject: (e: any) => { try { for (const w of waiters) w.reject(e); } catch {} } });
+          try { logger.debug('arb.queue enq (coalesced)', { kind: 'diff', size: arbQueue.length }); } catch {}
+          processArbQueue().catch(() => {});
+        }, coalesceMs);
+      }
+      return;
+    }
+    // No coalescing: keep snapshots, drop queued diffs, then enqueue
+    try { arbQueue = arbQueue.filter((j) => j.kind === 'snapshot'); } catch {}
     arbQueue.push({ kind: 'diff', payload: diff, resolve, reject });
     try { logger.debug('arb.queue enq', { kind: 'diff', size: arbQueue.length }); } catch {}
     processArbQueue().catch(() => {});

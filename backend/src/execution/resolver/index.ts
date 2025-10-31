@@ -19,8 +19,26 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
   const hops: DirectHop[] = await Promise.all(path.slice(0, -1).map(async (_mint, i) => {
     const dexv = String(dexes[i] || '').toLowerCase();
     const dex = (dexv.includes('raydium') ? 'raydium' : (dexv.includes('orca') ? 'orca' : 'meteora')) as DirectHop['dex'];
-    const variant: DirectHop['variant'] = dex === 'raydium' ? (dexv.includes('clmm') ? 'clmm' : 'amm') : (dex === 'orca' ? 'clmm' : 'dlmm');
     const poolId = String(hopPoolIds[i]);
+    let variant: DirectHop['variant'];
+    if (dex === 'raydium') {
+      if (dexv.includes('clmm')) {
+        variant = 'clmm';
+      } else {
+        // Infer from poolId presence in Raydium CLMM list when variant not hinted
+        try {
+          const { peekRaydiumPools } = await import('../../server/pools.js');
+          const id = poolId.replace(/-rev$/, '');
+          const ray = peekRaydiumPools();
+          const isClmm = Array.isArray(ray?.clmm) && (ray!.clmm as any[]).some((p: any) => String(p?.id || '') === id);
+          variant = isClmm ? 'clmm' : 'amm';
+        } catch { variant = 'amm'; }
+      }
+    } else if (dex === 'orca') {
+      variant = 'clmm';
+    } else {
+      variant = 'dlmm';
+    }
     const inputMint = path[i];
     const outputMint = path[i+1];
     // lightweight placeholders; per-DEX resolvers will fill in accounts/state

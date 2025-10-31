@@ -615,12 +615,18 @@ export function startRaydiumRefreshLoop(): void {
                       const d = diffNormalizedPools(prev, next);
                       raydiumCache.data = next; raydiumCache.ts = Date.now();
                       try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: [], clmm: d.clmm.slice(0, 20) }, ts: Date.now() }); } catch {}
-                  // Debounced graph rebuild on pool delta
+                  // Prefer incremental graph apply when enabled; fallback to rebuild
                   try {
+                    const inc = !!((CONFIG.system as any)?.graphIncrementalMode);
                     const gmod: any = await import('./graph.js');
-                    const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
-                    const delta = d.clmm.length;
-                    if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
+                    const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
+                    if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
+                      await gmod.applyPoolUpdates(prev as any, next, { pushToArb: false });
+                    } else {
+                      const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
+                      const delta = d.clmm.length;
+                      if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
+                    }
                   } catch {}
                       updated = true;
                     }
@@ -646,12 +652,18 @@ export function startRaydiumRefreshLoop(): void {
                         const d = diffNormalizedPools(prev, next);
                         raydiumCache.data = next; raydiumCache.ts = Date.now();
                         try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: d.amm.slice(0, 20), clmm: [] }, ts: Date.now() }); } catch {}
-                        // Debounced graph rebuild on pool delta
+                        // Prefer incremental graph apply when enabled; fallback to rebuild
                         try {
+                          const inc = !!((CONFIG.system as any)?.graphIncrementalMode);
                           const gmod: any = await import('./graph.js');
-                          const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
-                          const delta = d.amm.length;
-                          if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
+                          const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
+                          if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
+                            await gmod.applyPoolUpdates(prev as any, next, { pushToArb: false });
+                          } else {
+                            const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
+                            const delta = d.amm.length;
+                            if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
+                          }
                         } catch {}
                         updated = true;
                     }
@@ -1283,7 +1295,7 @@ export async function getMeteoraBalancedPoolsCached(force = false): Promise<Pool
         try {
           const gmod: any = await import('./graph.js');
           if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
-            await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm);
+            await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: false });
           }
         } catch {}
       } catch {}
@@ -1407,7 +1419,7 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
         try {
           const gmod: any = await import('./graph.js');
           if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
-            await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm);
+            await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: false });
           } else {
             const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
             const delta = d.amm.length + d.clmm.length + d.addedAmm + d.addedClmm + d.removedAmm + d.removedClmm;

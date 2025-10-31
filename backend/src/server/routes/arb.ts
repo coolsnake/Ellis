@@ -38,6 +38,27 @@ export function createArbRouter(io: SocketIOServer): Router {
   } = { buildMs: [], preflightMs: [], sendMs: [], preflightOk: 0, preflightErr: 0, sendOk: 0, sendErr: 0 };
   const pushBounded = (arr: number[], v: number, cap = 200) => { if (Number.isFinite(v)) { arr.push(v); if (arr.length > cap) arr.shift(); } };
   const pct = (arr: number[], p: number): number | null => { if (!arr.length) return null; const a = arr.slice().sort((x,y)=>x-y); const i = Math.min(a.length-1, Math.max(0, Math.floor((p/100)*(a.length-1)))); return a[i] ?? null; };
+
+  // Soft assert: verify plan hops align with current graph edges (warn-only)
+  async function assertPlanMatchesGraph(path: string[], hops: Array<{ poolId: string }>): Promise<void> {
+    try {
+      const { getGraphSnapshot } = await import('../graph.js');
+      const snap = await getGraphSnapshot(false);
+      const byPid = new Map<string, any>();
+      try { for (const e of (snap?.edges || [])) { const pid = String((e as any)?.pool_id || ''); if (pid) byPid.set(pid, e); } } catch {}
+      for (let i = 0; i < hops.length; i += 1) {
+        const pid = String((hops[i] as any)?.poolId || '');
+        const src = String(path[i] || '');
+        const dst = String(path[i + 1] || '');
+        if (!pid || !src || !dst) continue;
+        const e = byPid.get(pid);
+        if (!e) { try { logger.warn('arb.graph_plan.missing_edge', { hop: i, pid, src, dst, cat: 'arb' }); } catch {}; continue; }
+        if (String((e as any).source) !== src || String((e as any).target) !== dst) {
+          try { logger.warn('arb.graph_plan.mismatch', { hop: i, pid, src, dst, edgeSrc: (e as any).source, edgeDst: (e as any).target, cat: 'arb' }); } catch {}
+        }
+      }
+    } catch {}
+  }
   api.get('/arb/config', async (_req, res) => {
     try {
       const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
@@ -200,6 +221,12 @@ export function createArbRouter(io: SocketIOServer): Router {
           }
         }
       }
+      // Correlate traces
+      const { getGraphVersion } = await import('../graph.js');
+      const graph = getGraphVersion();
+      const oppKey = (() => {
+        try { const fams = Array.from(new Set((plan.hops || []).map((h: any) => String(h?.dex || '')))).filter(Boolean).sort(); return `${(plan.path||[]).join('->')}|${fams.join(',')}`; } catch { return `${(plan.path||[]).join('->')}|`; }
+      })();
       const execCfg = await loadExecConfig();
       const tBuild0 = Date.now();
       const built = await buildDirectArbTx(plan, [], {} as any);
@@ -209,6 +236,8 @@ export function createArbRouter(io: SocketIOServer): Router {
       const id = Math.random().toString(36).slice(2,10);
       await logTxTrace('simulate', {
         id, timeMs: Date.now(),
+        graph,
+        oppKey,
         path: plan.path,
         hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })),
         ixCount: built.ixCount, txSizeBytes: built.sizeBytes,
@@ -262,6 +291,13 @@ export function createArbRouter(io: SocketIOServer): Router {
       }
       // Build intent early so we log even if build fails
       const { executionCache } = await import('../../execution/cache.js');
+      // Correlate and soft-check alignment
+      try { await assertPlanMatchesGraph(plan.path, plan.hops as any); } catch {}
+      const { getGraphVersion } = await import('../graph.js');
+      const graph = getGraphVersion();
+      const oppKey = (() => {
+        try { const fams = Array.from(new Set((plan.hops || []).map((h: any) => String(h?.dex || '')))).filter(Boolean).sort(); return `${(plan.path||[]).join('->')}|${fams.join(',')}`; } catch { return `${(plan.path||[]).join('->')}|`; }
+      })();
       const earlyIntent = {
         path: plan.path,
         hops: (plan.hops || []).map((h: any) => ({
@@ -375,6 +411,23 @@ export function createArbRouter(io: SocketIOServer): Router {
           return { pid, dataLen, accounts };
         } catch { return { pid: String(ix?.programId || ''), dataLen: 0, accounts: [] }; }
       });
+      // Optional: warn if built programs imply a different DEX family set than planned
+      try {
+        const { CONFIG } = await import('../../utils/config.js');
+        const v: any = CONFIG;
+        const progs = ixs.map((x: any) => String(x?.pid || '')).filter(Boolean);
+        const seen = new Set<string>();
+        for (const pid of progs) {
+          if (pid === String(v?.raydium?.ammV4Program) || pid === String(v?.raydium?.ammV5Program) || pid === String(v?.raydium?.clmmProgram)) seen.add('raydium');
+          if (pid === String(v?.orca?.programId)) seen.add('orca');
+          if (pid === String(v?.meteora?.programId)) seen.add('meteora');
+        }
+        const planned = Array.from(new Set((plan.hops || []).map((h: any) => String(h?.dex || '')))).filter(Boolean).sort();
+        const seenArr = Array.from(seen).sort();
+        if (JSON.stringify(planned) !== JSON.stringify(seenArr)) {
+          try { logger.warn('tx.dex_mismatch.preflight', { planned, seen: seenArr, cat: 'tx' }); } catch {}
+        }
+      } catch {}
 
       // (duplicate block removed)
       try { emit('log', { level: 'info', message: 'pretrade:arb tx built', timestamp: new Date().toISOString(), context: { cat: 'tx', code: 'PRETRADE.TX.BUILT', mode: (execCfg as any)?.mode } }); } catch {}
@@ -409,6 +462,8 @@ export function createArbRouter(io: SocketIOServer): Router {
       try { emit('log', { level: 'info', message: 'tx.ixs', context: { cat: 'tx', id, ixCount: built.ixCount, items: ixs } }); } catch {}
       await logTxTrace('preflight', {
         id, timeMs: Date.now(),
+        graph,
+        oppKey,
         path: plan.path,
         hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })),
         ixCount: built.ixCount, txSizeBytes: built.sizeBytes,
@@ -549,6 +604,13 @@ export function createArbRouter(io: SocketIOServer): Router {
       const plan = input?.plan && Array.isArray(input.plan?.hops) ? input.plan : await resolveDirectPlan(parsed as any, {} as any);
       // Build intent early so we log even if build fails
       const { executionCache } = await import('../../execution/cache.js');
+      // Correlate and soft-check alignment (warn-only)
+      try { await assertPlanMatchesGraph(plan.path, plan.hops as any); } catch {}
+      const { getGraphVersion } = await import('../graph.js');
+      const graph = getGraphVersion();
+      const oppKey = (() => {
+        try { const fams = Array.from(new Set((plan.hops || []).map((h: any) => String(h?.dex || '')))).filter(Boolean).sort(); return `${(plan.path||[]).join('->')}|${fams.join(',')}`; } catch { return `${(plan.path||[]).join('->')}|`; }
+      })();
       const intent = {
         path: plan.path,
         hops: (plan.hops || []).map((h: any) => ({
@@ -607,6 +669,23 @@ export function createArbRouter(io: SocketIOServer): Router {
           return { pid, dataLen, accounts };
         } catch { return { pid: String(ix?.programId || ''), dataLen: 0, accounts: [] }; }
       });
+      // Optional: warn if built programs imply a different DEX family set than planned
+      try {
+        const { CONFIG } = await import('../../utils/config.js');
+        const v: any = CONFIG;
+        const progs = ixs.map((x: any) => String(x?.pid || '')).filter(Boolean);
+        const seen = new Set<string>();
+        for (const pid of progs) {
+          if (pid === String(v?.raydium?.ammV4Program) || pid === String(v?.raydium?.ammV5Program) || pid === String(v?.raydium?.clmmProgram)) seen.add('raydium');
+          if (pid === String(v?.orca?.programId)) seen.add('orca');
+          if (pid === String(v?.meteora?.programId)) seen.add('meteora');
+        }
+        const planned = Array.from(new Set((plan.hops || []).map((h: any) => String(h?.dex || '')))).filter(Boolean).sort();
+        const seenArr = Array.from(seen).sort();
+        if (JSON.stringify(planned) !== JSON.stringify(seenArr)) {
+          try { logger.warn('tx.dex_mismatch.preflight', { planned, seen: seenArr, cat: 'tx' }); } catch {}
+        }
+      } catch {}
       try { emit('log', { level: 'info', message: 'pretrade:arb tx built', timestamp: new Date().toISOString(), context: { cat: 'tx', code: 'PRETRADE.TX.BUILT', mode: (execCfg as any)?.mode } }); } catch {}
       try { logger.info('tx.build.ok', { cat: 'tx', code: LogCode.TX_BUILD_OK, ctx: { ixCount: built.ixCount, sizeBytes: built.sizeBytes, mode: (execCfg as any)?.mode } as any }); } catch {}
 
@@ -699,6 +778,8 @@ export function createArbRouter(io: SocketIOServer): Router {
       }
       await logTxTrace('preflight', {
         id, timeMs: Date.now(),
+        graph,
+        oppKey,
         path: plan.path,
         hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })),
         ixCount: built.ixCount, txSizeBytes: built.sizeBytes,
@@ -760,6 +841,8 @@ export function createArbRouter(io: SocketIOServer): Router {
         const signature = signatures[signatures.length - 1] || null;
         await logTxTrace('send', {
           id, timeMs: Date.now(),
+        graph,
+        oppKey,
           path: plan.path,
           hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })),
           ixCount: built.ixCount, txSizeBytes: built.sizeBytes,
@@ -808,6 +891,62 @@ export function createArbRouter(io: SocketIOServer): Router {
   // - { path: [inputMint, outputMint], hopPoolIds: [poolId], size?: number, sizeUsd?: number, slippageBps?: number }
   // or
   // - { plan: { path, hops: [{ dex: 'orca', poolId }] }, ... }
+  // Execute an arb-rs Opportunity directly (UI optional)
+  api.post('/arb/execute/opportunity', async (req, res) => {
+    try {
+      const opp = req.body || {};
+      const path: string[] = Array.isArray((opp as any)?.path) ? (opp as any).path : [];
+      const hopPoolIds: string[] = Array.isArray((opp as any)?.hop_pool_ids) ? ((opp as any).hop_pool_ids as any[]).map((x: any) => String(x)) : [];
+      const dexes: string[] = Array.isArray((opp as any)?.hop_dexes) ? ((opp as any).hop_dexes as any[]).map((x: any) => String(x)) : [];
+      if (!Array.isArray(path) || path.length < 2) return res.status(400).json({ error: 'invalid path' });
+      // Ensure closed cycle for path/hops alignment
+      const pathClosed = (path.length >= 2 && path[0] === path[path.length - 1]) ? path : [...path, path[0]];
+      const expected = Math.max(0, pathClosed.length - 1);
+      if (hopPoolIds.length !== expected || dexes.length !== expected) {
+        return res.status(400).json({ error: `hop count mismatch: expected ${expected}, got poolIds=${hopPoolIds.length}, dexes=${dexes.length}` });
+      }
+      // Delegate to generic executor
+      req.body = {
+        path: pathClosed,
+        hopPoolIds,
+        dexes,
+        size: Number.isFinite((opp as any)?.size as any) ? Number((opp as any).size) : undefined,
+        sizeUsd: Number.isFinite((opp as any)?.sizeUsd as any) ? Number((opp as any).sizeUsd) : undefined,
+        slippageBps: Number.isFinite((opp as any)?.slippageBps as any) ? Number((opp as any).slippageBps) : undefined,
+        forceDirect: (opp as any)?.forceDirect === true,
+      } as any;
+      return (api as any).handle({ ...req, url: '/arb/execute', originalUrl: '/arb/execute', path: '/arb/execute', method: 'POST' }, res, () => {});
+    } catch (e: any) {
+      return res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Preflight (simulate-send) an arb-rs Opportunity directly
+  api.post('/arb/simulate-send/opportunity', async (req, res) => {
+    try {
+      const opp = req.body || {};
+      const path: string[] = Array.isArray((opp as any)?.path) ? (opp as any).path : [];
+      const hopPoolIds: string[] = Array.isArray((opp as any)?.hop_pool_ids) ? ((opp as any).hop_pool_ids as any[]).map((x: any) => String(x)) : [];
+      const dexes: string[] = Array.isArray((opp as any)?.hop_dexes) ? ((opp as any).hop_dexes as any[]).map((x: any) => String(x)) : [];
+      if (!Array.isArray(path) || path.length < 2) return res.status(400).json({ error: 'invalid path' });
+      const pathClosed = (path.length >= 2 && path[0] === path[path.length - 1]) ? path : [...path, path[0]];
+      const expected = Math.max(0, pathClosed.length - 1);
+      if (hopPoolIds.length !== expected || dexes.length !== expected) {
+        return res.status(400).json({ error: `hop count mismatch: expected ${expected}, got poolIds=${hopPoolIds.length}, dexes=${dexes.length}` });
+      }
+      req.body = {
+        path: pathClosed,
+        hopPoolIds,
+        dexes,
+        size: Number.isFinite((opp as any)?.size as any) ? Number((opp as any).size) : undefined,
+        sizeUsd: Number.isFinite((opp as any)?.sizeUsd as any) ? Number((opp as any).sizeUsd) : undefined,
+        slippageBps: Number.isFinite((opp as any)?.slippageBps as any) ? Number((opp as any).slippageBps) : undefined,
+      } as any;
+      return (api as any).handle({ ...req, url: '/arb/simulate-send', originalUrl: '/arb/simulate-send', path: '/arb/simulate-send', method: 'POST' }, res, () => {});
+    } catch (e: any) {
+      return res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
   api.post('/arb/execute/orca', async (req, res) => {
     try {
       const body = req.body || {};
