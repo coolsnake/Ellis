@@ -4,24 +4,17 @@ import { LogCode } from '../../utils/logging.js';
 import { PublicKey, TransactionInstruction } from '@solana/web3.js';
 import { getConnection, ensureWallet } from '../../wallet/wallet.js';
 import { CONFIG } from '../../utils/config.js';
+import { normalizePublicKey, isValidPublicKey, coerceToPublicKey, sanitizeKeyString } from './utils.js';
+import { validateHopAmounts, validatePublicKey, validatePoolAccounts } from './validation.js';
+import { createBuilderError, wrapBuilderError, logAndThrow } from './errors.js';
 
-function sanitizeKeyString(v: any): string {
-  try {
-    return String(v || '').trim().replace(/-rev$/, '');
-  } catch {
-    return '';
-  }
-}
-
+// Legacy helper for backward compatibility - use coerceToPublicKey from utils.js instead
 function toPublicKey(value: any, fallback?: any): PublicKey {
-  const primary = sanitizeKeyString(value);
-  try { if (primary) return new PublicKey(primary); } catch {}
-  const fb = sanitizeKeyString(fallback);
-  if (fb) {
-    try { return new PublicKey(fb); } catch {}
+  try {
+    return coerceToPublicKey(value, fallback);
+  } catch {
+    throw new Error('Non-base58 character');
   }
-  // Preserve original error semantics to aid upstream handling/logging
-  throw new Error('Non-base58 character');
 }
 
 function resolveRaydiumAmmVersion(programIdStr?: string): 4 | 5 {
@@ -809,8 +802,18 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
 export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> {
   try { logger.info('ix.build raydium.amm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
   try {
-    if ((hop.amountInRaw || 0n) <= 0n) {
-      throw new Error('RAYDIUM_AMM_BUILD_FAILED: amount=0');
+    // Pre-build validation: amounts
+    validateHopAmounts(hop, { dex: 'raydium', variant: 'amm', poolId: hop.poolId });
+    
+    // Pre-build validation: critical PublicKeys
+    try {
+      validatePublicKey(hop.poolId, 'poolId', { dex: 'raydium', variant: 'amm' });
+      validatePublicKey(hop.inputMint, 'inputMint', { dex: 'raydium', variant: 'amm' });
+      validatePublicKey(hop.outputMint, 'outputMint', { dex: 'raydium', variant: 'amm' });
+      validatePublicKey(hop.userSourceAta, 'userSourceAta', { dex: 'raydium', variant: 'amm' });
+      validatePublicKey(hop.userDestAta, 'userDestAta', { dex: 'raydium', variant: 'amm' });
+    } catch (validationErr) {
+      throw createBuilderError('RAYDIUM_AMM', String((validationErr as any)?.message || validationErr), hop);
     }
     // Best-effort: derive missing market/program from on-chain pool state
     try {
@@ -842,19 +845,22 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
         }
       }
     } catch {}
-    // Validate required fields for Raydium AMM build
+    // Optional: validate vault accounts exist (best-effort, don't block on RPC errors)
+    if (hop.vaultA || hop.vaultB) {
+      try {
+        await validatePoolAccounts(hop.poolId, hop.vaultA, hop.vaultB, { dex: 'raydium', variant: 'amm' }).catch(() => {
+          // Best-effort validation - don't fail if RPC is slow
+        });
+      } catch {}
+    }
     const missing: string[] = [];
     if (!hop.market) missing.push('market');
     if (!hop.serumProgramId) missing.push('serumProgramId');
-    if (!hop.inputMint) missing.push('inputMint');
-    if (!hop.outputMint) missing.push('outputMint');
     if (!Number.isFinite(Number(hop.inputDecimals))) missing.push('inputDecimals');
     if (!Number.isFinite(Number(hop.outputDecimals))) missing.push('outputDecimals');
-    if (!hop.userSourceAta) missing.push('userSourceAta');
-    if (!hop.userDestAta) missing.push('userDestAta');
     if (missing.length) {
       const ver = resolveRaydiumAmmVersion(hop.programId);
-      throw new Error(`RAYDIUM_AMM_BUILD_FAILED: missing ${missing.join(',')} (version=${ver})`);
+      throw createBuilderError('RAYDIUM_AMM', `missing required fields: ${missing.join(', ')} (version=${ver})`, hop);
     }
 
     const { getAssociatedPoolKeys, makeSwapFixedInInstruction } = await import('@raydium-io/raydium-sdk-v2');
@@ -881,18 +887,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
 
     // Helper to detect invalid PublicKey-like values (including placeholder strings)
     const isBadPk = (x: any): boolean => {
-      try {
-        if (!x) return true;
-        if (typeof x?.toBase58 === 'function') return false;
-        const s = typeof x === 'string'
-          ? x
-          : (x?.address || x?.pubkey || x?.pubKey || x?.publicKey || x?.toBase58?.());
-        // Heuristic: Raydium SDK sometimes emits placeholder-like keys starting with many '1'
-        try { if (typeof s === 'string' && /^11111/.test(s)) return true; } catch {}
-        // eslint-disable-next-line no-new
-        new PublicKey(String(s));
-        return false;
-      } catch { return true; }
+      return !isValidPublicKey(x);
     };
 
     // Decode AMM state from chain (always) to override any placeholder keys returned by SDK
@@ -914,7 +909,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
         }
         if (state) {
           // Normalize fields across versions
-          const asPk = (v: any) => (v?.toBase58 ? v : (v ? toPublicKey(v) : undefined));
+          const asPk = (v: any) => (v?.toBase58 ? v : (v ? normalizePublicKey(v) : undefined));
           const baseVault = asPk(state.baseVault || state.coinVault || state.vaultA);
           const quoteVault = asPk(state.quoteVault || state.pcVault || state.vaultB);
           const authority = asPk(state.owner || state.ammAuthority || state.authority);
@@ -962,7 +957,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
 
     // Normalize poolKeys shape to match Raydium SDK expectations (PublicKey fields only)
     try {
-      const ensurePk = (v: any) => (v && typeof v === 'object' && typeof v.toBase58 === 'function') ? v : (v ? toPublicKey(v) : undefined);
+      const ensurePk = (v: any) => (v && typeof v === 'object' && typeof v.toBase58 === 'function') ? v : (v ? normalizePublicKey(v) : undefined);
       // Ensure mintLp is a PublicKey (not an object)
       const mintLpPk = ensurePk((poolKeys as any)?.mintLp?.address || (poolKeys as any)?.mintLp);
       (poolKeys as any).mintLp = mintLpPk;
@@ -1019,7 +1014,12 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
             marketProgramId: toStr((poolKeys as any)?.marketProgramId),
           } as any });
         } catch {}
-        throw new Error('RAYDIUM_AMM_BUILD_FAILED: invalid_pool_keys');
+        throw createBuilderError('RAYDIUM_AMM', 'invalid_pool_keys', hop, {
+          vaultA: toStr((poolKeys as any)?.vault?.A),
+          vaultB: toStr((poolKeys as any)?.vault?.B),
+          marketId: toStr((poolKeys as any)?.marketId),
+          marketProgramId: toStr((poolKeys as any)?.marketProgramId),
+        });
       }
     } catch {}
 
@@ -1078,27 +1078,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     // Fallback: coerce top-level ixInfo if unwrap produced no TIs
     if ((!out || out.length === 0) && ixInfo && typeof ixInfo === 'object' && (ixInfo as any).programId && (ixInfo as any).keys) {
       try {
-        const normalizePkLoose = (v: any): PublicKey => {
-          try {
-            if (v instanceof PublicKey) return v;
-            const inner = (v && (v.address || v.pubkey || v.pubKey || v.publicKey)) || v;
-            if (inner instanceof PublicKey) return inner;
-            try { if (inner && typeof inner.toBytes === 'function') return new PublicKey(inner.toBytes()); } catch {}
-            try { if (inner && typeof inner.toBuffer === 'function') return new PublicKey(inner.toBuffer()); } catch {}
-            try {
-              const bn = (inner && (inner._bn || inner.bn || inner.value)) as any;
-              if (bn && typeof bn === 'object') {
-                if (typeof bn.toArrayLike === 'function') return new PublicKey(bn.toArrayLike(Uint8Array, 'be', 32));
-                if (typeof bn.toArray === 'function') return new PublicKey(Uint8Array.from(bn.toArray('be', 32)));
-              }
-            } catch {}
-            try { if (Array.isArray(inner) && inner.length >= 32) return new PublicKey(Uint8Array.from(inner)); } catch {}
-            if (typeof inner === 'string') return new PublicKey(inner);
-            return new PublicKey(String(inner));
-          } catch (e) {
-            return toPublicKey(v);
-          }
-        };
+        const normalizePkLoose = (v: any): PublicKey => normalizePublicKey(v);
         const coerceTop = (ixAny: any): TransactionInstruction => {
           const programId = ammProgramId;
           const keysLike = ixAny?.keys;
@@ -1132,32 +1112,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     }
     // Coerce any foreign TI-shaped objects into our local TransactionInstruction to avoid cross-web3 issues
     try {
-      const normalizePkLoose = (v: any): PublicKey => {
-        try {
-          if (v instanceof PublicKey) return v;
-          const inner = (v && (v.address || v.pubkey || v.pubKey || v.publicKey)) || v;
-          if (inner instanceof PublicKey) return inner;
-          // Prefer byte-based paths to avoid foreign toBase58
-          try { if (inner && typeof inner.toBytes === 'function') return new PublicKey(inner.toBytes()); } catch {}
-          try { if (inner && typeof inner.toBuffer === 'function') return new PublicKey(inner.toBuffer()); } catch {}
-          // BN-like internals
-          try {
-            const bn = (inner && (inner._bn || inner.bn || inner.value)) as any;
-            if (bn && typeof bn === 'object') {
-              if (typeof bn.toArrayLike === 'function') return new PublicKey(bn.toArrayLike(Uint8Array, 'be', 32));
-              if (typeof bn.toArray === 'function') return new PublicKey(Uint8Array.from(bn.toArray('be', 32)));
-            }
-          } catch {}
-          // Direct byte array
-          try { if (Array.isArray(inner) && inner.length >= 32) return new PublicKey(Uint8Array.from(inner)); } catch {}
-          // String fallback
-          if (typeof inner === 'string') return new PublicKey(inner);
-          return new PublicKey(String(inner));
-        } catch (e) {
-          // Final fallback to existing helper
-          return toPublicKey(v);
-        }
-      };
+      const normalizePkLoose = (v: any): PublicKey => normalizePublicKey(v);
 
       const coerceOne = (ixAny: any): TransactionInstruction => {
         // Always build a fresh TI using our known program id to avoid foreign instances
@@ -1193,12 +1148,15 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       }
     } catch {}
     if (out && out.length) return out;
-    try { logger.warn('ix.build raydium.amm.real unexpected shape', { cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
-    throw new Error('RAYDIUM_AMM_BUILD_FAILED: bad_ix_shape');
+    throw createBuilderError('RAYDIUM_AMM', 'bad_ix_shape: no instructions produced', hop);
   } catch (e) {
-    try { logger.warn('ix.build raydium.amm.real fallback', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
+    // If error is already a builder error, log and rethrow
+    if (e instanceof Error && e.message.includes('RAYDIUM_AMM_BUILD_FAILED')) {
+      logAndThrow(e);
+    }
+    // Otherwise wrap it
+    wrapBuilderError(e, 'RAYDIUM_AMM', 'build failed', hop);
   }
-  throw new Error('RAYDIUM_AMM_BUILD_FAILED');
 }
 
 

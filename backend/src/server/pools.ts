@@ -9,6 +9,7 @@ import type { AmmPool, ClmmPool, PoolsPayload } from './pools/types.js';
 import { fetchRaydiumPoolsRaw as fetchRaydiumPoolsRawImpl, normalizeRaydiumPools as normalizeRaydiumPoolsImpl } from './pools/raydium.js';
 import { fetchOrcaHttp as fetchOrcaHttpImpl, normalizeOrcaHttp as normalizeOrcaHttpImpl } from './pools/orca.js';
 import { fetchMeteoraHttp as fetchMeteoraHttpImpl, normalizeMeteoraHttp as normalizeMeteoraHttpImpl } from './pools/meteora.js';
+import { validateCrossDexPrices, verifyCanonicalization } from './pools/validation.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './pools/httpLog.js';
 import { fetchMeteoraBalancedHttp as fetchMeteoraBalancedHttpImpl, normalizeMeteoraBalancedHttp as normalizeMeteoraBalancedHttpImpl, fetchMeteoraBalancedAll as fetchMeteoraBalancedAllImpl } from './pools/meteoraBalanced.js';
 
@@ -1638,6 +1639,15 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
           }
         } catch {}
         try { logger.info('pools.delta raydium', { updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, cat: 'pools' }); } catch {}
+      } catch {}
+      // Cross-DEX validation: Compare prices across all DEXes
+      try {
+        const allPools = {
+          raydium: raydiumCache.data || { amm: [], clmm: [] },
+          orca: orcaCache.data || { amm: [], clmm: [] },
+          meteora: meteoraCache.data || { amm: [], clmm: [] }
+        };
+        validateCrossDexPrices(allPools);
       } catch {}
       // Opportunistic price warmup (anchors + top-N pool mints) after first source completes
       try {

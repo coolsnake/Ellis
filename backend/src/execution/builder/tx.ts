@@ -1,12 +1,14 @@
-import type { ExecutionPlan } from '../types.js';
+import type { ExecutionPlan, DirectHop } from '../types.js';
 import { buildRaydiumAmmSwapIx, buildRaydiumClmmSwapIx, buildOrcaSwapIx, buildMeteoraDlmmSwapIx, buildRaydiumAmmSwapIxReal, buildRaydiumClmmSwapIxReal, buildMeteoraDlmmSwapIxReal } from './ix.js';
 import { logger } from '../../utils/logger.js';
 import { LogCode } from '../../utils/logging.js';
-import { PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import { PublicKey, LAMPORTS_PER_SOL, TransactionInstruction } from '@solana/web3.js';
 import { buildCreateAtaIx, deriveAta, isSolMint, buildWrapSolIxs, buildUnwrapSolIx } from '../accounts.js';
-import { ensureWallet } from '../../wallet/wallet.js';
+import { ensureWallet, getConnection } from '../../wallet/wallet.js';
 import { CONFIG } from '../../utils/config.js';
 import { loadExecConfig } from '../../server/execConfigStore.js';
+import { validateHopAmounts } from './validation.js';
+import { withRpcLimit } from '../../utils/rpcLimiter.js';
 
 export type ComputeBudgetConfig = { computeUnitLimit?: number; computeUnitPriceMicroLamports?: number };
 
@@ -20,6 +22,54 @@ function computeBudgetIxs(cfg?: ComputeBudgetConfig): any[] {
   return out;
 }
 
+/**
+ * Estimates the serialized size of a transaction instruction
+ */
+function estimateInstructionSize(ix: any): number {
+  try {
+    // Base overhead: programId (32) + accounts length (1) + data length (4)
+    let size = 37;
+    
+    // Add account keys (32 bytes each + 1 byte flags)
+    const keys = ix?.keys || ix?.accounts || [];
+    if (Array.isArray(keys)) {
+      size += keys.length * 33;
+    }
+    
+    // Add instruction data
+    const data = ix?.data;
+    if (data) {
+      if (Buffer.isBuffer(data)) {
+        size += data.length;
+      } else if (data instanceof Uint8Array) {
+        size += data.length;
+      } else if (Array.isArray(data)) {
+        size += data.length;
+      } else if (typeof data === 'string') {
+        size += Buffer.from(data, 'base64').length;
+      }
+    }
+    
+    return size;
+  } catch {
+    // Fallback to conservative estimate
+    return 200;
+  }
+}
+
+/**
+ * Checks if an ATA exists on-chain
+ */
+async function ataExists(ata: PublicKey): Promise<boolean> {
+  try {
+    const connection = getConnection();
+    const accountInfo = await withRpcLimit(() => connection.getAccountInfo(ata));
+    return accountInfo !== null;
+  } catch {
+    return false;
+  }
+}
+
 export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[], cb?: ComputeBudgetConfig): Promise<{ tx: any; ixCount: number; sizeBytes: number }> {
   const t0 = Date.now();
   const traceId = Math.random().toString(36).slice(2, 10);
@@ -31,8 +81,13 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
   const modeOverride: 'direct' | 'simulate' | undefined = (cb as any)?.__modeOverride;
   let performedWrap = false;
   let willUnwrap = false;
+  
+  // Track actual output amounts from previous hops (for amount propagation)
+  const hopOutputs: bigint[] = [];
+  
   for (let i = 0; i < plan.hops.length; i++) {
-    const hop = plan.hops[i];
+    // Create a working copy of the hop to avoid mutating the original
+    const hop: DirectHop = { ...plan.hops[i] };
     try { logger.debug('tx.build.hop', { cat: 'tx', code: LogCode.TX_BUILD_HOP, ctx: { traceId, dex: hop.dex, variant: hop.variant, poolId: hop.poolId } as any }); } catch {}
     try {
       logger.info('tx.build.hop.start', { cat: 'tx', ctx: { traceId, dex: hop.dex, variant: hop.variant, poolId: hop.poolId, inputMint: hop.inputMint, outputMint: hop.outputMint, amountInRaw: String(hop.amountInRaw ?? 0n), minOutRaw: String(hop.minOutRaw ?? 0n), userSourceAta: hop.userSourceAta ? 'set' : 'missing', userDestAta: hop.userDestAta ? 'set' : 'missing' } as any });
@@ -48,11 +103,22 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
         if (!hop.userDestAta) {
           try { hop.userDestAta = deriveAta(owner, new PublicKey(hop.outputMint), hop.outputTokenProgram).toBase58(); } catch {}
         }
-        // Ensure destination ATA exists (idempotent; safe if already exists)
-        hopIxs.push(buildCreateAtaIx(owner, owner, new PublicKey(hop.outputMint), hop.outputTokenProgram));
+        
+        // Optimize ATA creation: only create if they don't exist
+        // Note: createAssociatedTokenAccountIdempotentInstruction is safe, but we can avoid adding redundant instructions
+        const destAtaPk = new PublicKey(hop.userDestAta);
+        const destExists = await ataExists(destAtaPk);
+        if (!destExists) {
+          hopIxs.push(buildCreateAtaIx(owner, owner, new PublicKey(hop.outputMint), hop.outputTokenProgram));
+        }
+        
         // Ensure source ATA exists unless input is SOL (WSOL wrap path ensures source when needed)
         if (!isSolMint(hop.inputMint)) {
-          hopIxs.push(buildCreateAtaIx(owner, owner, new PublicKey(hop.inputMint), hop.inputTokenProgram));
+          const sourceAtaPk = new PublicKey(hop.userSourceAta);
+          const sourceExists = await ataExists(sourceAtaPk);
+          if (!sourceExists) {
+            hopIxs.push(buildCreateAtaIx(owner, owner, new PublicKey(hop.inputMint), hop.inputTokenProgram));
+          }
         }
       }
       // SOL wrapping/unwrap if configured
@@ -77,12 +143,35 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
       }
 
       // Defensive amount propagation fallback: if later hop is zero, try to use previous hop's output
+      // Use actual output amount from previous hop if available, otherwise fall back to minOutRaw
       if ((hop.amountInRaw || 0n) <= 0n && i > 0) {
         try {
-          const prev = plan.hops[i - 1] as any;
-          const candidate: bigint = (prev?.minOutRaw && prev.minOutRaw > 0n) ? prev.minOutRaw : (prev?.amountInRaw || 0n);
-          if (candidate > 0n) hop.amountInRaw = candidate;
-        } catch {}
+          // Prefer actual output from previous hop if tracked
+          const prevOutput = hopOutputs[i - 1];
+          if (prevOutput && prevOutput > 0n) {
+            hop.amountInRaw = prevOutput;
+          } else {
+            // Fallback to minOutRaw from previous hop
+            const prev = plan.hops[i - 1];
+            const candidate: bigint = (prev?.minOutRaw && prev.minOutRaw > 0n) ? prev.minOutRaw : (prev?.amountInRaw || 0n);
+            if (candidate > 0n) {
+              hop.amountInRaw = candidate;
+            }
+          }
+          
+          // Validate propagated amount is reasonable
+          if (hop.amountInRaw > 0n) {
+            validateHopAmounts(hop, { traceId, hopIndex: i, propagated: true });
+          }
+        } catch (propErr) {
+          try {
+            logger.warn('tx.build.amount_propagation.failed', {
+              cat: 'tx',
+              code: LogCode.TX_BUILD_ERR,
+              ctx: { traceId, hopIndex: i, error: String((propErr as any)?.message || propErr) }
+            });
+          } catch {}
+        }
       }
 
       // Guard: if amount is still zero, avoid invoking real SDK builders
@@ -92,16 +181,45 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
         const mode: any = modeOverride || (execCfg as any)?.mode || 'simulate';
         if (mode !== 'direct') {
           hopIxs.push({ kind: 'placeholder', dex: hop.dex, variant: hop.variant, poolId: hop.poolId, reason: 'amount=0' });
+          hopOutputs.push(0n); // Track zero output
           continue;
         } else {
-          throw new Error('AMOUNT_ZERO');
+          throw new Error(`AMOUNT_ZERO: hop ${i} has zero amountInRaw after propagation`);
+        }
+      }
+      
+      // Validate amounts before building
+      try {
+        validateHopAmounts(hop, { traceId, hopIndex: i });
+      } catch (validationErr) {
+        const mode: any = modeOverride || (execCfg as any)?.mode || 'simulate';
+        if (mode !== 'direct') {
+          hopIxs.push({ kind: 'placeholder', dex: hop.dex, variant: hop.variant, poolId: hop.poolId, reason: `validation_failed: ${String((validationErr as any)?.message || validationErr)}` });
+          hopOutputs.push(0n);
+          continue;
+        } else {
+          throw validationErr;
         }
       }
 
-      if (hop.dex === 'raydium' && hop.variant === 'amm') { const ixs = await buildRaydiumAmmSwapIxReal(hop); hopIxs.push(...ixs); }
-      else if (hop.dex === 'raydium' && hop.variant === 'clmm') { const ixs = await buildRaydiumClmmSwapIxReal(hop); hopIxs.push(...ixs); }
-      else if (hop.dex === 'orca') { const ixs = await buildOrcaSwapIx(hop) as any[]; hopIxs.push(...ixs); }
-      else if (hop.dex === 'meteora') { try { logger.info('tx.build.hop.meteora.real', { cat: 'tx', ctx: { poolId: hop.poolId } as any }); } catch {}; const ixs = await buildMeteoraDlmmSwapIxReal(hop); hopIxs.push(...ixs); }
+      let ixs: any[] = [];
+      if (hop.dex === 'raydium' && hop.variant === 'amm') {
+        ixs = await buildRaydiumAmmSwapIxReal(hop);
+      } else if (hop.dex === 'raydium' && hop.variant === 'clmm') {
+        ixs = await buildRaydiumClmmSwapIxReal(hop);
+      } else if (hop.dex === 'orca') {
+        ixs = await buildOrcaSwapIx(hop) as any[];
+      } else if (hop.dex === 'meteora') {
+        try { logger.info('tx.build.hop.meteora.real', { cat: 'tx', ctx: { poolId: hop.poolId } as any }); } catch {}
+        ixs = await buildMeteoraDlmmSwapIxReal(hop);
+      }
+      
+      hopIxs.push(...ixs);
+      
+      // Track output amount for next hop (use minOutRaw as conservative estimate)
+      // In a real scenario, this would come from quote simulation, but we use minOutRaw as fallback
+      hopOutputs.push(hop.minOutRaw && hop.minOutRaw > 0n ? hop.minOutRaw : (hop.amountInRaw || 0n));
+      
       try { logger.info('tx.build.hop.ok', { cat: 'tx', ctx: { traceId, dex: hop.dex, variant: hop.variant, poolId: hop.poolId } as any }); } catch {}
     } catch (e) {
       try { logger.error('tx.build.hop.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { traceId, dex: hop.dex, variant: hop.variant, poolId: hop.poolId, error: String((e as any)?.message || e) } as any }); } catch {}
@@ -113,8 +231,8 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
   }
   const budget = computeBudgetIxs(cb);
   const all = [...budget, ...extraSetupIxs, ...hopIxs];
-  // Approximate size
-  const sizeBytes = all.length * 200;
+  // Calculate actual serialized size instead of fixed estimate
+  const sizeBytes = all.reduce((sum, ix) => sum + estimateInstructionSize(ix), 0);
   try {
     const programCounts: Record<string, number> = {};
     for (const it of all) {
@@ -144,10 +262,10 @@ export function chunkRoute(plan: ExecutionPlan, extraSetupIxs: any[], cb: Comput
   const base = [...budget, ...extraSetupIxs];
   const txs: Array<{ instructions: any[]; approxSizeBytes: number }> = [];
   let cur: any[] = [...base];
-  let curBytes = cur.length * 200;
-  const pushCur = () => { txs.push({ instructions: cur, approxSizeBytes: curBytes }); cur = [...base]; curBytes = cur.length * 200; };
+  let curBytes = cur.reduce((sum, ix) => sum + estimateInstructionSize(ix), 0);
+  const pushCur = () => { txs.push({ instructions: cur, approxSizeBytes: curBytes }); cur = [...base]; curBytes = cur.reduce((sum, ix) => sum + estimateInstructionSize(ix), 0); };
   for (const ix of perHop) {
-    const ixSize = 200;
+    const ixSize = estimateInstructionSize(ix);
     if (curBytes + ixSize > maxBytes && cur.length > base.length) pushCur();
     cur.push(ix);
     curBytes += ixSize;
@@ -170,10 +288,10 @@ export async function chunkRouteAsync(plan: ExecutionPlan, extraSetupIxs: any[],
   const base = [...budget, ...extraSetupIxs];
   const txs: Array<{ instructions: any[]; approxSizeBytes: number }>= [];
   let cur: any[] = [...base];
-  let curBytes = cur.length * 200;
-  const pushCur = () => { txs.push({ instructions: cur, approxSizeBytes: curBytes }); cur = [...base]; curBytes = cur.length * 200; };
+  let curBytes = cur.reduce((sum, ix) => sum + estimateInstructionSize(ix), 0);
+  const pushCur = () => { txs.push({ instructions: cur, approxSizeBytes: curBytes }); cur = [...base]; curBytes = cur.reduce((sum, ix) => sum + estimateInstructionSize(ix), 0); };
   for (const ix of perHop) {
-    const ixSize = 200;
+    const ixSize = estimateInstructionSize(ix);
     if (curBytes + ixSize > maxBytes && cur.length > base.length) pushCur();
     cur.push(ix);
     curBytes += ixSize;

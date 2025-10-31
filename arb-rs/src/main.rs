@@ -1324,45 +1324,127 @@ async fn main() -> anyhow::Result<()> {
                       .then_with(|| b.detected_ms.unwrap_or(0).cmp(&a.detected_ms.unwrap_or(0)))
                 });
                 if merged.len() > 50 { merged.truncate(50); }
-                // Diff on paths list for change detection
-                let changed = true; // simplified; merged likely differs frequently enough
-                if changed {
-                    let mut s = loop_state.write().await;
-                    // Update detections for re-detected opps
-                    for m in merged.iter_mut() {
-                        // If this opp also existed previously, bump detections and preserve first_seen_ms
-                        if let Some(prev_o) = s.opportunities.iter().find(|p| p.path == m.path && p.dexes == m.dexes) {
-                            m.first_seen_ms = prev_o.first_seen_ms.or(prev_o.detected_ms).or(m.detected_ms);
-                            m.detections = Some(prev_o.detections.unwrap_or(1) + 1);
-                            m.last_verified_ms = Some(now_ms_val); // Update verification timestamp
-                        } else {
-                            m.first_seen_ms = m.first_seen_ms.or(m.detected_ms);
-                            m.last_verified_ms = m.last_verified_ms.or(m.detected_ms);
-                            m.detections = Some(1);
+                // Proper change detection: compare opportunities by path/dexes AND profit values
+                let mut s_check = loop_state.read().await;
+                let prev_opps = &s_check.opportunities;
+                let changed = {
+                    // Check if count changed
+                    if prev_opps.len() != merged.len() { true } else {
+                        // Check if any opportunity has changed (path/dexes match but profit differs)
+                        let mut found_change = false;
+                        for m in merged.iter() {
+                            if let Some(prev_o) = prev_opps.iter().find(|p| p.path == m.path && p.dexes == m.dexes) {
+                                // Check if profit_bps or net_bps changed
+                                if prev_o.profit_bps != m.profit_bps || prev_o.net_bps != m.net_bps {
+                                    found_change = true;
+                                    break;
+                                }
+                            } else {
+                                // New opportunity not in previous list
+                                found_change = true;
+                                break;
+                            }
+                        }
+                        // Also check if any previous opportunity is missing
+                        if !found_change {
+                            for prev_o in prev_opps.iter() {
+                                if !merged.iter().any(|m| m.path == prev_o.path && m.dexes == prev_o.dexes) {
+                                    found_change = true;
+                                    break;
+                                }
+                            }
+                        }
+                        found_change
+                    }
+                };
+                drop(s_check);
+                
+                // Always check and update near_misses if they changed (even if opportunities didn't)
+                let mut s = loop_state.write().await;
+                let mut near_misses_changed = false;
+                // Build top-K near-misses list for UI with updated profit values
+                let mut nlist = near_list;
+                nlist.sort_by_key(|(_, sh)| *sh);
+                let k = s.config.debug_top_n.max(1).min(10);
+                let mut new_near_misses = nlist.iter().take(k).map(|(o,_)| o.clone()).collect::<Vec<Opportunity>>();
+                // Update near_misses timestamps to reflect they were just rebuilt
+                for nm in new_near_misses.iter_mut() {
+                    nm.last_verified_ms = Some(now_ms_val);
+                }
+                // Check if near_misses changed by comparing profit values
+                if s.near_misses.len() != new_near_misses.len() {
+                    near_misses_changed = true;
+                } else {
+                    for (new, prev) in new_near_misses.iter().zip(s.near_misses.iter()) {
+                        if new.path != prev.path || new.dexes != prev.dexes || new.profit_bps != prev.profit_bps || new.net_bps != prev.net_bps {
+                            near_misses_changed = true;
+                            break;
                         }
                     }
-                    s.opportunities = merged;
-                    // Build top-K near-misses list for UI
-                    let mut nlist = near_list;
-                    nlist.sort_by_key(|(_, sh)| *sh);
-                    let k = s.config.debug_top_n.max(1).min(10);
-                    s.near_misses = nlist.iter().take(k).map(|(o,_)| o.clone()).collect();
-                    // Prefer ≥3-DEX paths and rotate across cycles; fallback to best-by-shortfall
+                }
+                
+                if changed || near_misses_changed {
+                    // Update detections for re-detected opps (only if opportunities changed)
+                    if changed {
+                        for m in merged.iter_mut() {
+                            // If this opp also existed previously, bump detections and preserve first_seen_ms
+                            if let Some(prev_o) = s.opportunities.iter().find(|p| p.path == m.path && p.dexes == m.dexes) {
+                                m.first_seen_ms = prev_o.first_seen_ms.or(prev_o.detected_ms).or(m.detected_ms);
+                                m.detections = Some(prev_o.detections.unwrap_or(1) + 1);
+                                m.last_verified_ms = Some(now_ms_val); // Update verification timestamp
+                            } else {
+                                m.first_seen_ms = m.first_seen_ms.or(m.detected_ms);
+                                m.last_verified_ms = m.last_verified_ms.or(m.detected_ms);
+                                m.detections = Some(1);
+                            }
+                        }
+                        s.opportunities = merged;
+                    }
+                    
+                    // Always update near_misses if they changed
+                    let prev_near_misses = s.near_misses.clone();
+                    s.near_misses = new_near_misses;
+                    // Prefer ≥3-DEX paths; prefer recently updated ones, then rotate across cycles
                     let preferred: Vec<Opportunity> = s.near_misses.iter().cloned().filter(|o| o.dexes.len() >= 3).collect();
                     let pool: Vec<Opportunity> = if !preferred.is_empty() { preferred } else { s.near_misses.clone() };
                     if !pool.is_empty() {
-                        let idx = (s.metrics.detection_cycles_total as usize) % pool.len();
-                        let chosen = pool[idx].clone();
+                        // Find opportunities that changed profit_bps compared to previous near_misses
+                        let changed_indices: Vec<usize> = pool.iter().enumerate().filter_map(|(idx, o)| {
+                            let prev = prev_near_misses.iter().find(|p| p.path == o.path && p.dexes == o.dexes);
+                            if let Some(prev_o) = prev {
+                                if prev_o.profit_bps != o.profit_bps || prev_o.net_bps != o.net_bps {
+                                    Some(idx)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                // New near miss
+                                Some(idx)
+                            }
+                        }).collect();
+                        // Prefer changed entries, then rotate
+                        let chosen = if !changed_indices.is_empty() {
+                            // Pick from changed entries, rotating through them
+                            let changed_idx = (s.metrics.detection_cycles_total as usize) % changed_indices.len();
+                            pool[changed_indices[changed_idx]].clone()
+                        } else {
+                            // No changes detected, rotate through all
+                            let idx = (s.metrics.detection_cycles_total as usize) % pool.len();
+                            pool[idx].clone()
+                        };
                         s.near_miss = Some(chosen.clone());
                         s.near_miss_shortfall_bps = Some((s.config.min_profit_bps - chosen.profit_bps).max(0));
                     } else {
                         s.near_miss = near_pair.as_ref().map(|(o, _)| o.clone());
                         s.near_miss_shortfall_bps = near_pair.as_ref().map(|(_, sh)| *sh);
                     }
-                    s.metrics.opportunities_active = s.opportunities.len() as u64;
-                    s.metrics.max_profit_bps = s.opportunities.iter().map(|o| o.profit_bps).max().unwrap_or(0) as i64;
-                    let total: i64 = s.opportunities.iter().map(|o| o.profit_bps).sum();
-                    s.metrics.avg_profit_bps = if s.opportunities.is_empty() { 0.0 } else { total as f64 / s.opportunities.len() as f64 };
+                    // Update metrics only when opportunities changed
+                    if changed {
+                        s.metrics.opportunities_active = s.opportunities.len() as u64;
+                        s.metrics.max_profit_bps = s.opportunities.iter().map(|o| o.profit_bps).max().unwrap_or(0) as i64;
+                        let total: i64 = s.opportunities.iter().map(|o| o.profit_bps).sum();
+                        s.metrics.avg_profit_bps = if s.opportunities.is_empty() { 0.0 } else { total as f64 / s.opportunities.len() as f64 };
+                    }
                     s.metrics.detection_cycles_total += 1;
                     // Increment detector outcomes and cumulative opportunities
                     if s.opportunities.is_empty() {
@@ -1821,9 +1903,25 @@ async fn ws_opportunities(ws: WebSocketUpgrade, State(state): State<Arc<RwLock<A
             };
             let payload = serde_json::json!({ "items": items, "near_items": near_items, "summary": summary });
             let text = payload.to_string();
-            if last.as_ref() != Some(&text) {
+            // Build a signature that includes profit values for change detection
+            let signature = {
+                let opps_sig: String = items.iter().map(|o| {
+                    format!("{}:{}:{}", 
+                        o.path.join(">"), 
+                        o.profit_bps, 
+                        o.net_bps.unwrap_or(o.profit_bps))
+                }).collect::<Vec<_>>().join("|");
+                let near_sig = if let Some(ref nm) = summary.near_miss {
+                    format!("{}:{}:{}", nm.path.join(">"), nm.profit_bps, nm.net_bps.unwrap_or(nm.profit_bps))
+                } else {
+                    String::new()
+                };
+                format!("{}:{}:{}", items.len(), opps_sig, near_sig)
+            };
+            // Compare signature instead of full JSON to detect profit value changes
+            if last.as_ref() != Some(&signature) {
                 if socket.send(Message::Text(text.clone())).await.is_err() { break; }
-                last = Some(text);
+                last = Some(signature);
                 let mut s = state.write().await;
                 s.metrics.ws_push_total += 1;
             } else {

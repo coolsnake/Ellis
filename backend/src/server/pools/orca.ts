@@ -3,7 +3,8 @@ import { emit } from '../realtime.js';
 import { CONFIG } from '../../utils/config.js';
 import { writeJson, joinPath } from '../../utils/fs.js';
 import type { ClmmPool, PoolsPayload } from './types.js';
-import { canonicalizePairs, validateHttpUrl } from './common.js';
+import { canonicalizePairs, validateHttpUrl, swapABFields } from './common.js';
+import { verifyCanonicalization } from './validation.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
 
 export async function fetchOrcaHttp(): Promise<any> {
@@ -220,6 +221,7 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
         // Then B/A = R^2, so A/B = 1 / R^2.
         // Adjust for decimals: amounts are in smallest units, so scale = 10^(decB-decA).
         // Therefore A-per-1-B (in whole-token units) = (scale) / (R^2).
+        // NOTE: Orca uses decB - decA, while Raydium uses decA - decB (see raydium.ts)
         const scale = Math.pow(10, (cDecB as number) - (cDecA as number));
         const aPerB = scale / (ratio * ratio);
         if (Number.isFinite(aPerB) && aPerB > 0) priceFromSqrt = aPerB;
@@ -270,6 +272,20 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
   }
   // Canonicalize pairs using unified policy; handles A/B swap and price inversion when needed
   const clmmCanon = canonicalizePairs(clmm);
+  
+  // Verify canonicalization: ensure price inversion happens correctly when mints are swapped
+  try {
+    const clmmVerification = verifyCanonicalization(clmmCanon, swapABFields);
+    if (!clmmVerification.valid) {
+      try {
+        logger.warn('orca.canonicalization.verification.failed', {
+          clmmErrors: clmmVerification.errors.length,
+          cat: 'orca'
+        });
+      } catch {}
+    }
+  } catch {}
+  
   if (!clmm.length) {
     logger.warn('orca.http normalized 0 clmm', { hint: 'Check inspect log for field presence and pool types' });
   }

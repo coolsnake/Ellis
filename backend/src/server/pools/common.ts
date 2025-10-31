@@ -8,7 +8,7 @@ export function toFeeBpsSafe(value: any, defaultBps = 30): number {
 }
 
 // Generic swapper to keep A/B-side fields consistent whenever a pair is swapped.
-function swapABFields<T extends Record<string, any>>(obj: T): T {
+export function swapABFields<T extends Record<string, any>>(obj: T): T {
   const out: any = { ...obj };
   // Swap mints
   const aMint = out.mint_a; const bMint = out.mint_b;

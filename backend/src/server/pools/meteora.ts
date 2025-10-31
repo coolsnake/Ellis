@@ -3,7 +3,8 @@ import { emit } from '../realtime.js';
 import { CONFIG } from '../../utils/config.js';
 import { writeJson, joinPath } from '../../utils/fs.js';
 import type { ClmmPool, PoolsPayload } from './types.js';
-import { canonicalizePairs, validateHttpUrl } from './common.js';
+import { canonicalizePairs, validateHttpUrl, swapABFields } from './common.js';
+import { verifyCanonicalization } from './validation.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
 
 export async function fetchMeteoraHttp(): Promise<any> {
@@ -276,6 +277,20 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
   }
   // Canonicalize pairs using unified policy; handles A/B swap and price inversion when needed
   const clmmCanon = canonicalizePairs(clmm);
+  
+  // Verify canonicalization: ensure price inversion happens correctly when mints are swapped
+  try {
+    const clmmVerification = verifyCanonicalization(clmmCanon, swapABFields);
+    if (!clmmVerification.valid) {
+      try {
+        logger.warn('meteora.canonicalization.verification.failed', {
+          clmmErrors: clmmVerification.errors.length,
+          cat: 'meteora'
+        });
+      } catch {}
+    }
+  } catch {}
+  
   try {
     const canon = String(((CONFIG as any)?.system?.canonicalizePairs) || 'lex');
     logger.info('meteora.http normalized', { clmm: clmmCanon.length, cat: 'meteora', canon });

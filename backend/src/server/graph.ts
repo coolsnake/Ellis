@@ -304,17 +304,39 @@ export async function applyPoolUpdates(prev: PoolsPayload, next: PoolsPayload, o
       }
     } catch {}
 
-    // Upsert edges for changed pools (based on updated_ms when available)
+    // Upsert edges for changed pools (detect changes by comparing price/liquidity, not just updated_ms)
     const byIdPrev: Map<string, AmmPool | ClmmPool> = new Map([...(prev?.amm || []), ...(prev?.clmm || [])].map((p: any) => [String(p.id), p]));
     const consider = [...(next?.amm || []), ...(next?.clmm || [])];
     const addedEdges: GraphEdge[] = [];
     const updatedEdges: GraphEdge[] = [];
     const addedNodes: GraphNode[] = [];
     const removedNodeIds: string[] = [];
+    const eps = 1e-9;
+    const poolChanged = (pv: AmmPool | ClmmPool | undefined, p: AmmPool | ClmmPool): boolean => {
+      if (!pv) return true; // New pool
+      const kind = ((p as any)?.pool_kind || (typeof (p as any)?.sqrt_price_x64 === 'number' ? 'clmm' : 'amm')) as 'amm'|'clmm';
+      if (kind === 'clmm') {
+        // CLMM: check sqrt_price_x64, liquidity, tvl_usd, price_a_per_b
+        if (Math.abs(((pv as any).sqrt_price_x64 || 0) - ((p as any).sqrt_price_x64 || 0)) > 0) return true;
+        if (Math.abs(((pv as any).liquidity || 0) - ((p as any).liquidity || 0)) > 0) return true;
+        if (((pv as any).tvl_usd || 0) !== ((p as any).tvl_usd || 0)) return true;
+        if (Math.abs(((pv as any).price_a_per_b || 0) - ((p as any).price_a_per_b || 0)) > eps) return true;
+      } else {
+        // AMM: check price_a_per_b, liquidity_base, tvl_usd
+        if (Math.abs(((pv as any).price_a_per_b || 0) - ((p as any).price_a_per_b || 0)) > eps) return true;
+        if (Math.abs(((pv as any).liquidity_base || 0) - ((p as any).liquidity_base || 0)) > eps) return true;
+        if (((pv as any).tvl_usd || 0) !== ((p as any).tvl_usd || 0)) return true;
+      }
+      // Also check updated_ms as a fallback if timestamps are available
+      const nextMs = Number((p as any)?.updated_ms || 0);
+      const prevMs = Number((pv as any)?.updated_ms || 0);
+      if (nextMs > 0 && prevMs > 0 && nextMs > prevMs) return true;
+      return false;
+    };
     for (const p of consider) {
       const id = String((p as any)?.id || '');
       const pv = byIdPrev.get(id);
-      const changed = !pv || Number((p as any)?.updated_ms || 0) > Number((pv as any)?.updated_ms || 0);
+      const changed = poolChanged(pv, p);
       // Skip pools explicitly dropped at runtime
       if (droppedPoolIds.has(id)) continue;
       // Skip when disallowed by allowlist
@@ -328,7 +350,15 @@ export async function applyPoolUpdates(prev: PoolsPayload, next: PoolsPayload, o
       for (const e of [fwd, rev]) {
         const cur = edgesMap.get(e.id);
         if (!cur) { edgesMap.set(e.id, e); addedEdges.push(e); }
-        else if (edgeChangedSimple(cur, e)) { edgesMap.set(e.id, e); updatedEdges.push(e); }
+        else {
+          // Always update edge in map if pool changed
+          edgesMap.set(e.id, e);
+          // Add to updatedEdges if edge values changed or if pool changed significantly
+          // (edgeChangedSimple might miss changes due to USD normalization, so we're conservative)
+          if (edgeChangedSimple(cur, e) || changed) {
+            updatedEdges.push(e);
+          }
+        }
       }
       const a = String((p as any)?.mint_a || ''); const b = String((p as any)?.mint_b || '');
       if (a && !nodesMap.has(a)) { nodesMap.set(a, { id: a }); addedNodes.push({ id: a }); }

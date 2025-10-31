@@ -3,7 +3,8 @@ import { emit } from '../realtime.js';
 import { CONFIG } from '../../utils/config.js';
 import { readJson, writeJson, joinPath } from '../../utils/fs.js';
 import type { AmmPool, ClmmPool, PoolsPayload } from './types.js';
-import { canonicalizePairs, validateHttpUrl } from './common.js';
+import { canonicalizePairs, validateHttpUrl, swapABFields } from './common.js';
+import { verifyCanonicalization } from './validation.js';
 
 let rayProbeOffset = 0;
 
@@ -275,34 +276,47 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         decA = Math.min(12, Math.max(0, Math.round(Number(decA))));
         decB = Math.min(12, Math.max(0, Math.round(Number(decB))));
       } catch {}
+      // Raydium CLMM sqrtPriceX64 encoding: sqrt encodes sqrt(B/A) in smallest units, like Orca.
+      // However, Raydium uses decA - decB for scaling, while Orca uses decB - decA.
+      // Formula: A-per-1-B = 10^(decA - decB) / (ratio^2), where ratio = sqrt / 2^64
+      // Verified by tests/raydium.clmm.decode.test.ts
       let price_from_sqrt = 0;
-      let price_from_sqrt_alt = 0;
       try {
         if (sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
           const two64 = Math.pow(2, 64);
           const ratio = sqrt / two64;
-          // Candidate set from both scale directions to guard against vendor orientation nuances
-          const scale1 = Math.pow(10, (decB as number) - (decA as number));
-          const scale2 = Math.pow(10, (decA as number) - (decB as number));
-          const c1 = scale1 / (ratio * ratio);
-          const c2 = (ratio * ratio) / scale1;
-          const c3 = scale2 / (ratio * ratio);
-          const c4 = (ratio * ratio) / scale2;
-          // Pick a primary and alt; we will still evaluate full candidate set later
-          price_from_sqrt = Number.isFinite(c1) && c1 > 0 ? c1 : 0;
-          price_from_sqrt_alt = Number.isFinite(c2) && c2 > 0 ? c2 : 0;
-          try {
-            const extra: number[] = [];
-            if (Number.isFinite(c3) && c3 > 0) extra.push(c3);
-            if (Number.isFinite(c4) && c4 > 0) extra.push(c4);
-            // Append to candidates immediately if we already built the list
-            // (we add again below defensively)
-          } catch {}
+          // Raydium-specific formula: scale = 10^(decA - decB), then A-per-1-B = scale / (ratio^2)
+          const scale = Math.pow(10, (decA as number) - (decB as number));
+          const aPerB = scale / (ratio * ratio);
+          if (Number.isFinite(aPerB) && aPerB > 0) price_from_sqrt = aPerB;
         }
       } catch {}
-      // Choose candidate closer to USD reference (when available): sqrt-derived vs incoming vs reserves-derived (decimals-aware)
+      // Choose best price from sqrt-derived vs reserves-derived (decimals-aware)
       let px = 0;
       try {
+        const candidates: number[] = [];
+        if (price_from_sqrt > 0) candidates.push(price_from_sqrt);
+        // Reserves-derived using decimals (treat mintAmountA/B as atomic, convert to whole)
+        try {
+          const hasDecs = Number.isFinite(decA) && Number.isFinite(decB);
+          const aAtomic = Number((it as any)?.mintAmountA ?? NaN);
+          const bAtomic = Number((it as any)?.mintAmountB ?? NaN);
+          const wholeAdec = (hasDecs && Number.isFinite(aAtomic)) ? (aAtomic / Math.pow(10, decA as number)) : NaN;
+          const wholeBdec = (hasDecs && Number.isFinite(bAtomic)) ? (bAtomic / Math.pow(10, decB as number)) : NaN;
+          if (Number.isFinite(wholeAdec) && Number.isFinite(wholeBdec) && (wholeBdec as number) > 0) {
+            const fromDec = (wholeAdec as number) / (wholeBdec as number);
+            if (fromDec > 0 && Number.isFinite(fromDec)) candidates.push(fromDec);
+          } else {
+            // Fallback: use whole amounts if they appear to be already whole
+            const wholeA = Number.isFinite(amount_a_whole as any) ? (amount_a_whole as number) : NaN;
+            const wholeB = Number.isFinite(amount_b_whole as any) ? (amount_b_whole as number) : NaN;
+            if (Number.isFinite(wholeA) && Number.isFinite(wholeB) && (wholeB as number) > 0) {
+              const fromWhole = (wholeA as number) / (wholeB as number);
+              if (fromWhole > 0 && Number.isFinite(fromWhole)) candidates.push(fromWhole);
+            }
+          }
+        } catch {}
+        // Use USD reference to select best candidate when multiple available
         const { getPriceByMint } = await import('../priceStore.js');
         let pa = getPriceByMint(mintA)?.usdc ?? null;
         let pb = getPriceByMint(mintB)?.usdc ?? null;
@@ -316,58 +330,18 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
           if (!(typeof pb === 'number' && pb > 0) && STABLES.has(mintB)) pb = 1;
         } catch {}
         const directRef = (pa && pb && (pa as number) > 0 && (pb as number) > 0) ? ((pb as number) / (pa as number)) : undefined;
-        const refs: number[] = [];
-        if (Number.isFinite(directRef as any) && (directRef as number) > 0) refs.push(directRef as number);
-        const candidates: number[] = [];
-        let usedWhole = false;
-        if (price_from_sqrt > 0) candidates.push(price_from_sqrt);
-        if (price_from_sqrt_alt > 0) candidates.push(price_from_sqrt_alt);
-        // Add alternate scale candidates as well
-        try {
-          if (sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
-            const ratio = sqrt / Math.pow(2, 64);
-            const scale2 = Math.pow(10, (decA as number) - (decB as number));
-            const c3 = scale2 / (ratio * ratio);
-            const c4 = (ratio * ratio) / scale2;
-            if (Number.isFinite(c3) && c3 > 0) candidates.push(c3);
-            if (Number.isFinite(c4) && c4 > 0) candidates.push(c4);
-          }
-        } catch {}
-        // Do not include vendor-reported price; rely on sqrt/reserves only for CLMM
-        try {
-          // Reserves-derived using decimals (treat mintAmountA/B as atomic, convert to whole)
-          const hasDecs = Number.isFinite(decA) && Number.isFinite(decB);
-          const aAtomic = Number((it as any)?.mintAmountA ?? NaN);
-          const bAtomic = Number((it as any)?.mintAmountB ?? NaN);
-          const wholeAdec = (hasDecs && Number.isFinite(aAtomic)) ? (aAtomic / Math.pow(10, decA as number)) : NaN;
-          const wholeBdec = (hasDecs && Number.isFinite(bAtomic)) ? (bAtomic / Math.pow(10, decB as number)) : NaN;
-          if (Number.isFinite(wholeAdec) && Number.isFinite(wholeBdec) && (wholeBdec as number) > 0) {
-            const fromDec = (wholeAdec as number) / (wholeBdec as number);
-            if (fromDec > 0 && Number.isFinite(fromDec)) { candidates.push(fromDec); usedWhole = true; }
-          } else {
-            // Fallback: use whole amounts if they appear to be already whole
-            const wholeA = Number.isFinite(amount_a_whole as any) ? (amount_a_whole as number) : NaN;
-            const wholeB = Number.isFinite(amount_b_whole as any) ? (amount_b_whole as number) : NaN;
-            if (Number.isFinite(wholeA) && Number.isFinite(wholeB) && (wholeB as number) > 0) {
-              const fromWhole = (wholeA as number) / (wholeB as number);
-              if (fromWhole > 0 && Number.isFinite(fromWhole)) { candidates.push(fromWhole); usedWhole = true; }
-            }
-          }
-        } catch {}
-        // Use USD references only to choose between pool-derived candidates; never substitute USD ref as price
-        if (refs.length && candidates.length > 1) {
-          // Robust pick: minimize median deviation across refs
+        if (directRef && candidates.length > 1) {
+          // Pick candidate closest to USD reference
           let best = candidates[0];
-          let bestMed = Number.POSITIVE_INFINITY;
-          for (let i = 0; i < candidates.length; i++) {
+          let bestDev = Math.max(best / (directRef as number), (directRef as number) / best);
+          for (let i = 1; i < candidates.length; i++) {
             const v = candidates[i];
-            const devs = refs.map((r) => Math.max(v / r, r / v));
-            const med = devs.sort((a,b)=>a-b)[Math.floor(devs.length/2)];
-            if (med + 1e-12 < bestMed) { bestMed = med; best = v; }
+            const dev = Math.max(v / (directRef as number), (directRef as number) / v);
+            if (dev + 1e-12 < bestDev) { bestDev = dev; best = v; }
           }
           px = best;
         } else {
-          px = price_from_sqrt > 0 ? price_from_sqrt : (Number(price) > 0 ? Number(price) : 0);
+          px = candidates.length > 0 ? candidates[0] : (Number(price) > 0 ? Number(price) : 0);
         }
       } catch {
         px = price_from_sqrt > 0 ? price_from_sqrt : (Number(price) > 0 ? Number(price) : 0);
@@ -499,6 +473,22 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
 
   const ammCanon = canonicalizePairs(amm);
   const clmmCanon = canonicalizePairs(clmm);
+  
+  // Verify canonicalization: ensure price inversion happens correctly when mints are swapped
+  try {
+    const ammVerification = verifyCanonicalization(ammCanon, swapABFields);
+    const clmmVerification = verifyCanonicalization(clmmCanon, swapABFields);
+    if (!ammVerification.valid || !clmmVerification.valid) {
+      try {
+        logger.warn('raydium.canonicalization.verification.failed', {
+          ammErrors: ammVerification.errors.length,
+          clmmErrors: clmmVerification.errors.length,
+          cat: 'raydium'
+        });
+      } catch {}
+    }
+  } catch {}
+  
   logger.info('raydium.pools normalized', { amm: ammCanon.length, clmm: clmmCanon.length, cat: 'raydium' });
   return { amm: ammCanon, clmm: clmmCanon };
 }
