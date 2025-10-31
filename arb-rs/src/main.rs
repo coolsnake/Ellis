@@ -715,6 +715,7 @@ async fn main() -> anyhow::Result<()> {
                             bottleneck: bottleneck_edge,
                             detected_ms: Some(now_ts),
                             first_seen_ms: None,
+                            last_verified_ms: None,
                             detections: None,
                             bf_slack_log: None,
                             bf_required_rate: None,
@@ -880,6 +881,7 @@ async fn main() -> anyhow::Result<()> {
                                 bottleneck: bottleneck_edge,
                                 detected_ms: Some(now_ts),
                                 first_seen_ms: None,
+                                last_verified_ms: None,
                                 detections: Some(0),
                                 bf_slack_log: None,
                                 bf_required_rate: None,
@@ -1077,6 +1079,7 @@ async fn main() -> anyhow::Result<()> {
                                 bottleneck: bottleneck_edge,
                                 detected_ms: Some(now_ts),
                                 first_seen_ms: None,
+                                last_verified_ms: None,
                                 detections: Some(0),
                                 bf_slack_log: None,
                                 bf_required_rate: None,
@@ -1188,7 +1191,7 @@ async fn main() -> anyhow::Result<()> {
                                     let rates_units = hop_units.join("; ");
                                     tracing::info!(target = "arb_rs", "arb.near_miss.triangle path={} profit_bps={} net_bps={} hops=3 rates_units={} pools=[{}] fees=[{}] product={:.8}", path_str, profit_bps, net_bps, rates_units, pools_str, fees_str, prod);
                                 }
-                                let near = Opportunity { path: labels, profit_bps, net_bps: Some(net_bps), est_profit_usd: 1.0, dexes, hop_dexes: Some(hop_dexes), hop_rates: Some(hop_rates), hop_outs: None, hop_pool_ids: Some(hop_pool_ids), hop_fee_bps: Some(hop_fee_bps_vec), hop_liquidity_display: None, hop_count: Some(3), rate_product: Some(prod), link_edges_used: Some(link_edges_used), link_penalty_bps_total: Some(link_penalty_bps_total), min_edge_liquidity: est_capacity, est_capacity, bottleneck: bottleneck_edge, detected_ms: Some(now_ts), first_seen_ms: None, detections: Some(0), bf_slack_log: None, bf_required_rate: None, bf_rate_delta_bps: None, is_near_miss: Some(true) };
+                                let near = Opportunity { path: labels, profit_bps, net_bps: Some(net_bps), est_profit_usd: 1.0, dexes, hop_dexes: Some(hop_dexes), hop_rates: Some(hop_rates), hop_outs: None, hop_pool_ids: Some(hop_pool_ids), hop_fee_bps: Some(hop_fee_bps_vec), hop_liquidity_display: None, hop_count: Some(3), rate_product: Some(prod), link_edges_used: Some(link_edges_used), link_penalty_bps_total: Some(link_penalty_bps_total), min_edge_liquidity: est_capacity, est_capacity, bottleneck: bottleneck_edge, detected_ms: Some(now_ts), first_seen_ms: None, last_verified_ms: None, detections: Some(0), bf_slack_log: None, bf_required_rate: None, bf_rate_delta_bps: None, is_near_miss: Some(true) };
                                 near_pair = Some((near, shortfall));
                             }
                         }
