@@ -17,6 +17,100 @@ function toPublicKey(value: any, fallback?: any): PublicKey {
   }
 }
 
+// Utility function to inject bin array account metas into an instruction
+async function injectBinArrayMetas(
+  ix: any,
+  DLMM: any,
+  connection: any,
+  poolPk: PublicKey,
+  programId: PublicKey
+): Promise<number> {
+  try {
+    let metas: any[] | undefined = undefined;
+    
+    // Try primary method: getBinArrayAccountMetasCoverage with bounds
+    try {
+      const getBounds = (DLMM as any)?.getBinArrayLowerUpperBinId;
+      const getMetas = (DLMM as any)?.getBinArrayAccountMetasCoverage;
+      if (getBounds && getMetas) {
+        const bnjs = await import('bn.js').catch(() => null as any);
+        const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
+        const bounds = await getBounds(connection, poolPk).catch(() => null as any);
+        const toNum = (v: any): number => {
+          try {
+            if (v && typeof v.toNumber === 'function') return v.toNumber();
+            const s = (v && typeof v.toString === 'function') ? v.toString() : String(v);
+            const n = Number(s);
+            return Number.isFinite(n) ? n : NaN;
+          } catch {
+            return NaN;
+          }
+        };
+        const loNum = toNum(bounds?.lowerBinId);
+        const hiNum = toNum(bounds?.upperBinId);
+        if (Number.isFinite(loNum) && Number.isFinite(hiNum) && BN) {
+          metas = getMetas(new BN(String(loNum)), new BN(String(hiNum)), poolPk, programId) || [];
+        }
+      }
+    } catch (e: any) {
+      try { logger.debug('meteora.dlmm.inject.bounds.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
+    }
+    
+    // Fallback: try generic coverage helper
+    if (!metas || !metas.length) {
+      try {
+        const getCoverage = (DLMM as any)?.getBinArrayKeysCoverage || (DLMM as any)?.getBinArrayAccountMetasCoverage;
+        if (getCoverage) {
+          const cov = await getCoverage(programId, poolPk).catch(() => null as any) 
+            || await getCoverage(connection, programId, poolPk).catch(() => null as any) 
+            || await getCoverage({ programId, lbPair: poolPk }).catch(() => null as any);
+          metas = (cov && ((cov as any).metas || (cov as any).accountMetas)) || (Array.isArray(cov) ? cov : []);
+        }
+      } catch (e: any) {
+        try { logger.debug('meteora.dlmm.inject.coverage.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
+      }
+    }
+    
+    // Inject metas into instruction
+    if (Array.isArray(metas) && metas.length && Array.isArray((ix as any).keys)) {
+      const existing = new Set<string>();
+      try {
+        for (const k of (ix as any).keys as any[]) {
+          const s = (k?.pubkey && typeof k.pubkey.toBase58 === 'function') ? k.pubkey.toBase58() : String(k?.pubkey);
+          if (s) existing.add(s);
+        }
+      } catch (e: any) {
+        try { logger.debug('meteora.dlmm.inject.existing.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
+      }
+      
+      let injected = 0;
+      for (const m of metas) {
+        try {
+          const pk = (m?.pubkey && typeof m.pubkey.toBase58 === 'function') 
+            ? m.pubkey 
+            : new PublicKey(String(m?.pubkey));
+          const s = (pk && typeof pk.toBase58 === 'function') ? pk.toBase58() : undefined;
+          if (s && !existing.has(s)) {
+            (ix as any).keys.push({ pubkey: pk, isWritable: !!m?.isWritable, isSigner: !!m?.isSigner });
+            existing.add(s);
+            injected += 1;
+          }
+        } catch (e: any) {
+          try { logger.debug('meteora.dlmm.inject.meta.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
+        }
+      }
+      
+      if (injected > 0) {
+        try { logger.info('meteora.dlmm.remaining.inject', { cat: 'tx', ctx: { added: injected } as any }); } catch {}
+      }
+      return injected;
+    }
+  } catch (e: any) {
+    try { logger.warn('meteora.dlmm.inject.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
+  }
+  return 0;
+}
+
 function resolveRaydiumAmmVersion(programIdStr?: string): 4 | 5 {
   try {
     const pid = sanitizeKeyString(programIdStr);
@@ -53,8 +147,12 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
   try {
     const connection = getConnection();
     const kp = await ensureWallet(CONFIG.walletPath);
-    const { createSolanaRpc } = await import('@solana/kit');
-    const { swapInstructions, setWhirlpoolsConfig, setNativeMintWrappingStrategy, setPayerFromBytes } = await import('@orca-so/whirlpools');
+    const poolAddr = String(hop.poolId);
+    const inputMint = String(hop.inputMint);
+    
+    // Pre-build validation: amounts
+    validateHopAmounts(hop, { dex: 'orca', variant: 'clmm', poolId: hop.poolId });
+    
     // Precheck: ensure pool contains input mint to avoid zero-out quotes
     try {
       const sdkAny: any = await import('@orca-so/whirlpools-sdk').catch(() => null);
@@ -71,89 +169,128 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
           try { logger.info('orca.whirlpool.pool.tokens', { cat: 'tx', ctx: { pool: String(hop.poolId), mintA, mintB, inputMint: inMint } }); } catch {}
           if (inMint !== mintA && inMint !== mintB) {
             try { logger.warn('orca.whirlpool.input_mint_mismatch', { cat: 'tx', ctx: { pool: String(hop.poolId), inputMint: inMint, mintA, mintB } }); } catch {}
-            throw new Error('ORCA_WRONG_INPUT_MINT_FOR_POOL');
+            throw createBuilderError('ORCA', 'input mint does not match pool tokens', hop);
           }
         }
       }
     } catch (preErr) {
-      throw preErr;
+      if (preErr instanceof Error && preErr.message.includes('ORCA_BUILD_FAILED')) {
+        throw preErr;
+      }
+      // Log but continue - pool validation is best-effort
+      try { logger.warn('orca.whirlpool.pool.precheck.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String((preErr as any)?.message || preErr) } }); } catch {}
     }
+    
+    // Use context-based SDK approach instead of global state
     try {
-      const rpc = createSolanaRpc(CONFIG.rpcUrl);
-      await setPayerFromBytes(kp.secretKey);
-      await setWhirlpoolsConfig('solanaMainnet');
-      setNativeMintWrappingStrategy('ata');
-      const poolAddr = String(hop.poolId);
-      const inputMint = String(hop.inputMint);
-      const bps = computeSlippageBps(hop.amountInRaw, hop.minOutRaw);
-      try { logger.info('orca.whirlpool.program', { cat: 'tx', ctx: { programId: 'whirlpool(high-level)' } as any }); } catch {}
-      try { logger.info('orca.whirlpool.ctx.ok', { cat: 'tx' }); } catch {}
-      try { logger.info('orca.whirlpool.client.ok', { cat: 'tx' }); } catch {}
-      try { logger.info('orca.whirlpool.pool.prepare', { cat: 'tx', ctx: { pool: poolAddr } as any }); } catch {}
-      try { logger.info('orca.whirlpool.slippage', { cat: 'tx', ctx: { amountInRaw: String(hop.amountInRaw ?? 0n), minOutRaw: String(hop.minOutRaw ?? 0n), bps } as any }); } catch {}
-      try { logger.info('orca.whirlpool.input', { cat: 'tx', ctx: { inputMint, amountIn: String(hop.amountInRaw ?? 0n) } as any }); } catch {}
-      const res: any = await swapInstructions(
-        rpc as any,
-        { inputAmount: BigInt(String(hop.amountInRaw ?? 0n)), mint: inputMint } as any,
-        poolAddr,
-        bps
+      const { WhirlpoolContext, buildWhirlpoolClient, swapQuoteByInputToken } = await import('@orca-so/whirlpools-sdk');
+      const { Percentage } = await import('@orca-so/common-sdk');
+      const { PublicKey } = await import('@solana/web3.js');
+      const BN = (await import('bn.js')).default as any;
+      
+      const programId = new PublicKey((CONFIG as any).orca.programId);
+      
+      // Create context per operation (no global state)
+      const ctx = (WhirlpoolContext as any).from(connection, { publicKey: kp.publicKey }, programId);
+      const client = (buildWhirlpoolClient as any)(ctx);
+      const pool = await client.getPool(new PublicKey(poolAddr));
+      
+      // Calculate slippage from minOutRaw directly
+      // If minOutRaw is provided, calculate slippage BPS from it
+      // Otherwise use default 1% (100 bps)
+      let slippageBps = 100; // Default 1%
+      if (hop.minOutRaw && hop.minOutRaw > 0n && hop.amountInRaw && hop.amountInRaw > 0n) {
+        const ratio = Number(hop.minOutRaw) / Number(hop.amountInRaw);
+        slippageBps = Math.max(0, Math.min(9900, Math.round((1 - ratio) * 10000)));
+      }
+      
+      const slippage = (Percentage as any).fromFraction(slippageBps, 10_000);
+      const amountInBn = new BN(String(hop.amountInRaw ?? 0n));
+      
+      try { logger.info('orca.whirlpool.quote', { cat: 'tx', ctx: { pool: poolAddr, inputMint, amountIn: String(hop.amountInRaw ?? 0n), slippageBps } }); } catch {}
+      
+      // Primary path: use swapQuoteByInputToken
+      const quote = await (swapQuoteByInputToken as any)(
+        pool,
+        new PublicKey(inputMint),
+        amountInBn,
+        slippage,
+        ctx.program.programId,
+        ctx.fetcher,
+        true
       );
-      try { logger.info('orca.whirlpool.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: String((res as any)?.quote?.estimatedAmountOut ?? 0) } as any }); } catch {}
+      
+      if (!quote) {
+        throw createBuilderError('ORCA', 'quote returned null', hop);
+      }
+      
+      const estimatedOut = BigInt((quote as any)?.otherAmount ?? (quote as any)?.estimatedAmountOut ?? 0);
+      
       // Guard: trade not enabled yet
-      try {
-        const tradeTs: any = (res as any)?.tradeEnableTimestamp;
-        if (typeof tradeTs === 'bigint') {
-          const nowSec = BigInt(Math.floor(Date.now() / 1000));
-          try { logger.info('orca.whirlpool.trade.ts', { cat: 'tx', ctx: { tradeEnableTimestamp: tradeTs.toString() } as any }); } catch {}
-          if (tradeTs > nowSec) throw new Error(`ORCA_TRADE_DISABLED: enabled_at=${tradeTs.toString()}`);
+      const tradeTs: any = (quote as any)?.tradeEnableTimestamp;
+      if (typeof tradeTs === 'bigint') {
+        const nowSec = BigInt(Math.floor(Date.now() / 1000));
+        try { logger.info('orca.whirlpool.trade.ts', { cat: 'tx', ctx: { tradeEnableTimestamp: tradeTs.toString() } as any }); } catch {}
+        if (tradeTs > nowSec) {
+          throw createBuilderError('ORCA', `trade disabled until ${tradeTs.toString()}`, hop);
         }
-      } catch (guardErr) { throw guardErr; }
+      }
+      
       // Guard: zero estimated out
-      try {
-        const estOut = BigInt(String((res as any)?.quote?.estimatedAmountOut ?? 0));
-        if (estOut === 0n) {
-          // Fallback 1: reuse our resolver's quote to confirm zero vs SDK-wrapper quirk
-          try {
-            const { quoteHopOut } = await import('../resolver/quotes.js');
-            const fallbackOut = await quoteHopOut(hop as any, BigInt(String(hop.amountInRaw ?? 0n)));
-            try { logger.info('orca.whirlpool.quote.fallback', { cat: 'tx', ctx: { fallbackOutRaw: String(fallbackOut) } as any }); } catch {}
-            if (fallbackOut > 0n) {
-              // proceed trusting instructions; do not throw
-            } else {
-              // Fallback 2: call whirlpools-sdk directly with BN amount (avoids eq errors)
-              try {
-                const { WhirlpoolContext, buildWhirlpoolClient, swapQuoteByInputToken } = await import('@orca-so/whirlpools-sdk');
-                const { Percentage } = await import('@orca-so/common-sdk');
-                const BN = (await import('bn.js')).default as any;
-                const ctx = (WhirlpoolContext as any).from(getConnection() as any, { publicKey: kp.publicKey } as any, new PublicKey((CONFIG as any).orca.programId));
-                const client = (buildWhirlpoolClient as any)(ctx);
-                const pool = await client.getPool(new PublicKey(poolAddr));
-                const amtBn = new BN(String(hop.amountInRaw ?? 0n));
-                const q2 = await (swapQuoteByInputToken as any)(
-                  pool,
-                  new PublicKey(inputMint),
-                  amtBn,
-                  (Percentage as any).fromFraction(1, 10_000),
-                  ctx.program.programId,
-                  ctx.fetcher,
-                  true
-                );
-                const fb2 = BigInt((q2 as any)?.otherAmount ?? (q2 as any)?.estimatedAmountOut ?? 0);
-                try { logger.info('orca.whirlpool.quote.fallback2', { cat: 'tx', ctx: { fallbackOutRaw: fb2.toString() } as any }); } catch {}
-                if (fb2 === 0n) throw new Error('ORCA_QUOTE_ZERO: no tradable amount');
-              } catch (fb2Err) {
-                try { logger.warn('orca.whirlpool.quote.fallback2.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String((fb2Err as any)?.message || fb2Err) } }); } catch {}
-                throw new Error('ORCA_QUOTE_ZERO: no tradable amount');
-              }
-            }
-          } catch (fallbackErr) {
-            // Do not surface fallback-specific errors; retain original zero-quote semantics
-            try { logger.warn('orca.whirlpool.quote.fallback.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String((fallbackErr as any)?.message || fallbackErr) } }); } catch {}
-            throw new Error('ORCA_QUOTE_ZERO: no tradable amount');
-          }
+      if (estimatedOut === 0n) {
+        throw createBuilderError('ORCA', 'quote returned zero output amount', hop);
+      }
+      
+      try { logger.info('orca.whirlpool.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: estimatedOut.toString() } as any }); } catch {}
+      
+      // Build swap instruction from quote
+      // Try multiple SDK API patterns for building swap instruction
+      let swapIx: any = null;
+      
+      // Pattern 1: pool.swap(quote) - newer SDK versions
+      if (typeof (pool as any).swap === 'function') {
+        try {
+          swapIx = await (pool as any).swap(quote);
+        } catch (e: any) {
+          try { logger.warn('orca.whirlpool.swap.method.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
         }
-      } catch (guardErr) { throw guardErr; }
-      const rawIxs = Array.isArray((res as any)?.instructions) ? (res as any).instructions : [];
+      }
+      
+      // Pattern 2: pool.swapIx(quote) - alternative pattern
+      if (!swapIx && typeof (pool as any).swapIx === 'function') {
+        try {
+          swapIx = await (pool as any).swapIx(quote);
+        } catch (e: any) {
+          try { logger.warn('orca.whirlpool.swapIx.method.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
+        }
+      }
+      
+      // Pattern 3: buildSwapInstruction from SDK - explicit builder
+      if (!swapIx) {
+        try {
+          const { buildSwapInstruction } = await import('@orca-so/whirlpools-sdk');
+          if (typeof buildSwapInstruction === 'function') {
+            swapIx = await (buildSwapInstruction as any)(pool, quote, kp.publicKey);
+          }
+        } catch (e: any) {
+          try { logger.warn('orca.whirlpool.buildSwapInstruction.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
+        }
+      }
+      
+      // Pattern 4: Use quote to build instruction manually via pool methods
+      if (!swapIx && typeof (pool as any).buildSwapInstruction === 'function') {
+        try {
+          swapIx = await (pool as any).buildSwapInstruction(quote);
+        } catch (e: any) {
+          try { logger.warn('orca.whirlpool.buildSwapInstruction.method.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
+        }
+      }
+      
+      if (!swapIx) {
+        throw createBuilderError('ORCA', 'unable to build swap instruction from quote - no compatible SDK method found', hop);
+      }
+      
+      // Normalize instruction format
       const normalizeIx = (ix: any): any => {
         try {
           const programId = ix?.programId || ix?.programAddress || (ix?.program && (ix.program.address || ix.program)) || '';
@@ -169,16 +306,23 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
           return ix;
         }
       };
-      const out = rawIxs.map(normalizeIx);
+      
+      const out = Array.isArray(swapIx) ? swapIx.map(normalizeIx) : [normalizeIx(swapIx)];
       try { logger.info('orca.whirlpool.ix.ready', { cat: 'tx', ctx: { count: Array.isArray(out) ? out.length : 0 } as any }); } catch {}
       return out;
     } catch (inner) {
-      throw inner;
+      // Wrap errors with context
+      if (inner instanceof Error && inner.message.includes('ORCA_BUILD_FAILED')) {
+        logAndThrow(inner);
+      }
+      wrapBuilderError(inner, 'ORCA', 'build failed', hop);
     }
   } catch (e) {
-    try { logger.warn('ix.build orca.clmm err', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
-    // Propagate error so caller can abort rather than sending a broken placeholder
-    throw e;
+    // Wrap outer errors
+    if (e instanceof Error && e.message.includes('ORCA_BUILD_FAILED')) {
+      logAndThrow(e);
+    }
+    wrapBuilderError(e, 'ORCA', 'build failed', hop);
   }
 }
 export function buildMeteoraDlmmSwapIx(hop: DirectHop): any[] {
@@ -188,50 +332,61 @@ export function buildMeteoraDlmmSwapIx(hop: DirectHop): any[] {
 
 export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]> {
   try { logger.debug('ix.build meteora.dlmm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
+  
+  // Pre-build validation: amounts
+  validateHopAmounts(hop, { dex: 'meteora', variant: 'dlmm', poolId: hop.poolId });
+  
   const connection = getConnection();
   const kp = await ensureWallet(CONFIG.walletPath);
   const poolPk = toPublicKey(hop.poolId);
   const programId = toPublicKey(hop.programId as string, (CONFIG as any)?.meteora?.programId);
   try { logger.info('meteora.dlmm.build.start', { cat: 'tx', ctx: { pool: poolPk?.toBase58?.() || String(poolPk), programId: programId?.toBase58?.() || String(programId), amountInRaw: String(hop.amountInRaw ?? 0n), minOutRaw: String(hop.minOutRaw ?? 0n) } as any }); } catch {}
 
-  // 1) Prefer CJS require to load Meteora modules (many ship as CJS)
-  let mod: any = null;
-  try {
-    const m: any = await import('node:module');
-    const createRequire: any = (m && m.createRequire) || (m?.default && m.default.createRequire);
-    const req: any = createRequire ? createRequire(import.meta.url) : undefined;
-    if (req) {
-      const specs = [
-        '@meteora-ag/dlmm',
-        '@meteora-ag/dlmm/ts-client',
-        '@meteora-ag/dlmm-sdk',
-        '@meteora-ag/dlmm-sdk-public',
-        '@meteora-ag/dlmm/dist/index.js',
-        '@meteora-ag/dlmm-sdk/dist/index.js',
-      ];
-      for (const spec of specs) {
-        try { const m2 = req(spec); if (m2) { mod = m2; try { logger.info('meteora.dlmm.require.ok', { cat: 'tx', ctx: { spec, keys: Object.keys(m2 || {}) } }); } catch {}; break; } } catch (e: any) { try { logger.warn('meteora.dlmm.require.fail', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { spec, error: String(e?.message || e) } }); } catch {} }
-      }
-    }
-  } catch {}
-
-  // 2) Fallback: dynamic import
+  // Standardized SDK import: prefer ESM dynamic import, cache module
+  // Module-level cache to avoid repeated imports
+  let mod: any = (buildMeteoraDlmmSwapIxReal as any).__dlmmMod || null;
+  
   if (!mod) {
-    const dyn = (Function('return import')()) as any;
+    // Primary: ESM dynamic import (recommended for modern Node.js)
     const specs = [
       '@meteora-ag/dlmm',
-      '@meteora-ag/dlmm/ts-client',
       '@meteora-ag/dlmm-sdk',
-      '@meteora-ag/dlmm-sdk-public',
-      '@meteora-ag/dlmm/dist/index.js',
-      '@meteora-ag/dlmm-sdk/dist/index.js',
     ];
+    
     for (const spec of specs) {
-      try { const m2 = await dyn(spec); if (m2) { mod = m2; try { logger.info('meteora.dlmm.import.ok', { cat: 'tx', ctx: { spec, keys: Object.keys(m2 || {}) } }); } catch {}; break; } } catch (e: any) { try { logger.warn('meteora.dlmm.import.fail', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { spec, error: String(e?.message || e) } }); } catch {} }
+      try {
+        mod = await import(spec);
+        if (mod) {
+          try { logger.info('meteora.dlmm.import.ok', { cat: 'tx', ctx: { spec, keys: Object.keys(mod || {}) } }); } catch {}
+          // Cache the module
+          (buildMeteoraDlmmSwapIxReal as any).__dlmmMod = mod;
+          break;
+        }
+      } catch (e: any) {
+        try { logger.warn('meteora.dlmm.import.fail', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { spec, error: String(e?.message || e) } }); } catch {}
+      }
+    }
+    
+    // Fallback: try ts-client specifically if main imports failed
+    if (!mod) {
+      try {
+        // Dynamic import may fail if ts-client path doesn't exist - that's ok
+        // @ts-expect-error - ts-client path may not exist, handled by catch
+        mod = await import('@meteora-ag/dlmm/ts-client').catch(() => null);
+        if (mod) {
+          try { logger.info('meteora.dlmm.import.ok', { cat: 'tx', ctx: { spec: '@meteora-ag/dlmm/ts-client' } }); } catch {}
+          (buildMeteoraDlmmSwapIxReal as any).__dlmmMod = mod;
+        }
+      } catch (e: any) {
+        try { logger.warn('meteora.dlmm.import.fail', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { spec: '@meteora-ag/dlmm/ts-client', error: String(e?.message || e) } }); } catch {}
+      }
     }
   }
 
-  if (!mod) { try { logger.warn('meteora.dlmm.import.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: 'ALL_IMPORTS_FAILED' } }); } catch {}; throw new Error('METEORA_DLMM_BUILD_FAILED'); }
+  if (!mod) {
+    try { logger.error('meteora.dlmm.import.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: 'ALL_IMPORTS_FAILED' } }); } catch {}
+    throw createBuilderError('METEORA_DLMM', 'failed to load SDK module', hop);
+  }
 
   // Resolve default export / namespace
   const DLMM: any = (mod && (mod as any).default) ? (mod as any).default : (((mod as any).DLMM) || mod);
@@ -253,57 +408,15 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       const ix = await (DLMM as any).swapIx(connection, kp.publicKey, params);
       if (ix) {
         // Safety net: attempt to attach remaining bin-array metas when using fast-path ix
-        try {
-          let metas: any[] | undefined;
-          try {
-            const getBounds = (DLMM as any)?.getBinArrayLowerUpperBinId;
-            const getMetas = (DLMM as any)?.getBinArrayAccountMetasCoverage;
-            if (getBounds && getMetas) {
-              const bnjs = await import('bn.js').catch(() => null as any);
-              const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
-              const bounds = await getBounds(connection, poolPk).catch(() => null as any);
-              const toNum = (v: any): number => {
-                try { if (v && typeof v.toNumber === 'function') return v.toNumber(); const s = (v && typeof v.toString === 'function') ? v.toString() : String(v); const n = Number(s); return Number.isFinite(n) ? n : NaN; } catch { return NaN; }
-              };
-              const loNum = toNum(bounds?.lowerBinId);
-              const hiNum = toNum(bounds?.upperBinId);
-              if (Number.isFinite(loNum) && Number.isFinite(hiNum) && BN) {
-                metas = getMetas(new BN(String(loNum)), new BN(String(hiNum)), poolPk, programId) || [];
-              }
-            }
-          } catch {}
-          if (!metas || !metas.length) {
-            try {
-              const getCoverage = (DLMM as any)?.getBinArrayKeysCoverage || (DLMM as any)?.getBinArrayAccountMetasCoverage;
-              if (getCoverage) {
-                const cov = await getCoverage(programId, poolPk).catch(() => null as any) || await getCoverage(connection, programId, poolPk).catch(() => null as any) || await getCoverage({ programId, lbPair: poolPk }).catch(() => null as any);
-                metas = (cov && ((cov as any).metas || (cov as any).accountMetas)) || (Array.isArray(cov) ? cov : []);
-              }
-            } catch {}
-          }
-          if (Array.isArray(metas) && metas.length && Array.isArray((ix as any).keys)) {
-            const existing = new Set<string>();
-            try { for (const k of (ix as any).keys as any[]) { const s = (k?.pubkey && typeof k.pubkey.toBase58 === 'function') ? k.pubkey.toBase58() : String(k?.pubkey); if (s) existing.add(s); } } catch {}
-            let injected = 0;
-            for (const m of metas) {
-              try {
-                const pk = (m?.pubkey && typeof m.pubkey.toBase58 === 'function') ? m.pubkey : new (await import('@solana/web3.js')).PublicKey(String(m?.pubkey));
-                const s = (pk && typeof pk.toBase58 === 'function') ? pk.toBase58() : undefined;
-                if (s && !existing.has(s)) {
-                  (ix as any).keys.push({ pubkey: pk, isWritable: !!m?.isWritable, isSigner: !!m?.isSigner });
-                  existing.add(s);
-                  injected += 1;
-                }
-              } catch {}
-            }
-            if (injected > 0) { try { logger.info('meteora.dlmm.remaining.inject', { cat: 'tx', ctx: { added: injected } as any }); } catch {} }
-          }
-        } catch {}
+        await injectBinArrayMetas(ix, DLMM, connection, poolPk, programId);
         try { logger.info('meteora.dlmm.swapIx.ok', { cat: 'tx' }); } catch {}
         return [ix];
       }
     }
-  } catch (e: any) { try { logger.warn('meteora.dlmm.swapIx.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {} }
+  } catch (e: any) {
+    try { logger.warn('meteora.dlmm.swapIx.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
+    // Continue to fallback path
+  }
 
   // 4) ts-client fallback: Anchor program path
   try {
@@ -338,7 +451,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         if (Number.isFinite(hiNum)) { try { const hi = await deriveBinArray(programId, poolPk, hiNum); binArrayUpper = (hi as any)?.publicKey || hi || binArrayUpper; } catch {} }
       }
       try {
-        // Robustly attempt to derive the bitmap extension PDA across SDK variants
+        // Derive bitmap extension PDA - reduced to essential attempts only
         const coercePk = (val: any): PublicKey | undefined => {
           try {
             if (!val) return undefined;
@@ -347,26 +460,23 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
             if ((val as any)?.address instanceof PublicKey) return (val as any).address as PublicKey;
             if (typeof (val as any)?.toBase58 === 'function') return val as PublicKey;
             if (typeof val === 'string') return new PublicKey(val);
-            if (Array.isArray(val) && val.length && (val[0] instanceof PublicKey)) return val[0] as PublicKey;
             if ((val as any)?.publicKey && typeof (val as any).publicKey === 'string') return new PublicKey((val as any).publicKey);
             if ((val as any)?.address && typeof (val as any).address === 'string') return new PublicKey((val as any).address);
-          } catch {}
+          } catch (e: any) {
+            try { logger.debug('meteora.dlmm.coercePk.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
+          }
           return undefined;
         };
+        
+        // Essential attempts only (reduced from 10+ to 3)
         const attempts: Array<() => Promise<any>> = [];
+        
+        // Attempt 1: Most common pattern - deriveBinArrayBitmapExtension(programId, poolPk)
         if (deriveBinArrayBitmapExtension) {
           attempts.push(() => deriveBinArrayBitmapExtension(programId, poolPk));
-          attempts.push(() => deriveBinArrayBitmapExtension(poolPk, programId));
-          attempts.push(() => deriveBinArrayBitmapExtension(programId.toBase58?.() || String(programId), poolPk));
-          attempts.push(() => deriveBinArrayBitmapExtension(poolPk, programId.toBase58?.() || String(programId)));
-          attempts.push(() => deriveBinArrayBitmapExtension(program, poolPk));
-          attempts.push(() => deriveBinArrayBitmapExtension(connection, programId, poolPk));
-          attempts.push(() => deriveBinArrayBitmapExtension(connection, poolPk, programId));
-          attempts.push(() => deriveBinArrayBitmapExtension({ programId, lbPair: poolPk }));
-          attempts.push(() => deriveBinArrayBitmapExtension({ program, lbPair: poolPk }));
-          attempts.push(() => deriveBinArrayBitmapExtension({ connection, programId, lbPair: poolPk }));
         }
-        // Fallbacks via coverage helpers, if available
+        
+        // Attempt 2: Coverage helper - getBinArrayKeysCoverage
         const getKeysCoverage = (DLMM as any)?.getBinArrayKeysCoverage || (DLMM as any)?.getBinArrayAccountMetasCoverage;
         if (getKeysCoverage) {
           attempts.push(async () => {
@@ -378,73 +488,44 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
             const found = metas.find((m: any) => (m?.name === 'binArrayBitmapExtension') && (m?.pubkey || m?.publicKey || m?.address));
             return found?.pubkey || found?.publicKey || found?.address;
           });
-          attempts.push(async () => {
-            const res = await getKeysCoverage(connection, programId, poolPk);
-            if (!res) return undefined;
-            if ((res as any)?.binArrayBitmapExtension) return (res as any).binArrayBitmapExtension;
-            if ((res as any)?.accounts?.binArrayBitmapExtension) return (res as any).accounts.binArrayBitmapExtension;
-            const metas: any[] = (res as any)?.metas || (res as any)?.accountMetas || [];
-            const found = metas.find((m: any) => (m?.name === 'binArrayBitmapExtension') && (m?.pubkey || m?.publicKey || m?.address));
-            return found?.pubkey || found?.publicKey || found?.address;
-          });
-          attempts.push(async () => {
-            const res = await getKeysCoverage({ programId, lbPair: poolPk });
-            if (!res) return undefined;
-            return (res as any)?.binArrayBitmapExtension || (res as any)?.accounts?.binArrayBitmapExtension;
-          });
-          attempts.push(async () => {
-            const res = await getKeysCoverage({ connection, programId, lbPair: poolPk });
-            if (!res) return undefined;
-            return (res as any)?.binArrayBitmapExtension || (res as any)?.accounts?.binArrayBitmapExtension;
-          });
         }
-        const chunkFetch = (DLMM as any)?.chunkedFetchMultipleBinArrayBitmapExtensionAccount;
-        if (chunkFetch) {
-          attempts.push(async () => {
-            const arr = await chunkFetch(connection, programId, [poolPk]);
-            const first = Array.isArray(arr) ? arr[0] : undefined;
-            return first?.publicKey || first?.address || first;
-          });
-          attempts.push(async () => {
-            const arr = await chunkFetch(programId, [poolPk]);
-            const first = Array.isArray(arr) ? arr[0] : undefined;
-            return first?.publicKey || first?.address || first;
-          });
-          attempts.push(async () => {
-            const arr = await chunkFetch({ connection, programId, lbPairs: [poolPk] });
-            const first = Array.isArray(arr) ? arr[0] : undefined;
-            return first?.publicKey || first?.address || first;
-          });
-        }
+        
+        // Attempt 3: Last resort - compute PDA via common seed
+        attempts.push(async () => {
+          try {
+            const seedCandidates = ['bin_array_bitmap_extension', 'binarray_bitmap_extension'];
+            for (const seed of seedCandidates) {
+              try {
+                const [addr] = await (PublicKey as any).findProgramAddress([
+                  Buffer.from(seed),
+                  poolPk.toBuffer(),
+                ], programId);
+                if (addr) return addr;
+              } catch (e: any) {
+                try { logger.debug('meteora.dlmm.pda.failed', { cat: 'tx', ctx: { seed, error: String(e?.message || e) } }); } catch {}
+              }
+            }
+          } catch {}
+          return undefined;
+        });
+        
         for (const fn of attempts) {
           try {
             const val = await fn();
             const pk = coercePk(val);
-            if (pk) { binArrayBitmapExtension = pk; break; }
-          } catch {}
-        }
-        // Last resort: compute PDA via common seed candidates
-        if (!binArrayBitmapExtension) {
-          try {
-            const seedCandidates = [
-              'bin_array_bitmap_extension',
-              'binarray_bitmap_extension',
-              'bin_array_bitmap_ext',
-              'binarray_bitmap_ext',
-            ];
-            for (const s of seedCandidates) {
-              try {
-                const [addr] = await (PublicKey as any).findProgramAddress([
-                  Buffer.from(s),
-                  poolPk.toBuffer(),
-                ], programId);
-                if (addr) { binArrayBitmapExtension = addr; break; }
-              } catch {}
+            if (pk) {
+              binArrayBitmapExtension = pk;
+              try { logger.info('meteora.dlmm.derive.ext.ok', { cat: 'tx', ctx: { ext: binArrayBitmapExtension?.toBase58?.() } as any }); } catch {}
+              break;
             }
-          } catch {}
+          } catch (e: any) {
+            try { logger.debug('meteora.dlmm.bitmap.attempt.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
+          }
         }
-        if (binArrayBitmapExtension) { try { logger.info('meteora.dlmm.derive.ext.ok', { cat: 'tx', ctx: { ext: binArrayBitmapExtension?.toBase58?.() } as any }); } catch {} }
-      } catch {}
+      } catch (e: any) {
+        try { logger.warn('meteora.dlmm.bitmap.derive.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
+        // Continue without bitmap extension - it may be optional
+      }
     } catch {}
 
     const BN = (await import('bn.js')).default as any;
@@ -619,69 +700,75 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
 
     // Supply remaining accounts for bin arrays using documented helpers (applies to swap and swap2)
     try {
-      let added = false;
-      let binMetas: any[] | undefined = undefined;
-      try {
-        const getBounds = (DLMM as any)?.getBinArrayLowerUpperBinId;
-        const getMetas = (DLMM as any)?.getBinArrayAccountMetasCoverage;
-        if (getBounds && getMetas) {
+      const getBounds = (DLMM as any)?.getBinArrayLowerUpperBinId;
+      const getMetas = (DLMM as any)?.getBinArrayAccountMetasCoverage;
+      if (getBounds && getMetas && typeof (builder as any).remainingAccounts === 'function') {
+        try {
           const bnjs = await import('bn.js').catch(() => null as any);
           const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
           const bounds = await getBounds(connection, poolPk).catch(() => null as any);
           const toNum = (v: any): number => {
-            try { if (v && typeof v.toNumber === 'function') return v.toNumber(); const s = (v && typeof v.toString === 'function') ? v.toString() : String(v); const n = Number(s); return Number.isFinite(n) ? n : NaN; } catch { return NaN; }
+            try {
+              if (v && typeof v.toNumber === 'function') return v.toNumber();
+              const s = (v && typeof v.toString === 'function') ? v.toString() : String(v);
+              const n = Number(s);
+              return Number.isFinite(n) ? n : NaN;
+            } catch {
+              return NaN;
+            }
           };
           const loNum = toNum(bounds?.lowerBinId);
           const hiNum = toNum(bounds?.upperBinId);
-          if (Number.isFinite(loNum) && Number.isFinite(hiNum) && BN && typeof (builder as any).remainingAccounts === 'function') {
+          if (Number.isFinite(loNum) && Number.isFinite(hiNum) && BN) {
             const metas = getMetas(new BN(String(loNum)), new BN(String(hiNum)), poolPk, programId) || [];
-            if (Array.isArray(metas) && metas.length) { builder = (builder as any).remainingAccounts(metas); added = true; binMetas = metas; }
+            if (Array.isArray(metas) && metas.length) {
+              builder = (builder as any).remainingAccounts(metas);
+              try { logger.info('meteora.dlmm.remaining.ok', { cat: 'tx', ctx: { count: metas.length } }); } catch {}
+            }
           }
+        } catch (e: any) {
+          try { logger.debug('meteora.dlmm.remaining.bounds.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
         }
-      } catch {}
+      }
+      
       // Fallback: try generic keys coverage without explicit bounds
-      if (!added) {
+      if (typeof (builder as any).remainingAccounts === 'function') {
         try {
           const getCoverage = (DLMM as any)?.getBinArrayKeysCoverage || (DLMM as any)?.getBinArrayAccountMetasCoverage;
-          if (getCoverage && typeof (builder as any).remainingAccounts === 'function') {
-            const cov = await getCoverage(programId, poolPk).catch(() => null as any) || await getCoverage(connection, programId, poolPk).catch(() => null as any) || await getCoverage({ programId, lbPair: poolPk }).catch(() => null as any);
+          if (getCoverage) {
+            const cov = await getCoverage(programId, poolPk).catch(() => null as any) 
+              || await getCoverage(connection, programId, poolPk).catch(() => null as any) 
+              || await getCoverage({ programId, lbPair: poolPk }).catch(() => null as any);
             const metas = (cov && ((cov as any).metas || (cov as any).accountMetas)) || (Array.isArray(cov) ? cov : []);
-            if (Array.isArray(metas) && metas.length) { builder = (builder as any).remainingAccounts(metas); added = true; binMetas = metas; }
-          }
-        } catch {}
-      }
-      try { if (added) { logger.info('meteora.dlmm.remaining.ok', { cat: 'tx' }); } } catch {}
-      (builder as any).__binMetas = binMetas;
-    } catch {}
-    const ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
-    // Safety net: inject bin metas into instruction if builder.remainingAccounts did not attach them
-    try {
-      const metas: any[] | undefined = (builder as any).__binMetas;
-      if (ix && Array.isArray(metas) && metas.length && Array.isArray((ix as any).keys)) {
-        const existing = new Set<string>();
-        try { for (const k of (ix as any).keys as any[]) { const s = (k?.pubkey && typeof k.pubkey.toBase58 === 'function') ? k.pubkey.toBase58() : String(k?.pubkey); if (s) existing.add(s); } } catch {}
-        let injected = 0;
-        for (const m of metas) {
-          try {
-            const pk = (m?.pubkey && typeof m.pubkey.toBase58 === 'function') ? m.pubkey : new (await import('@solana/web3.js')).PublicKey(String(m?.pubkey));
-            const s = (pk && typeof pk.toBase58 === 'function') ? pk.toBase58() : undefined;
-            if (s && !existing.has(s)) {
-              (ix as any).keys.push({ pubkey: pk, isWritable: !!m?.isWritable, isSigner: !!m?.isSigner });
-              existing.add(s);
-              injected += 1;
+            if (Array.isArray(metas) && metas.length) {
+              builder = (builder as any).remainingAccounts(metas);
+              try { logger.info('meteora.dlmm.remaining.ok', { cat: 'tx', ctx: { count: metas.length } }); } catch {}
             }
-          } catch {}
+          }
+        } catch (e: any) {
+          try { logger.debug('meteora.dlmm.remaining.coverage.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
         }
-        if (injected > 0) { try { logger.info('meteora.dlmm.remaining.inject', { cat: 'tx', ctx: { added: injected } as any }); } catch {} }
       }
-    } catch {}
-    if (ix) { try { logger.info('meteora.dlmm.swap.ok', { cat: 'tx' }); } catch {}; return [...setupIxs, ix]; }
+    } catch (e: any) {
+      try { logger.warn('meteora.dlmm.remaining.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
+    }
+    
+    const ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
+    
+    // Safety net: inject bin metas into instruction if builder.remainingAccounts did not attach them
+    if (ix) {
+      await injectBinArrayMetas(ix, DLMM, connection, poolPk, programId);
+      try { logger.info('meteora.dlmm.swap.ok', { cat: 'tx' }); } catch {}
+      return [...setupIxs, ix];
+    }
+    
     try { logger.warn('meteora.dlmm.tsclient.swap.empty', { cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
   } catch (e: any) {
     try { logger.warn('meteora.dlmm.tsclient.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
   }
 
-  throw new Error('METEORA_DLMM_BUILD_FAILED');
+  // Wrap final error with context
+  wrapBuilderError(new Error('METEORA_DLMM_BUILD_FAILED'), 'METEORA_DLMM', 'build failed', hop);
 }
 
 export function maybeCreateAtas(hop: DirectHop, create: boolean): any[] {
@@ -756,7 +843,13 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     const kp = await ensureWallet(CONFIG.walletPath);
     const poolId = toPublicKey(hop.poolId);
     const programId = toPublicKey(hop.programId, (CONFIG.raydium?.clmmProgram as any));
-    const observationId = toPublicKey((CONFIG.raydium as any)?.clmmObservationId || PublicKey.default.toBase58());
+    
+    // Validate required config values - no unsafe fallbacks
+    const observationIdConfig = (CONFIG.raydium as any)?.clmmObservationId;
+    if (!observationIdConfig) {
+      throw createBuilderError('RAYDIUM_CLMM', 'clmmObservationId required in CONFIG.raydium.clmmObservationId', hop);
+    }
+    const observationId = toPublicKey(observationIdConfig);
 
     const ownerInfo = {
       wallet: kp.publicKey,
@@ -766,13 +859,21 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
 
     // Minimal poolInfo/poolKeys for swapBaseIn; for real use, prefer full keys via SDK helper if available in version
     const poolInfo = { id: poolId, programId, mintA: toPublicKey(hop.inputMint), mintB: toPublicKey(hop.outputMint), config: {} } as any;
+    
+    // Validate authority config - no unsafe fallback
+    const authorityConfig = (CONFIG.raydium as any)?.clmmAuthority;
+    if (!authorityConfig) {
+      throw createBuilderError('RAYDIUM_CLMM', 'clmmAuthority required in CONFIG.raydium.clmmAuthority', hop);
+    }
+    const authority = toPublicKey(authorityConfig);
+    
     const poolKeys: any = {
       id: poolId,
       programId,
       mintA: toPublicKey(hop.inputMint),
       mintB: toPublicKey(hop.outputMint),
       vault: { A: toPublicKey(hop.vaultA as any), B: toPublicKey(hop.vaultB as any) },
-      authority: toPublicKey((CONFIG.raydium as any)?.clmmAuthority || PublicKey.default.toBase58()),
+      authority,
       observationId,
     };
     try { if (hop.tickArrayLower) (poolKeys as any).tickArrayLower = toPublicKey(hop.tickArrayLower); } catch {}
@@ -794,9 +895,13 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     const ixs = Array.isArray(res?.instructions) ? res.instructions : (res?.innerTransaction ? res.innerTransaction.instructions : []);
     if (ixs && ixs.length) return ixs as any[];
   } catch (e) {
-    try { logger.warn('ix.build raydium.clmm.real fallback', { error: String((e as any)?.message || e), cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
+    // If error is already a builder error, preserve it
+    if (e instanceof Error && e.message.includes('RAYDIUM_CLMM_BUILD_FAILED')) {
+      logAndThrow(e);
+    }
+    // Otherwise wrap it with context
+    wrapBuilderError(e, 'RAYDIUM_CLMM', 'build failed', hop);
   }
-  throw new Error('RAYDIUM_CLMM_BUILD_FAILED');
 }
 
 export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> {
@@ -1003,8 +1108,8 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
         (poolKeys as any)?.authority,
       ].some(isBadPk);
       if (stillBad) {
+        const toStr = (v: any) => (v && typeof v.toBase58 === 'function') ? v.toBase58() : String(v || '');
         try {
-          const toStr = (v: any) => (v && typeof v.toBase58 === 'function') ? v.toBase58() : String(v || '');
           logger.warn('raydium.amm.keys.invalid', { cat: 'tx', ctx: {
             id: toStr((poolKeys as any)?.id || hop.poolId),
             programId: toStr((poolKeys as any)?.programId || ammProgramId),
