@@ -43,7 +43,7 @@ export async function getTxHistory(limit = 50): Promise<TxRecord[]> {
 // Check and update transaction confirmation status
 export async function checkTxConfirmation(signature: string): Promise<{ confirmed: boolean; success?: boolean; slot?: number; error?: string }> {
   try {
-    const { getConnection } = await import('../utils/rpc.js');
+    const { getConnection } = await import('../wallet/wallet.js');
     const connection = getConnection();
     const status = await connection.getSignatureStatus(signature, { searchTransactionHistory: true });
     if (!status) return { confirmed: false };
