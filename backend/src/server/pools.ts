@@ -632,8 +632,8 @@ export function startRaydiumRefreshLoop(): void {
                     const inc = !!((CONFIG.system as any)?.graphIncrementalMode);
                     const gmod: any = await import('./graph.js');
                     const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
-                    if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
-                      await gmod.applyPoolUpdates(prev as any, next, { pushToArb: true });
+                    if (inc && hasDelta) {
+                      await scheduleDexApply('raydium', prev as any);
                     } else {
                       const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
                       const delta = d.clmm.length;
@@ -682,8 +682,8 @@ export function startRaydiumRefreshLoop(): void {
                           const inc = !!((CONFIG.system as any)?.graphIncrementalMode);
                           const gmod: any = await import('./graph.js');
                           const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
-                          if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
-                            await gmod.applyPoolUpdates(prev as any, next, { pushToArb: true });
+                          if (inc && hasDelta) {
+                            await scheduleDexApply('raydium', prev as any);
                           } else {
                             const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
                             const delta = d.amm.length;
@@ -754,8 +754,7 @@ export function startRaydiumRefreshLoop(): void {
                     const gmod: any = await import('./graph.js');
                     const prevSnap = orcaCache.data ? prev : { amm: [], clmm: [] };
                     if (inc && (d.clmm.length || d.amm.length || d.addedClmm || d.removedClmm || d.addedAmm || d.removedAmm)) {
-                      // Push diffs immediately so arb-rs uses latest on next loop
-                      await gmod.applyPoolUpdates(prevSnap as any, next, { pushToArb: true });
+                      await scheduleDexApply('orca', prevSnap as any);
                     } else {
                       const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
                       const delta = d.amm.length + d.clmm.length + d.addedAmm + d.addedClmm + d.removedAmm + d.removedClmm;
@@ -903,8 +902,8 @@ export function startRaydiumRefreshLoop(): void {
                     try {
                       const gmod: any = await import('./graph.js');
                       const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
-                      if (hasDelta && typeof gmod.applyPoolUpdates === 'function') {
-                        await gmod.applyPoolUpdates(prev as any, next as any, { pushToArb: true });
+                      if (hasDelta) {
+                        await scheduleDexApply('meteora', prev as any);
                       }
                     } catch {}
                     updated = true;
@@ -1000,6 +999,35 @@ export function startRaydiumRefreshLoop(): void {
             }
           }
         };
+        // Debounced per-DEX apply: coalesce multiple WS updates into a single apply+push
+        const wsApply: Record<'raydium'|'orca'|'meteora', { timer: NodeJS.Timeout | null; baseline: any | null }> = {
+          raydium: { timer: null, baseline: null },
+          orca: { timer: null, baseline: null },
+          meteora: { timer: null, baseline: null },
+        };
+        const WS_APPLY_DEBOUNCE_MS = Math.max(10, Number(((CONFIG.system as any)?.wsApplyDebounceMs) || 75));
+        const getCurrentCache = (dex: 'raydium'|'orca'|'meteora'): any => {
+          if (dex === 'raydium') return raydiumCache.data || { amm: [], clmm: [] };
+          if (dex === 'orca') return orcaCache.data || { amm: [], clmm: [] };
+          return meteoraCache.data || { amm: [], clmm: [] };
+        };
+        async function scheduleDexApply(dex: 'raydium'|'orca'|'meteora', baseline: any): Promise<void> {
+          try {
+            if (!wsApply[dex].baseline) wsApply[dex].baseline = baseline;
+            if (wsApply[dex].timer) return;
+            wsApply[dex].timer = setTimeout(async () => {
+              const base = wsApply[dex].baseline; wsApply[dex].baseline = null; wsApply[dex].timer = null;
+              if (!base) return;
+              try {
+                const gmod: any = await import('./graph.js');
+                const cur = getCurrentCache(dex);
+                if (typeof gmod.applyPoolUpdates === 'function') {
+                  await gmod.applyPoolUpdates(base, cur, { pushToArb: true });
+                }
+              } catch {}
+            }, WS_APPLY_DEBOUNCE_MS);
+          } catch {}
+        }
         // Helper: attach Raydium AMM vault (token) accounts for a given AMM pool address
         const attachRaydiumAmmVaults = async (poolAddr: string) => {
           try {

@@ -125,6 +125,12 @@ let arbDiffWaiters: Array<{ resolve: () => void; reject: (e: any) => void }> = [
 const getDiffCoalesceMs = (): number => {
   try { const v = Number(((globalThis as any)?.process?.env?.ARB_DIFF_COALESCE_MS) || 50); return Number.isFinite(v) ? Math.max(0, v) : 0; } catch { return 0; }
 };
+// Detect-driven push dirty/guard and debounce
+let detectDirty = false;
+let ddPushTimer: NodeJS.Timeout | null = null;
+const getDetectDrivenPushCoalesceMs = (): number => {
+  try { const v = Number(((globalThis as any)?.process?.env?.DETECT_DRIVEN_PUSH_COALESCE_MS) || 75); return Number.isFinite(v) ? Math.max(0, v) : 0; } catch { return 0; }
+};
 function mergeArraysUnique<T>(a: T[] | undefined, b: T[] | undefined, keyFn?: (x: T) => string): T[] {
   const out: T[] = [];
   const seen = new Set<string>();
@@ -273,6 +279,8 @@ export async function pushArbGraphDiff(diff: any): Promise<void> {
   return new Promise((resolve, reject) => {
     // Suppress until explicitly enabled
     try { if (!arbStreamEnabled) { logger.debug('arb.push gated', { kind: 'diff' }); resolve(); return; } } catch {}
+    // Mark dirty so detect-driven coalesced push can run after the next detection
+    try { detectDirty = true; } catch {}
     const coalesceMs = getDiffCoalesceMs();
     if (coalesceMs > 0) {
       try { arbDiffBuffer = coalesceDiff(arbDiffBuffer, diff); } catch { arbDiffBuffer = diff; }
@@ -345,13 +353,20 @@ export function startDetectDrivenGraphPush(debounceMs = 0): void {
           lastDetectSeen = Number(m.last_detection_ms || 0);
           try { logger.info('graph.rebuild.detect_driven', { last_detection_ms: lastDetectSeen, code: 'GRAPH.REBUILD.DETECT_DRIVEN' }); } catch {}
           try {
+            // Only push after detection when we actually saw diffs since last detection
+            if (!detectDirty) { return; }
             const gmod: any = await import('./graph.js');
-            // Rebuild the graph and push to arb-rs upon detect completion
-            if (typeof gmod.rebuildGraphNow === 'function') {
-              await gmod.rebuildGraphNow(undefined, { pushToArb: true });
-            } else {
-              gmod.scheduleGraphRebuild(undefined, Math.max(0, debounceMs));
-            }
+            const wait = getDetectDrivenPushCoalesceMs();
+            if (ddPushTimer) { clearTimeout(ddPushTimer); ddPushTimer = null; }
+            ddPushTimer = setTimeout(async () => {
+              ddPushTimer = null;
+              try { detectDirty = false; } catch {}
+              if (typeof gmod.rebuildGraphNow === 'function') {
+                await gmod.rebuildGraphNow(undefined, { pushToArb: true });
+              } else {
+                gmod.scheduleGraphRebuild(undefined, Math.max(0, debounceMs));
+              }
+            }, wait);
           } catch {}
         }
       } catch {}
