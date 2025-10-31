@@ -936,13 +936,21 @@ export function startRaydiumRefreshLoop(): void {
           // Probe internal readyState if available to avoid subscribing during CLOSING/CLOSED
           const waitUntilWsReady = async () => {
             try {
-              const ws = (conn as any)?._rpcWebSocket?._ws;
-              let rs = Number(ws?.readyState);
-              // 0 CONNECTING, 1 OPEN, 2 CLOSING, 3 CLOSED
               const deadline = Date.now() + Math.max(500, Number(((CONFIG.system as any)?.wsReadyWaitMs) || 3000));
-              while (ws && (rs === 2 || rs === 3) && Date.now() < deadline) {
+              for (;;) {
+                let ws = (conn as any)?._rpcWebSocket?._ws;
+                let rs = Number(ws?.readyState);
+                // 0 CONNECTING, 1 OPEN, 2 CLOSING, 3 CLOSED
+                if (!ws || rs === 3) {
+                  try { await (conn as any)?._rpcWebSocket?.connect?.(); } catch {}
+                  // brief delay and re-check
+                  await sleep(100);
+                  ws = (conn as any)?._rpcWebSocket?._ws;
+                  rs = Number(ws?.readyState);
+                }
+                if (rs === 0 || rs === 1) return; // CONNECTING or OPEN is acceptable
+                if (Date.now() >= deadline) return;
                 await sleep(150);
-                rs = Number(ws?.readyState);
               }
             } catch {}
           };
@@ -972,12 +980,19 @@ export function startRaydiumRefreshLoop(): void {
           let attempt = 0;
           const waitUntilWsReady = async () => {
             try {
-              const ws = (conn as any)?._rpcWebSocket?._ws;
-              let rs = Number(ws?.readyState);
               const deadline = Date.now() + Math.max(500, Number(((CONFIG.system as any)?.wsReadyWaitMs) || 3000));
-              while (ws && (rs === 2 || rs === 3) && Date.now() < deadline) {
+              for (;;) {
+                let ws = (conn as any)?._rpcWebSocket?._ws;
+                let rs = Number(ws?.readyState);
+                if (!ws || rs === 3) {
+                  try { await (conn as any)?._rpcWebSocket?.connect?.(); } catch {}
+                  await sleep(100);
+                  ws = (conn as any)?._rpcWebSocket?._ws;
+                  rs = Number(ws?.readyState);
+                }
+                if (rs === 0 || rs === 1) return;
+                if (Date.now() >= deadline) return;
                 await sleep(150);
-                rs = Number(ws?.readyState);
               }
             } catch {}
           };
