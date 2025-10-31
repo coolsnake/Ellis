@@ -656,6 +656,7 @@ async fn main() -> anyhow::Result<()> {
                                     bottleneck: bottleneck_edge.clone(),
                                     detected_ms: Some(now_ts),
                                     first_seen_ms: None,
+                                    last_verified_ms: None,
                                     detections: Some(0),
                                     bf_slack_log: None,
                                     bf_required_rate: None,
@@ -2033,6 +2034,7 @@ mod tests {
             est_capacity: None,
             bottleneck: None,
             detected_ms: Some(last),
+            last_verified_ms: Some(last),
             first_seen_ms: Some(first),
             detections: Some(det),
             bf_slack_log: None,
@@ -2254,12 +2256,11 @@ async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: Head
     let want_version = req.version.unwrap_or(0);
     let timeout_ms = req.timeout_ms.unwrap_or(2500);
     let start = std::time::Instant::now();
-    let mut last_version = 0u64;
     
     // Poll until version is >= want_version or timeout
     loop {
         let s = state.read().await;
-        last_version = s.last_graph_version;
+        let last_version = s.last_graph_version;
         let current_ts = s.last_graph_ts;
         drop(s);
         
@@ -2279,9 +2280,13 @@ async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: Head
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     
+    let final_version = {
+        let s = state.read().await;
+        s.last_graph_version
+    };
     Json(GraphAckResponse { 
         ok: true, 
-        current_version: last_version, 
+        current_version: final_version, 
         current_timestamp: 0, 
         acked: false 
     })
