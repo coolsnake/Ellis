@@ -277,18 +277,35 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
       const reserveB = Number((it as any)?.reserveB ?? NaN);
       const amount_a_whole = Number.isFinite(mintAmountA) ? mintAmountA : (Number.isFinite(reserveA) ? reserveA : undefined);
       const amount_b_whole = Number.isFinite(mintAmountB) ? mintAmountB : (Number.isFinite(reserveB) ? reserveB : undefined);
-      // Raydium CLMM sqrtPriceX64 encoding: same as Orca/Uniswap V3 - sqrt encodes sqrt(B/A) in smallest units
-      // Formula: A-per-1-B = 10^(decB-decA) / (ratio^2), where ratio = sqrt / 2^64
-      // VERIFIED: Raydium uses SAME encoding as Orca CLMM (priceToSqrtPriceX64 in limits.ts is for limits only, not pool encoding)
+      // Raydium CLMM sqrtPriceX64 encoding: Use Raydium SDK's authoritative conversion function
+      // If SDK unavailable, manual decode: sqrtPriceX64 encodes sqrt(A/B) in atomic units
+      // Formula: A-per-1-B = (ratio^2) * 10^(decB-decA), where ratio = sqrt / 2^64
       let price_from_sqrt = 0;
       try {
         if (sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
-          const two64 = Math.pow(2, 64);
-          const ratio = sqrt / two64;
-          // Same formula as Orca: scale = 10^(decB - decA), then A-per-1-B = scale / (ratio^2)
-          const scale = Math.pow(10, (decB as number) - (decA as number));
-          const aPerB = scale / (ratio * ratio);
-          if (Number.isFinite(aPerB) && aPerB > 0) price_from_sqrt = aPerB;
+          // Prefer Raydium SDK's authoritative conversion function
+          try {
+            const rmod: any = await import('@raydium-io/raydium-sdk-v2');
+            const SqrtPriceMath = rmod?.SqrtPriceMath || rmod?.Clmm?.SqrtPriceMath;
+            if (SqrtPriceMath?.sqrtPriceX64ToPrice) {
+              const sqrtBigInt = BigInt(Math.floor(sqrt));
+              const priceFromSdk = SqrtPriceMath.sqrtPriceX64ToPrice(sqrtBigInt, decA, decB);
+              if (priceFromSdk != null && Number(priceFromSdk) > 0 && Number.isFinite(Number(priceFromSdk))) {
+                price_from_sqrt = Number(priceFromSdk);
+              }
+            }
+          } catch {}
+          
+          // Fallback to manual calculation if SDK fails or unavailable
+          if (price_from_sqrt === 0) {
+            const two64 = Math.pow(2, 64);
+            const ratio = sqrt / two64;
+            // Manual decode: sqrtPriceX64 = sqrt(A_atomic/B_atomic) * 2^64
+            // A_per_B (whole) = (ratio^2) * 10^(decB-decA)
+            const scale = Math.pow(10, (decB as number) - (decA as number));
+            const aPerB = (ratio * ratio) * scale;
+            if (Number.isFinite(aPerB) && aPerB > 0) price_from_sqrt = aPerB;
+          }
         }
       } catch {}
       // Choose best price from sqrt-derived vs reserves-derived (decimals-aware)

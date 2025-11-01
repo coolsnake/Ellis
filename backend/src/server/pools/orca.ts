@@ -205,20 +205,16 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
       // Already in bps format
       fee_bps = Math.round(feeBpsNum);
     } else if (typeof feeRateNum === 'number' && Number.isFinite(feeRateNum)) {
-      // Orca API returns feeRate as decimal (0.003 = 0.3%, 0.0004 = 0.04%)
-      // Need to distinguish: 
-      // - Very small values (< 0.01) are decimals → multiply by 10,000
-      // - Values >= 0.01 but <= 1 are percentages → multiply by 100
-      // - Values > 1 are already in bps
-      if (feeRateNum < 0.01) {
-        // Decimal format: 0.0004 = 0.04% → 4 bps
-        fee_bps = Math.round(feeRateNum * 10_000);
-      } else if (feeRateNum <= 1) {
-        // Percentage format: 0.04 = 0.04% → 4 bps
-        fee_bps = Math.round(feeRateNum * 100);
-      } else {
+      // Orca API returns feeRate as decimal percentage (0.0004 = 0.04% = 4 bps)
+      // All decimal values should be multiplied by 10,000 to convert to bps
+      // Only values > 1 are already in bps format
+      if (feeRateNum > 1) {
         // Already in bps format
         fee_bps = Math.round(feeRateNum);
+      } else {
+        // Decimal format: multiply by 10,000 to convert to bps
+        // Examples: 0.0004 = 0.04% → 4 bps, 0.04 = 4% → 400 bps
+        fee_bps = Math.round(feeRateNum * 10_000);
       }
     }
     const poolType = String(it?.type || it?.poolType || '').toLowerCase();

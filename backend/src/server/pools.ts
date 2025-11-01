@@ -162,15 +162,31 @@ export function defaultNormalizeRaydiumPools(raw: any): PoolsPayload {
       const liquidity = Number((it as any)?.liquidity ?? 0);
       const tvl_usd = Number.isFinite(tvl) && tvl > 0 ? tvl : undefined;
       // Derive A per 1 B from sqrt if possible
-      // Raydium CLMM: same encoding as Orca/Uniswap V3 - sqrt encodes sqrt(B/A) in smallest units
-      // Formula: A-per-1-B = 10^(decB-decA) / (ratio^2), where ratio = sqrt / 2^64
+      // Raydium CLMM sqrtPriceX64 encoding: sqrt encodes sqrt(A/B) in atomic units
+      // Formula: A-per-1-B = (ratio^2) * 10^(decB-decA), where ratio = sqrt / 2^64
       let price_from_sqrt = 0;
       if (sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
-        const two64 = Math.pow(2, 64);
-        const ratio = sqrt / two64;
-        const scale = Math.pow(10, (decB as number) - (decA as number));
-        const cand = scale / (ratio * ratio);
-        price_from_sqrt = Number.isFinite(cand) && cand > 0 ? cand : 0;
+        // Try Raydium SDK first if available
+        try {
+          const rmod: any = await import('@raydium-io/raydium-sdk-v2').catch(() => null);
+          const SqrtPriceMath = rmod?.SqrtPriceMath || rmod?.Clmm?.SqrtPriceMath;
+          if (SqrtPriceMath?.sqrtPriceX64ToPrice) {
+            const sqrtBigInt = BigInt(Math.floor(sqrt));
+            const priceFromSdk = SqrtPriceMath.sqrtPriceX64ToPrice(sqrtBigInt, decA, decB);
+            if (priceFromSdk != null && Number(priceFromSdk) > 0 && Number.isFinite(Number(priceFromSdk))) {
+              price_from_sqrt = Number(priceFromSdk);
+            }
+          }
+        } catch {}
+        
+        // Fallback to manual calculation if SDK fails
+        if (price_from_sqrt === 0) {
+          const two64 = Math.pow(2, 64);
+          const ratio = sqrt / two64;
+          const scale = Math.pow(10, (decB as number) - (decA as number));
+          const cand = (ratio * ratio) * scale;
+          price_from_sqrt = Number.isFinite(cand) && cand > 0 ? cand : 0;
+        }
       }
       const px = price_from_sqrt > 0 ? price_from_sqrt : (Number(price) > 0 ? Number(price) : 0);
       clmm.push({ id, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps, sqrt_price_x64: Number.isFinite(sqrt) ? sqrt : 0, liquidity: Number.isFinite(liquidity) ? liquidity : 0, tick_spacing: Number.isFinite(tick) ? tick : 0, updated_ms: now, price_a_per_b: px > 0 ? px : undefined, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, pool_kind: 'clmm', tvl_usd } as any);
@@ -611,8 +627,8 @@ export function startRaydiumRefreshLoop(): void {
                       const mintB = ((state as any).mintB || (state as any).tokenMintB)?.toBase58?.() || '';
                       const sqrt = Number((state as any).sqrtPriceX64 ?? (state as any).sqrt_price_x64 ?? (state as any).sqrtPrice ?? 0);
                       // Derive A per 1 B using sqrtPrice and decimals:
-                      // Raydium CLMM uses same encoding as Orca/Uniswap V3: sqrt encodes sqrt(B/A) in smallest units
-                      // Formula: A-per-1-B = 10^(decB-decA) / (ratio^2), where ratio = sqrt / 2^64
+                      // Raydium CLMM sqrtPriceX64 encoding: sqrt encodes sqrt(A/B) in atomic units
+                      // Formula: A-per-1-B = (ratio^2) * 10^(decB-decA), where ratio = sqrt / 2^64
                       const price_a_per_b = await (async () => {
                         try {
                           if (!Number.isFinite(sqrt) || sqrt <= 0) return undefined;
@@ -625,10 +641,25 @@ export function startRaydiumRefreshLoop(): void {
                             decB = Number(b?.decimals);
                           } catch {}
                           if (!Number.isFinite(decA as any) || !Number.isFinite(decB as any)) return undefined;
+                          
+                          // Try Raydium SDK's authoritative conversion function first
+                          try {
+                            const SqrtPriceMath = rmod?.SqrtPriceMath || rmod?.Clmm?.SqrtPriceMath;
+                            if (SqrtPriceMath?.sqrtPriceX64ToPrice) {
+                              const sqrtBigInt = BigInt(Math.floor(sqrt));
+                              const priceFromSdk = SqrtPriceMath.sqrtPriceX64ToPrice(sqrtBigInt, decA as number, decB as number);
+                              if (priceFromSdk != null && Number(priceFromSdk) > 0 && Number.isFinite(Number(priceFromSdk))) {
+                                return Number(priceFromSdk);
+                              }
+                            }
+                          } catch {}
+                          
+                          // Fallback to manual calculation
                           const ratio = sqrt / Math.pow(2, 64);
-                          // Same formula as Orca: scale = 10^(decB - decA), then A-per-1-B = scale / (ratio^2)
+                          // Manual decode: sqrtPriceX64 = sqrt(A_atomic/B_atomic) * 2^64
+                          // A_per_B (whole) = (ratio^2) * 10^(decB-decA)
                           const scale = Math.pow(10, (decB as number) - (decA as number));
-                          const aPerB = scale / (ratio * ratio);
+                          const aPerB = (ratio * ratio) * scale;
                           return (aPerB > 0 && Number.isFinite(aPerB)) ? aPerB : undefined;
                         } catch { return undefined; }
                       })();
@@ -753,7 +784,10 @@ export function startRaydiumRefreshLoop(): void {
                   })();
                   const liquidity = Number(parsed.liquidity);
                   const tick_spacing = Number(parsed.tickSpacing);
-                  const fee_bps = Number((parsed as any)?.feeRate ?? 0);
+                  // Orca SDK feeRate is in decimal format (0.0004 = 0.04% = 4 bps)
+                  // Convert to bps: multiply by 10,000 if <= 1, otherwise assume already in bps
+                  const feeRateRaw = Number((parsed as any)?.feeRate ?? 0);
+                  const fee_bps = (feeRateRaw > 1) ? Math.round(feeRateRaw) : Math.round(feeRateRaw * 10_000);
                   const clmmItem: ClmmPool = { id, dex: 'Orca', mint_a, mint_b, fee_bps, sqrt_price_x64, liquidity, tick_spacing, updated_ms: Date.now(), pool_kind: 'clmm', liquidity_display: liquidity, price_a_per_b: pxFromSqrt } as any;
                   const prev = orcaCache.data || { amm: [], clmm: [] };
                   const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
