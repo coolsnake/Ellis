@@ -1236,11 +1236,14 @@ export function startRaydiumRefreshLoop(): void {
             meteoraPoolIds = meteoraKnown;
             if (meteoraPoolIds.length > 0) {
               try { logger.info('pools.ws targets.meteora from cache', { size: meteoraPoolIds.length }); } catch {}
+              // Also update meteoraTargets Set so handle() closure can recognize events
+              for (const id of meteoraPoolIds) { meteoraTargets.add(id); }
             }
           }
           
           const attachMeteora = async (targetIds: string[]): Promise<number> => {
             let attached = 0;
+            let failed = 0;
             const edgeIds: string[] = targetIds;
             // Rate-limit new attachments per second based on config
             const perSecMet = Math.max(1, Number(((CONFIG.system as any)?.wsAttachPerSec) || 10));
@@ -1253,8 +1256,16 @@ export function startRaydiumRefreshLoop(): void {
                 const id = await subscribeAccountWithRetry(pk, handle);
                 subs.push({ kind: 'account', id }); attached++;
                 try { targetedSourceByAccount.set(pk.toBase58(), 'meteora'); } catch {}
-              } catch {}
+                // Ensure meteoraTargets Set includes this ID for handle() closure
+                meteoraTargets.add(addr);
+              } catch (e: any) {
+                failed++;
+                try { logger.debug('pools.ws meteora subscribe failed for pool', { addr: addr.slice(0,8)+'…', error: String(e?.message || e).slice(0,50) }); } catch {}
+              }
               if (i < edgeIds.length - 1 && intervalMsMet > 0) { await sleepMet(intervalMsMet); }
+            }
+            if (failed > 0) {
+              try { logger.warn('pools.ws meteora subscribe partial failure', { attached, failed, total: edgeIds.length }); } catch {}
             }
             return attached;
           };
@@ -1276,7 +1287,8 @@ export function startRaydiumRefreshLoop(): void {
                   const base = pid.replace(/-rev$/, '');
                   if ((e as any)?.dex === 'Meteora') mset.add(base);
                 }
-                meteoraTargets = mset;
+                // Merge new targets into existing Set (don't replace, to preserve any already subscribed)
+                for (const id of mset) { meteoraTargets.add(id); }
                 meteoraPoolIds = Array.from(meteoraTargets);
               } catch {}
               if (meteoraPoolIds.length > 0) attachedMet = await attachMeteora(meteoraPoolIds);
@@ -1301,7 +1313,7 @@ export function startRaydiumRefreshLoop(): void {
             }
           }
         } catch (e:any) {
-          logger.warn('pools.ws meteora subscribe failed', { error: String(e?.message || e) });
+          logger.warn('pools.ws meteora subscribe failed', { error: String(e?.message || e), stack: String(e?.stack || '').slice(0,200) });
           attachedMeteoraPools = 0;
         }
 

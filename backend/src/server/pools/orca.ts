@@ -235,20 +235,114 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
     const incomingPrice = Number(it?.price ?? it?.price_a_per_b ?? it?.priceAperB ?? 0);
     if (isWhirlpool && id && sqrt_price_x64 > 0) {
       let cA = mint_a; let cB = mint_b; let cDecA = decA; let cDecB = decB; let cAmtA = amount_a; let cAmtB = amount_b;
+      
+      // Ensure decimals are definitely set before computing price
+      // Double-check decimals are finite after all the setup above
+      if (!Number.isFinite(cDecA) || !Number.isFinite(cDecB)) {
+        // Try one more time to get decimals if missing
+        try {
+          if (!Number.isFinite(cDecA)) {
+            const tok = await import('../../utils/tokens.js');
+            const r = await (tok as any).resolveMint(cA);
+            if (Number.isFinite(Number(r?.decimals))) cDecA = Number(r.decimals);
+          }
+          if (!Number.isFinite(cDecB)) {
+            const tok = await import('../../utils/tokens.js');
+            const r = await (tok as any).resolveMint(cB);
+            if (Number.isFinite(Number(r?.decimals))) cDecB = Number(r.decimals);
+          }
+          // Clamp again after potential fix
+          cDecA = Math.min(12, Math.max(0, Math.round(Number(cDecA))));
+          cDecB = Math.min(12, Math.max(0, Math.round(Number(cDecB))));
+        } catch {}
+      }
+      
       let priceFromSqrt = 0;
       if (sqrt_price_x64 > 0 && Number.isFinite(cDecA) && Number.isFinite(cDecB)) {
-        const two64 = Math.pow(2, 64);
-        const ratio = sqrt_price_x64 / two64;
-        // Orca sqrt encodes sqrt(B/A) in smallest units. Let R = ratio.
-        // Then B/A = R^2, so A/B = 1 / R^2.
-        // Adjust for decimals: amounts are in smallest units, so scale = 10^(decB-decA).
-        // Therefore A-per-1-B (in whole-token units) = (scale) / (R^2).
-        // NOTE: Orca uses decB - decA, while Raydium uses decA - decB (see raydium.ts)
-        const scale = Math.pow(10, (cDecB as number) - (cDecA as number));
-        const aPerB = scale / (ratio * ratio);
-        if (Number.isFinite(aPerB) && aPerB > 0) priceFromSqrt = aPerB;
+        try {
+          const two64 = Math.pow(2, 64);
+          const ratio = sqrt_price_x64 / two64;
+          // Orca sqrt encodes sqrt(B/A) in smallest units. Let R = ratio.
+          // Then B/A = R^2, so A/B = 1 / R^2.
+          // Adjust for decimals: amounts are in smallest units, so scale = 10^(decB-decA).
+          // Therefore A-per-1-B (in whole-token units) = (scale) / (R^2).
+          // NOTE: Orca uses decB - decA, while Raydium uses decA - decB (see raydium.ts)
+          const scale = Math.pow(10, (cDecB as number) - (cDecA as number));
+          const aPerB = scale / (ratio * ratio);
+          if (Number.isFinite(aPerB) && aPerB > 0) priceFromSqrt = aPerB;
+        } catch (e) {
+          // If sqrt calculation fails, log for debugging
+          try {
+            logger.debug('orca.priceFromSqrt.calc.failed', { 
+              id, 
+              mint_a: cA, 
+              mint_b: cB, 
+              sqrt_price_x64,
+              decA: cDecA, 
+              decB: cDecB,
+              error: String(e?.message || e),
+              cat: 'orca' 
+            });
+          } catch {}
+        }
+      } else {
+        // Log when we can't compute priceFromSqrt due to missing data
+        if (sqrt_price_x64 > 0) {
+          try {
+            logger.debug('orca.priceFromSqrt.missing.decimals', { 
+              id, 
+              mint_a: cA, 
+              mint_b: cB, 
+              sqrt_price_x64,
+              decA: cDecA, 
+              decB: cDecB,
+              decA_finite: Number.isFinite(cDecA),
+              decB_finite: Number.isFinite(cDecB),
+              cat: 'orca' 
+            });
+          } catch {}
+        }
       }
-      const incomingCanonical = (incomingPrice > 0) ? incomingPrice : 0;
+      
+      // Fallback: try to derive price from token amounts if sqrt calculation failed
+      if (priceFromSqrt === 0 && cAmtA > 0 && cAmtB > 0 && Number.isFinite(cDecA) && Number.isFinite(cDecB)) {
+        try {
+          const wholeA = cAmtA / Math.pow(10, cDecA as number);
+          const wholeB = cAmtB / Math.pow(10, cDecB as number);
+          if (wholeA > 0 && wholeB > 0 && Number.isFinite(wholeA) && Number.isFinite(wholeB)) {
+            // A per 1 B = (amountA / amountB) adjusted for decimals already handled above
+            const derivedFromAmounts = wholeA / wholeB;
+            if (Number.isFinite(derivedFromAmounts) && derivedFromAmounts > 0) {
+              priceFromSqrt = derivedFromAmounts;
+            }
+          }
+        } catch {}
+      }
+      
+      // Handle fallback to incomingPrice: normalize if it appears to be in wrong units
+      let incomingCanonical = (incomingPrice > 0) ? incomingPrice : 0;
+      if (priceFromSqrt === 0 && incomingCanonical > 0 && Number.isFinite(cDecA) && Number.isFinite(cDecB)) {
+        // The Orca API price field might be in smallest units rather than whole-token units
+        // If the price is suspiciously large (> 1e6), it might need decimal normalization
+        // However, we'll let calibrateMagnitude handle the fine-tuning with its power-of-10 search
+        // Just add debug logging to help diagnose
+        if (incomingCanonical > 1e6) {
+          try {
+            logger.debug('orca.incomingPrice.fallback', { 
+              id, 
+              mint_a: cA, 
+              mint_b: cB, 
+              incomingPrice: incomingCanonical,
+              decA: cDecA, 
+              decB: cDecB,
+              sqrt_price_x64,
+              hint: 'priceFromSqrt failed, using incomingPrice which may need normalization',
+              cat: 'orca' 
+            });
+          } catch {}
+        }
+      }
+      
       let priceDerived = priceFromSqrt > 0 ? priceFromSqrt : incomingCanonical;
       
       // Magnitude-only calibration (no flips)
