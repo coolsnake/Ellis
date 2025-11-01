@@ -7,7 +7,7 @@ import { enablePriceFeed, isPriceFeedEnabled } from './feedRegistry.js';
 // import { PublicKey } from '@solana/web3.js';
 import type { AmmPool, ClmmPool, PoolsPayload } from './pools/types.js';
 import { fetchRaydiumPoolsRaw as fetchRaydiumPoolsRawImpl, normalizeRaydiumPools as normalizeRaydiumPoolsImpl } from './pools/raydium.js';
-import { fetchOrcaHttp as fetchOrcaHttpImpl, normalizeOrcaHttp as normalizeOrcaHttpImpl } from './pools/orca.js';
+import { fetchOrcaHttp as fetchOrcaHttpImpl, normalizeOrcaHttp as normalizeOrcaHttpImpl, deriveOrcaFeeBps } from './pools/orca.js';
 import { fetchMeteoraHttp as fetchMeteoraHttpImpl, normalizeMeteoraHttp as normalizeMeteoraHttpImpl } from './pools/meteora.js';
 import { validateCrossDexPrices, verifyCanonicalization } from './pools/validation.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './pools/httpLog.js';
@@ -772,10 +772,7 @@ export function startRaydiumRefreshLoop(): void {
                   })();
                   const liquidity = Number(parsed.liquidity);
                   const tick_spacing = Number(parsed.tickSpacing);
-                  // Orca SDK feeRate is in decimal format (0.0004 = 0.04% = 4 bps)
-                  // Convert to bps: multiply by 10,000 if <= 1, otherwise assume already in bps
-                  const feeRateRaw = Number((parsed as any)?.feeRate ?? 0);
-                  const fee_bps = (feeRateRaw > 1) ? Math.round(feeRateRaw) : Math.round(feeRateRaw * 10_000);
+                  const fee_bps = deriveOrcaFeeBps(parsed as any);
                   const clmmItem: ClmmPool = { id, dex: 'Orca', mint_a, mint_b, fee_bps, sqrt_price_x64, liquidity, tick_spacing, updated_ms: Date.now(), pool_kind: 'clmm', liquidity_display: liquidity, price_a_per_b: pxFromSqrt } as any;
                   const prev = orcaCache.data || { amm: [], clmm: [] };
                   const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
@@ -1814,7 +1811,7 @@ export async function getOrcaPoolsCached(force = false): Promise<PoolsPayload> {
         try {
           const gmod: any = await import('./graph.js');
           if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
-            await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, data);
+            await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, data, { pushToArb: true });
           } else {
             const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
             const delta = d.amm.length + d.clmm.length + d.addedAmm + d.addedClmm + d.removedAmm + d.removedClmm;
@@ -1954,7 +1951,7 @@ export async function getMeteoraPoolsCached(force = false): Promise<PoolsPayload
         try {
           const gmod: any = await import('./graph.js');
           if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
-            await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm);
+            await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: true });
           }
         } catch {}
       } catch {}

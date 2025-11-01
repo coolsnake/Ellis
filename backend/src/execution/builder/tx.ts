@@ -2,13 +2,12 @@ import type { ExecutionPlan, DirectHop } from '../types.js';
 import { buildRaydiumAmmSwapIx, buildRaydiumClmmSwapIx, buildOrcaSwapIx, buildMeteoraDlmmSwapIx, buildRaydiumAmmSwapIxReal, buildRaydiumClmmSwapIxReal, buildMeteoraDlmmSwapIxReal } from './ix.js';
 import { logger } from '../../utils/logger.js';
 import { LogCode } from '../../utils/logging.js';
-import { PublicKey, LAMPORTS_PER_SOL, TransactionInstruction } from '@solana/web3.js';
+import { PublicKey } from '@solana/web3.js';
 import { buildCreateAtaIx, deriveAta, isSolMint, buildWrapSolIxs, buildUnwrapSolIx } from '../accounts.js';
-import { ensureWallet, getConnection } from '../../wallet/wallet.js';
+import { ensureWallet } from '../../wallet/wallet.js';
 import { CONFIG } from '../../utils/config.js';
 import { loadExecConfig } from '../../server/execConfigStore.js';
 import { validateHopAmounts } from './validation.js';
-import { withRpcLimit } from '../../utils/rpcLimiter.js';
 
 export type ComputeBudgetConfig = { computeUnitLimit?: number; computeUnitPriceMicroLamports?: number };
 
@@ -57,19 +56,6 @@ function estimateInstructionSize(ix: any): number {
   }
 }
 
-/**
- * Checks if an ATA exists on-chain
- */
-async function ataExists(ata: PublicKey): Promise<boolean> {
-  try {
-    const connection = getConnection();
-    const accountInfo = await withRpcLimit(() => connection.getAccountInfo(ata));
-    return accountInfo !== null;
-  } catch {
-    return false;
-  }
-}
-
 export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[], cb?: ComputeBudgetConfig): Promise<{ tx: any; ixCount: number; sizeBytes: number }> {
   const t0 = Date.now();
   const traceId = Math.random().toString(36).slice(2, 10);
@@ -84,6 +70,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
   
   // Track actual output amounts from previous hops (for amount propagation)
   const hopOutputs: bigint[] = [];
+  const ensuredAtas = new Set<string>();
   
   for (let i = 0; i < plan.hops.length; i++) {
     // Create a working copy of the hop to avoid mutating the original
@@ -103,22 +90,15 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
         if (!hop.userDestAta) {
           try { hop.userDestAta = deriveAta(owner, new PublicKey(hop.outputMint), hop.outputTokenProgram).toBase58(); } catch {}
         }
-        
-        // Optimize ATA creation: only create if they don't exist
-        // Note: createAssociatedTokenAccountIdempotentInstruction is safe, but we can avoid adding redundant instructions
-        const destAtaPk = new PublicKey(hop.userDestAta);
-        const destExists = await ataExists(destAtaPk);
-        if (!destExists) {
-          hopIxs.push(buildCreateAtaIx(owner, owner, new PublicKey(hop.outputMint), hop.outputTokenProgram));
+
+        if (hop.userDestAta && !ensuredAtas.has(hop.userDestAta)) {
+          hopIxs.push(buildCreateAtaIx(owner, payer, new PublicKey(hop.outputMint), hop.outputTokenProgram));
+          ensuredAtas.add(hop.userDestAta);
         }
-        
-        // Ensure source ATA exists unless input is SOL (WSOL wrap path ensures source when needed)
-        if (!isSolMint(hop.inputMint)) {
-          const sourceAtaPk = new PublicKey(hop.userSourceAta);
-          const sourceExists = await ataExists(sourceAtaPk);
-          if (!sourceExists) {
-            hopIxs.push(buildCreateAtaIx(owner, owner, new PublicKey(hop.inputMint), hop.inputTokenProgram));
-          }
+
+        if (!isSolMint(hop.inputMint) && hop.userSourceAta && !ensuredAtas.has(hop.userSourceAta)) {
+          hopIxs.push(buildCreateAtaIx(owner, payer, new PublicKey(hop.inputMint), hop.inputTokenProgram));
+          ensuredAtas.add(hop.userSourceAta);
         }
       }
       // SOL wrapping/unwrap if configured
@@ -130,6 +110,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
             const wrap = buildWrapSolIxs(owner, owner, lamports);
             hopIxs.push(...wrap.ixs);
             hop.userSourceAta = wrap.wsolAta.toBase58();
+            ensuredAtas.add(hop.userSourceAta);
             performedWrap = true;
           }
         }
@@ -138,7 +119,13 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
         if (isLastHop && isSolMint(hop.outputMint)) {
           willUnwrap = true;
           // Ensure dest ATA is WSOL; unwrap will close it to SOL
-          try { hop.userDestAta = deriveAta(owner, new PublicKey(hop.outputMint), hop.outputTokenProgram).toBase58(); } catch {}
+          try {
+            hop.userDestAta = deriveAta(owner, new PublicKey(hop.outputMint), hop.outputTokenProgram).toBase58();
+            if (hop.userDestAta && !ensuredAtas.has(hop.userDestAta)) {
+              hopIxs.push(buildCreateAtaIx(owner, owner, new PublicKey(hop.outputMint), hop.outputTokenProgram));
+              ensuredAtas.add(hop.userDestAta);
+            }
+          } catch {}
         }
       }
 
