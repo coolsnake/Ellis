@@ -163,7 +163,7 @@ export function defaultNormalizeRaydiumPools(raw: any): PoolsPayload {
       const tvl_usd = Number.isFinite(tvl) && tvl > 0 ? tvl : undefined;
       // Derive A per 1 B from sqrt if possible
       // Raydium CLMM sqrtPriceX64 encoding: sqrt encodes sqrt(A/B) in atomic units
-      // Formula: A-per-1-B = (ratio^2) * 10^(decB-decA), where ratio = sqrt / 2^64
+      // Formula: A-per-1-B = (ratio^2) * 10^(decA-decB), where ratio = sqrt / 2^64
       // Note: This is a synchronous function, so we use manual calculation only
       // The async normalizeRaydiumPools in raydium.ts uses SDK when available
       let price_from_sqrt = 0;
@@ -171,8 +171,8 @@ export function defaultNormalizeRaydiumPools(raw: any): PoolsPayload {
         const two64 = Math.pow(2, 64);
         const ratio = sqrt / two64;
         // Manual decode: sqrtPriceX64 = sqrt(A_atomic/B_atomic) * 2^64
-        // A_per_B (whole) = (ratio^2) * 10^(decB-decA)
-        const scale = Math.pow(10, (decB as number) - (decA as number));
+        // A_per_B (whole) = (ratio^2) * 10^(decA-decB)
+        const scale = Math.pow(10, (decA as number) - (decB as number));
         const cand = (ratio * ratio) * scale;
         price_from_sqrt = Number.isFinite(cand) && cand > 0 ? cand : 0;
       }
@@ -645,8 +645,8 @@ export function startRaydiumRefreshLoop(): void {
                           // Fallback to manual calculation
                           const ratio = sqrt / Math.pow(2, 64);
                           // Manual decode: sqrtPriceX64 = sqrt(A_atomic/B_atomic) * 2^64
-                          // A_per_B (whole) = (ratio^2) * 10^(decB-decA)
-                          const scale = Math.pow(10, (decB as number) - (decA as number));
+                          // A_per_B (whole) = (ratio^2) * 10^(decA-decB)
+                          const scale = Math.pow(10, (decA as number) - (decB as number));
                           const aPerB = (ratio * ratio) * scale;
                           return (aPerB > 0 && Number.isFinite(aPerB)) ? aPerB : undefined;
                         } catch { return undefined; }
