@@ -162,14 +162,14 @@ export function defaultNormalizeRaydiumPools(raw: any): PoolsPayload {
       const liquidity = Number((it as any)?.liquidity ?? 0);
       const tvl_usd = Number.isFinite(tvl) && tvl > 0 ? tvl : undefined;
       // Derive A per 1 B from sqrt if possible
-      // Raydium CLMM: encoding matches priceToSqrtPriceX64: sqrt = sqrt((A_per_B_whole) / 10^(decA-decB))
-      // Decoding: A_per_B_whole = (ratio²) × 10^(decA-decB), where ratio = sqrt / 2^64
+      // Raydium CLMM: same encoding as Orca/Uniswap V3 - sqrt encodes sqrt(B/A) in smallest units
+      // Formula: A-per-1-B = 10^(decB-decA) / (ratio^2), where ratio = sqrt / 2^64
       let price_from_sqrt = 0;
       if (sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
         const two64 = Math.pow(2, 64);
         const ratio = sqrt / two64;
-        const scale = Math.pow(10, (decA as number) - (decB as number));
-        const cand = (ratio * ratio) * scale;
+        const scale = Math.pow(10, (decB as number) - (decA as number));
+        const cand = scale / (ratio * ratio);
         price_from_sqrt = Number.isFinite(cand) && cand > 0 ? cand : 0;
       }
       const px = price_from_sqrt > 0 ? price_from_sqrt : (Number(price) > 0 ? Number(price) : 0);
@@ -553,7 +553,8 @@ export function startRaydiumRefreshLoop(): void {
         let meteoraTargets = new Set<string>();
         try {
           const gmod: any = await import('./graph.js');
-          const snap = await gmod.getGraphSnapshot(false);
+          // Use forced snapshot when retargeting (suppressInitialOnce) to ensure fresh data
+          const snap = await gmod.getGraphSnapshot(suppressInitialOnce);
           const mset = new Set<string>();
           for (const e of (snap?.edges || [])) {
             const pid = String((e as any)?.pool_id || '');
@@ -562,6 +563,9 @@ export function startRaydiumRefreshLoop(): void {
             if ((e as any)?.dex === 'Meteora') mset.add(base);
           }
           meteoraTargets = mset;
+          if (meteoraTargets.size > 0) {
+            try { logger.info('pools.ws targets.meteora from graph', { size: meteoraTargets.size, forced: suppressInitialOnce }); } catch {}
+          }
         } catch {}
 
         const handle = async (pk: any, info: any) => {
@@ -607,8 +611,8 @@ export function startRaydiumRefreshLoop(): void {
                       const mintB = ((state as any).mintB || (state as any).tokenMintB)?.toBase58?.() || '';
                       const sqrt = Number((state as any).sqrtPriceX64 ?? (state as any).sqrt_price_x64 ?? (state as any).sqrtPrice ?? 0);
                       // Derive A per 1 B using sqrtPrice and decimals:
-                      // Encoding matches priceToSqrtPriceX64: sqrt = sqrt((A_per_B_whole) / 10^(decA-decB))
-                      // Decoding: A_per_B_whole = (ratio²) × 10^(decA-decB), where ratio = sqrt / 2^64
+                      // Raydium CLMM uses same encoding as Orca/Uniswap V3: sqrt encodes sqrt(B/A) in smallest units
+                      // Formula: A-per-1-B = 10^(decB-decA) / (ratio^2), where ratio = sqrt / 2^64
                       const price_a_per_b = await (async () => {
                         try {
                           if (!Number.isFinite(sqrt) || sqrt <= 0) return undefined;
@@ -622,9 +626,9 @@ export function startRaydiumRefreshLoop(): void {
                           } catch {}
                           if (!Number.isFinite(decA as any) || !Number.isFinite(decB as any)) return undefined;
                           const ratio = sqrt / Math.pow(2, 64);
-                          // Match encoding: scale = 10^(decA - decB) to reverse the encoding division
-                          const scale = Math.pow(10, (decA as number) - (decB as number));
-                          const aPerB = (ratio * ratio) * scale;
+                          // Same formula as Orca: scale = 10^(decB - decA), then A-per-1-B = scale / (ratio^2)
+                          const scale = Math.pow(10, (decB as number) - (decA as number));
+                          const aPerB = scale / (ratio * ratio);
                           return (aPerB > 0 && Number.isFinite(aPerB)) ? aPerB : undefined;
                         } catch { return undefined; }
                       })();
@@ -1219,12 +1223,25 @@ export function startRaydiumRefreshLoop(): void {
             }
           }
         } catch {}
-        // Meteora targeted subscriptions from graph edges. If none yet, retry briefly for targets; fallback to program-level when configured.
+        // Meteora targeted subscriptions from graph edges. Fallback to cached pools if graph doesn't have edges yet.
         try {
           const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-          const attachMeteora = async (): Promise<number> => {
+          
+          // Build target set: prefer graph edges, fallback to cached pools (like Raydium does)
+          let meteoraPoolIds = Array.from(meteoraTargets);
+          if (meteoraPoolIds.length === 0) {
+            // Fallback to cached pool IDs
+            const meteoraKnown: string[] = [];
+            try { for (const p of (meteoraCache.data?.clmm || [])) if (p?.id) meteoraKnown.push(String(p.id)); } catch {}
+            meteoraPoolIds = meteoraKnown;
+            if (meteoraPoolIds.length > 0) {
+              try { logger.info('pools.ws targets.meteora from cache', { size: meteoraPoolIds.length }); } catch {}
+            }
+          }
+          
+          const attachMeteora = async (targetIds: string[]): Promise<number> => {
             let attached = 0;
-            const edgeIds: string[] = Array.from(meteoraTargets);
+            const edgeIds: string[] = targetIds;
             // Rate-limit new attachments per second based on config
             const perSecMet = Math.max(1, Number(((CONFIG.system as any)?.wsAttachPerSec) || 10));
             const intervalMsMet = Math.floor(1000 / perSecMet);
@@ -1241,9 +1258,10 @@ export function startRaydiumRefreshLoop(): void {
             }
             return attached;
           };
+          
           // Try immediate targets; if none, make a couple of quick retries to allow first graph to include Meteora edges
-          let attachedMet = await attachMeteora();
-          if (attachedMet === 0) {
+          let attachedMet = await attachMeteora(meteoraPoolIds);
+          if (attachedMet === 0 && meteoraTargets.size === 0) {
             const maxRetries = Math.max(1, Number(((CONFIG.system as any)?.meteoraWsRetryCount) || 2));
             const delayMs = Math.max(200, Number(((CONFIG.system as any)?.meteoraWsRetryDelayMs) || 600));
             for (let i = 0; i < maxRetries && attachedMet === 0; i++) {
@@ -1259,16 +1277,19 @@ export function startRaydiumRefreshLoop(): void {
                   if ((e as any)?.dex === 'Meteora') mset.add(base);
                 }
                 meteoraTargets = mset;
+                meteoraPoolIds = Array.from(meteoraTargets);
               } catch {}
-              if (meteoraTargets.size > 0) attachedMet = await attachMeteora();
+              if (meteoraPoolIds.length > 0) attachedMet = await attachMeteora(meteoraPoolIds);
               if (attachedMet === 0) await sleep(delayMs);
             }
           }
           attachedMeteoraPools = attachedMet;
-          if (attachedMet > 0) {
-            try { logger.info('pools.ws subscribe meteora.pools', { attached: attachedMet, target: meteoraTargets.size, source: 'meteora' }); } catch {}
-          } else {
-            // Program-level fallback when configured
+          
+          // Always log (like Orca and Raydium do), even if attachedMet === 0
+          logger.info('pools.ws subscribe meteora.pools', { attached: attachedMet, target: meteoraPoolIds.length, source: 'meteora' });
+          
+          // Program-level fallback when configured
+          if (attachedMet === 0) {
             const meteoraProg = String((CONFIG as any)?.meteora?.programId || '').trim();
             if (meteoraProg && !!((CONFIG.system as any)?.meteoraWsProgramFallback)) {
               try { logger.info('pools.ws subscribe meteora(program)', { source: 'meteora', cat: 'pools' }); } catch {}

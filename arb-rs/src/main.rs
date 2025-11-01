@@ -387,7 +387,16 @@ async fn main() -> anyhow::Result<()> {
                         // Explicitly log that there were no pending graph updates for this tick
                         tracing::info!("arb.graph.diff: none pending");
                     }
-                    if let Some(v) = s.pending_graph_version.take() { s.last_graph_version = v; }
+                    // Update version even when there are no edges - the diff itself represents a version increment
+                    if let Some(v) = s.pending_graph_version.take() {
+                        if v > s.last_graph_version {
+                            let old_version = s.last_graph_version;
+                            s.last_graph_version = v;
+                            tracing::info!(old_version = old_version, new_version = v, "arb.graph.version: updated");
+                        } else {
+                            tracing::warn!(received_version = v, current_version = s.last_graph_version, "arb.graph.version: attempted downgrade, ignoring");
+                        }
+                    }
                     if let Some(t) = s.pending_graph_ts.take() { s.last_graph_ts = t; }
                     s.metrics.graph_nodes = s.graph.g.node_count() as u64;
                     s.metrics.graph_edges = s.graph.g.edge_count() as u64;
@@ -1818,7 +1827,20 @@ async fn arb_graph_update(State(state): State<Arc<RwLock<AppState>>>, headers: H
     if let Some(removed) = req.removed_edge_ids { let n = removed.len(); s.pending_removed_edge_ids.extend(removed); tracing::info!(removed=n, "arb.graph.diff: buffered removed edges"); }
     if let Some(added) = req.added_edges { let n = added.len(); s.pending_added_edges.extend(added); tracing::info!(added=n, "arb.graph.diff: buffered added edges"); }
     if let Some(updated) = req.updated_edges { let n = updated.len(); s.pending_updated_edges.extend(updated); tracing::info!(updated=n, "arb.graph.diff: buffered updated edges"); }
-    if req.version.is_some() { s.pending_graph_version = req.version; }
+    // Only update pending_graph_version if the new version is higher (preserve highest version)
+    if let Some(v) = req.version {
+        if let Some(old_pending) = s.pending_graph_version {
+            if v > old_pending {
+                s.pending_graph_version = Some(v);
+                tracing::info!(old_version = old_pending, new_version = v, "arb.graph.diff: version buffered (replaced)");
+            } else {
+                tracing::info!(received_version = v, pending_version = old_pending, "arb.graph.diff: version ignored (not higher than pending)");
+            }
+        } else {
+            s.pending_graph_version = Some(v);
+            tracing::info!(version = v, "arb.graph.diff: version buffered (new)");
+        }
+    }
     if req.timestamp.is_some() { s.pending_graph_ts = req.timestamp; }
     // Record time of receipt for diff_to_detect tracking
     s.metrics.last_graph_push_rx_ms = now_ms();
