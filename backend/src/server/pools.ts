@@ -271,6 +271,13 @@ export function getPoolCacheAges(): { raydium: number; orca: number; meteora: nu
 // Retarget WS: unsubscribe and re-subscribe to current graph-derived targets
 export async function retargetPoolWebsockets(): Promise<{ attached: { orca: number; raydium: number; meteora: number } }> {
   try { disablePoolWebsocketRefreshes(); } catch {}
+  // Wait for websocket cleanup to complete before starting new subscriptions
+  try { 
+    if (wsClosePromise) { 
+      await wsClosePromise.catch(() => {}); 
+      wsClosePromise = null;
+    } 
+  } catch {}
   try { startPoolWebsocketsOnlyOnce(); } catch {}
   // Give subscriptions a brief moment to attach
   await new Promise((r) => setTimeout(r, 250));
@@ -597,8 +604,8 @@ export function startRaydiumRefreshLoop(): void {
                       const mintB = ((state as any).mintB || (state as any).tokenMintB)?.toBase58?.() || '';
                       const sqrt = Number((state as any).sqrtPriceX64 ?? (state as any).sqrt_price_x64 ?? (state as any).sqrtPrice ?? 0);
                       // Derive A per 1 B using sqrtPrice and decimals:
-                      // price_B_per_A = (ratio^2) * 10^(decA - decB)
-                      // price_A_per_B = 1 / price_B_per_A
+                      // Formula: A-per-1-B = 10^(decB - decA) / (ratio^2), where ratio = sqrt / 2^64
+                      // Same formula as Orca CLMM (matching normalizeRaydiumPools fix)
                       const price_a_per_b = await (async () => {
                         try {
                           if (!Number.isFinite(sqrt) || sqrt <= 0) return undefined;
@@ -612,8 +619,9 @@ export function startRaydiumRefreshLoop(): void {
                           } catch {}
                           if (!Number.isFinite(decA as any) || !Number.isFinite(decB as any)) return undefined;
                           const ratio = sqrt / Math.pow(2, 64);
-                          const priceBperA = (ratio * ratio) * Math.pow(10, (decA as number) - (decB as number));
-                          const aPerB = priceBperA > 0 ? (1 / priceBperA) : 0;
+                          // Use same formula as normalizeRaydiumPools: scale = 10^(decB - decA), then A-per-1-B = scale / (ratio^2)
+                          const scale = Math.pow(10, (decB as number) - (decA as number));
+                          const aPerB = scale / (ratio * ratio);
                           return (aPerB > 0 && Number.isFinite(aPerB)) ? aPerB : undefined;
                         } catch { return undefined; }
                       })();
@@ -1441,6 +1449,8 @@ export function disablePoolWebsocketRefreshes(): void {
     if (wsUnsubscribe) { wsUnsubscribe(); wsUnsubscribe = undefined; }
     if (healthTimer) { clearInterval(healthTimer); healthTimer = undefined; }
     wsHealthy = false; lastWsEventMs = 0;
+    // Reset wsSetupActive to allow new setup to proceed
+    wsSetupActive = false;
     logger.info('pools.ws unsubscribed');
   } catch {}
 }

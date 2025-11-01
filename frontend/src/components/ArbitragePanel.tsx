@@ -134,7 +134,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
       try { const r = await fetch(`${apiBase}${ROUTES.arb.config}`); const j = await r.json(); if (typeof j?.quote_size_usd === 'number') setQuoteSize(Number(j.quote_size_usd)||50); } catch {}
     })();
     (async () => {
-      try { const r = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const j = await r.json(); setTxRows(Array.isArray(j?.items) ? j.items : []); } catch {}
+      try { const r = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const j = await r.json(); const allItems = Array.isArray(j?.items) ? j.items : []; setTxRows(allItems.slice(0, 10)); } catch {}
     })();
   }, []);
 
@@ -231,7 +231,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
   useEffect(() => {
     if (!effectiveSocket) return;
     const onTxAny = async () => {
-      try { const r = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const j = await r.json(); setTxRows(Array.isArray(j?.items) ? j.items : []); } catch {}
+      try { const r = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const j = await r.json(); const allItems = Array.isArray(j?.items) ? j.items : []; setTxRows(allItems.slice(0, 10)); } catch {}
     };
     effectiveSocket.on('tx:start', onTxAny);
     effectiveSocket.on('tx:resolved', onTxAny);
@@ -498,7 +498,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
                         setNmSimLogs(logs.slice(-20));
                         setNmSimErr(j?.err ? String(j.err) : null);
                       }
-                      try { const rh = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const jh = await rh.json(); setTxRows(Array.isArray(jh?.items) ? jh.items : []); } catch {}
+                      try { const rh = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const jh = await rh.json(); const allItems = Array.isArray(jh?.items) ? jh.items : []; setTxRows(allItems.slice(0, 10)); } catch {}
                     } catch {}
                     setSending(false);
                   }}>Preflight Simulate</button>
@@ -517,7 +517,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
                       } else if (j && j.mode && j.mode !== 'direct') {
                         setNmSimErr(`Execution disabled (mode: ${j.mode}). Enable 'direct' in Exec Config.`);
                       }
-                      try { const rh = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const jh = await rh.json(); setTxRows(Array.isArray(jh?.items) ? jh.items : []); } catch {}
+                      try { const rh = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const jh = await rh.json(); const allItems = Array.isArray(jh?.items) ? jh.items : []; setTxRows(allItems.slice(0, 10)); } catch {}
                     } catch (e: any) {
                       setNmSimErr(String(e?.message || e));
                     }
@@ -582,7 +582,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
       <div className="mt-4 p-2 border rounded bg-black/10">
         <div className="flex items-center justify-between mb-2">
           <h4 className="font-semibold">Transactions</h4>
-          <button className="px-2 py-1 border rounded" onClick={async()=>{ try { const r = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const j = await r.json(); setTxRows(Array.isArray(j?.items) ? j.items : []); } catch {} }}>Refresh</button>
+          <button className="px-2 py-1 border rounded" onClick={async()=>{ try { const r = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const j = await r.json(); const allItems = Array.isArray(j?.items) ? j.items : []; setTxRows(allItems.slice(0, 10)); } catch {} }}>Refresh</button>
         </div>
         <div className="overflow-auto">
           <table className="w-full text-xs">

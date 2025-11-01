@@ -200,7 +200,7 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
   const arr: any[] = Array.isArray(raw?.data?.data)
     ? raw.data.data
     : (Array.isArray(raw?.data) ? raw.data : (Array.isArray(raw) ? raw : []));
-  // Load Jupiter token decimals to enforce authoritative values for CLMM
+  // Load Jupiter token decimals to enforce authoritative values for both AMM and CLMM
   let jupMap: Record<string, { symbol?: string; decimals?: number }> = {};
   try {
     const tok = await import('../../utils/tokens.js');
@@ -243,6 +243,25 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         if (!Number.isFinite(decB)) { const r = await (tok as any).resolveMint(mintB); decB = Number(r?.decimals); }
       }
     } catch {}
+    // Enforce authoritative decimals from Jupiter list for both AMM and CLMM, then anchors, then clamp
+    // This ensures consistent decimal handling across all pool types
+    try {
+      const jDecA = Number(jupMap[mintA]?.decimals);
+      const jDecB = Number(jupMap[mintB]?.decimals);
+      if (Number.isFinite(jDecA)) decA = jDecA;
+      if (Number.isFinite(jDecB)) decB = jDecB;
+      // Anchors: SOL 9, USDC/USDT/USD1 6
+      if (mintA === 'So11111111111111111111111111111111111111112') decA = 9;
+      if (mintB === 'So11111111111111111111111111111111111111112') decB = 9;
+      if (mintA === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') decA = 6;
+      if (mintB === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') decB = 6;
+      if (mintA === 'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN') decA = 6;
+      if (mintB === 'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN') decB = 6;
+      if (mintA === 'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB') decA = 6;
+      if (mintB === 'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB') decB = 6;
+      decA = Math.min(12, Math.max(0, Math.round(Number(decA))));
+      decB = Math.min(12, Math.max(0, Math.round(Number(decB))));
+    } catch {}
     const price = Number((it as any)?.price);
     const tvl = Number((it as any)?.tvl);
     const mintAmountA = Number((it as any)?.mintAmountA);
@@ -258,24 +277,6 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
       const reserveB = Number((it as any)?.reserveB ?? NaN);
       const amount_a_whole = Number.isFinite(mintAmountA) ? mintAmountA : (Number.isFinite(reserveA) ? reserveA : undefined);
       const amount_b_whole = Number.isFinite(mintAmountB) ? mintAmountB : (Number.isFinite(reserveB) ? reserveB : undefined);
-      // Enforce authoritative decimals from Jupiter list, then anchors, then clamp
-      try {
-        const jDecA = Number(jupMap[mintA]?.decimals);
-        const jDecB = Number(jupMap[mintB]?.decimals);
-        if (Number.isFinite(jDecA)) decA = jDecA;
-        if (Number.isFinite(jDecB)) decB = jDecB;
-        // Anchors: SOL 9, USDC/USDT/USD1 6
-        if (mintA === 'So11111111111111111111111111111111111111112') decA = 9;
-        if (mintB === 'So11111111111111111111111111111111111111112') decB = 9;
-        if (mintA === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') decA = 6;
-        if (mintB === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') decB = 6;
-        if (mintA === 'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN') decA = 6;
-        if (mintB === 'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN') decB = 6;
-        if (mintA === 'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB') decA = 6;
-        if (mintB === 'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB') decB = 6;
-        decA = Math.min(12, Math.max(0, Math.round(Number(decA))));
-        decB = Math.min(12, Math.max(0, Math.round(Number(decB))));
-      } catch {}
       // Raydium CLMM sqrtPriceX64 encoding: sqrt encodes sqrt(B/A) in smallest units, like Orca.
       // Formula: A-per-1-B = 10^(decB - decA) / (ratio^2), where ratio = sqrt / 2^64
       // Same formula as Orca CLMM (verified against Orca implementation and pools.ts defaultNormalizeRaydiumPools)
