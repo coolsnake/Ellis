@@ -162,18 +162,18 @@ export function defaultNormalizeRaydiumPools(raw: any): PoolsPayload {
       const liquidity = Number((it as any)?.liquidity ?? 0);
       const tvl_usd = Number.isFinite(tvl) && tvl > 0 ? tvl : undefined;
       // Derive A per 1 B from sqrt if possible
-      // Raydium CLMM sqrtPriceX64 encoding: sqrt encodes sqrt(A/B) in atomic units
-      // Formula: A-per-1-B = (ratio^2) * 10^(decB-decA), where ratio = sqrt / 2^64
+      // Raydium CLMM sqrtPriceX64 encoding: sqrt encodes sqrt(B/A) in atomic units
+      // Formula: A-per-1-B = 10^(decB-decA) / (ratio^2), where ratio = sqrt / 2^64
       // Note: This is a synchronous function, so we use manual calculation only
       // The async normalizeRaydiumPools in raydium.ts uses SDK when available
       let price_from_sqrt = 0;
       if (sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
         const two64 = Math.pow(2, 64);
         const ratio = sqrt / two64;
-        // Manual decode: sqrtPriceX64 = sqrt(A_atomic/B_atomic) * 2^64
-        // A_per_B (whole) = (ratio^2) * 10^(decB-decA)
+        // Manual decode: sqrtPriceX64 = sqrt(B_atomic/A_atomic) * 2^64
+        // A_per_B (whole) = 10^(decB-decA) / (ratio^2)
         const scale = Math.pow(10, (decB as number) - (decA as number));
-        const cand = (ratio * ratio) * scale;
+        const cand = scale / (ratio * ratio);
         price_from_sqrt = Number.isFinite(cand) && cand > 0 ? cand : 0;
       }
       const px = price_from_sqrt > 0 ? price_from_sqrt : (Number(price) > 0 ? Number(price) : 0);
@@ -644,10 +644,10 @@ export function startRaydiumRefreshLoop(): void {
                           
                           // Fallback to manual calculation
                           const ratio = sqrt / Math.pow(2, 64);
-                          // Manual decode: sqrtPriceX64 = sqrt(A_atomic/B_atomic) * 2^64
-                          // A_per_B (whole) = (ratio^2) * 10^(decB-decA)
+                          // Manual decode: sqrtPriceX64 = sqrt(B_atomic/A_atomic) * 2^64
+                          // A_per_B (whole) = 10^(decB-decA) / (ratio^2)
                           const scale = Math.pow(10, (decB as number) - (decA as number));
-                          const aPerB = (ratio * ratio) * scale;
+                          const aPerB = scale / (ratio * ratio);
                           return (aPerB > 0 && Number.isFinite(aPerB)) ? aPerB : undefined;
                         } catch { return undefined; }
                       })();

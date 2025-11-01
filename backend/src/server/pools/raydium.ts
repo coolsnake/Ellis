@@ -278,8 +278,8 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
       const amount_a_whole = Number.isFinite(mintAmountA) ? mintAmountA : (Number.isFinite(reserveA) ? reserveA : undefined);
       const amount_b_whole = Number.isFinite(mintAmountB) ? mintAmountB : (Number.isFinite(reserveB) ? reserveB : undefined);
       // Raydium CLMM sqrtPriceX64 encoding: Use Raydium SDK's authoritative conversion function
-      // If SDK unavailable, manual decode: sqrtPriceX64 encodes sqrt(A/B) in atomic units
-      // Formula: A-per-1-B = (ratio^2) * 10^(decB-decA), where ratio = sqrt / 2^64
+      // If SDK unavailable, manual decode: sqrtPriceX64 encodes sqrt(B/A) in atomic units
+      // Formula: A-per-1-B = 10^(decB-decA) / (ratio^2), where ratio = sqrt / 2^64
       let price_from_sqrt = 0;
       try {
         if (sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
@@ -300,10 +300,10 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
           if (price_from_sqrt === 0) {
             const two64 = Math.pow(2, 64);
             const ratio = sqrt / two64;
-            // Manual decode: sqrtPriceX64 = sqrt(A_atomic/B_atomic) * 2^64
-            // A_per_B (whole) = (ratio^2) * 10^(decB-decA)
+            // Manual decode: sqrtPriceX64 = sqrt(B_atomic/A_atomic) * 2^64
+            // A_per_B (whole) = 10^(decB-decA) / (ratio^2)
             const scale = Math.pow(10, (decB as number) - (decA as number));
-            const aPerB = (ratio * ratio) * scale;
+            const aPerB = scale / (ratio * ratio);
             if (Number.isFinite(aPerB) && aPerB > 0) price_from_sqrt = aPerB;
           }
         }

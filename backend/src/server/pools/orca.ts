@@ -37,6 +37,10 @@ export function deriveOrcaFeeBps(raw: any): number {
   const toBps = (rate: number | undefined): number => {
     if (!Number.isFinite(rate) || (rate as number) <= 0) return 0;
     const n = rate as number;
+    if (Number.isInteger(n) && n > 1 && n <= 10_000) {
+      // On-chain Whirlpool accounts encode feeRate in hundredths of a basis point
+      return Math.round(n / 100);
+    }
     if (n >= 100) return Math.round(n); // already in bps (100 = 1%)
     if (n >= 0.01) return Math.round(n * 100); // treat as percentage value
     return Math.round(n * 10_000); // decimal fraction (0.003 => 30 bps)

@@ -25,6 +25,13 @@ describe('orca.fees.normalize', () => {
     expect(deriveOrcaFeeBps({ feeRate: 0.0025, protocolFeeRate: 0.0005 })).toBe(20);
   });
 
+  it('handles on-chain integer encodings from Whirlpool accounts', async () => {
+    const { deriveOrcaFeeBps } = await import('../pools/orca.js');
+    expect(deriveOrcaFeeBps({ feeRate: 400 })).toBe(4); // 0.04% => 4 bps
+    expect(deriveOrcaFeeBps({ feeRate: 3000 })).toBe(30); // 0.3% => 30 bps
+    expect(deriveOrcaFeeBps({ feeRate: 3000, protocolFeeRate: 500 })).toBe(25); // subtract protocol fee
+  });
+
   it('integrates with normalizeOrcaHttp', async () => {
     const { normalizeOrcaHttp } = await import('../pools/orca.js');
     const raw = {
