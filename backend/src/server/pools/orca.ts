@@ -193,11 +193,21 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
       decB = Math.min(12, Math.max(0, Math.round(Number(decB))));
     } catch {}
     let fee_bps = 0;
-    const feeRateRaw = (it as any)?.feeRate;
-    if (typeof feeRateRaw === 'number') {
-      fee_bps = feeRateRaw <= 1 ? Math.round(feeRateRaw * 100) : Math.round(feeRateRaw);
-    } else if (typeof (it as any)?.fee_bps === 'number') {
-      fee_bps = Math.round((it as any).fee_bps);
+    // Check multiple possible fee fields, handling both numbers and strings
+    const feeRateRaw = (it as any)?.feeRate ?? (it as any)?.tradeFee ?? (it as any)?.fee;
+    const feeBpsRaw = (it as any)?.fee_bps ?? (it as any)?.feeBps;
+    
+    // Convert string values to numbers
+    const feeRateNum = typeof feeRateRaw === 'string' ? Number(feeRateRaw) : feeRateRaw;
+    const feeBpsNum = typeof feeBpsRaw === 'string' ? Number(feeBpsRaw) : feeBpsRaw;
+    
+    if (typeof feeBpsNum === 'number' && Number.isFinite(feeBpsNum)) {
+      // Already in bps format
+      fee_bps = Math.round(feeBpsNum);
+    } else if (typeof feeRateNum === 'number' && Number.isFinite(feeRateNum)) {
+      // Convert percentage to bps (0.04 = 0.04% = 4 bps)
+      // If value is <= 1, treat as percentage; otherwise assume already in bps
+      fee_bps = feeRateNum <= 1 ? Math.round(feeRateNum * 100) : Math.round(feeRateNum);
     }
     const poolType = String(it?.type || it?.poolType || '').toLowerCase();
     const isWhirlpool = poolType.includes('whirlpool') || poolType.includes('concentrated') || typeof it?.tickSpacing === 'number' || typeof it?.state?.tickSpacing === 'number';
