@@ -152,9 +152,13 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
         const sig = (() => {
           try {
             const count = Array.isArray((payload as any)?.items) ? ((payload as any).items as any[]).length : 0;
-            const top = ((payload as any)?.items || []).slice(0, 3).map((o: any) => [Math.round(o?.net_bps ?? o?.profit_bps ?? 0), (o?.path||[]).join('>')]).join('|');
+            // Include ALL opportunities in signature, not just top 3, to detect all changes
+            const allOpps = ((payload as any)?.items || []).map((o: any) => 
+              `${Math.round(o?.net_bps ?? o?.profit_bps ?? 0)}:${(o?.path||[]).join('>')}`
+            ).join('|');
             const near = (((payload as any)?.summary?.near_miss?.path || []) as string[]).join('>');
-            return `${count}:${top}:${near}`;
+            const nearMissesCount = Array.isArray((payload as any)?.summary?.near_misses) ? (payload as any).summary.near_misses.length : 0;
+            return `${count}:${allOpps}:${near}:${nearMissesCount}`;
           } catch { return String(now); }
         })();
         if (sig === lastSig) return;
@@ -555,7 +559,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
           )}
         </div>
       )}
-      {items.length === 0 && !summary?.near_miss && summary?.near_misses && summary.near_misses.length > 0 && (
+      {items.length === 0 && summary?.near_misses && summary.near_misses.length > 0 && (
         <div className="p-2 border rounded bg-yellow-900/10 text-xs mb-3">
           <div className="font-semibold mb-1">Near-misses this run</div>
           <div className="space-y-1">

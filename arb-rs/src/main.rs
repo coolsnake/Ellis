@@ -465,7 +465,7 @@ async fn main() -> anyhow::Result<()> {
                         let nlen = c.nodes.len();
                         if nlen < 3 { continue; }
                         if nlen > max_hops { continue; }
-                        tracing::info!(len = nlen, "arb.detect.cycle.begin");
+                        tracing::debug!(len = nlen, "arb.detect.cycle.begin");
                         let mut uniq = std::collections::HashSet::new();
                         let mut simple = true;
                         for &v in c.nodes.iter() { if !uniq.insert(v) { simple = false; break; } }
@@ -603,7 +603,7 @@ async fn main() -> anyhow::Result<()> {
                             }
                         };
                         let canon_labels = canon(&labels);
-                        tracing::info!(path = %canon_labels.join("->"), profit_bps, "arb.detect.cycle.end");
+                        tracing::debug!(path = %canon_labels.join("->"), profit_bps, "arb.detect.cycle.end");
                         // Align hop arrays with the rotated labels (no reversal)
                         rotate_to_start(&labels, &canon_labels, &mut hop_pool_ids);
                         rotate_to_start(&labels, &canon_labels, &mut hop_dexes);
