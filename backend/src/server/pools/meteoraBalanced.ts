@@ -100,7 +100,7 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
   const toFeeBps = (v: any): number => {
     const n = Number(v?.feeRate ?? v?.tradeFeeBps ?? v?.feeBps);
     if (!Number.isFinite(n)) return 30;
-    return n <= 1 ? Math.round(n * 10_000) : Math.round(n);
+    return n <= 1 ? Math.round(n * 100) : Math.round(n);
   };
 
   for (const it of arr) {

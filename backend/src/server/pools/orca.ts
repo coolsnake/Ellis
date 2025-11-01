@@ -195,7 +195,7 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
     let fee_bps = 0;
     const feeRateRaw = (it as any)?.feeRate;
     if (typeof feeRateRaw === 'number') {
-      fee_bps = feeRateRaw <= 1 ? Math.round(feeRateRaw * 10_000) : Math.round(feeRateRaw);
+      fee_bps = feeRateRaw <= 1 ? Math.round(feeRateRaw * 100) : Math.round(feeRateRaw);
     } else if (typeof (it as any)?.fee_bps === 'number') {
       fee_bps = Math.round((it as any).fee_bps);
     }

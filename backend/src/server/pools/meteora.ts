@@ -148,10 +148,10 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     let fee_bps = 0;
     if (feeBasePctRaw != null) {
       const val = Number(feeBasePctRaw);
-      if (Number.isFinite(val)) fee_bps = val <= 1 ? Math.round(val * 10_000) : Math.round(val * 100);
+      if (Number.isFinite(val)) fee_bps = val <= 1 ? Math.round(val * 100) : Math.round(val);
     } else {
       const feeRaw = (it as any)?.feeRate ?? (it as any)?.fee_bps;
-      if (typeof feeRaw === 'number') fee_bps = feeRaw <= 1 ? Math.round(feeRaw * 10_000) : Math.round(feeRaw);
+      if (typeof feeRaw === 'number') fee_bps = feeRaw <= 1 ? Math.round(feeRaw * 100) : Math.round(feeRaw);
     }
     let price_a_per_b = Number((it as any)?.current_price ?? (it as any)?.price ?? (it as any)?.price_a_per_b ?? 0);
     const amtAraw = (it?.reserve_x_amount ?? it?.tokenBalanceA ?? it?.tokenAAmount ?? it?.amountA ?? it?.baseAmount ?? 0);

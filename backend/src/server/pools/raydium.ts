@@ -277,16 +277,15 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         decB = Math.min(12, Math.max(0, Math.round(Number(decB))));
       } catch {}
       // Raydium CLMM sqrtPriceX64 encoding: sqrt encodes sqrt(B/A) in smallest units, like Orca.
-      // However, Raydium uses decA - decB for scaling, while Orca uses decB - decA.
-      // Formula: A-per-1-B = 10^(decA - decB) / (ratio^2), where ratio = sqrt / 2^64
-      // Verified by tests/raydium.clmm.decode.test.ts
+      // Formula: A-per-1-B = 10^(decB - decA) / (ratio^2), where ratio = sqrt / 2^64
+      // Same formula as Orca CLMM (verified against Orca implementation and pools.ts defaultNormalizeRaydiumPools)
       let price_from_sqrt = 0;
       try {
         if (sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
           const two64 = Math.pow(2, 64);
           const ratio = sqrt / two64;
-          // Raydium-specific formula: scale = 10^(decA - decB), then A-per-1-B = scale / (ratio^2)
-          const scale = Math.pow(10, (decA as number) - (decB as number));
+          // Use same formula as Orca: scale = 10^(decB - decA), then A-per-1-B = scale / (ratio^2)
+          const scale = Math.pow(10, (decB as number) - (decA as number));
           const aPerB = scale / (ratio * ratio);
           if (Number.isFinite(aPerB) && aPerB > 0) price_from_sqrt = aPerB;
         }
