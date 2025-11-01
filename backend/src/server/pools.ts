@@ -162,12 +162,13 @@ export function defaultNormalizeRaydiumPools(raw: any): PoolsPayload {
       const liquidity = Number((it as any)?.liquidity ?? 0);
       const tvl_usd = Number.isFinite(tvl) && tvl > 0 ? tvl : undefined;
       // Derive A per 1 B from sqrt if possible
-      // Raydium CLMM: sqrt encodes sqrt(A/B), so A-per-1-B = (ratio^2) * 10^(decB - decA)
+      // Raydium CLMM: encoding matches priceToSqrtPriceX64: sqrt = sqrt((A_per_B_whole) / 10^(decA-decB))
+      // Decoding: A_per_B_whole = (ratio²) × 10^(decA-decB), where ratio = sqrt / 2^64
       let price_from_sqrt = 0;
       if (sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
         const two64 = Math.pow(2, 64);
         const ratio = sqrt / two64;
-        const scale = Math.pow(10, (decB as number) - (decA as number));
+        const scale = Math.pow(10, (decA as number) - (decB as number));
         const cand = (ratio * ratio) * scale;
         price_from_sqrt = Number.isFinite(cand) && cand > 0 ? cand : 0;
       }
@@ -606,8 +607,8 @@ export function startRaydiumRefreshLoop(): void {
                       const mintB = ((state as any).mintB || (state as any).tokenMintB)?.toBase58?.() || '';
                       const sqrt = Number((state as any).sqrtPriceX64 ?? (state as any).sqrt_price_x64 ?? (state as any).sqrtPrice ?? 0);
                       // Derive A per 1 B using sqrtPrice and decimals:
-                      // Formula: A-per-1-B = (ratio^2) * 10^(decB - decA), where ratio = sqrt / 2^64
-                      // Raydium uses inverted formula compared to Orca (sqrt encodes sqrt(A/B) instead of sqrt(B/A))
+                      // Encoding matches priceToSqrtPriceX64: sqrt = sqrt((A_per_B_whole) / 10^(decA-decB))
+                      // Decoding: A_per_B_whole = (ratio²) × 10^(decA-decB), where ratio = sqrt / 2^64
                       const price_a_per_b = await (async () => {
                         try {
                           if (!Number.isFinite(sqrt) || sqrt <= 0) return undefined;
@@ -621,8 +622,8 @@ export function startRaydiumRefreshLoop(): void {
                           } catch {}
                           if (!Number.isFinite(decA as any) || !Number.isFinite(decB as any)) return undefined;
                           const ratio = sqrt / Math.pow(2, 64);
-                          // Raydium-specific formula: sqrt encodes sqrt(A/B), so A-per-1-B = (ratio^2) * scale
-                          const scale = Math.pow(10, (decB as number) - (decA as number));
+                          // Match encoding: scale = 10^(decA - decB) to reverse the encoding division
+                          const scale = Math.pow(10, (decA as number) - (decB as number));
                           const aPerB = (ratio * ratio) * scale;
                           return (aPerB > 0 && Number.isFinite(aPerB)) ? aPerB : undefined;
                         } catch { return undefined; }
