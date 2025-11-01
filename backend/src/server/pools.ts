@@ -164,29 +164,17 @@ export function defaultNormalizeRaydiumPools(raw: any): PoolsPayload {
       // Derive A per 1 B from sqrt if possible
       // Raydium CLMM sqrtPriceX64 encoding: sqrt encodes sqrt(A/B) in atomic units
       // Formula: A-per-1-B = (ratio^2) * 10^(decB-decA), where ratio = sqrt / 2^64
+      // Note: This is a synchronous function, so we use manual calculation only
+      // The async normalizeRaydiumPools in raydium.ts uses SDK when available
       let price_from_sqrt = 0;
       if (sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
-        // Try Raydium SDK first if available
-        try {
-          const rmod: any = await import('@raydium-io/raydium-sdk-v2').catch(() => null);
-          const SqrtPriceMath = rmod?.SqrtPriceMath || rmod?.Clmm?.SqrtPriceMath;
-          if (SqrtPriceMath?.sqrtPriceX64ToPrice) {
-            const sqrtBigInt = BigInt(Math.floor(sqrt));
-            const priceFromSdk = SqrtPriceMath.sqrtPriceX64ToPrice(sqrtBigInt, decA, decB);
-            if (priceFromSdk != null && Number(priceFromSdk) > 0 && Number.isFinite(Number(priceFromSdk))) {
-              price_from_sqrt = Number(priceFromSdk);
-            }
-          }
-        } catch {}
-        
-        // Fallback to manual calculation if SDK fails
-        if (price_from_sqrt === 0) {
-          const two64 = Math.pow(2, 64);
-          const ratio = sqrt / two64;
-          const scale = Math.pow(10, (decB as number) - (decA as number));
-          const cand = (ratio * ratio) * scale;
-          price_from_sqrt = Number.isFinite(cand) && cand > 0 ? cand : 0;
-        }
+        const two64 = Math.pow(2, 64);
+        const ratio = sqrt / two64;
+        // Manual decode: sqrtPriceX64 = sqrt(A_atomic/B_atomic) * 2^64
+        // A_per_B (whole) = (ratio^2) * 10^(decB-decA)
+        const scale = Math.pow(10, (decB as number) - (decA as number));
+        const cand = (ratio * ratio) * scale;
+        price_from_sqrt = Number.isFinite(cand) && cand > 0 ? cand : 0;
       }
       const px = price_from_sqrt > 0 ? price_from_sqrt : (Number(price) > 0 ? Number(price) : 0);
       clmm.push({ id, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps, sqrt_price_x64: Number.isFinite(sqrt) ? sqrt : 0, liquidity: Number.isFinite(liquidity) ? liquidity : 0, tick_spacing: Number.isFinite(tick) ? tick : 0, updated_ms: now, price_a_per_b: px > 0 ? px : undefined, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, pool_kind: 'clmm', tvl_usd } as any);
