@@ -544,6 +544,15 @@ async fn main() -> anyhow::Result<()> {
                         if timed_out { continue; }
                         let profit = rate_prod - 1.0;
                         let profit_bps = (profit * 10_000.0).floor() as i64;
+                        
+                        // Skip if cycle is unprofitable after picking best edges
+                        // (Bellman-Ford detected negative cycle, but best edges don't form profitable cycle)
+                        if rate_prod <= 1.0 {
+                            let path_str = labels.join("->");
+                            tracing::info!(path = %path_str, rate_prod, "arb.detect.cycle.unprofitable_after_edge_selection");
+                            continue;
+                        }
+                        
                         // Canonicalize cycle labels by rotation only (preserve direction to keep hop arrays aligned)
                         let canon = |v: &Vec<String>| -> Vec<String> {
                             if v.is_empty() { return v.clone(); }
