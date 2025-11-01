@@ -37,7 +37,8 @@ export function deriveOrcaFeeBps(raw: any): number {
   const toBps = (rate: number | undefined): number => {
     if (!Number.isFinite(rate) || (rate as number) <= 0) return 0;
     const n = rate as number;
-    return n > 1 ? Math.round(n) : Math.round(n * 10_000);
+    if (n >= 100) return Math.round(n); // already in bps (100 = 1%)
+    return Math.round(n * 10_000);
   };
 
   const protocolBps = toBps(protocolRateRaw);
