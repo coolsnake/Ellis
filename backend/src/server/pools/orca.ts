@@ -7,31 +7,6 @@ import { canonicalizePairs, validateHttpUrl, swapABFields } from './common.js';
 import { verifyCanonicalization } from './validation.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
 
-const ORCA_KNOWN_FEE_BPS = [
-  1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 15, 16, 18, 20, 24, 25, 30, 34, 36, 40, 48, 50, 55, 60, 64, 70, 74,
-  75, 78, 80, 85, 90, 94, 96, 100, 110, 120, 125, 130, 140, 150, 160, 170, 180, 190, 200, 210, 220, 230,
-  240, 250, 260, 280, 300, 320, 340, 350, 360, 380, 400, 420, 450, 480, 500, 520, 550, 560, 580, 600,
-  620, 640, 660, 680, 700, 720, 750, 780, 800, 820, 840, 880, 900, 940, 960, 1000, 1100, 1200, 1300, 1400,
-  1500, 1600, 1700, 1800, 1900, 2000, 2500, 3000
-];
-
-const ORCA_FEE_TIER_LOOKUP = ORCA_KNOWN_FEE_BPS.map((tier) => Number(tier)).filter((tier) => Number.isFinite(tier));
-
-const MAX_PLAUSIBLE_ORCA_FEE_BPS = 5000;
-
-const FEE_REASON_PENALTY: Record<string, number> = {
-  raw: 0,
-  bps: 0.01,
-  times100: 0.02,
-  times10: 0.04,
-  times1000: 0.06,
-  times10000: 0.1,
-  times100000: 0.2,
-  div10: 0.6,
-  div100: 0.8,
-  div1000: 1.0,
-};
-
 const FEERATE_FIELDS = ['tradingFeeRate', 'tradeFeeRate', 'feeRate', 'tradeFee', 'fee', 'makerFee', 'takerFee'];
 const FEEBPS_FIELDS = ['fee_bps', 'feeBps', 'fee_in_bps'];
 const PROTOCOL_FEE_FIELDS = ['protocolFeeRate', 'protocolFee'];
@@ -45,56 +20,6 @@ const toNumber = (value: any): number | undefined => {
   return undefined;
 };
 
-const nearestTierDiff = (bps: number): number => {
-  let min = Number.POSITIVE_INFINITY;
-  for (const tier of ORCA_FEE_TIER_LOOKUP) {
-    const diff = Math.abs(bps - tier);
-    if (diff < min) min = diff;
-  }
-  return min;
-};
-
-const normalizeFeeRateNumber = (value: number | undefined): { bps: number; reason: string } | undefined => {
-  if (!Number.isFinite(value) || (value as number) <= 0) return undefined;
-  const n = value as number;
-  const candidates = new Map<number, string>();
-
-  const pushCandidate = (val: number, reason: string) => {
-    if (!Number.isFinite(val)) return;
-    const rounded = Math.round(val);
-    if (rounded <= 0) return;
-    if (rounded > MAX_PLAUSIBLE_ORCA_FEE_BPS) return;
-    if (!candidates.has(rounded)) candidates.set(rounded, reason);
-  };
-
-  pushCandidate(n, 'raw');
-  if (n < 5) {
-    pushCandidate(n * 10, 'times10');
-    pushCandidate(n * 100, 'times100');
-    pushCandidate(n * 1000, 'times1000');
-    pushCandidate(n * 10_000, 'times10000');
-    pushCandidate(n * 100_000, 'times100000');
-  }
-  if (n >= 5) {
-    pushCandidate(n / 10, 'div10');
-    pushCandidate(n / 100, 'div100');
-    pushCandidate(n / 1000, 'div1000');
-  }
-  // Always allow interpreting as bps directly
-  pushCandidate(n, 'bps');
-
-  const scored = [...candidates.entries()].map(([bps, reason]) => {
-    const diff = nearestTierDiff(bps);
-    const reasonPenalty = FEE_REASON_PENALTY[reason] ?? 0.4;
-    const rangePenalty = bps > 2000 ? (bps - 2000) / 200 : 0;
-    return { bps, reason, score: diff + reasonPenalty + rangePenalty };
-  });
-
-  if (!scored.length) return undefined;
-  scored.sort((a, b) => (a.score === b.score ? a.bps - b.bps : a.score - b.score));
-  return { bps: scored[0].bps, reason: scored[0].reason };
-};
-
 export function deriveOrcaFeeBps(raw: any): number {
   // 1. Explicit bps fields take precedence
   for (const field of FEEBPS_FIELDS) {
@@ -104,33 +29,28 @@ export function deriveOrcaFeeBps(raw: any): number {
     }
   }
 
-  // 2. Prefer trading fee rate when provided separately from protocol fee
-  const protocolRate = PROTOCOL_FEE_FIELDS.map((f) => toNumber(raw?.[f]))
+  const protocolRateRaw = PROTOCOL_FEE_FIELDS.map((f) => toNumber(raw?.[f]))
+    .find((v) => Number.isFinite(v) && (v as number) > 0);
+  const feeRateRaw = FEERATE_FIELDS.map((f) => toNumber(raw?.[f]))
     .find((v) => Number.isFinite(v) && (v as number) > 0);
 
-  for (const field of FEERATE_FIELDS) {
-    const rateVal = toNumber(raw?.[field]);
-    if (!Number.isFinite(rateVal) || (rateVal as number) <= 0) continue;
-    let candidateValue = rateVal as number;
-    if (Number.isFinite(protocolRate)) {
-      // When the field appears to include protocol fees, try removing them but only if it keeps us positive.
-      if (candidateValue > (protocolRate as number)) {
-        candidateValue -= protocolRate as number;
-      }
+  const toBps = (rate: number | undefined): number => {
+    if (!Number.isFinite(rate) || (rate as number) <= 0) return 0;
+    const n = rate as number;
+    return n > 1 ? Math.round(n) : Math.round(n * 10_000);
+  };
+
+  const protocolBps = toBps(protocolRateRaw);
+  let feeBps = toBps(feeRateRaw);
+
+  if (feeBps > 0) {
+    if (protocolBps > 0 && protocolBps <= feeBps) {
+      feeBps -= protocolBps;
     }
-    const normalized = normalizeFeeRateNumber(candidateValue);
-    if (normalized) {
-      return normalized.bps;
-    }
+    return feeBps;
   }
 
-  // 3. Fallback to protocol-only fee if no trading rate found
-  if (Number.isFinite(protocolRate) && (protocolRate as number) > 0) {
-    const normalized = normalizeFeeRateNumber(protocolRate as number);
-    if (normalized) return normalized.bps;
-  }
-
-  return 0;
+  return protocolBps > 0 ? protocolBps : 0;
 }
 
 export async function fetchOrcaHttp(): Promise<any> {

@@ -19,6 +19,12 @@ describe('orca.fees.normalize', () => {
     expect(deriveOrcaFeeBps({ feeBps: '90', feeRate: 0.009 })).toBe(90);
   });
 
+  it('subtracts protocol fee when trade fee includes it', async () => {
+    const { deriveOrcaFeeBps } = await import('../pools/orca.js');
+    expect(deriveOrcaFeeBps({ feeRate: 0.0006, protocolFeeRate: 0.0002 })).toBe(4);
+    expect(deriveOrcaFeeBps({ feeRate: 0.0025, protocolFeeRate: 0.0005 })).toBe(20);
+  });
+
   it('integrates with normalizeOrcaHttp', async () => {
     const { normalizeOrcaHttp } = await import('../pools/orca.js');
     const raw = {
