@@ -277,6 +277,18 @@ const wsDeltaStats: Record<'raydium' | 'orca' | 'meteora', { decoded: number; ap
   orca: { decoded: 0, applied: 0, skipped: 0 },
   meteora: { decoded: 0, applied: 0, skipped: 0 },
 };
+const wsDebugCounters: Record<'raydium' | 'orca' | 'meteora', number> = { raydium: 0, orca: 0, meteora: 0 };
+const wsTargetDebugCounters: Record<'raydium' | 'orca' | 'meteora', number> = { raydium: 0, orca: 0, meteora: 0 };
+
+function debugLogTargeted(source: 'raydium' | 'orca' | 'meteora', account: string, extra: Record<string, unknown>): void {
+  try {
+    const limit = Number((CONFIG.system as any)?.wsDebugAccountLogLimit ?? 10);
+    if (!(limit > 0)) return;
+    if (wsTargetDebugCounters[source] >= limit) return;
+    wsTargetDebugCounters[source] += 1;
+    logger.info('pools.ws debug.subscribe', { source, account, ...extra, cat: 'pools' });
+  } catch {}
+}
 let attachedOrcaPools: number = 0;
 let attachedRaydiumPools: number = 0;
 let attachedMeteoraPools: number = 0;
@@ -662,6 +674,22 @@ export function startRaydiumRefreshLoop(): void {
               emit('log', { level: 'debug', message: `pools:ws event source=${src} acct=${shortPk}`, timestamp: new Date().toISOString(), context: { cat: 'pools', raw, source: src } });
             } catch {}
             const now = Date.now();
+            const debugLimit = Number((CONFIG.system as any)?.wsDebugAccountLogLimit ?? 10);
+            const maybeDebugAccount = (source: 'raydium' | 'orca' | 'meteora') => {
+              if (!(debugLimit > 0)) return;
+              if (wsDebugCounters[source] >= debugLimit) return;
+              wsDebugCounters[source] += 1;
+              try {
+                logger.info('pools.ws debug.account', {
+                  source,
+                  account: pk58,
+                  owner,
+                  targeted: targetedSourceByAccount.get(pk58) || null,
+                  dataLen: Number(info?.data?.length ?? 0),
+                  cat: 'pools'
+                });
+              } catch {}
+            };
             if (owner === ownerRayAmm || owner === ownerRayClmm) {
               try { wsCounts.raydium += 1; } catch {}
               const pk58 = toB58Any(pk);
@@ -672,6 +700,7 @@ export function startRaydiumRefreshLoop(): void {
                   // Try CLMM pool decode first
                   let state: any = null;
                   const clmmLayout = (rmod as any)?.Clmm?.PoolStateLayout || (rmod as any)?.CLMM?.POOL_STATE_LAYOUT || (rmod as any)?.PoolStateLayout;
+                  if (debugLimit !== 0) maybeDebugAccount('raydium');
                   if (clmmLayout && typeof clmmLayout.decode === 'function') {
                     try { state = clmmLayout.decode(info.data); } catch {}
                     if (state && (state as any).liquidity != null && ((state as any).mintA || (state as any).tokenMintA)) {
@@ -839,6 +868,7 @@ export function startRaydiumRefreshLoop(): void {
                 const { ParsableWhirlpool } = sdk as any;
                 const parsed = ParsableWhirlpool.parse(pk, info);
                 if (parsed) {
+                  if (debugLimit !== 0) maybeDebugAccount('orca');
                   const id = pk58;
                   const mint_a = parsed.tokenMintA.toBase58();
                   const mint_b = parsed.tokenMintB.toBase58();
@@ -930,6 +960,7 @@ export function startRaydiumRefreshLoop(): void {
               // Try on-chain decode via Meteora DLMM SDK; fallback to HTTP refresh if unavailable
               let updated = false;
               try {
+                if (debugLimit !== 0) maybeDebugAccount('meteora');
                 const poolId = pk58;
                 // Lazy-load DLMM module (CJS or ESM)
                 let mod: any = (handle as any).__dlmmMod || null;
@@ -1222,6 +1253,7 @@ export function startRaydiumRefreshLoop(): void {
                 const id = await subscribeAccountWithRetry(vpk, handle);
                 subs.push({ kind: 'account', id });
                 targetedSourceByAccount.set(String(v), 'raydium');
+                    debugLogTargeted('raydium', String(v), { kind: 'vault' });
               } catch {}
             }
           } catch {}
@@ -1286,7 +1318,14 @@ export function startRaydiumRefreshLoop(): void {
               const pk = new PublicKey(addr);
               const id = await subscribeAccountWithRetry(pk, handle);
               subs.push({ kind: 'account', id }); attached++;
-              try { targetedSourceByAccount.set(pk.toBase58(), 'orca'); } catch {}
+              try {
+                const acct = pk.toBase58();
+                targetedSourceByAccount.set(acct, 'orca');
+                debugLogTargeted('orca', acct, { kind: 'pool' });
+              } catch {}
+              // Opportunistically attach AMM vault listeners for AMM pools
+              // Safe to call for any Raydium pool; function is a no-op for CLMM layouts
+              attachRaydiumAmmVaults(addr).catch(() => {});
             } catch {}
             if (i < uniq.length - 1 && intervalMs > 0) { await sleep(intervalMs); }
           }
@@ -1342,7 +1381,11 @@ export function startRaydiumRefreshLoop(): void {
               const pk = new web3.PublicKey(addr);
               const id = await subscribeAccountWithRetry(pk, handle);
               subs.push({ kind: 'account', id }); attachedRay++;
-              try { targetedSourceByAccount.set(pk.toBase58(), 'raydium'); } catch {}
+              try {
+                const acct = pk.toBase58();
+                targetedSourceByAccount.set(acct, 'raydium');
+                debugLogTargeted('raydium', acct, { kind: 'pool' });
+              } catch {}
               // Opportunistically attach AMM vault listeners for AMM pools
               // Safe to call for any Raydium pool; function is a no-op for CLMM layouts
               attachRaydiumAmmVaults(addr).catch(() => {});
@@ -1397,7 +1440,11 @@ export function startRaydiumRefreshLoop(): void {
                 const pk = new web3.PublicKey(addr);
                 const id = await subscribeAccountWithRetry(pk, handle);
                 subs.push({ kind: 'account', id }); attached++;
-                try { targetedSourceByAccount.set(pk.toBase58(), 'meteora'); } catch {}
+                try {
+                  const acct = pk.toBase58();
+                  targetedSourceByAccount.set(acct, 'meteora');
+                  debugLogTargeted('meteora', acct, { kind: 'pool' });
+                } catch {}
                 // Ensure meteoraTargets Set includes this ID for handle() closure
                 meteoraTargets.add(addr);
               } catch (e: any) {
