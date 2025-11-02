@@ -13,14 +13,14 @@ import { fetchMeteoraHttp as fetchMeteoraHttpImpl, normalizeMeteoraHttp as norma
 import { validateCrossDexPrices, verifyCanonicalization } from './pools/validation.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './pools/httpLog.js';
 import { fetchMeteoraBalancedHttp as fetchMeteoraBalancedHttpImpl, normalizeMeteoraBalancedHttp as normalizeMeteoraBalancedHttpImpl, fetchMeteoraBalancedAll as fetchMeteoraBalancedAllImpl } from './pools/meteoraBalanced.js';
-import { BorshAccountsCoder } from '@coral-xyz/anchor';
-import { IDL as MeteoraIdl } from '@meteora-ag/dlmm';
+import { createProgram, getAccountDiscriminator } from '@meteora-ag/dlmm';
 import { PoolInfoLayout as RaydiumClmmLayout } from '@raydium-io/raydium-sdk-v2/lib/raydium/clmm/layout.js';
 
 const raydiumCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 const orcaCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 const meteoraCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 const metbalCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
+const METEORA_DEFAULT_PROGRAM_ID = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
 
 // WS lifecycle flags: defer websocket subscriptions until graph signals readiness
 let wsAllowed: boolean = false;
@@ -282,7 +282,7 @@ const wsDeltaStats: Record<'raydium' | 'orca' | 'meteora', { decoded: number; ap
 };
 const wsDebugCounters: Record<'raydium' | 'orca' | 'meteora', number> = { raydium: 0, orca: 0, meteora: 0 };
 const wsTargetDebugCounters: Record<'raydium' | 'orca' | 'meteora', number> = { raydium: 0, orca: 0, meteora: 0 };
-const meteoraAccountsCoder = new BorshAccountsCoder(MeteoraIdl as any);
+let meteoraProgramInstance: any | null = null;
 
 function debugLogTargeted(source: 'raydium' | 'orca' | 'meteora', account: string, extra: Record<string, unknown>): void {
   try {
@@ -625,6 +625,19 @@ export function startRaydiumRefreshLoop(): void {
         const conn = new web3.Connection(CONFIG.rpcUrl, CONFIG.system.txCommitment as any);
         // Record connection so we can actively close its underlying WS on unsubscribe
         wsConn = conn;
+        const ensureMeteoraProgram = (): any | null => {
+          if (meteoraProgramInstance) return meteoraProgramInstance;
+          try {
+            const idStr = String(((CONFIG as any)?.meteora?.programId) || METEORA_DEFAULT_PROGRAM_ID).trim();
+            const programId = new web3.PublicKey(idStr);
+            meteoraProgramInstance = createProgram(conn, { programId });
+            try { logger.info('meteora.program.init', { programId: idStr, cat: 'pools' }); } catch {}
+          } catch (err: any) {
+            meteoraProgramInstance = null;
+            try { logger.warn('meteora.program.init failed', { error: String(err?.message || err), cat: 'pools' }); } catch {}
+          }
+          return meteoraProgramInstance;
+        };
         const rayAmm = new web3.PublicKey(String(CONFIG.raydium?.ammV4Program).trim());
         const rayClmm = new web3.PublicKey(String(CONFIG.raydium?.clmmProgram).trim());
         const orcaProg = new web3.PublicKey(String(CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc').trim());
@@ -987,102 +1000,72 @@ export function startRaydiumRefreshLoop(): void {
               try {
                 if (debugLimit !== 0) maybeDebugAccount('meteora');
                 const poolId = pk58;
-                // Lazy-load DLMM module (CJS or ESM)
-                let mod: any = (handle as any).__dlmmMod || null;
-                if (!mod) {
+                const program = ensureMeteoraProgram();
+                let state: any = null;
+                if (program && info?.data) {
                   try {
-                    const mmod: any = await import('node:module');
-                    const createRequire: any = (mmod && (mmod as any).createRequire) || (mmod?.default && (mmod as any).default.createRequire);
-                    const req: any = createRequire ? createRequire(import.meta.url) : undefined;
-                    if (req && !mod) {
-                      const specs = ['@meteora-ag/dlmm','@meteora-ag/dlmm/ts-client','@meteora-ag/dlmm-sdk','@meteora-ag/dlmm-sdk-public','@meteora-ag/dlmm/dist/index.js','@meteora-ag/dlmm-sdk/dist/index.js'];
-                      for (const spec of specs) { try { const m2 = req(spec); if (m2) { mod = m2; break; } } catch {} }
-                    }
-                  } catch {}
-                  if (!mod) {
+                    state = program.coder.accounts.decode('lbPair', info.data);
+                    logger.info('meteora.ws state.inspect', {
+                      id: poolId,
+                      gotState: true,
+                      keys: Object.keys(state || {}),
+                      source: 'program',
+                      cat: 'pools'
+                    });
+                  } catch (err: any) {
+                    try { logger.debug('meteora.ws decode.fail', { id: poolId, error: String(err?.message || err), cat: 'pools' }); } catch {}
                     try {
-                      const dyn = (Function('return import')()) as any;
-                      const specs = ['@meteora-ag/dlmm','@meteora-ag/dlmm/ts-client','@meteora-ag/dlmm-sdk','@meteora-ag/dlmm-sdk-public','@meteora-ag/dlmm/dist/index.js','@meteora-ag/dlmm-sdk/dist/index.js'];
-                      for (const spec of specs) { try { const m2 = await dyn(spec); if (m2) { mod = m2; break; } } catch {} }
+                      const bin = program.coder.accounts.decode('binArray', info.data);
+                      if (bin) {
+                        logger.info('meteora.ws binarray.inspect', {
+                          id: poolId,
+                          gotState: true,
+                          keys: Object.keys(bin || {}),
+                          cat: 'pools'
+                        });
+                      }
                     } catch {}
                   }
-                  (handle as any).__dlmmMod = mod;
                 }
-                const DLMM: any = mod && (mod as any).default ? (mod as any).default : (((mod as any)?.DLMM) || mod);
-                if (DLMM) {
-                  // Attempt multiple state accessors for robustness across SDK variants
-                  const getStateFns = [
-                    (DLMM as any).getLbPairState,
-                    (DLMM as any).getLbPair,
-                    (DLMM as any).lbPairState,
-                  ].filter((f: any) => typeof f === 'function');
-                  let state: any = null;
-                  for (const fn of getStateFns) {
-                    try { state = await fn(conn, new web3.PublicKey(poolId)); if (state) break; } catch {}
-                  }
-                  if (!state && info?.data) {
+                if (!state) {
+                  logger.warn('meteora.ws state.missing', { id: poolId, cat: 'pools' });
+                }
+                if (state) {
+                  // Fallback: try reading minimal fields via generic accessors
+                  let tokenX: string | undefined;
+                  let tokenY: string | undefined;
+                  let activeId: number | undefined;
+                  let binStep: number | undefined;
+                  try { tokenX = state?.tokenXMint?.toBase58?.() || state?.mint_x || state?.tokenXMint || state?.tokenA || undefined; } catch {}
+                  try { tokenY = state?.tokenYMint?.toBase58?.() || state?.mint_y || state?.tokenYMint || state?.tokenB || undefined; } catch {}
+                  try { activeId = Number(state?.activeId ?? state?.active_id); } catch {}
+                  try { binStep = Number(state?.binStep ?? state?.bin_step); } catch {}
+                  if (tokenX && tokenY && Number.isFinite(activeId as any) && Number.isFinite(binStep as any)) {
+                    // Resolve decimals
+                    let decA: number | undefined; let decB: number | undefined;
+                    try { const tok = await import('../utils/tokens.js'); const a = await (tok as any).resolveMint(tokenX); const b = await (tok as any).resolveMint(tokenY); decA = Number(a?.decimals); decB = Number(b?.decimals); } catch {}
+                    // Prefer reserves-based price if available; fallback to activeId/binStep
+                    let price_a_per_b: number | undefined;
                     try {
-                      state = meteoraAccountsCoder.decode('LbPair', info.data);
-                      logger.info('meteora.ws state.inspect', {
-                        id: poolId,
-                        gotState: true,
-                        keys: Object.keys(state || {}),
-                        source: 'coder',
-                        cat: 'pools'
-                      });
-                    } catch {
-                      logger.info('meteora.ws state.inspect', { id: poolId, gotState: false, keys: [], cat: 'pools' });
-                    }
-                  } else {
-                    try {
-                      logger.info('meteora.ws state.inspect', {
-                        id: poolId,
-                        gotState: !!state,
-                        keys: state ? Object.keys(state) : [],
-                        cat: 'pools'
-                      });
+                      // Try extracting reserves with multiple candidate field names
+                      const rx = Number(state?.reserveX ?? state?.reserve_x ?? state?.reserve_x_amount ?? state?.tokenXBalance ?? state?.tokenBalanceX ?? 0);
+                      const ry = Number(state?.reserveY ?? state?.reserve_y ?? state?.reserve_y_amount ?? state?.tokenYBalance ?? state?.tokenBalanceY ?? 0);
+                      if (Number.isFinite(rx) && Number.isFinite(ry) && rx > 0 && ry > 0 && Number.isFinite(decA as any) && Number.isFinite(decB as any)) {
+                        const wholeA = rx / Math.pow(10, decA as number);
+                        const wholeB = ry / Math.pow(10, decB as number);
+                        if (wholeA > 0 && wholeB > 0) price_a_per_b = wholeA / wholeB;
+                      }
                     } catch {}
-                  }
-                  if (!state) {
-                    logger.warn('meteora.ws state.missing', { id: poolId, cat: 'pools' });
-                  }
-                  if (state) {
-                    // Fallback: try reading minimal fields via generic accessors
-                    let tokenX: string | undefined;
-                    let tokenY: string | undefined;
-                    let activeId: number | undefined;
-                    let binStep: number | undefined;
-                    try { tokenX = state?.tokenXMint?.toBase58?.() || state?.mint_x || state?.tokenXMint || state?.tokenA || undefined; } catch {}
-                    try { tokenY = state?.tokenYMint?.toBase58?.() || state?.mint_y || state?.tokenYMint || state?.tokenB || undefined; } catch {}
-                    try { activeId = Number(state?.activeId ?? state?.active_id); } catch {}
-                    try { binStep = Number(state?.binStep ?? state?.bin_step); } catch {}
-                    if (tokenX && tokenY && Number.isFinite(activeId as any) && Number.isFinite(binStep as any)) {
-                      // Resolve decimals
-                      let decA: number | undefined; let decB: number | undefined;
-                      try { const tok = await import('../utils/tokens.js'); const a = await (tok as any).resolveMint(tokenX); const b = await (tok as any).resolveMint(tokenY); decA = Number(a?.decimals); decB = Number(b?.decimals); } catch {}
-                      // Prefer reserves-based price if available; fallback to activeId/binStep
-                      let price_a_per_b: number | undefined;
-                      try {
-                        // Try extracting reserves with multiple candidate field names
-                        const rx = Number(state?.reserveX ?? state?.reserve_x ?? state?.reserve_x_amount ?? state?.tokenXBalance ?? state?.tokenBalanceX ?? 0);
-                        const ry = Number(state?.reserveY ?? state?.reserve_y ?? state?.reserve_y_amount ?? state?.tokenYBalance ?? state?.tokenBalanceY ?? 0);
-                        if (Number.isFinite(rx) && Number.isFinite(ry) && rx > 0 && ry > 0 && Number.isFinite(decA as any) && Number.isFinite(decB as any)) {
-                          const wholeA = rx / Math.pow(10, decA as number);
-                          const wholeB = ry / Math.pow(10, decB as number);
-                          if (wholeA > 0 && wholeB > 0) price_a_per_b = wholeA / wholeB;
+                    try {
+                      if (!(price_a_per_b && price_a_per_b > 0) && Number.isFinite(decA as any) && Number.isFinite(decB as any)) {
+                        const f = Math.pow(1.0001, binStep as number);
+                        if (f > 0) {
+                          const bPerA = Math.pow(f, activeId as number) * Math.pow(10, (decA as number) - (decB as number));
+                          const cand = [bPerA > 0 ? (1 / bPerA) : 0, bPerA].filter(v => Number.isFinite(v) && v > 0);
+                          price_a_per_b = cand[0];
                         }
-                      } catch {}
-                      try {
-                        if (!(price_a_per_b && price_a_per_b > 0) && Number.isFinite(decA as any) && Number.isFinite(decB as any)) {
-                          const f = Math.pow(1.0001, binStep as number);
-                          if (f > 0) {
-                            const bPerA = Math.pow(f, activeId as number) * Math.pow(10, (decA as number) - (decB as number));
-                            const cand = [bPerA > 0 ? (1 / bPerA) : 0, bPerA].filter(v => Number.isFinite(v) && v > 0);
-                            price_a_per_b = cand[0];
-                          }
-                        }
-                      } catch {}
-                    }
+                      }
+                    } catch {}
                   }
                 }
               } catch {}
@@ -2169,5 +2152,7 @@ export async function getMeteoraPoolsCached(force = false): Promise<PoolsPayload
 
 // Orca normalization and fetch helpers are provided in ./pools/orca.ts
  
+
+const meteoraProgram = createProgram(await import('@solana/web3.js').then(m => m.Connection).then(() => undefined));
 
 
