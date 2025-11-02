@@ -214,7 +214,7 @@ export function defaultNormalizeRaydiumPools(raw: any): PoolsPayload {
         sqrt_price_x64_raw: sqrtBig ? sqrtBig.toString() : undefined,
         liquidity: Number.isFinite(liquidity) ? liquidity : 0,
         liquidity_raw: liquidityRaw ? liquidityRaw.toString() : undefined,
-        tick_spacing: Number.isFinite(tick) ? tick : 0,
+        'tick_spacing': Number.isFinite(tick) ? tick : 0,
         updated_ms: now,
         price_a_per_b: px > 0 ? px : undefined,
         price_a_per_b_num: ratio ? ratio.numerator.toString() : undefined,
@@ -717,7 +717,7 @@ export function startRaydiumRefreshLoop(): void {
                 if (!rmod || !info?.data) { throw new Error('raydium sdk missing'); }
                   // Try CLMM pool decode first
                   let state: any = null;
-                  const clmmLayout = (rmod as any)?.Clmm?.PoolStateLayout || (rmod as any)?.CLMM?.POOL_STATE_LAYOUT || (rmod as any)?.PoolStateLayout;
+                const clmmLayout = (rmod as any)?.Clmm?.PoolStateLayout || (rmod as any)?.CLMM?.POOL_STATE_LAYOUT || (rmod as any)?.PoolStateLayout || (rmod as any)?.PoolInfoLayout;
                   if (debugLimit !== 0) maybeDebugAccount('raydium');
                   if (clmmLayout && typeof clmmLayout.decode === 'function') {
                     let clmmDecodeError: any = null;
@@ -814,7 +814,7 @@ export function startRaydiumRefreshLoop(): void {
                         sqrt_price_x64_raw: sqrtRaw ? sqrtRaw.toString() : undefined,
                         liquidity: Number.isFinite(liq) ? liq : 0,
                         liquidity_raw: liqRaw ? liqRaw.toString() : undefined,
-                        tick_spacing: tick,
+                        'tick_spacing': tick,
                         updated_ms: Date.now(),
                         pool_kind: 'clmm',
                         liquidity_display: liq,
@@ -899,6 +899,15 @@ export function startRaydiumRefreshLoop(): void {
                         updated = true;
                     }
                   }
+                } else if (!(handle as any).__raydiumClmmLayoutMissing) {
+                  (handle as any).__raydiumClmmLayoutMissing = true;
+                  try {
+                    logger.info('raydium.ws clmm.layout.missing', {
+                      id: pk58,
+                      keys: Object.keys(rmod || {}),
+                      cat: 'pools'
+                    });
+                  } catch {}
                 }
               } catch (e:any) {
                 try { logger.warn('raydium.ws.decode failed', { id: pk58.slice(0,6)+'…', error: String(e?.message || e) }); } catch {}
@@ -960,7 +969,7 @@ export function startRaydiumRefreshLoop(): void {
                     sqrt_price_x64_raw: sqrtRaw ? sqrtRaw.toString() : undefined,
                     liquidity,
                     liquidity_raw: liquidityRaw ? liquidityRaw.toString() : undefined,
-                    tick_spacing,
+                    'tick_spacing': tick_spacing,
                     updated_ms: Date.now(),
                     pool_kind: 'clmm',
                     liquidity_display: liquidity,
@@ -1081,15 +1090,21 @@ export function startRaydiumRefreshLoop(): void {
                   }
                   if (tokenX && tokenY) {
                     const tickSpacing = Number.isFinite(binStep as any) ? Number(binStep) : 0;
+                    const liquidityRaw = anyToBigInt((state as any)?.liquidity ?? 0);
+                    const liquidity = liquidityRaw ? Number(liquidityRaw) : Number((state as any)?.liquidity ?? 0);
+                    const sqrtPriceRaw = anyToBigInt((state as any)?.sqrtPriceX64 ?? (state as any)?.sqrt_price_x64 ?? 0);
+                    const feeBps = Number((state as any)?.tradeFeeRate ?? (state as any)?.feeRate ?? (state as any)?.fee_rate ?? (state as any)?.fees ?? 0);
                     const item: ClmmPool = {
                       id: poolId,
                       dex: 'Meteora',
                       mint_a: tokenX,
                       mint_b: tokenY,
-                      fee_bps: 0,
-                      sqrt_price_x64: 0,
-                      liquidity: 0,
-                      tick_spacing: tickSpacing,
+                      fee_bps: Number.isFinite(feeBps) ? feeBps : 0,
+                      sqrt_price_x64: sqrtPriceRaw ? Number(sqrtPriceRaw) : Number((state as any)?.sqrtPriceX64 ?? (state as any)?.sqrt_price_x64 ?? 0),
+                      sqrt_price_x64_raw: sqrtPriceRaw ? sqrtPriceRaw.toString() : undefined,
+                      liquidity: Number.isFinite(liquidity) ? liquidity : 0,
+                      liquidity_raw: liquidityRaw ? liquidityRaw.toString() : undefined,
+                      'tick_spacing': tickSpacing,
                       updated_ms: Date.now(),
                       pool_kind: 'clmm',
                       price_a_per_b: price_a_per_b && price_a_per_b > 0 ? price_a_per_b : undefined,
