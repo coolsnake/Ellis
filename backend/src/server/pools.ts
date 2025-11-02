@@ -1105,6 +1105,24 @@ export function startRaydiumRefreshLoop(): void {
         };
         // Helper: subscribe with retry/backoff to avoid calling while WS is closing
         const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+        const getRpcWebSocketReadyState = (): number | undefined => {
+          try {
+            const rpcWs: any = (conn as any)?._rpcWebSocket;
+            if (!rpcWs) return undefined;
+            const sockets = [
+              (rpcWs as any)?.underlyingSocket,
+              (rpcWs as any)?._ws,
+              (rpcWs as any)?.socket,
+              (rpcWs as any)?._socket,
+            ];
+            for (const sock of sockets) {
+              const ready = Number((sock as any)?.readyState);
+              if (Number.isFinite(ready) && ready >= 0) return ready;
+            }
+            if ((conn as any)?._rpcWebSocketConnected === true) return 1;
+          } catch {}
+          return undefined;
+        };
         const subscribeAccountWithRetry = async (accountPk: any, cb: (pk: any, info: any) => void): Promise<number> => {
           const maxAttempts = Math.max(1, Number(((CONFIG.system as any)?.wsSubscribeMaxAttempts) || 10));
           const baseBackoffMs = Math.max(50, Number(((CONFIG.system as any)?.wsSubscribeBackoffMs) || 250));
@@ -1115,21 +1133,24 @@ export function startRaydiumRefreshLoop(): void {
               const deadline = Date.now() + Math.max(500, Number(((CONFIG.system as any)?.wsReadyWaitMs) || 3000));
               const started = Date.now();
               for (;;) {
-                let ws = (conn as any)?._rpcWebSocket?._ws;
-                let rs = Number(ws?.readyState);
+                const rs = getRpcWebSocketReadyState();
                 // 0 CONNECTING, 1 OPEN, 2 CLOSING, 3 CLOSED
-                if (!ws || rs === 3) {
-                  try { await (conn as any)?._rpcWebSocket?.connect?.(); } catch {}
-                  // brief delay and re-check
-                  await sleep(100);
-                  ws = (conn as any)?._rpcWebSocket?._ws;
-                  rs = Number(ws?.readyState);
+                if (rs === 0 || rs === 1) {
+                  const waited = Date.now() - started;
+                  if (waited > 200) {
+                    try { logger.debug('pools.ws waitUntilWsReady waited', { ms: waited, cat: 'pools' }); } catch {}
+                  }
+                  return;
                 }
-                if (rs === 0 || rs === 1) return; // CONNECTING or OPEN is acceptable
-                if (Date.now() >= deadline) return;
+                if (Date.now() >= deadline) {
+                  try { logger.debug('pools.ws waitUntilWsReady waited', { ms: Date.now() - started, cat: 'pools', deadline: true }); } catch {}
+                  return;
+                }
+                if (rs === undefined || rs === 3) {
+                  try { await (conn as any)?._rpcWebSocket?.connect?.(); } catch {}
+                }
                 await sleep(150);
               }
-              try { logger.debug('pools.ws waitUntilWsReady waited', { ms: Date.now() - started, cat: 'pools' }); } catch {}
             } catch {}
           };
           // Attempt loop
@@ -1159,17 +1180,23 @@ export function startRaydiumRefreshLoop(): void {
           const waitUntilWsReady = async () => {
             try {
               const deadline = Date.now() + Math.max(500, Number(((CONFIG.system as any)?.wsReadyWaitMs) || 3000));
+              const started = Date.now();
               for (;;) {
-                let ws = (conn as any)?._rpcWebSocket?._ws;
-                let rs = Number(ws?.readyState);
-                if (!ws || rs === 3) {
-                  try { await (conn as any)?._rpcWebSocket?.connect?.(); } catch {}
-                  await sleep(100);
-                  ws = (conn as any)?._rpcWebSocket?._ws;
-                  rs = Number(ws?.readyState);
+                const rs = getRpcWebSocketReadyState();
+                if (rs === 0 || rs === 1) {
+                  const waited = Date.now() - started;
+                  if (waited > 200) {
+                    try { logger.debug('pools.ws waitUntilWsReady waited', { ms: waited, cat: 'pools' }); } catch {}
+                  }
+                  return;
                 }
-                if (rs === 0 || rs === 1) return;
-                if (Date.now() >= deadline) return;
+                if (Date.now() >= deadline) {
+                  try { logger.debug('pools.ws waitUntilWsReady waited', { ms: Date.now() - started, cat: 'pools', deadline: true }); } catch {}
+                  return;
+                }
+                if (rs === undefined || rs === 3) {
+                  try { await (conn as any)?._rpcWebSocket?.connect?.(); } catch {}
+                }
                 await sleep(150);
               }
             } catch {}
