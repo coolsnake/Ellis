@@ -703,7 +703,17 @@ export function startRaydiumRefreshLoop(): void {
                   if (debugLimit !== 0) maybeDebugAccount('raydium');
                   if (clmmLayout && typeof clmmLayout.decode === 'function') {
                     try { state = clmmLayout.decode(info.data); } catch {}
-                    if (state && (state as any).liquidity != null && ((state as any).mintA || (state as any).tokenMintA)) {
+                    if (state) {
+                      try {
+                        logger.debug('raydium.ws state.inspect', {
+                          id: pk58.slice(0, 6) + '…',
+                          keys: Object.keys(state || {}),
+                          liquidityType: typeof (state as any)?.liquidity,
+                          cat: 'pools'
+                        });
+                      } catch {}
+                    }
+                    if (state && (state as any).liquidity != null && ((state as any).mintA || (state as any).tokenMintA || (state as any).mint_a || (state as any).token_mint_a)) {
                       const mintA = ((state as any).mintA || (state as any).tokenMintA)?.toBase58?.() || '';
                       const mintB = ((state as any).mintB || (state as any).tokenMintB)?.toBase58?.() || '';
                       const sqrtRaw = anyToBigInt((state as any).sqrtPriceX64 ?? (state as any).sqrt_price_x64 ?? (state as any).sqrtPrice ?? 0);
@@ -751,9 +761,20 @@ export function startRaydiumRefreshLoop(): void {
                           return { price: undefined, decA: undefined, decB: undefined, ratio: null };
                         }
                       })();
+                      try {
+                        logger.debug('raydium.ws clmm.fields', {
+                          id: pk58.slice(0,6)+'…',
+                          priceCandidate: precision.price,
+                          ratio: precision.ratio ? { num: precision.ratio.numerator.toString(), den: precision.ratio.denominator.toString() } : null,
+                          liquidityPresent: (state as any)?.liquidity != null,
+                          mintA,
+                          mintB,
+                          cat: 'pools'
+                        });
+                      } catch {}
                       const price_a_per_b = precision.price;
                       const liqRaw = anyToBigInt((state as any).liquidity ?? 0);
-                      const liq = Number((state as any).liquidity ?? 0);
+                      const liq = Number((state as any).liquidity ?? (state as any).liquidityNet ?? 0);
                       const tick = Number((state as any).tickSpacing ?? (state as any).tick_spacing ?? 0);
                       const fee = Number((state as any).feeRate ?? (state as any).fee_rate ?? 0);
                       const item: ClmmPool = {
@@ -995,6 +1016,14 @@ export function startRaydiumRefreshLoop(): void {
                   for (const fn of getStateFns) {
                     try { state = await fn(conn, new web3.PublicKey(poolId)); if (state) break; } catch {}
                   }
+                  try {
+                    logger.debug('meteora.ws state.inspect', {
+                      id: poolId.slice(0,6)+'…',
+                      gotState: !!state,
+                      keys: state ? Object.keys(state) : [],
+                      cat: 'pools'
+                    });
+                  } catch {}
                   // Fallback: try reading minimal fields via generic accessors
                   let tokenX: string | undefined;
                   let tokenY: string | undefined;
