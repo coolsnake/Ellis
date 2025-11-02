@@ -13,7 +13,7 @@ import { fetchMeteoraHttp as fetchMeteoraHttpImpl, normalizeMeteoraHttp as norma
 import { validateCrossDexPrices, verifyCanonicalization } from './pools/validation.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './pools/httpLog.js';
 import { fetchMeteoraBalancedHttp as fetchMeteoraBalancedHttpImpl, normalizeMeteoraBalancedHttp as normalizeMeteoraBalancedHttpImpl, fetchMeteoraBalancedAll as fetchMeteoraBalancedAllImpl } from './pools/meteoraBalanced.js';
-import { BorshCoder } from '@coral-xyz/anchor';
+import { BorshAccountsCoder } from '@coral-xyz/anchor';
 import { IDL as MeteoraIdl } from '@meteora-ag/dlmm';
 import { PoolInfoLayout as RaydiumClmmLayout } from '@raydium-io/raydium-sdk-v2/lib/raydium/clmm/layout.js';
 
@@ -282,7 +282,7 @@ const wsDeltaStats: Record<'raydium' | 'orca' | 'meteora', { decoded: number; ap
 };
 const wsDebugCounters: Record<'raydium' | 'orca' | 'meteora', number> = { raydium: 0, orca: 0, meteora: 0 };
 const wsTargetDebugCounters: Record<'raydium' | 'orca' | 'meteora', number> = { raydium: 0, orca: 0, meteora: 0 };
-const meteoraCoder = new BorshCoder(MeteoraIdl as any);
+const meteoraAccountsCoder = new BorshAccountsCoder(MeteoraIdl as any);
 
 function debugLogTargeted(source: 'raydium' | 'orca' | 'meteora', account: string, extra: Record<string, unknown>): void {
   try {
@@ -1022,7 +1022,7 @@ export function startRaydiumRefreshLoop(): void {
                   }
                   if (!state && info?.data) {
                     try {
-                      state = meteoraCoder.accounts.decode('LbPair', info.data);
+                      state = meteoraAccountsCoder.decode('LbPair', info.data);
                       logger.info('meteora.ws state.inspect', {
                         id: poolId,
                         gotState: true,
