@@ -131,6 +131,9 @@ let ddPushTimer: NodeJS.Timeout | null = null;
 const getDetectDrivenPushCoalesceMs = (): number => {
   try { const v = Number(((globalThis as any)?.process?.env?.DETECT_DRIVEN_PUSH_COALESCE_MS) || 75); return Number.isFinite(v) ? Math.max(0, v) : 0; } catch { return 0; }
 };
+export function markDetectDirty(): void {
+  try { detectDirty = true; } catch {}
+}
 function mergeArraysUnique<T>(a: T[] | undefined, b: T[] | undefined, keyFn?: (x: T) => string): T[] {
   const out: T[] = [];
   const seen = new Set<string>();
@@ -291,7 +294,7 @@ export async function pushArbGraphDiff(diff: any): Promise<void> {
     // Suppress until explicitly enabled
     try { if (!arbStreamEnabled) { logger.debug('arb.push gated', { kind: 'diff' }); resolve(); return; } } catch {}
     // Mark dirty so detect-driven coalesced push can run after the next detection
-    try { detectDirty = true; } catch {}
+    markDetectDirty();
     const coalesceMs = getDiffCoalesceMs();
     if (coalesceMs > 0) {
       try { arbDiffBuffer = coalesceDiff(arbDiffBuffer, diff); } catch { arbDiffBuffer = diff; }

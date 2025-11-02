@@ -1342,7 +1342,9 @@ export function startRaydiumRefreshLoop(): void {
                 const gmod: any = await import('./graph.js');
                 const cur = getCurrentCache(dex);
                 if (typeof gmod.applyPoolUpdates === 'function') {
-                  await gmod.applyPoolUpdates(base, cur, { pushToArb: true });
+                  const detectDriven = !!((CONFIG.system as any)?.detectDrivenGraphPush);
+                  const pushOpts = detectDriven ? undefined : { pushToArb: true };
+                  await gmod.applyPoolUpdates(base, cur, pushOpts);
                 }
               } catch {}
             }, WS_APPLY_DEBOUNCE_MS);
@@ -2025,7 +2027,9 @@ export async function getMeteoraBalancedPoolsCached(force = false): Promise<Pool
         try {
           const gmod: any = await import('./graph.js');
           if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
-            await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: true });
+            const detectDriven = !!((CONFIG.system as any)?.detectDrivenGraphPush);
+            const pushOpts = detectDriven ? undefined : { pushToArb: true };
+            await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, pushOpts);
           }
         } catch {}
       } catch {}
@@ -2149,7 +2153,9 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
         try {
           const gmod: any = await import('./graph.js');
           if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
-            await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: true });
+            const detectDriven = !!((CONFIG.system as any)?.detectDrivenGraphPush);
+            const pushOpts = detectDriven ? undefined : { pushToArb: true };
+            await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, pushOpts);
           } else {
             const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
             const delta = d.amm.length + d.clmm.length + d.addedAmm + d.addedClmm + d.removedAmm + d.removedClmm;
@@ -2264,7 +2270,9 @@ export async function getOrcaPoolsCached(force = false): Promise<PoolsPayload> {
         try {
           const gmod: any = await import('./graph.js');
           if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
-            await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, data, { pushToArb: true });
+            const detectDriven = !!((CONFIG.system as any)?.detectDrivenGraphPush);
+            const pushOpts = detectDriven ? undefined : { pushToArb: true };
+            await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, data, pushOpts);
           } else {
             const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
             const delta = d.amm.length + d.clmm.length + d.addedAmm + d.addedClmm + d.removedAmm + d.removedClmm;
@@ -2404,7 +2412,9 @@ export async function getMeteoraPoolsCached(force = false): Promise<PoolsPayload
         try {
           const gmod: any = await import('./graph.js');
           if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
-            await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: true });
+            const detectDriven = !!((CONFIG.system as any)?.detectDrivenGraphPush);
+            const pushOpts = detectDriven ? undefined : { pushToArb: true };
+            await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, pushOpts);
           }
         } catch {}
       } catch {}

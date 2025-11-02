@@ -26,6 +26,7 @@ type Opportunity = {
   bottleneck?: BottleneckEdge;
   detected_ms?: number;
   first_seen_ms?: number;
+  last_verified_ms?: number;
   detections?: number;
 };
 
@@ -144,23 +145,50 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
     if (!effectiveSocket) return;
     let lastAt = 0;
     let lastSig = '';
+    const buildSignature = (payload: { items?: Opportunity[]; summary?: OpportunitiesSummary } | undefined) => {
+      try {
+        const items = Array.isArray(payload?.items) ? (payload?.items as Opportunity[]) : [];
+        const itemsSig = items
+          .map((o) => {
+            const path = Array.isArray(o?.path) ? o.path.join('>') : '';
+            const profit = o?.profit_bps ?? '';
+            const net = o?.net_bps ?? o?.profit_bps ?? '';
+            const detected = o?.detected_ms ?? '';
+            const lastVerified = (o as any)?.last_verified_ms ?? '';
+            const firstSeen = o?.first_seen_ms ?? '';
+            const capacity = o?.est_capacity ?? '';
+            return `${path}:${profit}:${net}:${detected}:${lastVerified}:${firstSeen}:${capacity}`;
+          })
+          .join('|');
+
+        const summary = payload?.summary;
+        const nearSig = summary?.near_miss
+          ? `${(summary.near_miss.path || []).join('>')}:${summary.near_miss.profit_bps}:${summary.near_miss.net_bps ?? summary.near_miss.profit_bps}:${summary.near_miss_shortfall_bps ?? ''}:${summary.near_miss.detected_ms ?? ''}`
+          : '';
+        const nearList = Array.isArray(summary?.near_misses) ? (summary?.near_misses as Opportunity[]) : [];
+        const nearListSig = nearList
+          .map((nm) => `${(nm.path || []).join('>')}:${nm.profit_bps}:${nm.net_bps ?? nm.profit_bps}:${nm.detected_ms ?? ''}`)
+          .join('|');
+        const summaryMarkers = [
+          summary?.count ?? '',
+          summary?.last_detection_ms ?? '',
+          summary?.detection_duration_ms ?? '',
+          summary?.graph_nodes ?? '',
+          summary?.graph_edges ?? '',
+          summary?.near_miss_shortfall_bps ?? '',
+        ].join(':');
+
+        return `${itemsSig}||${nearSig}||${nearListSig}||${summaryMarkers}`;
+      } catch {
+        return String(Date.now());
+      }
+    };
     const applyBulk = (payload: { items?: Opportunity[]; summary?: OpportunitiesSummary }, isCritical = false) => {
       try {
         const now = Date.now();
         const throttleMs = isCritical ? 100 : 200; // Reduced from 1000ms
         if (now - lastAt < throttleMs) return;
-        const sig = (() => {
-          try {
-            const count = Array.isArray((payload as any)?.items) ? ((payload as any).items as any[]).length : 0;
-            // Include ALL opportunities in signature, not just top 3, to detect all changes
-            const allOpps = ((payload as any)?.items || []).map((o: any) => 
-              `${Math.round(o?.net_bps ?? o?.profit_bps ?? 0)}:${(o?.path||[]).join('>')}`
-            ).join('|');
-            const near = (((payload as any)?.summary?.near_miss?.path || []) as string[]).join('>');
-            const nearMissesCount = Array.isArray((payload as any)?.summary?.near_misses) ? (payload as any).summary.near_misses.length : 0;
-            return `${count}:${allOpps}:${near}:${nearMissesCount}`;
-          } catch { return String(now); }
-        })();
+        const sig = buildSignature(payload);
         if (sig === lastSig) return;
         lastSig = sig;
         lastAt = now;

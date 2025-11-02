@@ -133,6 +133,134 @@ export function computeSlippageBps(amountInRaw?: bigint, minOutRaw?: bigint): nu
   return 100; // default 1%
 }
 
+function safeCoercePublicKey(value: any): PublicKey | undefined {
+  try {
+    if (!value) return undefined;
+    if (value instanceof PublicKey) return value;
+    if (typeof value?.toBase58 === 'function') {
+      const base58 = value.toBase58();
+      return coerceToPublicKey(base58);
+    }
+    return coerceToPublicKey(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function toBuffer(data: any): Buffer {
+  if (!data) return Buffer.alloc(0);
+  if (Buffer.isBuffer(data)) return data;
+  if (data instanceof Uint8Array) return Buffer.from(data);
+  if (Array.isArray(data)) return Buffer.from(data);
+  if (typeof data === 'string') {
+    const trimmed = data.trim();
+    if (!trimmed) return Buffer.alloc(0);
+    const hexCandidate = trimmed.startsWith('0x') ? trimmed.slice(2) : trimmed;
+    const isHex = /^[0-9a-fA-F]+$/.test(hexCandidate) && hexCandidate.length % 2 === 0;
+    try {
+      return Buffer.from(trimmed, isHex ? 'hex' : 'base64');
+    } catch {
+      try {
+        return Buffer.from(trimmed, 'base64');
+      } catch {
+        return Buffer.alloc(0);
+      }
+    }
+  }
+  if (typeof data === 'object' && data !== null) {
+    if (Buffer.isBuffer((data as any).data) || (data as any).data instanceof Uint8Array || Array.isArray((data as any).data) || typeof (data as any).data === 'string') {
+      return toBuffer((data as any).data);
+    }
+  }
+  return Buffer.alloc(0);
+}
+
+function flattenToTransactionInstructions(value: any, hop: DirectHop): TransactionInstruction[] {
+  const out: TransactionInstruction[] = [];
+
+  const visit = (item: any) => {
+    if (!item) return;
+    if (Array.isArray(item)) {
+      for (const inner of item) visit(inner);
+      return;
+    }
+    if (item instanceof TransactionInstruction) {
+      out.push(item);
+      return;
+    }
+    if (typeof item?.compressIx === 'function') {
+      try {
+        const compressed = item.compressIx(true);
+        if (compressed) {
+          visit(compressed.instructions);
+          visit(compressed.cleanupInstructions);
+        }
+        return;
+      } catch (e: any) {
+        try { logger.warn('orca.whirlpool.compressIx.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { pool: hop.poolId, error: String(e?.message || e) } }); } catch {}
+        return;
+      }
+    }
+    if (Array.isArray(item?.instructions)) {
+      visit(item.instructions);
+      if (Array.isArray(item?.cleanupInstructions)) visit(item.cleanupInstructions);
+      return;
+    }
+    if (typeof item?.instruction === 'object') {
+      visit(item.instruction);
+      return;
+    }
+    if (item.instructions instanceof Map) {
+      visit(Array.from(item.instructions.values()));
+      return;
+    }
+
+    if (typeof item === 'object') {
+      try {
+        const programIdRaw = item.programId
+          || item.programAddress
+          || (item.program && (item.program.programId || item.program.address || item.program))
+          || item.address;
+        const programId = safeCoercePublicKey(programIdRaw);
+        if (!programId) {
+          try { logger.warn('orca.whirlpool.ix.missing_program', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { pool: hop.poolId, kind: typeof programIdRaw } }); } catch {}
+          return;
+        }
+        const rawKeys = Array.isArray(item.keys)
+          ? item.keys
+          : (Array.isArray(item.accounts) ? item.accounts : []);
+        const keys = rawKeys
+          .map((k: any) => {
+            const pk = safeCoercePublicKey(
+              k?.pubkey
+                ?? k?.pubKey
+                ?? k?.address
+                ?? k?.publicKey
+                ?? k?.pubkeyAddress
+                ?? k?.pubKeyAddress
+            );
+            if (!pk) return undefined;
+            return {
+              pubkey: pk,
+              isSigner: !!(k?.isSigner ?? k?.signer),
+              isWritable: !!(k?.isWritable ?? k?.writable),
+            };
+          })
+          .filter((meta): meta is { pubkey: PublicKey; isSigner: boolean; isWritable: boolean } => !!meta);
+        const data = toBuffer(item.data ?? item.ixData ?? item.bytes ?? item.bytecode);
+        out.push(new TransactionInstruction({ programId, keys, data }));
+        return;
+      } catch (coerceErr: any) {
+        try { logger.warn('orca.whirlpool.coerce_ix.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { pool: hop.poolId, error: String(coerceErr?.message || coerceErr) } }); } catch {}
+        return;
+      }
+    }
+  };
+
+  visit(value);
+  return out;
+}
+
 // Placeholders to satisfy wiring; concrete implementations will target specific programs
 export function buildRaydiumAmmSwapIx(hop: DirectHop): any[] {
   try { logger.info('ix.build raydium.amm', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
@@ -289,27 +417,14 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
       if (!swapIx) {
         throw createBuilderError('ORCA', 'unable to build swap instruction from quote - no compatible SDK method found', hop);
       }
-      
-      // Normalize instruction format
-      const normalizeIx = (ix: any): any => {
-        try {
-          const programId = ix?.programId || ix?.programAddress || (ix?.program && (ix.program.address || ix.program)) || '';
-          const accounts = Array.isArray(ix?.accounts) ? ix.accounts : (Array.isArray(ix?.keys) ? ix.keys : []);
-          const keys = accounts.map((a: any) => ({
-            pubkey: a?.address || a?.pubkey || a?.pubKey || a?.pubKeyAddress || a?.pubkeyAddress,
-            isSigner: !!a?.isSigner,
-            isWritable: !!a?.isWritable,
-          }));
-          const data = ix?.data || new Uint8Array();
-          return { programId, keys, data };
-        } catch {
-          return ix;
-        }
-      };
-      
-      const out = Array.isArray(swapIx) ? swapIx.map(normalizeIx) : [normalizeIx(swapIx)];
-      try { logger.info('orca.whirlpool.ix.ready', { cat: 'tx', ctx: { count: Array.isArray(out) ? out.length : 0 } as any }); } catch {}
-      return out;
+
+      const instructions = flattenToTransactionInstructions(swapIx, hop);
+      if (!instructions.length) {
+        throw createBuilderError('ORCA', 'swap builder returned no executable instructions', hop);
+      }
+
+      try { logger.info('orca.whirlpool.ix.ready', { cat: 'tx', ctx: { count: instructions.length } }); } catch {}
+      return instructions;
     } catch (inner) {
       // Wrap errors with context
       if (inner instanceof Error && inner.message.includes('ORCA_BUILD_FAILED')) {
@@ -826,12 +941,15 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     if (preMissing.length) throw new Error(`RAYDIUM_CLMM_BUILD_FAILED: missing ${preMissing.join(',')}`);
     // Final validation - require cache-provided arrays/oracle
     try { logger.info('raydium.clmm.builder.arrays', { cat: 'tx', ctx: { pool: hop.poolId, lower: hop.tickArrayLower, upper: hop.tickArrayUpper } as any }); } catch {}
-    const missing: string[] = [];
-    if (!hop.tickArrayLower || !hop.tickArrayUpper || !hop.oracle) missing.push('tickArrayLower/Upper/oracle');
-    if (missing.length) {
+    const missingRequired: string[] = [];
+    const missingOptional: string[] = [];
+    if (!hop.tickArrayLower) missingRequired.push('tickArrayLower');
+    if (!hop.tickArrayUpper) missingRequired.push('tickArrayUpper');
+    if (!hop.oracle) missingOptional.push('oracle');
+    if (missingRequired.length || missingOptional.length) {
       // One-shot refresh: attempt to hydrate CLMM statics (oracle/tick arrays) from chain
       try {
-        try { logger.warn('raydium.clmm.refresh.attempt', { cat: 'tx', ctx: { pool: hop.poolId, missing: missing.join('/') } as any }); } catch {}
+        try { logger.warn('raydium.clmm.refresh.attempt', { cat: 'tx', ctx: { pool: hop.poolId, missingRequired: missingRequired.join('/'), missingOptional: missingOptional.join('/') } as any }); } catch {}
         const poolBase = String(hop.poolId || '').replace(/-rev$/, '');
         try {
           const mod = await import('../../server/tasks/refreshClmm.js');
@@ -857,9 +975,13 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
           try { logger.info('raydium.clmm.refresh.result', { cat: 'tx', ctx: { pool: poolBase, oracle: hop.oracle || '', lower: hop.tickArrayLower || '', upper: hop.tickArrayUpper || '' } as any }); } catch {}
         } catch {}
       } catch {}
-      const stillMissing: string[] = [];
-      if (!hop.tickArrayLower || !hop.tickArrayUpper || !hop.oracle) stillMissing.push('tickArrayLower/Upper/oracle');
-      if (stillMissing.length) throw new Error(`RAYDIUM_CLMM_BUILD_FAILED: CACHE_MISS_AFTER_REFRESH: missing ${stillMissing.join(',')}`);
+      const stillMissingRequired: string[] = [];
+      if (!hop.tickArrayLower) stillMissingRequired.push('tickArrayLower');
+      if (!hop.tickArrayUpper) stillMissingRequired.push('tickArrayUpper');
+      if (stillMissingRequired.length) throw new Error(`RAYDIUM_CLMM_BUILD_FAILED: CACHE_MISS_AFTER_REFRESH: missing ${stillMissingRequired.join(',')}`);
+      if (!hop.oracle) {
+        try { logger.warn('raydium.clmm.oracle.missing', { cat: 'tx', ctx: { pool: hop.poolId } as any }); } catch {}
+      }
     }
     try {
       logger.info('raydium.clmm.accounts', { cat: 'tx', ctx: {
