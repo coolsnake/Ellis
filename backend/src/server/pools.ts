@@ -723,7 +723,7 @@ export function startRaydiumRefreshLoop(): void {
                     let clmmDecodeError: any = null;
                     try { state = clmmLayout.decode(info.data); } catch (err: any) { clmmDecodeError = err; state = null; }
                     if (!state && clmmDecodeError) {
-                      try { logger.debug('raydium.ws clmm.decode.fail', { id: pk58, error: String(clmmDecodeError?.message || clmmDecodeError), dataLen: Number(info?.data?.length ?? 0), cat: 'pools' }); } catch {}
+                      try { logger.info('raydium.ws clmm.decode.fail', { id: pk58, error: String(clmmDecodeError?.message || clmmDecodeError), dataLen: Number(info?.data?.length ?? 0), cat: 'pools' }); } catch {}
                     }
                     if (state) {
                       try {
@@ -738,7 +738,7 @@ export function startRaydiumRefreshLoop(): void {
                     const hasLiquidityField = !!(state && (state as any)?.liquidity != null);
                     const hasMintFields = !!(state && ((state as any)?.mintA || (state as any)?.tokenMintA || (state as any)?.mint_a || (state as any)?.token_mint_a));
                     if (state && (!hasLiquidityField || !hasMintFields)) {
-                      try { logger.debug('raydium.ws clmm.skip', { id: pk58, hasLiquidityField, hasMintFields, cat: 'pools' }); } catch {}
+                      try { logger.info('raydium.ws clmm.skip', { id: pk58, hasLiquidityField, hasMintFields, cat: 'pools' }); } catch {}
                     }
                     if (state && hasLiquidityField && hasMintFields) {
                       const mintA = ((state as any).mintA || (state as any).tokenMintA)?.toBase58?.() || '';
