@@ -303,7 +303,7 @@ function debugLogTargeted(source: 'raydium' | 'orca' | 'meteora', account: strin
     if (!(limit > 0)) return;
     if (wsTargetDebugCounters[source] >= limit) return;
     wsTargetDebugCounters[source] += 1;
-    logger.info('pools.ws debug.subscribe', { source, account, ...extra, cat: 'pools' });
+    logger.debug('pools.ws debug.subscribe', { source, account, ...extra, cat: 'pools' });
   } catch {}
 }
 let attachedOrcaPools: number = 0;
@@ -710,7 +710,7 @@ export function startRaydiumRefreshLoop(): void {
               if (wsDebugCounters[source] >= debugLimit) return;
               wsDebugCounters[source] += 1;
               try {
-                logger.info('pools.ws debug.account', {
+                logger.debug('pools.ws debug.account', {
                   source,
                   account: pk58,
                   owner,

@@ -23,7 +23,14 @@ async function decodeClmmState(connection: Connection, poolPk: PublicKey): Promi
       } catch {}
     }
     if (!sdk) return null;
-    const layout = (sdk as any)?.Clmm?.PoolStateLayout || (sdk as any)?.CLMM?.POOL_STATE_LAYOUT || (sdk as any)?.PoolStateLayout || (sdk as any)?.CLMM?.PoolStateLayout || (sdk as any)?.Clmm?.POOL_STATE_LAYOUT;
+    const layout =
+      (sdk as any)?.PoolInfoLayout ||
+      (sdk as any)?.Clmm?.PoolInfoLayout ||
+      (sdk as any)?.raydium?.clmm?.layout?.PoolInfoLayout ||
+      (sdk as any)?.Clmm?.PoolStateLayout ||
+      (sdk as any)?.CLMM?.POOL_STATE_LAYOUT ||
+      (sdk as any)?.PoolStateLayout ||
+      (sdk as any)?.Clmm?.POOL_STATE_LAYOUT;
     if (!layout?.decode) { try { logger.warn('clmm.decode.layout_missing', { pool: poolPk.toBase58?.(), keys: Object.keys(sdk || {}) }); } catch {}; return null; }
     let state: any = null;
     try { state = layout.decode(acc.data); } catch (e: any) { try { logger.warn('clmm.decode.fail', { pool: poolPk.toBase58?.(), error: String(e?.message || e) }); } catch {}; return null; }

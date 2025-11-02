@@ -1197,6 +1197,31 @@ async fn main() -> anyhow::Result<()> {
                                 if profit_bps >= min_bps {
                                     // This triangle is profitable enough - add as real opportunity
                                     let path_str = labels.join("->");
+                                    let key = keyify_opportunity(&labels, &dexes);
+                                    let repeat_limit_hit = if s.config.max_detections_without_exec == 0 {
+                                        false
+                                    } else {
+                                        let executed = s.executed_keys.contains(&key);
+                                        let count = s
+                                            .detection_counts
+                                            .get(&key)
+                                            .map(|(c, _)| *c as usize)
+                                            .unwrap_or(0);
+                                        !executed && count >= s.config.max_detections_without_exec
+                                    };
+                                    if repeat_limit_hit {
+                                        tracing::debug!(
+                                            target = "arb_rs",
+                                            path = %path_str,
+                                            detections = s
+                                                .detection_counts
+                                                .get(&key)
+                                                .map(|(c, _)| *c)
+                                                .unwrap_or(0),
+                                            "arb.opportunity.triangle suppressed after repeat detections"
+                                        );
+                                        continue;
+                                    }
                                     let pools_str = hop_pool_ids.join(",");
                                     let fees_str = hop_fee_bps_vec.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
                                     // Build unit-annotated rates

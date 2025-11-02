@@ -447,14 +447,48 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         };
         const loNum = toNum(bounds?.lowerBinId);
         const hiNum = toNum(bounds?.upperBinId);
-        if (Number.isFinite(loNum)) { try { const lo = await deriveBinArray(programId, poolPk, loNum); binArrayLower = (lo as any)?.publicKey || lo || binArrayLower; } catch {} }
-        if (Number.isFinite(hiNum)) { try { const hi = await deriveBinArray(programId, poolPk, hiNum); binArrayUpper = (hi as any)?.publicKey || hi || binArrayUpper; } catch {} }
+        const bnjs = await import('bn.js').catch(() => null as any);
+        const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
+        const binIdToBinArrayIndex = (DLMM as any)?.binIdToBinArrayIndex;
+        const toIndex = (num: number) => {
+          if (!Number.isFinite(num) || !BN) return null;
+          try {
+            const bnVal = new BN(String(num));
+            if (typeof binIdToBinArrayIndex === 'function') {
+              return binIdToBinArrayIndex(bnVal);
+            }
+            return bnVal;
+          } catch {
+            return null;
+          }
+        };
+        const loIdx = toIndex(loNum);
+        const hiIdx = toIndex(hiNum);
+        if (loIdx && deriveBinArray) {
+          try {
+            const derived = await deriveBinArray(poolPk, loIdx, programId);
+            const pk = Array.isArray(derived) ? derived[0] : derived;
+            binArrayLower = (pk as any)?.publicKey || pk || binArrayLower;
+          } catch {}
+        }
+        if (hiIdx && deriveBinArray) {
+          try {
+            const derived = await deriveBinArray(poolPk, hiIdx, programId);
+            const pk = Array.isArray(derived) ? derived[0] : derived;
+            binArrayUpper = (pk as any)?.publicKey || pk || binArrayUpper;
+          } catch {}
+        }
       }
       try {
         // Derive bitmap extension PDA - reduced to essential attempts only
         const coercePk = (val: any): PublicKey | undefined => {
           try {
             if (!val) return undefined;
+            if (Array.isArray(val)) {
+              const first = val[0];
+              if (!first) return undefined;
+              return coercePk(first);
+            }
             if (val instanceof PublicKey) return val;
             if ((val as any)?.publicKey instanceof PublicKey) return (val as any).publicKey as PublicKey;
             if ((val as any)?.address instanceof PublicKey) return (val as any).address as PublicKey;
@@ -473,7 +507,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         
         // Attempt 1: Most common pattern - deriveBinArrayBitmapExtension(programId, poolPk)
         if (deriveBinArrayBitmapExtension) {
-          attempts.push(() => deriveBinArrayBitmapExtension(programId, poolPk));
+          attempts.push(async () => deriveBinArrayBitmapExtension(poolPk, programId));
         }
         
         // Attempt 2: Coverage helper - getBinArrayKeysCoverage

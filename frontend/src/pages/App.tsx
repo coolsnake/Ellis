@@ -795,10 +795,22 @@ export const App: React.FC = () => {
         const SOL = 'So11111111111111111111111111111111111111112';
         const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
-        const pickPoolId = async (dex: 'raydium'|'orca'|'meteora'): Promise<string | null> => {
+        const pickPoolId = async (
+          dex: 'raydium'|'orca'|'meteora',
+          options?: { prefer?: 'amm' | 'clmm' },
+        ): Promise<string | null> => {
           const resp = await fetch(`${apiBase}/arb/pools/${dex}?sort=tvl`);
           const json = await resp.json();
-          const list = [ ...(json?.clmm || []), ...(json?.amm || []) ];
+          const prefer = options?.prefer;
+          const clmmList: any[] = Array.isArray(json?.clmm) ? json.clmm : [];
+          const ammList: any[] = Array.isArray(json?.amm) ? json.amm : [];
+          const list = (() => {
+            if (dex === 'raydium') {
+              if (prefer === 'amm') return [...ammList, ...clmmList];
+              if (prefer === 'clmm') return [...clmmList, ...ammList];
+            }
+            return [...clmmList, ...ammList];
+          })();
           const match = list.find((p: any) => {
             const a = String(p?.mint_a || p?.mintA || '').trim();
             const b = String(p?.mint_b || p?.mintB || '').trim();
@@ -808,7 +820,8 @@ export const App: React.FC = () => {
         };
 
         const buildTwoHopBody = async (dex: 'raydium'|'orca'|'meteora', variant?: 'amm'|'clmm', poolId?: string) => {
-          const pid = poolId || await pickPoolId(dex);
+          const preferVariant = dex === 'raydium' ? variant : undefined;
+          const pid = poolId || await pickPoolId(dex, preferVariant ? { prefer: preferVariant } : undefined);
           if (!pid) throw new Error(`no USDC/USDT pool found for ${dex}`);
           const dexKey = dex === 'raydium'
             ? (variant === 'clmm' ? 'raydium-clmm' : 'raydium-amm')
@@ -824,7 +837,7 @@ export const App: React.FC = () => {
         };
 
         const buildMultiHopBody = async (rayPool?: string, orcaPool?: string, meteoraPool?: string) => {
-          const ray = rayPool || await pickPoolId('raydium');
+          const ray = rayPool || await pickPoolId('raydium', { prefer: 'amm' });
           const orc = orcaPool || await pickPoolId('orca');
           const met = meteoraPool || await pickPoolId('meteora');
           if (!ray || !orc || !met) throw new Error('missing one or more std pools (ray/orca/meteora)');
@@ -924,7 +937,11 @@ export const App: React.FC = () => {
             }
             // Pick pool if not provided
             const dexForPick = target.startsWith('ray') ? 'raydium' : (target as any);
-            const pid = poolId || await pickPoolId(dexForPick as any);
+            const preferForPick = target === 'ray-amm' ? 'amm' : (target === 'ray-clmm' ? 'clmm' : undefined);
+            const pid = poolId || await pickPoolId(
+              dexForPick as any,
+              preferForPick ? { prefer: preferForPick } : undefined,
+            );
             if (!pid) {
               await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: no USDC/USDT pool found for ${target}` }) });
               return;
