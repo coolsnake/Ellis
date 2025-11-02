@@ -219,7 +219,7 @@ function edgesFromPoolIncremental(p: AmmPool | ClmmPool, getUsd: (m: string) => 
     undefined,
   );
   const rev = fwd && fwd > 0 ? 1 / fwd : undefined;
-  const kind = (p as any)?.pool_kind || (typeof (p as any)?.sqrt_price_x64 === 'number' ? 'clmm' : 'amm');
+  const kind = (p as any)?.pool_kind || ((p as any)?.sqrt_price_x64_raw != null || typeof (p as any)?.sqrt_price_x64 === 'number' ? 'clmm' : 'amm');
 
   const forward: GraphEdge = {
     id: id || `${a}->${b}-${dex}`,
@@ -314,20 +314,25 @@ export async function applyPoolUpdates(prev: PoolsPayload, next: PoolsPayload, o
     const eps = 1e-9;
     const poolChanged = (pv: AmmPool | ClmmPool | undefined, p: AmmPool | ClmmPool): boolean => {
       if (!pv) return true; // New pool
-      const kind = ((p as any)?.pool_kind || (typeof (p as any)?.sqrt_price_x64 === 'number' ? 'clmm' : 'amm')) as 'amm'|'clmm';
+      const kind = ((p as any)?.pool_kind || ((p as any)?.sqrt_price_x64_raw != null || typeof (p as any)?.sqrt_price_x64 === 'number') ? 'clmm' : 'amm') as 'amm'|'clmm';
       if (kind === 'clmm') {
-        // CLMM: check sqrt_price_x64, liquidity, tvl_usd, price_a_per_b
-        if (Math.abs(((pv as any).sqrt_price_x64 || 0) - ((p as any).sqrt_price_x64 || 0)) > 0) return true;
+        if ((pv as any).sqrt_price_x64_raw && (p as any).sqrt_price_x64_raw && (pv as any).sqrt_price_x64_raw !== (p as any).sqrt_price_x64_raw) return true;
+        if ((pv as any).price_a_per_b_num && (pv as any).price_a_per_b_den && (p as any).price_a_per_b_num && (p as any).price_a_per_b_den) {
+          if ((pv as any).price_a_per_b_num !== (p as any).price_a_per_b_num || (pv as any).price_a_per_b_den !== (p as any).price_a_per_b_den) return true;
+        }
+        if ((pv as any).liquidity_raw && (p as any).liquidity_raw && (pv as any).liquidity_raw !== (p as any).liquidity_raw) return true;
         if (Math.abs(((pv as any).liquidity || 0) - ((p as any).liquidity || 0)) > 0) return true;
         if (((pv as any).tvl_usd || 0) !== ((p as any).tvl_usd || 0)) return true;
         if (Math.abs(((pv as any).price_a_per_b || 0) - ((p as any).price_a_per_b || 0)) > eps) return true;
       } else {
-        // AMM: check price_a_per_b, liquidity_base, tvl_usd
+        if ((pv as any).reserve_a_raw && (pv as any).reserve_b_raw && (p as any).reserve_a_raw && (p as any).reserve_b_raw) {
+          if ((pv as any).reserve_a_raw !== (p as any).reserve_a_raw || (pv as any).reserve_b_raw !== (p as any).reserve_b_raw) return true;
+        }
         if (Math.abs(((pv as any).price_a_per_b || 0) - ((p as any).price_a_per_b || 0)) > eps) return true;
         if (Math.abs(((pv as any).liquidity_base || 0) - ((p as any).liquidity_base || 0)) > eps) return true;
+        if ((pv as any).liquidity_base_raw && (p as any).liquidity_base_raw && (pv as any).liquidity_base_raw !== (p as any).liquidity_base_raw) return true;
         if (((pv as any).tvl_usd || 0) !== ((p as any).tvl_usd || 0)) return true;
       }
-      // Also check updated_ms as a fallback if timestamps are available
       const nextMs = Number((p as any)?.updated_ms || 0);
       const prevMs = Number((pv as any)?.updated_ms || 0);
       if (nextMs > 0 && prevMs > 0 && nextMs > prevMs) return true;

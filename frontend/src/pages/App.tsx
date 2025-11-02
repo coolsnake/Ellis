@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { logger } from '../utils/logger';
 import { io, Socket } from 'socket.io-client';
 import { GridStrategyConfig } from '../components/GridStrategyConfig';
@@ -25,19 +25,16 @@ import { GraphConfig } from '../components/GraphConfig';
 import { SystemConfig } from '../components/SystemConfig';
 import { GraphView } from '../components/GraphView';
 import { CollapsibleSection } from '../components/CollapsibleSection';
-import { LogWindow } from '../components/LogWindow';
-import { LOG_WINDOWS, WINDOW_ORDER, catToWindowId } from '../utils/logs';
 import { setLogLevel as setFrontendLogLevel } from '../utils/logger';
 import { maskRpcUrl } from '../utils/mask';
 import { useSystem } from '../app/contexts/system';
 import { useWallet } from '../app/contexts/wallet';
-import { useLogs } from '../app/contexts/logs';
 import { useDrift } from '../app/contexts/drift';
 import { useArb } from '../app/contexts/arb';
 import { useAuth } from '../app/contexts/auth';
 // Login page is now routed at /login; main app assumes authenticated state
 
-type LogEvent = { level: string; message: string; timestamp: string; context?: Record<string, unknown>; cat?: string; subcat?: string; code?: string; cid?: string; span?: 'start' | 'end'; muted?: boolean };
+const LogsColumn = React.lazy(() => import('../features/logs/LogsColumn'));
 
 // maskRpcUrl moved to ../utils/mask
 
@@ -45,18 +42,12 @@ export const App: React.FC = () => {
   const { system, setSystem } = useSystem();
   const [showFillerRunnerConfig, setShowFillerRunnerConfig] = useState(false);
   const { wallet, setWallet, walletTokens, setWalletTokens, prices, setPrices } = useWallet();
-  const { logsByWindow, setLogsByWindow } = useLogs();
   const { status: driftStatus, setStatus: setDriftStatus, subaccounts: driftSubaccounts, setSubaccounts: setDriftSubaccounts, selectedSubId: driftSelectedSubId, setSelectedSubId: setDriftSelectedSubId, subBalances: driftSubBalances, setSubBalances: setDriftSubBalances, spotMarkets: driftSpotMarkets, setSpotMarkets: setDriftSpotMarkets, action: driftAction, setAction: setDriftAction, amount: driftAmount, setAmount: setDriftAmount, spotIndex: driftSpotIndex, setSpotIndex: setDriftSpotIndex } = useDrift();
   const { arbConfig, setArbConfig, strategies, setStrategies } = useArb();
   const [watchlist, setWatchlist] = useState<any[]>([]);
   const [driftNewSubName, setDriftNewSubName] = useState<string>('');
   const [driftRenameSubName, setDriftRenameSubName] = useState<string>('');
   const [driftOpBusy, setDriftOpBusy] = useState<boolean>(false);
-  const [tradeLogs, setTradeLogs] = useState<LogEvent[]>([]);
-  const [strategyLogs, setStrategyLogs] = useState<LogEvent[]>([]);
-  const [arbLogs, setArbLogs] = useState<LogEvent[]>([]);
-  const [apiLogs, setApiLogs] = useState<LogEvent[]>([]);
-  const [terminalLogs, setTerminalLogs] = useState<LogEvent[]>([]);
   const [positions, setPositions] = useState<any[]>([]);
   const [gridPositionsSummary, setGridPositionsSummary] = useState<Array<{ strategy: string; fromSymbol: string; toSymbol: string; count: number; totalFromToken: number; avgOpenMs: number }>>([]);
   const [activity, setActivity] = useState<{ status: string; trades: any[] }>({ status: 'idle', trades: [] });
@@ -297,18 +288,6 @@ export const App: React.FC = () => {
   }, [wsUrl, credentials]);
 
   // Listen for clear events from individual LogWindow components
-  useEffect(() => {
-    const onClear = (e: any) => {
-      try {
-        const id = e && e.detail && e.detail.id;
-        if (!id) return;
-        setLogsByWindow((prev) => ({ ...prev, [id]: [] }));
-      } catch {}
-    };
-    try { window.addEventListener('logwin:clear', onClear as any); } catch {}
-    return () => { try { window.removeEventListener('logwin:clear', onClear as any); } catch {} };
-  }, []);
-
   // Auth is gated at the router level
 
   const isGridStrategy = (strategy: any) => {
@@ -2092,17 +2071,9 @@ export const App: React.FC = () => {
         </CollapsibleSection>
         
       </div>
-      <div className="space-y-4">
-        {WINDOW_ORDER.map((id) => {
-          const cfg = LOG_WINDOWS.find(w => w.id === id);
-          if (!cfg) return null;
-          const title = `${cfg.title} Log`;
-          const items = logsByWindow[id] || [];
-          return (
-            <LogWindow key={id} id={id} title={title} logs={items} />
-          );
-        })}
-      </div>
+      <Suspense fallback={<div className="space-y-4"><div className="text-sm text-gray-400">Loading logs...</div></div>}>
+        <LogsColumn />
+      </Suspense>
       
       {/* Grid Strategy Configuration Modal */}
       {showGridConfig && (

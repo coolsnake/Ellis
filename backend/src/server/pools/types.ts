@@ -20,6 +20,12 @@ export type AmmPool = {
   decimals_b?: number;
   pool_liquidity_raw?: number; // min(amount_a_whole, amount_b_whole) when available
   liquidity_display?: number;  // prefer pool_liquidity_raw for display when available
+  liquidity_base_raw?: string;
+  reserve_a_raw?: string;
+  reserve_b_raw?: string;
+  price_a_per_b_num?: string;
+  price_a_per_b_den?: string;
+  price_a_per_b_exact?: string;
 };
 
 export type ClmmPool = {
@@ -47,6 +53,11 @@ export type ClmmPool = {
   amount_a_whole?: number;
   amount_b_whole?: number;
   liquidity_display?: number;  // prefer pool_liquidity_raw for display when available
+  sqrt_price_x64_raw?: string;
+  liquidity_raw?: string;
+  price_a_per_b_num?: string;
+  price_a_per_b_den?: string;
+  price_a_per_b_exact?: string;
 };
 
 export type PoolsPayload = { amm: AmmPool[]; clmm: ClmmPool[] };

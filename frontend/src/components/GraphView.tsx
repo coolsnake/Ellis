@@ -84,6 +84,11 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 
 	// Optional cap for rendered edges by priority to reduce overdraw
 	const [maxEdges, setMaxEdges] = useState<number>(1200);
+	const combineEdgesRef = useRef<boolean>(combineEdges);
+	useEffect(() => { combineEdgesRef.current = combineEdges; }, [combineEdges]);
+	const maxEdgesRef = useRef<number>(maxEdges);
+	useEffect(() => { maxEdgesRef.current = maxEdges; }, [maxEdges]);
+	const rawEdgeCountRef = useRef<number>(0);
 
 	// Queue for recomputing combined edges across frames
 	const pairQueueRef = useRef<string[]>([]);
@@ -148,6 +153,25 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 		{ selector: 'edge.highlighted', style: { 'line-color': '#ef4444', 'width': 3.5, 'opacity': 1 } },
 		{ selector: ':selected', style: { 'line-color': '#ef4444', 'background-color': '#ef4444' } },
 	]), []);
+
+	useEffect(() => {
+		const cy = cyRef.current;
+		if (!cy) return;
+		if (combineEdges) return;
+		withBatch(cy, () => {
+			cy.edges('[combined = 1]').forEach((edge: any) => {
+				try {
+					const originals: string[] = Array.isArray(edge.data('combinedOriginalIds')) ? edge.data('combinedOriginalIds').map(String) : [];
+					originals.forEach((id) => {
+						const orig = cy.getElementById(id);
+						if (orig && orig.length) { orig.data('hiddenEdge', null); }
+					});
+					edge.remove();
+				} catch {}
+			});
+			recountRawEdgeCount(cy);
+		});
+	}, [combineEdges]);
 
 // Track page/tab visibility
 useEffect(() => {
@@ -314,17 +338,32 @@ useEffect(() => {
 
 	// Seed initial positions for nodes that didn't exist before this refresh,
 	// placing them near the average of positioned neighbors (or center with jitter)
-	const seedPositionsForNewNodes = (cy: cytoscape.Core, prevPos: Map<string, { x: number; y: number }>) => {
+	const seedPositionsForNewNodes = (
+		cy: cytoscape.Core,
+		prevPos: Map<string, { x: number; y: number }>,
+		candidateIds?: Iterable<string>
+	) => {
 		try {
-			const all = cy.nodes(); if (!all || all.length === 0) return;
-			// Compute a viewport center fallback
+			const nodes: cytoscape.NodeSingular[] = [];
+			if (candidateIds) {
+				for (const rawId of candidateIds) {
+					const id = String(rawId);
+					const node = cy.getElementById(id);
+					if (node && node.length && node.isNode()) {
+						nodes.push(node as cytoscape.NodeSingular);
+					}
+				}
+			} else {
+				const all = cy.nodes(); if (!all || all.length === 0) return;
+				nodes.push(...all.toArray());
+			}
+			if (!nodes.length) return;
 			let cx = 0, cyy = 0;
 			try { const bb = cy.extent(); cx = (bb.x1 + bb.x2) / 2; cyy = (bb.y1 + bb.y2) / 2; } catch {}
 			const isNew = (id: string) => !prevPos.has(id);
-			all.forEach((n) => {
+			nodes.forEach((n) => {
 				const id = n.id();
 				if (!isNew(id)) return;
-				// Gather neighbor positions that are known
 				let sumX = 0, sumY = 0, cnt = 0;
 				try {
 					n.connectedEdges().forEach((e) => {
@@ -344,7 +383,6 @@ useEffect(() => {
 				} catch {}
 				let nx = cx, ny = cyy;
 				if (cnt > 0) { nx = sumX / cnt; ny = sumY / cnt; }
-				// Apply a small jitter to avoid perfect overlap
 				const jitter = 12;
 				const rx = (Math.random() - 0.5) * jitter;
 				const ry = (Math.random() - 0.5) * jitter;
@@ -353,35 +391,45 @@ useEffect(() => {
 		} catch {}
 	};
 
+	const recountRawEdgeCount = (cy: cytoscape.Core) => {
+		try {
+			rawEdgeCountRef.current = cy.edges().reduce((acc: number, edge: any) => {
+				return edge?.data('combined') === 1 ? acc : acc + 1;
+			}, 0);
+		} catch {}
+	};
+
 	// Ensure combined edge exists (or is removed) for a directed pair, and originals are hidden/shown appropriately
 	const ensureCombinedForPair = (cy: cytoscape.Core, a: string, b: string) => {
 		try {
-				const originals = findEdgesBetween(cy, a, b, { excludeCombined: true });
+			const originals = findEdgesBetween(cy, a, b, { excludeCombined: true });
+			const combinedId = `combined:${a}->${b}`;
+			const wantCombined = combineEdgesRef.current;
+			const existing = cy.getElementById(combinedId);
 			if (!originals || originals.length === 0) {
-				// Nothing to do; remove any stale combined
-				const combinedId = `combined:${a}->${b}`;
-				const existing = cy.getElementById(combinedId);
 				if (existing && existing.length) { try { existing.remove(); } catch {} }
 				return;
 			}
-				// Filter by currently visible DEX
-				let vis = originals;
-				try {
-					vis = vis.filter((e) => {
-						const dx = String(e.data('dex'));
-						if (!filterDex.Raydium && dx === 'Raydium') return false;
-						if (!filterDex.Orca && dx === 'Orca') return false;
-						if (!filterDex.Meteora && dx === 'Meteora') return false;
-						return true;
-					});
-				} catch {}
-			// Determine number of distinct DEX among visible originals
+			if (!wantCombined) {
+				if (existing && existing.length) { try { existing.remove(); } catch {} }
+				originals.forEach((e) => { try { e.data('hiddenEdge', null); } catch {} });
+				recomputeParallelOffsets(cy, a, b);
+				return;
+			}
+			// Filter by currently visible DEX
+			let vis = originals;
+			try {
+				vis = vis.filter((e) => {
+					const dx = String(e.data('dex'));
+					if (!filterDex.Raydium && dx === 'Raydium') return false;
+					if (!filterDex.Orca && dx === 'Orca') return false;
+					if (!filterDex.Meteora && dx === 'Meteora') return false;
+					return true;
+				});
+			} catch {}
 			const dexSet = new Set<string>();
 			vis.forEach((e) => { try { dexSet.add(String(e.data('dex'))); } catch {} });
-			const combinedId = `combined:${a}->${b}`;
-			const existing = cy.getElementById(combinedId);
 			if (dexSet.size >= 2) {
-				// Build combined details
 				const all = vis;
 				const originalIds: string[] = [];
 				const details: any[] = [];
@@ -406,14 +454,11 @@ useEffect(() => {
 				} else {
 					try { existing.data('combinedOriginalIds', originalIds); existing.data('combinedEdgesDetails', details); } catch {}
 				}
-				// Hide originals under combined
 				originals.forEach((e) => { try { e.data('hiddenEdge', 1); } catch {} });
 			} else {
-				// Remove combined and show originals
 				if (existing && existing.length) { try { existing.remove(); } catch {} }
 				originals.forEach((e) => { try { e.data('hiddenEdge', null); } catch {} });
 			}
-			// Recompute offsets for this pair
 			recomputeParallelOffsets(cy, a, b);
 		} catch {}
 	};
@@ -574,6 +619,7 @@ useEffect(() => {
       try { cy.nodes().forEach((n) => { prevPos.set(n.id(), { x: n.position('x'), y: n.position('y') }); }); } catch {}
       cy.elements().remove();
 			cy.add(toElements(j));
+			recountRawEdgeCount(cy);
       // Restore positions for existing nodes when preserving layout
       if (preservePositions) {
         try { cy.nodes().forEach((n) => { const p = prevPos.get(n.id()); if (p) n.position(p); }); } catch {}
@@ -744,6 +790,9 @@ useEffect(() => {
 					for (const id of remIds) {
 						const el = cy.getElementById(String(id));
 						if (el && el.length && el.isEdge()) {
+							if (el.data('combined') !== 1) {
+								rawEdgeCountRef.current = Math.max(0, rawEdgeCountRef.current - 1);
+							}
 							const a = String(el.data('source'));
 							const b = String(el.data('target'));
 							touchedPairs.add(`${a}|${b}`);
@@ -752,21 +801,25 @@ useEffect(() => {
 				} catch {}
 				if (diff.removedEdgeIds?.length) cy.remove(diff.removedEdgeIds.map((id) => `#${id}`).join(','));
 				if (diff.removedNodeIds?.length) cy.remove(diff.removedNodeIds.map((id) => `#${id}`).join(','));
-				const hideKind = new Set<string>();
-				if (!filterKind.AMM) hideKind.add('amm');
-				if (!filterKind.CLMM) hideKind.add('clmm');
-		for (const n of [...(diff.addedNodes||[]), ...(diff.updatedNodes||[])]) {
-					try {
-						const id = String(n.id);
-						const existing = cy.getElementById(id);
-						if (existing && existing.length && existing.isNode()) {
+			if (diff.removedNodeIds?.length) recountRawEdgeCount(cy);
+			const hideKind = new Set<string>();
+			if (!filterKind.AMM) hideKind.add('amm');
+			if (!filterKind.CLMM) hideKind.add('clmm');
+			const rawLimit = maxEdgesRef.current;
+			const newNodeIds = new Set<string>();
+	for (const n of [...(diff.addedNodes||[]), ...(diff.updatedNodes||[])]) {
+				try {
+					const id = String(n.id);
+					const existing = cy.getElementById(id);
+					if (existing && existing.length && existing.isNode()) {
 						existing.data('label', '');
-						} else {
+					} else {
 						cy.add({ data: { id, label: '' } });
-						}
-					} catch {}
+						newNodeIds.add(id);
+					}
+				} catch {}
 				}
-				for (const e of [...(diff.addedEdges||[]), ...(diff.updatedEdges||[])]) {
+			for (const e of [...(diff.addedEdges||[]), ...(diff.updatedEdges||[])]) {
 					const kind = (e as any).pool_kind;
 					if (kind === 'amm' || kind === 'clmm') {
 						if (hideKind.has(kind)) continue;
@@ -775,17 +828,21 @@ useEffect(() => {
 					try {
 						const id = String(e.id);
 						const el = cy.getElementById(id);
-						if (el && el.length && el.isEdge()) {
-							el.data(data);
-						} else {
-							cy.add({ data } as any);
+					if (el && el.length && el.isEdge()) {
+						el.data(data);
+					} else {
+						if (rawLimit > 0 && rawEdgeCountRef.current >= rawLimit) {
+							continue;
 						}
+						cy.add({ data } as any);
+						rawEdgeCountRef.current += 1;
+					}
 					} catch {}
-					try {
-						const a = String(e.source);
-						const b = String(e.target);
-						touchedPairs.add(`${a}|${b}`);
-					} catch {}
+				try {
+					const a = String(e.source);
+					const b = String(e.target);
+					touchedPairs.add(`${a}|${b}`);
+				} catch {}
 				}
 				try {
 					const highlightIds: string[] = [];
@@ -816,7 +873,9 @@ useEffect(() => {
             });
           }
         } catch {}
-				seedPositionsForNewNodes(cy, prevPos);
+			if (newNodeIds.size > 0) {
+				seedPositionsForNewNodes(cy, prevPos, newNodeIds);
+			}
 			});
 		};
 
@@ -835,6 +894,7 @@ useEffect(() => {
 				try { cy.nodes().forEach((n) => { prevPos.set(n.id(), { x: n.position('x'), y: n.position('y') }); }); } catch {}
 				cy.elements().remove();
 				cy.add(toElements(snap));
+				recountRawEdgeCount(cy);
 				if (preservePositions) {
 					try { cy.nodes().forEach((n) => { const p = prevPos.get(n.id()); if (p) n.position(p); }); } catch {}
 				}

@@ -6,6 +6,7 @@ import type { ClmmPool, PoolsPayload } from './types.js';
 import { canonicalizePairs, validateHttpUrl, swapABFields } from './common.js';
 import { verifyCanonicalization } from './validation.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
+import { anyToBigInt, ratioToDecimalString, sqrtPriceX64ToPriceRatio } from './precision.js';
 
 const FEERATE_FIELDS = ['tradingFeeRate', 'tradeFeeRate', 'feeRate', 'tradeFee', 'fee', 'makerFee', 'takerFee'];
 const FEEBPS_FIELDS = ['fee_bps', 'feeBps', 'fee_in_bps'];
@@ -251,6 +252,7 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
     let sqrt_price_x64 = Number(typeof sqrtPriceStr === 'string' ? Number(sqrtPriceStr) : sqrtPriceStr || 0);
     const liquidityVal = (it?.liquidity ?? it?.state?.liquidity ?? 0);
     const liquidity = Number(typeof liquidityVal === 'string' ? Number(liquidityVal) : liquidityVal || 0);
+    const liquidityRaw = anyToBigInt(liquidityVal);
     const tick_spacing = Number((it?.tickSpacing ?? it?.state?.tickSpacing) || 0);
     const amtAraw = (it?.tokenBalanceA ?? it?.tokenAAmount ?? it?.token_a_amount ?? it?.amountA ?? it?.baseAmount ?? 0);
     const amtBraw = (it?.tokenBalanceB ?? it?.tokenBAmount ?? it?.token_b_amount ?? it?.amountB ?? it?.quoteAmount ?? 0);
@@ -258,6 +260,10 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
     let amount_b = Number(typeof amtBraw === 'string' ? Number(amtBraw) : amtBraw || 0);
     const incomingPrice = Number(it?.price ?? it?.price_a_per_b ?? it?.priceAperB ?? 0);
     if (isWhirlpool && id && sqrt_price_x64 > 0) {
+      const sqrtRaw = anyToBigInt(sqrtPriceStr);
+      let priceRatio = sqrtRaw && Number.isFinite(decA) && Number.isFinite(decB)
+        ? sqrtPriceX64ToPriceRatio(sqrtRaw, decA as number, decB as number)
+        : null;
       let cA = mint_a; let cB = mint_b; let cDecA = decA; let cDecB = decB; let cAmtA = amount_a; let cAmtB = amount_b;
       
       // Ensure decimals are definitely set before computing price
@@ -404,7 +410,31 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
         }
       } catch {}
       if (usdDevOkOrca) {
-        clmm.push({ id, dex: 'Orca', mint_a: cA, mint_b: cB, fee_bps, sqrt_price_x64, liquidity, tick_spacing, updated_ms: now, price_a_per_b: priceDerived > 0 ? priceDerived : undefined, amount_a: cAmtA, amount_b: cAmtB, decimals_a: Number.isFinite(cDecA) ? cDecA : undefined, decimals_b: Number.isFinite(cDecB) ? cDecB : undefined, pool_kind: 'clmm', pool_liquidity_raw, tvl_usd, liquidity_display });
+        clmm.push({
+          id,
+          dex: 'Orca',
+          mint_a: cA,
+          mint_b: cB,
+          fee_bps,
+          sqrt_price_x64,
+          sqrt_price_x64_raw: sqrtRaw ? sqrtRaw.toString() : undefined,
+          liquidity,
+          liquidity_raw: liquidityRaw ? liquidityRaw.toString() : undefined,
+          tick_spacing,
+          updated_ms: now,
+          price_a_per_b: priceDerived > 0 ? priceDerived : undefined,
+          price_a_per_b_num: priceRatio ? priceRatio.numerator.toString() : undefined,
+          price_a_per_b_den: priceRatio ? priceRatio.denominator.toString() : undefined,
+          price_a_per_b_exact: ratioToDecimalString(priceRatio) ?? undefined,
+          amount_a: cAmtA,
+          amount_b: cAmtB,
+          decimals_a: Number.isFinite(cDecA) ? cDecA : undefined,
+          decimals_b: Number.isFinite(cDecB) ? cDecB : undefined,
+          pool_kind: 'clmm',
+          pool_liquidity_raw,
+          tvl_usd,
+          liquidity_display,
+        });
       } else {
         try { logger.warn('orca.clmm drop by sanity', { id, mint_a: cA, mint_b: cB, price_a_per_b: priceDerived, cat: 'orca' }); } catch {}
       }

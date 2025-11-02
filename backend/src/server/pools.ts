@@ -6,6 +6,7 @@ import { enablePriceFeed, isPriceFeedEnabled } from './feedRegistry.js';
 // Defer web3 imports to runtime to prevent type issues in environments without types
 // import { PublicKey } from '@solana/web3.js';
 import type { AmmPool, ClmmPool, PoolsPayload } from './pools/types.js';
+import { anyToBigInt, ratioToDecimalString, sqrtPriceX64ToPriceRatio } from './pools/precision.js';
 import { fetchRaydiumPoolsRaw as fetchRaydiumPoolsRawImpl, normalizeRaydiumPools as normalizeRaydiumPoolsImpl } from './pools/raydium.js';
 import { fetchOrcaHttp as fetchOrcaHttpImpl, normalizeOrcaHttp as normalizeOrcaHttpImpl, deriveOrcaFeeBps } from './pools/orca.js';
 import { fetchMeteoraHttp as fetchMeteoraHttpImpl, normalizeMeteoraHttp as normalizeMeteoraHttpImpl } from './pools/meteora.js';
@@ -91,6 +92,15 @@ export function diffNormalizedPools(prev: PoolsPayload | null | undefined, next:
   const eps = 1e-9;
   const changedAmm = (a?: AmmPool, b?: AmmPool): boolean => {
     if (!a || !b) return true;
+    const reserveChanged = ((a as any).reserve_a_raw && (b as any).reserve_a_raw && (a as any).reserve_b_raw && (b as any).reserve_b_raw)
+      ? ((a as any).reserve_a_raw !== (b as any).reserve_a_raw || (a as any).reserve_b_raw !== (b as any).reserve_b_raw)
+      : false;
+    if (reserveChanged) return true;
+    const ratioChanged = ((a as any).price_a_per_b_num && (a as any).price_a_per_b_den && (b as any).price_a_per_b_num && (b as any).price_a_per_b_den)
+      ? ((a as any).price_a_per_b_num !== (b as any).price_a_per_b_num || (a as any).price_a_per_b_den !== (b as any).price_a_per_b_den)
+      : false;
+    if (ratioChanged) return true;
+    if (((a as any).liquidity_base_raw && (b as any).liquidity_base_raw) && (a as any).liquidity_base_raw !== (b as any).liquidity_base_raw) return true;
     if (Math.abs((a.price_a_per_b || 0) - (b.price_a_per_b || 0)) > eps) return true;
     if (Math.abs((a.liquidity_base || 0) - (b.liquidity_base || 0)) > eps) return true;
     if ((a.tvl_usd || 0) !== (b.tvl_usd || 0)) return true;
@@ -98,10 +108,20 @@ export function diffNormalizedPools(prev: PoolsPayload | null | undefined, next:
   };
   const changedClmm = (a?: ClmmPool, b?: ClmmPool): boolean => {
     if (!a || !b) return true;
-    if (Math.abs((a.sqrt_price_x64 || 0) - (b.sqrt_price_x64 || 0)) > 0) return true;
+    const rawChanged = ((a as any).sqrt_price_x64_raw && (b as any).sqrt_price_x64_raw)
+      ? (a as any).sqrt_price_x64_raw !== (b as any).sqrt_price_x64_raw
+      : false;
+    if (rawChanged) return true;
+    const ratioChanged = ((a as any).price_a_per_b_num && (a as any).price_a_per_b_den && (b as any).price_a_per_b_num && (b as any).price_a_per_b_den)
+      ? ((a as any).price_a_per_b_num !== (b as any).price_a_per_b_num || (a as any).price_a_per_b_den !== (b as any).price_a_per_b_den)
+      : false;
+    if (ratioChanged) return true;
+    if (((a as any).liquidity_raw && (b as any).liquidity_raw) && (a as any).liquidity_raw !== (b as any).liquidity_raw) return true;
     if (Math.abs((a.liquidity || 0) - (b.liquidity || 0)) > 0) return true;
     if ((a.tvl_usd || 0) !== (b.tvl_usd || 0)) return true;
     if (Math.abs((a.price_a_per_b || 0) - (b.price_a_per_b || 0)) > eps) return true;
+    if (Math.abs((a.amount_a || 0) - (b.amount_a || 0)) > 0) return true;
+    if (Math.abs((a.amount_b || 0) - (b.amount_b || 0)) > 0) return true;
     return false;
   };
   for (const [id, nx] of nA) { const pv = pA.get(id); if (!pv || changedAmm(pv, nx)) updatedAmm.push(nx); }
@@ -158,34 +178,55 @@ export function defaultNormalizeRaydiumPools(raw: any): PoolsPayload {
     const mintAmountB = Number((it as any)?.mintAmountB);
     if (isClmm) {
       const tick = Number((it as any)?.tickSpacing ?? (it as any)?.config?.tickSpacing ?? 0);
-      const sqrt = Number((it as any)?.sqrtPriceX64 ?? (it as any)?.sqrtPrice ?? 0);
-      const liquidity = Number((it as any)?.liquidity ?? 0);
+      const sqrtCandidate = (it as any)?.sqrtPriceX64 ?? (it as any)?.sqrtPrice ?? 0;
+      const sqrtBig = anyToBigInt(sqrtCandidate);
+      const sqrt = typeof sqrtCandidate === 'number' ? sqrtCandidate : Number(sqrtBig ?? 0n);
+      const liquidityCandidate = (it as any)?.liquidity ?? 0;
+      const liquidity = Number(liquidityCandidate);
+      const liquidityRaw = anyToBigInt(liquidityCandidate);
       const tvl_usd = Number.isFinite(tvl) && tvl > 0 ? tvl : undefined;
-      // Derive A per 1 B from sqrt if possible
-      // Raydium CLMM sqrtPriceX64 encoding: sqrt encodes sqrt(B/A) in atomic units
-      // Formula: A-per-1-B = 10^(decB-decA) / (ratio^2), where ratio = sqrt / 2^64
-      // Note: This is a synchronous function, so we use manual calculation only
-      // The async normalizeRaydiumPools in raydium.ts uses SDK when available
       let price_from_sqrt = 0;
-      if (sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
+      let ratio: ReturnType<typeof sqrtPriceX64ToPriceRatio> | null = null;
+      if (sqrtBig && Number.isFinite(decA) && Number.isFinite(decB)) {
+        ratio = sqrtPriceX64ToPriceRatio(sqrtBig, decA as number, decB as number);
+        if (ratio?.float && Number.isFinite(ratio.float) && ratio.float > 0) {
+          price_from_sqrt = ratio.float;
+        }
+      } else if (sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
         const two64 = Math.pow(2, 64);
-        const ratio = sqrt / two64;
-        // Manual decode: sqrtPriceX64 = sqrt(B_atomic/A_atomic) * 2^64
-        // A_per_B (whole) = 10^(decB-decA) / (ratio^2)
+        const calcRatio = sqrt / two64;
         const scale = Math.pow(10, (decB as number) - (decA as number));
-        const cand = scale / (ratio * ratio);
+        const cand = scale / (calcRatio * calcRatio);
         price_from_sqrt = Number.isFinite(cand) && cand > 0 ? cand : 0;
       }
       const px = price_from_sqrt > 0 ? price_from_sqrt : (Number(price) > 0 ? Number(price) : 0);
-      clmm.push({ id, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps, sqrt_price_x64: Number.isFinite(sqrt) ? sqrt : 0, liquidity: Number.isFinite(liquidity) ? liquidity : 0, tick_spacing: Number.isFinite(tick) ? tick : 0, updated_ms: now, price_a_per_b: px > 0 ? px : undefined, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, pool_kind: 'clmm', tvl_usd } as any);
+      clmm.push({
+        id,
+        dex: 'Raydium',
+        mint_a: mintA,
+        mint_b: mintB,
+        fee_bps,
+        sqrt_price_x64: Number.isFinite(sqrt) ? sqrt : 0,
+        sqrt_price_x64_raw: sqrtBig ? sqrtBig.toString() : undefined,
+        liquidity: Number.isFinite(liquidity) ? liquidity : 0,
+        liquidity_raw: liquidityRaw ? liquidityRaw.toString() : undefined,
+        tick_spacing: Number.isFinite(tick) ? tick : 0,
+        updated_ms: now,
+        price_a_per_b: px > 0 ? px : undefined,
+        price_a_per_b_num: ratio ? ratio.numerator.toString() : undefined,
+        price_a_per_b_den: ratio ? ratio.denominator.toString() : undefined,
+        price_a_per_b_exact: ratioToDecimalString(ratio) ?? undefined,
+        decimals_a: Number.isFinite(decA) ? decA : undefined,
+        decimals_b: Number.isFinite(decB) ? decB : undefined,
+        pool_kind: 'clmm',
+        tvl_usd,
+      } as any);
     } else {
       const tvl_usd = Number.isFinite(tvl) && tvl > 0 ? tvl : undefined;
-      // Treat mintAmountA/B as whole amounts (legacy API behavior in tests); fallback to reserveA/B
       const reserveA = Number((it as any)?.reserveA ?? NaN);
       const reserveB = Number((it as any)?.reserveB ?? NaN);
       const amount_a_whole = Number.isFinite(mintAmountA) ? mintAmountA : (Number.isFinite(reserveA) ? reserveA : undefined);
       const amount_b_whole = Number.isFinite(mintAmountB) ? mintAmountB : (Number.isFinite(reserveB) ? reserveB : undefined);
-      // Legacy/alternate reserve fields used in tests (fallback when whole amounts missing)
       const reserveA0 = Number((it as any)?.reserveA ?? 0);
       const reserveB0 = Number((it as any)?.reserveB ?? 0);
       const price_res = (Number.isFinite(amount_a_whole as any) && Number.isFinite(amount_b_whole as any) && (amount_b_whole as number) > 0)
@@ -195,7 +236,25 @@ export function defaultNormalizeRaydiumPools(raw: any): PoolsPayload {
         ? ((mintAmountA as number) / Math.pow(10, decA as number)) / ((mintAmountB as number) / Math.pow(10, decB as number))
         : 0;
       const px = price_res_decs > 0 ? price_res_decs : (price_res > 0 ? price_res : (Number(price) > 0 ? Number(price) : 0));
-      amm.push({ id, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps, price_a_per_b: Number.isFinite(px) ? px : 0, updated_ms: now, pool_kind: 'amm', tvl_usd, amount_a_whole, amount_b_whole, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined } as any);
+      const reserveARaw = anyToBigInt((it as any)?.reserveA ?? mintAmountA);
+      const reserveBRaw = anyToBigInt((it as any)?.reserveB ?? mintAmountB);
+      amm.push({
+        id,
+        dex: 'Raydium',
+        mint_a: mintA,
+        mint_b: mintB,
+        fee_bps,
+        price_a_per_b: Number.isFinite(px) ? px : 0,
+        updated_ms: now,
+        pool_kind: 'amm',
+        tvl_usd,
+        amount_a_whole,
+        amount_b_whole,
+        decimals_a: Number.isFinite(decA) ? decA : undefined,
+        decimals_b: Number.isFinite(decB) ? decB : undefined,
+        reserve_a_raw: reserveARaw ? reserveARaw.toString() : undefined,
+        reserve_b_raw: reserveBRaw ? reserveBRaw.toString() : undefined,
+      } as any);
     }
   }
   return { amm, clmm } as any;
@@ -213,6 +272,11 @@ let lastWsEventMs: number = 0;
 let wsHealthy: boolean = false;
 let aggTimer: any | undefined;
 const wsCounts: { raydium: number; orca: number; meteora?: number } = { raydium: 0, orca: 0, meteora: 0 };
+const wsDeltaStats: Record<'raydium' | 'orca' | 'meteora', { decoded: number; applied: number; skipped: number }> = {
+  raydium: { decoded: 0, applied: 0, skipped: 0 },
+  orca: { decoded: 0, applied: 0, skipped: 0 },
+  meteora: { decoded: 0, applied: 0, skipped: 0 },
+};
 let attachedOrcaPools: number = 0;
 let attachedRaydiumPools: number = 0;
 let attachedMeteoraPools: number = 0;
@@ -613,14 +677,11 @@ export function startRaydiumRefreshLoop(): void {
                     if (state && (state as any).liquidity != null && ((state as any).mintA || (state as any).tokenMintA)) {
                       const mintA = ((state as any).mintA || (state as any).tokenMintA)?.toBase58?.() || '';
                       const mintB = ((state as any).mintB || (state as any).tokenMintB)?.toBase58?.() || '';
-                      const sqrt = Number((state as any).sqrtPriceX64 ?? (state as any).sqrt_price_x64 ?? (state as any).sqrtPrice ?? 0);
-                      // Derive A per 1 B using sqrtPrice and decimals:
-                      // Raydium CLMM sqrtPriceX64 encoding: sqrt encodes sqrt(A/B) in atomic units
-                      // Formula: A-per-1-B = (ratio^2) * 10^(decB-decA), where ratio = sqrt / 2^64
-                      const price_a_per_b = await (async () => {
+                      const sqrtRaw = anyToBigInt((state as any).sqrtPriceX64 ?? (state as any).sqrt_price_x64 ?? (state as any).sqrtPrice ?? 0);
+                      const precision = await (async () => {
                         try {
-                          if (!Number.isFinite(sqrt) || sqrt <= 0) return undefined;
-                          let decA: number | undefined; let decB: number | undefined;
+                          let decA: number | undefined;
+                          let decB: number | undefined;
                           try {
                             const tok = await import('../utils/tokens.js');
                             const a = await (tok as any).resolveMint(mintA);
@@ -628,40 +689,73 @@ export function startRaydiumRefreshLoop(): void {
                             decA = Number(a?.decimals);
                             decB = Number(b?.decimals);
                           } catch {}
-                          if (!Number.isFinite(decA as any) || !Number.isFinite(decB as any)) return undefined;
-                          
-                          // Try Raydium SDK's authoritative conversion function first
-                          try {
-                            const SqrtPriceMath = rmod?.SqrtPriceMath || rmod?.Clmm?.SqrtPriceMath;
-                            if (SqrtPriceMath?.sqrtPriceX64ToPrice) {
-                              const sqrtBigInt = BigInt(Math.floor(sqrt));
-                              const priceFromSdk = SqrtPriceMath.sqrtPriceX64ToPrice(sqrtBigInt, decA as number, decB as number);
-                              if (priceFromSdk != null && Number(priceFromSdk) > 0 && Number.isFinite(Number(priceFromSdk))) {
-                                return Number(priceFromSdk);
+                          if (!Number.isFinite(decA)) decA = undefined;
+                          if (!Number.isFinite(decB)) decB = undefined;
+                          let ratio = (sqrtRaw && decA != null && decB != null)
+                            ? sqrtPriceX64ToPriceRatio(sqrtRaw, decA, decB)
+                            : null;
+                          let price: number | undefined;
+                          if (ratio?.float && Number.isFinite(ratio.float) && ratio.float > 0) {
+                            price = ratio.float;
+                          }
+                          if ((!price || price <= 0) && sqrtRaw && decA != null && decB != null) {
+                            try {
+                              const SqrtPriceMath = rmod?.SqrtPriceMath || rmod?.Clmm?.SqrtPriceMath;
+                              if (SqrtPriceMath?.sqrtPriceX64ToPrice) {
+                                const priceFromSdk = SqrtPriceMath.sqrtPriceX64ToPrice(sqrtRaw, decA, decB);
+                                if (priceFromSdk != null && Number(priceFromSdk) > 0 && Number.isFinite(Number(priceFromSdk))) {
+                                  price = Number(priceFromSdk);
+                                }
                               }
-                            }
-                          } catch {}
-                          
-                          // Fallback to manual calculation
-                          const ratio = sqrt / Math.pow(2, 64);
-                          // Manual decode: sqrtPriceX64 = sqrt(B_atomic/A_atomic) * 2^64
-                          // A_per_B (whole) = 10^(decB-decA) / (ratio^2)
-                          const scale = Math.pow(10, (decB as number) - (decA as number));
-                          const aPerB = scale / (ratio * ratio);
-                          return (aPerB > 0 && Number.isFinite(aPerB)) ? aPerB : undefined;
-                        } catch { return undefined; }
+                            } catch {}
+                          }
+                          if ((!price || price <= 0) && sqrtRaw && decA != null && decB != null) {
+                            try {
+                              const ratioApprox = Number(sqrtRaw) / Math.pow(2, 64);
+                              const scale = Math.pow(10, decB - decA);
+                              const cand = scale / (ratioApprox * ratioApprox);
+                              if (Number.isFinite(cand) && cand > 0) price = cand;
+                            } catch {}
+                          }
+                          return { price, decA, decB, ratio };
+                        } catch {
+                          return { price: undefined, decA: undefined, decB: undefined, ratio: null };
+                        }
                       })();
+                      const price_a_per_b = precision.price;
+                      const liqRaw = anyToBigInt((state as any).liquidity ?? 0);
                       const liq = Number((state as any).liquidity ?? 0);
                       const tick = Number((state as any).tickSpacing ?? (state as any).tick_spacing ?? 0);
                       const fee = Number((state as any).feeRate ?? (state as any).fee_rate ?? 0);
-                      const item: ClmmPool = { id: pk58, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps: fee, sqrt_price_x64: sqrt, liquidity: liq, tick_spacing: tick, updated_ms: Date.now(), pool_kind: 'clmm', liquidity_display: liq, price_a_per_b } as any;
+                      const item: ClmmPool = {
+                        id: pk58,
+                        dex: 'Raydium',
+                        mint_a: mintA,
+                        mint_b: mintB,
+                        fee_bps: fee,
+                        sqrt_price_x64: Number.isFinite(Number(sqrtRaw)) ? Number(sqrtRaw) : Number((state as any).sqrtPriceX64 ?? (state as any).sqrt_price_x64 ?? (state as any).sqrtPrice ?? 0),
+                        sqrt_price_x64_raw: sqrtRaw ? sqrtRaw.toString() : undefined,
+                        liquidity: Number.isFinite(liq) ? liq : 0,
+                        liquidity_raw: liqRaw ? liqRaw.toString() : undefined,
+                        tick_spacing: tick,
+                        updated_ms: Date.now(),
+                        pool_kind: 'clmm',
+                        liquidity_display: liq,
+                        price_a_per_b,
+                        price_a_per_b_num: precision.ratio ? precision.ratio.numerator.toString() : undefined,
+                        price_a_per_b_den: precision.ratio ? precision.ratio.denominator.toString() : undefined,
+                        price_a_per_b_exact: ratioToDecimalString(precision.ratio) ?? undefined,
+                        decimals_a: precision.decA,
+                        decimals_b: precision.decB,
+                      } as any;
                       const prev = raydiumCache.data || { amm: [], clmm: [] };
                       const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
                       const idx = next.clmm.findIndex(p => p.id === item.id);
                       if (idx >= 0) next.clmm[idx] = { ...next.clmm[idx], ...item }; else next.clmm.push(item);
+                      wsDeltaStats.raydium.decoded += 1;
                       const d = diffNormalizedPools(prev, next);
                       raydiumCache.data = next; raydiumCache.ts = Date.now();
-                      try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: [], clmm: d.clmm.slice(0, 20) }, ts: Date.now() }); } catch {}
+                      try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: d.amm.slice(0, 20), clmm: [] }, ts: Date.now() }); } catch {}
                   // Prefer incremental graph apply when enabled; fallback to rebuild
                   try {
                     const inc = !!((CONFIG.system as any)?.graphIncrementalMode);
@@ -748,15 +842,12 @@ export function startRaydiumRefreshLoop(): void {
                   const id = pk58;
                   const mint_a = parsed.tokenMintA.toBase58();
                   const mint_b = parsed.tokenMintB.toBase58();
-                  const sqrt_price_x64 = Number(parsed.sqrtPrice);
-                  // Derive A per 1 B using sqrtPrice and decimals:
-                  // price_B_per_A = (ratio^2) * 10^(decA - decB)
-                  // price_A_per_B = 1 / price_B_per_A = 10^(decB - decA) / (ratio^2)
-                  const pxFromSqrt = await (async () => {
+                  const sqrtRaw = anyToBigInt(parsed.sqrtPrice);
+                  const sqrt_price_x64 = sqrtRaw ? Number(sqrtRaw) : Number(parsed.sqrtPrice);
+                  const precision = await (async () => {
                     try {
-                      if (!Number.isFinite(sqrt_price_x64) || sqrt_price_x64 <= 0) return 0;
-                      const ratio = sqrt_price_x64 / Math.pow(2, 64);
-                      let decA: number | undefined; let decB: number | undefined;
+                      let decA: number | undefined;
+                      let decB: number | undefined;
                       try {
                         const tok = await import('../utils/tokens.js');
                         const a = await (tok as any).resolveMint(mint_a);
@@ -764,20 +855,49 @@ export function startRaydiumRefreshLoop(): void {
                         decA = Number(a?.decimals);
                         decB = Number(b?.decimals);
                       } catch {}
-                      if (!Number.isFinite(decA as any) || !Number.isFinite(decB as any)) return 0;
-                      const scale = Math.pow(10, (decB as number) - (decA as number));
-                      const px = scale / (ratio * ratio);
-                      return Number.isFinite(px) && px > 0 ? px : 0;
-                    } catch { return 0; }
+                      if (!Number.isFinite(decA)) decA = undefined;
+                      if (!Number.isFinite(decB)) decB = undefined;
+                      const ratio = (sqrtRaw && decA != null && decB != null)
+                        ? sqrtPriceX64ToPriceRatio(sqrtRaw, decA, decB)
+                        : null;
+                      const price = ratio?.float && Number.isFinite(ratio.float) && ratio.float > 0
+                        ? ratio.float
+                        : 0;
+                      return { price, ratio, decA, decB };
+                    } catch {
+                      return { price: 0, ratio: null, decA: undefined, decB: undefined };
+                    }
                   })();
+                  const liquidityRaw = anyToBigInt(parsed.liquidity);
                   const liquidity = Number(parsed.liquidity);
                   const tick_spacing = Number(parsed.tickSpacing);
                   const fee_bps = deriveOrcaFeeBps(parsed as any);
-                  const clmmItem: ClmmPool = { id, dex: 'Orca', mint_a, mint_b, fee_bps, sqrt_price_x64, liquidity, tick_spacing, updated_ms: Date.now(), pool_kind: 'clmm', liquidity_display: liquidity, price_a_per_b: pxFromSqrt } as any;
+                  const clmmItem: ClmmPool = {
+                    id,
+                    dex: 'Orca',
+                    mint_a,
+                    mint_b,
+                    fee_bps,
+                    sqrt_price_x64,
+                    sqrt_price_x64_raw: sqrtRaw ? sqrtRaw.toString() : undefined,
+                    liquidity,
+                    liquidity_raw: liquidityRaw ? liquidityRaw.toString() : undefined,
+                    tick_spacing,
+                    updated_ms: Date.now(),
+                    pool_kind: 'clmm',
+                    liquidity_display: liquidity,
+                    price_a_per_b: precision.price > 0 ? precision.price : undefined,
+                    price_a_per_b_num: precision.ratio ? precision.ratio.numerator.toString() : undefined,
+                    price_a_per_b_den: precision.ratio ? precision.ratio.denominator.toString() : undefined,
+                    price_a_per_b_exact: ratioToDecimalString(precision.ratio) ?? undefined,
+                    decimals_a: precision.decA,
+                    decimals_b: precision.decB,
+                  } as any;
                   const prev = orcaCache.data || { amm: [], clmm: [] };
                   const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
                   const idx = next.clmm.findIndex(p => p.id === id);
                   if (idx >= 0) { next.clmm[idx] = { ...next.clmm[idx], ...clmmItem }; } else { next.clmm.push(clmmItem); }
+                  wsDeltaStats.orca.decoded += 1;
                   orcaCache.data = next; orcaCache.ts = Date.now();
                   const d = diffNormalizedPools(prev, next);
                   const sample = { amm: [], clmm: d.clmm.slice(0, 20) };
@@ -788,7 +908,9 @@ export function startRaydiumRefreshLoop(): void {
                     const inc = !!((CONFIG.system as any)?.graphIncrementalMode);
                     const gmod: any = await import('./graph.js');
                     const prevSnap = orcaCache.data ? prev : { amm: [], clmm: [] };
-                    if (inc && (d.clmm.length || d.amm.length || d.addedClmm || d.removedClmm || d.addedAmm || d.removedAmm)) {
+                    const hasDelta = (d.clmm.length || d.amm.length || d.addedClmm || d.removedClmm || d.addedAmm || d.removedAmm);
+                    if (hasDelta) wsDeltaStats.orca.applied += 1; else wsDeltaStats.orca.skipped += 1;
+                    if (inc && hasDelta) {
                       await scheduleDexApply('orca', prevSnap as any);
                     } else {
                       const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
@@ -930,6 +1052,7 @@ export function startRaydiumRefreshLoop(): void {
                       pool_kind: 'clmm',
                     } as any;
                     if (idx >= 0) next.clmm[idx] = { ...next.clmm[idx], ...item }; else next.clmm.push(item);
+                    wsDeltaStats.meteora.decoded += 1;
                     const d = diffNormalizedPools(prev, next);
                     meteoraCache.data = next; meteoraCache.ts = Date.now();
                     try { emit('pool-updates', { source: 'meteora', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: [], clmm: d.clmm.slice(0, 20) }, ts: Date.now() }); } catch {}
@@ -1418,16 +1541,25 @@ export function startRaydiumRefreshLoop(): void {
           try {
             const snapshot = { raydium: wsCounts.raydium, orca: wsCounts.orca, meteora: wsCounts.meteora } as any;
             wsCounts.raydium = 0; wsCounts.orca = 0; wsCounts.meteora = 0;
-            logger.info('pools.ws aggregate', { 
-              events: snapshot, 
-              healthy: wsHealthy, 
+            const metrics = {
+              raydium: { ...wsDeltaStats.raydium },
+              orca: { ...wsDeltaStats.orca },
+              meteora: { ...wsDeltaStats.meteora },
+            };
+            logger.info('pools.ws aggregate', {
+              events: snapshot,
+              healthy: wsHealthy,
               lastEventMs: lastWsEventMs,
               counts: {
                 raydium: { attached: attachedRaydiumPools, target: (typeof getWsTargets === 'function' ? (getWsTargets as any)._last?.raydium?.target : undefined) },
                 orca: { attached: attachedOrcaPools, target: (typeof getWsTargets === 'function' ? (getWsTargets as any)._last?.orca?.target : undefined) },
                 meteora: { attached: attachedMeteoraPools, target: (typeof getWsTargets === 'function' ? (getWsTargets as any)._last?.meteora?.target : undefined) }
-              }
+              },
+              metrics,
             });
+            wsDeltaStats.raydium = { decoded: 0, applied: 0, skipped: 0 };
+            wsDeltaStats.orca = { decoded: 0, applied: 0, skipped: 0 };
+            wsDeltaStats.meteora = { decoded: 0, applied: 0, skipped: 0 };
             // Emit a dedicated ws-activity event for UI regardless of log filtering
             try { emit('ws-activity', { healthy: wsHealthy, lastEventMs: lastWsEventMs, orca: { attached: attachedOrcaPools, events: snapshot.orca || 0 }, raydium: { attached: attachedRaydiumPools, events: snapshot.raydium || 0 }, meteora: { attached: attachedMeteoraPools, events: snapshot.meteora || 0 } }); } catch {}
             try {
