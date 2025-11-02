@@ -13,7 +13,8 @@ import { fetchMeteoraHttp as fetchMeteoraHttpImpl, normalizeMeteoraHttp as norma
 import { validateCrossDexPrices, verifyCanonicalization } from './pools/validation.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './pools/httpLog.js';
 import { fetchMeteoraBalancedHttp as fetchMeteoraBalancedHttpImpl, normalizeMeteoraBalancedHttp as normalizeMeteoraBalancedHttpImpl, fetchMeteoraBalancedAll as fetchMeteoraBalancedAllImpl } from './pools/meteoraBalanced.js';
-import { createProgram, getAccountDiscriminator } from '@meteora-ag/dlmm';
+import { canonicalizePairs } from './pools/common.js';
+import { createProgram } from '@meteora-ag/dlmm';
 import { PoolInfoLayout as RaydiumClmmLayout } from '@raydium-io/raydium-sdk-v2/lib/raydium/clmm/layout.js';
 
 const raydiumCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
@@ -719,7 +720,11 @@ export function startRaydiumRefreshLoop(): void {
                   const clmmLayout = (rmod as any)?.Clmm?.PoolStateLayout || (rmod as any)?.CLMM?.POOL_STATE_LAYOUT || (rmod as any)?.PoolStateLayout;
                   if (debugLimit !== 0) maybeDebugAccount('raydium');
                   if (clmmLayout && typeof clmmLayout.decode === 'function') {
-                    try { state = clmmLayout.decode(info.data); } catch {}
+                    let clmmDecodeError: any = null;
+                    try { state = clmmLayout.decode(info.data); } catch (err: any) { clmmDecodeError = err; state = null; }
+                    if (!state && clmmDecodeError) {
+                      try { logger.debug('raydium.ws clmm.decode.fail', { id: pk58, error: String(clmmDecodeError?.message || clmmDecodeError), dataLen: Number(info?.data?.length ?? 0), cat: 'pools' }); } catch {}
+                    }
                     if (state) {
                       try {
                         logger.info('raydium.ws state.inspect', {
@@ -730,7 +735,12 @@ export function startRaydiumRefreshLoop(): void {
                         });
                       } catch {}
                     }
-                    if (state && (state as any).liquidity != null && ((state as any).mintA || (state as any).tokenMintA || (state as any).mint_a || (state as any).token_mint_a)) {
+                    const hasLiquidityField = !!(state && (state as any)?.liquidity != null);
+                    const hasMintFields = !!(state && ((state as any)?.mintA || (state as any)?.tokenMintA || (state as any)?.mint_a || (state as any)?.token_mint_a));
+                    if (state && (!hasLiquidityField || !hasMintFields)) {
+                      try { logger.debug('raydium.ws clmm.skip', { id: pk58, hasLiquidityField, hasMintFields, cat: 'pools' }); } catch {}
+                    }
+                    if (state && hasLiquidityField && hasMintFields) {
                       const mintA = ((state as any).mintA || (state as any).tokenMintA)?.toBase58?.() || '';
                       const mintB = ((state as any).mintB || (state as any).tokenMintB)?.toBase58?.() || '';
                       const sqrtRaw = anyToBigInt((state as any).sqrtPriceX64 ?? (state as any).sqrt_price_x64 ?? (state as any).sqrtPrice ?? 0);
@@ -1040,32 +1050,87 @@ export function startRaydiumRefreshLoop(): void {
                   try { tokenY = state?.tokenYMint?.toBase58?.() || state?.mint_y || state?.tokenYMint || state?.tokenB || undefined; } catch {}
                   try { activeId = Number(state?.activeId ?? state?.active_id); } catch {}
                   try { binStep = Number(state?.binStep ?? state?.bin_step); } catch {}
-                  if (tokenX && tokenY && Number.isFinite(activeId as any) && Number.isFinite(binStep as any)) {
-                    // Resolve decimals
-                    let decA: number | undefined; let decB: number | undefined;
-                    try { const tok = await import('../utils/tokens.js'); const a = await (tok as any).resolveMint(tokenX); const b = await (tok as any).resolveMint(tokenY); decA = Number(a?.decimals); decB = Number(b?.decimals); } catch {}
-                    // Prefer reserves-based price if available; fallback to activeId/binStep
-                    let price_a_per_b: number | undefined;
+                  const accountA = toB58Any((state as any)?.reserveX);
+                  const accountB = toB58Any((state as any)?.reserveY);
+                  let decA: number | undefined;
+                  let decB: number | undefined;
+                  let price_a_per_b: number | undefined;
+                  if (tokenX && tokenY) {
                     try {
-                      // Try extracting reserves with multiple candidate field names
-                      const rx = Number(state?.reserveX ?? state?.reserve_x ?? state?.reserve_x_amount ?? state?.tokenXBalance ?? state?.tokenBalanceX ?? 0);
-                      const ry = Number(state?.reserveY ?? state?.reserve_y ?? state?.reserve_y_amount ?? state?.tokenYBalance ?? state?.tokenBalanceY ?? 0);
-                      if (Number.isFinite(rx) && Number.isFinite(ry) && rx > 0 && ry > 0 && Number.isFinite(decA as any) && Number.isFinite(decB as any)) {
-                        const wholeA = rx / Math.pow(10, decA as number);
-                        const wholeB = ry / Math.pow(10, decB as number);
-                        if (wholeA > 0 && wholeB > 0) price_a_per_b = wholeA / wholeB;
-                      }
+                      const tok = await import('../utils/tokens.js');
+                      const a = await (tok as any).resolveMint(tokenX);
+                      const b = await (tok as any).resolveMint(tokenY);
+                      decA = Number(a?.decimals);
+                      decB = Number(b?.decimals);
+                      if (!Number.isFinite(decA)) decA = undefined;
+                      if (!Number.isFinite(decB)) decB = undefined;
                     } catch {}
-                    try {
-                      if (!(price_a_per_b && price_a_per_b > 0) && Number.isFinite(decA as any) && Number.isFinite(decB as any)) {
-                        const f = Math.pow(1.0001, binStep as number);
+                    if (Number.isFinite(activeId as any) && Number.isFinite(binStep as any) && decA != null && decB != null) {
+                      try {
+                        const f = Math.pow(1.0001, Number(binStep));
                         if (f > 0) {
-                          const bPerA = Math.pow(f, activeId as number) * Math.pow(10, (decA as number) - (decB as number));
-                          const cand = [bPerA > 0 ? (1 / bPerA) : 0, bPerA].filter(v => Number.isFinite(v) && v > 0);
-                          price_a_per_b = cand[0];
+                          const bPerA = Math.pow(f, Number(activeId)) * Math.pow(10, (decA as number) - (decB as number));
+                          const candidates = [
+                            bPerA > 0 ? (1 / bPerA) : 0,
+                            bPerA,
+                          ].filter(v => Number.isFinite(v) && v > 0);
+                          if (candidates.length) price_a_per_b = candidates[0];
                         }
+                      } catch {}
+                    }
+                  }
+                  if (tokenX && tokenY) {
+                    const tickSpacing = Number.isFinite(binStep as any) ? Number(binStep) : 0;
+                    const item: ClmmPool = {
+                      id: poolId,
+                      dex: 'Meteora',
+                      mint_a: tokenX,
+                      mint_b: tokenY,
+                      fee_bps: 0,
+                      sqrt_price_x64: 0,
+                      liquidity: 0,
+                      tick_spacing: tickSpacing,
+                      updated_ms: Date.now(),
+                      pool_kind: 'clmm',
+                      price_a_per_b: price_a_per_b && price_a_per_b > 0 ? price_a_per_b : undefined,
+                      decimals_a: Number.isFinite(decA as any) ? Number(decA) : undefined,
+                      decimals_b: Number.isFinite(decB as any) ? Number(decB) : undefined,
+                      account_a: accountA,
+                      account_b: accountB,
+                      price_a_per_b_exact: price_a_per_b && price_a_per_b > 0 ? price_a_per_b.toString() : undefined,
+                    } as any;
+                    if (Number.isFinite(activeId as any)) (item as any).active_id = Number(activeId);
+                    if (tickSpacing) (item as any).bin_step = tickSpacing;
+                    const [canonicalItem] = canonicalizePairs([{ ...item }]);
+                    const finalItem = canonicalItem || item;
+                    const prev = meteoraCache.data || { amm: [], clmm: [] };
+                    const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
+                    const idx = next.clmm.findIndex(p => p.id === finalItem.id);
+                    if (idx >= 0) next.clmm[idx] = { ...next.clmm[idx], ...finalItem }; else next.clmm.push(finalItem);
+                    wsDeltaStats.meteora.decoded += 1;
+                    const d = diffNormalizedPools(prev, next);
+                    meteoraCache.data = next; meteoraCache.ts = Date.now();
+                    const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
+                    if (hasDelta) { wsDeltaStats.meteora.applied += 1; } else { wsDeltaStats.meteora.skipped += 1; }
+                    try {
+                      const sample = { amm: [], clmm: d.clmm.slice(0, 20) };
+                      emit('pool-updates', { source: 'meteora', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now(), canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
+                    } catch {}
+                    try {
+                      const inc = !!((CONFIG.system as any)?.graphIncrementalMode);
+                      const gmod: any = await import('./graph.js');
+                      if (inc && hasDelta) {
+                        await scheduleDexApply('meteora', prev as any);
+                      } else {
+                        const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
+                        const delta = d.clmm.length;
+                        if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
                       }
                     } catch {}
+                    try { logger.debug('meteora.ws clmm.fields', { id: poolId, priceCandidate: price_a_per_b, binStep: tickSpacing, activeId, decimals: { a: decA, b: decB }, cat: 'pools' }); } catch {}
+                    updated = true;
+                  } else {
+                    try { logger.debug('meteora.ws state.skip', { id: poolId, hasTokenX: !!tokenX, hasTokenY: !!tokenY, activeId, binStep, cat: 'pools' }); } catch {}
                   }
                 }
               } catch {}
