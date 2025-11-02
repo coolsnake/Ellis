@@ -705,8 +705,8 @@ export function startRaydiumRefreshLoop(): void {
                     try { state = clmmLayout.decode(info.data); } catch {}
                     if (state) {
                       try {
-                        logger.debug('raydium.ws state.inspect', {
-                          id: pk58.slice(0, 6) + '…',
+                        logger.info('raydium.ws state.inspect', {
+                          id: pk58,
                           keys: Object.keys(state || {}),
                           liquidityType: typeof (state as any)?.liquidity,
                           cat: 'pools'
@@ -762,8 +762,8 @@ export function startRaydiumRefreshLoop(): void {
                         }
                       })();
                       try {
-                        logger.debug('raydium.ws clmm.fields', {
-                          id: pk58.slice(0,6)+'…',
+                        logger.info('raydium.ws clmm.fields', {
+                          id: pk58,
                           priceCandidate: precision.price,
                           ratio: precision.ratio ? { num: precision.ratio.numerator.toString(), den: precision.ratio.denominator.toString() } : null,
                           liquidityPresent: (state as any)?.liquidity != null,
@@ -1017,8 +1017,8 @@ export function startRaydiumRefreshLoop(): void {
                     try { state = await fn(conn, new web3.PublicKey(poolId)); if (state) break; } catch {}
                   }
                   try {
-                    logger.debug('meteora.ws state.inspect', {
-                      id: poolId.slice(0,6)+'…',
+                    logger.info('meteora.ws state.inspect', {
+                      id: poolId,
                       gotState: !!state,
                       keys: state ? Object.keys(state) : [],
                       cat: 'pools'
@@ -1155,6 +1155,7 @@ export function startRaydiumRefreshLoop(): void {
           const waitUntilWsReady = async () => {
             try {
               const deadline = Date.now() + Math.max(500, Number(((CONFIG.system as any)?.wsReadyWaitMs) || 3000));
+              const started = Date.now();
               for (;;) {
                 let ws = (conn as any)?._rpcWebSocket?._ws;
                 let rs = Number(ws?.readyState);
@@ -1170,6 +1171,7 @@ export function startRaydiumRefreshLoop(): void {
                 if (Date.now() >= deadline) return;
                 await sleep(150);
               }
+              try { logger.debug('pools.ws waitUntilWsReady waited', { ms: Date.now() - started, cat: 'pools' }); } catch {}
             } catch {}
           };
           // Attempt loop
@@ -1336,6 +1338,7 @@ export function startRaydiumRefreshLoop(): void {
             }
             uniq = Array.from(new Set(poolAddrs));
           }
+          const startTsOrca = Date.now();
           let attached = 0;
           // Rate-limit new attachments per second based on config
           const perSec = Math.max(1, Number(((CONFIG.system as any)?.wsAttachPerSec) || 10));
@@ -1359,7 +1362,7 @@ export function startRaydiumRefreshLoop(): void {
             if (i < uniq.length - 1 && intervalMs > 0) { await sleep(intervalMs); }
           }
           attachedOrcaPools = attached;
-          logger.info('pools.ws subscribe orca.pools', { attached, target: uniq.length, source: 'orca' });
+          logger.info('pools.ws subscribe orca.pools', { attached, target: uniq.length, source: 'orca', ms: Date.now() - startTsOrca });
           // Subscribe at program level only if we had no targeted addresses and explicit fallback is allowed
           if (attached === 0 && !!((CONFIG.system as any)?.wsFallbackPrograms) && ((CONFIG.system as any)?.wsFallbackAllowZeroTargets === true)) {
             try { logger.info('pools.ws subscribe orca(program)', { source: 'orca', cat: 'pools' }); } catch {}
@@ -1397,6 +1400,7 @@ export function startRaydiumRefreshLoop(): void {
           const rayKnown: string[] = [];
           try { for (const p of (raydiumCache.data?.amm || [])) if (p?.id) rayKnown.push(String(p.id)); } catch {}
           try { for (const p of (raydiumCache.data?.clmm || [])) if (p?.id) rayKnown.push(String(p.id)); } catch {}
+          const startTsRay = Date.now();
           const base = edgePoolIds.size > 0 ? Array.from(edgePoolIds) : rayKnown;
           const uniqueRay = Array.from(new Set(base.filter(Boolean)));
           let attachedRay = 0;
@@ -1422,7 +1426,7 @@ export function startRaydiumRefreshLoop(): void {
             if (i < uniqueRay.length - 1 && intervalMsRay > 0) { await sleepRay(intervalMsRay); }
           }
           attachedRaydiumPools = attachedRay;
-          logger.info('pools.ws subscribe raydium.pools', { attached: attachedRay, target: uniqueRay.length });
+          logger.info('pools.ws subscribe raydium.pools', { attached: attachedRay, target: uniqueRay.length, ms: Date.now() - startTsRay });
           // Fallback to program-level if none attached and explicit fallback is allowed
           if (attachedRay === 0 && !!((CONFIG.system as any)?.wsFallbackPrograms) && ((CONFIG.system as any)?.wsFallbackAllowZeroTargets === true)) {
             try { logger.info('pools.ws subscribe raydium.amm(fallback)', { source: 'raydium', cat: 'pools' }); } catch {}
@@ -1456,6 +1460,7 @@ export function startRaydiumRefreshLoop(): void {
           }
           
           const attachMeteora = async (targetIds: string[]): Promise<number> => {
+            const startTs = Date.now();
             let attached = 0;
             let failed = 0;
             const edgeIds: string[] = targetIds;
@@ -1485,6 +1490,9 @@ export function startRaydiumRefreshLoop(): void {
             if (failed > 0) {
               try { logger.warn('pools.ws meteora subscribe partial failure', { attached, failed, total: edgeIds.length }); } catch {}
             }
+            try {
+              logger.info('pools.ws meteora.attach.complete', { attached, failed, total: edgeIds.length, ms: Date.now() - startTs, cat: 'pools' });
+            } catch {}
             return attached;
           };
           
