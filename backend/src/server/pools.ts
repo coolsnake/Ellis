@@ -1005,7 +1005,7 @@ export function startRaydiumRefreshLoop(): void {
                 if (program && info?.data) {
                   try {
                     state = program.coder.accounts.decode('lbPair', info.data);
-                    logger.info('meteora.ws state.inspect', {
+                    logger.debug('meteora.ws state.inspect', {
                       id: poolId,
                       gotState: true,
                       keys: Object.keys(state || {}),
