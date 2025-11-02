@@ -16,12 +16,23 @@ import { fetchMeteoraBalancedHttp as fetchMeteoraBalancedHttpImpl, normalizeMete
 import { canonicalizePairs } from './pools/common.js';
 import { createProgram } from '@meteora-ag/dlmm';
 import { PoolInfoLayout as RaydiumClmmLayout } from '@raydium-io/raydium-sdk-v2/lib/raydium/clmm/layout.js';
+import BN from 'bn.js';
+import { createHash } from 'crypto';
 
 const raydiumCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 const orcaCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 const meteoraCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 const metbalCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 const METEORA_DEFAULT_PROGRAM_ID = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
+const METEORA_BIN_BITMAP_SIZE = 512;
+type MeteoraBinTracker = {
+  indexes: Set<number>;
+  accounts: Map<string, { id: number; index: number }>;
+  binHashes: Map<string, string>;
+  aggregate?: string;
+};
+const meteoraBinTrackers: Map<string, MeteoraBinTracker> = new Map();
+const meteoraBinAccountToPool: Map<string, string> = new Map();
 
 // WS lifecycle flags: defer websocket subscriptions until graph signals readiness
 let wsAllowed: boolean = false;
@@ -126,6 +137,7 @@ export function diffNormalizedPools(prev: PoolsPayload | null | undefined, next:
     if (Math.abs((a.price_a_per_b || 0) - (b.price_a_per_b || 0)) > eps) return true;
     if (Math.abs((a.amount_a || 0) - (b.amount_a || 0)) > 0) return true;
     if (Math.abs((a.amount_b || 0) - (b.amount_b || 0)) > 0) return true;
+    if (((a as any).meteora_bin_hash || undefined) !== ((b as any).meteora_bin_hash || undefined)) return true;
     return false;
   };
   for (const [id, nx] of nA) { const pv = pA.get(id); if (!pv || changedAmm(pv, nx)) updatedAmm.push(nx); }
@@ -832,6 +844,8 @@ export function startRaydiumRefreshLoop(): void {
                       wsDeltaStats.raydium.decoded += 1;
                       const d = diffNormalizedPools(prev, next);
                       raydiumCache.data = next; raydiumCache.ts = Date.now();
+                      const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
+                      if (hasDelta) wsDeltaStats.raydium.applied += 1; else wsDeltaStats.raydium.skipped += 1;
                       try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: d.amm.slice(0, 20), clmm: [] }, ts: Date.now() }); } catch {}
                   // Prefer incremental graph apply when enabled; fallback to rebuild
                   try {
@@ -1014,6 +1028,26 @@ export function startRaydiumRefreshLoop(): void {
             } else if ((ownerMeteora && owner === ownerMeteora) || isMeteoraTarget) {
               try { wsCounts.meteora = (wsCounts.meteora || 0) + 1; } catch {}
               const pk58 = toB58Any(pk);
+              const parentPoolId = meteoraBinAccountToPool.get(pk58);
+              if (parentPoolId) {
+                const tracker = meteoraBinTrackers.get(parentPoolId);
+                if (tracker) {
+                  const accountMeta = tracker.accounts.get(pk58);
+                  if (!info?.data || info.data.length === 0) {
+                    if (accountMeta) {
+                      tracker.indexes.delete(accountMeta.index);
+                    }
+                    tracker.accounts.delete(pk58);
+                    tracker.binHashes.delete(pk58);
+                    meteoraBinAccountToPool.delete(pk58);
+                  } else {
+                    const dataBuf = Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data as Uint8Array);
+                    tracker.binHashes.set(pk58, hashBuffer(dataBuf));
+                  }
+                  await applyMeteoraBinHash(parentPoolId);
+                }
+                return;
+              }
               // Try on-chain decode via Meteora DLMM SDK; fallback to HTTP refresh if unavailable
               let updated = false;
               try {
@@ -1050,6 +1084,7 @@ export function startRaydiumRefreshLoop(): void {
                   logger.warn('meteora.ws state.missing', { id: poolId, cat: 'pools' });
                 }
                 if (state) {
+                  await ensureMeteoraBinSubscriptionsForState(pk, poolId, state);
                   // Fallback: try reading minimal fields via generic accessors
                   let tokenX: string | undefined;
                   let tokenY: string | undefined;
@@ -1114,6 +1149,8 @@ export function startRaydiumRefreshLoop(): void {
                       account_b: accountB,
                       price_a_per_b_exact: price_a_per_b && price_a_per_b > 0 ? price_a_per_b.toString() : undefined,
                     } as any;
+                    const tracker = meteoraBinTrackers.get(poolId);
+                    if (tracker?.aggregate) (item as any).meteora_bin_hash = tracker.aggregate;
                     if (Number.isFinite(activeId as any)) (item as any).active_id = Number(activeId);
                     if (tickSpacing) (item as any).bin_step = tickSpacing;
                     const [canonicalItem] = canonicalizePairs([{ ...item }]);
@@ -1311,6 +1348,158 @@ export function startRaydiumRefreshLoop(): void {
             }, WS_APPLY_DEBOUNCE_MS);
           } catch {}
         }
+        const bnFrom = (value: any): BN => {
+          if (BN.isBN && BN.isBN(value)) return value as BN;
+          if (value instanceof BN) return value;
+          if (typeof value === 'bigint') return new BN(value.toString());
+          if (typeof value === 'number') return new BN(value);
+          if (typeof value === 'string') {
+            try { return new BN(value, 10); } catch { return new BN(0); }
+          }
+          if (value && typeof value === 'object') {
+            try {
+              if (typeof value.toArrayLike === 'function') return new BN(value.toArrayLike(Buffer, 'le', 32));
+              if (Array.isArray(value)) return bnFrom(value[0]);
+            } catch {}
+          }
+          return new BN(0);
+        };
+
+        const computeMeteoraBinIndexes = (state: any): number[] => {
+          const words: BN[] = Array.isArray(state?.binArrayBitmap)
+            ? state.binArrayBitmap.map((w: any) => bnFrom(w))
+            : [];
+          if (!words.length) return [];
+          const indexes: number[] = [];
+          const totalBits = METEORA_BIN_BITMAP_SIZE * 2; // default coverage (-512 .. 511)
+          const offset = METEORA_BIN_BITMAP_SIZE;
+          for (let bit = 0; bit < totalBits; bit++) {
+            const wordIndex = Math.floor(bit / 64);
+            const bitIndex = bit % 64;
+            const word = words[wordIndex];
+            if (!word || typeof word.testn !== 'function') continue;
+            if (word.testn(bitIndex)) {
+              const index = bit - offset;
+              indexes.push(index);
+            }
+          }
+          return Array.from(new Set(indexes));
+        };
+
+        const deriveMeteoraBinArrayAddress = (pairPk: any, index: number, programId: any): any => {
+          const idx = new BN(index);
+          const seed = idx.isNeg()
+            ? idx.toTwos(64).toArrayLike(Buffer, 'le', 8)
+            : idx.toArrayLike(Buffer, 'le', 8);
+          return (web3.PublicKey as any).findProgramAddressSync([
+            Buffer.from('bin_array'),
+            pairPk.toBuffer(),
+            Buffer.from(seed),
+          ], programId)[0];
+        };
+
+        const getMeteoraTracker = (poolId: string): MeteoraBinTracker => {
+          let tracker = meteoraBinTrackers.get(poolId);
+          if (!tracker) {
+            tracker = { indexes: new Set(), accounts: new Map(), binHashes: new Map(), aggregate: undefined };
+            meteoraBinTrackers.set(poolId, tracker);
+          }
+          return tracker;
+        };
+
+        const hashBuffer = (data: Buffer): string => createHash('sha256').update(data).digest('hex');
+
+        const applyMeteoraBinHash = async (poolId: string): Promise<void> => {
+          const tracker = meteoraBinTrackers.get(poolId);
+          if (!tracker) return;
+          wsDeltaStats.meteora.decoded += 1;
+          const aggregate = (() => {
+            if (tracker.binHashes.size === 0) return undefined;
+            const digest = createHash('sha256');
+            const sorted = Array.from(tracker.binHashes.entries()).sort(([a], [b]) => a.localeCompare(b));
+            for (const [addr, hash] of sorted) {
+              digest.update(addr);
+              digest.update(':');
+              digest.update(hash);
+              digest.update('|');
+            }
+            return digest.digest('hex');
+          })();
+          if (aggregate === tracker.aggregate) {
+            wsDeltaStats.meteora.skipped += 1;
+            return;
+          }
+          tracker.aggregate = aggregate;
+          const prev = meteoraCache.data || { amm: [], clmm: [] };
+          const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
+          const idx = next.clmm.findIndex(p => p.id === poolId);
+          if (idx === -1) {
+            // Pool snapshot not yet cached; bin state will be included on next pair update
+            return;
+          }
+          const updated: any = { ...next.clmm[idx] };
+          if (aggregate) updated.meteora_bin_hash = aggregate; else delete updated.meteora_bin_hash;
+          next.clmm[idx] = updated;
+          const d = diffNormalizedPools(prev, next);
+          meteoraCache.data = next; meteoraCache.ts = Date.now();
+          const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
+          if (hasDelta) wsDeltaStats.meteora.applied += 1; else wsDeltaStats.meteora.skipped += 1;
+          try {
+            const sample = { amm: [], clmm: d.clmm.slice(0, 20) };
+            emit('pool-updates', { source: 'meteora', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now(), canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
+          } catch {}
+          try {
+            const inc = !!((CONFIG.system as any)?.graphIncrementalMode);
+            const gmod: any = await import('./graph.js');
+            if (inc && hasDelta) {
+              await scheduleDexApply('meteora', prev as any);
+            } else {
+              const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
+              const delta = d.amm.length + d.clmm.length + d.addedAmm + d.addedClmm + d.removedAmm + d.removedClmm;
+              if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
+            }
+          } catch {}
+        };
+
+        const ensureMeteoraBinSubscriptionsForState = async (pairPk: any, poolId: string, state: any): Promise<void> => {
+          try {
+            const program = ensureMeteoraProgram();
+            if (!program) return;
+            const programId = program.programId;
+            const indexes = computeMeteoraBinIndexes(state);
+            if (indexes.length === 0) return;
+            const tracker = getMeteoraTracker(poolId);
+            const newIndexes = indexes.filter((idx) => !tracker.indexes.has(idx));
+            for (const index of newIndexes) {
+              try {
+                const binPk = deriveMeteoraBinArrayAddress(pairPk, index, programId);
+                const id = await subscribeAccountWithRetry(binPk, handle);
+                subs.push({ kind: 'account', id });
+                const acct = binPk.toBase58();
+                meteoraBinAccountToPool.set(acct, poolId);
+                tracker.accounts.set(acct, { id, index });
+                tracker.indexes.add(index);
+                targetedSourceByAccount.set(acct, 'meteora');
+                debugLogTargeted('meteora', acct, { kind: 'bin_array', index });
+                try {
+                  const accInfo = await conn.getAccountInfo(binPk, CONFIG.system.txCommitment as any);
+                  if (accInfo?.data) {
+                    tracker.binHashes.set(acct, hashBuffer(accInfo.data));
+                  }
+                } catch {}
+              } catch (err) {
+                try { logger.debug('meteora.ws bin.subscribe.fail', { pool: poolId, index, error: String((err as any)?.message || err) }); } catch {}
+              }
+            }
+            // Ensure aggregate reflects any freshly fetched hashes
+            if (tracker.binHashes.size > 0) {
+              await applyMeteoraBinHash(poolId);
+            }
+          } catch (err) {
+            try { logger.debug('meteora.ws bin.ensure.failed', { pool: poolId, error: String((err as any)?.message || err) }); } catch {}
+          }
+        };
+
         // Helper: attach Raydium AMM vault (token) accounts for a given AMM pool address
         const attachRaydiumAmmVaults = async (poolAddr: string) => {
           try {
