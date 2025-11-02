@@ -13,6 +13,9 @@ import { fetchMeteoraHttp as fetchMeteoraHttpImpl, normalizeMeteoraHttp as norma
 import { validateCrossDexPrices, verifyCanonicalization } from './pools/validation.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './pools/httpLog.js';
 import { fetchMeteoraBalancedHttp as fetchMeteoraBalancedHttpImpl, normalizeMeteoraBalancedHttp as normalizeMeteoraBalancedHttpImpl, fetchMeteoraBalancedAll as fetchMeteoraBalancedAllImpl } from './pools/meteoraBalanced.js';
+import { BorshCoder } from '@coral-xyz/anchor';
+import { IDL as MeteoraIdl } from '@meteora-ag/dlmm';
+import { PoolInfoLayout as RaydiumClmmLayout } from '@raydium-io/raydium-sdk-v2/dist/raydium/clmm/layout.js';
 
 const raydiumCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 const orcaCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
@@ -279,6 +282,7 @@ const wsDeltaStats: Record<'raydium' | 'orca' | 'meteora', { decoded: number; ap
 };
 const wsDebugCounters: Record<'raydium' | 'orca' | 'meteora', number> = { raydium: 0, orca: 0, meteora: 0 };
 const wsTargetDebugCounters: Record<'raydium' | 'orca' | 'meteora', number> = { raydium: 0, orca: 0, meteora: 0 };
+const meteoraCoder = new BorshCoder(MeteoraIdl as any);
 
 function debugLogTargeted(source: 'raydium' | 'orca' | 'meteora', account: string, extra: Record<string, unknown>): void {
   try {
@@ -774,9 +778,9 @@ export function startRaydiumRefreshLoop(): void {
                       } catch {}
                       const price_a_per_b = precision.price;
                       const liqRaw = anyToBigInt((state as any).liquidity ?? 0);
-                      const liq = Number((state as any).liquidity ?? (state as any).liquidityNet ?? 0);
+                      const liq = Number((state as any).liquidity ?? 0);
                       const tick = Number((state as any).tickSpacing ?? (state as any).tick_spacing ?? 0);
-                      const fee = Number((state as any).feeRate ?? (state as any).fee_rate ?? 0);
+                      const fee = Number((state as any).tradeFeeRate ?? (state as any).feeRate ?? (state as any).fee_rate ?? 0);
                       const item: ClmmPool = {
                         id: pk58,
                         dex: 'Raydium',
@@ -1016,115 +1020,69 @@ export function startRaydiumRefreshLoop(): void {
                   for (const fn of getStateFns) {
                     try { state = await fn(conn, new web3.PublicKey(poolId)); if (state) break; } catch {}
                   }
-                  try {
-                    logger.info('meteora.ws state.inspect', {
-                      id: poolId,
-                      gotState: !!state,
-                      keys: state ? Object.keys(state) : [],
-                      cat: 'pools'
-                    });
-                  } catch {}
-                  // Fallback: try reading minimal fields via generic accessors
-                  let tokenX: string | undefined;
-                  let tokenY: string | undefined;
-                  let activeId: number | undefined;
-                  let binStep: number | undefined;
-                  try { tokenX = state?.tokenXMint?.toBase58?.() || state?.mint_x || state?.tokenXMint || state?.tokenA || undefined; } catch {}
-                  try { tokenY = state?.tokenYMint?.toBase58?.() || state?.mint_y || state?.tokenYMint || state?.tokenB || undefined; } catch {}
-                  try { activeId = Number(state?.activeId ?? state?.active_id); } catch {}
-                  try { binStep = Number(state?.binStep ?? state?.bin_step); } catch {}
-                  if (tokenX && tokenY && Number.isFinite(activeId as any) && Number.isFinite(binStep as any)) {
-                    // Resolve decimals
-                    let decA: number | undefined; let decB: number | undefined;
-                    try { const tok = await import('../utils/tokens.js'); const a = await (tok as any).resolveMint(tokenX); const b = await (tok as any).resolveMint(tokenY); decA = Number(a?.decimals); decB = Number(b?.decimals); } catch {}
-                    // Prefer reserves-based price if available; fallback to activeId/binStep
-                    let price_a_per_b: number | undefined;
+                  if (!state && info?.data) {
                     try {
-                      // Try extracting reserves with multiple candidate field names
-                      const rx = Number(state?.reserveX ?? state?.reserve_x ?? state?.reserve_x_amount ?? state?.tokenXBalance ?? state?.tokenBalanceX ?? 0);
-                      const ry = Number(state?.reserveY ?? state?.reserve_y ?? state?.reserve_y_amount ?? state?.tokenYBalance ?? state?.tokenBalanceY ?? 0);
-                      if (Number.isFinite(rx) && Number.isFinite(ry) && rx > 0 && ry > 0 && Number.isFinite(decA as any) && Number.isFinite(decB as any)) {
-                        const wholeA = rx / Math.pow(10, decA as number);
-                        const wholeB = ry / Math.pow(10, decB as number);
-                        if (wholeA > 0 && wholeB > 0) price_a_per_b = wholeA / wholeB;
-                      }
+                      state = meteoraCoder.accounts.decode('LbPair', info.data);
+                      logger.info('meteora.ws state.inspect', {
+                        id: poolId,
+                        gotState: true,
+                        keys: Object.keys(state || {}),
+                        source: 'coder',
+                        cat: 'pools'
+                      });
+                    } catch {
+                      logger.info('meteora.ws state.inspect', { id: poolId, gotState: false, keys: [], cat: 'pools' });
+                    }
+                  } else {
+                    try {
+                      logger.info('meteora.ws state.inspect', {
+                        id: poolId,
+                        gotState: !!state,
+                        keys: state ? Object.keys(state) : [],
+                        cat: 'pools'
+                      });
                     } catch {}
-                    try {
-                      if (!(price_a_per_b && price_a_per_b > 0) && Number.isFinite(decA as any) && Number.isFinite(decB as any)) {
-                        const f = Math.pow(1.0001, binStep as number);
-                        if (f > 0) {
-                          const bPerA = Math.pow(f, activeId as number) * Math.pow(10, (decA as number) - (decB as number));
-                          const cand = [bPerA > 0 ? (1 / bPerA) : 0, bPerA].filter(v => Number.isFinite(v) && v > 0);
-                          price_a_per_b = cand[0];
+                  }
+                  if (!state) {
+                    logger.warn('meteora.ws state.missing', { id: poolId, cat: 'pools' });
+                  }
+                  if (state) {
+                    // Fallback: try reading minimal fields via generic accessors
+                    let tokenX: string | undefined;
+                    let tokenY: string | undefined;
+                    let activeId: number | undefined;
+                    let binStep: number | undefined;
+                    try { tokenX = state?.tokenXMint?.toBase58?.() || state?.mint_x || state?.tokenXMint || state?.tokenA || undefined; } catch {}
+                    try { tokenY = state?.tokenYMint?.toBase58?.() || state?.mint_y || state?.tokenYMint || state?.tokenB || undefined; } catch {}
+                    try { activeId = Number(state?.activeId ?? state?.active_id); } catch {}
+                    try { binStep = Number(state?.binStep ?? state?.bin_step); } catch {}
+                    if (tokenX && tokenY && Number.isFinite(activeId as any) && Number.isFinite(binStep as any)) {
+                      // Resolve decimals
+                      let decA: number | undefined; let decB: number | undefined;
+                      try { const tok = await import('../utils/tokens.js'); const a = await (tok as any).resolveMint(tokenX); const b = await (tok as any).resolveMint(tokenY); decA = Number(a?.decimals); decB = Number(b?.decimals); } catch {}
+                      // Prefer reserves-based price if available; fallback to activeId/binStep
+                      let price_a_per_b: number | undefined;
+                      try {
+                        // Try extracting reserves with multiple candidate field names
+                        const rx = Number(state?.reserveX ?? state?.reserve_x ?? state?.reserve_x_amount ?? state?.tokenXBalance ?? state?.tokenBalanceX ?? 0);
+                        const ry = Number(state?.reserveY ?? state?.reserve_y ?? state?.reserve_y_amount ?? state?.tokenYBalance ?? state?.tokenBalanceY ?? 0);
+                        if (Number.isFinite(rx) && Number.isFinite(ry) && rx > 0 && ry > 0 && Number.isFinite(decA as any) && Number.isFinite(decB as any)) {
+                          const wholeA = rx / Math.pow(10, decA as number);
+                          const wholeB = ry / Math.pow(10, decB as number);
+                          if (wholeA > 0 && wholeB > 0) price_a_per_b = wholeA / wholeB;
                         }
-                      }
-                    } catch {}
-
-                    // Subscribe bin-array accounts to capture reserve changes within active bin
-                    try {
-                      const poolPk = new web3.PublicKey(poolId);
-                      let metas: any[] | undefined;
-                      const getBounds = (DLMM as any)?.getBinArrayLowerUpperBinId;
-                      const getMetas = (DLMM as any)?.getBinArrayAccountMetasCoverage || (DLMM as any)?.getBinArrayKeysCoverage;
-                      if (getBounds && getMetas) {
-                        const bnjs = await import('bn.js').catch(() => null as any);
-                        const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
-                        const bounds = await getBounds(conn, poolPk).catch(() => null as any);
-                        const toNum = (v: any): number => { try { if (v && typeof v.toNumber === 'function') return v.toNumber(); const s = (v && typeof v.toString === 'function') ? v.toString() : String(v); const n = Number(s); return Number.isFinite(n) ? n : NaN; } catch { return NaN; } };
-                        const loNum = toNum(bounds?.lowerBinId);
-                        const hiNum = toNum(bounds?.upperBinId);
-                        if (BN && Number.isFinite(loNum) && Number.isFinite(hiNum)) {
-                          try {
-                            metas = getMetas.length === 3
-                              ? getMetas(new BN(String(loNum)), new BN(String(hiNum)), poolPk)
-                              : await getMetas(conn, new web3.PublicKey((CONFIG as any)?.meteora?.programId), poolPk).catch(() => null as any);
-                          } catch {}
+                      } catch {}
+                      try {
+                        if (!(price_a_per_b && price_a_per_b > 0) && Number.isFinite(decA as any) && Number.isFinite(decB as any)) {
+                          const f = Math.pow(1.0001, binStep as number);
+                          if (f > 0) {
+                            const bPerA = Math.pow(f, activeId as number) * Math.pow(10, (decA as number) - (decB as number));
+                            const cand = [bPerA > 0 ? (1 / bPerA) : 0, bPerA].filter(v => Number.isFinite(v) && v > 0);
+                            price_a_per_b = cand[0];
+                          }
                         }
-                      }
-                      const keys: string[] = Array.isArray(metas)
-                        ? metas.map((m: any) => (m?.pubkey?.toBase58?.() || m?.pubkey || m?.pubKey || m?.address)).filter(Boolean)
-                        : [];
-                      for (const k of keys) {
-                        try {
-                          if (targetedSourceByAccount.has(k)) continue;
-                          const vpk = new web3.PublicKey(k);
-                          const id = await subscribeAccountWithRetry(vpk, handle);
-                          subs.push({ kind: 'account', id });
-                          targetedSourceByAccount.set(k, 'meteora');
-                        } catch {}
-                      }
-                    } catch {}
-                    // Upsert minimal item
-                    const prev = meteoraCache.data || { amm: [], clmm: [] };
-                    const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() } as any;
-                    const idx = next.clmm.findIndex(p => p.id === poolId);
-                    const item: ClmmPool = {
-                      id: poolId,
-                      dex: 'Meteora',
-                      mint_a: tokenX,
-                      mint_b: tokenY,
-                      fee_bps: 0,
-                      sqrt_price_x64: 0,
-                      liquidity: 0,
-                      tick_spacing: Number.isFinite(binStep as any) ? (binStep as number) : 0,
-                      updated_ms: Date.now(),
-                      price_a_per_b: (price_a_per_b && price_a_per_b > 0) ? price_a_per_b : undefined,
-                      pool_kind: 'clmm',
-                    } as any;
-                    if (idx >= 0) next.clmm[idx] = { ...next.clmm[idx], ...item }; else next.clmm.push(item);
-                    wsDeltaStats.meteora.decoded += 1;
-                    const d = diffNormalizedPools(prev, next);
-                    meteoraCache.data = next; meteoraCache.ts = Date.now();
-                    try { emit('pool-updates', { source: 'meteora', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: [], clmm: d.clmm.slice(0, 20) }, ts: Date.now() }); } catch {}
-                    // Apply incrementally and push to arb-rs
-                    try {
-                      const gmod: any = await import('./graph.js');
-                      const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
-                      if (hasDelta) {
-                        await scheduleDexApply('meteora', prev as any);
-                      }
-                    } catch {}
-                    updated = true;
+                      } catch {}
+                    }
                   }
                 }
               } catch {}
