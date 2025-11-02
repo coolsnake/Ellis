@@ -147,6 +147,29 @@ function safeCoercePublicKey(value: any): PublicKey | undefined {
   }
 }
 
+function toFlag(value: any): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') {
+    switch (value.trim().toLowerCase()) {
+      case 'false':
+      case '0':
+      case 'no':
+      case 'off':
+      case '':
+        return false;
+      case 'true':
+      case '1':
+      case 'yes':
+      case 'on':
+        return true;
+      default:
+        return !!value;
+    }
+  }
+  return !!value;
+}
+
 function toBuffer(data: any): Buffer {
   if (!data) return Buffer.alloc(0);
   if (Buffer.isBuffer(data)) return data;
@@ -202,6 +225,11 @@ function flattenToTransactionInstructions(value: any, hop: DirectHop): Transacti
       }
     }
     if (Array.isArray(item?.instructions)) {
+      try {
+        if (Array.isArray(item?.signers) && item.signers.length) {
+          logger.warn('orca.whirlpool.ix.signers_unsupported', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { pool: hop.poolId, count: item.signers.length } });
+        }
+      } catch {}
       visit(item.instructions);
       if (Array.isArray(item?.cleanupInstructions)) visit(item.cleanupInstructions);
       return;
@@ -242,8 +270,8 @@ function flattenToTransactionInstructions(value: any, hop: DirectHop): Transacti
             if (!pk) return undefined;
             return {
               pubkey: pk,
-              isSigner: !!(k?.isSigner ?? k?.signer),
-              isWritable: !!(k?.isWritable ?? k?.writable),
+              isSigner: toFlag(k?.isSigner ?? k?.signer),
+              isWritable: toFlag(k?.isWritable ?? k?.writable),
             };
           })
           .filter((meta): meta is { pubkey: PublicKey; isSigner: boolean; isWritable: boolean } => !!meta);
@@ -545,9 +573,9 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     let binArrayUpper: PublicKey | undefined = hop.binArrayUpper ? toPublicKey(hop.binArrayUpper) : undefined;
     let binArrayBitmapExtension: PublicKey | undefined = undefined;
     try {
-      const getBinBounds = (DLMM as any)?.getBinArrayLowerUpperBinId || (DLMM as any)?.deriveBinArrayLowerUpperBinId;
-      const deriveBinArray = (DLMM as any)?.deriveBinArray;
-      const deriveBinArrayBitmapExtension = (DLMM as any)?.deriveBinArrayBitmapExtension;
+      const getBinBounds = (DLMM as any)?.getBinArrayLowerUpperBinId || (mod as any)?.getBinArrayLowerUpperBinId || (DLMM as any)?.deriveBinArrayLowerUpperBinId || (mod as any)?.deriveBinArrayLowerUpperBinId;
+      const deriveBinArray = (DLMM as any)?.deriveBinArray || (mod as any)?.deriveBinArray;
+      const deriveBinArrayBitmapExtension = (DLMM as any)?.deriveBinArrayBitmapExtension || (mod as any)?.deriveBinArrayBitmapExtension;
       if ((!binArrayLower || !binArrayUpper) && getBinBounds && deriveBinArray) {
         const bounds = await getBinBounds(connection, poolPk).catch(() => null as any);
         const toNum = (v: any): number => {
@@ -564,7 +592,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         const hiNum = toNum(bounds?.upperBinId);
         const bnjs = await import('bn.js').catch(() => null as any);
         const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
-        const binIdToBinArrayIndex = (DLMM as any)?.binIdToBinArrayIndex;
+        const binIdToBinArrayIndex = (DLMM as any)?.binIdToBinArrayIndex || (mod as any)?.binIdToBinArrayIndex;
         const toIndex = (num: number) => {
           if (!Number.isFinite(num) || !BN) return null;
           try {
@@ -626,23 +654,67 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         }
         
         // Attempt 2: Coverage helper - getBinArrayKeysCoverage
-        const getKeysCoverage = (DLMM as any)?.getBinArrayKeysCoverage || (DLMM as any)?.getBinArrayAccountMetasCoverage;
+        const getKeysCoverage = (DLMM as any)?.getBinArrayKeysCoverage || (mod as any)?.getBinArrayKeysCoverage || (DLMM as any)?.getBinArrayAccountMetasCoverage || (mod as any)?.getBinArrayAccountMetasCoverage;
         if (getKeysCoverage) {
           attempts.push(async () => {
-            const res = await getKeysCoverage(programId, poolPk);
+            let res: any;
+            try {
+              if (typeof getKeysCoverage === 'function') {
+                if (getKeysCoverage.length >= 4 && typeof hop.activeId === 'number') {
+                  const bnjs = await import('bn.js').catch(() => null as any);
+                  const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
+                  if (BN) {
+                    const idxFn = (DLMM as any)?.binIdToBinArrayIndex || (mod as any)?.binIdToBinArrayIndex;
+                    const toIdx = (offset: number) => {
+                      if (!Number.isFinite(offset)) return null;
+                      const target = new BN(String(offset));
+                      if (typeof idxFn === 'function') {
+                        try {
+                          return idxFn(target);
+                        } catch {}
+                      }
+                      return target;
+                    };
+                    const lowerIdx = toIdx(hop.activeId);
+                    const upperIdx = toIdx(hop.activeId);
+                    if (lowerIdx && upperIdx) {
+                      const lowerBounds = typeof (DLMM as any)?.getBinArrayLowerUpperBinId === 'function'
+                        ? (DLMM as any).getBinArrayLowerUpperBinId(lowerIdx)
+                        : typeof (mod as any)?.getBinArrayLowerUpperBinId === 'function'
+                          ? (mod as any).getBinArrayLowerUpperBinId(lowerIdx)
+                          : [lowerIdx];
+                      const upperBounds = typeof (DLMM as any)?.getBinArrayLowerUpperBinId === 'function'
+                        ? (DLMM as any).getBinArrayLowerUpperBinId(upperIdx)
+                        : typeof (mod as any)?.getBinArrayLowerUpperBinId === 'function'
+                          ? (mod as any).getBinArrayLowerUpperBinId(upperIdx)
+                          : [upperIdx];
+                      const lower = Array.isArray(lowerBounds) ? lowerBounds[0] : lowerIdx;
+                      const upper = Array.isArray(upperBounds) ? upperBounds[upperBounds.length - 1] : upperIdx;
+                      return getKeysCoverage(new BN(String(lower)), new BN(String(upper)), poolPk, programId);
+                    }
+                  }
+                }
+                res = await getKeysCoverage(programId, poolPk);
+              }
+            } catch {}
             if (!res) return undefined;
             if ((res as any)?.binArrayBitmapExtension) return (res as any).binArrayBitmapExtension;
             if ((res as any)?.accounts?.binArrayBitmapExtension) return (res as any).accounts.binArrayBitmapExtension;
             const metas: any[] = (res as any)?.metas || (res as any)?.accountMetas || [];
             const found = metas.find((m: any) => (m?.name === 'binArrayBitmapExtension') && (m?.pubkey || m?.publicKey || m?.address));
-            return found?.pubkey || found?.publicKey || found?.address;
+            if (found) return found?.pubkey || found?.publicKey || found?.address;
+            if (Array.isArray(res)) {
+              const direct = res.find((entry: any) => entry?.name === 'binArrayBitmapExtension');
+              if (direct) return direct.pubkey || direct.publicKey || direct.address;
+            }
+            return res;
           });
         }
         
         // Attempt 3: Last resort - compute PDA via common seed
         attempts.push(async () => {
           try {
-            const seedCandidates = ['bin_array_bitmap_extension', 'binarray_bitmap_extension'];
+            const seedCandidates = ['bitmap', 'bin_array_bitmap_extension', 'binarray_bitmap_extension'];
             for (const seed of seedCandidates) {
               try {
                 const [addr] = await (PublicKey as any).findProgramAddress([
@@ -971,6 +1043,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
             hop.tickArrayLower = hop.tickArrayLower || cached.tickArrays.lower;
             hop.tickArrayCenter = hop.tickArrayCenter || cached.tickArrays.center;
             hop.tickArrayUpper = hop.tickArrayUpper || cached.tickArrays.upper;
+            hop.observationId = hop.observationId || cached.observationId;
           }
           try { logger.info('raydium.clmm.refresh.result', { cat: 'tx', ctx: { pool: poolBase, oracle: hop.oracle || '', lower: hop.tickArrayLower || '', upper: hop.tickArrayUpper || '' } as any }); } catch {}
         } catch {}
@@ -988,6 +1061,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
         pool: hop.poolId,
         programId: hop.programId,
         oracle: hop.oracle,
+        observation: hop.observationId,
         lower: hop.tickArrayLower,
         upper: hop.tickArrayUpper,
         vaultA: hop.vaultA,
@@ -1001,11 +1075,23 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     const programId = toPublicKey(hop.programId, (CONFIG.raydium?.clmmProgram as any));
     
     // Validate required config values - no unsafe fallbacks
-    const observationIdConfig = (CONFIG.raydium as any)?.clmmObservationId;
-    if (!observationIdConfig) {
-      throw createBuilderError('RAYDIUM_CLMM', 'clmmObservationId required in CONFIG.raydium.clmmObservationId', hop);
+    let observationId: PublicKey | null = null;
+    if (hop.observationId) {
+      try { observationId = toPublicKey(hop.observationId); } catch (e) {
+        throw createBuilderError('RAYDIUM_CLMM', `invalid observationId: ${String(e instanceof Error ? e.message : e)}`, hop);
+      }
     }
-    const observationId = toPublicKey(observationIdConfig);
+    if (!observationId) {
+      const observationIdConfig = (CONFIG.raydium as any)?.clmmObservationId;
+      if (observationIdConfig) {
+        try { observationId = toPublicKey(observationIdConfig); } catch (e) {
+          throw createBuilderError('RAYDIUM_CLMM', `invalid CONFIG.raydium.clmmObservationId: ${String(e instanceof Error ? e.message : e)}`, hop);
+        }
+      }
+    }
+    if (!observationId) {
+      throw createBuilderError('RAYDIUM_CLMM', 'observationId missing (cache/config)', hop);
+    }
 
     const ownerInfo = {
       wallet: kp.publicKey,

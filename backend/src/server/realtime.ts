@@ -131,8 +131,129 @@ let ddPushTimer: NodeJS.Timeout | null = null;
 const getDetectDrivenPushCoalesceMs = (): number => {
   try { const v = Number(((globalThis as any)?.process?.env?.DETECT_DRIVEN_PUSH_COALESCE_MS) || 75); return Number.isFinite(v) ? Math.max(0, v) : 0; } catch { return 0; }
 };
-export function markDetectDirty(): void {
-  try { detectDirty = true; } catch {}
+let detectorReady = true;
+let pendingDetectVersion = 0;
+let pendingAckVersion = 0;
+let lastAckedVersion = 0;
+let ackRetryTimer: NodeJS.Timeout | null = null;
+let ackRetryVersion = 0;
+let ackRetryKind: 'diff' | 'snapshot' = 'diff';
+let lastAckContext: { host: string; headers: Record<string, string>; timeoutMs: number } | null = null;
+const isDetectDrivenEnabled = (): boolean => !!((CONFIG as any)?.system?.detectDrivenGraphPush);
+export function markDetectDirty(version?: number): void {
+  try {
+    detectDirty = true;
+    const ver = Number(version);
+    if (Number.isFinite(ver) && ver > 0) {
+      pendingDetectVersion = Math.max(pendingDetectVersion, ver);
+    }
+    maybeTriggerDetectDrivenPush();
+  } catch {}
+}
+function maybeTriggerDetectDrivenPush(): void {
+  try {
+    if (!isDetectDrivenEnabled()) return;
+    if (!detectDirty) return;
+    if (!detectorReady) return;
+    if (ddPushTimer) return;
+    const wait = getDetectDrivenPushCoalesceMs();
+    ddPushTimer = setTimeout(async () => {
+      ddPushTimer = null;
+      try {
+        if (!isDetectDrivenEnabled()) return;
+        if (!detectDirty) return;
+        if (!detectorReady) { maybeTriggerDetectDrivenPush(); return; }
+        detectDirty = false;
+        pendingDetectVersion = 0;
+        detectorReady = false;
+        try {
+          const gmod: any = await import('./graph.js');
+          if (typeof gmod.rebuildGraphNow === 'function') {
+            await gmod.rebuildGraphNow(undefined, { pushToArb: true });
+          } else if (typeof gmod.scheduleGraphRebuild === 'function') {
+            gmod.scheduleGraphRebuild(undefined, Math.max(0, Number((CONFIG as any)?.system?.graphRebuildDebounceMs || 0)));
+          }
+        } catch (err: any) {
+          detectorReady = true;
+          detectDirty = true;
+          try { logger.warn('graph.rebuild.detect_driven.failed', { error: String(err?.message || err) }); } catch {}
+          maybeTriggerDetectDrivenPush();
+        }
+      } catch {}
+    }, wait);
+  } catch {}
+}
+async function requestGraphAck(host: string, headers: Record<string, string>, version: number, timeoutMs: number, kind: 'diff' | 'snapshot'): Promise<boolean> {
+  try {
+    const body = JSON.stringify({ version, timeout_ms: timeoutMs });
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort('timeout'), timeoutMs + 500);
+    const r = await fetch(`${host}/arb/graph/ack`, { method: 'POST', headers, body, signal: ac.signal }).finally(() => clearTimeout(timer));
+    if (r?.ok) {
+      const j: any = await r.json().catch(() => ({}));
+      return j?.acked === true;
+    }
+  } catch (e: any) {
+    try { logger.debug('arb.push ack failed', { kind, error: String(e?.message || e) }); } catch {}
+  }
+  return false;
+}
+async function waitForGraphAck(host: string, headers: Record<string, string>, version: number, timeoutMs: number, kind: 'diff' | 'snapshot'): Promise<boolean> {
+  if (!(version > 0)) return true;
+  const defaultTotal = timeoutMs > 0 ? timeoutMs * 4 : 10000;
+  const totalTimeout = Math.max(timeoutMs, Number(((globalThis as any)?.process?.env?.ARB_ACK_TOTAL_TIMEOUT_MS) || defaultTotal));
+  const deadline = Date.now() + totalTimeout;
+  while (true) {
+    const acked = await requestGraphAck(host, headers, version, timeoutMs, kind);
+    if (acked) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(500, Math.max(100, timeoutMs))));
+  }
+}
+function handleGraphAckResult(version: number, acked: boolean, kind: 'diff' | 'snapshot'): void {
+  try {
+    if (!isDetectDrivenEnabled()) return;
+    if (!(version > 0)) {
+      if (acked) {
+        detectorReady = true;
+        maybeTriggerDetectDrivenPush();
+      }
+      return;
+    }
+    if (acked) {
+      lastAckedVersion = Math.max(lastAckedVersion, version);
+      if (pendingAckVersion <= version) pendingAckVersion = 0;
+      detectorReady = true;
+      if (pendingDetectVersion > lastAckedVersion) detectDirty = true;
+      ackRetryVersion = 0;
+      if (ackRetryTimer) { clearTimeout(ackRetryTimer); ackRetryTimer = null; }
+      lastAckContext = null;
+      maybeTriggerDetectDrivenPush();
+    } else {
+      detectorReady = false;
+      pendingAckVersion = Math.max(pendingAckVersion, version);
+      try { logger.warn('arb.push ack timeout', { kind, version }); } catch {}
+      ackRetryVersion = Math.max(ackRetryVersion, version);
+      ackRetryKind = kind;
+      scheduleAckRetry();
+    }
+  } catch {}
+}
+function scheduleAckRetry(): void {
+  try {
+    if (!isDetectDrivenEnabled()) return;
+    if (!(ackRetryVersion > 0)) return;
+    if (!lastAckContext) return;
+    if (ackRetryTimer) return;
+    const delay = Math.max(500, Number(((globalThis as any)?.process?.env?.ARB_ACK_RETRY_DELAY_MS) || 1000));
+    ackRetryTimer = setTimeout(async () => {
+      ackRetryTimer = null;
+      if (!lastAckContext) return;
+      const { host, headers, timeoutMs } = lastAckContext;
+      const acked = await waitForGraphAck(host, headers, ackRetryVersion, timeoutMs, ackRetryKind);
+      handleGraphAckResult(ackRetryVersion, acked, ackRetryKind);
+    }, delay);
+  } catch {}
 }
 function mergeArraysUnique<T>(a: T[] | undefined, b: T[] | undefined, keyFn?: (x: T) => string): T[] {
   const out: T[] = [];
@@ -193,6 +314,7 @@ async function processArbQueue(): Promise<void> {
       const auth = String(((globalThis as any)?.process?.env?.ARB_SHARED_SECRET) || '');
       const headers: any = { 'content-type': 'application/json' };
       if (auth) headers['authorization'] = `Bearer ${auth}`;
+      const ackHeaders: Record<string, string> = { 'content-type': 'application/json', ...(auth ? { authorization: `Bearer ${auth}` } : {}) };
       const url = job.kind === 'snapshot' ? `${host}/arb/graph/snapshot` : `${host}/arb/graph/update`;
       const body = job.kind === 'snapshot' ? JSON.stringify({ graph: job.payload }) : JSON.stringify(job.payload);
       let attempt = 0;
@@ -219,32 +341,8 @@ async function processArbQueue(): Promise<void> {
       const wantVersion: number = Number((job.kind === 'snapshot' ? job.payload?.version : job.payload?.version) || 0);
       const start = Date.now();
       const timeoutMs = Number((((globalThis as any)?.process?.env?.ARB_ACK_TIMEOUT_MS) || 2500));
-      let acked = false;
-      if (wantVersion > 0) {
-        try {
-          // eslint-disable-next-line no-undef
-          const ac = new AbortController();
-          const t = setTimeout(() => ac.abort('timeout'), timeoutMs + 500);
-          const r = await fetch(`${host}/arb/graph/ack`, {
-            method: 'POST',
-            headers: { 
-              'content-type': 'application/json',
-              ...(auth ? { authorization: `Bearer ${auth}` } : {}),
-            },
-            body: JSON.stringify({ version: wantVersion, timeout_ms: timeoutMs }),
-            signal: ac.signal,
-          }).finally(() => clearTimeout(t));
-          if (r?.ok) {
-            const j: any = await r.json().catch(() => ({}));
-            acked = j?.acked === true;
-          }
-        } catch (e: any) {
-          try { logger.debug('arb.push ack failed', { kind: job.kind, error: String(e?.message || e) }); } catch {}
-        }
-      } else {
-        // No version specified, consider it acked immediately
-        acked = true;
-      }
+      lastAckContext = { host, headers: ackHeaders, timeoutMs };
+      const acked = await waitForGraphAck(host, ackHeaders, wantVersion, timeoutMs, job.kind);
       try {
         if (acked) pushSuccess += 1; else pushFailed += 1;
         logger.info('arb.push ack', { kind: job.kind, acked, waited_ms: Date.now() - start, wantVersion, queue_depth: arbQueue.length, push_success: pushSuccess, push_failed: pushFailed });
@@ -253,6 +351,7 @@ async function processArbQueue(): Promise<void> {
         if (acked) graphPushStats.success += 1; else graphPushStats.failed += 1;
         pushBounded(graphPushStats.ackMs, waited);
       } catch {}
+      handleGraphAckResult(wantVersion, acked, job.kind);
 
       // Optionally wait for a fresh detection to complete after applying this graph update (bounded wait)
       try {
@@ -284,6 +383,13 @@ export async function pushArbGraphSnapshot(snapshot: any): Promise<void> {
       if (!arbStreamEnabled) { logger.debug('arb.push gated', { kind: 'snapshot' }); resolve(); return; }
       if (!snapshot || !Array.isArray((snapshot as any).edges) || (snapshot as any).edges.length === 0) { logger.debug('arb.push skip empty snapshot'); resolve(); return; }
     } catch {}
+    try {
+      const ver = Number(snapshot?.version || 0);
+      if (Number.isFinite(ver) && ver > 0) {
+        pendingAckVersion = Math.max(pendingAckVersion, ver);
+      }
+    } catch {}
+    detectorReady = false;
     arbQueue.push({ kind: 'snapshot', payload: snapshot, resolve, reject });
     processArbQueue().catch(() => {});
   });
@@ -293,8 +399,13 @@ export async function pushArbGraphDiff(diff: any): Promise<void> {
   return new Promise((resolve, reject) => {
     // Suppress until explicitly enabled
     try { if (!arbStreamEnabled) { logger.debug('arb.push gated', { kind: 'diff' }); resolve(); return; } } catch {}
-    // Mark dirty so detect-driven coalesced push can run after the next detection
-    markDetectDirty();
+    try {
+      const ver = Number(diff?.version || 0);
+      if (Number.isFinite(ver) && ver > 0) {
+        pendingAckVersion = Math.max(pendingAckVersion, ver);
+      }
+    } catch {}
+    detectorReady = false;
     const coalesceMs = getDiffCoalesceMs();
     if (coalesceMs > 0) {
       try { arbDiffBuffer = coalesceDiff(arbDiffBuffer, diff); } catch { arbDiffBuffer = diff; }
@@ -306,6 +417,12 @@ export async function pushArbGraphDiff(diff: any): Promise<void> {
           // Drop any queued diffs, keep snapshots
           try { arbQueue = arbQueue.filter((j) => j.kind === 'snapshot'); } catch {}
           // Enqueue single coalesced diff and fanout resolution after ack
+          try {
+            const ver = Number(payload?.version || 0);
+            if (Number.isFinite(ver) && ver > 0) {
+              pendingAckVersion = Math.max(pendingAckVersion, ver);
+            }
+          } catch {}
           arbQueue.push({ kind: 'diff', payload, resolve: () => { try { for (const w of waiters) w.resolve(); } catch {} }, reject: (e: any) => { try { for (const w of waiters) w.reject(e); } catch {} } });
           try { logger.debug('arb.queue enq (coalesced)', { kind: 'diff', size: arbQueue.length }); } catch {}
           processArbQueue().catch(() => {});
@@ -354,38 +471,11 @@ export function getCachedArbVersion(): { version: number; timestamp: number; age
 }
 
 // Detect-driven trigger: rebuild graph right after each detection finishes
-let lastDetectSeen = 0;
-export function startDetectDrivenGraphPush(debounceMs = 0): void {
+export function startDetectDrivenGraphPush(): void {
   try {
-    // Avoid duplicate timers
-    let timer: NodeJS.Timeout | null = null;
-    const period = Math.max(100, Number((CONFIG as any)?.system?.graphRebuildMinDebounceMs || 100));
-    const tick = async () => {
-      try {
-        const m = await fetchArbMetrics();
-        if (Number(m.last_detection_ms || 0) > Number(lastDetectSeen || 0)) {
-          lastDetectSeen = Number(m.last_detection_ms || 0);
-          try { logger.info('graph.rebuild.detect_driven', { last_detection_ms: lastDetectSeen, code: 'GRAPH.REBUILD.DETECT_DRIVEN' }); } catch {}
-          try {
-            // Only push after detection when we actually saw diffs since last detection
-            if (!detectDirty) { return; }
-            const gmod: any = await import('./graph.js');
-            const wait = getDetectDrivenPushCoalesceMs();
-            if (ddPushTimer) { clearTimeout(ddPushTimer); ddPushTimer = null; }
-            ddPushTimer = setTimeout(async () => {
-              ddPushTimer = null;
-              try { detectDirty = false; } catch {}
-              if (typeof gmod.rebuildGraphNow === 'function') {
-                await gmod.rebuildGraphNow(undefined, { pushToArb: true });
-              } else {
-                gmod.scheduleGraphRebuild(undefined, Math.max(0, debounceMs));
-              }
-            }, wait);
-          } catch {}
-        }
-      } catch {}
-    };
-    timer = setInterval(tick, period);
+    if (!isDetectDrivenEnabled()) return;
+    detectorReady = pendingAckVersion === 0;
+    maybeTriggerDetectDrivenPush();
   } catch {}
 }
 (async function pollArbVersionLoop(){

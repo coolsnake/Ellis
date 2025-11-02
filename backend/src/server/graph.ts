@@ -155,7 +155,7 @@ export async function rebuildGraphNow(io?: SocketIOServer, opts?: { pushToArb?: 
       if (allowPush) { try { await notifyArbServiceRefresh(); } catch {} }
     }
     if (!allowPush && shouldNotifyDetect) {
-      markDetectDirty();
+      markDetectDirty(next.version);
     }
     try { logger.info('graph.rebuild.now', { nodes: next.nodes.length, edges: next.edges.length, changed }); } catch {}
     // Optional: auto-retarget WS if many edges changed
@@ -429,7 +429,7 @@ export async function applyPoolUpdates(prev: PoolsPayload, next: PoolsPayload, o
       else { shouldNotifyDetect = true; }
     }
     if (allowPush) { try { await notifyArbServiceRefresh(); } catch {} }
-    else if (shouldNotifyDetect) { markDetectDirty(); }
+    else if (shouldNotifyDetect) { markDetectDirty(newSnap.version); }
   } catch (e: any) {
     try { logger.debug('graph.incremental.apply failed', { error: String(e?.message || e), cat: 'graph' }); } catch {}
     try { await rebuildGraphNow(undefined); } catch {}

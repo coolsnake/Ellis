@@ -585,9 +585,8 @@ server.listen(CONFIG.port, () => {
   // Start detect-driven graph push cadence when enabled
   try {
     if ((CONFIG as any)?.system?.detectDrivenGraphPush) {
-      const debounce = Math.max(0, Number((CONFIG as any)?.system?.graphRebuildDebounceMs || 0));
       import('./realtime.js')
-        .then(({ startDetectDrivenGraphPush }) => { try { startDetectDrivenGraphPush(debounce); } catch {} })
+        .then(({ startDetectDrivenGraphPush }) => { try { startDetectDrivenGraphPush(); } catch {} })
         .catch(() => {});
     }
   } catch {}

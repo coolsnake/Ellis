@@ -9,6 +9,7 @@ export type ClmmPoolStatic = {
   vaultA: string;
   vaultB: string;
   tickArrays: { lower: string; center: string; upper: string };
+  observationId?: string;
   lastUpdateMs: number;
 };
 
