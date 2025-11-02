@@ -15,7 +15,7 @@ import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './pools
 import { fetchMeteoraBalancedHttp as fetchMeteoraBalancedHttpImpl, normalizeMeteoraBalancedHttp as normalizeMeteoraBalancedHttpImpl, fetchMeteoraBalancedAll as fetchMeteoraBalancedAllImpl } from './pools/meteoraBalanced.js';
 import { BorshCoder } from '@coral-xyz/anchor';
 import { IDL as MeteoraIdl } from '@meteora-ag/dlmm';
-import { PoolInfoLayout as RaydiumClmmLayout } from '@raydium-io/raydium-sdk-v2/dist/raydium/clmm/layout.js';
+import { PoolInfoLayout as RaydiumClmmLayout } from '@raydium-io/raydium-sdk-v2/lib/raydium/clmm/layout.js';
 
 const raydiumCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 const orcaCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
