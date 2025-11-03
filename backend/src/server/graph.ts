@@ -2,7 +2,8 @@ import type { Server as SocketIOServer } from 'socket.io';
 import { logger } from '../utils/logger.js';
 import { LogCode } from '../utils/logging.js';
 import { readJson } from '../utils/fs.js';
-import { notifyArbServiceRefresh, emit, pushArbGraphSnapshot, pushArbGraphDiff, markDetectDirty } from './realtime.js';
+import { emit } from './realtime.js';
+import { submitSnapshot, submitDiff } from './graphPushCoordinator.js';
 import { computePriceForward } from './graph.pricing.js';
 import { CONFIG } from '../utils/config.js';
 import { getRaydiumPoolsNormalized, getOrcaPoolsCached, enablePoolWebsocketRefreshes, peekMeteoraPools, getMeteoraPoolsCached, peekMeteoraBalancedPools } from './pools.js';
@@ -126,36 +127,26 @@ export async function rebuildGraphNow(io?: SocketIOServer, opts?: { pushToArb?: 
     }
     const detectMode = !!((CONFIG.system as any)?.detectDrivenGraphPush);
     const allowPush = !detectMode || (opts && (opts as any).pushToArb === true);
-    let shouldNotifyDetect = false;
     if (!prev) {
       if (allowPush) {
-        try { void pushArbGraphSnapshot(next); } catch {}
-        try { await notifyArbServiceRefresh(); } catch {}
-      } else {
-        shouldNotifyDetect = true;
+        try { submitSnapshot(next); } catch {}
       }
       diffSinceRebase = 0; lastRebaseMs = Date.now();
     } else if (changed) {
       const nowMs = Date.now();
       const shouldRebase = (diffSinceRebase >= REBASE_DIFF_THRESHOLD) || (nowMs - lastRebaseMs > REBASE_TIME_MS);
       if (shouldRebase) {
-        if (allowPush) { try { void pushArbGraphSnapshot(next); } catch {} }
-        else { shouldNotifyDetect = true; }
+        if (allowPush) { try { submitSnapshot(next); } catch {} }
         diffSinceRebase = 0; lastRebaseMs = nowMs;
         try { emit('log', { level: 'info', message: `graph:push rebase v=${next.version} nodes=${next.nodes.length} edges=${next.edges.length}`, timestamp: new Date().toISOString(), context: { cat: 'graph', code: LogCode.GRAPH_PUSH_SNAPSHOT } }); } catch {}
         // Emit a lightweight rebase signal to clients; they will pull lite snapshot when idle/visible
         try { if (io) io.emit('graph-rebase', { version: next.version, timestamp: next.timestamp }); else emit('graph-rebase', { version: next.version, timestamp: next.timestamp }); } catch {}
         try { logger.info('graph.rebase', { at_ms: lastRebaseMs, version: next.version, nodes: next.nodes.length, edges: next.edges.length }); } catch {}
       } else {
-        if (allowPush) { try { void pushArbGraphDiff(diff); } catch {} }
-        else { shouldNotifyDetect = true; }
+        if (allowPush) { try { submitDiff(diff); } catch {} }
         diffSinceRebase += (diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length);
         try { emit('log', { level: 'info', message: `graph:push diff v=${diff.version} changes=${(diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length)}`, timestamp: new Date().toISOString(), context: { cat: 'graph', code: LogCode.GRAPH_PUSH_DIFF } }); } catch {}
       }
-      if (allowPush) { try { await notifyArbServiceRefresh(); } catch {} }
-    }
-    if (!allowPush && shouldNotifyDetect) {
-      markDetectDirty(next.version);
     }
     try { logger.info('graph.rebuild.now', { nodes: next.nodes.length, edges: next.edges.length, changed }); } catch {}
     // Optional: auto-retarget WS if many edges changed
@@ -414,22 +405,17 @@ export async function applyPoolUpdates(prev: PoolsPayload, next: PoolsPayload, o
     const shouldRebase = (diffSinceRebase >= REBASE_DIFF_THRESHOLD) || (nowMs - lastRebaseMs > REBASE_TIME_MS);
     const detectMode = !!((CONFIG.system as any)?.detectDrivenGraphPush);
     const allowPush = !detectMode || (opts && (opts as any).pushToArb === true);
-    let shouldNotifyDetect = false;
     if (shouldRebase) {
       diffSinceRebase = 0; lastRebaseMs = nowMs;
       try { logger.info('graph.incremental.apply', { added: addedEdges.length, updated: updatedEdges.length, removed: removedEdgeIds.length, nodes_add: addedNodes.length, nodes_rem: removedNodeIds.length, mode: 'rebase', cat: 'graph' }); } catch {}
       try { emit('graph-rebase', { version: newSnap.version, timestamp: newSnap.timestamp }); } catch {}
-      if (allowPush) { try { await pushArbGraphSnapshot(newSnap); } catch {} }
-      else { shouldNotifyDetect = true; }
+      if (allowPush) { try { submitSnapshot(newSnap); } catch {} }
     } else {
       diffSinceRebase += ch;
       try { logger.info('graph.incremental.apply', { added: addedEdges.length, updated: updatedEdges.length, removed: removedEdgeIds.length, nodes_add: addedNodes.length, nodes_rem: removedNodeIds.length, mode: 'diff', cat: 'graph' }); } catch {}
       try { emit('graph-update', toLiteDiff(diff)); } catch {}
-      if (allowPush) { try { await pushArbGraphDiff(diff); } catch {} }
-      else { shouldNotifyDetect = true; }
+      if (allowPush) { try { submitDiff(diff); } catch {} }
     }
-    if (allowPush) { try { await notifyArbServiceRefresh(); } catch {} }
-    else if (shouldNotifyDetect) { markDetectDirty(newSnap.version); }
   } catch (e: any) {
     try { logger.debug('graph.incremental.apply failed', { error: String(e?.message || e), cat: 'graph' }); } catch {}
     try { await rebuildGraphNow(undefined); } catch {}
@@ -1715,8 +1701,7 @@ export function startGraphStream(io: SocketIOServer): void {
         // Push initial snapshot to arb-rs to enter backend-graph mode immediately
         const detectMode = !!((CONFIG.system as any)?.detectDrivenGraphPush);
         if (!detectMode) {
-          try { void pushArbGraphSnapshot(snap); } catch {}
-          try { await notifyArbServiceRefresh(); } catch {}
+          try { submitSnapshot(snap); } catch {}
         }
         try { logger.info('graph.push initial rebase', { version: snap.version, nodes: snap.nodes.length, edges: snap.edges.length, cat: 'graph' }); } catch {}
         try { emit('log', { level: 'info', message: `graph:push rebase v=${snap.version} nodes=${snap.nodes.length} edges=${snap.edges.length}`, timestamp: new Date().toISOString(), context: { cat: 'graph' } }); } catch {}
@@ -1768,12 +1753,12 @@ export function startGraphStream(io: SocketIOServer): void {
           const shouldRebase = (diffSinceRebase >= REBASE_DIFF_THRESHOLD) || (nowMs - lastRebaseMs > REBASE_TIME_MS);
           const detectMode = !!((CONFIG.system as any)?.detectDrivenGraphPush);
           if (shouldRebase) {
-            if (!detectMode) { try { void pushArbGraphSnapshot(snap); } catch {} }
+          if (!detectMode) { try { submitSnapshot(snap); } catch {} }
             diffSinceRebase = 0; lastRebaseMs = nowMs;
       try { logger.info('graph.push rebase', { version: snap.version, nodes: snap.nodes.length, edges: snap.edges.length, cat: 'graph', code: LogCode.GRAPH_PUSH_SNAPSHOT }); } catch {}
             try { emit('log', { level: 'info', message: `graph:push rebase v=${snap.version} nodes=${snap.nodes.length} edges=${snap.edges.length}`, timestamp: new Date().toISOString(), context: { cat: 'graph' } }); } catch {}
           } else {
-            if (!detectMode) { try { void pushArbGraphDiff(diff); } catch {} }
+          if (!detectMode) { try { submitDiff(diff); } catch {} }
             diffSinceRebase += (diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length);
             try {
               const ch = diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length;
@@ -1781,7 +1766,6 @@ export function startGraphStream(io: SocketIOServer): void {
               emit('log', { level: 'info', message: `graph:push diff v=${diff.version} changes=${ch}`, timestamp: new Date().toISOString(), context: { cat: 'graph' } });
             } catch {}
           }
-          if (!detectMode) { try { await notifyArbServiceRefresh(); } catch {} }
         } catch {}
         last = snap;
       }
