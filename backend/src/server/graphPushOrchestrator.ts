@@ -120,6 +120,7 @@ class GraphPushOrchestrator {
   private flushInProgress = false;
   private lastDetectSeen = 0;
   private detectDirty = false;
+  private awaitingDetect = false;
 
   constructor() {
     this.diffCoalesceMs = getDiffCoalesceMs();
@@ -229,7 +230,7 @@ class GraphPushOrchestrator {
     if (!this.arbStreamEnabled) return;
     if (!this.pendingSnapshot && !this.pendingDiff) return;
     const detectMode = this.shouldWaitForDetect();
-    if (!force && detectMode) {
+    if (!force && detectMode && (this.awaitingDetect || this.inFlight || this.flushInProgress)) {
       this.detectDirty = true;
       try {
         logger.info('graph.push wait_for_detect', {
@@ -276,6 +277,8 @@ class GraphPushOrchestrator {
 
     try {
       if (this.detectDirty) this.detectDirty = false;
+      const detectMode = this.shouldWaitForDetect();
+      this.awaitingDetect = detectMode;
       try {
         logger.info('graph.push flush_start', {
           kind: snapshot ? 'snapshot' : 'diff',
@@ -283,6 +286,7 @@ class GraphPushOrchestrator {
           added: diff?.addedEdges?.length,
           updated: diff?.updatedEdges?.length,
           removed: diff?.removedEdgeIds?.length,
+          detect_mode: detectMode,
         });
       } catch {}
       if (snapshot) {
@@ -291,6 +295,7 @@ class GraphPushOrchestrator {
         await this.enqueueJob('diff', diff);
       }
     } finally {
+      this.awaitingDetect = false;
       this.flushInProgress = false;
       if (this.pendingSnapshot || this.pendingDiff) {
         this.scheduleFlush();
@@ -435,11 +440,12 @@ class GraphPushOrchestrator {
 
   async flushPendingFromDetector(): Promise<boolean> {
     if (!this.arbStreamEnabled) return false;
-    if (this.flushInProgress) return false;
-    const snapshot = this.pendingSnapshot;
-    const diff = snapshot ? null : this.pendingDiff;
-    if (!snapshot && !diff) {
+    if (!this.pendingSnapshot && !this.pendingDiff) {
       this.detectDirty = false;
+      return false;
+    }
+    if (this.flushInProgress || this.inFlight || this.awaitingDetect) {
+      this.detectDirty = true;
       return false;
     }
     if (this.flushHandle) {
@@ -450,27 +456,36 @@ class GraphPushOrchestrator {
       clearTimeout(this.diffTimer);
       this.diffTimer = null;
     }
+    const snapshot = this.pendingSnapshot;
+    const diff = snapshot ? null : this.pendingDiff;
     this.pendingSnapshot = null;
     if (!snapshot) this.pendingDiff = null;
+    const detectMode = this.shouldWaitForDetect();
+    this.awaitingDetect = detectMode;
     this.detectDirty = false;
     try {
-      logger.info('graph.push flush_detector', {
+      logger.info('graph.push detector_trigger_flush', {
         kind: snapshot ? 'snapshot' : 'diff',
         version: snapshot ? snapshot.version : diff?.version,
         added: diff?.addedEdges?.length,
         updated: diff?.updatedEdges?.length,
+        detect_mode: detectMode,
         queue_depth: this.queue.length,
       });
     } catch {}
-    if (snapshot) {
-      await this.enqueueJob('snapshot', snapshot);
-      return true;
+    try {
+      if (snapshot) {
+        await this.enqueueJob('snapshot', snapshot);
+        return true;
+      }
+      if (diff) {
+        await this.enqueueJob('diff', diff);
+        return true;
+      }
+      return false;
+    } finally {
+      this.awaitingDetect = false;
     }
-    if (diff) {
-      await this.enqueueJob('diff', diff);
-      return true;
-    }
-    return false;
   }
 }
 
@@ -492,5 +507,7 @@ export const getGraphPushStatsRaw = () => graphPushOrchestrator.getStatsRaw();
 
 export const hasDetectDrivenDirty = () => graphPushOrchestrator.peekDetectDirty();
 
-export const flushPendingFromDetector = () => graphPushOrchestrator.flushPendingFromDetector();
+export async function flushPendingFromDetector(): Promise<boolean> {
+  return graphPushOrchestrator.flushPendingFromDetector();
+}
 

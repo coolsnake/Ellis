@@ -3,6 +3,10 @@ import { logger } from '../../utils/logger.js';
 import { LogCode } from '../../utils/logging.js';
 import { PublicKey, TransactionInstruction } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
+import { address } from '@solana/kit';
+import { swapInstructions, setWhirlpoolsConfig, setNativeMintWrappingStrategy } from '@orca-so/whirlpools';
+import { rpcFromUrl } from '@orca-so/tx-sender';
+import { createKeyPairSignerFromPrivateKeyBytes } from '@solana/signers';
 import { getConnection, ensureWallet } from '../../wallet/wallet.js';
 import { CONFIG } from '../../utils/config.js';
 import { normalizePublicKey, isValidPublicKey, coerceToPublicKey, sanitizeKeyString } from './utils.js';
@@ -18,6 +22,10 @@ function toPublicKey(value: any, fallback?: any): PublicKey {
   }
 }
 
+let orcaWhirlpoolConfigPromise: Promise<void> | null = null;
+let orcaRpcInstance: ReturnType<typeof rpcFromUrl> | null = null;
+let orcaSignerCache: { pubkey: string; signer: any } | null = null;
+
 // Utility function to inject bin array account metas into an instruction
 async function injectBinArrayMetas(
   ix: any,
@@ -29,28 +37,43 @@ async function injectBinArrayMetas(
   try {
     let metas: any[] | undefined = undefined;
     
+    const coercePk = (val: any): PublicKey | undefined => {
+      try {
+        if (!val) return undefined;
+        if (val instanceof PublicKey) return val;
+        if (typeof val?.toBase58 === 'function') return new PublicKey(val.toBase58());
+        if (Array.isArray(val)) return coercePk(val[0]);
+        if (typeof val === 'string') return new PublicKey(val);
+        if (typeof val?.publicKey === 'string') return new PublicKey(val.publicKey);
+        if (val?.publicKey instanceof PublicKey) return val.publicKey;
+        if (typeof val?.address === 'string') return new PublicKey(val.address);
+        if (val?.address instanceof PublicKey) return val.address;
+      } catch {}
+      return undefined;
+    };
+
     // Try primary method: getBinArrayAccountMetasCoverage with bounds
     try {
       const getBounds = (DLMM as any)?.getBinArrayLowerUpperBinId;
       const getMetas = (DLMM as any)?.getBinArrayAccountMetasCoverage;
       if (getBounds && getMetas) {
-        const bnjs = await import('bn.js').catch(() => null as any);
-        const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
-        const bounds = await getBounds(connection, poolPk).catch(() => null as any);
-        const toNum = (v: any): number => {
+        // These helpers expect bin IDs; fall back to using entire default range when bounds can't be derived.
+        const coverageFnArgCount = getMetas.length;
+        if (coverageFnArgCount >= 4) {
           try {
-            if (v && typeof v.toNumber === 'function') return v.toNumber();
-            const s = (v && typeof v.toString === 'function') ? v.toString() : String(v);
-            const n = Number(s);
-            return Number.isFinite(n) ? n : NaN;
-          } catch {
-            return NaN;
-          }
-        };
-        const loNum = toNum(bounds?.lowerBinId);
-        const hiNum = toNum(bounds?.upperBinId);
-        if (Number.isFinite(loNum) && Number.isFinite(hiNum) && BN) {
-          metas = getMetas(new BN(String(loNum)), new BN(String(hiNum)), poolPk, programId) || [];
+            const bnjs = await import('bn.js').catch(() => null as any);
+            const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
+            if (BN) {
+              const rangeSize = (DLMM as any)?.BIN_ARRAY_BITMAP_SIZE ?? 8;
+              const lower = new BN(-Number(rangeSize) * 1024);
+              const upper = new BN(Number(rangeSize) * 1024);
+              metas = getMetas(lower, upper, poolPk, programId) || [];
+            }
+          } catch {}
+        } else {
+          try {
+            metas = getMetas(poolPk, programId) || [];
+          } catch {}
         }
       }
     } catch (e: any) {
@@ -72,6 +95,31 @@ async function injectBinArrayMetas(
       }
     }
     
+    // Ensure bitmap extension PDA meta is included
+    try {
+      let extPk = coercePk((DLMM as any)?.deriveBinArrayBitmapExtension?.(poolPk, programId));
+      if (!extPk) {
+        try {
+          const [pda] = PublicKey.findProgramAddressSync([Buffer.from('bitmap'), poolPk.toBuffer()], programId);
+          extPk = pda;
+        } catch {}
+      }
+      if (extPk) {
+        metas = metas || [];
+        const hasExt = metas.some((m: any) => {
+          try {
+            const pk = coercePk(m?.pubkey || m?.publicKey || m?.address);
+            return pk ? pk.equals(extPk) : false;
+          } catch {
+            return false;
+          }
+        });
+        if (!hasExt) {
+          metas.push({ pubkey: extPk, isWritable: true, isSigner: false });
+        }
+      }
+    } catch {}
+
     // Inject metas into instruction
     if (Array.isArray(metas) && metas.length && Array.isArray((ix as any).keys)) {
       const existing = new Set<string>();
@@ -138,6 +186,13 @@ function safeCoercePublicKey(value: any): PublicKey | undefined {
   try {
     if (!value) return undefined;
     if (value instanceof PublicKey) return value;
+    if (typeof value === 'object') {
+      if (value instanceof Uint8Array) return coerceToPublicKey(value);
+      if (value && typeof value.address === 'string') return coerceToPublicKey(value.address);
+      if (Array.isArray(value) && value.length > 0) {
+        try { return coerceToPublicKey(value[0]); } catch {}
+      }
+    }
     if (typeof value?.toBase58 === 'function') {
       const base58 = value.toBase58();
       return coerceToPublicKey(base58);
@@ -253,7 +308,7 @@ function flattenToTransactionInstructions(value: any, hop: DirectHop): Transacti
           try { logger.warn('orca.whirlpool.ix.missing_program', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { pool: hop.poolId, kind: typeof programIdRaw } }); } catch {}
           return;
         }
-        const rawKeys = Array.isArray(item.keys)
+    const rawKeys = Array.isArray(item.keys)
           ? item.keys
           : (Array.isArray(item.accounts) ? item.accounts : []);
         const keys = rawKeys
@@ -265,12 +320,27 @@ function flattenToTransactionInstructions(value: any, hop: DirectHop): Transacti
                 ?? k?.publicKey
                 ?? k?.pubkeyAddress
                 ?? k?.pubKeyAddress
+                ?? (k?.signer && (k.signer as any).address)
             );
             if (!pk) return undefined;
+            const role = (typeof k?.role === 'number') ? Number(k.role) : undefined;
+            const hasWritableFlag = Object.prototype.hasOwnProperty.call(k ?? {}, 'isWritable') || Object.prototype.hasOwnProperty.call(k ?? {}, 'writable');
+            let isWritable: boolean | undefined = hasWritableFlag ? toFlag(k?.isWritable ?? k?.writable) : undefined;
+            if (isWritable === undefined && role !== undefined) {
+              isWritable = role === 1 || role === 3;
+            }
+            if (isWritable === undefined) isWritable = false;
+            const hasSignerFlag = Object.prototype.hasOwnProperty.call(k ?? {}, 'isSigner');
+            let isSigner: boolean | undefined = hasSignerFlag ? toFlag(k?.isSigner) : undefined;
+            if (isSigner === undefined && k?.signer) isSigner = true;
+            if (isSigner === undefined && role !== undefined) {
+              isSigner = role === 2 || role === 3;
+            }
+            if (isSigner === undefined) isSigner = false;
             return {
               pubkey: pk,
-              isSigner: toFlag(k?.isSigner ?? k?.signer),
-              isWritable: toFlag(k?.isWritable ?? k?.writable),
+              isSigner,
+              isWritable,
             };
           })
           .filter((meta): meta is { pubkey: PublicKey; isSigner: boolean; isWritable: boolean } => !!meta);
@@ -286,6 +356,68 @@ function flattenToTransactionInstructions(value: any, hop: DirectHop): Transacti
 
   visit(value);
   return out;
+}
+
+async function ensureOrcaSdkConfig(): Promise<void> {
+  if (!orcaWhirlpoolConfigPromise) {
+    orcaWhirlpoolConfigPromise = (async () => {
+      try {
+        const cfg = String((CONFIG.orca as any)?.configPubkey || '').trim();
+        if (cfg) {
+          await setWhirlpoolsConfig(address(cfg));
+        }
+      } catch (e: any) {
+        try { logger.warn('orca.whirlpool.config.set.failed', { cat: 'tx', ctx: { error: String((e as any)?.message || e) } }); } catch {}
+      }
+      try { setNativeMintWrappingStrategy('ata'); } catch {}
+    })();
+  }
+  await orcaWhirlpoolConfigPromise;
+}
+
+function getOrcaRpc() {
+  if (!orcaRpcInstance) {
+    const url = String(CONFIG.readRpcUrl || CONFIG.rpcUrl || '').trim();
+    orcaRpcInstance = rpcFromUrl(url);
+  }
+  return orcaRpcInstance;
+}
+
+async function getOrcaSdkSigner(kp: { publicKey: PublicKey; secretKey: Uint8Array }) {
+  const pk = kp.publicKey.toBase58();
+  if (!orcaSignerCache || orcaSignerCache.pubkey !== pk) {
+    const signer = await createKeyPairSignerFromPrivateKeyBytes(kp.secretKey, false);
+    orcaSignerCache = { pubkey: pk, signer };
+  }
+  return orcaSignerCache.signer;
+}
+
+async function buildOrcaSwapViaSdk(hop: DirectHop, kp: { publicKey: PublicKey; secretKey: Uint8Array }, slippageBps: number): Promise<{ instructions: TransactionInstruction[]; quote: any }> {
+  await ensureOrcaSdkConfig();
+  const rpc = getOrcaRpc();
+  const signer = await getOrcaSdkSigner(kp);
+  const poolAddr = address(String(hop.poolId));
+  const inputMintAddr = address(String(hop.inputMint));
+  const amountIn = BigInt(hop.amountInRaw ?? 0n);
+  if (amountIn <= 0n) {
+    throw createBuilderError('ORCA', 'input amount must be positive for swapInstructions', hop);
+  }
+  const params: any = { inputAmount: amountIn, mint: inputMintAddr };
+  const result = await swapInstructions(rpc, params, poolAddr, Math.max(0, Math.floor(slippageBps)), signer);
+  const tradeEnableTs = result.tradeEnableTimestamp ?? 0n;
+  const nowSec = BigInt(Math.floor(Date.now() / 1000));
+  if (tradeEnableTs && tradeEnableTs > nowSec) {
+    throw createBuilderError('ORCA', `trade disabled until ${tradeEnableTs.toString()}`, hop);
+  }
+  const sdkInstructions = Array.isArray(result.instructions) ? result.instructions : [];
+  const converted: TransactionInstruction[] = [];
+  for (const inst of sdkInstructions) {
+    converted.push(...flattenToTransactionInstructions(inst, hop));
+  }
+  if (!converted.length) {
+    throw createBuilderError('ORCA', 'swapInstructions produced no executable instructions', hop);
+  }
+  return { instructions: converted, quote: result.quote };
 }
 
 async function ensureWhirlpoolTickArrays(
@@ -318,20 +450,51 @@ async function ensureWhirlpoolTickArrays(
     }
     if (!requiredKeys.length) return [];
 
-    const { SwapUtils, PDAUtil, WhirlpoolIx } = await import('@orca-so/whirlpools-sdk');
+    const { PDAUtil, WhirlpoolIx } = await import('@orca-so/whirlpools-sdk');
+    const swapUtilsMod: any = await import('@orca-so/whirlpools-sdk/dist/utils/swap-utils.js').catch(() => null);
+    const publicUtilsMod: any = await import('@orca-so/whirlpools-sdk/dist/utils/public/tick-utils.js').catch(() => null);
     const whirlpoolPk: PublicKey = whirlpool.getAddress ? whirlpool.getAddress() : new PublicKey(String((whirlpool as any)?.address || (whirlpool as any)?.publicKey));
     const data = whirlpool.getData ? whirlpool.getData() : undefined;
     if (!data) return [];
-    const pathEntries = SwapUtils.getTickArrayPublicKeysWithStartTickIndex(
-      Number(data.tickCurrentIndex),
-      Number(data.tickSpacing),
-      !!(quote as any)?.aToB,
-      ctx.program.programId,
-      whirlpoolPk,
-    );
+    const getter = swapUtilsMod?.getTickArrayPublicKeysWithStartTickIndex;
+    let pathEntries: Array<{ pubkey: PublicKey; startTickIndex: number }> = [];
+    if (typeof getter === 'function') {
+      try {
+        pathEntries = getter(
+          Number(data.tickCurrentIndex),
+          Number(data.tickSpacing),
+          !!(quote as any)?.aToB,
+          ctx.program.programId,
+          whirlpoolPk,
+        ) || [];
+      } catch {}
+    }
     const startIndexByAddress = new Map<string, number>();
-    for (const entry of pathEntries) {
-      startIndexByAddress.set(entry.pubkey.toBase58(), Number(entry.startTickIndex));
+    const registerEntry = (entry: { pubkey: PublicKey; startTickIndex: number }) => {
+      if (!entry) return;
+      try {
+        startIndexByAddress.set(entry.pubkey.toBase58(), Number(entry.startTickIndex));
+      } catch {}
+    };
+    if (Array.isArray(pathEntries) && pathEntries.length) {
+      for (const entry of pathEntries) registerEntry(entry);
+    } else {
+      const tickUtil = publicUtilsMod?.TickUtil;
+      if (tickUtil && typeof tickUtil.getStartTickIndex === 'function') {
+        const tickSpacing = Number(data.tickSpacing);
+        const current = Number(data.tickCurrentIndex);
+        const aToB = !!(quote as any)?.aToB;
+        const shift = aToB ? 0 : tickSpacing;
+        let offset = 0;
+        for (let i = 0; i < 12; i += 1) {
+          try {
+            const start = tickUtil.getStartTickIndex(current + shift, tickSpacing, offset);
+            const pda = PDAUtil.getTickArray(ctx.program.programId, whirlpoolPk, start);
+            if (pda?.publicKey) registerEntry({ pubkey: pda.publicKey, startTickIndex: start });
+          } catch {}
+          offset = aToB ? offset - 1 : offset + 1;
+        }
+      }
     }
 
     const infos = await ctx.connection.getMultipleAccountsInfo(requiredKeys);
@@ -423,6 +586,28 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
       try { logger.warn('orca.whirlpool.pool.precheck.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String((preErr as any)?.message || preErr) } }); } catch {}
     }
     
+    let slippageBps = 100;
+    if (hop.minOutRaw && hop.minOutRaw > 0n && hop.amountInRaw && hop.amountInRaw > 0n) {
+      const ratio = Number(hop.minOutRaw) / Math.max(1, Number(hop.amountInRaw));
+      slippageBps = Math.max(0, Math.min(9900, Math.round((1 - ratio) * 10000)));
+    }
+    try {
+      const sdkResult = await buildOrcaSwapViaSdk(hop, kp, slippageBps);
+      const quoteAny = sdkResult.quote as any;
+      const estOut = quoteAny?.tokenEstOut ?? quoteAny?.tokenMinOut ?? quoteAny?.estimatedAmountOut ?? null;
+      if (estOut !== null && estOut !== undefined) {
+        try { logger.info('orca.whirlpool.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: String(estOut), mode: 'swapInstructions' } as any }); } catch {}
+      }
+      try { logger.info('orca.whirlpool.ix.ready', { cat: 'tx', ctx: { count: sdkResult.instructions.length, mode: 'swapInstructions' } as any }); } catch {}
+      return sdkResult.instructions;
+    } catch (sdkErr) {
+      const msg = String((sdkErr as any)?.message || sdkErr);
+      if (msg.includes('ORCA_BUILD_FAILED')) {
+        throw sdkErr;
+      }
+      try { logger.warn('orca.whirlpool.swapInstructions.fallback', { cat: 'tx', ctx: { pool: hop.poolId, error: msg } as any }); } catch {}
+    }
+
     // Use context-based SDK approach instead of global state
     try {
       const { WhirlpoolContext, buildWhirlpoolClient, swapQuoteByInputToken } = await import('@orca-so/whirlpools-sdk');
@@ -448,15 +633,6 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
       );
       const client = (buildWhirlpoolClient as any)(ctx);
       const pool = await client.getPool(new PublicKey(poolAddr));
-      
-      // Calculate slippage from minOutRaw directly
-      // If minOutRaw is provided, calculate slippage BPS from it
-      // Otherwise use default 1% (100 bps)
-      let slippageBps = 100; // Default 1%
-      if (hop.minOutRaw && hop.minOutRaw > 0n && hop.amountInRaw && hop.amountInRaw > 0n) {
-        const ratio = Number(hop.minOutRaw) / Number(hop.amountInRaw);
-        slippageBps = Math.max(0, Math.min(9900, Math.round((1 - ratio) * 10000)));
-      }
       
       const slippage = (Percentage as any).fromFraction(slippageBps, 10_000);
       const amountInBn = new BN(String(hop.amountInRaw ?? 0n));
