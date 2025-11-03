@@ -22,9 +22,15 @@ export function validateHopAmounts(hop: DirectHop, context?: Record<string, unkn
     throw new Error(`INVALID_MIN_OUT: minOut must be non-negative, got ${minOut.toString()}`);
   }
 
-  // Sanity check: minOut should generally be less than amountIn (allowing for slippage)
-  // Allow up to 100% slippage as a safety margin, but log a warning
-  if (minOut > amountIn) {
+  // Sanity check: minOut vs amountIn comparison only makes sense for same-token operations
+  // For swaps, minOut and amountIn are in different token units (different decimals),
+  // so direct comparison is invalid. Skip this check when tokens differ.
+  const inputMint = hop.inputMint;
+  const outputMint = hop.outputMint;
+  const isSameToken = inputMint && outputMint && inputMint === outputMint;
+  
+  if (isSameToken && minOut > amountIn) {
+    // Only validate when tokens are the same (e.g., token transfers, not swaps)
     const slippage = Number((minOut - amountIn) * 10000n / amountIn);
     if (slippage > 10000) {
       throw new Error(`INVALID_SLIPPAGE: minOut (${minOut.toString()}) exceeds amountIn (${amountIn.toString()}) by more than 100%`);

@@ -276,12 +276,8 @@ export function createArbRouter(io: SocketIOServer): Router {
           const src = basePlan.hops[i] as any;
           if (src.inputMint)  plan.hops[i].inputMint  = String(src.inputMint);
           if (src.outputMint) plan.hops[i].outputMint = String(src.outputMint);
-          if (src.amountInRaw !== undefined && src.amountInRaw !== null) {
-            try {
-              const v = BigInt(String(src.amountInRaw));
-              if (v > 0n) plan.hops[i].amountInRaw = v; // ignore zero overrides
-            } catch {}
-          }
+          // NOTE: Do NOT override amountInRaw here - it breaks amount propagation between hops.
+          // The resolver already correctly sets amountInRaw based on previous hop's output.
           if (src.minOutRaw !== undefined && src.minOutRaw !== null) {
             try { plan.hops[i].minOutRaw = BigInt(String(src.minOutRaw)); } catch {}
           }
@@ -343,12 +339,8 @@ export function createArbRouter(io: SocketIOServer): Router {
           const src = basePlan.hops[i] as any;
           if (src.inputMint)  plan.hops[i].inputMint  = String(src.inputMint);
           if (src.outputMint) plan.hops[i].outputMint = String(src.outputMint);
-          if (src.amountInRaw !== undefined && src.amountInRaw !== null) {
-            try {
-              const v = BigInt(String(src.amountInRaw));
-              if (v > 0n) plan.hops[i].amountInRaw = v; // ignore zero overrides
-            } catch {}
-          }
+          // NOTE: Do NOT override amountInRaw here - it breaks amount propagation between hops.
+          // The resolver already correctly sets amountInRaw based on previous hop's output.
           if (src.minOutRaw !== undefined && src.minOutRaw !== null) {
             try { plan.hops[i].minOutRaw = BigInt(String(src.minOutRaw)); } catch {}
           }

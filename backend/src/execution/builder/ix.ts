@@ -1508,6 +1508,8 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     };
     
     // Verify tick array accounts exist and filter out any that don't
+    // Note: We only verify account existence with data - don't check owner (chain/SDK will validate)
+    // Some tick arrays might be PDAs owned by related programs or the validation might fail due to RPC timing
     const tickArrayKeys: PublicKey[] = [];
     const tickArrayCandidates = [
       hop.tickArrayCenter,  // Start with center (current tick)
@@ -1519,12 +1521,45 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       try {
         const tickPk = toPublicKey(tickArrayAddr);
         const tickAcc = await withRpcLimit(() => connection.getAccountInfo(tickPk)).catch(() => null);
-        if (tickAcc && tickAcc.owner.equals(programIdPk)) {
+        // Just verify account exists with data - don't check owner (chain will validate program ownership)
+        if (tickAcc && tickAcc.data && tickAcc.data.length > 0) {
           tickArrayKeys.push(tickPk);
+          try { 
+            logger.debug('raydium.clmm.tickarray.verified', { 
+              cat: 'tx', 
+              ctx: { 
+                pool: hop.poolId, 
+                tickArray: tickPk.toBase58(),
+                owner: tickAcc.owner.toBase58(),
+                dataLen: tickAcc.data.length 
+              } as any 
+            }); 
+          } catch {}
         } else {
-          try { logger.debug('raydium.clmm.tickarray.missing', { cat: 'tx', ctx: { pool: hop.poolId, tickArray: tickPk.toBase58() } as any }); } catch {}
+          try { 
+            logger.debug('raydium.clmm.tickarray.missing', { 
+              cat: 'tx', 
+              ctx: { 
+                pool: hop.poolId, 
+                tickArray: tickPk.toBase58(),
+                exists: !!tickAcc,
+                hasData: !!(tickAcc && tickAcc.data?.length) 
+              } as any 
+            }); 
+          } catch {}
         }
-      } catch {}
+      } catch (e: any) {
+        try { 
+          logger.debug('raydium.clmm.tickarray.verify.error', { 
+            cat: 'tx', 
+            ctx: { 
+              pool: hop.poolId, 
+              tickArray: String(tickArrayAddr),
+              error: String(e?.message || e) 
+            } as any 
+          }); 
+        } catch {}
+      }
     }
     
     if (!tickArrayKeys.length) {
