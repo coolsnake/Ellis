@@ -121,6 +121,10 @@ class GraphPushOrchestrator {
   private lastDetectSeen = 0;
   private detectDirty = false;
   private awaitingDetect = false;
+  // Version tracking to prevent duplicate pushes
+  private lastAckedVersion: number = 0;
+  private inFlightVersion: number | null = null;
+  private queuedVersions: Set<number> = new Set();
 
   constructor() {
     this.diffCoalesceMs = getDiffCoalesceMs();
@@ -148,6 +152,20 @@ class GraphPushOrchestrator {
     }
     if (!snapshot || !Array.isArray((snapshot as any).edges) || (snapshot as any).edges.length === 0) {
       try { logger.debug('arb.push skip empty snapshot'); } catch {}
+      return;
+    }
+    const version = Number(snapshot.version || 0);
+    // Skip if version already acknowledged, in-flight, or queued
+    if (version > 0 && version <= this.lastAckedVersion) {
+      try { logger.debug('arb.push skip duplicate snapshot', { version, last_acked: this.lastAckedVersion, reason: 'already_acked' }); } catch {}
+      return;
+    }
+    if (version > 0 && version === this.inFlightVersion) {
+      try { logger.debug('arb.push skip duplicate snapshot', { version, reason: 'in_flight' }); } catch {}
+      return;
+    }
+    if (version > 0 && this.queuedVersions.has(version)) {
+      try { logger.debug('arb.push skip duplicate snapshot', { version, reason: 'already_queued' }); } catch {}
       return;
     }
     try {
@@ -178,6 +196,20 @@ class GraphPushOrchestrator {
       try { logger.debug('arb.push gated', { kind: 'diff' }); } catch {}
       return;
     }
+    const version = Number(diff.version || 0);
+    // Skip if version already acknowledged, in-flight, or queued
+    if (version > 0 && version <= this.lastAckedVersion) {
+      try { logger.debug('arb.push skip duplicate diff', { version, last_acked: this.lastAckedVersion, reason: 'already_acked' }); } catch {}
+      return;
+    }
+    if (version > 0 && version === this.inFlightVersion) {
+      try { logger.debug('arb.push skip duplicate diff', { version, reason: 'in_flight' }); } catch {}
+      return;
+    }
+    if (version > 0 && this.queuedVersions.has(version)) {
+      try { logger.debug('arb.push skip duplicate diff', { version, reason: 'already_queued' }); } catch {}
+      return;
+    }
     try {
       logger.info('graph.push enqueue', {
         kind: 'diff',
@@ -190,7 +222,35 @@ class GraphPushOrchestrator {
     } catch {}
     this.detectDirty = true;
     const apply = () => {
-      this.pendingDiff = coalesceDiff(this.pendingDiff, diff);
+      const coalesced = coalesceDiff(this.pendingDiff, diff);
+      const coalescedVersion = Number(coalesced.version || 0);
+      // Check again after coalescing - might have merged with pending diff that has a higher version
+      if (coalescedVersion > 0 && coalescedVersion <= this.lastAckedVersion) {
+        try { logger.debug('arb.push skip coalesced diff', { coalesced_version: coalescedVersion, last_acked: this.lastAckedVersion, reason: 'already_acked' }); } catch {}
+        this.pendingDiff = null;
+        return;
+      }
+      if (coalescedVersion > 0 && coalescedVersion === this.inFlightVersion) {
+        try { logger.debug('arb.push skip coalesced diff', { coalesced_version: coalescedVersion, reason: 'in_flight' }); } catch {}
+        // Keep pending diff if it's different from in-flight version
+        if (this.pendingDiff && Number(this.pendingDiff.version || 0) !== coalescedVersion) {
+          // Keep existing pending
+        } else {
+          this.pendingDiff = null;
+        }
+        return;
+      }
+      if (coalescedVersion > 0 && this.queuedVersions.has(coalescedVersion)) {
+        try { logger.debug('arb.push skip coalesced diff', { coalesced_version: coalescedVersion, reason: 'already_queued' }); } catch {}
+        // Keep pending diff if it's different
+        if (this.pendingDiff && Number(this.pendingDiff.version || 0) !== coalescedVersion) {
+          // Keep existing pending
+        } else {
+          this.pendingDiff = null;
+        }
+        return;
+      }
+      this.pendingDiff = coalesced;
       this.scheduleFlush();
     };
 
@@ -305,6 +365,11 @@ class GraphPushOrchestrator {
 
   private async enqueueJob(kind: GraphPushKind, payload: any): Promise<void> {
     return new Promise((resolve, reject) => {
+      const version = Number(payload?.version || 0);
+      // Track version when added to queue
+      if (version > 0) {
+        this.queuedVersions.add(version);
+      }
       this.queue.push({ kind, payload, resolve, reject });
       this.processQueue().catch((e) => {
         try { logger.debug('arb.push queue process failed', { error: String(e?.message || e) }); } catch {}
@@ -318,7 +383,21 @@ class GraphPushOrchestrator {
     try {
       while (this.queue.length) {
         const job = this.queue.shift()!;
+        const wantVersion = Number(job.kind === 'snapshot' ? job.payload?.version : job.payload?.version) || 0;
+        
+        // Remove from queuedVersions since we're now processing it
+        if (wantVersion > 0) {
+          this.queuedVersions.delete(wantVersion);
+          this.inFlightVersion = wantVersion;
+        }
+        
         if (!this.arbStreamEnabled) {
+          // Clear in-flight tracking since we're not actually sending
+          if (wantVersion > 0) {
+            this.inFlightVersion = null;
+            // If not sent, we should update lastAckedVersion to prevent re-queuing
+            // But actually, if stream is disabled, we shouldn't track it
+          }
           job.resolve();
           this.resolveWaiters();
           continue;
@@ -350,9 +429,12 @@ class GraphPushOrchestrator {
         }
         if (!sent) {
           try { logger.error('arb.push giveup', { kind: job.kind, attempts: attempt }); } catch {}
+          // Clear in-flight tracking on failure
+          if (wantVersion > 0 && this.inFlightVersion === wantVersion) {
+            this.inFlightVersion = null;
+          }
         }
 
-        const wantVersion = Number(job.kind === 'snapshot' ? job.payload?.version : job.payload?.version) || 0;
         const start = Date.now();
         const timeoutMs = Number((((globalThis as any)?.process?.env?.ARB_ACK_TIMEOUT_MS) || 2500));
         let acked = false;
@@ -369,6 +451,11 @@ class GraphPushOrchestrator {
             if (res?.ok) {
               const j: any = await res.json().catch(() => ({}));
               acked = j?.acked === true;
+              // Update lastAckedVersion when ACK succeeds
+              if (acked && wantVersion > this.lastAckedVersion) {
+                this.lastAckedVersion = wantVersion;
+                try { logger.debug('arb.push version acked', { version: wantVersion, last_acked: this.lastAckedVersion }); } catch {}
+              }
             }
           } catch (err: any) {
             try { logger.debug('arb.push ack failed', { kind: job.kind, error: String(err?.message || err) }); } catch {}
@@ -399,15 +486,38 @@ class GraphPushOrchestrator {
 
         await notifyArbServiceRefreshImpl();
 
+        // Clear in-flight tracking after job completes
+        if (wantVersion > 0 && this.inFlightVersion === wantVersion) {
+          this.inFlightVersion = null;
+        }
+
         job.resolve();
         this.resolveWaiters();
 
         if (job.kind === 'snapshot' && this.queue.length) {
-          this.queue = this.queue.filter((j) => j.kind === 'snapshot');
+          // When a snapshot is processed, remove all non-snapshot jobs (snapshots supersede diffs)
+          // Also clean up versions for removed jobs
+          const beforeCleanup = this.queue.length;
+          this.queue = this.queue.filter((j) => {
+            if (j.kind === 'snapshot') {
+              // Keep snapshot jobs
+              return true;
+            }
+            // Remove non-snapshot jobs and clean up their version tracking
+            const v = Number(j.payload?.version || 0);
+            if (v > 0) {
+              this.queuedVersions.delete(v);
+            }
+            return false;
+          });
+          if (beforeCleanup > this.queue.length) {
+            try { logger.debug('arb.push snapshot cleanup', { removed: beforeCleanup - this.queue.length, remaining: this.queue.length }); } catch {}
+          }
         }
       }
     } finally {
       this.inFlight = false;
+      this.inFlightVersion = null;
     }
   }
 
@@ -448,6 +558,33 @@ class GraphPushOrchestrator {
       this.detectDirty = true;
       return false;
     }
+    
+    // Check for duplicates before flushing
+    const snapshot = this.pendingSnapshot;
+    const diff = snapshot ? null : this.pendingDiff;
+    const version = snapshot ? Number(snapshot.version || 0) : (diff ? Number(diff.version || 0) : 0);
+    
+    if (version > 0) {
+      // Skip if already acknowledged, in-flight, or queued
+      if (version <= this.lastAckedVersion) {
+        try { logger.debug('arb.push detector_flush skip duplicate', { version, last_acked: this.lastAckedVersion, reason: 'already_acked' }); } catch {}
+        this.pendingSnapshot = null;
+        this.pendingDiff = null;
+        this.detectDirty = false;
+        return false;
+      }
+      if (version === this.inFlightVersion) {
+        try { logger.debug('arb.push detector_flush skip duplicate', { version, reason: 'in_flight' }); } catch {}
+        this.detectDirty = true; // Keep dirty so we retry later
+        return false;
+      }
+      if (this.queuedVersions.has(version)) {
+        try { logger.debug('arb.push detector_flush skip duplicate', { version, reason: 'already_queued' }); } catch {}
+        this.detectDirty = true; // Keep dirty so we retry later
+        return false;
+      }
+    }
+    
     if (this.flushHandle) {
       clearTimeout(this.flushHandle);
       this.flushHandle = null;
@@ -456,8 +593,6 @@ class GraphPushOrchestrator {
       clearTimeout(this.diffTimer);
       this.diffTimer = null;
     }
-    const snapshot = this.pendingSnapshot;
-    const diff = snapshot ? null : this.pendingDiff;
     this.pendingSnapshot = null;
     if (!snapshot) this.pendingDiff = null;
     const detectMode = this.shouldWaitForDetect();

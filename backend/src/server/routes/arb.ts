@@ -7,6 +7,9 @@ import { setArbStreamEnabled } from '../realtime.js';
 import { writeJson, readJson } from '../../utils/fs.js';
 import { logTxTrace } from '../../utils/txTrace.js';
 import { CONFIG } from '../../utils/config.js';
+import { createWorkerClient, WorkerClient } from '../../workers/client.js';
+import type { ArbBuildRequest, ArbBuildResult, SerializedInstruction } from '../../workers/arbBuild.types.js';
+import { buildTransactionSummary } from '../arb.build.worker.compute.js';
 
 export function createArbRouter(io: SocketIOServer): Router {
   const api = Router();
@@ -28,6 +31,17 @@ export function createArbRouter(io: SocketIOServer): Router {
       return 'err_format_failed';
     }
   };
+
+  const env = (typeof globalThis !== 'undefined' && (globalThis as any)?.process?.env) ? (globalThis as any).process.env : {} as Record<string, string>;
+  const ARB_BUILD_WORKER_DISABLED = String(env.ARB_BUILD_WORKER_DISABLED ?? env.ARB_BUILD_TX_DISABLED ?? '').toLowerCase() === 'true';
+  const ARB_BUILD_WORKER_MAX_QUEUE = Math.max(1, Number(env.ARB_BUILD_WORKER_MAX_QUEUE ?? 2));
+  const ARB_BUILD_WORKER_TIMEOUT_MS = Math.max(2000, Number(env.ARB_BUILD_WORKER_TIMEOUT_MS ?? 8000));
+  const ARB_BUILD_WORKER_IDLE_MS = Math.max(0, Number(env.ARB_BUILD_WORKER_IDLE_MS ?? 30_000));
+  const ARB_BUILD_WORKER_CONCURRENCY = Math.max(1, Number(env.ARB_BUILD_WORKER_CONCURRENCY ?? 1));
+
+  let arbBuildWorkerClient: WorkerClient<ArbBuildRequest, ArbBuildResult> | null = null;
+  let arbBuildWorkerUnavailable = ARB_BUILD_WORKER_DISABLED;
+  let arbBuildWorkerFailures = 0;
 
   // In-memory execution timing rings and counters (bounded)
   const execStats: {
@@ -187,7 +201,6 @@ export function createArbRouter(io: SocketIOServer): Router {
       try { emit('log', { level: 'info', message: 'pretrade:arb simulate start', timestamp: new Date().toISOString(), context: { cat: 'arb', code: 'PRETRADE.SIM.START' } }); } catch {}
       const { resolveDirectPlan } = await import('../../execution/resolver/index.js');
       const { ResolveDirectSchema } = await import('../routes/schemas.js');
-      const { buildDirectArbTx } = await import('../../execution/builder/tx.js');
       const { loadExecConfig } = await import('../execConfigStore.js');
       const input = req.body || {};
       const parsed = ResolveDirectSchema.parse(input);
@@ -230,7 +243,7 @@ export function createArbRouter(io: SocketIOServer): Router {
       })();
       const execCfg = await loadExecConfig();
       const tBuild0 = Date.now();
-      const built = await buildDirectArbTx(plan, [], {} as any);
+      const built = await buildArbTransaction(plan);
       try { pushBounded(execStats.buildMs, Date.now() - tBuild0); } catch {}
       try { emit('log', { level: 'info', message: 'pretrade:arb tx built', timestamp: new Date().toISOString(), context: { cat: 'tx', code: 'PRETRADE.TX.BUILT', mode: (execCfg as any)?.mode } }); } catch {}
       try { logger.info('tx.build.ok', { cat: 'tx', code: LogCode.TX_BUILD_OK, ctx: { ixCount: built.ixCount, sizeBytes: built.sizeBytes, mode: (execCfg as any)?.mode } as any }); } catch {}
@@ -255,7 +268,6 @@ export function createArbRouter(io: SocketIOServer): Router {
       try { emit('log', { level: 'info', message: 'pretrade:arb simulate start', timestamp: new Date().toISOString(), context: { cat: 'arb', code: 'PRETRADE.SIM.START' } }); } catch {}
       const { resolveDirectPlan } = await import('../../execution/resolver/index.js');
       const { ResolveDirectSchema } = await import('../routes/schemas.js');
-      const { buildDirectArbTx } = await import('../../execution/builder/tx.js');
       const { assembleAndSimulate } = await import('../../execution/sender.js');
       const { writeDexFullDump } = await import('../../utils/txTrace.js');
       const { loadExecConfig } = await import('../execConfigStore.js');
@@ -343,7 +355,7 @@ export function createArbRouter(io: SocketIOServer): Router {
 
       // use early id
 
-      const built = await buildDirectArbTx(plan, [], {} as any);
+      const built = await buildArbTransaction(plan);
       const execCfg = await loadExecConfig();
 
       // Build intent + pool cache + ix summaries for tracing
@@ -398,19 +410,13 @@ export function createArbRouter(io: SocketIOServer): Router {
           return { poolId: h.poolId, programId: h.programId, static: st, hot };
         }),
       } as any;
-      const ixs = (Array.isArray((built as any)?.tx?.instructions) ? (built as any).tx.instructions : []).map((ix: any) => {
+      const ixs = built.instructions.map((ix) => {
         try {
-          const pidLike = (ix?.programId) ?? (ix?.programAddress) ?? (ix?.program && (ix.program.address || ix.program));
-          const pid = (pidLike && typeof pidLike.toBase58 === 'function') ? pidLike.toBase58() : String(pidLike || '');
-          const keysSrc: any[] = Array.isArray(ix?.keys) ? ix.keys : [];
-          const accounts = keysSrc.map((k: any) => {
-            const pkLike = (k?.pubkey) ?? (k?.pubKey) ?? (k?.address);
-            const pk = (pkLike && typeof pkLike.toBase58 === 'function') ? pkLike.toBase58() : String(pkLike || '');
-            return { pk, s: !!k?.isSigner, w: !!k?.isWritable };
-          });
-          const dataLen = (ix?.data && typeof (ix.data as any).length === 'number') ? Number((ix.data as any).length) : 0;
+          const pid = String(ix.programId || '');
+          const accounts = (ix.keys || []).map((k) => ({ pk: k.pubkey, s: !!k.isSigner, w: !!k.isWritable }));
+          const dataLen = Buffer.from(ix.data || '', 'base64').length;
           return { pid, dataLen, accounts };
-        } catch { return { pid: String(ix?.programId || ''), dataLen: 0, accounts: [] }; }
+        } catch { return { pid: String((ix as any)?.programId || ''), dataLen: 0, accounts: [] }; }
       });
       // Optional: warn if built programs imply a different DEX family set than planned
       try {
@@ -434,7 +440,7 @@ export function createArbRouter(io: SocketIOServer): Router {
       try { emit('log', { level: 'info', message: 'pretrade:arb tx built', timestamp: new Date().toISOString(), context: { cat: 'tx', code: 'PRETRADE.TX.BUILT', mode: (execCfg as any)?.mode } }); } catch {}
       try { logger.info('tx.preflight.start', { cat: 'tx', code: LogCode.TX_PREFLIGHT_START, ctx: { ixCount: built.ixCount, sizeBytes: built.sizeBytes, mode: (execCfg as any)?.mode } as any }); } catch {}
       const tPre0 = Date.now();
-      const sim = await assembleAndSimulate(built.tx.instructions, {
+      const sim = await assembleAndSimulate(built.instructions, {
         computeUnitLimit: execCfg.computeUnitLimit,
         computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
         lookupTableAddresses: execCfg.lookupTableAddresses,
@@ -594,7 +600,6 @@ export function createArbRouter(io: SocketIOServer): Router {
       try { logger.info('pretrade:arb execute start', { cat: 'arb', code: LogCode.API_REQUEST }); } catch {}
       const { resolveDirectPlan } = await import('../../execution/resolver/index.js');
       const { ResolveDirectSchema } = await import('../routes/schemas.js');
-      const { buildDirectArbTx } = await import('../../execution/builder/tx.js');
       const { assembleAndSend, assembleAndSimulate } = await import('../../execution/sender.js');
       const { writeDexFullDump } = await import('../../utils/txTrace.js');
       const { addTxRecord } = await import('../txHistory.js');
@@ -653,22 +658,16 @@ export function createArbRouter(io: SocketIOServer): Router {
       const id = Math.random().toString(36).slice(2,10);
       try { logger.info('tx.intents', { cat: 'tx', ctx: { id, intent } as any }); } catch {}
       try { emit('log', { level: 'info', message: 'tx.intents', context: { cat: 'tx', id, intent } }); } catch {}
-      const built = await buildDirectArbTx(plan, [], {} as any);
+      const built = await buildArbTransaction(plan);
       const execCfg = await loadExecConfig();
-      
-      const ixs = (Array.isArray((built as any)?.tx?.instructions) ? (built as any).tx.instructions : []).map((ix: any) => {
+
+      const ixs = built.instructions.map((ix) => {
         try {
-          const pidLike = (ix?.programId) ?? (ix?.programAddress) ?? (ix?.program && (ix.program.address || ix.program));
-          const pid = (pidLike && typeof pidLike.toBase58 === 'function') ? pidLike.toBase58() : String(pidLike || '');
-          const keysSrc: any[] = Array.isArray(ix?.keys) ? ix.keys : [];
-          const accounts = keysSrc.map((k: any) => {
-            const pkLike = (k?.pubkey) ?? (k?.pubKey) ?? (k?.address);
-            const pk = (pkLike && typeof pkLike.toBase58 === 'function') ? pkLike.toBase58() : String(pkLike || '');
-            return { pk, s: !!k?.isSigner, w: !!k?.isWritable };
-          });
-          const dataLen = (ix?.data && typeof (ix.data as any).length === 'number') ? Number((ix.data as any).length) : 0;
+          const pid = String(ix.programId || '');
+          const accounts = (ix.keys || []).map((k) => ({ pk: k.pubkey, s: !!k.isSigner, w: !!k.isWritable }));
+          const dataLen = Buffer.from(ix.data || '', 'base64').length;
           return { pid, dataLen, accounts };
-        } catch { return { pid: String(ix?.programId || ''), dataLen: 0, accounts: [] }; }
+        } catch { return { pid: String((ix as any)?.programId || ''), dataLen: 0, accounts: [] }; }
       });
       // Optional: warn if built programs imply a different DEX family set than planned
       try {
@@ -753,7 +752,7 @@ export function createArbRouter(io: SocketIOServer): Router {
       try { logger.info('tx.preflight.start', { cat: 'tx', code: LogCode.TX_PREFLIGHT_START, ctx: { ixCount: built.ixCount, sizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode } as any }); } catch {}
       let sim: any;
       try {
-        sim = await assembleAndSimulate(built.tx.instructions, {
+        sim = await assembleAndSimulate(built.instructions, {
           computeUnitLimit: execCfg.computeUnitLimit,
           computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
           lookupTableAddresses: execCfg.lookupTableAddresses,
@@ -847,7 +846,7 @@ export function createArbRouter(io: SocketIOServer): Router {
       // Proceed to send (no chunking)
       try {
         const tSend0 = Date.now();
-        const sendRes = await assembleAndSend(built.tx.instructions, {
+        const sendRes = await assembleAndSend(built.instructions, {
           computeUnitLimit: execCfg.computeUnitLimit,
           computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
           lookupTableAddresses: execCfg.lookupTableAddresses,
@@ -1309,6 +1308,59 @@ export function createArbRouter(io: SocketIOServer): Router {
       res.status(503).json({ ok: false, error: 'arb service unreachable; config saved locally' });
     }
   });
+
+  function getArbBuildWorkerClient(): WorkerClient<ArbBuildRequest, ArbBuildResult> | null {
+    if (arbBuildWorkerUnavailable) return null;
+    if (arbBuildWorkerClient) return arbBuildWorkerClient;
+    try {
+      const url = new URL('../../workers/arbBuild.worker.js', import.meta.url);
+      arbBuildWorkerClient = createWorkerClient<ArbBuildRequest, ArbBuildResult>({
+        url,
+        name: 'arb-build',
+        maxConcurrency: ARB_BUILD_WORKER_CONCURRENCY,
+        idleTimeoutMs: ARB_BUILD_WORKER_IDLE_MS,
+      });
+      arbBuildWorkerFailures = 0;
+      return arbBuildWorkerClient;
+    } catch (err: any) {
+      arbBuildWorkerUnavailable = true;
+      try { logger.warn('arb.build.worker.init_failed', { error: String(err?.message || err), cat: 'tx' }); } catch {}
+      return null;
+    }
+  }
+
+  function markArbBuildWorkerFailed(err: unknown): void {
+    if (arbBuildWorkerClient) {
+      try { arbBuildWorkerClient.dispose(); } catch {}
+      arbBuildWorkerClient = null;
+    }
+    arbBuildWorkerFailures += 1;
+    if (arbBuildWorkerFailures >= 3) {
+      arbBuildWorkerUnavailable = true;
+    }
+    try { logger.debug('arb.build.worker.failed', { error: String((err as any)?.message || err), failures: arbBuildWorkerFailures, cat: 'tx' }); } catch {}
+  }
+
+  async function buildArbTransaction(plan: any): Promise<ArbBuildResult> {
+    const client = getArbBuildWorkerClient();
+    const request: ArbBuildRequest = { plan };
+    if (client) {
+      const queue = client.getQueueSize();
+      const active = client.getActiveCount();
+      if (queue + active < ARB_BUILD_WORKER_MAX_QUEUE) {
+        try {
+          return await client.run(request, { timeoutMs: ARB_BUILD_WORKER_TIMEOUT_MS });
+        } catch (err) {
+          markArbBuildWorkerFailed(err);
+          try { logger.warn('arb.build.worker.run_failed', { error: String((err as any)?.message || err), queue, active, cat: 'tx' }); } catch {}
+        }
+      } else {
+        try { logger.warn('arb.build.worker.queue_saturated', { queue, active, limit: ARB_BUILD_WORKER_MAX_QUEUE, cat: 'tx' }); } catch {}
+      }
+    }
+    try { logger.debug('arb.build.worker.fallback', { reason: client ? 'worker_error' : 'worker_unavailable', cat: 'tx' }); } catch {}
+    return buildTransactionSummary(plan, undefined, undefined);
+  }
 
   return api;
 }

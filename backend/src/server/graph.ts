@@ -11,10 +11,14 @@ import { loadTokenMap } from '../utils/tokens.js';
 import { fetch } from 'undici';
 import { calibrateMagnitude } from './priceCalib.js';
 import type { GraphNode, GraphEdge, GraphSnapshot, GraphDiff } from './graph.types.js';
+import { createWorkerClient, WorkerClient } from '../workers/client.js';
+import type { GraphWorkerRequest, GraphWorkerResponse, GraphIncrementalRequest } from '../workers/graphDiff.types.js';
+import { computeIncrementalGraphUpdate } from './graph.worker.compute.js';
+import { isDexKindAllowed, type EdgeAllow } from './graph.edges.js';
 export type { GraphNode, GraphEdge, GraphSnapshot, GraphDiff } from './graph.types.js';
 import { diffSnapshots } from './graph.diff.js';
 import { findPathInSnapshot } from './graph.path.js';
-import type { PoolsPayload, AmmPool, ClmmPool } from './pools/types.js';
+import type { PoolsPayload } from './pools/types.js';
 
 
 
@@ -62,6 +66,17 @@ const REBASE_DIFF_THRESHOLD = Math.max(0, Number((CONFIG.system as any)?.graphRe
 const REBASE_TIME_MS = Math.max(0, Number((CONFIG.system as any)?.graphRebaseTimeMs || (5 * 60 * 1000)));
 let lastRebaseMs = 0;
 
+const env = (typeof globalThis !== 'undefined' && (globalThis as any)?.process?.env) ? (globalThis as any).process.env : {} as Record<string, string>;
+const GRAPH_WORKER_DISABLED = String(env.GRAPH_WORKER_DISABLED ?? env.ARB_GRAPH_WORKER_DISABLED ?? '').toLowerCase() === 'true';
+const GRAPH_WORKER_MAX_QUEUE = Math.max(1, Number(env.GRAPH_WORKER_MAX_QUEUE ?? env.ARB_GRAPH_WORKER_MAX_QUEUE ?? 4));
+const GRAPH_WORKER_TIMEOUT_MS = Math.max(2000, Number(env.GRAPH_WORKER_TIMEOUT_MS ?? env.ARB_GRAPH_WORKER_TIMEOUT_MS ?? 8000));
+const GRAPH_WORKER_IDLE_MS = Math.max(0, Number(env.GRAPH_WORKER_IDLE_MS ?? env.ARB_GRAPH_WORKER_IDLE_MS ?? 60_000));
+const GRAPH_WORKER_CONCURRENCY = Math.max(1, Number(env.GRAPH_WORKER_CONCURRENCY ?? env.ARB_GRAPH_WORKER_CONCURRENCY ?? 1));
+
+let graphWorkerClient: WorkerClient<GraphWorkerRequest, GraphWorkerResponse> | null = null;
+let graphWorkerUnavailable = GRAPH_WORKER_DISABLED;
+let graphWorkerFailureCount = 0;
+
 // Runtime-only set of pool ids to drop from the graph. Not persisted across restarts.
 const droppedPoolIds: Set<string> = new Set<string>();
 
@@ -79,11 +94,6 @@ export function listDroppedPools(): string[] {
 }
 
 // Edge allowlist loaded from arb engine config (backend/config/arbConfig.json)
-type EdgeAllow = {
-  raydium?: { amm?: boolean; clmm?: boolean };
-  orca?: { amm?: boolean; clmm?: boolean };
-  meteora?: { amm?: boolean; clmm?: boolean };
-};
 async function loadEdgeAllow(): Promise<EdgeAllow> {
   try {
     const cfg: any = await readJson('backend/config/arbConfig.json', {} as any);
@@ -91,14 +101,6 @@ async function loadEdgeAllow(): Promise<EdgeAllow> {
   } catch {
     return {} as EdgeAllow;
   }
-}
-function isDexKindAllowed(dex: string, kind: 'amm'|'clmm', allow: EdgeAllow): boolean {
-  const d = String(dex || '').toLowerCase();
-  const k = String(kind || 'amm') as 'amm'|'clmm';
-  if (d.includes('raydium')) return (allow.raydium?.[k] !== false);
-  if (d.includes('orca')) return (allow.orca?.[k] !== false);
-  if (d.includes('meteora')) return (allow.meteora?.[k] !== false);
-  return true; // default allow
 }
 
 export function getGraphVersion(): { version: number; timestamp: number } {
@@ -126,7 +128,13 @@ export async function rebuildGraphNow(io?: SocketIOServer, opts?: { pushToArb?: 
       try { if (!prev) emit('graph-rebase', { version: next.version, timestamp: next.timestamp }); else if (changed) emit('graph-update', toLiteDiff(diff)); } catch {}
     }
     const detectMode = !!((CONFIG.system as any)?.detectDrivenGraphPush);
-    const allowPush = !detectMode || (opts && (opts as any).pushToArb === true);
+    const incrementalMode = !!((CONFIG.system as any)?.graphIncrementalMode);
+    // Only push to arb-rs if:
+    // - Not in detect-driven mode (unless explicitly requested), AND
+    // - Not in incremental mode (unless explicitly requested)
+    // When incremental mode is enabled, applyPoolUpdates() handles all arb-rs pushes
+    const allowPush = (!detectMode || (opts && (opts as any).pushToArb === true)) &&
+                     (!incrementalMode || (opts && (opts as any).pushToArb === true));
     if (!prev) {
       if (allowPush) {
         try { void pushArbGraphSnapshot(next); } catch {}
@@ -182,244 +190,183 @@ const clampPriceInc = (px?: number): number | undefined => {
   if (!Number.isFinite(v) || !(v > 0)) return undefined;
   return Math.min(priceClampMaxInc, Math.max(priceClampMinInc, v));
 };
-function liqDisplayFromPool(pool: any): number | undefined {
-  const tvl = Number((pool as any)?.tvl_usd);
-  if (Number.isFinite(tvl) && tvl > 0) return tvl;
-  const disp = Number((pool as any)?.liquidity_display);
-  if (Number.isFinite(disp) && disp > 0) return disp;
-  const raw = Number((pool as any)?.pool_liquidity_raw ?? (pool as any)?.liquidity ?? (pool as any)?.liquidity_base);
-  if (Number.isFinite(raw) && raw > 0) return raw;
-  return undefined;
-}
-function weightFrom(liq?: number, fee_bps?: number): number {
-  const liqv = Number(liq || 0);
-  const fee = Number(fee_bps || 1);
-  return Math.max(1, liqv) / Math.max(1, fee);
-}
-function edgesFromPoolIncremental(p: AmmPool | ClmmPool, getUsd: (m: string) => number | undefined): GraphEdge[] {
-  const dex = String((p as any)?.dex || '');
-  const id = String((p as any)?.id || '');
-  const a = String((p as any)?.mint_a || '');
-  const b = String((p as any)?.mint_b || '');
-  const fee = Number((p as any)?.fee_bps || 0);
-  const liq = liqDisplayFromPool(p);
-  const w = weightFrom(liq, fee);
-  const fwdRaw = Number((p as any)?.price_a_per_b);
-  const fRaw = Number.isFinite(fwdRaw) && fwdRaw > 0 ? fwdRaw : undefined;
-  const fwd = computePriceForward(
-    a,
-    b,
-    fRaw,
-    (p as any)?.decimals_a,
-    (p as any)?.decimals_b,
-    undefined,
-    undefined,
-    getUsd,
-    undefined,
-  );
-  const rev = fwd && fwd > 0 ? 1 / fwd : undefined;
-  const kind = (p as any)?.pool_kind || ((p as any)?.sqrt_price_x64_raw != null || typeof (p as any)?.sqrt_price_x64 === 'number' ? 'clmm' : 'amm');
-
-  const forward: GraphEdge = {
-    id: id || `${a}->${b}-${dex}`,
-    source: a,
-    target: b,
-    dex,
-    pool_id: id || undefined,
-    source_account: (p as any)?.account_a,
-    target_account: (p as any)?.account_b,
-    fee_bps: fee,
-    liquidity: liq,
-    liquidity_display: liq,
-    weight: w,
-    price_a_per_b: fwd,
-    tvl_usd: (p as any)?.tvl_usd,
-    pool_kind: kind as any,
-    direction: 'forward',
-    pool_liquidity_raw: (p as any)?.pool_liquidity_raw,
-  };
-  const rid = id ? `${id}-rev` : '';
-  const reverse: GraphEdge = {
-    id: rid || `${b}->${a}-${dex}`,
-    source: b,
-    target: a,
-    dex,
-    pool_id: rid || undefined,
-    source_account: (p as any)?.account_b,
-    target_account: (p as any)?.account_a,
-    fee_bps: fee,
-    liquidity: liq,
-    liquidity_display: liq,
-    weight: w,
-    price_a_per_b: rev,
-    tvl_usd: (p as any)?.tvl_usd,
-    pool_kind: kind as any,
-    direction: 'reverse',
-    pool_liquidity_raw: (p as any)?.pool_liquidity_raw,
-  };
-  return [forward, reverse];
-}
-function edgeChangedSimple(a: GraphEdge, b: GraphEdge): boolean {
-  if (a.id !== b.id) return true;
-  const liqa = Number(a.liquidity_display ?? a.liquidity ?? 0);
-  const liqb = Number(b.liquidity_display ?? b.liquidity ?? 0);
-  const pxa  = Number(a.price_a_per_b ?? 0);
-  const pxb  = Number(b.price_a_per_b ?? 0);
-  const wa   = Number(a.weight ?? 0);
-  const wb   = Number(b.weight ?? 0);
-  const eps = 1e-8;
-  if (Math.abs(liqa - liqb) > eps) return true;
-  if (Math.abs(pxa - pxb) > eps) return true;
-  if (Math.abs(wa - wb) > eps) return true;
-  if (Number(a.fee_bps ?? -1) !== Number(b.fee_bps ?? -1)) return true;
-  return false;
-}
-
 export async function applyPoolUpdates(prev: PoolsPayload, next: PoolsPayload, opts?: { pushToArb?: boolean }): Promise<void> {
   try {
     if (!lastSnapshot) { await rebuildGraphNow(undefined); return; }
+
     const priceStore = await import('./priceStore.js');
-    const getUsd = (m: string): number | undefined => { try { return (priceStore as any).getPriceByMint(m)?.usdc ?? undefined; } catch { return undefined; } };
-    // Load edge allowlist for incremental updates as well
     const edgeAllow = await loadEdgeAllow();
+    const priceMap = buildPriceMap(priceStore, lastSnapshot, prev, next);
+    const timestampMs = Date.now();
 
-    const edgesMap = new Map(lastSnapshot.edges.map(e => [String(e.id), e]));
-    const nodesMap = new Map(lastSnapshot.nodes.map(n => [String(n.id), n]));
-
-    // Identify removed pools by id (remove fwd + rev edges when pool disappears)
-    const prevA = new Set((prev?.amm || []).map(p => String(p.id)));
-    const prevC = new Set((prev?.clmm || []).map(p => String(p.id)));
-    const nextA = new Set((next?.amm || []).map(p => String(p.id)));
-    const nextC = new Set((next?.clmm || []).map(p => String(p.id)));
-    const removedEdgeIds: string[] = [];
-    for (const id of prevA) if (!nextA.has(id)) { if (edgesMap.delete(id)) removedEdgeIds.push(id); const rid = `${id}-rev`; if (edgesMap.delete(rid)) removedEdgeIds.push(rid); }
-    for (const id of prevC) if (!nextC.has(id)) { if (edgesMap.delete(id)) removedEdgeIds.push(id); const rid = `${id}-rev`; if (edgesMap.delete(rid)) removedEdgeIds.push(rid); }
-    // Apply runtime drops: remove both forward and reverse edges for any dropped pool ids
-    try {
-      for (const pid of droppedPoolIds) {
-        if (edgesMap.delete(pid)) removedEdgeIds.push(pid);
-        const rid = `${pid}-rev`;
-        if (edgesMap.delete(rid)) removedEdgeIds.push(rid);
-      }
-    } catch {}
-
-    // Upsert edges for changed pools (detect changes by comparing price/liquidity, not just updated_ms)
-    const byIdPrev: Map<string, AmmPool | ClmmPool> = new Map([...(prev?.amm || []), ...(prev?.clmm || [])].map((p: any) => [String(p.id), p]));
-    const consider = [...(next?.amm || []), ...(next?.clmm || [])];
-    const addedEdges: GraphEdge[] = [];
-    const updatedEdges: GraphEdge[] = [];
-    const addedNodes: GraphNode[] = [];
-    const removedNodeIds: string[] = [];
-    const eps = 1e-9;
-    const poolChanged = (pv: AmmPool | ClmmPool | undefined, p: AmmPool | ClmmPool): boolean => {
-      if (!pv) return true; // New pool
-      const kind = ((p as any)?.pool_kind || ((p as any)?.sqrt_price_x64_raw != null || typeof (p as any)?.sqrt_price_x64 === 'number') ? 'clmm' : 'amm') as 'amm'|'clmm';
-      if (kind === 'clmm') {
-        if ((pv as any).sqrt_price_x64_raw && (p as any).sqrt_price_x64_raw && (pv as any).sqrt_price_x64_raw !== (p as any).sqrt_price_x64_raw) return true;
-        if ((pv as any).price_a_per_b_num && (pv as any).price_a_per_b_den && (p as any).price_a_per_b_num && (p as any).price_a_per_b_den) {
-          if ((pv as any).price_a_per_b_num !== (p as any).price_a_per_b_num || (pv as any).price_a_per_b_den !== (p as any).price_a_per_b_den) return true;
-        }
-        if ((pv as any).liquidity_raw && (p as any).liquidity_raw && (pv as any).liquidity_raw !== (p as any).liquidity_raw) return true;
-        if (Math.abs(((pv as any).liquidity || 0) - ((p as any).liquidity || 0)) > 0) return true;
-        if (((pv as any).tvl_usd || 0) !== ((p as any).tvl_usd || 0)) return true;
-        if (Math.abs(((pv as any).price_a_per_b || 0) - ((p as any).price_a_per_b || 0)) > eps) return true;
-      } else {
-        if ((pv as any).reserve_a_raw && (pv as any).reserve_b_raw && (p as any).reserve_a_raw && (p as any).reserve_b_raw) {
-          if ((pv as any).reserve_a_raw !== (p as any).reserve_a_raw || (pv as any).reserve_b_raw !== (p as any).reserve_b_raw) return true;
-        }
-        if (Math.abs(((pv as any).price_a_per_b || 0) - ((p as any).price_a_per_b || 0)) > eps) return true;
-        if (Math.abs(((pv as any).liquidity_base || 0) - ((p as any).liquidity_base || 0)) > eps) return true;
-        if ((pv as any).liquidity_base_raw && (p as any).liquidity_base_raw && (pv as any).liquidity_base_raw !== (p as any).liquidity_base_raw) return true;
-        if (((pv as any).tvl_usd || 0) !== ((p as any).tvl_usd || 0)) return true;
-      }
-      const nextMs = Number((p as any)?.updated_ms || 0);
-      const prevMs = Number((pv as any)?.updated_ms || 0);
-      if (nextMs > 0 && prevMs > 0 && nextMs > prevMs) return true;
-      return false;
+    const payload: GraphIncrementalRequest = {
+      previousSnapshot: lastSnapshot,
+      previousPools: prev,
+      nextPools: next,
+      droppedPoolIds: Array.from(droppedPoolIds),
+      edgeAllow,
+      priceMap,
+      priceClampMin: priceClampMinInc,
+      priceClampMax: priceClampMaxInc,
+      timestampMs,
     };
-    for (const p of consider) {
-      const id = String((p as any)?.id || '');
-      const pv = byIdPrev.get(id);
-      const changed = poolChanged(pv, p);
-      // Skip pools explicitly dropped at runtime
-      if (droppedPoolIds.has(id)) continue;
-      // Skip when disallowed by allowlist
+
+    const workerRequest: GraphWorkerRequest = { kind: 'incremental', payload };
+
+    const worker = getGraphWorkerClient();
+    const queueDepth = worker ? worker.getQueueSize() : 0;
+    const active = worker ? worker.getActiveCount() : 0;
+    const totalPending = queueDepth + active;
+    let usedWorker = false;
+    let result: GraphWorkerResponse;
+
+    const start = Date.now();
+    if (worker && totalPending < GRAPH_WORKER_MAX_QUEUE) {
       try {
-        const dex = String((p as any)?.dex || '');
-        const kind = ((p as any)?.pool_kind || (typeof (p as any)?.sqrt_price_x64 === 'number' ? 'clmm' : 'amm')) as 'amm'|'clmm';
-        if (!isDexKindAllowed(dex, kind, edgeAllow)) continue;
-      } catch {}
-      if (!changed) continue;
-      const [fwd, rev] = edgesFromPoolIncremental(p, getUsd);
-      for (const e of [fwd, rev]) {
-        const cur = edgesMap.get(e.id);
-        if (!cur) { edgesMap.set(e.id, e); addedEdges.push(e); }
-        else {
-          // Always update edge in map if pool changed
-          edgesMap.set(e.id, e);
-          // Add to updatedEdges if edge values changed or if pool changed significantly
-          // (edgeChangedSimple might miss changes due to USD normalization, so we're conservative)
-          if (edgeChangedSimple(cur, e) || changed) {
-            updatedEdges.push(e);
-          }
-        }
+        usedWorker = true;
+        result = await worker.run(workerRequest, { timeoutMs: GRAPH_WORKER_TIMEOUT_MS });
+      } catch (err: any) {
+        usedWorker = false;
+        markGraphWorkerFailed(err);
+        try { logger.warn('graph.worker.incremental_failed', { error: String(err?.message || err), queue: queueDepth, active, cat: 'graph' }); } catch {}
+        result = computeIncrementalGraphUpdate(payload);
       }
-      const a = String((p as any)?.mint_a || ''); const b = String((p as any)?.mint_b || '');
-      if (a && !nodesMap.has(a)) { nodesMap.set(a, { id: a }); addedNodes.push({ id: a }); }
-      if (b && !nodesMap.has(b)) { nodesMap.set(b, { id: b }); addedNodes.push({ id: b }); }
+    } else {
+      if (worker && totalPending >= GRAPH_WORKER_MAX_QUEUE) {
+        try { logger.warn('graph.worker.queue_saturated', { queue: queueDepth, active, limit: GRAPH_WORKER_MAX_QUEUE, cat: 'graph' }); } catch {}
+      }
+      result = computeIncrementalGraphUpdate(payload);
+    }
+    const duration = Date.now() - start;
+    try { logger.debug('graph.incremental.compute', { worker: usedWorker, duration_ms: duration, stats: result?.stats, cat: 'graph' }); } catch {}
+
+    if (!result?.changed || !result.snapshot || !result.diff) {
+      return;
     }
 
-    // prune orphan nodes
-    const incident = new Map<string, number>();
-    for (const e of edgesMap.values()) {
-      incident.set(e.source, (incident.get(e.source) || 0) + 1);
-      incident.set(e.target, (incident.get(e.target) || 0) + 1);
-    }
-    for (const [id] of nodesMap) {
-      if (!incident.has(id)) { nodesMap.delete(id); removedNodeIds.push(id); }
-    }
-
-    if (!(addedEdges.length || updatedEdges.length || removedEdgeIds.length || addedNodes.length || removedNodeIds.length)) return;
-
-    const newSnap: GraphSnapshot = {
-      version: (lastSnapshot.version || 0) + 1,
-      timestamp: Date.now(),
-      nodes: Array.from(nodesMap.values()),
-      edges: Array.from(edgesMap.values()),
-    };
-    lastSnapshot = newSnap;
-
-    const diff: GraphDiff = {
-      version: newSnap.version,
-      timestamp: newSnap.timestamp,
-      addedNodes,
-      updatedNodes: [],
-      removedNodeIds,
-      addedEdges,
-      updatedEdges,
-      removedEdgeIds,
-    };
-
-    const ch = addedEdges.length + updatedEdges.length + removedEdgeIds.length;
+    lastSnapshot = result.snapshot;
+    const diff = result.diff;
+    const ch = (result.stats?.addedEdges || 0) + (result.stats?.updatedEdges || 0) + (result.stats?.removedEdges || 0);
     const nowMs = Date.now();
     const shouldRebase = (diffSinceRebase >= REBASE_DIFF_THRESHOLD) || (nowMs - lastRebaseMs > REBASE_TIME_MS);
     const detectMode = !!((CONFIG.system as any)?.detectDrivenGraphPush);
     const allowPush = !detectMode || (opts && (opts as any).pushToArb === true);
+
     if (shouldRebase) {
-      diffSinceRebase = 0; lastRebaseMs = nowMs;
-      try { logger.info('graph.incremental.apply', { added: addedEdges.length, updated: updatedEdges.length, removed: removedEdgeIds.length, nodes_add: addedNodes.length, nodes_rem: removedNodeIds.length, mode: 'rebase', cat: 'graph' }); } catch {}
-      try { emit('graph-rebase', { version: newSnap.version, timestamp: newSnap.timestamp }); } catch {}
-      if (allowPush) { try { await pushArbGraphSnapshot(newSnap); } catch {} }
+      diffSinceRebase = 0;
+      lastRebaseMs = nowMs;
+      try {
+        logger.info('graph.incremental.apply', {
+          added: result.stats?.addedEdges,
+          updated: result.stats?.updatedEdges,
+          removed: result.stats?.removedEdges,
+          nodes_add: result.stats?.addedNodes,
+          nodes_rem: result.stats?.removedNodes,
+          mode: 'rebase',
+          worker: usedWorker,
+          cat: 'graph',
+        });
+      } catch {}
+      try { emit('graph-rebase', { version: diff.version, timestamp: diff.timestamp }); } catch {}
+      if (allowPush) {
+        try { await pushArbGraphSnapshot(result.snapshot); } catch {}
+      }
     } else {
       diffSinceRebase += ch;
-      try { logger.info('graph.incremental.apply', { added: addedEdges.length, updated: updatedEdges.length, removed: removedEdgeIds.length, nodes_add: addedNodes.length, nodes_rem: removedNodeIds.length, mode: 'diff', cat: 'graph' }); } catch {}
+      try {
+        logger.info('graph.incremental.apply', {
+          added: result.stats?.addedEdges,
+          updated: result.stats?.updatedEdges,
+          removed: result.stats?.removedEdges,
+          nodes_add: result.stats?.addedNodes,
+          nodes_rem: result.stats?.removedNodes,
+          mode: 'diff',
+          worker: usedWorker,
+          cat: 'graph',
+        });
+      } catch {}
       try { emit('graph-update', toLiteDiff(diff)); } catch {}
-      if (allowPush) { try { await pushArbGraphDiff(diff); } catch {} }
+      if (allowPush) {
+        try { await pushArbGraphDiff(diff); } catch {}
+      }
     }
   } catch (e: any) {
     try { logger.debug('graph.incremental.apply failed', { error: String(e?.message || e), cat: 'graph' }); } catch {}
     try { await rebuildGraphNow(undefined); } catch {}
   }
+}
+
+function getGraphWorkerClient(): WorkerClient<GraphWorkerRequest, GraphWorkerResponse> | null {
+  if (graphWorkerUnavailable) return null;
+  if (graphWorkerClient) return graphWorkerClient;
+  try {
+    const url = new URL('../workers/graphDiff.worker.js', import.meta.url);
+    graphWorkerClient = createWorkerClient<GraphWorkerRequest, GraphWorkerResponse>({
+      url,
+      name: 'graph-diff',
+      maxConcurrency: GRAPH_WORKER_CONCURRENCY,
+      idleTimeoutMs: GRAPH_WORKER_IDLE_MS,
+    });
+    graphWorkerFailureCount = 0;
+    return graphWorkerClient;
+  } catch (err: any) {
+    graphWorkerUnavailable = true;
+    try { logger.warn('graph.worker.init_failed', { error: String(err?.message || err), cat: 'graph' }); } catch {}
+    return null;
+  }
+}
+
+function markGraphWorkerFailed(err: unknown): void {
+  if (graphWorkerClient) {
+    try { graphWorkerClient.dispose(); } catch {}
+    graphWorkerClient = null;
+  }
+  graphWorkerFailureCount += 1;
+  if (graphWorkerFailureCount >= 3) {
+    graphWorkerUnavailable = true;
+  }
+  try { logger.debug('graph.worker.disabled_temp', { error: String((err as any)?.message || err), failures: graphWorkerFailureCount, cat: 'graph' }); } catch {}
+}
+
+function buildPriceMap(priceStore: any, snapshot: GraphSnapshot, prev: PoolsPayload, next: PoolsPayload): Record<string, number> {
+  const out: Record<string, number> = {};
+  const seen = new Set<string>();
+  const getter = typeof priceStore?.getPriceByMint === 'function' ? priceStore.getPriceByMint.bind(priceStore) : undefined;
+
+  const addMint = (mint: unknown) => {
+    const key = String(mint || '').trim();
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    if (!getter) return;
+    try {
+      const info = getter(key);
+      const val = Number((info as any)?.usdc ?? (info as any)?.usd ?? (info as any)?.price);
+      if (Number.isFinite(val) && val > 0) {
+        out[key] = val;
+      }
+    } catch {}
+  };
+
+  for (const node of snapshot?.nodes || []) {
+    addMint((node as any)?.id);
+  }
+
+  const collect = (pools?: PoolsPayload) => {
+    if (!pools) return;
+    for (const pool of pools.amm || []) {
+      addMint((pool as any)?.mint_a);
+      addMint((pool as any)?.mint_b);
+    }
+    for (const pool of pools.clmm || []) {
+      addMint((pool as any)?.mint_a);
+      addMint((pool as any)?.mint_b);
+    }
+  };
+
+  collect(prev);
+  collect(next);
+
+  return out;
 }
 
 // Lightweight timing gauges for build and push latencies
@@ -1698,9 +1645,11 @@ export function startGraphStream(io: SocketIOServer): void {
       }
       if (!last) {
         tryEmit('snapshot', { version: snap.version, timestamp: snap.timestamp });
-        // Push initial snapshot to arb-rs to enter backend-graph mode immediately
+        // Push initial snapshot to arb-rs only if NOT in incremental mode
+        // (incremental mode handles all arb-rs pushes via applyPoolUpdates)
         const detectMode = !!((CONFIG.system as any)?.detectDrivenGraphPush);
-        if (!detectMode) {
+        const incrementalMode = !!((CONFIG.system as any)?.graphIncrementalMode);
+        if (!detectMode && !incrementalMode) {
           try { void pushArbGraphSnapshot(snap); } catch {}
         }
         try { logger.info('graph.push initial rebase', { version: snap.version, nodes: snap.nodes.length, edges: snap.edges.length, cat: 'graph' }); } catch {}
@@ -1747,18 +1696,23 @@ export function startGraphStream(io: SocketIOServer): void {
         } catch {
           tryEmit('diff', toLiteDiff(diff));
         }
-        // Push diff to arb-rs; occasionally rebase with full snapshot per rebase policy
+        // Push diff to arb-rs only if NOT in incremental mode
+        // (incremental mode handles all arb-rs pushes via applyPoolUpdates)
+        // This periodic stream is primarily for client WebSocket updates
         try {
           const nowMs = Date.now();
           const shouldRebase = (diffSinceRebase >= REBASE_DIFF_THRESHOLD) || (nowMs - lastRebaseMs > REBASE_TIME_MS);
           const detectMode = !!((CONFIG.system as any)?.detectDrivenGraphPush);
+          const incrementalMode = !!((CONFIG.system as any)?.graphIncrementalMode);
+          // Only push to arb-rs if NOT in incremental mode and NOT in detect-driven mode
+          const shouldPushToArb = !detectMode && !incrementalMode;
           if (shouldRebase) {
-            if (!detectMode) { try { void pushArbGraphSnapshot(snap); } catch {} }
+            if (shouldPushToArb) { try { void pushArbGraphSnapshot(snap); } catch {} }
             diffSinceRebase = 0; lastRebaseMs = nowMs;
       try { logger.info('graph.push rebase', { version: snap.version, nodes: snap.nodes.length, edges: snap.edges.length, cat: 'graph', code: LogCode.GRAPH_PUSH_SNAPSHOT }); } catch {}
             try { emit('log', { level: 'info', message: `graph:push rebase v=${snap.version} nodes=${snap.nodes.length} edges=${snap.edges.length}`, timestamp: new Date().toISOString(), context: { cat: 'graph' } }); } catch {}
           } else {
-            if (!detectMode) { try { void pushArbGraphDiff(diff); } catch {} }
+            if (shouldPushToArb) { try { void pushArbGraphDiff(diff); } catch {} }
             diffSinceRebase += (diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length);
             try {
               const ch = diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length;

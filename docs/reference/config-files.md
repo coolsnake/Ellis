@@ -198,6 +198,23 @@ Runtime config keys under `system` (see backend/src/utils/config.ts):
 - `graphStreamIntervalMs`: Interval for periodic graph snapshot rebuild/check.
 - `graphPushMode`: 'stream' | 'snapshot' (default 'stream'). When 'snapshot', prefer periodic snapshot polling on the client over diff streaming.
 - `graphSnapshotPollMs`: Poll interval in ms for snapshot-only mode (default 10000).
+
+### Worker offload toggles
+
+To keep the primary Node.js event loop responsive, graph diffing and arbitrage transaction assembly run in worker threads. The following environment variables control their behaviour (all optional):
+
+- `GRAPH_WORKER_DISABLED` – Set to `true` to force synchronous diffing on the main thread.
+- `GRAPH_WORKER_MAX_QUEUE` – Maximum queued incremental jobs before falling back to local execution (default `4`).
+- `GRAPH_WORKER_TIMEOUT_MS` – Worker job timeout; exceeded jobs fall back to local diffing (default `8000`).
+- `GRAPH_WORKER_IDLE_MS` – Idle tear-down window for the graph worker (default `60000`).
+- `GRAPH_WORKER_CONCURRENCY` – Maximum concurrent incremental diff jobs per worker (default `1`).
+- `ARB_BUILD_WORKER_DISABLED` – Disable `/arb/execute` worker offload and build transactions on the main thread.
+- `ARB_BUILD_WORKER_MAX_QUEUE` – Queue depth limit before falling back to synchronous builds (default `2`).
+- `ARB_BUILD_WORKER_TIMEOUT_MS` – Timeout applied to transaction build jobs (default `8000`).
+- `ARB_BUILD_WORKER_IDLE_MS` – Idle tear-down window for the arb build worker (default `30000`).
+- `ARB_BUILD_WORKER_CONCURRENCY` – Maximum concurrent build jobs (default `1`).
+
+Observability: when the queue limit or timeout is hit, the backend emits structured logs such as `graph.worker.queue_saturated`, `graph.worker.incremental_failed`, and `arb.build.worker.run_failed` to highlight worker pressure and fallback events.
 - `graphRebaseDiffThreshold`: Number of diff changes after which to rebase to full snapshot.
 - `graphRebaseTimeMs`: Max time between forced rebases.
 - `graphDiffLiqEps`, `graphDiffPriceEps`, `graphDiffWeightEps`: Tolerances for diff filtering/comparison to reduce churn.

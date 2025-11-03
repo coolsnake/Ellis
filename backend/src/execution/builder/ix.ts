@@ -851,195 +851,174 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     let binArrayLower: PublicKey | undefined = hop.binArrayLower ? toPublicKey(hop.binArrayLower) : undefined;
     let binArrayUpper: PublicKey | undefined = hop.binArrayUpper ? toPublicKey(hop.binArrayUpper) : undefined;
     let binArrayBitmapExtension: PublicKey | undefined = undefined;
+    let binArrayMetas: Array<{ pubkey: PublicKey; isWritable: boolean; isSigner: boolean }> | null = null;
+    
+    // Always derive bitmap extension first (required account)
     try {
-      const getBinBounds = (DLMM as any)?.getBinArrayLowerUpperBinId || (mod as any)?.getBinArrayLowerUpperBinId || (DLMM as any)?.deriveBinArrayLowerUpperBinId || (mod as any)?.deriveBinArrayLowerUpperBinId;
-      const deriveBinArray = (DLMM as any)?.deriveBinArray || (mod as any)?.deriveBinArray;
       const deriveBinArrayBitmapExtension = (DLMM as any)?.deriveBinArrayBitmapExtension || (mod as any)?.deriveBinArrayBitmapExtension;
-      if ((!binArrayLower || !binArrayUpper) && getBinBounds && deriveBinArray) {
-        const bounds = await getBinBounds(connection, poolPk).catch(() => null as any);
-        const toNum = (v: any): number => {
-          try {
-            if (v && typeof v.toNumber === 'function') return v.toNumber();
-            if (typeof v === 'bigint') return Number(v);
-            if (typeof v === 'number') return v;
-            const s = (v && typeof v.toString === 'function') ? v.toString() : String(v);
-            const n = Number(s);
-            return Number.isFinite(n) ? n : NaN;
-          } catch { return NaN; }
-        };
-        const loNum = toNum(bounds?.lowerBinId);
-        const hiNum = toNum(bounds?.upperBinId);
+      if (deriveBinArrayBitmapExtension) {
+        try {
+          const derivedExt = deriveBinArrayBitmapExtension(poolPk, programId);
+          const extPk = Array.isArray(derivedExt) ? derivedExt[0] : derivedExt;
+          binArrayBitmapExtension = extPk instanceof PublicKey ? extPk : new PublicKey(String(extPk));
+        } catch {}
+      }
+      if (!binArrayBitmapExtension) {
+        // Fallback: deterministic PDA derivation
+        const [extPda] = PublicKey.findProgramAddressSync([Buffer.from('bitmap'), poolPk.toBuffer()], programId);
+        binArrayBitmapExtension = extPda;
+      }
+    } catch {
+      // Last resort: derive PDA directly
+      try {
+        const [extPda] = PublicKey.findProgramAddressSync([Buffer.from('bitmap'), poolPk.toBuffer()], programId);
+        binArrayBitmapExtension = extPda;
+      } catch {}
+    }
+    
+    try {
+      const deriveBinArray = (DLMM as any)?.deriveBinArray || (mod as any)?.deriveBinArray;
+      const binIdToBinArrayIndex = (DLMM as any)?.binIdToBinArrayIndex || (mod as any)?.binIdToBinArrayIndex;
+      
+      // Derive bin arrays using active bin ID if lower/upper not provided
+      if ((!binArrayLower || !binArrayUpper) && deriveBinArray && binIdToBinArrayIndex) {
+        const bnjs = await import('bn.js').catch(() => null as any);
+        const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
+        if (BN) {
+          let activeBinId: any = null;
+          if (typeof hop.activeId === 'number') {
+            activeBinId = new BN(String(hop.activeId));
+          }
+          
+          // Fetch pool state to get active bin if not in hop
+          if (!activeBinId) {
+            try {
+              const poolState = await program.account.lbPair.fetch(poolPk);
+              const stateActive = poolState?.activeId;
+              if (stateActive) {
+                if (stateActive instanceof BN) activeBinId = stateActive;
+                else if (typeof stateActive === 'object' && typeof stateActive.toString === 'function') {
+                  activeBinId = new BN(stateActive.toString());
+                } else if (typeof stateActive === 'number') {
+                  activeBinId = new BN(String(stateActive));
+                }
+              }
+            } catch {}
+          }
+          
+          if (activeBinId) {
+            try {
+              const binArrayIdx = binIdToBinArrayIndex(activeBinId);
+              if (binArrayIdx instanceof BN || (binArrayIdx && typeof binArrayIdx === 'object')) {
+                const idx = binArrayIdx instanceof BN ? binArrayIdx : new BN(String(binArrayIdx));
+                // Derive bin arrays around active bin
+                const indices = [idx, idx.add(new BN(1)), idx.sub(new BN(1))];
+                for (const arrIdx of indices) {
+                  try {
+                    const derived = deriveBinArray(poolPk, arrIdx, programId);
+                    const pk = Array.isArray(derived) ? derived[0] : derived;
+                    const finalPk = pk instanceof PublicKey ? pk : new PublicKey(String(pk));
+                    if (!binArrayLower) binArrayLower = finalPk;
+                    if (!binArrayUpper && !finalPk.equals(binArrayLower)) binArrayUpper = finalPk;
+                    if (binArrayLower && binArrayUpper) break;
+                  } catch {}
+                }
+              }
+            } catch {}
+          }
+        }
+      }
+
+      const coverageMetas: Array<{ pubkey: PublicKey; isWritable: boolean; isSigner: boolean }> = [];
+      const coverageSet = new Set<string>();
+      const pushMeta = (val: any, writable = true) => {
+        try {
+          if (!val) return;
+          let pk: PublicKey | null = null;
+          if (val instanceof PublicKey) pk = val;
+          else if (typeof val === 'string') pk = new PublicKey(val);
+          else if (typeof val?.toBase58 === 'function') pk = new PublicKey(val.toBase58());
+          else if (val?.publicKey instanceof PublicKey) pk = val.publicKey;
+          else if (typeof val?.publicKey === 'string') pk = new PublicKey(val.publicKey);
+          else if (val?.address instanceof PublicKey) pk = val.address;
+          else if (typeof val?.address === 'string') pk = new PublicKey(val.address);
+          if (!pk) return;
+          const key = pk.toBase58();
+          if (coverageSet.has(key)) return;
+          coverageSet.add(key);
+          coverageMetas.push({ pubkey: pk, isWritable: writable, isSigner: false });
+        } catch {}
+      };
+
+      try { if (binArrayLower) pushMeta(binArrayLower); } catch {}
+      try { if (binArrayUpper) pushMeta(binArrayUpper); } catch {}
+
+      let lbPairState: any = null;
+      try { lbPairState = await program.account.lbPair.fetch(poolPk); } catch {}
+
+      try {
         const bnjs = await import('bn.js').catch(() => null as any);
         const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
         const binIdToBinArrayIndex = (DLMM as any)?.binIdToBinArrayIndex || (mod as any)?.binIdToBinArrayIndex;
-        const toIndex = (num: number) => {
-          if (!Number.isFinite(num) || !BN) return null;
-          try {
-            const bnVal = new BN(String(num));
-            if (typeof binIdToBinArrayIndex === 'function') {
-              return binIdToBinArrayIndex(bnVal);
-            }
-            return bnVal;
-          } catch {
-            return null;
+        const deriveBinArray = (DLMM as any)?.deriveBinArray || (mod as any)?.deriveBinArray;
+        const getBinBounds = (DLMM as any)?.getBinArrayLowerUpperBinId || (mod as any)?.getBinArrayLowerUpperBinId;
+        if (BN && typeof binIdToBinArrayIndex === 'function' && typeof deriveBinArray === 'function') {
+          const candidateBinIds: any[] = [];
+          if (typeof hop.activeId === 'number') candidateBinIds.push(new BN(String(hop.activeId)));
+          const stateActive = lbPairState?.activeId;
+          if (stateActive && typeof stateActive === 'object' && typeof stateActive.toString === 'function') {
+            candidateBinIds.push(new BN(stateActive.toString()));
           }
-        };
-        const loIdx = toIndex(loNum);
-        const hiIdx = toIndex(hiNum);
-        if (loIdx && deriveBinArray) {
-          try {
-            const derived = await deriveBinArray(poolPk, loIdx, programId);
-            const pk = Array.isArray(derived) ? derived[0] : derived;
-            binArrayLower = (pk as any)?.publicKey || pk || binArrayLower;
-          } catch {}
-        }
-        if (hiIdx && deriveBinArray) {
-          try {
-            const derived = await deriveBinArray(poolPk, hiIdx, programId);
-            const pk = Array.isArray(derived) ? derived[0] : derived;
-            binArrayUpper = (pk as any)?.publicKey || pk || binArrayUpper;
-          } catch {}
-        }
-      }
-      try {
-        // Derive bitmap extension PDA - reduced to essential attempts only
-        const coercePk = (val: any): PublicKey | undefined => {
-          try {
-            if (!val) return undefined;
-            if (Array.isArray(val)) {
-              const first = val[0];
-              if (!first) return undefined;
-              return coercePk(first);
-            }
-            if (val instanceof PublicKey) return val;
-            if ((val as any)?.publicKey instanceof PublicKey) return (val as any).publicKey as PublicKey;
-            if ((val as any)?.address instanceof PublicKey) return (val as any).address as PublicKey;
-            if (typeof (val as any)?.toBase58 === 'function') return val as PublicKey;
-            if (typeof val === 'string') return new PublicKey(val);
-            if ((val as any)?.publicKey && typeof (val as any).publicKey === 'string') return new PublicKey((val as any).publicKey);
-            if ((val as any)?.address && typeof (val as any).address === 'string') return new PublicKey((val as any).address);
-          } catch (e: any) {
-            try { logger.debug('meteora.dlmm.coercePk.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
-          }
-          return undefined;
-        };
 
-        // Deterministic PDA derivation (primary path)
-        try {
-          if (!binArrayBitmapExtension) {
-            const [pda] = PublicKey.findProgramAddressSync([
-              Buffer.from('bitmap'),
-              poolPk.toBuffer(),
-            ], programId);
-            binArrayBitmapExtension = pda;
-            try { logger.info('meteora.dlmm.derive.ext.ok', { cat: 'tx', ctx: { ext: binArrayBitmapExtension?.toBase58?.() } as any }); } catch {}
-          }
-        } catch (pdaErr: any) {
-          try { logger.debug('meteora.dlmm.bitmap.pda.sync.fail', { cat: 'tx', ctx: { error: String(pdaErr?.message || pdaErr) } }); } catch {}
-        }
-        
-        // Essential attempts only (reduced from 10+ to 3)
-        const attempts: Array<() => Promise<any>> = [];
-        
-        // Attempt 1: Most common pattern - deriveBinArrayBitmapExtension(programId, poolPk)
-        if (deriveBinArrayBitmapExtension) {
-          attempts.push(async () => deriveBinArrayBitmapExtension(poolPk, programId));
-        }
-        
-        // Attempt 2: Coverage helper - getBinArrayKeysCoverage
-        const getKeysCoverage = (DLMM as any)?.getBinArrayKeysCoverage || (mod as any)?.getBinArrayKeysCoverage || (DLMM as any)?.getBinArrayAccountMetasCoverage || (mod as any)?.getBinArrayAccountMetasCoverage;
-        if (getKeysCoverage) {
-          attempts.push(async () => {
-            let res: any;
+          const indices: any[] = [];
+          const idxSet = new Set<string>();
+          const addIndex = (idx: any) => {
+            const key = idx.toString();
+            if (idxSet.has(key)) return;
+            idxSet.add(key);
+            indices.push(idx);
+          };
+
+          for (const binId of candidateBinIds) {
             try {
-              if (typeof getKeysCoverage === 'function') {
-                if (getKeysCoverage.length >= 4 && typeof hop.activeId === 'number') {
-                  const bnjs = await import('bn.js').catch(() => null as any);
-                  const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
-                  if (BN) {
-                    const idxFn = (DLMM as any)?.binIdToBinArrayIndex || (mod as any)?.binIdToBinArrayIndex;
-                    const toIdx = (offset: number) => {
-                      if (!Number.isFinite(offset)) return null;
-                      const target = new BN(String(offset));
-                      if (typeof idxFn === 'function') {
-                        try {
-                          return idxFn(target);
-                        } catch {}
-                      }
-                      return target;
-                    };
-                    const lowerIdx = toIdx(hop.activeId);
-                    const upperIdx = toIdx(hop.activeId);
-                    if (lowerIdx && upperIdx) {
-                      const lowerBounds = typeof (DLMM as any)?.getBinArrayLowerUpperBinId === 'function'
-                        ? (DLMM as any).getBinArrayLowerUpperBinId(lowerIdx)
-                        : typeof (mod as any)?.getBinArrayLowerUpperBinId === 'function'
-                          ? (mod as any).getBinArrayLowerUpperBinId(lowerIdx)
-                          : [lowerIdx];
-                      const upperBounds = typeof (DLMM as any)?.getBinArrayLowerUpperBinId === 'function'
-                        ? (DLMM as any).getBinArrayLowerUpperBinId(upperIdx)
-                        : typeof (mod as any)?.getBinArrayLowerUpperBinId === 'function'
-                          ? (mod as any).getBinArrayLowerUpperBinId(upperIdx)
-                          : [upperIdx];
-                      const lower = Array.isArray(lowerBounds) ? lowerBounds[0] : lowerIdx;
-                      const upper = Array.isArray(upperBounds) ? upperBounds[upperBounds.length - 1] : upperIdx;
-                      return getKeysCoverage(new BN(String(lower)), new BN(String(upper)), poolPk, programId);
+              const baseIdx = binIdToBinArrayIndex(binId);
+              if (baseIdx instanceof BN) {
+                addIndex(baseIdx);
+                addIndex(baseIdx.add(new BN(1)));
+                addIndex(baseIdx.sub(new BN(1)));
+              }
+            } catch {}
+          }
+
+          for (const idx of indices) {
+            try {
+              const derived = await deriveBinArray(poolPk, idx, programId);
+              const pk = Array.isArray(derived) ? derived[0] : derived;
+              pushMeta(pk);
+              if (typeof getBinBounds === 'function') {
+                const bounds = getBinBounds(idx);
+                if (Array.isArray(bounds)) {
+                  const [lower, upper] = bounds;
+                  const coverageFn = (DLMM as any)?.getBinArrayAccountMetasCoverage || (mod as any)?.getBinArrayAccountMetasCoverage || (DLMM as any)?.getBinArrayKeysCoverage;
+                  if (coverageFn) {
+                    const cov = coverageFn(lower, upper, poolPk, programId) || [];
+                    for (const entry of cov) {
+                      pushMeta(entry?.pubkey || entry?.publicKey || entry?.address, !!entry?.isWritable);
                     }
                   }
                 }
-                res = await getKeysCoverage(programId, poolPk);
               }
             } catch {}
-            if (!res) return undefined;
-            if ((res as any)?.binArrayBitmapExtension) return (res as any).binArrayBitmapExtension;
-            if ((res as any)?.accounts?.binArrayBitmapExtension) return (res as any).accounts.binArrayBitmapExtension;
-            const metas: any[] = (res as any)?.metas || (res as any)?.accountMetas || [];
-            const found = metas.find((m: any) => (m?.name === 'binArrayBitmapExtension') && (m?.pubkey || m?.publicKey || m?.address));
-            if (found) return found?.pubkey || found?.publicKey || found?.address;
-            if (Array.isArray(res)) {
-              const direct = res.find((entry: any) => entry?.name === 'binArrayBitmapExtension');
-              if (direct) return direct.pubkey || direct.publicKey || direct.address;
-            }
-            return res;
-          });
-        }
-        
-        // Attempt 3: Last resort - compute PDA via common seed
-        attempts.push(async () => {
-          try {
-            const seedCandidates = ['bitmap', 'bin_array_bitmap_extension', 'binarray_bitmap_extension'];
-            for (const seed of seedCandidates) {
-              try {
-                const [addr] = await (PublicKey as any).findProgramAddress([
-                  Buffer.from(seed),
-                  poolPk.toBuffer(),
-                ], programId);
-                if (addr) return addr;
-              } catch (e: any) {
-                try { logger.debug('meteora.dlmm.pda.failed', { cat: 'tx', ctx: { seed, error: String(e?.message || e) } }); } catch {}
-              }
-            }
-          } catch {}
-          return undefined;
-        });
-        
-        for (const fn of attempts) {
-          try {
-            const val = await fn();
-            const pk = coercePk(val);
-            if (pk) {
-              binArrayBitmapExtension = pk;
-              try { logger.info('meteora.dlmm.derive.ext.ok', { cat: 'tx', ctx: { ext: binArrayBitmapExtension?.toBase58?.() } as any }); } catch {}
-              break;
-            }
-          } catch (e: any) {
-            try { logger.debug('meteora.dlmm.bitmap.attempt.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
           }
         }
-      } catch (e: any) {
-        try { logger.warn('meteora.dlmm.bitmap.derive.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
-        // Continue without bitmap extension - it may be optional
+      } catch {}
+
+      // Always include bitmap extension in coverage metas
+      if (binArrayBitmapExtension) {
+        pushMeta(binArrayBitmapExtension);
       }
+
+      binArrayMetas = coverageMetas.length ? coverageMetas : null;
     } catch {}
 
     const BN = (await import('bn.js')).default as any;
@@ -1057,10 +1036,15 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     };
     if (binArrayLower) accounts.binArrayLower = binArrayLower;
     if (binArrayUpper) accounts.binArrayUpper = binArrayUpper;
-    // Always include the bitmap extension PDA if derived; program can create/verify it
+    // Always include the bitmap extension PDA (required account)
+    if (!binArrayBitmapExtension) {
+      // Last resort: ensure it's always set
+      const [extPda] = PublicKey.findProgramAddressSync([Buffer.from('bitmap'), poolPk.toBuffer()], programId);
+      binArrayBitmapExtension = extPda;
+    }
+    accounts.binArrayBitmapExtension = binArrayBitmapExtension;
     try {
       if (binArrayBitmapExtension) {
-        accounts.binArrayBitmapExtension = binArrayBitmapExtension;
         // Observability only; do not gate on presence/owner
         let needsBitmapExtensionInit = false;
         try {
@@ -1214,34 +1198,53 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
 
     // Supply remaining accounts for bin arrays using documented helpers (applies to swap and swap2)
     try {
-      const getBounds = (DLMM as any)?.getBinArrayLowerUpperBinId;
-      const getMetas = (DLMM as any)?.getBinArrayAccountMetasCoverage;
-      if (getBounds && getMetas && typeof (builder as any).remainingAccounts === 'function') {
+      const getBinArrayLowerUpperBinId = (DLMM as any)?.getBinArrayLowerUpperBinId || (mod as any)?.getBinArrayLowerUpperBinId;
+      const getBinArrayAccountMetasCoverage = (DLMM as any)?.getBinArrayAccountMetasCoverage || (mod as any)?.getBinArrayAccountMetasCoverage;
+      const binIdToBinArrayIndex = (DLMM as any)?.binIdToBinArrayIndex || (mod as any)?.binIdToBinArrayIndex;
+      
+      if (getBinArrayLowerUpperBinId && getBinArrayAccountMetasCoverage && binIdToBinArrayIndex && typeof (builder as any).remainingAccounts === 'function') {
         try {
           const bnjs = await import('bn.js').catch(() => null as any);
           const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
-          const bounds = await getBounds(connection, poolPk).catch(() => null as any);
-          const toNum = (v: any): number => {
-            try {
-              if (v && typeof v.toNumber === 'function') return v.toNumber();
-              const s = (v && typeof v.toString === 'function') ? v.toString() : String(v);
-              const n = Number(s);
-              return Number.isFinite(n) ? n : NaN;
-            } catch {
-              return NaN;
+          if (BN) {
+            // Get active bin ID and convert to bin array index
+            let activeBinId: any = null;
+            if (typeof hop.activeId === 'number') {
+              activeBinId = new BN(String(hop.activeId));
+            } else {
+              try {
+                const poolState = await program.account.lbPair.fetch(poolPk);
+                const stateActive = poolState?.activeId;
+                if (stateActive) {
+                  if (stateActive instanceof BN) activeBinId = stateActive;
+                  else if (typeof stateActive === 'object' && typeof stateActive.toString === 'function') {
+                    activeBinId = new BN(stateActive.toString());
+                  } else if (typeof stateActive === 'number') {
+                    activeBinId = new BN(String(stateActive));
+                  }
+                }
+              } catch {}
             }
-          };
-          const loNum = toNum(bounds?.lowerBinId);
-          const hiNum = toNum(bounds?.upperBinId);
-          if (Number.isFinite(loNum) && Number.isFinite(hiNum) && BN) {
-            const metas = getMetas(new BN(String(loNum)), new BN(String(hiNum)), poolPk, programId) || [];
-            if (Array.isArray(metas) && metas.length) {
-              builder = (builder as any).remainingAccounts(metas);
-              try { logger.info('meteora.dlmm.remaining.ok', { cat: 'tx', ctx: { count: metas.length } }); } catch {}
+            
+            if (activeBinId) {
+              try {
+                // Convert bin ID to bin array index
+                const binArrayIdx = binIdToBinArrayIndex(activeBinId);
+                const idx = binArrayIdx instanceof BN ? binArrayIdx : new BN(String(binArrayIdx));
+                // getBinArrayLowerUpperBinId takes binArrayIndex, returns [lowerBinId, upperBinId]
+                const [lowerBinId, upperBinId] = getBinArrayLowerUpperBinId(idx);
+                const metas = getBinArrayAccountMetasCoverage(lowerBinId, upperBinId, poolPk, programId) || [];
+                if (Array.isArray(metas) && metas.length) {
+                  builder = (builder as any).remainingAccounts(metas);
+                  try { logger.info('meteora.dlmm.remaining.ok', { cat: 'tx', ctx: { count: metas.length } }); } catch {}
+                }
+              } catch (e: any) {
+                try { logger.debug('meteora.dlmm.remaining.bounds.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
+              }
             }
           }
         } catch (e: any) {
-          try { logger.debug('meteora.dlmm.remaining.bounds.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
+          try { logger.debug('meteora.dlmm.remaining.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
         }
       }
       
@@ -1265,6 +1268,12 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       }
     } catch (e: any) {
       try { logger.warn('meteora.dlmm.remaining.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
+    }
+    
+    if (binArrayMetas && binArrayMetas.length && typeof (builder as any).remainingAccounts === 'function') {
+      try {
+        builder = (builder as any).remainingAccounts(binArrayMetas);
+      } catch {}
     }
     
     const ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
@@ -1396,11 +1405,40 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       tokenAccountB: toPublicKey(hop.userDestAta),
     };
 
-    // Minimal poolInfo/poolKeys for swapBaseIn; for real use, prefer full keys via SDK helper if available in version
+    // Verify ammConfig account exists on-chain before using it
     const configIdPk = hop.ammConfig ? toPublicKey(hop.ammConfig) : null;
     if (!configIdPk) {
       throw createBuilderError('RAYDIUM_CLMM', 'ammConfig missing (cache)', hop);
     }
+    
+    // Verify critical accounts exist before building instruction
+    const connection = getConnection();
+    const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+    try {
+      const configAcc = await withRpcLimit(() => connection.getAccountInfo(configIdPk));
+      if (!configAcc) {
+        throw createBuilderError('RAYDIUM_CLMM', `ammConfig account does not exist: ${configIdPk.toBase58()}`, hop);
+      }
+      if (!configAcc.owner.equals(programIdPk)) {
+        throw createBuilderError('RAYDIUM_CLMM', `ammConfig account owner mismatch: expected ${programIdPk.toBase58()}, got ${configAcc.owner.toBase58()}`, hop);
+      }
+    } catch (e: any) {
+      if (e instanceof Error && e.message.includes('RAYDIUM_CLMM_BUILD_FAILED')) throw e;
+      try { logger.warn('raydium.clmm.config.verify.failed', { cat: 'tx', ctx: { pool: hop.poolId, error: String(e?.message || e) } as any }); } catch {}
+    }
+
+    // Try to use SDK's getClmmPoolKeys for proper structure (if API available)
+    let poolKeysFromApi: any = null;
+    try {
+      const { Clmm } = await import('@raydium-io/raydium-sdk-v2');
+      const clmm = new (Clmm as any)({
+        connection,
+        owner: kp.publicKey,
+      });
+      if (typeof clmm.getClmmPoolKeys === 'function') {
+        poolKeysFromApi = await clmm.getClmmPoolKeys(poolId).catch(() => null);
+      }
+    } catch {}
 
     const mintAAddress = toPublicKey(hop.inputMint).toBase58();
     const mintBAddress = toPublicKey(hop.outputMint).toBase58();
@@ -1415,7 +1453,8 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       programId: hop.outputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID.toBase58() : TOKEN_PROGRAM_ID.toBase58(),
     } as any;
 
-    const configInfo = {
+    // Use config from API if available, otherwise use cached/decoded values
+    const configInfo = poolKeysFromApi?.config || {
       id: configIdPk.toBase58(),
       index: 0,
       protocolFeeRate: 0,
@@ -1434,7 +1473,8 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       config: configInfo,
     } as any;
     
-    const poolKeys: any = {
+    // Prefer API-fetched poolKeys, fallback to constructed
+    const poolKeys: any = poolKeysFromApi || {
       id: poolId,
       programId,
       mintA: mintAInfo,
@@ -1447,16 +1487,38 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       config: configInfo,
       rewardInfos: [],
     };
-    try { if (hop.tickArrayLower) (poolKeys as any).tickArrayLower = toPublicKey(hop.tickArrayLower).toBase58(); } catch {}
-    try { if (hop.tickArrayCenter) (poolKeys as any).tickArrayCenter = toPublicKey(hop.tickArrayCenter).toBase58(); } catch {}
-    try { if (hop.tickArrayUpper) (poolKeys as any).tickArrayUpper = toPublicKey(hop.tickArrayUpper).toBase58(); } catch {}
-
+    
+    // Verify tick array accounts exist and filter out any that don't
     const tickArrayKeys: PublicKey[] = [];
-    try { if (hop.tickArrayLower) tickArrayKeys.push(toPublicKey(hop.tickArrayLower)); } catch {}
-    try { if (hop.tickArrayCenter) tickArrayKeys.push(toPublicKey(hop.tickArrayCenter)); } catch {}
-    try { if (hop.tickArrayUpper) tickArrayKeys.push(toPublicKey(hop.tickArrayUpper)); } catch {}
+    const tickArrayCandidates = [
+      hop.tickArrayCenter,  // Start with center (current tick)
+      hop.tickArrayLower,
+      hop.tickArrayUpper,
+    ].filter(Boolean);
+    
+    for (const tickArrayAddr of tickArrayCandidates) {
+      try {
+        const tickPk = toPublicKey(tickArrayAddr);
+        const tickAcc = await withRpcLimit(() => connection.getAccountInfo(tickPk)).catch(() => null);
+        if (tickAcc && tickAcc.owner.equals(programIdPk)) {
+          tickArrayKeys.push(tickPk);
+        } else {
+          try { logger.debug('raydium.clmm.tickarray.missing', { cat: 'tx', ctx: { pool: hop.poolId, tickArray: tickPk.toBase58() } as any }); } catch {}
+        }
+      } catch {}
+    }
+    
     if (!tickArrayKeys.length) {
-      throw createBuilderError('RAYDIUM_CLMM', 'missing tick arrays for swap', hop);
+      throw createBuilderError('RAYDIUM_CLMM', 'no valid tick arrays found for swap (all accounts missing or invalid)', hop);
+    }
+    
+    // Sort tick arrays: center first (most likely needed), then others
+    const centerPk = hop.tickArrayCenter ? toPublicKey(hop.tickArrayCenter) : null;
+    if (centerPk && tickArrayKeys.find(pk => pk.equals(centerPk))) {
+      const centerIdx = tickArrayKeys.findIndex(pk => pk.equals(centerPk));
+      if (centerIdx > 0) {
+        tickArrayKeys.unshift(tickArrayKeys.splice(centerIdx, 1)[0]);
+      }
     }
 
     const BN = (await import('bn.js')).default as any;
@@ -1475,7 +1537,57 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       sqrtPriceLimitX64: sqrtLimitBn,
       remainingAccounts: tickArrayKeys,
     });
-    const ixs = Array.isArray(res?.instructions) ? res.instructions : (res?.innerTransaction ? res.innerTransaction.instructions : []);
+    let ixs = Array.isArray(res?.instructions) ? res.instructions : (res?.innerTransaction ? res.innerTransaction.instructions : []);
+    
+    // Post-process: verify exBitmap account exists (SDK always adds it internally)
+    // If it doesn't exist, remove it from remainingAccounts to prevent ProgramAccountNotFound
+    if (ixs && ixs.length) {
+      try {
+        const { getPdaExBitmapAccount } = await import('@raydium-io/raydium-sdk-v2').catch(() => ({ getPdaExBitmapAccount: null }));
+        if (getPdaExBitmapAccount) {
+          const exBitmapPk = getPdaExBitmapAccount(programIdPk, poolIdPk).publicKey;
+          const exBitmapAcc = await withRpcLimit(() => connection.getAccountInfo(exBitmapPk)).catch(() => null);
+          
+          if (!exBitmapAcc) {
+            // ExBitmap account doesn't exist - remove it from instruction keys
+            try {
+              logger.warn('raydium.clmm.exbitmap.missing', { cat: 'tx', ctx: { pool: hop.poolId, exBitmap: exBitmapPk.toBase58() } as any });
+            } catch {}
+            
+            // Remove exBitmap from remainingAccounts in each instruction
+            // Create new instructions with filtered keys (keys array may be readonly)
+            const filteredIxs: TransactionInstruction[] = [];
+            for (const ix of ixs) {
+              if (ix instanceof TransactionInstruction && Array.isArray(ix.keys)) {
+                const exBitmapIdx = ix.keys.findIndex((k: any) => {
+                  const pk = k?.pubkey || k?.publicKey;
+                  return pk && (pk.equals ? pk.equals(exBitmapPk) : pk.toBase58() === exBitmapPk.toBase58());
+                });
+                if (exBitmapIdx >= 0) {
+                  // Create new instruction without the exBitmap key
+                  const filteredKeys = ix.keys.filter((_, idx) => idx !== exBitmapIdx);
+                  filteredIxs.push(new TransactionInstruction({
+                    programId: ix.programId,
+                    keys: filteredKeys,
+                    data: ix.data,
+                  }));
+                } else {
+                  filteredIxs.push(ix);
+                }
+              } else {
+                filteredIxs.push(ix as TransactionInstruction);
+              }
+            }
+            if (filteredIxs.length > 0) {
+              ixs = filteredIxs;
+            }
+          }
+        }
+      } catch (e: any) {
+        try { logger.debug('raydium.clmm.exbitmap.verify.failed', { cat: 'tx', ctx: { pool: hop.poolId, error: String(e?.message || e) } as any }); } catch {}
+      }
+    }
+    
     if (ixs && ixs.length) return ixs as any[];
   } catch (e) {
     // If error is already a builder error, preserve it
