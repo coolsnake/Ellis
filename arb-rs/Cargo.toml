@@ -17,5 +17,6 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 anyhow = "1"
 thiserror = "1"
 base64 = "0.22"
+once_cell = "1"
 
 
