@@ -326,6 +326,11 @@ class GraphPushOrchestrator {
       this.resolvePendingDetect = null;
       try { resolver(); } catch {}
     }
+    // CRITICAL FIX: After detect completes, check if we have pending diffs/snapshots
+    // and schedule a flush if we're not already processing/flushing
+    if (!this.flushInProgress && !this.inFlight && (this.pendingSnapshot || this.pendingDiff)) {
+      this.scheduleFlush(true); // Force flush since detect just completed
+    }
   }
 
   private scheduleFlush(force = false): void {
@@ -555,6 +560,11 @@ class GraphPushOrchestrator {
     } finally {
       this.inFlight = false;
       this.inFlightVersion = null;
+      // CRITICAL FIX: After processing queue completes, check if new diffs arrived
+      // during processing and schedule a flush
+      if (this.pendingSnapshot || this.pendingDiff) {
+        this.scheduleFlush(true); // Force flush since we just finished a cycle
+      }
     }
   }
 

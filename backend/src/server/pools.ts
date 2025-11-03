@@ -1804,11 +1804,29 @@ export function startRaydiumRefreshLoop(): void {
             // Begin async teardown and websocket close; future setups will await wsClosePromise
             wsClosePromise = (async () => {
               try {
+                // First, try to disable the internal subscription update mechanism
+                // to prevent _updateSubscriptions from running while we're closing
+                try {
+                  const rpcWs: any = (wsConn as any)?._rpcWebSocket;
+                  if (rpcWs) {
+                    // Clear any pending subscription update timers
+                    // The library may have timers that call _updateSubscriptions
+                    if (rpcWs._subscriptionsByAccountChangeSubscriptionId) {
+                      // Clear the internal subscription map to prevent resubscriptions
+                      try { rpcWs._subscriptionsByAccountChangeSubscriptionId.clear?.(); } catch {}
+                    }
+                    if (rpcWs._subscriptionsByProgramAccountChangeSubscriptionId) {
+                      try { rpcWs._subscriptionsByProgramAccountChangeSubscriptionId.clear?.(); } catch {}
+                    }
+                  }
+                } catch {}
+
                 // Best-effort await listener removals, but avoid calling into RPC when WS is CLOSING/CLOSED
                 const removals: Array<Promise<any>> = [];
                 const wsAny = (wsConn as any)?._rpcWebSocket?._ws;
                 const ready: number = Number(wsAny?.readyState);
-                const canRpc = (ready === 0 || ready === 1); // CONNECTING or OPEN
+                // Only allow RPC calls if socket is OPEN (1), not CONNECTING (0) as CONNECTING may fail
+                const canRpc = (ready === 1); // Only OPEN, not CONNECTING
                 for (const s of subs) {
                   try {
                     if (!canRpc) continue;
@@ -1822,12 +1840,17 @@ export function startRaydiumRefreshLoop(): void {
                 if (canRpc && removals.length) {
                   try { await Promise.allSettled(removals); } catch {}
                 }
+
+                // Give a small delay to allow any in-flight subscription updates to complete
+                // before closing the socket
+                await new Promise(r => setTimeout(r, 100));
+
                 // Close underlying websocket if present to avoid CLOSING race on next subscribe
                 try {
                   const wsAny2 = (wsConn as any)?._rpcWebSocket?._ws;
                   const rs: number | undefined = Number(wsAny2?.readyState);
-                  // 0 CONNECTING, 1 OPEN, 2 CLOSING
-                  if (wsAny2 && (rs === 0 || rs === 1 || rs === 2)) {
+                  // 0 CONNECTING, 1 OPEN, 2 CLOSING, 3 CLOSED
+                  if (wsAny2 && (rs === 1 || rs === 2)) { // Only close if OPEN or CLOSING, not CONNECTING
                     try { (wsConn as any)?._rpcWebSocket?.close?.(); } catch {}
                   }
                   // Wait until CLOSED (3) or socket disappears, with small timeout

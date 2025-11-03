@@ -1419,9 +1419,11 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       if (!configAcc) {
         throw createBuilderError('RAYDIUM_CLMM', `ammConfig account does not exist: ${configIdPk.toBase58()}`, hop);
       }
-      if (!configAcc.owner.equals(programIdPk)) {
-        throw createBuilderError('RAYDIUM_CLMM', `ammConfig account owner mismatch: expected ${programIdPk.toBase58()}, got ${configAcc.owner.toBase58()}`, hop);
-      }
+      // Note: ammConfig account may be owned by a different program (config program, not pool program)
+      // We just verify it exists - the SDK will validate program ownership during instruction execution
+      try {
+        logger.debug('raydium.clmm.config.verified', { cat: 'tx', ctx: { pool: hop.poolId, config: configIdPk.toBase58(), owner: configAcc.owner.toBase58() } as any });
+      } catch {}
     } catch (e: any) {
       if (e instanceof Error && e.message.includes('RAYDIUM_CLMM_BUILD_FAILED')) throw e;
       try { logger.warn('raydium.clmm.config.verify.failed', { cat: 'tx', ctx: { pool: hop.poolId, error: String(e?.message || e) } as any }); } catch {}
