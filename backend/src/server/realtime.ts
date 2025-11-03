@@ -156,31 +156,92 @@ export function startDetectDrivenGraphPush(debounceMs = 0): void {
     const tick = async () => {
       try {
         const m = await fetchArbMetrics();
-        if (Number(m.last_detection_ms || 0) > Number(lastDetectSeen || 0)) {
-          lastDetectSeen = Number(m.last_detection_ms || 0);
-          try { logger.info('graph.rebuild.detect_driven', { last_detection_ms: lastDetectSeen, code: 'GRAPH.REBUILD.DETECT_DRIVEN' }); } catch {}
+        const currentDetectionMs = Number(m.last_detection_ms || 0);
+        const previousSeen = lastDetectSeen || 0;
+        
+        if (currentDetectionMs > previousSeen) {
+          lastDetectSeen = currentDetectionMs;
+          try { 
+            logger.info('graph.rebuild.detect_driven', { 
+              last_detection_ms: lastDetectSeen, 
+              previous_seen: previousSeen,
+              delta_ms: currentDetectionMs - previousSeen,
+              code: 'GRAPH.REBUILD.DETECT_DRIVEN',
+              cat: 'graph',
+            }); 
+          } catch {}
           try {
-            if (!hasDetectDrivenDirty()) { return; }
+            const hasDirty = hasDetectDrivenDirty();
+            if (!hasDirty) { 
+              try { logger.debug('graph.push detect_driven no_dirty', { cat: 'graph' }); } catch {}
+              return; 
+            }
             const wait = getDetectDrivenPushCoalesceMs();
             if (detectDebounceTimer) { clearTimeout(detectDebounceTimer); detectDebounceTimer = null; }
             detectDebounceTimer = setTimeout(async () => {
               detectDebounceTimer = null;
-              if (!hasDetectDrivenDirty()) return;
+              const stillDirty = hasDetectDrivenDirty();
+              if (!stillDirty) {
+                try { logger.debug('graph.push detector_flush cancelled_no_dirty', { cat: 'graph' }); } catch {}
+                return;
+              }
               try {
-                logger.info('graph.push detector_flush_pending', {});
+                logger.info('graph.push detector_flush_pending', {
+                  last_detection_ms: lastDetectSeen,
+                  coalesce_ms: wait,
+                  cat: 'graph',
+                });
               } catch {}
               try {
                 const flushed = await orchestratorFlushPendingFromDetector();
                 try {
-                  logger.info('graph.push detector_flush_complete', { flushed });
+                  logger.info('graph.push detector_flush_complete', { 
+                    flushed,
+                    last_detection_ms: lastDetectSeen,
+                    cat: 'graph',
+                  });
                 } catch {}
               } catch (err) {
-                try { logger.info('graph.push detector_flush_failed', { error: String((err as any)?.message || err) }); } catch {}
+                try { 
+                  logger.warn('graph.push detector_flush_failed', { 
+                    error: String((err as any)?.message || err),
+                    last_detection_ms: lastDetectSeen,
+                    cat: 'graph',
+                  }); 
+                } catch {}
               }
             }, wait);
+          } catch (err) {
+            try { 
+              logger.warn('graph.push detect_driven_error', { 
+                error: String((err as any)?.message || err),
+                cat: 'graph',
+              }); 
+            } catch {}
+          }
+        } else {
+          // Log when polling but no new detection (for debugging)
+          try {
+            const hasDirty = hasDetectDrivenDirty();
+            if (hasDirty && currentDetectionMs === previousSeen && previousSeen > 0) {
+              // Have dirty updates but detection hasn't progressed
+              logger.debug('graph.push detect_driven_no_progress', {
+                last_detection_ms: currentDetectionMs,
+                previous_seen: previousSeen,
+                has_dirty: hasDirty,
+                cat: 'graph',
+              });
+            }
           } catch {}
         }
-      } catch {}
+      } catch (err) {
+        try { 
+          logger.warn('graph.push detect_driven_poll_error', { 
+            error: String((err as any)?.message || err),
+            cat: 'graph',
+          }); 
+        } catch {}
+      }
     };
     timer = setInterval(tick, period);
   } catch {}

@@ -66,6 +66,9 @@ let diffSinceRebase = 0;
 const REBASE_DIFF_THRESHOLD = Math.max(0, Number((CONFIG.system as any)?.graphRebaseDiffThreshold || 2000));
 const REBASE_TIME_MS = Math.max(0, Number((CONFIG.system as any)?.graphRebaseTimeMs || (5 * 60 * 1000)));
 let lastRebaseMs = 0;
+let lastRebuildMs = 0;
+let lastRebuildHadChanges = false;
+const MIN_REBUILD_GAP_MS = Math.max(100, Number((CONFIG.system as any)?.graphMinRebuildGapMs || 500));
 
 const env = (typeof globalThis !== 'undefined' && (globalThis as any)?.process?.env) ? (globalThis as any).process.env : {} as Record<string, string>;
 const GRAPH_WORKER_DISABLED = String(env.GRAPH_WORKER_DISABLED ?? env.ARB_GRAPH_WORKER_DISABLED ?? '').toLowerCase() === 'true';
@@ -113,15 +116,30 @@ export function getGraphVersion(): { version: number; timestamp: number } {
 
 export async function rebuildGraphNow(io?: SocketIOServer, opts?: { pushToArb?: boolean }): Promise<void> {
   try {
+    const nowMs = Date.now();
+    // Guard: skip if last rebuild was recent and had no changes (unless force requested)
+    if (!opts?.pushToArb && lastRebuildMs > 0 && lastRebuildHadChanges === false) {
+      const gap = nowMs - lastRebuildMs;
+      if (gap < MIN_REBUILD_GAP_MS) {
+        try { logger.debug('graph.rebuild.skip_recent_no_change', { gap_ms: gap, min_gap_ms: MIN_REBUILD_GAP_MS, cat: 'graph' }); } catch {}
+        return;
+      }
+    }
+
     const prev = lastSnapshot;
     const next = await getGraphSnapshot(true);
     // Skip emitting/pushing when we have no retained pools yet
     if (!prev && (!next || !Array.isArray((next as any).edges) || (next as any).edges.length === 0)) {
       try { logger.info('graph.rebuild.skip_empty', { reason: 'no_retained_pools' }); } catch {}
+      lastRebuildMs = nowMs;
+      lastRebuildHadChanges = false;
       return;
     }
     const diff = diffSnapshots(prev, next);
     const changed = diff.addedNodes.length || diff.updatedNodes.length || diff.removedNodeIds.length || diff.addedEdges.length || diff.updatedEdges.length || diff.removedEdgeIds.length;
+    
+    lastRebuildMs = nowMs;
+    lastRebuildHadChanges = changed;
     if (io) {
       if (!prev) io.emit('graph-rebase', { version: next.version, timestamp: next.timestamp }); else if (changed) io.emit('graph-update', toLiteDiff(diff));
     } else {
@@ -344,6 +362,14 @@ function markGraphWorkerFailed(err: unknown): void {
     graphWorkerUnavailable = true;
   }
   try { logger.debug('graph.worker.disabled_temp', { error: String((err as any)?.message || err), failures: graphWorkerFailureCount, cat: 'graph' }); } catch {}
+}
+
+export function isGraphWorkerBusy(): boolean {
+  const worker = getGraphWorkerClient();
+  if (!worker) return false;
+  const queue = worker.getQueueSize();
+  const active = worker.getActiveCount();
+  return queue > 0 || active > 0;
 }
 
 function buildPriceMap(priceStore: any, snapshot: GraphSnapshot, prev: PoolsPayload, next: PoolsPayload): Record<string, number> {

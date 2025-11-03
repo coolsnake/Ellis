@@ -150,11 +150,20 @@ class GraphPushOrchestrator {
   private resolvePendingDetect: (() => void) | null = null;
   private lastDetectCompleteMs = 0;
   private lastDetectCompleteVersion = 0;
+  private pendingSinceMs: number = 0;
+  private fallbackFlushTimer: NodeJS.Timeout | null = null;
+  private readonly fallbackFlushTimeoutMs: number;
 
   constructor() {
     this.diffCoalesceMs = getDiffCoalesceMs();
     this.detectCoalesceMs = getDetectDrivenPushCoalesceMs();
     this.detectWaitTimeoutMs = DETECT_ACK_TIMEOUT_MS;
+    // Fallback: if updates are pending for more than this, force flush even without ACK
+    // Default to 2x the detect wait timeout, but allow override via env
+    const defaultFallback = Math.max(this.detectWaitTimeoutMs * 2, 10000);
+    this.fallbackFlushTimeoutMs = Number(
+      ((globalThis as any)?.process?.env?.ARB_FALLBACK_FLUSH_TIMEOUT_MS) || defaultFallback
+    );
   }
 
   setStreamEnabled(enabled: boolean): void {
@@ -211,6 +220,8 @@ class GraphPushOrchestrator {
       this.diffTimer = null;
     }
     this.detectDirty = true;
+    this.pendingSinceMs = Date.now();
+    this.scheduleFallbackFlush();
     return new Promise((resolve, reject) => {
       this.waiters.push({ resolve, reject });
       this.scheduleFlush();
@@ -249,6 +260,10 @@ class GraphPushOrchestrator {
       });
     } catch {}
     this.detectDirty = true;
+    if (this.pendingSinceMs === 0) {
+      this.pendingSinceMs = Date.now();
+      this.scheduleFallbackFlush();
+    }
     const apply = () => {
       const coalesced = coalesceDiff(this.pendingDiff, diff);
       const coalescedVersion = Number(coalesced.version || 0);
@@ -257,6 +272,9 @@ class GraphPushOrchestrator {
       if (coalescedVersion > 0 && coalescedVersion < this.lastAckedVersion) {
         try { logger.debug('arb.push skip coalesced diff', { coalesced_version: coalescedVersion, last_acked: this.lastAckedVersion, reason: 'already_acked' }); } catch {}
         this.pendingDiff = null;
+        if (!this.pendingSnapshot) {
+          this.cancelFallbackFlush();
+        }
         return;
       }
       if (coalescedVersion > 0 && coalescedVersion === this.inFlightVersion) {
@@ -332,8 +350,56 @@ class GraphPushOrchestrator {
     // CRITICAL FIX: After detect completes, check if we have pending diffs/snapshots
     // and schedule a flush if we're not already processing/flushing
     if (!this.flushInProgress && !this.inFlight && (this.pendingSnapshot || this.pendingDiff)) {
+      this.cancelFallbackFlush(); // Cancel fallback since we got ACK
       this.scheduleFlush(true); // Force flush since detect just completed
     }
+  }
+
+  private scheduleFallbackFlush(): void {
+    // Cancel existing fallback timer if any
+    if (this.fallbackFlushTimer) {
+      clearTimeout(this.fallbackFlushTimer);
+      this.fallbackFlushTimer = null;
+    }
+    
+    // Only schedule if we have pending updates and detect mode is active
+    if (!this.pendingSnapshot && !this.pendingDiff) {
+      return;
+    }
+    if (!this.shouldWaitForDetect()) {
+      return; // Not in detect mode, normal flush will handle it
+    }
+
+    const elapsed = Date.now() - this.pendingSinceMs;
+    const remaining = Math.max(0, this.fallbackFlushTimeoutMs - elapsed);
+    
+    this.fallbackFlushTimer = setTimeout(() => {
+      this.fallbackFlushTimer = null;
+      if (!this.pendingSnapshot && !this.pendingDiff) {
+        return; // Already flushed
+      }
+      try {
+        logger.warn('arb.push fallback_flush triggered', {
+          pending_since_ms: this.pendingSinceMs,
+          elapsed_ms: Date.now() - this.pendingSinceMs,
+          pending_snapshot: !!this.pendingSnapshot,
+          pending_diff: !!this.pendingDiff,
+          diff_version: this.pendingDiff?.version,
+          reason: 'timeout_no_ack',
+          cat: 'graph',
+        });
+      } catch {}
+      // Force flush even without detection ACK
+      this.scheduleFlush(true);
+    }, remaining);
+  }
+
+  private cancelFallbackFlush(): void {
+    if (this.fallbackFlushTimer) {
+      clearTimeout(this.fallbackFlushTimer);
+      this.fallbackFlushTimer = null;
+    }
+    this.pendingSinceMs = 0;
   }
 
   private scheduleFlush(force = false): void {
@@ -378,13 +444,17 @@ class GraphPushOrchestrator {
     if (this.flushInProgress) return;
     const snapshot = this.pendingSnapshot;
     const diff = !snapshot ? this.pendingDiff : null;
-    if (!snapshot && !diff) return;
+    if (!snapshot && !diff) {
+      this.cancelFallbackFlush();
+      return;
+    }
 
     this.flushInProgress = true;
     this.pendingSnapshot = null;
     if (!snapshot) {
       this.pendingDiff = null;
     }
+    this.cancelFallbackFlush(); // Cancel fallback since we're flushing
 
     try {
       if (this.detectDirty) this.detectDirty = false;
@@ -661,12 +731,35 @@ class GraphPushOrchestrator {
   }
 
   async flushPendingFromDetector(): Promise<boolean> {
-    if (!this.arbStreamEnabled) return false;
+    if (!this.arbStreamEnabled) {
+      try { 
+        logger.info('arb.push detector_flush blocked', { 
+          reason: 'stream_disabled',
+          pending_snapshot: !!this.pendingSnapshot,
+          pending_diff: !!this.pendingDiff,
+          cat: 'graph',
+        }); 
+      } catch {}
+      return false;
+    }
     if (!this.pendingSnapshot && !this.pendingDiff) {
       this.detectDirty = false;
       return false;
     }
     if (this.flushInProgress || this.inFlight || this.awaitingDetect) {
+      try { 
+        logger.info('arb.push detector_flush blocked', { 
+          reason: 'busy', 
+          flushInProgress: this.flushInProgress,
+          inFlight: this.inFlight,
+          awaitingDetect: this.awaitingDetect,
+          pending_snapshot: !!this.pendingSnapshot,
+          pending_diff: !!this.pendingDiff,
+          diff_version: this.pendingDiff?.version,
+          queue_depth: this.queue.length,
+          cat: 'graph',
+        }); 
+      } catch {}
       this.detectDirty = true;
       return false;
     }
@@ -683,6 +776,7 @@ class GraphPushOrchestrator {
         try { logger.debug('arb.push detector_flush skip duplicate', { version, last_acked: this.lastAckedVersion, reason: 'already_acked' }); } catch {}
         this.pendingSnapshot = null;
         this.pendingDiff = null;
+        this.cancelFallbackFlush();
         this.detectDirty = false;
         return false;
       }
@@ -708,6 +802,7 @@ class GraphPushOrchestrator {
     }
     this.pendingSnapshot = null;
     if (!snapshot) this.pendingDiff = null;
+    this.cancelFallbackFlush(); // Clear fallback timer since we're flushing now
     const detectMode = this.shouldWaitForDetect();
     this.awaitingDetect = detectMode;
     this.detectDirty = false;
