@@ -4,7 +4,7 @@ import { LogCode } from '../../utils/logging.js';
 import { PublicKey, TransactionInstruction } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
 import { address } from '@solana/kit';
-import { swapInstructions, setWhirlpoolsConfig, setNativeMintWrappingStrategy } from '@orca-so/whirlpools';
+import * as OrcaWhirlpools from '@orca-so/whirlpools';
 import { rpcFromUrl } from '@orca-so/tx-sender';
 import { createKeyPairSignerFromPrivateKeyBytes } from '@solana/signers';
 import { getConnection, ensureWallet } from '../../wallet/wallet.js';
@@ -363,13 +363,13 @@ async function ensureOrcaSdkConfig(): Promise<void> {
     orcaWhirlpoolConfigPromise = (async () => {
       try {
         const cfg = String((CONFIG.orca as any)?.configPubkey || '').trim();
-        if (cfg) {
-          await setWhirlpoolsConfig(address(cfg));
+        if (cfg && typeof OrcaWhirlpools.setWhirlpoolsConfig === 'function') {
+          await OrcaWhirlpools.setWhirlpoolsConfig(address(cfg));
         }
       } catch (e: any) {
         try { logger.warn('orca.whirlpool.config.set.failed', { cat: 'tx', ctx: { error: String((e as any)?.message || e) } }); } catch {}
       }
-      try { setNativeMintWrappingStrategy('ata'); } catch {}
+      try { if (typeof OrcaWhirlpools.setNativeMintWrappingStrategy === 'function') OrcaWhirlpools.setNativeMintWrappingStrategy('ata'); } catch {}
     })();
   }
   await orcaWhirlpoolConfigPromise;
@@ -403,7 +403,10 @@ async function buildOrcaSwapViaSdk(hop: DirectHop, kp: { publicKey: PublicKey; s
     throw createBuilderError('ORCA', 'input amount must be positive for swapInstructions', hop);
   }
   const params: any = { inputAmount: amountIn, mint: inputMintAddr };
-  const result = await swapInstructions(rpc, params, poolAddr, Math.max(0, Math.floor(slippageBps)), signer);
+  if (typeof OrcaWhirlpools.swapInstructions !== 'function') {
+    throw createBuilderError('ORCA', 'swapInstructions not available in @orca-so/whirlpools', hop);
+  }
+  const result = await OrcaWhirlpools.swapInstructions(rpc, params, poolAddr, Math.max(0, Math.floor(slippageBps)), signer);
   const tradeEnableTs = result.tradeEnableTimestamp ?? 0n;
   const nowSec = BigInt(Math.floor(Date.now() / 1000));
   if (tradeEnableTs && tradeEnableTs > nowSec) {
