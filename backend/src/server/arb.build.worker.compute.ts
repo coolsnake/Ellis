@@ -1,6 +1,6 @@
 import { PublicKey } from '@solana/web3.js';
-import { buildDirectArbTx } from '../../execution/builder/tx.js';
-import type { ExecutionPlan } from '../../execution/types.js';
+import { buildDirectArbTx } from '../execution/builder/tx.js';
+import type { ExecutionPlan } from '../execution/types.js';
 import type { SerializedInstruction, SerializedInstructionKey, ArbBuildResult } from '../workers/arbBuild.types.js';
 
 function toBase58(value: any): string {
@@ -54,7 +54,7 @@ function serializeInstruction(ix: any): SerializedInstruction {
   return {
     programId,
     keys: keysSrc.map(serializeInstructionKey),
-    data: dataBuf.toString('base64'),
+    data: Buffer.from(dataBuf).toString('base64'),
   };
 }
 

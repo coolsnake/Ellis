@@ -1,5 +1,11 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { PublicKey, TransactionInstruction } from '@solana/web3.js';
+
+const { vi, afterEach } = globalThis as unknown as { vi?: any; afterEach?: (fn: () => void) => void };
+
+if (!vi || !afterEach) {
+  throw new Error('Vitest globals not available');
+}
 
 const buildDirectArbTx = vi.fn(async (_plan: any, extras: TransactionInstruction[]) => ({
   tx: {

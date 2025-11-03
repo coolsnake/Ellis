@@ -1,6 +1,13 @@
 import { Worker } from 'node:worker_threads';
 
-import type { WorkerErrorPayload, WorkerInboundMessage, WorkerOutboundMessage, WorkerClientOptions, RunJobOptions } from './types.js';
+import type {
+  WorkerErrorMessage,
+  WorkerErrorPayload,
+  WorkerInboundMessage,
+  WorkerOutboundMessage,
+  WorkerClientOptions,
+  RunJobOptions,
+} from './types.js';
 
 type PendingJob<TOut> = {
   id: number;
@@ -155,7 +162,6 @@ export class WorkerClient<TIn = unknown, TOut = unknown> {
       name: this.name,
       env: this.env,
       workerData: this.workerData,
-      type: 'module',
     });
     worker.on('message', (msg: WorkerOutboundMessage<TOut>) => this.onMessage(msg));
     worker.on('error', (err) => this.onError(err));
@@ -174,7 +180,8 @@ export class WorkerClient<TIn = unknown, TOut = unknown> {
     if (msg.ok) {
       pending.resolve(msg.result as TOut);
     } else {
-      pending.reject(reviveError(msg.error));
+      const errorMsg = msg as WorkerErrorMessage<TOut>;
+      pending.reject(reviveError(errorMsg.error));
     }
 
     if (!this.disposed) {

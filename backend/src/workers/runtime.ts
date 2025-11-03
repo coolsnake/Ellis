@@ -38,14 +38,12 @@ export function exposeWorkerHandler<TIn = unknown, TOut = unknown>(handler: Work
   parentPort.on('message', async (raw: WorkerInboundMessage<TIn>) => {
     if (!raw || raw.kind !== 'job') return;
     const { id, payload } = raw;
-    const response: WorkerOutboundMessage<TOut> = { kind: 'result', id, ok: true, result: undefined as any };
+    let response: WorkerOutboundMessage<TOut>;
     try {
       const result = await handler(payload);
-      response.ok = true;
-      response.result = result as TOut;
+      response = { kind: 'result', id, ok: true, result: result as TOut };
     } catch (err) {
-      response.ok = false;
-      response.error = serializeError(err);
+      response = { kind: 'result', id, ok: false, error: serializeError(err) } as WorkerOutboundMessage<TOut>;
     }
     try {
       parentPort!.postMessage(response);

@@ -2,15 +2,18 @@ import { describe, it, expect } from 'vitest';
 import { computeIncrementalGraphUpdate } from '../graph.worker.compute.js';
 import { edgesFromPoolIncremental } from '../graph.edges.js';
 import type { GraphIncrementalRequest } from '../../workers/graphDiff.types.js';
+import type { AmmPool } from '../pools/types.js';
 
-const BASE_POOL = {
+const BASE_POOL: AmmPool = {
   id: 'pool-abc',
   dex: 'Raydium',
   mint_a: 'MintA',
   mint_b: 'MintB',
   fee_bps: 30,
   price_a_per_b: 1,
+  liquidity_base: 1_000,
   liquidity_display: 1_000,
+  updated_ms: 1_000,
   pool_kind: 'amm',
   decimals_a: 6,
   decimals_b: 6,
@@ -37,7 +40,7 @@ describe('computeIncrementalGraphUpdate', () => {
     const request: GraphIncrementalRequest = {
       previousSnapshot,
       previousPools: { amm: [{ ...BASE_POOL }], clmm: [] },
-      nextPools: { amm: [{ ...BASE_POOL, price_a_per_b: 1.1 }], clmm: [] },
+      nextPools: { amm: [{ ...BASE_POOL, price_a_per_b: 1.1, updated_ms: 2_000 }], clmm: [] },
       droppedPoolIds: [],
       edgeAllow: {},
       priceMap: PRICE_MAP,
