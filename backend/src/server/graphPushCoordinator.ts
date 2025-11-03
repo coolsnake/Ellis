@@ -13,6 +13,7 @@ type InflightJob = PendingJob & {
   stage: 'push' | 'ack' | 'detect';
   lastDetectionMs: number;
   retries: number;
+  acked: boolean;
 };
 
 type AckStats = {
@@ -93,6 +94,7 @@ class GraphPushCoordinator {
   private awaitDetectVersion: number | null = null;
   private latestDetectionMs = 0;
   private stats: AckStats = { ackMs: [], success: 0, failed: 0 };
+  private pushedSinceDetect = false;
 
   submitSnapshot(snapshot: GraphSnapshot): void {
     try {
@@ -151,6 +153,14 @@ class GraphPushCoordinator {
     return { ackMs: this.stats.ackMs.slice(), success: this.stats.success, failed: this.stats.failed };
   }
 
+  hasPending(): boolean {
+    return !!this.pendingSnapshot || !!this.pendingDiff || !!this.inflight;
+  }
+
+  didPushSinceDetection(): boolean {
+    return this.pushedSinceDetect;
+  }
+
   private scheduleFlush(force = false): void {
     if (!force && this.flushScheduled) return;
     this.flushScheduled = true;
@@ -175,12 +185,20 @@ class GraphPushCoordinator {
       stage: 'push',
       lastDetectionMs: this.latestDetectionMs,
       retries: 0,
+      acked: false,
     };
 
     try {
       await this.push(job);
-      await this.requestAck(version);
-      this.finishJob();
+      const acked = await this.requestAck(version);
+      if (!this.inflight || this.inflight.version !== version) return;
+      this.inflight.acked = acked;
+      this.awaitDetectVersion = version;
+      this.inflight.stage = 'detect';
+      this.inflight.retries = 0;
+      if (!acked) {
+        return; // wait for detection to re-attempt ack
+      }
     } catch (error) {
       logger.error('graph.push.coordinator push failed', { error: String((error as any)?.message || error) });
       this.stats.failed += 1;
@@ -220,6 +238,7 @@ class GraphPushCoordinator {
         if (!res || !res.ok) throw new Error(`status ${res ? (res as any).status : 'unknown'}`);
         logger.info('graph.push.coordinator sent', { kind: job.kind, version: this.inflight?.version, attempt });
         await this.pingArbService();
+        this.pushedSinceDetect = true;
         return;
       } catch (err) {
         const wait = Math.min(2000 * Math.pow(2, attempt - 1), 15000);
@@ -236,7 +255,7 @@ class GraphPushCoordinator {
     throw new Error('push failed after retries');
   }
 
-  private async requestAck(version: number): Promise<void> {
+  private async requestAck(version: number): Promise<boolean> {
     const timeoutMs = Math.max(500, Number(((globalThis as any)?.process?.env?.ARB_ACK_TIMEOUT_MS) || 2500));
     const host = getArbHost();
     const auth = ((globalThis as any)?.process?.env?.ARB_SHARED_SECRET) || '';
@@ -262,7 +281,7 @@ class GraphPushCoordinator {
           pushBounded(this.stats.ackMs, waited);
           this.stats.success += 1;
           logger.info('graph.push.coordinator acked', { version, waitedMs: waited });
-          return;
+          return true;
         }
       }
     } catch (err) {
@@ -278,30 +297,42 @@ class GraphPushCoordinator {
         logger.warn('graph.push.coordinator ack timeout exceeded', { version, retries: this.inflight.retries });
         this.stats.failed += 1;
         this.finishJob();
-        return;
+        return false;
       }
       logger.debug('graph.push.coordinator awaiting detection', { version, retries: this.inflight.retries });
     }
+    return false;
   }
 
   private async continueAfterDetection(): Promise<void> {
     if (!this.inflight) return;
-    const version = this.inflight.version;
-    this.inflight.stage = 'ack';
+    const job = this.inflight;
+    const version = job.version;
     this.awaitDetectVersion = null;
-    try {
-      await this.requestAck(version);
-      if (this.awaitDetectVersion === null) {
+
+    if (!job.acked) {
+      job.stage = 'ack';
+      try {
+        const acked = await this.requestAck(version);
+        if (!this.inflight || this.inflight.version !== version) return;
+        this.inflight.acked = acked;
+        if (!acked) {
+          this.awaitDetectVersion = version;
+          this.inflight.stage = 'detect';
+          return;
+        }
+      } catch (error) {
+        logger.error('graph.push.coordinator post-detect ack failed', {
+          version,
+          error: String((error as any)?.message || error),
+        });
+        this.stats.failed += 1;
         this.finishJob();
+        return;
       }
-    } catch (error) {
-      logger.error('graph.push.coordinator post-detect ack failed', {
-        version,
-        error: String((error as any)?.message || error),
-      });
-      this.stats.failed += 1;
-      this.finishJob();
     }
+
+    this.finishJob();
   }
 
   private finishJob(): void {
@@ -317,6 +348,7 @@ class GraphPushCoordinator {
     }
     this.inflight = null;
     this.awaitDetectVersion = null;
+    this.pushedSinceDetect = false;
     this.scheduleFlush();
   }
 
@@ -351,6 +383,10 @@ export const getGraphPushStats = (): { count: number; p50: number | null; p95: n
   coordinator.getStats();
 
 export const getGraphPushStatsRaw = (): AckStats => coordinator.getStatsRaw();
+
+export const hasPendingPush = (): boolean => coordinator.hasPending();
+
+export const didPushSinceDetection = (): boolean => coordinator.didPushSinceDetection();
 
 export default coordinator;
 

@@ -8,6 +8,7 @@ import {
   markDetectorComplete as coordinatorDetectorComplete,
   getGraphPushStats as coordinatorGetStats,
   getGraphPushStatsRaw as coordinatorGetStatsRaw,
+  hasPendingPush,
 } from './graphPushCoordinator.js';
 
 let ioRef: SocketIOServer | null = null;
@@ -153,6 +154,7 @@ export function startDetectDrivenGraphPush(debounceMs = 0): void {
           try { logger.info('graph.rebuild.detect_driven', { last_detection_ms: lastDetectSeen, code: 'GRAPH.REBUILD.DETECT_DRIVEN' }); } catch {}
           try {
             coordinatorDetectorComplete(lastDetectSeen);
+            if (!hasPendingPush()) return;
             const gmod: any = await import('./graph.js');
             if (typeof gmod.rebuildGraphNow === 'function') {
               await gmod.rebuildGraphNow(undefined, { pushToArb: true });
