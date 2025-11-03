@@ -170,7 +170,7 @@ describe('multi-dex multi-hop transaction tester', () => {
     expect(pidsStr.some((id: string) => id === 'meteora-dlmm')).toBe(true);
 
     // Verify ATAs are created
-    expect(pidsStr.some((id: string) => id === 'spl-associated-token-account'))).toBe(true);
+    expect(pidsStr.some((id: string) => id === 'spl-associated-token-account')).toBe(true);
 
     // Verify WSOL wrapping/unwrapping for SOL hops
     expect(pidsStr.some((id: string) => id === 'spl-token')).toBe(true);
