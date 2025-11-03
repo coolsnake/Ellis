@@ -794,6 +794,7 @@ export const App: React.FC = () => {
 
         const SOL = 'So11111111111111111111111111111111111111112';
         const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+        const USDT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
 
         const pickPoolId = async (
           dex: 'raydium'|'orca'|'meteora',
@@ -971,12 +972,84 @@ export const App: React.FC = () => {
             }
             return;
           }
+
+          // New: multihop helpers for UI terminal
+          if (action === 'multihop') {
+            const mode = (parts[2] || '').toLowerCase(); // sim|exec
+            const target = (parts[3] || '').toLowerCase(); // ray-amm|ray-clmm|orca|meteora
+            const sizeSol = Number(parts[4] || 0.01);
+            const slippageBps = Number(parts[5] || 50);
+            const poolIds = parts.slice(6).filter(Boolean); // All remaining args are pool IDs
+            
+            if (!['sim','exec'].includes(mode) || !['ray-amm','ray-clmm','orca','meteora'].includes(target)) {
+              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: arb multihop sim|exec ray-amm|ray-clmm|orca|meteora [SIZE_SOL] [SLIPPAGE_BPS] [POOL_ID_1] [POOL_ID_2] ...' }) });
+              return;
+            }
+            
+            // Determine DEX key for each hop
+            const dexKey = target === 'ray-amm' ? 'raydium.amm' : (target === 'ray-clmm' ? 'raydium.clmm' : (target === 'orca' ? 'orca.clmm' : 'meteora'));
+            const dexForPick = target.startsWith('ray') ? 'raydium' : (target as any);
+            const preferForPick = target === 'ray-amm' ? 'amm' : (target === 'ray-clmm' ? 'clmm' : undefined);
+            
+            // Determine number of hops (default to 2-hop if no pools specified)
+            const numHops = Math.max(2, poolIds.length || 2);
+            
+            // Pick pools if not all provided
+            const pickedPoolIds: string[] = [];
+            for (let i = 0; i < numHops; i++) {
+              const provided = poolIds[i];
+              if (provided) {
+                pickedPoolIds.push(provided);
+              } else {
+                const pid = await pickPoolId(
+                  dexForPick as any,
+                  preferForPick ? { prefer: preferForPick } : undefined,
+                );
+                if (!pid) {
+                  await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: no pool found for hop ${i + 1} (${target})` }) });
+                  return;
+                }
+                pickedPoolIds.push(pid);
+              }
+            }
+            
+            // Build path: SOL -> USDC -> USDT -> ... (alternating for numHops)
+            const path = [SOL];
+            for (let i = 0; i < numHops; i++) {
+              path.push(i % 2 === 0 ? USDC : USDT);
+            }
+            
+            // Build payload
+            const endpoint = mode === 'sim' ? '/arb/simulate-send' : '/arb/execute';
+            const payload: any = {
+              path,
+              hopPoolIds: pickedPoolIds,
+              dexes: Array(numHops).fill(dexKey),
+              size: sizeSol,
+              slippageBps,
+            };
+            if (mode === 'exec') payload.forceDirect = true;
+            
+            try {
+              const resp = await fetch(`${apiBase}${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+              const json = await resp.json();
+              if (!resp.ok) throw new Error(json?.error || 'request failed');
+              const poolStr = pickedPoolIds.join(',');
+              const msg = mode === 'sim' 
+                ? `multihop ${target} sim OK ${numHops}hops pools=[${poolStr}]`
+                : `multihop ${target} exec signature=${json?.signature || '(n/a)'} ${numHops}hops pools=[${poolStr}]`;
+              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: ${msg}` }) });
+            } catch (e: any) {
+              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: arb multihop failed ${String(e?.message || e)}` }) });
+            }
+            return;
+          }
         } catch (e: any) {
           await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: arb failed ${String(e?.message || e)}` }) });
           return;
         }
 
-        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: arb commands: mode direct|simulate|jupiter | pools usdc-usdt | jup roundtrip [SIZE_SOL] [SLIPPAGE_BPS] | simulate|preflight|execute ray|orca|meteora|multi' }) });
+        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: arb commands: mode direct|simulate|jupiter | pools usdc-usdt | jup roundtrip [SIZE_SOL] [SLIPPAGE_BPS] | simulate|preflight|execute ray|orca|meteora|multi | singlehop sim|exec ray-amm|ray-clmm|orca|meteora [SIZE_SOL] [SLIPPAGE_BPS] [POOL_ID] | multihop sim|exec ray-amm|ray-clmm|orca|meteora [SIZE_SOL] [SLIPPAGE_BPS] [POOL_ID_1] [POOL_ID_2] ...' }) });
         return;
       }
       if (ns === 'swap') {
@@ -1060,7 +1133,7 @@ export const App: React.FC = () => {
           'api: start | stop | reset',
           'ticktime: MS (set target tick time in ms)',
           'swap: AMOUNT FROM TO',
-          'arb: mode direct|simulate|jupiter | pools usdc-usdt | jup roundtrip [SIZE_SOL] [SLIPPAGE_BPS] | simulate|preflight|execute ray|orca|meteora|multi',
+          'arb: mode direct|simulate|jupiter | pools usdc-usdt | jup roundtrip [SIZE_SOL] [SLIPPAGE_BPS] | simulate|preflight|execute ray|orca|meteora|multi | singlehop sim|exec ray-amm|ray-clmm|orca|meteora [SIZE_SOL] [SLIPPAGE_BPS] [POOL_ID] | multihop sim|exec ray-amm|ray-clmm|orca|meteora [SIZE_SOL] [SLIPPAGE_BPS] [POOL_ID_1] [POOL_ID_2] ...',
           'config: reset | ticktime MS',
           'help — show this help'
         ];

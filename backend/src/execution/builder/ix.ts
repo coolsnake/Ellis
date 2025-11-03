@@ -53,26 +53,53 @@ async function injectBinArrayMetas(
     };
 
     // Try primary method: getBinArrayAccountMetasCoverage with bounds
+    // Note: Do NOT use large ranges - getBinArrayAccountMetasCoverage returns ALL arrays in range
+    // For swaps, we only need a few bin arrays around the active bin
     try {
       const getBounds = (DLMM as any)?.getBinArrayLowerUpperBinId;
       const getMetas = (DLMM as any)?.getBinArrayAccountMetasCoverage;
-      if (getBounds && getMetas) {
-        // These helpers expect bin IDs; fall back to using entire default range when bounds can't be derived.
+      const binIdToBinArrayIndex = (DLMM as any)?.binIdToBinArrayIndex;
+      
+      if (getBounds && getMetas && binIdToBinArrayIndex) {
         const coverageFnArgCount = getMetas.length;
         if (coverageFnArgCount >= 4) {
           try {
             const bnjs = await import('bn.js').catch(() => null as any);
             const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
             if (BN) {
-              const rangeSize = (DLMM as any)?.BIN_ARRAY_BITMAP_SIZE ?? 8;
-              const lower = new BN(-Number(rangeSize) * 1024);
-              const upper = new BN(Number(rangeSize) * 1024);
-              metas = getMetas(lower, upper, poolPk, programId) || [];
+              // Try to get active bin from pool state to use a small range
+              try {
+                const poolState = await connection.getAccountInfo(poolPk);
+                if (poolState?.data?.length) {
+                  const decode = (DLMM as any)?.decodeAccount;
+                  if (decode) {
+                    const state = decode({ coder: (DLMM as any)?.coder ?? {} }, 'lbPair', poolState.data);
+                    const activeId = state?.activeId;
+                    if (activeId !== undefined) {
+                      const activeBn = activeId instanceof BN ? activeId : new BN(String(activeId));
+                      const idx = binIdToBinArrayIndex(activeBn);
+                      const arrIdx = idx instanceof BN ? idx : new BN(String(idx));
+                      // Get bounds for just the active bin array and adjacent ones
+                      const [lower, upper] = getBounds(arrIdx);
+                      // Use small range: active bin array +/- 1 bin array worth of bins
+                      const binArraySize = (DLMM as any)?.MAX_BIN_ARRAY_SIZE ?? new BN(70);
+                      const rangeLower = lower.sub(binArraySize);
+                      const rangeUpper = upper.add(binArraySize);
+                      const rawMetas = getMetas(rangeLower, rangeUpper, poolPk, programId) || [];
+                      // Limit to max 10 bin arrays for swap safety
+                      metas = rawMetas.slice(0, 10);
+                    }
+                  }
+                }
+              } catch {}
+              // Fallback removed - don't use huge default ranges that return hundreds
             }
           } catch {}
         } else {
           try {
             metas = getMetas(poolPk, programId) || [];
+            // Limit results if it's an array
+            if (Array.isArray(metas)) metas = metas.slice(0, 10);
           } catch {}
         }
       }
@@ -80,7 +107,7 @@ async function injectBinArrayMetas(
       try { logger.debug('meteora.dlmm.inject.bounds.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
     }
     
-    // Fallback: try generic coverage helper
+    // Fallback: try generic coverage helper (but limit results - can return hundreds)
     if (!metas || !metas.length) {
       try {
         const getCoverage = (DLMM as any)?.getBinArrayKeysCoverage || (DLMM as any)?.getBinArrayAccountMetasCoverage;
@@ -88,7 +115,9 @@ async function injectBinArrayMetas(
           const cov = await getCoverage(programId, poolPk).catch(() => null as any) 
             || await getCoverage(connection, programId, poolPk).catch(() => null as any) 
             || await getCoverage({ programId, lbPair: poolPk }).catch(() => null as any);
-          metas = (cov && ((cov as any).metas || (cov as any).accountMetas)) || (Array.isArray(cov) ? cov : []);
+          const raw = (cov && ((cov as any).metas || (cov as any).accountMetas)) || (Array.isArray(cov) ? cov : []);
+          // Limit to max 10 bin arrays - getCoverage can return all bin arrays in pool
+          metas = Array.isArray(raw) ? raw.slice(0, 10) : [];
         }
       } catch (e: any) {
         try { logger.debug('meteora.dlmm.inject.coverage.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
@@ -132,8 +161,12 @@ async function injectBinArrayMetas(
         try { logger.debug('meteora.dlmm.inject.existing.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
       }
       
+      // Safety limit - should already be limited but cap at 12 total (10 arrays + bitmap + overhead)
+      const maxInjected = 12;
+      const limitedMetas = metas.slice(0, maxInjected);
+      
       let injected = 0;
-      for (const m of metas) {
+      for (const m of limitedMetas) {
         try {
           const pk = (m?.pubkey && typeof m.pubkey.toBase58 === 'function') 
             ? m.pubkey 
@@ -990,24 +1023,18 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
             } catch {}
           }
 
+          // Only collect specific bin array PDAs needed for swap (not full coverage ranges)
+          // For swaps, we typically need 2-4 bin arrays around the active bin
+          const maxBinArrays = 6; // Reasonable limit for swap paths
           for (const idx of indices) {
+            if (coverageMetas.length >= maxBinArrays) break; // Stop if we have enough
             try {
-              const derived = await deriveBinArray(poolPk, idx, programId);
+              const derived = deriveBinArray(poolPk, idx, programId);
               const pk = Array.isArray(derived) ? derived[0] : derived;
               pushMeta(pk);
-              if (typeof getBinBounds === 'function') {
-                const bounds = getBinBounds(idx);
-                if (Array.isArray(bounds)) {
-                  const [lower, upper] = bounds;
-                  const coverageFn = (DLMM as any)?.getBinArrayAccountMetasCoverage || (mod as any)?.getBinArrayAccountMetasCoverage || (DLMM as any)?.getBinArrayKeysCoverage;
-                  if (coverageFn) {
-                    const cov = coverageFn(lower, upper, poolPk, programId) || [];
-                    for (const entry of cov) {
-                      pushMeta(entry?.pubkey || entry?.publicKey || entry?.address, !!entry?.isWritable);
-                    }
-                  }
-                }
-              }
+              // Do NOT call getBinArrayAccountMetasCoverage here - that returns ALL arrays
+              // in the range, which can be hundreds. For swaps, we only need the specific
+              // bin array PDAs around the active bin.
             } catch {}
           }
         }
@@ -1234,9 +1261,12 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 // getBinArrayLowerUpperBinId takes binArrayIndex, returns [lowerBinId, upperBinId]
                 const [lowerBinId, upperBinId] = getBinArrayLowerUpperBinId(idx);
                 const metas = getBinArrayAccountMetasCoverage(lowerBinId, upperBinId, poolPk, programId) || [];
-                if (Array.isArray(metas) && metas.length) {
-                  builder = (builder as any).remainingAccounts(metas);
-                  try { logger.info('meteora.dlmm.remaining.ok', { cat: 'tx', ctx: { count: metas.length } }); } catch {}
+                // Limit metas to reasonable number for swap (getBinArrayAccountMetasCoverage can return many)
+                const maxMetas = 10; // Safety limit - swaps typically need 2-4 bin arrays
+                const limitedMetas = Array.isArray(metas) ? metas.slice(0, maxMetas) : [];
+                if (limitedMetas.length) {
+                  builder = (builder as any).remainingAccounts(limitedMetas);
+                  try { logger.info('meteora.dlmm.remaining.ok', { cat: 'tx', ctx: { count: limitedMetas.length, total: metas.length } }); } catch {}
                 }
               } catch (e: any) {
                 try { logger.debug('meteora.dlmm.remaining.bounds.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
@@ -1270,9 +1300,16 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       try { logger.warn('meteora.dlmm.remaining.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
     }
     
+    // Add pre-computed bin array metas as remaining accounts (already limited to ~6-7 max)
+    // Only add if SDK helper didn't already set remaining accounts
     if (binArrayMetas && binArrayMetas.length && typeof (builder as any).remainingAccounts === 'function') {
       try {
-        builder = (builder as any).remainingAccounts(binArrayMetas);
+        // Safety limit - should already be limited but cap at 10 just in case
+        const limited = binArrayMetas.slice(0, 10);
+        if (limited.length) {
+          builder = (builder as any).remainingAccounts(limited);
+          try { logger.info('meteora.dlmm.remaining.from_metas', { cat: 'tx', ctx: { count: limited.length } }); } catch {}
+        }
       } catch {}
     }
     
