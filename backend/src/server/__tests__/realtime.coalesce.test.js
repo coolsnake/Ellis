@@ -51,6 +51,7 @@ describe('realtime diff coalescing', () => {
     const p2 = rt.pushArbGraphDiff({ version: 2, addedEdges: [], updatedEdges: [], removedEdgeIds: [] });
 
     await vi.advanceTimersByTimeAsync(200);
+    await rt.flushPendingFromDetector();
     await Promise.all([p1, p2]);
 
     expect(updateCalls).toBe(1);

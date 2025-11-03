@@ -118,7 +118,6 @@ class GraphPushOrchestrator {
   private waiters: Waiter[] = [];
   private flushHandle: NodeJS.Timeout | null = null;
   private flushInProgress = false;
-  private awaitingDetect = false;
   private lastDetectSeen = 0;
   private detectDirty = false;
 
@@ -150,6 +149,15 @@ class GraphPushOrchestrator {
       try { logger.debug('arb.push skip empty snapshot'); } catch {}
       return;
     }
+    try {
+      logger.info('graph.push enqueue', {
+        kind: 'snapshot',
+        version: snapshot.version,
+        nodes: Array.isArray(snapshot.nodes) ? snapshot.nodes.length : undefined,
+        edges: Array.isArray(snapshot.edges) ? snapshot.edges.length : undefined,
+        detect_mode: this.shouldWaitForDetect(),
+      });
+    } catch {}
     this.pendingSnapshot = snapshot;
     this.pendingDiff = null;
     if (this.diffTimer) {
@@ -169,6 +177,16 @@ class GraphPushOrchestrator {
       try { logger.debug('arb.push gated', { kind: 'diff' }); } catch {}
       return;
     }
+    try {
+      logger.info('graph.push enqueue', {
+        kind: 'diff',
+        version: diff.version,
+        added: diff.addedEdges?.length,
+        updated: diff.updatedEdges?.length,
+        removed: diff.removedEdgeIds?.length,
+        detect_mode: this.shouldWaitForDetect(),
+      });
+    } catch {}
     this.detectDirty = true;
     const apply = () => {
       this.pendingDiff = coalesceDiff(this.pendingDiff, diff);
@@ -206,18 +224,41 @@ class GraphPushOrchestrator {
     return { ackMs: pushStats.ackMs.slice(), success: pushStats.success, failed: pushStats.failed };
   }
 
-  private scheduleFlush(): void {
+  private scheduleFlush(force = false): void {
     if (this.flushInProgress) return;
     if (!this.arbStreamEnabled) return;
     if (!this.pendingSnapshot && !this.pendingDiff) return;
+    const detectMode = this.shouldWaitForDetect();
+    if (!force && detectMode) {
+      this.detectDirty = true;
+      try {
+        logger.info('graph.push wait_for_detect', {
+          pending_snapshot: !!this.pendingSnapshot,
+          pending_diff: !!this.pendingDiff,
+          diff_version: this.pendingDiff?.version,
+          queue_depth: this.queue.length,
+        });
+      } catch {}
+      return;
+    }
     if (this.flushHandle) return;
+    const delay = force ? 0 : this.detectCoalesceMs;
     this.flushHandle = setTimeout(() => {
       this.flushHandle = null;
       this.flushPending().catch((e) => {
         try { logger.debug('arb.push flush failed', { error: String(e?.message || e) }); } catch {}
         this.rejectWaiters(e);
       });
-    }, this.detectCoalesceMs);
+    }, delay);
+    try {
+      logger.info('graph.push flush_scheduled', {
+        force,
+        pending_snapshot: !!this.pendingSnapshot,
+        pending_diff: !!this.pendingDiff,
+        diff_version: this.pendingDiff?.version,
+        delay_ms: delay,
+      });
+    } catch {}
   }
 
   private async flushPending(): Promise<void> {
@@ -234,6 +275,16 @@ class GraphPushOrchestrator {
     }
 
     try {
+      if (this.detectDirty) this.detectDirty = false;
+      try {
+        logger.info('graph.push flush_start', {
+          kind: snapshot ? 'snapshot' : 'diff',
+          version: snapshot ? snapshot.version : diff?.version,
+          added: diff?.addedEdges?.length,
+          updated: diff?.updatedEdges?.length,
+          removed: diff?.removedEdgeIds?.length,
+        });
+      } catch {}
       if (snapshot) {
         await this.enqueueJob('snapshot', snapshot);
       } else if (diff) {
@@ -379,13 +430,47 @@ class GraphPushOrchestrator {
   }
 
   peekDetectDirty(): boolean {
-    return this.detectDirty;
+    return this.detectDirty || !!this.pendingSnapshot || !!this.pendingDiff;
   }
 
-  consumeDetectDirty(): boolean {
-    const dirty = this.detectDirty;
+  async flushPendingFromDetector(): Promise<boolean> {
+    if (!this.arbStreamEnabled) return false;
+    if (this.flushInProgress) return false;
+    const snapshot = this.pendingSnapshot;
+    const diff = snapshot ? null : this.pendingDiff;
+    if (!snapshot && !diff) {
+      this.detectDirty = false;
+      return false;
+    }
+    if (this.flushHandle) {
+      clearTimeout(this.flushHandle);
+      this.flushHandle = null;
+    }
+    if (this.diffTimer) {
+      clearTimeout(this.diffTimer);
+      this.diffTimer = null;
+    }
+    this.pendingSnapshot = null;
+    if (!snapshot) this.pendingDiff = null;
     this.detectDirty = false;
-    return dirty;
+    try {
+      logger.info('graph.push flush_detector', {
+        kind: snapshot ? 'snapshot' : 'diff',
+        version: snapshot ? snapshot.version : diff?.version,
+        added: diff?.addedEdges?.length,
+        updated: diff?.updatedEdges?.length,
+        queue_depth: this.queue.length,
+      });
+    } catch {}
+    if (snapshot) {
+      await this.enqueueJob('snapshot', snapshot);
+      return true;
+    }
+    if (diff) {
+      await this.enqueueJob('diff', diff);
+      return true;
+    }
+    return false;
   }
 }
 
@@ -407,5 +492,5 @@ export const getGraphPushStatsRaw = () => graphPushOrchestrator.getStatsRaw();
 
 export const hasDetectDrivenDirty = () => graphPushOrchestrator.peekDetectDirty();
 
-export const consumeDetectDrivenDirty = () => graphPushOrchestrator.consumeDetectDirty();
+export const flushPendingFromDetector = () => graphPushOrchestrator.flushPendingFromDetector();
 

@@ -9,7 +9,7 @@ import {
   getGraphPushStats as orchestratorGetGraphPushStats,
   getGraphPushStatsRaw as orchestratorGetGraphPushStatsRaw,
   hasDetectDrivenDirty,
-  consumeDetectDrivenDirty,
+  flushPendingFromDetector as orchestratorFlushPendingFromDetector,
 } from './graphPushOrchestrator.js';
 
 export { pushArbGraphSnapshot, pushArbGraphDiff, notifyArbServiceRefresh } from './graphPushOrchestrator.js';
@@ -90,6 +90,8 @@ export const getGraphPushStats = () => orchestratorGetGraphPushStats();
 
 export const getGraphPushStatsRaw = () => orchestratorGetGraphPushStatsRaw();
 
+export const flushPendingFromDetector = () => orchestratorFlushPendingFromDetector();
+
 // Optional: basic retry with backoff for failed pushes is handled implicitly by queue re-enqueue if needed in future
 
 // Lightweight readiness probe for arb-rs backend mode
@@ -159,17 +161,21 @@ export function startDetectDrivenGraphPush(debounceMs = 0): void {
           try { logger.info('graph.rebuild.detect_driven', { last_detection_ms: lastDetectSeen, code: 'GRAPH.REBUILD.DETECT_DRIVEN' }); } catch {}
           try {
             if (!hasDetectDrivenDirty()) { return; }
-            const gmod: any = await import('./graph.js');
             const wait = getDetectDrivenPushCoalesceMs();
             if (detectDebounceTimer) { clearTimeout(detectDebounceTimer); detectDebounceTimer = null; }
             detectDebounceTimer = setTimeout(async () => {
               detectDebounceTimer = null;
-              const dirty = consumeDetectDrivenDirty();
-              if (!dirty) return;
-              if (typeof gmod.rebuildGraphNow === 'function') {
-                await gmod.rebuildGraphNow(undefined, { pushToArb: true });
-              } else {
-                gmod.scheduleGraphRebuild(undefined, Math.max(0, debounceMs));
+              if (!hasDetectDrivenDirty()) return;
+              try {
+                logger.info('graph.push detector_flush_pending', {});
+              } catch {}
+              try {
+                const flushed = await orchestratorFlushPendingFromDetector();
+                try {
+                  logger.info('graph.push detector_flush_complete', { flushed });
+                } catch {}
+              } catch (err) {
+                try { logger.info('graph.push detector_flush_failed', { error: String((err as any)?.message || err) }); } catch {}
               }
             }, wait);
           } catch {}

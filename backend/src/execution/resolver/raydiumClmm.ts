@@ -21,6 +21,7 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
     hop.tickArrayCenter = hop.tickArrayCenter || cached.tickArrays.center;
     hop.tickArrayUpper = hop.tickArrayUpper || cached.tickArrays.upper;
     if (!hop.observationId && cached.observationId) hop.observationId = cached.observationId;
+    if (!hop.ammConfig && cached.ammConfig) hop.ammConfig = cached.ammConfig;
   } else {
     // Fallback: minimal hints from pools snapshot (non-authoritative)
     try {
@@ -38,6 +39,10 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
         if (!hop.observationId) {
           const obs = (p as any)?.observation_id || (p as any)?.observationId || '';
           if (obs) hop.observationId = String(obs);
+        }
+        if (!hop.ammConfig) {
+          const cfg = (p as any)?.amm_config || (p as any)?.ammConfig || (p as any)?.config_id || '';
+          if (cfg) hop.ammConfig = String(cfg);
         }
       }
     } catch {}

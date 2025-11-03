@@ -4,7 +4,7 @@ import { logger } from '../../utils/logger.js';
 import { getTickArrayStartIndexByTick, deriveTickArrayPda } from '../../execution/raydiumTickArrays.js';
 import { getClmmStatic, setClmmStatic, saveClmmCacheToDisk } from '../../execution/clmmCache.js';
 
-async function decodeClmmState(connection: Connection, poolPk: PublicKey): Promise<{ programId: PublicKey; oracle: PublicKey | null; vaultA: PublicKey | null; vaultB: PublicKey | null; observationId: PublicKey | null; tickCurrent: number; tickSpacing: number } | null> {
+async function decodeClmmState(connection: Connection, poolPk: PublicKey): Promise<{ programId: PublicKey; ammConfig: PublicKey | null; oracle: PublicKey | null; vaultA: PublicKey | null; vaultB: PublicKey | null; observationId: PublicKey | null; tickCurrent: number; tickSpacing: number } | null> {
   const acc = await connection.getAccountInfo(poolPk);
   if (!acc?.data?.length) { try { logger.warn('clmm.decode.no_account', { pool: poolPk.toBase58?.() || String(poolPk) }); } catch {}; return null; }
   const programId = acc.owner;
@@ -44,14 +44,15 @@ async function decodeClmmState(connection: Connection, poolPk: PublicKey): Promi
         return null;
       }
     };
+    const ammConfig = asPk((state as any).ammConfig || (state as any).amm_config);
     const oracle = asPk((state as any).oracle);
     const observationId = asPk((state as any).observationId || (state as any).observation_id || (state as any).observationAccount || (state as any).observation_account);
     const vaultA = asPk((state as any).vaultA || (state as any).tokenVaultA || (state as any).baseVault);
     const vaultB = asPk((state as any).vaultB || (state as any).tokenVaultB || (state as any).quoteVault);
     const tickCurrent = Number((state as any).tickCurrent ?? (state as any).tick_current ?? 0);
     const tickSpacing = Number((state as any).tickSpacing ?? (state as any).tick_spacing ?? 1);
-    try { logger.info('clmm.decode.ok', { pool: poolPk.toBase58?.(), owner: programId?.toBase58?.(), tickCurrent, tickSpacing, oracle: oracle?.toBase58?.(), observationId: observationId?.toBase58?.(), vA: vaultA?.toBase58?.(), vB: vaultB?.toBase58?.() }); } catch {}
-    return { programId, oracle, vaultA, vaultB, observationId, tickCurrent, tickSpacing };
+    try { logger.info('clmm.decode.ok', { pool: poolPk.toBase58?.(), owner: programId?.toBase58?.(), tickCurrent, tickSpacing, oracle: oracle?.toBase58?.(), observationId: observationId?.toBase58?.(), ammConfig: ammConfig?.toBase58?.(), vA: vaultA?.toBase58?.(), vB: vaultB?.toBase58?.() }); } catch {}
+    return { programId, ammConfig, oracle, vaultA, vaultB, observationId, tickCurrent, tickSpacing };
   } catch {
     return null;
   }
@@ -74,7 +75,7 @@ export async function refreshRaydiumClmm(poolIdStr: string): Promise<void> {
   const decoded = await decodeClmmState(connection, poolPk);
   if (!decoded) { try { logger.warn('clmm.refresh.decode_nil', { pool: poolIdStr }); } catch {}; return; }
 
-  const { programId, oracle, vaultA, vaultB, observationId, tickCurrent, tickSpacing } = decoded;
+  const { programId, ammConfig, oracle, vaultA, vaultB, observationId, tickCurrent, tickSpacing } = decoded;
 
   const centerStart = getTickArrayStartIndexByTick(tickCurrent, tickSpacing);
   const delta = 60 * Math.max(1, tickSpacing);
@@ -106,6 +107,7 @@ export async function refreshRaydiumClmm(poolIdStr: string): Promise<void> {
 
   const staticInfo = {
     programId: programId.toBase58(),
+    ammConfig: ammConfig ? ammConfig.toBase58() : '',
     tickSpacing,
     oracle: oracle ? oracle.toBase58() : '',
     observationId: observationId ? observationId.toBase58() : '',

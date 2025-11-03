@@ -34,6 +34,7 @@ export type DirectHop = {
   tickArrayCenter?: string;
   tickArrayUpper?: string;
   observationId?: string;
+  ammConfig?: string;
 
   // Raydium AMM/Serum
   ammAuthority?: string;

@@ -2,6 +2,7 @@ import type { DirectHop } from '../types.js';
 import { logger } from '../../utils/logger.js';
 import { LogCode } from '../../utils/logging.js';
 import { PublicKey, TransactionInstruction } from '@solana/web3.js';
+import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
 import { getConnection, ensureWallet } from '../../wallet/wallet.js';
 import { CONFIG } from '../../utils/config.js';
 import { normalizePublicKey, isValidPublicKey, coerceToPublicKey, sanitizeKeyString } from './utils.js';
@@ -225,11 +226,9 @@ function flattenToTransactionInstructions(value: any, hop: DirectHop): Transacti
       }
     }
     if (Array.isArray(item?.instructions)) {
-      try {
-        if (Array.isArray(item?.signers) && item.signers.length) {
-          logger.warn('orca.whirlpool.ix.signers_unsupported', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { pool: hop.poolId, count: item.signers.length } });
-        }
-      } catch {}
+      if (Array.isArray(item?.signers) && item.signers.length) {
+        throw createBuilderError('ORCA', `whirlpool swap requires additional signers (count=${item.signers.length}); ensure all tick arrays/accounts exist on-chain`, hop);
+      }
       visit(item.instructions);
       if (Array.isArray(item?.cleanupInstructions)) visit(item.cleanupInstructions);
       return;
@@ -287,6 +286,93 @@ function flattenToTransactionInstructions(value: any, hop: DirectHop): Transacti
 
   visit(value);
   return out;
+}
+
+async function ensureWhirlpoolTickArrays(
+  ctx: any,
+  whirlpool: any,
+  quote: any,
+  payer: PublicKey,
+  hop: DirectHop,
+): Promise<TransactionInstruction[]> {
+  try {
+    if (!ctx || !whirlpool || !quote) return [];
+    const requiredKeys: PublicKey[] = [];
+    const requiredSet = new Set<string>();
+    const addRequired = (val: any) => {
+      if (!val) return;
+      try {
+        const pk = val instanceof PublicKey ? val : new PublicKey(val);
+        const key = pk.toBase58();
+        if (!requiredSet.has(key)) {
+          requiredSet.add(key);
+          requiredKeys.push(pk);
+        }
+      } catch {}
+    };
+    addRequired((quote as any)?.tickArray0);
+    addRequired((quote as any)?.tickArray1);
+    addRequired((quote as any)?.tickArray2);
+    if (Array.isArray((quote as any)?.supplementalTickArrays)) {
+      for (const extra of (quote as any).supplementalTickArrays) addRequired(extra);
+    }
+    if (!requiredKeys.length) return [];
+
+    const { SwapUtils, PDAUtil, WhirlpoolIx } = await import('@orca-so/whirlpools-sdk');
+    const whirlpoolPk: PublicKey = whirlpool.getAddress ? whirlpool.getAddress() : new PublicKey(String((whirlpool as any)?.address || (whirlpool as any)?.publicKey));
+    const data = whirlpool.getData ? whirlpool.getData() : undefined;
+    if (!data) return [];
+    const pathEntries = SwapUtils.getTickArrayPublicKeysWithStartTickIndex(
+      Number(data.tickCurrentIndex),
+      Number(data.tickSpacing),
+      !!(quote as any)?.aToB,
+      ctx.program.programId,
+      whirlpoolPk,
+    );
+    const startIndexByAddress = new Map<string, number>();
+    for (const entry of pathEntries) {
+      startIndexByAddress.set(entry.pubkey.toBase58(), Number(entry.startTickIndex));
+    }
+
+    const infos = await ctx.connection.getMultipleAccountsInfo(requiredKeys);
+    const missing: Array<{ pubkey: PublicKey; startTick: number }> = [];
+    for (let i = 0; i < requiredKeys.length; i += 1) {
+      if (infos[i]) continue;
+      const pk = requiredKeys[i];
+      const startTick = startIndexByAddress.get(pk.toBase58());
+      if (startTick === undefined) {
+        throw createBuilderError('ORCA', `missing tick array ${pk.toBase58()} but unable to derive start tick`, hop);
+      }
+      missing.push({ pubkey: pk, startTick });
+    }
+    if (!missing.length) return [];
+
+    const instructions: TransactionInstruction[] = [];
+    for (const item of missing) {
+      try {
+        const tickArrayPda = PDAUtil.getTickArray(ctx.program.programId, whirlpoolPk, item.startTick);
+        const ix = WhirlpoolIx.initTickArrayIx(ctx.program, {
+          whirlpool: whirlpoolPk,
+          tickArrayPda,
+          startTick: item.startTick,
+          funder: payer,
+        });
+        instructions.push(...flattenToTransactionInstructions(ix, hop));
+        try {
+          logger.info('orca.whirlpool.tickarray.init', {
+            cat: 'tx',
+            ctx: { pool: whirlpoolPk.toBase58(), tickArray: item.pubkey.toBase58(), startTick: item.startTick },
+          });
+        } catch {}
+      } catch (e: any) {
+        throw createBuilderError('ORCA', `failed to build tick array init for ${item.pubkey.toBase58()}: ${String((e as any)?.message || e)}`, hop);
+      }
+    }
+    return instructions;
+  } catch (e) {
+    if (e instanceof Error && e.message.includes('ORCA_BUILD_FAILED')) throw e;
+    throw createBuilderError('ORCA', `tick array preparation failed: ${String((e as any)?.message || e)}`, hop);
+  }
 }
 
 // Placeholders to satisfy wiring; concrete implementations will target specific programs
@@ -347,7 +433,19 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
       const programId = new PublicKey((CONFIG as any).orca.programId);
       
       // Create context per operation (no global state)
-      const ctx = (WhirlpoolContext as any).from(connection, { publicKey: kp.publicKey }, programId);
+      const ctx = (WhirlpoolContext as any).from(
+        connection,
+        { publicKey: kp.publicKey },
+        programId,
+        undefined,
+        undefined,
+        {
+          accountResolverOptions: {
+            createWrappedSolAccountMethod: 'ata',
+            allowPDAOwnerAddress: true,
+          },
+        },
+      );
       const client = (buildWhirlpoolClient as any)(ctx);
       const pool = await client.getPool(new PublicKey(poolAddr));
       
@@ -399,6 +497,8 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
       
       try { logger.info('orca.whirlpool.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: estimatedOut.toString() } as any }); } catch {}
       
+      const preIx = await ensureWhirlpoolTickArrays(ctx, pool, quote, kp.publicKey, hop);
+
       // Build swap instruction from quote
       // Try multiple SDK API patterns for building swap instruction
       let swapIx: any = null;
@@ -446,7 +546,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
         throw createBuilderError('ORCA', 'unable to build swap instruction from quote - no compatible SDK method found', hop);
       }
 
-      const instructions = flattenToTransactionInstructions(swapIx, hop);
+      const instructions = [...preIx, ...flattenToTransactionInstructions(swapIx, hop)];
       if (!instructions.length) {
         throw createBuilderError('ORCA', 'swap builder returned no executable instructions', hop);
       }
@@ -644,6 +744,20 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           }
           return undefined;
         };
+
+        // Deterministic PDA derivation (primary path)
+        try {
+          if (!binArrayBitmapExtension) {
+            const [pda] = PublicKey.findProgramAddressSync([
+              Buffer.from('bitmap'),
+              poolPk.toBuffer(),
+            ], programId);
+            binArrayBitmapExtension = pda;
+            try { logger.info('meteora.dlmm.derive.ext.ok', { cat: 'tx', ctx: { ext: binArrayBitmapExtension?.toBase58?.() } as any }); } catch {}
+          }
+        } catch (pdaErr: any) {
+          try { logger.debug('meteora.dlmm.bitmap.pda.sync.fail', { cat: 'tx', ctx: { error: String(pdaErr?.message || pdaErr) } }); } catch {}
+        }
         
         // Essential attempts only (reduced from 10+ to 3)
         const attempts: Array<() => Promise<any>> = [];
@@ -1044,6 +1158,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
             hop.tickArrayCenter = hop.tickArrayCenter || cached.tickArrays.center;
             hop.tickArrayUpper = hop.tickArrayUpper || cached.tickArrays.upper;
             hop.observationId = hop.observationId || cached.observationId;
+            hop.ammConfig = hop.ammConfig || cached.ammConfig;
           }
           try { logger.info('raydium.clmm.refresh.result', { cat: 'tx', ctx: { pool: poolBase, oracle: hop.oracle || '', lower: hop.tickArrayLower || '', upper: hop.tickArrayUpper || '' } as any }); } catch {}
         } catch {}
@@ -1062,6 +1177,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
         programId: hop.programId,
         oracle: hop.oracle,
         observation: hop.observationId,
+        ammConfig: hop.ammConfig,
         lower: hop.tickArrayLower,
         upper: hop.tickArrayUpper,
         vaultA: hop.vaultA,
@@ -1071,8 +1187,10 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
 
     const { ClmmInstrument } = await import('@raydium-io/raydium-sdk-v2');
     const kp = await ensureWallet(CONFIG.walletPath);
-    const poolId = toPublicKey(hop.poolId);
-    const programId = toPublicKey(hop.programId, (CONFIG.raydium?.clmmProgram as any));
+    const poolIdPk = toPublicKey(hop.poolId);
+    const programIdPk = toPublicKey(hop.programId, (CONFIG.raydium?.clmmProgram as any));
+    const poolId = poolIdPk.toBase58();
+    const programId = programIdPk.toBase58();
     
     // Validate required config values - no unsafe fallbacks
     let observationId: PublicKey | null = null;
@@ -1100,39 +1218,83 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     };
 
     // Minimal poolInfo/poolKeys for swapBaseIn; for real use, prefer full keys via SDK helper if available in version
-    const poolInfo = { id: poolId, programId, mintA: toPublicKey(hop.inputMint), mintB: toPublicKey(hop.outputMint), config: {} } as any;
-    
-    // Validate authority config - no unsafe fallback
-    const authorityConfig = (CONFIG.raydium as any)?.clmmAuthority;
-    if (!authorityConfig) {
-      throw createBuilderError('RAYDIUM_CLMM', 'clmmAuthority required in CONFIG.raydium.clmmAuthority', hop);
+    const configIdPk = hop.ammConfig ? toPublicKey(hop.ammConfig) : null;
+    if (!configIdPk) {
+      throw createBuilderError('RAYDIUM_CLMM', 'ammConfig missing (cache)', hop);
     }
-    const authority = toPublicKey(authorityConfig);
+
+    const mintAAddress = toPublicKey(hop.inputMint).toBase58();
+    const mintBAddress = toPublicKey(hop.outputMint).toBase58();
+    const mintAInfo = {
+      address: mintAAddress,
+      decimals: Number(hop.inputDecimals ?? 0),
+      programId: hop.inputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID.toBase58() : TOKEN_PROGRAM_ID.toBase58(),
+    } as any;
+    const mintBInfo = {
+      address: mintBAddress,
+      decimals: Number(hop.outputDecimals ?? 0),
+      programId: hop.outputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID.toBase58() : TOKEN_PROGRAM_ID.toBase58(),
+    } as any;
+
+    const configInfo = {
+      id: configIdPk.toBase58(),
+      index: 0,
+      protocolFeeRate: 0,
+      tradeFeeRate: 0,
+      tickSpacing: Number(hop.tickSpacing ?? 1),
+      fundFeeRate: 0,
+      defaultRange: 0,
+      defaultRangePoint: [],
+    } as any;
+
+    const poolInfo = {
+      id: poolId,
+      programId,
+      mintA: mintAInfo,
+      mintB: mintBInfo,
+      config: configInfo,
+    } as any;
     
     const poolKeys: any = {
       id: poolId,
       programId,
-      mintA: toPublicKey(hop.inputMint),
-      mintB: toPublicKey(hop.outputMint),
-      vault: { A: toPublicKey(hop.vaultA as any), B: toPublicKey(hop.vaultB as any) },
-      authority,
-      observationId,
+      mintA: mintAInfo,
+      mintB: mintBInfo,
+      vault: {
+        A: toPublicKey(hop.vaultA as any).toBase58(),
+        B: toPublicKey(hop.vaultB as any).toBase58(),
+      },
+      observationId: observationId.toBase58(),
+      config: configInfo,
+      rewardInfos: [],
     };
-    try { if (hop.tickArrayLower) (poolKeys as any).tickArrayLower = toPublicKey(hop.tickArrayLower); } catch {}
-    try { if (hop.tickArrayUpper) (poolKeys as any).tickArrayUpper = toPublicKey(hop.tickArrayUpper); } catch {}
+    try { if (hop.tickArrayLower) (poolKeys as any).tickArrayLower = toPublicKey(hop.tickArrayLower).toBase58(); } catch {}
+    try { if (hop.tickArrayCenter) (poolKeys as any).tickArrayCenter = toPublicKey(hop.tickArrayCenter).toBase58(); } catch {}
+    try { if (hop.tickArrayUpper) (poolKeys as any).tickArrayUpper = toPublicKey(hop.tickArrayUpper).toBase58(); } catch {}
 
-    const remaining: any[] = [];
-    try { if (hop.oracle) remaining.push({ pubkey: toPublicKey(hop.oracle), isWritable: false, isSigner: false }); } catch {}
+    const tickArrayKeys: PublicKey[] = [];
+    try { if (hop.tickArrayLower) tickArrayKeys.push(toPublicKey(hop.tickArrayLower)); } catch {}
+    try { if (hop.tickArrayCenter) tickArrayKeys.push(toPublicKey(hop.tickArrayCenter)); } catch {}
+    try { if (hop.tickArrayUpper) tickArrayKeys.push(toPublicKey(hop.tickArrayUpper)); } catch {}
+    if (!tickArrayKeys.length) {
+      throw createBuilderError('RAYDIUM_CLMM', 'missing tick arrays for swap', hop);
+    }
+
+    const BN = (await import('bn.js')).default as any;
+    const amountInBn = new BN(String(hop.amountInRaw ?? 0n));
+    const minOutBn = new BN(String(hop.minOutRaw ?? 0n));
+    const sqrtLimitBn = new BN(String(hop.sqrtPriceLimitX64 ?? 0n));
+
     const res = (ClmmInstrument as any).makeSwapBaseInInstructions({
       poolInfo,
       poolKeys,
       observationId,
       ownerInfo,
       inputMint: toPublicKey(hop.inputMint),
-      amountIn: hop.amountInRaw,
-      amountOutMin: hop.minOutRaw,
-      sqrtPriceLimitX64: hop.sqrtPriceLimitX64 ?? 0n,
-      remainingAccounts: remaining,
+      amountIn: amountInBn,
+      amountOutMin: minOutBn,
+      sqrtPriceLimitX64: sqrtLimitBn,
+      remainingAccounts: tickArrayKeys,
     });
     const ixs = Array.isArray(res?.instructions) ? res.instructions : (res?.innerTransaction ? res.innerTransaction.instructions : []);
     if (ixs && ixs.length) return ixs as any[];

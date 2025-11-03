@@ -18,14 +18,18 @@ describe('detect-driven graph push', () => {
     }));
     const sequence = [0, 0, 1234, 1234, 2345];
     let idx = 0;
+    let updateCalls = 0;
+    let ackCalls = 0;
     global.fetch = vi.fn(async (url = '') => {
       if (typeof url === 'string' && url.endsWith('/metrics/json')) {
         return { ok: true, json: async () => ({ last_detection_ms: sequence[idx++] || 0 }) };
       }
       if (typeof url === 'string' && (url.endsWith('/arb/graph/update') || url.endsWith('/arb/graph/snapshot'))) {
+        if (url.endsWith('/arb/graph/update')) updateCalls += 1;
         return { ok: true, json: async () => ({ ok: true }) };
       }
       if (typeof url === 'string' && url.endsWith('/arb/graph/ack')) {
+        ackCalls += 1;
         return { ok: true, json: async () => ({ ok: true, acked: true }) };
       }
       if (typeof url === 'string' && url.endsWith('/arb/graph/version')) {
@@ -38,11 +42,12 @@ describe('detect-driven graph push', () => {
     const g = await import('../../server/graph.js');
     setArbStreamEnabled(true);
     const diffPromise = pushArbGraphDiff({ version: 1, addedEdges: [], updatedEdges: [], removedEdgeIds: [] });
-    await vi.advanceTimersByTimeAsync(100);
-    await diffPromise;
     startDetectDrivenGraphPush(0);
     await vi.advanceTimersByTimeAsync(600);
-    expect(g.scheduleGraphRebuild).toHaveBeenCalled();
+    await diffPromise;
+    expect(updateCalls).toBeGreaterThan(0);
+    expect(ackCalls).toBeGreaterThan(0);
+    expect(g.scheduleGraphRebuild).not.toHaveBeenCalled();
   });
 
   it('waits for detection after push (bounded)', async () => {
@@ -66,6 +71,7 @@ describe('detect-driven graph push', () => {
     const t0 = Date.now();
     const pushPromise = rt.pushArbGraphDiff({ version: 1, addedEdges: [], updatedEdges: [], removedEdgeIds: [] });
     await vi.advanceTimersByTimeAsync(500);
+    await rt.flushPendingFromDetector();
     await pushPromise;
     const dt = Date.now() - t0;
     expect(dt).toBeGreaterThanOrEqual(0);

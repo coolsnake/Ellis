@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 export type ClmmPoolStatic = {
   programId: string;
+  ammConfig: string;
   tickSpacing: number;
   oracle: string;
   vaultA: string;
