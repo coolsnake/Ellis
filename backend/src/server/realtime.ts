@@ -11,6 +11,14 @@ import {
   hasPendingPush,
 } from './graphPushCoordinator.js';
 
+export async function notifyArbServiceRefresh(): Promise<void> {
+  try {
+    const host = ((globalThis as any)?.process?.env?.ARB_SERVICE_URL) || 'http://127.0.0.1:4010';
+    // eslint-disable-next-line no-undef
+    await fetch(`${host}/arb/graph/version`, { method: 'GET', headers: { accept: 'application/json' } });
+  } catch {}
+}
+
 let ioRef: SocketIOServer | null = null;
 
 export function setIo(io: SocketIOServer) {
