@@ -180,7 +180,7 @@ export class WorkerClient<TIn = unknown, TOut = unknown> {
     if (msg.ok) {
       pending.resolve(msg.result as TOut);
     } else {
-      const errorMsg = msg as WorkerErrorMessage<TOut>;
+      const errorMsg = msg as WorkerErrorMessage;
       pending.reject(reviveError(errorMsg.error));
     }
 
