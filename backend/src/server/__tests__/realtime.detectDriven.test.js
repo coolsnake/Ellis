@@ -18,10 +18,28 @@ describe('detect-driven graph push', () => {
     }));
     const sequence = [0, 0, 1234, 1234, 2345];
     let idx = 0;
-    global.fetch = vi.fn(async () => ({ ok: true, json: async () => ({ last_detection_ms: sequence[idx++] || 0 }) }));
+    global.fetch = vi.fn(async (url = '') => {
+      if (typeof url === 'string' && url.endsWith('/metrics/json')) {
+        return { ok: true, json: async () => ({ last_detection_ms: sequence[idx++] || 0 }) };
+      }
+      if (typeof url === 'string' && (url.endsWith('/arb/graph/update') || url.endsWith('/arb/graph/snapshot'))) {
+        return { ok: true, json: async () => ({ ok: true }) };
+      }
+      if (typeof url === 'string' && url.endsWith('/arb/graph/ack')) {
+        return { ok: true, json: async () => ({ ok: true, acked: true }) };
+      }
+      if (typeof url === 'string' && url.endsWith('/arb/graph/version')) {
+        return { ok: true, json: async () => ({ version: 1 }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
 
-    const { startDetectDrivenGraphPush } = await import('../../server/realtime.js');
+    const { startDetectDrivenGraphPush, pushArbGraphDiff, setArbStreamEnabled } = await import('../../server/realtime.js');
     const g = await import('../../server/graph.js');
+    setArbStreamEnabled(true);
+    const diffPromise = pushArbGraphDiff({ version: 1, addedEdges: [], updatedEdges: [], removedEdgeIds: [] });
+    await vi.advanceTimersByTimeAsync(100);
+    await diffPromise;
     startDetectDrivenGraphPush(0);
     await vi.advanceTimersByTimeAsync(600);
     expect(g.scheduleGraphRebuild).toHaveBeenCalled();
@@ -46,8 +64,9 @@ describe('detect-driven graph push', () => {
 
     const rt = await import('../../server/realtime.js');
     const t0 = Date.now();
-    await rt.pushArbGraphDiff({ version: 1, addedEdges: [], updatedEdges: [], removedEdgeIds: [] });
+    const pushPromise = rt.pushArbGraphDiff({ version: 1, addedEdges: [], updatedEdges: [], removedEdgeIds: [] });
     await vi.advanceTimersByTimeAsync(500);
+    await pushPromise;
     const dt = Date.now() - t0;
     expect(dt).toBeGreaterThanOrEqual(0);
   });

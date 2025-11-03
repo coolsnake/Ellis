@@ -22,6 +22,8 @@ describe('realtime diff coalescing', () => {
   it('merges rapid diffs into a single /arb/graph/update', async () => {
     let updateCalls = 0;
     let versionPeekCalls = 0;
+    const metricsSeq = [0, 0, 100, 200];
+    let metricsIdx = 0;
     global.fetch = vi.fn(async (url) => {
       const u = String(url || '');
       if (u.endsWith('/arb/graph/update')) {
@@ -32,10 +34,18 @@ describe('realtime diff coalescing', () => {
         versionPeekCalls += 1;
         return { ok: true, json: async () => ({ version: 2 }) };
       }
+      if (u.endsWith('/arb/graph/ack')) {
+        return { ok: true, json: async () => ({ ok: true, acked: true }) };
+      }
+      if (u.endsWith('/metrics/json')) {
+        const value = metricsSeq[Math.min(metricsIdx++, metricsSeq.length - 1)] || 0;
+        return { ok: true, json: async () => ({ last_detection_ms: value }) };
+      }
       return { ok: true, json: async () => ({}) };
     });
 
     const rt = await import('../../server/realtime.js');
+    rt.setArbStreamEnabled(true);
 
     const p1 = rt.pushArbGraphDiff({ version: 1, addedEdges: [], updatedEdges: [], removedEdgeIds: [] });
     const p2 = rt.pushArbGraphDiff({ version: 2, addedEdges: [], updatedEdges: [], removedEdgeIds: [] });

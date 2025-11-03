@@ -3,6 +3,16 @@ import { recordSessionLog } from '../utils/sessionLogs.js';
 import { logger } from '../utils/logger.js';
 import { WebSocket } from 'ws';
 import { CONFIG } from '../utils/config.js';
+import {
+  setArbStreamEnabled as orchestratorSetArbStreamEnabled,
+  isArbStreamEnabled as orchestratorIsArbStreamEnabled,
+  getGraphPushStats as orchestratorGetGraphPushStats,
+  getGraphPushStatsRaw as orchestratorGetGraphPushStatsRaw,
+  hasDetectDrivenDirty,
+  consumeDetectDrivenDirty,
+} from './graphPushOrchestrator.js';
+
+export { pushArbGraphSnapshot, pushArbGraphDiff, notifyArbServiceRefresh } from './graphPushOrchestrator.js';
 
 let ioRef: SocketIOServer | null = null;
 
@@ -70,253 +80,15 @@ export function emitUserSummary(summary: any): void {
 }
 
 // Gate: only push graph updates to arb-rs after user presses Start Arb
-let arbStreamEnabled = false;
 export function setArbStreamEnabled(enabled: boolean): void {
   try { emit('log', { level: 'info', message: `arb:stream ${enabled ? 'enabled' : 'disabled'}`, context: { cat: 'arb', code: enabled ? 'ARB.STREAM.ENABLE' : 'ARB.STREAM.DISABLE' } }); } catch {}
-  arbStreamEnabled = !!enabled;
+  orchestratorSetArbStreamEnabled(enabled);
 }
-export function isArbStreamEnabled(): boolean { return arbStreamEnabled; }
+export function isArbStreamEnabled(): boolean { return orchestratorIsArbStreamEnabled(); }
 
-export async function notifyArbServiceRefresh(): Promise<void> {
-  try {
-    const host = ((globalThis as any)?.process?.env?.ARB_SERVICE_URL) || 'http://127.0.0.1:4010';
-    // Use a lightweight ping to a valid arb-rs endpoint to nudge the loop without assuming custom routes
-    // eslint-disable-next-line no-undef
-    await fetch(`${host}/arb/graph/version`, { method: 'GET', headers: { 'accept': 'application/json' } });
-  } catch {}
-}
+export const getGraphPushStats = () => orchestratorGetGraphPushStats();
 
-// Simple sequential push queue to arb-rs with detection-run acknowledgement
-type ArbJob = { kind: 'snapshot' | 'diff'; payload: any; resolve: () => void; reject: (e: any) => void };
-let arbQueue: ArbJob[] = [];
-let arbInFlight = false;
-let lastRebaseAt = 0;
-let pushSuccess = 0;
-let pushFailed = 0;
-
-// Lightweight graph push ack statistics (bounded in-memory)
-const graphPushStats = {
-  ackMs: [] as number[],
-  success: 0,
-  failed: 0,
-};
-function pushBounded(arr: number[], v: number, cap = 200): void {
-  if (!Number.isFinite(v)) return;
-  arr.push(v);
-  if (arr.length > cap) arr.shift();
-}
-function pct(arr: number[], p: number): number | null {
-  if (!arr || arr.length === 0) return null;
-  const a = arr.slice().sort((x, y) => x - y);
-  const i = Math.min(a.length - 1, Math.max(0, Math.floor(((p / 100) * (a.length - 1)))));
-  return a[i] ?? null;
-}
-export function getGraphPushStats(): { count: number; p50: number | null; p95: number | null; success: number; failed: number } {
-  return { count: graphPushStats.ackMs.length, p50: pct(graphPushStats.ackMs, 50), p95: pct(graphPushStats.ackMs, 95), success: graphPushStats.success, failed: graphPushStats.failed };
-}
-export function getGraphPushStatsRaw(): { ackMs: number[]; success: number; failed: number } {
-  return { ackMs: graphPushStats.ackMs.slice(), success: graphPushStats.success, failed: graphPushStats.failed };
-}
-
-// Diff coalescing (debounce/merge) to reduce push/ack churn under high update rates
-let arbDiffBuffer: any | null = null;
-let arbDiffTimer: NodeJS.Timeout | null = null;
-let arbDiffWaiters: Array<{ resolve: () => void; reject: (e: any) => void }> = [];
-const getDiffCoalesceMs = (): number => {
-  try { const v = Number(((globalThis as any)?.process?.env?.ARB_DIFF_COALESCE_MS) || 50); return Number.isFinite(v) ? Math.max(0, v) : 0; } catch { return 0; }
-};
-// Detect-driven push dirty/guard and debounce
-let detectDirty = false;
-let ddPushTimer: NodeJS.Timeout | null = null;
-const getDetectDrivenPushCoalesceMs = (): number => {
-  try { const v = Number(((globalThis as any)?.process?.env?.DETECT_DRIVEN_PUSH_COALESCE_MS) || 75); return Number.isFinite(v) ? Math.max(0, v) : 0; } catch { return 0; }
-};
-function mergeArraysUnique<T>(a: T[] | undefined, b: T[] | undefined, keyFn?: (x: T) => string): T[] {
-  const out: T[] = [];
-  const seen = new Set<string>();
-  const push = (x: T) => {
-    if (!keyFn) { out.push(x); return; }
-    const k = keyFn(x);
-    if (!seen.has(k)) { seen.add(k); out.push(x); }
-  };
-  for (const x of (a || [])) push(x);
-  for (const x of (b || [])) push(x);
-  return out;
-}
-function coalesceDiff(acc: any | null, nxt: any): any {
-  if (!acc) return { ...(nxt || {}) };
-  const version = Math.max(Number(acc.version || 0), Number(nxt.version || 0));
-  const timestamp = Math.max(Number(acc.timestamp || 0), Number(nxt.timestamp || 0), Date.now());
-  const keyEdge = (e: any) => String((e?.pool_id) || `${e?.source}|${e?.target}|${e?.dex}`);
-  const removedEdgeIds = Array.from(new Set([...(acc.removedEdgeIds || []), ...(nxt.removedEdgeIds || [])].map((s: any) => String(s))));
-  const addedEdges = mergeArraysUnique(acc.addedEdges, nxt.addedEdges, keyEdge);
-  const updatedEdges = mergeArraysUnique(acc.updatedEdges, nxt.updatedEdges, keyEdge);
-  return { version, timestamp, addedNodes: [], updatedNodes: [], removedNodeIds: [], addedEdges, updatedEdges, removedEdgeIds };
-}
-
-async function fetchArbMetrics(): Promise<{ last_detection_ms: number }> {
-  try {
-    // Skip network during unit tests to avoid timeouts
-    if (String((globalThis as any)?.process?.env?.NODE_ENV || '').toLowerCase() === 'test') {
-      return { last_detection_ms: 0 };
-    }
-    const host = ((globalThis as any)?.process?.env?.ARB_SERVICE_URL) || 'http://127.0.0.1:4010';
-    // eslint-disable-next-line no-undef
-    const ac = new AbortController();
-    const t = setTimeout(() => ac.abort('timeout'), 3000);
-    const r = await fetch(`${host}/metrics/json`, { headers: { accept: 'application/json' }, signal: ac.signal }).finally(() => clearTimeout(t));
-    const j: any = await r.json().catch(() => ({}));
-    return { last_detection_ms: Number(j?.last_detection_ms || 0) };
-  } catch {
-    return { last_detection_ms: 0 };
-  }
-}
-
-async function processArbQueue(): Promise<void> {
-  if (arbInFlight) return;
-  arbInFlight = true;
-  try {
-    while (arbQueue.length) {
-      const job = arbQueue.shift()!;
-      const host = ((globalThis as any)?.process?.env?.ARB_SERVICE_URL) || 'http://127.0.0.1:4010';
-      // In test, simulate immediate success without network
-      if (String((globalThis as any)?.process?.env?.NODE_ENV || '').toLowerCase() === 'test') {
-        try { logger.info('arb.push ack', { kind: job.kind, acked: true, waited_ms: 0, wantVersion: Number((job as any)?.payload?.version || 0), queue_depth: arbQueue.length }); } catch {}
-        job.resolve();
-        continue;
-      }
-      const before = await fetchArbMetrics();
-      // Retry with exponential backoff
-      const auth = String(((globalThis as any)?.process?.env?.ARB_SHARED_SECRET) || '');
-      const headers: any = { 'content-type': 'application/json' };
-      if (auth) headers['authorization'] = `Bearer ${auth}`;
-      const url = job.kind === 'snapshot' ? `${host}/arb/graph/snapshot` : `${host}/arb/graph/update`;
-      const body = job.kind === 'snapshot' ? JSON.stringify({ graph: job.payload }) : JSON.stringify(job.payload);
-      let attempt = 0;
-      const maxAttempts = 5;
-      let sent = false;
-      while (attempt < maxAttempts && !sent) {
-        try {
-          // eslint-disable-next-line no-undef
-          const r = await fetch(url, { method: 'POST', headers, body });
-          if (!r || !r.ok) throw new Error(`status ${r && (r as any).status}`);
-          sent = true;
-          break;
-        } catch (e: any) {
-          attempt += 1;
-          const wait = Math.min(2000 * Math.pow(2, attempt - 1), 15000);
-          try { logger.warn('arb.push retry', { kind: job.kind, attempt, wait_ms: wait, error: String(e?.message || e) }); } catch {}
-          await new Promise((r) => setTimeout(r, wait));
-        }
-      }
-      if (!sent) {
-        try { logger.error('arb.push giveup', { kind: job.kind, attempts: attempt }); } catch {}
-      }
-      // Ack by calling /arb/graph/ack endpoint (more efficient than polling)
-      const wantVersion: number = Number((job.kind === 'snapshot' ? job.payload?.version : job.payload?.version) || 0);
-      const start = Date.now();
-      const timeoutMs = Number((((globalThis as any)?.process?.env?.ARB_ACK_TIMEOUT_MS) || 2500));
-      let acked = false;
-      if (wantVersion > 0) {
-        try {
-          // eslint-disable-next-line no-undef
-          const ac = new AbortController();
-          const t = setTimeout(() => ac.abort('timeout'), timeoutMs + 500);
-          const r = await fetch(`${host}/arb/graph/ack`, {
-            method: 'POST',
-            headers: { 
-              'content-type': 'application/json',
-              ...(auth ? { authorization: `Bearer ${auth}` } : {}),
-            },
-            body: JSON.stringify({ version: wantVersion, timeout_ms: timeoutMs }),
-            signal: ac.signal,
-          }).finally(() => clearTimeout(t));
-          if (r?.ok) {
-            const j: any = await r.json().catch(() => ({}));
-            acked = j?.acked === true;
-          }
-        } catch (e: any) {
-          try { logger.debug('arb.push ack failed', { kind: job.kind, error: String(e?.message || e) }); } catch {}
-        }
-      } else {
-        // No version specified, consider it acked immediately
-        acked = true;
-      }
-      try {
-        if (acked) pushSuccess += 1; else pushFailed += 1;
-        logger.info('arb.push ack', { kind: job.kind, acked, waited_ms: Date.now() - start, wantVersion, queue_depth: arbQueue.length, push_success: pushSuccess, push_failed: pushFailed });
-        // Record stats
-        const waited = Date.now() - start;
-        if (acked) graphPushStats.success += 1; else graphPushStats.failed += 1;
-        pushBounded(graphPushStats.ackMs, waited);
-      } catch {}
-
-      // Optionally wait for a fresh detection to complete after applying this graph update (bounded wait)
-      try {
-        const waitForDetect = String((((globalThis as any)?.process?.env?.ARB_WAIT_FOR_DETECT) || 'false')).toLowerCase() === 'true';
-        if (waitForDetect && String((((globalThis as any)?.process?.env?.NODE_ENV) || '')).toLowerCase() !== 'test') {
-          const detectDeadline = Date.now() + 8000;
-          while (Date.now() < detectDeadline) {
-            const cur = await fetchArbMetrics();
-            if (cur.last_detection_ms > before.last_detection_ms) break;
-            await new Promise((r) => setTimeout(r, 100));
-          }
-        }
-      } catch {}
-      job.resolve();
-      // If a snapshot was pushed, it supersedes any pending diffs built from older state; drop consecutive diffs until next rebuild
-      if (job.kind === 'snapshot' && arbQueue.length) {
-        arbQueue = arbQueue.filter((j) => j.kind === 'snapshot');
-      }
-    }
-  } finally {
-    arbInFlight = false;
-  }
-}
-
-export async function pushArbGraphSnapshot(snapshot: any): Promise<void> {
-  return new Promise((resolve, reject) => {
-    // Suppress until explicitly enabled and skip empties
-    try {
-      if (!arbStreamEnabled) { logger.debug('arb.push gated', { kind: 'snapshot' }); resolve(); return; }
-      if (!snapshot || !Array.isArray((snapshot as any).edges) || (snapshot as any).edges.length === 0) { logger.debug('arb.push skip empty snapshot'); resolve(); return; }
-    } catch {}
-    arbQueue.push({ kind: 'snapshot', payload: snapshot, resolve, reject });
-    processArbQueue().catch(() => {});
-  });
-}
-
-export async function pushArbGraphDiff(diff: any): Promise<void> {
-  return new Promise((resolve, reject) => {
-    // Suppress until explicitly enabled
-    try { if (!arbStreamEnabled) { logger.debug('arb.push gated', { kind: 'diff' }); resolve(); return; } } catch {}
-    // Mark dirty so detect-driven coalesced push can run after the next detection
-    try { detectDirty = true; } catch {}
-    const coalesceMs = getDiffCoalesceMs();
-    if (coalesceMs > 0) {
-      try { arbDiffBuffer = coalesceDiff(arbDiffBuffer, diff); } catch { arbDiffBuffer = diff; }
-      arbDiffWaiters.push({ resolve, reject });
-      if (!arbDiffTimer) {
-        arbDiffTimer = setTimeout(() => {
-          const payload = arbDiffBuffer; arbDiffBuffer = null; const waiters = arbDiffWaiters; arbDiffWaiters = [];
-          arbDiffTimer = null;
-          // Drop any queued diffs, keep snapshots
-          try { arbQueue = arbQueue.filter((j) => j.kind === 'snapshot'); } catch {}
-          // Enqueue single coalesced diff and fanout resolution after ack
-          arbQueue.push({ kind: 'diff', payload, resolve: () => { try { for (const w of waiters) w.resolve(); } catch {} }, reject: (e: any) => { try { for (const w of waiters) w.reject(e); } catch {} } });
-          try { logger.debug('arb.queue enq (coalesced)', { kind: 'diff', size: arbQueue.length }); } catch {}
-          processArbQueue().catch(() => {});
-        }, coalesceMs);
-      }
-      return;
-    }
-    // No coalescing: keep snapshots, drop queued diffs, then enqueue
-    try { arbQueue = arbQueue.filter((j) => j.kind === 'snapshot'); } catch {}
-    arbQueue.push({ kind: 'diff', payload: diff, resolve, reject });
-    try { logger.debug('arb.queue enq', { kind: 'diff', size: arbQueue.length }); } catch {}
-    processArbQueue().catch(() => {});
-  });
-}
+export const getGraphPushStatsRaw = () => orchestratorGetGraphPushStatsRaw();
 
 // Optional: basic retry with backoff for failed pushes is handled implicitly by queue re-enqueue if needed in future
 
@@ -351,7 +123,29 @@ export function getCachedArbVersion(): { version: number; timestamp: number; age
 }
 
 // Detect-driven trigger: rebuild graph right after each detection finishes
+const getDetectDrivenPushCoalesceMs = (): number => {
+  try { const v = Number(((globalThis as any)?.process?.env?.DETECT_DRIVEN_PUSH_COALESCE_MS) || 75); return Number.isFinite(v) ? Math.max(0, v) : 0; } catch { return 0; }
+};
+
 let lastDetectSeen = 0;
+let detectDebounceTimer: NodeJS.Timeout | null = null;
+
+const fetchArbMetrics = async (): Promise<{ last_detection_ms: number }> => {
+  try {
+    if (String((globalThis as any)?.process?.env?.NODE_ENV || '').toLowerCase() === 'test') {
+      return { last_detection_ms: 0 };
+    }
+    const host = ((globalThis as any)?.process?.env?.ARB_SERVICE_URL) || 'http://127.0.0.1:4010';
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort('timeout'), 3000);
+    const r = await fetch(`${host}/metrics/json`, { headers: { accept: 'application/json' }, signal: ac.signal }).finally(() => clearTimeout(t));
+    const j: any = await r.json().catch(() => ({}));
+    return { last_detection_ms: Number(j?.last_detection_ms || 0) };
+  } catch {
+    return { last_detection_ms: 0 };
+  }
+};
+
 export function startDetectDrivenGraphPush(debounceMs = 0): void {
   try {
     // Avoid duplicate timers
@@ -364,14 +158,14 @@ export function startDetectDrivenGraphPush(debounceMs = 0): void {
           lastDetectSeen = Number(m.last_detection_ms || 0);
           try { logger.info('graph.rebuild.detect_driven', { last_detection_ms: lastDetectSeen, code: 'GRAPH.REBUILD.DETECT_DRIVEN' }); } catch {}
           try {
-            // Only push after detection when we actually saw diffs since last detection
-            if (!detectDirty) { return; }
+            if (!hasDetectDrivenDirty()) { return; }
             const gmod: any = await import('./graph.js');
             const wait = getDetectDrivenPushCoalesceMs();
-            if (ddPushTimer) { clearTimeout(ddPushTimer); ddPushTimer = null; }
-            ddPushTimer = setTimeout(async () => {
-              ddPushTimer = null;
-              try { detectDirty = false; } catch {}
+            if (detectDebounceTimer) { clearTimeout(detectDebounceTimer); detectDebounceTimer = null; }
+            detectDebounceTimer = setTimeout(async () => {
+              detectDebounceTimer = null;
+              const dirty = consumeDetectDrivenDirty();
+              if (!dirty) return;
               if (typeof gmod.rebuildGraphNow === 'function') {
                 await gmod.rebuildGraphNow(undefined, { pushToArb: true });
               } else {
