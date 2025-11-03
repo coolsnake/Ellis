@@ -113,8 +113,8 @@ export const CONFIG = {
     graphStartDelayMs: Number(process.env.GRAPH_START_DELAY_MS || 5000),
     // Graph push cadence; when 0, rely entirely on event-driven rebuilds
     graphStreamIntervalMs: Number(process.env.GRAPH_STREAM_INTERVAL_MS || 1000),
-    // Enable detect-driven graph push cadence (default: false)
-    detectDrivenGraphPush: (process.env.DETECT_DRIVEN_GRAPH_PUSH || 'true') === 'true',
+    // Enforce detect-driven graph push cadence
+    detectDrivenGraphPush: true,
     // Debounce and delta threshold for event-driven graph rebuilds
     graphRebuildDebounceMs: Number(process.env.GRAPH_REBUILD_DEBOUNCE_MS || 25),
     graphRebuildMinDebounceMs: Number(process.env.GRAPH_REBUILD_MIN_DEBOUNCE_MS || 10),
