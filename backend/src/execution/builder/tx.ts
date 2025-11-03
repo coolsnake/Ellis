@@ -71,6 +71,9 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
   // Track actual output amounts from previous hops (for amount propagation)
   const hopOutputs: bigint[] = [];
   const ensuredAtas = new Set<string>();
+  let prevHopDestAta: string | undefined = undefined;
+  let prevHopOutputMint: string | undefined = undefined;
+  let prevHopOutputTokenProgram: string | undefined = undefined;
   
   for (let i = 0; i < plan.hops.length; i++) {
     // Create a working copy of the hop to avoid mutating the original
@@ -83,6 +86,19 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
       // --- Pre-hop account prep: ATAs and optional SOL wrapping ---
       if (execCfg.createAtasInTx !== false) {
         const payer = owner;
+        
+        // For multihop: chain output of previous hop as input of current hop
+        if (i > 0 && !hop.userSourceAta && prevHopDestAta) {
+          // If previous hop's output mint matches current hop's input mint, reuse the ATA
+          if (prevHopOutputMint === hop.inputMint && 
+              prevHopOutputTokenProgram === hop.inputTokenProgram) {
+            hop.userSourceAta = prevHopDestAta;
+            try {
+              logger.info('tx.build.hop.chain', { cat: 'tx', ctx: { traceId, hopIndex: i, chainedAta: hop.userSourceAta, mint: hop.inputMint } as any });
+            } catch {}
+          }
+        }
+        
         // Derive ATAs when missing
         if (!hop.userSourceAta) {
           try { hop.userSourceAta = deriveAta(owner, new PublicKey(hop.inputMint), hop.inputTokenProgram).toBase58(); } catch {}
@@ -206,6 +222,11 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
       // Track output amount for next hop (use minOutRaw as conservative estimate)
       // In a real scenario, this would come from quote simulation, but we use minOutRaw as fallback
       hopOutputs.push(hop.minOutRaw && hop.minOutRaw > 0n ? hop.minOutRaw : (hop.amountInRaw || 0n));
+      
+      // Track this hop's output ATA for chaining to next hop
+      prevHopDestAta = hop.userDestAta;
+      prevHopOutputMint = hop.outputMint;
+      prevHopOutputTokenProgram = hop.outputTokenProgram;
       
       try { logger.info('tx.build.hop.ok', { cat: 'tx', ctx: { traceId, dex: hop.dex, variant: hop.variant, poolId: hop.poolId } as any }); } catch {}
     } catch (e) {

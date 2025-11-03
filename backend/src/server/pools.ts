@@ -2191,12 +2191,18 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
         try {
           const gmod: any = await import('./graph.js');
           if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
+            // Incremental mode: use applyPoolUpdates (only one path)
             await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: true });
-          } else {
+          } else if (!inc && hasDelta) {
+            // Non-incremental mode: schedule rebuild only (only one path)
             const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
             const delta = d.amm.length + d.clmm.length + d.addedAmm + d.addedClmm + d.removedAmm + d.removedClmm;
-            if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
+            // Only schedule if threshold met (0 means always, but check delta > 0 to avoid empty rebuilds)
+            if ((thresh === 0 && delta > 0) || delta >= thresh) {
+              gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
+            }
           }
+          // ✅ No overlap - only one path triggers based on mode
         } catch {}
         try { logger.info('pools.delta raydium', { updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, cat: 'pools' }); } catch {}
       } catch {}
@@ -2306,12 +2312,18 @@ export async function getOrcaPoolsCached(force = false): Promise<PoolsPayload> {
         try {
           const gmod: any = await import('./graph.js');
           if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
+            // Incremental mode: use applyPoolUpdates (only one path)
             await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, data, { pushToArb: true });
-          } else {
+          } else if (!inc && hasDelta) {
+            // Non-incremental mode: schedule rebuild only (only one path)
             const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
             const delta = d.amm.length + d.clmm.length + d.addedAmm + d.addedClmm + d.removedAmm + d.removedClmm;
-            if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
+            // Only schedule if threshold met (0 means always, but check delta > 0 to avoid empty rebuilds)
+            if ((thresh === 0 && delta > 0) || delta >= thresh) {
+              gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
+            }
           }
+          // ✅ No overlap - only one path triggers based on mode
         } catch {}
       } catch {}
       // Graph rebuilds now orchestrated by refresh endpoint; avoid redundant triggers here

@@ -914,6 +914,8 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       const binIdToBinArrayIndex = (DLMM as any)?.binIdToBinArrayIndex || (mod as any)?.binIdToBinArrayIndex;
       
       // Derive bin arrays using active bin ID if lower/upper not provided
+      // IMPORTANT: Only set these if we can verify the accounts exist on-chain
+      // Deriving PDAs without verification causes AccountDiscriminatorMismatch errors
       if ((!binArrayLower || !binArrayUpper) && deriveBinArray && binIdToBinArrayIndex) {
         const bnjs = await import('bn.js').catch(() => null as any);
         const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
@@ -944,16 +946,26 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               const binArrayIdx = binIdToBinArrayIndex(activeBinId);
               if (binArrayIdx instanceof BN || (binArrayIdx && typeof binArrayIdx === 'object')) {
                 const idx = binArrayIdx instanceof BN ? binArrayIdx : new BN(String(binArrayIdx));
-                // Derive bin arrays around active bin
+                // Derive bin arrays around active bin and verify they exist
                 const indices = [idx, idx.add(new BN(1)), idx.sub(new BN(1))];
                 for (const arrIdx of indices) {
                   try {
                     const derived = deriveBinArray(poolPk, arrIdx, programId);
                     const pk = Array.isArray(derived) ? derived[0] : derived;
                     const finalPk = pk instanceof PublicKey ? pk : new PublicKey(String(pk));
-                    if (!binArrayLower) binArrayLower = finalPk;
-                    if (!binArrayUpper && !finalPk.equals(binArrayLower)) binArrayUpper = finalPk;
-                    if (binArrayLower && binArrayUpper) break;
+                    
+                    // Verify account exists on-chain before including it
+                    try {
+                      const accInfo = await connection.getAccountInfo(finalPk);
+                      if (accInfo && accInfo.data && accInfo.data.length > 0) {
+                        // Account exists, safe to include
+                        if (!binArrayLower) binArrayLower = finalPk;
+                        if (!binArrayUpper && !finalPk.equals(binArrayLower)) binArrayUpper = finalPk;
+                        if (binArrayLower && binArrayUpper) break;
+                      }
+                    } catch {
+                      // Account doesn't exist or error fetching - skip it
+                    }
                   } catch {}
                 }
               }
@@ -989,56 +1001,11 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       let lbPairState: any = null;
       try { lbPairState = await program.account.lbPair.fetch(poolPk); } catch {}
 
-      try {
-        const bnjs = await import('bn.js').catch(() => null as any);
-        const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
-        const binIdToBinArrayIndex = (DLMM as any)?.binIdToBinArrayIndex || (mod as any)?.binIdToBinArrayIndex;
-        const deriveBinArray = (DLMM as any)?.deriveBinArray || (mod as any)?.deriveBinArray;
-        const getBinBounds = (DLMM as any)?.getBinArrayLowerUpperBinId || (mod as any)?.getBinArrayLowerUpperBinId;
-        if (BN && typeof binIdToBinArrayIndex === 'function' && typeof deriveBinArray === 'function') {
-          const candidateBinIds: any[] = [];
-          if (typeof hop.activeId === 'number') candidateBinIds.push(new BN(String(hop.activeId)));
-          const stateActive = lbPairState?.activeId;
-          if (stateActive && typeof stateActive === 'object' && typeof stateActive.toString === 'function') {
-            candidateBinIds.push(new BN(stateActive.toString()));
-          }
-
-          const indices: any[] = [];
-          const idxSet = new Set<string>();
-          const addIndex = (idx: any) => {
-            const key = idx.toString();
-            if (idxSet.has(key)) return;
-            idxSet.add(key);
-            indices.push(idx);
-          };
-
-          for (const binId of candidateBinIds) {
-            try {
-              const baseIdx = binIdToBinArrayIndex(binId);
-              if (baseIdx instanceof BN) {
-                addIndex(baseIdx);
-                addIndex(baseIdx.add(new BN(1)));
-                addIndex(baseIdx.sub(new BN(1)));
-              }
-            } catch {}
-          }
-
-          // Only collect specific bin array PDAs needed for swap (not full coverage ranges)
-          // For swaps, we typically need 2-4 bin arrays around the active bin
-          const maxBinArrays = 6; // Reasonable limit for swap paths
-          for (const idx of indices) {
-            if (coverageMetas.length >= maxBinArrays) break; // Stop if we have enough
-            try {
-              const derived = deriveBinArray(poolPk, idx, programId);
-              const pk = Array.isArray(derived) ? derived[0] : derived;
-              pushMeta(pk);
-              // Do NOT call getBinArrayAccountMetasCoverage here - that returns ALL arrays
-              // in the range, which can be hundreds. For swaps, we only need the specific
-              // bin array PDAs around the active bin.
-            } catch {}
-          }
-        }
-      } catch {}
+      // Note: Do NOT manually derive bin arrays here - we need to verify they exist on-chain
+      // The SDK's getBinArrayAccountMetasCoverage will return only the bin arrays that are
+      // needed for the swap path. Manual derivation can include non-existent PDAs which
+      // causes AccountDiscriminatorMismatch errors.
+      // Let the SDK determine required bin arrays via remainingAccounts (below).
 
       // Always include bitmap extension in coverage metas
       if (binArrayBitmapExtension) {
@@ -1260,13 +1227,22 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 const idx = binArrayIdx instanceof BN ? binArrayIdx : new BN(String(binArrayIdx));
                 // getBinArrayLowerUpperBinId takes binArrayIndex, returns [lowerBinId, upperBinId]
                 const [lowerBinId, upperBinId] = getBinArrayLowerUpperBinId(idx);
-                const metas = getBinArrayAccountMetasCoverage(lowerBinId, upperBinId, poolPk, programId) || [];
-                // Limit metas to reasonable number for swap (getBinArrayAccountMetasCoverage can return many)
-                const maxMetas = 10; // Safety limit - swaps typically need 2-4 bin arrays
+                
+                // Expand range to cover potential swap path: active bin array +/- 2-3 bin arrays
+                // Swaps can traverse multiple bins, so we need a wider range
+                const binArraySize = (DLMM as any)?.MAX_BIN_ARRAY_SIZE ?? new BN(70);
+                const expansionFactor = new BN(3); // Cover 3 bin arrays on each side
+                const rangeLower = lowerBinId.sub(binArraySize.mul(expansionFactor));
+                const rangeUpper = upperBinId.add(binArraySize.mul(expansionFactor));
+                
+                const metas = getBinArrayAccountMetasCoverage(rangeLower, rangeUpper, poolPk, programId) || [];
+                // Don't limit aggressively - SDK should only return arrays that exist and are needed
+                // But cap at 20 as a safety measure against edge cases
+                const maxMetas = 20;
                 const limitedMetas = Array.isArray(metas) ? metas.slice(0, maxMetas) : [];
                 if (limitedMetas.length) {
                   builder = (builder as any).remainingAccounts(limitedMetas);
-                  try { logger.info('meteora.dlmm.remaining.ok', { cat: 'tx', ctx: { count: limitedMetas.length, total: metas.length } }); } catch {}
+                  try { logger.info('meteora.dlmm.remaining.ok', { cat: 'tx', ctx: { count: limitedMetas.length, total: metas.length, range: `${rangeLower.toString()}..${rangeUpper.toString()}` } }); } catch {}
                 }
               } catch (e: any) {
                 try { logger.debug('meteora.dlmm.remaining.bounds.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}

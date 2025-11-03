@@ -182,7 +182,8 @@ class GraphPushOrchestrator {
     }
     const version = Number(snapshot.version || 0);
     // Skip if version already acknowledged, in-flight, or queued
-    if (version > 0 && version <= this.lastAckedVersion) {
+    // Use < instead of <= to allow equal versions (valid retry after network failure)
+    if (version > 0 && version < this.lastAckedVersion) {
       try { logger.debug('arb.push skip duplicate snapshot', { version, last_acked: this.lastAckedVersion, reason: 'already_acked' }); } catch {}
       return;
     }
@@ -224,7 +225,8 @@ class GraphPushOrchestrator {
     }
     const version = Number(diff.version || 0);
     // Skip if version already acknowledged, in-flight, or queued
-    if (version > 0 && version <= this.lastAckedVersion) {
+    // Use < instead of <= to allow equal versions (valid retry after network failure)
+    if (version > 0 && version < this.lastAckedVersion) {
       try { logger.debug('arb.push skip duplicate diff', { version, last_acked: this.lastAckedVersion, reason: 'already_acked' }); } catch {}
       return;
     }
@@ -251,7 +253,8 @@ class GraphPushOrchestrator {
       const coalesced = coalesceDiff(this.pendingDiff, diff);
       const coalescedVersion = Number(coalesced.version || 0);
       // Check again after coalescing - might have merged with pending diff that has a higher version
-      if (coalescedVersion > 0 && coalescedVersion <= this.lastAckedVersion) {
+      // Use < instead of <= to allow equal versions (valid retry after network failure)
+      if (coalescedVersion > 0 && coalescedVersion < this.lastAckedVersion) {
         try { logger.debug('arb.push skip coalesced diff', { coalesced_version: coalescedVersion, last_acked: this.lastAckedVersion, reason: 'already_acked' }); } catch {}
         this.pendingDiff = null;
         return;
@@ -537,23 +540,38 @@ class GraphPushOrchestrator {
         this.resolveWaiters();
 
         if (job.kind === 'snapshot' && this.queue.length) {
-          // When a snapshot is processed, remove all non-snapshot jobs (snapshots supersede diffs)
-          // Also clean up versions for removed jobs
+          // When a snapshot is processed, we need smarter cleanup:
+          // - Remove OLDER diffs (version < snapshot version) - they're superseded
+          // - Keep NEWER diffs (version > snapshot version) - they supersede the snapshot
           const beforeCleanup = this.queue.length;
+          const snapshotVersion = Number(job.payload?.version || 0);
+          
           this.queue = this.queue.filter((j) => {
             if (j.kind === 'snapshot') {
               // Keep snapshot jobs
               return true;
             }
-            // Remove non-snapshot jobs and clean up their version tracking
-            const v = Number(j.payload?.version || 0);
-            if (v > 0) {
-              this.queuedVersions.delete(v);
+            // For diff jobs: remove only if older than snapshot
+            const diffVersion = Number(j.payload?.version || 0);
+            if (diffVersion > 0 && diffVersion < snapshotVersion) {
+              // Older diff - remove it (superseded by snapshot)
+              if (diffVersion > 0) {
+                this.queuedVersions.delete(diffVersion);
+              }
+              return false;
             }
-            return false;
+            // Newer diff - keep it (will supersede snapshot when processed)
+            return true;
           });
+          
           if (beforeCleanup > this.queue.length) {
-            try { logger.debug('arb.push snapshot cleanup', { removed: beforeCleanup - this.queue.length, remaining: this.queue.length }); } catch {}
+            try { 
+              logger.debug('arb.push snapshot cleanup', { 
+                removed: beforeCleanup - this.queue.length, 
+                remaining: this.queue.length,
+                snapshot_version: snapshotVersion
+              }); 
+            } catch {}
           }
         }
       }
@@ -660,7 +678,8 @@ class GraphPushOrchestrator {
     
     if (version > 0) {
       // Skip if already acknowledged, in-flight, or queued
-      if (version <= this.lastAckedVersion) {
+      // Use < instead of <= to allow equal versions (valid retry after network failure)
+      if (version < this.lastAckedVersion) {
         try { logger.debug('arb.push detector_flush skip duplicate', { version, last_acked: this.lastAckedVersion, reason: 'already_acked' }); } catch {}
         this.pendingSnapshot = null;
         this.pendingDiff = null;

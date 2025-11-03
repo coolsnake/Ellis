@@ -104,6 +104,46 @@ export function createArbRouter(io: SocketIOServer): Router {
     }
   });
 
+  api.get('/arb/graph/sync-status', async (_req, res) => {
+    try {
+      const { getGraphVersion } = await import('../graph.js');
+      const { isArbStreamEnabled, getCachedArbVersion } = await import('../realtime.js');
+      const { getGraphPushStats } = await import('../realtime.js');
+      
+      const backendVersion = getGraphVersion();
+      const arbVersion = getCachedArbVersion();
+      const streamEnabled = isArbStreamEnabled();
+      const pushStats = getGraphPushStats();
+      
+      const versionLag = backendVersion.version - arbVersion.version;
+      const timeLag = backendVersion.timestamp - arbVersion.timestamp;
+      
+      const status = {
+        stream_enabled: streamEnabled,
+        backend_version: backendVersion.version,
+        backend_timestamp: backendVersion.timestamp,
+        arb_version: arbVersion.version,
+        arb_timestamp: arbVersion.timestamp,
+        arb_version_age_ms: arbVersion.ageMs,
+        version_lag: versionLag,
+        time_lag_ms: timeLag,
+        push_stats: {
+          success: pushStats.success,
+          failed: pushStats.failed,
+          p50_ms: pushStats.p50,
+          p95_ms: pushStats.p95,
+        },
+        sync_status: streamEnabled && versionLag === 0 && timeLag < 5000 ? 'synced' : 
+                     streamEnabled && versionLag <= 2 && timeLag < 30000 ? 'lagging' : 
+                     streamEnabled ? 'out_of_sync' : 'disabled',
+      };
+      
+      res.json(status);
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   api.post('/arb/detect/complete', (req, res) => {
     try {
       const body = req.body || {};
