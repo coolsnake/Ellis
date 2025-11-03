@@ -136,7 +136,7 @@ export async function rebuildGraphNow(io?: SocketIOServer, opts?: { pushToArb?: 
       return;
     }
     const diff = diffSnapshots(prev, next);
-    const changed = diff.addedNodes.length || diff.updatedNodes.length || diff.removedNodeIds.length || diff.addedEdges.length || diff.updatedEdges.length || diff.removedEdgeIds.length;
+    const changed = !!(diff.addedNodes.length || diff.updatedNodes.length || diff.removedNodeIds.length || diff.addedEdges.length || diff.updatedEdges.length || diff.removedEdgeIds.length);
     
     lastRebuildMs = nowMs;
     lastRebuildHadChanges = changed;
