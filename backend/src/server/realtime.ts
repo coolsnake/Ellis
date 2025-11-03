@@ -12,7 +12,7 @@ import {
   flushPendingFromDetector as orchestratorFlushPendingFromDetector,
 } from './graphPushOrchestrator.js';
 
-export { pushArbGraphSnapshot, pushArbGraphDiff, notifyArbServiceRefresh } from './graphPushOrchestrator.js';
+export { pushArbGraphSnapshot, pushArbGraphDiff, notifyArbServiceRefresh, markDetectorCompleteFromAck } from './graphPushOrchestrator.js';
 
 let ioRef: SocketIOServer | null = null;
 

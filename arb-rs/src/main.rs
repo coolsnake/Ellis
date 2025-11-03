@@ -11,10 +11,12 @@ use axum::extract::ws::{WebSocketUpgrade, Message};
 use axum::response::IntoResponse;
 use serde::Serialize;
 use serde::Deserialize;
+use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::{RwLock, Notify};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use base64::{engine::general_purpose, Engine as _};
+use once_cell::sync::Lazy;
 mod opportunities;
 use opportunities::{OpportunitiesResponse, Opportunity, OpportunitiesSummary};
 mod graph;
@@ -261,6 +263,7 @@ async fn main() -> anyhow::Result<()> {
             };
             let iter_start = Instant::now();
             if enabled {
+                let mut detect_ack: Option<(u64, u64)> = None;
                 {
                     let s = loop_state.read().await;
                     tracing::info!(nodes = s.metrics.graph_nodes, edges = s.metrics.graph_edges, version = s.last_graph_version, "arb.loop.tick start");
@@ -1519,6 +1522,7 @@ async fn main() -> anyhow::Result<()> {
                     s.metrics.opportunities_detected_total = s.metrics.opportunities_detected_total.saturating_add(s.opportunities.len() as u64);
                     if s.opportunities.is_empty() { s.metrics.detection_misses_total = s.metrics.detection_misses_total.saturating_add(1); } else { s.metrics.detection_hits_total = s.metrics.detection_hits_total.saturating_add(1); }
                     s.metrics.last_detection_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+                    detect_ack = Some((s.last_graph_version, s.metrics.last_detection_ms));
                     s.metrics.detection_duration_ms = loop_start.elapsed().as_millis() as u64;
                     let det_ms = s.metrics.detection_duration_ms;
                     let active = s.metrics.opportunities_active;
@@ -1559,6 +1563,11 @@ async fn main() -> anyhow::Result<()> {
                     let len = s.events.len();
                     if len > 200 { s.events.drain(0..(len-200)); }
                 }
+                if let Some((version, completed_ms)) = detect_ack {
+                    if let Err(err) = notify_backend_detect_complete(&api_base, version, completed_ms).await {
+                        tracing::debug!(error = ?err, version, completed_ms, "arb.detect.ack_failed");
+                    }
+                }
             }
             // Sleep respects configured interval even when disabled to avoid hot loop
             // Event-driven wait: wake on notify or after max idle interval
@@ -1597,6 +1606,49 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(?addr, "starting arb-rs server");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).with_graceful_shutdown(shutdown_signal(ring.clone())).await?;
+    Ok(())
+}
+
+fn detector_ack_enabled() -> bool {
+    static FLAG: Lazy<bool> = Lazy::new(|| {
+        std::env::var("BACKEND_DETECT_ACK")
+            .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(true)
+    });
+    *FLAG
+}
+
+fn detector_ack_timeout() -> Duration {
+    static TIMEOUT: Lazy<Duration> = Lazy::new(|| {
+        let ms = std::env::var("BACKEND_DETECT_ACK_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(|v| v.max(100).min(5_000))
+            .unwrap_or(1_500);
+        Duration::from_millis(ms)
+    });
+    *TIMEOUT
+}
+
+async fn notify_backend_detect_complete(api_base: &str, version: u64, completed_ms: u64) -> Result<(), reqwest::Error> {
+    if !detector_ack_enabled() {
+        return Ok(());
+    }
+    let endpoint = format!("{}/arb/detect/complete", api_base.trim_end_matches('/'));
+    let client = reqwest::Client::new();
+    let payload = json!({
+        "graphVersion": version,
+        "completedMs": completed_ms,
+    });
+    let resp = client
+        .post(&endpoint)
+        .json(&payload)
+        .timeout(detector_ack_timeout())
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        tracing::debug!(status = resp.status().as_u16(), version, completed_ms, "arb.detect.ack_status");
+    }
     Ok(())
 }
 

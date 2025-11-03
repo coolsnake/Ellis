@@ -215,6 +215,18 @@ To keep the primary Node.js event loop responsive, graph diffing and arbitrage t
 - `ARB_BUILD_WORKER_CONCURRENCY` – Maximum concurrent build jobs (default `1`).
 
 Observability: when the queue limit or timeout is hit, the backend emits structured logs such as `graph.worker.queue_saturated`, `graph.worker.incremental_failed`, and `arb.build.worker.run_failed` to highlight worker pressure and fallback events.
+
+### Detector ACK handshake
+
+- Endpoint: `POST /api/arb/detect/complete` — arb-rs should call this with `{ "graphVersion": number, "completedMs": number }` after each detection iteration. The backend records the timestamp and releases any pending diff flushes.
+- Backend env (optional):
+  - `ARB_DETECT_ACK_MODE` (`auto` by default). Set to `off` to fall back to metrics polling; any other truthy value enables ACK waiting.
+  - `ARB_DETECT_ACK_TIMEOUT_MS` (default `8000`). Upper bound before the backend falls back to polling.
+- arb-rs env (optional):
+  - `BACKEND_DETECT_ACK` (default `true`). Set to `false` to disable detector ACK posts.
+  - `BACKEND_DETECT_ACK_TIMEOUT_MS` (default `1500`). HTTP timeout for the ACK request.
+
+- `graphRebaseDiffThreshold`: Number of diff changes after which to rebase to full snapshot.
 - `graphRebaseDiffThreshold`: Number of diff changes after which to rebase to full snapshot.
 - `graphRebaseTimeMs`: Max time between forced rebases.
 - `graphDiffLiqEps`, `graphDiffPriceEps`, `graphDiffWeightEps`: Tolerances for diff filtering/comparison to reduce churn.

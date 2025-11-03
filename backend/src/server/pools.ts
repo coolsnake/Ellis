@@ -1223,6 +1223,21 @@ export function startRaydiumRefreshLoop(): void {
           } catch {}
           return undefined;
         };
+        
+        // Shared WS attach rate limiter for all RPC operations during attachment
+        // This ensures all RPC calls (onAccountChange, getAccountInfo) respect wsAttachPerSec
+        const wsAttachPerSec = Math.max(1, Number(((CONFIG.system as any)?.wsAttachPerSec) || 10));
+        const wsAttachIntervalMs = Math.floor(1000 / wsAttachPerSec);
+        let lastWsAttachMs = 0;
+        const waitForWsAttachSlot = async () => {
+          const now = Date.now();
+          const elapsed = now - lastWsAttachMs;
+          if (elapsed < wsAttachIntervalMs) {
+            await sleep(wsAttachIntervalMs - elapsed);
+          }
+          lastWsAttachMs = Date.now();
+        };
+        
         const subscribeAccountWithRetry = async (accountPk: any, cb: (pk: any, info: any) => void): Promise<number> => {
           const maxAttempts = Math.max(1, Number(((CONFIG.system as any)?.wsSubscribeMaxAttempts) || 10));
           const baseBackoffMs = Math.max(50, Number(((CONFIG.system as any)?.wsSubscribeBackoffMs) || 250));
@@ -1257,6 +1272,7 @@ export function startRaydiumRefreshLoop(): void {
           for (;;) {
             await waitUntilWsReady();
             try {
+              await waitForWsAttachSlot(); // Rate-limit the RPC call
               const id = await conn.onAccountChange(accountPk, (info: any) => { try { cb(accountPk, info); } catch {} });
               return id as unknown as number;
             } catch (e: any) {
@@ -1482,6 +1498,7 @@ export function startRaydiumRefreshLoop(): void {
                 targetedSourceByAccount.set(acct, 'meteora');
                 debugLogTargeted('meteora', acct, { kind: 'bin_array', index });
                 try {
+                  await waitForWsAttachSlot(); // Rate-limit the RPC call
                   const accInfo = await conn.getAccountInfo(binPk, CONFIG.system.txCommitment as any);
                   if (accInfo?.data) {
                     tracker.binHashes.set(acct, hashBuffer(accInfo.data));
@@ -1594,7 +1611,8 @@ export function startRaydiumRefreshLoop(): void {
               } catch {}
               // Opportunistically attach AMM vault listeners for AMM pools
               // Safe to call for any Raydium pool; function is a no-op for CLMM layouts
-              attachRaydiumAmmVaults(addr).catch(() => {});
+              // Await to respect rate limiter (vault attachments also consume WS attach slots)
+              await attachRaydiumAmmVaults(addr).catch(() => {});
             } catch {}
             if (i < uniq.length - 1 && intervalMs > 0) { await sleep(intervalMs); }
           }
@@ -1658,7 +1676,8 @@ export function startRaydiumRefreshLoop(): void {
               } catch {}
               // Opportunistically attach AMM vault listeners for AMM pools
               // Safe to call for any Raydium pool; function is a no-op for CLMM layouts
-              attachRaydiumAmmVaults(addr).catch(() => {});
+              // Await to respect rate limiter (vault attachments also consume WS attach slots)
+              await attachRaydiumAmmVaults(addr).catch(() => {});
             } catch {}
             if (i < uniqueRay.length - 1 && intervalMsRay > 0) { await sleepRay(intervalMsRay); }
           }

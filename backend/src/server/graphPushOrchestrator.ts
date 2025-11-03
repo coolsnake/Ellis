@@ -106,6 +106,26 @@ const notifyArbServiceRefreshImpl = async (): Promise<void> => {
   } catch {}
 };
 
+const DETECT_ACK_MODE = String(
+  ((globalThis as any)?.process?.env?.ARB_DETECT_ACK_MODE)
+    ?? ((globalThis as any)?.process?.env?.ARB_DETECT_ACK_ENABLED)
+    ?? ((globalThis as any)?.process?.env?.ARB_DETECT_ACK)
+    ?? ''
+).toLowerCase();
+
+const DETECT_ACK_ENABLED = DETECT_ACK_MODE === ''
+  ? true
+  : ['1', 'true', 'yes', 'on'].includes(DETECT_ACK_MODE);
+
+const DETECT_ACK_TIMEOUT_MS = Math.max(
+  1000,
+  Number(
+    ((globalThis as any)?.process?.env?.ARB_DETECT_ACK_TIMEOUT_MS)
+      ?? ((globalThis as any)?.process?.env?.GRAPH_DETECT_ACK_TIMEOUT_MS)
+      ?? 8000,
+  ),
+);
+
 class GraphPushOrchestrator {
   private arbStreamEnabled = false;
   private pendingSnapshot: GraphSnapshot | null = null;
@@ -125,10 +145,16 @@ class GraphPushOrchestrator {
   private lastAckedVersion: number = 0;
   private inFlightVersion: number | null = null;
   private queuedVersions: Set<number> = new Set();
+  private readonly detectorAckEnabled = DETECT_ACK_ENABLED;
+  private readonly detectWaitTimeoutMs: number;
+  private resolvePendingDetect: (() => void) | null = null;
+  private lastDetectCompleteMs = 0;
+  private lastDetectCompleteVersion = 0;
 
   constructor() {
     this.diffCoalesceMs = getDiffCoalesceMs();
     this.detectCoalesceMs = getDetectDrivenPushCoalesceMs();
+    this.detectWaitTimeoutMs = DETECT_ACK_TIMEOUT_MS;
   }
 
   setStreamEnabled(enabled: boolean): void {
@@ -283,6 +309,23 @@ class GraphPushOrchestrator {
 
   getStatsRaw(): GraphPushStats {
     return { ackMs: pushStats.ackMs.slice(), success: pushStats.success, failed: pushStats.failed };
+  }
+
+  markDetectorComplete(info: { version?: number; completedMs?: number }): void {
+    const msRaw = Number(info?.completedMs ?? Date.now());
+    if (Number.isFinite(msRaw) && msRaw > 0) {
+      this.lastDetectSeen = Math.max(this.lastDetectSeen, msRaw);
+      this.lastDetectCompleteMs = Math.max(this.lastDetectCompleteMs, msRaw);
+    }
+    const versionRaw = Number(info?.version ?? 0);
+    if (Number.isFinite(versionRaw) && versionRaw > 0) {
+      this.lastDetectCompleteVersion = Math.max(this.lastDetectCompleteVersion, versionRaw);
+    }
+    if (this.resolvePendingDetect) {
+      const resolver = this.resolvePendingDetect;
+      this.resolvePendingDetect = null;
+      try { resolver(); } catch {}
+    }
   }
 
   private scheduleFlush(force = false): void {
@@ -471,17 +514,11 @@ class GraphPushOrchestrator {
           logger.info('arb.push ack', { kind: job.kind, acked, waited_ms: waited, wantVersion, queue_depth: this.queue.length, push_success: pushStats.success, push_failed: pushStats.failed });
         } catch {}
 
-        const waitForDetect = this.shouldWaitForDetect();
-        if (waitForDetect) {
-          const deadline = Date.now() + 8000;
-          while (Date.now() < deadline) {
-            const cur = await fetchArbMetrics();
-            this.lastDetectSeen = Math.max(this.lastDetectSeen, Number(cur.last_detection_ms || 0));
-            if (cur.last_detection_ms > before.last_detection_ms) break;
-            await new Promise((r) => setTimeout(r, 100));
-          }
+        const baselineDetectionMs = Number(before.last_detection_ms || 0);
+        if (this.shouldWaitForDetect()) {
+          await this.waitForDetectorCompletion(baselineDetectionMs);
         } else {
-          this.lastDetectSeen = Math.max(this.lastDetectSeen, Number(before.last_detection_ms || 0));
+          this.lastDetectSeen = Math.max(this.lastDetectSeen, baselineDetectionMs);
         }
 
         await notifyArbServiceRefreshImpl();
@@ -518,6 +555,53 @@ class GraphPushOrchestrator {
     } finally {
       this.inFlight = false;
       this.inFlightVersion = null;
+    }
+  }
+
+  private async waitForDetectorCompletion(baselineMs: number): Promise<void> {
+    this.lastDetectSeen = Math.max(this.lastDetectSeen, baselineMs);
+    if (this.detectorAckEnabled) {
+      const acked = await this.waitForDetectorCompletionViaAck(baselineMs);
+      if (acked) return;
+      try { logger.debug('graph.detect.ack_timeout', { baseline_ms: baselineMs, timeout_ms: this.detectWaitTimeoutMs }); } catch {}
+    }
+    await this.waitForDetectorCompletionViaPolling(baselineMs);
+  }
+
+  private async waitForDetectorCompletionViaAck(baselineMs: number): Promise<boolean> {
+    if (this.lastDetectCompleteMs > baselineMs) return true;
+    return await new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finalize = (result: boolean) => {
+        if (settled) return;
+        settled = true;
+        this.resolvePendingDetect = null;
+        resolve(result);
+      };
+      const timer = setTimeout(() => finalize(false), this.detectWaitTimeoutMs);
+      const resolver = () => {
+        clearTimeout(timer);
+        finalize(true);
+      };
+
+      if (this.lastDetectCompleteMs > baselineMs) {
+        clearTimeout(timer);
+        finalize(true);
+        return;
+      }
+
+      this.resolvePendingDetect = resolver;
+    });
+  }
+
+  private async waitForDetectorCompletionViaPolling(baselineMs: number): Promise<void> {
+    const deadline = Date.now() + this.detectWaitTimeoutMs;
+    while (Date.now() < deadline) {
+      const cur = await fetchArbMetrics();
+      const currentMs = Number(cur.last_detection_ms || 0);
+      this.lastDetectSeen = Math.max(this.lastDetectSeen, currentMs);
+      if (currentMs > baselineMs) return;
+      await new Promise((r) => setTimeout(r, 100));
     }
   }
 
@@ -641,6 +725,9 @@ export const getGraphPushStats = () => graphPushOrchestrator.getStats();
 export const getGraphPushStatsRaw = () => graphPushOrchestrator.getStatsRaw();
 
 export const hasDetectDrivenDirty = () => graphPushOrchestrator.peekDetectDirty();
+
+export const markDetectorCompleteFromAck = (info: { version?: number; completedMs?: number }) =>
+  graphPushOrchestrator.markDetectorComplete(info);
 
 export async function flushPendingFromDetector(): Promise<boolean> {
   return graphPushOrchestrator.flushPendingFromDetector();
