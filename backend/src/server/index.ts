@@ -585,9 +585,7 @@ server.listen(CONFIG.port, () => {
   // Start detect-driven graph push cadence when enabled
   try {
     if ((CONFIG as any)?.system?.detectDrivenGraphPush) {
-      import('./realtime.js')
-        .then(({ startDetectDrivenGraphPush }) => { try { startDetectDrivenGraphPush(); } catch {} })
-        .catch(() => {});
+      import('./realtime.js').catch(() => {});
     }
   } catch {}
   // Start optional arb-rs stdout/stderr forwarding over WS

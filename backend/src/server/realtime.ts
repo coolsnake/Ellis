@@ -74,6 +74,21 @@ let arbStreamEnabled = false;
 export function setArbStreamEnabled(enabled: boolean): void {
   try { emit('log', { level: 'info', message: `arb:stream ${enabled ? 'enabled' : 'disabled'}`, context: { cat: 'arb', code: enabled ? 'ARB.STREAM.ENABLE' : 'ARB.STREAM.DISABLE' } }); } catch {}
   arbStreamEnabled = !!enabled;
+  if (!isDetectDrivenEnabled()) return;
+  if (arbStreamEnabled) {
+    detectorReady = pendingAckVersion === 0;
+    detectDirty = detectDirty || pendingDetectVersion > lastAckedVersion;
+    maybeTriggerDetectDrivenPush();
+  } else {
+    detectorReady = true;
+    detectDirty = false;
+    pendingDetectVersion = 0;
+    pendingAckVersion = 0;
+    ackRetryVersion = 0;
+    lastAckContext = null;
+    if (ddPushTimer) { clearTimeout(ddPushTimer); ddPushTimer = null; }
+    if (ackRetryTimer) { clearTimeout(ackRetryTimer); ackRetryTimer = null; }
+  }
 }
 export function isArbStreamEnabled(): boolean { return arbStreamEnabled; }
 
@@ -474,6 +489,8 @@ export function getCachedArbVersion(): { version: number; timestamp: number; age
 export function startDetectDrivenGraphPush(): void {
   try {
     if (!isDetectDrivenEnabled()) return;
+    // When detect-driven is enabled at boot but stream is still gated, defer until stream enabled
+    if (!arbStreamEnabled) return;
     detectorReady = pendingAckVersion === 0;
     maybeTriggerDetectDrivenPush();
   } catch {}
