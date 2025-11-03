@@ -3,9 +3,10 @@ import { getConnection } from '../../wallet/wallet.js';
 import { logger } from '../../utils/logger.js';
 import { getTickArrayStartIndexByTick, deriveTickArrayPda } from '../../execution/raydiumTickArrays.js';
 import { getClmmStatic, setClmmStatic, saveClmmCacheToDisk } from '../../execution/clmmCache.js';
+import { withRpcLimit } from '../../utils/rpcLimiter.js';
 
 async function decodeClmmState(connection: Connection, poolPk: PublicKey): Promise<{ programId: PublicKey; ammConfig: PublicKey | null; oracle: PublicKey | null; vaultA: PublicKey | null; vaultB: PublicKey | null; observationId: PublicKey | null; tickCurrent: number; tickSpacing: number } | null> {
-  const acc = await connection.getAccountInfo(poolPk);
+  const acc = await withRpcLimit(() => connection.getAccountInfo(poolPk));
   if (!acc?.data?.length) { try { logger.warn('clmm.decode.no_account', { pool: poolPk.toBase58?.() || String(poolPk) }); } catch {}; return null; }
   const programId = acc.owner;
   try {
@@ -61,7 +62,7 @@ async function decodeClmmState(connection: Connection, poolPk: PublicKey): Promi
 async function accountExists(connection: Connection, owner: PublicKey, addr: PublicKey | null): Promise<boolean> {
   if (!addr) return false;
   try {
-    const info = await connection.getAccountInfo(addr);
+    const info = await withRpcLimit(() => connection.getAccountInfo(addr));
     return !!(info && info.owner && info.owner.equals(owner));
   } catch {
     return false;

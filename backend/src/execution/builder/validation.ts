@@ -4,6 +4,7 @@ import { getConnection } from '../../wallet/wallet.js';
 import { logger } from '../../utils/logger.js';
 import { LogCode } from '../../utils/logging.js';
 import { createBuilderError } from './errors.js';
+import { withRpcLimit } from '../../utils/rpcLimiter.js';
 
 /**
  * Validates hop amounts are positive and reasonable
@@ -101,7 +102,7 @@ export async function validatePoolAccounts(
   try {
     // Validate pool exists
     const poolPk = new PublicKey(poolId);
-    const poolInfo = await connection.getAccountInfo(poolPk).catch(() => null);
+    const poolInfo = await withRpcLimit(() => connection.getAccountInfo(poolPk)).catch(() => null);
     if (!poolInfo) {
       missing.push('pool');
     }
@@ -110,7 +111,7 @@ export async function validatePoolAccounts(
     if (vaultA) {
       try {
         const vaultAPk = new PublicKey(vaultA);
-        const vaultAInfo = await connection.getAccountInfo(vaultAPk).catch(() => null);
+        const vaultAInfo = await withRpcLimit(() => connection.getAccountInfo(vaultAPk)).catch(() => null);
         if (!vaultAInfo) {
           missing.push('vaultA');
         }
@@ -122,7 +123,7 @@ export async function validatePoolAccounts(
     if (vaultB) {
       try {
         const vaultBPk = new PublicKey(vaultB);
-        const vaultBInfo = await connection.getAccountInfo(vaultBPk).catch(() => null);
+        const vaultBInfo = await withRpcLimit(() => connection.getAccountInfo(vaultBPk)).catch(() => null);
         if (!vaultBInfo) {
           missing.push('vaultB');
         }

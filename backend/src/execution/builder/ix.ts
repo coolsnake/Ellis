@@ -69,7 +69,8 @@ async function injectBinArrayMetas(
             if (BN) {
               // Try to get active bin from pool state to use a small range
               try {
-                const poolState = await connection.getAccountInfo(poolPk);
+                const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+                const poolState = await withRpcLimit(() => connection.getAccountInfo(poolPk)) as any;
                 if (poolState?.data?.length) {
                   const decode = (DLMM as any)?.decodeAccount;
                   if (decode) {
@@ -600,7 +601,8 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
       if (sdkAny && hop.poolId && hop.inputMint) {
         const { PublicKey } = await import('@solana/web3.js');
         const pk = new PublicKey(String(hop.poolId));
-        const acc = await connection.getAccountInfo(pk);
+        const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+        const acc = await withRpcLimit(() => connection.getAccountInfo(pk));
         const ParsableWhirlpool = (sdkAny as any).ParsableWhirlpool;
         const parsed = acc ? (ParsableWhirlpool as any).parse(pk, acc) : null;
         if (parsed) {
@@ -956,7 +958,8 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                     
                     // Verify account exists on-chain before including it
                     try {
-                      const accInfo = await connection.getAccountInfo(finalPk);
+                      const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+                      const accInfo = await withRpcLimit(() => connection.getAccountInfo(finalPk));
                       if (accInfo && accInfo.data && accInfo.data.length > 0) {
                         // Account exists, safe to include
                         if (!binArrayLower) binArrayLower = finalPk;
@@ -1042,7 +1045,8 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         // Observability only; do not gate on presence/owner
         let needsBitmapExtensionInit = false;
         try {
-          const acc = await connection.getAccountInfo(binArrayBitmapExtension);
+          const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+          const acc = await withRpcLimit(() => connection.getAccountInfo(binArrayBitmapExtension));
           if (!acc) {
             needsBitmapExtensionInit = true;
             try { logger.warn('meteora.dlmm.ext.missing_on_chain', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { expected: programId?.toBase58?.() } }); } catch {}

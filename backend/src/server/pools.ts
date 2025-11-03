@@ -1499,7 +1499,8 @@ export function startRaydiumRefreshLoop(): void {
                 debugLogTargeted('meteora', acct, { kind: 'bin_array', index });
                 try {
                   await waitForWsAttachSlot(); // Rate-limit the RPC call
-                  const accInfo = await conn.getAccountInfo(binPk, CONFIG.system.txCommitment as any);
+                  const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+                  const accInfo = await withRpcLimit(() => conn.getAccountInfo(binPk, CONFIG.system.txCommitment as any)) as any;
                   if (accInfo?.data) {
                     tracker.binHashes.set(acct, hashBuffer(accInfo.data));
                   }

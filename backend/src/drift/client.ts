@@ -191,6 +191,15 @@ export class DriftService {
       return res as any;
     };
     this.connection = new Connection(CONFIG.rpcUrl, { commitment: 'confirmed', disableRetryOnRateLimit: true, fetch: customFetch } as any);
+    
+    // Intercept getAccountInfo to ensure all calls go through rate limiter
+    // This catches SDK-internal getAccountInfo calls that bypass direct rate limiting
+    const originalGetAccountInfo = this.connection.getAccountInfo.bind(this.connection);
+    const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+    this.connection.getAccountInfo = async function(...args: any[]) {
+      return await withRpcLimit(() => originalGetAccountInfo(...args));
+    };
+    
     const t0 = Date.now();
     logger.info('drift.sdk.init', { rpcUrl: CONFIG.rpcUrl, cluster: this.cluster, cat: 'drift', code: 'DRIFT.SDK.INIT' });
     const { initialize, Wallet, BulkAccountLoader, getMarketsAndOraclesForSubscription } = await loadSdk();
