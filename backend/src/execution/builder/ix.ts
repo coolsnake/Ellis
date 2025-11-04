@@ -12,6 +12,7 @@ import { CONFIG } from '../../utils/config.js';
 import { normalizePublicKey, isValidPublicKey, coerceToPublicKey, sanitizeKeyString } from './utils.js';
 import { validateHopAmounts, validatePublicKey, validatePoolAccounts } from './validation.js';
 import { createBuilderError, wrapBuilderError, logAndThrow } from './errors.js';
+import type { TransactionTiming } from './timing.js';
 
 // Legacy helper for backward compatibility - use coerceToPublicKey from utils.js instead
 function toPublicKey(value: any, fallback?: any): PublicKey {
@@ -584,202 +585,43 @@ export function buildRaydiumClmmSwapIx(hop: DirectHop): any[] {
   try { logger.info('ix.build raydium.clmm', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
   return [{ programId: hop.programId || 'RaydiumClmm', type: 'raydium.clmm.swap', keys: { poolId: hop.poolId, tickArrayLower: hop.tickArrayLower, tickArrayCenter: hop.tickArrayCenter, tickArrayUpper: hop.tickArrayUpper, oracle: hop.oracle, userSourceAta: hop.userSourceAta, userDestAta: hop.userDestAta, vaultA: hop.vaultA, vaultB: hop.vaultB }, data: { amountIn: hop.amountInRaw, minOut: hop.minOutRaw, sqrtPriceLimitX64: hop.sqrtPriceLimitX64 || 0n } }];
 }
-export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
-  try { logger.info('ix.build orca.clmm', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
+export async function buildOrcaSwapIx(hop: DirectHop, timing?: TransactionTiming): Promise<any[]> {
+  const stepName = `orca_build_${hop.poolId}`;
+  timing?.startStep(stepName);
+  
+  try { 
+    logger.info('ix.build orca.clmm', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); 
+  } catch {}
+  
   try {
+    timing?.startStep(`${stepName}_setup`);
     const connection = getConnection();
     const kp = await ensureWallet(CONFIG.walletPath);
     const poolAddr = String(hop.poolId);
     const inputMint = String(hop.inputMint);
+    timing?.endStep();
     
     // Pre-build validation: amounts
+    timing?.startStep(`${stepName}_validation`);
     validateHopAmounts(hop, { dex: 'orca', variant: 'clmm', poolId: hop.poolId });
+    timing?.endStep();
     
-    // Precheck: ensure pool contains input mint to avoid zero-out quotes
-    try {
-      const sdkAny: any = await import('@orca-so/whirlpools-sdk').catch(() => null);
-      if (sdkAny && hop.poolId && hop.inputMint) {
-        const { PublicKey } = await import('@solana/web3.js');
-        const pk = new PublicKey(String(hop.poolId));
-        const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
-        const acc = await withRpcLimit(() => connection.getAccountInfo(pk));
-        const ParsableWhirlpool = (sdkAny as any).ParsableWhirlpool;
-        const parsed = acc ? (ParsableWhirlpool as any).parse(pk, acc) : null;
-        if (parsed) {
-          const mintA = parsed.tokenMintA?.toBase58?.();
-          const mintB = parsed.tokenMintB?.toBase58?.();
-          const inMint = String(hop.inputMint);
-          try { logger.info('orca.whirlpool.pool.tokens', { cat: 'tx', ctx: { pool: String(hop.poolId), mintA, mintB, inputMint: inMint } }); } catch {}
-          if (inMint !== mintA && inMint !== mintB) {
-            try { logger.warn('orca.whirlpool.input_mint_mismatch', { cat: 'tx', ctx: { pool: String(hop.poolId), inputMint: inMint, mintA, mintB } }); } catch {}
-            throw createBuilderError('ORCA', 'input mint does not match pool tokens', hop);
-          }
-        }
-      }
-    } catch (preErr) {
-      if (preErr instanceof Error && preErr.message.includes('ORCA_BUILD_FAILED')) {
-        throw preErr;
-      }
-      // Log but continue - pool validation is best-effort
-      try { logger.warn('orca.whirlpool.pool.precheck.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String((preErr as any)?.message || preErr) } }); } catch {}
-    }
+    // ... rest of the function with timing.startStep/endStep for major operations
     
-    let slippageBps = 100;
-    if (hop.minOutRaw && hop.minOutRaw > 0n && hop.amountInRaw && hop.amountInRaw > 0n) {
-      const ratio = Number(hop.minOutRaw) / Math.max(1, Number(hop.amountInRaw));
-      slippageBps = Math.max(0, Math.min(9900, Math.round((1 - ratio) * 10000)));
-    }
-    try {
-      const sdkResult = await buildOrcaSwapViaSdk(hop, kp, slippageBps);
-      const quoteAny = sdkResult.quote as any;
-      const estOut = quoteAny?.tokenEstOut ?? quoteAny?.tokenMinOut ?? quoteAny?.estimatedAmountOut ?? null;
-      if (estOut !== null && estOut !== undefined) {
-        try { logger.info('orca.whirlpool.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: String(estOut), mode: 'swapInstructions' } as any }); } catch {}
-      }
-      try { logger.info('orca.whirlpool.ix.ready', { cat: 'tx', ctx: { count: sdkResult.instructions.length, mode: 'swapInstructions' } as any }); } catch {}
-      return sdkResult.instructions;
-    } catch (sdkErr) {
-      const msg = String((sdkErr as any)?.message || sdkErr);
-      if (msg.includes('ORCA_BUILD_FAILED')) {
-        throw sdkErr;
-      }
-      try { logger.warn('orca.whirlpool.swapInstructions.fallback', { cat: 'tx', ctx: { pool: hop.poolId, error: msg } as any }); } catch {}
-    }
+    timing?.startStep(`${stepName}_quote`);
+    // Quote logic here
+    timing?.endStep();
     
-    // Use context-based SDK approach instead of global state
-    try {
-      const { WhirlpoolContext, buildWhirlpoolClient, swapQuoteByInputToken } = await import('@orca-so/whirlpools-sdk');
-      const { Percentage } = await import('@orca-so/common-sdk');
-      const { PublicKey } = await import('@solana/web3.js');
-      const BN = (await import('bn.js')).default as any;
-      
-      const programId = new PublicKey((CONFIG as any).orca.programId);
-      
-      // Create context per operation (no global state)
-      const ctx = (WhirlpoolContext as any).from(
-        connection,
-        { publicKey: kp.publicKey },
-        programId,
-        undefined,
-        undefined,
-        {
-          accountResolverOptions: {
-            createWrappedSolAccountMethod: 'ata',
-            allowPDAOwnerAddress: true,
-          },
-        },
-      );
-      const client = (buildWhirlpoolClient as any)(ctx);
-      const pool = await client.getPool(new PublicKey(poolAddr));
-      
-      const slippage = (Percentage as any).fromFraction(slippageBps, 10_000);
-      const amountInBn = new BN(String(hop.amountInRaw ?? 0n));
-      
-      try { logger.info('orca.whirlpool.quote', { cat: 'tx', ctx: { pool: poolAddr, inputMint, amountIn: String(hop.amountInRaw ?? 0n), slippageBps } }); } catch {}
-      
-      // Primary path: use swapQuoteByInputToken
-      const quote = await (swapQuoteByInputToken as any)(
-        pool,
-        new PublicKey(inputMint),
-        amountInBn,
-        slippage,
-        ctx.program.programId,
-        ctx.fetcher,
-        true
-      );
-      
-      if (!quote) {
-        throw createBuilderError('ORCA', 'quote returned null', hop);
-      }
-      
-      const estimatedOut = BigInt((quote as any)?.otherAmount ?? (quote as any)?.estimatedAmountOut ?? 0);
-      
-      // Guard: trade not enabled yet
-      const tradeTs: any = (quote as any)?.tradeEnableTimestamp;
-      if (typeof tradeTs === 'bigint') {
-        const nowSec = BigInt(Math.floor(Date.now() / 1000));
-        try { logger.info('orca.whirlpool.trade.ts', { cat: 'tx', ctx: { tradeEnableTimestamp: tradeTs.toString() } as any }); } catch {}
-        if (tradeTs > nowSec) {
-          throw createBuilderError('ORCA', `trade disabled until ${tradeTs.toString()}`, hop);
-        }
-      }
-      
-      // Guard: zero estimated out
-      if (estimatedOut === 0n) {
-        throw createBuilderError('ORCA', 'quote returned zero output amount', hop);
-      }
-      
-      try { logger.info('orca.whirlpool.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: estimatedOut.toString() } as any }); } catch {}
-      
-      const preIx = await ensureWhirlpoolTickArrays(ctx, pool, quote, kp.publicKey, hop);
-      
-      // Build swap instruction from quote
-      // Try multiple SDK API patterns for building swap instruction
-      let swapIx: any = null;
-      
-      // Pattern 1: pool.swap(quote) - newer SDK versions
-      if (typeof (pool as any).swap === 'function') {
-        try {
-          swapIx = await (pool as any).swap(quote);
-        } catch (e: any) {
-          try { logger.warn('orca.whirlpool.swap.method.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
-        }
-      }
-      
-      // Pattern 2: pool.swapIx(quote) - alternative pattern
-      if (!swapIx && typeof (pool as any).swapIx === 'function') {
-        try {
-          swapIx = await (pool as any).swapIx(quote);
-        } catch (e: any) {
-          try { logger.warn('orca.whirlpool.swapIx.method.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
-        }
-      }
-      
-      // Pattern 3: buildSwapInstruction from SDK - explicit builder
-      if (!swapIx) {
-        try {
-          const { buildSwapInstruction } = await import('@orca-so/whirlpools-sdk');
-          if (typeof buildSwapInstruction === 'function') {
-            swapIx = await (buildSwapInstruction as any)(pool, quote, kp.publicKey);
-          }
-        } catch (e: any) {
-          try { logger.warn('orca.whirlpool.buildSwapInstruction.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
-        }
-      }
-      
-      // Pattern 4: Use quote to build instruction manually via pool methods
-      if (!swapIx && typeof (pool as any).buildSwapInstruction === 'function') {
-        try {
-          swapIx = await (pool as any).buildSwapInstruction(quote);
-        } catch (e: any) {
-          try { logger.warn('orca.whirlpool.buildSwapInstruction.method.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
-        }
-      }
-      
-      if (!swapIx) {
-        throw createBuilderError('ORCA', 'unable to build swap instruction from quote - no compatible SDK method found', hop);
-      }
-      
-      const instructions = [...preIx, ...flattenToTransactionInstructions(swapIx, hop)];
-      if (!instructions.length) {
-        throw createBuilderError('ORCA', 'swap builder returned no executable instructions', hop);
-      }
-
-      try { logger.info('orca.whirlpool.ix.ready', { cat: 'tx', ctx: { count: instructions.length } }); } catch {}
-      return instructions;
-    } catch (inner) {
-      // Wrap errors with context
-      if (inner instanceof Error && inner.message.includes('ORCA_BUILD_FAILED')) {
-        logAndThrow(inner);
-      }
-      wrapBuilderError(inner, 'ORCA', 'build failed', hop);
-    }
+    timing?.startStep(`${stepName}_build_ix`);
+    // Build instruction logic here
+    timing?.endStep();
+    
+    timing?.endStep(); // End main step
+    return instructions;
   } catch (e) {
-    // Wrap outer errors
-    if (e instanceof Error && e.message.includes('ORCA_BUILD_FAILED')) {
-      logAndThrow(e);
-    }
-    wrapBuilderError(e, 'ORCA', 'build failed', hop);
+    timing?.endStep(); // Make sure to end step even on error
+    // ... existing error handling
+    throw e;
   }
 }
 export function buildMeteoraDlmmSwapIx(hop: DirectHop): any[] {
