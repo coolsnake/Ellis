@@ -937,16 +937,19 @@ class GraphPushOrchestrator {
       // Otherwise fall back to lastDetectCompleteVersion
       const effectiveArbVersion = cacheAgeMs < 10000 ? arbVersion : (this.lastDetectCompleteVersion || 0);
       
-      if (backendVersion > effectiveArbVersion) {
-      const arbVersion = this.lastDetectCompleteVersion || 0;
-      if (backendVersion > arbVersion) {
+      // Use cached version if fresh, otherwise fall back to lastDetectCompleteVersion
+      const arbVersionToCheck = cacheAgeMs < 10000 ? arbVersion : (this.lastDetectCompleteVersion || 0);
+      
+      if (backendVersion > arbVersionToCheck) {
         hasVersionGap = true;
-        const versionGap = backendVersion - arbVersion;
+        const versionGap = backendVersion - arbVersionToCheck;
         try {
           logger.info('graph.push detector_flush_version_gap', {
-            arb_rs_version: arbVersion,
+            arb_rs_version: arbVersionToCheck,
             backend_version: backendVersion,
             gap: versionGap,
+            cache_age_ms: cacheAgeMs,
+            using_cached: cacheAgeMs < 10000,
             cat: 'graph',
           });
         } catch {}
