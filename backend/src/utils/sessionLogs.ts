@@ -115,8 +115,17 @@ export function getTxRelatedLogs(txId: string | undefined, startTime?: number, e
   try {
     const relevant: SessionLogEvent[] = [];
     const txPatterns = [
+      // Transaction lifecycle patterns
       /^tx\.(preflight|send|build|execute|resolve|intents|ixs|size|slippage|rpc|ix\.coerce|ix\.coerce\.skip|ix\.coerce\.err)/i,
       /tx\.(preflight|send|build|execute|resolve|intents|ixs|size|slippage|rpc)/i,
+      // DEX-specific instruction builder patterns
+      /^(raydium|orca|meteora)\.(clmm|amm|dlmm|whirlpool)\./i,
+      /ix\.build\.(raydium|orca|meteora)/i,
+      // Account verification patterns
+      /\.(account|accounts|verification|verify|missing|exists)\./i,
+      // Instruction details
+      /\.(ix\.|instruction)/i,
+      /\.(builder|build|swap)/i,
     ];
     
     // Iterate backwards through recent events (most recent first)

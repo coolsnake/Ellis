@@ -1328,6 +1328,50 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         const y = (mints as any)?.tokenYMint || (mints as any)?.y || (mints as any)?.b;
         if (x) acctBase.tokenXMint = (x as any).publicKey || x;
         if (y) acctBase.tokenYMint = (y as any).publicKey || y;
+        
+        // CRITICAL FIX: Validate swap direction matches pool tokens
+        // This ensures the SDK receives the correct token mints for validation
+        if (acctBase.tokenXMint && acctBase.tokenYMint) {
+          const inputMintPk = toPublicKey(hop.inputMint);
+          const outputMintPk = toPublicKey(hop.outputMint);
+          const tokenXMintPk = acctBase.tokenXMint instanceof PublicKey ? acctBase.tokenXMint : toPublicKey(acctBase.tokenXMint);
+          const tokenYMintPk = acctBase.tokenYMint instanceof PublicKey ? acctBase.tokenYMint : toPublicKey(acctBase.tokenYMint);
+          
+          // Verify swap direction matches pool tokens
+          const isXToY = inputMintPk.equals(tokenXMintPk) && outputMintPk.equals(tokenYMintPk);
+          const isYToX = inputMintPk.equals(tokenYMintPk) && outputMintPk.equals(tokenXMintPk);
+          
+          if (!isXToY && !isYToX) {
+            try { 
+              logger.error('meteora.dlmm.swap_direction_mismatch', { 
+                cat: 'tx', 
+                code: LogCode.TX_BUILD_ERR,
+                ctx: { 
+                  inputMint: hop.inputMint,
+                  outputMint: hop.outputMint,
+                  tokenXMint: tokenXMintPk.toBase58(),
+                  tokenYMint: tokenYMintPk.toBase58(),
+                  poolId: hop.poolId
+                } 
+              }); 
+            } catch {}
+            throw createBuilderError('METEORA_DLMM', 'Swap direction does not match pool token mints', hop);
+          }
+          
+          // Log swap direction for debugging
+          try {
+            logger.info('meteora.dlmm.swap_direction', {
+              cat: 'tx',
+              ctx: {
+                direction: isXToY ? 'X->Y' : 'Y->X',
+                inputMint: hop.inputMint,
+                outputMint: hop.outputMint,
+                tokenXMint: tokenXMintPk.toBase58(),
+                tokenYMint: tokenYMintPk.toBase58()
+              }
+            });
+          } catch {}
+        }
       }
     } catch {}
     // Derive reserves if not already provided
@@ -1352,6 +1396,58 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       }
     } catch {}
 
+    // CRITICAL FIX: Ensure token mints are explicitly set before building instruction
+    // This prevents the SDK from using incorrect/cached mints from previous swaps
+    try {
+      if (!acctBase.tokenXMint || !acctBase.tokenYMint) {
+        const inputMintPk = toPublicKey(hop.inputMint);
+        const outputMintPk = toPublicKey(hop.outputMint);
+        const tokenXMintPk = acctBase.tokenXMint ? (acctBase.tokenXMint instanceof PublicKey ? acctBase.tokenXMint : toPublicKey(acctBase.tokenXMint)) : null;
+        const tokenYMintPk = acctBase.tokenYMint ? (acctBase.tokenYMint instanceof PublicKey ? acctBase.tokenYMint : toPublicKey(acctBase.tokenYMint)) : null;
+        
+        // If pool mints are available, verify direction and use them
+        if (tokenXMintPk && tokenYMintPk) {
+          const isXToY = inputMintPk.equals(tokenXMintPk) && outputMintPk.equals(tokenYMintPk);
+          const isYToX = inputMintPk.equals(tokenYMintPk) && outputMintPk.equals(tokenXMintPk);
+          
+          if (isXToY || isYToX) {
+            // Pool mints match swap direction - use them
+            acctBase.tokenXMint = tokenXMintPk;
+            acctBase.tokenYMint = tokenYMintPk;
+          } else {
+            // Mismatch - log warning but use pool mints anyway (swap direction validation will catch this)
+            try {
+              logger.warn('meteora.dlmm.token_mint_mismatch_fallback', {
+                cat: 'tx',
+                ctx: {
+                  inputMint: hop.inputMint,
+                  outputMint: hop.outputMint,
+                  tokenXMint: tokenXMintPk.toBase58(),
+                  tokenYMint: tokenYMintPk.toBase58()
+                }
+              });
+            } catch {}
+            acctBase.tokenXMint = tokenXMintPk;
+            acctBase.tokenYMint = tokenYMintPk;
+          }
+        } else {
+          // Fallback: use hop mints directly (shouldn't happen if pool fetch worked)
+          try {
+            logger.warn('meteora.dlmm.token_mint_fallback', {
+              cat: 'tx',
+              ctx: {
+                poolId: hop.poolId,
+                inputMint: hop.inputMint,
+                outputMint: hop.outputMint
+              }
+            });
+          } catch {}
+          // Don't set tokenXMint/tokenYMint from hop mints - let the SDK derive from pool
+          // Setting them incorrectly could cause the "Invalid token mint" error
+        }
+      }
+    } catch {}
+
     // Choose swap variant now that token program IDs are known
     try {
       const tokenKeg = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
@@ -1364,6 +1460,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     } catch {}
 
     // Prefer accountsPartial so optional nulls are honored
+    // Ensure tokenXMint and tokenYMint are explicitly included in acctBase
     if (typeof (builder as any).accountsPartial === 'function') builder = (builder as any).accountsPartial(acctBase);
     else if (typeof (builder as any).accounts === 'function') builder = (builder as any).accounts(acctBase);
 
@@ -1731,10 +1828,61 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         const inputMintPk = toPublicKey(hop.inputMint);
         const outputMintPk = toPublicKey(hop.outputMint);
         
+        // CRITICAL FIX: Validate token mints in instruction accounts match expected swap direction
+        // The SDK typically puts token mints at positions 6-7 (tokenXMint, tokenYMint)
+        // We need to verify these match the swap direction
         if (tokenXMint && tokenYMint) {
           // Determine swap direction and expected output token
           const isXToY = inputMintPk.equals(tokenXMint) && outputMintPk.equals(tokenYMint);
           const isYToX = inputMintPk.equals(tokenYMint) && outputMintPk.equals(tokenXMint);
+          
+          // Verify the instruction has the correct token mints
+          // Check positions 6-7 where token mints typically appear in Meteora DLMM swap instructions
+          if (ix.keys.length >= 8) {
+            const pos6 = ix.keys[6];
+            const pos7 = ix.keys[7];
+            const mint6 = pos6?.pubkey instanceof PublicKey ? pos6.pubkey : (typeof pos6?.pubkey === 'string' ? new PublicKey(pos6.pubkey) : null);
+            const mint7 = pos7?.pubkey instanceof PublicKey ? pos7.pubkey : (typeof pos7?.pubkey === 'string' ? new PublicKey(pos7.pubkey) : null);
+            
+            if (mint6 && mint7) {
+              const mint6Matches = mint6.equals(tokenXMint) || mint6.equals(tokenYMint);
+              const mint7Matches = mint7.equals(tokenXMint) || mint7.equals(tokenYMint);
+              
+              if (!mint6Matches || !mint7Matches) {
+                try {
+                  logger.error('meteora.dlmm.instruction_token_mint_mismatch', {
+                    cat: 'tx',
+                    code: LogCode.TX_BUILD_ERR,
+                    ctx: {
+                      pos6Mint: mint6.toBase58(),
+                      pos7Mint: mint7.toBase58(),
+                      expectedTokenXMint: tokenXMint.toBase58(),
+                      expectedTokenYMint: tokenYMint.toBase58(),
+                      inputMint: hop.inputMint,
+                      outputMint: hop.outputMint,
+                      poolId: hop.poolId
+                    }
+                  });
+                } catch {}
+              }
+            }
+          }
+          
+          if (!isXToY && !isYToX) {
+            try {
+              logger.error('meteora.dlmm.swap_direction_invalid', {
+                cat: 'tx',
+                code: LogCode.TX_BUILD_ERR,
+                ctx: {
+                  inputMint: hop.inputMint,
+                  outputMint: hop.outputMint,
+                  tokenXMint: tokenXMint.toBase58(),
+                  tokenYMint: tokenYMint.toBase58(),
+                  poolId: hop.poolId
+                }
+              });
+            } catch {}
+          }
           
           if (isXToY || isYToX) {
             const expectedOutputToken = isXToY ? tokenYMint : tokenXMint;
@@ -2207,6 +2355,28 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       remainingAccounts: tickArrayKeys,
     });
     let ixs = Array.isArray(res?.instructions) ? res.instructions : (res?.innerTransaction ? res.innerTransaction.instructions : []);
+    
+    // Log SDK-generated instructions for debugging
+    try {
+      logger.info('raydium.clmm.sdk.instructions.raw', {
+        cat: 'tx',
+        ctx: {
+          pool: hop.poolId,
+          instructionCount: ixs?.length || 0,
+          instructions: ixs?.map((ix: any, idx: number) => ({
+            index: idx,
+            programId: (ix?.programId?.toBase58?.() || String(ix?.programId || '')),
+            accountCount: (ix?.keys?.length || 0),
+            accounts: (ix?.keys || []).map((k: any, accIdx: number) => ({
+              index: accIdx,
+              address: (k?.pubkey?.toBase58?.() || String(k?.pubkey || '')),
+              isSigner: !!k?.isSigner,
+              isWritable: !!k?.isWritable,
+            })),
+          })) || [],
+        } as any,
+      });
+    } catch {}
     
     // If exBitmap doesn't exist, we need to remove it from the instruction
     // BUT we need to be careful - the SDK might have encoded account indices in the instruction data

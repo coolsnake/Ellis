@@ -479,21 +479,23 @@ class GraphPushOrchestrator {
   }
 
   private scheduleFlush(force = false): void {
-    if (this.flushInProgress) return;
     if (!this.arbStreamEnabled) return;
     if (!this.pendingSnapshot && !this.pendingDiff) return;
-    const detectMode = this.shouldWaitForDetect();
     
-    // Check version gap - if arb-rs is behind, skip coalescing to close gap immediately
+    // Check version gap FIRST - if gap exists and we're forcing, bypass flushInProgress check
+    const detectMode = this.shouldWaitForDetect();
     let skipCoalescing = force;
-    if (!force && detectMode) {
+    let hasVersionGap = false;
+    
+    if (detectMode) {
       try {
         const { getGraphVersion } = require('./graph.js');
         const backendVersion = getGraphVersion().version;
         const arbVersion = this.lastDetectCompleteVersion || 0;
         
         if (backendVersion > arbVersion) {
-          skipCoalescing = true; // Force immediate flush to close version gap
+          hasVersionGap = true;
+          skipCoalescing = true;
           try {
             logger.info('graph.push force_flush_version_gap', {
               arb_rs_version: arbVersion,
@@ -504,15 +506,12 @@ class GraphPushOrchestrator {
           } catch {}
         }
       } catch (err) {
-        // If version check fails, continue with normal logic
-        try {
-          logger.debug('graph.push version_check_failed', {
-            error: String((err as any)?.message || err),
-            cat: 'graph',
-          });
-        } catch {}
+        // If version check fails, continue
       }
     }
+    
+    // Only block flushInProgress if there's no version gap
+    if (!hasVersionGap && this.flushInProgress) return;
     
     // Only block if awaitingDetect or flushInProgress (and not forcing/skipping coalescing)
     if (!skipCoalescing && detectMode && (this.awaitingDetect || this.flushInProgress)) {
@@ -589,7 +588,39 @@ class GraphPushOrchestrator {
       this.awaitingDetect = false;
       this.flushInProgress = false;
       if (this.pendingSnapshot || this.pendingDiff) {
-        this.scheduleFlush(true); // Force flush after completing a flush cycle
+        // Check if there's still a version gap - if so, use flushPendingFromDetector to bypass blocks
+        try {
+          const { getGraphVersion } = require('./graph.js');
+          const backendVersion = getGraphVersion().version;
+          // Use the most recent version from polling cache, not just lastDetectCompleteVersion
+          const { getCachedArbVersion } = await import('./realtime.js');
+          const arbVersion = getCachedArbVersion().version;
+          
+          if (backendVersion > arbVersion) {
+            // Version gap still exists - force flush via detector path to bypass all blocks
+            try {
+              logger.info('graph.push post_flush_version_gap', {
+                arb_rs_version: arbVersion,
+                backend_version: backendVersion,
+                gap: backendVersion - arbVersion,
+                cat: 'graph',
+              });
+            } catch {}
+            // Use flushPendingFromDetector which bypasses blocking conditions
+            try {
+              void this.flushPendingFromDetector();
+            } catch (err) {
+              // Fallback to normal scheduleFlush if flushPendingFromDetector fails
+              this.scheduleFlush(true);
+            }
+          } else {
+            // No version gap, use normal scheduling
+            this.scheduleFlush(true);
+          }
+        } catch (err) {
+          // If version check fails, fall back to normal scheduling
+          this.scheduleFlush(true);
+        }
       }
     }
   }
