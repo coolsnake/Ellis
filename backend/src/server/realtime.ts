@@ -202,6 +202,35 @@ export function startDetectDrivenGraphPush(debounceMs = 0): void {
             } catch {}
           }
           
+          // Check version gap - ensure arb-rs gets updates before next detection cycle
+          try {
+            const { getGraphVersion } = await import('../graph.js');
+            const backendVersion = getGraphVersion().version;
+            const arbVersion = getCachedArbVersion().version;
+            
+            if (backendVersion > arbVersion) {
+              const versionGap = backendVersion - arbVersion;
+              try {
+                logger.info('graph.push polling_version_gap', {
+                  arb_rs_version: arbVersion,
+                  backend_version: backendVersion,
+                  gap: versionGap,
+                  last_detection_ms: currentDetectionMs,
+                  cat: 'graph',
+                });
+              } catch {}
+              // Version gap detected - will force immediate flush below
+            }
+          } catch (err) {
+            // If version check fails, continue with normal logic
+            try {
+              logger.debug('graph.push polling_version_check_failed', {
+                error: String((err as any)?.message || err),
+                cat: 'graph',
+              });
+            } catch {}
+          }
+          
           // Then check if we need to flush new updates
           try {
             const hasDirty = hasDetectDrivenDirty();
@@ -209,8 +238,52 @@ export function startDetectDrivenGraphPush(debounceMs = 0): void {
               try { logger.debug('graph.push detect_driven no_dirty', { cat: 'graph' }); } catch {}
               return; 
             }
-            const wait = getDetectDrivenPushCoalesceMs();
+            
+            // Check if we need to skip coalescing due to version gap
+            let skipCoalescing = false;
+            try {
+              const { getGraphVersion } = await import('../graph.js');
+              const backendVersion = getGraphVersion().version;
+              const arbVersion = getCachedArbVersion().version;
+              if (backendVersion > arbVersion) {
+                skipCoalescing = true; // Force immediate flush to close version gap
+              }
+            } catch (err) {
+              // If version check fails, use normal coalescing
+            }
+            
+            const wait = skipCoalescing ? 0 : getDetectDrivenPushCoalesceMs();
             if (detectDebounceTimer) { clearTimeout(detectDebounceTimer); detectDebounceTimer = null; }
+            
+            // If skipping coalescing, flush immediately
+            if (skipCoalescing) {
+              try {
+                logger.info('graph.push detector_flush_immediate_version_gap', {
+                  last_detection_ms: lastDetectSeen,
+                  cat: 'graph',
+                });
+              } catch {}
+              try {
+                const flushed = await orchestratorFlushPendingFromDetector();
+                try {
+                  logger.info('graph.push detector_flush_complete', { 
+                    flushed,
+                    last_detection_ms: lastDetectSeen,
+                    cat: 'graph',
+                  });
+                } catch {}
+              } catch (err) {
+                try { 
+                  logger.warn('graph.push detector_flush_failed', { 
+                    error: String((err as any)?.message || err),
+                    last_detection_ms: lastDetectSeen,
+                    cat: 'graph',
+                  }); 
+                } catch {}
+              }
+              return;
+            }
+            
             detectDebounceTimer = setTimeout(async () => {
               detectDebounceTimer = null;
               const stillDirty = hasDetectDrivenDirty();

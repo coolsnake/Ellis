@@ -208,20 +208,54 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
             amountInRaw: curIn.toString(),
             inputMint: hops[i].inputMint,
             outputMint: hops[i].outputMint,
+            inputDecimals: hops[i].inputDecimals,
+            outputDecimals: hops[i].outputDecimals,
           }
         });
       } catch {}
 
+      // CRITICAL: If this is not the first hop, verify curIn matches the input mint's decimals
+      // This prevents using SOL lamports (9 decimals) for USDC (6 decimals)
+      if (i > 0) {
+        const prevHop = hops[i - 1];
+        const currentHop = hops[i];
+        const prevDecimals = prevHop.outputDecimals ?? 0;
+        const currentDecimals = currentHop.inputDecimals ?? 0;
+        
+        // Log decimal check for debugging
+        try {
+          logger.info('tx.resolve.hop.decimal_check', {
+            cat: 'tx',
+            code: LogCode.TX_RESOLVE_OK,
+            ctx: {
+              hopIndex: i,
+              prevOutputDecimals: prevDecimals,
+              currentInputDecimals: currentDecimals,
+              curIn: curIn.toString(),
+              prevOutputMint: prevHop.outputMint,
+              currentInputMint: currentHop.inputMint,
+            }
+          });
+        } catch {}
+      }
+
       // Quote per-hop; never let one failure abort subsequent hops
       let out = 0n;
+      let quoteError: Error | null = null;
       try {
         out = await quoteHopOut(hops[i], curIn);
       } catch (e) {
+        quoteError = e as Error;
         try {
           logger.warn('tx.resolve.hop.quote.failed', {
             cat: 'tx',
             code: LogCode.TX_BUILD_ERR,
-            ctx: { hopIndex: i, error: String((e as any)?.message || e) }
+            ctx: { 
+              hopIndex: i, 
+              error: String((e as any)?.message || e),
+              amountInRaw: curIn.toString(),
+              inputMint: hops[i].inputMint,
+            }
           });
         } catch {}
       }
@@ -236,12 +270,12 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       } catch {}
       try { hops[i].minOutRaw = applyMinOut(out, eff); } catch { hops[i].minOutRaw = 0n; }
 
-      // Only advance curIn when we have a positive quote
+      // Only advance curIn when we have a positive quote AND valid minOutRaw
       // Use minOutRaw (slippage-adjusted) for propagation to ensure we don't try to swap more than we'll actually receive
       // The quoted 'out' amount is optimistic and doesn't account for fees/slippage
       if (out > 0n) {
         // CRITICAL: Always use minOutRaw for propagation, never the optimistic quote
-        // If minOutRaw is 0 or invalid, something is wrong - use a very conservative fallback
+        // If minOutRaw is 0 or invalid, something is wrong - don't propagate the old curIn
         if (hops[i].minOutRaw && hops[i].minOutRaw > 0n) {
           curIn = hops[i].minOutRaw;
           
@@ -256,14 +290,15 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
                 minOutRaw: hops[i].minOutRaw.toString(),
                 propagatedAmount: hops[i].minOutRaw.toString(),
                 nextHopInput: curIn.toString(),
+                nextHopInputMint: (i < hops.length - 1) ? hops[i + 1].inputMint : 'N/A',
               }
             });
           } catch {}
         } else {
-          // This should not happen - minOutRaw should always be set if out > 0
-          // Log warning but use a very conservative estimate (out with max slippage)
+          // Quote succeeded but minOutRaw is invalid - this is an error condition
+          // Don't propagate old curIn - this will cause the next hop to fail validation, which is better than using wrong amount
           try {
-            logger.warn('tx.resolve.hop.minout_missing', {
+            logger.error('tx.resolve.hop.invalid_minout', {
               cat: 'tx',
               code: LogCode.TX_BUILD_ERR,
               ctx: {
@@ -271,27 +306,18 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
                 quotedOut: out.toString(),
                 minOutRaw: hops[i].minOutRaw?.toString() || '0',
                 slippageBps: eff,
+                inputMint: hops[i].inputMint,
+                outputMint: hops[i].outputMint,
               }
             });
           } catch {}
-          // Apply maximum slippage as safety fallback (very conservative)
-          const fallbackAmount = applyMinOut(out, 9900); // 99% slippage = very conservative
-          curIn = fallbackAmount;
-          
-          try {
-            logger.info('tx.resolve.hop.propagate.fallback', {
-              cat: 'tx',
-              code: LogCode.TX_RESOLVE_OK,
-              ctx: {
-                hopIndex: i,
-                quotedOut: out.toString(),
-                fallbackAmount: fallbackAmount.toString(),
-                nextHopInput: curIn.toString(),
-              }
-            });
-          } catch {}
+          // Don't propagate - set curIn to 0 so next hop will fail validation
+          // This prevents using the wrong amount in the wrong token's units
+          curIn = 0n;
         }
       } else {
+        // Quote failed or returned 0 - don't propagate old curIn
+        // Set curIn to 0 so next hop will fail validation
         try {
           logger.warn('tx.resolve.hop.no_propagation', {
             cat: 'tx',
@@ -300,12 +326,32 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
               hopIndex: i,
               quotedOut: out.toString(),
               amountInRaw: curIn.toString(),
+              inputMint: hops[i].inputMint,
+              outputMint: hops[i].outputMint,
+              quoteError: quoteError ? String(quoteError.message) : 'none',
             }
           });
         } catch {}
+        // Don't propagate - set to 0 to prevent using wrong amount
+        curIn = 0n;
       }
     }
-  } catch {}
+  } catch (e) {
+    // Log the error instead of swallowing it
+    try {
+      logger.error('tx.resolve.failed', {
+        cat: 'tx',
+        code: LogCode.TX_BUILD_ERR,
+        ctx: { 
+          error: String((e as any)?.message || e), 
+          hops: hops.length,
+          stack: (e as any)?.stack,
+        }
+      });
+    } catch {}
+    // Re-throw so the caller knows resolution failed
+    throw e;
+  }
   logger.info('tx.resolve.ok', { cat: 'tx', code: LogCode.TX_RESOLVE_OK, ctx: { ms: Date.now() - t0, hops: hops.length } as any });
   return { path, hops, computeUnitPriceMicroLamports: cfg.computeUnitPriceMicroLamports };
 }
