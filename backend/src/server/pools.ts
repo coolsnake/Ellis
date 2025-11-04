@@ -1921,9 +1921,9 @@ export function startRaydiumRefreshLoop(): void {
               },
               metrics,
             });
-            wsDeltaStats.raydium = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
-            wsDeltaStats.orca = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
-            wsDeltaStats.meteora = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
+            wsDeltaStats.raydium = { decoded: 0, applied: 0, skipped: 0 };
+            wsDeltaStats.orca = { decoded: 0, applied: 0, skipped: 0 };
+            wsDeltaStats.meteora = { decoded: 0, applied: 0, skipped: 0 };
             // Emit a dedicated ws-activity event for UI regardless of log filtering
             try { emit('ws-activity', { healthy: wsHealthy, lastEventMs: lastWsEventMs, orca: { attached: attachedOrcaPools, events: snapshot.orca || 0 }, raydium: { attached: attachedRaydiumPools, events: snapshot.raydium || 0 }, meteora: { attached: attachedMeteoraPools, events: snapshot.meteora || 0 } }); } catch {}
             try {

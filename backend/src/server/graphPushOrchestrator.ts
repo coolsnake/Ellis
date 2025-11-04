@@ -491,25 +491,18 @@ class GraphPushOrchestrator {
       try {
         const { getGraphVersion } = require('./graph.js');
         const backendVersion = getGraphVersion().version;
-        // Use cached version from polling instead of lastDetectCompleteVersion
-        const { getCachedArbVersion } = await import('./realtime.js');
-        const cachedVersion = getCachedArbVersion();
-        const arbVersion = cachedVersion.version;
-        const cacheAgeMs = cachedVersion.ageMs;
+        // Use lastDetectCompleteVersion here since scheduleFlush is synchronous
+        // The async flushPendingFromDetector will use the cached version
+        const arbVersion = this.lastDetectCompleteVersion || 0;
         
-        // Prefer cached version if fresh (< 10 seconds), otherwise use lastDetectCompleteVersion
-        const effectiveArbVersion = cacheAgeMs < 10000 ? arbVersion : (this.lastDetectCompleteVersion || 0);
-        
-        if (backendVersion > effectiveArbVersion) {
+        if (backendVersion > arbVersion) {
           hasVersionGap = true;
           skipCoalescing = true;
           try {
             logger.info('graph.push force_flush_version_gap', {
-              arb_rs_version: effectiveArbVersion,
+              arb_rs_version: arbVersion,
               backend_version: backendVersion,
-              gap: backendVersion - effectiveArbVersion,
-              cache_age_ms: cacheAgeMs,
-              using_cached: cacheAgeMs < 10000,
+              gap: backendVersion - arbVersion,
               cat: 'graph',
             });
           } catch {}
