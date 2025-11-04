@@ -1386,14 +1386,9 @@ export function createArbRouter(io: SocketIOServer): Router {
   }
 
   async function buildArbTransaction(plan: any): Promise<ArbBuildResult> {
-    // If graph worker is busy, skip worker entirely and build synchronously
-    // This prevents transaction builds from being starved by graph diffs
-    const { isGraphWorkerBusy } = await import('../graph.js');
-    if (isGraphWorkerBusy()) {
-      try { logger.debug('arb.build.worker.skip_busy', { reason: 'graph_worker_busy', cat: 'tx' }); } catch {}
-      return buildTransactionSummary(plan, undefined, undefined);
-    }
-
+    // Graph and arb build workers are independent and can run in parallel
+    // No need to check graph worker status - they use separate worker threads
+    
     const client = getArbBuildWorkerClient();
     const request: ArbBuildRequest = { plan };
     if (client) {

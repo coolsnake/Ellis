@@ -51,7 +51,7 @@ async function injectBinArrayMetas(
       } catch {}
       return undefined;
     };
-
+    
     // Try primary method: getBinArrayAccountMetasCoverage with bounds
     // Note: Do NOT use large ranges - getBinArrayAccountMetasCoverage returns ALL arrays in range
     // For swaps, we only need a few bin arrays around the active bin
@@ -64,8 +64,8 @@ async function injectBinArrayMetas(
         const coverageFnArgCount = getMetas.length;
         if (coverageFnArgCount >= 4) {
           try {
-            const bnjs = await import('bn.js').catch(() => null as any);
-            const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
+        const bnjs = await import('bn.js').catch(() => null as any);
+        const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
             if (BN) {
               // Try to get active bin from pool state to use a small range
               try {
@@ -149,7 +149,7 @@ async function injectBinArrayMetas(
         }
       }
     } catch {}
-
+    
     // Inject metas into instruction
     if (Array.isArray(metas) && metas.length && Array.isArray((ix as any).keys)) {
       const existing = new Set<string>();
@@ -645,7 +645,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
       }
       try { logger.warn('orca.whirlpool.swapInstructions.fallback', { cat: 'tx', ctx: { pool: hop.poolId, error: msg } as any }); } catch {}
     }
-
+    
     // Use context-based SDK approach instead of global state
     try {
       const { WhirlpoolContext, buildWhirlpoolClient, swapQuoteByInputToken } = await import('@orca-so/whirlpools-sdk');
@@ -712,7 +712,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
       try { logger.info('orca.whirlpool.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: estimatedOut.toString() } as any }); } catch {}
       
       const preIx = await ensureWhirlpoolTickArrays(ctx, pool, quote, kp.publicKey, hop);
-
+      
       // Build swap instruction from quote
       // Try multiple SDK API patterns for building swap instruction
       let swapIx: any = null;
@@ -759,7 +759,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
       if (!swapIx) {
         throw createBuilderError('ORCA', 'unable to build swap instruction from quote - no compatible SDK method found', hop);
       }
-
+      
       const instructions = [...preIx, ...flattenToTransactionInstructions(swapIx, hop)];
       if (!instructions.length) {
         throw createBuilderError('ORCA', 'swap builder returned no executable instructions', hop);
@@ -955,9 +955,9 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                     const derived = deriveBinArray(poolPk, arrIdx, programId);
                     const pk = Array.isArray(derived) ? derived[0] : derived;
                     const finalPk = pk instanceof PublicKey ? pk : new PublicKey(String(pk));
-                    
+        
                     // Verify account exists on-chain before including it
-                    try {
+          try {
                       const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
                       const accInfo = await withRpcLimit(() => connection.getAccountInfo(finalPk));
                       if (accInfo && accInfo.data && accInfo.data.length > 0) {
@@ -968,8 +968,8 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                       }
                     } catch {
                       // Account doesn't exist or error fetching - skip it
-                    }
-                  } catch {}
+            }
+          } catch {}
                 }
               }
             } catch {}
@@ -980,7 +980,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       const coverageMetas: Array<{ pubkey: PublicKey; isWritable: boolean; isSigner: boolean }> = [];
       const coverageSet = new Set<string>();
       const pushMeta = (val: any, writable = true) => {
-        try {
+          try {
           if (!val) return;
           let pk: PublicKey | null = null;
           if (val instanceof PublicKey) pk = val;
@@ -1456,6 +1456,96 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       } catch {}
     }
 
+    // Enhanced validation: ensure userTokenOut matches pool's tokenX/tokenY based on swap direction
+    try {
+      const tokenXMint = acctBase.tokenXMint ? (acctBase.tokenXMint instanceof PublicKey ? acctBase.tokenXMint : toPublicKey(acctBase.tokenXMint)) : null;
+      const tokenYMint = acctBase.tokenYMint ? (acctBase.tokenYMint instanceof PublicKey ? acctBase.tokenYMint : toPublicKey(acctBase.tokenYMint)) : null;
+      const inputMintPk = toPublicKey(hop.inputMint);
+      const outputMintPk = toPublicKey(hop.outputMint);
+      
+      if (tokenXMint && tokenYMint) {
+        // Determine swap direction: X->Y or Y->X
+        const isXToY = inputMintPk.equals(tokenXMint) && outputMintPk.equals(tokenYMint);
+        const isYToX = inputMintPk.equals(tokenYMint) && outputMintPk.equals(tokenXMint);
+        
+        if (isXToY || isYToX) {
+          // Swap direction is valid, ensure userTokenOut matches the output token
+          const expectedOutputToken = isXToY ? tokenYMint : tokenXMint;
+          const { deriveAta } = await import('../accounts.js');
+          const outputTokenProgram = isXToY ? acctBase.tokenYProgram : acctBase.tokenXProgram;
+          const fallbackTokenProg = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+          const tokenProg = outputTokenProgram instanceof PublicKey ? outputTokenProgram : (outputTokenProgram ? toPublicKey(outputTokenProgram) : fallbackTokenProg);
+          const correctOutputAta = deriveAta(kp.publicKey, expectedOutputToken, tokenProg.equals(TOKEN_2022_PROGRAM_ID) ? 'token-2022' : 'spl-token');
+          
+          const currentUserTokenOut = acctBase.userTokenOut || accounts.userTokenOut;
+          if (currentUserTokenOut) {
+            const currentOutPk = currentUserTokenOut instanceof PublicKey ? currentUserTokenOut : toPublicKey(currentUserTokenOut);
+            
+            if (!currentOutPk.equals(correctOutputAta)) {
+              try { 
+                logger.warn('meteora.dlmm.userTokenOut.pool_token_mismatch', { 
+                  cat: 'tx', 
+                  ctx: { 
+                    currentUserTokenOut: currentOutPk.toBase58(),
+                    correctOutputAta: correctOutputAta.toBase58(),
+                    expectedOutputToken: expectedOutputToken.toBase58(),
+                    tokenXMint: tokenXMint.toBase58(),
+                    tokenYMint: tokenYMint.toBase58(),
+                    swapDirection: isXToY ? 'X->Y' : 'Y->X',
+                    inputMint: hop.inputMint,
+                    outputMint: hop.outputMint
+                  } 
+                }); 
+              } catch {}
+              
+              acctBase.userTokenOut = correctOutputAta;
+              accounts.userTokenOut = correctOutputAta;
+              
+              // Re-apply accounts
+              try {
+                if (typeof (builder as any).accountsPartial === 'function') {
+                  builder = (builder as any).accountsPartial(acctBase);
+                } else if (typeof (builder as any).accounts === 'function') {
+                  builder = (builder as any).accounts(acctBase);
+                }
+              } catch {}
+              
+              try { 
+                logger.info('meteora.dlmm.userTokenOut.pool_token_corrected', { 
+                  cat: 'tx', 
+                  ctx: { 
+                    old: currentOutPk.toBase58(),
+                    new: correctOutputAta.toBase58(),
+                    token: expectedOutputToken.toBase58()
+                  } 
+                }); 
+              } catch {}
+            }
+          }
+        } else {
+          // Swap direction doesn't match pool tokens - this might be the issue
+          try { 
+            logger.warn('meteora.dlmm.swap_direction_mismatch', { 
+              cat: 'tx', 
+              ctx: { 
+                inputMint: hop.inputMint,
+                outputMint: hop.outputMint,
+                tokenXMint: tokenXMint.toBase58(),
+                tokenYMint: tokenYMint.toBase58()
+              } 
+            }); 
+          } catch {}
+        }
+      }
+    } catch (poolValErr) {
+      try { 
+        logger.debug('meteora.dlmm.pool_token_validation.failed', { 
+          cat: 'tx', 
+          ctx: { error: String((poolValErr as any)?.message || poolValErr) } 
+        }); 
+      } catch {}
+    }
+
     // Log key accounts for DLMM swap for observability
     try {
       const to58 = (x: any) => (x && typeof x.toBase58 === 'function') ? x.toBase58() : (typeof x === 'string' ? x : undefined);
@@ -1524,9 +1614,9 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 if (limitedMetas.length) {
                   builder = (builder as any).remainingAccounts(limitedMetas);
                   try { logger.info('meteora.dlmm.remaining.ok', { cat: 'tx', ctx: { count: limitedMetas.length, total: metas.length, range: `${rangeLower.toString()}..${rangeUpper.toString()}` } }); } catch {}
-                }
-              } catch (e: any) {
-                try { logger.debug('meteora.dlmm.remaining.bounds.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
+          }
+        } catch (e: any) {
+          try { logger.debug('meteora.dlmm.remaining.bounds.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
               }
             }
           }
@@ -1682,11 +1772,11 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       }
     }
     if (!observationId) {
-      const observationIdConfig = (CONFIG.raydium as any)?.clmmObservationId;
+    const observationIdConfig = (CONFIG.raydium as any)?.clmmObservationId;
       if (observationIdConfig) {
         try { observationId = toPublicKey(observationIdConfig); } catch (e) {
           throw createBuilderError('RAYDIUM_CLMM', `invalid CONFIG.raydium.clmmObservationId: ${String(e instanceof Error ? e.message : e)}`, hop);
-        }
+    }
       }
     }
     if (!observationId) {
@@ -1737,7 +1827,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       });
       if (typeof clmm.getClmmPoolKeys === 'function') {
         poolKeysFromApi = await clmm.getClmmPoolKeys(poolId).catch(() => null);
-      }
+    }
     } catch {}
 
     const mintAAddress = toPublicKey(hop.inputMint).toBase58();
