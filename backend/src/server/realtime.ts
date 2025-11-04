@@ -204,7 +204,7 @@ export function startDetectDrivenGraphPush(debounceMs = 0): void {
           
           // Check version gap - ensure arb-rs gets updates before next detection cycle
           try {
-            const { getGraphVersion } = await import('../graph.js');
+            const { getGraphVersion } = await import('./graph.js');
             const backendVersion = getGraphVersion().version;
             const arbVersion = getCachedArbVersion().version;
             
@@ -242,7 +242,7 @@ export function startDetectDrivenGraphPush(debounceMs = 0): void {
             // Check if we need to skip coalescing due to version gap
             let skipCoalescing = false;
             try {
-              const { getGraphVersion } = await import('../graph.js');
+              const { getGraphVersion } = await import('./graph.js');
               const backendVersion = getGraphVersion().version;
               const arbVersion = getCachedArbVersion().version;
               if (backendVersion > arbVersion) {
