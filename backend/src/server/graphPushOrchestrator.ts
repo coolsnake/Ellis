@@ -589,38 +589,54 @@ class GraphPushOrchestrator {
       this.flushInProgress = false;
       if (this.pendingSnapshot || this.pendingDiff) {
         // Check if there's still a version gap - if so, use flushPendingFromDetector to bypass blocks
-        try {
-          const { getGraphVersion } = require('./graph.js');
-          const backendVersion = getGraphVersion().version;
-          // Use the most recent version from polling cache, not just lastDetectCompleteVersion
-          const { getCachedArbVersion } = await import('./realtime.js');
-          const arbVersion = getCachedArbVersion().version;
-          
-          if (backendVersion > arbVersion) {
-            // Version gap still exists - force flush via detector path to bypass all blocks
+        // Use IIFE to handle async properly in finally block
+        (async () => {
+          try {
+            const { getGraphVersion } = require('./graph.js');
+            const backendVersion = getGraphVersion().version;
+            // Use the most recent version from polling cache, not just lastDetectCompleteVersion
+            const { getCachedArbVersion } = await import('./realtime.js');
+            const arbVersion = getCachedArbVersion().version;
+            
+            if (backendVersion > arbVersion) {
+              // Version gap still exists - force flush via detector path to bypass all blocks
+              try {
+                logger.info('graph.push post_flush_version_gap', {
+                  arb_rs_version: arbVersion,
+                  backend_version: backendVersion,
+                  gap: backendVersion - arbVersion,
+                  cat: 'graph',
+                });
+              } catch {}
+              // Use flushPendingFromDetector which bypasses blocking conditions
+              // Await it properly and handle errors
+              try {
+                await this.flushPendingFromDetector();
+              } catch (err) {
+                // Fallback to normal scheduleFlush if flushPendingFromDetector fails
+                try {
+                  logger.warn('graph.push post_flush_detector_failed', {
+                    error: String((err as any)?.message || err),
+                    cat: 'graph',
+                  });
+                } catch {}
+                this.scheduleFlush(true);
+              }
+            } else {
+              // No version gap, use normal scheduling
+              this.scheduleFlush(true);
+            }
+          } catch (err) {
+            // If version check fails, fall back to normal scheduling
             try {
-              logger.info('graph.push post_flush_version_gap', {
-                arb_rs_version: arbVersion,
-                backend_version: backendVersion,
-                gap: backendVersion - arbVersion,
+              logger.debug('graph.push post_flush_version_check_failed', {
+                error: String((err as any)?.message || err),
                 cat: 'graph',
               });
             } catch {}
-            // Use flushPendingFromDetector which bypasses blocking conditions
-            try {
-              void this.flushPendingFromDetector();
-            } catch (err) {
-              // Fallback to normal scheduleFlush if flushPendingFromDetector fails
-              this.scheduleFlush(true);
-            }
-          } else {
-            // No version gap, use normal scheduling
             this.scheduleFlush(true);
           }
-        } catch (err) {
-          // If version check fails, fall back to normal scheduling
-          this.scheduleFlush(true);
-        }
+        })();
       }
     }
   }

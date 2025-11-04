@@ -121,6 +121,8 @@ export function getTxRelatedLogs(txId: string | undefined, startTime?: number, e
       // DEX-specific instruction builder patterns
       /^(raydium|orca|meteora)\.(clmm|amm|dlmm|whirlpool)\./i,
       /ix\.build\.(raydium|orca|meteora)/i,
+      // SDK account verification patterns (explicitly match these)
+      /\.sdk\.(account|accounts)\.(missing|verified|verify)/i,
       // Account verification patterns
       /\.(account|accounts|verification|verify|missing|exists)\./i,
       // Instruction details
@@ -130,7 +132,8 @@ export function getTxRelatedLogs(txId: string | undefined, startTime?: number, e
     
     // Iterate backwards through recent events (most recent first)
     // Events are stored chronologically, so we start from the end
-    const eventsToCheck = Math.min(_sessionEvents.length, maxLogs * 3); // Check more to filter down
+    // Increase window to ensure we capture all instruction building logs
+    const eventsToCheck = Math.min(_sessionEvents.length, maxLogs * 5); // Check more to filter down (increased from 3x to 5x)
     const startIdx = Math.max(0, _sessionEvents.length - eventsToCheck);
     
     for (let i = _sessionEvents.length - 1; i >= startIdx; i--) {

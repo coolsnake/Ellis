@@ -326,7 +326,7 @@ export function startDetectDrivenGraphPush(debounceMs = 0): void {
             } catch {}
           }
         } else {
-          // Log when polling but no new detection (for debugging)
+          // In the else branch (when detection hasn't progressed), also check for version gaps
           try {
             const hasDirty = hasDetectDrivenDirty();
             if (hasDirty && currentDetectionMs === previousSeen && previousSeen > 0) {
@@ -337,6 +337,50 @@ export function startDetectDrivenGraphPush(debounceMs = 0): void {
                 has_dirty: hasDirty,
                 cat: 'graph',
               });
+              
+              // ALSO check for version gaps - if gap exists, force flush even without new detection
+              try {
+                const { getGraphVersion } = await import('./graph.js');
+                const backendVersion = getGraphVersion().version;
+                const arbVersion = getCachedArbVersion().version;
+                
+                if (backendVersion > arbVersion) {
+                  const versionGap = backendVersion - arbVersion;
+                  // Only force flush if gap is significant (>= 3) to avoid excessive flushing
+                  if (versionGap >= 3) {
+                    try {
+                      logger.info('graph.push polling_version_gap_no_detection', {
+                        arb_rs_version: arbVersion,
+                        backend_version: backendVersion,
+                        gap: versionGap,
+                        last_detection_ms: currentDetectionMs,
+                        cat: 'graph',
+                      });
+                    } catch {}
+                    // Force flush even though detection hasn't progressed
+                    try {
+                      const flushed = await orchestratorFlushPendingFromDetector();
+                      try {
+                        logger.info('graph.push detector_flush_complete_no_detection', { 
+                          flushed,
+                          last_detection_ms: currentDetectionMs,
+                          cat: 'graph',
+                        });
+                      } catch {}
+                    } catch (err) {
+                      try { 
+                        logger.warn('graph.push detector_flush_failed_no_detection', { 
+                          error: String((err as any)?.message || err),
+                          last_detection_ms: currentDetectionMs,
+                          cat: 'graph',
+                        }); 
+                      } catch {}
+                    }
+                  }
+                }
+              } catch (err) {
+                // If version check fails, continue silently
+              }
             }
           } catch {}
         }

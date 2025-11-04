@@ -624,11 +624,34 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
       try { logger.warn('orca.whirlpool.pool.precheck.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String((preErr as any)?.message || preErr) } }); } catch {}
     }
     
-    let slippageBps = 100;
-    if (hop.minOutRaw && hop.minOutRaw > 0n && hop.amountInRaw && hop.amountInRaw > 0n) {
-      const ratio = Number(hop.minOutRaw) / Math.max(1, Number(hop.amountInRaw));
-      slippageBps = Math.max(0, Math.min(9900, Math.round((1 - ratio) * 10000)));
-    }
+    // Calculate slippage from the configured value, not by comparing minOutRaw to amountInRaw
+    // (which are in different tokens with different decimals and can't be directly compared)
+    // Use the configured slippage from CONFIG or default to 100 bps (1%)
+    // This ensures consistency with the slippage used during resolution
+    const configuredSlippageBps = typeof (CONFIG as any)?.fees?.slippageBps === 'number' 
+      ? (CONFIG as any).fees.slippageBps 
+      : (typeof (CONFIG as any)?.system?.slippageBpsDefault === 'number'
+          ? (CONFIG as any).system.slippageBpsDefault
+          : 100);
+    
+    // Ensure slippage is within reasonable bounds (1-500 bps = 0.01% to 5%)
+    // Too small slippage causes the threshold to be too high and swaps fail
+    // Too large slippage is unsafe
+    let slippageBps = Math.max(1, Math.min(500, configuredSlippageBps));
+    
+    try {
+      logger.info('orca.whirlpool.slippage', {
+        cat: 'tx',
+        ctx: {
+          pool: hop.poolId,
+          configuredSlippageBps,
+          finalSlippageBps: slippageBps,
+          amountInRaw: String(hop.amountInRaw ?? 0n),
+          minOutRaw: String(hop.minOutRaw ?? 0n),
+        }
+      });
+    } catch {}
+    
     try {
       const sdkResult = await buildOrcaSwapViaSdk(hop, kp, slippageBps);
       const quoteAny = sdkResult.quote as any;
@@ -1323,64 +1346,92 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     try {
       const getTokensMintFromPoolAddress = (DLMM as any)?.getTokensMintFromPoolAddress;
       if (getTokensMintFromPoolAddress) {
-        const mints = await getTokensMintFromPoolAddress(connection, poolPk).catch(() => null as any);
-        const x = (mints as any)?.tokenXMint || (mints as any)?.x || (mints as any)?.a;
-        const y = (mints as any)?.tokenYMint || (mints as any)?.y || (mints as any)?.b;
-        if (x) acctBase.tokenXMint = (x as any).publicKey || x;
-        if (y) acctBase.tokenYMint = (y as any).publicKey || y;
-        
-        // CRITICAL FIX: Validate swap direction matches pool tokens
-        // This ensures the SDK receives the correct token mints for validation
-        if (acctBase.tokenXMint && acctBase.tokenYMint) {
-          const inputMintPk = toPublicKey(hop.inputMint);
-          const outputMintPk = toPublicKey(hop.outputMint);
-          const tokenXMintPk = acctBase.tokenXMint instanceof PublicKey ? acctBase.tokenXMint : toPublicKey(acctBase.tokenXMint);
-          const tokenYMintPk = acctBase.tokenYMint instanceof PublicKey ? acctBase.tokenYMint : toPublicKey(acctBase.tokenYMint);
-          
-          // Verify swap direction matches pool tokens
-          const isXToY = inputMintPk.equals(tokenXMintPk) && outputMintPk.equals(tokenYMintPk);
-          const isYToX = inputMintPk.equals(tokenYMintPk) && outputMintPk.equals(tokenXMintPk);
-          
-          if (!isXToY && !isYToX) {
-            try { 
-              logger.error('meteora.dlmm.swap_direction_mismatch', { 
-                cat: 'tx', 
-                code: LogCode.TX_BUILD_ERR,
-                ctx: { 
-                  inputMint: hop.inputMint,
-                  outputMint: hop.outputMint,
-                  tokenXMint: tokenXMintPk.toBase58(),
-                  tokenYMint: tokenYMintPk.toBase58(),
-                  poolId: hop.poolId
-                } 
-              }); 
-            } catch {}
-            // CRITICAL: Don't catch this error - let it propagate to fail fast
-            throw createBuilderError('METEORA_DLMM', 'Swap direction does not match pool token mints', hop);
-          }
-          
-          // Log swap direction for debugging
+        const mints = await getTokensMintFromPoolAddress(connection, poolPk).catch((e: any) => {
+          // Log fetch failure
           try {
-            logger.info('meteora.dlmm.swap_direction', {
+            logger.error('meteora.dlmm.pool_mint_fetch.failed', {
               cat: 'tx',
+              code: LogCode.TX_BUILD_ERR,
               ctx: {
-                direction: isXToY ? 'X->Y' : 'Y->X',
-                inputMint: hop.inputMint,
-                outputMint: hop.outputMint,
-                tokenXMint: tokenXMintPk.toBase58(),
-                tokenYMint: tokenYMintPk.toBase58(),
-                poolId: hop.poolId
+                poolId: hop.poolId,
+                error: String(e?.message || e)
               }
             });
           } catch {}
+          return null;
+        });
+        
+        if (!mints) {
+          // Pool fetch failed - this is critical, fail fast
+          throw createBuilderError('METEORA_DLMM', `Failed to fetch token mints for pool ${hop.poolId}`, hop);
         }
+        
+        const x = (mints as any)?.tokenXMint || (mints as any)?.x || (mints as any)?.a;
+        const y = (mints as any)?.tokenYMint || (mints as any)?.y || (mints as any)?.b;
+        
+        if (!x || !y) {
+          // Mints not found in response
+          throw createBuilderError('METEORA_DLMM', `Pool ${hop.poolId} response missing token mints`, hop);
+        }
+        
+        acctBase.tokenXMint = (x as any).publicKey || x;
+        acctBase.tokenYMint = (y as any).publicKey || y;
+        
+        // CRITICAL: Validate swap direction - fail fast if mismatch
+        const inputMintPk = toPublicKey(hop.inputMint);
+        const outputMintPk = toPublicKey(hop.outputMint);
+        const tokenXMintPk = acctBase.tokenXMint instanceof PublicKey ? acctBase.tokenXMint : toPublicKey(acctBase.tokenXMint);
+        const tokenYMintPk = acctBase.tokenYMint instanceof PublicKey ? acctBase.tokenYMint : toPublicKey(acctBase.tokenYMint);
+        
+        const isXToY = inputMintPk.equals(tokenXMintPk) && outputMintPk.equals(tokenYMintPk);
+        const isYToX = inputMintPk.equals(tokenYMintPk) && outputMintPk.equals(tokenXMintPk);
+        
+        if (!isXToY && !isYToX) {
+          // POOL MISMATCH - this is the root cause
+          logger.error('meteora.dlmm.pool_mismatch', {
+            cat: 'tx',
+            code: LogCode.TX_BUILD_ERR,
+            ctx: {
+              poolId: hop.poolId,
+              inputMint: hop.inputMint,
+              outputMint: hop.outputMint,
+              poolTokenXMint: tokenXMintPk.toBase58(),
+              poolTokenYMint: tokenYMintPk.toBase58(),
+              message: `Pool ${hop.poolId} contains ${tokenXMintPk.toBase58()}/${tokenYMintPk.toBase58()} but swap requires ${hop.inputMint}/${hop.outputMint}`
+            }
+          });
+          throw createBuilderError('METEORA_DLMM', `Pool ${hop.poolId} token mints (${tokenXMintPk.toBase58()}/${tokenYMintPk.toBase58()}) do not match swap direction (${hop.inputMint}/${hop.outputMint})`, hop);
+        }
+        
+        // Log success
+        logger.info('meteora.dlmm.swap_direction', {
+          cat: 'tx',
+          ctx: {
+            direction: isXToY ? 'X->Y' : 'Y->X',
+            inputMint: hop.inputMint,
+            outputMint: hop.outputMint,
+            tokenXMint: tokenXMintPk.toBase58(),
+            tokenYMint: tokenYMintPk.toBase58(),
+            poolId: hop.poolId
+          }
+        });
+      } else {
+        // SDK doesn't have getTokensMintFromPoolAddress - this is a problem
+        logger.warn('meteora.dlmm.sdk_missing_getTokensMintFromPoolAddress', {
+          cat: 'tx',
+          ctx: { poolId: hop.poolId }
+        });
       }
     } catch (e: any) {
-      // Re-throw validation errors, but catch other errors (like network failures)
-      if (e?.code === 'METEORA_DLMM' || (typeof e?.message === 'string' && e.message.includes('Swap direction does not match'))) {
+      // Re-throw validation/configuration errors
+      if (e?.code === 'METEORA_DLMM' || (typeof e?.message === 'string' && (
+        e.message.includes('Swap direction') || 
+        e.message.includes('token mints') ||
+        e.message.includes('Failed to fetch')
+      ))) {
         throw e;
       }
-      // Log other errors but don't fail
+      // Log other errors but don't fail (might be network issues)
       try { 
         logger.debug('meteora.dlmm.token_mint_fetch.failed', { 
           cat: 'tx', 
@@ -2440,6 +2491,15 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     // CRITICAL: Immediately verify all accounts in SDK-generated instructions to catch missing accounts
     // This catches issues before any processing that might mask the error
     if (ixs && ixs.length) {
+      try {
+        logger.info('raydium.clmm.sdk.verification.start', {
+          cat: 'tx',
+          ctx: {
+            pool: hop.poolId,
+            instructionCount: ixs.length,
+          } as any,
+        });
+      } catch {}
       const connection = getConnection();
       const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
       const missingAccounts: Array<{ instructionIndex: number; accountIndex: number; address: string; programId: string }> = [];
@@ -2518,7 +2578,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 } catch {}
               } else {
                 try {
-                  logger.debug('raydium.clmm.sdk.account.verified', {
+                  logger.info('raydium.clmm.sdk.account.verified', {
                     cat: 'tx',
                     ctx: {
                       pool: hop.poolId,
@@ -2552,6 +2612,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       
       if (missingAccounts.length > 0) {
         const missingList = missingAccounts.map(a => `${a.address} (ix=${a.instructionIndex}, acc=${a.accountIndex})`).join(', ');
+        // CRITICAL: Log summary BEFORE throwing to ensure it's captured
         try {
           logger.error('raydium.clmm.sdk.accounts.missing', {
             cat: 'tx',
@@ -2559,10 +2620,24 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
               pool: hop.poolId,
               missingCount: missingAccounts.length,
               missingAccounts: missingAccounts,
+              missingList: missingList,
+            } as any,
+          });
+          // Small delay to ensure log is written before throwing
+          await new Promise(resolve => setTimeout(resolve, 10));
+        } catch {}
+        throw createBuilderError('RAYDIUM_CLMM', `SDK-generated instruction contains missing accounts: ${missingList}`, hop);
+      } else {
+        // Log success summary
+        try {
+          logger.info('raydium.clmm.sdk.verification.complete', {
+            cat: 'tx',
+            ctx: {
+              pool: hop.poolId,
+              verifiedAllAccounts: true,
             } as any,
           });
         } catch {}
-        throw createBuilderError('RAYDIUM_CLMM', `SDK-generated instruction contains missing accounts: ${missingList}`, hop);
       }
     }
     
