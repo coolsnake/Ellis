@@ -2109,7 +2109,7 @@ export async function getMeteoraBalancedPoolsCached(force = false): Promise<Pool
           if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
             // Fire-and-forget: don't await to avoid blocking HTTP fetchers
             void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: true }).catch((err: any) => {
-              try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'raydium', cat: 'graph' }); } catch {}
+              try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'meteora_balanced', cat: 'graph' }); } catch {}
             });
           } else if (!inc && hasDelta) {
             // Non-incremental mode: schedule rebuild only (only one path)
@@ -2242,8 +2242,10 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
         try {
           const gmod: any = await import('./graph.js');
           if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
-            // Incremental mode: use applyPoolUpdates (only one path)
-            await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: true });
+            // Fire-and-forget: don't await to avoid blocking HTTP fetchers
+            void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: true }).catch((err: any) => {
+              try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'raydium', cat: 'graph' }); } catch {}
+            });
           } else if (!inc && hasDelta) {
             // Non-incremental mode: schedule rebuild only (only one path)
             const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
@@ -2363,8 +2365,10 @@ export async function getOrcaPoolsCached(force = false): Promise<PoolsPayload> {
         try {
           const gmod: any = await import('./graph.js');
           if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
-            // Incremental mode: use applyPoolUpdates (only one path)
-            await gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, data, { pushToArb: true });
+            // Fire-and-forget: don't await to avoid blocking HTTP fetchers
+            void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, data, { pushToArb: true }).catch((err: any) => {
+              try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'orca', cat: 'graph' }); } catch {}
+            });
           } else if (!inc && hasDelta) {
             // Non-incremental mode: schedule rebuild only (only one path)
             const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
@@ -2511,7 +2515,7 @@ export async function getMeteoraPoolsCached(force = false): Promise<PoolsPayload
           if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
             // Fire-and-forget: don't await to avoid blocking HTTP fetchers
             void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: true }).catch((err: any) => {
-              try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'raydium', cat: 'graph' }); } catch {}
+              try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'meteora', cat: 'graph' }); } catch {}
             });
           } else if (!inc && hasDelta) {
             // Non-incremental mode: schedule rebuild only (only one path)

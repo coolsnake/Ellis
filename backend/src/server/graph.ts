@@ -69,6 +69,9 @@ let lastRebaseMs = 0;
 let lastRebuildMs = 0;
 let lastRebuildHadChanges = false;
 const MIN_REBUILD_GAP_MS = Math.max(100, Number((CONFIG.system as any)?.graphMinRebuildGapMs || 500));
+// Track last detect-driven rebuild to prevent excessive rebuilds
+let lastDetectDrivenRebuildMs = 0;
+const DETECT_DRIVEN_REBUILD_COOLDOWN_MS = 5000; // Minimum 5 seconds between detect-driven rebuilds
 
 const env = (typeof globalThis !== 'undefined' && (globalThis as any)?.process?.env) ? (globalThis as any).process.env : {} as Record<string, string>;
 const GRAPH_WORKER_DISABLED = String(env.GRAPH_WORKER_DISABLED ?? env.ARB_GRAPH_WORKER_DISABLED ?? '').toLowerCase() === 'true';
@@ -155,9 +158,21 @@ async function processUpdateQueue(): Promise<void> {
 }
 
 // ADD: Internal rebuild function that doesn't use the lock (for use when already locked)
-async function rebuildGraphNowInternal(io?: SocketIOServer, opts?: { pushToArb?: boolean }): Promise<void> {
+async function rebuildGraphNowInternal(io?: SocketIOServer, opts?: { pushToArb?: boolean; source?: string }): Promise<void> {
   try {
     const nowMs = Date.now();
+    
+    // ADD: Prevent excessive detect-driven rebuilds
+    const isDetectDriven = opts?.source === 'detect_driven' || opts?.source === 'graph_stream';
+    if (isDetectDriven) {
+      const gap = nowMs - lastDetectDrivenRebuildMs;
+      if (gap < DETECT_DRIVEN_REBUILD_COOLDOWN_MS) {
+        try { logger.debug('graph.rebuild.skip_detect_driven_cooldown', { gap_ms: gap, min_gap_ms: DETECT_DRIVEN_REBUILD_COOLDOWN_MS, cat: 'graph' }); } catch {}
+        return;
+      }
+      lastDetectDrivenRebuildMs = nowMs;
+    }
+    
     // Guard: skip if last rebuild was recent and had no changes (unless force requested)
     if (!opts?.pushToArb && lastRebuildMs > 0 && lastRebuildHadChanges === false) {
       const gap = nowMs - lastRebuildMs;
@@ -382,8 +397,17 @@ export async function applyPoolUpdates(prev: PoolsPayload, next: PoolsPayload, o
         }
       }
     } catch (e: any) {
-      try { logger.debug('graph.incremental.apply failed', { error: String(e?.message || e), cat: 'graph' }); } catch {}
-      try { await rebuildGraphNow(undefined); } catch {}
+      try { logger.warn('graph.incremental.apply failed', { error: String(e?.message || e), stack: e?.stack, cat: 'graph' }); } catch {}
+      // FIX: Don't rebuild on every error - avoid deadlocks and excessive rebuilds
+      // Log the error but don't cascade rebuilds which can cause deadlocks
+      try { 
+        logger.warn('graph.incremental.error_recovery', { 
+          error: String(e?.message || e),
+          will_rebuild: false, // Changed: don't auto-rebuild on errors to prevent cascading rebuilds
+          cat: 'graph' 
+        }); 
+      } catch {}
+      // REMOVED: await rebuildGraphNow(undefined); - this was causing deadlocks and excessive rebuilds
     }
   });
 }
