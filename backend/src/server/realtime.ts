@@ -170,69 +170,6 @@ export function startDetectDrivenGraphPush(debounceMs = 0): void {
           });
         } catch {}
         
-        // CRITICAL: Always check for version gaps on EVERY poll, not just when new detection is detected
-        // This ensures we flush updates even if polling misses detection completions
-        let hasVersionGap = false;
-        try {
-          const { getGraphVersion } = await import('./graph.js');
-          const backendVersion = getGraphVersion().version;
-          const arbVersion = getCachedArbVersion().version;
-          
-          if (backendVersion > arbVersion) {
-            hasVersionGap = true;
-            const versionGap = backendVersion - arbVersion;
-            const hasDirty = hasDetectDrivenDirty();
-            
-            if (hasDirty) {
-              try {
-                logger.info('graph.push polling_version_gap', {
-                  arb_rs_version: arbVersion,
-                  backend_version: backendVersion,
-                  gap: versionGap,
-                  last_detection_ms: currentDetectionMs,
-                  cat: 'graph',
-                });
-              } catch {}
-              
-              // Force immediate flush to close version gap
-              try {
-                logger.info('graph.push detector_flush_immediate_version_gap', {
-                  last_detection_ms: currentDetectionMs,
-                  cat: 'graph',
-                });
-              } catch {}
-              try {
-                const flushed = await orchestratorFlushPendingFromDetector();
-                try {
-                  logger.info('graph.push detector_flush_complete', { 
-                    flushed,
-                    last_detection_ms: currentDetectionMs,
-                    cat: 'graph',
-                  });
-                } catch {}
-              } catch (err) {
-                try { 
-                  logger.warn('graph.push detector_flush_failed', { 
-                    error: String((err as any)?.message || err),
-                    last_detection_ms: currentDetectionMs,
-                    cat: 'graph',
-                  }); 
-                } catch {}
-              }
-              // Don't return here - continue to handle detection completion if needed
-            }
-          }
-        } catch (err) {
-          // If version check fails, continue with normal logic
-          try {
-            logger.debug('graph.push polling_version_check_failed', {
-              error: String((err as any)?.message || err),
-              cat: 'graph',
-            });
-          } catch {}
-        }
-        
-        // Handle new detection completion (existing logic)
         if (currentDetectionMs > previousSeen) {
           lastDetectSeen = currentDetectionMs;
           try { 
@@ -245,7 +182,8 @@ export function startDetectDrivenGraphPush(debounceMs = 0): void {
             }); 
           } catch {}
           
-          // Mark detection complete to unblock any waiting flush
+          // CRITICAL FIX: Mark detection complete first to unblock any waiting flush
+          // This allows the existing flush (if any) to proceed
           try {
             markDetectorCompleteFromAck({ completedMs: currentDetectionMs });
             try {
@@ -264,102 +202,128 @@ export function startDetectDrivenGraphPush(debounceMs = 0): void {
             } catch {}
           }
           
-          // If we already flushed due to version gap above, don't do it again
-          if (!hasVersionGap) {
-            // Check if we need to flush new updates (existing logic)
-            try {
-              const hasDirty = hasDetectDrivenDirty();
-              if (!hasDirty) { 
-                try { logger.debug('graph.push detect_driven no_dirty', { cat: 'graph' }); } catch {}
-                return; 
-              }
-              
-              // Check if we need to skip coalescing due to version gap
-              let skipCoalescing = false;
+          // Check version gap - ensure arb-rs gets updates before next detection cycle
+          try {
+            const { getGraphVersion } = await import('./graph.js');
+            const backendVersion = getGraphVersion().version;
+            const arbVersion = getCachedArbVersion().version;
+            
+            if (backendVersion > arbVersion) {
+              const versionGap = backendVersion - arbVersion;
               try {
-                const { getGraphVersion } = await import('./graph.js');
-                const backendVersion = getGraphVersion().version;
-                const arbVersion = getCachedArbVersion().version;
-                if (backendVersion > arbVersion) {
-                  skipCoalescing = true; // Force immediate flush to close version gap
-                }
-              } catch (err) {
-                // If version check fails, use normal coalescing
+                logger.info('graph.push polling_version_gap', {
+                  arb_rs_version: arbVersion,
+                  backend_version: backendVersion,
+                  gap: versionGap,
+                  last_detection_ms: currentDetectionMs,
+                  cat: 'graph',
+                });
+              } catch {}
+              // Version gap detected - will force immediate flush below
+            }
+          } catch (err) {
+            // If version check fails, continue with normal logic
+            try {
+              logger.debug('graph.push polling_version_check_failed', {
+                error: String((err as any)?.message || err),
+                cat: 'graph',
+              });
+            } catch {}
+          }
+          
+          // Then check if we need to flush new updates
+          try {
+            const hasDirty = hasDetectDrivenDirty();
+            if (!hasDirty) { 
+              try { logger.debug('graph.push detect_driven no_dirty', { cat: 'graph' }); } catch {}
+              return; 
+            }
+            
+            // Check if we need to skip coalescing due to version gap
+            let skipCoalescing = false;
+            try {
+              const { getGraphVersion } = await import('./graph.js');
+              const backendVersion = getGraphVersion().version;
+              const arbVersion = getCachedArbVersion().version;
+              if (backendVersion > arbVersion) {
+                skipCoalescing = true; // Force immediate flush to close version gap
               }
-              
-              const wait = skipCoalescing ? 0 : getDetectDrivenPushCoalesceMs();
-              if (detectDebounceTimer) { clearTimeout(detectDebounceTimer); detectDebounceTimer = null; }
-              
-              // If skipping coalescing, flush immediately
-              if (skipCoalescing) {
+            } catch (err) {
+              // If version check fails, use normal coalescing
+            }
+            
+            const wait = skipCoalescing ? 0 : getDetectDrivenPushCoalesceMs();
+            if (detectDebounceTimer) { clearTimeout(detectDebounceTimer); detectDebounceTimer = null; }
+            
+            // If skipping coalescing, flush immediately
+            if (skipCoalescing) {
+              try {
+                logger.info('graph.push detector_flush_immediate_version_gap', {
+                  last_detection_ms: lastDetectSeen,
+                  cat: 'graph',
+                });
+              } catch {}
+              try {
+                const flushed = await orchestratorFlushPendingFromDetector();
                 try {
-                  logger.info('graph.push detector_flush_immediate_version_gap', {
+                  logger.info('graph.push detector_flush_complete', { 
+                    flushed,
                     last_detection_ms: lastDetectSeen,
                     cat: 'graph',
                   });
                 } catch {}
-                try {
-                  const flushed = await orchestratorFlushPendingFromDetector();
-                  try {
-                    logger.info('graph.push detector_flush_complete', { 
-                      flushed,
-                      last_detection_ms: lastDetectSeen,
-                      cat: 'graph',
-                    });
-                  } catch {}
-                } catch (err) {
-                  try { 
-                    logger.warn('graph.push detector_flush_failed', { 
-                      error: String((err as any)?.message || err),
-                      last_detection_ms: lastDetectSeen,
-                      cat: 'graph',
-                    }); 
-                  } catch {}
-                }
+              } catch (err) {
+                try { 
+                  logger.warn('graph.push detector_flush_failed', { 
+                    error: String((err as any)?.message || err),
+                    last_detection_ms: lastDetectSeen,
+                    cat: 'graph',
+                  }); 
+                } catch {}
+              }
+              return;
+            }
+            
+            detectDebounceTimer = setTimeout(async () => {
+              detectDebounceTimer = null;
+              const stillDirty = hasDetectDrivenDirty();
+              if (!stillDirty) {
+                try { logger.debug('graph.push detector_flush cancelled_no_dirty', { cat: 'graph' }); } catch {}
                 return;
               }
-              
-              detectDebounceTimer = setTimeout(async () => {
-                detectDebounceTimer = null;
-                const stillDirty = hasDetectDrivenDirty();
-                if (!stillDirty) {
-                  try { logger.debug('graph.push detector_flush cancelled_no_dirty', { cat: 'graph' }); } catch {}
-                  return;
-                }
+              try {
+                logger.info('graph.push detector_flush_pending', {
+                  last_detection_ms: lastDetectSeen,
+                  coalesce_ms: wait,
+                  cat: 'graph',
+                });
+              } catch {}
+              try {
+                const flushed = await orchestratorFlushPendingFromDetector();
                 try {
-                  logger.info('graph.push detector_flush_pending', {
+                  logger.info('graph.push detector_flush_complete', { 
+                    flushed,
                     last_detection_ms: lastDetectSeen,
-                    coalesce_ms: wait,
                     cat: 'graph',
                   });
                 } catch {}
-                try {
-                  const flushed = await orchestratorFlushPendingFromDetector();
-                  try {
-                    logger.info('graph.push detector_flush_complete', { 
-                      flushed,
-                      last_detection_ms: lastDetectSeen,
-                      cat: 'graph',
-                    });
-                  } catch {}
-                } catch (err) {
-                  try { 
-                    logger.warn('graph.push detector_flush_failed', { 
-                      error: String((err as any)?.message || err),
-                      last_detection_ms: lastDetectSeen,
-                      cat: 'graph',
-                    }); 
-                  } catch {}
-                }
-              }, wait);
-            } catch (err) {
-              try { 
-                logger.warn('graph.push detect_driven_error', { 
-                  error: String((err as any)?.message || err),
-                  cat: 'graph',
-                }); 
-              } catch {}
-            }
+              } catch (err) {
+                try { 
+                  logger.warn('graph.push detector_flush_failed', { 
+                    error: String((err as any)?.message || err),
+                    last_detection_ms: lastDetectSeen,
+                    cat: 'graph',
+                  }); 
+                } catch {}
+              }
+            }, wait);
+          } catch (err) {
+            try { 
+              logger.warn('graph.push detect_driven_error', { 
+                error: String((err as any)?.message || err),
+                cat: 'graph',
+              }); 
+            } catch {}
           }
         } else {
           // Log when polling but no new detection (for debugging)
