@@ -263,6 +263,22 @@ class GraphPushOrchestrator {
     if (this.pendingSinceMs === 0) {
       this.pendingSinceMs = Date.now();
       this.scheduleFallbackFlush();
+    } else {
+      // Check if we've been waiting too long without a flush
+      const elapsed = Date.now() - this.pendingSinceMs;
+      const maxWait = this.detectCoalesceMs * 2;
+      if (elapsed > maxWait && this.shouldWaitForDetect()) {
+        // Force a flush if we've been waiting too long
+        try {
+          logger.debug('graph.push force_flush_long_wait', {
+            elapsed_ms: elapsed,
+            max_wait_ms: maxWait,
+            pending_version: diff.version,
+            cat: 'graph',
+          });
+        } catch {}
+        this.scheduleFlush(true);
+      }
     }
     const apply = () => {
       const coalesced = coalesceDiff(this.pendingDiff, diff);
@@ -407,7 +423,9 @@ class GraphPushOrchestrator {
     if (!this.arbStreamEnabled) return;
     if (!this.pendingSnapshot && !this.pendingDiff) return;
     const detectMode = this.shouldWaitForDetect();
-    if (!force && detectMode && (this.awaitingDetect || this.inFlight || this.flushInProgress)) {
+    // Only block if awaitingDetect or flushInProgress
+    // Don't block on inFlight - that's normal during queue processing and shouldn't prevent new flushes
+    if (!force && detectMode && (this.awaitingDetect || this.flushInProgress)) {
       this.detectDirty = true;
       try {
         logger.info('graph.push wait_for_detect', {
@@ -415,6 +433,8 @@ class GraphPushOrchestrator {
           pending_diff: !!this.pendingDiff,
           diff_version: this.pendingDiff?.version,
           queue_depth: this.queue.length,
+          awaiting_detect: this.awaitingDetect,
+          flush_in_progress: this.flushInProgress,
         });
       } catch {}
       return;
@@ -479,7 +499,7 @@ class GraphPushOrchestrator {
       this.awaitingDetect = false;
       this.flushInProgress = false;
       if (this.pendingSnapshot || this.pendingDiff) {
-        this.scheduleFlush();
+        this.scheduleFlush(true); // Force flush after completing a flush cycle
       }
     }
   }

@@ -1031,6 +1031,130 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       userTokenIn: toPublicKey(hop.userSourceAta),
       userTokenOut: toPublicKey(hop.userDestAta),
     };
+    
+    // Log token account details for debugging
+    try {
+      logger.info('meteora.dlmm.accounts.detail', { 
+        cat: 'tx', 
+        ctx: {
+          userTokenIn: accounts.userTokenIn.toBase58(),
+          userTokenOut: accounts.userTokenOut.toBase58(),
+          inputMint: hop.inputMint,
+          outputMint: hop.outputMint,
+          poolId: hop.poolId
+        } 
+      });
+    } catch {}
+    
+    // Validate userTokenIn matches expected input mint
+    try {
+      const userTokenInPk = toPublicKey(hop.userSourceAta);
+      const expectedInputMint = toPublicKey(hop.inputMint);
+      const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+      const tokenInInfo = await withRpcLimit(() => connection.getAccountInfo(userTokenInPk)).catch(() => null);
+      
+      if (tokenInInfo?.data && tokenInInfo.data.length >= 32) {
+        const mintBytes = tokenInInfo.data.slice(0, 32);
+        try {
+          const accountMint = new PublicKey(mintBytes);
+          
+          if (!accountMint.equals(expectedInputMint)) {
+            try { 
+              logger.warn('meteora.dlmm.userTokenIn.mint_mismatch', { 
+                cat: 'tx', 
+                ctx: { 
+                  userTokenIn: userTokenInPk.toBase58(),
+                  accountMint: accountMint.toBase58(),
+                  expectedMint: expectedInputMint.toBase58(),
+                  inputMint: hop.inputMint
+                } 
+              }); 
+            } catch {}
+            
+            const { deriveAta } = await import('../accounts.js');
+            const correctAta = deriveAta(kp.publicKey, expectedInputMint, hop.inputTokenProgram);
+            accounts.userTokenIn = correctAta;
+            
+            try { 
+              logger.info('meteora.dlmm.userTokenIn.corrected', { 
+                cat: 'tx', 
+                ctx: { 
+                  old: userTokenInPk.toBase58(),
+                  new: correctAta.toBase58(),
+                  mint: expectedInputMint.toBase58()
+                } 
+              }); 
+            } catch {}
+          }
+        } catch {}
+      }
+    } catch {}
+    
+    // Validate userTokenOut matches expected output mint
+    try {
+      const userTokenOutPk = toPublicKey(hop.userDestAta);
+      const expectedMint = toPublicKey(hop.outputMint);
+      const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+      const tokenOutInfo = await withRpcLimit(() => connection.getAccountInfo(userTokenOutPk)).catch(() => null);
+      
+      if (tokenOutInfo?.data && tokenOutInfo.data.length >= 32) {
+        // Parse token account to get mint (mint is at offset 0 in SPL token account)
+        const mintBytes = tokenOutInfo.data.slice(0, 32);
+        try {
+          const accountMint = new PublicKey(mintBytes);
+          
+          if (!accountMint.equals(expectedMint)) {
+            try { 
+              logger.warn('meteora.dlmm.userTokenOut.mint_mismatch', { 
+                cat: 'tx', 
+                ctx: { 
+                  userTokenOut: userTokenOutPk.toBase58(),
+                  accountMint: accountMint.toBase58(),
+                  expectedMint: expectedMint.toBase58(),
+                  outputMint: hop.outputMint
+                } 
+              }); 
+            } catch {}
+            
+            // Re-derive ATA with correct mint to fix the issue
+            const { deriveAta } = await import('../accounts.js');
+            const correctAta = deriveAta(kp.publicKey, expectedMint, hop.outputTokenProgram);
+            accounts.userTokenOut = correctAta;
+            
+            try { 
+              logger.info('meteora.dlmm.userTokenOut.corrected', { 
+                cat: 'tx', 
+                ctx: { 
+                  old: userTokenOutPk.toBase58(),
+                  new: correctAta.toBase58(),
+                  mint: expectedMint.toBase58()
+                } 
+              }); 
+            } catch {}
+          }
+        } catch (parseErr) {
+          // If account doesn't exist or can't parse, that's okay - ATA creation will handle it
+          try { 
+            logger.debug('meteora.dlmm.userTokenOut.parse_failed', { 
+              cat: 'tx', 
+              ctx: { 
+                error: String((parseErr as any)?.message || parseErr),
+                userTokenOut: userTokenOutPk.toBase58()
+              } 
+            }); 
+          } catch {}
+        }
+      }
+    } catch (validateErr) {
+      // Non-fatal: log but continue
+      try { 
+        logger.debug('meteora.dlmm.userTokenOut.validation.failed', { 
+          cat: 'tx', 
+          ctx: { error: String((validateErr as any)?.message || validateErr) } 
+        }); 
+      } catch {}
+    }
+    
     if (binArrayLower) accounts.binArrayLower = binArrayLower;
     if (binArrayUpper) accounts.binArrayUpper = binArrayUpper;
     // Always include the bitmap extension PDA (required account)
@@ -1593,6 +1717,96 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     });
     let ixs = Array.isArray(res?.instructions) ? res.instructions : (res?.innerTransaction ? res.innerTransaction.instructions : []);
     
+    // Verify all critical accounts exist before proceeding
+    if (ixs && ixs.length) {
+      // First verify observation account exists
+      try {
+        const obsAcc = await withRpcLimit(() => connection.getAccountInfo(observationId)).catch(() => null);
+        if (!obsAcc || !obsAcc.data || obsAcc.data.length === 0) {
+          throw createBuilderError('RAYDIUM_CLMM', `observation account does not exist: ${observationId.toBase58()}`, hop);
+        }
+        try {
+          logger.debug('raydium.clmm.observation.verified', { cat: 'tx', ctx: { pool: hop.poolId, observation: observationId.toBase58() } as any });
+        } catch {}
+      } catch (e: any) {
+        if (e instanceof Error && e.message.includes('RAYDIUM_CLMM_BUILD_FAILED')) throw e;
+        try { logger.warn('raydium.clmm.observation.verify.failed', { cat: 'tx', ctx: { pool: hop.poolId, error: String(e?.message || e) } as any }); } catch {}
+      }
+
+      // Verify all accounts in each instruction to catch missing accounts early
+      const verifiedIxs: TransactionInstruction[] = [];
+      for (let ixIdx = 0; ixIdx < ixs.length; ixIdx++) {
+        const ix = ixs[ixIdx];
+        if (ix instanceof TransactionInstruction && Array.isArray(ix.keys)) {
+          const missingAccounts: Array<{ address: string; index: number; isSigner: boolean; isWritable: boolean }> = [];
+          
+          // Verify each account in the instruction
+          for (let keyIdx = 0; keyIdx < ix.keys.length; keyIdx++) {
+            const keyMeta = ix.keys[keyIdx];
+            const pk = keyMeta?.pubkey;
+            if (!pk) continue; // Skip if no pubkey (shouldn't happen but be safe)
+            
+            try {
+              const pkObj = pk instanceof PublicKey ? pk : new PublicKey(pk);
+              // Skip well-known system accounts that always exist
+              const wellKnown = [
+                '11111111111111111111111111111111', // System Program
+                'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', // Token Program
+                'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb', // Token-2022 Program
+                'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL', // Associated Token Program
+                'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr', // Memo Program
+                'ComputeBudget111111111111111111111111111111', // Compute Budget Program
+              ];
+              const pkStr = pkObj.toBase58();
+              if (wellKnown.includes(pkStr)) continue;
+              
+              const acc = await withRpcLimit(() => connection.getAccountInfo(pkObj)).catch(() => null);
+              if (!acc || !acc.data || acc.data.length === 0) {
+                missingAccounts.push({
+                  address: pkStr,
+                  index: keyIdx,
+                  isSigner: !!keyMeta?.isSigner,
+                  isWritable: !!keyMeta?.isWritable,
+                });
+              }
+            } catch (e: any) {
+              const pkStr = pk instanceof PublicKey ? pk.toBase58() : String(pk);
+              missingAccounts.push({
+                address: pkStr,
+                index: keyIdx,
+                isSigner: !!keyMeta?.isSigner,
+                isWritable: !!keyMeta?.isWritable,
+              });
+            }
+          }
+          
+          if (missingAccounts.length > 0) {
+            try {
+              logger.error('raydium.clmm.ix.accounts.missing', { 
+                cat: 'tx', 
+                ctx: { 
+                  pool: hop.poolId,
+                  instructionIndex: ixIdx,
+                  missingAccounts: missingAccounts.map(a => `${a.address} (idx=${a.index}, signer=${a.isSigner}, writable=${a.isWritable})`),
+                  totalKeys: ix.keys.length,
+                  programId: ix.programId.toBase58(),
+                } as any 
+              });
+            } catch {}
+            throw createBuilderError('RAYDIUM_CLMM', `instruction ${ixIdx} contains missing accounts: ${missingAccounts.map(a => a.address).join(', ')}`, hop);
+          }
+          
+          verifiedIxs.push(ix);
+        } else {
+          verifiedIxs.push(ix as TransactionInstruction);
+        }
+      }
+      
+      if (verifiedIxs.length > 0) {
+        ixs = verifiedIxs;
+      }
+    }
+    
     // Post-process: verify exBitmap account exists (SDK always adds it internally)
     // If it doesn't exist, remove it from remainingAccounts to prevent ProgramAccountNotFound
     if (ixs && ixs.length) {
@@ -1614,7 +1828,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
             for (const ix of ixs) {
               if (ix instanceof TransactionInstruction && Array.isArray(ix.keys)) {
                 const exBitmapIdx = ix.keys.findIndex((k: any) => {
-                  const pk = k?.pubkey || k?.publicKey;
+                  const pk = k?.pubkey;
                   return pk && (pk.equals ? pk.equals(exBitmapPk) : pk.toBase58() === exBitmapPk.toBase58());
                 });
                 if (exBitmapIdx >= 0) {

@@ -215,7 +215,12 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       try { hops[i].minOutRaw = applyMinOut(out, eff); } catch { hops[i].minOutRaw = 0n; }
 
       // Only advance curIn when we have a positive quote
-      if (out > 0n) curIn = out;
+      // Use minOutRaw (slippage-adjusted) for propagation to ensure we don't try to swap more than we'll actually receive
+      // The quoted 'out' amount is optimistic and doesn't account for fees/slippage
+      if (out > 0n) {
+        const propagatedAmount = hops[i].minOutRaw && hops[i].minOutRaw > 0n ? hops[i].minOutRaw : out;
+        curIn = propagatedAmount;
+      }
     }
   } catch {}
   logger.info('tx.resolve.ok', { cat: 'tx', code: LogCode.TX_RESOLVE_OK, ctx: { ms: Date.now() - t0, hops: hops.length } as any });

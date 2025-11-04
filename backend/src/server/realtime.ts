@@ -159,6 +159,16 @@ export function startDetectDrivenGraphPush(debounceMs = 0): void {
         const currentDetectionMs = Number(m.last_detection_ms || 0);
         const previousSeen = lastDetectSeen || 0;
         
+        // Diagnostic logging to verify polling is active
+        try {
+          logger.debug('graph.push detect_driven_poll', {
+            current_detection_ms: currentDetectionMs,
+            previous_seen: previousSeen,
+            has_new_detection: currentDetectionMs > previousSeen,
+            cat: 'graph',
+          });
+        } catch {}
+        
         if (currentDetectionMs > previousSeen) {
           lastDetectSeen = currentDetectionMs;
           try { 
