@@ -112,15 +112,23 @@ export const CONFIG = {
     targetTickTimeMs: Number(process.env.TARGET_TICK_TIME_MS || 2000),
     graphStartDelayMs: Number(process.env.GRAPH_START_DELAY_MS || 5000),
     // Graph push cadence; when 0, rely entirely on event-driven rebuilds
-    graphStreamIntervalMs: Number(process.env.GRAPH_STREAM_INTERVAL_MS || 1000),
+    // CHANGED: Default to 0 when incremental mode is enabled to avoid conflicts
+    graphStreamIntervalMs: Number(process.env.GRAPH_STREAM_INTERVAL_MS || 0), // Changed from 1000
     // Enable detect-driven graph push cadence (default: false)
     detectDrivenGraphPush: (process.env.DETECT_DRIVEN_GRAPH_PUSH || 'true') === 'true',
     // Debounce and delta threshold for event-driven graph rebuilds
+    // CHANGED: When incremental mode is enabled, these should not trigger rebuilds
     graphRebuildDebounceMs: Number(process.env.GRAPH_REBUILD_DEBOUNCE_MS || 25),
     graphRebuildMinDebounceMs: Number(process.env.GRAPH_REBUILD_MIN_DEBOUNCE_MS || 10),
     graphDeltaRebuildThreshold: Number(process.env.GRAPH_DELTA_REBUILD_THRESHOLD || 0),
-    graphRebaseDiffThreshold: Number(process.env.GRAPH_REBASE_DIFF_THRESHOLD || 2000),
+    
+    // CHANGED: Increase rebase threshold to be more conservative (safety net)
+    graphRebaseDiffThreshold: Number(process.env.GRAPH_REBASE_DIFF_THRESHOLD || 5000), // Changed from 2000
+    
+    // CHANGED: Keep 5 minutes for periodic validation (good default)
     graphRebaseTimeMs: Number(process.env.GRAPH_REBASE_TIME_MS || (5 * 60 * 1000)),
+    
+    // CHANGED: Keep 1500 for snapshot TTL (good default)
     graphSnapshotTtlMs: Number(process.env.GRAPH_SNAPSHOT_TTL_MS || 1500),
     // Enable incremental graph updates (diff-first); fallback to rebuild when disabled
     graphIncrementalMode: (process.env.GRAPH_INCREMENTAL_MODE || 'true') !== 'false',

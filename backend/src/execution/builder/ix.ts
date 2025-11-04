@@ -1939,29 +1939,50 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
             }
           });
           
-          // Check account mints for writable token accounts
+          // Check account mints for writable token accounts - batch fetch to reduce RPC calls
           const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
-          const mintChecks: any[] = [];
+          
+          // Collect accounts for batch fetch
+          const accountsToCheck: Array<{ pkObj: PublicKey; index: number }> = [];
           for (let i = 0; i < Math.min(ix.keys.length, 15); i++) {
             const key = ix.keys[i];
             if (key && typeof key === 'object' && (key as any).pubkey && (key as any).isWritable && !(key as any).isSigner && i > 3) {
               try {
                 const pk = (key as any).pubkey;
                 const pkObj = pk instanceof PublicKey ? pk : new PublicKey(pk);
-                const accInfo = await withRpcLimit(() => connection.getAccountInfo(pkObj)).catch(() => null);
-                if (accInfo?.data && accInfo.data.length >= 32) {
-                  const mintBytes = accInfo.data.slice(0, 32);
-                  const accountMint = new PublicKey(mintBytes);
-                  mintChecks.push({
-                    index: i,
-                    pubkey: pkObj.toBase58(),
-                    mint: accountMint.toBase58(),
-                    isTokenAccount: true
-                  });
-                }
+                accountsToCheck.push({ pkObj, index: i });
               } catch {}
             }
           }
+          
+          // Batch fetch all accounts at once
+          const mintChecks: any[] = [];
+          if (accountsToCheck.length > 0) {
+            try {
+              const keys = accountsToCheck.map(a => a.pkObj);
+              const weight = Math.max(1, Math.ceil(keys.length / 5));
+              const accountInfos = await withRpcLimit(() => connection.getMultipleAccountsInfo(keys), weight).catch(() => null);
+              
+              if (accountInfos && accountInfos.length === accountsToCheck.length) {
+                for (let i = 0; i < accountsToCheck.length; i++) {
+                  const { pkObj, index } = accountsToCheck[i];
+                  const accInfo = accountInfos[i];
+                  
+                  if (accInfo?.data && accInfo.data.length >= 32) {
+                    const mintBytes = accInfo.data.slice(0, 32);
+                    const accountMint = new PublicKey(mintBytes);
+                    mintChecks.push({
+                      index,
+                      pubkey: pkObj.toBase58(),
+                      mint: accountMint.toBase58(),
+                      isTokenAccount: true
+                    });
+                  }
+                }
+              }
+            } catch {}
+          }
+          
           if (mintChecks.length > 0) {
             logger.info('meteora.dlmm.instruction.account_mints', {
               cat: 'tx',
@@ -2140,16 +2161,33 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 }
               }
               
-              // If we didn't find it by position, try to find by checking account mints
+              // If we didn't find it by position, try to find by checking account mints - batch fetch to reduce RPC calls
               if (!foundUserTokenOut) {
+                // Collect accounts for batch fetch
+                const accountsToCheck: Array<{ pk: PublicKey; key: any; index: number }> = [];
                 for (let i = 0; i < ix.keys.length; i++) {
                   const key = ix.keys[i];
                   if (key && typeof key === 'object' && (key as any).pubkey && (key as any).isWritable && !(key as any).isSigner && i > 3) {
                     const pk = (key as any).pubkey;
                     if (pk instanceof PublicKey && !pk.equals(correctOutputAta)) {
-                      try {
-                        const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
-                        const accInfo = await withRpcLimit(() => connection.getAccountInfo(pk)).catch(() => null);
+                      accountsToCheck.push({ pk, key, index: i });
+                    }
+                  }
+                }
+                
+                // Batch fetch all accounts at once
+                if (accountsToCheck.length > 0) {
+                  try {
+                    const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+                    const keys = accountsToCheck.map(a => a.pk);
+                    const weight = Math.max(1, Math.ceil(keys.length / 5));
+                    const accountInfos = await withRpcLimit(() => connection.getMultipleAccountsInfo(keys), weight).catch(() => null);
+                    
+                    if (accountInfos && accountInfos.length === accountsToCheck.length) {
+                      for (let i = 0; i < accountsToCheck.length && !foundUserTokenOut; i++) {
+                        const { pk, key, index } = accountsToCheck[i];
+                        const accInfo = accountInfos[i];
+                        
                         if (accInfo?.data && accInfo.data.length >= 32) {
                           const mintBytes = accInfo.data.slice(0, 32);
                           const accountMint = new PublicKey(mintBytes);
@@ -2162,7 +2200,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                               logger.warn('meteora.dlmm.instruction.userTokenOut.mint_corrected', { 
                                 cat: 'tx', 
                                 ctx: { 
-                                  index: i,
+                                  index,
                                   old: pk.toBase58(),
                                   new: correctOutputAta.toBase58(),
                                   expectedToken: expectedOutputToken.toBase58(),
@@ -2173,9 +2211,9 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                             break;
                           }
                         }
-                      } catch {}
+                      }
                     }
-                  }
+                  } catch {}
                 }
               }
             }
@@ -2574,6 +2612,9 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
       const missingAccounts: Array<{ instructionIndex: number; accountIndex: number; address: string; programId: string }> = [];
       
+      // Collect all accounts to verify first, then batch fetch to reduce RPC calls
+      const accountsToVerify: Array<{ pkObj: PublicKey; pkStr: string; ixIdx: number; accIdx: number; keyMeta: any; ixProgramId: string }> = [];
+      
       for (let ixIdx = 0; ixIdx < ixs.length; ixIdx++) {
         const ix = ixs[ixIdx];
         if (ix instanceof TransactionInstruction && Array.isArray(ix.keys)) {
@@ -2582,7 +2623,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
           // Skip non-CLMM instructions (they're handled elsewhere)
           if (ixProgramId !== programIdPk.toBase58()) continue;
           
-          // Verify all read-only accounts in CLMM instruction
+          // Collect accounts to verify (instead of fetching immediately)
           for (let accIdx = 0; accIdx < ix.keys.length; accIdx++) {
             const keyMeta = ix.keys[accIdx];
             const pk = keyMeta?.pubkey;
@@ -2622,9 +2663,26 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
               if (!isPoolRelated) continue;
             }
             
-            // Verify this account exists on-chain
-            try {
-              const acc = await withRpcLimit(() => connection.getAccountInfo(pkObj)).catch(() => null);
+            // Collect for batch fetch instead of fetching immediately
+            accountsToVerify.push({ pkObj, pkStr, ixIdx, accIdx, keyMeta, ixProgramId });
+          }
+        }
+      }
+      
+      // Batch fetch all accounts at once to reduce RPC rate limit issues
+      if (accountsToVerify.length > 0) {
+        try {
+          const keys = accountsToVerify.map(a => a.pkObj);
+          // Use weight scaling for batch requests (similar to drift client)
+          const weight = Math.max(1, Math.ceil(keys.length / 5));
+          const accountInfos = await withRpcLimit(() => connection.getMultipleAccountsInfo(keys), weight).catch(() => null);
+          
+          // Process results
+          if (accountInfos && accountInfos.length === accountsToVerify.length) {
+            for (let i = 0; i < accountsToVerify.length; i++) {
+              const { pkObj, pkStr, ixIdx, accIdx, keyMeta, ixProgramId } = accountsToVerify[i];
+              const acc = accountInfos[i];
+              
               if (!acc || !acc.data || acc.data.length === 0) {
                 missingAccounts.push({
                   instructionIndex: ixIdx,
@@ -2661,21 +2719,49 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                   });
                 } catch {}
               }
-            } catch (e: any) {
-              // If verification fails, log but don't fail yet (might be network issue)
-              try {
-                logger.warn('raydium.clmm.sdk.account.verify.error', {
-                  cat: 'tx',
-                  ctx: {
-                    pool: hop.poolId,
-                    instructionIndex: ixIdx,
-                    accountIndex: accIdx,
-                    address: pkStr,
-                    error: String(e?.message || e),
-                  } as any,
-                });
-              } catch {}
             }
+          } else {
+            // Fallback: if batch fetch failed or returned unexpected results, log warning
+            try {
+              logger.warn('raydium.clmm.sdk.account.batch_fetch.failed', {
+                cat: 'tx',
+                ctx: {
+                  pool: hop.poolId,
+                  expectedCount: accountsToVerify.length,
+                  actualCount: accountInfos?.length || 0,
+                } as any,
+              });
+            } catch {}
+            // Still add all accounts as missing since we couldn't verify them
+            for (const { pkStr, ixIdx, accIdx, ixProgramId } of accountsToVerify) {
+              missingAccounts.push({
+                instructionIndex: ixIdx,
+                accountIndex: accIdx,
+                address: pkStr,
+                programId: ixProgramId,
+              });
+            }
+          }
+        } catch (e: any) {
+          // If batch verification fails, log but don't fail yet (might be network issue)
+          try {
+            logger.warn('raydium.clmm.sdk.account.batch_verify.error', {
+              cat: 'tx',
+              ctx: {
+                pool: hop.poolId,
+                accountCount: accountsToVerify.length,
+                error: String(e?.message || e),
+              } as any,
+            });
+          } catch {}
+          // Still add all accounts as missing since we couldn't verify them
+          for (const { pkStr, ixIdx, accIdx, ixProgramId } of accountsToVerify) {
+            missingAccounts.push({
+              instructionIndex: ixIdx,
+              accountIndex: accIdx,
+              address: pkStr,
+              programId: ixProgramId,
+            });
           }
         }
       }
@@ -2844,13 +2930,17 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
           const verifiedAccounts: Array<{ address: string; index: number; reason: string }> = [];
           const skippedAccounts: Array<{ address: string; index: number; reason: string }> = [];
           
-          // Verify each account in the instruction
+          // Collect accounts to verify first, then batch fetch to reduce RPC calls
+          const accountsToVerify: Array<{ pkObj: PublicKey; pkStr: string; keyIdx: number; keyMeta: any }> = [];
+          
+          // First pass: collect accounts that need verification
           for (let keyIdx = 0; keyIdx < ix.keys.length; keyIdx++) {
             const keyMeta = ix.keys[keyIdx];
             const pk = keyMeta?.pubkey;
             if (!pk) continue; // Skip if no pubkey (shouldn't happen but be safe)
             
-            const pkStr = (pk instanceof PublicKey ? pk : new PublicKey(pk)).toBase58();
+            const pkObj = pk instanceof PublicKey ? pk : new PublicKey(pk);
+            const pkStr = pkObj.toBase58();
             
             // Skip signer accounts - they're wallet addresses, always valid
             if (keyMeta.isSigner) {
@@ -2896,7 +2986,6 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
             }
             
             try {
-              const pkObj = pk instanceof PublicKey ? pk : new PublicKey(pk);
               // Skip well-known system accounts that always exist
               const wellKnown = [
                 '11111111111111111111111111111111', // System Program
@@ -2906,72 +2995,100 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr', // Memo Program
                 'ComputeBudget111111111111111111111111111111', // Compute Budget Program
               ];
-              const pkStrCheck = pkObj.toBase58();
-              if (wellKnown.includes(pkStrCheck)) {
-                skippedAccounts.push({ address: pkStrCheck, index: keyIdx, reason: 'well_known_system_account' });
+              if (wellKnown.includes(pkStr)) {
+                skippedAccounts.push({ address: pkStr, index: keyIdx, reason: 'well_known_system_account' });
                 continue;
               }
               
-              // Only verify read-only accounts that MUST exist (pool state, configs, observation, tick arrays)
+              // Collect for batch fetch - only verify read-only accounts that MUST exist
               // Or writable pool-related accounts (vaults, pool account, observation)
-              const acc = await withRpcLimit(() => connection.getAccountInfo(pkObj)).catch(() => null);
-              if (!acc || !acc.data || acc.data.length === 0) {
-                missingAccounts.push({
-                  address: pkStrCheck,
-                  index: keyIdx,
-                  isSigner: !!keyMeta?.isSigner,
-                  isWritable: !!keyMeta?.isWritable,
-                });
-                try {
-                  logger.warn('raydium.clmm.ix.account.missing', {
-                    cat: 'tx',
-                    ctx: {
-                      pool: hop.poolId,
-                      instructionIndex: ixIdx,
-                      accountIndex: keyIdx,
-                      address: pkStrCheck,
+              accountsToVerify.push({ pkObj, pkStr, keyIdx, keyMeta });
+            } catch {}
+          }
+          
+          // Batch fetch all accounts at once
+          if (accountsToVerify.length > 0) {
+            try {
+              const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+              const keys = accountsToVerify.map(a => a.pkObj);
+              const weight = Math.max(1, Math.ceil(keys.length / 5));
+              const accountInfos = await withRpcLimit(() => connection.getMultipleAccountsInfo(keys), weight).catch(() => null);
+              
+              if (accountInfos && accountInfos.length === accountsToVerify.length) {
+                for (let i = 0; i < accountsToVerify.length; i++) {
+                  const { pkStr, keyIdx, keyMeta } = accountsToVerify[i];
+                  const acc = accountInfos[i];
+                  
+                  if (!acc || !acc.data || acc.data.length === 0) {
+                    missingAccounts.push({
+                      address: pkStr,
+                      index: keyIdx,
                       isSigner: !!keyMeta?.isSigner,
                       isWritable: !!keyMeta?.isWritable,
-                      owner: acc?.owner?.toBase58?.() || 'unknown',
-                    } as any,
-                  });
-                } catch {}
+                    });
+                    try {
+                      logger.warn('raydium.clmm.ix.account.missing', {
+                        cat: 'tx',
+                        ctx: {
+                          pool: hop.poolId,
+                          instructionIndex: ixIdx,
+                          accountIndex: keyIdx,
+                          address: pkStr,
+                          isSigner: !!keyMeta?.isSigner,
+                          isWritable: !!keyMeta?.isWritable,
+                          owner: acc?.owner?.toBase58?.() || 'unknown',
+                        } as any,
+                      });
+                    } catch {}
+                  } else {
+                    verifiedAccounts.push({ address: pkStr, index: keyIdx, reason: 'exists_on_chain' });
+                    try {
+                      logger.debug('raydium.clmm.ix.account.verified', {
+                        cat: 'tx',
+                        ctx: {
+                          pool: hop.poolId,
+                          instructionIndex: ixIdx,
+                          accountIndex: keyIdx,
+                          address: pkStr,
+                          owner: acc.owner.toBase58(),
+                          dataLen: acc.data.length,
+                        } as any,
+                      });
+                    } catch {}
+                  }
+                }
               } else {
-                verifiedAccounts.push({ address: pkStrCheck, index: keyIdx, reason: 'exists_on_chain' });
-                try {
-                  logger.debug('raydium.clmm.ix.account.verified', {
-                    cat: 'tx',
-                    ctx: {
-                      pool: hop.poolId,
-                      instructionIndex: ixIdx,
-                      accountIndex: keyIdx,
-                      address: pkStrCheck,
-                      owner: acc.owner.toBase58(),
-                      dataLen: acc.data.length,
-                    } as any,
+                // Fallback: if batch fetch failed, mark all as missing
+                for (const { pkStr, keyIdx, keyMeta } of accountsToVerify) {
+                  missingAccounts.push({
+                    address: pkStr,
+                    index: keyIdx,
+                    isSigner: !!keyMeta?.isSigner,
+                    isWritable: !!keyMeta?.isWritable,
                   });
-                } catch {}
+                }
               }
             } catch (e: any) {
-              const pkStrError = pk instanceof PublicKey ? pk.toBase58() : String(pk);
-              missingAccounts.push({
-                address: pkStrError,
-                index: keyIdx,
-                isSigner: !!keyMeta?.isSigner,
-                isWritable: !!keyMeta?.isWritable,
-              });
+              // If batch verification fails, mark all as missing
               try {
-                logger.warn('raydium.clmm.ix.account.verify.error', {
+                logger.warn('raydium.clmm.ix.account.batch_verify.error', {
                   cat: 'tx',
                   ctx: {
                     pool: hop.poolId,
                     instructionIndex: ixIdx,
-                    accountIndex: keyIdx,
-                    address: pkStrError,
+                    accountCount: accountsToVerify.length,
                     error: String(e?.message || e),
                   } as any,
                 });
               } catch {}
+              for (const { pkStr, keyIdx, keyMeta } of accountsToVerify) {
+                missingAccounts.push({
+                  address: pkStr,
+                  index: keyIdx,
+                  isSigner: !!keyMeta?.isSigner,
+                  isWritable: !!keyMeta?.isWritable,
+                });
+              }
             }
           }
           
