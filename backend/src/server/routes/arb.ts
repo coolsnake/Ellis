@@ -6,6 +6,7 @@ import { emit, setArbStreamEnabled, markDetectorCompleteFromAck } from '../realt
 import { writeJson, readJson } from '../../utils/fs.js';
 import { logTxTrace } from '../../utils/txTrace.js';
 import { CONFIG } from '../../utils/config.js';
+import { getTxRelatedLogs } from '../../utils/sessionLogs.js';
 import { createWorkerClient, WorkerClient } from '../../workers/client.js';
 import type { ArbBuildRequest, ArbBuildResult, SerializedInstruction } from '../../workers/arbBuild.types.js';
 import { buildTransactionSummary } from '../arb.build.worker.compute.js';
@@ -491,15 +492,17 @@ export function createArbRouter(io: SocketIOServer): Router {
       } as any);
       try {
         const dexes = Array.from(new Set((plan.hops || []).map((h:any)=>String(h?.dex||'').toLowerCase())));
+        const txLogs = getTxRelatedLogs(id, Date.now() - 30000, Date.now(), 200);
         for (const d of dexes) {
           if (d === 'raydium' || d === 'orca' || d === 'meteora') {
             await writeDexFullDump(d as any, 'preflight', {
-              id: Math.random().toString(36).slice(2,10),
+              id,
               path: plan.path,
               hops: plan.hops,
               exec: execCfg,
               built,
               sim,
+              txLogs,
             });
           }
         }
@@ -803,6 +806,7 @@ export function createArbRouter(io: SocketIOServer): Router {
         } as any);
         try {
           const dexes = Array.from(new Set((plan.hops || []).map((h:any)=>String(h?.dex||'').toLowerCase())));
+          const txLogs = getTxRelatedLogs(id, Date.now() - 30000, Date.now(), 200);
           for (const d of dexes) {
             if (d === 'raydium' || d === 'orca' || d === 'meteora') {
               await writeDexFullDump(d as any, 'preflight', {
@@ -812,6 +816,7 @@ export function createArbRouter(io: SocketIOServer): Router {
                 exec: execCfg,
                 built,
                 sim,
+                txLogs,
               });
             }
           }
@@ -897,6 +902,8 @@ export function createArbRouter(io: SocketIOServer): Router {
         } as any);
         try {
           const dexes = Array.from(new Set((plan.hops || []).map((h:any)=>String(h?.dex||'').toLowerCase())));
+          // Capture logs from a wider window to include preflight logs too
+          const txLogs = getTxRelatedLogs(id, Date.now() - 60000, Date.now(), 300);
           for (const d of dexes) {
             if (d === 'raydium' || d === 'orca' || d === 'meteora') {
               await writeDexFullDump(d as any, 'execute', {
@@ -906,6 +913,7 @@ export function createArbRouter(io: SocketIOServer): Router {
                 exec: execCfg,
                 built,
                 send: sendRes,
+                txLogs,
               });
             }
           }

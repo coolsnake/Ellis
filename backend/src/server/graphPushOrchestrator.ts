@@ -382,10 +382,24 @@ class GraphPushOrchestrator {
         } catch {}
         
         // Force immediate flush with no coalescing to close version gap
-        if (!this.flushInProgress && !this.inFlight && (this.pendingSnapshot || this.pendingDiff)) {
+        // IMPORTANT: Bypass blocking conditions when version gap exists - version gap takes priority
+        if (this.pendingSnapshot || this.pendingDiff) {
           this.cancelFallbackFlush();
+          // Force flush even if blocking conditions are true - version gap takes priority
           this.scheduleFlush(true); // Force flush - will skip coalescing in scheduleFlush
-        } else if (!this.pendingSnapshot && !this.pendingDiff && backendVersion > arbRsVersion) {
+          // Also try direct flush from detector to bypass blocks
+          try {
+            void this.flushPendingFromDetector();
+          } catch (err) {
+            // If flush fails, scheduleFlush above will still attempt it
+            try {
+              logger.debug('graph.push version_gap_flush_failed', {
+                error: String((err as any)?.message || err),
+                cat: 'graph',
+              });
+            } catch {}
+          }
+        } else if (backendVersion > arbRsVersion) {
           // No pending updates but version gap exists - this shouldn't happen normally
           // Log warning but don't force rebuild (updates might be in flight)
           try {
@@ -843,18 +857,43 @@ class GraphPushOrchestrator {
       return false;
     }
     
+    // Check version gap BEFORE checking blocking conditions
+    // If version gap exists, we MUST flush even if blocking conditions are true
+    let hasVersionGap = false;
+    try {
+      const { getGraphVersion } = require('./graph.js');
+      const backendVersion = getGraphVersion().version;
+      const arbVersion = this.lastDetectCompleteVersion || 0;
+      if (backendVersion > arbVersion) {
+        hasVersionGap = true;
+        const versionGap = backendVersion - arbVersion;
+        try {
+          logger.info('graph.push detector_flush_version_gap', {
+            arb_rs_version: arbVersion,
+            backend_version: backendVersion,
+            gap: versionGap,
+            cat: 'graph',
+          });
+        } catch {}
+      }
+    } catch (err) {
+      // If version check fails, continue with normal logic
+    }
+    
     // Allow flush if detection completion was recently signaled (within 5 seconds)
+    // OR if there's a version gap (we MUST close the gap)
     // This means the system just detected completion and is ready to flush
     const recentlyCompleted = this.lastDetectCompleteMs > 0 && 
       (Date.now() - this.lastDetectCompleteMs) < 5000;
+    const shouldBypassBlock = recentlyCompleted || hasVersionGap;
     
     // Block if:
-    // - A flush is in progress AND detect didn't just complete (existing flush will proceed)
-    // - Queue is being processed AND detect didn't just complete (inFlight is normal during processing)
-    // - Awaiting detect AND detect didn't just complete (this means we're still waiting)
-    if ((this.flushInProgress && !recentlyCompleted) || 
-        (this.inFlight && !recentlyCompleted) || 
-        (this.awaitingDetect && !recentlyCompleted)) {
+    // - A flush is in progress AND we shouldn't bypass (existing flush will proceed)
+    // - Queue is being processed AND we shouldn't bypass (inFlight is normal during processing)
+    // - Awaiting detect AND we shouldn't bypass (this means we're still waiting)
+    if ((this.flushInProgress && !shouldBypassBlock) || 
+        (this.inFlight && !shouldBypassBlock) || 
+        (this.awaitingDetect && !shouldBypassBlock)) {
       try { 
         logger.info('arb.push detector_flush blocked', { 
           reason: 'busy', 
@@ -862,6 +901,7 @@ class GraphPushOrchestrator {
           inFlight: this.inFlight,
           awaitingDetect: this.awaitingDetect,
           recently_completed: recentlyCompleted,
+          has_version_gap: hasVersionGap,
           last_detect_complete_ms: this.lastDetectCompleteMs,
           pending_snapshot: !!this.pendingSnapshot,
           pending_diff: !!this.pendingDiff,
@@ -872,6 +912,18 @@ class GraphPushOrchestrator {
       } catch {}
       this.detectDirty = true;
       return false;
+    }
+    
+    // If version gap exists, log that we're bypassing blocks
+    if (hasVersionGap) {
+      try {
+        logger.info('graph.push detector_flush_bypassing_for_gap', {
+          flush_in_progress: this.flushInProgress,
+          in_flight: this.inFlight,
+          awaiting_detect: this.awaitingDetect,
+          cat: 'graph',
+        });
+      } catch {}
     }
     
     // Check for duplicates before flushing

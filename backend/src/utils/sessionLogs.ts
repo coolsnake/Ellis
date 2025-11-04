@@ -109,4 +109,50 @@ export async function writeConsolidatedSessionLog(): Promise<string | null> {
   }
 }
 
+// Get recent session logs filtered by transaction ID and patterns
+// Since timestamps are relative strings, we use a simple approach: take recent logs that match
+export function getTxRelatedLogs(txId: string | undefined, startTime?: number, endTime?: number, maxLogs: number = 200): SessionLogEvent[] {
+  try {
+    const relevant: SessionLogEvent[] = [];
+    const txPatterns = [
+      /^tx\.(preflight|send|build|execute|resolve|intents|ixs|size|slippage|rpc|ix\.coerce|ix\.coerce\.skip|ix\.coerce\.err)/i,
+      /tx\.(preflight|send|build|execute|resolve|intents|ixs|size|slippage|rpc)/i,
+    ];
+    
+    // Iterate backwards through recent events (most recent first)
+    // Events are stored chronologically, so we start from the end
+    const eventsToCheck = Math.min(_sessionEvents.length, maxLogs * 3); // Check more to filter down
+    const startIdx = Math.max(0, _sessionEvents.length - eventsToCheck);
+    
+    for (let i = _sessionEvents.length - 1; i >= startIdx; i--) {
+      const event = _sessionEvents[i];
+      if (!event) continue;
+      
+      const msg = String(event.message || '').toLowerCase();
+      const ctxStr = JSON.stringify(event.context || {}).toLowerCase();
+      
+      // Check if transaction ID matches
+      const hasTxId = txId && (
+        ctxStr.includes(txId.toLowerCase()) ||
+        msg.includes(txId.toLowerCase())
+      );
+      
+      // Check if message matches transaction patterns
+      const matchesPattern = txPatterns.some(p => p.test(msg) || p.test(ctxStr));
+      
+      // Check if cat is 'tx' (transaction category)
+      const isTxCat = event.cat === 'tx';
+      
+      if (hasTxId || matchesPattern || isTxCat) {
+        relevant.unshift(event); // Add to beginning to maintain chronological order
+        if (relevant.length >= maxLogs) break;
+      }
+    }
+    
+    return relevant;
+  } catch {
+    return [];
+  }
+}
+
 

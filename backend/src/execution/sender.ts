@@ -4,6 +4,7 @@ import { withRpcLimit } from '../utils/rpcLimiter.js';
 import { writeDexFullDump } from '../utils/txTrace.js';
 import { CONFIG } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
+import { getTxRelatedLogs } from '../utils/sessionLogs.js';
 const TX_DEBUG_COERCION = !!((CONFIG as any)?.tx?.debugIxCoercion);
 
 export type SendOptions = {
@@ -251,6 +252,7 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
   try {
     const programs = realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId)));
     const dexes = detectDexesFromPrograms(programs);
+    const txLogs = getTxRelatedLogs(txId, Date.now() - 10000, Date.now(), 200);
     for (const d of dexes) {
       await writeDexFullDump(d, 'preflight', {
         kind: 'sender.preflight',
@@ -261,6 +263,7 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
         wireBase64,
         logs: sim.value?.logs,
         err: sim.value?.err || null,
+        txLogs,
       });
     }
   } catch {}
@@ -313,6 +316,7 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
   try {
     const programs = realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId)));
     const dexes = detectDexesFromPrograms(programs);
+    const txLogs = getTxRelatedLogs(txId, Date.now() - 20000, Date.now(), 300);
     for (const d of dexes) {
       await writeDexFullDump(d, 'execute', {
         kind: 'sender.execute',
@@ -321,6 +325,7 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
         opts,
         wireBase64,
         signature: sig,
+        txLogs,
       });
     }
   } catch {}
