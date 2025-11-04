@@ -436,7 +436,7 @@ async fn main() -> anyhow::Result<()> {
                     );
                     // Run detection
                     let cycles = if use_filtered { detect_negative_cycles_filtered(&s.graph, &affected_nodes) } else { detect_negative_cycles(&s.graph) };
-                    tracing::info!(found = cycles.len(), "arb.detect.cycles");
+                    let cycles_count = cycles.len();
                     // Prepare metrics snapshot, then drop read lock before taking write lock to avoid deadlock
                     let used_filtered_flag_for_metrics = if use_filtered { 1 } else { 0 };
                     let scope_nodes_count_for_metrics = if use_filtered { affected_nodes.len() as u64 } else { s.graph.g.node_count() as u64 };
@@ -458,17 +458,42 @@ async fn main() -> anyhow::Result<()> {
                     let mut best_below_shortfall: i64 = i64::MAX;
                     // Minimum liquidity threshold to consider an edge in rate selection
                     let min_edge_liq_threshold: f64 = 0.0; // filter out zero-liquidity edges
+                    // Track rejection reasons for detailed logging
+                    let mut rejected_too_short: usize = 0;
+                    let mut rejected_too_long: usize = 0;
+                    let mut rejected_not_simple: usize = 0;
+                    let mut rejected_stable_stable: usize = 0;
+                    let mut rejected_sol_stable_limit: usize = 0;
+                    let mut rejected_no_edge: usize = 0;
+                    let mut rejected_timeout: usize = 0;
+                    let mut rejected_unprofitable: usize = 0;
+                    let mut rejected_misaligned: usize = 0;
+                    let mut rejected_duplicate: usize = 0;
+                    let mut rejected_too_low_profit: usize = 0;
+                    let mut rejected_too_high_profit: usize = 0;
                     for c in cycles.into_iter() {
-                        if c.nodes.len() < 2 { continue; }
+                        if c.nodes.len() < 2 { 
+                            rejected_too_short += 1;
+                            continue; 
+                        }
                         // Enforce simple cycles and hop bound
                         let nlen = c.nodes.len();
-                        if nlen < 3 { continue; }
-                        if nlen > max_hops { continue; }
+                        if nlen < 3 { 
+                            rejected_too_short += 1;
+                            continue; 
+                        }
+                        if nlen > max_hops { 
+                            rejected_too_long += 1;
+                            continue; 
+                        }
                         tracing::debug!(len = nlen, "arb.detect.cycle.begin");
                         let mut uniq = std::collections::HashSet::new();
                         let mut simple = true;
                         for &v in c.nodes.iter() { if !uniq.insert(v) { simple = false; break; } }
-                        if !simple { continue; }
+                        if !simple { 
+                            rejected_not_simple += 1;
+                            continue; 
+                        }
 
                         // Build labels (mint-only) and compute product of best-of-parallel rates along the closed loop
                         let labels: Vec<String> = c.nodes.iter().map(|&i| s.graph.g[NodeIndex::new(i)].clone()).collect();
@@ -491,8 +516,16 @@ async fn main() -> anyhow::Result<()> {
                             if a_st && b_st { has_stable_stable = true; break; }
                             if (a == sol && b_st) || (b == sol && a_st) { sol_stable_hops += 1; }
                         }
-                        if s.config.drop_stable_stable_hops && has_stable_stable { continue; }
-                        if let Some(limit) = s.config.max_sol_stable_hops { if sol_stable_hops > limit { continue; } }
+                        if s.config.drop_stable_stable_hops && has_stable_stable { 
+                            rejected_stable_stable += 1;
+                            continue; 
+                        }
+                        if let Some(limit) = s.config.max_sol_stable_hops { 
+                            if sol_stable_hops > limit { 
+                                rejected_sol_stable_limit += 1;
+                                continue; 
+                            } 
+                        }
                         // ensure closed by appending first at end for edge traversal
                         let mut rate_prod: f64 = 1.0;
                         let mut link_edges_used: usize = 0;
@@ -522,7 +555,9 @@ async fn main() -> anyhow::Result<()> {
                             }
                             if best_rate <= 0.0 {
                                 tracing::info!(u = u.index(), v = v.index(), "arb.detect.cycle.no_edge");
-                                rate_prod = 0.0; break 'cycle;
+                                rate_prod = 0.0; 
+                                rejected_no_edge += 1;
+                                break 'cycle;
                             }
                             if let Some((dex, liq, fee, pid, liqd)) = best_meta.take() {
                                 if dex == "Link" { link_edges_used += 1; link_penalty_bps_total += fee; }
@@ -549,7 +584,10 @@ async fn main() -> anyhow::Result<()> {
                                 break 'cycle;
                             }
                         }
-                        if timed_out { continue; }
+                        if timed_out { 
+                            rejected_timeout += 1;
+                            continue; 
+                        }
                         let profit = rate_prod - 1.0;
                         let profit_bps = (profit * 10_000.0).floor() as i64;
                         
@@ -558,6 +596,7 @@ async fn main() -> anyhow::Result<()> {
                         if rate_prod <= 1.0 {
                             let path_str = labels.join("->");
                             tracing::info!(path = %path_str, rate_prod, "arb.detect.cycle.unprofitable_after_edge_selection");
+                            rejected_unprofitable += 1;
                             continue;
                         }
                         
@@ -628,11 +667,15 @@ async fn main() -> anyhow::Result<()> {
                             }
                             if !aligned {
                                 tracing::warn!("arb.detect.cycle.misaligned path={} pools=[{}]", canon_labels.join("->"), hop_pool_ids.join(","));
+                                rejected_misaligned += 1;
                                 continue;
                             }
                         }
                         let key = canon_labels.join("->");
-                        if seen.contains(&key) { continue; }
+                        if seen.contains(&key) { 
+                            rejected_duplicate += 1;
+                            continue; 
+                        }
                         seen.insert(key);
                         // DEXes derived from edges selected along the cycle
                         let mut dexes: Vec<String> = dexes_set.into_iter().collect();
@@ -686,6 +729,7 @@ async fn main() -> anyhow::Result<()> {
                                     best_below_shortfall = shortfall;
                                 }
                             }
+                            rejected_too_low_profit += 1;
                             continue;
                         }
                         // Emit arb log for validation
@@ -711,7 +755,10 @@ async fn main() -> anyhow::Result<()> {
                             tracing::info!(target = "arb_rs", "arb.opportunity path={} profit_bps={} net_bps={} hops={} rates=[{}] outs=[{}] fees=[{}] pools=[{}] edges=[{}] product={:.8}", path_str, profit_bps, net_bps, nlen, rates_str, outs_str, fees_str, pools_str, edges_str, rate_prod);
                         }
                         // Skip absurdly high raw profits (likely data issues)
-                        if profit_bps > s.config.max_profit_bps { continue; }
+                        if profit_bps > s.config.max_profit_bps { 
+                            rejected_too_high_profit += 1;
+                            continue; 
+                        }
                         curr.push(Opportunity {
                             path: canon_labels,
                             profit_bps,
@@ -741,6 +788,29 @@ async fn main() -> anyhow::Result<()> {
                             is_near_miss: None,
                         });
                     }
+                    // Log detailed breakdown of cycles detected vs opportunities created
+                    let total_rejected = rejected_too_short + rejected_too_long + rejected_not_simple 
+                        + rejected_stable_stable + rejected_sol_stable_limit + rejected_no_edge 
+                        + rejected_timeout + rejected_unprofitable + rejected_misaligned 
+                        + rejected_duplicate + rejected_too_low_profit + rejected_too_high_profit;
+                    tracing::info!(
+                        found = cycles_count,
+                        opportunities = curr.len(),
+                        rejected = total_rejected,
+                        rejected_too_short,
+                        rejected_too_long,
+                        rejected_not_simple,
+                        rejected_stable_stable,
+                        rejected_sol_stable_limit,
+                        rejected_no_edge,
+                        rejected_timeout,
+                        rejected_unprofitable,
+                        rejected_misaligned,
+                        rejected_duplicate,
+                        rejected_too_low_profit,
+                        rejected_too_high_profit,
+                        "arb.detect.cycles"
+                    );
                     let mut near_pair = best_below.map(|o| (o, best_below_shortfall));
                     let mut near_list: Vec<(Opportunity,i64)> = Vec::new();
                     // Near-miss via Bellman-Ford final slack pass
