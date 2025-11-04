@@ -301,8 +301,8 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
     realIxs.push(t);
   }
   const { blockhash, lastValidBlockHeight } = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
+  const txId = Math.random().toString(36).slice(2, 10);
   try {
-    const txId = Math.random().toString(36).slice(2, 10);
     logger.info('tx.send.start', { cat: 'tx', ctx: { txId, ixCount: realIxs.length } as any });
     logger.info('tx.send.detail', { cat: 'tx', ctx: { txId, ixCount: realIxs.length, programs: realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId))) } as any });
   } catch {}
