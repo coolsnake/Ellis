@@ -264,10 +264,6 @@ async fn main() -> anyhow::Result<()> {
             let iter_start = Instant::now();
             if enabled {
                 let mut detect_ack: Option<(u64, u64)> = None;
-                {
-                    let s = loop_state.read().await;
-                    tracing::info!(nodes = s.metrics.graph_nodes, edges = s.metrics.graph_edges, version = s.last_graph_version, "arb.loop.tick start");
-                }
                 // Capture diff_to_detect latency if we have a recent graph push timestamp
                 {
                     let mut s = loop_state.write().await;
