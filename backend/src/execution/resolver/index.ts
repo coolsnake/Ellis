@@ -270,51 +270,30 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       } catch {}
       try { hops[i].minOutRaw = applyMinOut(out, eff); } catch { hops[i].minOutRaw = 0n; }
 
-      // Only advance curIn when we have a positive quote AND valid minOutRaw
-      // Use minOutRaw (slippage-adjusted) for propagation to ensure we don't try to swap more than we'll actually receive
-      // The quoted 'out' amount is optimistic and doesn't account for fees/slippage
+      // For multihop: use the actual quoted output for propagation, not minOutRaw
+      // The minOutRaw is only used for minimum output protection in the swap instruction
+      // Using the actual quoted output ensures we use all tokens received from the previous hop
+      // This prevents leaking small amounts between hops in multihop transactions
       if (out > 0n) {
-        // CRITICAL: Always use minOutRaw for propagation, never the optimistic quote
-        // If minOutRaw is 0 or invalid, something is wrong - don't propagate the old curIn
-        if (hops[i].minOutRaw && hops[i].minOutRaw > 0n) {
-          curIn = hops[i].minOutRaw;
-          
-          // Add logging for successful propagation
-          try {
-            logger.info('tx.resolve.hop.propagate', {
-              cat: 'tx',
-              code: LogCode.TX_RESOLVE_OK,
-              ctx: {
-                hopIndex: i,
-                quotedOut: out.toString(),
-                minOutRaw: hops[i].minOutRaw.toString(),
-                propagatedAmount: hops[i].minOutRaw.toString(),
-                nextHopInput: curIn.toString(),
-                nextHopInputMint: (i < hops.length - 1) ? hops[i + 1].inputMint : 'N/A',
-              }
-            });
-          } catch {}
-        } else {
-          // Quote succeeded but minOutRaw is invalid - this is an error condition
-          // Don't propagate old curIn - this will cause the next hop to fail validation, which is better than using wrong amount
-          try {
-            logger.error('tx.resolve.hop.invalid_minout', {
-              cat: 'tx',
-              code: LogCode.TX_BUILD_ERR,
-              ctx: {
-                hopIndex: i,
-                quotedOut: out.toString(),
-                minOutRaw: hops[i].minOutRaw?.toString() || '0',
-                slippageBps: eff,
-                inputMint: hops[i].inputMint,
-                outputMint: hops[i].outputMint,
-              }
-            });
-          } catch {}
-          // Don't propagate - set curIn to 0 so next hop will fail validation
-          // This prevents using the wrong amount in the wrong token's units
-          curIn = 0n;
-        }
+        // Use the actual quoted output amount for propagation to next hop
+        // This ensures we use the full amount received, not the slippage-adjusted minimum
+        curIn = out;
+        
+        // Add logging for successful propagation
+        try {
+          logger.info('tx.resolve.hop.propagate', {
+            cat: 'tx',
+            code: LogCode.TX_RESOLVE_OK,
+            ctx: {
+              hopIndex: i,
+              quotedOut: out.toString(),
+              minOutRaw: hops[i].minOutRaw.toString(),
+              propagatedAmount: out.toString(), // Now using actual output
+              nextHopInput: curIn.toString(),
+              nextHopInputMint: (i < hops.length - 1) ? hops[i + 1].inputMint : 'N/A',
+            }
+          });
+        } catch {}
       } else {
         // Quote failed or returned 0 - don't propagate old curIn
         // Set curIn to 0 so next hop will fail validation

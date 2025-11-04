@@ -1355,6 +1355,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 } 
               }); 
             } catch {}
+            // CRITICAL: Don't catch this error - let it propagate to fail fast
             throw createBuilderError('METEORA_DLMM', 'Swap direction does not match pool token mints', hop);
           }
           
@@ -1367,13 +1368,26 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 inputMint: hop.inputMint,
                 outputMint: hop.outputMint,
                 tokenXMint: tokenXMintPk.toBase58(),
-                tokenYMint: tokenYMintPk.toBase58()
+                tokenYMint: tokenYMintPk.toBase58(),
+                poolId: hop.poolId
               }
             });
           } catch {}
         }
       }
-    } catch {}
+    } catch (e: any) {
+      // Re-throw validation errors, but catch other errors (like network failures)
+      if (e?.code === 'METEORA_DLMM' || (typeof e?.message === 'string' && e.message.includes('Swap direction does not match'))) {
+        throw e;
+      }
+      // Log other errors but don't fail
+      try { 
+        logger.debug('meteora.dlmm.token_mint_fetch.failed', { 
+          cat: 'tx', 
+          ctx: { error: String(e?.message || e) } 
+        }); 
+      } catch {}
+    }
     // Derive reserves if not already provided
     try {
       const deriveReserve = (DLMM as any)?.deriveReserve;
@@ -1461,6 +1475,22 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
 
     // Prefer accountsPartial so optional nulls are honored
     // Ensure tokenXMint and tokenYMint are explicitly included in acctBase
+    // CRITICAL: Log acctBase before passing to SDK to debug token mint issues
+    try {
+      logger.info('meteora.dlmm.acctBase.before_sdk', {
+        cat: 'tx',
+        ctx: {
+          poolId: hop.poolId,
+          inputMint: hop.inputMint,
+          outputMint: hop.outputMint,
+          tokenXMint: acctBase.tokenXMint ? (acctBase.tokenXMint instanceof PublicKey ? acctBase.tokenXMint.toBase58() : String(acctBase.tokenXMint)) : 'missing',
+          tokenYMint: acctBase.tokenYMint ? (acctBase.tokenYMint instanceof PublicKey ? acctBase.tokenYMint.toBase58() : String(acctBase.tokenYMint)) : 'missing',
+          userTokenIn: acctBase.userTokenIn ? (acctBase.userTokenIn instanceof PublicKey ? acctBase.userTokenIn.toBase58() : String(acctBase.userTokenIn)) : 'missing',
+          userTokenOut: acctBase.userTokenOut ? (acctBase.userTokenOut instanceof PublicKey ? acctBase.userTokenOut.toBase58() : String(acctBase.userTokenOut)) : 'missing'
+        }
+      });
+    } catch {}
+    
     if (typeof (builder as any).accountsPartial === 'function') builder = (builder as any).accountsPartial(acctBase);
     else if (typeof (builder as any).accounts === 'function') builder = (builder as any).accounts(acctBase);
 
@@ -1864,6 +1894,35 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                     }
                   });
                 } catch {}
+                // CRITICAL: This is a fatal error - the instruction has wrong token mints
+                throw createBuilderError('METEORA_DLMM', `Instruction has incorrect token mints: pos6=${mint6.toBase58()}, pos7=${mint7.toBase58()}, expected X=${tokenXMint.toBase58()}, Y=${tokenYMint.toBase58()}`, hop);
+              }
+              
+              // Additional validation: Ensure the mints match the swap direction
+              // Position 6 should be input mint (or tokenXMint if X->Y, tokenYMint if Y->X)
+              // Position 7 should be output mint (or tokenYMint if X->Y, tokenXMint if Y->X)
+              const expectedPos6 = isXToY ? tokenXMint : tokenYMint;
+              const expectedPos7 = isXToY ? tokenYMint : tokenXMint;
+              
+              if (!mint6.equals(expectedPos6) || !mint7.equals(expectedPos7)) {
+                try {
+                  logger.error('meteora.dlmm.instruction_token_mint_direction_mismatch', {
+                    cat: 'tx',
+                    code: LogCode.TX_BUILD_ERR,
+                    ctx: {
+                      pos6Mint: mint6.toBase58(),
+                      pos7Mint: mint7.toBase58(),
+                      expectedPos6: expectedPos6.toBase58(),
+                      expectedPos7: expectedPos7.toBase58(),
+                      swapDirection: isXToY ? 'X->Y' : 'Y->X',
+                      inputMint: hop.inputMint,
+                      outputMint: hop.outputMint,
+                      poolId: hop.poolId
+                    }
+                  });
+                } catch {}
+                // CRITICAL: This is a fatal error - token mints don't match swap direction
+                throw createBuilderError('METEORA_DLMM', `Instruction token mints don't match swap direction: pos6=${mint6.toBase58()}, pos7=${mint7.toBase58()}, expected pos6=${expectedPos6.toBase58()}, pos7=${expectedPos7.toBase58()}`, hop);
               }
             }
           }
@@ -2377,6 +2436,135 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
         } as any,
       });
     } catch {}
+    
+    // CRITICAL: Immediately verify all accounts in SDK-generated instructions to catch missing accounts
+    // This catches issues before any processing that might mask the error
+    if (ixs && ixs.length) {
+      const connection = getConnection();
+      const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+      const missingAccounts: Array<{ instructionIndex: number; accountIndex: number; address: string; programId: string }> = [];
+      
+      for (let ixIdx = 0; ixIdx < ixs.length; ixIdx++) {
+        const ix = ixs[ixIdx];
+        if (ix instanceof TransactionInstruction && Array.isArray(ix.keys)) {
+          const ixProgramId = ix.programId.toBase58();
+          
+          // Skip non-CLMM instructions (they're handled elsewhere)
+          if (ixProgramId !== programIdPk.toBase58()) continue;
+          
+          // Verify all read-only accounts in CLMM instruction
+          for (let accIdx = 0; accIdx < ix.keys.length; accIdx++) {
+            const keyMeta = ix.keys[accIdx];
+            const pk = keyMeta?.pubkey;
+            if (!pk) continue;
+            
+            const pkObj = pk instanceof PublicKey ? pk : new PublicKey(pk);
+            const pkStr = pkObj.toBase58();
+            
+            // Skip signer accounts (wallet addresses)
+            if (keyMeta.isSigner) continue;
+            
+            // Skip well-known system programs
+            const wellKnown = [
+              '11111111111111111111111111111111',
+              'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+              'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',
+              'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',
+              'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr',
+              'ComputeBudget111111111111111111111111111111',
+            ];
+            if (wellKnown.includes(pkStr)) continue;
+            
+            // Skip writable accounts that might be created (user token accounts)
+            // But verify writable pool accounts (vaults, pool account) that MUST exist
+            if (keyMeta.isWritable) {
+              const isUserTokenAccount = pkStr === toPublicKey(hop.userSourceAta).toBase58() 
+                || pkStr === toPublicKey(hop.userDestAta).toBase58();
+              if (isUserTokenAccount) continue;
+              
+              // Verify pool-related writable accounts (vaults, pool account, tick arrays)
+              const isPoolRelated = pkStr === toPublicKey(hop.poolId).toBase58()
+                || pkStr === toPublicKey(hop.vaultA as any).toBase58()
+                || pkStr === toPublicKey(hop.vaultB as any).toBase58()
+                || tickArrayKeys.some(ta => ta.toBase58() === pkStr);
+              // If it's pool-related, we'll verify it below (don't skip)
+              // If it's not pool-related and writable, might be created, so skip
+              if (!isPoolRelated) continue;
+            }
+            
+            // Verify this account exists on-chain
+            try {
+              const acc = await withRpcLimit(() => connection.getAccountInfo(pkObj)).catch(() => null);
+              if (!acc || !acc.data || acc.data.length === 0) {
+                missingAccounts.push({
+                  instructionIndex: ixIdx,
+                  accountIndex: accIdx,
+                  address: pkStr,
+                  programId: ixProgramId,
+                });
+                try {
+                  logger.error('raydium.clmm.sdk.account.missing', {
+                    cat: 'tx',
+                    ctx: {
+                      pool: hop.poolId,
+                      instructionIndex: ixIdx,
+                      accountIndex: accIdx,
+                      address: pkStr,
+                      isSigner: !!keyMeta.isSigner,
+                      isWritable: !!keyMeta.isWritable,
+                      owner: acc?.owner?.toBase58?.() || 'none',
+                    } as any,
+                  });
+                } catch {}
+              } else {
+                try {
+                  logger.debug('raydium.clmm.sdk.account.verified', {
+                    cat: 'tx',
+                    ctx: {
+                      pool: hop.poolId,
+                      instructionIndex: ixIdx,
+                      accountIndex: accIdx,
+                      address: pkStr,
+                      owner: acc.owner.toBase58(),
+                      dataLen: acc.data.length,
+                    } as any,
+                  });
+                } catch {}
+              }
+            } catch (e: any) {
+              // If verification fails, log but don't fail yet (might be network issue)
+              try {
+                logger.warn('raydium.clmm.sdk.account.verify.error', {
+                  cat: 'tx',
+                  ctx: {
+                    pool: hop.poolId,
+                    instructionIndex: ixIdx,
+                    accountIndex: accIdx,
+                    address: pkStr,
+                    error: String(e?.message || e),
+                  } as any,
+                });
+              } catch {}
+            }
+          }
+        }
+      }
+      
+      if (missingAccounts.length > 0) {
+        const missingList = missingAccounts.map(a => `${a.address} (ix=${a.instructionIndex}, acc=${a.accountIndex})`).join(', ');
+        try {
+          logger.error('raydium.clmm.sdk.accounts.missing', {
+            cat: 'tx',
+            ctx: {
+              pool: hop.poolId,
+              missingCount: missingAccounts.length,
+              missingAccounts: missingAccounts,
+            } as any,
+          });
+        } catch {}
+        throw createBuilderError('RAYDIUM_CLMM', `SDK-generated instruction contains missing accounts: ${missingList}`, hop);
+      }
+    }
     
     // If exBitmap doesn't exist, we need to remove it from the instruction
     // BUT we need to be careful - the SDK might have encoded account indices in the instruction data
