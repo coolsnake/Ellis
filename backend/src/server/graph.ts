@@ -154,92 +154,97 @@ async function processUpdateQueue(): Promise<void> {
   }
 }
 
-export async function rebuildGraphNow(io?: SocketIOServer, opts?: { pushToArb?: boolean }): Promise<void> {
-  return applyUpdateWithLock(async () => {
-    try {
-      const nowMs = Date.now();
-      // Guard: skip if last rebuild was recent and had no changes (unless force requested)
-      if (!opts?.pushToArb && lastRebuildMs > 0 && lastRebuildHadChanges === false) {
-        const gap = nowMs - lastRebuildMs;
-        if (gap < MIN_REBUILD_GAP_MS) {
-          try { logger.debug('graph.rebuild.skip_recent_no_change', { gap_ms: gap, min_gap_ms: MIN_REBUILD_GAP_MS, cat: 'graph' }); } catch {}
-          return;
-        }
-      }
-
-      const prev = lastSnapshot;
-      const next = await getGraphSnapshot(true);
-      // Skip emitting/pushing when we have no retained pools yet
-      if (!prev && (!next || !Array.isArray((next as any).edges) || (next as any).edges.length === 0)) {
-        try { logger.info('graph.rebuild.skip_empty', { reason: 'no_retained_pools' }); } catch {}
-        lastRebuildMs = nowMs;
-        lastRebuildHadChanges = false;
+// ADD: Internal rebuild function that doesn't use the lock (for use when already locked)
+async function rebuildGraphNowInternal(io?: SocketIOServer, opts?: { pushToArb?: boolean }): Promise<void> {
+  try {
+    const nowMs = Date.now();
+    // Guard: skip if last rebuild was recent and had no changes (unless force requested)
+    if (!opts?.pushToArb && lastRebuildMs > 0 && lastRebuildHadChanges === false) {
+      const gap = nowMs - lastRebuildMs;
+      if (gap < MIN_REBUILD_GAP_MS) {
+        try { logger.debug('graph.rebuild.skip_recent_no_change', { gap_ms: gap, min_gap_ms: MIN_REBUILD_GAP_MS, cat: 'graph' }); } catch {}
         return;
       }
-      const diff = diffSnapshots(prev, next);
-      const changed = !!(diff.addedNodes.length || diff.updatedNodes.length || diff.removedNodeIds.length || diff.addedEdges.length || diff.updatedEdges.length || diff.removedEdgeIds.length);
-      
-      lastRebuildMs = nowMs;
-      lastRebuildHadChanges = changed;
-      
-      // CHANGED: Update lastSnapshot atomically within lock
-      lastSnapshot = next;
-      
-      if (io) {
-        if (!prev) io.emit('graph-rebase', { version: next.version, timestamp: next.timestamp }); else if (changed) io.emit('graph-update', toLiteDiff(diff));
-      } else {
-        try { if (!prev) emit('graph-rebase', { version: next.version, timestamp: next.timestamp }); else if (changed) emit('graph-update', toLiteDiff(diff)); } catch {}
-      }
-      
-      // Use unified coordinator for push decision
-      const decision = shouldPushGraphUpdate({ 
-        force: opts?.pushToArb === true,
-        source: 'rebuild_graph_now'
-      });
-      logPushDecision(decision, { 
-        version: next.version, 
-        kind: !prev ? 'snapshot' : 'diff',
-        source: 'rebuild_graph_now'
-      });
-      
-      if (!prev) {
-        if (decision.shouldPush) {
-          try { void pushArbGraphSnapshot(next); } catch {}
-        }
-        diffSinceRebase = 0; 
-        lastRebaseMs = Date.now();
-      } else if (changed) {
-        if (decision.shouldPush) {
-          const nowMs = Date.now();
-          const shouldRebase = (diffSinceRebase >= REBASE_DIFF_THRESHOLD) || (nowMs - lastRebaseMs > REBASE_TIME_MS);
-          if (shouldRebase) {
-            try { void pushArbGraphSnapshot(next); } catch {}
-            diffSinceRebase = 0; 
-            lastRebaseMs = nowMs;
-            try { emit('log', { level: 'info', message: `graph:push rebase v=${next.version} nodes=${next.nodes.length} edges=${next.edges.length}`, timestamp: new Date().toISOString(), context: { cat: 'graph', code: LogCode.GRAPH_PUSH_SNAPSHOT } }); } catch {}
-            try { if (io) io.emit('graph-rebase', { version: next.version, timestamp: next.timestamp }); else emit('graph-rebase', { version: next.version, timestamp: next.timestamp }); } catch {}
-            try { logger.info('graph.rebase', { at_ms: lastRebaseMs, version: next.version, nodes: next.nodes.length, edges: next.edges.length }); } catch {}
-          } else {
-            try { void pushArbGraphDiff(diff); } catch {}
-            diffSinceRebase += (diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length);
-            try { emit('log', { level: 'info', message: `graph:push diff v=${diff.version} changes=${(diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length)}`, timestamp: new Date().toISOString(), context: { cat: 'graph', code: LogCode.GRAPH_PUSH_DIFF } }); } catch {}
-          }
-        }
-      }
-      try { logger.info('graph.rebuild.now', { nodes: next.nodes.length, edges: next.edges.length, changed }); } catch {}
-      // Optional: auto-retarget WS if many edges changed
-      try {
-        const auto = !!((CONFIG.system as any)?.autoRetargetOnGraph);
-        const ch = (diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length);
-        const big = ch >= Math.max(50, Number((CONFIG.system as any)?.autoRetargetEdgeThreshold || 200));
-        if (auto && (big || !prev)) {
-          const pools = await import('./pools.js');
-          try { await (pools as any).retargetPoolWebsockets?.(); } catch {}
-        }
-      } catch {}
-    } catch (e: any) {
-      logger.debug('graph.rebuild.now failed', { error: String(e?.message || e) });
     }
+
+    const prev = lastSnapshot;
+    const next = await getGraphSnapshot(true);
+    // Skip emitting/pushing when we have no retained pools yet
+    if (!prev && (!next || !Array.isArray((next as any).edges) || (next as any).edges.length === 0)) {
+      try { logger.info('graph.rebuild.skip_empty', { reason: 'no_retained_pools' }); } catch {}
+      lastRebuildMs = nowMs;
+      lastRebuildHadChanges = false;
+      return;
+    }
+    const diff = diffSnapshots(prev, next);
+    const changed = !!(diff.addedNodes.length || diff.updatedNodes.length || diff.removedNodeIds.length || diff.addedEdges.length || diff.updatedEdges.length || diff.removedEdgeIds.length);
+    
+    lastRebuildMs = nowMs;
+    lastRebuildHadChanges = changed;
+    
+    // Update lastSnapshot atomically (already within lock context)
+    lastSnapshot = next;
+    
+    if (io) {
+      if (!prev) io.emit('graph-rebase', { version: next.version, timestamp: next.timestamp }); else if (changed) io.emit('graph-update', toLiteDiff(diff));
+    } else {
+      try { if (!prev) emit('graph-rebase', { version: next.version, timestamp: next.timestamp }); else if (changed) emit('graph-update', toLiteDiff(diff)); } catch {}
+    }
+    
+    // Use unified coordinator for push decision
+    const decision = shouldPushGraphUpdate({ 
+      force: opts?.pushToArb === true,
+      source: 'rebuild_graph_now'
+    });
+    logPushDecision(decision, { 
+      version: next.version, 
+      kind: !prev ? 'snapshot' : 'diff',
+      source: 'rebuild_graph_now'
+    });
+    
+    if (!prev) {
+      if (decision.shouldPush) {
+        try { void pushArbGraphSnapshot(next); } catch {}
+      }
+      diffSinceRebase = 0; 
+      lastRebaseMs = Date.now();
+    } else if (changed) {
+      if (decision.shouldPush) {
+        const nowMs = Date.now();
+        const shouldRebase = (diffSinceRebase >= REBASE_DIFF_THRESHOLD) || (nowMs - lastRebaseMs > REBASE_TIME_MS);
+        if (shouldRebase) {
+          try { void pushArbGraphSnapshot(next); } catch {}
+          diffSinceRebase = 0; 
+          lastRebaseMs = nowMs;
+          try { emit('log', { level: 'info', message: `graph:push rebase v=${next.version} nodes=${next.nodes.length} edges=${next.edges.length}`, timestamp: new Date().toISOString(), context: { cat: 'graph', code: LogCode.GRAPH_PUSH_SNAPSHOT } }); } catch {}
+          try { if (io) io.emit('graph-rebase', { version: next.version, timestamp: next.timestamp }); else emit('graph-rebase', { version: next.version, timestamp: next.timestamp }); } catch {}
+          try { logger.info('graph.rebase', { at_ms: lastRebaseMs, version: next.version, nodes: next.nodes.length, edges: next.edges.length }); } catch {}
+        } else {
+          try { void pushArbGraphDiff(diff); } catch {}
+          diffSinceRebase += (diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length);
+          try { emit('log', { level: 'info', message: `graph:push diff v=${diff.version} changes=${(diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length)}`, timestamp: new Date().toISOString(), context: { cat: 'graph', code: LogCode.GRAPH_PUSH_DIFF } }); } catch {}
+        }
+      }
+    }
+    try { logger.info('graph.rebuild.now', { nodes: next.nodes.length, edges: next.edges.length, changed }); } catch {}
+    // Optional: auto-retarget WS if many edges changed
+    try {
+      const auto = !!((CONFIG.system as any)?.autoRetargetOnGraph);
+      const ch = (diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length);
+      const big = ch >= Math.max(50, Number((CONFIG.system as any)?.autoRetargetEdgeThreshold || 200));
+      if (auto && (big || !prev)) {
+        const pools = await import('./pools.js');
+        try { await (pools as any).retargetPoolWebsockets?.(); } catch {}
+      }
+    } catch {}
+  } catch (e: any) {
+    logger.debug('graph.rebuild.now failed', { error: String(e?.message || e) });
+  }
+}
+
+export async function rebuildGraphNow(io?: SocketIOServer, opts?: { pushToArb?: boolean }): Promise<void> {
+  return applyUpdateWithLock(async () => {
+    await rebuildGraphNowInternal(io, opts);
   });
 }
 
@@ -264,7 +269,11 @@ const clampPriceInc = (px?: number): number | undefined => {
 export async function applyPoolUpdates(prev: PoolsPayload, next: PoolsPayload, opts?: { pushToArb?: boolean }): Promise<void> {
   return applyUpdateWithLock(async () => {
     try {
-      if (!lastSnapshot) { await rebuildGraphNow(undefined); return; }
+      if (!lastSnapshot) { 
+        // Use internal rebuild when already in lock context
+        await rebuildGraphNowInternal(undefined); 
+        return; 
+      }
 
       const priceStore = await import('./priceStore.js');
       const edgeAllow = await loadEdgeAllow();
