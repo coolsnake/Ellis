@@ -11,7 +11,7 @@ import { createWorkerClient, WorkerClient } from '../../workers/client.js';
 import type { ArbBuildRequest, ArbBuildResult, SerializedInstruction } from '../../workers/arbBuild.types.js';
 import { buildTransactionSummary } from '../arb.build.worker.compute.js';
 import { Worker } from 'node:worker_threads';
-import type { WorkerInboundMessage, WorkerOutboundMessage } from '../../workers/types.js';
+import type { WorkerInboundMessage, WorkerOutboundMessage, WorkerErrorMessage } from '../../workers/types.js';
 
 export function createArbRouter(io: SocketIOServer): Router {
   const api = Router();
@@ -1441,7 +1441,9 @@ export function createArbRouter(io: SocketIOServer): Router {
             if (msg.ok) {
               finish(msg.result as ArbBuildResult, null);
             } else {
-              finish(null, new Error(msg.error?.message || 'Worker error'));
+              // msg.ok is false, so TypeScript knows this is WorkerErrorMessage
+              const errorMsg = msg as WorkerErrorMessage;
+              finish(null, new Error(errorMsg.error?.message || 'Worker error'));
             }
           }
         });
