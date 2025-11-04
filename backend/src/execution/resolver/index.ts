@@ -275,6 +275,9 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       // Using the actual quoted output ensures we use all tokens received from the previous hop
       // This prevents leaking small amounts between hops in multihop transactions
       if (out > 0n) {
+        // Store the exact quoted output for this hop - this will be used as exact input for next hop
+        hops[i].quotedOutputRaw = out;
+        
         // Use the actual quoted output amount for propagation to next hop
         // This ensures we use the full amount received, not the slippage-adjusted minimum
         curIn = out;
@@ -287,6 +290,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
             ctx: {
               hopIndex: i,
               quotedOut: out.toString(),
+              quotedOutputRaw: hops[i].quotedOutputRaw?.toString() || '0',
               minOutRaw: hops[i].minOutRaw.toString(),
               propagatedAmount: out.toString(), // Now using actual output
               nextHopInput: curIn.toString(),

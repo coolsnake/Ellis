@@ -21,6 +21,10 @@ export type DirectHop = {
 
   amountInRaw: bigint;
   minOutRaw: bigint;
+  
+  // Multihop exact amount tracking
+  quotedOutputRaw?: bigint; // Exact output from quote, used for multihop propagation
+  useExactAmount?: boolean; // Flag to prevent re-quote adjustments in instruction building
 
   // Common vaults
   vaultA?: string;

@@ -656,6 +656,40 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
       const sdkResult = await buildOrcaSwapViaSdk(hop, kp, slippageBps);
       const quoteAny = sdkResult.quote as any;
       const estOut = quoteAny?.tokenEstOut ?? quoteAny?.tokenMinOut ?? quoteAny?.estimatedAmountOut ?? null;
+      
+      // For multihop with exact amounts, verify the SDK used the exact input amount
+      if (hop.useExactAmount && hop.amountInRaw > 0n) {
+        const quoteInputAmount = BigInt((quoteAny?.inputAmount ?? quoteAny?.tokenAmountIn ?? 0));
+        if (quoteInputAmount > 0n && quoteInputAmount !== hop.amountInRaw) {
+          try {
+            logger.warn('orca.whirlpool.exact_amount.mismatch', {
+              cat: 'tx',
+              code: LogCode.TX_BUILD_ERR,
+              ctx: {
+                pool: hop.poolId,
+                expectedInput: hop.amountInRaw.toString(),
+                quoteInput: quoteInputAmount.toString(),
+                difference: (quoteInputAmount > hop.amountInRaw 
+                  ? (quoteInputAmount - hop.amountInRaw).toString() 
+                  : (hop.amountInRaw - quoteInputAmount).toString()),
+                mode: 'swapInstructions',
+              }
+            });
+          } catch {}
+        } else if (quoteInputAmount === hop.amountInRaw) {
+          try {
+            logger.info('orca.whirlpool.exact_amount.verified', {
+              cat: 'tx',
+              ctx: {
+                pool: hop.poolId,
+                exactInput: hop.amountInRaw.toString(),
+                mode: 'swapInstructions',
+              }
+            });
+          } catch {}
+        }
+      }
+      
       if (estOut !== null && estOut !== undefined) {
         try { logger.info('orca.whirlpool.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: String(estOut), mode: 'swapInstructions' } as any }); } catch {}
       }
@@ -698,7 +732,21 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
       const slippage = (Percentage as any).fromFraction(slippageBps, 10_000);
       const amountInBn = new BN(String(hop.amountInRaw ?? 0n));
       
-      try { logger.info('orca.whirlpool.quote', { cat: 'tx', ctx: { pool: poolAddr, inputMint, amountIn: String(hop.amountInRaw ?? 0n), slippageBps } }); } catch {}
+      // Log exact amount usage for multihop debugging
+      const isExactAmount = hop.useExactAmount || false;
+      try { 
+        logger.info('orca.whirlpool.quote', { 
+          cat: 'tx', 
+          ctx: { 
+            pool: poolAddr, 
+            inputMint, 
+            amountIn: String(hop.amountInRaw ?? 0n), 
+            slippageBps,
+            useExactAmount: isExactAmount,
+            quotedOutputRaw: hop.quotedOutputRaw?.toString() || 'N/A',
+          } 
+        }); 
+      } catch {}
       
       // Primary path: use swapQuoteByInputToken
       const quote = await (swapQuoteByInputToken as any)(
@@ -713,6 +761,28 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
       
       if (!quote) {
         throw createBuilderError('ORCA', 'quote returned null', hop);
+      }
+      
+      // For exact amount multihop, verify the quote used the exact input
+      if (isExactAmount && hop.amountInRaw > 0n) {
+        const quoteInputAmount = BigInt((quote as any)?.inputAmount ?? (quote as any)?.tokenAmountIn ?? 0);
+        if (quoteInputAmount > 0n && quoteInputAmount !== hop.amountInRaw) {
+          try {
+            logger.warn('orca.whirlpool.exact_amount.quote_mismatch', {
+              cat: 'tx',
+              code: LogCode.TX_BUILD_ERR,
+              ctx: {
+                pool: poolAddr,
+                expectedInput: hop.amountInRaw.toString(),
+                quoteInput: quoteInputAmount.toString(),
+                difference: (quoteInputAmount > hop.amountInRaw 
+                  ? (quoteInputAmount - hop.amountInRaw).toString() 
+                  : (hop.amountInRaw - quoteInputAmount).toString()),
+                mode: 'swapQuoteByInputToken',
+              }
+            });
+          } catch {}
+        }
       }
       
       const estimatedOut = BigInt((quote as any)?.otherAmount ?? (quote as any)?.estimatedAmountOut ?? 0);

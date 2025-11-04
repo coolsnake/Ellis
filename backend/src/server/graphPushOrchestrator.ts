@@ -491,16 +491,25 @@ class GraphPushOrchestrator {
       try {
         const { getGraphVersion } = require('./graph.js');
         const backendVersion = getGraphVersion().version;
-        const arbVersion = this.lastDetectCompleteVersion || 0;
+        // Use cached version from polling instead of lastDetectCompleteVersion
+        const { getCachedArbVersion } = await import('./realtime.js');
+        const cachedVersion = getCachedArbVersion();
+        const arbVersion = cachedVersion.version;
+        const cacheAgeMs = cachedVersion.ageMs;
         
-        if (backendVersion > arbVersion) {
+        // Prefer cached version if fresh (< 10 seconds), otherwise use lastDetectCompleteVersion
+        const effectiveArbVersion = cacheAgeMs < 10000 ? arbVersion : (this.lastDetectCompleteVersion || 0);
+        
+        if (backendVersion > effectiveArbVersion) {
           hasVersionGap = true;
           skipCoalescing = true;
           try {
             logger.info('graph.push force_flush_version_gap', {
-              arb_rs_version: arbVersion,
+              arb_rs_version: effectiveArbVersion,
               backend_version: backendVersion,
-              gap: backendVersion - arbVersion,
+              gap: backendVersion - effectiveArbVersion,
+              cache_age_ms: cacheAgeMs,
+              using_cached: cacheAgeMs < 10000,
               cat: 'graph',
             });
           } catch {}
@@ -596,15 +605,22 @@ class GraphPushOrchestrator {
             const backendVersion = getGraphVersion().version;
             // Use the most recent version from polling cache, not just lastDetectCompleteVersion
             const { getCachedArbVersion } = await import('./realtime.js');
-            const arbVersion = getCachedArbVersion().version;
+            const cachedVersion = getCachedArbVersion();
+            const arbVersion = cachedVersion.version;
+            const cacheAgeMs = cachedVersion.ageMs;
             
-            if (backendVersion > arbVersion) {
+            // Prefer cached version if fresh (< 10 seconds), otherwise use lastDetectCompleteVersion
+            const effectiveArbVersion = cacheAgeMs < 10000 ? arbVersion : (this.lastDetectCompleteVersion || 0);
+            
+            if (backendVersion > effectiveArbVersion) {
               // Version gap still exists - force flush via detector path to bypass all blocks
               try {
                 logger.info('graph.push post_flush_version_gap', {
-                  arb_rs_version: arbVersion,
+                  arb_rs_version: effectiveArbVersion,
                   backend_version: backendVersion,
-                  gap: backendVersion - arbVersion,
+                  gap: backendVersion - effectiveArbVersion,
+                  cache_age_ms: cacheAgeMs,
+                  using_cached: cacheAgeMs < 10000,
                   cat: 'graph',
                 });
               } catch {}
@@ -905,11 +921,23 @@ class GraphPushOrchestrator {
     }
     
     // Check version gap BEFORE checking blocking conditions
-    // If version gap exists, we MUST flush even if blocking conditions are true
+    // Use cached version from polling (getCachedArbVersion) instead of lastDetectCompleteVersion
+    // which is only updated on detection completion events and can be stale
     let hasVersionGap = false;
     try {
       const { getGraphVersion } = require('./graph.js');
       const backendVersion = getGraphVersion().version;
+      // Use cached version from polling, not lastDetectCompleteVersion (which can be stale)
+      const { getCachedArbVersion } = await import('./realtime.js');
+      const cachedVersion = getCachedArbVersion();
+      const arbVersion = cachedVersion.version;
+      const cacheAgeMs = cachedVersion.ageMs;
+      
+      // Only use cached version if it's relatively fresh (< 10 seconds old)
+      // Otherwise fall back to lastDetectCompleteVersion
+      const effectiveArbVersion = cacheAgeMs < 10000 ? arbVersion : (this.lastDetectCompleteVersion || 0);
+      
+      if (backendVersion > effectiveArbVersion) {
       const arbVersion = this.lastDetectCompleteVersion || 0;
       if (backendVersion > arbVersion) {
         hasVersionGap = true;
