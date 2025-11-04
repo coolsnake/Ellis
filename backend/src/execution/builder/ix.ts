@@ -1050,6 +1050,42 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     try {
       const userTokenInPk = toPublicKey(hop.userSourceAta);
       const expectedInputMint = toPublicKey(hop.inputMint);
+      
+      // Always derive the correct ATA to verify, even if account doesn't exist yet
+      const { deriveAta } = await import('../accounts.js');
+      const correctAta = deriveAta(kp.publicKey, expectedInputMint, hop.inputTokenProgram);
+      
+      // Check if the ATA address matches what we expect (always verify, even for new accounts)
+      if (!userTokenInPk.equals(correctAta)) {
+        try { 
+          logger.warn('meteora.dlmm.userTokenIn.address_mismatch', { 
+            cat: 'tx', 
+            ctx: { 
+              userTokenIn: userTokenInPk.toBase58(),
+              correctAta: correctAta.toBase58(),
+              expectedMint: expectedInputMint.toBase58(),
+              inputMint: hop.inputMint,
+              inputTokenProgram: hop.inputTokenProgram
+            } 
+          }); 
+        } catch {}
+        
+        // Use the correct ATA
+        accounts.userTokenIn = correctAta;
+        
+        try { 
+          logger.info('meteora.dlmm.userTokenIn.corrected', { 
+            cat: 'tx', 
+            ctx: { 
+              old: userTokenInPk.toBase58(),
+              new: correctAta.toBase58(),
+              mint: expectedInputMint.toBase58()
+            } 
+          }); 
+        } catch {}
+      }
+      
+      // Additionally, if account exists on-chain, verify the mint matches
       const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
       const tokenInInfo = await withRpcLimit(() => connection.getAccountInfo(userTokenInPk)).catch(() => null);
       
@@ -1071,12 +1107,11 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               }); 
             } catch {}
             
-            const { deriveAta } = await import('../accounts.js');
-            const correctAta = deriveAta(kp.publicKey, expectedInputMint, hop.inputTokenProgram);
+            // Use the correct ATA (already set above if address was wrong)
             accounts.userTokenIn = correctAta;
             
             try { 
-              logger.info('meteora.dlmm.userTokenIn.corrected', { 
+              logger.info('meteora.dlmm.userTokenIn.mint_corrected', { 
                 cat: 'tx', 
                 ctx: { 
                   old: userTokenInPk.toBase58(),
@@ -1086,7 +1121,10 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               }); 
             } catch {}
           }
-        } catch {}
+        } catch (parseErr) {
+          // Account exists but can't parse - use correct derivation
+          accounts.userTokenIn = correctAta;
+        }
       }
     } catch {}
     
@@ -1094,6 +1132,42 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     try {
       const userTokenOutPk = toPublicKey(hop.userDestAta);
       const expectedMint = toPublicKey(hop.outputMint);
+      
+      // Always derive the correct ATA to verify, even if account doesn't exist yet
+      const { deriveAta } = await import('../accounts.js');
+      const correctAta = deriveAta(kp.publicKey, expectedMint, hop.outputTokenProgram);
+      
+      // Check if the ATA address matches what we expect (always verify, even for new accounts)
+      if (!userTokenOutPk.equals(correctAta)) {
+        try { 
+          logger.warn('meteora.dlmm.userTokenOut.address_mismatch', { 
+            cat: 'tx', 
+            ctx: { 
+              userTokenOut: userTokenOutPk.toBase58(),
+              correctAta: correctAta.toBase58(),
+              expectedMint: expectedMint.toBase58(),
+              outputMint: hop.outputMint,
+              outputTokenProgram: hop.outputTokenProgram
+            } 
+          }); 
+        } catch {}
+        
+        // Use the correct ATA
+        accounts.userTokenOut = correctAta;
+        
+        try { 
+          logger.info('meteora.dlmm.userTokenOut.corrected', { 
+            cat: 'tx', 
+            ctx: { 
+              old: userTokenOutPk.toBase58(),
+              new: correctAta.toBase58(),
+              mint: expectedMint.toBase58()
+            } 
+          }); 
+        } catch {}
+      }
+      
+      // Additionally, if account exists on-chain, verify the mint matches
       const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
       const tokenOutInfo = await withRpcLimit(() => connection.getAccountInfo(userTokenOutPk)).catch(() => null);
       
@@ -1116,13 +1190,11 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               }); 
             } catch {}
             
-            // Re-derive ATA with correct mint to fix the issue
-            const { deriveAta } = await import('../accounts.js');
-            const correctAta = deriveAta(kp.publicKey, expectedMint, hop.outputTokenProgram);
+            // Use the correct ATA (already set above if address was wrong)
             accounts.userTokenOut = correctAta;
             
             try { 
-              logger.info('meteora.dlmm.userTokenOut.corrected', { 
+              logger.info('meteora.dlmm.userTokenOut.mint_corrected', { 
                 cat: 'tx', 
                 ctx: { 
                   old: userTokenOutPk.toBase58(),
@@ -1133,16 +1205,8 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
             } catch {}
           }
         } catch (parseErr) {
-          // If account doesn't exist or can't parse, that's okay - ATA creation will handle it
-          try { 
-            logger.debug('meteora.dlmm.userTokenOut.parse_failed', { 
-              cat: 'tx', 
-              ctx: { 
-                error: String((parseErr as any)?.message || parseErr),
-                userTokenOut: userTokenOutPk.toBase58()
-              } 
-            }); 
-          } catch {}
+          // Account exists but can't parse - use correct derivation
+          accounts.userTokenOut = correctAta;
         }
       }
     } catch (validateErr) {
@@ -1733,7 +1797,17 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
         try { logger.warn('raydium.clmm.observation.verify.failed', { cat: 'tx', ctx: { pool: hop.poolId, error: String(e?.message || e) } as any }); } catch {}
       }
 
+      // Derive exBitmap address once (we skip it in verification since we handle it separately)
+      let exBitmapPk: PublicKey | null = null;
+      try {
+        const { getPdaExBitmapAccount } = await import('@raydium-io/raydium-sdk-v2').catch(() => ({ getPdaExBitmapAccount: null }));
+        if (getPdaExBitmapAccount) {
+          exBitmapPk = getPdaExBitmapAccount(programIdPk, poolIdPk).publicKey;
+        }
+      } catch {}
+      
       // Verify all accounts in each instruction to catch missing accounts early
+      // But skip accounts that don't need to exist yet (signers, writable accounts that can be created)
       const verifiedIxs: TransactionInstruction[] = [];
       for (let ixIdx = 0; ixIdx < ixs.length; ixIdx++) {
         const ix = ixs[ixIdx];
@@ -1745,6 +1819,35 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
             const keyMeta = ix.keys[keyIdx];
             const pk = keyMeta?.pubkey;
             if (!pk) continue; // Skip if no pubkey (shouldn't happen but be safe)
+            
+            // Skip signer accounts - they're wallet addresses, always valid
+            if (keyMeta.isSigner) continue;
+            
+            // Skip writable accounts that might be created by the transaction
+            // (ATAs, new accounts, etc.) - the transaction will create them if needed
+            if (keyMeta.isWritable) {
+              // Double-check: some writable accounts like vaults MUST exist
+              // But user token accounts (ATAs) might not exist yet
+              const pkStr = (pk instanceof PublicKey ? pk : new PublicKey(pk)).toBase58();
+              // Skip user token accounts (input/output ATAs) - they can be created
+              const isUserTokenAccount = pkStr === toPublicKey(hop.userSourceAta).toBase58() 
+                || pkStr === toPublicKey(hop.userDestAta).toBase58();
+              if (isUserTokenAccount) continue;
+              
+              // Skip tick arrays - we've already verified them exist
+              const isTickArray = tickArrayKeys.some(ta => ta.toBase58() === pkStr);
+              if (isTickArray) continue;
+              
+              // Skip exBitmap account - we handle it separately (remove if doesn't exist)
+              if (exBitmapPk && pkStr === exBitmapPk.toBase58()) continue;
+              
+              // For other writable accounts, check if they're pool-related (must exist)
+              const isPoolRelated = pkStr === toPublicKey(hop.poolId).toBase58()
+                || pkStr === toPublicKey(hop.vaultA as any).toBase58()
+                || pkStr === toPublicKey(hop.vaultB as any).toBase58()
+                || pkStr === observationId.toBase58();
+              if (!isPoolRelated) continue; // Skip other writable accounts (might be created)
+            }
             
             try {
               const pkObj = pk instanceof PublicKey ? pk : new PublicKey(pk);
@@ -1760,6 +1863,8 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
               const pkStr = pkObj.toBase58();
               if (wellKnown.includes(pkStr)) continue;
               
+              // Only verify read-only accounts that MUST exist (pool state, configs, observation, tick arrays)
+              // Or writable pool-related accounts (vaults, pool account, observation)
               const acc = await withRpcLimit(() => connection.getAccountInfo(pkObj)).catch(() => null);
               if (!acc || !acc.data || acc.data.length === 0) {
                 missingAccounts.push({
@@ -1793,7 +1898,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 } as any 
               });
             } catch {}
-            throw createBuilderError('RAYDIUM_CLMM', `instruction ${ixIdx} contains missing accounts: ${missingAccounts.map(a => a.address).join(', ')}`, hop);
+            throw createBuilderError('RAYDIUM_CLMM', `instruction ${ixIdx} contains missing read-only accounts: ${missingAccounts.map(a => a.address).join(', ')}`, hop);
           }
           
           verifiedIxs.push(ix);

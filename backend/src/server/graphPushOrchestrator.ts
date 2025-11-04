@@ -766,13 +766,27 @@ class GraphPushOrchestrator {
       this.detectDirty = false;
       return false;
     }
-    if (this.flushInProgress || this.inFlight || this.awaitingDetect) {
+    
+    // Allow flush if detection completion was recently signaled (within 5 seconds)
+    // This means the system just detected completion and is ready to flush
+    const recentlyCompleted = this.lastDetectCompleteMs > 0 && 
+      (Date.now() - this.lastDetectCompleteMs) < 5000;
+    
+    // Block if:
+    // - A flush is in progress AND detect didn't just complete (existing flush will proceed)
+    // - Queue is being processed AND detect didn't just complete (inFlight is normal during processing)
+    // - Awaiting detect AND detect didn't just complete (this means we're still waiting)
+    if ((this.flushInProgress && !recentlyCompleted) || 
+        (this.inFlight && !recentlyCompleted) || 
+        (this.awaitingDetect && !recentlyCompleted)) {
       try { 
         logger.info('arb.push detector_flush blocked', { 
           reason: 'busy', 
           flushInProgress: this.flushInProgress,
           inFlight: this.inFlight,
           awaitingDetect: this.awaitingDetect,
+          recently_completed: recentlyCompleted,
+          last_detect_complete_ms: this.lastDetectCompleteMs,
           pending_snapshot: !!this.pendingSnapshot,
           pending_diff: !!this.pendingDiff,
           diff_version: this.pendingDiff?.version,

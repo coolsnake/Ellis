@@ -10,6 +10,7 @@ import {
   getGraphPushStatsRaw as orchestratorGetGraphPushStatsRaw,
   hasDetectDrivenDirty,
   flushPendingFromDetector as orchestratorFlushPendingFromDetector,
+  markDetectorCompleteFromAck,
 } from './graphPushOrchestrator.js';
 
 export { pushArbGraphSnapshot, pushArbGraphDiff, notifyArbServiceRefresh, markDetectorCompleteFromAck } from './graphPushOrchestrator.js';
@@ -180,6 +181,28 @@ export function startDetectDrivenGraphPush(debounceMs = 0): void {
               cat: 'graph',
             }); 
           } catch {}
+          
+          // CRITICAL FIX: Mark detection complete first to unblock any waiting flush
+          // This allows the existing flush (if any) to proceed
+          try {
+            markDetectorCompleteFromAck({ completedMs: currentDetectionMs });
+            try {
+              logger.debug('graph.push detect_marked_complete', {
+                last_detection_ms: currentDetectionMs,
+                cat: 'graph',
+              });
+            } catch {}
+          } catch (err) {
+            try { 
+              logger.warn('graph.push detect_mark_complete_failed', { 
+                error: String((err as any)?.message || err),
+                last_detection_ms: currentDetectionMs,
+                cat: 'graph',
+              }); 
+            } catch {}
+          }
+          
+          // Then check if we need to flush new updates
           try {
             const hasDirty = hasDetectDrivenDirty();
             if (!hasDirty) { 

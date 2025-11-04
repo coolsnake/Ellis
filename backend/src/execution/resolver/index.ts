@@ -198,11 +198,33 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       // Always set current hop input
       hops[i].amountInRaw = curIn;
 
+      // Add logging to debug amount propagation
+      try {
+        logger.info('tx.resolve.hop.amount.set', {
+          cat: 'tx',
+          code: LogCode.TX_RESOLVE_OK,
+          ctx: {
+            hopIndex: i,
+            amountInRaw: curIn.toString(),
+            inputMint: hops[i].inputMint,
+            outputMint: hops[i].outputMint,
+          }
+        });
+      } catch {}
+
       // Quote per-hop; never let one failure abort subsequent hops
       let out = 0n;
       try {
         out = await quoteHopOut(hops[i], curIn);
-      } catch {}
+      } catch (e) {
+        try {
+          logger.warn('tx.resolve.hop.quote.failed', {
+            cat: 'tx',
+            code: LogCode.TX_BUILD_ERR,
+            ctx: { hopIndex: i, error: String((e as any)?.message || e) }
+          });
+        } catch {}
+      }
 
       // Compute effective slippage and minOut even if out=0n
       let eff = slippage;
@@ -218,8 +240,69 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       // Use minOutRaw (slippage-adjusted) for propagation to ensure we don't try to swap more than we'll actually receive
       // The quoted 'out' amount is optimistic and doesn't account for fees/slippage
       if (out > 0n) {
-        const propagatedAmount = hops[i].minOutRaw && hops[i].minOutRaw > 0n ? hops[i].minOutRaw : out;
-        curIn = propagatedAmount;
+        // CRITICAL: Always use minOutRaw for propagation, never the optimistic quote
+        // If minOutRaw is 0 or invalid, something is wrong - use a very conservative fallback
+        if (hops[i].minOutRaw && hops[i].minOutRaw > 0n) {
+          curIn = hops[i].minOutRaw;
+          
+          // Add logging for successful propagation
+          try {
+            logger.info('tx.resolve.hop.propagate', {
+              cat: 'tx',
+              code: LogCode.TX_RESOLVE_OK,
+              ctx: {
+                hopIndex: i,
+                quotedOut: out.toString(),
+                minOutRaw: hops[i].minOutRaw.toString(),
+                propagatedAmount: hops[i].minOutRaw.toString(),
+                nextHopInput: curIn.toString(),
+              }
+            });
+          } catch {}
+        } else {
+          // This should not happen - minOutRaw should always be set if out > 0
+          // Log warning but use a very conservative estimate (out with max slippage)
+          try {
+            logger.warn('tx.resolve.hop.minout_missing', {
+              cat: 'tx',
+              code: LogCode.TX_BUILD_ERR,
+              ctx: {
+                hopIndex: i,
+                quotedOut: out.toString(),
+                minOutRaw: hops[i].minOutRaw?.toString() || '0',
+                slippageBps: eff,
+              }
+            });
+          } catch {}
+          // Apply maximum slippage as safety fallback (very conservative)
+          const fallbackAmount = applyMinOut(out, 9900); // 99% slippage = very conservative
+          curIn = fallbackAmount;
+          
+          try {
+            logger.info('tx.resolve.hop.propagate.fallback', {
+              cat: 'tx',
+              code: LogCode.TX_RESOLVE_OK,
+              ctx: {
+                hopIndex: i,
+                quotedOut: out.toString(),
+                fallbackAmount: fallbackAmount.toString(),
+                nextHopInput: curIn.toString(),
+              }
+            });
+          } catch {}
+        }
+      } else {
+        try {
+          logger.warn('tx.resolve.hop.no_propagation', {
+            cat: 'tx',
+            code: LogCode.TX_BUILD_ERR,
+            ctx: {
+              hopIndex: i,
+              quotedOut: out.toString(),
+              amountInRaw: curIn.toString(),
+            }
+          });
+        } catch {}
       }
     }
   } catch {}
