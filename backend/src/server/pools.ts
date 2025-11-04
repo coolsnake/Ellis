@@ -548,6 +548,12 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
   } catch {}
   if (subscribe) {
     try {
+      // Wait for any existing WebSocket cleanup to complete before starting new subscriptions
+      // This prevents race conditions where accountSubscribe is called on a closed socket
+      if (wsClosePromise) {
+        await wsClosePromise.catch(() => {});
+        wsClosePromise = null;
+      }
       enablePoolWebsocketRefreshes();
       startRaydiumRefreshLoop();
     } catch {}
