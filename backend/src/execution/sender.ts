@@ -183,16 +183,52 @@ async function loadLookupTables(connection: Connection, addrs: string[]): Promis
   return out;
 }
 
-function summarizeSimError(logs?: string[], err?: any): { ix?: number; custom?: number; hint?: string } {
+function summarizeSimError(logs?: string[], err?: any): { ix?: number; custom?: number; hint?: string; account?: string; errorType?: string } {
   try {
     if (err && err.InstructionError && Array.isArray(err.InstructionError)) {
       const ix = Number(err.InstructionError[0]);
       const detail = err.InstructionError[1];
-      const custom = Number(detail?.Custom);
-      return { ix, custom, hint: custom ? `custom=${custom}` : undefined };
+      
+      // Check for ProgramAccountNotFound specifically
+      if (detail?.ProgramAccountNotFound !== undefined) {
+        return { 
+        ix, 
+        errorType: 'ProgramAccountNotFound',
+        hint: `ProgramAccountNotFound at instruction ${ix}`,
+        account: detail.ProgramAccountNotFound ? String(detail.ProgramAccountNotFound) : undefined
+      };
+      }
+      
+      // Check for other common errors
+      if (detail?.Custom !== undefined) {
+        const custom = Number(detail.Custom);
+        return { ix, custom, errorType: 'Custom', hint: custom ? `custom=${custom}` : undefined };
+      }
+      
+      // Check for other error types
+      const errorKeys = Object.keys(detail || {});
+      if (errorKeys.length > 0) {
+        const errorType = errorKeys[0];
+        return { ix, errorType, hint: `${errorType} at instruction ${ix}`, account: detail[errorType] ? String(detail[errorType]) : undefined };
+      }
+      
+      return { ix, hint: `instruction ${ix} error` };
     }
-    const last = Array.isArray(logs) ? [...logs].reverse().find(l => /error|failed|custom program error/i.test(l)) : undefined;
-    return { hint: last };
+    
+    // Try to extract error from logs
+    const last = Array.isArray(logs) ? [...logs].reverse().find(l => /error|failed|custom program error|ProgramAccountNotFound/i.test(l)) : undefined;
+    
+    // Try to extract account address from logs if ProgramAccountNotFound
+    let account: string | undefined;
+    if (last && /ProgramAccountNotFound/i.test(last)) {
+      // Try to extract account address from log (format may vary)
+      const accountMatch = last.match(/([A-Za-z0-9]{32,44})/);
+      if (accountMatch) {
+        account = accountMatch[1];
+      }
+    }
+    
+    return { hint: last, errorType: last && /ProgramAccountNotFound/i.test(last) ? 'ProgramAccountNotFound' : undefined, account };
   } catch { return {}; }
 }
 
@@ -247,7 +283,31 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
   const wireBase64 = Buffer.from(tx.serialize()).toString('base64');
   const sim = await connection.simulateTransaction(tx, { sigVerify: true });
   if (sim.value?.err) {
-    try { logger.error('tx.preflight.summary', { cat: 'tx', ctx: { txId, ...summarizeSimError(sim.value?.logs, sim.value?.err) } as any }); } catch {}
+    const errorDetails = summarizeSimError(sim.value?.logs, sim.value?.err);
+    try { 
+      logger.error('tx.preflight.summary', { 
+        cat: 'tx', 
+        ctx: { 
+          txId, 
+          ...errorDetails,
+          // Add full error details for debugging
+          fullError: sim.value?.err,
+          instructionCount: realIxs.length,
+          // If ProgramAccountNotFound, log which instruction and account
+          failingInstruction: errorDetails.ix !== undefined ? {
+            index: errorDetails.ix,
+            programId: realIxs[errorDetails.ix]?.programId?.toBase58?.() || 'unknown',
+            accountCount: realIxs[errorDetails.ix]?.keys?.length || 0,
+            accounts: realIxs[errorDetails.ix]?.keys?.map((k: any, idx: number) => ({
+              index: idx,
+              address: k?.pubkey?.toBase58?.() || String(k?.pubkey || ''),
+              isSigner: !!k?.isSigner,
+              isWritable: !!k?.isWritable,
+            })) || [],
+          } : undefined,
+        } as any 
+      }); 
+    } catch {}
   }
   try {
     const programs = realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId)));

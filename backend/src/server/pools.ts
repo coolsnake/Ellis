@@ -288,11 +288,18 @@ let lastWsEventMs: number = 0;
 let wsHealthy: boolean = false;
 let aggTimer: any | undefined;
 const wsCounts: { raydium: number; orca: number; meteora?: number } = { raydium: 0, orca: 0, meteora: 0 };
-const wsDeltaStats: Record<'raydium' | 'orca' | 'meteora', { decoded: number; applied: number; skipped: number }> = {
-  raydium: { decoded: 0, applied: 0, skipped: 0 },
-  orca: { decoded: 0, applied: 0, skipped: 0 },
-  meteora: { decoded: 0, applied: 0, skipped: 0 },
+const wsDeltaStats: Record<'raydium' | 'orca' | 'meteora', { decoded: number; applied: number; skipped: number; skipReasons?: Record<string, number> }> = {
+  raydium: { decoded: 0, applied: 0, skipped: 0, skipReasons: {} },
+  orca: { decoded: 0, applied: 0, skipped: 0, skipReasons: {} },
+  meteora: { decoded: 0, applied: 0, skipped: 0, skipReasons: {} },
 };
+
+// Helper function to increment skip reason
+function incrementSkipReason(dex: 'raydium' | 'orca' | 'meteora', reason: string): void {
+  const stats = wsDeltaStats[dex];
+  if (!stats.skipReasons) stats.skipReasons = {};
+  stats.skipReasons[reason] = (stats.skipReasons[reason] || 0) + 1;
+}
 const wsDebugCounters: Record<'raydium' | 'orca' | 'meteora', number> = { raydium: 0, orca: 0, meteora: 0 };
 const wsTargetDebugCounters: Record<'raydium' | 'orca' | 'meteora', number> = { raydium: 0, orca: 0, meteora: 0 };
 let meteoraProgramInstance: any | null = null;
@@ -1169,7 +1176,24 @@ export function startRaydiumRefreshLoop(): void {
                     const d = diffNormalizedPools(prev, next);
                     meteoraCache.data = next; meteoraCache.ts = Date.now();
                     const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
-                    if (hasDelta) { wsDeltaStats.meteora.applied += 1; } else { wsDeltaStats.meteora.skipped += 1; }
+                    if (hasDelta) { 
+                      wsDeltaStats.meteora.applied += 1; 
+                    } else { 
+                      wsDeltaStats.meteora.skipped += 1;
+                      // Diagnose why no delta detected
+                      const prevPool = prev.clmm.find(p => p.id === finalItem.id);
+                      if (prevPool) {
+                        const reasons: string[] = [];
+                        if ((prevPool as any).sqrt_price_x64_raw === (finalItem as any).sqrt_price_x64_raw) reasons.push('sqrt_price_unchanged');
+                        if ((prevPool as any).liquidity_raw === (finalItem as any).liquidity_raw) reasons.push('liquidity_raw_unchanged');
+                        if (Math.abs((prevPool.liquidity || 0) - (finalItem.liquidity || 0)) === 0) reasons.push('liquidity_unchanged');
+                        if (Math.abs((prevPool.price_a_per_b || 0) - (finalItem.price_a_per_b || 0)) <= 1e-9) reasons.push('price_unchanged');
+                        if ((prevPool as any).meteora_bin_hash === (finalItem as any).meteora_bin_hash) reasons.push('bin_hash_unchanged');
+                        incrementSkipReason('meteora', reasons.length > 0 ? reasons.join('+') : 'no_delta_detected');
+                      } else {
+                        incrementSkipReason('meteora', 'prev_pool_missing');
+                      }
+                    }
                     try {
                       const sample = { amm: [], clmm: d.clmm.slice(0, 20) };
                       emit('pool-updates', { source: 'meteora', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now(), canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
@@ -1188,6 +1212,9 @@ export function startRaydiumRefreshLoop(): void {
                     try { logger.debug('meteora.ws clmm.fields', { id: poolId, priceCandidate: price_a_per_b, binStep: tickSpacing, activeId, decimals: { a: decA, b: decB }, cat: 'pools' }); } catch {}
                     updated = true;
                   } else {
+                    wsDeltaStats.meteora.skipped += 1;
+                    const tokenReason = `missing_tokens_${!tokenX ? 'x' : ''}${!tokenY ? 'y' : ''}`;
+                    incrementSkipReason('meteora', tokenReason);
                     try { logger.debug('meteora.ws state.skip', { id: poolId, hasTokenX: !!tokenX, hasTokenY: !!tokenY, activeId, binStep, cat: 'pools' }); } catch {}
                   }
                 }
@@ -1449,6 +1476,7 @@ export function startRaydiumRefreshLoop(): void {
           })();
           if (aggregate === tracker.aggregate) {
             wsDeltaStats.meteora.skipped += 1;
+            incrementSkipReason('meteora', 'bin_hash_aggregate_unchanged');
             return;
           }
           tracker.aggregate = aggregate;
@@ -1465,7 +1493,12 @@ export function startRaydiumRefreshLoop(): void {
           const d = diffNormalizedPools(prev, next);
           meteoraCache.data = next; meteoraCache.ts = Date.now();
           const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
-          if (hasDelta) wsDeltaStats.meteora.applied += 1; else wsDeltaStats.meteora.skipped += 1;
+          if (hasDelta) {
+            wsDeltaStats.meteora.applied += 1;
+          } else {
+            wsDeltaStats.meteora.skipped += 1;
+            incrementSkipReason('meteora', 'bin_update_no_delta');
+          }
           try {
             const sample = { amm: [], clmm: d.clmm.slice(0, 20) };
             emit('pool-updates', { source: 'meteora', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now(), canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
@@ -1912,9 +1945,9 @@ export function startRaydiumRefreshLoop(): void {
             const snapshot = { raydium: wsCounts.raydium, orca: wsCounts.orca, meteora: wsCounts.meteora } as any;
             wsCounts.raydium = 0; wsCounts.orca = 0; wsCounts.meteora = 0;
             const metrics = {
-              raydium: { ...wsDeltaStats.raydium },
-              orca: { ...wsDeltaStats.orca },
-              meteora: { ...wsDeltaStats.meteora },
+              raydium: { ...wsDeltaStats.raydium, skipReasons: wsDeltaStats.raydium.skipReasons },
+              orca: { ...wsDeltaStats.orca, skipReasons: wsDeltaStats.orca.skipReasons },
+              meteora: { ...wsDeltaStats.meteora, skipReasons: wsDeltaStats.meteora.skipReasons },
             };
             logger.info('pools.ws aggregate', { 
               events: snapshot, 
@@ -1927,9 +1960,9 @@ export function startRaydiumRefreshLoop(): void {
               },
               metrics,
             });
-            wsDeltaStats.raydium = { decoded: 0, applied: 0, skipped: 0 };
-            wsDeltaStats.orca = { decoded: 0, applied: 0, skipped: 0 };
-            wsDeltaStats.meteora = { decoded: 0, applied: 0, skipped: 0 };
+            wsDeltaStats.raydium = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
+            wsDeltaStats.orca = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
+            wsDeltaStats.meteora = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
             // Emit a dedicated ws-activity event for UI regardless of log filtering
             try { emit('ws-activity', { healthy: wsHealthy, lastEventMs: lastWsEventMs, orca: { attached: attachedOrcaPools, events: snapshot.orca || 0 }, raydium: { attached: attachedRaydiumPools, events: snapshot.raydium || 0 }, meteora: { attached: attachedMeteoraPools, events: snapshot.meteora || 0 } }); } catch {}
             try {

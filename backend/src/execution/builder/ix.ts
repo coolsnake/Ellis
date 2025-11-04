@@ -881,20 +881,21 @@ export function buildMeteoraDlmmSwapIx(hop: DirectHop): any[] {
 }
 
 export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]> {
-  try { logger.debug('ix.build meteora.dlmm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
-  
-  // Pre-build validation: amounts
-  validateHopAmounts(hop, { dex: 'meteora', variant: 'dlmm', poolId: hop.poolId });
-  
-  const connection = getConnection();
-  const kp = await ensureWallet(CONFIG.walletPath);
-  const poolPk = toPublicKey(hop.poolId);
-  const programId = toPublicKey(hop.programId as string, (CONFIG as any)?.meteora?.programId);
-  try { logger.info('meteora.dlmm.build.start', { cat: 'tx', ctx: { pool: poolPk?.toBase58?.() || String(poolPk), programId: programId?.toBase58?.() || String(programId), amountInRaw: String(hop.amountInRaw ?? 0n), minOutRaw: String(hop.minOutRaw ?? 0n) } as any }); } catch {}
+  try {
+    try { logger.debug('ix.build meteora.dlmm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
+    
+    // Pre-build validation: amounts
+    validateHopAmounts(hop, { dex: 'meteora', variant: 'dlmm', poolId: hop.poolId });
+    
+    const connection = getConnection();
+    const kp = await ensureWallet(CONFIG.walletPath);
+    const poolPk = toPublicKey(hop.poolId);
+    const programId = toPublicKey(hop.programId as string, (CONFIG as any)?.meteora?.programId);
+    try { logger.info('meteora.dlmm.build.start', { cat: 'tx', ctx: { pool: poolPk?.toBase58?.() || String(poolPk), programId: programId?.toBase58?.() || String(programId), amountInRaw: String(hop.amountInRaw ?? 0n), minOutRaw: String(hop.minOutRaw ?? 0n) } as any }); } catch {}
 
-  // Standardized SDK import: prefer ESM dynamic import, cache module
-  // Module-level cache to avoid repeated imports
-  let mod: any = (buildMeteoraDlmmSwapIxReal as any).__dlmmMod || null;
+    // Standardized SDK import: prefer ESM dynamic import, cache module
+    // Module-level cache to avoid repeated imports
+    let mod: any = (buildMeteoraDlmmSwapIxReal as any).__dlmmMod || null;
   
   if (!mod) {
     // Primary: ESM dynamic import (recommended for modern Node.js)
@@ -2241,8 +2242,13 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     try { logger.warn('meteora.dlmm.tsclient.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
   }
 
-  // Wrap final error with context
-  wrapBuilderError(new Error('METEORA_DLMM_BUILD_FAILED'), 'METEORA_DLMM', 'build failed', hop);
+    // Wrap final error with context (only reached if no successful return)
+    wrapBuilderError(new Error('METEORA_DLMM_BUILD_FAILED'), 'METEORA_DLMM', 'build failed', hop);
+  } catch (e: any) {
+    // Catch any errors thrown from the entire function body
+    // This ensures all errors (including early validation/connection errors) get Meteora-specific logging
+    wrapBuilderError(e, 'METEORA_DLMM', 'build failed', hop);
+  }
 }
 
 export function maybeCreateAtas(hop: DirectHop, create: boolean): any[] {
@@ -2613,7 +2619,64 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       const missingAccounts: Array<{ instructionIndex: number; accountIndex: number; address: string; programId: string }> = [];
       
       // Collect all accounts to verify first, then batch fetch to reduce RPC calls
-      const accountsToVerify: Array<{ pkObj: PublicKey; pkStr: string; ixIdx: number; accIdx: number; keyMeta: any; ixProgramId: string }> = [];
+      // Also identify account roles for better debugging
+      const accountsToVerify: Array<{ 
+        pkObj: PublicKey; 
+        pkStr: string; 
+        ixIdx: number; 
+        accIdx: number; 
+        keyMeta: any; 
+        ixProgramId: string;
+        role?: string; // Account role for debugging
+        expectedOwner?: string; // Expected program owner
+      }> = [];
+      
+      // Helper to identify account role
+      const identifyAccountRole = (pkStr: string, accIdx: number): { role: string; expectedOwner?: string } => {
+        // Account at index 1 is typically the observation account
+        if (accIdx === 1 && observationId && pkStr === observationId.toBase58()) {
+          return { role: 'observation', expectedOwner: programId };
+        }
+        // Account at index 2 is typically the pool account
+        if (accIdx === 2 && pkStr === toPublicKey(hop.poolId).toBase58()) {
+          return { role: 'pool', expectedOwner: programId };
+        }
+        // Check if it's ammConfig
+        if (configIdPk && pkStr === configIdPk.toBase58()) {
+          return { role: 'ammConfig', expectedOwner: 'config_program' }; // May be owned by different program
+        }
+        // Check if it's observation
+        if (observationId && pkStr === observationId.toBase58()) {
+          return { role: 'observation', expectedOwner: programId };
+        }
+        // Check if it's a vault
+        if (hop.vaultA && pkStr === toPublicKey(hop.vaultA as any).toBase58()) {
+          return { role: 'vaultA', expectedOwner: programId };
+        }
+        if (hop.vaultB && pkStr === toPublicKey(hop.vaultB as any).toBase58()) {
+          return { role: 'vaultB', expectedOwner: programId };
+        }
+        // Check if it's a tick array
+        const tickArrayMatch = tickArrayKeys.findIndex(ta => ta.toBase58() === pkStr);
+        if (tickArrayMatch >= 0) {
+          return { role: `tickArray_${tickArrayMatch === 0 ? 'center' : tickArrayMatch === 1 ? 'lower' : 'upper'}`, expectedOwner: programId };
+        }
+        // Check if it's user token accounts
+        if (hop.userSourceAta && pkStr === toPublicKey(hop.userSourceAta).toBase58()) {
+          return { role: 'userSourceAta', expectedOwner: 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL' };
+        }
+        if (hop.userDestAta && pkStr === toPublicKey(hop.userDestAta).toBase58()) {
+          return { role: 'userDestAta', expectedOwner: 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL' };
+        }
+        // Check if it's a mint
+        if (hop.inputMint && pkStr === toPublicKey(hop.inputMint).toBase58()) {
+          return { role: 'inputMint', expectedOwner: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' };
+        }
+        if (hop.outputMint && pkStr === toPublicKey(hop.outputMint).toBase58()) {
+          return { role: 'outputMint', expectedOwner: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' };
+        }
+        return { role: 'unknown' };
+      };
       
       for (let ixIdx = 0; ixIdx < ixs.length; ixIdx++) {
         const ix = ixs[ixIdx];
@@ -2632,8 +2695,26 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
             const pkObj = pk instanceof PublicKey ? pk : new PublicKey(pk);
             const pkStr = pkObj.toBase58();
             
+            // Identify account role
+            const { role, expectedOwner } = identifyAccountRole(pkStr, accIdx);
+            
             // Skip signer accounts (wallet addresses)
-            if (keyMeta.isSigner) continue;
+            if (keyMeta.isSigner) {
+              try {
+                logger.debug('raydium.clmm.sdk.account.skipped', {
+                  cat: 'tx',
+                  ctx: {
+                    pool: hop.poolId,
+                    instructionIndex: ixIdx,
+                    accountIndex: accIdx,
+                    address: pkStr,
+                    role: 'signer',
+                    reason: 'signer_account',
+                  } as any,
+                });
+              } catch {}
+              continue;
+            }
             
             // Skip well-known system programs
             const wellKnown = [
@@ -2644,14 +2725,44 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
               'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr',
               'ComputeBudget111111111111111111111111111111',
             ];
-            if (wellKnown.includes(pkStr)) continue;
+            if (wellKnown.includes(pkStr)) {
+              try {
+                logger.debug('raydium.clmm.sdk.account.skipped', {
+                  cat: 'tx',
+                  ctx: {
+                    pool: hop.poolId,
+                    instructionIndex: ixIdx,
+                    accountIndex: accIdx,
+                    address: pkStr,
+                    role: 'system_program',
+                    reason: 'well_known_system_account',
+                  } as any,
+                });
+              } catch {}
+              continue;
+            }
             
             // Skip writable accounts that might be created (user token accounts)
             // But verify writable pool accounts (vaults, pool account) that MUST exist
             if (keyMeta.isWritable) {
               const isUserTokenAccount = pkStr === toPublicKey(hop.userSourceAta).toBase58() 
                 || pkStr === toPublicKey(hop.userDestAta).toBase58();
-              if (isUserTokenAccount) continue;
+              if (isUserTokenAccount) {
+                try {
+                  logger.debug('raydium.clmm.sdk.account.skipped', {
+                    cat: 'tx',
+                    ctx: {
+                      pool: hop.poolId,
+                      instructionIndex: ixIdx,
+                      accountIndex: accIdx,
+                      address: pkStr,
+                      role,
+                      reason: 'user_token_account_may_be_created',
+                    } as any,
+                  });
+                } catch {}
+                continue;
+              }
               
               // Verify pool-related writable accounts (vaults, pool account, tick arrays)
               const isPoolRelated = pkStr === toPublicKey(hop.poolId).toBase58()
@@ -2660,11 +2771,26 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 || tickArrayKeys.some(ta => ta.toBase58() === pkStr);
               // If it's pool-related, we'll verify it below (don't skip)
               // If it's not pool-related and writable, might be created, so skip
-              if (!isPoolRelated) continue;
+              if (!isPoolRelated) {
+                try {
+                  logger.debug('raydium.clmm.sdk.account.skipped', {
+                    cat: 'tx',
+                    ctx: {
+                      pool: hop.poolId,
+                      instructionIndex: ixIdx,
+                      accountIndex: accIdx,
+                      address: pkStr,
+                      role,
+                      reason: 'writable_non_pool_account_may_be_created',
+                    } as any,
+                  });
+                } catch {}
+                continue;
+              }
             }
             
             // Collect for batch fetch instead of fetching immediately
-            accountsToVerify.push({ pkObj, pkStr, ixIdx, accIdx, keyMeta, ixProgramId });
+            accountsToVerify.push({ pkObj, pkStr, ixIdx, accIdx, keyMeta, ixProgramId, role, expectedOwner });
           }
         }
       }
@@ -2680,7 +2806,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
           // Process results
           if (accountInfos && accountInfos.length === accountsToVerify.length) {
             for (let i = 0; i < accountsToVerify.length; i++) {
-              const { pkObj, pkStr, ixIdx, accIdx, keyMeta, ixProgramId } = accountsToVerify[i];
+              const { pkObj, pkStr, ixIdx, accIdx, keyMeta, ixProgramId, role, expectedOwner } = accountsToVerify[i];
               const acc = accountInfos[i];
               
               if (!acc || !acc.data || acc.data.length === 0) {
@@ -2698,13 +2824,20 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                       instructionIndex: ixIdx,
                       accountIndex: accIdx,
                       address: pkStr,
+                      role: role || 'unknown',
+                      expectedOwner: expectedOwner || 'unknown',
                       isSigner: !!keyMeta.isSigner,
                       isWritable: !!keyMeta.isWritable,
                       owner: acc?.owner?.toBase58?.() || 'none',
+                      // Critical: This account is missing and will cause ProgramAccountNotFound
                     } as any,
                   });
                 } catch {}
               } else {
+                // Verify account owner matches expected program
+                const actualOwner = acc.owner.toBase58();
+                const ownerMatches = expectedOwner ? actualOwner === expectedOwner : true;
+                
                 try {
                   logger.info('raydium.clmm.sdk.account.verified', {
                     cat: 'tx',
@@ -2713,10 +2846,32 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                       instructionIndex: ixIdx,
                       accountIndex: accIdx,
                       address: pkStr,
-                      owner: acc.owner.toBase58(),
+                      role: role || 'unknown',
+                      expectedOwner: expectedOwner || 'any',
+                      actualOwner: actualOwner,
+                      ownerMatches,
                       dataLen: acc.data.length,
+                      isSigner: !!keyMeta.isSigner,
+                      isWritable: !!keyMeta.isWritable,
                     } as any,
                   });
+                  
+                  // Warn if owner doesn't match expected
+                  if (!ownerMatches && expectedOwner) {
+                    logger.warn('raydium.clmm.sdk.account.owner_mismatch', {
+                      cat: 'tx',
+                      ctx: {
+                        pool: hop.poolId,
+                        instructionIndex: ixIdx,
+                        accountIndex: accIdx,
+                        address: pkStr,
+                        role: role || 'unknown',
+                        expectedOwner,
+                        actualOwner,
+                        warning: 'Account owner does not match expected program - may cause ProgramAccountNotFound',
+                      } as any,
+                    });
+                  }
                 } catch {}
               }
             }
@@ -2767,7 +2922,20 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       }
       
       if (missingAccounts.length > 0) {
-        const missingList = missingAccounts.map(a => `${a.address} (ix=${a.instructionIndex}, acc=${a.accountIndex})`).join(', ');
+        // Enrich missing accounts with role information
+        const missingAccountsWithRoles = missingAccounts.map(a => {
+          const accountInfo = accountsToVerify.find(av => av.ixIdx === a.instructionIndex && av.accIdx === a.accountIndex);
+          return {
+            ...a,
+            role: accountInfo?.role || 'unknown',
+            expectedOwner: accountInfo?.expectedOwner || 'unknown',
+          };
+        });
+        
+        const missingList = missingAccountsWithRoles.map(a => 
+          `${a.address} (ix=${a.instructionIndex}, acc=${a.accountIndex}, role=${a.role})`
+        ).join(', ');
+        
         // CRITICAL: Log summary BEFORE throwing to ensure it's captured
         try {
           logger.error('raydium.clmm.sdk.accounts.missing', {
@@ -2775,8 +2943,9 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
             ctx: {
               pool: hop.poolId,
               missingCount: missingAccounts.length,
-              missingAccounts: missingAccounts,
+              missingAccounts: missingAccountsWithRoles,
               missingList: missingList,
+              // Critical: These accounts are missing and will cause ProgramAccountNotFound during simulation
             } as any,
           });
           // Small delay to ensure log is written before throwing
@@ -2784,13 +2953,22 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
         } catch {}
         throw createBuilderError('RAYDIUM_CLMM', `SDK-generated instruction contains missing accounts: ${missingList}`, hop);
       } else {
-        // Log success summary
+        // Log success summary with account details
         try {
+          const verifiedAccountsSummary = accountsToVerify.map(a => ({
+            address: a.pkStr,
+            role: a.role || 'unknown',
+            index: a.accIdx,
+            expectedOwner: a.expectedOwner || 'any',
+          }));
+          
           logger.info('raydium.clmm.sdk.verification.complete', {
             cat: 'tx',
             ctx: {
               pool: hop.poolId,
               verifiedAllAccounts: true,
+              verifiedCount: accountsToVerify.length,
+              verifiedAccounts: verifiedAccountsSummary,
             } as any,
           });
         } catch {}
