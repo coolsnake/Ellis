@@ -1662,6 +1662,207 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     
     const ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
     
+    // Final safety check: validate and correct userTokenOut in the actual instruction
+    if (ix && Array.isArray(ix.keys)) {
+      try {
+        // Log all instruction accounts for debugging
+        try {
+          const accountDetails = ix.keys.map((key: any, idx: number) => {
+            try {
+              const pk = key?.pubkey instanceof PublicKey ? key.pubkey : (typeof key?.pubkey === 'string' ? new PublicKey(key.pubkey) : null);
+              return {
+                index: idx,
+                pubkey: pk?.toBase58() || 'unknown',
+                isWritable: key?.isWritable || false,
+                isSigner: key?.isSigner || false
+              };
+            } catch {
+              return { index: idx, pubkey: 'invalid', isWritable: false, isSigner: false };
+            }
+          });
+          logger.info('meteora.dlmm.instruction.accounts', {
+            cat: 'tx',
+            ctx: {
+              accountCount: ix.keys.length,
+              accounts: accountDetails,
+              inputMint: hop.inputMint,
+              outputMint: hop.outputMint,
+              poolId: hop.poolId
+            }
+          });
+          
+          // Check account mints for writable token accounts
+          const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+          const mintChecks: any[] = [];
+          for (let i = 0; i < Math.min(ix.keys.length, 15); i++) {
+            const key = ix.keys[i];
+            if (key && typeof key === 'object' && (key as any).pubkey && (key as any).isWritable && !(key as any).isSigner && i > 3) {
+              try {
+                const pk = (key as any).pubkey;
+                const pkObj = pk instanceof PublicKey ? pk : new PublicKey(pk);
+                const accInfo = await withRpcLimit(() => connection.getAccountInfo(pkObj)).catch(() => null);
+                if (accInfo?.data && accInfo.data.length >= 32) {
+                  const mintBytes = accInfo.data.slice(0, 32);
+                  const accountMint = new PublicKey(mintBytes);
+                  mintChecks.push({
+                    index: i,
+                    pubkey: pkObj.toBase58(),
+                    mint: accountMint.toBase58(),
+                    isTokenAccount: true
+                  });
+                }
+              } catch {}
+            }
+          }
+          if (mintChecks.length > 0) {
+            logger.info('meteora.dlmm.instruction.account_mints', {
+              cat: 'tx',
+              ctx: {
+                mintChecks,
+                expectedInputMint: hop.inputMint,
+                expectedOutputMint: hop.outputMint
+              }
+            });
+          }
+        } catch {}
+        
+        const tokenXMint = acctBase.tokenXMint ? (acctBase.tokenXMint instanceof PublicKey ? acctBase.tokenXMint : toPublicKey(acctBase.tokenXMint)) : null;
+        const tokenYMint = acctBase.tokenYMint ? (acctBase.tokenYMint instanceof PublicKey ? acctBase.tokenYMint : toPublicKey(acctBase.tokenYMint)) : null;
+        const inputMintPk = toPublicKey(hop.inputMint);
+        const outputMintPk = toPublicKey(hop.outputMint);
+        
+        if (tokenXMint && tokenYMint) {
+          // Determine swap direction and expected output token
+          const isXToY = inputMintPk.equals(tokenXMint) && outputMintPk.equals(tokenYMint);
+          const isYToX = inputMintPk.equals(tokenYMint) && outputMintPk.equals(tokenXMint);
+          
+          if (isXToY || isYToX) {
+            const expectedOutputToken = isXToY ? tokenYMint : tokenXMint;
+            const { deriveAta } = await import('../accounts.js');
+            const outputTokenProgram = isXToY ? acctBase.tokenYProgram : acctBase.tokenXProgram;
+            const fallbackTokenProg = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+            const tokenProg = outputTokenProgram instanceof PublicKey ? outputTokenProgram : (outputTokenProgram ? toPublicKey(outputTokenProgram) : fallbackTokenProg);
+            const correctOutputAta = deriveAta(kp.publicKey, expectedOutputToken, tokenProg.equals(TOKEN_2022_PROGRAM_ID) ? 'token-2022' : 'spl-token');
+            
+            // Find and correct userTokenOut in instruction keys
+            // Strategy: Find any account that matches our expected correct ATA, or find accounts that don't match
+            // and need to be corrected. We'll check known positions and also validate by checking if
+            // the account exists and has the wrong mint.
+            
+            // First, check if correctOutputAta is already in the instruction
+            let foundCorrect = false;
+            for (const key of ix.keys) {
+              if (key && typeof key === 'object' && (key as any).pubkey) {
+                const pk = (key as any).pubkey;
+                if (pk instanceof PublicKey && pk.equals(correctOutputAta)) {
+                  foundCorrect = true;
+                  break;
+                }
+              }
+            }
+            
+            // If correct ATA is not found, find userTokenOut and replace it
+            if (!foundCorrect) {
+              // Find userTokenIn first to identify where userTokenOut should be
+              const { deriveAta: deriveAtaFn } = await import('../accounts.js');
+              const inputTokenProgram = isXToY ? acctBase.tokenXProgram : acctBase.tokenYProgram;
+              const fallbackTokenProg = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+              const inputTokenProg = inputTokenProgram instanceof PublicKey ? inputTokenProgram : (inputTokenProgram ? toPublicKey(inputTokenProgram) : fallbackTokenProg);
+              const correctInputAta = deriveAtaFn(kp.publicKey, inputMintPk, inputTokenProg.equals(TOKEN_2022_PROGRAM_ID) ? 'token-2022' : 'spl-token');
+              
+              let userTokenInIdx = -1;
+              for (let i = 0; i < ix.keys.length; i++) {
+                const key = ix.keys[i];
+                if (key && typeof key === 'object' && (key as any).pubkey) {
+                  const pk = (key as any).pubkey;
+                  if (pk instanceof PublicKey && pk.equals(correctInputAta)) {
+                    userTokenInIdx = i;
+                    break;
+                  }
+                }
+              }
+              
+              // Find userTokenOut - it's typically right after userTokenIn
+              let foundUserTokenOut = false;
+              if (userTokenInIdx >= 0) {
+                // Find the next writable account after userTokenIn
+                for (let i = userTokenInIdx + 1; i < ix.keys.length && !foundUserTokenOut; i++) {
+                  const key = ix.keys[i];
+                  if (key && typeof key === 'object' && (key as any).pubkey && (key as any).isWritable && !(key as any).isSigner) {
+                    const pk = (key as any).pubkey;
+                    if (pk instanceof PublicKey && !pk.equals(correctOutputAta)) {
+                      // This is likely userTokenOut - replace it
+                      (key as any).pubkey = correctOutputAta;
+                      foundUserTokenOut = true;
+                      try { 
+                        logger.warn('meteora.dlmm.instruction.userTokenOut.adjacent_corrected', { 
+                          cat: 'tx', 
+                          ctx: { 
+                            index: i,
+                            userTokenInIdx: userTokenInIdx,
+                            old: pk.toBase58(),
+                            new: correctOutputAta.toBase58(),
+                            expectedToken: expectedOutputToken.toBase58()
+                          } 
+                        }); 
+                      } catch {}
+                      break;
+                    }
+                  }
+                }
+              }
+              
+              // If we didn't find it by position, try to find by checking account mints
+              if (!foundUserTokenOut) {
+                for (let i = 0; i < ix.keys.length; i++) {
+                  const key = ix.keys[i];
+                  if (key && typeof key === 'object' && (key as any).pubkey && (key as any).isWritable && !(key as any).isSigner && i > 3) {
+                    const pk = (key as any).pubkey;
+                    if (pk instanceof PublicKey && !pk.equals(correctOutputAta)) {
+                      try {
+                        const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+                        const accInfo = await withRpcLimit(() => connection.getAccountInfo(pk)).catch(() => null);
+                        if (accInfo?.data && accInfo.data.length >= 32) {
+                          const mintBytes = accInfo.data.slice(0, 32);
+                          const accountMint = new PublicKey(mintBytes);
+                          
+                          // If this account has the output mint but is not the correct ATA, it's likely userTokenOut
+                          if (accountMint.equals(expectedOutputToken)) {
+                            (key as any).pubkey = correctOutputAta;
+                            foundUserTokenOut = true;
+                            try { 
+                              logger.warn('meteora.dlmm.instruction.userTokenOut.mint_corrected', { 
+                                cat: 'tx', 
+                                ctx: { 
+                                  index: i,
+                                  old: pk.toBase58(),
+                                  new: correctOutputAta.toBase58(),
+                                  expectedToken: expectedOutputToken.toBase58(),
+                                  accountMint: accountMint.toBase58()
+                                } 
+                              }); 
+                            } catch {}
+                            break;
+                          }
+                        }
+                      } catch {}
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (instrValErr) {
+        try { 
+          logger.debug('meteora.dlmm.instruction.validation.failed', { 
+            cat: 'tx', 
+            ctx: { error: String((instrValErr as any)?.message || instrValErr) } 
+          }); 
+        } catch {}
+      }
+    }
+    
     // Safety net: inject bin metas into instruction if builder.remainingAccounts did not attach them
     if (ix) {
       await injectBinArrayMetas(ix, DLMM, connection, poolPk, programId);
@@ -1946,6 +2147,49 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       }
     }
 
+    // Check exBitmap BEFORE calling SDK to prevent it from being added if it doesn't exist
+    let exBitmapPk: PublicKey | null = null;
+    let exBitmapExists = false;
+    try {
+      const { getPdaExBitmapAccount } = await import('@raydium-io/raydium-sdk-v2').catch(() => ({ getPdaExBitmapAccount: null }));
+      if (getPdaExBitmapAccount) {
+        exBitmapPk = getPdaExBitmapAccount(programIdPk, poolIdPk).publicKey;
+        const exBitmapAcc = await withRpcLimit(() => connection.getAccountInfo(exBitmapPk)).catch(() => null);
+        exBitmapExists = !!exBitmapAcc && !!exBitmapAcc.data && exBitmapAcc.data.length > 0;
+        try {
+          if (exBitmapExists) {
+            logger.debug('raydium.clmm.exbitmap.precheck.exists', {
+              cat: 'tx',
+              ctx: {
+                pool: hop.poolId,
+                exBitmap: exBitmapPk.toBase58(),
+                owner: exBitmapAcc.owner.toBase58(),
+                dataLen: exBitmapAcc.data.length,
+              } as any,
+            });
+          } else {
+            logger.warn('raydium.clmm.exbitmap.precheck.missing', {
+              cat: 'tx',
+              ctx: {
+                pool: hop.poolId,
+                exBitmap: exBitmapPk.toBase58(),
+              } as any,
+            });
+          }
+        } catch {}
+      }
+    } catch (e: any) {
+      try {
+        logger.debug('raydium.clmm.exbitmap.precheck.failed', {
+          cat: 'tx',
+          ctx: {
+            pool: hop.poolId,
+            error: String(e?.message || e),
+          } as any,
+        });
+      } catch {}
+    }
+
     const BN = (await import('bn.js')).default as any;
     const amountInBn = new BN(String(hop.amountInRaw ?? 0n));
     const minOutBn = new BN(String(hop.minOutRaw ?? 0n));
@@ -1963,6 +2207,85 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       remainingAccounts: tickArrayKeys,
     });
     let ixs = Array.isArray(res?.instructions) ? res.instructions : (res?.innerTransaction ? res.innerTransaction.instructions : []);
+    
+    // If exBitmap doesn't exist, we need to remove it from the instruction
+    // BUT we need to be careful - the SDK might have encoded account indices in the instruction data
+    // So we need to remove it in a way that doesn't break the instruction
+    if (ixs && ixs.length && exBitmapPk && !exBitmapExists) {
+      try {
+        logger.warn('raydium.clmm.exbitmap.removing_from_instruction', {
+          cat: 'tx',
+          ctx: {
+            pool: hop.poolId,
+            exBitmap: exBitmapPk.toBase58(),
+            instructionCount: ixs.length,
+            warning: 'SDK instruction data may reference account indices - removing exBitmap may break the instruction',
+          } as any,
+        });
+        
+        // Find the instruction that contains the exBitmap (should be the CLMM swap instruction)
+        const filteredIxs: TransactionInstruction[] = [];
+        for (let ixIdx = 0; ixIdx < ixs.length; ixIdx++) {
+          const ix = ixs[ixIdx];
+          if (ix instanceof TransactionInstruction && Array.isArray(ix.keys)) {
+            // Check if this instruction targets the CLMM program
+            if (ix.programId.equals(programIdPk)) {
+              // This is the CLMM swap instruction - find and remove exBitmap
+              const exBitmapIdx = ix.keys.findIndex((k: any) => {
+                const pk = k?.pubkey;
+                return pk && (pk.equals ? pk.equals(exBitmapPk) : pk.toBase58() === exBitmapPk.toBase58());
+              });
+              
+              if (exBitmapIdx >= 0) {
+                // Remove exBitmap from keys
+                // NOTE: This may break the instruction if the SDK encoded account indices in the data
+                // The instruction data might reference account positions, so removing an account shifts all indices
+                const filteredKeys = ix.keys.filter((_, idx) => idx !== exBitmapIdx);
+                filteredIxs.push(new TransactionInstruction({
+                  programId: ix.programId,
+                  keys: filteredKeys,
+                  data: ix.data, // This data might still reference old account indices
+                }));
+                
+                try {
+                  logger.warn('raydium.clmm.exbitmap.removed_from_instruction', {
+                    cat: 'tx',
+                    ctx: {
+                      pool: hop.poolId,
+                      instructionIndex: ixIdx,
+                      exBitmapIndex: exBitmapIdx,
+                      originalAccountCount: ix.keys.length,
+                      newAccountCount: filteredKeys.length,
+                      warning: 'Instruction data may still reference old account indices',
+                    } as any,
+                  });
+                } catch {}
+              } else {
+                filteredIxs.push(ix);
+              }
+            } else {
+              filteredIxs.push(ix);
+            }
+          } else {
+            filteredIxs.push(ix as TransactionInstruction);
+          }
+        }
+        
+        if (filteredIxs.length > 0) {
+          ixs = filteredIxs;
+        }
+      } catch (e: any) {
+        try {
+          logger.warn('raydium.clmm.exbitmap.removal.failed', {
+            cat: 'tx',
+            ctx: {
+              pool: hop.poolId,
+              error: String(e?.message || e),
+            } as any,
+          });
+        } catch {}
+      }
+    }
     
     // Verify all critical accounts exist before proceeding
     if (ixs && ixs.length) {
@@ -2194,54 +2517,27 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       }
     }
     
-    // Post-process: verify exBitmap account exists (SDK always adds it internally)
-    // If it doesn't exist, remove it from remainingAccounts to prevent ProgramAccountNotFound
-    if (ixs && ixs.length) {
-      try {
-        const { getPdaExBitmapAccount } = await import('@raydium-io/raydium-sdk-v2').catch(() => ({ getPdaExBitmapAccount: null }));
-        if (getPdaExBitmapAccount) {
-          const exBitmapPk = getPdaExBitmapAccount(programIdPk, poolIdPk).publicKey;
-          const exBitmapAcc = await withRpcLimit(() => connection.getAccountInfo(exBitmapPk)).catch(() => null);
-          
-          if (!exBitmapAcc) {
-            // ExBitmap account doesn't exist - remove it from instruction keys
-            try {
-              logger.warn('raydium.clmm.exbitmap.missing', { cat: 'tx', ctx: { pool: hop.poolId, exBitmap: exBitmapPk.toBase58() } as any });
-            } catch {}
-            
-            // Remove exBitmap from remainingAccounts in each instruction
-            // Create new instructions with filtered keys (keys array may be readonly)
-            const filteredIxs: TransactionInstruction[] = [];
-            for (const ix of ixs) {
-              if (ix instanceof TransactionInstruction && Array.isArray(ix.keys)) {
-                const exBitmapIdx = ix.keys.findIndex((k: any) => {
-                  const pk = k?.pubkey;
-                  return pk && (pk.equals ? pk.equals(exBitmapPk) : pk.toBase58() === exBitmapPk.toBase58());
-                });
-                if (exBitmapIdx >= 0) {
-                  // Create new instruction without the exBitmap key
-                  const filteredKeys = ix.keys.filter((_, idx) => idx !== exBitmapIdx);
-                  filteredIxs.push(new TransactionInstruction({
-                    programId: ix.programId,
-                    keys: filteredKeys,
-                    data: ix.data,
-                  }));
-                } else {
-                  filteredIxs.push(ix);
-                }
-              } else {
-                filteredIxs.push(ix as TransactionInstruction);
-              }
-            }
-            if (filteredIxs.length > 0) {
-              ixs = filteredIxs;
-            }
-          }
-        }
-      } catch (e: any) {
-        try { logger.debug('raydium.clmm.exbitmap.verify.failed', { cat: 'tx', ctx: { pool: hop.poolId, error: String(e?.message || e) } as any }); } catch {}
-      }
-    }
+    // Log final instructions after all processing
+    try {
+      logger.info('raydium.clmm.instructions.final', {
+        cat: 'tx',
+        ctx: {
+          pool: hop.poolId,
+          instructionCount: ixs?.length || 0,
+          instructions: ixs?.map((ix: any, idx: number) => ({
+            index: idx,
+            programId: (ix?.programId?.toBase58?.() || String(ix?.programId || '')),
+            accountCount: (ix?.keys?.length || 0),
+            accounts: (ix?.keys || []).map((k: any, accIdx: number) => ({
+              index: accIdx,
+              address: (k?.pubkey?.toBase58?.() || String(k?.pubkey || '')),
+              isSigner: !!k?.isSigner,
+              isWritable: !!k?.isWritable,
+            })),
+          })) || [],
+        } as any,
+      });
+    } catch {}
     
     if (ixs && ixs.length) return ixs as any[];
   } catch (e) {
