@@ -10,8 +10,6 @@ import { getTxRelatedLogs } from '../../utils/sessionLogs.js';
 import { createWorkerClient, WorkerClient } from '../../workers/client.js';
 import type { ArbBuildRequest, ArbBuildResult, SerializedInstruction } from '../../workers/arbBuild.types.js';
 import { buildTransactionSummary } from '../arb.build.worker.compute.js';
-import { Worker } from 'node:worker_threads';
-import type { WorkerInboundMessage, WorkerOutboundMessage, WorkerErrorMessage } from '../../workers/types.js';
 
 export function createArbRouter(io: SocketIOServer): Router {
   const api = Router();
@@ -1395,97 +1393,10 @@ export function createArbRouter(io: SocketIOServer): Router {
     try { logger.debug('arb.build.worker.failed', { error: String((err as any)?.message || err), failures: arbBuildWorkerFailures, cat: 'tx' }); } catch {}
   }
 
-  async function buildArbTransactionDirectWorker(plan: any, timeoutMs: number): Promise<ArbBuildResult> {
-    return new Promise<ArbBuildResult>((resolve, reject) => {
-      let worker: Worker | null = null;
-      let timeoutHandle: NodeJS.Timeout | null = null;
-      let resolved = false;
-
-      const cleanup = () => {
-        if (timeoutHandle) {
-          clearTimeout(timeoutHandle);
-          timeoutHandle = null;
-        }
-        if (worker) {
-          worker.removeAllListeners();
-          worker.terminate().catch(() => {});
-          worker = null;
-        }
-      };
-
-      const finish = (result: ArbBuildResult | null, error: Error | null) => {
-        if (resolved) return;
-        resolved = true;
-        cleanup();
-        if (error) {
-          reject(error);
-        } else if (result) {
-          resolve(result);
-        } else {
-          reject(new Error('Worker completed without result'));
-        }
-      };
-
-      try {
-        const url = new URL('../../workers/arbBuild.worker.js', import.meta.url);
-        worker = new Worker(url, { name: 'arb-build-direct' });
-        
-        const message: WorkerInboundMessage<ArbBuildRequest> = {
-          kind: 'job',
-          id: 1,
-          payload: { plan },
-        };
-
-        worker.on('message', (msg: WorkerOutboundMessage<ArbBuildResult>) => {
-          if (msg.kind === 'result' && msg.id === 1) {
-            if (msg.ok) {
-              finish(msg.result as ArbBuildResult, null);
-            } else {
-              // msg.ok is false, so TypeScript knows this is WorkerErrorMessage
-              const errorMsg = msg as WorkerErrorMessage;
-              finish(null, new Error(errorMsg.error?.message || 'Worker error'));
-            }
-          }
-        });
-
-        worker.on('error', (err) => {
-          finish(null, err);
-        });
-
-        worker.on('exit', (code) => {
-          if (code !== 0 && !resolved) {
-            finish(null, new Error(`Worker exited with code ${code}`));
-          }
-        });
-
-        if (timeoutMs > 0) {
-          timeoutHandle = setTimeout(() => {
-            finish(null, new Error(`Transaction build timed out after ${timeoutMs}ms`));
-          }, timeoutMs);
-        }
-
-        worker.postMessage(message);
-      } catch (err) {
-        finish(null, err instanceof Error ? err : new Error(String(err)));
-      }
-    });
-  }
-
   async function buildArbTransaction(plan: any): Promise<ArbBuildResult> {
-    // Spawn a fresh worker thread for each build to avoid queue saturation
-    // This allows true parallelism - each build gets its own thread immediately
-    if (!arbBuildWorkerUnavailable) {
-      try {
-        return await buildArbTransactionDirectWorker(plan, ARB_BUILD_WORKER_TIMEOUT_MS);
-      } catch (err) {
-        // On worker failure, fall back to synchronous execution
-        try { logger.warn('arb.build.worker.direct_failed', { error: String((err as any)?.message || err), cat: 'tx' }); } catch {}
-        // Continue to fallback below
-      }
-    }
-    
-    // Fallback to synchronous execution if workers are disabled or failed
-    try { logger.debug('arb.build.worker.fallback', { reason: arbBuildWorkerUnavailable ? 'worker_disabled' : 'worker_error', cat: 'tx' }); } catch {}
+    // Run directly on main thread to avoid queue saturation and worker overhead
+    // Transaction builds are fast enough that worker overhead isn't worth it,
+    // and this ensures immediate execution without queue delays or worker thread creation overhead
     return buildTransactionSummary(plan, undefined, undefined);
   }
 
