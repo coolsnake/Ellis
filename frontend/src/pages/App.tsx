@@ -798,7 +798,7 @@ export const App: React.FC = () => {
 
         const pickPoolId = async (
           dex: 'raydium'|'orca'|'meteora',
-          options?: { prefer?: 'amm' | 'clmm' },
+          options?: { prefer?: 'amm' | 'clmm'; inputMint?: string; outputMint?: string },
         ): Promise<string | null> => {
           const resp = await fetch(`${apiBase}/arb/pools/${dex}?sort=tvl`);
           const json = await resp.json();
@@ -812,23 +812,30 @@ export const App: React.FC = () => {
             }
             return [...clmmList, ...ammList];
           })();
+          
+          // If input/output mints are provided, filter by that pair; otherwise default to SOL/USDC
+          const inputMint = options?.inputMint || SOL;
+          const outputMint = options?.outputMint || USDC;
+          
           const match = list.find((p: any) => {
             const a = String(p?.mint_a || p?.mintA || '').trim();
             const b = String(p?.mint_b || p?.mintB || '').trim();
-            return (a === SOL && b === USDC) || (a === USDC && b === SOL);
+            return (a === inputMint && b === outputMint) || (a === outputMint && b === inputMint);
           });
           return match ? String(match.id) : null;
         };
 
         const buildTwoHopBody = async (dex: 'raydium'|'orca'|'meteora', variant?: 'amm'|'clmm', poolId?: string) => {
           const preferVariant = dex === 'raydium' ? variant : undefined;
-          const pid = poolId || await pickPoolId(dex, preferVariant ? { prefer: preferVariant } : undefined);
+          const path = [USDC, USDT, USDC];
+          // Pick pool for USDC -> USDT hop
+          const pid = poolId || await pickPoolId(dex, preferVariant ? { prefer: preferVariant, inputMint: USDC, outputMint: USDT } : { inputMint: USDC, outputMint: USDT });
           if (!pid) throw new Error(`no USDC/USDT pool found for ${dex}`);
           const dexKey = dex === 'raydium'
             ? (variant === 'clmm' ? 'raydium-clmm' : 'raydium-amm')
             : (dex === 'orca' ? 'orca' : 'meteora');
           return {
-            path: [USDC, USDT, USDC],
+            path,
             hopPoolIds: [pid, pid],
             dexes: [dexKey, dexKey],
             // Use token units; backend resolver converts to atoms using decimals
@@ -838,13 +845,16 @@ export const App: React.FC = () => {
         };
 
         const buildMultiHopBody = async (rayPool?: string, orcaPool?: string, meteoraPool?: string) => {
-          const ray = rayPool || await pickPoolId('raydium', { prefer: 'amm' });
-          const orc = orcaPool || await pickPoolId('orca');
-          const met = meteoraPool || await pickPoolId('meteora');
-          if (!ray || !orc || !met) throw new Error('missing one or more std pools (ray/orca/meteora)');
+          const path = [USDC, USDT, USDC, USDT, USDC];
+          // Pick pools for each hop with correct token pairs
+          const ray = rayPool || await pickPoolId('raydium', { prefer: 'amm', inputMint: USDC, outputMint: USDT });
+          const orc = orcaPool || await pickPoolId('orca', { inputMint: USDT, outputMint: USDC });
+          const met = meteoraPool || await pickPoolId('meteora', { inputMint: USDC, outputMint: USDT });
+          const ray2 = rayPool || await pickPoolId('raydium', { prefer: 'amm', inputMint: USDT, outputMint: USDC });
+          if (!ray || !orc || !met || !ray2) throw new Error('missing one or more std pools (ray/orca/meteora)');
           return {
-            path: [USDC, USDT, USDC, USDT, USDC],
-            hopPoolIds: [ray, orc, met, ray],
+            path,
+            hopPoolIds: [ray, orc, met, ray2],
             dexes: ['raydium-amm', 'orca', 'meteora', 'raydium-amm'],
             size: 1,
             slippageBps: 50,
@@ -994,29 +1004,37 @@ export const App: React.FC = () => {
             // Determine number of hops (default to 2-hop if no pools specified)
             const numHops = Math.max(2, poolIds.length || 2);
             
-            // Pick pools if not all provided
+            // Build path first: SOL -> USDC -> USDT -> ... (alternating for numHops)
+            const path = [SOL];
+            for (let i = 0; i < numHops; i++) {
+              path.push(i % 2 === 0 ? USDC : USDT);
+            }
+            
+            // Pick pools if not all provided - now we can use the path to determine token pairs
             const pickedPoolIds: string[] = [];
             for (let i = 0; i < numHops; i++) {
               const provided = poolIds[i];
               if (provided) {
                 pickedPoolIds.push(provided);
               } else {
+                // Determine the token pair for this hop
+                const hopInputMint = path[i];
+                const hopOutputMint = path[i + 1];
+                
                 const pid = await pickPoolId(
                   dexForPick as any,
-                  preferForPick ? { prefer: preferForPick } : undefined,
+                  {
+                    prefer: preferForPick,
+                    inputMint: hopInputMint,
+                    outputMint: hopOutputMint,
+                  },
                 );
                 if (!pid) {
-                  await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: no pool found for hop ${i + 1} (${target})` }) });
+                  await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: no pool found for hop ${i + 1} (${target}) for ${hopInputMint}/${hopOutputMint}` }) });
                   return;
                 }
                 pickedPoolIds.push(pid);
               }
-            }
-            
-            // Build path: SOL -> USDC -> USDT -> ... (alternating for numHops)
-            const path = [SOL];
-            for (let i = 0; i < numHops; i++) {
-              path.push(i % 2 === 0 ? USDC : USDT);
             }
             
             // Build payload
@@ -1068,15 +1086,15 @@ export const App: React.FC = () => {
               const path = [SOL, USDC, SOL, USDC, SOL, USDC, SOL];
               const dexes = ['raydium.clmm', 'meteora', 'orca.clmm', 'raydium.clmm', 'meteora', 'orca.clmm'];
 
-              // Pick pools for each hop
+              // Pick pools for each hop with correct token pairs
               const hopPoolIds: string[] = [];
               const poolPickPromises = [
-                pickPoolId('raydium', { prefer: 'clmm' }), // Hop 1: SOL -> USDC
-                pickPoolId('meteora'),                      // Hop 2: USDC -> SOL
-                pickPoolId('orca'),                         // Hop 3: SOL -> USDC
-                pickPoolId('raydium', { prefer: 'clmm' }),  // Hop 4: USDC -> SOL
-                pickPoolId('meteora'),                      // Hop 5: SOL -> USDC
-                pickPoolId('orca'),                         // Hop 6: USDC -> SOL
+                pickPoolId('raydium', { prefer: 'clmm', inputMint: SOL, outputMint: USDC }), // Hop 1: SOL -> USDC
+                pickPoolId('meteora', { inputMint: USDC, outputMint: SOL }),                  // Hop 2: USDC -> SOL
+                pickPoolId('orca', { inputMint: SOL, outputMint: USDC }),                     // Hop 3: SOL -> USDC
+                pickPoolId('raydium', { prefer: 'clmm', inputMint: USDC, outputMint: SOL }),  // Hop 4: USDC -> SOL
+                pickPoolId('meteora', { inputMint: SOL, outputMint: USDC }),                  // Hop 5: SOL -> USDC
+                pickPoolId('orca', { inputMint: USDC, outputMint: SOL }),                     // Hop 6: USDC -> SOL
               ];
 
               try {

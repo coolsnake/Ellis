@@ -12,7 +12,9 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
   // Load from CLMM static cache (authoritative for arrays/oracle).
   const cached = getClmmStatic(hop.poolId.replace(/-rev$/, ''));
   if (cached) {
-    hop.programId = hop.programId || cached.programId;
+    // CRITICAL: Always prefer cached programId (from on-chain account owner) over any existing value
+    // The cache contains the actual program ID that owns the pool account, which is authoritative
+    hop.programId = cached.programId || hop.programId;
     hop.tickSpacing = hop.tickSpacing ?? cached.tickSpacing;
     hop.oracle = hop.oracle || cached.oracle;
     hop.vaultA = hop.vaultA || cached.vaultA;

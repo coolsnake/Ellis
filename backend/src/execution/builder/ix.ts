@@ -2318,9 +2318,44 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     const { ClmmInstrument } = await import('@raydium-io/raydium-sdk-v2');
     const kp = await ensureWallet(CONFIG.walletPath);
     const poolIdPk = toPublicKey(hop.poolId);
-    const programIdPk = toPublicKey(hop.programId, (CONFIG.raydium?.clmmProgram as any));
-    const poolId = poolIdPk.toBase58();
-    const programId = programIdPk.toBase58();
+    let programIdPk = toPublicKey(hop.programId, (CONFIG.raydium?.clmmProgram as any));
+    let poolId = poolIdPk.toBase58();
+    let programId = programIdPk.toBase58();
+    
+    // CRITICAL: Verify the program ID matches the actual account owner
+    // This prevents ProgramAccountNotFound errors when the config default doesn't match the pool
+    const connection = getConnection();
+    const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+    try {
+      const poolAcc = await withRpcLimit(() => connection.getAccountInfo(poolIdPk));
+      if (poolAcc && poolAcc.owner) {
+        const actualOwner = poolAcc.owner.toBase58();
+        if (actualOwner !== programId) {
+          try {
+            logger.warn('raydium.clmm.program_id.mismatch', {
+              cat: 'tx',
+              ctx: {
+                pool: hop.poolId,
+                expected: programId,
+                actual: actualOwner,
+                correcting: true,
+              } as any,
+            });
+          } catch {}
+          // Use the actual owner instead - this is the authoritative source
+          programIdPk = poolAcc.owner;
+          programId = actualOwner;
+        }
+      }
+    } catch (e) {
+      // Log but don't fail - might be network issue, and we'll catch it during simulation
+      try {
+        logger.warn('raydium.clmm.program_id.verify.failed', {
+          cat: 'tx',
+          ctx: { pool: hop.poolId, error: String(e?.message || e) } as any,
+        });
+      } catch {}
+    }
     
     // Validate required config values - no unsafe fallbacks
     let observationId: PublicKey | null = null;
@@ -2354,13 +2389,11 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     }
     
     try {
-      logger.info('raydium.clmm.config.verify.start', { cat: 'tx', ctx: { pool: hop.poolId, ammConfig: configIdPk.toBase58() } as any });
+      logger.info('raydium.clmm.config.verify.start', { cat: 'tx', ctx: { pool: hop.poolId, ammConfig: configIdPk.toBase58() } as any }); 
     } catch {}
     
     // Verify critical accounts exist before building instruction
     // Note: We'll batch this with other account checks later to reduce RPC calls
-    const connection = getConnection();
-    const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
     let configAcc: any = null;
     try {
       configAcc = await withRpcLimit(() => connection.getAccountInfo(configIdPk));
