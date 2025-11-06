@@ -113,8 +113,8 @@ export class DexAltManager {
     const recentSlotRaw = await withRpcLimit(() => connection.getSlot('finalized'));
     const recentSlot = typeof recentSlotRaw === 'number' ? recentSlotRaw : Number(recentSlotRaw);
     
-    // Create ALT instruction
-    const createIx = AddressLookupTableProgram.createLookupTable({
+    // Create ALT instruction (returns [instruction, lookupTableAddress])
+    const [createIx] = AddressLookupTableProgram.createLookupTable({
       authority: payer.publicKey,
       payer: payer.publicKey,
       recentSlot,

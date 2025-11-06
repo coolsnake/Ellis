@@ -85,7 +85,7 @@ export class AccountDataCache {
       if (cachedEntry && now < cachedEntry.expiresAt) {
         cached[i] = cachedEntry.data;
       } else {
-        const pubkey = typeof addresses[i] === 'string' 
+        const pubkey: PublicKey = typeof addresses[i] === 'string' 
           ? new PublicKey(addresses[i]) 
           : addresses[i];
         toFetch.push({ index: i, pubkey });
