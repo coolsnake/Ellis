@@ -4,27 +4,19 @@ import { TransactionInstruction, AccountMeta } from '@solana/web3.js';
  * Optimizes account ordering in instructions:
  * 1. Writable accounts first
  * 2. Signers before non-signers within each group
- * 3. Deduplicates accounts (keeps first occurrence)
+ * 
+ * NOTE: Does NOT deduplicate accounts - Solana instructions can reference
+ * the same account multiple times with different flags (e.g., writable and non-writable).
+ * Deduplication happens at the transaction level by compileToV0Message.
  */
 export function optimizeAccountOrder(instruction: TransactionInstruction): TransactionInstruction {
   if (!instruction.keys || instruction.keys.length === 0) {
     return instruction;
   }
 
-  // Deduplicate accounts while preserving order
-  const seen = new Set<string>();
-  const uniqueAccounts: AccountMeta[] = [];
-  
-  for (const account of instruction.keys) {
-    const key = account.pubkey.toBase58();
-    if (!seen.has(key)) {
-      seen.add(key);
-      uniqueAccounts.push(account);
-    }
-  }
-
   // Sort: writable first, then signers before non-signers
-  const sorted = uniqueAccounts.sort((a, b) => {
+  // IMPORTANT: Do NOT deduplicate - same account can appear with different flags
+  const sorted = [...instruction.keys].sort((a, b) => {
     // Writable accounts first
     if (a.isWritable && !b.isWritable) return -1;
     if (!a.isWritable && b.isWritable) return 1;
