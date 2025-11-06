@@ -231,18 +231,58 @@ export class DexAltManager {
 
     const addresses: string[] = [];
 
-    // Always use ALTs for multi-hop swaps
-    if (forceMultiHop || accounts.length > 32) {
+    // Always use ALTs for multi-hop or if we have many accounts
+    // Lower threshold: CLMM swaps typically have 15+ accounts per instruction
+    if (forceMultiHop || accounts.length > 15) {
       for (const addr of this.altAddresses.values()) {
         addresses.push(addr.toBase58());
+      }
+      try {
+        logger.info('alt.manager.using_alts', {
+          cat: 'tx',
+          ctx: {
+            accountCount: accounts.length,
+            forceMultiHop,
+            altCount: addresses.length,
+            altAddresses: addresses,
+          },
+        });
+      } catch {}
+    }
+
+    // Also check if we have any registered ALTs from config
+    // Even if account count is low, use them if configured
+    if (this.altAddresses.size > 0 && addresses.length === 0) {
+      // If ALTs are explicitly configured, use them
+      const configAlts = (CONFIG as any)?.execution?.lookupTableAddresses || [];
+      if (configAlts.length > 0) {
+        for (const addr of this.altAddresses.values()) {
+          addresses.push(addr.toBase58());
+        }
+        try {
+          logger.info('alt.manager.using_config_alts', {
+            cat: 'tx',
+            ctx: {
+              accountCount: accounts.length,
+              altCount: addresses.length,
+              altAddresses: addresses,
+            },
+          });
+        } catch {}
       }
     }
 
-    // Check if we have many accounts that would benefit from ALTs
-    if (accounts.length > 20) {
-      for (const addr of this.altAddresses.values()) {
-        addresses.push(addr.toBase58());
-      }
+    if (addresses.length === 0) {
+      try {
+        logger.debug('alt.manager.no_alts', {
+          cat: 'tx',
+          ctx: {
+            accountCount: accounts.length,
+            forceMultiHop,
+            registeredAltCount: this.altAddresses.size,
+          },
+        });
+      } catch {}
     }
 
     return Array.from(new Set(addresses)); // Deduplicate

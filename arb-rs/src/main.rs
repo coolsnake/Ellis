@@ -1629,6 +1629,17 @@ async fn main() -> anyhow::Result<()> {
                     let len = s.events.len();
                     if len > 200 { s.events.drain(0..(len-200)); }
                 }
+                
+                // CRITICAL FIX: Always set detect_ack after detection cycle completes,
+                // even if no opportunities changed. This ensures the backend knows
+                // the detector finished and can send the next batch of updates.
+                // Without this, the sync loop breaks when detection finds no changes.
+                if detect_ack.is_none() {
+                    let mut s = loop_state.write().await;
+                    s.metrics.last_detection_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+                    detect_ack = Some((s.last_graph_version, s.metrics.last_detection_ms));
+                }
+                
                 if let Some((version, completed_ms)) = detect_ack {
                     if let Err(err) = notify_backend_detect_complete(&api_base, version, completed_ms).await {
                         tracing::debug!(error = ?err, version, completed_ms, "arb.detect.ack_failed");

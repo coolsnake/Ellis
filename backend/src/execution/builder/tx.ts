@@ -520,16 +520,45 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
         // Collect all accounts from instructions for ALT determination
         const allAccounts: (PublicKey | string)[] = [];
         for (const ix of [...extraSetupIxs, ...hopIxs]) {
-          const keys = (ix as any)?.keys || (ix as any)?.accounts || [];
-          for (const key of keys) {
-            const pk = key?.pubkey || key?.publicKey || key;
-            if (pk) allAccounts.push(pk);
+          // Handle both array format (TransactionInstruction) and object format (placeholder)
+          const keys = (ix as any)?.keys;
+          if (Array.isArray(keys)) {
+            // Array format: [{ pubkey, isSigner, isWritable }, ...]
+            for (const key of keys) {
+              const pk = key?.pubkey || key?.publicKey || key;
+              if (pk) allAccounts.push(pk);
+            }
+          } else if (keys && typeof keys === 'object') {
+            // Object format: { poolId, tickArrayLower, ... }
+            for (const value of Object.values(keys)) {
+              if (value && (typeof value === 'string' || value instanceof PublicKey)) {
+                allAccounts.push(value);
+              }
+            }
+          }
+          // Also check accounts field
+          const accounts = (ix as any)?.accounts;
+          if (Array.isArray(accounts)) {
+            for (const acc of accounts) {
+              const pk = acc?.pubkey || acc?.publicKey || acc;
+              if (pk) allAccounts.push(pk);
+            }
+          }
+          // Also collect programId
+          const programId = (ix as any)?.programId;
+          if (programId) {
+            allAccounts.push(programId);
           }
         }
         
         // Get ALT addresses for this transaction
         const isMultiHop = plan.hops.length > 1;
-        const altAddresses = await dexAltManager.getAltAddresses(allAccounts, isMultiHop);
+        // Lower threshold for CLMM swaps - they always have many accounts
+        const hasClmmSwap = plan.hops.some(h => h.dex === 'raydium' && h.variant === 'clmm');
+        const shouldUseAlts = isMultiHop || allAccounts.length > 15 || hasClmmSwap;
+        const altAddresses = shouldUseAlts 
+          ? await dexAltManager.getAltAddresses(allAccounts, isMultiHop || hasClmmSwap)
+          : [];
         
         // If we have real instructions, measure them
         if (realIxs.length > 0) {
@@ -619,15 +648,44 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
     // Collect ALT addresses for the transaction
     const allAccounts: (PublicKey | string)[] = [];
     for (const ix of all) {
-      const keys = (ix as any)?.keys || (ix as any)?.accounts || [];
-      for (const key of keys) {
-        const pk = key?.pubkey || key?.publicKey || key;
-        if (pk) allAccounts.push(pk);
+      // Handle both array format (TransactionInstruction) and object format (placeholder)
+      const keys = (ix as any)?.keys;
+      if (Array.isArray(keys)) {
+        // Array format: [{ pubkey, isSigner, isWritable }, ...]
+        for (const key of keys) {
+          const pk = key?.pubkey || key?.publicKey || key;
+          if (pk) allAccounts.push(pk);
+        }
+      } else if (keys && typeof keys === 'object') {
+        // Object format: { poolId, tickArrayLower, ... }
+        for (const value of Object.values(keys)) {
+          if (value && (typeof value === 'string' || value instanceof PublicKey)) {
+            allAccounts.push(value);
+          }
+        }
+      }
+      // Also check accounts field
+      const accounts = (ix as any)?.accounts;
+      if (Array.isArray(accounts)) {
+        for (const acc of accounts) {
+          const pk = acc?.pubkey || acc?.publicKey || acc;
+          if (pk) allAccounts.push(pk);
+        }
+      }
+      // Also collect programId
+      const programId = (ix as any)?.programId;
+      if (programId) {
+        allAccounts.push(programId);
       }
     }
     
     const isMultiHop = plan.hops.length > 1;
-    const altAddresses = await dexAltManager.getAltAddresses(allAccounts, isMultiHop);
+    // Lower threshold for CLMM swaps - they always have many accounts
+    const hasClmmSwap = plan.hops.some(h => h.dex === 'raydium' && h.variant === 'clmm');
+    const shouldUseAlts = isMultiHop || allAccounts.length > 15 || hasClmmSwap;
+    const altAddresses = shouldUseAlts 
+      ? await dexAltManager.getAltAddresses(allAccounts, isMultiHop || hasClmmSwap)
+      : [];
     
     // After transaction is built, schedule closures and mark accounts as used:
     if (scheduledClosures.length > 0 || (CONFIG.system as any)?.autoCloseAccounts !== false) {

@@ -346,6 +346,20 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
   } catch {}
   const lookupTables = await loadLookupTables(connection, (opts?.lookupTableAddresses || []));
   
+  // Log ALT addresses received
+  try {
+    logger.info('tx.lookup_table.addresses', {
+      cat: 'tx',
+      ctx: {
+        txId,
+        addresses: opts?.lookupTableAddresses || [],
+        loadedCount: lookupTables.length,
+        instructionCount: realIxs.length,
+        accountCount: realIxs.reduce((sum, ix) => sum + (ix.keys?.length || 0), 0),
+      },
+    });
+  } catch {}
+  
   // If no lookup tables provided, try to use common ones
   if (lookupTables.length === 0) {
     const commonTables = await getCommonLookupTables(connection);
@@ -355,10 +369,24 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
         logger.info('tx.lookup_table.using_common', { 
           cat: 'tx', 
           ctx: { 
+            txId,
             count: commonTables.length,
             totalAccounts: commonTables.reduce((sum, lt) => sum + (lt.state?.addresses?.length || 0), 0)
           } 
         }); 
+      } catch {}
+    } else {
+      // Log warning if no ALTs available
+      try {
+        logger.warn('tx.lookup_table.none_available', {
+          cat: 'tx',
+          ctx: {
+            txId,
+            instructionCount: realIxs.length,
+            accountCount: realIxs.reduce((sum, ix) => sum + (ix.keys?.length || 0), 0),
+            providedAddresses: opts?.lookupTableAddresses || [],
+          },
+        });
       } catch {}
     }
   }
@@ -528,6 +556,20 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
   const altAddresses = opts?.lookupTableAddresses || [];
   const lookupTables = await loadLookupTables(connection, altAddresses);
   
+  // Log ALT addresses received
+  try {
+    logger.info('tx.lookup_table.addresses', {
+      cat: 'tx',
+      ctx: {
+        txId,
+        addresses: altAddresses,
+        loadedCount: lookupTables.length,
+        instructionCount: realIxs.length,
+        accountCount: realIxs.reduce((sum, ix) => sum + (ix.keys?.length || 0), 0),
+      },
+    });
+  } catch {}
+  
   // If no lookup tables provided, try to use common ones
   if (lookupTables.length === 0) {
     const commonTables = await getCommonLookupTables(connection);
@@ -537,10 +579,24 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
         logger.info('tx.lookup_table.using_common', { 
           cat: 'tx', 
           ctx: { 
+            txId,
             count: commonTables.length,
             totalAccounts: commonTables.reduce((sum, lt) => sum + (lt.state?.addresses?.length || 0), 0)
           } 
         }); 
+      } catch {}
+    } else {
+      // Log warning if no ALTs available
+      try {
+        logger.warn('tx.lookup_table.none_available', {
+          cat: 'tx',
+          ctx: {
+            txId,
+            instructionCount: realIxs.length,
+            accountCount: realIxs.reduce((sum, ix) => sum + (ix.keys?.length || 0), 0),
+            providedAddresses: altAddresses,
+          },
+        });
       } catch {}
     }
   }
