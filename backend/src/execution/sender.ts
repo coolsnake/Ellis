@@ -6,6 +6,7 @@ import { CONFIG } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 import { LogCode } from '../utils/logging.js';
 import { getTxRelatedLogs } from '../utils/sessionLogs.js';
+import { optimizeAccountOrder } from '../execution/utils/accountOrdering.js';
 const TX_DEBUG_COERCION = !!((CONFIG as any)?.tx?.debugIxCoercion);
 
 export type SendOptions = {
@@ -169,6 +170,14 @@ function sanitizeInstructionKeys(ix: TransactionInstruction): void {
         } catch {}
       }
     }
+    
+    // Optimize account ordering (writable first)
+    try {
+      const optimized = optimizeAccountOrder(ix);
+      ix.keys = optimized.keys;
+    } catch {
+      // If optimization fails, continue with original keys
+    }
   } catch {}
 }
 
@@ -237,9 +246,49 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
   const connection = getConnection();
   const kp = await ensureWallet((await import('../utils/config.js')).CONFIG.walletPath);
   const realIxs: TransactionInstruction[] = [];
-  // Compute budget ixs
-  if (opts?.computeUnitLimit && opts.computeUnitLimit > 0) realIxs.push(ComputeBudgetProgram.setComputeUnitLimit({ units: Math.floor(opts.computeUnitLimit) }));
-  if (opts?.computeUnitPriceMicroLamports && opts.computeUnitPriceMicroLamports > 0) realIxs.push(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: Math.floor(opts.computeUnitPriceMicroLamports) }));
+  
+  // Check if compute budget instructions already exist in the incoming instructions
+  const COMPUTE_BUDGET_PROGRAM_ID = 'ComputeBudget111111111111111111111111111111';
+  let hasComputeUnitLimit = false;
+  let hasComputeUnitPrice = false;
+  
+  // First pass: check for existing compute budget instructions
+  for (const ix of instructions) {
+    try {
+      // Check for type field first (from computeBudgetIxs format)
+      const type = (ix as any)?.type;
+      if (type === 'set_compute_unit_limit') hasComputeUnitLimit = true;
+      else if (type === 'set_compute_unit_price') hasComputeUnitPrice = true;
+      
+      // Also check converted instruction format
+      const t = toInstruction(ix);
+      if (t) {
+        const pid = t.programId?.toBase58?.() || String(t.programId);
+        if (pid === COMPUTE_BUDGET_PROGRAM_ID) {
+          // Check instruction data to determine which compute budget instruction it is
+          const data = t.data;
+          if (Buffer.isBuffer(data) || data instanceof Uint8Array) {
+            // ComputeBudgetProgram.setComputeUnitLimit has discriminator 2
+            // ComputeBudgetProgram.setComputeUnitPrice has discriminator 3
+            if (data.length > 0) {
+              const discriminator = data[0];
+              if (discriminator === 2) hasComputeUnitLimit = true;
+              else if (discriminator === 3) hasComputeUnitPrice = true;
+            }
+          }
+        }
+      }
+    } catch {}
+  }
+  
+  // Only add compute budget instructions if they don't already exist
+  if (opts?.computeUnitLimit && opts.computeUnitLimit > 0 && !hasComputeUnitLimit) {
+    realIxs.push(ComputeBudgetProgram.setComputeUnitLimit({ units: Math.floor(opts.computeUnitLimit) }));
+  }
+  if (opts?.computeUnitPriceMicroLamports && opts.computeUnitPriceMicroLamports > 0 && !hasComputeUnitPrice) {
+    realIxs.push(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: Math.floor(opts.computeUnitPriceMicroLamports) }));
+  }
+  
   let skipped = 0;
   for (const ix of instructions) {
     try {
@@ -366,8 +415,49 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
   const connection = getConnection();
   const kp = await ensureWallet((await import('../utils/config.js')).CONFIG.walletPath);
   const realIxs: TransactionInstruction[] = [];
-  if (opts?.computeUnitLimit && opts.computeUnitLimit > 0) realIxs.push(ComputeBudgetProgram.setComputeUnitLimit({ units: Math.floor(opts.computeUnitLimit) }));
-  if (opts?.computeUnitPriceMicroLamports && opts.computeUnitPriceMicroLamports > 0) realIxs.push(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: Math.floor(opts.computeUnitPriceMicroLamports) }));
+  
+  // Check if compute budget instructions already exist in the incoming instructions
+  const COMPUTE_BUDGET_PROGRAM_ID = 'ComputeBudget111111111111111111111111111111';
+  let hasComputeUnitLimit = false;
+  let hasComputeUnitPrice = false;
+  
+  // First pass: check for existing compute budget instructions
+  for (const ix of instructions) {
+    try {
+      // Check for type field first (from computeBudgetIxs format)
+      const type = (ix as any)?.type;
+      if (type === 'set_compute_unit_limit') hasComputeUnitLimit = true;
+      else if (type === 'set_compute_unit_price') hasComputeUnitPrice = true;
+      
+      // Also check converted instruction format
+      const t = toInstruction(ix);
+      if (t) {
+        const pid = t.programId?.toBase58?.() || String(t.programId);
+        if (pid === COMPUTE_BUDGET_PROGRAM_ID) {
+          // Check instruction data to determine which compute budget instruction it is
+          const data = t.data;
+          if (Buffer.isBuffer(data) || data instanceof Uint8Array) {
+            // ComputeBudgetProgram.setComputeUnitLimit has discriminator 2
+            // ComputeBudgetProgram.setComputeUnitPrice has discriminator 3
+            if (data.length > 0) {
+              const discriminator = data[0];
+              if (discriminator === 2) hasComputeUnitLimit = true;
+              else if (discriminator === 3) hasComputeUnitPrice = true;
+            }
+          }
+        }
+      }
+    } catch {}
+  }
+  
+  // Only add compute budget instructions if they don't already exist
+  if (opts?.computeUnitLimit && opts.computeUnitLimit > 0 && !hasComputeUnitLimit) {
+    realIxs.push(ComputeBudgetProgram.setComputeUnitLimit({ units: Math.floor(opts.computeUnitLimit) }));
+  }
+  if (opts?.computeUnitPriceMicroLamports && opts.computeUnitPriceMicroLamports > 0 && !hasComputeUnitPrice) {
+    realIxs.push(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: Math.floor(opts.computeUnitPriceMicroLamports) }));
+  }
+  
   for (const ix of instructions) {
     const t = toInstruction(ix);
     if (!t) {
@@ -398,7 +488,9 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
     logger.info('tx.send.start', { cat: 'tx', ctx: { txId, ixCount: realIxs.length } as any });
     logger.info('tx.send.detail', { cat: 'tx', ctx: { txId, ixCount: realIxs.length, programs: realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId))) } as any });
   } catch {}
-  const lookupTables = await loadLookupTables(connection, (opts?.lookupTableAddresses || []));
+  // Use ALT addresses from options, or try to extract from instructions if available
+  const altAddresses = opts?.lookupTableAddresses || [];
+  const lookupTables = await loadLookupTables(connection, altAddresses);
   const msg = new TransactionMessage({ payerKey: kp.publicKey, recentBlockhash: blockhash, instructions: realIxs }).compileToV0Message(lookupTables);
   const tx = new VersionedTransaction(msg);
   tx.sign([kp]);

@@ -144,6 +144,11 @@ export const CONFIG = {
     logLevel: process.env.LOG_LEVEL || 'info',
     txCommitment: (process.env.TX_COMMITMENT as any) || 'confirmed',
     wrapAndUnwrapSol: process.env.WRAP_AND_UNWRAP_SOL !== 'false',
+    // Account management: delayed closing for token accounts
+    accountKeepOpenMs: Number(process.env.ACCOUNT_KEEP_OPEN_MS || 30 * 60 * 1000), // 30 minutes default
+    frequentTokenKeepOpenMs: Number(process.env.FREQUENT_TOKEN_KEEP_OPEN_MS || 2 * 60 * 60 * 1000), // 2 hours for frequent tokens
+    frequentTokenThreshold: Number(process.env.FREQUENT_TOKEN_THRESHOLD || 5), // 5 uses = frequent
+    autoCloseAccounts: process.env.AUTO_CLOSE_ACCOUNTS !== 'false', // Enable by default
     scopePools: (process.env.SCOPE_POOLS || 'false') === 'true',
     // New: scoping mode for /arb/pools endpoints: 'none' | 'watchlist' | 'jupiter' | 'intersection' | 'union'
     scopePoolsMode: (process.env.SCOPE_POOLS_MODE as any) || 'none',
@@ -706,6 +711,12 @@ export const CONFIG = {
     cacheTtlMs: Number(process.env.METEORA_BALANCED_CACHE_TTL_MS || 300_000),
     maxHttpRetries: Number(process.env.METEORA_BALANCED_HTTP_MAX_RETRIES || 2),
     httpBackoffMs: Number(process.env.METEORA_BALANCED_HTTP_BACKOFF_MS || 500),
+  },
+  execution: {
+    accountKeepOpenMs: Number(process.env.ACCOUNT_KEEP_OPEN_MS || 30 * 60 * 1000), // 30 min default
+    frequentTokenKeepOpenMs: Number(process.env.FREQUENT_TOKEN_KEEP_OPEN_MS || 2 * 60 * 60 * 1000), // 2 hours
+    frequentTokenThreshold: Number(process.env.FREQUENT_TOKEN_THRESHOLD || 5), // 5 uses = frequent
+    autoCloseAccounts: process.env.AUTO_CLOSE_ACCOUNTS !== 'false', // Enable by default
   },
 };
 

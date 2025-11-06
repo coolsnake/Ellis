@@ -22,6 +22,7 @@ export interface ArbBuildResult {
   instructions: SerializedInstruction[];
   ixCount: number;
   sizeBytes: number;
+  lookupTableAddresses?: string[]; // ALT addresses for the transaction
 }
 
 

@@ -485,10 +485,12 @@ export function createArbRouter(io: SocketIOServer): Router {
       try { emit('log', { level: 'info', message: 'pretrade:arb tx built', timestamp: new Date().toISOString(), context: { cat: 'tx', code: 'PRETRADE.TX.BUILT', mode: (execCfg as any)?.mode } }); } catch {}
       try { logger.info('tx.preflight.start', { cat: 'tx', code: LogCode.TX_PREFLIGHT_START, ctx: { ixCount: built.ixCount, sizeBytes: built.sizeBytes, mode: (execCfg as any)?.mode } as any }); } catch {}
       const tPre0 = Date.now();
+      // Use ALT addresses from built transaction, fallback to exec config
+      const altAddresses = built.lookupTableAddresses || execCfg.lookupTableAddresses || [];
       const sim = await assembleAndSimulate(built.instructions, {
         computeUnitLimit: execCfg.computeUnitLimit,
         computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
-        lookupTableAddresses: execCfg.lookupTableAddresses,
+        lookupTableAddresses: altAddresses,
       } as any);
       try {
         const dexes = Array.from(new Set((plan.hops || []).map((h:any)=>String(h?.dex||'').toLowerCase())));
@@ -799,10 +801,12 @@ export function createArbRouter(io: SocketIOServer): Router {
       try { logger.info('tx.preflight.start', { cat: 'tx', code: LogCode.TX_PREFLIGHT_START, ctx: { ixCount: built.ixCount, sizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode } as any }); } catch {}
       let sim: any;
       try {
+        // Use ALT addresses from built transaction, fallback to exec config
+        const altAddresses = built.lookupTableAddresses || execCfg.lookupTableAddresses || [];
         sim = await assembleAndSimulate(built.instructions, {
           computeUnitLimit: execCfg.computeUnitLimit,
           computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
-          lookupTableAddresses: execCfg.lookupTableAddresses,
+          lookupTableAddresses: altAddresses,
         } as any);
         try {
           const dexes = Array.from(new Set((plan.hops || []).map((h:any)=>String(h?.dex||'').toLowerCase())));
@@ -895,10 +899,12 @@ export function createArbRouter(io: SocketIOServer): Router {
       // Proceed to send (no chunking)
       try {
         const tSend0 = Date.now();
+        // Use ALT addresses from built transaction, fallback to exec config
+        const altAddresses = built.lookupTableAddresses || execCfg.lookupTableAddresses || [];
         const sendRes = await assembleAndSend(built.instructions, {
           computeUnitLimit: execCfg.computeUnitLimit,
           computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
-          lookupTableAddresses: execCfg.lookupTableAddresses,
+          lookupTableAddresses: altAddresses,
         } as any);
         try {
           const dexes = Array.from(new Set((plan.hops || []).map((h:any)=>String(h?.dex||'').toLowerCase())));

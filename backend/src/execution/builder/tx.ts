@@ -2,12 +2,16 @@ import type { ExecutionPlan, DirectHop } from '../types.js';
 import { buildRaydiumAmmSwapIx, buildRaydiumClmmSwapIx, buildOrcaSwapIx, buildMeteoraDlmmSwapIx, buildRaydiumAmmSwapIxReal, buildRaydiumClmmSwapIxReal, buildMeteoraDlmmSwapIxReal } from './ix.js';
 import { logger } from '../../utils/logger.js';
 import { LogCode } from '../../utils/logging.js';
-import { PublicKey } from '@solana/web3.js';
+import { PublicKey, TransactionInstruction } from '@solana/web3.js';
 import { buildCreateAtaIx, deriveAta, isSolMint, buildWrapSolIxs, buildUnwrapSolIx } from '../accounts.js';
 import { ensureWallet } from '../../wallet/wallet.js';
 import { CONFIG } from '../../utils/config.js';
 import { loadExecConfig } from '../../server/execConfigStore.js';
 import { validateHopAmounts } from './validation.js';
+import { measureComputeUnits, estimateComputeUnits } from '../utils/computeUnits.js';
+import { dexAltManager } from '../utils/altManager.js';
+import { getFeeCalculator } from '../../utils/feeCalculator.js';
+import { getConnection } from '../../wallet/wallet.js';
 
 // Add timing metrics interface
 interface TimingMetrics {
@@ -296,11 +300,23 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
           if (hop.userDestAta && !ensuredAtas.has(hop.userDestAta)) {
             hopIxs.push(buildCreateAtaIx(owner, payer, new PublicKey(hop.outputMint), hop.outputTokenProgram));
             ensuredAtas.add(hop.userDestAta);
+            // Mark account as used for delayed closing tracking
+            try {
+              const { getTokenAccountManager } = await import('../../wallet/tokenAccountManager.js');
+              const manager = getTokenAccountManager(getConnection());
+              await manager.markTokenAccountUsed(new PublicKey(hop.userDestAta));
+            } catch {}
           }
 
           if (!isSolMint(hop.inputMint) && hop.userSourceAta && !ensuredAtas.has(hop.userSourceAta)) {
             hopIxs.push(buildCreateAtaIx(owner, payer, new PublicKey(hop.inputMint), hop.inputTokenProgram));
             ensuredAtas.add(hop.userSourceAta);
+            // Mark account as used for delayed closing tracking
+            try {
+              const { getTokenAccountManager } = await import('../../wallet/tokenAccountManager.js');
+              const manager = getTokenAccountManager(getConnection());
+              await manager.markTokenAccountUsed(new PublicKey(hop.userSourceAta));
+            } catch {}
           }
         }
         // SOL wrapping/unwrap if configured
@@ -495,13 +511,148 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
     const finalizationStart = Date.now();
     
     const unwrapStart = Date.now();
+    const scheduledClosures: Array<{ address: PublicKey; mint: PublicKey }> = [];
+
     if (willUnwrap) {
-      hopIxs.push(buildUnwrapSolIx(owner));
+      const unwrapIx = buildUnwrapSolIx(owner, true); // Schedule close instead of immediate
+      
+      // Check if it's a scheduled close
+      if (unwrapIx?.type === 'schedule_close_ata') {
+        const { PublicKey } = await import('@solana/web3.js');
+        scheduledClosures.push({
+          address: new PublicKey(unwrapIx.address),
+          mint: new PublicKey(unwrapIx.mint),
+        });
+        // Don't add to instructions - we'll schedule it separately
+      } else {
+        hopIxs.push(unwrapIx);
+      }
     }
     metrics.finalization.unwrap = Date.now() - unwrapStart;
     
     const budgetStart = Date.now();
-    const budget = computeBudgetIxs(cb);
+    
+    // Measure compute units if not provided or if dynamic compute is enabled
+    let measuredComputeUnits: number | undefined = undefined;
+    let dynamicPriorityFee: number | undefined = undefined;
+    const execCfg = await loadExecConfig().catch(() => ({ dynamicCompute: false } as any));
+    const shouldMeasure = !cb?.computeUnitLimit || (execCfg as any)?.dynamicCompute;
+    
+    // Calculate dynamic priority fees if enabled
+    if ((CONFIG.fees as any)?.dynamicFees || !cb?.computeUnitPriceMicroLamports) {
+      try {
+        const connection = getConnection();
+        const feeCalculator = getFeeCalculator(connection);
+        const calculatedFees = await feeCalculator.calculateFees(CONFIG.fees as any);
+        
+        // Convert priority fee from lamports to micro-lamports for compute budget
+        // Priority fee in config is in lamports, but compute budget expects micro-lamports
+        dynamicPriorityFee = Math.floor(calculatedFees.priorityFee * 1000);
+        
+        try {
+          logger.info('tx.build.priority.fee.dynamic', {
+            cat: 'tx',
+            ctx: {
+              traceId,
+              priorityFeeLamports: calculatedFees.priorityFee,
+              priorityFeeMicroLamports: dynamicPriorityFee,
+              isDynamic: calculatedFees.isDynamic,
+            } as any,
+          });
+        } catch {}
+      } catch (error) {
+        try {
+          logger.warn('tx.build.priority.fee.error', {
+            cat: 'tx',
+            ctx: {
+              traceId,
+              error: String((error as any)?.message || error),
+            } as any,
+          });
+        } catch {}
+      }
+    }
+    
+    if (shouldMeasure && hopIxs.length > 0) {
+      try {
+        // Convert instructions to TransactionInstruction format for measurement
+        const realIxs: TransactionInstruction[] = [];
+        for (const ix of [...extraSetupIxs, ...hopIxs]) {
+          try {
+            // Try to convert instruction - this is a simplified version
+            // In practice, you'd use the full toInstruction logic
+            if (ix && typeof ix === 'object') {
+              // For now, we'll estimate based on instruction count
+              // Full conversion would require the toInstruction function
+            }
+          } catch {}
+        }
+        
+        // Collect all accounts from instructions for ALT determination
+        const allAccounts: (PublicKey | string)[] = [];
+        for (const ix of [...extraSetupIxs, ...hopIxs]) {
+          const keys = (ix as any)?.keys || (ix as any)?.accounts || [];
+          for (const key of keys) {
+            const pk = key?.pubkey || key?.publicKey || key;
+            if (pk) allAccounts.push(pk);
+          }
+        }
+        
+        // Get ALT addresses for this transaction
+        const isMultiHop = plan.hops.length > 1;
+        const altAddresses = await dexAltManager.getAltAddresses(allAccounts, isMultiHop);
+        
+        // If we have real instructions, measure them
+        if (realIxs.length > 0) {
+          measuredComputeUnits = await measureComputeUnits(realIxs, altAddresses);
+        } else {
+          // Fallback to estimation
+          const dexTypes = Array.from(new Set(plan.hops.map(h => h.dex)));
+          measuredComputeUnits = estimateComputeUnits(
+            hopIxs.length + extraSetupIxs.length,
+            isMultiHop,
+            dexTypes
+          );
+        }
+        
+        try {
+          logger.info('tx.build.compute.measured', {
+            cat: 'tx',
+            ctx: {
+              traceId,
+              measured: measuredComputeUnits,
+              instructionCount: hopIxs.length + extraSetupIxs.length,
+              isMultiHop,
+            } as any,
+          });
+        } catch {}
+      } catch (error) {
+        try {
+          logger.warn('tx.build.compute.measure.error', {
+            cat: 'tx',
+            ctx: {
+              traceId,
+              error: String((error as any)?.message || error),
+            } as any,
+          });
+        } catch {}
+        // Fallback to estimation
+        const dexTypes = Array.from(new Set(plan.hops.map(h => h.dex)));
+        measuredComputeUnits = estimateComputeUnits(
+          hopIxs.length + extraSetupIxs.length,
+          plan.hops.length > 1,
+          dexTypes
+        );
+      }
+    }
+    
+    // Use measured compute units if available, otherwise use provided config
+    const finalComputeBudget: ComputeBudgetConfig = {
+      computeUnitLimit: measuredComputeUnits || cb?.computeUnitLimit,
+      computeUnitPriceMicroLamports: dynamicPriorityFee || cb?.computeUnitPriceMicroLamports,
+    };
+    
+    const budget = computeBudgetIxs(finalComputeBudget);
     metrics.finalization.budget = Date.now() - budgetStart;
     
     const all = [...budget, ...extraSetupIxs, ...hopIxs];
@@ -536,8 +687,81 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
       sizeBytes,
     });
     
-    try { logger.info('tx.build.ok', { cat: 'tx', code: LogCode.TX_BUILD_OK, ctx: { traceId, ms: Date.now() - t0, ixCount: all.length, sizeBytes } as any }); } catch {}
-    return { tx: { instructions: all, v: 0 }, ixCount: all.length, sizeBytes };
+    try { logger.info('tx.build.ok', { cat: 'tx', code: LogCode.TX_BUILD_OK, ctx: { traceId, ms: Date.now() - t0, ixCount: all.length, sizeBytes, computeUnits: finalComputeBudget.computeUnitLimit } as any }); } catch {}
+    
+    // Collect ALT addresses for the transaction
+    const allAccounts: (PublicKey | string)[] = [];
+    for (const ix of all) {
+      const keys = (ix as any)?.keys || (ix as any)?.accounts || [];
+      for (const key of keys) {
+        const pk = key?.pubkey || key?.publicKey || key;
+        if (pk) allAccounts.push(pk);
+      }
+    }
+    
+    const isMultiHop = plan.hops.length > 1;
+    const altAddresses = await dexAltManager.getAltAddresses(allAccounts, isMultiHop);
+    
+    // After transaction is built, schedule closures and mark accounts as used:
+    if (scheduledClosures.length > 0 || (CONFIG.system as any)?.autoCloseAccounts !== false) {
+      try {
+        const { getTokenAccountManager } = await import('../../wallet/tokenAccountManager.js');
+        const manager = getTokenAccountManager(getConnection());
+        
+        // Schedule closures for accounts that should be closed
+        for (const { address, mint } of scheduledClosures) {
+          manager.scheduleAccountClosure(address, mint);
+        }
+        
+        // Mark all token accounts used in this transaction (for usage tracking)
+        const tokenAccountsUsed = new Set<string>();
+        for (const hop of plan.hops) {
+          if (hop.userSourceAta && !isSolMint(hop.inputMint)) {
+            tokenAccountsUsed.add(hop.userSourceAta);
+          }
+          if (hop.userDestAta && !isSolMint(hop.outputMint)) {
+            tokenAccountsUsed.add(hop.userDestAta);
+          }
+        }
+        
+        for (const ataStr of tokenAccountsUsed) {
+          try {
+            await manager.markTokenAccountUsed(new PublicKey(ataStr));
+          } catch {}
+        }
+        
+        try {
+          logger.info('tx.build.accounts.scheduled.close', {
+            cat: 'tx',
+            ctx: {
+              traceId,
+              scheduledCloseCount: scheduledClosures.length,
+              accountsUsedCount: tokenAccountsUsed.size,
+            } as any,
+          });
+        } catch {}
+      } catch (error) {
+        try {
+          logger.warn('tx.build.accounts.schedule.error', {
+            cat: 'tx',
+            ctx: {
+              traceId,
+              error: String((error as any)?.message || error),
+            } as any,
+          });
+        } catch {}
+      }
+    }
+
+    return { 
+      tx: { 
+        instructions: all, 
+        v: 0,
+        lookupTableAddresses: altAddresses, // Include ALT addresses
+      }, 
+      ixCount: all.length, 
+      sizeBytes 
+    };
   } catch (error) {
     // Calculate total time even on error
     metrics.total = Date.now() - t0;

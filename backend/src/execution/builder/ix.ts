@@ -153,26 +153,6 @@ async function injectBinArrayMetas(
     // Inject metas into instruction
     if (Array.isArray(metas) && metas.length && Array.isArray((ix as any).keys)) {
       const existing = new Set<string>();
-      const currentAccountCount = (ix as any).keys.length;
-      
-      // Solana instruction limit: 64 accounts max
-      const MAX_ACCOUNTS = 64;
-      const availableSlots = Math.max(0, MAX_ACCOUNTS - currentAccountCount);
-      
-      if (availableSlots === 0) {
-        try { 
-          logger.warn('meteora.dlmm.inject.skip_limit', { 
-            cat: 'tx', 
-            ctx: { 
-              currentAccounts: currentAccountCount,
-              maxAccounts: MAX_ACCOUNTS,
-              message: 'Instruction already at account limit, skipping bin array injection'
-            } 
-          }); 
-        } catch {}
-        return 0;
-      }
-      
       try {
         for (const k of (ix as any).keys as any[]) {
           const s = (k?.pubkey && typeof k.pubkey.toBase58 === 'function') ? k.pubkey.toBase58() : String(k?.pubkey);
@@ -182,27 +162,12 @@ async function injectBinArrayMetas(
         try { logger.debug('meteora.dlmm.inject.existing.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
       }
       
-      // Safety limit - cap at available slots (leave some room for safety)
-      const maxInjected = Math.min(12, availableSlots - 2); // Leave 2 slots for safety
+      // Safety limit - should already be limited but cap at 12 total (10 arrays + bitmap + overhead)
+      const maxInjected = 12;
       const limitedMetas = metas.slice(0, maxInjected);
       
       let injected = 0;
       for (const m of limitedMetas) {
-        // Double-check we haven't exceeded limit
-        if ((ix as any).keys.length >= MAX_ACCOUNTS) {
-          try { 
-            logger.warn('meteora.dlmm.inject.limit_reached', { 
-              cat: 'tx', 
-              ctx: { 
-                currentAccounts: (ix as any).keys.length,
-                maxAccounts: MAX_ACCOUNTS,
-                injectedSoFar: injected
-              } 
-            }); 
-          } catch {}
-          break;
-        }
-        
         try {
           const pk = (m?.pubkey && typeof m.pubkey.toBase58 === 'function') 
             ? m.pubkey 
@@ -219,16 +184,7 @@ async function injectBinArrayMetas(
       }
       
       if (injected > 0) {
-        try { 
-          logger.info('meteora.dlmm.remaining.inject', { 
-            cat: 'tx', 
-            ctx: { 
-              added: injected,
-              totalAccounts: (ix as any).keys.length,
-              maxAccounts: MAX_ACCOUNTS
-            } as any 
-          }); 
-        } catch {}
+        try { logger.info('meteora.dlmm.remaining.inject', { cat: 'tx', ctx: { added: injected } as any }); } catch {}
       }
       return injected;
     }
@@ -645,8 +601,9 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
       if (sdkAny && hop.poolId && hop.inputMint) {
         const { PublicKey } = await import('@solana/web3.js');
         const pk = new PublicKey(String(hop.poolId));
-        const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
-        const acc = await withRpcLimit(() => connection.getAccountInfo(pk));
+        // Use account cache instead of direct RPC call
+        const { accountCache } = await import('../utils/accountCache.js');
+        const acc = await accountCache.getAccountInfo(pk);
         const ParsableWhirlpool = (sdkAny as any).ParsableWhirlpool;
         const parsed = acc ? (ParsableWhirlpool as any).parse(pk, acc) : null;
         if (parsed) {
@@ -1927,62 +1884,18 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     
     // Add pre-computed bin array metas as remaining accounts (already limited to ~6-7 max)
     // Only add if SDK helper didn't already set remaining accounts
-    // Solana limit is 64 accounts per instruction - we need to be careful here
-    const MAX_ACCOUNTS = 64;
     if (binArrayMetas && binArrayMetas.length && typeof (builder as any).remainingAccounts === 'function') {
       try {
-        // Build instruction first to check current account count
-        const tempIx = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
-        let currentCount = 0;
-        
-        if (tempIx && Array.isArray(tempIx.keys)) {
-          currentCount = tempIx.keys.length;
-        }
-        
-        // Limit based on available slots (leave 2 for safety)
-        const maxToAdd = Math.min(10, MAX_ACCOUNTS - currentCount - 2);
-        const limited = binArrayMetas.slice(0, Math.max(0, maxToAdd));
-        
-        if (limited.length > 0) {
+        // Safety limit - should already be limited but cap at 10 just in case
+        const limited = binArrayMetas.slice(0, 10);
+        if (limited.length) {
           builder = (builder as any).remainingAccounts(limited);
-          try { logger.info('meteora.dlmm.remaining.from_metas', { cat: 'tx', ctx: { count: limited.length, currentAccounts: currentCount } }); } catch {}
-          // Don't return early - continue with normal flow to ensure setupIxs are included
-        } else if (binArrayMetas.length > 0) {
-          try { 
-            logger.warn('meteora.dlmm.remaining.from_metas.skipped', { 
-              cat: 'tx', 
-              ctx: { 
-                requested: binArrayMetas.length,
-                currentAccounts: currentCount,
-                maxAccounts: MAX_ACCOUNTS,
-                message: 'Skipping bin array metas due to account limit'
-              } 
-            }); 
-          } catch {}
+          try { logger.info('meteora.dlmm.remaining.from_metas', { cat: 'tx', ctx: { count: limited.length } }); } catch {}
         }
       } catch {}
     }
     
     const ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
-    
-    // Validate instruction account count before proceeding
-    if (ix && Array.isArray(ix.keys)) {
-      if (ix.keys.length > MAX_ACCOUNTS) {
-        try {
-          logger.error('meteora.dlmm.instruction.account_limit_exceeded', {
-            cat: 'tx',
-            code: LogCode.TX_BUILD_ERR,
-            ctx: {
-              accountCount: ix.keys.length,
-              maxAccounts: MAX_ACCOUNTS,
-              poolId: hop.poolId,
-              message: 'Instruction exceeds Solana account limit, this will cause encoding errors'
-            }
-          });
-        } catch {}
-        throw createBuilderError('METEORA_DLMM', `Instruction has ${ix.keys.length} accounts, exceeds Solana limit of ${MAX_ACCOUNTS}`, hop);
-      }
-    }
     
     // Final safety check: validate and correct userTokenOut in the actual instruction
     if (ix && Array.isArray(ix.keys)) {
@@ -2406,44 +2319,9 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     const { ClmmInstrument } = await import('@raydium-io/raydium-sdk-v2');
     const kp = await ensureWallet(CONFIG.walletPath);
     const poolIdPk = toPublicKey(hop.poolId);
-    let programIdPk = toPublicKey(hop.programId, (CONFIG.raydium?.clmmProgram as any));
-    let poolId = poolIdPk.toBase58();
-    let programId = programIdPk.toBase58();
-    
-    // CRITICAL: Verify the program ID matches the actual account owner
-    // This prevents ProgramAccountNotFound errors when the config default doesn't match the pool
-    const connection = getConnection();
-    const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
-    try {
-      const poolAcc = await withRpcLimit(() => connection.getAccountInfo(poolIdPk));
-      if (poolAcc && poolAcc.owner) {
-        const actualOwner = poolAcc.owner.toBase58();
-        if (actualOwner !== programId) {
-          try {
-            logger.warn('raydium.clmm.program_id.mismatch', {
-              cat: 'tx',
-              ctx: {
-                pool: hop.poolId,
-                expected: programId,
-                actual: actualOwner,
-                correcting: true,
-              } as any,
-            });
-          } catch {}
-          // Use the actual owner instead - this is the authoritative source
-          programIdPk = poolAcc.owner;
-          programId = actualOwner;
-        }
-      }
-    } catch (e) {
-      // Log but don't fail - might be network issue, and we'll catch it during simulation
-      try {
-        logger.warn('raydium.clmm.program_id.verify.failed', {
-          cat: 'tx',
-          ctx: { pool: hop.poolId, error: String(e?.message || e) } as any,
-        });
-      } catch {}
-    }
+    const programIdPk = toPublicKey(hop.programId, (CONFIG.raydium?.clmmProgram as any));
+    const poolId = poolIdPk.toBase58();
+    const programId = programIdPk.toBase58();
     
     // Validate required config values - no unsafe fallbacks
     let observationId: PublicKey | null = null;
@@ -2477,14 +2355,15 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     }
     
     try {
-      logger.info('raydium.clmm.config.verify.start', { cat: 'tx', ctx: { pool: hop.poolId, ammConfig: configIdPk.toBase58() } as any }); 
+      logger.info('raydium.clmm.config.verify.start', { cat: 'tx', ctx: { pool: hop.poolId, ammConfig: configIdPk.toBase58() } as any });
     } catch {}
     
     // Verify critical accounts exist before building instruction
-    // Note: We'll batch this with other account checks later to reduce RPC calls
+    // Use account cache to avoid per-transaction RPC calls
+    const { accountCache } = await import('../utils/accountCache.js');
     let configAcc: any = null;
     try {
-      configAcc = await withRpcLimit(() => connection.getAccountInfo(configIdPk));
+      configAcc = await accountCache.getAccountInfo(configIdPk);
       if (!configAcc) {
         throw createBuilderError('RAYDIUM_CLMM', `ammConfig account does not exist: ${configIdPk.toBase58()}`, hop);
       }
@@ -3573,9 +3452,9 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     try {
       let acc = poolAccountInfo;
       if (!acc) {
-        const connection = getConnection();
-        const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
-        acc = await withRpcLimit(() => connection.getAccountInfo(toPublicKey(hop.poolId)));
+        // Use account cache instead of direct RPC call
+        const { accountCache } = await import('../utils/accountCache.js');
+        acc = await accountCache.getAccountInfo(toPublicKey(hop.poolId));
       }
       if (acc?.data?.length) {
         const sdkLayouts: any = await import('@raydium-io/raydium-sdk-v2');

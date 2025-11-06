@@ -44,8 +44,37 @@ export function buildWrapSolIxs(owner: PublicKey, payer: PublicKey, lamports: nu
   return { ixs, wsolAta: ata };
 }
 
-export function buildUnwrapSolIx(owner: PublicKey): any {
+export function buildScheduleCloseAtaIx(
+  owner: PublicKey,
+  mint: PublicKey,
+  programKind: TokenProgramKind
+): { instruction: null; scheduleClose: { address: PublicKey; mint: PublicKey } } {
+  const program = resolveTokenProgram(programKind);
+  const ata = getAssociatedTokenAddressSync(mint, owner, false, program, ASSOCIATED_TOKEN_PROGRAM_ID);
+  // Return metadata instead of actual close instruction
+  return {
+    instruction: null,
+    scheduleClose: { address: ata, mint },
+  };
+}
+
+export function buildUnwrapSolIx(
+  owner: PublicKey,
+  scheduleClose: boolean = true
+): any {
   const ata = getAssociatedTokenAddressSync(NATIVE_MINT, owner, false);
+  
+  if (scheduleClose) {
+    // Return metadata for delayed closing instead of immediate close
+    return {
+      programId: 'spl-token',
+      type: 'schedule_close_ata',
+      address: ata.toBase58(),
+      mint: NATIVE_MINT.toBase58(),
+    };
+  }
+  
+  // Immediate close (legacy behavior)
   return createCloseAccountInstruction(ata, owner, owner);
 }
 

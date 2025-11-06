@@ -68,10 +68,14 @@ export async function buildTransactionSummary(plan: ExecutionPlan, extraSetupIxs
 
   const built = await buildDirectArbTx(plan, extras, computeBudget as any);
   const instructions = Array.isArray((built as any)?.tx?.instructions) ? (built as any).tx.instructions.map(serializeInstruction) : [];
+  const lookupTableAddresses = Array.isArray((built as any)?.tx?.lookupTableAddresses) 
+    ? (built as any).tx.lookupTableAddresses 
+    : undefined;
   return {
     instructions,
     ixCount: built.ixCount,
     sizeBytes: built.sizeBytes,
+    lookupTableAddresses,
   };
 }
 

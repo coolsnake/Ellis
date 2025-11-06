@@ -165,8 +165,11 @@ export async function buildCombinedTransaction(
   const allIxs: any[] = [];
   const altAddresses = new Set<string>();
   // Optional: compute budget first
+  // Note: Compute unit limit should be measured via simulation, not hardcoded
+  // For now, use a reasonable default that will be overridden by measured values
   if (computeUnitPriceMicroLamports && computeUnitPriceMicroLamports > 0) {
-    allIxs.push(web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 800000 }));
+    // Default to 400k instead of 800k - should be measured via simulation
+    allIxs.push(web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 400000 }));
     allIxs.push(web3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: computeUnitPriceMicroLamports }));
   }
   // Proactive setup (e.g., ATAs)

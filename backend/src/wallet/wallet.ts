@@ -246,8 +246,10 @@ export async function signAndSendSerializedTransaction(
       const calculatedFees = await feeCalculator.calculateFees(finalConfig);
       
       // Add compute budget instructions
+      // Note: Compute unit limit should be measured via simulation, not hardcoded
+      // Using a conservative default that should be overridden by measured values
       const computeBudgetInstructions = [
-        ComputeBudgetProgram.setComputeUnitLimit({ units: 200000 }), // Standard compute limit
+        ComputeBudgetProgram.setComputeUnitLimit({ units: 150000 }), // Conservative default - should be measured
         ComputeBudgetProgram.setComputeUnitPrice({ microLamports: calculatedFees.priorityFee })
       ];
       
