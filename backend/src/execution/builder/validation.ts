@@ -95,6 +95,7 @@ export function validatePublicKey(value: any, fieldName: string, context?: Recor
 /**
  * Validates pool accounts exist on-chain
  * Note: This performs RPC calls, use sparingly
+ * Optimized: Uses getMultipleAccountsInfo to batch RPC calls
  */
 export async function validatePoolAccounts(
   poolId: string,
@@ -106,35 +107,46 @@ export async function validatePoolAccounts(
   const missing: string[] = [];
 
   try {
-    // Validate pool exists
-    const poolPk = new PublicKey(poolId);
-    const poolInfo = await withRpcLimit(() => connection.getAccountInfo(poolPk)).catch(() => null);
-    if (!poolInfo) {
-      missing.push('pool');
-    }
-
-    // Validate vaults if provided
+    // Batch all account checks into a single RPC call for efficiency
+    const keysToCheck: PublicKey[] = [new PublicKey(poolId)];
+    const keyLabels: string[] = ['pool'];
+    
     if (vaultA) {
       try {
-        const vaultAPk = new PublicKey(vaultA);
-        const vaultAInfo = await withRpcLimit(() => connection.getAccountInfo(vaultAPk)).catch(() => null);
-        if (!vaultAInfo) {
-          missing.push('vaultA');
-        }
+        keysToCheck.push(new PublicKey(vaultA));
+        keyLabels.push('vaultA');
       } catch {
         missing.push('vaultA');
       }
     }
-
+    
     if (vaultB) {
       try {
-        const vaultBPk = new PublicKey(vaultB);
-        const vaultBInfo = await withRpcLimit(() => connection.getAccountInfo(vaultBPk)).catch(() => null);
-        if (!vaultBInfo) {
-          missing.push('vaultB');
-        }
+        keysToCheck.push(new PublicKey(vaultB));
+        keyLabels.push('vaultB');
       } catch {
         missing.push('vaultB');
+      }
+    }
+
+    // Batch fetch all accounts at once
+    if (keysToCheck.length > 0) {
+      const weight = Math.max(1, Math.ceil(keysToCheck.length / 5));
+      const accountInfos = await withRpcLimit(
+        () => connection.getMultipleAccountsInfo(keysToCheck),
+        weight
+      ).catch(() => null);
+
+      if (!accountInfos || accountInfos.length !== keysToCheck.length) {
+        // If batch fetch failed, mark all as missing
+        missing.push(...keyLabels);
+      } else {
+        // Check each account in order
+        for (let i = 0; i < accountInfos.length; i++) {
+          if (!accountInfos[i]) {
+            missing.push(keyLabels[i]);
+          }
+        }
       }
     }
 

@@ -218,8 +218,95 @@ export class DriftService {
     const programIdOpt = (CONFIG as any).drift?.programId ? { programID: new PublicKey((CONFIG as any).drift.programId) } : {};
     const marketOpts = typeof getMarketsAndOraclesForSubscription === 'function' ? (getMarketsAndOraclesForSubscription as any)(this.cluster) : {};
     this.client = await initialize({ connection: this.connection, wallet, opts: { env: this.cluster, accountSubscription: subscription, ...programIdOpt, ...marketOpts } });
+    
+    // Wait for WebSocket to be ready before subscribing to avoid "socket was not CONNECTING or OPEN" errors
+    const waitUntilWsReady = async (): Promise<void> => {
+      try {
+        const deadline = Date.now() + Math.max(500, Number(((CONFIG.system as any)?.wsReadyWaitMs) || 5000));
+        const started = Date.now();
+        const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+        const getRpcWebSocketReadyState = (): number | undefined => {
+          try {
+            const rpcWs: any = (this.connection as any)?._rpcWebSocket;
+            if (!rpcWs) return undefined;
+            const sockets = [
+              (rpcWs as any)?.underlyingSocket,
+              (rpcWs as any)?._ws,
+              (rpcWs as any)?.socket,
+              (rpcWs as any)?._socket,
+            ];
+            for (const sock of sockets) {
+              const ready = Number((sock as any)?.readyState);
+              if (Number.isFinite(ready) && ready >= 0) return ready;
+            }
+            if ((this.connection as any)?._rpcWebSocketConnected === true) return 1;
+          } catch {}
+          return undefined;
+        };
+        for (;;) {
+          const rs = getRpcWebSocketReadyState();
+          // 0 CONNECTING, 1 OPEN, 2 CLOSING, 3 CLOSED
+          if (rs === 0 || rs === 1) {
+            const waited = Date.now() - started;
+            if (waited > 200) {
+              try { logger.debug('drift.ws waitUntilWsReady waited', { ms: waited, cat: 'drift' }); } catch {}
+            }
+            return;
+          }
+          if (Date.now() >= deadline) {
+            try { logger.debug('drift.ws waitUntilWsReady timeout', { ms: Date.now() - started, cat: 'drift' }); } catch {}
+            return;
+          }
+          if (rs === undefined || rs === 3) {
+            try { await (this.connection as any)?._rpcWebSocket?.connect?.(); } catch {}
+          }
+          await sleep(150);
+        }
+      } catch {}
+    };
+    
+    // Only wait for WebSocket if using websocket subscriptions
+    if (subType === 'websocket') {
+      try {
+        await waitUntilWsReady();
+      } catch (e: any) {
+        try { logger.warn('drift.ws waitUntilWsReady error', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+      }
+    }
+    
     // Subscribe to populate internal caches for markets/users/oracles
-    try { if (typeof (this.client as any)?.subscribe === 'function') { await (this.client as any).subscribe(); } } catch {}
+    // Retry subscribe with backoff if WebSocket isn't ready yet
+    try {
+      if (typeof (this.client as any)?.subscribe === 'function') {
+        const maxRetries = 3;
+        const baseDelayMs = 500;
+        for (let attempt = 0; attempt < maxRetries; attempt++) {
+          try {
+            await (this.client as any).subscribe();
+            break;
+          } catch (e: any) {
+            const msg = String(e?.message || e);
+            const isWsState = msg.includes('socket was not') || msg.includes('readyState');
+            if (isWsState && attempt < maxRetries - 1) {
+              const delay = baseDelayMs * Math.pow(1.5, attempt);
+              try { logger.debug('drift.ws subscribe retry', { attempt: attempt + 1, delay, error: msg, cat: 'drift' }); } catch {}
+              await new Promise(r => setTimeout(r, delay));
+              // Wait for WebSocket again before retrying
+              if (subType === 'websocket') {
+                try { await waitUntilWsReady(); } catch {}
+              }
+              continue;
+            }
+            // If not a WebSocket state error or out of retries, log and rethrow
+            try { logger.warn('drift.ws subscribe failed', { error: msg, attempt: attempt + 1, cat: 'drift' }); } catch {}
+            throw e;
+          }
+        }
+      }
+    } catch (e: any) {
+      // Log but don't fail initialization - the client can still work with polling or retry later
+      try { logger.warn('drift.ws subscribe error (non-fatal)', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+    }
     // Ensure default user is initialized and registered with the client
     try {
       const defaultId = Number((CONFIG as any).drift?.defaultSubaccountId || 0);

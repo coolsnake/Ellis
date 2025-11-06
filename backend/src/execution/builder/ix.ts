@@ -1140,173 +1140,158 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       });
     } catch {}
     
-    // Validate userTokenIn matches expected input mint
+    // Validate token accounts - batch fetch both at once to reduce RPC calls
+    let tokenInfos: any[] | null = null;
     try {
       const userTokenInPk = toPublicKey(hop.userSourceAta);
       const expectedInputMint = toPublicKey(hop.inputMint);
+      const userTokenOutPk = toPublicKey(hop.userDestAta);
+      const expectedMint = toPublicKey(hop.outputMint);
       
-      // Always derive the correct ATA to verify, even if account doesn't exist yet
+      // Always derive the correct ATAs to verify, even if accounts don't exist yet
       const { deriveAta } = await import('../accounts.js');
-      const correctAta = deriveAta(kp.publicKey, expectedInputMint, hop.inputTokenProgram);
+      const correctAtaIn = deriveAta(kp.publicKey, expectedInputMint, hop.inputTokenProgram);
+      const correctAtaOut = deriveAta(kp.publicKey, expectedMint, hop.outputTokenProgram);
       
-      // Check if the ATA address matches what we expect (always verify, even for new accounts)
-      if (!userTokenInPk.equals(correctAta)) {
+      // Check if the ATA addresses match what we expect
+      if (!userTokenInPk.equals(correctAtaIn)) {
         try { 
           logger.warn('meteora.dlmm.userTokenIn.address_mismatch', { 
             cat: 'tx', 
             ctx: { 
               userTokenIn: userTokenInPk.toBase58(),
-              correctAta: correctAta.toBase58(),
+              correctAta: correctAtaIn.toBase58(),
               expectedMint: expectedInputMint.toBase58(),
               inputMint: hop.inputMint,
               inputTokenProgram: hop.inputTokenProgram
             } 
           }); 
         } catch {}
-        
-        // Use the correct ATA
-        accounts.userTokenIn = correctAta;
-        
+        accounts.userTokenIn = correctAtaIn;
         try { 
           logger.info('meteora.dlmm.userTokenIn.corrected', { 
             cat: 'tx', 
             ctx: { 
               old: userTokenInPk.toBase58(),
-              new: correctAta.toBase58(),
+              new: correctAtaIn.toBase58(),
               mint: expectedInputMint.toBase58()
             } 
           }); 
         } catch {}
       }
       
-      // Additionally, if account exists on-chain, verify the mint matches
-      const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
-      const tokenInInfo = await withRpcLimit(() => connection.getAccountInfo(userTokenInPk)).catch(() => null);
-      
-      if (tokenInInfo?.data && tokenInInfo.data.length >= 32) {
-        const mintBytes = tokenInInfo.data.slice(0, 32);
-        try {
-          const accountMint = new PublicKey(mintBytes);
-          
-          if (!accountMint.equals(expectedInputMint)) {
-            try { 
-              logger.warn('meteora.dlmm.userTokenIn.mint_mismatch', { 
-                cat: 'tx', 
-                ctx: { 
-                  userTokenIn: userTokenInPk.toBase58(),
-                  accountMint: accountMint.toBase58(),
-                  expectedMint: expectedInputMint.toBase58(),
-                  inputMint: hop.inputMint
-                } 
-              }); 
-            } catch {}
-            
-            // Use the correct ATA (already set above if address was wrong)
-            accounts.userTokenIn = correctAta;
-            
-            try { 
-              logger.info('meteora.dlmm.userTokenIn.mint_corrected', { 
-                cat: 'tx', 
-                ctx: { 
-                  old: userTokenInPk.toBase58(),
-                  new: correctAta.toBase58(),
-                  mint: expectedInputMint.toBase58()
-                } 
-              }); 
-            } catch {}
-          }
-        } catch (parseErr) {
-          // Account exists but can't parse - use correct derivation
-          accounts.userTokenIn = correctAta;
-        }
-      }
-    } catch {}
-    
-    // Validate userTokenOut matches expected output mint
-    try {
-      const userTokenOutPk = toPublicKey(hop.userDestAta);
-      const expectedMint = toPublicKey(hop.outputMint);
-      
-      // Always derive the correct ATA to verify, even if account doesn't exist yet
-      const { deriveAta } = await import('../accounts.js');
-      const correctAta = deriveAta(kp.publicKey, expectedMint, hop.outputTokenProgram);
-      
-      // Check if the ATA address matches what we expect (always verify, even for new accounts)
-      if (!userTokenOutPk.equals(correctAta)) {
+      if (!userTokenOutPk.equals(correctAtaOut)) {
         try { 
           logger.warn('meteora.dlmm.userTokenOut.address_mismatch', { 
             cat: 'tx', 
             ctx: { 
               userTokenOut: userTokenOutPk.toBase58(),
-              correctAta: correctAta.toBase58(),
+              correctAta: correctAtaOut.toBase58(),
               expectedMint: expectedMint.toBase58(),
               outputMint: hop.outputMint,
               outputTokenProgram: hop.outputTokenProgram
             } 
           }); 
         } catch {}
-        
-        // Use the correct ATA
-        accounts.userTokenOut = correctAta;
-        
+        accounts.userTokenOut = correctAtaOut;
         try { 
           logger.info('meteora.dlmm.userTokenOut.corrected', { 
             cat: 'tx', 
             ctx: { 
               old: userTokenOutPk.toBase58(),
-              new: correctAta.toBase58(),
+              new: correctAtaOut.toBase58(),
               mint: expectedMint.toBase58()
             } 
           }); 
         } catch {}
       }
       
-      // Additionally, if account exists on-chain, verify the mint matches
+      // Batch fetch both token accounts at once to reduce RPC calls
       const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
-      const tokenOutInfo = await withRpcLimit(() => connection.getAccountInfo(userTokenOutPk)).catch(() => null);
+      const tokenAccountsToCheck: PublicKey[] = [userTokenInPk, userTokenOutPk];
+      const weight = Math.max(1, Math.ceil(tokenAccountsToCheck.length / 5));
+      tokenInfos = await withRpcLimit(
+        () => connection.getMultipleAccountsInfo(tokenAccountsToCheck),
+        weight
+      ).catch(() => null);
       
-      if (tokenOutInfo?.data && tokenOutInfo.data.length >= 32) {
-        // Parse token account to get mint (mint is at offset 0 in SPL token account)
-        const mintBytes = tokenOutInfo.data.slice(0, 32);
-        try {
-          const accountMint = new PublicKey(mintBytes);
-          
-          if (!accountMint.equals(expectedMint)) {
-            try { 
-              logger.warn('meteora.dlmm.userTokenOut.mint_mismatch', { 
-                cat: 'tx', 
-                ctx: { 
-                  userTokenOut: userTokenOutPk.toBase58(),
-                  accountMint: accountMint.toBase58(),
-                  expectedMint: expectedMint.toBase58(),
-                  outputMint: hop.outputMint
-                } 
-              }); 
-            } catch {}
-            
-            // Use the correct ATA (already set above if address was wrong)
-            accounts.userTokenOut = correctAta;
-            
-            try { 
-              logger.info('meteora.dlmm.userTokenOut.mint_corrected', { 
-                cat: 'tx', 
-                ctx: { 
-                  old: userTokenOutPk.toBase58(),
-                  new: correctAta.toBase58(),
-                  mint: expectedMint.toBase58()
-                } 
-              }); 
-            } catch {}
+      // Process input token account result
+      if (tokenInfos && tokenInfos.length >= 1) {
+        const tokenInInfo = tokenInfos[0];
+        if (tokenInInfo?.data && tokenInInfo.data.length >= 32) {
+          const mintBytes = tokenInInfo.data.slice(0, 32);
+          try {
+            const accountMint = new PublicKey(mintBytes);
+            if (!accountMint.equals(expectedInputMint)) {
+              try { 
+                logger.warn('meteora.dlmm.userTokenIn.mint_mismatch', { 
+                  cat: 'tx', 
+                  ctx: { 
+                    userTokenIn: userTokenInPk.toBase58(),
+                    accountMint: accountMint.toBase58(),
+                    expectedMint: expectedInputMint.toBase58(),
+                    inputMint: hop.inputMint
+                  } 
+                }); 
+              } catch {}
+              accounts.userTokenIn = correctAtaIn;
+              try { 
+                logger.info('meteora.dlmm.userTokenIn.mint_corrected', { 
+                  cat: 'tx', 
+                  ctx: { 
+                    old: userTokenInPk.toBase58(),
+                    new: correctAtaIn.toBase58(),
+                    mint: expectedInputMint.toBase58()
+                  } 
+                }); 
+              } catch {}
+            }
+          } catch (parseErr) {
+            accounts.userTokenIn = correctAtaIn;
           }
-        } catch (parseErr) {
-          // Account exists but can't parse - use correct derivation
-          accounts.userTokenOut = correctAta;
+        }
+      }
+      
+      // Process output token account result
+      if (tokenInfos && tokenInfos.length >= 2) {
+        const tokenOutInfo = tokenInfos[1];
+        if (tokenOutInfo?.data && tokenOutInfo.data.length >= 32) {
+          const mintBytes = tokenOutInfo.data.slice(0, 32);
+          try {
+            const accountMint = new PublicKey(mintBytes);
+            if (!accountMint.equals(expectedMint)) {
+              try { 
+                logger.warn('meteora.dlmm.userTokenOut.mint_mismatch', { 
+                  cat: 'tx', 
+                  ctx: { 
+                    userTokenOut: userTokenOutPk.toBase58(),
+                    accountMint: accountMint.toBase58(),
+                    expectedMint: expectedMint.toBase58(),
+                    outputMint: hop.outputMint
+                  } 
+                }); 
+              } catch {}
+              accounts.userTokenOut = correctAtaOut;
+              try { 
+                logger.info('meteora.dlmm.userTokenOut.mint_corrected', { 
+                  cat: 'tx', 
+                  ctx: { 
+                    old: userTokenOutPk.toBase58(),
+                    new: correctAtaOut.toBase58(),
+                    mint: expectedMint.toBase58()
+                  } 
+                }); 
+              } catch {}
+            }
+          } catch (parseErr) {
+            accounts.userTokenOut = correctAtaOut;
+          }
         }
       }
     } catch (validateErr) {
       // Non-fatal: log but continue
       try { 
-        logger.debug('meteora.dlmm.userTokenOut.validation.failed', { 
+        logger.debug('meteora.dlmm.token.validation.failed', { 
           cat: 'tx', 
           ctx: { error: String((validateErr as any)?.message || validateErr) } 
         }); 
@@ -2373,10 +2358,12 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     } catch {}
     
     // Verify critical accounts exist before building instruction
+    // Note: We'll batch this with other account checks later to reduce RPC calls
     const connection = getConnection();
     const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+    let configAcc: any = null;
     try {
-      const configAcc = await withRpcLimit(() => connection.getAccountInfo(configIdPk));
+      configAcc = await withRpcLimit(() => connection.getAccountInfo(configIdPk));
       if (!configAcc) {
         throw createBuilderError('RAYDIUM_CLMM', `ammConfig account does not exist: ${configIdPk.toBase58()}`, hop);
       }
@@ -2461,36 +2448,48 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       hop.tickArrayUpper,
     ].filter(Boolean);
     
-    for (const tickArrayAddr of tickArrayCandidates) {
+    // Batch fetch all tick arrays at once to reduce RPC calls
+    if (tickArrayCandidates.length > 0) {
       try {
-        const tickPk = toPublicKey(tickArrayAddr);
-        const tickAcc = await withRpcLimit(() => connection.getAccountInfo(tickPk)).catch(() => null);
-        // Just verify account exists with data - don't check owner (chain will validate program ownership)
-        if (tickAcc && tickAcc.data && tickAcc.data.length > 0) {
-          tickArrayKeys.push(tickPk);
-          try { 
-            logger.debug('raydium.clmm.tickarray.verified', { 
-              cat: 'tx', 
-              ctx: { 
-                pool: hop.poolId, 
-                tickArray: tickPk.toBase58(),
-                owner: tickAcc.owner.toBase58(),
-                dataLen: tickAcc.data.length 
-              } as any 
-            }); 
-          } catch {}
-        } else {
-          try { 
-            logger.debug('raydium.clmm.tickarray.missing', { 
-              cat: 'tx', 
-              ctx: { 
-                pool: hop.poolId, 
-                tickArray: tickPk.toBase58(),
-                exists: !!tickAcc,
-                hasData: !!(tickAcc && tickAcc.data?.length) 
-              } as any 
-            }); 
-          } catch {}
+        const tickArrayPks = tickArrayCandidates.map(addr => toPublicKey(addr));
+        const weight = Math.max(1, Math.ceil(tickArrayPks.length / 5));
+        const tickArrayInfos = await withRpcLimit(
+          () => connection.getMultipleAccountsInfo(tickArrayPks),
+          weight
+        ).catch(() => null);
+        
+        if (tickArrayInfos && tickArrayInfos.length === tickArrayPks.length) {
+          for (let i = 0; i < tickArrayPks.length; i++) {
+            const tickPk = tickArrayPks[i];
+            const tickAcc = tickArrayInfos[i];
+            // Just verify account exists with data - don't check owner (chain will validate program ownership)
+            if (tickAcc && tickAcc.data && tickAcc.data.length > 0) {
+              tickArrayKeys.push(tickPk);
+              try { 
+                logger.debug('raydium.clmm.tickarray.verified', { 
+                  cat: 'tx', 
+                  ctx: { 
+                    pool: hop.poolId, 
+                    tickArray: tickPk.toBase58(),
+                    owner: tickAcc.owner.toBase58(),
+                    dataLen: tickAcc.data.length 
+                  } as any 
+                }); 
+              } catch {}
+            } else {
+              try { 
+                logger.debug('raydium.clmm.tickarray.missing', { 
+                  cat: 'tx', 
+                  ctx: { 
+                    pool: hop.poolId, 
+                    tickArray: tickPk.toBase58(),
+                    exists: !!tickAcc,
+                    hasData: !!(tickAcc && tickAcc.data?.length) 
+                  } as any 
+                }); 
+              } catch {}
+            }
+          }
         }
       } catch (e: any) {
         try { 
@@ -2498,7 +2497,6 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
             cat: 'tx', 
             ctx: { 
               pool: hop.poolId, 
-              tickArray: String(tickArrayAddr),
               error: String(e?.message || e) 
             } as any 
           }); 
@@ -2520,39 +2518,18 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     }
 
     // Check exBitmap BEFORE calling SDK to prevent it from being added if it doesn't exist
+    // Note: This will be batched with observation account check later to reduce RPC calls
     let exBitmapPk: PublicKey | null = null;
     let exBitmapExists = false;
     try {
       const { getPdaExBitmapAccount } = await import('@raydium-io/raydium-sdk-v2').catch(() => ({ getPdaExBitmapAccount: null }));
       if (getPdaExBitmapAccount) {
         exBitmapPk = getPdaExBitmapAccount(programIdPk, poolIdPk).publicKey;
-        const exBitmapAcc = await withRpcLimit(() => connection.getAccountInfo(exBitmapPk)).catch(() => null);
-        exBitmapExists = !!exBitmapAcc && !!exBitmapAcc.data && exBitmapAcc.data.length > 0;
-        try {
-          if (exBitmapExists) {
-            logger.debug('raydium.clmm.exbitmap.precheck.exists', {
-              cat: 'tx',
-              ctx: {
-                pool: hop.poolId,
-                exBitmap: exBitmapPk.toBase58(),
-                owner: exBitmapAcc.owner.toBase58(),
-                dataLen: exBitmapAcc.data.length,
-              } as any,
-            });
-          } else {
-            logger.warn('raydium.clmm.exbitmap.precheck.missing', {
-              cat: 'tx',
-              ctx: {
-                pool: hop.poolId,
-                exBitmap: exBitmapPk.toBase58(),
-              } as any,
-            });
-          }
-        } catch {}
+        // We'll batch this check with observation account below
       }
     } catch (e: any) {
       try {
-        logger.debug('raydium.clmm.exbitmap.precheck.failed', {
+        logger.debug('raydium.clmm.exbitmap.derive.failed', {
           cat: 'tx',
           ctx: {
             pool: hop.poolId,
@@ -3056,28 +3033,57 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     
     // Verify all critical accounts exist before proceeding
     if (ixs && ixs.length) {
-      // First verify observation account exists
+      // Batch fetch observation and exBitmap accounts together to reduce RPC calls
       try {
-        const obsAcc = await withRpcLimit(() => connection.getAccountInfo(observationId)).catch(() => null);
-        if (!obsAcc || !obsAcc.data || obsAcc.data.length === 0) {
+        const accountsToCheck: PublicKey[] = [observationId];
+        if (exBitmapPk) {
+          accountsToCheck.push(exBitmapPk);
+        }
+        
+        const weight = Math.max(1, Math.ceil(accountsToCheck.length / 5));
+        const accountInfos = await withRpcLimit(
+          () => connection.getMultipleAccountsInfo(accountsToCheck),
+          weight
+        ).catch(() => null);
+        
+        // Verify observation account exists
+        if (!accountInfos || accountInfos.length < 1 || !accountInfos[0] || !accountInfos[0].data || accountInfos[0].data.length === 0) {
           throw createBuilderError('RAYDIUM_CLMM', `observation account does not exist: ${observationId.toBase58()}`, hop);
         }
         try {
           logger.debug('raydium.clmm.observation.verified', { cat: 'tx', ctx: { pool: hop.poolId, observation: observationId.toBase58() } as any });
         } catch {}
+        
+        // Check exBitmap if it was included
+        if (exBitmapPk && accountInfos.length >= 2) {
+          const exBitmapAcc = accountInfos[1];
+          exBitmapExists = !!exBitmapAcc && !!exBitmapAcc.data && exBitmapAcc.data.length > 0;
+          try {
+            if (exBitmapExists) {
+              logger.debug('raydium.clmm.exbitmap.precheck.exists', {
+                cat: 'tx',
+                ctx: {
+                  pool: hop.poolId,
+                  exBitmap: exBitmapPk.toBase58(),
+                  owner: exBitmapAcc.owner.toBase58(),
+                  dataLen: exBitmapAcc.data.length,
+                } as any,
+              });
+            } else {
+              logger.warn('raydium.clmm.exbitmap.precheck.missing', {
+                cat: 'tx',
+                ctx: {
+                  pool: hop.poolId,
+                  exBitmap: exBitmapPk.toBase58(),
+                } as any,
+              });
+            }
+          } catch {}
+        }
       } catch (e: any) {
         if (e instanceof Error && e.message.includes('RAYDIUM_CLMM_BUILD_FAILED')) throw e;
         try { logger.warn('raydium.clmm.observation.verify.failed', { cat: 'tx', ctx: { pool: hop.poolId, error: String(e?.message || e) } as any }); } catch {}
       }
-
-      // Derive exBitmap address once (we skip it in verification since we handle it separately)
-      let exBitmapPk: PublicKey | null = null;
-      try {
-        const { getPdaExBitmapAccount } = await import('@raydium-io/raydium-sdk-v2').catch(() => ({ getPdaExBitmapAccount: null }));
-        if (getPdaExBitmapAccount) {
-          exBitmapPk = getPdaExBitmapAccount(programIdPk, poolIdPk).publicKey;
-        }
-      } catch {}
       
       // Verify all accounts in each instruction to catch missing accounts early
       // But skip accounts that don't need to exist yet (signers, writable accounts that can be created)
@@ -3365,13 +3371,15 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       throw createBuilderError('RAYDIUM_AMM', String((validationErr as any)?.message || validationErr), hop);
     }
     // Best-effort: derive missing market/program from on-chain pool state
+    // Cache the pool account info to avoid duplicate RPC calls
+    let poolAccountInfo: any = null;
     try {
       if (!hop.market || !hop.serumProgramId) {
         const connection = getConnection();
         const poolPk = toPublicKey(hop.poolId);
         const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
-        const acc = await withRpcLimit(() => connection.getAccountInfo(poolPk));
-        if (acc?.data?.length) {
+        poolAccountInfo = await withRpcLimit(() => connection.getAccountInfo(poolPk));
+        if (poolAccountInfo?.data?.length) {
           const rmod: any = await import('@raydium-io/raydium-sdk-v2');
           const layouts = [
             (rmod as any)?.LiquidityStateLayoutV4,
@@ -3381,7 +3389,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
           ].filter(Boolean);
           for (const layout of layouts) {
             try {
-              const state = layout.decode(acc.data);
+              const state = layout.decode(poolAccountInfo.data);
               const mk = state.marketId?.toBase58?.() || state.marketId?.toString?.() || '';
               const mp = state.marketProgramId?.toBase58?.() || state.marketProgramId?.toString?.() || '';
               if (mk && mp) {
@@ -3440,10 +3448,14 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     };
 
     // Decode AMM state from chain (always) to override any placeholder keys returned by SDK
+    // Reuse cached pool account info if available to avoid duplicate RPC call
     try {
-      const connection = getConnection();
-      const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
-      const acc = await withRpcLimit(() => connection.getAccountInfo(toPublicKey(hop.poolId)));
+      let acc = poolAccountInfo;
+      if (!acc) {
+        const connection = getConnection();
+        const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+        acc = await withRpcLimit(() => connection.getAccountInfo(toPublicKey(hop.poolId)));
+      }
       if (acc?.data?.length) {
         const sdkLayouts: any = await import('@raydium-io/raydium-sdk-v2');
         const layouts = [
