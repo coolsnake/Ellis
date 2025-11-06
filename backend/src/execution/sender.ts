@@ -4,6 +4,7 @@ import { withRpcLimit } from '../utils/rpcLimiter.js';
 import { writeDexFullDump } from '../utils/txTrace.js';
 import { CONFIG } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
+import { LogCode } from '../utils/logging.js';
 import { getTxRelatedLogs } from '../utils/sessionLogs.js';
 const TX_DEBUG_COERCION = !!((CONFIG as any)?.tx?.debugIxCoercion);
 
@@ -281,6 +282,37 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
   const tx = new VersionedTransaction(msg);
   tx.sign([kp]);
   const wireBase64 = Buffer.from(tx.serialize()).toString('base64');
+  
+  // CRITICAL: Check actual serialized size before simulation
+  // Solana v0 transaction size limit: 1232 bytes (raw) or 1644 bytes (base64 encoded)
+  // The error message format suggests checking base64 encoded size
+  const rawSizeBytes = Buffer.from(wireBase64, 'base64').length;
+  const base64SizeBytes = wireBase64.length; // Base64 encoded size
+  const MAX_TX_SIZE_RAW = 1232; // Raw transaction size limit
+  const MAX_TX_SIZE_BASE64 = 1644; // Base64 encoded size limit
+  
+  // Check both raw and base64 sizes (base64 is what Solana reports in errors)
+  if (rawSizeBytes > MAX_TX_SIZE_RAW || base64SizeBytes > MAX_TX_SIZE_BASE64) {
+    const errorMsg = `Transaction too large: ${base64SizeBytes} bytes base64 encoded / ${rawSizeBytes} bytes raw (max: ${MAX_TX_SIZE_BASE64} bytes encoded / ${MAX_TX_SIZE_RAW} bytes raw). Instruction count: ${realIxs.length}, Lookup tables: ${lookupTables.length}`;
+    try {
+      logger.error('tx.size.exceeded', {
+        cat: 'tx',
+        code: LogCode.TX_PREFLIGHT_ERR,
+        ctx: {
+          txId,
+          base64SizeBytes,
+          rawSizeBytes,
+          maxSizeRaw: MAX_TX_SIZE_RAW,
+          maxSizeBase64: MAX_TX_SIZE_BASE64,
+          ixCount: realIxs.length,
+          lookupTableCount: lookupTables.length,
+          error: errorMsg,
+        } as any,
+      });
+    } catch {}
+    return { logs: [], err: { TransactionTooLarge: errorMsg }, wireBase64 };
+  }
+  
   const sim = await connection.simulateTransaction(tx, { sigVerify: true });
   if (sim.value?.err) {
     const errorDetails = summarizeSimError(sim.value?.logs, sim.value?.err);

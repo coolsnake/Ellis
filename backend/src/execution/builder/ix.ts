@@ -153,6 +153,26 @@ async function injectBinArrayMetas(
     // Inject metas into instruction
     if (Array.isArray(metas) && metas.length && Array.isArray((ix as any).keys)) {
       const existing = new Set<string>();
+      const currentAccountCount = (ix as any).keys.length;
+      
+      // Solana instruction limit: 64 accounts max
+      const MAX_ACCOUNTS = 64;
+      const availableSlots = Math.max(0, MAX_ACCOUNTS - currentAccountCount);
+      
+      if (availableSlots === 0) {
+        try { 
+          logger.warn('meteora.dlmm.inject.skip_limit', { 
+            cat: 'tx', 
+            ctx: { 
+              currentAccounts: currentAccountCount,
+              maxAccounts: MAX_ACCOUNTS,
+              message: 'Instruction already at account limit, skipping bin array injection'
+            } 
+          }); 
+        } catch {}
+        return 0;
+      }
+      
       try {
         for (const k of (ix as any).keys as any[]) {
           const s = (k?.pubkey && typeof k.pubkey.toBase58 === 'function') ? k.pubkey.toBase58() : String(k?.pubkey);
@@ -162,12 +182,27 @@ async function injectBinArrayMetas(
         try { logger.debug('meteora.dlmm.inject.existing.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
       }
       
-      // Safety limit - should already be limited but cap at 12 total (10 arrays + bitmap + overhead)
-      const maxInjected = 12;
+      // Safety limit - cap at available slots (leave some room for safety)
+      const maxInjected = Math.min(12, availableSlots - 2); // Leave 2 slots for safety
       const limitedMetas = metas.slice(0, maxInjected);
       
       let injected = 0;
       for (const m of limitedMetas) {
+        // Double-check we haven't exceeded limit
+        if ((ix as any).keys.length >= MAX_ACCOUNTS) {
+          try { 
+            logger.warn('meteora.dlmm.inject.limit_reached', { 
+              cat: 'tx', 
+              ctx: { 
+                currentAccounts: (ix as any).keys.length,
+                maxAccounts: MAX_ACCOUNTS,
+                injectedSoFar: injected
+              } 
+            }); 
+          } catch {}
+          break;
+        }
+        
         try {
           const pk = (m?.pubkey && typeof m.pubkey.toBase58 === 'function') 
             ? m.pubkey 
@@ -184,7 +219,16 @@ async function injectBinArrayMetas(
       }
       
       if (injected > 0) {
-        try { logger.info('meteora.dlmm.remaining.inject', { cat: 'tx', ctx: { added: injected } as any }); } catch {}
+        try { 
+          logger.info('meteora.dlmm.remaining.inject', { 
+            cat: 'tx', 
+            ctx: { 
+              added: injected,
+              totalAccounts: (ix as any).keys.length,
+              maxAccounts: MAX_ACCOUNTS
+            } as any 
+          }); 
+        } catch {}
       }
       return injected;
     }
@@ -1883,18 +1927,62 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     
     // Add pre-computed bin array metas as remaining accounts (already limited to ~6-7 max)
     // Only add if SDK helper didn't already set remaining accounts
+    // Solana limit is 64 accounts per instruction - we need to be careful here
+    const MAX_ACCOUNTS = 64;
     if (binArrayMetas && binArrayMetas.length && typeof (builder as any).remainingAccounts === 'function') {
       try {
-        // Safety limit - should already be limited but cap at 10 just in case
-        const limited = binArrayMetas.slice(0, 10);
-        if (limited.length) {
+        // Build instruction first to check current account count
+        const tempIx = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
+        let currentCount = 0;
+        
+        if (tempIx && Array.isArray(tempIx.keys)) {
+          currentCount = tempIx.keys.length;
+        }
+        
+        // Limit based on available slots (leave 2 for safety)
+        const maxToAdd = Math.min(10, MAX_ACCOUNTS - currentCount - 2);
+        const limited = binArrayMetas.slice(0, Math.max(0, maxToAdd));
+        
+        if (limited.length > 0) {
           builder = (builder as any).remainingAccounts(limited);
-          try { logger.info('meteora.dlmm.remaining.from_metas', { cat: 'tx', ctx: { count: limited.length } }); } catch {}
+          try { logger.info('meteora.dlmm.remaining.from_metas', { cat: 'tx', ctx: { count: limited.length, currentAccounts: currentCount } }); } catch {}
+          // Don't return early - continue with normal flow to ensure setupIxs are included
+        } else if (binArrayMetas.length > 0) {
+          try { 
+            logger.warn('meteora.dlmm.remaining.from_metas.skipped', { 
+              cat: 'tx', 
+              ctx: { 
+                requested: binArrayMetas.length,
+                currentAccounts: currentCount,
+                maxAccounts: MAX_ACCOUNTS,
+                message: 'Skipping bin array metas due to account limit'
+              } 
+            }); 
+          } catch {}
         }
       } catch {}
     }
     
     const ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
+    
+    // Validate instruction account count before proceeding
+    if (ix && Array.isArray(ix.keys)) {
+      if (ix.keys.length > MAX_ACCOUNTS) {
+        try {
+          logger.error('meteora.dlmm.instruction.account_limit_exceeded', {
+            cat: 'tx',
+            code: LogCode.TX_BUILD_ERR,
+            ctx: {
+              accountCount: ix.keys.length,
+              maxAccounts: MAX_ACCOUNTS,
+              poolId: hop.poolId,
+              message: 'Instruction exceeds Solana account limit, this will cause encoding errors'
+            }
+          });
+        } catch {}
+        throw createBuilderError('METEORA_DLMM', `Instruction has ${ix.keys.length} accounts, exceeds Solana limit of ${MAX_ACCOUNTS}`, hop);
+      }
+    }
     
     // Final safety check: validate and correct userTokenOut in the actual instruction
     if (ix && Array.isArray(ix.keys)) {
