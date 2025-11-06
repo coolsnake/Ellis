@@ -1,5 +1,5 @@
 import { Connection, Transaction, TransactionInstruction, VersionedTransaction, TransactionMessage, PublicKey } from '@solana/web3.js';
-import { getConnection } from '../../utils/connection.js';
+import { getConnection } from '../../wallet/wallet.js';
 import { withRpcLimit } from '../../utils/rpcLimiter.js';
 import { logger } from '../../utils/logger.js';
 
@@ -18,7 +18,8 @@ export async function measureComputeUnits(
 
   try {
     const connection = getConnection();
-    const { blockhash } = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
+    const latestBlockhash = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
+    const blockhash = latestBlockhash.blockhash;
     
     // Load lookup tables if provided
     const lookupTables = lookupTableAddresses.length > 0

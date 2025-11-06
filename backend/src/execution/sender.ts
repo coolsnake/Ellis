@@ -193,6 +193,24 @@ async function loadLookupTables(connection: Connection, addrs: string[]): Promis
   return out;
 }
 
+// Add function to get common lookup table addresses (Jupiter's common ALT)
+async function getCommonLookupTables(connection: Connection): Promise<AddressLookupTableAccount[]> {
+  // Jupiter's common address lookup table for mainnet
+  // This contains common programs like Token Program, System Program, etc.
+  const COMMON_ALT_MAINNET = 'DehAasscXF4kEGxFgJ3bq4PpVGp5wyUxMRvn6TzGVHaw';
+  // Add other common ALTs as needed
+  
+  try {
+    const pk = new PublicKey(COMMON_ALT_MAINNET);
+    const acc = await connection.getAddressLookupTable(pk).then(r => r.value).catch(() => null);
+    if (acc) {
+      try { logger.debug('tx.lookup_table.loaded', { cat: 'tx', ctx: { address: COMMON_ALT_MAINNET, accountCount: acc.state.addresses.length } }); } catch {}
+      return [acc];
+    }
+  } catch {}
+  return [];
+}
+
 function summarizeSimError(logs?: string[], err?: any): { ix?: number; custom?: number; hint?: string; account?: string; errorType?: string } {
   try {
     if (err && err.InstructionError && Array.isArray(err.InstructionError)) {
@@ -327,6 +345,24 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
     logger.info('tx.preflight.detail', { cat: 'tx', ctx: { txId, ixCount: realIxs.length, origCount: (instructions || []).length, skipped, programs: realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId))) } as any });
   } catch {}
   const lookupTables = await loadLookupTables(connection, (opts?.lookupTableAddresses || []));
+  
+  // If no lookup tables provided, try to use common ones
+  if (lookupTables.length === 0) {
+    const commonTables = await getCommonLookupTables(connection);
+    if (commonTables.length > 0) {
+      lookupTables.push(...commonTables);
+      try { 
+        logger.info('tx.lookup_table.using_common', { 
+          cat: 'tx', 
+          ctx: { 
+            count: commonTables.length,
+            totalAccounts: commonTables.reduce((sum, lt) => sum + (lt.state?.addresses?.length || 0), 0)
+          } 
+        }); 
+      } catch {}
+    }
+  }
+  
   const msg = new TransactionMessage({ payerKey: kp.publicKey, recentBlockhash: blockhash, instructions: realIxs }).compileToV0Message(lookupTables);
   const tx = new VersionedTransaction(msg);
   tx.sign([kp]);
@@ -491,6 +527,24 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
   // Use ALT addresses from options, or try to extract from instructions if available
   const altAddresses = opts?.lookupTableAddresses || [];
   const lookupTables = await loadLookupTables(connection, altAddresses);
+  
+  // If no lookup tables provided, try to use common ones
+  if (lookupTables.length === 0) {
+    const commonTables = await getCommonLookupTables(connection);
+    if (commonTables.length > 0) {
+      lookupTables.push(...commonTables);
+      try { 
+        logger.info('tx.lookup_table.using_common', { 
+          cat: 'tx', 
+          ctx: { 
+            count: commonTables.length,
+            totalAccounts: commonTables.reduce((sum, lt) => sum + (lt.state?.addresses?.length || 0), 0)
+          } 
+        }); 
+      } catch {}
+    }
+  }
+  
   const msg = new TransactionMessage({ payerKey: kp.publicKey, recentBlockhash: blockhash, instructions: realIxs }).compileToV0Message(lookupTables);
   const tx = new VersionedTransaction(msg);
   tx.sign([kp]);

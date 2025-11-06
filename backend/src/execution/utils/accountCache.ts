@@ -1,5 +1,5 @@
 import { Connection, PublicKey, AccountInfo } from '@solana/web3.js';
-import { getConnection } from '../../utils/connection.js';
+import { getConnection } from '../../wallet/wallet.js';
 import { withRpcLimit } from '../../utils/rpcLimiter.js';
 import { logger } from '../../utils/logger.js';
 
@@ -50,6 +50,8 @@ export class AccountDataCache {
         return info;
       }
       
+      // Account doesn't exist, remove from cache
+      this.cache.delete(key);
       return null;
     } catch (error) {
       try {

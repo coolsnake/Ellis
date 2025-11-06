@@ -125,77 +125,6 @@ function estimateInstructionSize(ix: any): number {
   }
 }
 
-/**
- * Estimates the full serialized size of a VersionedTransaction
- * This includes transaction overhead (signatures, header, lookup tables, etc.)
- */
-function estimateVersionedTransactionSize(instructions: any[], lookupTableCount = 0): number {
-  try {
-    // Base transaction overhead:
-    // - Version byte: 1
-    // - Signature count (u8): 1
-    // - Signatures: 64 bytes each (typically 1)
-    // - Message header overhead: ~20 bytes
-    let size = 1 + 1 + 64 + 20;
-    
-    // Lookup table addresses: 32 bytes each
-    size += lookupTableCount * 32;
-    
-    // Instruction count: 1 byte
-    size += 1;
-    
-    // Account keys count: 2 bytes (u16)
-    // For v0 transactions with lookup tables, accounts are compressed
-    // Estimate: ~2 bytes per account (index) vs 33 bytes (full key)
-    // We'll use a conservative estimate assuming some compression
-    const totalAccounts = new Set<string>();
-    for (const ix of instructions) {
-      const keys = ix?.keys || ix?.accounts || [];
-      for (const key of keys) {
-        const pk = key?.pubkey || key;
-        if (pk) {
-          const addr = typeof pk.toBase58 === 'function' ? pk.toBase58() : String(pk);
-          totalAccounts.add(addr);
-        }
-      }
-    }
-    // With lookup tables: ~2 bytes per account (index) + overhead
-    // Without: ~33 bytes per account
-    // Use conservative estimate: assume 50% compression with lookup tables
-    const accountSize = lookupTableCount > 0 ? Math.max(2, 33 * 0.5) : 33;
-    size += 2 + (totalAccounts.size * accountSize);
-    
-    // Instructions: each instruction has overhead
-    for (const ix of instructions) {
-      // Program ID index: 1 byte (if in lookup table) or 2 bytes (u16 for account index)
-      size += lookupTableCount > 0 ? 1 : 2;
-      // Account indices: 1 byte each (u8)
-      const keys = ix?.keys || ix?.accounts || [];
-      size += keys.length;
-      // Data length: 2 bytes (u16) + data
-      const data = ix?.data;
-      let dataLen = 0;
-      if (data) {
-        if (Buffer.isBuffer(data)) {
-          dataLen = data.length;
-        } else if (data instanceof Uint8Array) {
-          dataLen = data.length;
-        } else if (Array.isArray(data)) {
-          dataLen = data.length;
-        } else if (typeof data === 'string') {
-          dataLen = Buffer.from(data, 'base64').length;
-        }
-      }
-      size += 2 + dataLen;
-    }
-    
-    return size;
-  } catch {
-    // Fallback: use instruction-based estimate with 2x multiplier for overhead
-    return instructions.reduce((sum, ix) => sum + estimateInstructionSize(ix), 0) * 2;
-  }
-}
-
 export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[], cb?: ComputeBudgetConfig): Promise<{ tx: any; ixCount: number; sizeBytes: number }> {
   const t0 = Date.now();
   const traceId = Math.random().toString(36).slice(2, 10);
@@ -535,7 +464,7 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
     // Measure compute units if not provided or if dynamic compute is enabled
     let measuredComputeUnits: number | undefined = undefined;
     let dynamicPriorityFee: number | undefined = undefined;
-    const execCfg = await loadExecConfig().catch(() => ({ dynamicCompute: false } as any));
+    // Reuse execCfg from earlier in the function (line 161)
     const shouldMeasure = !cb?.computeUnitLimit || (execCfg as any)?.dynamicCompute;
     
     // Calculate dynamic priority fees if enabled
@@ -658,10 +587,8 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
     const all = [...budget, ...extraSetupIxs, ...hopIxs];
     
     const sizeCalcStart = Date.now();
-    // Calculate estimated serialized size for VersionedTransaction
-    // Note: This is an estimate; actual size may vary due to lookup table compression
-    const estimatedSizeBytes = estimateVersionedTransactionSize(all, 0); // Conservative: assume no lookup tables
-    const sizeBytes = estimatedSizeBytes;
+    // Calculate actual serialized size instead of fixed estimate
+    const sizeBytes = all.reduce((sum, ix) => sum + estimateInstructionSize(ix), 0);
     metrics.finalization.sizeCalculation = Date.now() - sizeCalcStart;
     
     metrics.finalization.total = Date.now() - finalizationStart;

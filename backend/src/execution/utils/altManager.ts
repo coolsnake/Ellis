@@ -1,5 +1,5 @@
 import { Connection, PublicKey, AddressLookupTableAccount, TransactionMessage, VersionedTransaction, AddressLookupTableProgram, Transaction, Keypair } from '@solana/web3.js';
-import { getConnection } from '../../utils/connection.js';
+import { getConnection } from '../../wallet/wallet.js';
 import { CONFIG } from '../../utils/config.js';
 import { withRpcLimit } from '../../utils/rpcLimiter.js';
 import { logger } from '../../utils/logger.js';
@@ -110,7 +110,8 @@ export class DexAltManager {
     }
     
     // Get recent slot for ALT creation
-    const recentSlot = await withRpcLimit(() => connection.getSlot('finalized'));
+    const recentSlotRaw = await withRpcLimit(() => connection.getSlot('finalized'));
+    const recentSlot = typeof recentSlotRaw === 'number' ? recentSlotRaw : Number(recentSlotRaw);
     
     // Create ALT instruction
     const createIx = AddressLookupTableProgram.createLookupTable({
@@ -131,9 +132,11 @@ export class DexAltManager {
     });
     
     // Send transaction
-    const tx = new Transaction().add(createIx, extendIx);
-    const { blockhash } = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
-    tx.recentBlockhash = blockhash;
+    const tx = new Transaction();
+    tx.add(createIx);
+    tx.add(extendIx);
+    const latestBlockhash = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
+    tx.recentBlockhash = latestBlockhash.blockhash;
     tx.feePayer = payer.publicKey;
     
     const kp = Keypair.fromSecretKey(payer.secretKey);
@@ -267,7 +270,7 @@ export class DexAltManager {
           connection.getAddressLookupTable(pk)
         );
 
-        if (result.value) {
+        if (result && 'value' in result && result.value) {
           this.altAccounts.set(addr, result.value);
           accounts.push(result.value);
         }

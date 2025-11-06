@@ -2380,6 +2380,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     // Try to use SDK's getClmmPoolKeys for proper structure (if API available)
     let poolKeysFromApi: any = null;
     try {
+      const connection = getConnection();
       const { Clmm } = await import('@raydium-io/raydium-sdk-v2');
       const clmm = new (Clmm as any)({
         connection,
@@ -2451,6 +2452,8 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     // Batch fetch all tick arrays at once to reduce RPC calls
     if (tickArrayCandidates.length > 0) {
       try {
+        const connection = getConnection();
+        const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
         const tickArrayPks = tickArrayCandidates.map(addr => toPublicKey(addr));
         const weight = Math.max(1, Math.ceil(tickArrayPks.length / 5));
         const tickArrayInfos = await withRpcLimit(
@@ -3035,6 +3038,8 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     if (ixs && ixs.length) {
       // Batch fetch observation and exBitmap accounts together to reduce RPC calls
       try {
+        const connection = getConnection();
+        const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
         const accountsToCheck: PublicKey[] = [observationId];
         if (exBitmapPk) {
           accountsToCheck.push(exBitmapPk);
@@ -3193,12 +3198,13 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
           // Batch fetch all accounts at once
           if (accountsToVerify.length > 0) {
             try {
+              const connection = getConnection();
               const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
               const keys = accountsToVerify.map(a => a.pkObj);
               const weight = Math.max(1, Math.ceil(keys.length / 5));
               const accountInfos = await withRpcLimit(() => connection.getMultipleAccountsInfo(keys), weight).catch(() => null);
               
-              if (accountInfos && accountInfos.length === accountsToVerify.length) {
+              if (accountInfos && Array.isArray(accountInfos) && accountInfos.length === accountsToVerify.length) {
                 for (let i = 0; i < accountsToVerify.length; i++) {
                   const { pkStr, keyIdx, keyMeta } = accountsToVerify[i];
                   const acc = accountInfos[i];
