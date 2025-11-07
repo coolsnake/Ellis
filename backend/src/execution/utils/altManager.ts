@@ -377,14 +377,38 @@ export class DexAltManager {
           throw new Error(`Transaction failed: ${JSON.stringify(txStatus.value.err)}`);
         }
         
-        // Transaction succeeded but account not found - this shouldn't happen
-        throw new Error(`Lookup table creation transaction succeeded but account not found after ${maxRetries} retries. Signature: ${createSig}`);
+        // Transaction succeeded but account not queryable yet
+        // This can happen due to RPC indexing delays - proceed with extend attempt
+        // The extend will fail clearly if the account doesn't exist
+        try {
+          logger.warn('alt.manager.create.verify.timeout', {
+            cat: 'tx',
+            ctx: {
+              address: lookupTableAddress.toBase58(),
+              signature: createSig,
+              attempts: maxRetries,
+              note: 'Transaction succeeded but account not queryable. Proceeding with extend - it will fail if account does not exist.',
+            },
+          });
+        } catch {}
+        // Don't throw - proceed with extend attempt
       } catch (error) {
-        // Re-throw if it's our error, otherwise wrap
-        if (error instanceof Error && (error.message.includes('Transaction failed') || error.message.includes('account not found'))) {
+        // If we can't check status, assume transaction might have failed
+        if (error instanceof Error && error.message.includes('Transaction failed')) {
           throw error;
         }
-        throw new Error(`Failed to verify lookup table creation: ${String((error as any)?.message || error)}`);
+        // Otherwise, log warning and proceed - extend will fail if account doesn't exist
+        try {
+          logger.warn('alt.manager.create.verify.uncertain', {
+            cat: 'tx',
+            ctx: {
+              address: lookupTableAddress.toBase58(),
+              signature: createSig,
+              error: String((error as any)?.message || error),
+              note: 'Could not verify account exists. Proceeding with extend attempt.',
+            },
+          });
+        } catch {}
       }
     }
     
