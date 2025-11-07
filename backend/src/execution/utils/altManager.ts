@@ -222,8 +222,8 @@ export class DexAltManager {
     const connection = getConnection();
     
     try {
-      // Derive ALT address deterministically with custom seed
-      const [lookupTableAddress] = PublicKey.findProgramAddressSync(
+      // Derive ALT address deterministically with custom seed (for checking existing ALTs)
+      const [derivedAddress] = PublicKey.findProgramAddressSync(
         [
           Buffer.from(seed),
           payer.publicKey.toBuffer(),
@@ -236,7 +236,7 @@ export class DexAltManager {
       for (let retry = 0; retry < 3; retry++) {
         try {
           existing = await withRpcLimit(() => 
-            connection.getAddressLookupTable(lookupTableAddress)
+            connection.getAddressLookupTable(derivedAddress)
           );
           if (existing && existing.value) break;
         } catch {}
@@ -253,7 +253,7 @@ export class DexAltManager {
           logger.info('alt.manager.exists.found', {
             cat: 'tx',
             ctx: {
-              address: lookupTableAddress.toBase58(),
+              address: derivedAddress.toBase58(),
               accountCount,
               remainingCapacity,
               accountsToAdd: accounts.length,
@@ -268,7 +268,7 @@ export class DexAltManager {
             logger.info('alt.manager.exists.extendable', {
               cat: 'tx',
               ctx: {
-                address: lookupTableAddress.toBase58(),
+                address: derivedAddress.toBase58(),
                 currentCount: accountCount,
                 remainingCapacity,
                 accountsToAdd: accounts.length,
@@ -278,25 +278,25 @@ export class DexAltManager {
           
           // Extend the existing ALT
           const addressesToAdd = accounts.slice(0, remainingCapacity);
-          await this.extendLookupTable(payer, lookupTableAddress, addressesToAdd);
+          await this.extendLookupTable(payer, derivedAddress, addressesToAdd);
           
-          this.altAddresses.set(seed, lookupTableAddress);
-          return lookupTableAddress;
+          this.altAddresses.set(seed, derivedAddress);
+          return derivedAddress;
         } else {
           // ALT exists but is full or no accounts to add
           try {
             logger.info('alt.manager.exists', {
               cat: 'tx',
               ctx: {
-                address: lookupTableAddress.toBase58(),
+                address: derivedAddress.toBase58(),
                 accountCount,
                 full: remainingCapacity < accounts.length,
                 noAccountsToAdd: accounts.length === 0,
               },
             });
           } catch {}
-          this.altAddresses.set(seed, lookupTableAddress);
-          return lookupTableAddress;
+          this.altAddresses.set(seed, derivedAddress);
+          return derivedAddress;
         }
       }
       
@@ -388,11 +388,16 @@ export class DexAltManager {
     const recentSlot = typeof recentSlotRaw === 'number' ? recentSlotRaw : Number(recentSlotRaw);
     
     // Create ALT instruction (returns [instruction, lookupTableAddress])
-    const [createIx] = AddressLookupTableProgram.createLookupTable({
+    // IMPORTANT: Capture the actual address returned by createLookupTable!
+    // The derived address might not match due to bump seed differences
+    const [createIx, actualLookupTableAddress] = AddressLookupTableProgram.createLookupTable({
       authority: payer.publicKey,
       payer: payer.publicKey,
       recentSlot,
     });
+    
+    // Use the actual address from createLookupTable, not the derived one
+    const lookupTableAddress = actualLookupTableAddress;
     
     // STEP 1: Create the lookup table (first transaction)
     // The lookup table account must exist before we can extend it
@@ -427,11 +432,11 @@ export class DexAltManager {
       });
     } catch {}
     
-    // Retry verification with exponential backoff
+    // Retry verification with exponential backoff (reduced retries for faster operation)
     // The account may take a moment to be available after confirmation
     let verifyResult: { value: AddressLookupTableAccount | null } | null = null;
-    const maxRetries = 8; // Increased retries
-    const baseDelayMs = 1000; // Start with 1 second
+    const maxRetries = 5; // Reduced from 8 for faster operation
+    const baseDelayMs = 500; // Reduced from 1000ms for faster operation
     
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       const delay = baseDelayMs * Math.pow(2, attempt);
@@ -552,12 +557,15 @@ export class DexAltManager {
     
     // STEP 2: Extend ALT with accounts (second transaction)
     // Wait and verify the account exists and is properly initialized before extending
+    // Reduced retries and delays for faster operation
     let accountReady = false;
-    const maxReadyRetries = 10;
-    const readyDelayMs = 2000;
+    const maxReadyRetries = 5; // Reduced from 10 for faster operation
+    const readyDelayMs = 1000; // Reduced from 2000ms for faster operation
     
     for (let retry = 0; retry < maxReadyRetries; retry++) {
-      await new Promise(resolve => setTimeout(resolve, readyDelayMs));
+      if (retry > 0) {
+        await new Promise(resolve => setTimeout(resolve, readyDelayMs));
+      }
       
       try {
         // Check if account exists and is owned by Address Lookup Table program
