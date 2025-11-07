@@ -326,13 +326,13 @@ async fn main() -> anyhow::Result<()> {
                         }
                         
                         // Do magnitude calibration outside write lock (expensive operation)
-                        let mut calibrated_edges: Vec<(String, String, String, u16, f64, f64, f64, String)> = Vec::new();
+                        let mut calibrated_edges: Vec<(String, String, String, i64, f64, f64, f64, String)> = Vec::new();
                         let sol_mint: &str  = "So11111111111111111111111111111111111111112";
                         let usdc_mint: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
                         
                         for e in added.iter().chain(updated.iter()) {
                             let dex = e.dex.clone().unwrap_or_else(|| "Unknown".to_string());
-                            let fee = e.fee_bps.unwrap_or(0);
+                            let fee: i64 = e.fee_bps.unwrap_or(0);
                             let liq = e.liquidity.unwrap_or(0.0);
                             let liq_disp = e.liquidity_display.unwrap_or(0.0);
                             let pool_id = e.pool_id.clone().unwrap_or_default();
@@ -396,7 +396,7 @@ async fn main() -> anyhow::Result<()> {
                                 }
                             }
                             let base = if px > 0.0 { 1.0 / px } else { 0.0 };
-                            let rate_eff = if base > 0.0 { base * (1.0 - (fee as f64)/10_000.0).max(0.0) } else { 0.0 };
+                            let rate_eff = if base > 0.0 { base * (1.0 - (fee as f64)/10_000.0).max(0.0_f64) } else { 0.0 };
                             calibrated_edges.push((e.source.clone(), e.target.clone(), dex, fee, rate_eff, liq, liq_disp, pool_id));
                         }
                         

@@ -12,7 +12,7 @@ pub struct EdgeData {
     #[allow(dead_code)] pub liquidity_display: f64,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ArbGraph {
     pub g: DiGraph<String, EdgeData>,
     pub map: HashMap<String, NodeIndex>, // mint -> node (unified across DEXes)
