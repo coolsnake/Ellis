@@ -1977,6 +1977,90 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       }
     }
     
+    // CRITICAL FIX: Validate and correct token program accounts in instruction
+    // The SDK sometimes places wrong accounts (like reward vaults) in token program slots
+    if (ix && Array.isArray(ix.keys)) {
+      try {
+        const TOKEN_PROGRAM_ID_STR = TOKEN_PROGRAM_ID.toBase58();
+        const TOKEN_2022_PROGRAM_ID_STR = TOKEN_2022_PROGRAM_ID.toBase58();
+        const validTokenPrograms = new Set([TOKEN_PROGRAM_ID_STR, TOKEN_2022_PROGRAM_ID_STR]);
+        
+        // Find expected token program IDs based on what we set in acctBase
+        const expectedTokenXProgram = acctBase.tokenXProgram instanceof PublicKey 
+          ? acctBase.tokenXProgram.toBase58() 
+          : (acctBase.tokenXProgram ? String(acctBase.tokenXProgram) : TOKEN_PROGRAM_ID_STR);
+        const expectedTokenYProgram = acctBase.tokenYProgram instanceof PublicKey 
+          ? acctBase.tokenYProgram.toBase58() 
+          : (acctBase.tokenYProgram ? String(acctBase.tokenYProgram) : TOKEN_PROGRAM_ID_STR);
+        
+        // Token program accounts are typically at positions 11-12 (tokenXProgram, tokenYProgram)
+        // Check these positions first
+        const positionsToCheck = [11, 12];
+        let correctedCount = 0;
+        
+        for (const pos of positionsToCheck) {
+          if (pos < ix.keys.length) {
+            const key = ix.keys[pos];
+            if (key && typeof key === 'object' && (key as any).pubkey) {
+              const pk = (key as any).pubkey;
+              const pkStr = pk instanceof PublicKey ? pk.toBase58() : String(pk);
+              
+              // If this position should be a token program but isn't, fix it
+              if (!validTokenPrograms.has(pkStr)) {
+                // Determine which token program should be here
+                // Position 11 is typically tokenXProgram, position 12 is tokenYProgram
+                const expectedProgram = pos === 11 ? expectedTokenXProgram : expectedTokenYProgram;
+                const expectedProgramPk = new PublicKey(expectedProgram);
+                
+                // Replace with correct token program
+                ix.keys[pos] = {
+                  pubkey: expectedProgramPk,
+                  isSigner: false,
+                  isWritable: false
+                };
+                correctedCount++;
+                
+                try {
+                  logger.warn('meteora.dlmm.token_program.corrected', {
+                    cat: 'tx',
+                    code: LogCode.TX_BUILD_ERR,
+                    ctx: {
+                      position: pos,
+                      oldAccount: pkStr,
+                      newAccount: expectedProgram,
+                      role: pos === 11 ? 'tokenXProgram' : 'tokenYProgram',
+                      poolId: hop.poolId
+                    }
+                  });
+                } catch {}
+              }
+            }
+          }
+        }
+        
+        if (correctedCount > 0) {
+          try {
+            logger.debug('meteora.dlmm.token_program.corrections_applied', {
+              cat: 'tx',
+              ctx: {
+                correctedCount,
+                tokenXProgram: expectedTokenXProgram,
+                tokenYProgram: expectedTokenYProgram,
+                poolId: hop.poolId
+              }
+            });
+          } catch {}
+        }
+      } catch (e: any) {
+        try {
+          logger.debug('meteora.dlmm.token_program.validation.failed', {
+            cat: 'tx',
+            ctx: { error: String(e?.message || e) }
+          });
+        } catch {}
+      }
+    }
+    
     // Final safety check: validate and correct userTokenOut in the actual instruction
     if (ix && Array.isArray(ix.keys)) {
       try {
@@ -2051,7 +2135,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           }
           
           if (mintChecks.length > 0) {
-            logger.info('meteora.dlmm.instruction.account_mints', {
+            logger.debug('meteora.dlmm.instruction.account_mints', {
               cat: 'tx',
               ctx: {
                 mintChecks,
