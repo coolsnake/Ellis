@@ -253,45 +253,44 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async move {
         loop {
             let iter_start = Instant::now();
-            // Wrap loop body in error handling to prevent silent failures
-            let iter_result = async {
-                let (enabled, idle_ms, min_bps, max_hops) = {
-                    let s = loop_state.read().await;
-                    (
-                        s.config.enabled,
-                        s.config.max_idle_ms,
-                        s.config.min_profit_bps,
-                        s.config.max_hops,
-                    )
-                };
-                if enabled {
-                    let mut detect_ack: Option<(u64, u64)> = None;
-                    // Capture diff_to_detect latency if we have a recent graph push timestamp
-                    {
-                        let mut s = loop_state.write().await;
-                        if s.metrics.last_graph_push_rx_ms > 0 {
-                            let now = now_ms();
-                            let delta = now.saturating_sub(s.metrics.last_graph_push_rx_ms);
-                            s.metrics.diff_to_detect_ms = delta;
-                            // Clear the marker so only the first iteration after push records the latency
-                            s.metrics.last_graph_push_rx_ms = 0;
-                        }
+            // Execute loop iteration - errors are logged but don't stop the loop
+            let (enabled, idle_ms, min_bps, max_hops) = {
+                let s = loop_state.read().await;
+                (
+                    s.config.enabled,
+                    s.config.max_idle_ms,
+                    s.config.min_profit_bps,
+                    s.config.max_hops,
+                )
+            };
+            if enabled {
+                let mut detect_ack: Option<(u64, u64)> = None;
+                // Capture diff_to_detect latency if we have a recent graph push timestamp
+                {
+                    let mut s = loop_state.write().await;
+                    if s.metrics.last_graph_push_rx_ms > 0 {
+                        let now = now_ms();
+                        let delta = now.saturating_sub(s.metrics.last_graph_push_rx_ms);
+                        s.metrics.diff_to_detect_ms = delta;
+                        // Clear the marker so only the first iteration after push records the latency
+                        s.metrics.last_graph_push_rx_ms = 0;
                     }
-                    // Track changed mints and edge ids from pending diffs for scoped detection
-                    let mut changed_mints: HashSet<String> = HashSet::new();
-                    let mut changed_edge_ids: HashSet<String> = HashSet::new();
-                    // Best-effort peek at backend graph version with a short timeout.
-                    // Do not advance local last_graph_version here to avoid racing with buffered diffs.
-                    let api_base = std::env::var("BACKEND_API_BASE").unwrap_or_else(|_| "http://127.0.0.1:3001/api".into());
-                    let gv_url = format!("{}/arb/graph/version", api_base.trim_end_matches('/'));
-                    let _ = tokio::time::timeout(
-                        std::time::Duration::from_millis(300),
-                        reqwest::Client::new().get(&gv_url).send()
-                    ).await;
-                    let loop_start = Instant::now();
-                    let usdc = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-                    // Apply any buffered diffs now (between detection runs)
-                    {
+                }
+                // Track changed mints and edge ids from pending diffs for scoped detection
+                let mut changed_mints: HashSet<String> = HashSet::new();
+                let mut changed_edge_ids: HashSet<String> = HashSet::new();
+                // Best-effort peek at backend graph version with a short timeout.
+                // Do not advance local last_graph_version here to avoid racing with buffered diffs.
+                let api_base = std::env::var("BACKEND_API_BASE").unwrap_or_else(|_| "http://127.0.0.1:3001/api".into());
+                let gv_url = format!("{}/arb/graph/version", api_base.trim_end_matches('/'));
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_millis(300),
+                    reqwest::Client::new().get(&gv_url).send()
+                ).await;
+                let loop_start = Instant::now();
+                let usdc = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+                // Apply any buffered diffs now (between detection runs)
+                {
                     // Extract pending data and config quickly, then drop write lock for expensive calibration
                     let (updates_data, rem_ct, add_ct, upd_ct) = {
                         let mut s = loop_state.write().await;
@@ -1688,17 +1687,6 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     tracing::warn!("arb.detect.ack.none - detect_ack was not set");
                 }
-                
-                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-            } else {
-                // Loop disabled, just continue
-                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-            }
-            };
-            
-            // Handle errors in loop iteration
-            if let Err(e) = iter_result.await {
-                tracing::error!(error = %e, "arb.loop.error - continuing loop");
             }
             
             // Sleep respects configured interval even when disabled to avoid hot loop
