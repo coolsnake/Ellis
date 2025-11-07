@@ -317,7 +317,6 @@ export class DexAltManager {
         ctx: {
           address: lookupTableAddress.toBase58(),
           signature: createSig,
-          slot: confirmation.value.slot,
         },
       });
     } catch {}
