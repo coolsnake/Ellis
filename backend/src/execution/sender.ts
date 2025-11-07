@@ -171,12 +171,53 @@ function sanitizeInstructionKeys(ix: TransactionInstruction): void {
       }
     }
     
-    // Optimize account ordering (writable first)
-    try {
-      const optimized = optimizeAccountOrder(ix);
-      ix.keys = optimized.keys;
-    } catch {
-      // If optimization fails, continue with original keys
+    // Skip account ordering optimization for DEX programs that require strict account ordering
+    // DEX programs have account order as part of their instruction interface contract
+    const programIdStr = ix.programId.toBase58();
+    
+    // Hardcoded mainnet program IDs (fallbacks if config not set)
+    const dexProgramIds = new Set([
+      // Orca Whirlpool
+      'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc',
+      // Raydium AMM V4
+      '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8',
+      // Raydium AMM V5
+      'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C',
+      // Raydium CLMM
+      'CAMMCzo5nKXjotvLkGQ6r1N1C8QXr8iY6pYwWf3V8mGk',
+      // Meteora DLMM
+      'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo',
+      // Meteora AMM V1
+      'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB',
+      // Meteora AMM V2
+      'cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG',
+    ]);
+    
+    // Also check config-based program IDs
+    const configProgramIds = [
+      (CONFIG as any)?.orca?.programId,
+      (CONFIG as any)?.raydium?.ammV4Program,
+      (CONFIG as any)?.raydium?.ammV5Program,
+      (CONFIG as any)?.raydium?.clmmProgram,
+      (CONFIG as any)?.meteora?.programId,
+      (CONFIG as any)?.meteora?.amm?.v1ProgramId,
+      (CONFIG as any)?.meteora?.amm?.v2ProgramId,
+    ].filter(Boolean).map(String);
+    
+    for (const pid of configProgramIds) {
+      if (pid) dexProgramIds.add(pid);
+    }
+    
+    const isDexProgram = dexProgramIds.has(programIdStr);
+    
+    // Only optimize account ordering for non-DEX programs
+    if (!isDexProgram) {
+      try {
+        const optimized = optimizeAccountOrder(ix);
+        ix.keys = optimized.keys;
+      } catch {
+        // If optimization fails, continue with original keys
+      }
     }
   } catch {}
 }

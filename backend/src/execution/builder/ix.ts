@@ -184,7 +184,7 @@ async function injectBinArrayMetas(
       }
       
       if (injected > 0) {
-        try { logger.info('meteora.dlmm.remaining.inject', { cat: 'tx', ctx: { added: injected } as any }); } catch {}
+        try { logger.debug('meteora.dlmm.remaining.inject', { cat: 'tx', ctx: { added: injected } as any }); } catch {}
       }
       return injected;
     }
@@ -559,7 +559,7 @@ async function ensureWhirlpoolTickArrays(
         });
         instructions.push(...flattenToTransactionInstructions(ix, hop));
         try {
-          logger.info('orca.whirlpool.tickarray.init', {
+          logger.debug('orca.whirlpool.tickarray.init', {
             cat: 'tx',
             ctx: { pool: whirlpoolPk.toBase58(), tickArray: item.pubkey.toBase58(), startTick: item.startTick },
           });
@@ -585,7 +585,7 @@ export function buildRaydiumClmmSwapIx(hop: DirectHop): any[] {
   return [{ programId: hop.programId || 'RaydiumClmm', type: 'raydium.clmm.swap', keys: { poolId: hop.poolId, tickArrayLower: hop.tickArrayLower, tickArrayCenter: hop.tickArrayCenter, tickArrayUpper: hop.tickArrayUpper, oracle: hop.oracle, userSourceAta: hop.userSourceAta, userDestAta: hop.userDestAta, vaultA: hop.vaultA, vaultB: hop.vaultB }, data: { amountIn: hop.amountInRaw, minOut: hop.minOutRaw, sqrtPriceLimitX64: hop.sqrtPriceLimitX64 || 0n } }];
 }
 export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
-  try { logger.info('ix.build orca.clmm', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
+  try { logger.debug('ix.build orca.clmm', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
   try {
     const connection = getConnection();
     const kp = await ensureWallet(CONFIG.walletPath);
@@ -610,7 +610,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
           const mintA = parsed.tokenMintA?.toBase58?.();
           const mintB = parsed.tokenMintB?.toBase58?.();
           const inMint = String(hop.inputMint);
-          try { logger.info('orca.whirlpool.pool.tokens', { cat: 'tx', ctx: { pool: String(hop.poolId), mintA, mintB, inputMint: inMint } }); } catch {}
+          try { logger.debug('orca.whirlpool.pool.tokens', { cat: 'tx', ctx: { pool: String(hop.poolId), mintA, mintB, inputMint: inMint } }); } catch {}
           if (inMint !== mintA && inMint !== mintB) {
             try { logger.warn('orca.whirlpool.input_mint_mismatch', { cat: 'tx', ctx: { pool: String(hop.poolId), inputMint: inMint, mintA, mintB } }); } catch {}
             throw createBuilderError('ORCA', 'input mint does not match pool tokens', hop);
@@ -641,7 +641,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
     let slippageBps = Math.max(1, Math.min(500, configuredSlippageBps));
     
     try {
-      logger.info('orca.whirlpool.slippage', {
+      logger.debug('orca.whirlpool.slippage', {
         cat: 'tx',
         ctx: {
           pool: hop.poolId,
@@ -679,7 +679,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
           } catch {}
         } else if (quoteInputAmount === hop.amountInRaw) {
           try {
-            logger.info('orca.whirlpool.exact_amount.verified', {
+            logger.debug('orca.whirlpool.exact_amount.verified', {
               cat: 'tx',
               ctx: {
                 pool: hop.poolId,
@@ -692,9 +692,9 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
       }
       
       if (estOut !== null && estOut !== undefined) {
-        try { logger.info('orca.whirlpool.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: String(estOut), mode: 'swapInstructions' } as any }); } catch {}
+        try { logger.debug('orca.whirlpool.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: String(estOut), mode: 'swapInstructions' } as any }); } catch {}
       }
-      try { logger.info('orca.whirlpool.ix.ready', { cat: 'tx', ctx: { count: sdkResult.instructions.length, mode: 'swapInstructions' } as any }); } catch {}
+      try { logger.debug('orca.whirlpool.ix.ready', { cat: 'tx', ctx: { count: sdkResult.instructions.length, mode: 'swapInstructions' } as any }); } catch {}
       return sdkResult.instructions;
     } catch (sdkErr) {
       const msg = String((sdkErr as any)?.message || sdkErr);
@@ -736,7 +736,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
       // Log exact amount usage for multihop debugging
       const isExactAmount = hop.useExactAmount || false;
       try { 
-        logger.info('orca.whirlpool.quote', { 
+        logger.debug('orca.whirlpool.quote', { 
           cat: 'tx', 
           ctx: { 
             pool: poolAddr, 
@@ -859,7 +859,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
         throw createBuilderError('ORCA', 'swap builder returned no executable instructions', hop);
       }
 
-      try { logger.info('orca.whirlpool.ix.ready', { cat: 'tx', ctx: { count: instructions.length } }); } catch {}
+      try { logger.debug('orca.whirlpool.ix.ready', { cat: 'tx', ctx: { count: instructions.length } }); } catch {}
       return instructions;
     } catch (inner) {
       // Wrap errors with context
@@ -909,7 +909,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       try {
         mod = await import(spec);
         if (mod) {
-          try { logger.info('meteora.dlmm.import.ok', { cat: 'tx', ctx: { spec, keys: Object.keys(mod || {}) } }); } catch {}
+          try { logger.debug('meteora.dlmm.import.ok', { cat: 'tx', ctx: { spec, keys: Object.keys(mod || {}) } }); } catch {}
           // Cache the module
           (buildMeteoraDlmmSwapIxReal as any).__dlmmMod = mod;
           break;
@@ -926,7 +926,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         // @ts-expect-error - ts-client path may not exist, handled by catch
         mod = await import('@meteora-ag/dlmm/ts-client').catch(() => null);
         if (mod) {
-          try { logger.info('meteora.dlmm.import.ok', { cat: 'tx', ctx: { spec: '@meteora-ag/dlmm/ts-client' } }); } catch {}
+          try { logger.debug('meteora.dlmm.import.ok', { cat: 'tx', ctx: { spec: '@meteora-ag/dlmm/ts-client' } }); } catch {}
           (buildMeteoraDlmmSwapIxReal as any).__dlmmMod = mod;
         }
       } catch (e: any) {
@@ -956,12 +956,12 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         binArrayLower: hop.binArrayLower ? toPublicKey(hop.binArrayLower) : undefined,
         binArrayUpper: hop.binArrayUpper ? toPublicKey(hop.binArrayUpper) : undefined,
       } as any;
-      try { logger.info('meteora.dlmm.swapIx.call', { cat: 'tx' }); } catch {}
+      try { logger.debug('meteora.dlmm.swapIx.call', { cat: 'tx' }); } catch {}
       const ix = await (DLMM as any).swapIx(connection, kp.publicKey, params);
       if (ix) {
         // Safety net: attempt to attach remaining bin-array metas when using fast-path ix
         await injectBinArrayMetas(ix, DLMM, connection, poolPk, programId);
-        try { logger.info('meteora.dlmm.swapIx.ok', { cat: 'tx' }); } catch {}
+        try { logger.debug('meteora.dlmm.swapIx.ok', { cat: 'tx' }); } catch {}
         return [ix];
       }
     }
@@ -975,7 +975,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     const createProgram = (DLMM as any)?.createProgram || (mod as any)?.createProgram;
     if (!createProgram) throw new Error('DLMM_CREATE_PROGRAM_MISSING');
     const program = createProgram(connection, programId);
-    try { logger.info('meteora.dlmm.program.ok', { cat: 'tx' }); } catch {}
+    try { logger.debug('meteora.dlmm.program.ok', { cat: 'tx' }); } catch {}
 
     // Derive optional accounts
     let binArrayLower: PublicKey | undefined = hop.binArrayLower ? toPublicKey(hop.binArrayLower) : undefined;
@@ -1105,9 +1105,33 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       // causes AccountDiscriminatorMismatch errors.
       // Let the SDK determine required bin arrays via remainingAccounts (below).
 
-      // Always include bitmap extension in coverage metas
+      // Always include bitmap extension in coverage metas - but verify it first
       if (binArrayBitmapExtension) {
-        pushMeta(binArrayBitmapExtension);
+        // CRITICAL FIX: Verify account exists and is owned by correct program before including
+        try {
+          const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+          const acc = await withRpcLimit(() => connection.getAccountInfo(binArrayBitmapExtension)).catch(() => null);
+          if (acc && acc.owner && typeof acc.owner.equals === 'function' && acc.owner.equals(programId)) {
+            // Account exists and is owned by correct program - include it
+            pushMeta(binArrayBitmapExtension);
+          } else {
+            // Account doesn't exist or has wrong owner - exclude it
+            try { 
+              logger.warn('meteora.dlmm.inject.ext.excluding', { 
+                cat: 'tx', 
+                ctx: { 
+                  address: binArrayBitmapExtension.toBase58(),
+                  exists: !!acc,
+                  owner: acc?.owner?.toBase58?.() || 'none',
+                  expected: programId.toBase58()
+                } 
+              }); 
+            } catch {}
+          }
+        } catch {
+          // If verification fails, exclude it to be safe
+          try { logger.warn('meteora.dlmm.inject.ext.verification_failed', { cat: 'tx' }); } catch {}
+        }
       }
 
       binArrayMetas = coverageMetas.length ? coverageMetas : null;
@@ -1129,7 +1153,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     
     // Log token account details for debugging
     try {
-      logger.info('meteora.dlmm.accounts.detail', { 
+      logger.debug('meteora.dlmm.accounts.detail', { 
         cat: 'tx', 
         ctx: {
           userTokenIn: accounts.userTokenIn.toBase58(),
@@ -1170,7 +1194,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         } catch {}
         accounts.userTokenIn = correctAtaIn;
         try { 
-          logger.info('meteora.dlmm.userTokenIn.corrected', { 
+          logger.debug('meteora.dlmm.userTokenIn.corrected', { 
             cat: 'tx', 
             ctx: { 
               old: userTokenInPk.toBase58(),
@@ -1196,7 +1220,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         } catch {}
         accounts.userTokenOut = correctAtaOut;
         try { 
-          logger.info('meteora.dlmm.userTokenOut.corrected', { 
+          logger.debug('meteora.dlmm.userTokenOut.corrected', { 
             cat: 'tx', 
             ctx: { 
               old: userTokenOutPk.toBase58(),
@@ -1237,7 +1261,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               } catch {}
               accounts.userTokenIn = correctAtaIn;
               try { 
-                logger.info('meteora.dlmm.userTokenIn.mint_corrected', { 
+                logger.debug('meteora.dlmm.userTokenIn.mint_corrected', { 
                   cat: 'tx', 
                   ctx: { 
                     old: userTokenInPk.toBase58(),
@@ -1274,7 +1298,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               } catch {}
               accounts.userTokenOut = correctAtaOut;
               try { 
-                logger.info('meteora.dlmm.userTokenOut.mint_corrected', { 
+                logger.debug('meteora.dlmm.userTokenOut.mint_corrected', { 
                   cat: 'tx', 
                   ctx: { 
                     old: userTokenOutPk.toBase58(),
@@ -1307,78 +1331,86 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       const [extPda] = PublicKey.findProgramAddressSync([Buffer.from('bitmap'), poolPk.toBuffer()], programId);
       binArrayBitmapExtension = extPda;
     }
-    accounts.binArrayBitmapExtension = binArrayBitmapExtension;
+    
+    // CRITICAL FIX: Verify bitmap extension account exists and is owned by correct program
+    // before including it in accounts. If it doesn't exist or has wrong owner, exclude it.
+    let shouldIncludeBitmapExtension = false;
     try {
       if (binArrayBitmapExtension) {
-        // Observability only; do not gate on presence/owner
-        let needsBitmapExtensionInit = false;
-        try {
-          const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
-          const acc = await withRpcLimit(() => connection.getAccountInfo(binArrayBitmapExtension));
-          if (!acc) {
-            needsBitmapExtensionInit = true;
-            try { logger.warn('meteora.dlmm.ext.missing_on_chain', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { expected: programId?.toBase58?.() } }); } catch {}
-          } else if (acc.owner && typeof acc.owner.equals === 'function' && !acc.owner.equals(programId)) {
-            try { logger.warn('meteora.dlmm.ext.owner_mismatch', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { owner: acc.owner?.toBase58?.(), expected: programId?.toBase58?.() } }); } catch {}
+        const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+        const acc = await withRpcLimit(() => connection.getAccountInfo(binArrayBitmapExtension));
+        if (acc && acc.owner && typeof acc.owner.equals === 'function') {
+          if (acc.owner.equals(programId)) {
+            shouldIncludeBitmapExtension = true;
+            try { logger.info('meteora.dlmm.ext.verified', { cat: 'tx', ctx: { address: binArrayBitmapExtension.toBase58(), owner: acc.owner.toBase58() } }); } catch {}
+          } else {
+            // Account exists but owned by wrong program - exclude it
+            try { 
+              logger.warn('meteora.dlmm.ext.owner_mismatch.excluding', { 
+                cat: 'tx', 
+                code: LogCode.TX_BUILD_ERR, 
+                ctx: { 
+                  address: binArrayBitmapExtension.toBase58(),
+                  owner: acc.owner?.toBase58?.(), 
+                  expected: programId?.toBase58?.() 
+                } 
+              }); 
+            } catch {}
+            binArrayBitmapExtension = undefined;
           }
-        } catch {}
-
-        // Best-effort: if extension missing, try to prepend an updateBinArray ix to initialize it
-        try {
-          if (needsBitmapExtensionInit) {
-            try { logger.info('meteora.dlmm.bitmap_ext.init.start', { cat: 'tx' }); } catch {}
-            const getBounds = (DLMM as any)?.getBinArrayLowerUpperBinId || (DLMM as any)?.deriveBinArrayLowerUpperBinId;
-            const getCoverage = (DLMM as any)?.getBinArrayAccountMetasCoverage || (DLMM as any)?.getBinArrayKeysCoverage;
-            const bounds = getBounds ? await getBounds(connection, poolPk).catch(() => null as any) : null;
-            const bnjs = await import('bn.js').catch(() => null as any);
-            const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
-            const toNum = (v: any): number => { try { if (v && typeof v.toNumber === 'function') return v.toNumber(); const s = (v && typeof v.toString === 'function') ? v.toString() : String(v); const n = Number(s); return Number.isFinite(n) ? n : NaN; } catch { return NaN; } };
-            const loNum = toNum(bounds?.lowerBinId);
-            const hiNum = toNum(bounds?.upperBinId);
-
-            let updBuilder: any = null;
-            // Try multiple signatures across SDK variants
-            try { if (typeof (methods as any)?.updateBinArray === 'function') updBuilder = (methods as any).updateBinArray(); } catch {}
-            try { if (!updBuilder && typeof (methods as any)?.updateBinArray === 'function' && Number.isFinite(loNum) && Number.isFinite(hiNum) && BN) updBuilder = (methods as any).updateBinArray(new BN(String(loNum)), new BN(String(hiNum))); } catch {}
-            try { if (!updBuilder && typeof (methods as any)?.updateBinArray === 'function' && Number.isFinite(loNum) && Number.isFinite(hiNum)) updBuilder = (methods as any).updateBinArray(loNum, hiNum); } catch {}
-
-            if (updBuilder) {
-              // Supply accounts and metas if possible
-              try { if (typeof updBuilder.accountsPartial === 'function') updBuilder = updBuilder.accountsPartial({ ...accounts }); else if (typeof updBuilder.accounts === 'function') updBuilder = updBuilder.accounts({ ...accounts }); } catch {}
-              try {
-                if (getCoverage && typeof updBuilder.remainingAccounts === 'function') {
-                  const cov = await getCoverage(programId, poolPk).catch(() => null as any) || await getCoverage(connection, programId, poolPk).catch(() => null as any) || await getCoverage({ programId, lbPair: poolPk }).catch(() => null as any);
-                  const metas = (cov && ((cov as any).metas || (cov as any).accountMetas)) || (Array.isArray(cov) ? cov : []);
-                  if (Array.isArray(metas) && metas.length) updBuilder = updBuilder.remainingAccounts(metas);
-                }
-              } catch {}
-              try {
-                const updIx = (typeof updBuilder.instruction === 'function') ? await updBuilder.instruction() : null;
-                if (updIx) { setupIxs.push(updIx as TransactionInstruction); try { logger.info('meteora.dlmm.bitmap_ext.init.ok', { cat: 'tx' }); } catch {} }
-              } catch (e: any) { try { logger.warn('meteora.dlmm.bitmap_ext.init.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {} }
-            } else {
-              // Fallback: try top-level helper if present
-              const updateFn = (DLMM as any)?.updateBinArray || (mod as any)?.updateBinArray;
-              if (typeof updateFn === 'function') {
-                const attempts: Array<() => Promise<any>> = [];
-                attempts.push(() => updateFn(connection, programId, poolPk));
-                attempts.push(() => updateFn(programId, poolPk));
-                attempts.push(() => updateFn(program, poolPk));
-                attempts.push(() => updateFn({ connection, programId, lbPair: poolPk }));
-                for (const fn of attempts) {
-                  try {
-                    const maybeIx = await fn();
-                    if (maybeIx) { setupIxs.push(maybeIx as TransactionInstruction); try { logger.info('meteora.dlmm.bitmap_ext.init.ok', { cat: 'tx' }); } catch {} break; }
-                  } catch {}
-                }
-              } else {
-                try { logger.warn('meteora.dlmm.bitmap_ext.init.unavailable', { cat: 'tx', code: LogCode.TX_BUILD_ERR }); } catch {}
-              }
+        } else if (!acc) {
+          // Account doesn't exist - might need initialization, but don't include in swap instruction
+          try { 
+            logger.warn('meteora.dlmm.ext.missing_on_chain.excluding', { 
+              cat: 'tx', 
+              code: LogCode.TX_BUILD_ERR, 
+              ctx: { expected: programId?.toBase58?.() } 
+            }); 
+          } catch {}
+          binArrayBitmapExtension = undefined;
+        }
+      }
+    } catch (e: any) {
+      // If we can't verify, err on the side of caution and exclude it
+      try { 
+        logger.warn('meteora.dlmm.ext.verification_failed.excluding', { 
+          cat: 'tx', 
+          code: LogCode.TX_BUILD_ERR, 
+          ctx: { error: String(e?.message || e) } 
+        }); 
+      } catch {}
+      binArrayBitmapExtension = undefined;
+    }
+    
+    // Only include bitmap extension if verified
+    if (binArrayBitmapExtension && shouldIncludeBitmapExtension) {
+      accounts.binArrayBitmapExtension = binArrayBitmapExtension;
+    } else {
+      // Remove from accounts if it was set
+      delete accounts.binArrayBitmapExtension;
+    }
+    
+    // Also remove from coverageMetas if it was added there
+    try {
+      if (binArrayMetas && Array.isArray(binArrayMetas)) {
+        const extPkStr = binArrayBitmapExtension?.toBase58();
+        if (extPkStr) {
+          binArrayMetas = binArrayMetas.filter((m: any) => {
+            try {
+              const pk = m?.pubkey || m?.publicKey || m?.address;
+              const pkStr = pk instanceof PublicKey ? pk.toBase58() : (typeof pk === 'string' ? pk : String(pk));
+              return pkStr !== extPkStr;
+            } catch {
+              return true;
             }
-          }
-        } catch {}
+          });
+        }
       }
     } catch {}
+    
+    // Note: Initialization logic removed - if account doesn't exist or has wrong owner,
+    // it's already excluded above. Initialization should be handled in a separate transaction.
+    // The account is only included if it exists and is owned by the correct program.
 
     // Extend with host/referral fee handling and reserves when available
     const acctBase: any = { ...accounts, hostFeeIn: null };
@@ -1890,12 +1922,60 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         const limited = binArrayMetas.slice(0, 10);
         if (limited.length) {
           builder = (builder as any).remainingAccounts(limited);
-          try { logger.info('meteora.dlmm.remaining.from_metas', { cat: 'tx', ctx: { count: limited.length } }); } catch {}
+          try { logger.debug('meteora.dlmm.remaining.from_metas', { cat: 'tx', ctx: { count: limited.length } }); } catch {}
         }
       } catch {}
     }
     
     const ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
+    
+    // CRITICAL FIX: Remove duplicate accounts from instruction
+    // The same account should not appear multiple times with different flags
+    if (ix && Array.isArray(ix.keys)) {
+      const seen = new Map<string, { index: number; key: any }>();
+      const duplicates: number[] = [];
+      
+      for (let i = 0; i < ix.keys.length; i++) {
+        const key = ix.keys[i];
+        try {
+          const pk = key?.pubkey instanceof PublicKey ? key.pubkey : (typeof key?.pubkey === 'string' ? new PublicKey(key.pubkey) : null);
+          if (pk) {
+            const pkStr = pk.toBase58();
+            if (seen.has(pkStr)) {
+              // Duplicate found - keep the one with isWritable=true if either has it
+              const existing = seen.get(pkStr)!;
+              const existingWritable = existing.key?.isWritable || false;
+              const currentWritable = key?.isWritable || false;
+              
+              if (currentWritable && !existingWritable) {
+                // Current is writable, existing is not - replace existing
+                duplicates.push(existing.index);
+                seen.set(pkStr, { index: i, key });
+              } else {
+                // Keep existing, mark current as duplicate
+                duplicates.push(i);
+              }
+            } else {
+              seen.set(pkStr, { index: i, key });
+            }
+          }
+        } catch {}
+      }
+      
+      // Remove duplicates in reverse order to maintain indices
+      if (duplicates.length > 0) {
+        duplicates.sort((a, b) => b - a);
+        for (const idx of duplicates) {
+          ix.keys.splice(idx, 1);
+        }
+        try { 
+          logger.warn('meteora.dlmm.duplicate_accounts.removed', { 
+            cat: 'tx', 
+            ctx: { removedCount: duplicates.length, newAccountCount: ix.keys.length } 
+          }); 
+        } catch {}
+      }
+    }
     
     // Final safety check: validate and correct userTokenOut in the actual instruction
     if (ix && Array.isArray(ix.keys)) {
@@ -1915,7 +1995,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               return { index: idx, pubkey: 'invalid', isWritable: false, isSigner: false };
             }
           });
-          logger.info('meteora.dlmm.instruction.accounts', {
+          logger.debug('meteora.dlmm.instruction.accounts', {
             cat: 'tx',
             ctx: {
               accountCount: ix.keys.length,
@@ -2219,7 +2299,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     // Safety net: inject bin metas into instruction if builder.remainingAccounts did not attach them
     if (ix) {
       await injectBinArrayMetas(ix, DLMM, connection, poolPk, programId);
-      try { logger.info('meteora.dlmm.swap.ok', { cat: 'tx' }); } catch {}
+      try { logger.debug('meteora.dlmm.swap.ok', { cat: 'tx' }); } catch {}
       return [...setupIxs, ix];
     }
     
