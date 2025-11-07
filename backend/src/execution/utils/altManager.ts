@@ -105,16 +105,40 @@ export class DexAltManager {
           AddressLookupTableProgram.programId
         );
         
-        const result = await withRpcLimit(() => 
-          connection.getAddressLookupTable(lookupTableAddress)
-        ).catch(() => ({ value: null }));
+        // Retry a few times as the ALT might not be immediately queryable
+        let result: { value: AddressLookupTableAccount | null } | null = null;
+        for (let retry = 0; retry < 3; retry++) {
+          try {
+            result = await withRpcLimit(() => 
+              connection.getAddressLookupTable(lookupTableAddress)
+            );
+            if (result && result.value) break;
+          } catch {}
+          if (retry < 2) {
+            await new Promise(resolve => setTimeout(resolve, 500 * (retry + 1)));
+          }
+        }
         
-        if (result.value) {
+        if (result && result.value) {
           const accountCount = result.value.state?.addresses?.length || 0;
           const remainingCapacity = 256 - accountCount;
           
           // If empty or has enough capacity, we can reuse it
-          if (accountCount === 0 || (remainingCapacity >= accounts.length && accountCount > 0)) {
+          // Prefer empty ALTs first
+          if (accountCount === 0) {
+            try {
+              logger.info('alt.manager.found.reusable.empty', {
+                cat: 'tx',
+                ctx: {
+                  address: lookupTableAddress.toBase58(),
+                  seed,
+                  accountCount: 0,
+                  accountsToAdd: accounts.length,
+                },
+              });
+            } catch {}
+            return { address: lookupTableAddress, accountCount: 0, seed };
+          } else if (remainingCapacity >= accounts.length && accounts.length > 0) {
             try {
               logger.info('alt.manager.found.reusable', {
                 cat: 'tx',
@@ -207,11 +231,36 @@ export class DexAltManager {
         AddressLookupTableProgram.programId
       );
     
-      // Check if ALT already exists at this address
-      const existing = await connection.getAddressLookupTable(lookupTableAddress).catch(() => ({ value: null }));
-      if (existing.value) {
+      // Check if ALT already exists at this address (with retries for RPC delays)
+      let existing: { value: AddressLookupTableAccount | null } | null = null;
+      for (let retry = 0; retry < 3; retry++) {
+        try {
+          existing = await withRpcLimit(() => 
+            connection.getAddressLookupTable(lookupTableAddress)
+          );
+          if (existing && existing.value) break;
+        } catch {}
+        if (retry < 2) {
+          await new Promise(resolve => setTimeout(resolve, 500 * (retry + 1)));
+        }
+      }
+      
+      if (existing && existing.value) {
         const accountCount = existing.value.state?.addresses?.length || 0;
         const remainingCapacity = 256 - accountCount;
+        
+        try {
+          logger.info('alt.manager.exists.found', {
+            cat: 'tx',
+            ctx: {
+              address: lookupTableAddress.toBase58(),
+              accountCount,
+              remainingCapacity,
+              accountsToAdd: accounts.length,
+              seed,
+            },
+          });
+        } catch {}
         
         // If it has space, extend it
         if (remainingCapacity >= accounts.length && accounts.length > 0) {
@@ -242,6 +291,7 @@ export class DexAltManager {
                 address: lookupTableAddress.toBase58(),
                 accountCount,
                 full: remainingCapacity < accounts.length,
+                noAccountsToAdd: accounts.length === 0,
               },
             });
           } catch {}
@@ -250,8 +300,64 @@ export class DexAltManager {
         }
       }
       
+      // Check ALT config for existing addresses first
+      try {
+        const config = await loadAltConfig();
+        if (config.alts) {
+          for (const [category, address] of Object.entries(config.alts)) {
+            if (!address) continue;
+            try {
+              const altPk = new PublicKey(address);
+              const result = await withRpcLimit(() => 
+                connection.getAddressLookupTable(altPk)
+              ).catch(() => ({ value: null }));
+              
+              if (result.value) {
+                const accountCount = result.value.state?.addresses?.length || 0;
+                const remainingCapacity = 256 - accountCount;
+                
+                // If empty or has enough capacity, reuse it
+                if (accountCount === 0 || (remainingCapacity >= accounts.length && accounts.length > 0)) {
+                  try {
+                    logger.info('alt.manager.found.config', {
+                      cat: 'tx',
+                      ctx: {
+                        address,
+                        category,
+                        accountCount,
+                        remainingCapacity,
+                        accountsToAdd: accounts.length,
+                        requestedSeed: seed,
+                      },
+                    });
+                  } catch {}
+                  
+                  // Extend if needed
+                  if (accounts.length > 0 && remainingCapacity >= accounts.length) {
+                    const addressesToAdd = accounts.slice(0, remainingCapacity);
+                    await this.extendLookupTable(payer, altPk, addressesToAdd);
+                  }
+                  
+                  this.altAddresses.set(seed, altPk);
+                  return altPk;
+                }
+              }
+            } catch {}
+          }
+        }
+      } catch {}
+      
       // Check for reusable lookup tables (created but not extended)
-      const reusable = await this.findReusableLookupTable(payer, accounts);
+      // Retry this check a few times as the ALT might not be immediately queryable
+      let reusable: { address: PublicKey; accountCount: number; seed: string } | null = null;
+      for (let retry = 0; retry < 3; retry++) {
+        reusable = await this.findReusableLookupTable(payer, accounts);
+        if (reusable) break;
+        if (retry < 2) {
+          await new Promise(resolve => setTimeout(resolve, 1000 * (retry + 1)));
+        }
+      }
+      
       if (reusable) {
         try {
           logger.info('alt.manager.reusing', {
@@ -415,15 +521,29 @@ export class DexAltManager {
     // Limit to 256 addresses per ALT (Solana limit)
     const addressesToAdd = accounts.slice(0, 256);
     
+    try {
+      logger.info('alt.manager.create.preparing.extend', {
+        cat: 'tx',
+        ctx: {
+          address: lookupTableAddress.toBase58(),
+          createSignature: createSig,
+          accountsToAdd: addressesToAdd.length,
+          totalAccountsProvided: accounts.length,
+        },
+      });
+    } catch {}
+    
     if (addressesToAdd.length === 0) {
       // No accounts to add, just cache the empty ALT
       this.altAddresses.set(seed, lookupTableAddress);
       try {
-        logger.info('alt.manager.created.empty', {
+        logger.warn('alt.manager.created.empty', {
           cat: 'tx',
           ctx: {
             address: lookupTableAddress.toBase58(),
             signature: createSig,
+            note: 'No accounts to add - ALT created but empty. Check collectCommonAccounts()',
+            accountsProvided: accounts.length,
           },
         });
       } catch {}
@@ -431,40 +551,157 @@ export class DexAltManager {
     }
     
     // STEP 2: Extend ALT with accounts (second transaction)
-    const extendIx = AddressLookupTableProgram.extendLookupTable({
-      payer: payer.publicKey,
-      authority: payer.publicKey,
-      lookupTable: lookupTableAddress,
-      addresses: addressesToAdd,
-    });
+    // Wait and verify the account exists and is properly initialized before extending
+    let accountReady = false;
+    const maxReadyRetries = 10;
+    const readyDelayMs = 2000;
     
-    const extendTx = new Transaction();
-    extendTx.add(extendIx);
-    const extendBlockhash = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
-    extendTx.recentBlockhash = extendBlockhash.blockhash;
-    extendTx.feePayer = payer.publicKey;
+    for (let retry = 0; retry < maxReadyRetries; retry++) {
+      await new Promise(resolve => setTimeout(resolve, readyDelayMs));
+      
+      try {
+        // Check if account exists and is owned by Address Lookup Table program
+        const accountInfo = await withRpcLimit(() => 
+          connection.getAccountInfo(lookupTableAddress)
+        );
+        
+        if (accountInfo && accountInfo.owner) {
+          const isOwnedByAltProgram = accountInfo.owner.equals(AddressLookupTableProgram.programId);
+          
+          if (isOwnedByAltProgram) {
+            // Also verify we can get the lookup table data
+            const altResult = await withRpcLimit(() => 
+              connection.getAddressLookupTable(lookupTableAddress)
+            );
+            
+            if (altResult && altResult.value) {
+              accountReady = true;
+              try {
+                logger.info('alt.manager.account.ready', {
+                  cat: 'tx',
+                  ctx: {
+                    address: lookupTableAddress.toBase58(),
+                    attempt: retry + 1,
+                    owner: accountInfo.owner.toBase58(),
+                    accountCount: altResult.value.state?.addresses?.length || 0,
+                  },
+                });
+              } catch {}
+              break;
+            }
+          } else {
+            try {
+              logger.warn('alt.manager.account.wrong_owner', {
+                cat: 'tx',
+                ctx: {
+                  address: lookupTableAddress.toBase58(),
+                  attempt: retry + 1,
+                  owner: accountInfo.owner.toBase58(),
+                  expectedOwner: AddressLookupTableProgram.programId.toBase58(),
+                },
+              });
+            } catch {}
+          }
+        }
+      } catch (error) {
+        // Continue retrying
+        if (retry === maxReadyRetries - 1) {
+          try {
+            logger.warn('alt.manager.account.check.failed', {
+              cat: 'tx',
+              ctx: {
+                address: lookupTableAddress.toBase58(),
+                attempts: maxReadyRetries,
+                error: String((error as any)?.message || error),
+              },
+            });
+          } catch {}
+        }
+      }
+    }
     
-    extendTx.sign(kp);
-    
-    const extendSig = await withRpcLimit(() => connection.sendRawTransaction(extendTx.serialize()));
-    await withRpcLimit(() => connection.confirmTransaction(extendSig, 'confirmed'));
-    
-    // Cache the new ALT with seed-based key
-    this.altAddresses.set(seed, lookupTableAddress);
+    if (!accountReady) {
+      // Account not ready after retries - don't attempt extend
+      try {
+        logger.error('alt.manager.account.not_ready', {
+          cat: 'tx',
+          ctx: {
+            address: lookupTableAddress.toBase58(),
+            createSignature: createSig,
+            note: 'Account not ready for extension after retries. ALT created but not extended. Can be extended manually later.',
+          },
+        });
+      } catch {}
+      
+      // Cache the ALT address anyway
+      this.altAddresses.set(seed, lookupTableAddress);
+      return lookupTableAddress;
+    }
     
     try {
-      logger.info('alt.manager.created', {
-        cat: 'tx',
-        ctx: {
-          address: lookupTableAddress.toBase58(),
-          accountCount: addressesToAdd.length,
-          createSignature: createSig,
-          extendSignature: extendSig,
-        },
+      try {
+        logger.info('alt.manager.extend.starting', {
+          cat: 'tx',
+          ctx: {
+            address: lookupTableAddress.toBase58(),
+            accountCount: addressesToAdd.length,
+          },
+        });
+      } catch {}
+      
+      const extendIx = AddressLookupTableProgram.extendLookupTable({
+        payer: payer.publicKey,
+        authority: payer.publicKey,
+        lookupTable: lookupTableAddress,
+        addresses: addressesToAdd,
       });
-    } catch {}
-    
-    return lookupTableAddress;
+      
+      const extendTx = new Transaction();
+      extendTx.add(extendIx);
+      const extendBlockhash = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
+      extendTx.recentBlockhash = extendBlockhash.blockhash;
+      extendTx.feePayer = payer.publicKey;
+      
+      extendTx.sign(kp);
+      
+      const extendSig = await withRpcLimit(() => connection.sendRawTransaction(extendTx.serialize()));
+      await withRpcLimit(() => connection.confirmTransaction(extendSig, 'confirmed'));
+      
+      // Cache the new ALT with seed-based key
+      this.altAddresses.set(seed, lookupTableAddress);
+      
+      try {
+        logger.info('alt.manager.created', {
+          cat: 'tx',
+          ctx: {
+            address: lookupTableAddress.toBase58(),
+            accountCount: addressesToAdd.length,
+            createSignature: createSig,
+            extendSignature: extendSig,
+          },
+        });
+      } catch {}
+      
+      return lookupTableAddress;
+    } catch (extendError) {
+      // If extend fails, log but don't throw - the ALT was created successfully
+      try {
+        logger.error('alt.manager.extend.failed', {
+          cat: 'tx',
+          ctx: {
+            address: lookupTableAddress.toBase58(),
+            createSignature: createSig,
+            accountCount: addressesToAdd.length,
+            error: String((extendError as any)?.message || extendError),
+            note: 'ALT created but extend failed - can be extended later',
+          },
+        });
+      } catch {}
+      
+      // Still cache the ALT address even if extend failed
+      this.altAddresses.set(seed, lookupTableAddress);
+      return lookupTableAddress;
+    }
   } catch (error) {
     try {
       logger.error('alt.manager.create.error', {

@@ -290,14 +290,31 @@ async fn main() -> anyhow::Result<()> {
                 let usdc = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
                 // Apply any buffered diffs now (between detection runs)
                 {
-                    let mut s = loop_state.write().await;
-                    if !s.pending_removed_edge_ids.is_empty() || !s.pending_added_edges.is_empty() || !s.pending_updated_edges.is_empty() {
+                    // Extract pending data and config quickly, then drop write lock for expensive calibration
+                    let (updates_data, rem_ct, add_ct, upd_ct) = {
+                        let mut s = loop_state.write().await;
                         let rem_ct = s.pending_removed_edge_ids.len();
                         let add_ct = s.pending_added_edges.len();
                         let upd_ct = s.pending_updated_edges.len();
-                        let removed = std::mem::take(&mut s.pending_removed_edge_ids);
-                        let added = std::mem::take(&mut s.pending_added_edges);
-                        let updated = std::mem::take(&mut s.pending_updated_edges);
+                        let has_updates = !s.pending_removed_edge_ids.is_empty() || !s.pending_added_edges.is_empty() || !s.pending_updated_edges.is_empty();
+                        
+                        if has_updates {
+                            let removed = std::mem::take(&mut s.pending_removed_edge_ids);
+                            let added = std::mem::take(&mut s.pending_added_edges);
+                            let updated = std::mem::take(&mut s.pending_updated_edges);
+                            let calibrate_enabled = s.config.calibrate_magnitude_on_ingest;
+                            // Clone graph only if calibration is enabled (expensive operation)
+                            let graph_snapshot = if calibrate_enabled { Some(s.graph.clone()) } else { None };
+                            // Apply removals quickly before dropping lock
+                            if !removed.is_empty() { let _ = s.graph.remove_edges_by_ids(&removed); }
+                            (Some((removed, added, updated, calibrate_enabled, graph_snapshot)), rem_ct, add_ct, upd_ct)
+                        } else {
+                            (None, 0, 0, 0)
+                        }
+                    };
+                    
+                    // Build change sets and do calibration outside write lock
+                    if let Some((removed, added, updated, calibrate_enabled, graph_snapshot)) = updates_data {
                         // Build change sets BEFORE applying removals to derive scope
                         for id in removed.iter() { changed_edge_ids.insert(id.clone()); }
                         let synth_edge_id = |src: &str, dst: &str, dex: &str| -> String { format!("{}->{}-{}", src, dst, dex) };
@@ -307,98 +324,114 @@ async fn main() -> anyhow::Result<()> {
                             if let Some(pid) = &e.pool_id { if !pid.is_empty() { changed_edge_ids.insert(pid.clone()); } }
                             if let Some(dex) = &e.dex { if e.pool_id.is_none() { changed_edge_ids.insert(synth_edge_id(&e.source, &e.target, dex)); } }
                         }
-                        if !removed.is_empty() { let _ = s.graph.remove_edges_by_ids(&removed); }
-                        let mut upsert = |e: &GraphDiffEdge| {
+                        
+                        // Do magnitude calibration outside write lock (expensive operation)
+                        let mut calibrated_edges: Vec<(String, String, String, u16, f64, f64, f64, String)> = Vec::new();
+                        let sol_mint: &str  = "So11111111111111111111111111111111111111112";
+                        let usdc_mint: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+                        
+                        for e in added.iter().chain(updated.iter()) {
                             let dex = e.dex.clone().unwrap_or_else(|| "Unknown".to_string());
                             let fee = e.fee_bps.unwrap_or(0);
                             let liq = e.liquidity.unwrap_or(0.0);
                             let liq_disp = e.liquidity_display.unwrap_or(0.0);
-                            // Magnitude calibration using current graph edges as USD pivots (USDC/SOL) [optional]
+                            let pool_id = e.pool_id.clone().unwrap_or_default();
                             let px_raw = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
                             let mut px = px_raw;
-                            if px > 0.0 && s.config.calibrate_magnitude_on_ingest {
-                                let sol_mint: &str  = "So11111111111111111111111111111111111111112";
-                                let usdc_mint: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-                                let get_usd = |mint: &str, graph: &ArbGraph| -> Option<f64> {
-                                    if mint == usdc_mint { return Some(1.0); }
-                                    if let Some(idx) = graph.map.get(mint) {
-                                        // Prefer direct edges to USDC
-                                        for edge in graph.g.edges(*idx) {
-                                            let u = edge.source(); let v = edge.target();
-                                            let src = graph.g.node_weight(u).cloned().unwrap_or_default();
-                                            let dst = graph.g.node_weight(v).cloned().unwrap_or_default();
-                                            let r = edge.weight().rate_effective;
-                                            if dst == usdc_mint && r > 0.0 { return Some(r); }
-                                            if src == usdc_mint && r > 0.0 { return Some(1.0 / r); }
-                                        }
-                                        // Via SOL
-                                        let mut via_sol: Option<f64> = None;
-                                        let mut sol_usd: Option<f64> = None;
-                                        for edge in graph.g.edge_references() {
-                                            let src = graph.g.node_weight(edge.source()).cloned().unwrap_or_default();
-                                            let dst = graph.g.node_weight(edge.target()).cloned().unwrap_or_default();
-                                            let r = edge.weight().rate_effective;
-                                            if r <= 0.0 { continue; }
-                                            if src == sol_mint && dst == usdc_mint { sol_usd = Some(r); }
-                                            if src == usdc_mint && dst == sol_mint { sol_usd = Some(1.0 / r); }
-                                        }
-                                        if let Some(su) = sol_usd {
+                            
+                            if px > 0.0 && calibrate_enabled {
+                                if let Some(ref graph) = graph_snapshot {
+                                    let get_usd = |mint: &str, graph: &ArbGraph| -> Option<f64> {
+                                        if mint == usdc_mint { return Some(1.0); }
+                                        if let Some(idx) = graph.map.get(mint) {
+                                            // Prefer direct edges to USDC
                                             for edge in graph.g.edges(*idx) {
                                                 let u = edge.source(); let v = edge.target();
-                                                let s = graph.g.node_weight(u).cloned().unwrap_or_default();
-                                                let t = graph.g.node_weight(v).cloned().unwrap_or_default();
+                                                let src = graph.g.node_weight(u).cloned().unwrap_or_default();
+                                                let dst = graph.g.node_weight(v).cloned().unwrap_or_default();
+                                                let r = edge.weight().rate_effective;
+                                                if dst == usdc_mint && r > 0.0 { return Some(r); }
+                                                if src == usdc_mint && r > 0.0 { return Some(1.0 / r); }
+                                            }
+                                            // Via SOL
+                                            let mut via_sol: Option<f64> = None;
+                                            let mut sol_usd: Option<f64> = None;
+                                            for edge in graph.g.edge_references() {
+                                                let src = graph.g.node_weight(edge.source()).cloned().unwrap_or_default();
+                                                let dst = graph.g.node_weight(edge.target()).cloned().unwrap_or_default();
                                                 let r = edge.weight().rate_effective;
                                                 if r <= 0.0 { continue; }
-                                                if s == *mint && t == sol_mint { via_sol = Some(su / r); break; }
-                                                if s == sol_mint && t == *mint { via_sol = Some(su * r); break; }
+                                                if src == sol_mint && dst == usdc_mint { sol_usd = Some(r); }
+                                                if src == usdc_mint && dst == sol_mint { sol_usd = Some(1.0 / r); }
                                             }
+                                            if let Some(su) = sol_usd {
+                                                for edge in graph.g.edges(*idx) {
+                                                    let u = edge.source(); let v = edge.target();
+                                                    let s = graph.g.node_weight(u).cloned().unwrap_or_default();
+                                                    let t = graph.g.node_weight(v).cloned().unwrap_or_default();
+                                                    let r = edge.weight().rate_effective;
+                                                    if r <= 0.0 { continue; }
+                                                    if s == *mint && t == sol_mint { via_sol = Some(su / r); break; }
+                                                    if s == sol_mint && t == *mint { via_sol = Some(su * r); break; }
+                                                }
+                                            }
+                                            return via_sol;
                                         }
-                                        return via_sol;
+                                        None
+                                    };
+                                    let pa = get_usd(&e.source, graph);
+                                    let pb = get_usd(&e.target, graph);
+                                    if let (Some(pa), Some(pb)) = (pa, pb) {
+                                        let refv = pb / pa;
+                                        let mut best = px; let mut best_dev = f64::INFINITY; let mut best_k = 0i32;
+                                        for k in -8..=8 {
+                                            let cand = px * 10f64.powi(k);
+                                            if !(cand.is_finite() && cand > 0.0) { continue; }
+                                            let dev = (cand / refv).max(refv / cand);
+                                            if dev + 1e-12 < best_dev { best_dev = dev; best = cand; best_k = k; }
+                                        }
+                                        if best_k != 0 { tracing::debug!(mint_a = %e.source, mint_b = %e.target, px_in = px_raw, px_out = best, k = best_k, refv, "arb.magnitude.calibrated.diff"); }
+                                        px = best;
                                     }
-                                    None
-                                };
-                                let pa = get_usd(&e.source, &s.graph);
-                                let pb = get_usd(&e.target, &s.graph);
-                                if let (Some(pa), Some(pb)) = (pa, pb) {
-                                    let refv = pb / pa;
-                                    let mut best = px; let mut best_dev = f64::INFINITY; let mut best_k = 0i32;
-                                    for k in -8..=8 {
-                                        let cand = px * 10f64.powi(k);
-                                        if !(cand.is_finite() && cand > 0.0) { continue; }
-                                        let dev = (cand / refv).max(refv / cand);
-                                        if dev + 1e-12 < best_dev { best_dev = dev; best = cand; best_k = k; }
-                                    }
-                                    if best_k != 0 { tracing::debug!(mint_a = %e.source, mint_b = %e.target, px_in = px_raw, px_out = best, k = best_k, refv, "arb.magnitude.calibrated.diff"); }
-                                    px = best;
                                 }
                             }
                             let base = if px > 0.0 { 1.0 / px } else { 0.0 };
                             let rate_eff = if base > 0.0 { base * (1.0 - (fee as f64)/10_000.0).max(0.0) } else { 0.0 };
-                            s.graph.upsert_edge(&dex, &e.source, &e.target, EdgeData { rate_effective: rate_eff, fee_bps: fee, liquidity: liq, dex: dex.clone(), pool_id: e.pool_id.clone().unwrap_or_default(), liquidity_display: liq_disp });
-                        };
-                        for e in added.iter() { upsert(e); }
-                        for e in updated.iter() { upsert(e); }
-                        s.metrics.graph_updates_applied = s.metrics.graph_updates_applied.saturating_add(1);
-                        s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.graph.diff: applied add={} upd={} rem={}", add_ct, upd_ct, rem_ct) });
-                        tracing::info!(add=add_ct, upd=upd_ct, rem=rem_ct, "arb.graph.diff: applied");
-                        let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
+                            calibrated_edges.push((e.source.clone(), e.target.clone(), dex, fee, rate_eff, liq, liq_disp, pool_id));
+                        }
+                        
+                        // Reacquire write lock briefly to apply calibrated edges
+                        {
+                            let mut s = loop_state.write().await;
+                            for (source, target, dex, fee, rate_eff, liq, liq_disp, pool_id) in calibrated_edges {
+                                s.graph.upsert_edge(&dex, &source, &target, EdgeData { rate_effective: rate_eff, fee_bps: fee, liquidity: liq, dex: dex.clone(), pool_id, liquidity_display: liq_disp });
+                            }
+                            s.metrics.graph_updates_applied = s.metrics.graph_updates_applied.saturating_add(1);
+                            s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.graph.diff: applied add={} upd={} rem={}", add_ct, upd_ct, rem_ct) });
+                            tracing::info!(add=add_ct, upd=upd_ct, rem=rem_ct, "arb.graph.diff: applied");
+                            let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
+                            s.metrics.graph_nodes = s.graph.g.node_count() as u64;
+                            s.metrics.graph_edges = s.graph.g.edge_count() as u64;
+                        }
                     } else {
-                        // Explicitly log that there were no pending graph updates for this tick
+                        // No pending updates - still need to check version
                         tracing::info!("arb.graph.diff: none pending");
                     }
-                    // Update version even when there are no edges - the diff itself represents a version increment
-                    if let Some(v) = s.pending_graph_version.take() {
-                        if v > s.last_graph_version {
-                            let old_version = s.last_graph_version;
-                            s.last_graph_version = v;
-                            tracing::info!(old_version = old_version, new_version = v, "arb.graph.version: updated");
-                        } else {
-                            tracing::warn!(received_version = v, current_version = s.last_graph_version, "arb.graph.version: attempted downgrade, ignoring");
+                    
+                    // Update version (quick operation, can hold lock briefly)
+                    {
+                        let mut s = loop_state.write().await;
+                        if let Some(v) = s.pending_graph_version.take() {
+                            if v > s.last_graph_version {
+                                let old_version = s.last_graph_version;
+                                s.last_graph_version = v;
+                                tracing::info!(old_version = old_version, new_version = v, "arb.graph.version: updated");
+                            } else {
+                                tracing::warn!(received_version = v, current_version = s.last_graph_version, "arb.graph.version: attempted downgrade, ignoring");
+                            }
                         }
+                        if let Some(t) = s.pending_graph_ts.take() { s.last_graph_ts = t; }
                     }
-                    if let Some(t) = s.pending_graph_ts.take() { s.last_graph_ts = t; }
-                    s.metrics.graph_nodes = s.graph.g.node_count() as u64;
-                    s.metrics.graph_edges = s.graph.g.edge_count() as u64;
                 }
                 // Detect cycles (MVP -log weights)
                 // Compare with previous to only push WS updates on change
