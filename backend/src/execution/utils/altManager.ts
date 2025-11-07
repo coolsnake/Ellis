@@ -153,13 +153,64 @@ export class DexAltManager {
       });
     } catch {}
     
-    // Wait a bit to ensure the account is fully initialized
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // Retry verification with exponential backoff
+    // The account may take a moment to be available after confirmation
+    let verifyResult: { value: AddressLookupTableAccount | null } | null = null;
+    const maxRetries = 5;
+    const baseDelayMs = 500;
     
-    // Verify the lookup table was created
-    const verifyResult = await connection.getAddressLookupTable(lookupTableAddress).catch(() => ({ value: null }));
-    if (!verifyResult.value) {
-      throw new Error('Lookup table creation failed - account not found after creation');
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, baseDelayMs * Math.pow(2, attempt)));
+      
+      try {
+        verifyResult = await withRpcLimit(() => 
+          connection.getAddressLookupTable(lookupTableAddress)
+        );
+        
+        if (verifyResult && verifyResult.value) {
+          try {
+            logger.info('alt.manager.create.verified', {
+              cat: 'tx',
+              ctx: {
+                address: lookupTableAddress.toBase58(),
+                attempt: attempt + 1,
+                accountCount: verifyResult.value.state?.addresses?.length || 0,
+              },
+            });
+          } catch {}
+          break;
+        }
+      } catch (error) {
+        // Continue to next retry
+        if (attempt === maxRetries - 1) {
+          try {
+            logger.warn('alt.manager.create.verify.failed', {
+              cat: 'tx',
+              ctx: {
+                address: lookupTableAddress.toBase58(),
+                attempts: maxRetries,
+                error: String((error as any)?.message || error),
+              },
+            });
+          } catch {}
+        }
+      }
+    }
+    
+    if (!verifyResult || !verifyResult.value) {
+      // Even if verification fails, we can still try to extend
+      // The account might exist but not be immediately queryable
+      try {
+        logger.warn('alt.manager.create.verify.timeout', {
+          cat: 'tx',
+          ctx: {
+            address: lookupTableAddress.toBase58(),
+            signature: createSig,
+            note: 'Proceeding with extend - account may exist but not be queryable yet',
+          },
+        });
+      } catch {}
+      // Don't throw - proceed with extend attempt
     }
     
     // Limit to 256 addresses per ALT (Solana limit)
