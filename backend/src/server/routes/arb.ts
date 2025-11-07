@@ -207,11 +207,28 @@ export function createArbRouter(io: SocketIOServer): Router {
           counts: { preflight_ok: execStats.preflightOk, preflight_err: execStats.preflightErr, send_ok: execStats.sendOk, send_err: execStats.sendErr },
         };
         const graph_push = getGraphPushStats();
-        j = { ...(j || {}), pools: { ...(j?.pools || {}), ...pm }, pools_age_ms: ages, exec, graph_push };
+        // Add ALT status
+        let altStatus: any = null;
+        try {
+          const { dexAltManager } = await import('../../execution/utils/altManager.js');
+          altStatus = dexAltManager.getStatus();
+        } catch {}
+        j = { ...(j || {}), pools: { ...(j?.pools || {}), ...pm }, pools_age_ms: ages, exec, graph_push, alt_status: altStatus };
       } catch {}
       res.status(r?.status || 200).json(j);
     } catch {
       res.status(503).json({ ok: false });
+    }
+  });
+
+  // ALT status endpoint
+  api.get('/arb/alts/status', async (_req, res) => {
+    try {
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      const status = dexAltManager.getStatus();
+      res.json(status);
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
     }
   });
 

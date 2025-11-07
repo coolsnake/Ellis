@@ -4,6 +4,7 @@ import { CONFIG } from '../../utils/config.js';
 import { withRpcLimit } from '../../utils/rpcLimiter.js';
 import { logger } from '../../utils/logger.js';
 import { accountCache } from './accountCache.js';
+import { loadAltConfig, saveAltConfig, type AltConfig } from './altConfig.js';
 
 /**
  * Manages Address Lookup Tables (ALTs) for DEX transactions
@@ -14,6 +15,12 @@ export class DexAltManager {
   private altAccounts: Map<string, AddressLookupTableAccount> = new Map();
   private initialized = false;
   private initPromise: Promise<void> | null = null;
+  private altConfig: AltConfig | null = null;
+  private startupStatus: {
+    initialized: boolean;
+    alts: { [category: string]: string };
+    errors: string[];
+  } | null = null;
 
   /**
    * Initialize ALTs with frequently used accounts
@@ -27,12 +34,12 @@ export class DexAltManager {
         // Collect frequently used accounts
         const commonAccounts = await this.collectCommonAccounts();
         
-        // Load ALTs from config
+        // Load ALTs from config (fix: use unique keys for multiple ALTs)
         const configAlts = (CONFIG as any)?.execution?.lookupTableAddresses || [];
-        for (const addr of configAlts) {
+        for (let i = 0; i < configAlts.length; i++) {
           try {
-            const pk = new PublicKey(addr);
-            this.altAddresses.set('config', pk);
+            const pk = new PublicKey(configAlts[i]);
+            this.altAddresses.set(`exec-config-${i}`, pk);
           } catch {}
         }
 
@@ -82,15 +89,16 @@ export class DexAltManager {
    */
   async createAltOnChain(
     payer: { publicKey: PublicKey; secretKey: Uint8Array },
-    accounts: PublicKey[]
+    accounts: PublicKey[],
+    seed: string = 'dex-common-alt'
   ): Promise<PublicKey> {
     const connection = getConnection();
     
     try {
-      // Derive ALT address deterministically
+      // Derive ALT address deterministically with custom seed
       const [lookupTableAddress] = PublicKey.findProgramAddressSync(
         [
-          Buffer.from('dex-common-alt'),
+          Buffer.from(seed),
           payer.publicKey.toBuffer(),
         ],
         AddressLookupTableProgram.programId
@@ -105,7 +113,8 @@ export class DexAltManager {
           ctx: { address: lookupTableAddress.toBase58() },
         });
       } catch {}
-      this.altAddresses.set('dex-common', lookupTableAddress);
+      // Store with seed-based key
+      this.altAddresses.set(seed, lookupTableAddress);
       return lookupTableAddress;
     }
     
@@ -145,8 +154,8 @@ export class DexAltManager {
     const sig = await withRpcLimit(() => connection.sendRawTransaction(tx.serialize()));
     await withRpcLimit(() => connection.confirmTransaction(sig, 'confirmed'));
     
-    // Cache the new ALT
-    this.altAddresses.set('dex-common', lookupTableAddress);
+    // Cache the new ALT with seed-based key
+    this.altAddresses.set(seed, lookupTableAddress);
     
     try {
       logger.info('alt.manager.created', {
@@ -216,6 +225,51 @@ export class DexAltManager {
       } catch {}
     }
 
+    return accounts;
+  }
+
+  /**
+   * Collect frequently used pool addresses
+   */
+  private async collectPoolAccounts(): Promise<PublicKey[]> {
+    const accounts: PublicKey[] = [];
+    
+    try {
+      // Load pools from watchlist/config if available
+      // For now, return empty - can be enhanced to load from watchlist
+      // Example: get top N most frequently traded pools
+    } catch (error) {
+      try {
+        logger.warn('alt.manager.collect.pools.error', {
+          cat: 'tx',
+          ctx: { error: String((error as any)?.message || error) },
+        });
+      } catch {}
+    }
+    
+    return accounts;
+  }
+
+  /**
+   * Collect CLMM-specific accounts (tick arrays, etc.)
+   */
+  private async collectClmmAccounts(): Promise<PublicKey[]> {
+    const accounts: PublicKey[] = [];
+    
+    try {
+      // Add frequently used tick array addresses
+      // This would require tracking which tick arrays you use most
+      // Could be populated from transaction history analysis
+      // For now, return empty - can be enhanced later
+    } catch (error) {
+      try {
+        logger.warn('alt.manager.collect.clmm.error', {
+          cat: 'tx',
+          ctx: { error: String((error as any)?.message || error) },
+        });
+      } catch {}
+    }
+    
     return accounts;
   }
 
@@ -350,6 +404,324 @@ export class DexAltManager {
    */
   clearCache(): void {
     this.altAccounts.clear();
+  }
+
+  /**
+   * Comprehensive startup initialization
+   * Checks existing ALTs, validates them, creates if missing
+   */
+  async initializeStartup(options?: {
+    createIfMissing?: boolean;
+    validateExisting?: boolean;
+    autoCreateCategories?: string[]; // ['common', 'pools', 'clmm']
+  }): Promise<{
+    initialized: boolean;
+    alts: { [category: string]: string };
+    errors: string[];
+  }> {
+    const opts = {
+      createIfMissing: false,
+      validateExisting: true,
+      autoCreateCategories: [] as string[],
+      ...options,
+    };
+
+    const errors: string[] = [];
+    const results: { [category: string]: string } = {};
+
+    try {
+      // 1. Load ALT config from disk
+      this.altConfig = await loadAltConfig();
+
+      // 2. Load ALTs from exec-config (backward compatibility)
+      try {
+        const execCfg = await import('../../server/execConfigStore.js');
+        const execConfig = await execCfg.loadExecConfig();
+        if (execConfig.lookupTableAddresses?.length) {
+          for (let i = 0; i < execConfig.lookupTableAddresses.length; i++) {
+            try {
+              const pk = new PublicKey(execConfig.lookupTableAddresses[i]);
+              this.altAddresses.set(`exec-config-${i}`, pk);
+            } catch (e) {
+              errors.push(`Invalid exec-config ALT ${i}: ${String(e)}`);
+            }
+          }
+        }
+      } catch (e) {
+        errors.push(`Failed to load exec-config: ${String(e)}`);
+      }
+
+      // 3. Check and validate existing ALTs from config
+      if (opts.validateExisting && this.altConfig.alts) {
+        for (const [category, address] of Object.entries(this.altConfig.alts)) {
+          if (!address) continue;
+          
+          try {
+            const exists = await this.validateAltExists(address);
+            if (exists.valid) {
+              this.altAddresses.set(category, new PublicKey(address));
+              results[category] = address;
+              try {
+                logger.info('alt.startup.validated', {
+                  cat: 'tx',
+                  ctx: { category, address, accountCount: exists.accountCount },
+                });
+              } catch {}
+            } else {
+              errors.push(`ALT ${category} (${address}) is invalid: ${exists.reason}`);
+              // Remove invalid ALT from config
+              if (this.altConfig.alts) {
+                delete this.altConfig.alts[category as keyof typeof this.altConfig.alts];
+              }
+            }
+          } catch (e) {
+            errors.push(`Failed to validate ALT ${category}: ${String(e)}`);
+          }
+        }
+      }
+
+      // 4. Create missing ALTs if requested
+      if (opts.createIfMissing) {
+        try {
+          const { ensureWallet } = await import('../../wallet/wallet.js');
+          const wallet = await ensureWallet(CONFIG.walletPath);
+          
+          if (!this.altConfig.walletPublicKey) {
+            this.altConfig.walletPublicKey = wallet.publicKey.toBase58();
+          }
+
+          // Create common ALT if missing
+          if (opts.autoCreateCategories.includes('common') && !results.common) {
+            try {
+              const commonAccounts = await this.collectCommonAccounts();
+              if (commonAccounts.length > 0) {
+                const address = await this.createAltOnChain(
+                  wallet,
+                  commonAccounts,
+                  'common-alt'
+                );
+                results.common = address.toBase58();
+                if (this.altConfig.alts) {
+                  this.altConfig.alts.common = address.toBase58();
+                }
+                try {
+                  logger.info('alt.startup.created', {
+                    cat: 'tx',
+                    ctx: { category: 'common', address: address.toBase58(), accountCount: commonAccounts.length },
+                  });
+                } catch {}
+              }
+            } catch (e) {
+              errors.push(`Failed to create common ALT: ${String(e)}`);
+            }
+          }
+
+          // Create pools ALT if missing
+          if (opts.autoCreateCategories.includes('pools') && !results.pools) {
+            try {
+              const poolAccounts = await this.collectPoolAccounts();
+              if (poolAccounts.length > 0) {
+                const address = await this.createAltOnChain(
+                  wallet,
+                  poolAccounts,
+                  'pool-alt'
+                );
+                results.pools = address.toBase58();
+                if (this.altConfig.alts) {
+                  this.altConfig.alts.pools = address.toBase58();
+                }
+                try {
+                  logger.info('alt.startup.created', {
+                    cat: 'tx',
+                    ctx: { category: 'pools', address: address.toBase58(), accountCount: poolAccounts.length },
+                  });
+                } catch {}
+              }
+            } catch (e) {
+              errors.push(`Failed to create pools ALT: ${String(e)}`);
+            }
+          }
+
+          // Create CLMM ALT if missing
+          if (opts.autoCreateCategories.includes('clmm') && !results.clmm) {
+            try {
+              const clmmAccounts = await this.collectClmmAccounts();
+              if (clmmAccounts.length > 0) {
+                const address = await this.createAltOnChain(
+                  wallet,
+                  clmmAccounts,
+                  'clmm-alt'
+                );
+                results.clmm = address.toBase58();
+                if (this.altConfig.alts) {
+                  this.altConfig.alts.clmm = address.toBase58();
+                }
+                try {
+                  logger.info('alt.startup.created', {
+                    cat: 'tx',
+                    ctx: { category: 'clmm', address: address.toBase58(), accountCount: clmmAccounts.length },
+                  });
+                } catch {}
+              }
+            } catch (e) {
+              errors.push(`Failed to create CLMM ALT: ${String(e)}`);
+            }
+          }
+
+          // Save updated config
+          if (this.altConfig) {
+            this.altConfig.lastValidated = Date.now();
+            if (!this.altConfig.createdAt) {
+              this.altConfig.createdAt = Date.now();
+            }
+            await saveAltConfig(this.altConfig);
+          }
+        } catch (e) {
+          errors.push(`Failed to create ALTs: ${String(e)}`);
+        }
+      }
+
+      this.initialized = true;
+      this.startupStatus = {
+        initialized: this.initialized,
+        alts: results,
+        errors,
+      };
+      
+      try {
+        logger.info('alt.startup.complete', {
+          cat: 'tx',
+          ctx: {
+            altCount: this.altAddresses.size,
+            categories: Object.keys(results),
+            errorCount: errors.length,
+          },
+        });
+      } catch {}
+
+    } catch (error) {
+      errors.push(`Startup initialization failed: ${String(error)}`);
+      try {
+        logger.error('alt.startup.error', {
+          cat: 'tx',
+          ctx: { error: String((error as any)?.message || error) },
+        });
+      } catch {}
+      this.initialized = true; // Mark as initialized even on error
+      this.startupStatus = {
+        initialized: this.initialized,
+        alts: results,
+        errors,
+      };
+    }
+
+    return {
+      initialized: this.initialized,
+      alts: results,
+      errors,
+    };
+  }
+
+  /**
+   * Validate that an ALT exists and is accessible
+   */
+  async validateAltExists(address: string): Promise<{
+    valid: boolean;
+    reason?: string;
+    accountCount?: number;
+  }> {
+    try {
+      const connection = getConnection();
+      const pk = new PublicKey(address);
+      const result = await withRpcLimit(() =>
+        connection.getAddressLookupTable(pk)
+      );
+
+      if (!result || !result.value) {
+        return { valid: false, reason: 'ALT not found on-chain' };
+      }
+
+      const accountCount = result.value.state?.addresses?.length || 0;
+      if (accountCount === 0) {
+        return { valid: false, reason: 'ALT is empty (no accounts)' };
+      }
+
+      // Cache the ALT account
+      this.altAccounts.set(address, result.value);
+
+      return { valid: true, accountCount };
+    } catch (error) {
+      return {
+        valid: false,
+        reason: `Validation error: ${String((error as any)?.message || error)}`,
+      };
+    }
+  }
+
+  /**
+   * Check if ALTs need to be created/updated
+   */
+  async checkAltStatus(): Promise<{
+    needsSetup: boolean;
+    existing: { [category: string]: string };
+    missing: string[];
+  }> {
+    const config = await loadAltConfig();
+    
+    const existing: { [category: string]: string } = {};
+    const missing: string[] = [];
+
+    if (config.alts) {
+      for (const [category, address] of Object.entries(config.alts)) {
+        if (address) {
+          const validated = await this.validateAltExists(address);
+          if (validated.valid) {
+            existing[category] = address;
+          } else {
+            missing.push(category);
+          }
+        } else {
+          missing.push(category);
+        }
+      }
+    }
+
+    return {
+      needsSetup: missing.length > 0,
+      existing,
+      missing,
+    };
+  }
+
+  /**
+   * Get current ALT status for API
+   */
+  getStatus(): {
+    initialized: boolean;
+    altCount: number;
+    categories: string[];
+    addresses: { [category: string]: string };
+    startupStatus?: {
+      initialized: boolean;
+      alts: { [category: string]: string };
+      errors: string[];
+    };
+  } {
+    const addresses: { [category: string]: string } = {};
+    for (const [key, pk] of this.altAddresses.entries()) {
+      // Skip exec-config prefixed keys for cleaner output
+      if (!key.startsWith('exec-config-')) {
+        addresses[key] = pk.toBase58();
+      }
+    }
+
+    return {
+      initialized: this.initialized,
+      altCount: this.altAddresses.size,
+      categories: Object.keys(addresses),
+      addresses,
+      startupStatus: this.startupStatus || undefined,
+    };
   }
 }
 

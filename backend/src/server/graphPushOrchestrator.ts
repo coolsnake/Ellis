@@ -728,13 +728,24 @@ class GraphPushOrchestrator {
         const baseTimeoutMs = Number((((globalThis as any)?.process?.env?.ARB_ACK_TIMEOUT_MS) || 2500));
         let versionGap = 0;
         try {
-          const { getGraphVersion } = require('./graph.js');
-          const backendVersion = getGraphVersion().version;
           // Use cached version from polling, not lastDetectCompleteVersion (which can be stale)
           const { getCachedArbVersion } = require('./realtime.js');
           const cachedVersion = getCachedArbVersion();
           const arbVersion = cachedVersion.version;
-          versionGap = Math.max(0, backendVersion - arbVersion);
+          // Calculate gap for the version we're ACKing, not current backend version
+          // This ensures we give enough time for arb-rs to process this specific version
+          versionGap = Math.max(0, wantVersion - arbVersion);
+          // Log for debugging timeout issues
+          try {
+            logger.debug('arb.push ack timeout calculation', {
+              wantVersion,
+              arbVersion,
+              versionGap,
+              baseTimeoutMs,
+              adaptiveTimeoutMs: Math.min(baseTimeoutMs + (versionGap * 500), baseTimeoutMs * 3),
+              cacheAgeMs: cachedVersion.ageMs,
+            });
+          } catch {}
         } catch {}
         // Add 500ms per version gap, capped at 3x base timeout
         const adaptiveTimeoutMs = Math.min(baseTimeoutMs + (versionGap * 500), baseTimeoutMs * 3);

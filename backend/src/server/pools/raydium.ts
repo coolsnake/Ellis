@@ -231,7 +231,8 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
     const typeStr = String(it?.type || it?.poolType || '').toLowerCase();
     const pooltype = Array.isArray((it as any)?.pooltype) ? (it as any).pooltype : [];
     const hasSqrt = (it as any)?.sqrtPriceX64 != null || (it as any)?.sqrtPrice != null;
-    const hasTick = (it as any)?.tickSpacing != null || (it as any)?.config?.tickSpacing != null;
+    const tickSpacing = (it as any)?.tickSpacing ?? (it as any)?.config?.tickSpacing;
+    const hasTick = typeof tickSpacing === 'number' && tickSpacing > 0; // Only consider valid tick spacing
     const isClmm = typeStr.includes('concentrated') || pooltype.map((s: any) => String(s).toLowerCase()).includes('clmm') || hasSqrt || hasTick;
     const fee_bps = toFeeBps((it as any)?.feeRate ?? (it as any)?.tradeFeeRate ?? (it as any)?.feeBps ?? (it as any)?.tradeFeeBps);
     let decA = Number((it?.mintA as any)?.decimals);

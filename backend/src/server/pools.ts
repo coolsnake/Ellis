@@ -179,10 +179,12 @@ export function defaultNormalizeRaydiumPools(raw: any): PoolsPayload {
     if (!id || !mintA || !mintB) continue;
     const typeStr = String(it?.type || it?.poolType || '').toLowerCase();
     const pooltype = Array.isArray((it as any)?.pooltype) ? (it as any).pooltype : [];
+    const tickSpacing = (it as any)?.tickSpacing ?? (it as any)?.config?.tickSpacing;
+    const hasTick = typeof tickSpacing === 'number' && tickSpacing > 0; // Only consider valid tick spacing
     const isClmm = (
       typeStr.includes('concentrated') ||
       pooltype.map((s: any) => String(s).toLowerCase()).includes('clmm') ||
-      typeof (it as any)?.tickSpacing === 'number' ||
+      hasTick ||
       (typeof (it as any)?.sqrtPriceX64 !== 'undefined' || typeof (it as any)?.sqrtPrice !== 'undefined')
     );
     const fee_bps = toFeeBps((it as any)?.feeRate ?? (it as any)?.tradeFeeRate ?? (it as any)?.feeBps ?? (it as any)?.tradeFeeBps);

@@ -2573,8 +2573,29 @@ async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: Head
         let current_ts = s.last_graph_ts;
         drop(s);
         
+        let elapsed = start.elapsed().as_millis() as u64;
+        
+        // Log periodically to debug timeout issues (every 500ms or when behind)
+        if (elapsed % 500 == 0 && elapsed > 0) || (effective_version < want_version && elapsed > 1000) {
+            tracing::debug!(
+                want_version = want_version,
+                last_version = last_version,
+                pending_version = pending_version,
+                effective_version = effective_version,
+                elapsed_ms = elapsed,
+                timeout_ms = timeout_ms,
+                "arb.graph.ack: polling"
+            );
+        }
+        
         // ACK if either pending or applied version meets the requirement
         if want_version > 0 && effective_version >= want_version {
+            tracing::info!(
+                want_version = want_version,
+                effective_version = effective_version,
+                elapsed_ms = elapsed,
+                "arb.graph.ack: success"
+            );
             return Json(GraphAckResponse { 
                 ok: true, 
                 current_version: effective_version, 
@@ -2583,7 +2604,16 @@ async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: Head
             });
         }
         
-        if start.elapsed().as_millis() as u64 >= timeout_ms {
+        if elapsed >= timeout_ms {
+            tracing::warn!(
+                want_version = want_version,
+                last_version = last_version,
+                pending_version = pending_version,
+                effective_version = effective_version,
+                elapsed_ms = elapsed,
+                timeout_ms = timeout_ms,
+                "arb.graph.ack: timeout"
+            );
             break;
         }
         

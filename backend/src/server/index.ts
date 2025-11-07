@@ -416,6 +416,47 @@ server.listen(CONFIG.port, () => {
 
   // Post-listen initialization: run migrations and history load without blocking readiness
   setImmediate(async () => {
+      // Initialize ALTs at startup
+      try {
+        const { dexAltManager } = await import('../execution/utils/altManager.js');
+        const altCfg: any = (CONFIG as any)?.execution?.alts || {};
+        
+        const result = await dexAltManager.initializeStartup({
+          createIfMissing: altCfg.autoCreate !== false, // Default: true
+          validateExisting: altCfg.validateOnStartup !== false, // Default: true
+          autoCreateCategories: altCfg.categories || ['common'], // Default: just common
+        });
+
+        if (result.errors.length > 0) {
+          try {
+            logger.warn('alt.startup.warnings', {
+              cat: 'server',
+              ctx: { errors: result.errors },
+            });
+          } catch {}
+        }
+
+        try {
+          logger.info('alt.startup.done', {
+            cat: 'server',
+            ctx: {
+              initialized: result.initialized,
+              altCount: Object.keys(result.alts).length,
+              categories: Object.keys(result.alts),
+              errorCount: result.errors.length,
+            },
+          });
+        } catch {}
+      } catch (error) {
+        try {
+          logger.warn('alt.startup.failed', {
+            cat: 'server',
+            ctx: { error: String((error as any)?.message || error) },
+          });
+        } catch {}
+        // Don't block startup if ALT init fails
+      }
+      
       // Load precomputed CLMM cache from disk
       try { await loadClmmCacheFromDisk(); logger.info('clmm.cache.loaded'); } catch {}
       // Removed auto verified fetch; use manual /watchlist/fetch-verified endpoint

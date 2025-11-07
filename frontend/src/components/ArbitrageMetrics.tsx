@@ -21,6 +21,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
   const [wsDetails, setWsDetails] = React.useState<{ orca?: { attached?: number; events?: number }, raydium?: { attached?: number; events?: number }, meteora?: { attached?: number; events?: number } }>({});
   const [poolAges, setPoolAges] = React.useState<any | null>(null);
   const [wsTargets, setWsTargets] = React.useState<{ orca?: number; raydium?: number; meteora?: number }>({});
+  const [altStatus, setAltStatus] = React.useState<any | null>(null);
 
   const fetchMetrics = async () => {
     try {
@@ -38,6 +39,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
         setM(j);
         if (j?.pools) setPoolsStats(j.pools);
         if (j?.pools_age_ms) setPoolAges(j.pools_age_ms);
+        if (j?.alt_status) setAltStatus(j.alt_status);
       }
     } catch {}
   };
@@ -206,6 +208,11 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
           <span className={`px-2 py-0.5 text-xs rounded border ${wsHealthy ? 'bg-green-700/50 border-green-600' : 'bg-yellow-700/50 border-yellow-600'}`}>
             {wsHealthy ? `WS Active: Ray ${wsDetails.raydium?.attached||0}/${wsTargets.raydium||0} ev=${wsDetails.raydium?.events||0}, Orca ${wsDetails.orca?.attached||0}/${wsTargets.orca||0} ev=${wsDetails.orca?.events||0}, Met ${wsDetails.meteora?.attached||0}/${wsTargets.meteora||0} ev=${wsDetails.meteora?.events||0} · idle ${ago(lastEventMs)}` : `WS Idle · idle ${ago(lastEventMs)}`}
           </span>
+          {altStatus ? (
+            <span className={`px-2 py-0.5 text-xs rounded border ${altStatus.initialized && altStatus.altCount > 0 ? 'bg-green-700/50 border-green-600' : 'bg-yellow-700/50 border-yellow-600'}`} title={altStatus.startupStatus?.errors?.length ? `Errors: ${altStatus.startupStatus.errors.join(', ')}` : undefined}>
+              ALTs: {altStatus.altCount || 0} {altStatus.categories?.length ? `(${altStatus.categories.join(', ')})` : ''} {altStatus.startupStatus?.errors?.length ? `⚠ ${altStatus.startupStatus.errors.length} err` : ''}
+            </span>
+          ) : null}
         </div>
       </div>
       {!m ? <div className="text-sm opacity-70">Loading...</div> : (
@@ -251,6 +258,41 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
                 <div>AMM: {fmt(mblPools.amm?.length)}</div>
               )}
             </div>
+          {altStatus ? (
+            <div className="col-span-2 border-t border-gray-700 pt-2">
+              <div className="text-gray-400">Address Lookup Tables (ALTs)</div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+                <div>
+                  <div className="text-gray-400">Status</div>
+                  <div className={`px-1 rounded border inline-block ${altStatus.initialized && altStatus.altCount > 0 ? 'bg-green-800/40 border-green-700' : 'bg-yellow-800/50 border-yellow-700'}`}>
+                    {altStatus.initialized ? 'Initialized' : 'Not Initialized'} · {altStatus.altCount || 0} ALT{altStatus.altCount !== 1 ? 's' : ''}
+                  </div>
+                </div>
+                {altStatus.categories?.length > 0 ? (
+                  <div>
+                    <div className="text-gray-400">Categories</div>
+                    <div>{altStatus.categories.join(', ')}</div>
+                  </div>
+                ) : null}
+                {altStatus.startupStatus?.errors?.length > 0 ? (
+                  <div className="col-span-2">
+                    <div className="text-yellow-400">Warnings</div>
+                    <div className="text-xs opacity-80">{altStatus.startupStatus.errors.slice(0, 3).join('; ')}{altStatus.startupStatus.errors.length > 3 ? ` (+${altStatus.startupStatus.errors.length - 3} more)` : ''}</div>
+                  </div>
+                ) : null}
+                {altStatus.addresses && Object.keys(altStatus.addresses).length > 0 ? (
+                  <div className="col-span-2">
+                    <div className="text-gray-400">ALT Addresses</div>
+                    <div className="text-xs opacity-70 font-mono break-all">
+                      {Object.entries(altStatus.addresses).map(([cat, addr]: [string, any]) => (
+                        <div key={cat} className="truncate">{cat}: {String(addr).slice(0, 8)}...{String(addr).slice(-8)}</div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
           {poolAges ? (
             <div className="col-span-2">
               <div className="text-gray-400">Pool Cache Age</div>
