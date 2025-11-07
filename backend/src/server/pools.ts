@@ -830,51 +830,57 @@ export function startRaydiumRefreshLoop(): void {
                       const liqRaw = anyToBigInt((state as any).liquidity ?? 0);
                       const liq = Number((state as any).liquidity ?? 0);
                       const tick = Number((state as any).tickSpacing ?? (state as any).tick_spacing ?? 0);
-                      const fee = Number((state as any).tradeFeeRate ?? (state as any).feeRate ?? (state as any).fee_rate ?? 0);
-                      const item: ClmmPool = {
-                        id: pk58,
-                        dex: 'Raydium',
-                        mint_a: mintA,
-                        mint_b: mintB,
-                        fee_bps: fee,
-                        sqrt_price_x64: Number.isFinite(Number(sqrtRaw)) ? Number(sqrtRaw) : Number((state as any).sqrtPriceX64 ?? (state as any).sqrt_price_x64 ?? (state as any).sqrtPrice ?? 0),
-                        sqrt_price_x64_raw: sqrtRaw ? sqrtRaw.toString() : undefined,
-                        liquidity: Number.isFinite(liq) ? liq : 0,
-                        liquidity_raw: liqRaw ? liqRaw.toString() : undefined,
-                        'tick_spacing': tick,
-                        updated_ms: Date.now(),
-                        pool_kind: 'clmm',
-                        liquidity_display: liq,
-                        price_a_per_b,
-                        price_a_per_b_num: precision.ratio ? precision.ratio.numerator.toString() : undefined,
-                        price_a_per_b_den: precision.ratio ? precision.ratio.denominator.toString() : undefined,
-                        price_a_per_b_exact: ratioToDecimalString(precision.ratio) ?? undefined,
-                        decimals_a: precision.decA,
-                        decimals_b: precision.decB,
-                      } as any;
-                      const prev = raydiumCache.data || { amm: [], clmm: [] };
-                      const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
-                      const idx = next.clmm.findIndex(p => p.id === item.id);
-                      if (idx >= 0) next.clmm[idx] = { ...next.clmm[idx], ...item }; else next.clmm.push(item);
-                      wsDeltaStats.raydium.decoded += 1;
-                      const d = diffNormalizedPools(prev, next);
-                      raydiumCache.data = next; raydiumCache.ts = Date.now();
+                      // Skip adding to CLMM list if tickSpacing is invalid (must be > 0 for valid CLMM pools)
+                      if (tick > 0) {
+                        const fee = Number((state as any).tradeFeeRate ?? (state as any).feeRate ?? (state as any).fee_rate ?? 0);
+                        const item: ClmmPool = {
+                          id: pk58,
+                          dex: 'Raydium',
+                          mint_a: mintA,
+                          mint_b: mintB,
+                          fee_bps: fee,
+                          sqrt_price_x64: Number.isFinite(Number(sqrtRaw)) ? Number(sqrtRaw) : Number((state as any).sqrtPriceX64 ?? (state as any).sqrt_price_x64 ?? (state as any).sqrtPrice ?? 0),
+                          sqrt_price_x64_raw: sqrtRaw ? sqrtRaw.toString() : undefined,
+                          liquidity: Number.isFinite(liq) ? liq : 0,
+                          liquidity_raw: liqRaw ? liqRaw.toString() : undefined,
+                          'tick_spacing': tick,
+                          updated_ms: Date.now(),
+                          pool_kind: 'clmm',
+                          liquidity_display: liq,
+                          price_a_per_b,
+                          price_a_per_b_num: precision.ratio ? precision.ratio.numerator.toString() : undefined,
+                          price_a_per_b_den: precision.ratio ? precision.ratio.denominator.toString() : undefined,
+                          price_a_per_b_exact: ratioToDecimalString(precision.ratio) ?? undefined,
+                          decimals_a: precision.decA,
+                          decimals_b: precision.decB,
+                        } as any;
+                        const prev = raydiumCache.data || { amm: [], clmm: [] };
+                        const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
+                        const idx = next.clmm.findIndex(p => p.id === item.id);
+                        if (idx >= 0) next.clmm[idx] = { ...next.clmm[idx], ...item }; else next.clmm.push(item);
+                        wsDeltaStats.raydium.decoded += 1;
+                        const d = diffNormalizedPools(prev, next);
+                        raydiumCache.data = next; raydiumCache.ts = Date.now();
+                        const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
+                        if (hasDelta) wsDeltaStats.raydium.applied += 1; else wsDeltaStats.raydium.skipped += 1;
+                        try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: d.amm.slice(0, 20), clmm: [] }, ts: Date.now() }); } catch {}
+                    // Prefer incremental graph apply when enabled; fallback to rebuild
+                    try {
+                      const inc = !!((CONFIG.system as any)?.graphIncrementalMode);
+                      const gmod: any = await import('./graph.js');
                       const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
-                      if (hasDelta) wsDeltaStats.raydium.applied += 1; else wsDeltaStats.raydium.skipped += 1;
-                      try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: d.amm.slice(0, 20), clmm: [] }, ts: Date.now() }); } catch {}
-                  // Prefer incremental graph apply when enabled; fallback to rebuild
-                  try {
-                    const inc = !!((CONFIG.system as any)?.graphIncrementalMode);
-                    const gmod: any = await import('./graph.js');
-                    const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
-                    if (inc && hasDelta) {
-                      await scheduleDexApply('raydium', prev as any);
-                    } else {
-                      const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
-                      const delta = d.clmm.length;
-                      if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
-                    }
-                  } catch {}
+                      if (inc && hasDelta) {
+                        await scheduleDexApply('raydium', prev as any);
+                      } else {
+                        const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
+                        const delta = d.clmm.length;
+                        if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
+                      }
+                    } catch {}
+                      } else {
+                        try { logger.debug('raydium.ws clmm.skip.invalid_tick', { id: pk58, tick, cat: 'pools' }); } catch {}
+                        updated = true; // Mark as processed to avoid further handling
+                      }
                       updated = true;
                     }
                   }

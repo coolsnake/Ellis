@@ -2020,8 +2020,9 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               const pk = (key as any).pubkey;
               const pkStr = pk instanceof PublicKey ? pk.toBase58() : String(pk);
               
-              // CRITICAL: Don't replace event_authority or other important PDAs
-              // Check if this account is the event_authority PDA
+              // CRITICAL: Don't replace event_authority specifically
+              // Positions 11-12 MUST be token programs, so we replace anything that's not a token program
+              // UNLESS it's event_authority (which should never be at positions 11-12, but check anyway)
               if (eventAuthorityPda && pkStr === eventAuthorityPda.toBase58()) {
                 try {
                   logger.debug('meteora.dlmm.token_program.skip_event_authority', {
@@ -2029,7 +2030,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                     ctx: {
                       position: pos,
                       account: pkStr,
-                      note: 'Skipping replacement - this is event_authority PDA'
+                      note: 'Skipping replacement - this is event_authority PDA (unexpected at token program position)'
                     }
                   });
                 } catch {}
@@ -2041,34 +2042,10 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               const expectedProgram = pos === 11 ? expectedTokenXProgram : expectedTokenYProgram;
               
               // If this position should be a token program but isn't, OR if it's the wrong token program, fix it
-              // BUT only if it's not a PDA (like event_authority)
+              // We replace it UNLESS it's event_authority (which we already checked above)
+              // Note: Even if the account is a PDA, if it's at a token program position and not event_authority,
+              // we must replace it because the instruction requires a token program here
               if (!validTokenPrograms.has(pkStr) || pkStr !== expectedProgram) {
-                // Additional safety check: if this account is owned by the DLMM program, it's likely a PDA
-                // and we shouldn't replace it
-                let isLikelyPda = false;
-                try {
-                  const pkObj = pk instanceof PublicKey ? pk : new PublicKey(pkStr);
-                  const accountInfo = await connection.getAccountInfo(pkObj).catch(() => null);
-                  if (accountInfo && accountInfo.owner.equals(programId)) {
-                    isLikelyPda = true;
-                    try {
-                      logger.debug('meteora.dlmm.token_program.skip_pda', {
-                        cat: 'tx',
-                        ctx: {
-                          position: pos,
-                          account: pkStr,
-                          owner: accountInfo.owner.toBase58(),
-                          note: 'Skipping replacement - account is owned by DLMM program (likely PDA)'
-                        }
-                      });
-                    } catch {}
-                  }
-                } catch {}
-                
-                if (isLikelyPda) {
-                  continue; // Don't replace PDAs
-                }
-                
                 const expectedProgramPk = new PublicKey(expectedProgram);
                 
                 // Store the replaced account for logging (only if it's not already a valid token program)

@@ -129,10 +129,58 @@ export class DexAltManager {
       recentSlot,
     });
     
+    // STEP 1: Create the lookup table (first transaction)
+    // The lookup table account must exist before we can extend it
+    const createTx = new Transaction();
+    createTx.add(createIx);
+    const createBlockhash = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
+    createTx.recentBlockhash = createBlockhash.blockhash;
+    createTx.feePayer = payer.publicKey;
+    
+    const kp = Keypair.fromSecretKey(payer.secretKey);
+    createTx.sign(kp);
+    
+    const createSig = await withRpcLimit(() => connection.sendRawTransaction(createTx.serialize()));
+    await withRpcLimit(() => connection.confirmTransaction(createSig, 'confirmed'));
+    
+    try {
+      logger.info('alt.manager.create.step1', {
+        cat: 'tx',
+        ctx: {
+          address: lookupTableAddress.toBase58(),
+          signature: createSig,
+        },
+      });
+    } catch {}
+    
+    // Wait a bit to ensure the account is fully initialized
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Verify the lookup table was created
+    const verifyResult = await connection.getAddressLookupTable(lookupTableAddress).catch(() => ({ value: null }));
+    if (!verifyResult.value) {
+      throw new Error('Lookup table creation failed - account not found after creation');
+    }
+    
     // Limit to 256 addresses per ALT (Solana limit)
     const addressesToAdd = accounts.slice(0, 256);
     
-    // Extend ALT with accounts
+    if (addressesToAdd.length === 0) {
+      // No accounts to add, just cache the empty ALT
+      this.altAddresses.set(seed, lookupTableAddress);
+      try {
+        logger.info('alt.manager.created.empty', {
+          cat: 'tx',
+          ctx: {
+            address: lookupTableAddress.toBase58(),
+            signature: createSig,
+          },
+        });
+      } catch {}
+      return lookupTableAddress;
+    }
+    
+    // STEP 2: Extend ALT with accounts (second transaction)
     const extendIx = AddressLookupTableProgram.extendLookupTable({
       payer: payer.publicKey,
       authority: payer.publicKey,
@@ -140,19 +188,16 @@ export class DexAltManager {
       addresses: addressesToAdd,
     });
     
-    // Send transaction
-    const tx = new Transaction();
-    tx.add(createIx);
-    tx.add(extendIx);
-    const latestBlockhash = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
-    tx.recentBlockhash = latestBlockhash.blockhash;
-    tx.feePayer = payer.publicKey;
+    const extendTx = new Transaction();
+    extendTx.add(extendIx);
+    const extendBlockhash = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
+    extendTx.recentBlockhash = extendBlockhash.blockhash;
+    extendTx.feePayer = payer.publicKey;
     
-    const kp = Keypair.fromSecretKey(payer.secretKey);
-    tx.sign(kp);
+    extendTx.sign(kp);
     
-    const sig = await withRpcLimit(() => connection.sendRawTransaction(tx.serialize()));
-    await withRpcLimit(() => connection.confirmTransaction(sig, 'confirmed'));
+    const extendSig = await withRpcLimit(() => connection.sendRawTransaction(extendTx.serialize()));
+    await withRpcLimit(() => connection.confirmTransaction(extendSig, 'confirmed'));
     
     // Cache the new ALT with seed-based key
     this.altAddresses.set(seed, lookupTableAddress);
@@ -163,7 +208,8 @@ export class DexAltManager {
         ctx: {
           address: lookupTableAddress.toBase58(),
           accountCount: addressesToAdd.length,
-          signature: sig,
+          createSignature: createSig,
+          extendSignature: extendSig,
         },
       });
     } catch {}

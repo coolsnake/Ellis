@@ -2563,6 +2563,26 @@ async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: Head
     let timeout_ms = req.timeout_ms.unwrap_or(2500);
     let start = std::time::Instant::now();
     
+    // Log immediately when ACK request arrives
+    tracing::info!(
+        want_version = want_version,
+        timeout_ms = timeout_ms,
+        "arb.graph.ack: request received"
+    );
+    
+    // Check initial state
+    let initial_state = {
+        let s = state.read().await;
+        (s.last_graph_version, s.pending_graph_version.unwrap_or(0))
+    };
+    tracing::debug!(
+        want_version = want_version,
+        initial_last_version = initial_state.0,
+        initial_pending_version = initial_state.1,
+        initial_effective = initial_state.1.max(initial_state.0),
+        "arb.graph.ack: initial state"
+    );
+    
     // Poll until version is >= want_version or timeout
     // Check both pending_graph_version (buffered but not yet applied) and last_graph_version (applied)
     loop {
@@ -2575,8 +2595,8 @@ async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: Head
         
         let elapsed = start.elapsed().as_millis() as u64;
         
-        // Log periodically to debug timeout issues (every 500ms or when behind)
-        if (elapsed % 500 == 0 && elapsed > 0) || (effective_version < want_version && elapsed > 1000) {
+        // Log on first iteration, periodically (every 500ms), or when behind (after 500ms)
+        if elapsed == 0 || (elapsed % 500 == 0 && elapsed > 0) || (effective_version < want_version && elapsed > 500) {
             tracing::debug!(
                 want_version = want_version,
                 last_version = last_version,

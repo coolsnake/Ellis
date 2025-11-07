@@ -30,7 +30,13 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
           const { peekRaydiumPools } = await import('../../server/pools.js');
           const id = poolId.replace(/-rev$/, '');
           const ray = peekRaydiumPools();
-          const isClmm = Array.isArray(ray?.clmm) && (ray!.clmm as any[]).some((p: any) => String(p?.id || '') === id);
+          // Validate that pool has valid tickSpacing > 0 before considering it CLMM
+          const isClmm = Array.isArray(ray?.clmm) && (ray!.clmm as any[]).some((p: any) => {
+            const matchesId = String(p?.id || '') === id;
+            const tickSpacing = p?.tick_spacing ?? p?.tickSpacing;
+            const hasValidTick = typeof tickSpacing === 'number' && tickSpacing > 0;
+            return matchesId && hasValidTick;
+          });
           variant = isClmm ? 'clmm' : 'amm';
         } catch { variant = 'amm'; }
       }
