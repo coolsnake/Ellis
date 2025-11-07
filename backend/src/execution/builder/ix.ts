@@ -2034,31 +2034,31 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 });
               } catch {}
               
-              // CRITICAL: Don't replace event_authority specifically
-              // Positions 11-12 MUST be token programs, so we replace anything that's not a token program
-              // UNLESS it's event_authority (which should never be at positions 11-12, but check anyway)
-              if (eventAuthorityPda && pkStr === eventAuthorityPda.toBase58()) {
-                try {
-                  logger.info('meteora.dlmm.token_program.skip_event_authority', {
-                    cat: 'tx',
-                    ctx: {
-                      position: pos,
-                      account: pkStr,
-                      note: 'Skipping replacement - this is event_authority PDA (unexpected at token program position)'
-                    }
-                  });
-                } catch {}
-                continue; // Don't replace event_authority
-              }
-              
               // Determine which token program should be here
               // Position 11 is typically tokenXProgram, position 12 is tokenYProgram
               const expectedProgram = pos === 11 ? expectedTokenXProgram : expectedTokenYProgram;
               
+              // CRITICAL: Positions 11-12 MUST be token programs
+              // If event_authority is incorrectly placed here, we still need to replace it
+              // because the instruction requires a token program at these positions
+              if (eventAuthorityPda && pkStr === eventAuthorityPda.toBase58()) {
+                try {
+                  logger.warn('meteora.dlmm.token_program.event_authority_at_token_position', {
+                    cat: 'tx',
+                    ctx: {
+                      position: pos,
+                      account: pkStr,
+                      expectedProgram,
+                      warning: 'event_authority PDA incorrectly placed at token program position - will replace with token program'
+                    }
+                  });
+                } catch {}
+                // Continue to replacement logic below - don't skip!
+              }
+              
               // If this position should be a token program but isn't, OR if it's the wrong token program, fix it
-              // We replace it UNLESS it's event_authority (which we already checked above)
-              // Note: Even if the account is a PDA, if it's at a token program position and not event_authority,
-              // we must replace it because the instruction requires a token program here
+              // Note: Positions 11-12 MUST be token programs, so we replace ANY account that's not the correct token program
+              // This includes event_authority if it's incorrectly placed here (which we log as a warning above)
               if (!validTokenPrograms.has(pkStr) || pkStr !== expectedProgram) {
                 try {
                   logger.info('meteora.dlmm.token_program.will_replace', {

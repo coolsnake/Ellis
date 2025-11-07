@@ -84,6 +84,109 @@ export class DexAltManager {
   }
 
   /**
+   * Find existing empty or reusable lookup tables owned by this wallet
+   */
+  private async findReusableLookupTable(
+    payer: { publicKey: PublicKey },
+    accounts: PublicKey[]
+  ): Promise<{ address: PublicKey; accountCount: number; seed: string } | null> {
+    const connection = getConnection();
+    
+    // Check common seed variations that might have been created but not extended
+    const seedsToCheck = ['common-alt', 'dex-common-alt', 'pool-alt', 'clmm-alt', 'tokens-alt'];
+    
+    for (const seed of seedsToCheck) {
+      try {
+        const [lookupTableAddress] = PublicKey.findProgramAddressSync(
+          [
+            Buffer.from(seed),
+            payer.publicKey.toBuffer(),
+          ],
+          AddressLookupTableProgram.programId
+        );
+        
+        const result = await withRpcLimit(() => 
+          connection.getAddressLookupTable(lookupTableAddress)
+        ).catch(() => ({ value: null }));
+        
+        if (result.value) {
+          const accountCount = result.value.state?.addresses?.length || 0;
+          const remainingCapacity = 256 - accountCount;
+          
+          // If empty or has enough capacity, we can reuse it
+          if (accountCount === 0 || (remainingCapacity >= accounts.length && accountCount > 0)) {
+            try {
+              logger.info('alt.manager.found.reusable', {
+                cat: 'tx',
+                ctx: {
+                  address: lookupTableAddress.toBase58(),
+                  seed,
+                  accountCount,
+                  remainingCapacity,
+                  accountsToAdd: accounts.length,
+                },
+              });
+            } catch {}
+            return { address: lookupTableAddress, accountCount, seed };
+          }
+        }
+      } catch (error) {
+        // Continue checking other seeds
+        continue;
+      }
+    }
+    
+    return null;
+  }
+
+  /**
+   * Extend an existing lookup table with accounts
+   */
+  private async extendLookupTable(
+    payer: { publicKey: PublicKey; secretKey: Uint8Array },
+    lookupTableAddress: PublicKey,
+    addresses: PublicKey[]
+  ): Promise<string> {
+    if (addresses.length === 0) {
+      return '';
+    }
+    
+    const connection = getConnection();
+    const kp = Keypair.fromSecretKey(payer.secretKey);
+    
+    const extendIx = AddressLookupTableProgram.extendLookupTable({
+      payer: payer.publicKey,
+      authority: payer.publicKey,
+      lookupTable: lookupTableAddress,
+      addresses,
+    });
+    
+    const extendTx = new Transaction();
+    extendTx.add(extendIx);
+    const extendBlockhash = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
+    extendTx.recentBlockhash = extendBlockhash.blockhash;
+    extendTx.feePayer = payer.publicKey;
+    
+    extendTx.sign(kp);
+    
+    const extendSig = await withRpcLimit(() => connection.sendRawTransaction(extendTx.serialize()));
+    await withRpcLimit(() => connection.confirmTransaction(extendSig, 'confirmed'));
+    
+    try {
+      logger.info('alt.manager.extended', {
+        cat: 'tx',
+        ctx: {
+          address: lookupTableAddress.toBase58(),
+          accountCount: addresses.length,
+          signature: extendSig,
+        },
+      });
+    } catch {}
+    
+    return extendSig;
+  }
+
+  /**
    * Create a new ALT on-chain with frequently used accounts
    * Note: This requires a funded wallet and should be done once during setup
    */
@@ -104,19 +207,75 @@ export class DexAltManager {
         AddressLookupTableProgram.programId
       );
     
-    // Check if ALT already exists
-    const existing = await connection.getAddressLookupTable(lookupTableAddress).catch(() => ({ value: null }));
-    if (existing.value) {
-      try {
-        logger.info('alt.manager.exists', {
-          cat: 'tx',
-          ctx: { address: lookupTableAddress.toBase58() },
-        });
-      } catch {}
-      // Store with seed-based key
-      this.altAddresses.set(seed, lookupTableAddress);
-      return lookupTableAddress;
-    }
+      // Check if ALT already exists at this address
+      const existing = await connection.getAddressLookupTable(lookupTableAddress).catch(() => ({ value: null }));
+      if (existing.value) {
+        const accountCount = existing.value.state?.addresses?.length || 0;
+        const remainingCapacity = 256 - accountCount;
+        
+        // If it has space, extend it
+        if (remainingCapacity >= accounts.length && accounts.length > 0) {
+          try {
+            logger.info('alt.manager.exists.extendable', {
+              cat: 'tx',
+              ctx: {
+                address: lookupTableAddress.toBase58(),
+                currentCount: accountCount,
+                remainingCapacity,
+                accountsToAdd: accounts.length,
+              },
+            });
+          } catch {}
+          
+          // Extend the existing ALT
+          const addressesToAdd = accounts.slice(0, remainingCapacity);
+          await this.extendLookupTable(payer, lookupTableAddress, addressesToAdd);
+          
+          this.altAddresses.set(seed, lookupTableAddress);
+          return lookupTableAddress;
+        } else {
+          // ALT exists but is full or no accounts to add
+          try {
+            logger.info('alt.manager.exists', {
+              cat: 'tx',
+              ctx: {
+                address: lookupTableAddress.toBase58(),
+                accountCount,
+                full: remainingCapacity < accounts.length,
+              },
+            });
+          } catch {}
+          this.altAddresses.set(seed, lookupTableAddress);
+          return lookupTableAddress;
+        }
+      }
+      
+      // Check for reusable lookup tables (created but not extended)
+      const reusable = await this.findReusableLookupTable(payer, accounts);
+      if (reusable) {
+        try {
+          logger.info('alt.manager.reusing', {
+            cat: 'tx',
+            ctx: {
+              address: reusable.address.toBase58(),
+              originalSeed: reusable.seed,
+              requestedSeed: seed,
+              currentCount: reusable.accountCount,
+              accountsToAdd: accounts.length,
+            },
+          });
+        } catch {}
+        
+        // Extend the reusable ALT
+        if (accounts.length > 0) {
+          const addressesToAdd = accounts.slice(0, 256 - reusable.accountCount);
+          await this.extendLookupTable(payer, reusable.address, addressesToAdd);
+        }
+        
+        // Store with the requested seed key
+        this.altAddresses.set(seed, reusable.address);
+        return reusable.address;
+      }
     
     // Get recent slot for ALT creation
     const recentSlotRaw = await withRpcLimit(() => connection.getSlot('finalized'));
@@ -141,7 +300,16 @@ export class DexAltManager {
     createTx.sign(kp);
     
     const createSig = await withRpcLimit(() => connection.sendRawTransaction(createTx.serialize()));
-    await withRpcLimit(() => connection.confirmTransaction(createSig, 'confirmed'));
+    
+    // Use 'finalized' commitment for more reliable confirmation
+    const confirmation = await withRpcLimit(() => 
+      connection.confirmTransaction(createSig, 'finalized')
+    );
+    
+    // Verify the transaction actually succeeded
+    if (confirmation.value.err) {
+      throw new Error(`Lookup table creation transaction failed: ${JSON.stringify(confirmation.value.err)}`);
+    }
     
     try {
       logger.info('alt.manager.create.step1', {
@@ -149,6 +317,7 @@ export class DexAltManager {
         ctx: {
           address: lookupTableAddress.toBase58(),
           signature: createSig,
+          slot: confirmation.value.slot,
         },
       });
     } catch {}
@@ -156,11 +325,12 @@ export class DexAltManager {
     // Retry verification with exponential backoff
     // The account may take a moment to be available after confirmation
     let verifyResult: { value: AddressLookupTableAccount | null } | null = null;
-    const maxRetries = 5;
-    const baseDelayMs = 500;
+    const maxRetries = 8; // Increased retries
+    const baseDelayMs = 1000; // Start with 1 second
     
     for (let attempt = 0; attempt < maxRetries; attempt++) {
-      await new Promise(resolve => setTimeout(resolve, baseDelayMs * Math.pow(2, attempt)));
+      const delay = baseDelayMs * Math.pow(2, attempt);
+      await new Promise(resolve => setTimeout(resolve, delay));
       
       try {
         verifyResult = await withRpcLimit(() => 
@@ -198,19 +368,25 @@ export class DexAltManager {
     }
     
     if (!verifyResult || !verifyResult.value) {
-      // Even if verification fails, we can still try to extend
-      // The account might exist but not be immediately queryable
+      // Check transaction status one more time
       try {
-        logger.warn('alt.manager.create.verify.timeout', {
-          cat: 'tx',
-          ctx: {
-            address: lookupTableAddress.toBase58(),
-            signature: createSig,
-            note: 'Proceeding with extend - account may exist but not be queryable yet',
-          },
-        });
-      } catch {}
-      // Don't throw - proceed with extend attempt
+        const txStatus = await withRpcLimit(() => 
+          connection.getSignatureStatus(createSig)
+        );
+        
+        if (txStatus.value?.err) {
+          throw new Error(`Transaction failed: ${JSON.stringify(txStatus.value.err)}`);
+        }
+        
+        // Transaction succeeded but account not found - this shouldn't happen
+        throw new Error(`Lookup table creation transaction succeeded but account not found after ${maxRetries} retries. Signature: ${createSig}`);
+      } catch (error) {
+        // Re-throw if it's our error, otherwise wrap
+        if (error instanceof Error && (error.message.includes('Transaction failed') || error.message.includes('account not found'))) {
+          throw error;
+        }
+        throw new Error(`Failed to verify lookup table creation: ${String((error as any)?.message || error)}`);
+      }
     }
     
     // Limit to 256 addresses per ALT (Solana limit)

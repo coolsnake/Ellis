@@ -104,6 +104,14 @@ export function normalizePublicKey(value: any): PublicKey {
       } catch {}
     }
 
+    // Handle PublicKey-like objects from different web3.js instances
+    // Check for toBase58 method before trying other paths
+    if (inner && typeof inner.toBase58 === 'function') {
+      try {
+        return new PublicKey(inner.toBase58());
+      } catch {}
+    }
+
     // Handle BN-like internals (some SDKs use BN internally)
     if (inner && typeof inner === 'object') {
       const bn = (inner as any)._bn || (inner as any).bn || (inner as any).value;

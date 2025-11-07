@@ -2571,9 +2571,26 @@ async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: Head
     );
     
     // Check initial state - use INFO level so it's always visible
-    let initial_state = {
-        let s = state.read().await;
-        (s.last_graph_version, s.pending_graph_version.unwrap_or(0))
+    // Add timeout to prevent hanging if detection loop holds write lock
+    let initial_state = match tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        state.read()
+    ).await {
+        Ok(guard) => {
+            let last = guard.last_graph_version;
+            let pending = guard.pending_graph_version.unwrap_or(0);
+            drop(guard);
+            (last, pending)
+        },
+        Err(_) => {
+            // Timeout acquiring lock - log and use fallback
+            tracing::warn!(
+                want_version = want_version,
+                "arb.graph.ack: timeout acquiring initial state lock"
+            );
+            // Will be updated in the loop below
+            (0, 0)
+        }
     };
     tracing::info!(
         want_version = want_version,
@@ -2587,13 +2604,33 @@ async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: Head
     // Poll until version is >= want_version or timeout
     // Check both pending_graph_version (buffered but not yet applied) and last_graph_version (applied)
     loop {
-        let s = state.read().await;
-        let last_version = s.last_graph_version;
-        let pending_version = s.pending_graph_version.unwrap_or(0);
-        let effective_version = pending_version.max(last_version);
-        let current_ts = s.last_graph_ts;
-        drop(s);
+        // Add timeout to read lock to prevent indefinite blocking
+        let (last_version, pending_version, current_ts) = match tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            state.read()
+        ).await {
+            Ok(guard) => {
+                let last = guard.last_graph_version;
+                let pending = guard.pending_graph_version.unwrap_or(0);
+                let ts = guard.last_graph_ts;
+                drop(guard);
+                (last, pending, ts)
+            },
+            Err(_) => {
+                // Timeout acquiring lock - log and continue polling
+                let elapsed = start.elapsed().as_millis() as u64;
+                tracing::debug!(
+                    want_version = want_version,
+                    elapsed_ms = elapsed,
+                    "arb.graph.ack: timeout acquiring lock, retrying"
+                );
+                // Sleep and retry
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
+            }
+        };
         
+        let effective_version = pending_version.max(last_version);
         let elapsed = start.elapsed().as_millis() as u64;
         
         // Log on first iteration, periodically (every 500ms), or when behind (after 500ms) - use INFO level
@@ -2642,9 +2679,25 @@ async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: Head
     }
     
     // Return final state (check both pending and applied)
-    let (final_version, final_pending) = {
-        let s = state.read().await;
-        (s.last_graph_version, s.pending_graph_version.unwrap_or(0))
+    // Add timeout to prevent hanging
+    let (final_version, final_pending) = match tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        state.read()
+    ).await {
+        Ok(guard) => {
+            let last = guard.last_graph_version;
+            let pending = guard.pending_graph_version.unwrap_or(0);
+            drop(guard);
+            (last, pending)
+        },
+        Err(_) => {
+            // Timeout - use fallback values
+            tracing::warn!(
+                want_version = want_version,
+                "arb.graph.ack: timeout acquiring final state lock"
+            );
+            (0, 0)
+        }
     };
     let final_effective = final_pending.max(final_version);
     Json(GraphAckResponse { 
