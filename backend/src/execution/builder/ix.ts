@@ -2119,6 +2119,79 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           }
         }
         
+        // CRITICAL: If event_authority was replaced at position 11 or 12, we need to add it back
+        // to the instruction at the correct position because event_authority is a required account
+        // Check if event_authority was one of the replaced accounts
+        if (eventAuthorityPda && correctedCount > 0 && replacedAccounts.size > 0) {
+          const eventAuthStr = eventAuthorityPda.toBase58();
+          let eventAuthWasReplaced = false;
+          let replacedPosition = -1;
+          
+          // Check if event_authority was replaced
+          for (const [pos, replacedAccount] of replacedAccounts.entries()) {
+            if (replacedAccount === eventAuthStr) {
+              eventAuthWasReplaced = true;
+              replacedPosition = pos;
+              break;
+            }
+          }
+          
+          // If event_authority was replaced, check if it exists elsewhere in the instruction
+          if (eventAuthWasReplaced) {
+            let eventAuthFoundElsewhere = false;
+            for (let i = 0; i < ix.keys.length; i++) {
+              if (i !== replacedPosition) {
+                const key = ix.keys[i];
+                if (key && typeof key === 'object' && (key as any).pubkey) {
+                  const pk = (key as any).pubkey;
+                  const pkStr = pk instanceof PublicKey ? pk.toBase58() : String(pk);
+                  if (pkStr === eventAuthStr) {
+                    eventAuthFoundElsewhere = true;
+                    break;
+                  }
+                }
+              }
+            }
+            
+            // If event_authority was replaced and not found elsewhere, add it back
+            // Insert at position 9 (typical position for event_authority in Meteora DLMM)
+            // Note: This shifts account indices, but event_authority is required for the instruction to work
+            if (!eventAuthFoundElsewhere) {
+              try {
+                // Insert event_authority at position 9 (after program ID at 8, before user at 10)
+                const insertPosition = Math.min(9, ix.keys.length);
+                ix.keys.splice(insertPosition, 0, {
+                  pubkey: eventAuthorityPda,
+                  isSigner: false,
+                  isWritable: false
+                });
+                
+                try {
+                  logger.info('meteora.dlmm.token_program.event_authority_restored', {
+                    cat: 'tx',
+                    ctx: {
+                      replacedAt: replacedPosition,
+                      restoredAt: insertPosition,
+                      account: eventAuthStr,
+                      note: 'event_authority was replaced at token program position and restored at correct position'
+                    }
+                  });
+                } catch {}
+              } catch (restoreErr) {
+                try {
+                  logger.warn('meteora.dlmm.token_program.event_authority_restore_failed', {
+                    cat: 'tx',
+                    ctx: {
+                      error: String((restoreErr as any)?.message || restoreErr),
+                      account: eventAuthStr
+                    }
+                  });
+                } catch {}
+              }
+            }
+          }
+        }
+        
         // Verify that replaced accounts aren't needed elsewhere in the instruction
         // If a replaced account appears elsewhere, it means it was correctly placed there
         // and we only fixed the token program position
