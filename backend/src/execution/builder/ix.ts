@@ -2020,12 +2020,26 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               const pk = (key as any).pubkey;
               const pkStr = pk instanceof PublicKey ? pk.toBase58() : String(pk);
               
+              // Debug logging to track what we're checking
+              try {
+                logger.info('meteora.dlmm.token_program.checking_position', {
+                  cat: 'tx',
+                  ctx: {
+                    position: pos,
+                    account: pkStr,
+                    isTokenProgram: validTokenPrograms.has(pkStr),
+                    expectedProgram: pos === 11 ? expectedTokenXProgram : expectedTokenYProgram,
+                    role: pos === 11 ? 'tokenXProgram' : 'tokenYProgram'
+                  }
+                });
+              } catch {}
+              
               // CRITICAL: Don't replace event_authority specifically
               // Positions 11-12 MUST be token programs, so we replace anything that's not a token program
               // UNLESS it's event_authority (which should never be at positions 11-12, but check anyway)
               if (eventAuthorityPda && pkStr === eventAuthorityPda.toBase58()) {
                 try {
-                  logger.debug('meteora.dlmm.token_program.skip_event_authority', {
+                  logger.info('meteora.dlmm.token_program.skip_event_authority', {
                     cat: 'tx',
                     ctx: {
                       position: pos,
@@ -2046,6 +2060,19 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               // Note: Even if the account is a PDA, if it's at a token program position and not event_authority,
               // we must replace it because the instruction requires a token program here
               if (!validTokenPrograms.has(pkStr) || pkStr !== expectedProgram) {
+                try {
+                  logger.info('meteora.dlmm.token_program.will_replace', {
+                    cat: 'tx',
+                    ctx: {
+                      position: pos,
+                      oldAccount: pkStr,
+                      newAccount: expectedProgram,
+                      reason: !validTokenPrograms.has(pkStr) ? 'not_a_token_program' : 'wrong_token_program',
+                      role: pos === 11 ? 'tokenXProgram' : 'tokenYProgram'
+                    }
+                  });
+                } catch {}
+                
                 const expectedProgramPk = new PublicKey(expectedProgram);
                 
                 // Store the replaced account for logging (only if it's not already a valid token program)
@@ -2072,6 +2099,18 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                       role: pos === 11 ? 'tokenXProgram' : 'tokenYProgram',
                       poolId: hop.poolId,
                       wasValidTokenProgram: validTokenPrograms.has(pkStr) && pkStr !== expectedProgram
+                    }
+                  });
+                } catch {}
+              } else {
+                try {
+                  logger.info('meteora.dlmm.token_program.position_correct', {
+                    cat: 'tx',
+                    ctx: {
+                      position: pos,
+                      account: pkStr,
+                      expectedProgram,
+                      role: pos === 11 ? 'tokenXProgram' : 'tokenYProgram'
                     }
                   });
                 } catch {}
@@ -3923,8 +3962,18 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       const normalizePkLoose = (v: any): PublicKey => normalizePublicKey(v);
 
       const coerceOne = (ixAny: any): TransactionInstruction => {
-        // Always build a fresh TI using our known program id to avoid foreign instances
-        const programId = ammProgramId;
+        // Extract programId properly - handle both our TI instances and foreign ones
+        let programId: PublicKey;
+        if (ixAny instanceof TransactionInstruction) {
+          // If it's already a TI, extract and normalize the programId from it
+          programId = normalizePkLoose((ixAny as any).programId);
+        } else if (ixAny?.programId) {
+          // If it has a programId field, normalize it
+          programId = normalizePkLoose(ixAny.programId);
+        } else {
+          // Fallback to ammProgramId if we can't extract it
+          programId = ammProgramId;
+        }
         const keysLike = ixAny?.keys;
         let keyArr: any[] = [];
         try {
@@ -3951,6 +4000,8 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
         } catch {}
         return new TransactionInstruction({ programId, keys, data });
       };
+      // ALWAYS coerce all instructions, even if they're already TransactionInstruction instances
+      // This ensures programId and keys are normalized to our web3.js instance
       if (Array.isArray(out) && out.length) {
         out = out.map(coerceOne);
       }

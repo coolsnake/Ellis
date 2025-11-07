@@ -2570,16 +2570,17 @@ async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: Head
         "arb.graph.ack: request received"
     );
     
-    // Check initial state
+    // Check initial state - use INFO level so it's always visible
     let initial_state = {
         let s = state.read().await;
         (s.last_graph_version, s.pending_graph_version.unwrap_or(0))
     };
-    tracing::debug!(
+    tracing::info!(
         want_version = want_version,
         initial_last_version = initial_state.0,
         initial_pending_version = initial_state.1,
         initial_effective = initial_state.1.max(initial_state.0),
+        timeout_ms = timeout_ms,
         "arb.graph.ack: initial state"
     );
     
@@ -2595,9 +2596,9 @@ async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: Head
         
         let elapsed = start.elapsed().as_millis() as u64;
         
-        // Log on first iteration, periodically (every 500ms), or when behind (after 500ms)
+        // Log on first iteration, periodically (every 500ms), or when behind (after 500ms) - use INFO level
         if elapsed == 0 || (elapsed % 500 == 0 && elapsed > 0) || (effective_version < want_version && elapsed > 500) {
-            tracing::debug!(
+            tracing::info!(
                 want_version = want_version,
                 last_version = last_version,
                 pending_version = pending_version,
