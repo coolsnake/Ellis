@@ -346,8 +346,8 @@ export function startDetectDrivenGraphPush(debounceMs = 0): void {
                 
                 if (backendVersion > arbVersion) {
                   const versionGap = backendVersion - arbVersion;
-                  // Only force flush if gap is significant (>= 3) to avoid excessive flushing
-                  if (versionGap >= 3) {
+                  // Force flush if gap exists (>= 1) to prevent version drift
+                  if (versionGap >= 1) {
                     try {
                       logger.info('graph.push polling_version_gap_no_detection', {
                         arb_rs_version: arbVersion,

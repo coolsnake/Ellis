@@ -2562,16 +2562,20 @@ async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: Head
     let start = std::time::Instant::now();
     
     // Poll until version is >= want_version or timeout
+    // Check both pending_graph_version (buffered but not yet applied) and last_graph_version (applied)
     loop {
         let s = state.read().await;
         let last_version = s.last_graph_version;
+        let pending_version = s.pending_graph_version.unwrap_or(0);
+        let effective_version = pending_version.max(last_version);
         let current_ts = s.last_graph_ts;
         drop(s);
         
-        if want_version > 0 && last_version >= want_version {
+        // ACK if either pending or applied version meets the requirement
+        if want_version > 0 && effective_version >= want_version {
             return Json(GraphAckResponse { 
                 ok: true, 
-                current_version: last_version, 
+                current_version: effective_version, 
                 current_timestamp: current_ts, 
                 acked: true 
             });
@@ -2584,13 +2588,15 @@ async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: Head
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     
-    let final_version = {
+    // Return final state (check both pending and applied)
+    let (final_version, final_pending) = {
         let s = state.read().await;
-        s.last_graph_version
+        (s.last_graph_version, s.pending_graph_version.unwrap_or(0))
     };
+    let final_effective = final_pending.max(final_version);
     Json(GraphAckResponse { 
         ok: true, 
-        current_version: final_version, 
+        current_version: final_effective, 
         current_timestamp: 0, 
         acked: false 
     })

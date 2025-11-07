@@ -184,7 +184,7 @@ function sanitizeInstructionKeys(ix: TransactionInstruction): void {
       // Raydium AMM V5
       'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C',
       // Raydium CLMM
-      'CAMMCzo5nKXjotvLkGQ6r1N1C8QXr8iY6pYwWf3V8mGk',
+      'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK',
       // Meteora DLMM
       'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo',
       // Meteora AMM V1

@@ -723,7 +723,19 @@ class GraphPushOrchestrator {
         }
 
         const start = Date.now();
-        const timeoutMs = Number((((globalThis as any)?.process?.env?.ARB_ACK_TIMEOUT_MS) || 2500));
+        // Calculate adaptive timeout based on version gap
+        // Base timeout + extra time per version gap to allow processing time
+        const baseTimeoutMs = Number((((globalThis as any)?.process?.env?.ARB_ACK_TIMEOUT_MS) || 2500));
+        let versionGap = 0;
+        try {
+          const { getGraphVersion } = require('./graph.js');
+          const backendVersion = getGraphVersion().version;
+          const arbVersion = this.lastDetectCompleteVersion || 0;
+          versionGap = Math.max(0, backendVersion - arbVersion);
+        } catch {}
+        // Add 500ms per version gap, capped at 3x base timeout
+        const adaptiveTimeoutMs = Math.min(baseTimeoutMs + (versionGap * 500), baseTimeoutMs * 3);
+        const timeoutMs = adaptiveTimeoutMs;
         let acked = false;
         if (wantVersion > 0) {
           try {

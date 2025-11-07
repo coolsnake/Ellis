@@ -359,7 +359,7 @@ export const CONFIG = {
     // Optional: AMM v5 program (set via env if needed)
     ammV5Program: process.env.RAYDIUM_AMM_V5_PROGRAM || 'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C',
     // Concentrated Liquidity (CLMM) program (mainnet)
-    clmmProgram: process.env.RAYDIUM_CLMM_PROGRAM || 'CAMMCzo5nKXjotvLkGQ6r1N1C8QXr8iY6pYwWf3V8mGk',
+    clmmProgram: process.env.RAYDIUM_CLMM_PROGRAM || 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK',
     // Optional CLMM authority/observation id overrides (sdk will derive when unset)
     clmmAuthority: process.env.RAYDIUM_CLMM_AUTHORITY,
     clmmObservationId: process.env.RAYDIUM_CLMM_OBSERVATION_ID,
