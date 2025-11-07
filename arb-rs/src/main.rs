@@ -1670,23 +1670,33 @@ async fn main() -> anyhow::Result<()> {
                 // even if no opportunities changed. This ensures the backend knows
                 // the detector finished and can send the next batch of updates.
                 // Without this, the sync loop breaks when detection finds no changes.
+                tracing::info!(detect_ack_set = detect_ack.is_some(), "arb.detect.ack.check_before_fallback");
                 if detect_ack.is_none() {
+                    tracing::info!("arb.detect.ack.fallback_setting");
                     let mut s = loop_state.write().await;
                     s.metrics.last_detection_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
                     detect_ack = Some((s.last_graph_version, s.metrics.last_detection_ms));
                     tracing::info!(version = s.last_graph_version, completed_ms = s.metrics.last_detection_ms, "arb.detect.ack.set");
                 }
                 
+                tracing::info!(detect_ack_set = detect_ack.is_some(), "arb.detect.ack.check_before_send");
                 if let Some((version, completed_ms)) = detect_ack {
                     tracing::info!(version, completed_ms, "arb.detect.ack.sending");
-                    if let Err(err) = notify_backend_detect_complete(&api_base, version, completed_ms).await {
-                        tracing::warn!(error = ?err, version, completed_ms, "arb.detect.ack_failed");
-                    } else {
-                        tracing::info!(version, completed_ms, "arb.detect.ack.sent");
+                    let send_start = Instant::now();
+                    match notify_backend_detect_complete(&api_base, version, completed_ms).await {
+                        Ok(_) => {
+                            let send_duration = send_start.elapsed().as_millis();
+                            tracing::info!(version, completed_ms, send_duration_ms = send_duration, "arb.detect.ack.sent");
+                        },
+                        Err(err) => {
+                            let send_duration = send_start.elapsed().as_millis();
+                            tracing::warn!(error = ?err, version, completed_ms, send_duration_ms = send_duration, "arb.detect.ack_failed");
+                        }
                     }
                 } else {
                     tracing::warn!("arb.detect.ack.none - detect_ack was not set");
                 }
+                tracing::info!("arb.detect.ack.complete");
             }
             
             // Sleep respects configured interval even when disabled to avoid hot loop

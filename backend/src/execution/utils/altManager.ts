@@ -1014,6 +1014,8 @@ export class DexAltManager {
               if (this.altConfig.alts) {
                 delete this.altConfig.alts[category as keyof typeof this.altConfig.alts];
               }
+              // Save updated config to remove invalid ALT
+              await saveAltConfig(this.altConfig);
             }
           } catch (e) {
             errors.push(`Failed to validate ALT ${category}: ${String(e)}`);
@@ -1042,9 +1044,14 @@ export class DexAltManager {
                   'common-alt'
                 );
                 results.common = address.toBase58();
-                if (this.altConfig.alts) {
-                  this.altConfig.alts.common = address.toBase58();
+                // Save the new ALT to config
+                if (!this.altConfig.alts) {
+                  this.altConfig.alts = {};
                 }
+                this.altConfig.alts.common = address.toBase58();
+                this.altConfig.walletPublicKey = wallet.publicKey.toBase58();
+                this.altConfig.lastValidated = Date.now();
+                await saveAltConfig(this.altConfig);
                 try {
                   logger.info('alt.startup.created', {
                     cat: 'tx',
@@ -1068,9 +1075,14 @@ export class DexAltManager {
                   'pool-alt'
                 );
                 results.pools = address.toBase58();
-                if (this.altConfig.alts) {
-                  this.altConfig.alts.pools = address.toBase58();
+                // Save the new ALT to config
+                if (!this.altConfig.alts) {
+                  this.altConfig.alts = {};
                 }
+                this.altConfig.alts.pools = address.toBase58();
+                this.altConfig.walletPublicKey = wallet.publicKey.toBase58();
+                this.altConfig.lastValidated = Date.now();
+                await saveAltConfig(this.altConfig);
                 try {
                   logger.info('alt.startup.created', {
                     cat: 'tx',
@@ -1094,9 +1106,14 @@ export class DexAltManager {
                   'clmm-alt'
                 );
                 results.clmm = address.toBase58();
-                if (this.altConfig.alts) {
-                  this.altConfig.alts.clmm = address.toBase58();
+                // Save the new ALT to config
+                if (!this.altConfig.alts) {
+                  this.altConfig.alts = {};
                 }
+                this.altConfig.alts.clmm = address.toBase58();
+                this.altConfig.walletPublicKey = wallet.publicKey.toBase58();
+                this.altConfig.lastValidated = Date.now();
+                await saveAltConfig(this.altConfig);
                 try {
                   logger.info('alt.startup.created', {
                     cat: 'tx',
