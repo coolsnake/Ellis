@@ -1979,6 +1979,8 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     
     // CRITICAL FIX: Validate and correct token program accounts in instruction
     // The SDK sometimes places wrong accounts (like reward vaults) in token program slots
+    // Note: We only replace accounts at token program positions - we don't add/remove accounts
+    // to preserve the SDK's account order and instruction data integrity
     if (ix && Array.isArray(ix.keys)) {
       try {
         const TOKEN_PROGRAM_ID_STR = TOKEN_PROGRAM_ID.toBase58();
@@ -1997,6 +1999,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         // Check these positions first
         const positionsToCheck = [11, 12];
         let correctedCount = 0;
+        const replacedAccounts = new Map<number, string>(); // Track replaced accounts for logging
         
         for (const pos of positionsToCheck) {
           if (pos < ix.keys.length) {
@@ -2005,12 +2008,18 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               const pk = (key as any).pubkey;
               const pkStr = pk instanceof PublicKey ? pk.toBase58() : String(pk);
               
-              // If this position should be a token program but isn't, fix it
-              if (!validTokenPrograms.has(pkStr)) {
-                // Determine which token program should be here
-                // Position 11 is typically tokenXProgram, position 12 is tokenYProgram
-                const expectedProgram = pos === 11 ? expectedTokenXProgram : expectedTokenYProgram;
+              // Determine which token program should be here
+              // Position 11 is typically tokenXProgram, position 12 is tokenYProgram
+              const expectedProgram = pos === 11 ? expectedTokenXProgram : expectedTokenYProgram;
+              
+              // If this position should be a token program but isn't, OR if it's the wrong token program, fix it
+              if (!validTokenPrograms.has(pkStr) || pkStr !== expectedProgram) {
                 const expectedProgramPk = new PublicKey(expectedProgram);
+                
+                // Store the replaced account for logging (only if it's not already a valid token program)
+                if (!validTokenPrograms.has(pkStr)) {
+                  replacedAccounts.set(pos, pkStr);
+                }
                 
                 // Replace with correct token program
                 ix.keys[pos] = {
@@ -2029,11 +2038,47 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                       oldAccount: pkStr,
                       newAccount: expectedProgram,
                       role: pos === 11 ? 'tokenXProgram' : 'tokenYProgram',
-                      poolId: hop.poolId
+                      poolId: hop.poolId,
+                      wasValidTokenProgram: validTokenPrograms.has(pkStr) && pkStr !== expectedProgram
                     }
                   });
                 } catch {}
               }
+            }
+          }
+        }
+        
+        // Verify that replaced accounts aren't needed elsewhere in the instruction
+        // If a replaced account appears elsewhere, it means it was correctly placed there
+        // and we only fixed the token program position
+        if (correctedCount > 0 && replacedAccounts.size > 0) {
+          for (const [pos, replacedAccount] of replacedAccounts.entries()) {
+            let foundElsewhere = false;
+            for (let i = 0; i < ix.keys.length; i++) {
+              if (i !== pos) {
+                const key = ix.keys[i];
+                if (key && typeof key === 'object' && (key as any).pubkey) {
+                  const pk = (key as any).pubkey;
+                  const pkStr = pk instanceof PublicKey ? pk.toBase58() : String(pk);
+                  if (pkStr === replacedAccount) {
+                    foundElsewhere = true;
+                    break;
+                  }
+                }
+              }
+            }
+            
+            if (!foundElsewhere) {
+              try {
+                logger.debug('meteora.dlmm.token_program.replaced_account_not_found_elsewhere', {
+                  cat: 'tx',
+                  ctx: {
+                    position: pos,
+                    replacedAccount,
+                    note: 'Account was only at token program position - replacement should be safe'
+                  }
+                });
+              } catch {}
             }
           }
         }

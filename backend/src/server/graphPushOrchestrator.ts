@@ -730,7 +730,10 @@ class GraphPushOrchestrator {
         try {
           const { getGraphVersion } = require('./graph.js');
           const backendVersion = getGraphVersion().version;
-          const arbVersion = this.lastDetectCompleteVersion || 0;
+          // Use cached version from polling, not lastDetectCompleteVersion (which can be stale)
+          const { getCachedArbVersion } = require('./realtime.js');
+          const cachedVersion = getCachedArbVersion();
+          const arbVersion = cachedVersion.version;
           versionGap = Math.max(0, backendVersion - arbVersion);
         } catch {}
         // Add 500ms per version gap, capped at 3x base timeout
