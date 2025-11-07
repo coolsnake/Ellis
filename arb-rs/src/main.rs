@@ -1623,8 +1623,6 @@ async fn main() -> anyhow::Result<()> {
                     }
                     s.metrics.opportunities_detected_total = s.metrics.opportunities_detected_total.saturating_add(s.opportunities.len() as u64);
                     if s.opportunities.is_empty() { s.metrics.detection_misses_total = s.metrics.detection_misses_total.saturating_add(1); } else { s.metrics.detection_hits_total = s.metrics.detection_hits_total.saturating_add(1); }
-                    s.metrics.last_detection_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
-                    detect_ack = Some((s.last_graph_version, s.metrics.last_detection_ms));
                     s.metrics.detection_duration_ms = loop_start.elapsed().as_millis() as u64;
                     let det_ms = s.metrics.detection_duration_ms;
                     let active = s.metrics.opportunities_active;
@@ -1666,20 +1664,27 @@ async fn main() -> anyhow::Result<()> {
                     if len > 200 { s.events.drain(0..(len-200)); }
                 }
                 
-                // CRITICAL FIX: Always set detect_ack after detection cycle completes,
-                // even if no opportunities changed. This ensures the backend knows
-                // the detector finished and can send the next batch of updates.
-                // Without this, the sync loop breaks when detection finds no changes.
-                tracing::info!(detect_ack_set = detect_ack.is_some(), "arb.detect.ack.check_before_fallback");
+                // CRITICAL: Always set detect_ack after detection cycle completes,
+                // regardless of whether opportunities changed. This ensures the backend
+                // knows the detector finished and can send the next batch of updates.
+                // This must be done unconditionally, not just when opportunities change.
+                {
+                    let mut s = loop_state.write().await;
+                    s.metrics.last_detection_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+                    detect_ack = Some((s.last_graph_version, s.metrics.last_detection_ms));
+                    tracing::info!(version = s.last_graph_version, completed_ms = s.metrics.last_detection_ms, "arb.detect.ack.set_after_detection");
+                }
+                
+                // Fallback check (should rarely be needed now, but kept as safety net)
+                tracing::info!(detect_ack_set = detect_ack.is_some(), "arb.detect.ack.check_before_send");
                 if detect_ack.is_none() {
-                    tracing::info!("arb.detect.ack.fallback_setting");
+                    tracing::warn!("arb.detect.ack.fallback_setting - this should not happen!");
                     let mut s = loop_state.write().await;
                     s.metrics.last_detection_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
                     detect_ack = Some((s.last_graph_version, s.metrics.last_detection_ms));
                     tracing::info!(version = s.last_graph_version, completed_ms = s.metrics.last_detection_ms, "arb.detect.ack.set");
                 }
                 
-                tracing::info!(detect_ack_set = detect_ack.is_some(), "arb.detect.ack.check_before_send");
                 if let Some((version, completed_ms)) = detect_ack {
                     tracing::info!(version, completed_ms, "arb.detect.ack.sending");
                     let send_start = Instant::now();
