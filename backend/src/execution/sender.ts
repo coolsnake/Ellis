@@ -385,7 +385,11 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
   try {
     logger.info('tx.preflight.detail', { cat: 'tx', ctx: { txId, ixCount: realIxs.length, origCount: (instructions || []).length, skipped, programs: realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId))) } as any });
   } catch {}
-  const lookupTables = await loadLookupTables(connection, (opts?.lookupTableAddresses || []));
+  let lookupTables = await loadLookupTables(connection, (opts?.lookupTableAddresses || []));
+  
+  // Calculate total accounts to detect large transactions
+  const totalAccounts = realIxs.reduce((sum, ix) => sum + (ix.keys?.length || 0), 0);
+  const isLargeTransaction = totalAccounts > 30 || realIxs.length > 5;
   
   // Log ALT addresses received
   try {
@@ -396,46 +400,90 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
         addresses: opts?.lookupTableAddresses || [],
         loadedCount: lookupTables.length,
         instructionCount: realIxs.length,
-        accountCount: realIxs.reduce((sum, ix) => sum + (ix.keys?.length || 0), 0),
+        accountCount: totalAccounts,
+        isLargeTransaction,
       },
     });
   } catch {}
   
-  // If no lookup tables provided, try to use common ones
-  if (lookupTables.length === 0) {
+  // CRITICAL: Always try to load common ALTs for large or multi-hop transactions
+  // This prevents "encoding overruns Uint8Array" errors
+  if (lookupTables.length === 0 || isLargeTransaction) {
     const commonTables = await getCommonLookupTables(connection);
     if (commonTables.length > 0) {
-      lookupTables.push(...commonTables);
+      // Merge common tables, avoiding duplicates
+      const existingAddrs = new Set(lookupTables.map(lt => lt.key.toBase58()));
+      for (const table of commonTables) {
+        if (!existingAddrs.has(table.key.toBase58())) {
+          lookupTables.push(table);
+        }
+      }
       try { 
         logger.info('tx.lookup_table.using_common', { 
           cat: 'tx', 
           ctx: { 
             txId,
             count: commonTables.length,
-            totalAccounts: commonTables.reduce((sum, lt) => sum + (lt.state?.addresses?.length || 0), 0)
+            totalAccounts: commonTables.reduce((sum, lt) => sum + (lt.state?.addresses?.length || 0), 0),
+            instructionCount: realIxs.length,
+            accountCount: totalAccounts,
+            wasLargeTransaction: isLargeTransaction,
           } 
         }); 
       } catch {}
     } else {
-      // Log warning if no ALTs available
+      // Log warning if no ALTs available, especially for large transactions
       try {
         logger.warn('tx.lookup_table.none_available', {
           cat: 'tx',
           ctx: {
             txId,
             instructionCount: realIxs.length,
-            accountCount: realIxs.reduce((sum, ix) => sum + (ix.keys?.length || 0), 0),
+            accountCount: totalAccounts,
             providedAddresses: opts?.lookupTableAddresses || [],
+            isLargeTransaction,
+            warning: isLargeTransaction ? 'Large transaction without ALTs may fail serialization' : undefined,
           },
         });
       } catch {}
     }
   }
   
-  const msg = new TransactionMessage({ payerKey: kp.publicKey, recentBlockhash: blockhash, instructions: realIxs }).compileToV0Message(lookupTables);
-  const tx = new VersionedTransaction(msg);
-  tx.sign([kp]);
-  const wireBase64 = Buffer.from(tx.serialize()).toString('base64');
+  // Try to compile and serialize with error handling for "encoding overruns" errors
+  let msg: any;
+  let tx: VersionedTransaction;
+  let wireBase64: string;
+  
+  try {
+    msg = new TransactionMessage({ payerKey: kp.publicKey, recentBlockhash: blockhash, instructions: realIxs }).compileToV0Message(lookupTables);
+    tx = new VersionedTransaction(msg);
+    tx.sign([kp]);
+    wireBase64 = Buffer.from(tx.serialize()).toString('base64');
+  } catch (error: any) {
+    const errorMsg = String(error?.message || error);
+    // Check if it's a size/encoding-related error
+    if (errorMsg.includes('encoding') || errorMsg.includes('overrun') || errorMsg.includes('Uint8Array') || errorMsg.includes('size')) {
+      try {
+        logger.error('tx.serialize.size_error', {
+          cat: 'tx',
+          code: LogCode.TX_PREFLIGHT_ERR,
+          ctx: {
+            txId,
+            error: errorMsg,
+            instructionCount: realIxs.length,
+            accountCount: totalAccounts,
+            lookupTableCount: lookupTables.length,
+            suggestion: lookupTables.length === 0 
+              ? 'No ALTs available - transaction too large. Consider configuring Address Lookup Tables.' 
+              : 'Transaction may still be too large even with ALTs. Consider splitting into multiple transactions.',
+          } as any,
+        });
+      } catch {}
+      return { logs: [], err: { SerializationError: `Transaction too large: ${errorMsg}. Account count: ${totalAccounts}, Instructions: ${realIxs.length}, ALTs: ${lookupTables.length}` }, wireBase64: '' };
+    }
+    // Re-throw other errors
+    throw error;
+  }
   
   // CRITICAL: Check actual serialized size before simulation
   // Solana v0 transaction size limit: 1232 bytes (raw) or 1644 bytes (base64 encoded)
@@ -595,7 +643,11 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
   } catch {}
   // Use ALT addresses from options, or try to extract from instructions if available
   const altAddresses = opts?.lookupTableAddresses || [];
-  const lookupTables = await loadLookupTables(connection, altAddresses);
+  let lookupTables = await loadLookupTables(connection, altAddresses);
+  
+  // Calculate total accounts to detect large transactions
+  const totalAccounts = realIxs.reduce((sum, ix) => sum + (ix.keys?.length || 0), 0);
+  const isLargeTransaction = totalAccounts > 30 || realIxs.length > 5;
   
   // Log ALT addresses received
   try {
@@ -606,46 +658,90 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
         addresses: altAddresses,
         loadedCount: lookupTables.length,
         instructionCount: realIxs.length,
-        accountCount: realIxs.reduce((sum, ix) => sum + (ix.keys?.length || 0), 0),
+        accountCount: totalAccounts,
+        isLargeTransaction,
       },
     });
   } catch {}
   
-  // If no lookup tables provided, try to use common ones
-  if (lookupTables.length === 0) {
+  // CRITICAL: Always try to load common ALTs for large or multi-hop transactions
+  // This prevents "encoding overruns Uint8Array" errors
+  if (lookupTables.length === 0 || isLargeTransaction) {
     const commonTables = await getCommonLookupTables(connection);
     if (commonTables.length > 0) {
-      lookupTables.push(...commonTables);
+      // Merge common tables, avoiding duplicates
+      const existingAddrs = new Set(lookupTables.map(lt => lt.key.toBase58()));
+      for (const table of commonTables) {
+        if (!existingAddrs.has(table.key.toBase58())) {
+          lookupTables.push(table);
+        }
+      }
       try { 
         logger.info('tx.lookup_table.using_common', { 
           cat: 'tx', 
           ctx: { 
             txId,
             count: commonTables.length,
-            totalAccounts: commonTables.reduce((sum, lt) => sum + (lt.state?.addresses?.length || 0), 0)
+            totalAccounts: commonTables.reduce((sum, lt) => sum + (lt.state?.addresses?.length || 0), 0),
+            instructionCount: realIxs.length,
+            accountCount: totalAccounts,
+            wasLargeTransaction: isLargeTransaction,
           } 
         }); 
       } catch {}
     } else {
-      // Log warning if no ALTs available
+      // Log warning if no ALTs available, especially for large transactions
       try {
         logger.warn('tx.lookup_table.none_available', {
           cat: 'tx',
           ctx: {
             txId,
             instructionCount: realIxs.length,
-            accountCount: realIxs.reduce((sum, ix) => sum + (ix.keys?.length || 0), 0),
+            accountCount: totalAccounts,
             providedAddresses: altAddresses,
+            isLargeTransaction,
+            warning: isLargeTransaction ? 'Large transaction without ALTs may fail serialization' : undefined,
           },
         });
       } catch {}
     }
   }
   
-  const msg = new TransactionMessage({ payerKey: kp.publicKey, recentBlockhash: blockhash, instructions: realIxs }).compileToV0Message(lookupTables);
-  const tx = new VersionedTransaction(msg);
-  tx.sign([kp]);
-  const wireBase64 = Buffer.from(tx.serialize()).toString('base64');
+  // Try to compile and serialize with error handling for "encoding overruns" errors
+  let msg: any;
+  let tx: VersionedTransaction;
+  let wireBase64: string;
+  
+  try {
+    msg = new TransactionMessage({ payerKey: kp.publicKey, recentBlockhash: blockhash, instructions: realIxs }).compileToV0Message(lookupTables);
+    tx = new VersionedTransaction(msg);
+    tx.sign([kp]);
+    wireBase64 = Buffer.from(tx.serialize()).toString('base64');
+  } catch (error: any) {
+    const errorMsg = String(error?.message || error);
+    // Check if it's a size/encoding-related error
+    if (errorMsg.includes('encoding') || errorMsg.includes('overrun') || errorMsg.includes('Uint8Array') || errorMsg.includes('size')) {
+      try {
+        logger.error('tx.serialize.size_error', {
+          cat: 'tx',
+          code: LogCode.TX_PREFLIGHT_ERR,
+          ctx: {
+            txId,
+            error: errorMsg,
+            instructionCount: realIxs.length,
+            accountCount: totalAccounts,
+            lookupTableCount: lookupTables.length,
+            suggestion: lookupTables.length === 0 
+              ? 'No ALTs available - transaction too large. Consider configuring Address Lookup Tables.' 
+              : 'Transaction may still be too large even with ALTs. Consider splitting into multiple transactions.',
+          } as any,
+        });
+      } catch {}
+      throw new Error(`Transaction too large: ${errorMsg}. Account count: ${totalAccounts}, Instructions: ${realIxs.length}, ALTs: ${lookupTables.length}`);
+    }
+    // Re-throw other errors
+    throw error;
+  }
   const sig = await withRpcLimit(() => connection.sendTransaction(tx, { skipPreflight: true, preflightCommitment: 'confirmed' }));
   await withRpcLimit(() => connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed'));
   try {

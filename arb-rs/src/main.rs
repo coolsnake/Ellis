@@ -2550,7 +2550,9 @@ struct GraphAckResponse {
 
 async fn arb_graph_version(State(state): State<Arc<RwLock<AppState>>>) -> Json<GraphVersionResponse> {
     let s = state.read().await;
-    Json(GraphVersionResponse { version: s.last_graph_version, timestamp: s.last_graph_ts })
+    // Return effective version (max of pending and applied) so backend cache reflects buffered versions
+    let effective_version = s.pending_graph_version.unwrap_or(0).max(s.last_graph_version);
+    Json(GraphVersionResponse { version: effective_version, timestamp: s.last_graph_ts })
 }
 
 async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: HeaderMap, Json(req): Json<GraphAckReq>) -> Json<GraphAckResponse> {
