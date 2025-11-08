@@ -22,6 +22,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
   const [poolAges, setPoolAges] = React.useState<any | null>(null);
   const [wsTargets, setWsTargets] = React.useState<{ orca?: number; raydium?: number; meteora?: number }>({});
   const [altStatus, setAltStatus] = React.useState<any | null>(null);
+  const [altActionLoading, setAltActionLoading] = React.useState<string | null>(null);
 
   const fetchMetrics = async () => {
     try {
@@ -260,7 +261,88 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
             </div>
           {altStatus ? (
             <div className="col-span-2 border-t border-gray-700 pt-2">
-              <div className="text-gray-400">Address Lookup Tables (ALTs)</div>
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-gray-400">Address Lookup Tables (ALTs)</div>
+                <div className="flex items-center gap-2">
+                  <button 
+                    className={`px-2 py-1 text-xs border rounded ${altActionLoading === 'extend-common' ? 'bg-gray-700 opacity-50 cursor-not-allowed' : 'bg-blue-700 hover:bg-blue-600'}`}
+                    disabled={altActionLoading !== null}
+                    onClick={async () => {
+                      if (altActionLoading) return;
+                      setAltActionLoading('extend-common');
+                      try {
+                        const headers: Record<string, string> = { 'content-type': 'application/json' };
+                        try {
+                          const s = localStorage.getItem('authCreds');
+                          if (s) {
+                            const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
+                            if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
+                          }
+                        } catch {}
+                        const category = altStatus.categories?.[0] || 'common';
+                        const res = await fetch(`${apiBase}${ROUTES.arb.alts.extendWithCategory}`, {
+                          method: 'POST',
+                          headers,
+                          body: JSON.stringify({
+                            category,
+                            accountCategory: 'common',
+                            options: {
+                              includeSystemPrograms: true,
+                              includeWalletAtas: true,
+                            },
+                          }),
+                        });
+                        if (res.ok) {
+                          const result = await res.json();
+                          alert(`ALT extended successfully!\nAccounts added: ${result.accountsAdded}\nTotal accounts: ${result.accountCount}\nSignature: ${result.signature || 'N/A'}`);
+                          fetchMetrics();
+                        } else {
+                          const error = await res.json().catch(() => ({ error: 'Unknown error' }));
+                          alert(`Failed to extend ALT: ${error.error || 'Unknown error'}`);
+                        }
+                      } catch (e: any) {
+                        alert(`Error: ${e?.message || e}`);
+                      } finally {
+                        setAltActionLoading(null);
+                      }
+                    }}
+                  >
+                    {altActionLoading === 'extend-common' ? 'Extending...' : 'Extend with Common'}
+                  </button>
+                  <button 
+                    className={`px-2 py-1 text-xs border rounded ${altActionLoading === 'preview' ? 'bg-gray-700 opacity-50 cursor-not-allowed' : 'bg-purple-700 hover:bg-purple-600'}`}
+                    disabled={altActionLoading !== null}
+                    onClick={async () => {
+                      if (altActionLoading) return;
+                      setAltActionLoading('preview');
+                      try {
+                        const headers: Record<string, string> = {};
+                        try {
+                          const s = localStorage.getItem('authCreds');
+                          if (s) {
+                            const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
+                            if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
+                          }
+                        } catch {}
+                        const res = await fetch(`${apiBase}${ROUTES.arb.alts.collectAccounts}?category=common&includeSystemPrograms=true&includeWalletAtas=true`, { headers });
+                        if (res.ok) {
+                          const result = await res.json();
+                          alert(`Would collect ${result.accountCount} accounts:\n${result.accounts.slice(0, 10).join('\n')}${result.accounts.length > 10 ? `\n... and ${result.accounts.length - 10} more` : ''}`);
+                        } else {
+                          const error = await res.json().catch(() => ({ error: 'Unknown error' }));
+                          alert(`Failed to preview: ${error.error || 'Unknown error'}`);
+                        }
+                      } catch (e: any) {
+                        alert(`Error: ${e?.message || e}`);
+                      } finally {
+                        setAltActionLoading(null);
+                      }
+                    }}
+                  >
+                    {altActionLoading === 'preview' ? 'Loading...' : 'Preview Accounts'}
+                  </button>
+                </div>
+              </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
                 <div>
                   <div className="text-gray-400">Status</div>

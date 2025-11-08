@@ -972,6 +972,228 @@ export class DexAltManager {
   }
 
   /**
+   * Extend an existing ALT with additional accounts
+   * @param category Category/key of the ALT (e.g., 'common', 'pools', 'tokens')
+   * @param accounts Array of account addresses (strings or PublicKeys) to add
+   * @returns Transaction signature of the extend transaction
+   */
+  async extendAlt(
+    category: string,
+    accounts: (string | PublicKey)[]
+  ): Promise<{ signature: string; address: string; accountCount: number }> {
+    const connection = getConnection();
+    
+    // Get the ALT address
+    const altPk = this.altAddresses.get(category);
+    if (!altPk) {
+      throw new Error(`ALT with category "${category}" not found. Available categories: ${Array.from(this.altAddresses.keys()).join(', ')}`);
+    }
+
+    // Get wallet
+    const { ensureWallet } = await import('../../wallet/wallet.js');
+    const wallet = await ensureWallet(CONFIG.walletPath);
+
+    // Convert accounts to PublicKeys
+    const accountPks = accounts.map(acc => typeof acc === 'string' ? new PublicKey(acc) : acc);
+
+    // Check current ALT state
+    const result = await withRpcLimit(() => 
+      connection.getAddressLookupTable(altPk)
+    ).catch(() => ({ value: null }));
+
+    if (!result.value) {
+      throw new Error(`ALT ${altPk.toBase58()} not found on-chain`);
+    }
+
+    const currentCount = result.value.state?.addresses?.length || 0;
+    const remainingCapacity = 256 - currentCount;
+
+    if (accountPks.length > remainingCapacity) {
+      throw new Error(`ALT has ${remainingCapacity} remaining capacity, but ${accountPks.length} accounts requested`);
+    }
+
+    // Filter out accounts that are already in the ALT
+    const existingAddresses = new Set(
+      (result.value.state?.addresses || []).map(addr => addr.toBase58())
+    );
+    const newAccounts = accountPks.filter(pk => !existingAddresses.has(pk.toBase58()));
+
+    if (newAccounts.length === 0) {
+      return {
+        signature: '',
+        address: altPk.toBase58(),
+        accountCount: currentCount,
+      };
+    }
+
+    // Extend the ALT
+    const signature = await this.extendLookupTable(wallet, altPk, newAccounts);
+
+    // Refresh cache
+    this.altAccounts.delete(altPk.toBase58());
+
+    try {
+      logger.info('alt.manager.extended.public', {
+        cat: 'tx',
+        ctx: {
+          category,
+          address: altPk.toBase58(),
+          accountsAdded: newAccounts.length,
+          totalAccounts: currentCount + newAccounts.length,
+          signature,
+        },
+      });
+    } catch {}
+
+    return {
+      signature,
+      address: altPk.toBase58(),
+      accountCount: currentCount + newAccounts.length,
+    };
+  }
+
+  /**
+   * Create a new ALT and extend it with accounts
+   * @param category Category/key for the ALT (e.g., 'common', 'pools', 'tokens')
+   * @param accounts Array of account addresses to add
+   * @param seed Optional seed for deterministic address derivation
+   * @returns The created ALT address and account count
+   */
+  async createAndExtendAlt(
+    category: string,
+    accounts: (string | PublicKey)[],
+    seed?: string
+  ): Promise<{ address: string; accountCount: number }> {
+    const { ensureWallet } = await import('../../wallet/wallet.js');
+    const wallet = await ensureWallet(CONFIG.walletPath);
+
+    const accountPks = accounts.map(acc => typeof acc === 'string' ? new PublicKey(acc) : acc);
+    const altSeed = seed || `${category}-alt`;
+
+    // Check if ALT already exists for this category
+    if (this.altAddresses.has(category)) {
+      throw new Error(`ALT with category "${category}" already exists. Use extendAlt() instead.`);
+    }
+
+    // Create and extend the ALT
+    const address = await this.createAltOnChain(wallet, accountPks, altSeed);
+
+    // Get the account count
+    const connection = getConnection();
+    const result = await withRpcLimit(() => 
+      connection.getAddressLookupTable(address)
+    ).catch(() => ({ value: null }));
+
+    const accountCount = result.value?.state?.addresses?.length || 0;
+
+    // Save to config
+    try {
+      this.altConfig = await loadAltConfig();
+      if (!this.altConfig.alts) {
+        this.altConfig.alts = {};
+      }
+      this.altConfig.alts[category as keyof typeof this.altConfig.alts] = address.toBase58();
+      this.altConfig.walletPublicKey = wallet.publicKey.toBase58();
+      this.altConfig.lastValidated = Date.now();
+      await saveAltConfig(this.altConfig);
+    } catch (error) {
+      try {
+        logger.warn('alt.manager.create.save.config.failed', {
+          cat: 'tx',
+          ctx: { category, address: address.toBase58(), error: String((error as any)?.message || error) },
+        });
+      } catch {}
+    }
+
+    return {
+      address: address.toBase58(),
+      accountCount,
+    };
+  }
+
+  /**
+   * Collect accounts for a specific category
+   * @param category Category type: 'common', 'pools', 'tokens', 'clmm', or 'all'
+   * @param options Additional options for collection
+   */
+  async collectAccountsForCategory(
+    category: 'common' | 'pools' | 'tokens' | 'clmm' | 'all',
+    options?: {
+      includeSystemPrograms?: boolean;
+      includeWalletAtas?: boolean;
+      maxPoolAccounts?: number;
+      maxTokenAccounts?: number;
+    }
+  ): Promise<PublicKey[]> {
+    const accounts: PublicKey[] = [];
+    const opts = {
+      includeSystemPrograms: true,
+      includeWalletAtas: true,
+      maxPoolAccounts: 50,
+      maxTokenAccounts: 20,
+      ...options,
+    };
+
+    if (category === 'common' || category === 'all') {
+      const commonAccounts = await this.collectCommonAccounts();
+      accounts.push(...commonAccounts);
+
+      if (opts.includeSystemPrograms) {
+        const { SystemProgram, SYSVAR_RENT_PUBKEY } = await import('@solana/web3.js');
+        const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } = await import('@solana/spl-token');
+        accounts.push(SystemProgram.programId);
+        accounts.push(TOKEN_PROGRAM_ID);
+        accounts.push(TOKEN_2022_PROGRAM_ID);
+        accounts.push(ASSOCIATED_TOKEN_PROGRAM_ID);
+        accounts.push(SYSVAR_RENT_PUBKEY);
+      }
+
+      if (opts.includeWalletAtas) {
+        try {
+          const { ensureWallet } = await import('../../wallet/wallet.js');
+          const { getTokenAccountManager } = await import('../../wallet/tokenAccountManager.js');
+          const wallet = await ensureWallet(CONFIG.walletPath);
+          const connection = getConnection();
+          const tokenManager = getTokenAccountManager(connection);
+          const tokenAccounts = tokenManager.getTokenAccounts();
+          
+          const commonMints = [
+            'So11111111111111111111111111111111111111112',
+            'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+            'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+          ];
+          const commonMintSet = new Set(commonMints);
+          
+          for (const tokenAccount of tokenAccounts.slice(0, opts.maxTokenAccounts)) {
+            if (commonMintSet.has(tokenAccount.mint)) {
+              accounts.push(new PublicKey(tokenAccount.address));
+            }
+          }
+        } catch {}
+      }
+    }
+
+    if (category === 'pools' || category === 'all') {
+      const poolAccounts = await this.collectPoolAccounts();
+      accounts.push(...poolAccounts.slice(0, opts.maxPoolAccounts));
+    }
+
+    if (category === 'clmm' || category === 'all') {
+      const clmmAccounts = await this.collectClmmAccounts();
+      accounts.push(...clmmAccounts);
+    }
+
+    // Deduplicate
+    const seen = new Set<string>();
+    return accounts.filter(pk => {
+      const addr = pk.toBase58();
+      if (seen.has(addr)) return false;
+      seen.add(addr);
+      return true;
+    });
+  }
+
+  /**
    * Comprehensive startup initialization
    * Checks existing ALTs, validates them, creates if missing
    */

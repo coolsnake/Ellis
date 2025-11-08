@@ -232,6 +232,110 @@ export function createArbRouter(io: SocketIOServer): Router {
     }
   });
 
+  // Extend existing ALT
+  api.post('/arb/alts/extend', async (req, res) => {
+    try {
+      const body = req.body || {};
+      const category = String(body.category || '');
+      const accounts = Array.isArray(body.accounts) ? body.accounts : [];
+
+      if (!category) {
+        return res.status(400).json({ error: 'category is required' });
+      }
+      if (accounts.length === 0) {
+        return res.status(400).json({ error: 'accounts array is required and cannot be empty' });
+      }
+
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      const result = await dexAltManager.extendAlt(category, accounts);
+
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Create and extend new ALT
+  api.post('/arb/alts/create', async (req, res) => {
+    try {
+      const body = req.body || {};
+      const category = String(body.category || '');
+      const accounts = Array.isArray(body.accounts) ? body.accounts : [];
+      const seed = body.seed ? String(body.seed) : undefined;
+
+      if (!category) {
+        return res.status(400).json({ error: 'category is required' });
+      }
+      if (accounts.length === 0) {
+        return res.status(400).json({ error: 'accounts array is required and cannot be empty' });
+      }
+
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      const result = await dexAltManager.createAndExtendAlt(category, accounts, seed);
+
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Collect accounts for a category (preview what would be added)
+  api.get('/arb/alts/collect-accounts', async (req, res) => {
+    try {
+      const category = String(req.query.category || 'common') as 'common' | 'pools' | 'tokens' | 'clmm' | 'all';
+      const includeSystemPrograms = req.query.includeSystemPrograms !== 'false';
+      const includeWalletAtas = req.query.includeWalletAtas !== 'false';
+      const maxPoolAccounts = Number(req.query.maxPoolAccounts) || 50;
+      const maxTokenAccounts = Number(req.query.maxTokenAccounts) || 20;
+
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      const accounts = await dexAltManager.collectAccountsForCategory(category, {
+        includeSystemPrograms,
+        includeWalletAtas,
+        maxPoolAccounts,
+        maxTokenAccounts,
+      });
+
+      res.json({
+        category,
+        accountCount: accounts.length,
+        accounts: accounts.map(pk => pk.toBase58()),
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Extend ALT with collected accounts for a category
+  api.post('/arb/alts/extend-with-category', async (req, res) => {
+    try {
+      const body = req.body || {};
+      const category = String(body.category || 'common');
+      const accountCategory = String(body.accountCategory || 'common') as 'common' | 'pools' | 'tokens' | 'clmm' | 'all';
+      const options = body.options || {};
+
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      
+      // Collect accounts
+      const accounts = await dexAltManager.collectAccountsForCategory(accountCategory, options);
+      
+      if (accounts.length === 0) {
+        return res.status(400).json({ error: 'No accounts collected for the specified category' });
+      }
+
+      // Extend the ALT
+      const result = await dexAltManager.extendAlt(category, accounts);
+
+      res.json({
+        ...result,
+        accountsAdded: accounts.length,
+        accountAddresses: accounts.map(pk => pk.toBase58()),
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   // Trigger a one-off Raydium CLMM static precompute for a pool id
   api.post('/arb/clmm/refresh', async (req: Request, res: Response) => {
     try {

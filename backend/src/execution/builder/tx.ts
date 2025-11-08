@@ -308,17 +308,42 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
                 hop.amountInRaw = prevHop.quotedOutputRaw;
               }
               hop.useExactAmount = true; // Flag to prevent re-quote adjustments
-            } else if ((hop.amountInRaw || 0n) <= 0n) {
-              // Fallback: if quotedOutputRaw not available and amountInRaw is zero, try other sources
+            } else {
+              // Fallback: if quotedOutputRaw not available, try other sources
+              // CRITICAL: Always try to fix amount for multi-hop swaps, even if amountInRaw is already set
+              // This handles cases where quotedOutputRaw might be missing but we still need correct propagation
               const prevOutput = hopOutputs[i - 1];
+              let shouldUpdate = false;
+              let newAmount: bigint | null = null;
+              
               if (prevOutput && prevOutput > 0n) {
-                hop.amountInRaw = prevOutput;
-              } else {
-                // Final fallback to minOutRaw from previous hop
-                const candidate: bigint = (prevHop?.minOutRaw && prevHop.minOutRaw > 0n) ? prevHop.minOutRaw : (prevHop?.amountInRaw || 0n);
-                if (candidate > 0n) {
-                  hop.amountInRaw = candidate;
-                }
+                // Use tracked output from previous hop
+                newAmount = prevOutput;
+                shouldUpdate = (hop.amountInRaw || 0n) <= 0n || hop.amountInRaw !== prevOutput;
+              } else if (prevHop?.minOutRaw && prevHop.minOutRaw > 0n) {
+                // Fallback to minOutRaw from previous hop
+                newAmount = prevHop.minOutRaw;
+                shouldUpdate = (hop.amountInRaw || 0n) <= 0n || hop.amountInRaw !== prevHop.minOutRaw;
+              }
+              
+              if (shouldUpdate && newAmount && newAmount > 0n) {
+                try {
+                  logger.warn('tx.build.amount_propagation.fallback', {
+                    cat: 'tx',
+                    code: LogCode.TX_BUILD_HOP,
+                    ctx: {
+                      traceId,
+                      hopIndex: i,
+                      prevHopIndex: i - 1,
+                      previousAmount: hop.amountInRaw.toString(),
+                      fallbackAmount: newAmount.toString(),
+                      reason: 'quotedOutputRaw_unavailable_using_fallback',
+                      inputMint: hop.inputMint,
+                      outputMint: prevHop.outputMint,
+                    }
+                  });
+                } catch {}
+                hop.amountInRaw = newAmount;
               }
             }
             

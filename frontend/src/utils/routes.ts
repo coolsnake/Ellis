@@ -54,6 +54,14 @@ export const ROUTES = {
     executeOrca: '/arb/execute/orca',
     simulateSendMeteora: '/arb/simulate-send/meteora',
     executeMeteora: '/arb/execute/meteora',
+    // ALT management endpoints
+    alts: {
+      status: '/arb/alts/status',
+      extend: '/arb/alts/extend',
+      create: '/arb/alts/create',
+      collectAccounts: '/arb/alts/collect-accounts',
+      extendWithCategory: '/arb/alts/extend-with-category',
+    },
   },
   exec: {
     config: '/exec/config',

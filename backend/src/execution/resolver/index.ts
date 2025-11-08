@@ -201,8 +201,28 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
     }
     const { quoteHopOut, applyMinOut } = await import('./quotes.js');
     for (let i = 0; i < hops.length; i++) {
-      // Always set current hop input
+      // CRITICAL: Always set current hop input from curIn
+      // For multi-hop swaps (i > 0), this ensures we use the exact output from previous hop
+      // Never preserve a pre-set amountInRaw for hops after the first - always propagate correctly
+      const previousAmountInRaw = hops[i].amountInRaw;
       hops[i].amountInRaw = curIn;
+      
+      // Log if we're overriding a pre-set amount (indicates potential issue upstream)
+      if (i > 0 && previousAmountInRaw > 0n && previousAmountInRaw !== curIn) {
+        try {
+          logger.warn('tx.resolve.hop.amount.overridden', {
+            cat: 'tx',
+            code: LogCode.TX_RESOLVE_OK,
+            ctx: {
+              hopIndex: i,
+              previousAmount: previousAmountInRaw.toString(),
+              newAmount: curIn.toString(),
+              inputMint: hops[i].inputMint,
+              prevHopOutput: hops[i - 1]?.quotedOutputRaw?.toString() || 'N/A',
+            }
+          });
+        } catch {}
+      }
 
       // Add logging to debug amount propagation
       try {
