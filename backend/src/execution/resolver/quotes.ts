@@ -140,10 +140,17 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
       if (out > 0n) return out;
     } else if (hop.dex === 'raydium') {
       const sys: any = (CONFIG as any)?.system || {};
-      if (sys.quotes?.enableMinimalMath !== false) {
+      const minimalMathAllowed = sys.quotes?.enableMinimalMath !== false;
+      const ray = minimalMathAllowed ? peekRaydiumPools() : null;
+
+      if (minimalMathAllowed && ray && hop.variant === 'clmm') {
+        const clmmOut = quoteRaydiumClmmFromSnapshot(hop, amountInRaw, ray);
+        if (clmmOut > 0n) return clmmOut;
+      }
+
+      if (minimalMathAllowed && ray) {
         const isRev = /-rev$/.test(hop.poolId || '');
         const id = hop.poolId.replace(/-rev$/, '');
-        const ray = peekRaydiumPools();
         const p = (ray.amm || []).find((x: any) => String(x?.id || '') === id);
         if (p) {
           const feeBps = Number((p as any)?.fee_bps || (hop as any)?.fee_bps || 0);
@@ -238,6 +245,105 @@ export function applyMinOut(outRaw: bigint, slippageBps: number): bigint {
   const one = 10_000n;
   const bps = BigInt(Math.max(0, Math.min(9900, Math.round(slippageBps))));
   return (outRaw * (one - bps)) / one;
+}
+
+function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools: any): bigint {
+  if (!(amountInRaw > 0n)) return 0n;
+  if (!pools || !Array.isArray(pools.clmm)) return 0n;
+
+  const rawPoolId = String(hop.poolId || '');
+  if (!rawPoolId) return 0n;
+  const isRev = rawPoolId.endsWith('-rev');
+  const baseId = rawPoolId.replace(/-rev$/, '');
+  const pool = (pools.clmm || []).find((x: any) => String(x?.id || '') === baseId);
+  if (!pool) return 0n;
+
+  const ratio = extractClmmPriceRatio(pool, isRev);
+  if (!ratio) return 0n;
+  const { numerator: priceNumerator, denominator: priceDenominator } = ratio;
+
+  const decInCandidate =
+    typeof hop.inputDecimals === 'number' && Number.isFinite(hop.inputDecimals)
+      ? hop.inputDecimals
+      : (isRev
+          ? Number((pool as any)?.decimals_b ?? (pool as any)?.decimalsB)
+          : Number((pool as any)?.decimals_a ?? (pool as any)?.decimalsA));
+  const decOutCandidate =
+    typeof hop.outputDecimals === 'number' && Number.isFinite(hop.outputDecimals)
+      ? hop.outputDecimals
+      : (isRev
+          ? Number((pool as any)?.decimals_a ?? (pool as any)?.decimalsA)
+          : Number((pool as any)?.decimals_b ?? (pool as any)?.decimalsB));
+
+  const scaleIn = decimalScale(decInCandidate);
+  const scaleOut = decimalScale(decOutCandidate);
+  if (!scaleIn || !scaleOut) return 0n;
+
+  const feeBpsBig = BigInt(clampFeeBps((pool as any)?.fee_bps ?? (hop as any)?.fee_bps));
+  const feeNumerator = 10_000n - feeBpsBig;
+  const feeDenominator = 10_000n;
+
+  const numerator = amountInRaw * priceDenominator * scaleOut * feeNumerator;
+  const denominator = scaleIn * priceNumerator * feeDenominator;
+  if (!(denominator > 0n)) return 0n;
+
+  const out = numerator / denominator;
+  return out > 0n ? out : 0n;
+}
+
+function extractClmmPriceRatio(pool: any, isRev: boolean): { numerator: bigint; denominator: bigint } | null {
+  let numerator = parsePositiveBigInt((pool as any)?.price_a_per_b_num);
+  let denominator = parsePositiveBigInt((pool as any)?.price_a_per_b_den);
+
+  if (!numerator || !denominator) {
+    const price = Number((pool as any)?.price_a_per_b ?? 0);
+    if (Number.isFinite(price) && price > 0) {
+      const candidateScales = [1_000_000_000_000, 1_000_000_000, 1_000_000, 1_000];
+      for (const scale of candidateScales) {
+        const scaled = price * scale;
+        if (Number.isFinite(scaled) && Math.abs(scaled) <= Number.MAX_SAFE_INTEGER) {
+          const rounded = Math.round(scaled);
+          if (rounded > 0) {
+            numerator = BigInt(rounded);
+            denominator = BigInt(scale);
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  if (!numerator || !denominator) return null;
+  if (isRev) return { numerator: denominator, denominator: numerator };
+  return { numerator, denominator };
+}
+
+function parsePositiveBigInt(value: unknown): bigint | null {
+  if (value === null || value === undefined) return null;
+  try {
+    const bi = BigInt(String(value));
+    return bi > 0n ? bi : null;
+  } catch {
+    return null;
+  }
+}
+
+function decimalScale(dec?: number | null): bigint | null {
+  if (dec === null || dec === undefined) return null;
+  const n = Number(dec);
+  if (!Number.isFinite(n)) return null;
+  const clamped = Math.min(18, Math.max(0, Math.floor(n)));
+  try {
+    return 10n ** BigInt(clamped);
+  } catch {
+    return null;
+  }
+}
+
+function clampFeeBps(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(9999, Math.round(n)));
 }
 
 
