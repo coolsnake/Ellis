@@ -1845,6 +1845,23 @@ export function startRaydiumRefreshLoop(): void {
                     if (rpcWs._subscriptionsByProgramAccountChangeSubscriptionId) {
                       try { rpcWs._subscriptionsByProgramAccountChangeSubscriptionId.clear?.(); } catch {}
                     }
+                    // Clear any pending timers that might trigger _updateSubscriptions
+                    if (rpcWs._subscriptionUpdateTimer) {
+                      try { clearTimeout(rpcWs._subscriptionUpdateTimer); rpcWs._subscriptionUpdateTimer = null; } catch {}
+                    }
+                  }
+                } catch {}
+
+                // Collect all bin subscriptions from trackers before clearing
+                // These might not be in the subs array if setup() was called multiple times
+                const binSubIds: number[] = [];
+                try {
+                  for (const tracker of meteoraBinTrackers.values()) {
+                    for (const accountInfo of tracker.accounts.values()) {
+                      if (typeof accountInfo.id === 'number') {
+                        binSubIds.push(accountInfo.id);
+                      }
+                    }
                   }
                 } catch {}
 
@@ -1854,6 +1871,8 @@ export function startRaydiumRefreshLoop(): void {
                 const ready: number = Number(wsAny?.readyState);
                 // Only allow RPC calls if socket is OPEN (1), not CONNECTING (0) as CONNECTING may fail
                 const canRpc = (ready === 1); // Only OPEN, not CONNECTING
+                
+                // Unsubscribe from main subs array
                 for (const s of subs) {
                   try {
                     if (!canRpc) continue;
@@ -1864,9 +1883,28 @@ export function startRaydiumRefreshLoop(): void {
                     }
                   } catch {}
                 }
+                
+                // Also unsubscribe from bin subscriptions that might not be in subs array
+                for (const binId of binSubIds) {
+                  try {
+                    if (!canRpc) continue;
+                    // Check if this ID is already in subs to avoid double-unsubscribe
+                    const alreadyInSubs = subs.some(s => s.id === binId);
+                    if (!alreadyInSubs) {
+                      removals.push((conn as any).removeAccountChangeListener(binId).catch(() => {}));
+                    }
+                  } catch {}
+                }
+                
                 if (canRpc && removals.length) {
                   try { await Promise.allSettled(removals); } catch {}
                 }
+                
+                // Clear bin trackers after unsubscribing to prevent stale references
+                try {
+                  meteoraBinTrackers.clear();
+                  meteoraBinAccountToPool.clear();
+                } catch {}
 
                 // Give a small delay to allow any in-flight subscription updates to complete
                 // before closing the socket
@@ -2008,6 +2046,13 @@ export function stopPoolRefreshLoop(): void {
   try { if (healthTimer) { clearInterval(healthTimer); healthTimer = undefined; } } catch {}
   try { if (wsUnsubscribe) { wsUnsubscribe(); wsUnsubscribe = undefined; } } catch {}
   wsHealthy = false; lastWsEventMs = 0;
+  
+  // Clear Meteora bin trackers to prevent stale subscription references
+  try {
+    meteoraBinTrackers.clear();
+    meteoraBinAccountToPool.clear();
+  } catch {}
+  
   try { logger.info('pools.stop all timers and ws unsubscribed'); } catch {}
 }
 
@@ -2028,6 +2073,14 @@ export function disablePoolWebsocketRefreshes(): void {
     wsHealthy = false; lastWsEventMs = 0;
     // Reset wsSetupActive to allow new setup to proceed
     wsSetupActive = false;
+    
+    // Clear Meteora bin trackers to prevent stale subscription references
+    // that could trigger _updateSubscriptions after shutdown
+    try {
+      meteoraBinTrackers.clear();
+      meteoraBinAccountToPool.clear();
+    } catch {}
+    
     logger.info('pools.ws unsubscribed');
   } catch {}
 }
