@@ -2493,8 +2493,12 @@ async fn set_config(
     if let Some(v) = cfg.calibrate_magnitude_on_ingest { s.config.calibrate_magnitude_on_ingest = v; }
     // Optional: extend ConfigReq to accept pruning fields without breaking existing clients
     // We tolerate presence via raw JSON by re-reading from persisted file later if needed.
-    let _ = persist_config(&s.config).await;
-    Json(serde_json::json!({"ok": true, "config": &s.config}))
+    let config_snapshot = s.config.clone();
+    drop(s);
+    if let Err(err) = persist_config(&config_snapshot).await {
+        tracing::warn!(target = "arb_rs", error = ?err, "arb.config.persist_failed");
+    }
+    Json(serde_json::json!({"ok": true, "config": config_snapshot}))
 }
 
 async fn get_config(State(state): State<Arc<RwLock<AppState>>>) -> Json<ArbConfig> {
