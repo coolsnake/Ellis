@@ -37,13 +37,24 @@ pub fn detect_negative_cycles(g: &ArbGraph) -> Vec<DetectedCycle> {
         if dist[u] + w < dist[v] - 1e-12 {
             // Found a cycle, backtrack
             let mut x = v;
-            for _ in 0..n { x = pred[x].unwrap_or(x); }
+            for _ in 0..n { 
+                if let Some(p) = pred[x] {
+                    x = p;
+                } else {
+                    break;
+                }
+            }
             // collect cycle
             let mut cycle = Vec::new();
             let mut cur = x;
             loop {
                 cycle.push(cur);
-                cur = pred[cur].unwrap_or(cur);
+                if let Some(p) = pred[cur] {
+                    cur = p;
+                } else {
+                    // No predecessor means we can't continue the cycle
+                    break;
+                }
                 if cur == x || cycle.len() > n+5 { break; }
             }
             if cycle.len() >= 2 {
@@ -90,13 +101,24 @@ pub fn detect_negative_cycles_filtered(g: &ArbGraph, nodes: &HashSet<usize>) -> 
         if dist[u] + w < dist[v] - 1e-12 {
             // Found a cycle, backtrack
             let mut x = v;
-            for _ in 0..n { x = pred[x].unwrap_or(x); }
+            for _ in 0..n { 
+                if let Some(p) = pred[x] {
+                    x = p;
+                } else {
+                    break;
+                }
+            }
             // collect cycle
             let mut cycle = Vec::new();
             let mut cur = x;
             loop {
                 cycle.push(cur);
-                cur = pred[cur].unwrap_or(cur);
+                if let Some(p) = pred[cur] {
+                    cur = p;
+                } else {
+                    // No predecessor means we can't continue the cycle
+                    break;
+                }
                 if cur == x || cycle.len() > n+5 { break; }
             }
             if cycle.len() >= 2 {

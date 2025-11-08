@@ -1131,6 +1131,9 @@ export const App: React.FC = () => {
               }
               return;
             }
+            // If action is 'test' but subAction is not 'multidex', show help
+            await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: arb test multidex sim|exec [SIZE_SOL] [SLIPPAGE_BPS]' }) });
+            return;
           }
         } catch (e: any) {
           await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: arb failed ${String(e?.message || e)}` }) });
