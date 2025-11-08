@@ -278,34 +278,38 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
         
         hopMetrics.accountPrep = Date.now() - accountPrepStart;
 
-        // Defensive amount propagation fallback: if later hop is zero, try to use previous hop's output
-        // For multihop: prefer exact quoted output from previous hop to ensure no amount leakage
+        // CRITICAL: For multi-hop swaps, ALWAYS use the exact quotedOutputRaw from previous hop
+        // This ensures we use the exact amount that will be received, preventing leakage
         const amountPropStart = Date.now();
-        if ((hop.amountInRaw || 0n) <= 0n && i > 0) {
+        if (i > 0) {
           try {
             const prevHop = plan.hops[i - 1];
             
-            // CRITICAL: For multihop, use the exact quoted output from previous hop
-            // This ensures we use the exact amount that will be received, preventing leakage
+            // Always prefer quotedOutputRaw for multi-hop swaps when available
             if (prevHop?.quotedOutputRaw && prevHop.quotedOutputRaw > 0n) {
-              hop.amountInRaw = prevHop.quotedOutputRaw;
+              // Use exact quoted output, even if amountInRaw is already set
+              // This ensures consistency and prevents using wrong amounts
+              if (hop.amountInRaw !== prevHop.quotedOutputRaw) {
+                try {
+                  logger.info('tx.build.amount_propagation.exact', {
+                    cat: 'tx',
+                    code: LogCode.TX_BUILD_HOP,
+                    ctx: {
+                      traceId,
+                      hopIndex: i,
+                      prevHopIndex: i - 1,
+                      previousAmount: hop.amountInRaw.toString(),
+                      exactAmount: prevHop.quotedOutputRaw.toString(),
+                      inputMint: hop.inputMint,
+                      outputMint: prevHop.outputMint,
+                    }
+                  });
+                } catch {}
+                hop.amountInRaw = prevHop.quotedOutputRaw;
+              }
               hop.useExactAmount = true; // Flag to prevent re-quote adjustments
-              try {
-                logger.info('tx.build.amount_propagation.exact', {
-                  cat: 'tx',
-                  code: LogCode.TX_BUILD_HOP,
-                  ctx: {
-                    traceId,
-                    hopIndex: i,
-                    prevHopIndex: i - 1,
-                    exactAmount: prevHop.quotedOutputRaw.toString(),
-                    inputMint: hop.inputMint,
-                    outputMint: prevHop.outputMint,
-                  }
-                });
-              } catch {}
-            } else {
-              // Fallback: prefer actual output from previous hop if tracked
+            } else if ((hop.amountInRaw || 0n) <= 0n) {
+              // Fallback: if quotedOutputRaw not available and amountInRaw is zero, try other sources
               const prevOutput = hopOutputs[i - 1];
               if (prevOutput && prevOutput > 0n) {
                 hop.amountInRaw = prevOutput;
@@ -330,35 +334,6 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
                 ctx: { traceId, hopIndex: i, error: String((propErr as any)?.message || propErr) }
               });
             } catch {}
-          }
-        } else if (i > 0 && hop.amountInRaw > 0n) {
-          // Even if amountInRaw is already set, verify it matches previous hop's exact output
-          // This ensures consistency between resolution and instruction building
-          const prevHop = plan.hops[i - 1];
-          if (prevHop?.quotedOutputRaw && prevHop.quotedOutputRaw > 0n) {
-            if (hop.amountInRaw !== prevHop.quotedOutputRaw) {
-              try {
-                logger.warn('tx.build.amount.mismatch', {
-                  cat: 'tx',
-                  code: LogCode.TX_BUILD_ERR,
-                  ctx: {
-                    traceId,
-                    hopIndex: i,
-                    prevHopIndex: i - 1,
-                    currentAmount: hop.amountInRaw.toString(),
-                    expectedExactAmount: prevHop.quotedOutputRaw.toString(),
-                    difference: (hop.amountInRaw - prevHop.quotedOutputRaw).toString(),
-                    inputMint: hop.inputMint,
-                  }
-                });
-              } catch {}
-              // Use the exact amount from previous hop for consistency
-              hop.amountInRaw = prevHop.quotedOutputRaw;
-              hop.useExactAmount = true;
-            } else {
-              // Amounts match - mark as exact to prevent adjustments
-              hop.useExactAmount = true;
-            }
           }
         }
         hopMetrics.amountPropagation = Date.now() - amountPropStart;
@@ -415,9 +390,13 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
         
         hopIxs.push(...ixs);
         
-        // Track output amount for next hop (use minOutRaw as conservative estimate)
-        // In a real scenario, this would come from quote simulation, but we use minOutRaw as fallback
-        hopOutputs.push(hop.minOutRaw && hop.minOutRaw > 0n ? hop.minOutRaw : (hop.amountInRaw || 0n));
+        // Track output amount for next hop - use quotedOutputRaw if available, otherwise minOutRaw
+        // CRITICAL: Use quotedOutputRaw (exact output) instead of minOutRaw (slippage-adjusted minimum)
+        // This ensures the next hop uses the full amount received, not a reduced amount
+        const outputForNextHop = hop.quotedOutputRaw && hop.quotedOutputRaw > 0n 
+          ? hop.quotedOutputRaw 
+          : (hop.minOutRaw && hop.minOutRaw > 0n ? hop.minOutRaw : (hop.amountInRaw || 0n));
+        hopOutputs.push(outputForNextHop);
         
         // Track this hop's output ATA for chaining to next hop
         prevHopDestAta = hop.userDestAta;

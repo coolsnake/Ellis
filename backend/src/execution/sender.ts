@@ -234,22 +234,43 @@ async function loadLookupTables(connection: Connection, addrs: string[]): Promis
   return out;
 }
 
-// Add function to get common lookup table addresses (Jupiter's common ALT)
+// Get common lookup table addresses from ALT manager
 async function getCommonLookupTables(connection: Connection): Promise<AddressLookupTableAccount[]> {
-  // Jupiter's common address lookup table for mainnet
-  // This contains common programs like Token Program, System Program, etc.
-  const COMMON_ALT_MAINNET = 'DehAasscXF4kEGxFgJ3bq4PpVGp5wyUxMRvn6TzGVHaw';
-  // Add other common ALTs as needed
-  
   try {
-    const pk = new PublicKey(COMMON_ALT_MAINNET);
-    const acc = await connection.getAddressLookupTable(pk).then(r => r.value).catch(() => null);
-    if (acc) {
-      try { logger.debug('tx.lookup_table.loaded', { cat: 'tx', ctx: { address: COMMON_ALT_MAINNET, accountCount: acc.state.addresses.length } }); } catch {}
-      return [acc];
+    const { dexAltManager } = await import('./utils/altManager.js');
+    const altAddresses = dexAltManager.getAllAltAddresses();
+    
+    if (altAddresses.length === 0) {
+      return [];
     }
-  } catch {}
-  return [];
+    
+    const accounts: AddressLookupTableAccount[] = [];
+    for (const addr of altAddresses) {
+      try {
+        const pk = new PublicKey(addr);
+        const acc = await connection.getAddressLookupTable(pk).then(r => r.value).catch(() => null);
+        if (acc) {
+          accounts.push(acc);
+          try { 
+            logger.debug('tx.lookup_table.loaded', { 
+              cat: 'tx', 
+              ctx: { address: addr, accountCount: acc.state.addresses.length } 
+            }); 
+          } catch {}
+        }
+      } catch {}
+    }
+    
+    return accounts;
+  } catch (error) {
+    try {
+      logger.warn('tx.lookup_table.manager.load.failed', {
+        cat: 'tx',
+        ctx: { error: String((error as any)?.message || error) },
+      });
+    } catch {}
+    return [];
+  }
 }
 
 function summarizeSimError(logs?: string[], err?: any): { ix?: number; custom?: number; hint?: string; account?: string; errorType?: string } {

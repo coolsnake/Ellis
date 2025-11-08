@@ -28,8 +28,8 @@ const defaults: ExecConfig = {
   dynamicCompute: true,
   maxTxSizeBytes: 0,
   wrapSolInTx: true,
-  // Use Jupiter's common lookup table by default
-  lookupTableAddresses: ['DehAasscXF4kEGxFgJ3bq4PpVGp5wyUxMRvn6TzGVHaw'], // Jupiter common ALT mainnet
+  // ALT addresses are now managed via altConfig.json and DexAltManager
+  lookupTableAddresses: [],
 };
 
 export async function loadExecConfig(): Promise<ExecConfig> {

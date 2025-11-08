@@ -43,6 +43,30 @@ export class DexAltManager {
           } catch {}
         }
 
+        // Load ALTs from altConfig file (same as initializeStartup does)
+        try {
+          this.altConfig = await loadAltConfig();
+          if (this.altConfig.alts) {
+            for (const [category, address] of Object.entries(this.altConfig.alts)) {
+              if (!address) continue;
+              try {
+                const pk = new PublicKey(address);
+                this.altAddresses.set(category, pk);
+              } catch (e) {
+                // Invalid address, skip it
+              }
+            }
+          }
+        } catch (error) {
+          // If altConfig loading fails, continue without it
+          try {
+            logger.warn('alt.manager.init.config.load.failed', {
+              cat: 'tx',
+              ctx: { error: String((error as any)?.message || error) },
+            });
+          } catch {}
+        }
+
         // Optionally create ALT if missing and we have accounts
         if (createIfMissing && commonAccounts.length > 0 && this.altAddresses.size === 0) {
           try {
