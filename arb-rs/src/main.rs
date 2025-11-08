@@ -551,6 +551,13 @@ async fn main() -> anyhow::Result<()> {
                             continue; 
                         }
 
+                        // Validate node indices are in bounds before processing
+                        let node_count = s.graph.g.node_count();
+                        if c.nodes.iter().any(|&i| i >= node_count) {
+                            rejected_too_short += 1;
+                            continue;
+                        }
+
                         // Build labels (mint-only) and compute product of best-of-parallel rates along the closed loop
                         let labels: Vec<String> = c.nodes.iter().map(|&i| s.graph.g[NodeIndex::new(i)].clone()).collect();
                         let start_is_usdc = labels.first().map(|m| m == usdc).unwrap_or(false);
@@ -599,8 +606,15 @@ async fn main() -> anyhow::Result<()> {
                         let cycle_start = std::time::Instant::now();
                         let mut timed_out = false;
                         'cycle: for w in 0..c.nodes.len() {
-                            let u = NodeIndex::new(c.nodes[w]);
-                            let v = NodeIndex::new(c.nodes[(w+1) % c.nodes.len()]);
+                            let u_idx = c.nodes[w];
+                            let v_idx = c.nodes[(w+1) % c.nodes.len()];
+                            // Validate indices are in bounds
+                            if u_idx >= node_count || v_idx >= node_count {
+                                rejected_no_edge += 1;
+                                break 'cycle;
+                            }
+                            let u = NodeIndex::new(u_idx);
+                            let v = NodeIndex::new(v_idx);
                             let mut best_rate: f64 = 0.0;
                             let mut best_meta: Option<(String, f64, i64, String, f64)> = None; // (dex, liq, fee, pool_id, liq_display)
                             for e in s.graph.g.edges_connecting(u, v) {
@@ -741,10 +755,14 @@ async fn main() -> anyhow::Result<()> {
                         let now_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
                         // Compute net_bps as profit_bps - link penalties (already included in rate, but expose explicitly)
                         let net_bps = profit_bps - link_penalty_bps_total.max(0);
-                        let bottleneck_edge = bottleneck.as_ref().map(|(ui,vi,dex,rate,liq,fee)| {
+                        let bottleneck_edge = bottleneck.as_ref().and_then(|(ui,vi,dex,rate,liq,fee)| {
+                            // Validate indices are in bounds
+                            if *ui >= node_count || *vi >= node_count {
+                                return None;
+                            }
                             let from = s.graph.g[NodeIndex::new(*ui)].clone();
                             let to = s.graph.g[NodeIndex::new(*vi)].clone();
-                            opportunities::BottleneckEdge { from, to, dex: dex.clone(), rate: *rate, liquidity: *liq, fee_bps: *fee }
+                            Some(opportunities::BottleneckEdge { from, to, dex: dex.clone(), rate: *rate, liquidity: *liq, fee_bps: *fee })
                         });
                         // Compute estimated USD profit if cycle notionally started at USDC
                         let est_profit_usd_val: f64 = if start_is_usdc { s.config.quote_size_usd.max(0.0) * (rate_prod - 1.0) } else { 0.0 };
@@ -877,6 +895,11 @@ async fn main() -> anyhow::Result<()> {
                         for nmcy in nm.into_iter() {
                             // Interpret nodes to labels and compute best-of-parallel rates metadata
                             if nmcy.nodes.len() < 3 || nmcy.nodes.len() > max_hops { continue; }
+                            // Validate node indices are in bounds
+                            let node_count_nm = s.graph.g.node_count();
+                            if nmcy.nodes.iter().any(|&i| i >= node_count_nm) {
+                                continue;
+                            }
                             let mut labels: Vec<String> = nmcy.nodes.iter().map(|&i| s.graph.g[NodeIndex::new(i)].clone()).collect();
                             // Apply pruning to near-miss cycles as well (symmetric SOL<->stable and stable<->stable)
                             {
@@ -917,8 +940,15 @@ async fn main() -> anyhow::Result<()> {
                             let mut hop_outs: Vec<f64> = Vec::new();
                             let mut cur_out: f64 = if labels.first().map(|m| m == &usdc).unwrap_or(false) { s.config.quote_size_usd.max(0.0) } else { 1.0 };
                             for w in 0..nlen {
-                                let u = NodeIndex::new(nmcy.nodes[w]);
-                                let v = NodeIndex::new(nmcy.nodes[(w+1)%nlen]);
+                                let u_idx = nmcy.nodes[w];
+                                let v_idx = nmcy.nodes[(w+1)%nlen];
+                                // Validate indices are in bounds
+                                if u_idx >= node_count_nm || v_idx >= node_count_nm {
+                                    ok = false;
+                                    break;
+                                }
+                                let u = NodeIndex::new(u_idx);
+                                let v = NodeIndex::new(v_idx);
                                 let mut best_rate: f64 = 0.0;
                                 let mut best_meta: Option<(String, f64, i64, String, f64)> = None;
                                 for e in s.graph.g.edges_connecting(u, v) {
@@ -966,10 +996,14 @@ async fn main() -> anyhow::Result<()> {
                                 let total_est = (est_lam * hops as f64) / 1_000_000.0 * 10_000.0; // approx: 1 SOL baseline => bps rough
                                 (net_bps as f64 - total_est).round() as i64
                             };
-                            let bottleneck_edge = bottleneck.as_ref().map(|(ui,vi,dex,rate,liq,fee)| {
+                            let bottleneck_edge = bottleneck.as_ref().and_then(|(ui,vi,dex,rate,liq,fee)| {
+                                // Validate indices are in bounds
+                                if *ui >= node_count_nm || *vi >= node_count_nm {
+                                    return None;
+                                }
                                 let from = s.graph.g[NodeIndex::new(*ui)].clone();
                                 let to = s.graph.g[NodeIndex::new(*vi)].clone();
-                                opportunities::BottleneckEdge { from, to, dex: dex.clone(), rate: *rate, liquidity: *liq, fee_bps: *fee }
+                                Some(opportunities::BottleneckEdge { from, to, dex: dex.clone(), rate: *rate, liquidity: *liq, fee_bps: *fee })
                             });
                             // Capture last rate before moving hop_rates into the struct
                             let last_rate_opt = hop_rates.last().copied();
@@ -1116,6 +1150,10 @@ async fn main() -> anyhow::Result<()> {
                             }
                         }
                         if best_prod > 0.0 && !best_nodes.is_empty() {
+                            // Validate node indices are in bounds
+                            if best_nodes.iter().any(|&i| i >= ncount) {
+                                continue;
+                            }
                             // Build opportunity-like near miss from best cycle
                             let labels: Vec<String> = best_nodes.iter().map(|&i| s.graph.g[NodeIndex::new(i)].clone()).collect();
                             // Canonicalize
@@ -1177,8 +1215,15 @@ async fn main() -> anyhow::Result<()> {
                             let mut hop_outs: Vec<f64> = Vec::new();
                             let mut cur_out: f64 = if labels.first().map(|m| m == &usdc).unwrap_or(false) { s.config.quote_size_usd.max(0.0) } else { 1.0 };
                             for w in 0..best_nodes.len() {
-                                let u = NodeIndex::new(best_nodes[w]);
-                                let v = NodeIndex::new(best_nodes[(w+1)%best_nodes.len()]);
+                                let u_idx = best_nodes[w];
+                                let v_idx = best_nodes[(w+1)%best_nodes.len()];
+                                // Validate indices are in bounds
+                                if u_idx >= ncount || v_idx >= ncount {
+                                    prod2 = 0.0;
+                                    break;
+                                }
+                                let u = NodeIndex::new(u_idx);
+                                let v = NodeIndex::new(v_idx);
                             let mut best_rate: f64 = 0.0; let mut best_meta: Option<(String, f64, i64, String, f64)> = None;
                             for e in s.graph.g.edges_connecting(u, v) {
                                 let wt = e.weight(); if wt.liquidity <= 0.0 { continue; }
@@ -1195,10 +1240,14 @@ async fn main() -> anyhow::Result<()> {
                             let net_bps = profit_bps - link_penalty_bps_total.max(0);
                             let est_capacity = if min_edge_liquidity.is_finite() { Some(min_edge_liquidity.max(0.0)) } else { None };
                             let now_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
-                            let bottleneck_edge = bottleneck.as_ref().map(|(ui,vi,dex,rate,liq,fee)| {
+                            let bottleneck_edge = bottleneck.as_ref().and_then(|(ui,vi,dex,rate,liq,fee)| {
+                                // Validate indices are in bounds
+                                if *ui >= ncount || *vi >= ncount {
+                                    return None;
+                                }
                                 let from = s.graph.g[NodeIndex::new(*ui)].clone();
                                 let to = s.graph.g[NodeIndex::new(*vi)].clone();
-                                opportunities::BottleneckEdge { from, to, dex: dex.clone(), rate: *rate, liquidity: *liq, fee_bps: *fee }
+                                Some(opportunities::BottleneckEdge { from, to, dex: dex.clone(), rate: *rate, liquidity: *liq, fee_bps: *fee })
                             });
                             // Only consider as near-miss if below threshold, at least 3 hops, and min liquidity > 0
                             if profit_bps < min_bps && best_nodes.len() >= 3 && est_capacity.unwrap_or(0.0) > 0.0 {
@@ -1256,6 +1305,10 @@ async fn main() -> anyhow::Result<()> {
                                 }
                             }}}
                             if let Some((a,b,c,prod)) = best {
+                                // Validate node indices are in bounds
+                                if a >= ncount || b >= ncount || c >= ncount {
+                                    continue;
+                                }
                                 let mut nodes = vec![a,b,c];
                                 let mut labels: Vec<String> = nodes.iter().map(|&i| s.graph.g[NodeIndex::new(i)].clone()).collect();
                                 // Prune triangle near-miss by SOL<->stable cap and stable<->stable
@@ -1307,7 +1360,15 @@ async fn main() -> anyhow::Result<()> {
                                 let shortfall = (min_bps - profit_bps).max(1); // ensure >0 so UI shows
                                 let est_capacity = if min_edge_liquidity.is_finite() { Some(min_edge_liquidity.max(0.0)) } else { None };
                                 let now_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
-                                let bottleneck_edge = bottleneck.as_ref().map(|(ui,vi,dex,rate,liq,fee)| { let from = s.graph.g[NodeIndex::new(*ui)].clone(); let to = s.graph.g[NodeIndex::new(*vi)].clone(); opportunities::BottleneckEdge { from, to, dex: dex.clone(), rate: *rate, liquidity: *liq, fee_bps: *fee } });
+                                let bottleneck_edge = bottleneck.as_ref().and_then(|(ui,vi,dex,rate,liq,fee)| {
+                                    // Validate indices are in bounds
+                                    if *ui >= ncount || *vi >= ncount {
+                                        return None;
+                                    }
+                                    let from = s.graph.g[NodeIndex::new(*ui)].clone();
+                                    let to = s.graph.g[NodeIndex::new(*vi)].clone();
+                                    Some(opportunities::BottleneckEdge { from, to, dex: dex.clone(), rate: *rate, liquidity: *liq, fee_bps: *fee })
+                                });
                                 // Recompute best edges per hop to capture pool ids/fees for logging and output
                                 let mut hop_pool_ids: Vec<String> = Vec::new();
                                 let mut hop_fee_bps_vec: Vec<i64> = Vec::new();
@@ -1397,6 +1458,11 @@ async fn main() -> anyhow::Result<()> {
                             let mut simple = true; for &v in c.nodes.iter() { if !uniq.insert(v) { simple = false; break; } }
                             if !simple { continue; }
                             let mut prod: f64 = 1.0;
+                            // Validate node indices are in bounds
+                            let node_count_dbg = s.graph.g.node_count();
+                            if c.nodes.iter().any(|&i| i >= node_count_dbg) {
+                                continue;
+                            }
                             let mut ok = true;
                             for w in 0..c.nodes.len() {
                                 let u = NodeIndex::new(c.nodes[w]);
