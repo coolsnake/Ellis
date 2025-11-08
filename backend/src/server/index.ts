@@ -213,7 +213,7 @@ const shutdownWs = async () => {
   
   // Cleanup Drift subscriptions
   try {
-    const { DriftService } = await import('./drift/client.js');
+    const { DriftService } = await import('../drift/client.js');
     const driftSvc = DriftService.getInstance();
     if (driftSvc && typeof (driftSvc as any).cleanup === 'function') {
       await (driftSvc as any).cleanup();
