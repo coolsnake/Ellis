@@ -348,10 +348,27 @@ export function createArbRouter(io: SocketIOServer): Router {
   api.post('/arb/start', async (req, res) => {
     try {
       const body = req.body || {};
-      const { getGraphSnapshot } = await import('../graph.js');
-      const snap = await getGraphSnapshot(true);
       const host = process.env.ARB_SERVICE_URL || 'http://127.0.0.1:4010';
       const wantEnable: boolean = !!(body && (body as any).enable);
+      
+      // When stopping, disable streaming immediately and skip graph snapshot
+      if (!wantEnable) {
+        setArbStreamEnabled(false);
+        // Still notify arb-rs to stop, but don't wait for graph snapshot
+        const r = await fetch(`${host}/arb/start`, { 
+          method: 'POST', 
+          headers: { 'content-type': 'application/json' }, 
+          body: JSON.stringify({ enable: false }),
+          signal: AbortSignal.timeout(3000) // 3 second timeout
+        }).catch(() => null);
+        const status = r?.status || 200; // Don't fail if arb-rs is unreachable
+        const j = r ? await r.json().catch(() => ({ ok: true })) : { ok: true };
+        return res.status(status).json(j);
+      }
+      
+      // When starting, get graph snapshot and send to arb-rs
+      const { getGraphSnapshot } = await import('../graph.js');
+      const snap = await getGraphSnapshot(true);
       // Only include graph when non-empty
       const includeGraph = !!(snap && Array.isArray((snap as any).edges) && (snap as any).edges.length > 0);
       const payload = includeGraph ? { graph: snap, ...body } : { ...body };

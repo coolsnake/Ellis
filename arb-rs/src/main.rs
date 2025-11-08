@@ -2051,8 +2051,148 @@ async fn arb_graph_update(State(state): State<Arc<RwLock<AppState>>>, headers: H
     // Record time of receipt for diff_to_detect tracking
     s.metrics.last_graph_push_rx_ms = now_ms();
     
-    // Wake detection loop to apply diff promptly
-    s.wake.notify_one();
+    // CRITICAL FIX: Apply buffered diffs immediately instead of waiting for detection loop
+    // This ensures last_graph_version is updated right away so ACK can succeed immediately
+    let has_pending = !s.pending_added_edges.is_empty() || !s.pending_updated_edges.is_empty() || !s.pending_removed_edge_ids.is_empty();
+    let pending_v = s.pending_graph_version.load(Ordering::Acquire);
+    let pending_ts = s.pending_graph_ts.load(Ordering::Acquire);
+    
+    if has_pending && pending_v != u64::MAX {
+        // Extract pending diffs to apply (release lock quickly)
+        let added = std::mem::take(&mut s.pending_added_edges);
+        let updated = std::mem::take(&mut s.pending_updated_edges);
+        let removed = std::mem::take(&mut s.pending_removed_edge_ids);
+        let add_ct = added.len();
+        let upd_ct = updated.len();
+        let rem_ct = removed.len();
+        
+        // Check if calibration is enabled before cloning graph (expensive operation)
+        let calibrate_enabled = {
+            let guard = state.read().await;
+            guard.config.calibrate_magnitude_on_ingest
+        };
+        
+        // Clone graph only if calibration is enabled (expensive operation)
+        let graph_snapshot_for_calib = if calibrate_enabled {
+            drop(s);
+            let guard = state.read().await;
+            Some(guard.graph.clone())
+        } else {
+            None
+        };
+        
+        // Calibrate edges (same logic as detection loop)
+        let mut calibrated_edges: Vec<(String, String, String, i64, f64, f64, f64, String)> = Vec::new();
+        let sol_mint: &str = "So11111111111111111111111111111111111111112";
+        let usdc_mint: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+        
+        for e in added.iter().chain(updated.iter()) {
+            let dex = e.dex.clone().unwrap_or_else(|| "Unknown".to_string());
+            let fee: i64 = e.fee_bps.unwrap_or(0);
+            let liq = e.liquidity.unwrap_or(0.0);
+            let liq_disp = e.liquidity_display.unwrap_or(liq);
+            let pool_id = e.pool_id.clone().unwrap_or_default();
+            let px_raw = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
+            let mut px = px_raw;
+            
+            // Calibrate price magnitude if needed (same logic as detection loop)
+            if px > 0.0 && calibrate_enabled {
+                if let Some(ref graph) = graph_snapshot_for_calib {
+                    let get_usd = |mint: &str, graph: &ArbGraph| -> Option<f64> {
+                        if mint == usdc_mint { return Some(1.0); }
+                        if let Some(idx) = graph.map.get(mint) {
+                            // Prefer direct edges to USDC
+                            for edge in graph.g.edges(*idx) {
+                                let u = edge.source(); let v = edge.target();
+                                let src = graph.g.node_weight(u).cloned().unwrap_or_default();
+                                let dst = graph.g.node_weight(v).cloned().unwrap_or_default();
+                                let r = edge.weight().rate_effective;
+                                if dst == usdc_mint && r > 0.0 { return Some(r); }
+                                if src == usdc_mint && r > 0.0 { return Some(1.0 / r); }
+                            }
+                            // Via SOL
+                            let mut via_sol: Option<f64> = None;
+                            let mut sol_usd: Option<f64> = None;
+                            for edge in graph.g.edge_references() {
+                                let src = graph.g.node_weight(edge.source()).cloned().unwrap_or_default();
+                                let dst = graph.g.node_weight(edge.target()).cloned().unwrap_or_default();
+                                let r = edge.weight().rate_effective;
+                                if r <= 0.0 { continue; }
+                                if src == sol_mint && dst == usdc_mint { sol_usd = Some(r); }
+                                if src == usdc_mint && dst == sol_mint { sol_usd = Some(1.0 / r); }
+                            }
+                            if let Some(su) = sol_usd {
+                                for edge in graph.g.edges(*idx) {
+                                    let u = edge.source(); let v = edge.target();
+                                    let s = graph.g.node_weight(u).cloned().unwrap_or_default();
+                                    let t = graph.g.node_weight(v).cloned().unwrap_or_default();
+                                    let r = edge.weight().rate_effective;
+                                    if r <= 0.0 { continue; }
+                                    if s == mint && t == sol_mint { via_sol = Some(su / r); break; }
+                                    if s == sol_mint && t == mint { via_sol = Some(su * r); break; }
+                                }
+                            }
+                            return via_sol;
+                        }
+                        None
+                    };
+                    let pa = get_usd(&e.source, graph);
+                    let pb = get_usd(&e.target, graph);
+                    if let (Some(pa), Some(pb)) = (pa, pb) {
+                        let refv = pb / pa;
+                        let mut best = px; let mut best_dev = f64::INFINITY; let mut best_k = 0i32;
+                        for k in -8..=8 {
+                            let cand = px * 10f64.powi(k);
+                            if !(cand.is_finite() && cand > 0.0) { continue; }
+                            let dev = (cand / refv).max(refv / cand);
+                            if dev + 1e-12 < best_dev { best_dev = dev; best = cand; best_k = k; }
+                        }
+                        if best_k != 0 { tracing::debug!(mint_a = %e.source, mint_b = %e.target, px_in = px_raw, px_out = best, k = best_k, refv, "arb.magnitude.calibrated.diff"); }
+                        px = best;
+                    }
+                }
+            }
+            let base = if px > 0.0 { 1.0 / px } else { 0.0 };
+            let rate_eff = if base > 0.0 { base * (1.0 - (fee as f64)/10_000.0).max(0.0_f64) } else { 0.0 };
+            calibrated_edges.push((e.source.clone(), e.target.clone(), dex, fee, rate_eff, liq, liq_disp, pool_id));
+        }
+        
+        // Apply removals first, then calibrated edges
+        let mut s = state.write().await;
+        if !removed.is_empty() {
+            let _ = s.graph.remove_edges_by_ids(&removed);
+        }
+        for (source, target, dex, fee, rate_eff, liq, liq_disp, pool_id) in calibrated_edges {
+            s.graph.upsert_edge(&dex, &source, &target, EdgeData { rate_effective: rate_eff, fee_bps: fee, liquidity: liq, dex: dex.clone(), pool_id, liquidity_display: liq_disp });
+        }
+        
+        s.metrics.graph_updates_applied = s.metrics.graph_updates_applied.saturating_add(1);
+        s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.graph.diff: applied immediately add={} upd={} rem={}", add_ct, upd_ct, rem_ct) });
+        tracing::info!(add=add_ct, upd=upd_ct, rem=rem_ct, "arb.graph.diff: applied immediately");
+        let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
+        s.metrics.graph_nodes = s.graph.g.node_count() as u64;
+        s.metrics.graph_edges = s.graph.g.edge_count() as u64;
+        
+        // Update version immediately so ACK can succeed
+        let current_v = s.last_graph_version.load(Ordering::Acquire);
+        if pending_v > current_v {
+            s.last_graph_version.store(pending_v, Ordering::Release);
+            tracing::info!(old_version = current_v, new_version = pending_v, "arb.graph.version: updated immediately");
+        }
+        s.pending_graph_version.store(u64::MAX, Ordering::Release);
+        
+        if pending_ts != u64::MAX {
+            s.last_graph_ts.store(pending_ts, Ordering::Release);
+            s.pending_graph_ts.store(u64::MAX, Ordering::Release);
+        }
+        
+        // Wake detection loop to run detection with updated graph
+        s.wake.notify_one();
+    } else {
+        // No pending diffs to apply, just wake detection loop
+        s.wake.notify_one();
+    }
+    
     Json(serde_json::json!({"ok": true}))
 }
 

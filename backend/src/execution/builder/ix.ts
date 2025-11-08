@@ -2154,30 +2154,129 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
             }
             
             // If event_authority was replaced and not found elsewhere, add it back
-            // Append to the end instead of inserting in the middle to avoid shifting account indices
-            // This preserves the SDK's account order and instruction data integrity
+            // CRITICAL: event_authority must be at position 9 (not at the end) for the program to validate it correctly
+            // Check if position 9 has the program ID (which shouldn't be there) and replace it with event_authority
             if (!eventAuthFoundElsewhere) {
               try {
-                // Append event_authority to the end of the accounts array
-                // This avoids shifting account indices which would break instruction data
-                // The program will find event_authority even if it's at the end
-                ix.keys.push({
-                  pubkey: eventAuthorityPda,
-                  isSigner: false,
-                  isWritable: false
-                });
+                const programIdStr = programId.toBase58();
+                let restoredAt = -1;
                 
-                try {
-                  logger.info('meteora.dlmm.token_program.event_authority_restored', {
-                    cat: 'tx',
-                    ctx: {
-                      replacedAt: replacedPosition,
-                      restoredAt: ix.keys.length - 1,
-                      account: eventAuthStr,
-                      note: 'event_authority was replaced at token program position and restored at end of accounts array to preserve account indices'
+                // Check if position 9 has the program ID (incorrect) - replace it with event_authority
+                if (ix.keys.length > 9) {
+                  const keyAt9 = ix.keys[9];
+                  if (keyAt9 && typeof keyAt9 === 'object' && (keyAt9 as any).pubkey) {
+                    const pkAt9 = (keyAt9 as any).pubkey;
+                    const pkAt9Str = pkAt9 instanceof PublicKey ? pkAt9.toBase58() : String(pkAt9);
+                    
+                    // If position 9 has the program ID, replace it with event_authority
+                    if (pkAt9Str === programIdStr) {
+                      ix.keys[9] = {
+                        pubkey: eventAuthorityPda,
+                        isSigner: false,
+                        isWritable: false
+                      };
+                      restoredAt = 9;
+                      
+                      // Remove any duplicate event_authority at the end (if it was previously appended)
+                      // Check from the end backwards to find and remove duplicates
+                      for (let i = ix.keys.length - 1; i > 9; i--) {
+                        const key = ix.keys[i];
+                        if (key && typeof key === 'object' && (key as any).pubkey) {
+                          const pk = (key as any).pubkey;
+                          const pkStr = pk instanceof PublicKey ? pk.toBase58() : String(pk);
+                          if (pkStr === eventAuthStr) {
+                            ix.keys.splice(i, 1);
+                            try {
+                              logger.debug('meteora.dlmm.token_program.event_authority_duplicate_removed', {
+                                cat: 'tx',
+                                ctx: {
+                                  removedAt: i,
+                                  restoredAt: 9,
+                                  account: eventAuthStr
+                                }
+                              });
+                            } catch {}
+                            break; // Only remove one duplicate
+                          }
+                        }
+                      }
+                      
+                      try {
+                        logger.info('meteora.dlmm.token_program.event_authority_restored_at_position_9', {
+                          cat: 'tx',
+                          ctx: {
+                            replacedAt: replacedPosition,
+                            restoredAt: 9,
+                            account: eventAuthStr,
+                            note: 'event_authority was replaced at token program position and restored at position 9 (replacing program ID)'
+                          }
+                        });
+                      } catch {}
+                    } else {
+                      // Position 9 has something else - append to end as fallback
+                      ix.keys.push({
+                        pubkey: eventAuthorityPda,
+                        isSigner: false,
+                        isWritable: false
+                      });
+                      restoredAt = ix.keys.length - 1;
+                      
+                      try {
+                        logger.warn('meteora.dlmm.token_program.event_authority_restored_at_end', {
+                          cat: 'tx',
+                          ctx: {
+                            replacedAt: replacedPosition,
+                            restoredAt: restoredAt,
+                            account: eventAuthStr,
+                            position9Account: pkAt9Str,
+                            note: 'event_authority was replaced at token program position and restored at end (position 9 already occupied)'
+                          }
+                        });
+                      } catch {}
                     }
+                  } else {
+                    // Position 9 doesn't exist or is invalid - append to end
+                    ix.keys.push({
+                      pubkey: eventAuthorityPda,
+                      isSigner: false,
+                      isWritable: false
+                    });
+                    restoredAt = ix.keys.length - 1;
+                    
+                    try {
+                      logger.warn('meteora.dlmm.token_program.event_authority_restored_at_end_no_position_9', {
+                        cat: 'tx',
+                        ctx: {
+                          replacedAt: replacedPosition,
+                          restoredAt: restoredAt,
+                          account: eventAuthStr,
+                          note: 'event_authority was replaced at token program position and restored at end (position 9 not available)'
+                        }
+                      });
+                    } catch {}
+                  }
+                } else {
+                  // Not enough accounts - append to end
+                  ix.keys.push({
+                    pubkey: eventAuthorityPda,
+                    isSigner: false,
+                    isWritable: false
                   });
-                } catch {}
+                  restoredAt = ix.keys.length - 1;
+                  
+                  try {
+                    logger.warn('meteora.dlmm.token_program.event_authority_restored_at_end_insufficient_accounts', {
+                      cat: 'tx',
+                      ctx: {
+                        replacedAt: replacedPosition,
+                        restoredAt: restoredAt,
+                        account: eventAuthStr,
+                        accountCount: ix.keys.length,
+                        note: 'event_authority was replaced at token program position and restored at end (insufficient accounts for position 9)'
+                      }
+                    });
+                  } catch {}
+                }
               } catch (restoreErr) {
                 try {
                   logger.warn('meteora.dlmm.token_program.event_authority_restore_failed', {

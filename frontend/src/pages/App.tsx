@@ -1063,7 +1063,7 @@ export const App: React.FC = () => {
             return;
           }
 
-          // New: multidex multihop tester (6 hops: forward+reverse on each DEX)
+          // New: multidex multihop tester (3 hops: one hop on each DEX)
           if (action === 'test') {
             const subAction = (parts[2] || '').toLowerCase();
             if (subAction === 'multidex') {
@@ -1076,15 +1076,12 @@ export const App: React.FC = () => {
                 return;
               }
 
-              // 6-hop path: SOL -> USDC -> SOL -> USDC -> SOL -> USDC -> SOL
+              // 3-hop path: SOL -> USDC -> SOL -> USDC
               // Hop 1: Raydium CLMM: SOL -> USDC
               // Hop 2: Meteora: USDC -> SOL
               // Hop 3: Orca: SOL -> USDC
-              // Hop 4: Raydium CLMM: USDC -> SOL (reverse)
-              // Hop 5: Meteora: SOL -> USDC (reverse)
-              // Hop 6: Orca: USDC -> SOL (reverse)
-              const path = [SOL, USDC, SOL, USDC, SOL, USDC, SOL];
-              const dexes = ['raydium.clmm', 'meteora', 'orca.clmm', 'raydium.clmm', 'meteora', 'orca.clmm'];
+              const path = [SOL, USDC, SOL, USDC];
+              const dexes = ['raydium.clmm', 'meteora', 'orca.clmm'];
 
               // Pick pools for each hop with correct token pairs
               const hopPoolIds: string[] = [];
@@ -1092,9 +1089,6 @@ export const App: React.FC = () => {
                 pickPoolId('raydium', { prefer: 'clmm', inputMint: SOL, outputMint: USDC }), // Hop 1: SOL -> USDC
                 pickPoolId('meteora', { inputMint: USDC, outputMint: SOL }),                  // Hop 2: USDC -> SOL
                 pickPoolId('orca', { inputMint: SOL, outputMint: USDC }),                     // Hop 3: SOL -> USDC
-                pickPoolId('raydium', { prefer: 'clmm', inputMint: USDC, outputMint: SOL }),  // Hop 4: USDC -> SOL
-                pickPoolId('meteora', { inputMint: SOL, outputMint: USDC }),                  // Hop 5: SOL -> USDC
-                pickPoolId('orca', { inputMint: USDC, outputMint: SOL }),                     // Hop 6: USDC -> SOL
               ];
 
               try {
@@ -1123,14 +1117,14 @@ export const App: React.FC = () => {
               if (mode === 'exec') payload.forceDirect = true;
 
               try {
-                await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: running multidex test (6 hops: Ray CLMM -> Met -> Orca -> Ray CLMM -> Met -> Orca)...` }) });
+                await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: running multidex test (3 hops: Ray CLMM -> Met -> Orca)...` }) });
                 const resp = await fetch(`${apiBase}${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
                 const json = await resp.json();
                 if (!resp.ok) throw new Error(json?.error || 'request failed');
                 const poolStr = hopPoolIds.join(',');
                 const msg = mode === 'sim'
-                  ? `multidex test OK 6hops pools=[${poolStr}]`
-                  : `multidex test exec signature=${json?.signature || '(n/a)'} 6hops pools=[${poolStr}]`;
+                  ? `multidex test OK 3hops pools=[${poolStr}]`
+                  : `multidex test exec signature=${json?.signature || '(n/a)'} 3hops pools=[${poolStr}]`;
                 await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: ${msg}` }) });
               } catch (e: any) {
                 await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: arb test multidex failed ${String(e?.message || e)}` }) });
