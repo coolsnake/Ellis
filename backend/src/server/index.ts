@@ -623,15 +623,6 @@ server.listen(CONFIG.port, () => {
       .then(({ startTxConfirmationTask }) => { try { startTxConfirmationTask(io); } catch {} })
       .catch(() => {});
   } catch {}
-  // Start detect-driven graph push cadence when enabled
-  try {
-    if ((CONFIG as any)?.system?.detectDrivenGraphPush) {
-      const debounce = Math.max(0, Number((CONFIG as any)?.system?.graphRebuildDebounceMs || 0));
-      import('./realtime.js')
-        .then(({ startDetectDrivenGraphPush }) => { try { startDetectDrivenGraphPush(debounce); } catch {} })
-        .catch(() => {});
-    }
-  } catch {}
   // Start optional arb-rs stdout/stderr forwarding over WS
   try { setupRustLogForwarding(); } catch {}
   // Auto warmup Drift infra on startup so prefetch/GPA begins before any bot

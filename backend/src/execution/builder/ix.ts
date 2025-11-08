@@ -2154,13 +2154,14 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
             }
             
             // If event_authority was replaced and not found elsewhere, add it back
-            // Insert at position 9 (typical position for event_authority in Meteora DLMM)
-            // Note: This shifts account indices, but event_authority is required for the instruction to work
+            // Append to the end instead of inserting in the middle to avoid shifting account indices
+            // This preserves the SDK's account order and instruction data integrity
             if (!eventAuthFoundElsewhere) {
               try {
-                // Insert event_authority at position 9 (after program ID at 8, before user at 10)
-                const insertPosition = Math.min(9, ix.keys.length);
-                ix.keys.splice(insertPosition, 0, {
+                // Append event_authority to the end of the accounts array
+                // This avoids shifting account indices which would break instruction data
+                // The program will find event_authority even if it's at the end
+                ix.keys.push({
                   pubkey: eventAuthorityPda,
                   isSigner: false,
                   isWritable: false
@@ -2171,9 +2172,9 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                     cat: 'tx',
                     ctx: {
                       replacedAt: replacedPosition,
-                      restoredAt: insertPosition,
+                      restoredAt: ix.keys.length - 1,
                       account: eventAuthStr,
-                      note: 'event_authority was replaced at token program position and restored at correct position'
+                      note: 'event_authority was replaced at token program position and restored at end of accounts array to preserve account indices'
                     }
                   });
                 } catch {}

@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from 'express';
 import type { Server as SocketIOServer } from 'socket.io';
 import { logger } from '../../utils/logger.js';
 import { LogCode } from '../../utils/logging.js';
-import { emit, setArbStreamEnabled, markDetectorCompleteFromAck } from '../realtime.js';
+import { emit, setArbStreamEnabled } from '../realtime.js';
 import { writeJson, readJson } from '../../utils/fs.js';
 import { logTxTrace } from '../../utils/txTrace.js';
 import { CONFIG } from '../../utils/config.js';
@@ -146,12 +146,8 @@ export function createArbRouter(io: SocketIOServer): Router {
   });
 
   api.post('/arb/detect/complete', (req, res) => {
+    // No-op endpoint for backward compatibility - detection completion no longer needed
     try {
-      const body = req.body || {};
-      const version = Number(body?.graphVersion ?? body?.version ?? 0);
-      const completedMs = Number(body?.completedMs ?? body?.timestamp ?? Date.now());
-      markDetectorCompleteFromAck({ version, completedMs });
-      try { logger.debug('arb.detect.complete', { version, completed_ms: completedMs, cat: 'arb' }); } catch {}
       res.json({ ok: true });
     } catch (err: any) {
       res.status(400).json({ ok: false, error: String(err?.message || err) });

@@ -69,9 +69,6 @@ let lastRebaseMs = 0;
 let lastRebuildMs = 0;
 let lastRebuildHadChanges = false;
 const MIN_REBUILD_GAP_MS = Math.max(100, Number((CONFIG.system as any)?.graphMinRebuildGapMs || 500));
-// Track last detect-driven rebuild to prevent excessive rebuilds
-let lastDetectDrivenRebuildMs = 0;
-const DETECT_DRIVEN_REBUILD_COOLDOWN_MS = 5000; // Minimum 5 seconds between detect-driven rebuilds
 
 const env = (typeof globalThis !== 'undefined' && (globalThis as any)?.process?.env) ? (globalThis as any).process.env : {} as Record<string, string>;
 const GRAPH_WORKER_DISABLED = String(env.GRAPH_WORKER_DISABLED ?? env.ARB_GRAPH_WORKER_DISABLED ?? '').toLowerCase() === 'true';
@@ -161,17 +158,6 @@ async function processUpdateQueue(): Promise<void> {
 async function rebuildGraphNowInternal(io?: SocketIOServer, opts?: { pushToArb?: boolean; source?: string }): Promise<void> {
   try {
     const nowMs = Date.now();
-    
-    // ADD: Prevent excessive detect-driven rebuilds
-    const isDetectDriven = opts?.source === 'detect_driven' || opts?.source === 'graph_stream';
-    if (isDetectDriven) {
-      const gap = nowMs - lastDetectDrivenRebuildMs;
-      if (gap < DETECT_DRIVEN_REBUILD_COOLDOWN_MS) {
-        try { logger.debug('graph.rebuild.skip_detect_driven_cooldown', { gap_ms: gap, min_gap_ms: DETECT_DRIVEN_REBUILD_COOLDOWN_MS, cat: 'graph' }); } catch {}
-        return;
-      }
-      lastDetectDrivenRebuildMs = nowMs;
-    }
     
     // Guard: skip if last rebuild was recent and had no changes (unless force requested)
     if (!opts?.pushToArb && lastRebuildMs > 0 && lastRebuildHadChanges === false) {
@@ -1731,22 +1717,9 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
 export { diffSnapshots };
 
 export function startGraphStream(io: SocketIOServer): void {
-  // CHANGED: Disable periodic stream when incremental mode is enabled
-  const incrementalMode = !!((CONFIG.system as any)?.graphIncrementalMode);
-  const configuredInterval = Number((CONFIG.system as any)?.graphStreamIntervalMs || 0);
-  
-  // If incremental mode is enabled and interval is > 0, log warning and disable
-  if (incrementalMode && configuredInterval > 0) {
-    try { logger.warn('graph.stream.disabled', { reason: 'incremental_mode_enabled', configuredInterval, cat: 'graph' }); } catch {}
-    return;
-  }
-  
-  // If interval is 0 or negative, disable stream
-  if (configuredInterval <= 0) return;
-  
-  const period = Math.max(1000, configuredInterval);
-  
-  // ... rest of existing startGraphStream code ...
+  // Periodic graph stream removed - using event-driven updates only
+  // This function kept for backward compatibility but does nothing
+  try { logger.debug('graph.stream.disabled', { reason: 'event_driven_only', cat: 'graph' }); } catch {}
 }
 
 export async function findPath(fromMint: string, toMint: string): Promise<{ path: string[] }> {

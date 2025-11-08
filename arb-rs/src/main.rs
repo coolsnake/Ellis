@@ -265,7 +265,6 @@ async fn main() -> anyhow::Result<()> {
                 )
             };
             if enabled {
-                let mut detect_ack: Option<(u64, u64)> = None;
                 // Capture diff_to_detect latency if we have a recent graph push timestamp
                 {
                     let mut s = loop_state.write().await;
@@ -1687,46 +1686,11 @@ async fn main() -> anyhow::Result<()> {
                     if len > 200 { s.events.drain(0..(len-200)); }
                 }
                 
-                // CRITICAL: Always set detect_ack after detection cycle completes,
-                // regardless of whether opportunities changed. This ensures the backend
-                // knows the detector finished and can send the next batch of updates.
-                // This must be done unconditionally, not just when opportunities change.
+                // Update last_detection_ms metric for monitoring only
                 {
                     let mut s = loop_state.write().await;
                     s.metrics.last_detection_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
-                    let version = s.last_graph_version.load(Ordering::Acquire);
-                    detect_ack = Some((version, s.metrics.last_detection_ms));
-                    tracing::info!(version, completed_ms = s.metrics.last_detection_ms, "arb.detect.ack.set_after_detection");
                 }
-                
-                // Fallback check (should rarely be needed now, but kept as safety net)
-                tracing::info!(detect_ack_set = detect_ack.is_some(), "arb.detect.ack.check_before_send");
-                if detect_ack.is_none() {
-                    tracing::warn!("arb.detect.ack.fallback_setting - this should not happen!");
-                    let mut s = loop_state.write().await;
-                    s.metrics.last_detection_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
-                    let version = s.last_graph_version.load(Ordering::Acquire);
-                    detect_ack = Some((version, s.metrics.last_detection_ms));
-                    tracing::info!(version, completed_ms = s.metrics.last_detection_ms, "arb.detect.ack.set");
-                }
-                
-                if let Some((version, completed_ms)) = detect_ack {
-                    tracing::info!(version, completed_ms, "arb.detect.ack.sending");
-                    let send_start = Instant::now();
-                    match notify_backend_detect_complete(&api_base, version, completed_ms).await {
-                        Ok(_) => {
-                            let send_duration = send_start.elapsed().as_millis();
-                            tracing::info!(version, completed_ms, send_duration_ms = send_duration, "arb.detect.ack.sent");
-                        },
-                        Err(err) => {
-                            let send_duration = send_start.elapsed().as_millis();
-                            tracing::warn!(error = ?err, version, completed_ms, send_duration_ms = send_duration, "arb.detect.ack_failed");
-                        }
-                    }
-                } else {
-                    tracing::warn!("arb.detect.ack.none - detect_ack was not set");
-                }
-                tracing::info!("arb.detect.ack.complete");
             }
             
             // Sleep respects configured interval even when disabled to avoid hot loop
@@ -1799,25 +1763,10 @@ fn detector_ack_timeout() -> Duration {
     *TIMEOUT
 }
 
-async fn notify_backend_detect_complete(api_base: &str, version: u64, completed_ms: u64) -> Result<(), reqwest::Error> {
-    if !detector_ack_enabled() {
-        return Ok(());
-    }
-    let endpoint = format!("{}/arb/detect/complete", api_base.trim_end_matches('/'));
-    let client = reqwest::Client::new();
-    let payload = json!({
-        "graphVersion": version,
-        "completedMs": completed_ms,
-    });
-    let resp = client
-        .post(&endpoint)
-        .json(&payload)
-        .timeout(detector_ack_timeout())
-        .send()
-        .await?;
-    if !resp.status().is_success() {
-        tracing::debug!(status = resp.status().as_u16(), version, completed_ms, "arb.detect.ack_status");
-    }
+// Detection completion notification removed - version-based ACK only
+// This function kept for backward compatibility but is no longer called
+async fn _notify_backend_detect_complete(_api_base: &str, _version: u64, _completed_ms: u64) -> Result<(), reqwest::Error> {
+    // No-op: detection completion notification removed
     Ok(())
 }
 

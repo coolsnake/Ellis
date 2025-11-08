@@ -864,17 +864,12 @@ export function startRaydiumRefreshLoop(): void {
                         const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
                         if (hasDelta) wsDeltaStats.raydium.applied += 1; else wsDeltaStats.raydium.skipped += 1;
                         try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: d.amm.slice(0, 20), clmm: [] }, ts: Date.now() }); } catch {}
-                    // Prefer incremental graph apply when enabled; fallback to rebuild
+                    // Always use incremental graph updates
                     try {
-                      const inc = !!((CONFIG.system as any)?.graphIncrementalMode);
                       const gmod: any = await import('./graph.js');
                       const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
-                      if (inc && hasDelta) {
+                      if (hasDelta) {
                         await scheduleDexApply('raydium', prev as any);
-                      } else {
-                        const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
-                        const delta = d.clmm.length;
-                        if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
                       }
                     } catch {}
                       } else {
@@ -918,17 +913,12 @@ export function startRaydiumRefreshLoop(): void {
                         const d = diffNormalizedPools(prev, next);
                         raydiumCache.data = next; raydiumCache.ts = Date.now();
                         try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: d.amm.slice(0, 20), clmm: [] }, ts: Date.now() }); } catch {}
-                        // Prefer incremental graph apply when enabled; fallback to rebuild
+                        // Always use incremental graph updates
                         try {
-                          const inc = !!((CONFIG.system as any)?.graphIncrementalMode);
                           const gmod: any = await import('./graph.js');
                           const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
-                          if (inc && hasDelta) {
+                          if (hasDelta) {
                             await scheduleDexApply('raydium', prev as any);
-                          } else {
-                            const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
-                            const delta = d.amm.length;
-                            if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
                           }
                         } catch {}
                         updated = true;
@@ -1025,19 +1015,14 @@ export function startRaydiumRefreshLoop(): void {
                   const sample = { amm: [], clmm: d.clmm.slice(0, 20) };
                   emit('pool-updates', { source: 'orca', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now() });
                   try { logger.debug('pools.delta orca.ws', { id: pk58.slice(0,6)+'…', updatedClmm: d.clmm.length, cat: 'pools' }); } catch {}
-                  // Trigger incremental graph apply when enabled; else schedule rebuild (debounced)
+                  // Always use incremental graph updates
                   try {
-                    const inc = !!((CONFIG.system as any)?.graphIncrementalMode);
                     const gmod: any = await import('./graph.js');
                     const prevSnap = orcaCache.data ? prev : { amm: [], clmm: [] };
                     const hasDelta = (d.clmm.length || d.amm.length || d.addedClmm || d.removedClmm || d.addedAmm || d.removedAmm);
                     if (hasDelta) wsDeltaStats.orca.applied += 1; else wsDeltaStats.orca.skipped += 1;
-                    if (inc && hasDelta) {
+                    if (hasDelta) {
                       await scheduleDexApply('orca', prevSnap as any);
-                    } else {
-                      const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
-                      const delta = d.amm.length + d.clmm.length + d.addedAmm + d.addedClmm + d.removedAmm + d.removedClmm;
-                      if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
                     }
                   } catch {}
                   ok = true;
@@ -1207,14 +1192,9 @@ export function startRaydiumRefreshLoop(): void {
                       emit('pool-updates', { source: 'meteora', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now(), canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
                     } catch {}
                     try {
-                      const inc = !!((CONFIG.system as any)?.graphIncrementalMode);
                       const gmod: any = await import('./graph.js');
-                      if (inc && hasDelta) {
+                      if (hasDelta) {
                         await scheduleDexApply('meteora', prev as any);
-                      } else {
-                        const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
-                        const delta = d.clmm.length;
-                        if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
                       }
                     } catch {}
                     try { logger.debug('meteora.ws clmm.fields', { id: poolId, priceCandidate: price_a_per_b, binStep: tickSpacing, activeId, decimals: { a: decA, b: decB }, cat: 'pools' }); } catch {}
@@ -1382,7 +1362,7 @@ export function startRaydiumRefreshLoop(): void {
           orca: { timer: null, baseline: null },
           meteora: { timer: null, baseline: null },
         };
-        const WS_APPLY_DEBOUNCE_MS = Math.max(10, Number(((CONFIG.system as any)?.wsApplyDebounceMs) || 75));
+        const WS_APPLY_DEBOUNCE_MS = Math.max(10, Number(((CONFIG.system as any)?.wsApplyDebounceMs) || 100));
         const getCurrentCache = (dex: 'raydium'|'orca'|'meteora'): any => {
           if (dex === 'raydium') return raydiumCache.data || { amm: [], clmm: [] };
           if (dex === 'orca') return orcaCache.data || { amm: [], clmm: [] };
@@ -1391,7 +1371,11 @@ export function startRaydiumRefreshLoop(): void {
         async function scheduleDexApply(dex: 'raydium'|'orca'|'meteora', baseline: any): Promise<void> {
           try {
             if (!wsApply[dex].baseline) wsApply[dex].baseline = baseline;
-            if (wsApply[dex].timer) return;
+            // Reset timer on new updates - clear existing timer if present
+            if (wsApply[dex].timer) {
+              clearTimeout(wsApply[dex].timer);
+              wsApply[dex].timer = null;
+            }
             wsApply[dex].timer = setTimeout(async () => {
               const base = wsApply[dex].baseline; wsApply[dex].baseline = null; wsApply[dex].timer = null;
               if (!base) return;
@@ -1512,14 +1496,9 @@ export function startRaydiumRefreshLoop(): void {
             emit('pool-updates', { source: 'meteora', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now(), canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
           } catch {}
           try {
-            const inc = !!((CONFIG.system as any)?.graphIncrementalMode);
             const gmod: any = await import('./graph.js');
-            if (inc && hasDelta) {
+            if (hasDelta) {
               await scheduleDexApply('meteora', prev as any);
-            } else {
-              const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
-              const delta = d.amm.length + d.clmm.length + d.addedAmm + d.addedClmm + d.removedAmm + d.removedClmm;
-              if (thresh === 0 || delta >= thresh) gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
             }
           } catch {}
         };
@@ -2245,25 +2224,15 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
         const d = diffNormalizedPools(prev || { amm: [], clmm: [] }, norm);
         const sample = { amm: d.amm.slice(0, 100), clmm: d.clmm.slice(0, 100) };
         emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now(), canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
-        const inc = !!((CONFIG.system as any)?.graphIncrementalMode);
         const hasDelta = d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm;
         try {
           const gmod: any = await import('./graph.js');
-          if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
+          if (hasDelta && typeof gmod.applyPoolUpdates === 'function') {
             // Fire-and-forget: don't await to avoid blocking HTTP fetchers
             void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: true }).catch((err: any) => {
               try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'raydium', cat: 'graph' }); } catch {}
             });
-          } else if (!inc && hasDelta) {
-            // Non-incremental mode: schedule rebuild only (only one path)
-            const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
-            const delta = d.amm.length + d.clmm.length + d.addedAmm + d.addedClmm + d.removedAmm + d.removedClmm;
-            // Only schedule if threshold met (0 means always, but check delta > 0 to avoid empty rebuilds)
-            if ((thresh === 0 && delta > 0) || delta >= thresh) {
-              gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
-            }
           }
-          // ✅ No overlap - only one path triggers based on mode
         } catch {}
         try { logger.info('pools.delta raydium', { updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, cat: 'pools' }); } catch {}
       } catch {}
@@ -2368,25 +2337,15 @@ export async function getOrcaPoolsCached(force = false): Promise<PoolsPayload> {
         const sample = { amm: d.amm.slice(0, 100), clmm: d.clmm.slice(0, 100) };
         emit('pool-updates', { source: 'orca', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now(), canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
         try { logger.debug('pools.delta orca', { updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, cat: 'pools' }); } catch {}
-        const inc = !!((CONFIG.system as any)?.graphIncrementalMode);
         const hasDelta = d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm;
         try {
           const gmod: any = await import('./graph.js');
-          if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
+          if (hasDelta && typeof gmod.applyPoolUpdates === 'function') {
             // Fire-and-forget: don't await to avoid blocking HTTP fetchers
             void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, data, { pushToArb: true }).catch((err: any) => {
               try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'orca', cat: 'graph' }); } catch {}
             });
-          } else if (!inc && hasDelta) {
-            // Non-incremental mode: schedule rebuild only (only one path)
-            const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
-            const delta = d.amm.length + d.clmm.length + d.addedAmm + d.addedClmm + d.removedAmm + d.removedClmm;
-            // Only schedule if threshold met (0 means always, but check delta > 0 to avoid empty rebuilds)
-            if ((thresh === 0 && delta > 0) || delta >= thresh) {
-              gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
-            }
           }
-          // ✅ No overlap - only one path triggers based on mode
         } catch {}
       } catch {}
       // Graph rebuilds now orchestrated by refresh endpoint; avoid redundant triggers here
@@ -2516,23 +2475,14 @@ export async function getMeteoraPoolsCached(force = false): Promise<PoolsPayload
         const sample = { amm: [], clmm: d.clmm.slice(0, 100) };
         emit('pools-update', { source: 'meteora', amm: 0, clmm: norm.clmm.length, ts: Date.now() });
         emit('pool-updates', { source: 'meteora', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now() });
-        const inc = !!((CONFIG.system as any)?.graphIncrementalMode);
         const hasDelta = d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm;
         try {
           const gmod: any = await import('./graph.js');
-          if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
+          if (hasDelta && typeof gmod.applyPoolUpdates === 'function') {
             // Fire-and-forget: don't await to avoid blocking HTTP fetchers
             void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: true }).catch((err: any) => {
               try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'meteora', cat: 'graph' }); } catch {}
             });
-          } else if (!inc && hasDelta) {
-            // Non-incremental mode: schedule rebuild only (only one path)
-            const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
-            const delta = d.amm.length + d.clmm.length + d.addedAmm + d.addedClmm + d.removedAmm + d.removedClmm;
-            // Only schedule if threshold met (0 means always, but check delta > 0 to avoid empty rebuilds)
-            if ((thresh === 0 && delta > 0) || delta >= thresh) {
-              gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
-            }
           }
         } catch {}
       } catch {}

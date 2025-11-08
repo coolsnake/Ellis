@@ -5,7 +5,7 @@ import { logger } from '../utils/logger.js';
 export type PushDecision = {
   shouldPush: boolean;
   reason: string;
-  gateType?: 'disabled' | 'detect_mode' | 'incremental_mode';
+  gateType?: 'disabled';
 };
 
 /**
@@ -38,27 +38,7 @@ export function shouldPushGraphUpdate(opts?: {
     };
   }
 
-  // Gate 3: Mode-based gating
-  const detectMode = !!((CONFIG.system as any)?.detectDrivenGraphPush);
-  const incrementalMode = !!((CONFIG.system as any)?.graphIncrementalMode);
-
-  if (detectMode) {
-    return {
-      shouldPush: false,
-      reason: 'detect_driven_mode_active',
-      gateType: 'detect_mode',
-    };
-  }
-
-  if (incrementalMode && opts?.source !== 'incremental') {
-    // Incremental mode should only push from applyPoolUpdates
-    return {
-      shouldPush: false,
-      reason: 'incremental_mode_requires_incremental_path',
-      gateType: 'incremental_mode',
-    };
-  }
-
+  // All updates are allowed when stream is enabled
   return {
     shouldPush: true,
     reason: 'allowed',
