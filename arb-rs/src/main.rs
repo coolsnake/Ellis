@@ -1651,12 +1651,14 @@ async fn main() -> anyhow::Result<()> {
                         let top_bps = top.profit_bps;
                         let path = top.path.join("->");
                         // Compute graph age and latency metrics for observability
-                        let graph_age_ms = if s.last_graph_ts > 0 { now_ms().saturating_sub(s.last_graph_ts) } else { 0 };
+                        let last_ts = s.last_graph_ts.load(Ordering::Acquire);
+                        let graph_age_ms = if last_ts > 0 { now_ms().saturating_sub(last_ts) } else { 0 };
                         let dtd = s.metrics.diff_to_detect_ms;
                         s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.detect.done ms={} opps={} top_bps={} path={} graph_age_ms={} diff_to_detect_ms={}", det_ms, active, top_bps, path, graph_age_ms, dtd) });
                         tracing::info!(det_ms, opps = active, top_bps, path = %path, graph_age_ms, diff_to_detect_ms = dtd, "arb.detect.done");
                     } else {
-                        let graph_age_ms = if s.last_graph_ts > 0 { now_ms().saturating_sub(s.last_graph_ts) } else { 0 };
+                        let last_ts = s.last_graph_ts.load(Ordering::Acquire);
+                        let graph_age_ms = if last_ts > 0 { now_ms().saturating_sub(last_ts) } else { 0 };
                         let dtd = s.metrics.diff_to_detect_ms;
                         s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.detect.done ms={} opps=0 graph_age_ms={} diff_to_detect_ms={}", det_ms, graph_age_ms, dtd) });
                         tracing::info!(det_ms, opps = 0u64, graph_age_ms, diff_to_detect_ms = dtd, "arb.detect.done");
@@ -2615,8 +2617,8 @@ async fn metrics_prom(State(state): State<Arc<RwLock<AppState>>>) -> String {
         m.detection_hits_total,
         m.detection_misses_total,
         m.opportunities_detected_total,
-        s.last_graph_version,
-        s.last_graph_ts
+        s.last_graph_version.load(Ordering::Acquire),
+        s.last_graph_ts.load(Ordering::Acquire)
     )
 }
 
