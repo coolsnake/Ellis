@@ -210,6 +210,16 @@ const shutdownWs = async () => {
     disablePoolWebsocketRefreshes();
     try { (await import('./realtime.js')).emit('log', { level: 'info', message: 'pools:ws disabled on shutdown', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
   } catch {}
+  
+  // Cleanup Drift subscriptions
+  try {
+    const { DriftService } = await import('./drift/client.js');
+    const driftSvc = DriftService.getInstance();
+    if (driftSvc && typeof (driftSvc as any).cleanup === 'function') {
+      await (driftSvc as any).cleanup();
+    }
+  } catch {}
+  
   try { io.close(); } catch {}
   try { server.close(); } catch {}
   process.exit(0);
@@ -387,6 +397,16 @@ export async function shutdown() {
 
     // Stop timers and clear in-memory caches to force fresh pools/graph on next boot
     try { const pools = await import('./pools.js'); (pools as any).stopPoolRefreshLoop?.(); (pools as any).disablePoolWebsocketRefreshes?.(); (pools as any).clearAllPoolCaches?.(); } catch {}
+    
+    // Cleanup Drift subscriptions to prevent _updateSubscriptions errors on startup
+    try {
+      const { DriftService } = await import('./drift/client.js');
+      const driftSvc = DriftService.getInstance();
+      if (driftSvc && typeof (driftSvc as any).cleanup === 'function') {
+        await (driftSvc as any).cleanup();
+      }
+    } catch {}
+    
     // Reset in-memory graph snapshot so nothing is reused
     try { const graph = await import('./graph.js'); (graph as any).rebuildGraphNow?.(undefined); } catch {}
     const file = await writeSessionLogAndClear();
