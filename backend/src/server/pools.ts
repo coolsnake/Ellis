@@ -1061,6 +1061,7 @@ export function startRaydiumRefreshLoop(): void {
                 const poolId = pk58;
                 const program = ensureMeteoraProgram();
                 let state: any = null;
+                let isBinArray = false;
                 if (program && info?.data) {
                   try {
                     state = program.coder.accounts.decode('lbPair', info.data);
@@ -1076,6 +1077,7 @@ export function startRaydiumRefreshLoop(): void {
                     try {
                       const bin = program.coder.accounts.decode('binArray', info.data);
                       if (bin) {
+                        isBinArray = true;
                         logger.info('meteora.ws binarray.inspect', {
                           id: poolId,
                           gotState: true,
@@ -1086,7 +1088,8 @@ export function startRaydiumRefreshLoop(): void {
                     } catch {}
                   }
                 }
-                if (!state) {
+                // Only log warning if it's not a binArray (which is expected to not have lbPair state)
+                if (!state && !isBinArray) {
                   logger.warn('meteora.ws state.missing', { id: poolId, cat: 'pools' });
                 }
                 if (state) {

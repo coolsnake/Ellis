@@ -13,7 +13,7 @@ interface Opportunity {
   profit_bps: number;
   net_bps?: number;
   hop_count?: number;
-  pool_ids?: string[];
+  hop_pool_ids?: string[];
   reserves_min?: number;
   estimated_input_amount?: number;
   estimated_output_amount?: number;
@@ -282,6 +282,8 @@ export class ArbExecutor {
       const plan = await resolveDirectPlan(
         {
           path: opp.path,
+          hopPoolIds: opp.hop_pool_ids || [],
+          dexes: opp.dexes || [],
           sizeUsd: this.config.sizeUsd,
           slippageBps: this.config.slippageBps,
         } as any,

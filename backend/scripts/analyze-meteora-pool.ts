@@ -296,6 +296,122 @@ async function analyzeMeteoraPool() {
     console.log(`Error checking reserves: ${err.message}\n`);
   }
 
+  // Reverse-engineer the PDA derivation for actual vaults
+  console.log('─'.repeat(80));
+  console.log('🔧 Reverse-Engineering Vault PDA Derivation\n');
+
+  // Get mints from pool state
+  let tokenXMint: PublicKey | null = null;
+  let tokenYMint: PublicKey | null = null;
+  
+  try {
+    if (data.length >= 136) {
+      tokenXMint = new PublicKey(data.slice(72, 104));
+      tokenYMint = new PublicKey(data.slice(104, 136));
+      console.log(`Token X Mint: ${tokenXMint.toBase58()}`);
+      console.log(`Token Y Mint: ${tokenYMint.toBase58()}\n`);
+    }
+  } catch {}
+
+  // The actual vaults used in transactions (from our uncovered accounts)
+  const actualVaults = [
+    { addr: 'DwZz4S1Z1LBXomzmncQRVKCYhjCqSAMQ6RPKbUAadr7H', name: 'Vault 1' },
+    { addr: '4N22J4vW2juHocTntJNmXywSonYjkndCwahjZ2cYLDgb', name: 'Vault 2' }
+  ];
+
+  // Try common PDA seeds used in Solana programs
+  const possibleSeeds = [
+    'token_vault',
+    'vault',
+    'reserve',
+    'token_reserve',
+    'lb_pair_vault',
+    'liquidity_vault',
+    'pool_vault',
+  ];
+
+  for (const vault of actualVaults) {
+    console.log(`\n${vault.name}: ${vault.addr}`);
+    
+    const vaultPk = new PublicKey(vault.addr);
+    
+    // Check what mint this vault holds
+    const vaultInfo = await connection.getAccountInfo(vaultPk);
+    let vaultMint: PublicKey | null = null;
+    if (vaultInfo && vaultInfo.data.length >= 32) {
+      vaultMint = new PublicKey(vaultInfo.data.slice(0, 32));
+      console.log(`  Holds mint: ${vaultMint.toBase58()}`);
+      
+      // Determine if it's tokenX or tokenY
+      if (tokenXMint && vaultMint.equals(tokenXMint)) {
+        console.log('  → This is the Token X vault');
+      } else if (tokenYMint && vaultMint.equals(tokenYMint)) {
+        console.log('  → This is the Token Y vault');
+      }
+    }
+    
+    let found = false;
+    
+    // Try different seed combinations
+    if (vaultMint) {
+      for (const seed of possibleSeeds) {
+        try {
+          const [derived, bump] = PublicKey.findProgramAddressSync(
+            [Buffer.from(seed), poolPk.toBuffer(), vaultMint.toBuffer()],
+            programId
+          );
+          
+          if (derived.equals(vaultPk)) {
+            console.log(`  ✅ FOUND PDA DERIVATION!`);
+            console.log(`     Seeds: ["${seed}", pool, mint]`);
+            console.log(`     Bump: ${bump}`);
+            found = true;
+            break;
+          }
+        } catch {}
+      }
+      
+      // Try without text seed (just pool + mint)
+      if (!found) {
+        try {
+          const [derived, bump] = PublicKey.findProgramAddressSync(
+            [poolPk.toBuffer(), vaultMint.toBuffer()],
+            programId
+          );
+          
+          if (derived.equals(vaultPk)) {
+            console.log(`  ✅ FOUND PDA DERIVATION!`);
+            console.log(`     Seeds: [pool, mint]`);
+            console.log(`     Bump: ${bump}`);
+            found = true;
+          }
+        } catch {}
+      }
+      
+      // Try with mint first
+      if (!found) {
+        try {
+          const [derived, bump] = PublicKey.findProgramAddressSync(
+            [vaultMint.toBuffer(), poolPk.toBuffer()],
+            programId
+          );
+          
+          if (derived.equals(vaultPk)) {
+            console.log(`  ✅ FOUND PDA DERIVATION!`);
+            console.log(`     Seeds: [mint, pool]`);
+            console.log(`     Bump: ${bump}`);
+            found = true;
+          }
+        } catch {}
+      }
+    }
+    
+    if (!found) {
+      console.log(`  ❌ Could not determine PDA derivation`);
+      console.log(`     This vault might not be a PDA, or uses different seeds`);
+    }
+  }
+
   // Summary
   console.log('═'.repeat(80));
   console.log('📋 Summary\n');
