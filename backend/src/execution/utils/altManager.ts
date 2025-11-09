@@ -1345,8 +1345,6 @@ export class DexAltManager {
       const tokenMintB = asPk(parsed.tokenMintB);
       const oracle = asPk(parsed.oracle);
       const whirlpoolsConfig = asPk(parsed.whirlpoolsConfig);
-      const feeGrowthGlobalA = asPk(parsed.feeGrowthGlobalA);
-      const feeGrowthGlobalB = asPk(parsed.feeGrowthGlobalB);
       const rewardInfos = Array.isArray(parsed.rewardInfos) ? parsed.rewardInfos : [];
 
       if (tokenVaultA) accounts.push(tokenVaultA);
@@ -1870,6 +1868,9 @@ export class DexAltManager {
 
     const accountCount = result.value?.state?.addresses?.length || 0;
 
+    // CRITICAL: Add to our tracking map immediately
+    this.altAddresses.set(category, address);
+
     // Save to config
     try {
       this.altConfig = await loadAltConfig();
@@ -2343,9 +2344,17 @@ export class DexAltManager {
       connection.getAccountInfo(altPk)
     );
 
-    const isDeactivated = altAccount.value.state.deactivationSlot !== undefined;
+    // Check if deactivated: Solana uses BigInt(2^64 - 1) for active ALTs
+    // An ALT is deactivated only if the deactivationSlot is a valid slot number (not max u64)
+    const deactivationSlotBigInt = altAccount.value.state.deactivationSlot;
+    const MAX_U64 = BigInt('18446744073709551615'); // 2^64 - 1
+    
+    const isDeactivated = deactivationSlotBigInt !== undefined && 
+                         deactivationSlotBigInt !== MAX_U64 &&
+                         deactivationSlotBigInt < MAX_U64;
+    
     const deactivationSlot = isDeactivated 
-      ? Number(altAccount.value.state.deactivationSlot) 
+      ? Number(deactivationSlotBigInt) 
       : undefined;
 
     let canClose = false;
