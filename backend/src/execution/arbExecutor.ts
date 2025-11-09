@@ -278,10 +278,35 @@ export class ArbExecutor {
         netBps: opp.net_bps,
       });
 
+      // Debug: Log what we're receiving from arb-rs
+      logger.debug('arb.executor.opportunity_data', {
+        cat: 'arb',
+        path: opp.path,
+        pathLength: opp.path.length,
+        dexes: opp.dexes,
+        dexesLength: opp.dexes?.length,
+        hopPoolIds: opp.hop_pool_ids,
+        hopPoolIdsLength: opp.hop_pool_ids?.length,
+      });
+
+      // Handle 2-node cycles: arb-rs sends 2-node cycles but the resolver expects
+      // the full roundtrip path. For a 2-node cycle [A, B], we need to expand to [A, B, A]
+      let executionPath = opp.path;
+      if (opp.path.length === 2 && opp.hop_pool_ids && opp.hop_pool_ids.length === 2) {
+        // This is a 2-node cycle (e.g., USDC <-> SOL)
+        // Expand to full roundtrip: [USDC, SOL] -> [USDC, SOL, USDC]
+        executionPath = [...opp.path, opp.path[0]];
+        logger.debug('arb.executor.2node_cycle_expanded', {
+          cat: 'arb',
+          originalPath: opp.path,
+          expandedPath: executionPath,
+        });
+      }
+
       // Resolve execution plan
       const plan = await resolveDirectPlan(
         {
-          path: opp.path,
+          path: executionPath,
           hopPoolIds: opp.hop_pool_ids || [],
           dexes: opp.dexes || [],
           sizeUsd: this.config.sizeUsd,
