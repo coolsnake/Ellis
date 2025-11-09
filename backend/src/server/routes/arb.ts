@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from 'express';
 import type { Server as SocketIOServer } from 'socket.io';
 import { logger } from '../../utils/logger.js';
 import { LogCode } from '../../utils/logging.js';
-import { emit, setArbStreamEnabled } from '../realtime.js';
+import { emit, setArbStreamEnabled, clearPendingGraphUpdates } from '../realtime.js';
 import { writeJson, readJson } from '../../utils/fs.js';
 import { logTxTrace } from '../../utils/txTrace.js';
 import { CONFIG } from '../../utils/config.js';
@@ -395,6 +395,10 @@ export function createArbRouter(io: SocketIOServer): Router {
       if (wantEnable) {
         const shouldEnable = (r !== null && (j?.ok || includeGraph));
         if (shouldEnable) {
+          // Clear any pending diffs before enabling - snapshot is the source of truth
+          // This prevents stale diffs from before streaming was enabled from being sent
+          try { clearPendingGraphUpdates(); } catch {}
+          
           setArbStreamEnabled(true);
           try { 
             logger.info('arb.stream.enabled_after_start', { 

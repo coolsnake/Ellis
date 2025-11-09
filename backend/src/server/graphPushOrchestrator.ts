@@ -256,6 +256,16 @@ class GraphPushOrchestrator {
     return { ackMs: pushStats.ackMs.slice(), success: pushStats.success, failed: pushStats.failed };
   }
 
+  clearPending(): void {
+    this.pendingSnapshot = null;
+    this.pendingDiff = null;
+    this.queuedVersions.clear();
+    if (this.diffTimer) {
+      clearTimeout(this.diffTimer);
+      this.diffTimer = null;
+    }
+    try { logger.info('arb.push.cleared_pending', { cat: 'arb' }); } catch {}
+  }
 
   private scheduleFlush(force = false): void {
     if (!this.arbStreamEnabled) return;
@@ -576,6 +586,8 @@ export const notifyArbServiceRefresh = () => notifyArbServiceRefreshImpl();
 export const getGraphPushStats = () => graphPushOrchestrator.getStats();
 
 export const getGraphPushStatsRaw = () => graphPushOrchestrator.getStatsRaw();
+
+export const clearPendingGraphUpdates = () => graphPushOrchestrator.clearPending();
 
 export const hasDetectDrivenDirty = () => graphPushOrchestrator.hasPendingUpdates();
 

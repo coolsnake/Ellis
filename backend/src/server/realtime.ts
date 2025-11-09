@@ -9,6 +9,7 @@ import {
   getGraphPushStats as orchestratorGetGraphPushStats,
   getGraphPushStatsRaw as orchestratorGetGraphPushStatsRaw,
   flushPendingFromDetector as orchestratorFlushPendingFromDetector,
+  clearPendingGraphUpdates as orchestratorClearPendingGraphUpdates,
 } from './graphPushOrchestrator.js';
 
 export { pushArbGraphSnapshot, pushArbGraphDiff, notifyArbServiceRefresh } from './graphPushOrchestrator.js';
@@ -88,6 +89,8 @@ export function isArbStreamEnabled(): boolean { return orchestratorIsArbStreamEn
 export const getGraphPushStats = () => orchestratorGetGraphPushStats();
 
 export const getGraphPushStatsRaw = () => orchestratorGetGraphPushStatsRaw();
+
+export const clearPendingGraphUpdates = () => orchestratorClearPendingGraphUpdates();
 
 export const flushPendingFromDetector = () => orchestratorFlushPendingFromDetector();
 
