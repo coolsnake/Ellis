@@ -3,6 +3,7 @@ import { ROUTES } from '../utils/routes';
 import { useSocket } from '../app/contexts/socket';
 import OpportunityList from './OpportunityList';
 import { enqueueCritical, enqueueFrame, throttle } from '../utils/scheduler';
+import { ExecutorControl } from './ExecutorControl';
 
 type BottleneckEdge = { from: string; to: string; dex: string; rate: number; liquidity: number; fee_bps: number };
 type Opportunity = {
@@ -390,6 +391,9 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
           </div>
         </div>
       )}
+
+      {/* Executor Control */}
+      <ExecutorControl apiBase={apiBase} socket={effectiveSocket} />
 
       {items.length === 0 && summary?.near_miss && !firstLoad && (
         <div className="p-2 border rounded bg-yellow-900/20 text-xs mb-3">

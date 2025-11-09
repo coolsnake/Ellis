@@ -45,6 +45,11 @@ export const ROUTES = {
     jupiterRoundtrip: '/arb/jupiter/roundtrip',
     jupiterExecute: '/arb/jupiter/execute',
     jupiterAggregateExecute: '/arb/jupiter/aggregate-execute',
+    // Executor control endpoints
+    executorStart: '/arb/executor/start',
+    executorStop: '/arb/executor/stop',
+    executorStatus: '/arb/executor/status',
+    executorConfig: '/arb/executor/config',
     // Single-hop convenience endpoints
     simulateSendRaydiumAmm: '/arb/simulate-send/raydium-amm',
     executeRaydiumAmm: '/arb/execute/raydium-amm',
