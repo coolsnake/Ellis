@@ -120,7 +120,7 @@ async function analyzeMeteoraPool() {
     console.log(`Active ID: ${activeId}\n`);
   } catch {}
 
-  // Now try using SDK to derive accounts
+  // Now try using SDK to derive accounts (with better error handling)
   console.log('─'.repeat(80));
   console.log('🔧 SDK-Derived Accounts\n');
 
@@ -129,8 +129,14 @@ async function analyzeMeteoraPool() {
     const deriveReserve = DLMM?.deriveReserve;
     if (typeof deriveReserve === 'function') {
       try {
-        const rxResult = await deriveReserve(programId, poolPk, true);
-        const reserveX = rxResult?.publicKey || rxResult;
+        // Ensure programId is a proper PublicKey
+        const programIdPk = programId instanceof PublicKey ? programId : new PublicKey(programId);
+        const rxResult = await deriveReserve(programIdPk, poolPk, true);
+        let reserveX = rxResult?.publicKey || rxResult;
+        // Handle different return types
+        if (!(reserveX instanceof PublicKey)) {
+          reserveX = new PublicKey(reserveX);
+        }
         const rxAddr = reserveX.toBase58();
         console.log(`Reserve X (SDK): ${rxAddr}`);
         if (UNCOVERED_ACCOUNTS.includes(rxAddr)) {
@@ -142,13 +148,18 @@ async function analyzeMeteoraPool() {
           console.log('   ⚠️  Does NOT match any extracted account!');
         }
         console.log();
-      } catch (err) {
-        console.error('Failed to derive reserve X:', err);
+      } catch (err: any) {
+        console.log(`   ⚠️  SDK derive failed: ${err.message || err}`);
+        console.log('   (This is OK - we\'ll use pool state data directly)\n');
       }
 
       try {
-        const ryResult = await deriveReserve(programId, poolPk, false);
-        const reserveY = ryResult?.publicKey || ryResult;
+        const programIdPk = programId instanceof PublicKey ? programId : new PublicKey(programId);
+        const ryResult = await deriveReserve(programIdPk, poolPk, false);
+        let reserveY = ryResult?.publicKey || ryResult;
+        if (!(reserveY instanceof PublicKey)) {
+          reserveY = new PublicKey(reserveY);
+        }
         const ryAddr = reserveY.toBase58();
         console.log(`Reserve Y (SDK): ${ryAddr}`);
         if (UNCOVERED_ACCOUNTS.includes(ryAddr)) {
@@ -160,8 +171,9 @@ async function analyzeMeteoraPool() {
           console.log('   ⚠️  Does NOT match any extracted account!');
         }
         console.log();
-      } catch (err) {
-        console.error('Failed to derive reserve Y:', err);
+      } catch (err: any) {
+        console.log(`   ⚠️  SDK derive failed: ${err.message || err}`);
+        console.log('   (This is OK - we\'ll use pool state data directly)\n');
       }
     }
 
@@ -169,21 +181,27 @@ async function analyzeMeteoraPool() {
     const deriveOracle = DLMM?.deriveOracle;
     if (typeof deriveOracle === 'function') {
       try {
-        const oracleResult = await deriveOracle(programId, poolPk);
-        const oracle = oracleResult?.publicKey || oracleResult;
-        const oracleAddr = oracle.toBase58();
-        console.log(`Oracle (SDK): ${oracleAddr}`);
-        if (UNCOVERED_ACCOUNTS.includes(oracleAddr)) {
-          console.log('   🎯 UNCOVERED ACCOUNT!');
-        }
-        if (extractedAccounts.has(oracleAddr)) {
-          console.log(`   ✅ Matches extracted account: ${extractedAccounts.get(oracleAddr)?.name}`);
+        const programIdPk = programId instanceof PublicKey ? programId : new PublicKey(programId);
+        const oracleResult = await deriveOracle(programIdPk, poolPk);
+        let oracle = oracleResult?.publicKey || oracleResult;
+        if (oracle && typeof oracle === 'object' && 'toBase58' in oracle) {
+          const oracleAddr = oracle.toBase58();
+          console.log(`Oracle (SDK): ${oracleAddr}`);
+          if (UNCOVERED_ACCOUNTS.includes(oracleAddr)) {
+            console.log('   🎯 UNCOVERED ACCOUNT!');
+          }
+          if (extractedAccounts.has(oracleAddr)) {
+            console.log(`   ✅ Matches extracted account: ${extractedAccounts.get(oracleAddr)?.name}`);
+          } else {
+            console.log('   ⚠️  Does NOT match any extracted account!');
+          }
+          console.log();
         } else {
-          console.log('   ⚠️  Does NOT match any extracted account!');
+          console.log('   ⚠️  Oracle result is not a PublicKey');
         }
-        console.log();
-      } catch (err) {
-        console.error('Failed to derive oracle:', err);
+      } catch (err: any) {
+        console.log(`   ⚠️  SDK derive failed: ${err.message || err}`);
+        console.log('   (This is OK - we\'ll use pool state data directly)\n');
       }
     }
   }
@@ -216,6 +234,68 @@ async function analyzeMeteoraPool() {
     console.error('Failed to derive bitmap extension:', err);
   }
 
+  // Deep dive into reserve accounts
+  console.log('─'.repeat(80));
+  console.log('🔎 Reserve Accounts Deep Dive\n');
+
+  // Extract reserves from pool state
+  const reservesFromPoolState: string[] = [];
+  if (extractedAccounts.has('CxoLXAkNEexLHK5ukudpfTgmVRChnBjhrzv8CGcQ3FrQ')) {
+    reservesFromPoolState.push('CxoLXAkNEexLHK5ukudpfTgmVRChnBjhrzv8CGcQ3FrQ');
+  }
+  if (extractedAccounts.has('GgP2rf1Bcm2yZdGdMSVEHjo1uHWWyPvhEYfe4QpiLKao')) {
+    reservesFromPoolState.push('GgP2rf1Bcm2yZdGdMSVEHjo1uHWWyPvhEYfe4QpiLKao');
+  }
+  
+  // Get reserves from pool state at known offsets
+  try {
+    if (data.length >= 200) {
+      const reserveXBytes = data.slice(136, 168);
+      const reserveYBytes = data.slice(168, 200);
+      
+      const reserveX = new PublicKey(reserveXBytes);
+      const reserveY = new PublicKey(reserveYBytes);
+      
+      console.log('Reserves from pool state (offsets 136 & 168):');
+      console.log(`  Reserve X: ${reserveX.toBase58()}`);
+      console.log(`  Reserve Y: ${reserveY.toBase58()}\n`);
+      
+      // Check what these accounts actually are
+      for (const [label, addr] of [['Reserve X', reserveX], ['Reserve Y', reserveY]]) {
+        const info = await connection.getAccountInfo(addr);
+        if (info) {
+          console.log(`${label} account info:`);
+          console.log(`  Owner: ${info.owner.toBase58()}`);
+          console.log(`  Size: ${info.data.length} bytes`);
+          
+          if (info.owner.toBase58() === 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') {
+            console.log('  ✅ This is a Token Program account (token vault)');
+            if (info.data.length >= 32) {
+              const mint = new PublicKey(info.data.slice(0, 32));
+              console.log(`  Mint: ${mint.toBase58()}`);
+              
+              // Check if this is one of our uncovered accounts
+              if (UNCOVERED_ACCOUNTS.includes(addr.toBase58())) {
+                console.log('  🎯 THIS IS ONE OF THE UNCOVERED ACCOUNTS!');
+              }
+            }
+          } else if (info.owner.toBase58() === programId.toBase58()) {
+            console.log('  ⚠️  This is a Meteora program account (not a token vault)');
+            if (info.data.length >= 8) {
+              const discriminator = info.data.slice(0, 8);
+              console.log(`  Discriminator: ${discriminator.toString('hex')}`);
+            }
+          }
+          console.log();
+        } else {
+          console.log(`${label}: Does not exist\n`);
+        }
+      }
+    }
+  } catch (err: any) {
+    console.log(`Error checking reserves: ${err.message}\n`);
+  }
+
   // Summary
   console.log('═'.repeat(80));
   console.log('📋 Summary\n');
@@ -243,7 +323,21 @@ async function analyzeMeteoraPool() {
           if (accountInfo.data.length >= 8) {
             const discriminator = accountInfo.data.slice(0, 8);
             console.log(`     Discriminator: ${discriminator.toString('hex')}`);
+            
+            // Common discriminators
+            if (discriminator.toString('hex') === '506f7c7137ed1205') {
+              console.log('     💡 Likely: Event Authority or Bin Array Bitmap Extension');
+            } else if (discriminator.toString('hex') === '8bc283b38cb3e5f4') {
+              console.log('     💡 Likely: Oracle or Event Account');
+            }
           }
+        } else if (accountInfo.owner.toBase58() === 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') {
+          console.log('     ✅ Token Program account (Token Vault)');
+          if (accountInfo.data.length >= 32) {
+            const mint = new PublicKey(accountInfo.data.slice(0, 32));
+            console.log(`     Mint: ${mint.toBase58()}`);
+          }
+          console.log('     💡 This is a REAL token vault - should be in ALT!');
         } else {
           console.log('     ⚠️  Owned by different program');
         }
@@ -253,6 +347,12 @@ async function analyzeMeteoraPool() {
     }
   }
 
+  console.log('\n' + '═'.repeat(80));
+  console.log('🎯 CONCLUSION\n');
+  console.log('The reserves in the pool state data (offsets 136 & 168) should point to');
+  console.log('the actual token vaults. We need to verify if they match the uncovered accounts.');
+  console.log('\nIf the reserves in pool state ARE the uncovered accounts, then our ALT');
+  console.log('manager is working correctly and we just need to add the event/oracle accounts.');
   console.log('\n' + '═'.repeat(80));
   console.log('✅ Analysis complete!\n');
 }
