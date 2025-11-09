@@ -1,11 +1,11 @@
 import { logger } from '../utils/logger.js';
 import { emit } from '../server/realtime.js';
 import WebSocket from 'ws';
-import { buildArbTransaction } from './builder/tx.js';
 import { resolveDirectPlan } from './resolver/index.js';
 import { assembleAndSend, assembleAndSimulate } from './sender.js';
 import { loadExecConfig } from '../server/execConfigStore.js';
 import { addTxRecord } from '../server/txHistory.js';
+import type { ArbBuildResult } from '../workers/arbBuild.types.js';
 
 interface Opportunity {
   path: string[];
@@ -288,8 +288,9 @@ export class ArbExecutor {
         {} as any
       );
 
-      // Build transaction
-      const built = await buildArbTransaction(plan);
+      // Build transaction using the same method as arb routes
+      const { buildTransactionSummary } = await import('../server/arb.build.worker.compute.js');
+      const built: ArbBuildResult = await buildTransactionSummary(plan, undefined, undefined);
 
       // Load execution config
       const execCfg = await loadExecConfig();
@@ -297,9 +298,16 @@ export class ArbExecutor {
       // Execute based on mode
       const mode = execCfg.mode || 'simulate';
       
+      // Use ALT addresses from built transaction, fallback to exec config
+      const altAddresses = built.lookupTableAddresses || execCfg.lookupTableAddresses || [];
+      
       if (mode === 'simulate') {
         // Simulate only
-        const simResult = await assembleAndSimulate(plan, built, execCfg);
+        const simResult = await assembleAndSimulate(built.instructions, {
+          computeUnitLimit: execCfg.computeUnitLimit,
+          computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
+          lookupTableAddresses: altAddresses,
+        });
         logger.info('arb.executor.simulated', {
           cat: 'arb',
           path: pathStr,
@@ -308,7 +316,11 @@ export class ArbExecutor {
         this.state.successfulExecutions++;
       } else {
         // Execute on-chain
-        const sendResult = await assembleAndSend(plan, built, execCfg);
+        const sendResult = await assembleAndSend(built.instructions, {
+          computeUnitLimit: execCfg.computeUnitLimit,
+          computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
+          lookupTableAddresses: altAddresses,
+        });
         signature = sendResult?.signature || null;
 
         if (signature) {

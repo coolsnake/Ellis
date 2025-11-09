@@ -1856,7 +1856,7 @@ export function createArbRouter(io: SocketIOServer): Router {
       if (Object.keys(config).length === 0) {
         try {
           const configPath = 'backend/config/arbExecutor.json';
-          config = await readJson(configPath).catch(() => ({}));
+          config = await readJson(configPath, {});
         } catch {}
       }
       
