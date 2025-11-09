@@ -205,6 +205,31 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       // For multi-hop swaps (i > 0), this ensures we use the exact output from previous hop
       // Never preserve a pre-set amountInRaw for hops after the first - always propagate correctly
       const previousAmountInRaw = hops[i].amountInRaw;
+      
+      // CRITICAL: For multi-hop swaps, use the exact quotedOutputRaw from previous hop
+      // This ensures perfect amount propagation without any rounding errors
+      if (i > 0) {
+        const prevHop = hops[i - 1];
+        if (prevHop?.quotedOutputRaw && prevHop.quotedOutputRaw > 0n) {
+          // Use the exact quotedOutputRaw from previous hop, not curIn which might have rounding
+          curIn = prevHop.quotedOutputRaw;
+          try {
+            logger.info('tx.resolve.hop.amount.use_exact_quoted', {
+              cat: 'tx',
+              code: LogCode.TX_RESOLVE_OK,
+              ctx: {
+                hopIndex: i,
+                prevHopIndex: i - 1,
+                exactQuotedOutput: prevHop.quotedOutputRaw.toString(),
+                curInBefore: curIn.toString(),
+                inputMint: hops[i].inputMint,
+                outputMint: prevHop.outputMint,
+              }
+            });
+          } catch {}
+        }
+      }
+      
       hops[i].amountInRaw = curIn;
       
       // Log if we're overriding a pre-set amount (indicates potential issue upstream)
@@ -265,11 +290,42 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
         } catch {}
       }
 
+      // CRITICAL: Verify amountInRaw matches what we're quoting with
+      // For multi-hop swaps, ensure we're using the exact quotedOutputRaw from previous hop
+      if (i > 0) {
+        const prevHop = hops[i - 1];
+        if (prevHop?.quotedOutputRaw && prevHop.quotedOutputRaw > 0n) {
+          if (hops[i].amountInRaw !== prevHop.quotedOutputRaw) {
+            try {
+              logger.error('tx.resolve.hop.amount.mismatch', {
+                cat: 'tx',
+                code: LogCode.TX_BUILD_ERR,
+                ctx: {
+                  hopIndex: i,
+                  expectedAmount: prevHop.quotedOutputRaw.toString(),
+                  actualAmount: hops[i].amountInRaw.toString(),
+                  difference: (hops[i].amountInRaw > prevHop.quotedOutputRaw 
+                    ? (hops[i].amountInRaw - prevHop.quotedOutputRaw).toString() 
+                    : (prevHop.quotedOutputRaw - hops[i].amountInRaw).toString()),
+                  inputMint: hops[i].inputMint,
+                  outputMint: prevHop.outputMint,
+                }
+              });
+            } catch {}
+            // Force correct amount
+            hops[i].amountInRaw = prevHop.quotedOutputRaw;
+            curIn = prevHop.quotedOutputRaw;
+          }
+        }
+      }
+      
       // Quote per-hop; never let one failure abort subsequent hops
+      // CRITICAL: Use hops[i].amountInRaw (which should be the exact prevHop.quotedOutputRaw) for quoting
+      // This ensures the quote uses the exact amount that will be used in the swap
       let out = 0n;
       let quoteError: Error | null = null;
       try {
-        out = await quoteHopOut(hops[i], curIn);
+        out = await quoteHopOut(hops[i], hops[i].amountInRaw);
       } catch (e) {
         quoteError = e as Error;
         try {
@@ -279,7 +335,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
             ctx: { 
               hopIndex: i, 
               error: String((e as any)?.message || e),
-              amountInRaw: curIn.toString(),
+              amountInRaw: hops[i].amountInRaw.toString(),
               inputMint: hops[i].inputMint,
             }
           });

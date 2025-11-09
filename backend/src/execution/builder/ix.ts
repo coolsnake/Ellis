@@ -1625,6 +1625,8 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           outputMint: hop.outputMint,
           tokenXMint: acctBase.tokenXMint ? (acctBase.tokenXMint instanceof PublicKey ? acctBase.tokenXMint.toBase58() : String(acctBase.tokenXMint)) : 'missing',
           tokenYMint: acctBase.tokenYMint ? (acctBase.tokenYMint instanceof PublicKey ? acctBase.tokenYMint.toBase58() : String(acctBase.tokenYMint)) : 'missing',
+          tokenXProgram: acctBase.tokenXProgram ? (acctBase.tokenXProgram instanceof PublicKey ? acctBase.tokenXProgram.toBase58() : String(acctBase.tokenXProgram)) : 'missing',
+          tokenYProgram: acctBase.tokenYProgram ? (acctBase.tokenYProgram instanceof PublicKey ? acctBase.tokenYProgram.toBase58() : String(acctBase.tokenYProgram)) : 'missing',
           userTokenIn: acctBase.userTokenIn ? (acctBase.userTokenIn instanceof PublicKey ? acctBase.userTokenIn.toBase58() : String(acctBase.userTokenIn)) : 'missing',
           userTokenOut: acctBase.userTokenOut ? (acctBase.userTokenOut instanceof PublicKey ? acctBase.userTokenOut.toBase58() : String(acctBase.userTokenOut)) : 'missing'
         }
@@ -1928,6 +1930,84 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     }
     
     const ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
+    
+    // Log instruction accounts after SDK builds it to verify token programs
+    // Also fix token program positions if SDK placed wrong accounts there
+    if (ix && Array.isArray(ix.keys)) {
+      try {
+        const TOKEN_PROGRAM_ID_STR = TOKEN_PROGRAM_ID.toBase58();
+        const TOKEN_2022_PROGRAM_ID_STR = TOKEN_2022_PROGRAM_ID.toBase58();
+        const validTokenPrograms = new Set([TOKEN_PROGRAM_ID_STR, TOKEN_2022_PROGRAM_ID_STR]);
+        
+        const expectedTokenXProg = acctBase.tokenXProgram ? (acctBase.tokenXProgram instanceof PublicKey ? acctBase.tokenXProgram.toBase58() : String(acctBase.tokenXProgram)) : TOKEN_PROGRAM_ID_STR;
+        const expectedTokenYProg = acctBase.tokenYProgram ? (acctBase.tokenYProgram instanceof PublicKey ? acctBase.tokenYProgram.toBase58() : String(acctBase.tokenYProgram)) : TOKEN_PROGRAM_ID_STR;
+        
+        // Check and fix position 11 (tokenXProgram)
+        if (ix.keys.length > 11 && ix.keys[11]) {
+          const key11 = ix.keys[11];
+          const pk11 = (key11 as any).pubkey;
+          const pk11Str = pk11 instanceof PublicKey ? pk11.toBase58() : String(pk11);
+          
+          if (!validTokenPrograms.has(pk11Str) || pk11Str !== expectedTokenXProg) {
+            logger.warn('meteora.dlmm.fixing_token_program_position', {
+              cat: 'tx',
+              ctx: {
+                position: 11,
+                oldAccount: pk11Str,
+                newAccount: expectedTokenXProg,
+                poolId: hop.poolId
+              }
+            });
+            ix.keys[11] = {
+              pubkey: new PublicKey(expectedTokenXProg),
+              isSigner: false,
+              isWritable: false
+            };
+          }
+        }
+        
+        // Check and fix position 12 (tokenYProgram)
+        if (ix.keys.length > 12 && ix.keys[12]) {
+          const key12 = ix.keys[12];
+          const pk12 = (key12 as any).pubkey;
+          const pk12Str = pk12 instanceof PublicKey ? pk12.toBase58() : String(pk12);
+          
+          if (!validTokenPrograms.has(pk12Str) || pk12Str !== expectedTokenYProg) {
+            logger.warn('meteora.dlmm.fixing_token_program_position', {
+              cat: 'tx',
+              ctx: {
+                position: 12,
+                oldAccount: pk12Str,
+                newAccount: expectedTokenYProg,
+                poolId: hop.poolId
+              }
+            });
+            ix.keys[12] = {
+              pubkey: new PublicKey(expectedTokenYProg),
+              isSigner: false,
+              isWritable: false
+            };
+          }
+        }
+        
+        // Log final state
+        const accountAt11 = ix.keys[11] ? ((ix.keys[11] as any).pubkey instanceof PublicKey ? (ix.keys[11] as any).pubkey.toBase58() : String((ix.keys[11] as any).pubkey)) : 'missing';
+        const accountAt12 = ix.keys[12] ? ((ix.keys[12] as any).pubkey instanceof PublicKey ? (ix.keys[12] as any).pubkey.toBase58() : String((ix.keys[12] as any).pubkey)) : 'missing';
+        logger.info('meteora.dlmm.instruction.after_sdk', {
+          cat: 'tx',
+          ctx: {
+            poolId: hop.poolId,
+            accountCount: ix.keys.length,
+            accountAt11,
+            accountAt12,
+            expectedTokenXProgram: expectedTokenXProg,
+            expectedTokenYProgram: expectedTokenYProg,
+            position11Matches: accountAt11 === expectedTokenXProg,
+            position12Matches: accountAt12 === expectedTokenYProg
+          }
+        });
+      } catch {}
+    }
     
     // CRITICAL FIX: Remove duplicate accounts from instruction
     // The same account should not appear multiple times with different flags
