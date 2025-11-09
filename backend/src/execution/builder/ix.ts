@@ -2080,10 +2080,11 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               }
               
               // If event_authority was replaced and not found elsewhere, add it back
-              // Insert it after the token program positions (position 13)
+              // Append to end of accounts array (remaining accounts section) instead of inserting at fixed position
+              // This preserves SDK account order and allows ALTs to deduplicate properly
               if (!eventAuthFoundElsewhere) {
-                const insertPosition = Math.min(13, ix.keys.length);
-                ix.keys.splice(insertPosition, 0, {
+                const restoredAt = ix.keys.length;
+                ix.keys.push({
                   pubkey: eventAuthorityPda,
                   isSigner: false,
                   isWritable: false
@@ -2092,9 +2093,10 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                   cat: 'tx',
                   ctx: {
                     replacedAt: position,
-                    restoredAt: insertPosition,
+                    restoredAt,
                     account: eventAuthStr,
-                    poolId: hop.poolId
+                    poolId: hop.poolId,
+                    note: 'Added to remaining accounts section at end'
                   }
                 });
               }
@@ -2105,7 +2107,8 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         // Log final state
         const accountAt11 = ix.keys[11] ? ((ix.keys[11] as any).pubkey instanceof PublicKey ? (ix.keys[11] as any).pubkey.toBase58() : String((ix.keys[11] as any).pubkey)) : 'missing';
         const accountAt12 = ix.keys[12] ? ((ix.keys[12] as any).pubkey instanceof PublicKey ? (ix.keys[12] as any).pubkey.toBase58() : String((ix.keys[12] as any).pubkey)) : 'missing';
-        const accountAt13 = ix.keys[13] ? ((ix.keys[13] as any).pubkey instanceof PublicKey ? (ix.keys[13] as any).pubkey.toBase58() : String((ix.keys[13] as any).pubkey)) : 'missing';
+        const lastAccount = ix.keys.length > 0 && ix.keys[ix.keys.length - 1] ? ((ix.keys[ix.keys.length - 1] as any).pubkey instanceof PublicKey ? (ix.keys[ix.keys.length - 1] as any).pubkey.toBase58() : String((ix.keys[ix.keys.length - 1] as any).pubkey)) : 'missing';
+        const eventAuthAtEnd = eventAuthorityPda && lastAccount === eventAuthorityPda.toBase58();
         logger.info('meteora.dlmm.instruction.after_duplicate_removal', {
           cat: 'tx',
           ctx: {
@@ -2113,13 +2116,14 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
             accountCount: ix.keys.length,
             accountAt11,
             accountAt12,
-            accountAt13,
+            lastAccount,
             originalAccount12,
             expectedTokenXProgram: expectedTokenXProg,
             expectedTokenYProgram: expectedTokenYProg,
             position11Matches: accountAt11 === expectedTokenXProg,
             position12Matches: accountAt12 === expectedTokenYProg,
-            replacedAccountsCount: replacedAccounts.length
+            replacedAccountsCount: replacedAccounts.length,
+            eventAuthAtEnd
           }
         });
       } catch {}

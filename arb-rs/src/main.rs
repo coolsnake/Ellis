@@ -310,6 +310,12 @@ async fn main() -> anyhow::Result<()> {
                             if pending_ts_val != u64::MAX {
                                 ts_slot = Some(pending_ts_val);
                             }
+                            tracing::info!(
+                                pending_version = pending_version_val,
+                                pending_timestamp = pending_ts_val,
+                                has_updates,
+                                "arb.graph.version: queued"
+                            );
                             s.pending_graph_version.store(u64::MAX, Ordering::Release);
                             if pending_ts_val != u64::MAX {
                                 s.pending_graph_ts.store(u64::MAX, Ordering::Release);
@@ -437,8 +443,7 @@ async fn main() -> anyhow::Result<()> {
                             s.metrics.graph_edges = s.graph.g.edge_count() as u64;
                         }
                     } else {
-                        // No pending updates - detector was already aligned; still commit version if provided
-                        tracing::debug!("arb.graph.diff: none pending");
+                        tracing::info!("arb.graph.diff: none pending");
                     }
                 }
                 // Detect cycles (MVP -log weights)
@@ -1743,10 +1748,14 @@ async fn main() -> anyhow::Result<()> {
                     if v_commit > current_v {
                         tracing::info!(old_version = current_v, new_version = v_commit, "arb.graph.version: committed");
                         s.last_graph_version.store(v_commit, Ordering::Release);
+                    } else {
+                        tracing::info!(attempt = v_commit, current_version = current_v, "arb.graph.version: already_current");
                     }
                     if let Some(ts_commit) = ts_to_commit {
                         s.last_graph_ts.store(ts_commit, Ordering::Release);
                     }
+                } else {
+                    tracing::info!("arb.graph.version: nothing_to_commit");
                 }
                 
                 // Update last_detection_ms metric for monitoring only
