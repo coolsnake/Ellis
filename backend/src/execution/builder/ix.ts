@@ -2109,6 +2109,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         
         // Check if any replaced accounts are required PDAs that need to be preserved
         // Specifically check for event_authority PDA
+        // NOTE: This should rarely happen now since we preserve event_authority at position 12
         if (eventAuthorityPda && eventAuthorityPdaStr && replacedAccounts.length > 0) {
           for (const { position, originalAccount } of replacedAccounts) {
             // Log what account was replaced and whether it matches event_authority
@@ -2134,7 +2135,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                   if (key && typeof key === 'object' && (key as any).pubkey) {
                     const pk = (key as any).pubkey;
                     const pkStr = pk instanceof PublicKey ? pk.toBase58() : String(pk);
-                    if (pkStr === eventAuthStr) {
+                    if (pkStr === eventAuthorityPdaStr) {
                       eventAuthFoundElsewhere = true;
                       break;
                     }
@@ -2157,7 +2158,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                   ctx: {
                     replacedAt: position,
                     restoredAt,
-                    account: eventAuthStr,
+                    account: eventAuthorityPdaStr,
                     poolId: hop.poolId,
                     note: 'Added to remaining accounts section at end'
                   }
