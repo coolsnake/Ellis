@@ -53,7 +53,7 @@ const DEX_CONFIGS: DexConfig[] = [
   },
 ];
 
-export const AltManagementModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string }> = ({ onClose, apiBase }) => {
   const [altStatus, setAltStatus] = useState<AltStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -72,7 +72,7 @@ export const AltManagementModal: React.FC<{ onClose: () => void }> = ({ onClose 
 
   const loadAltStatus = async () => {
     try {
-      const resp = await fetch(ROUTES.arb.alts.status);
+      const resp = await fetch(`${apiBase}${ROUTES.arb.alts.status}`);
       if (!resp.ok) throw new Error('Failed to load ALT status');
       const data = await resp.json();
       setAltStatus(data);
@@ -90,7 +90,7 @@ export const AltManagementModal: React.FC<{ onClose: () => void }> = ({ onClose 
       const poolType = config.poolTypes[0].value;
       const maxPools = poolCounts[config.defaultCategory] || 30;
       const resp = await fetch(
-        `${ROUTES.arb.alts.poolsByDex}?dex=${config.key}&poolType=${poolType}&maxPools=${maxPools}`
+        `${apiBase}${ROUTES.arb.alts.poolsByDex}?dex=${config.key}&poolType=${poolType}&maxPools=${maxPools}`
       );
       if (!resp.ok) throw new Error('Failed to fetch pool preview');
       const data = await resp.json();
@@ -110,7 +110,7 @@ export const AltManagementModal: React.FC<{ onClose: () => void }> = ({ onClose 
     try {
       const poolType = config.poolTypes[0].value;
       const maxPools = poolCounts[config.defaultCategory] || 30;
-      const resp = await fetch(ROUTES.arb.alts.createDex, {
+      const resp = await fetch(`${apiBase}${ROUTES.arb.alts.createDex}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -144,7 +144,7 @@ export const AltManagementModal: React.FC<{ onClose: () => void }> = ({ onClose 
 
     try {
       const maxPools = poolCounts[config.defaultCategory] || 30;
-      const resp = await fetch(ROUTES.arb.alts.refreshDex, {
+      const resp = await fetch(`${apiBase}${ROUTES.arb.alts.refreshDex}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

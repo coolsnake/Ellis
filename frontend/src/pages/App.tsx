@@ -2460,7 +2460,7 @@ export const App: React.FC = () => {
         }} />
       )}
       {showAltModal && (
-        <AltManagementModal onClose={() => setShowAltModal(false)} />
+        <AltManagementModal onClose={() => setShowAltModal(false)} apiBase={apiBase} />
       )}
     </div>
   );
