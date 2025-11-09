@@ -73,10 +73,10 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
   const [success, setSuccess] = useState<string | null>(null);
   const [preview, setPreview] = useState<{ dex: string; pools: PoolPreview[] } | null>(null);
   const [poolCounts, setPoolCounts] = useState<{ [key: string]: number }>({
-    'raydium-amm': 30,
-    'raydium-clmm': 30,
-    'orca-whirlpool': 30,
-    'meteora-dlmm': 30,
+    'raydium-amm': 50,
+    'raydium-clmm': 50,
+    'orca-whirlpool': 50,
+    'meteora-dlmm': 50,
   });
   const [deletingCategory, setDeletingCategory] = useState<string | null>(null);
 
@@ -387,17 +387,17 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
                   <input
                     type="number"
                     min="1"
-                    max="50"
-                    value={poolCounts[config.defaultCategory] || 30}
+                    max="100"
+                    value={poolCounts[config.defaultCategory] || 50}
                     onChange={(e) =>
                       setPoolCounts({
                         ...poolCounts,
-                        [config.defaultCategory]: Math.min(50, Math.max(1, parseInt(e.target.value) || 30)),
+                        [config.defaultCategory]: Math.min(100, Math.max(1, parseInt(e.target.value) || 50)),
                       })
                     }
                     className="bg-gray-800 text-white px-2 py-1 rounded w-20 text-sm"
                   />
-                  <span className="text-xs text-gray-500">(1-50)</span>
+                  <span className="text-xs text-gray-500">(1-100)</span>
                 </div>
 
                 <div className="flex gap-2">

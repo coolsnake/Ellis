@@ -413,7 +413,7 @@ export function createArbRouter(io: SocketIOServer): Router {
       const body = req.body || {};
       const dex = String(body.dex || 'raydium') as 'raydium' | 'orca' | 'meteora' | 'meteora-balanced';
       const poolType = String(body.poolType || 'both') as 'amm' | 'clmm' | 'both';
-      const maxPools = Math.min(50, Math.max(1, Number(body.maxPools) || 30));
+      const maxPools = Math.min(100, Math.max(1, Number(body.maxPools) || 50));
       const category = String(body.category || `${dex}-${poolType === 'both' ? 'all' : poolType}`);
 
       if (!dex) {
@@ -450,7 +450,7 @@ export function createArbRouter(io: SocketIOServer): Router {
     try {
       const body = req.body || {};
       const category = String(body.category || '');
-      const maxPools = Math.min(50, Math.max(1, Number(body.maxPools) || 30));
+      const maxPools = Math.min(100, Math.max(1, Number(body.maxPools) || 50));
 
       if (!category) {
         return res.status(400).json({ error: 'category parameter is required' });

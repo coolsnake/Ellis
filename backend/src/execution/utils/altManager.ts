@@ -893,8 +893,31 @@ export class DexAltManager {
         return edge.pool_kind === poolType;
       });
 
+      // CRITICAL: Filter out reverse edges to avoid counting the same pool twice
+      // This allows us to maximize unique pools in the ALT
+      const forwardEdgesOnly = filtered.filter(edge => {
+        const poolId = String(edge.pool_id || '');
+        // Keep edges that don't have -rev suffix (includes -fwd and base pools)
+        // Skip edges marked as -rev to avoid duplicates
+        return !poolId.endsWith('-rev');
+      });
+
+      try {
+        logger.info('alt.manager.collect.dex.filtered', {
+          cat: 'tx',
+          ctx: {
+            dex,
+            poolType,
+            totalEdges: snapshot.edges.length,
+            filteredByDex: filtered.length,
+            afterRemovingRev: forwardEdgesOnly.length,
+            revEdgesRemoved: filtered.length - forwardEdgesOnly.length,
+          },
+        });
+      } catch {}
+
       // Sort by liquidity metrics (tvl_usd > liquidity_display > pool_liquidity_raw > liquidity)
-      filtered.sort((a, b) => {
+      forwardEdgesOnly.sort((a, b) => {
         const getLiquidity = (edge: any): number => {
           if (edge.tvl_usd && edge.tvl_usd > 0) return edge.tvl_usd;
           if (edge.liquidity_display && edge.liquidity_display > 0) return edge.liquidity_display;
@@ -905,14 +928,16 @@ export class DexAltManager {
         return getLiquidity(b) - getLiquidity(a);
       });
 
-      // Take top N pools (deduplicate by pool_id)
+      // Take top N pools (deduplicate by pool_id base to be extra safe)
       const poolIds = new Set<string>();
       const topPools: any[] = [];
       
-      for (const edge of filtered) {
+      for (const edge of forwardEdgesOnly) {
         if (!edge.pool_id) continue;
-        if (poolIds.has(edge.pool_id)) continue;
-        poolIds.add(edge.pool_id);
+        // Clean the pool ID to its base form (remove -fwd/-rev if present)
+        const cleanPoolId = String(edge.pool_id).replace(/-(rev|fwd)$/, '');
+        if (poolIds.has(cleanPoolId)) continue;
+        poolIds.add(cleanPoolId);
         topPools.push(edge);
         if (topPools.length >= maxPools) break;
       }
