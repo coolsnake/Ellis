@@ -1947,10 +1947,9 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           }
         }
         
-        // Filter remaining accounts, keeping first occurrence
-        // For multihop transactions, limit bin arrays more aggressively
-        const isMultiHop = setupIxs && setupIxs.length > 0; // Heuristic: if there are setup instructions, likely multihop
-        const maxRemainingAccounts = isMultiHop ? 5 : 12; // Limit to 5 bin arrays for multihop, 12 for single hop
+        // Limit bin arrays conservatively to prevent transaction size issues
+        // Most swaps only need 2-3 bin arrays; 5 provides safety margin
+        const maxRemainingAccounts = 5;
         
         const dedupedRemainingAccounts = [];
         for (let i = coreAccountCount; i < ix.keys.length; i++) {
@@ -1959,7 +1958,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           if (pk) {
             const pkStr = pk.toBase58();
             if (!seen.has(pkStr)) {
-              // Stop adding if we've reached the limit for multihop
+              // Stop adding if we've reached the limit
               if (dedupedRemainingAccounts.length >= maxRemainingAccounts) {
                 break;
               }
@@ -1969,7 +1968,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           }
         }
         
-        // Replace remaining accounts with deduplicated version
+        // Replace remaining accounts with deduplicated and limited version
         const originalCount = ix.keys.length;
         ix.keys = [...ix.keys.slice(0, coreAccountCount), ...dedupedRemainingAccounts];
         const removedCount = originalCount - ix.keys.length;
@@ -1984,7 +1983,6 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 newCount: ix.keys.length,
                 removedCount,
                 coreAccountCount,
-                isMultiHop,
                 maxRemainingAccounts
               }
             });
