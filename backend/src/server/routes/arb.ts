@@ -375,8 +375,48 @@ export function createArbRouter(io: SocketIOServer): Router {
       const r = await fetch(`${host}/arb/start`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) }).catch(() => null);
       const status = r?.status || 503;
       const j = r ? await r.json().catch(() => ({})) : { ok: false };
-      // Gate streaming based on requested enable flag only when arb-rs responded OK
-      try { if (r && r.ok) setArbStreamEnabled(wantEnable); } catch {}
+      
+      // Log the response for debugging
+      try { 
+        logger.info('arb.start.response', { 
+          status, 
+          ok: j?.ok, 
+          wantEnable, 
+          includeGraph,
+          snapshot_version: snap?.version,
+          snapshot_edges: snap?.edges?.length,
+          cat: 'arb' 
+        }); 
+      } catch {}
+      
+      // Enable streaming if we got any response (even if not ok) - the snapshot was sent
+      // This ensures updates continue to flow even if arb-rs had a transient issue
+      // Only enable if we actually sent a graph (includeGraph) or got an ok response
+      if (wantEnable) {
+        const shouldEnable = (r !== null && (j?.ok || includeGraph));
+        if (shouldEnable) {
+          setArbStreamEnabled(true);
+          try { 
+            logger.info('arb.stream.enabled_after_start', { 
+              arb_rs_ok: j?.ok,
+              includeGraph,
+              cat: 'arb' 
+            }); 
+          } catch {}
+        } else {
+          try { 
+            logger.warn('arb.stream.not_enabled', { 
+              reason: r === null ? 'no_response' : 'no_graph_and_not_ok',
+              arb_rs_ok: j?.ok,
+              includeGraph,
+              cat: 'arb' 
+            }); 
+          } catch {}
+        }
+      } else {
+        setArbStreamEnabled(false);
+      }
+      
       res.status(status).json(j);
     } catch (e: any) {
       res.status(503).json({ ok: false, error: String(e?.message || e) });

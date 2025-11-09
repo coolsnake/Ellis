@@ -1931,54 +1931,6 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     
     const ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
     
-    // CRITICAL FIX: Remove duplicate accounts from instruction
-    // The same account should not appear multiple times with different flags
-    if (ix && Array.isArray(ix.keys)) {
-      const seen = new Map<string, { index: number; key: any }>();
-      const duplicates: number[] = [];
-      
-      for (let i = 0; i < ix.keys.length; i++) {
-        const key = ix.keys[i];
-        try {
-          const pk = key?.pubkey instanceof PublicKey ? key.pubkey : (typeof key?.pubkey === 'string' ? new PublicKey(key.pubkey) : null);
-          if (pk) {
-            const pkStr = pk.toBase58();
-            if (seen.has(pkStr)) {
-              // Duplicate found - keep the one with isWritable=true if either has it
-              const existing = seen.get(pkStr)!;
-              const existingWritable = existing.key?.isWritable || false;
-              const currentWritable = key?.isWritable || false;
-              
-              if (currentWritable && !existingWritable) {
-                // Current is writable, existing is not - replace existing
-                duplicates.push(existing.index);
-                seen.set(pkStr, { index: i, key });
-              } else {
-                // Keep existing, mark current as duplicate
-                duplicates.push(i);
-              }
-            } else {
-              seen.set(pkStr, { index: i, key });
-            }
-          }
-        } catch {}
-      }
-      
-      // Remove duplicates in reverse order to maintain indices
-      if (duplicates.length > 0) {
-        duplicates.sort((a, b) => b - a);
-        for (const idx of duplicates) {
-          ix.keys.splice(idx, 1);
-        }
-        try { 
-          logger.warn('meteora.dlmm.duplicate_accounts.removed', { 
-            cat: 'tx', 
-            ctx: { removedCount: duplicates.length, newAccountCount: ix.keys.length } 
-          }); 
-        } catch {}
-      }
-    }
-    
     // Final safety check: validate and correct userTokenOut in the actual instruction
     if (ix && Array.isArray(ix.keys)) {
       try {
