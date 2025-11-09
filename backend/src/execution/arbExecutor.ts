@@ -289,17 +289,23 @@ export class ArbExecutor {
         hopPoolIdsLength: opp.hop_pool_ids?.length,
       });
 
-      // Handle 2-node cycles: arb-rs sends 2-node cycles but the resolver expects
-      // the full roundtrip path. For a 2-node cycle [A, B], we need to expand to [A, B, A]
+      // Handle cycles: arb-rs sends N-node cycles but the resolver expects
+      // the full roundtrip path. For an N-node cycle, we need N+1 tokens.
+      // arb-rs pattern: path.length === hop_pool_ids.length (N nodes, N edges)
+      // Resolver expects: path.length === hopPoolIds.length + 1 (N+1 tokens, N hops)
       let executionPath = opp.path;
-      if (opp.path.length === 2 && opp.hop_pool_ids && opp.hop_pool_ids.length === 2) {
-        // This is a 2-node cycle (e.g., USDC <-> SOL)
-        // Expand to full roundtrip: [USDC, SOL] -> [USDC, SOL, USDC]
+      if (opp.hop_pool_ids && opp.path.length === opp.hop_pool_ids.length && opp.path.length > 0) {
+        // This is a cycle - close it by appending the starting token
+        // Examples:
+        //   2-node: [USDC, SOL] -> [USDC, SOL, USDC]
+        //   3-node: [TOKEN, SOL, USDC] -> [TOKEN, SOL, USDC, TOKEN]
         executionPath = [...opp.path, opp.path[0]];
-        logger.debug('arb.executor.2node_cycle_expanded', {
+        logger.debug('arb.executor.cycle_closed', {
           cat: 'arb',
           originalPath: opp.path,
-          expandedPath: executionPath,
+          closedPath: executionPath,
+          nodes: opp.path.length,
+          edges: opp.hop_pool_ids.length,
         });
       }
 
