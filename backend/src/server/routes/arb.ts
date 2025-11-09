@@ -565,6 +565,21 @@ export function createArbRouter(io: SocketIOServer): Router {
     }
   });
 
+  // Force re-initialization of ALT manager (cleans up deleted ALTs)
+  api.post('/arb/alts/reinitialize', async (req, res) => {
+    try {
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      await dexAltManager.forceReinitialize();
+
+      res.json({
+        success: true,
+        message: 'ALT manager re-initialized successfully. Deleted ALTs have been cleaned up.',
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   // Trigger a one-off Raydium CLMM static precompute for a pool id
   api.post('/arb/clmm/refresh', async (req: Request, res: Response) => {
     try {

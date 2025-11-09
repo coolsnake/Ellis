@@ -67,6 +67,7 @@ export const ROUTES = {
       info: '/arb/alts/info',
       deactivate: '/arb/alts/deactivate',
       close: '/arb/alts/close',
+      reinitialize: '/arb/alts/reinitialize',
     },
   },
   exec: {

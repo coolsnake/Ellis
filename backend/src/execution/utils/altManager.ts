@@ -46,14 +46,80 @@ export class DexAltManager {
         // Load ALTs from altConfig file (same as initializeStartup does)
         try {
           this.altConfig = await loadAltConfig();
+          const connection = getConnection();
+          const invalidCategories: string[] = [];
+          
           if (this.altConfig.alts) {
             for (const [category, address] of Object.entries(this.altConfig.alts)) {
               if (!address) continue;
               try {
                 const pk = new PublicKey(address);
+                
+                // CRITICAL: Validate that the ALT actually exists on-chain
+                // This prevents stale references to deleted ALTs
+                const altAccount = await withRpcLimit(() => 
+                  connection.getAddressLookupTable(pk)
+                );
+                
+                if (!altAccount.value) {
+                  // ALT has been closed/deleted, mark for removal
+                  invalidCategories.push(category);
+                  try {
+                    logger.warn('alt.manager.init.alt.not.found', {
+                      cat: 'tx',
+                      ctx: {
+                        category,
+                        address,
+                        reason: 'ALT does not exist on-chain (possibly deleted)',
+                      },
+                    });
+                  } catch {}
+                  continue;
+                }
+                
+                // ALT is valid, add it to our map
                 this.altAddresses.set(category, pk);
               } catch (e) {
-                // Invalid address, skip it
+                // Invalid address or RPC error, skip it
+                invalidCategories.push(category);
+                try {
+                  logger.warn('alt.manager.init.alt.error', {
+                    cat: 'tx',
+                    ctx: {
+                      category,
+                      address,
+                      error: String((e as any)?.message || e),
+                    },
+                  });
+                } catch {}
+              }
+            }
+            
+            // Clean up invalid ALTs from config file
+            if (invalidCategories.length > 0) {
+              try {
+                for (const category of invalidCategories) {
+                  delete this.altConfig.alts[category as keyof typeof this.altConfig.alts];
+                }
+                await saveAltConfig(this.altConfig);
+                try {
+                  logger.info('alt.manager.init.cleanup', {
+                    cat: 'tx',
+                    ctx: {
+                      removedCategories: invalidCategories,
+                      message: 'Removed deleted/invalid ALTs from config',
+                    },
+                  });
+                } catch {}
+              } catch (saveError) {
+                try {
+                  logger.warn('alt.manager.init.cleanup.failed', {
+                    cat: 'tx',
+                    ctx: {
+                      error: String((saveError as any)?.message || saveError),
+                    },
+                  });
+                } catch {}
               }
             }
           }
@@ -2234,6 +2300,28 @@ export class DexAltManager {
       alts: results,
       errors,
     };
+  }
+
+  /**
+   * Force re-initialization of the ALT manager
+   * This is useful after deleting ALTs to clean up stale references
+   */
+  async forceReinitialize(): Promise<void> {
+    // Reset state
+    this.initialized = false;
+    this.initPromise = null;
+    this.altAddresses.clear();
+    this.altAccounts.clear();
+    
+    try {
+      logger.info('alt.manager.force.reinit', {
+        cat: 'tx',
+        ctx: { message: 'Forcing re-initialization to clean up stale ALT references' },
+      });
+    } catch {}
+    
+    // Re-initialize
+    await this.initialize();
   }
 
   /**

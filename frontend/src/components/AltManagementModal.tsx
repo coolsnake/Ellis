@@ -100,6 +100,36 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
     }
   };
 
+  const handleReinitialize = async () => {
+    if (!confirm('Re-initialize ALT manager? This will clean up any deleted ALTs and refresh the in-memory cache.')) {
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const resp = await fetch(`${apiBase}${ROUTES.arb.alts.reinitialize}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        throw new Error(errData.error || 'Failed to reinitialize ALT manager');
+      }
+      
+      const data = await resp.json();
+      setSuccess(data.message || 'ALT manager re-initialized successfully');
+      await loadAltStatus();
+    } catch (err: any) {
+      setError(err.message || 'Failed to reinitialize ALT manager');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const loadAltInfo = async (category: string) => {
     try {
       const resp = await fetch(`${apiBase}${ROUTES.arb.alts.info}/${category}`);
@@ -298,7 +328,16 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
 
         {/* Current ALT Status */}
         <div className="mb-6">
-          <h3 className="text-lg font-semibold text-white mb-2">Current ALTs</h3>
+          <div className="flex justify-between items-center mb-2">
+            <h3 className="text-lg font-semibold text-white">Current ALTs</h3>
+            <button
+              onClick={handleReinitialize}
+              disabled={loading}
+              className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 text-white px-3 py-1 rounded text-sm"
+            >
+              🔄 Refresh ALT Cache
+            </button>
+          </div>
           {altStatus ? (
             <div className="bg-gray-900 rounded p-4">
               <div className="grid grid-cols-2 gap-2 text-sm mb-4">

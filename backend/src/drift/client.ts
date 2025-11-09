@@ -331,6 +331,52 @@ export class DriftService {
     const connection = drift?.connection || this.connection;
     const program = drift?.program;
 
+    // Add this helper function at the start of getSharedInfra
+    const waitUntilWsReady = async (): Promise<void> => {
+      try {
+        const deadline = Date.now() + Math.max(500, Number(((CONFIG.system as any)?.wsReadyWaitMs) || 5000));
+        const started = Date.now();
+        const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+        const getRpcWebSocketReadyState = (): number | undefined => {
+          try {
+            const rpcWs: any = (connection as any)?._rpcWebSocket;
+            if (!rpcWs) return undefined;
+            const sockets = [
+              (rpcWs as any)?.underlyingSocket,
+              (rpcWs as any)?._ws,
+              (rpcWs as any)?.socket,
+              (rpcWs as any)?._socket,
+            ];
+            for (const sock of sockets) {
+              const ready = Number((sock as any)?.readyState);
+              if (Number.isFinite(ready) && ready >= 0) return ready;
+            }
+            if ((connection as any)?._rpcWebSocketConnected === true) return 1;
+          } catch {}
+          return undefined;
+        };
+        for (;;) {
+          const rs = getRpcWebSocketReadyState();
+          // 0 CONNECTING, 1 OPEN, 2 CLOSING, 3 CLOSED
+          if (rs === 0 || rs === 1) {
+            const waited = Date.now() - started;
+            if (waited > 200) {
+              try { logger.debug('drift.ws waitUntilWsReady waited', { ms: waited, cat: 'drift', location: 'getSharedInfra' }); } catch {}
+            }
+            return;
+          }
+          if (Date.now() >= deadline) {
+            try { logger.debug('drift.ws waitUntilWsReady timeout', { ms: Date.now() - started, cat: 'drift', location: 'getSharedInfra' }); } catch {}
+            return;
+          }
+          if (rs === undefined || rs === 3) {
+            try { await (connection as any)?._rpcWebSocket?.connect?.(); } catch {}
+          }
+          await sleep(150);
+        }
+      } catch {}
+    };
+
     // Start shared blockhash cache/warmer once for all bots
     try {
       const { startSharedBlockhash } = await import('../utils/blockhash.js');
@@ -345,6 +391,7 @@ export class DriftService {
 
     if (!this.sharedSlotSubscriber && sdk?.SlotSubscriber) {
       try {
+        await waitUntilWsReady(); // ADD THIS
         this.sharedSlotSubscriber = new (sdk as any).SlotSubscriber(connection);
         await this.sharedSlotSubscriber.subscribe();
         // Ensure slot timestamp listener is wired to the current emitter
@@ -354,6 +401,7 @@ export class DriftService {
     } else {
       // Best-effort resubscribe if previously unsubscribed
       try {
+        await waitUntilWsReady(); // ADD THIS
         await (this.sharedSlotSubscriber as any)?.subscribe?.();
         this.wireSlotTsListener(true);
         await sleep(spacing);
@@ -362,12 +410,17 @@ export class DriftService {
 
     if (!this.sharedEventSubscriber && sdk?.EventSubscriber) {
       try {
+        await waitUntilWsReady(); // ADD THIS
         this.sharedEventSubscriber = new (sdk as any).EventSubscriber(connection, program);
         await this.sharedEventSubscriber.subscribe();
         await sleep(spacing);
       } catch {}
     } else {
-      try { await (this.sharedEventSubscriber as any)?.subscribe?.(); await sleep(spacing); } catch {}
+      try { 
+        await waitUntilWsReady(); // ADD THIS
+        await (this.sharedEventSubscriber as any)?.subscribe?.(); 
+        await sleep(spacing); 
+      } catch {}
     }
 
     // Wire slot timestamp listener and start watchdog for stale resubscribe
@@ -456,9 +509,17 @@ export class DriftService {
           });
         } catch {}
       }
-      try { await this.sharedUserMap?.subscribe?.(); await sleep(spacing); } catch {}
+      try { 
+        await waitUntilWsReady(); // ADD THIS
+        await this.sharedUserMap?.subscribe?.(); 
+        await sleep(spacing); 
+      } catch {}
     } else {
-      try { await (this.sharedUserMap as any)?.subscribe?.(); await sleep(spacing); } catch {}
+      try { 
+        await waitUntilWsReady(); // ADD THIS
+        await (this.sharedUserMap as any)?.subscribe?.(); 
+        await sleep(spacing); 
+      } catch {}
     }
 
     // Optional OrderSubscriber for improved DLOB order coverage
@@ -475,10 +536,18 @@ export class DriftService {
           // fallback to legacy constructor
           this.sharedOrderSubscriber = new (sdk as any).OrderSubscriber(connection, program);
         }
-        try { await this.sharedOrderSubscriber?.subscribe?.(); await sleep(spacing); } catch {}
+        try { 
+          await waitUntilWsReady(); // ADD THIS
+          await this.sharedOrderSubscriber?.subscribe?.(); 
+          await sleep(spacing); 
+        } catch {}
       } catch {}
     } else {
-      try { await (this.sharedOrderSubscriber as any)?.subscribe?.(); await sleep(spacing); } catch {}
+      try { 
+        await waitUntilWsReady(); // ADD THIS
+        await (this.sharedOrderSubscriber as any)?.subscribe?.(); 
+        await sleep(spacing); 
+      } catch {}
     }
 
     const dlobSource = (opts?.preferOrderSubscriber && this.sharedOrderSubscriber) ? this.sharedOrderSubscriber : this.sharedUserMap;
@@ -491,6 +560,7 @@ export class DriftService {
           driftClient: drift,
           userMapSubscriptionConfig: (() => { try { return drift.userAccountSubscriptionConfig || undefined; } catch { return undefined; } })(),
         });
+        await waitUntilWsReady(); // ADD THIS
         await this.sharedDlobSubscriber.subscribe();
         await sleep(spacing);
       } catch {}
@@ -501,7 +571,11 @@ export class DriftService {
         if (dl && typeof dl.subscribe === 'function') {
           // If getDLOB exists and returns falsy, attempt to resubscribe
           const has = typeof dl.getDLOB === 'function' ? !!dl.getDLOB() : true;
-          if (!has) { await dl.subscribe(); await sleep(spacing); }
+          if (!has) { 
+            await waitUntilWsReady(); // ADD THIS
+            await dl.subscribe(); 
+            await sleep(spacing); 
+          }
         }
       } catch {}
     }
