@@ -1895,14 +1895,46 @@ export function createArbRouter(io: SocketIOServer): Router {
     }
   });
 
+  // Get executor configuration from file
+  api.get('/arb/executor/config', async (req: Request, res: Response) => {
+    try {
+      const { readJson } = await import('../../utils/fs.js');
+      const configPath = 'backend/config/arbExecutor.json';
+      const config = await readJson(configPath, {});
+      res.json(config);
+    } catch (e: any) {
+      logger.error('arb.executor.api.config_read_failed', { cat: 'arb', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   // Update executor configuration at runtime
   api.post('/arb/executor/config', async (req: Request, res: Response) => {
     try {
-      const { getArbExecutor } = await import('../../execution/arbExecutor.js');
-      const executor = getArbExecutor();
-      executor.updateConfig(req.body);
-      logger.info('arb.executor.api.config_updated', { cat: 'arb', updates: req.body });
-      res.json({ status: 'updated', ...executor.getStatus() });
+      const { readJson, writeJson } = await import('../../utils/fs.js');
+      const configPath = 'backend/config/arbExecutor.json';
+      
+      // Read current config from file
+      const currentConfig = await readJson(configPath, {});
+      
+      // Merge with updates
+      const updatedConfig = { ...currentConfig, ...req.body };
+      
+      // Write back to file
+      await writeJson(configPath, updatedConfig);
+      
+      // If executor is running, also update its runtime config
+      try {
+        const { getArbExecutor } = await import('../../execution/arbExecutor.js');
+        const executor = getArbExecutor();
+        executor.updateConfig(req.body);
+        logger.info('arb.executor.api.config_updated', { cat: 'arb', updates: req.body, runtime: true });
+      } catch {
+        // Executor not running yet, that's OK - file is updated
+        logger.info('arb.executor.api.config_updated', { cat: 'arb', updates: req.body, runtime: false });
+      }
+      
+      res.json({ status: 'updated', config: updatedConfig });
     } catch (e: any) {
       logger.error('arb.executor.api.config_update_failed', { cat: 'arb', error: String(e?.message || e) });
       res.status(500).json({ error: String(e?.message || e) });
