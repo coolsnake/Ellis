@@ -726,6 +726,10 @@ export class DriftLiquidator {
       // Ensure subscription before reads
       try {
         if (!this.subscribedUsers.has(String(pkStr)) && typeof (user as any)?.subscribe === 'function') {
+          const { waitUntilWsReady } = await import('./wsHelper.js');
+          const svc = DriftService.getInstance();
+          const conn = (svc as any)?.connection;
+          if (conn) await waitUntilWsReady(conn, 'liquidator.enqueueIfUnhealthy');
           await (user as any).subscribe();
           this.subscribedUsers.add(String(pkStr));
         }
@@ -1988,6 +1992,10 @@ export class DriftLiquidator {
           // Subscribe only during probe
           try {
             if (!this.subscribedUsers.has(key) && typeof (user as any)?.subscribe === 'function') {
+              const { waitUntilWsReady } = await import('./wsHelper.js');
+              const svc = DriftService.getInstance();
+              const conn = (svc as any)?.connection;
+              if (conn) await waitUntilWsReady(conn, 'liquidator.probeQueue');
               await (user as any).subscribe();
               this.subscribedUsers.add(key);
             }

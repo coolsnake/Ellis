@@ -509,7 +509,14 @@ export function createDriftRouter(io: SocketIOServer): Router {
         const userPk = await client?.getUserAccountPublicKey?.(Number(subId));
         if (userPk) {
           user = new User({ driftClient: client, userAccountPublicKey: userPk, accountSubscription: { type: 'websocket' } });
-          try { if (typeof user.subscribe === 'function') { await user.subscribe(); } } catch {}
+          try { 
+            if (typeof user.subscribe === 'function') { 
+              const { waitUntilWsReady } = await import('../../drift/wsHelper.js');
+              const conn = (svc as any)?.connection;
+              if (conn) await waitUntilWsReady(conn, 'routes.drift.balances');
+              await user.subscribe(); 
+            } 
+          } catch {}
         }
       } catch {}
       // Fallback to active user if targeted subaccount is unavailable

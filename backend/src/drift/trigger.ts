@@ -420,6 +420,9 @@ export class TriggerBot implements Bot {
 			updateFrequency: this.defaultIntervalMs - 500,
 			driftClient: this.driftClient,
 		});
+		const { waitUntilWsReady } = await import('./wsHelper.js');
+		const conn = (this.driftClient as any)?.connection;
+		if (conn) await waitUntilWsReady(conn, 'trigger.init.dlob');
 		await this.dlobSubscriber.subscribe();
 
 		this.lookupTableAccounts =
@@ -430,6 +433,9 @@ export class TriggerBot implements Bot {
 			this.pythLazerClient &&
 			this.pythPullClient
 		) {
+			const { waitUntilWsReady } = await import('./wsHelper.js');
+			const conn = (this.driftClient as any)?.connection;
+			if (conn) await waitUntilWsReady(conn, 'trigger.init.pythLazer');
 			await this.pythLazerClient.subscribe();
 			await this.pythPullClient.subscribePriceFeedUpdates(
 				this.pythPullFeedIdsToCrank.map((x) => x.feedId),

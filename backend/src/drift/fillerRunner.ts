@@ -265,6 +265,8 @@ export class DriftFillerRunner {
       if (BlockhashSubscriber) {
         try {
           this.blockhashSubscriber = new BlockhashSubscriber(this.connection);
+          const { waitUntilWsReady } = await import('./wsHelper.js');
+          if (this.connection) await waitUntilWsReady(this.connection, 'fillerRunner.init.blockhash');
           await this.blockhashSubscriber.subscribe();
         } catch {}
       }
@@ -273,6 +275,8 @@ export class DriftFillerRunner {
           connection: this.connection,
           fallbackPriorityFeeMicroLamports: Math.max(1000, Number(((CONFIG as any)?.fees?.priorityFee) || 1000)),
         });
+        const { waitUntilWsReady } = await import('./wsHelper.js');
+        if (this.connection) await waitUntilWsReady(this.connection, 'fillerRunner.init.priorityFee');
         await this.priorityFeeSubscriber.subscribe();
         try {
           this.priorityFeeSubscriber.updateAddresses([

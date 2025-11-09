@@ -459,19 +459,19 @@ export class DriftService {
             const stage = Math.min(3, Math.max(0, this._staleCount));
             try {
               if (stage >= 0) {
-                try { await (this.sharedSlotSubscriber as any)?.subscribe?.(); this.wireSlotTsListener(true); } catch {}
+                try { await waitUntilWsReady(); await (this.sharedSlotSubscriber as any)?.subscribe?.(); this.wireSlotTsListener(true); } catch {}
               }
               if (stage >= 1) {
-                try { await (this.sharedEventSubscriber as any)?.subscribe?.(); } catch {}
+                try { await waitUntilWsReady(); await (this.sharedEventSubscriber as any)?.subscribe?.(); } catch {}
               }
               if (stage >= 2) {
-                try { await (this.sharedUserMap as any)?.subscribe?.(); } catch {}
+                try { await waitUntilWsReady(); await (this.sharedUserMap as any)?.subscribe?.(); } catch {}
               }
               if (stage >= 3) {
                 try {
                   const dl: any = this.sharedDlobSubscriber;
                   const has = dl && typeof dl.getDLOB === 'function' ? !!dl.getDLOB() : true;
-                  if (dl && typeof dl.subscribe === 'function' && !has) { await dl.subscribe(); }
+                  if (dl && typeof dl.subscribe === 'function' && !has) { await waitUntilWsReady(); await dl.subscribe(); }
                 } catch {}
               }
             } finally {
@@ -1516,7 +1516,13 @@ export class DriftService {
           try {
             const { User } = await loadSdk();
             user = new User({ driftClient: client, userAccountPublicKey: pk, accountSubscription: { type: 'websocket' } });
-            try { if (typeof (user as any).subscribe === 'function') { await (user as any).subscribe(); } } catch {}
+            try { 
+              if (typeof (user as any).subscribe === 'function') { 
+                const { waitUntilWsReady } = await import('./wsHelper.js');
+                if (this.connection) await waitUntilWsReady(this.connection, 'client.getSubaccounts');
+                await (user as any).subscribe(); 
+              } 
+            } catch {}
           } catch {}
           const totalCollateral = toUi(user?.getTotalCollateral?.());
           const maint = toUi(user?.getMaintenanceMarginRequirement?.());

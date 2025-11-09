@@ -186,6 +186,8 @@ export class DriftTriggerRunner {
           connection: this.connection,
           fallbackPriorityFeeMicroLamports: Math.max(1000, Number(((CONFIG as any)?.fees?.priorityFee) || 1000)),
         });
+        const { waitUntilWsReady } = await import('./wsHelper.js');
+        if (this.connection) await waitUntilWsReady(this.connection, 'triggerRunner.init.priorityFee');
         await this.priorityFeeSubscriber.subscribe();
         try { this.priorityFeeSubscriber.updateAddresses([ this.client?.program?.programId ].filter(Boolean)); } catch {}
       }
