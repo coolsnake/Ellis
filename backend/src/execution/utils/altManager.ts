@@ -1402,7 +1402,14 @@ export class DexAltManager {
     
     try {
       // Import Meteora SDK
-      const { DLMM } = await import('@meteora-ag/dlmm').catch(() => ({ DLMM: null }));
+      let DLMM: any = null;
+      try {
+        const meteoraModule = await import('@meteora-ag/dlmm');
+        DLMM = (meteoraModule as any).DLMM || meteoraModule;
+      } catch {
+        DLMM = null;
+      }
+      
       if (!DLMM || !poolInfo?.data) return accounts;
 
       // Helper to convert to PublicKey
@@ -1422,7 +1429,7 @@ export class DexAltManager {
       const programId = poolInfo.owner;
 
       // Derive reserve accounts
-      const deriveReserve = (DLMM as any)?.deriveReserve;
+      const deriveReserve = DLMM?.deriveReserve;
       let reserveX: PublicKey | null = null;
       let reserveY: PublicKey | null = null;
       
@@ -1439,7 +1446,7 @@ export class DexAltManager {
       }
 
       // Derive oracle
-      const deriveOracle = (DLMM as any)?.deriveOracle;
+      const deriveOracle = DLMM?.deriveOracle;
       let oracle: PublicKey | null = null;
       if (typeof deriveOracle === 'function') {
         try {
