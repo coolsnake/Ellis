@@ -1643,9 +1643,75 @@ export class DexAltManager {
         }
       } catch {}
 
-      // Note: Bin arrays are calculated dynamically based on active bin
-      // We could pre-calculate a few bin arrays around the active bin, but they change over time
-      // For now, just add the static accounts
+      // Add bin arrays around the active bin
+      // Bin arrays are PDAs that follow a deterministic pattern
+      if (activeId !== null && binStep !== null) {
+        try {
+          const binIdToBinArrayIndex = DLMM?.binIdToBinArrayIndex;
+          const deriveBinArray = DLMM?.deriveBinArray;
+          
+          if (binIdToBinArrayIndex && deriveBinArray) {
+            // Import BN for calculations
+            const BN = (await import('bn.js')).default;
+            
+            // Calculate the bin array index for the active bin
+            const activeBinArrayIndex = binIdToBinArrayIndex(new BN(activeId));
+            const index = activeBinArrayIndex instanceof BN ? activeBinArrayIndex.toNumber() : Number(activeBinArrayIndex);
+            
+            // Add bin arrays in a range around the active bin (e.g., -10 to +10)
+            // This covers most swap scenarios without adding too many accounts
+            const binArrayRange = 10;
+            const binArraysAdded: string[] = [];
+            
+            for (let i = index - binArrayRange; i <= index + binArrayRange; i++) {
+              try {
+                const binArrayPda = deriveBinArray(poolPk, new BN(i), programId);
+                let binArrayPk: PublicKey;
+                
+                if (binArrayPda instanceof PublicKey) {
+                  binArrayPk = binArrayPda;
+                } else if (Array.isArray(binArrayPda)) {
+                  binArrayPk = binArrayPda[0];
+                } else {
+                  binArrayPk = new PublicKey(binArrayPda);
+                }
+                
+                // Check if the bin array exists on-chain
+                const connection = getConnection();
+                const binArrayInfo = await withRpcLimit(() => 
+                  connection.getAccountInfo(binArrayPk), 0.5
+                ).catch(() => null);
+                
+                if (binArrayInfo) {
+                  accounts.push(binArrayPk);
+                  binArraysAdded.push(`${i}:${binArrayPk.toBase58().substring(0, 8)}`);
+                }
+              } catch {}
+            }
+            
+            try {
+              logger.debug('alt.manager.meteora.dlmm.bin_arrays.added', {
+                cat: 'tx',
+                ctx: {
+                  pool: poolPk.toBase58(),
+                  activeId,
+                  activeBinArrayIndex: index,
+                  binArraysAdded: binArraysAdded.length,
+                  range: `${index - binArrayRange} to ${index + binArrayRange}`,
+                  sample: binArraysAdded.slice(0, 5),
+                },
+              });
+            } catch {}
+          }
+        } catch (error) {
+          try {
+            logger.debug('alt.manager.meteora.dlmm.bin_arrays.failed', {
+              cat: 'tx',
+              ctx: { pool: poolPk.toBase58(), error: String((error as any)?.message || error) },
+            });
+          } catch {}
+        }
+      }
 
       try {
         logger.debug('alt.manager.meteora.dlmm.parsed', {
