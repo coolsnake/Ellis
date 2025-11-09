@@ -9,7 +9,8 @@ import type { ArbBuildResult } from '../workers/arbBuild.types.js';
 
 interface Opportunity {
   path: string[];
-  dexes: string[];
+  dexes: string[];           // Deduplicated set of DEX families
+  hop_dexes?: string[];      // Per-hop DEX array (matches hop_pool_ids length)
   profit_bps: number;
   net_bps?: number;
   hop_count?: number;
@@ -285,6 +286,8 @@ export class ArbExecutor {
         pathLength: opp.path.length,
         dexes: opp.dexes,
         dexesLength: opp.dexes?.length,
+        hopDexes: opp.hop_dexes,
+        hopDexesLength: opp.hop_dexes?.length,
         hopPoolIds: opp.hop_pool_ids,
         hopPoolIdsLength: opp.hop_pool_ids?.length,
       });
@@ -309,12 +312,17 @@ export class ArbExecutor {
         });
       }
 
+      // CRITICAL: Use hop_dexes (per-hop array), not dexes (deduplicated set)
+      // dexes = ["Meteora"] (unique set)
+      // hop_dexes = ["Meteora", "Meteora"] (per-hop, matches hop_pool_ids length)
+      const executionDexes = opp.hop_dexes || opp.dexes || [];
+
       // Resolve execution plan
       const plan = await resolveDirectPlan(
         {
           path: executionPath,
           hopPoolIds: opp.hop_pool_ids || [],
-          dexes: opp.dexes || [],
+          dexes: executionDexes,
           sizeUsd: this.config.sizeUsd,
           slippageBps: this.config.slippageBps,
         } as any,
