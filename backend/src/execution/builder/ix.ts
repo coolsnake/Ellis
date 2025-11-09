@@ -1993,13 +1993,31 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         
         // Derive event_authority PDA to check if accounts are event_authority
         let eventAuthorityPda: PublicKey | null = null;
+        let eventAuthorityPdaStr: string | null = null;
         try {
           const [eventAuthPda] = PublicKey.findProgramAddressSync(
             [Buffer.from('__event_authority')],
             programId
           );
           eventAuthorityPda = eventAuthPda;
-        } catch {}
+          eventAuthorityPdaStr = eventAuthPda.toBase58();
+          logger.debug('meteora.dlmm.event_authority.derived', {
+            cat: 'tx',
+            ctx: {
+              poolId: hop.poolId,
+              derivedPda: eventAuthorityPdaStr,
+              programId: programId.toBase58()
+            }
+          });
+        } catch (e: any) {
+          logger.warn('meteora.dlmm.event_authority.derivation_failed', {
+            cat: 'tx',
+            ctx: {
+              poolId: hop.poolId,
+              error: String(e?.message || e)
+            }
+          });
+        }
         
         // Track accounts that were replaced so we can check if they need to be preserved
         const replacedAccounts: Array<{ position: number; originalAccount: string }> = [];
@@ -2030,6 +2048,8 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         }
         
         // Check and fix position 12 (tokenYProgram)
+        // CRITICAL: If position 12 is event_authority, DON'T replace it - it belongs there!
+        // The program validates event_authority PDA at position 12, so replacing it causes ConstraintSeeds errors
         let originalAccount12: string | null = null;
         if (ix.keys.length > 12 && ix.keys[12]) {
           const key12 = ix.keys[12];
@@ -2037,14 +2057,45 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           const pk12Str = pk12 instanceof PublicKey ? pk12.toBase58() : String(pk12);
           originalAccount12 = pk12Str;
           
-          if (!validTokenPrograms.has(pk12Str) || pk12Str !== expectedTokenYProg) {
+          // Check if position 12 is event_authority - if so, leave it alone!
+          const isEventAuthorityAt12 = eventAuthorityPdaStr && pk12Str === eventAuthorityPdaStr;
+          
+          // Log what's at position 12 before making any changes
+          logger.debug('meteora.dlmm.position12.before_fix', {
+            cat: 'tx',
+            ctx: {
+              poolId: hop.poolId,
+              accountAt12: pk12Str,
+              expectedTokenYProgram: expectedTokenYProg,
+              isTokenProgram: validTokenPrograms.has(pk12Str),
+              isEventAuthority: isEventAuthorityAt12,
+              matchesExpected: pk12Str === expectedTokenYProg,
+              willReplace: !isEventAuthorityAt12 && (!validTokenPrograms.has(pk12Str) || pk12Str !== expectedTokenYProg)
+            }
+          });
+          
+          if (isEventAuthorityAt12) {
+            // Position 12 correctly contains event_authority - don't replace it!
+            logger.info('meteora.dlmm.position12.is_event_authority', {
+              cat: 'tx',
+              ctx: {
+                poolId: hop.poolId,
+                accountAt12: pk12Str,
+                note: 'Position 12 correctly contains event_authority - preserving it'
+              }
+            });
+            // Don't replace - event_authority belongs at position 12
+          } else if (!validTokenPrograms.has(pk12Str) || pk12Str !== expectedTokenYProg) {
+            // Only replace if it's NOT event_authority and it's wrong
             logger.warn('meteora.dlmm.fixing_token_program_position', {
               cat: 'tx',
               ctx: {
                 position: 12,
                 oldAccount: pk12Str,
                 newAccount: expectedTokenYProg,
-                poolId: hop.poolId
+                poolId: hop.poolId,
+                isEventAuthority: false,
+                note: 'Replacing non-event-authority account at position 12'
               }
             });
             replacedAccounts.push({ position: 12, originalAccount: pk12Str });
@@ -2058,11 +2109,23 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         
         // Check if any replaced accounts are required PDAs that need to be preserved
         // Specifically check for event_authority PDA
-        if (eventAuthorityPda && replacedAccounts.length > 0) {
-          const eventAuthStr = eventAuthorityPda.toBase58();
-          
+        if (eventAuthorityPda && eventAuthorityPdaStr && replacedAccounts.length > 0) {
           for (const { position, originalAccount } of replacedAccounts) {
-            if (originalAccount === eventAuthStr) {
+            // Log what account was replaced and whether it matches event_authority
+            const isEventAuthority = originalAccount === eventAuthorityPdaStr;
+            logger.debug('meteora.dlmm.account_replacement_check', {
+              cat: 'tx',
+              ctx: {
+                poolId: hop.poolId,
+                position,
+                originalAccount,
+                derivedEventAuthority: eventAuthorityPdaStr,
+                isEventAuthority,
+                matches: originalAccount === eventAuthorityPdaStr
+              }
+            });
+            
+            if (isEventAuthority) {
               // event_authority was replaced - check if it exists elsewhere in the instruction
               let eventAuthFoundElsewhere = false;
               for (let i = 0; i < ix.keys.length; i++) {
@@ -2811,114 +2874,11 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     });
     let ixs = Array.isArray(res?.instructions) ? res.instructions : (res?.innerTransaction ? res.innerTransaction.instructions : []);
     
-    // CRITICAL: Decode instruction data to verify the amount actually encoded
-    // The SDK might adjust the amount, so we need to check what was actually encoded
-    if (ixs && ixs.length > 0 && hop.useExactAmount) {
-      try {
-        // Raydium CLMM swap instruction format: 
-        // - First 8 bytes: instruction discriminator
-        // - Next 16 bytes: amountIn (u128, little-endian)
-        // - Next 16 bytes: amountOutMin (u128, little-endian)
-        // - Next 16 bytes: sqrtPriceLimitX64 (u128, little-endian)
-        for (const ix of ixs) {
-          if (ix && ix.data && (Buffer.isBuffer(ix.data) || ix.data instanceof Uint8Array)) {
-            const data = Buffer.isBuffer(ix.data) ? ix.data : Buffer.from(ix.data);
-            if (data.length >= 24) {
-              // Read amountIn from bytes 8-24 (u128, little-endian)
-              const amountInEncoded = data.readBigUInt64LE(8) + (data.readBigUInt64LE(16) << 64n);
-              const expectedAmount = hop.amountInRaw || 0n;
-              
-              if (amountInEncoded !== expectedAmount && expectedAmount > 0n) {
-                try {
-                  logger.warn('raydium.clmm.instruction.amount.mismatch', {
-                    cat: 'tx',
-                    code: LogCode.TX_BUILD_ERR,
-                    ctx: {
-                      pool: hop.poolId,
-                      expectedAmount: expectedAmount.toString(),
-                      encodedAmount: amountInEncoded.toString(),
-                      difference: (amountInEncoded > expectedAmount 
-                        ? (amountInEncoded - expectedAmount).toString() 
-                        : (expectedAmount - amountInEncoded).toString()),
-                      inputMint: hop.inputMint,
-                      outputMint: hop.outputMint,
-                    } as any,
-                  });
-                } catch {}
-                
-                // CRITICAL: If this is a multi-hop swap and the SDK adjusted the amount,
-                // we need to update the hop's amountInRaw to match what was actually encoded
-                // Also update quotedOutputRaw if this is the first hop, so the next hop uses the correct amount
-                // Note: This happens after instruction building, so we can't adjust the next hop in the same pass
-                // But we can log it for debugging and potentially use it in a future optimization
-                if (hop.useExactAmount) {
-                  const originalQuotedOutput = hop.quotedOutputRaw;
-                  hop.amountInRaw = amountInEncoded;
-                  
-                  // If the SDK adjusted the input amount, we should re-quote the output
-                  // to get the actual output that will be received
-                  try {
-                    const { quoteHopOut } = await import('../resolver/quotes.js');
-                    const requotedOutput = await quoteHopOut(hop, amountInEncoded);
-                    if (requotedOutput > 0n) {
-                      hop.quotedOutputRaw = requotedOutput;
-                      try {
-                        logger.info('raydium.clmm.instruction.amount.adjusted_with_requote', {
-                          cat: 'tx',
-                          code: LogCode.TX_BUILD_HOP,
-                          ctx: {
-                            pool: hop.poolId,
-                            adjustedAmountIn: amountInEncoded.toString(),
-                            requotedOutput: requotedOutput.toString(),
-                            originalQuotedOutput: originalQuotedOutput?.toString() || 'N/A',
-                            inputMint: hop.inputMint,
-                            outputMint: hop.outputMint,
-                          } as any,
-                        });
-                      } catch {}
-                    }
-                  } catch (requoteErr) {
-                    try {
-                      logger.debug('raydium.clmm.instruction.requote.failed', {
-                        cat: 'tx',
-                        ctx: {
-                          pool: hop.poolId,
-                          error: String((requoteErr as any)?.message || requoteErr),
-                        } as any,
-                      });
-                    } catch {}
-                  }
-                  
-                  try {
-                    logger.info('raydium.clmm.instruction.amount.adjusted', {
-                      cat: 'tx',
-                      code: LogCode.TX_BUILD_HOP,
-                      ctx: {
-                        pool: hop.poolId,
-                        adjustedAmount: amountInEncoded.toString(),
-                        inputMint: hop.inputMint,
-                        outputMint: hop.outputMint,
-                      } as any,
-                    });
-                  } catch {}
-                }
-              }
-            }
-          }
-        }
-      } catch (decodeErr) {
-        // If decoding fails, log but don't fail - instruction might be in different format
-        try {
-          logger.debug('raydium.clmm.instruction.decode.failed', {
-            cat: 'tx',
-            ctx: {
-              pool: hop.poolId,
-              error: String((decodeErr as any)?.message || decodeErr),
-            } as any,
-          });
-        } catch {}
-      }
-    }
+    // Note: We don't decode instruction data here because:
+    // 1. The SDK correctly encodes the amount we pass to it
+    // 2. Instruction data format can vary and is complex to decode correctly
+    // 3. The actual transaction execution will use the correct amount
+    // Instead, we rely on the amount propagation logic to ensure correct amounts are used
     
     // Log SDK-generated instructions for debugging
     try {

@@ -2108,15 +2108,16 @@ async fn arb_graph_update(State(state): State<Arc<RwLock<AppState>>>, headers: H
     if let Some(v) = req.version {
         let old_pending = s.pending_graph_version.load(Ordering::Acquire);
         if old_pending == u64::MAX {
-            // No pending version, set it
             s.pending_graph_version.store(v, Ordering::Release);
             tracing::info!(version = v, "arb.graph.diff: version buffered (new)");
-        } else if v > old_pending {
-            // New version is higher, replace
-            s.pending_graph_version.store(v, Ordering::Release);
-            tracing::info!(old_version = old_pending, new_version = v, "arb.graph.diff: version buffered (replaced)");
         } else {
-            tracing::info!(received_version = v, pending_version = old_pending, "arb.graph.diff: version ignored (not higher than pending)");
+            let next = old_pending.max(v);
+            if next != old_pending {
+                s.pending_graph_version.store(next, Ordering::Release);
+                tracing::info!(old_version = old_pending, new_version = next, "arb.graph.diff: version buffered (raised)");
+            } else {
+                tracing::info!(received_version = v, pending_version = old_pending, "arb.graph.diff: version kept (max)");
+            }
         }
     }
     if let Some(ts) = req.timestamp { s.pending_graph_ts.store(ts, Ordering::Release); }
