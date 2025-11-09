@@ -786,21 +786,13 @@ export class DexAltManager {
       accounts.push(new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')); // Token Program
       accounts.push(new PublicKey('11111111111111111111111111111111')); // System Program
       accounts.push(new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL')); // ATA Program
+      accounts.push(new PublicKey('ComputeBudget111111111111111111111111111111')); // Compute Budget Program
       
-      // Meteora-specific common accounts
-      accounts.push(new PublicKey('D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6')); // Event Authority PDA (appears in EVERY Meteora swap)
+      // Meteora-specific common account (appears in EVERY Meteora swap)
+      accounts.push(new PublicKey('D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6')); // Event Authority PDA
       
-      // Frequently used pool accounts (SOL/USDC pool)
-      accounts.push(new PublicKey('DwZz4S1Z1LBXomzmncQRVKCYhjCqSAMQ6RPKbUAadr7H')); // SOL/USDC vault A
-      accounts.push(new PublicKey('4N22J4vW2juHocTntJNmXywSonYjkndCwahjZ2cYLDgb')); // SOL/USDC vault B
-      accounts.push(new PublicKey('BzQsUBAbd21nrNDgc7D55EwnABC16uZJ41mgxxqYydHJ')); // SOL/USDC bitmap ext
-      accounts.push(new PublicKey('BGm1tav58oGcsQJehL9WXBFXF7D27vZsKefj4xJKD5Y')); // SOL/USDC pool
-      
-      // USDC/USDT pool (second most common)
-      accounts.push(new PublicKey('ARwi1S4DaiTG5DX7S4M4ZsrXqpMD1MrTmbu9ue2tpmEq')); // USDC/USDT pool
-      accounts.push(new PublicKey('Bf3jBnSsKK7FT5xgUMqfaGoGW7JHKpDftua7BfxMt4Nq')); // USDC/USDT bitmap ext
-      accounts.push(new PublicKey('GkTrsQsu8WvrbairmN12aUKk74qHivRNFxaT5YxCECKQ')); // USDC/USDT vault A
-      accounts.push(new PublicKey('4STreSrMtf8umxyei9DaZG4bX3TGw3Xz41XNHd')); // USDC/USDT vault B
+      // NOTE: Pool-specific accounts (vaults, pools, etc.) should NOT be here
+      // They should be in DEX-specific ALTs via collectDexPoolAccounts()
       
     } catch (error) {
       try {
@@ -1030,64 +1022,100 @@ export class DexAltManager {
           const isClmm = poolInfo.data.length > 1000;
 
           if (isClmm) {
-            // Raydium CLMM accounts
-            // Add standard CLMM accounts (vaults will be in pool data)
-            // For now, just add the pool - full implementation would parse pool data
+            // Raydium CLMM - parse and extract all accounts
+            const clmmAccounts = await this.parseRaydiumClmmAccounts(poolPk, poolInfo);
+            accounts.push(...clmmAccounts);
             try {
-              logger.debug('alt.manager.raydium.clmm.basic', {
+              logger.info('alt.manager.raydium.clmm.collected', {
                 cat: 'tx',
-                ctx: { poolId: cleanPoolId, size: poolInfo.data.length },
+                ctx: { poolId: cleanPoolId, accountCount: clmmAccounts.length },
               });
             } catch {}
           } else {
-            // Raydium AMM accounts  
-            // For now, just add the pool - full implementation would parse pool data
+            // Raydium AMM - parse and extract accounts
+            const ammAccounts = await this.parseRaydiumAmmAccounts(poolPk, poolInfo);
+            accounts.push(...ammAccounts);
             try {
-              logger.debug('alt.manager.raydium.amm.basic', {
+              logger.info('alt.manager.raydium.amm.collected', {
                 cat: 'tx',
-                ctx: { poolId: cleanPoolId, size: poolInfo.data.length },
+                ctx: { poolId: cleanPoolId, accountCount: ammAccounts.length },
               });
             } catch {}
           }
-        } catch {}
+        } catch (e) {
+          try {
+            logger.warn('alt.manager.raydium.parse.error', {
+              cat: 'tx',
+              ctx: { poolId: cleanPoolId, error: String((e as any)?.message || e) },
+            });
+          } catch {}
+        }
       } else if (dexLower === 'orca') {
-        // Orca Whirlpool accounts
-        // Pool account contains vaults and oracle
-        // For now, just add the pool
-        try {
-          logger.debug('alt.manager.orca.whirlpool.basic', {
-            cat: 'tx',
-            ctx: { poolId: cleanPoolId },
-          });
-        } catch {}
-      } else if (dexLower === 'meteora') {
-        // Meteora DLMM accounts
+        // Orca Whirlpool - parse and extract all accounts
         try {
           const poolInfo = await withRpcLimit(() => connection.getAccountInfo(poolPk));
-          if (poolInfo && poolInfo.data.length > 0) {
-            // Parse basic Meteora pool data
-            // Meteora pools contain reserve addresses in the account data
-            // For comprehensive implementation, would need to:
-            // 1. Parse pool state to get reserves, oracle, bin array addresses
-            // 2. Fetch active bin from pool
-            // 3. Calculate bin array PDAs around active bin
-            // For now, just add the pool
+          if (poolInfo) {
+            const whirlpoolAccounts = await this.parseOrcaWhirlpoolAccounts(poolPk, poolInfo);
+            accounts.push(...whirlpoolAccounts);
             try {
-              logger.debug('alt.manager.meteora.dlmm.basic', {
+              logger.info('alt.manager.orca.whirlpool.collected', {
                 cat: 'tx',
-                ctx: { poolId: cleanPoolId, size: poolInfo.data.length },
+                ctx: { poolId: cleanPoolId, accountCount: whirlpoolAccounts.length },
               });
             } catch {}
           }
-        } catch {}
+        } catch (e) {
+          try {
+            logger.warn('alt.manager.orca.parse.error', {
+              cat: 'tx',
+              ctx: { poolId: cleanPoolId, error: String((e as any)?.message || e) },
+            });
+          } catch {}
+        }
+      } else if (dexLower === 'meteora') {
+        // Meteora DLMM - parse and extract all accounts
+        try {
+          const poolInfo = await withRpcLimit(() => connection.getAccountInfo(poolPk));
+          if (poolInfo) {
+            const dlmmAccounts = await this.parseMeteoraDlmmAccounts(poolPk, poolInfo);
+            accounts.push(...dlmmAccounts);
+            try {
+              logger.info('alt.manager.meteora.dlmm.collected', {
+                cat: 'tx',
+                ctx: { poolId: cleanPoolId, accountCount: dlmmAccounts.length },
+              });
+            } catch {}
+          }
+        } catch (e) {
+          try {
+            logger.warn('alt.manager.meteora.parse.error', {
+              cat: 'tx',
+              ctx: { poolId: cleanPoolId, error: String((e as any)?.message || e) },
+            });
+          } catch {}
+        }
       } else if (dexLower === 'meteora-balanced') {
         // Meteora Balanced AMM accounts
         try {
-          logger.debug('alt.manager.meteora.balanced.basic', {
-            cat: 'tx',
-            ctx: { poolId: cleanPoolId },
-          });
-        } catch {}
+          const poolInfo = await withRpcLimit(() => connection.getAccountInfo(poolPk));
+          if (poolInfo) {
+            const balancedAccounts = await this.parseMeteoraBalancedAccounts(poolPk, poolInfo);
+            accounts.push(...balancedAccounts);
+            try {
+              logger.info('alt.manager.meteora.balanced.collected', {
+                cat: 'tx',
+                ctx: { poolId: cleanPoolId, accountCount: balancedAccounts.length },
+              });
+            } catch {}
+          }
+        } catch (e) {
+          try {
+            logger.warn('alt.manager.meteora.balanced.parse.error', {
+              cat: 'tx',
+              ctx: { poolId: cleanPoolId, error: String((e as any)?.message || e) },
+            });
+          } catch {}
+        }
       }
 
       return accounts;
@@ -1104,6 +1132,487 @@ export class DexAltManager {
       } catch {}
       return accounts;
     }
+  }
+
+  /**
+   * Parse Raydium CLMM pool accounts
+   */
+  private async parseRaydiumClmmAccounts(
+    poolPk: PublicKey,
+    poolInfo: any
+  ): Promise<PublicKey[]> {
+    const accounts: PublicKey[] = [];
+    
+    try {
+      // Import Raydium SDK
+      const sdk = await import('@raydium-io/raydium-sdk-v2').catch(() => null);
+      if (!sdk || !poolInfo?.data) return accounts;
+
+      // Find the CLMM layout
+      const layout =
+        (sdk as any)?.PoolInfoLayout ||
+        (sdk as any)?.Clmm?.PoolInfoLayout ||
+        (sdk as any)?.Clmm?.PoolStateLayout ||
+        (sdk as any)?.CLMM?.POOL_STATE_LAYOUT ||
+        (sdk as any)?.PoolStateLayout;
+
+      if (!layout || typeof layout.decode !== 'function') return accounts;
+
+      // Decode pool state
+      const state = layout.decode(poolInfo.data);
+      if (!state) return accounts;
+
+      // Helper to convert to PublicKey
+      const asPk = (v: any): PublicKey | null => {
+        try {
+          if (!v) return null;
+          if (v instanceof PublicKey) return v;
+          if (typeof v?.toBase58 === 'function') return v;
+          return new PublicKey(v);
+        } catch {
+          return null;
+        }
+      };
+
+      // Extract all accounts from pool state
+      const vaultA = asPk(state.vaultA || state.tokenVaultA || state.baseVault);
+      const vaultB = asPk(state.vaultB || state.tokenVaultB || state.quoteVault);
+      const oracle = asPk(state.oracle);
+      const ammConfig = asPk(state.ammConfig || state.amm_config);
+      const observationId = asPk(state.observationId || state.observation_id || state.observationAccount);
+
+      if (vaultA) accounts.push(vaultA);
+      if (vaultB) accounts.push(vaultB);
+      if (oracle) accounts.push(oracle);
+      if (ammConfig) accounts.push(ammConfig);
+      if (observationId) accounts.push(observationId);
+
+      // Add token mints
+      const mintA = asPk(state.mintA || state.tokenMintA);
+      const mintB = asPk(state.mintB || state.tokenMintB);
+      if (mintA) accounts.push(mintA);
+      if (mintB) accounts.push(mintB);
+
+      // Note: Tick arrays are calculated dynamically based on current tick
+      // and can't be pre-loaded into ALTs since they change
+      // The 3 tick arrays (lower, center, upper) will still need to be in the transaction
+
+      try {
+        logger.debug('alt.manager.raydium.clmm.parsed', {
+          cat: 'tx',
+          ctx: {
+            pool: poolPk.toBase58(),
+            vaultA: vaultA?.toBase58(),
+            vaultB: vaultB?.toBase58(),
+            oracle: oracle?.toBase58(),
+            ammConfig: ammConfig?.toBase58(),
+            mintA: mintA?.toBase58(),
+            mintB: mintB?.toBase58(),
+          },
+        });
+      } catch {}
+    } catch (error) {
+      try {
+        logger.debug('alt.manager.raydium.clmm.parse.failed', {
+          cat: 'tx',
+          ctx: { pool: poolPk.toBase58(), error: String((error as any)?.message || error) },
+        });
+      } catch {}
+    }
+
+    return accounts;
+  }
+
+  /**
+   * Parse Raydium AMM pool accounts
+   */
+  private async parseRaydiumAmmAccounts(
+    poolPk: PublicKey,
+    poolInfo: any
+  ): Promise<PublicKey[]> {
+    const accounts: PublicKey[] = [];
+    
+    try {
+      // Import Raydium SDK
+      const sdk = await import('@raydium-io/raydium-sdk-v2').catch(() => null);
+      if (!sdk || !poolInfo?.data) return accounts;
+
+      // Find the AMM layout
+      const layout =
+        (sdk as any)?.LIQUIDITY_STATE_LAYOUT_V4 ||
+        (sdk as any)?.AmmV4?.StateLayout ||
+        (sdk as any)?.LiquidityStateLayoutV4;
+
+      if (!layout || typeof layout.decode !== 'function') return accounts;
+
+      // Decode pool state
+      const state = layout.decode(poolInfo.data);
+      if (!state) return accounts;
+
+      // Helper to convert to PublicKey
+      const asPk = (v: any): PublicKey | null => {
+        try {
+          if (!v) return null;
+          if (v instanceof PublicKey) return v;
+          if (typeof v?.toBase58 === 'function') return v;
+          return new PublicKey(v);
+        } catch {
+          return null;
+        }
+      };
+
+      // Extract AMM accounts
+      const baseVault = asPk(state.baseVault || state.poolCoinTokenAccount);
+      const quoteVault = asPk(state.quoteVault || state.poolPcTokenAccount);
+      const lpMint = asPk(state.lpMint);
+      const baseMint = asPk(state.baseMint || state.coinMint);
+      const quoteMint = asPk(state.quoteMint || state.pcMint);
+      const authority = asPk(state.authority);
+      const targetOrders = asPk(state.targetOrders);
+      const openOrders = asPk(state.openOrders);
+      const marketId = asPk(state.marketId || state.serumMarket);
+
+      if (baseVault) accounts.push(baseVault);
+      if (quoteVault) accounts.push(quoteVault);
+      if (lpMint) accounts.push(lpMint);
+      if (baseMint) accounts.push(baseMint);
+      if (quoteMint) accounts.push(quoteMint);
+      if (authority) accounts.push(authority);
+      if (targetOrders) accounts.push(targetOrders);
+      if (openOrders) accounts.push(openOrders);
+      if (marketId) accounts.push(marketId);
+
+      try {
+        logger.debug('alt.manager.raydium.amm.parsed', {
+          cat: 'tx',
+          ctx: {
+            pool: poolPk.toBase58(),
+            baseVault: baseVault?.toBase58(),
+            quoteVault: quoteVault?.toBase58(),
+            marketId: marketId?.toBase58(),
+          },
+        });
+      } catch {}
+    } catch (error) {
+      try {
+        logger.debug('alt.manager.raydium.amm.parse.failed', {
+          cat: 'tx',
+          ctx: { pool: poolPk.toBase58(), error: String((error as any)?.message || error) },
+        });
+      } catch {}
+    }
+
+    return accounts;
+  }
+
+  /**
+   * Parse Orca Whirlpool accounts
+   */
+  private async parseOrcaWhirlpoolAccounts(
+    poolPk: PublicKey,
+    poolInfo: any
+  ): Promise<PublicKey[]> {
+    const accounts: PublicKey[] = [];
+    
+    try {
+      // Import Orca SDK
+      const sdk = await import('@orca-so/whirlpools-sdk').catch(() => null);
+      if (!sdk || !poolInfo) return accounts;
+
+      const { ParsableWhirlpool } = sdk as any;
+      if (!ParsableWhirlpool || typeof ParsableWhirlpool.parse !== 'function') return accounts;
+
+      // Parse whirlpool state
+      const parsed = ParsableWhirlpool.parse(poolPk, poolInfo);
+      if (!parsed) return accounts;
+
+      // Helper to convert to PublicKey
+      const asPk = (v: any): PublicKey | null => {
+        try {
+          if (!v) return null;
+          if (v instanceof PublicKey) return v;
+          if (typeof v?.toBase58 === 'function') return v;
+          return new PublicKey(v);
+        } catch {
+          return null;
+        }
+      };
+
+      // Extract whirlpool accounts
+      const tokenVaultA = asPk(parsed.tokenVaultA);
+      const tokenVaultB = asPk(parsed.tokenVaultB);
+      const tokenMintA = asPk(parsed.tokenMintA);
+      const tokenMintB = asPk(parsed.tokenMintB);
+      const oracle = asPk(parsed.oracle);
+      const whirlpoolsConfig = asPk(parsed.whirlpoolsConfig);
+      const feeGrowthGlobalA = asPk(parsed.feeGrowthGlobalA);
+      const feeGrowthGlobalB = asPk(parsed.feeGrowthGlobalB);
+      const rewardInfos = Array.isArray(parsed.rewardInfos) ? parsed.rewardInfos : [];
+
+      if (tokenVaultA) accounts.push(tokenVaultA);
+      if (tokenVaultB) accounts.push(tokenVaultB);
+      if (tokenMintA) accounts.push(tokenMintA);
+      if (tokenMintB) accounts.push(tokenMintB);
+      if (oracle) accounts.push(oracle);
+      if (whirlpoolsConfig) accounts.push(whirlpoolsConfig);
+
+      // Add reward vaults if they exist
+      for (const reward of rewardInfos) {
+        const rewardVault = asPk(reward?.vault);
+        const rewardMint = asPk(reward?.mint);
+        if (rewardVault) accounts.push(rewardVault);
+        if (rewardMint) accounts.push(rewardMint);
+      }
+
+      // Note: Tick arrays are calculated dynamically based on current tick
+      // and can't be pre-loaded into ALTs
+
+      try {
+        logger.debug('alt.manager.orca.whirlpool.parsed', {
+          cat: 'tx',
+          ctx: {
+            pool: poolPk.toBase58(),
+            tokenVaultA: tokenVaultA?.toBase58(),
+            tokenVaultB: tokenVaultB?.toBase58(),
+            oracle: oracle?.toBase58(),
+            config: whirlpoolsConfig?.toBase58(),
+          },
+        });
+      } catch {}
+    } catch (error) {
+      try {
+        logger.debug('alt.manager.orca.whirlpool.parse.failed', {
+          cat: 'tx',
+          ctx: { pool: poolPk.toBase58(), error: String((error as any)?.message || error) },
+        });
+      } catch {}
+    }
+
+    return accounts;
+  }
+
+  /**
+   * Parse Meteora DLMM pool accounts
+   */
+  private async parseMeteoraDlmmAccounts(
+    poolPk: PublicKey,
+    poolInfo: any
+  ): Promise<PublicKey[]> {
+    const accounts: PublicKey[] = [];
+    
+    try {
+      // Import Meteora SDK
+      const { DLMM } = await import('@meteora-ag/dlmm').catch(() => ({ DLMM: null }));
+      if (!DLMM || !poolInfo?.data) return accounts;
+
+      // Helper to convert to PublicKey
+      const asPk = (v: any): PublicKey | null => {
+        try {
+          if (!v) return null;
+          if (v instanceof PublicKey) return v;
+          if (typeof v?.toBase58 === 'function') return v;
+          return new PublicKey(v);
+        } catch {
+          return null;
+        }
+      };
+
+      // The Meteora SDK doesn't export a direct layout decoder like Raydium/Orca
+      // But we can derive the key accounts using SDK helper functions
+      const programId = poolInfo.owner;
+
+      // Derive reserve accounts
+      const deriveReserve = (DLMM as any)?.deriveReserve;
+      let reserveX: PublicKey | null = null;
+      let reserveY: PublicKey | null = null;
+      
+      if (typeof deriveReserve === 'function') {
+        try {
+          const rx = await deriveReserve(programId, poolPk, true);
+          reserveX = asPk(rx?.publicKey || rx);
+        } catch {}
+        
+        try {
+          const ry = await deriveReserve(programId, poolPk, false);
+          reserveY = asPk(ry?.publicKey || ry);
+        } catch {}
+      }
+
+      // Derive oracle
+      const deriveOracle = (DLMM as any)?.deriveOracle;
+      let oracle: PublicKey | null = null;
+      if (typeof deriveOracle === 'function') {
+        try {
+          const orc = await deriveOracle(programId, poolPk);
+          oracle = asPk(orc?.publicKey || orc);
+        } catch {}
+      }
+
+      // Try to parse pool state to get token mints and active bin
+      // Meteora pool layout (rough structure based on on-chain observations):
+      // First 8 bytes: discriminator
+      // Then various fields including mints, reserves, bin step, active id, etc.
+      let tokenXMint: PublicKey | null = null;
+      let tokenYMint: PublicKey | null = null;
+      let activeId: number | null = null;
+      let binStep: number | null = null;
+
+      try {
+        // Try to read mint addresses (at fixed offsets if layout is stable)
+        // This is fragile but better than nothing
+        const data = poolInfo.data;
+        if (data.length >= 200) {
+          // Typical offsets (may vary by version):
+          // tokenXMint: around offset 72-104
+          // tokenYMint: around offset 104-136
+          try {
+            tokenXMint = new PublicKey(data.slice(72, 104));
+          } catch {}
+          try {
+            tokenYMint = new PublicKey(data.slice(104, 136));
+          } catch {}
+          
+          // Active ID is typically a i32 or i24 around offset 180-184
+          try {
+            activeId = data.readInt32LE(180);
+          } catch {}
+          
+          // Bin step is typically a u16 around offset 176-178
+          try {
+            binStep = data.readUInt16LE(176);
+          } catch {}
+        }
+      } catch {}
+
+      if (reserveX) accounts.push(reserveX);
+      if (reserveY) accounts.push(reserveY);
+      if (oracle) accounts.push(oracle);
+      if (tokenXMint) accounts.push(tokenXMint);
+      if (tokenYMint) accounts.push(tokenYMint);
+
+      // Derive bitmapExtension (if it exists)
+      // BitmapExtension PDA: [b"bitmap_extension", lb_pair.key()]
+      try {
+        const [bitmapExt] = PublicKey.findProgramAddressSync(
+          [Buffer.from('bitmap_extension'), poolPk.toBuffer()],
+          programId
+        );
+        // Check if it exists on-chain before adding
+        const connection = getConnection();
+        const bitmapInfo = await withRpcLimit(() => connection.getAccountInfo(bitmapExt), 0.5).catch(() => null);
+        if (bitmapInfo) {
+          accounts.push(bitmapExt);
+        }
+      } catch {}
+
+      // Note: Bin arrays are calculated dynamically based on active bin
+      // We could pre-calculate a few bin arrays around the active bin, but they change over time
+      // For now, just add the static accounts
+
+      try {
+        logger.debug('alt.manager.meteora.dlmm.parsed', {
+          cat: 'tx',
+          ctx: {
+            pool: poolPk.toBase58(),
+            reserveX: reserveX?.toBase58(),
+            reserveY: reserveY?.toBase58(),
+            oracle: oracle?.toBase58(),
+            tokenXMint: tokenXMint?.toBase58(),
+            tokenYMint: tokenYMint?.toBase58(),
+            activeId,
+            binStep,
+          },
+        });
+      } catch {}
+    } catch (error) {
+      try {
+        logger.debug('alt.manager.meteora.dlmm.parse.failed', {
+          cat: 'tx',
+          ctx: { pool: poolPk.toBase58(), error: String((error as any)?.message || error) },
+        });
+      } catch {}
+    }
+
+    return accounts;
+  }
+
+  /**
+   * Parse Meteora Balanced AMM pool accounts
+   */
+  private async parseMeteoraBalancedAccounts(
+    poolPk: PublicKey,
+    poolInfo: any
+  ): Promise<PublicKey[]> {
+    const accounts: PublicKey[] = [];
+    
+    try {
+      // Meteora Balanced pools have a different structure
+      // Similar to standard AMM pools with reserves, authority, etc.
+      if (!poolInfo?.data || poolInfo.data.length < 100) return accounts;
+
+      const data = poolInfo.data;
+      
+      // Helper to convert to PublicKey
+      const asPk = (v: any): PublicKey | null => {
+        try {
+          if (!v) return null;
+          if (v instanceof PublicKey) return v;
+          return new PublicKey(v);
+        } catch {
+          return null;
+        }
+      };
+
+      // Try to parse accounts from data (offsets are approximate)
+      try {
+        // Token A mint
+        const tokenAMint = asPk(data.slice(8, 40));
+        if (tokenAMint) accounts.push(tokenAMint);
+      } catch {}
+
+      try {
+        // Token B mint
+        const tokenBMint = asPk(data.slice(40, 72));
+        if (tokenBMint) accounts.push(tokenBMint);
+      } catch {}
+
+      try {
+        // Reserve A
+        const reserveA = asPk(data.slice(72, 104));
+        if (reserveA) accounts.push(reserveA);
+      } catch {}
+
+      try {
+        // Reserve B
+        const reserveB = asPk(data.slice(104, 136));
+        if (reserveB) accounts.push(reserveB);
+      } catch {}
+
+      try {
+        // LP mint
+        const lpMint = asPk(data.slice(136, 168));
+        if (lpMint) accounts.push(lpMint);
+      } catch {}
+
+      try {
+        logger.debug('alt.manager.meteora.balanced.parsed', {
+          cat: 'tx',
+          ctx: {
+            pool: poolPk.toBase58(),
+            accountCount: accounts.length,
+          },
+        });
+      } catch {}
+    } catch (error) {
+      try {
+        logger.debug('alt.manager.meteora.balanced.parse.failed', {
+          cat: 'tx',
+          ctx: { pool: poolPk.toBase58(), error: String((error as any)?.message || error) },
+        });
+      } catch {}
+    }
+
+    return accounts;
   }
 
   /**
