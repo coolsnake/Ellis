@@ -533,7 +533,7 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
     const uncoveredAccounts: string[] = [];
     for (const account of allTxAccounts) {
       if (!altAccountSet.has(account)) {
-        uncoveredAccounts.add(account);
+        uncoveredAccounts.push(account);
       }
     }
     
@@ -890,7 +890,7 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
     const uncoveredAccounts: string[] = [];
     for (const account of allTxAccounts) {
       if (!altAccountSet.has(account)) {
-        uncoveredAccounts.add(account);
+        uncoveredAccounts.push(account);
       }
     }
     
