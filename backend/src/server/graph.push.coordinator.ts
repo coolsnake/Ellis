@@ -54,7 +54,7 @@ export function logPushDecision(decision: PushDecision, context: {
   source?: string;
 }): void {
   if (!decision.shouldPush) {
-    logger.info('graph.push.blocked', {
+    logger.debug('graph.push.blocked', {
       reason: decision.reason,
       gateType: decision.gateType,
       version: context.version,

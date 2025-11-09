@@ -320,7 +320,7 @@ export async function applyPoolUpdates(prev: PoolsPayload, next: PoolsPayload, o
         result = computeIncrementalGraphUpdate(payload);
       }
       const duration = Date.now() - start;
-      try { logger.info('graph.incremental.compute', { worker: usedWorker, duration_ms: duration, stats: result?.stats, cat: 'graph' }); } catch {}
+      try { logger.debug('graph.incremental.compute', { worker: usedWorker, duration_ms: duration, stats: result?.stats, cat: 'graph' }); } catch {}
 
       if (!result?.changed || !result.snapshot || !result.diff) {
         return;

@@ -142,7 +142,7 @@ class GraphPushOrchestrator {
       return;
     }
     try {
-      logger.info('graph.push enqueue', {
+      logger.debug('graph.push enqueue', {
         kind: 'snapshot',
         version: snapshot.version,
         nodes: Array.isArray(snapshot.nodes) ? snapshot.nodes.length : undefined,
@@ -183,7 +183,7 @@ class GraphPushOrchestrator {
       return;
     }
     try {
-      logger.info('graph.push enqueue', {
+      logger.debug('graph.push enqueue', {
         kind: 'diff',
         version: diff.version,
         added: diff.addedEdges?.length,
@@ -282,7 +282,7 @@ class GraphPushOrchestrator {
       });
     }, delay);
     try {
-      logger.info('graph.push flush_scheduled', {
+      logger.debug('graph.push flush_scheduled', {
         force,
         pending_snapshot: !!this.pendingSnapshot,
         pending_diff: !!this.pendingDiff,
@@ -309,7 +309,7 @@ class GraphPushOrchestrator {
 
     try {
       try {
-        logger.info('graph.push flush_start', {
+        logger.debug('graph.push flush_start', {
           kind: snapshot ? 'snapshot' : 'diff',
           version: snapshot ? snapshot.version : diff?.version,
           added: diff?.addedEdges?.length,
