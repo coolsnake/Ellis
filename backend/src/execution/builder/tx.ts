@@ -289,7 +289,8 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
             if (prevHop?.quotedOutputRaw && prevHop.quotedOutputRaw > 0n) {
               // Use exact quoted output, even if amountInRaw is already set
               // This ensures consistency and prevents using wrong amounts
-              if (hop.amountInRaw !== prevHop.quotedOutputRaw) {
+              const exactAmount = prevHop.quotedOutputRaw;
+              if (hop.amountInRaw !== exactAmount) {
                 try {
                   logger.info('tx.build.amount_propagation.exact', {
                     cat: 'tx',
@@ -299,15 +300,42 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
                       hopIndex: i,
                       prevHopIndex: i - 1,
                       previousAmount: hop.amountInRaw.toString(),
-                      exactAmount: prevHop.quotedOutputRaw.toString(),
+                      exactAmount: exactAmount.toString(),
+                      inputMint: hop.inputMint,
+                      outputMint: prevHop.outputMint,
+                      prevHopQuotedOutputRaw: exactAmount.toString(),
+                    }
+                  });
+                } catch {}
+                // CRITICAL: Set amountInRaw to the exact quotedOutputRaw from previous hop
+                // This ensures perfect amount propagation without any rounding errors
+                hop.amountInRaw = exactAmount;
+              }
+              hop.useExactAmount = true; // Flag to prevent re-quote adjustments
+              
+              // CRITICAL: Verify the amount was set correctly and log if there's any discrepancy
+              // This helps catch any code that might be modifying amountInRaw after propagation
+              if (hop.amountInRaw !== exactAmount) {
+                try {
+                  logger.error('tx.build.amount_propagation.verification_failed', {
+                    cat: 'tx',
+                    code: LogCode.TX_BUILD_ERR,
+                    ctx: {
+                      traceId,
+                      hopIndex: i,
+                      expectedAmount: exactAmount.toString(),
+                      actualAmount: hop.amountInRaw.toString(),
+                      difference: (hop.amountInRaw > exactAmount 
+                        ? (hop.amountInRaw - exactAmount).toString() 
+                        : (exactAmount - hop.amountInRaw).toString()),
                       inputMint: hop.inputMint,
                       outputMint: prevHop.outputMint,
                     }
                   });
                 } catch {}
-                hop.amountInRaw = prevHop.quotedOutputRaw;
+                // Force correct amount even if something tried to modify it
+                hop.amountInRaw = exactAmount;
               }
-              hop.useExactAmount = true; // Flag to prevent re-quote adjustments
             } else {
               // Fallback: if quotedOutputRaw not available, try other sources
               // CRITICAL: Always try to fix amount for multi-hop swaps, even if amountInRaw is already set
@@ -398,6 +426,36 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
         }
         hopMetrics.validation = Date.now() - validationStart;
 
+        // CRITICAL: Final verification before building instructions
+        // Ensure amountInRaw hasn't been modified after propagation
+        if (i > 0 && hop.useExactAmount) {
+          const prevHop = plan.hops[i - 1];
+          if (prevHop?.quotedOutputRaw && prevHop.quotedOutputRaw > 0n) {
+            const expectedAmount = prevHop.quotedOutputRaw;
+            if (hop.amountInRaw !== expectedAmount) {
+              try {
+                logger.error('tx.build.amount_propagation.pre_build_mismatch', {
+                  cat: 'tx',
+                  code: LogCode.TX_BUILD_ERR,
+                  ctx: {
+                    traceId,
+                    hopIndex: i,
+                    expectedAmount: expectedAmount.toString(),
+                    actualAmount: hop.amountInRaw.toString(),
+                    difference: (hop.amountInRaw > expectedAmount 
+                      ? (hop.amountInRaw - expectedAmount).toString() 
+                      : (expectedAmount - hop.amountInRaw).toString()),
+                    inputMint: hop.inputMint,
+                    outputMint: prevHop.outputMint,
+                  }
+                });
+              } catch {}
+              // Force correct amount before building instruction
+              hop.amountInRaw = expectedAmount;
+            }
+          }
+        }
+        
         // Build instructions
         const instructionStart = Date.now();
         let ixs: any[] = [];
