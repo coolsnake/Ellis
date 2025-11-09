@@ -64,6 +64,9 @@ export const ROUTES = {
       poolsByDex: '/arb/alts/pools-by-dex',
       createDex: '/arb/alts/create-dex-alt',
       refreshDex: '/arb/alts/refresh-dex-alt',
+      info: '/arb/alts/info',
+      deactivate: '/arb/alts/deactivate',
+      close: '/arb/alts/close',
     },
   },
   exec: {

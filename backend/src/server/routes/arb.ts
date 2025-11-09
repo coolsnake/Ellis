@@ -502,6 +502,69 @@ export function createArbRouter(io: SocketIOServer): Router {
     }
   });
 
+  // Get detailed ALT information
+  api.get('/arb/alts/info/:category', async (req, res) => {
+    try {
+      const { category } = req.params;
+      if (!category) {
+        return res.status(400).json({ error: 'category parameter is required' });
+      }
+
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      const info = await dexAltManager.getAltInfo(category);
+
+      res.json({
+        ...info,
+        rentAmountSOL: (info.rentAmount / 1e9).toFixed(6),
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Deactivate an ALT (step 1 of deletion)
+  api.post('/arb/alts/deactivate', async (req, res) => {
+    try {
+      const { category } = req.body;
+      if (!category) {
+        return res.status(400).json({ error: 'category is required' });
+      }
+
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      const result = await dexAltManager.deactivateAlt(category);
+
+      res.json({
+        success: true,
+        ...result,
+        message: 'ALT deactivated. Wait ~5 minutes (513 slots) before closing to recover rent.',
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Close an ALT and recover rent (step 2 of deletion)
+  api.post('/arb/alts/close', async (req, res) => {
+    try {
+      const { category } = req.body;
+      if (!category) {
+        return res.status(400).json({ error: 'category is required' });
+      }
+
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      const result = await dexAltManager.closeAlt(category);
+
+      res.json({
+        success: true,
+        ...result,
+        rentRecoveredSOL: (result.rentRecovered / 1e9).toFixed(6),
+        message: `ALT closed. Recovered ${(result.rentRecovered / 1e9).toFixed(6)} SOL`,
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   // Trigger a one-off Raydium CLMM static precompute for a pool id
   api.post('/arb/clmm/refresh', async (req: Request, res: Response) => {
     try {

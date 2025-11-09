@@ -9,6 +9,18 @@ interface AltStatus {
   addresses: { [category: string]: string };
 }
 
+interface AltDetailedInfo {
+  address: string;
+  accountCount: number;
+  isDeactivated: boolean;
+  deactivationSlot?: number;
+  canClose: boolean;
+  slotsUntilCloseable?: number;
+  minutesUntilCloseable?: number;
+  rentAmount: number;
+  rentAmountSOL?: string;
+}
+
 interface PoolPreview {
   poolId: string;
   dex: string;
@@ -55,6 +67,7 @@ const DEX_CONFIGS: DexConfig[] = [
 
 export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string }> = ({ onClose, apiBase }) => {
   const [altStatus, setAltStatus] = useState<AltStatus | null>(null);
+  const [altInfos, setAltInfos] = useState<{ [category: string]: AltDetailedInfo }>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -65,6 +78,7 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
     'orca-whirlpool': 30,
     'meteora-dlmm': 30,
   });
+  const [deletingCategory, setDeletingCategory] = useState<string | null>(null);
 
   useEffect(() => {
     loadAltStatus();
@@ -76,8 +90,93 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
       if (!resp.ok) throw new Error('Failed to load ALT status');
       const data = await resp.json();
       setAltStatus(data);
+      
+      // Load detailed info for each ALT
+      for (const category of data.categories) {
+        loadAltInfo(category);
+      }
     } catch (err: any) {
       setError(err.message || 'Failed to load ALT status');
+    }
+  };
+
+  const loadAltInfo = async (category: string) => {
+    try {
+      const resp = await fetch(`${apiBase}${ROUTES.arb.alts.info}/${category}`);
+      if (!resp.ok) return; // Silently fail for individual ALTs
+      const data = await resp.json();
+      setAltInfos(prev => ({ ...prev, [category]: data }));
+    } catch (err) {
+      // Silently fail
+    }
+  };
+
+  const handleDeactivate = async (category: string) => {
+    if (!confirm(`Deactivate ${category} ALT? You'll need to wait ~5 minutes before you can close it.`)) {
+      return;
+    }
+
+    setDeletingCategory(category);
+    setLoading(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const resp = await fetch(`${apiBase}${ROUTES.arb.alts.deactivate}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category }),
+      });
+      
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        throw new Error(errData.error || 'Failed to deactivate ALT');
+      }
+      
+      const data = await resp.json();
+      setSuccess(`Deactivated ${category} ALT. Wait ~5 minutes before closing.`);
+      await loadAltStatus();
+    } catch (err: any) {
+      setError(err.message || 'Failed to deactivate ALT');
+    } finally {
+      setLoading(false);
+      setDeletingCategory(null);
+    }
+  };
+
+  const handleClose = async (category: string) => {
+    const info = altInfos[category];
+    const rentStr = info?.rentAmountSOL || '~0.01';
+    
+    if (!confirm(`Close ${category} ALT and recover ${rentStr} SOL rent? This action cannot be undone.`)) {
+      return;
+    }
+
+    setDeletingCategory(category);
+    setLoading(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const resp = await fetch(`${apiBase}${ROUTES.arb.alts.close}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category }),
+      });
+      
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        throw new Error(errData.error || 'Failed to close ALT');
+      }
+      
+      const data = await resp.json();
+      setSuccess(`Closed ${category} ALT. Recovered ${data.rentRecoveredSOL} SOL`);
+      await loadAltStatus();
+    } catch (err: any) {
+      setError(err.message || 'Failed to close ALT');
+    } finally {
+      setLoading(false);
+      setDeletingCategory(null);
     }
   };
 
@@ -202,20 +301,61 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
           <h3 className="text-lg font-semibold text-white mb-2">Current ALTs</h3>
           {altStatus ? (
             <div className="bg-gray-900 rounded p-4">
-              <div className="grid grid-cols-2 gap-2 text-sm">
+              <div className="grid grid-cols-2 gap-2 text-sm mb-4">
                 <div className="text-gray-400">Total ALTs:</div>
                 <div className="text-white">{altStatus.altCount}</div>
                 <div className="text-gray-400">Categories:</div>
                 <div className="text-white">{altStatus.categories.join(', ') || 'None'}</div>
               </div>
               {Object.keys(altStatus.addresses).length > 0 && (
-                <div className="mt-3 space-y-1">
-                  {Object.entries(altStatus.addresses).map(([category, address]) => (
-                    <div key={category} className="flex justify-between text-sm">
-                      <span className="text-gray-400">{category}:</span>
-                      <span className="text-gray-300 font-mono">{truncateAddress(address)}</span>
-                    </div>
-                  ))}
+                <div className="space-y-3">
+                  {Object.entries(altStatus.addresses).map(([category, address]) => {
+                    const info = altInfos[category];
+                    return (
+                      <div key={category} className="border border-gray-700 rounded p-3">
+                        <div className="flex justify-between items-start mb-2">
+                          <div>
+                            <span className="text-gray-400 text-sm">{category}</span>
+                            <div className="text-gray-300 font-mono text-xs">{truncateAddress(address)}</div>
+                          </div>
+                          {info && (
+                            <div className="text-right text-xs">
+                              <div className="text-gray-400">{info.accountCount} accounts</div>
+                              <div className="text-gray-400">{info.rentAmountSOL} SOL rent</div>
+                            </div>
+                          )}
+                        </div>
+                        
+                        {info && (
+                          <div className="flex gap-2 mt-2">
+                            {info.isDeactivated ? (
+                              info.canClose ? (
+                                <button
+                                  onClick={() => handleClose(category)}
+                                  disabled={loading && deletingCategory === category}
+                                  className="px-2 py-1 bg-red-600 text-white rounded hover:bg-red-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-xs"
+                                >
+                                  {loading && deletingCategory === category ? 'Closing...' : `Close & Recover ${info.rentAmountSOL} SOL`}
+                                </button>
+                              ) : (
+                                <div className="text-xs text-yellow-400">
+                                  ⏳ Wait {info.minutesUntilCloseable || 0} more minutes to close
+                                </div>
+                              )
+                            ) : (
+                              <button
+                                onClick={() => handleDeactivate(category)}
+                                disabled={loading && deletingCategory === category}
+                                className="px-2 py-1 bg-orange-600 text-white rounded hover:bg-orange-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-xs"
+                              >
+                                {loading && deletingCategory === category ? 'Deactivating...' : 'Deactivate (Step 1)'}
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
