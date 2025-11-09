@@ -1105,33 +1105,9 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       // causes AccountDiscriminatorMismatch errors.
       // Let the SDK determine required bin arrays via remainingAccounts (below).
 
-      // Always include bitmap extension in coverage metas - but verify it first
+      // Always include bitmap extension in coverage metas (required by SDK)
       if (binArrayBitmapExtension) {
-        // CRITICAL FIX: Verify account exists and is owned by correct program before including
-        try {
-          const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
-          const acc = await withRpcLimit(() => connection.getAccountInfo(binArrayBitmapExtension)).catch(() => null);
-          if (acc && acc.owner && typeof acc.owner.equals === 'function' && acc.owner.equals(programId)) {
-            // Account exists and is owned by correct program - include it
-            pushMeta(binArrayBitmapExtension);
-          } else {
-            // Account doesn't exist or has wrong owner - exclude it
-            try { 
-              logger.warn('meteora.dlmm.inject.ext.excluding', { 
-                cat: 'tx', 
-                ctx: { 
-                  address: binArrayBitmapExtension.toBase58(),
-                  exists: !!acc,
-                  owner: acc?.owner?.toBase58?.() || 'none',
-                  expected: programId.toBase58()
-                } 
-              }); 
-            } catch {}
-          }
-        } catch {
-          // If verification fails, exclude it to be safe
-          try { logger.warn('meteora.dlmm.inject.ext.verification_failed', { cat: 'tx' }); } catch {}
-        }
+        pushMeta(binArrayBitmapExtension);
       }
 
       binArrayMetas = coverageMetas.length ? coverageMetas : null;
@@ -1325,92 +1301,25 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     
     if (binArrayLower) accounts.binArrayLower = binArrayLower;
     if (binArrayUpper) accounts.binArrayUpper = binArrayUpper;
-    // Always include the bitmap extension PDA (required account)
+    
+    // Always include the bitmap extension PDA (required by Meteora SDK)
+    // The SDK requires this account even if it doesn't exist on-chain yet
+    // Solana runtime will handle non-existent accounts appropriately
     if (!binArrayBitmapExtension) {
-      // Last resort: ensure it's always set
       const [extPda] = PublicKey.findProgramAddressSync([Buffer.from('bitmap'), poolPk.toBuffer()], programId);
       binArrayBitmapExtension = extPda;
     }
     
-    // CRITICAL FIX: Verify bitmap extension account exists and is owned by correct program
-    // before including it in accounts. If it doesn't exist or has wrong owner, exclude it.
-    let shouldIncludeBitmapExtension = false;
-    try {
-      if (binArrayBitmapExtension) {
-        const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
-        const acc = await withRpcLimit(() => connection.getAccountInfo(binArrayBitmapExtension));
-        if (acc && acc.owner && typeof acc.owner.equals === 'function') {
-          if (acc.owner.equals(programId)) {
-            shouldIncludeBitmapExtension = true;
-            try { logger.info('meteora.dlmm.ext.verified', { cat: 'tx', ctx: { address: binArrayBitmapExtension.toBase58(), owner: acc.owner.toBase58() } }); } catch {}
-          } else {
-            // Account exists but owned by wrong program - exclude it
-            try { 
-              logger.warn('meteora.dlmm.ext.owner_mismatch.excluding', { 
-                cat: 'tx', 
-                code: LogCode.TX_BUILD_ERR, 
-                ctx: { 
-                  address: binArrayBitmapExtension.toBase58(),
-                  owner: acc.owner?.toBase58?.(), 
-                  expected: programId?.toBase58?.() 
-                } 
-              }); 
-            } catch {}
-            binArrayBitmapExtension = undefined;
-          }
-        } else if (!acc) {
-          // Account doesn't exist - might need initialization, but don't include in swap instruction
-          try { 
-            logger.warn('meteora.dlmm.ext.missing_on_chain.excluding', { 
-              cat: 'tx', 
-              code: LogCode.TX_BUILD_ERR, 
-              ctx: { expected: programId?.toBase58?.() } 
-            }); 
-          } catch {}
-          binArrayBitmapExtension = undefined;
-        }
-      }
-    } catch (e: any) {
-      // If we can't verify, err on the side of caution and exclude it
-      try { 
-        logger.warn('meteora.dlmm.ext.verification_failed.excluding', { 
-          cat: 'tx', 
-          code: LogCode.TX_BUILD_ERR, 
-          ctx: { error: String(e?.message || e) } 
-        }); 
-      } catch {}
-      binArrayBitmapExtension = undefined;
-    }
+    // Always include in accounts - SDK requires this field to be present
+    accounts.binArrayBitmapExtension = binArrayBitmapExtension;
     
-    // Only include bitmap extension if verified
-    if (binArrayBitmapExtension && shouldIncludeBitmapExtension) {
-      accounts.binArrayBitmapExtension = binArrayBitmapExtension;
-    } else {
-      // Remove from accounts if it was set
-      delete accounts.binArrayBitmapExtension;
-    }
-    
-    // Also remove from coverageMetas if it was added there
+    // Log for debugging purposes
     try {
-      if (binArrayMetas && Array.isArray(binArrayMetas)) {
-        const extPkStr = binArrayBitmapExtension?.toBase58();
-        if (extPkStr) {
-          binArrayMetas = binArrayMetas.filter((m: any) => {
-            try {
-              const pk = m?.pubkey || m?.publicKey || m?.address;
-              const pkStr = pk instanceof PublicKey ? pk.toBase58() : (typeof pk === 'string' ? pk : String(pk));
-              return pkStr !== extPkStr;
-            } catch {
-              return true;
-            }
-          });
-        }
-      }
+      logger.debug('meteora.dlmm.ext.included', { 
+        cat: 'tx', 
+        ctx: { address: binArrayBitmapExtension.toBase58() } 
+      });
     } catch {}
-    
-    // Note: Initialization logic removed - if account doesn't exist or has wrong owner,
-    // it's already excluded above. Initialization should be handled in a separate transaction.
-    // The account is only included if it exists and is owned by the correct program.
 
     // Extend with host/referral fee handling and reserves when available
     const acctBase: any = { ...accounts, hostFeeIn: null };
