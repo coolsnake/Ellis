@@ -1931,9 +1931,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     
     const ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
     
-    // Safety net: inject bin metas into instruction if builder.remainingAccounts did not attach them
     if (ix) {
-      await injectBinArrayMetas(ix, DLMM, connection, poolPk, programId);
       try { logger.debug('meteora.dlmm.swap.ok', { cat: 'tx' }); } catch {}
       return [...setupIxs, ix];
     }
