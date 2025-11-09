@@ -1,5 +1,5 @@
 import { Connection } from '@solana/web3.js';
-import { CONFIG } from '../config.js';
+import { CONFIG } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 
 /**
