@@ -285,6 +285,24 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
           try {
             const prevHop = plan.hops[i - 1];
             
+            // Log current state before propagation
+            try {
+              logger.info('tx.build.amount_propagation.before', {
+                cat: 'tx',
+                code: LogCode.TX_BUILD_HOP,
+                ctx: {
+                  traceId,
+                  hopIndex: i,
+                  prevHopIndex: i - 1,
+                  currentAmountInRaw: hop.amountInRaw.toString(),
+                  prevHopQuotedOutputRaw: prevHop?.quotedOutputRaw?.toString() || 'N/A',
+                  prevHopMinOutRaw: prevHop?.minOutRaw?.toString() || 'N/A',
+                  inputMint: hop.inputMint,
+                  outputMint: prevHop.outputMint,
+                }
+              });
+            } catch {}
+            
             // Always prefer quotedOutputRaw for multi-hop swaps when available
             if (prevHop?.quotedOutputRaw && prevHop.quotedOutputRaw > 0n) {
               // Use exact quoted output, even if amountInRaw is already set
@@ -301,6 +319,9 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
                       prevHopIndex: i - 1,
                       previousAmount: hop.amountInRaw.toString(),
                       exactAmount: exactAmount.toString(),
+                      difference: (hop.amountInRaw > exactAmount 
+                        ? (hop.amountInRaw - exactAmount).toString() 
+                        : (exactAmount - hop.amountInRaw).toString()),
                       inputMint: hop.inputMint,
                       outputMint: prevHop.outputMint,
                       prevHopQuotedOutputRaw: exactAmount.toString(),
@@ -336,6 +357,23 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
                 // Force correct amount even if something tried to modify it
                 hop.amountInRaw = exactAmount;
               }
+              
+              // Log after propagation
+              try {
+                logger.info('tx.build.amount_propagation.after', {
+                  cat: 'tx',
+                  code: LogCode.TX_BUILD_HOP,
+                  ctx: {
+                    traceId,
+                    hopIndex: i,
+                    amountInRaw: hop.amountInRaw.toString(),
+                    exactAmount: exactAmount.toString(),
+                    match: hop.amountInRaw === exactAmount,
+                    inputMint: hop.inputMint,
+                    outputMint: prevHop.outputMint,
+                  }
+                });
+              } catch {}
             } else {
               // Fallback: if quotedOutputRaw not available, try other sources
               // CRITICAL: Always try to fix amount for multi-hop swaps, even if amountInRaw is already set

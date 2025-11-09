@@ -1931,8 +1931,56 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     
     const ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
     
-    // Log instruction accounts after SDK builds it to verify token programs
-    // Also fix token program positions if SDK placed wrong accounts there
+    // CRITICAL FIX: Remove duplicate accounts from instruction
+    // The same account should not appear multiple times with different flags
+    if (ix && Array.isArray(ix.keys)) {
+      const seen = new Map<string, { index: number; key: any }>();
+      const duplicates: number[] = [];
+      
+      for (let i = 0; i < ix.keys.length; i++) {
+        const key = ix.keys[i];
+        try {
+          const pk = key?.pubkey instanceof PublicKey ? key.pubkey : (typeof key?.pubkey === 'string' ? new PublicKey(key.pubkey) : null);
+          if (pk) {
+            const pkStr = pk.toBase58();
+            if (seen.has(pkStr)) {
+              // Duplicate found - keep the one with isWritable=true if either has it
+              const existing = seen.get(pkStr)!;
+              const existingWritable = existing.key?.isWritable || false;
+              const currentWritable = key?.isWritable || false;
+              
+              if (currentWritable && !existingWritable) {
+                // Current is writable, existing is not - replace existing
+                duplicates.push(existing.index);
+                seen.set(pkStr, { index: i, key });
+              } else {
+                // Keep existing, mark current as duplicate
+                duplicates.push(i);
+              }
+            } else {
+              seen.set(pkStr, { index: i, key });
+            }
+          }
+        } catch {}
+      }
+      
+      // Remove duplicates in reverse order to maintain indices
+      if (duplicates.length > 0) {
+        duplicates.sort((a, b) => b - a);
+        for (const idx of duplicates) {
+          ix.keys.splice(idx, 1);
+        }
+        try { 
+          logger.warn('meteora.dlmm.duplicate_accounts.removed', { 
+            cat: 'tx', 
+            ctx: { removedCount: duplicates.length, newAccountCount: ix.keys.length } 
+          }); 
+        } catch {}
+      }
+    }
+    
+    // CRITICAL FIX: Ensure token programs are at positions 11-12 AFTER duplicate removal
+    // Duplicate removal can shift account positions, so we need to fix this after
     if (ix && Array.isArray(ix.keys)) {
       try {
         const TOKEN_PROGRAM_ID_STR = TOKEN_PROGRAM_ID.toBase58();
@@ -1993,7 +2041,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         // Log final state
         const accountAt11 = ix.keys[11] ? ((ix.keys[11] as any).pubkey instanceof PublicKey ? (ix.keys[11] as any).pubkey.toBase58() : String((ix.keys[11] as any).pubkey)) : 'missing';
         const accountAt12 = ix.keys[12] ? ((ix.keys[12] as any).pubkey instanceof PublicKey ? (ix.keys[12] as any).pubkey.toBase58() : String((ix.keys[12] as any).pubkey)) : 'missing';
-        logger.info('meteora.dlmm.instruction.after_sdk', {
+        logger.info('meteora.dlmm.instruction.after_duplicate_removal', {
           cat: 'tx',
           ctx: {
             poolId: hop.poolId,
@@ -2007,54 +2055,6 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           }
         });
       } catch {}
-    }
-    
-    // CRITICAL FIX: Remove duplicate accounts from instruction
-    // The same account should not appear multiple times with different flags
-    if (ix && Array.isArray(ix.keys)) {
-      const seen = new Map<string, { index: number; key: any }>();
-      const duplicates: number[] = [];
-      
-      for (let i = 0; i < ix.keys.length; i++) {
-        const key = ix.keys[i];
-        try {
-          const pk = key?.pubkey instanceof PublicKey ? key.pubkey : (typeof key?.pubkey === 'string' ? new PublicKey(key.pubkey) : null);
-          if (pk) {
-            const pkStr = pk.toBase58();
-            if (seen.has(pkStr)) {
-              // Duplicate found - keep the one with isWritable=true if either has it
-              const existing = seen.get(pkStr)!;
-              const existingWritable = existing.key?.isWritable || false;
-              const currentWritable = key?.isWritable || false;
-              
-              if (currentWritable && !existingWritable) {
-                // Current is writable, existing is not - replace existing
-                duplicates.push(existing.index);
-                seen.set(pkStr, { index: i, key });
-              } else {
-                // Keep existing, mark current as duplicate
-                duplicates.push(i);
-              }
-            } else {
-              seen.set(pkStr, { index: i, key });
-            }
-          }
-        } catch {}
-      }
-      
-      // Remove duplicates in reverse order to maintain indices
-      if (duplicates.length > 0) {
-        duplicates.sort((a, b) => b - a);
-        for (const idx of duplicates) {
-          ix.keys.splice(idx, 1);
-        }
-        try { 
-          logger.warn('meteora.dlmm.duplicate_accounts.removed', { 
-            cat: 'tx', 
-            ctx: { removedCount: duplicates.length, newAccountCount: ix.keys.length } 
-          }); 
-        } catch {}
-      }
     }
     
     // Final safety check: validate and correct userTokenOut in the actual instruction
@@ -2706,6 +2706,25 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     const amountInBn = new BN(String(hop.amountInRaw ?? 0n));
     const minOutBn = new BN(String(hop.minOutRaw ?? 0n));
     const sqrtLimitBn = new BN(String(hop.sqrtPriceLimitX64 ?? 0n));
+
+    // CRITICAL: Log exact amount being used for multihop debugging
+    // This helps identify if amountInRaw is correct before building the instruction
+    try {
+      logger.info('raydium.clmm.build.amount', {
+        cat: 'tx',
+        code: LogCode.TX_BUILD_HOP,
+        ctx: {
+          pool: hop.poolId,
+          amountInRaw: hop.amountInRaw?.toString() || '0',
+          amountInBn: amountInBn.toString(),
+          minOutRaw: hop.minOutRaw?.toString() || '0',
+          quotedOutputRaw: hop.quotedOutputRaw?.toString() || 'N/A',
+          useExactAmount: hop.useExactAmount || false,
+          inputMint: hop.inputMint,
+          outputMint: hop.outputMint,
+        } as any,
+      });
+    } catch {}
 
     const res = (ClmmInstrument as any).makeSwapBaseInInstructions({
       poolInfo,
