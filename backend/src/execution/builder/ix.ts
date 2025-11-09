@@ -1931,6 +1931,58 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     
     const ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
     
+    // Remove duplicate accounts from remaining accounts section only
+    // Core instruction accounts (first ~15) must preserve SDK ordering
+    if (ix && Array.isArray(ix.keys) && ix.keys.length > 15) {
+      try {
+        const coreAccountCount = 15; // Preserve core instruction accounts
+        const seen = new Set<string>();
+        
+        // Add core accounts to seen set
+        for (let i = 0; i < Math.min(coreAccountCount, ix.keys.length); i++) {
+          const key = ix.keys[i];
+          const pk = key?.pubkey instanceof PublicKey ? key.pubkey : (typeof key?.pubkey === 'string' ? new PublicKey(key.pubkey) : null);
+          if (pk) {
+            seen.add(pk.toBase58());
+          }
+        }
+        
+        // Filter remaining accounts, keeping first occurrence
+        const dedupedRemainingAccounts = [];
+        for (let i = coreAccountCount; i < ix.keys.length; i++) {
+          const key = ix.keys[i];
+          const pk = key?.pubkey instanceof PublicKey ? key.pubkey : (typeof key?.pubkey === 'string' ? new PublicKey(key.pubkey) : null);
+          if (pk) {
+            const pkStr = pk.toBase58();
+            if (!seen.has(pkStr)) {
+              dedupedRemainingAccounts.push(key);
+              seen.add(pkStr);
+            }
+          }
+        }
+        
+        // Replace remaining accounts with deduplicated version
+        const originalCount = ix.keys.length;
+        ix.keys = [...ix.keys.slice(0, coreAccountCount), ...dedupedRemainingAccounts];
+        const removedCount = originalCount - ix.keys.length;
+        
+        if (removedCount > 0) {
+          try {
+            logger.info('meteora.dlmm.remaining_accounts_deduped', {
+              cat: 'tx',
+              ctx: {
+                poolId: hop.poolId,
+                originalCount,
+                newCount: ix.keys.length,
+                removedCount,
+                coreAccountCount
+              }
+            });
+          } catch {}
+        }
+      } catch {}
+    }
+    
     if (ix) {
       try { logger.debug('meteora.dlmm.swap.ok', { cat: 'tx' }); } catch {}
       return [...setupIxs, ix];
