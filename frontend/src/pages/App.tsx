@@ -25,6 +25,7 @@ import { GraphConfig } from '../components/GraphConfig';
 import { SystemConfig } from '../components/SystemConfig';
 import { GraphView } from '../components/GraphView';
 import { CollapsibleSection } from '../components/CollapsibleSection';
+import { AltManagementModal } from '../components/AltManagementModal';
 import { setLogLevel as setFrontendLogLevel } from '../utils/logger';
 import { maskRpcUrl } from '../utils/mask';
 import { useSystem } from '../app/contexts/system';
@@ -71,6 +72,7 @@ export const App: React.FC = () => {
   const [showGraphConfig, setShowGraphConfig] = useState(false);
   const [showEngineConfig, setShowEngineConfig] = useState(false);
   const [showOpportunityConfig, setShowOpportunityConfig] = useState(false);
+  const [showAltModal, setShowAltModal] = useState(false);
   const [showLiqConfig, setShowLiqConfig] = useState(false);
   const [showGraph, setShowGraph] = useState(false);
   // socket managed by context; remove local ref after full migration
@@ -1673,6 +1675,7 @@ export const App: React.FC = () => {
               <button onClick={()=>setShowEngineConfig(true)} className="px-3 py-1 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Arb Engine</button>
               <button onClick={()=>setShowOpportunityConfig(true)} className="px-3 py-1 bg-fuchsia-600 text-white rounded text-sm hover:bg-fuchsia-700">Opportunity Config</button>
               <button onClick={()=>setShowGraphConfig(true)} className="px-3 py-1 bg-teal-600 text-white rounded text-sm hover:bg-teal-700">Graph Config</button>
+              <button onClick={()=>setShowAltModal(true)} className="px-3 py-1 bg-purple-600 text-white rounded text-sm hover:bg-purple-700">Manage ALTs</button>
             </>
           )}
         >
@@ -2455,6 +2458,9 @@ export const App: React.FC = () => {
             setSystem(sys);
           } catch {}
         }} />
+      )}
+      {showAltModal && (
+        <AltManagementModal onClose={() => setShowAltModal(false)} />
       )}
     </div>
   );

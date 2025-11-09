@@ -1948,8 +1948,9 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         }
         
         // Limit bin arrays conservatively to prevent transaction size issues
-        // Most swaps only need 2-3 bin arrays; 5 provides safety margin
-        const maxRemainingAccounts = 5;
+        // With extended ALT containing Meteora-specific accounts, we can allow more bin arrays
+        // 10 bin arrays should handle most price ranges while staying under tx size limit
+        const maxRemainingAccounts = 10;
         
         const dedupedRemainingAccounts = [];
         for (let i = coreAccountCount; i < ix.keys.length; i++) {

@@ -783,9 +783,61 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
     // Lower threshold for CLMM swaps - they always have many accounts
     const hasClmmSwap = plan.hops.some(h => h.dex === 'raydium' && h.variant === 'clmm');
     const shouldUseAlts = isMultiHop || allAccounts.length > 15 || hasClmmSwap;
-    const altAddresses = shouldUseAlts 
-      ? await dexAltManager.getAltAddresses(allAccounts, isMultiHop || hasClmmSwap)
-      : [];
+    
+    // Load DEX-specific ALTs based on hops
+    let altAddresses: string[] = [];
+    if (shouldUseAlts) {
+      // 1. Always include common ALT
+      const commonAltAddr = dexAltManager.getAllAltAddresses().find(addr => {
+        // Check if this is the common ALT (will be registered with 'common' key)
+        try {
+          for (const [key, value] of (dexAltManager as any).altAddresses.entries()) {
+            if (key === 'common' && value.toBase58() === addr) return true;
+          }
+        } catch {}
+        return false;
+      });
+      if (commonAltAddr) {
+        altAddresses.push(commonAltAddr);
+      }
+      
+      // 2. Load DEX-specific ALTs based on hops
+      const dexCategories = new Set<string>();
+      for (const hop of plan.hops) {
+        const dex = hop.dex;
+        const variant = hop.variant;
+        if (dex === 'raydium') {
+          dexCategories.add(variant === 'clmm' ? 'raydium-clmm' : 'raydium-amm');
+        } else if (dex === 'orca') {
+          dexCategories.add('orca-whirlpool');
+        } else if (dex === 'meteora') {
+          dexCategories.add('meteora-dlmm');
+        }
+      }
+      
+      // Add DEX ALTs if they exist
+      for (const category of dexCategories) {
+        try {
+          const altAddr = (dexAltManager as any).altAddresses.get(category);
+          if (altAddr) {
+            altAddresses.push(altAddr.toBase58());
+          }
+        } catch {}
+      }
+      
+      // Log ALT usage
+      try {
+        logger.info('tx.build.alts.loaded', {
+          cat: 'tx',
+          ctx: {
+            traceId,
+            altCount: altAddresses.length,
+            categories: Array.from(dexCategories),
+            altAddresses,
+          } as any,
+        });
+      } catch {}
+    }
     
     // After transaction is built, schedule closures and mark accounts as used:
     if (scheduledClosures.length > 0 || (CONFIG.system as any)?.autoCloseAccounts !== false) {

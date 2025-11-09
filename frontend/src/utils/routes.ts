@@ -61,6 +61,9 @@ export const ROUTES = {
       create: '/arb/alts/create',
       collectAccounts: '/arb/alts/collect-accounts',
       extendWithCategory: '/arb/alts/extend-with-category',
+      poolsByDex: '/arb/alts/pools-by-dex',
+      createDex: '/arb/alts/create-dex-alt',
+      refreshDex: '/arb/alts/refresh-dex-alt',
     },
   },
   exec: {

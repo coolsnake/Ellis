@@ -332,6 +332,176 @@ export function createArbRouter(io: SocketIOServer): Router {
     }
   });
 
+  // Get pools by DEX with liquidity data (for preview)
+  api.get('/arb/alts/pools-by-dex', async (req, res) => {
+    try {
+      const dex = String(req.query.dex || 'raydium') as 'raydium' | 'orca' | 'meteora' | 'meteora-balanced';
+      const poolType = String(req.query.poolType || 'both') as 'amm' | 'clmm' | 'both';
+      const maxPools = Math.min(100, Math.max(1, Number(req.query.maxPools) || 30));
+
+      // Import graph to get pool data
+      const { getGraphSnapshot } = await import('../graph.js');
+      const snapshot = await getGraphSnapshot();
+
+      if (!snapshot || !snapshot.edges) {
+        return res.status(503).json({ error: 'Graph snapshot not available' });
+      }
+
+      // Filter edges by DEX and pool type
+      let filtered = snapshot.edges.filter(edge => {
+        const edgeDex = String(edge.dex || '').toLowerCase();
+        const dexMatch = edgeDex === dex.toLowerCase() || 
+                        (dex === 'meteora' && edgeDex === 'meteora') ||
+                        (dex === 'orca' && edgeDex === 'orca');
+        
+        if (!dexMatch) return false;
+        
+        if (poolType === 'both') return true;
+        return edge.pool_kind === poolType;
+      });
+
+      // Sort by liquidity metrics
+      filtered.sort((a, b) => {
+        const getLiquidity = (edge: any): number => {
+          if (edge.tvl_usd && edge.tvl_usd > 0) return edge.tvl_usd;
+          if (edge.liquidity_display && edge.liquidity_display > 0) return edge.liquidity_display;
+          if (edge.liquidity_base && edge.liquidity_base > 0) return edge.liquidity_base;
+          if (edge.liquidity && edge.liquidity > 0) return edge.liquidity;
+          return 0;
+        };
+        return getLiquidity(b) - getLiquidity(a);
+      });
+
+      // Deduplicate by pool_id and take top N
+      const poolIds = new Set<string>();
+      const pools: any[] = [];
+      
+      for (const edge of filtered) {
+        if (!edge.pool_id) continue;
+        if (poolIds.has(edge.pool_id)) continue;
+        poolIds.add(edge.pool_id);
+        
+        const tvl = edge.tvl_usd || edge.liquidity_display || edge.liquidity_base || edge.liquidity || 0;
+        
+        pools.push({
+          poolId: edge.pool_id,
+          dex: edge.dex,
+          poolKind: edge.pool_kind,
+          mintA: edge.source,
+          mintB: edge.target,
+          tvl,
+          feeBps: edge.fee_bps,
+        });
+        
+        if (pools.length >= maxPools) break;
+      }
+
+      res.json({
+        dex,
+        poolType,
+        poolCount: pools.length,
+        pools,
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Create DEX-specific ALT with top pools
+  api.post('/arb/alts/create-dex-alt', async (req, res) => {
+    try {
+      const body = req.body || {};
+      const dex = String(body.dex || 'raydium') as 'raydium' | 'orca' | 'meteora' | 'meteora-balanced';
+      const poolType = String(body.poolType || 'both') as 'amm' | 'clmm' | 'both';
+      const maxPools = Math.min(50, Math.max(1, Number(body.maxPools) || 30));
+      const category = String(body.category || `${dex}-${poolType === 'both' ? 'all' : poolType}`);
+
+      if (!dex) {
+        return res.status(400).json({ error: 'dex parameter is required' });
+      }
+
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      
+      // Collect accounts for the DEX pools
+      const accounts = await dexAltManager.collectDexPoolAccounts(dex, poolType, maxPools);
+
+      if (accounts.length === 0) {
+        return res.status(400).json({ error: 'No accounts collected for the specified DEX and pool type' });
+      }
+
+      // Create the ALT
+      const result = await dexAltManager.createAndExtendAlt(category, accounts);
+
+      res.json({
+        ...result,
+        dex,
+        poolType,
+        maxPools,
+        category,
+        poolCount: maxPools,
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Refresh/extend existing DEX ALT with updated pool list
+  api.post('/arb/alts/refresh-dex-alt', async (req, res) => {
+    try {
+      const body = req.body || {};
+      const category = String(body.category || '');
+      const maxPools = Math.min(50, Math.max(1, Number(body.maxPools) || 30));
+
+      if (!category) {
+        return res.status(400).json({ error: 'category parameter is required' });
+      }
+
+      // Parse category to get dex and poolType
+      // Expected format: 'raydium-amm', 'orca-whirlpool', 'meteora-dlmm', etc.
+      let dex: 'raydium' | 'orca' | 'meteora' | 'meteora-balanced' = 'raydium';
+      let poolType: 'amm' | 'clmm' | 'both' = 'both';
+
+      if (category.includes('raydium')) {
+        dex = 'raydium';
+        if (category.includes('amm')) poolType = 'amm';
+        else if (category.includes('clmm')) poolType = 'clmm';
+      } else if (category.includes('orca')) {
+        dex = 'orca';
+        poolType = 'clmm'; // Orca only has Whirlpool (CLMM)
+      } else if (category.includes('meteora')) {
+        if (category.includes('balanced')) {
+          dex = 'meteora-balanced';
+          poolType = 'amm';
+        } else {
+          dex = 'meteora';
+          poolType = 'clmm'; // Meteora DLMM
+        }
+      }
+
+      const { dexAltManager } = await import('../../execution/utils/altManager.js');
+      
+      // Collect fresh accounts for the DEX pools
+      const accounts = await dexAltManager.collectDexPoolAccounts(dex, poolType, maxPools);
+
+      if (accounts.length === 0) {
+        return res.status(400).json({ error: 'No accounts collected for refresh' });
+      }
+
+      // Extend the existing ALT
+      const result = await dexAltManager.extendAlt(category, accounts);
+
+      res.json({
+        ...result,
+        dex,
+        poolType,
+        maxPools,
+        category,
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   // Trigger a one-off Raydium CLMM static precompute for a pool id
   api.post('/arb/clmm/refresh', async (req: Request, res: Response) => {
     try {

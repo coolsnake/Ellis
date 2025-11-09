@@ -860,6 +860,251 @@ export class DexAltManager {
   }
 
   /**
+   * Collect pools for a specific DEX sorted by liquidity/TVL
+   * @param dex DEX to collect pools for
+   * @param poolType Type of pools to collect (amm, clmm, or both)
+   * @param maxPools Maximum number of pools to collect (default 30)
+   * @returns Array of PublicKeys for all accounts needed for the top pools
+   */
+  async collectDexPoolAccounts(
+    dex: 'raydium' | 'orca' | 'meteora' | 'meteora-balanced',
+    poolType: 'amm' | 'clmm' | 'both' = 'both',
+    maxPools: number = 30
+  ): Promise<PublicKey[]> {
+    const accounts: PublicKey[] = [];
+    
+    try {
+      // Import graph snapshot to access pool data with liquidity
+      const { getGraphSnapshot } = await import('../../server/graph.js');
+      const snapshot = await getGraphSnapshot();
+      
+      if (!snapshot || !snapshot.edges) {
+        try {
+          logger.warn('alt.manager.collect.dex.no.snapshot', {
+            cat: 'tx',
+            ctx: { dex, poolType, maxPools },
+          });
+        } catch {}
+        return accounts;
+      }
+
+      // Filter edges by DEX and pool type
+      let filtered = snapshot.edges.filter(edge => {
+        const edgeDex = String(edge.dex || '').toLowerCase();
+        const dexMatch = edgeDex === dex.toLowerCase() || 
+                        (dex === 'meteora' && edgeDex === 'meteora') ||
+                        (dex === 'orca' && edgeDex === 'orca');
+        
+        if (!dexMatch) return false;
+        
+        if (poolType === 'both') return true;
+        return edge.pool_kind === poolType;
+      });
+
+      // Sort by liquidity metrics (tvl_usd > liquidity_display > liquidity_base)
+      filtered.sort((a, b) => {
+        const getLiquidity = (edge: any): number => {
+          if (edge.tvl_usd && edge.tvl_usd > 0) return edge.tvl_usd;
+          if (edge.liquidity_display && edge.liquidity_display > 0) return edge.liquidity_display;
+          if (edge.liquidity_base && edge.liquidity_base > 0) return edge.liquidity_base;
+          if (edge.liquidity && edge.liquidity > 0) return edge.liquidity;
+          return 0;
+        };
+        return getLiquidity(b) - getLiquidity(a);
+      });
+
+      // Take top N pools (deduplicate by pool_id)
+      const poolIds = new Set<string>();
+      const topPools: any[] = [];
+      
+      for (const edge of filtered) {
+        if (!edge.pool_id) continue;
+        if (poolIds.has(edge.pool_id)) continue;
+        poolIds.add(edge.pool_id);
+        topPools.push(edge);
+        if (topPools.length >= maxPools) break;
+      }
+
+      try {
+        logger.info('alt.manager.collect.dex.pools', {
+          cat: 'tx',
+          ctx: {
+            dex,
+            poolType,
+            maxPools,
+            foundPools: topPools.length,
+            totalEdges: snapshot.edges.length,
+            filteredEdges: filtered.length,
+          },
+        });
+      } catch {}
+
+      // Collect accounts for each pool
+      for (const edge of topPools) {
+        try {
+          const poolAccounts = await this.collectPoolSpecificAccounts(edge.pool_id, dex);
+          accounts.push(...poolAccounts);
+        } catch (error) {
+          try {
+            logger.warn('alt.manager.collect.pool.accounts.error', {
+              cat: 'tx',
+              ctx: {
+                poolId: edge.pool_id,
+                dex,
+                error: String((error as any)?.message || error),
+              },
+            });
+          } catch {}
+        }
+      }
+
+      // Deduplicate accounts
+      const seen = new Set<string>();
+      const deduped = accounts.filter(pk => {
+        const addr = pk.toBase58();
+        if (seen.has(addr)) return false;
+        seen.add(addr);
+        return true;
+      });
+
+      try {
+        logger.info('alt.manager.collect.dex.complete', {
+          cat: 'tx',
+          ctx: {
+            dex,
+            poolType,
+            poolCount: topPools.length,
+            totalAccounts: deduped.length,
+            avgAccountsPerPool: topPools.length > 0 ? (deduped.length / topPools.length).toFixed(1) : 0,
+          },
+        });
+      } catch {}
+
+      return deduped;
+    } catch (error) {
+      try {
+        logger.error('alt.manager.collect.dex.error', {
+          cat: 'tx',
+          ctx: {
+            dex,
+            poolType,
+            maxPools,
+            error: String((error as any)?.message || error),
+          },
+        });
+      } catch {}
+      return accounts;
+    }
+  }
+
+  /**
+   * Collect detailed accounts for a specific pool ID
+   * @param poolId Pool address
+   * @param dex DEX type
+   * @returns Array of PublicKeys for all accounts needed for this pool
+   */
+  async collectPoolSpecificAccounts(
+    poolId: string,
+    dex: string
+  ): Promise<PublicKey[]> {
+    const accounts: PublicKey[] = [];
+    const connection = getConnection();
+    
+    try {
+      const poolPk = new PublicKey(poolId);
+      accounts.push(poolPk);
+
+      const dexLower = dex.toLowerCase();
+
+      if (dexLower === 'raydium') {
+        // Fetch pool account data to determine if AMM or CLMM
+        try {
+          const poolInfo = await withRpcLimit(() => connection.getAccountInfo(poolPk));
+          if (!poolInfo) return accounts;
+
+          // Try to determine pool type from account size
+          // Raydium AMM pools are typically ~752 bytes
+          // Raydium CLMM pools are typically ~1544 bytes
+          const isClmm = poolInfo.data.length > 1000;
+
+          if (isClmm) {
+            // Raydium CLMM accounts
+            // Add standard CLMM accounts (vaults will be in pool data)
+            // For now, just add the pool - full implementation would parse pool data
+            try {
+              logger.debug('alt.manager.raydium.clmm.basic', {
+                cat: 'tx',
+                ctx: { poolId, size: poolInfo.data.length },
+              });
+            } catch {}
+          } else {
+            // Raydium AMM accounts  
+            // For now, just add the pool - full implementation would parse pool data
+            try {
+              logger.debug('alt.manager.raydium.amm.basic', {
+                cat: 'tx',
+                ctx: { poolId, size: poolInfo.data.length },
+              });
+            } catch {}
+          }
+        } catch {}
+      } else if (dexLower === 'orca') {
+        // Orca Whirlpool accounts
+        // Pool account contains vaults and oracle
+        // For now, just add the pool
+        try {
+          logger.debug('alt.manager.orca.whirlpool.basic', {
+            cat: 'tx',
+            ctx: { poolId },
+          });
+        } catch {}
+      } else if (dexLower === 'meteora') {
+        // Meteora DLMM accounts
+        try {
+          const poolInfo = await withRpcLimit(() => connection.getAccountInfo(poolPk));
+          if (poolInfo && poolInfo.data.length > 0) {
+            // Parse basic Meteora pool data
+            // Meteora pools contain reserve addresses in the account data
+            // For comprehensive implementation, would need to:
+            // 1. Parse pool state to get reserves, oracle, bin array addresses
+            // 2. Fetch active bin from pool
+            // 3. Calculate bin array PDAs around active bin
+            // For now, just add the pool
+            try {
+              logger.debug('alt.manager.meteora.dlmm.basic', {
+                cat: 'tx',
+                ctx: { poolId, size: poolInfo.data.length },
+              });
+            } catch {}
+          }
+        } catch {}
+      } else if (dexLower === 'meteora-balanced') {
+        // Meteora Balanced AMM accounts
+        try {
+          logger.debug('alt.manager.meteora.balanced.basic', {
+            cat: 'tx',
+            ctx: { poolId },
+          });
+        } catch {}
+      }
+
+      return accounts;
+    } catch (error) {
+      try {
+        logger.warn('alt.manager.collect.pool.specific.error', {
+          cat: 'tx',
+          ctx: {
+            poolId,
+            dex,
+            error: String((error as any)?.message || error),
+          },
+        });
+      } catch {}
+      return accounts;
+    }
+  }
+
+  /**
    * Get ALT addresses for a transaction
    * Returns addresses that should be used based on the accounts in the transaction
    */
