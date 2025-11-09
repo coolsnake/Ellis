@@ -781,6 +781,27 @@ export class DexAltManager {
           accounts.push(new PublicKey(mint));
         } catch {}
       }
+
+      // System programs (appear in every transaction)
+      accounts.push(new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')); // Token Program
+      accounts.push(new PublicKey('11111111111111111111111111111111')); // System Program
+      accounts.push(new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL')); // ATA Program
+      
+      // Meteora-specific common accounts
+      accounts.push(new PublicKey('D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6')); // Event Authority PDA (appears in EVERY Meteora swap)
+      
+      // Frequently used pool accounts (SOL/USDC pool)
+      accounts.push(new PublicKey('DwZz4S1Z1LBXomzmncQRVKCYhjCqSAMQ6RPKbUAadr7H')); // SOL/USDC vault A
+      accounts.push(new PublicKey('4N22J4vW2juHocTntJNmXywSonYjkndCwahjZ2cYLDgb')); // SOL/USDC vault B
+      accounts.push(new PublicKey('BzQsUBAbd21nrNDgc7D55EwnABC16uZJ41mgxxqYydHJ')); // SOL/USDC bitmap ext
+      accounts.push(new PublicKey('BGm1tav58oGcsQJehL9WXBFXF7D27vZsKefj4xJKD5Y')); // SOL/USDC pool
+      
+      // USDC/USDT pool (second most common)
+      accounts.push(new PublicKey('ARwi1S4DaiTG5DX7S4M4ZsrXqpMD1MrTmbu9ue2tpmEq')); // USDC/USDT pool
+      accounts.push(new PublicKey('Bf3jBnSsKK7FT5xgUMqfaGoGW7JHKpDftua7BfxMt4Nq')); // USDC/USDT bitmap ext
+      accounts.push(new PublicKey('GkTrsQsu8WvrbairmN12aUKk74qHivRNFxaT5YxCECKQ')); // USDC/USDT vault A
+      accounts.push(new PublicKey('4STreSrMtf8umxyei9DaZG4bX3TGw3Xz41XNHd')); // USDC/USDT vault B
+      
     } catch (error) {
       try {
         logger.warn('alt.manager.collect.error', {
