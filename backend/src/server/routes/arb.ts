@@ -365,7 +365,7 @@ export function createArbRouter(io: SocketIOServer): Router {
         const getLiquidity = (edge: any): number => {
           if (edge.tvl_usd && edge.tvl_usd > 0) return edge.tvl_usd;
           if (edge.liquidity_display && edge.liquidity_display > 0) return edge.liquidity_display;
-          if (edge.liquidity_base && edge.liquidity_base > 0) return edge.liquidity_base;
+          if (edge.pool_liquidity_raw && edge.pool_liquidity_raw > 0) return edge.pool_liquidity_raw;
           if (edge.liquidity && edge.liquidity > 0) return edge.liquidity;
           return 0;
         };
@@ -381,7 +381,7 @@ export function createArbRouter(io: SocketIOServer): Router {
         if (poolIds.has(edge.pool_id)) continue;
         poolIds.add(edge.pool_id);
         
-        const tvl = edge.tvl_usd || edge.liquidity_display || edge.liquidity_base || edge.liquidity || 0;
+        const tvl = edge.tvl_usd || edge.liquidity_display || edge.pool_liquidity_raw || edge.liquidity || 0;
         
         pools.push({
           poolId: edge.pool_id,

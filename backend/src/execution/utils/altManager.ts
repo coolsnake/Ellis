@@ -901,12 +901,12 @@ export class DexAltManager {
         return edge.pool_kind === poolType;
       });
 
-      // Sort by liquidity metrics (tvl_usd > liquidity_display > liquidity_base)
+      // Sort by liquidity metrics (tvl_usd > liquidity_display > pool_liquidity_raw > liquidity)
       filtered.sort((a, b) => {
         const getLiquidity = (edge: any): number => {
           if (edge.tvl_usd && edge.tvl_usd > 0) return edge.tvl_usd;
           if (edge.liquidity_display && edge.liquidity_display > 0) return edge.liquidity_display;
-          if (edge.liquidity_base && edge.liquidity_base > 0) return edge.liquidity_base;
+          if (edge.pool_liquidity_raw && edge.pool_liquidity_raw > 0) return edge.pool_liquidity_raw;
           if (edge.liquidity && edge.liquidity > 0) return edge.liquidity;
           return 0;
         };
