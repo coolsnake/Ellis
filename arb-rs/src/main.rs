@@ -520,13 +520,10 @@ async fn main() -> anyhow::Result<()> {
                     let mut rejected_too_low_profit: usize = 0;
                     let mut rejected_too_high_profit: usize = 0;
                     for c in cycles.into_iter() {
-                        if c.nodes.len() < 2 { 
-                            rejected_too_short += 1;
-                            continue; 
-                        }
                         // Enforce simple cycles and hop bound
+                        // Allow 2-node cycles (e.g., USDC -> SOL -> USDC) for cross-DEX arbitrage
                         let nlen = c.nodes.len();
-                        if nlen < 3 { 
+                        if nlen < 2 { 
                             rejected_too_short += 1;
                             continue; 
                         }

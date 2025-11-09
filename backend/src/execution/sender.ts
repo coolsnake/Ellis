@@ -228,8 +228,39 @@ async function loadLookupTables(connection: Connection, addrs: string[]): Promis
     try {
       const pk = new PublicKey(a);
       const acc = await connection.getAddressLookupTable(pk).then(r => r.value).catch(() => null);
-      if (acc) out.push(acc);
-    } catch {}
+      if (acc) {
+        out.push(acc);
+        try {
+          logger.debug('tx.lookup_table.loaded_individual', {
+            cat: 'tx',
+            ctx: {
+              address: a,
+              accountCount: acc.state.addresses.length,
+            },
+          });
+        } catch {}
+      } else {
+        try {
+          logger.warn('tx.lookup_table.load_failed', {
+            cat: 'tx',
+            ctx: {
+              address: a,
+              error: 'Failed to load ALT account',
+            },
+          });
+        } catch {}
+      }
+    } catch (err) {
+      try {
+        logger.warn('tx.lookup_table.load_error', {
+          cat: 'tx',
+          ctx: {
+            address: a,
+            error: String((err as any)?.message || err),
+          },
+        });
+      } catch {}
+    }
   }
   return out;
 }
@@ -470,6 +501,86 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
     }
   }
   
+  // Analyze ALT coverage before attempting compilation
+  try {
+    const allTxAccounts = new Set<string>();
+    const altAccountSet = new Set<string>();
+    
+    // Collect all accounts from instructions
+    for (const ix of realIxs) {
+      if (ix.programId) {
+        allTxAccounts.add(ix.programId.toBase58());
+      }
+      if (ix.keys) {
+        for (const key of ix.keys) {
+          if (key.pubkey) {
+            allTxAccounts.add(key.pubkey.toBase58());
+          }
+        }
+      }
+    }
+    
+    // Collect all accounts available in ALTs
+    for (const alt of lookupTables) {
+      if (alt.state?.addresses) {
+        for (const addr of alt.state.addresses) {
+          altAccountSet.add(addr.toBase58());
+        }
+      }
+    }
+    
+    // Find accounts NOT covered by ALTs
+    const uncoveredAccounts: string[] = [];
+    for (const account of allTxAccounts) {
+      if (!altAccountSet.has(account)) {
+        uncoveredAccounts.add(account);
+      }
+    }
+    
+    const coveredCount = allTxAccounts.size - uncoveredAccounts.length;
+    const coveragePercent = allTxAccounts.size > 0 
+      ? Math.round((coveredCount / allTxAccounts.size) * 100) 
+      : 0;
+    
+    logger.info('tx.alt.coverage.analysis', {
+      cat: 'tx',
+      ctx: {
+        txId,
+        totalAccounts: allTxAccounts.size,
+        altCoveredAccounts: coveredCount,
+        uncoveredAccounts: uncoveredAccounts.length,
+        coveragePercent,
+        altCount: lookupTables.length,
+        totalAltAccounts: altAccountSet.size,
+        // Sample of uncovered accounts (first 10)
+        uncoveredSample: uncoveredAccounts.slice(0, 10),
+      },
+    });
+    
+    // If coverage is poor, log more details
+    if (coveragePercent < 50 && uncoveredAccounts.length > 5) {
+      logger.warn('tx.alt.coverage.poor', {
+        cat: 'tx',
+        ctx: {
+          txId,
+          coveragePercent,
+          uncoveredAccounts: uncoveredAccounts,
+          warning: 'Many accounts not in ALTs - transaction may be too large',
+        },
+      });
+    }
+  } catch (analysisErr) {
+    try {
+      logger.warn('tx.alt.coverage.analysis.error', {
+        cat: 'tx',
+        ctx: {
+          txId,
+          error: String((analysisErr as any)?.message || analysisErr),
+        },
+      });
+    } catch {}
+  }
+  
   // Try to compile and serialize with error handling for "encoding overruns" errors
   let msg: any;
   let tx: VersionedTransaction;
@@ -535,6 +646,25 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
     } catch {}
     return { logs: [], err: { TransactionTooLarge: errorMsg }, wireBase64 };
   }
+  
+  // Log successful serialization with size details
+  try {
+    logger.info('tx.serialize.success', {
+      cat: 'tx',
+      ctx: {
+        txId,
+        rawSizeBytes,
+        base64SizeBytes,
+        maxSizeRaw: MAX_TX_SIZE_RAW,
+        maxSizeBase64: MAX_TX_SIZE_BASE64,
+        sizePctUsedRaw: Math.round((rawSizeBytes / MAX_TX_SIZE_RAW) * 100),
+        sizePctUsedBase64: Math.round((base64SizeBytes / MAX_TX_SIZE_BASE64) * 100),
+        ixCount: realIxs.length,
+        lookupTableCount: lookupTables.length,
+        accountCount: totalAccounts,
+      },
+    });
+  } catch {}
   
   const sim = await connection.simulateTransaction(tx, { sigVerify: true });
   if (sim.value?.err) {
@@ -726,6 +856,86 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
         });
       } catch {}
     }
+  }
+  
+  // Analyze ALT coverage before attempting compilation
+  try {
+    const allTxAccounts = new Set<string>();
+    const altAccountSet = new Set<string>();
+    
+    // Collect all accounts from instructions
+    for (const ix of realIxs) {
+      if (ix.programId) {
+        allTxAccounts.add(ix.programId.toBase58());
+      }
+      if (ix.keys) {
+        for (const key of ix.keys) {
+          if (key.pubkey) {
+            allTxAccounts.add(key.pubkey.toBase58());
+          }
+        }
+      }
+    }
+    
+    // Collect all accounts available in ALTs
+    for (const alt of lookupTables) {
+      if (alt.state?.addresses) {
+        for (const addr of alt.state.addresses) {
+          altAccountSet.add(addr.toBase58());
+        }
+      }
+    }
+    
+    // Find accounts NOT covered by ALTs
+    const uncoveredAccounts: string[] = [];
+    for (const account of allTxAccounts) {
+      if (!altAccountSet.has(account)) {
+        uncoveredAccounts.add(account);
+      }
+    }
+    
+    const coveredCount = allTxAccounts.size - uncoveredAccounts.length;
+    const coveragePercent = allTxAccounts.size > 0 
+      ? Math.round((coveredCount / allTxAccounts.size) * 100) 
+      : 0;
+    
+    logger.info('tx.alt.coverage.analysis', {
+      cat: 'tx',
+      ctx: {
+        txId,
+        totalAccounts: allTxAccounts.size,
+        altCoveredAccounts: coveredCount,
+        uncoveredAccounts: uncoveredAccounts.length,
+        coveragePercent,
+        altCount: lookupTables.length,
+        totalAltAccounts: altAccountSet.size,
+        // Sample of uncovered accounts (first 10)
+        uncoveredSample: uncoveredAccounts.slice(0, 10),
+      },
+    });
+    
+    // If coverage is poor, log more details
+    if (coveragePercent < 50 && uncoveredAccounts.length > 5) {
+      logger.warn('tx.alt.coverage.poor', {
+        cat: 'tx',
+        ctx: {
+          txId,
+          coveragePercent,
+          uncoveredAccounts: uncoveredAccounts,
+          warning: 'Many accounts not in ALTs - transaction may be too large',
+        },
+      });
+    }
+  } catch (analysisErr) {
+    try {
+      logger.warn('tx.alt.coverage.analysis.error', {
+        cat: 'tx',
+        ctx: {
+          txId,
+          error: String((analysisErr as any)?.message || analysisErr),
+        },
+      });
+    } catch {}
   }
   
   // Try to compile and serialize with error handling for "encoding overruns" errors
