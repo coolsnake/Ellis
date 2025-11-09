@@ -337,6 +337,8 @@ async fn main() -> anyhow::Result<()> {
                         }
                     };
 
+                    // Always commit version if we captured it (even if no edge updates)
+                    // This ensures ACK requests can succeed even for version-only updates
                     if version_slot.is_some() {
                         version_to_commit = version_slot;
                         ts_to_commit = ts_slot;
@@ -1755,7 +1757,13 @@ async fn main() -> anyhow::Result<()> {
                         s.last_graph_ts.store(ts_commit, Ordering::Release);
                     }
                 } else {
-                    tracing::info!("arb.graph.version: nothing_to_commit");
+                    // Check if there's a pending version that wasn't captured (shouldn't happen, but defensive check)
+                    let pending_check = loop_state.read().await.pending_graph_version.load(Ordering::Acquire);
+                    if pending_check != u64::MAX {
+                        tracing::warn!(pending_version = pending_check, "arb.graph.version: pending_version_not_captured");
+                    } else {
+                        tracing::info!("arb.graph.version: nothing_to_commit");
+                    }
                 }
                 
                 // Update last_detection_ms metric for monitoring only
@@ -2700,26 +2708,40 @@ async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: Head
 
     tracing::info!(want_version, timeout_ms, "arb.graph.ack: request received");
 
+    // Wake the loop to ensure pending versions are processed quickly
+    {
+        let guard = state.read().await;
+        guard.wake.notify_one();
+    }
+
     loop {
         let guard = state.read().await;
         let last_version = guard.last_graph_version.load(Ordering::Acquire);
+        let pending_version = guard.pending_graph_version.load(Ordering::Acquire);
+        let effective_version = if pending_version != u64::MAX { pending_version.max(last_version) } else { last_version };
         let current_ts = guard.last_graph_ts.load(Ordering::Acquire);
         drop(guard);
         
         let elapsed = start.elapsed().as_millis() as u64;
 
-        if want_version == 0 || last_version >= want_version {
+        // Check both committed and pending versions (pending versions will be committed soon)
+        if want_version == 0 || effective_version >= want_version {
+            // If effective_version >= want_version, we can ack even if it's only pending (will be committed soon)
+            let acked = effective_version >= want_version;
             tracing::info!(
                 want_version = want_version,
                 applied_version = last_version,
+                pending_version = if pending_version != u64::MAX { Some(pending_version) } else { None },
+                effective_version = effective_version,
                 waited_ms = elapsed,
+                acked = acked,
                 "arb.graph.ack: success"
             );
             return Json(GraphAckResponse {
                 ok: true,
                 current_version: last_version,
                 current_timestamp: current_ts,
-                acked: true,
+                acked,
             });
         }
         
