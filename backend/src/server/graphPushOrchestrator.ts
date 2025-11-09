@@ -403,9 +403,7 @@ class GraphPushOrchestrator {
           const cachedVersion = getCachedArbVersion();
           const arbVersion = cachedVersion.version;
           // Calculate gap for the version we're ACKing, not current backend version
-          // This ensures we give enough time for arb-rs to process this specific version
           versionGap = Math.max(0, wantVersion - arbVersion);
-          // Log for debugging timeout issues
           try {
             logger.debug('arb.push ack timeout calculation', {
               wantVersion,
@@ -420,34 +418,49 @@ class GraphPushOrchestrator {
         // Add 500ms per version gap, capped at 3x base timeout
         const adaptiveTimeoutMs = Math.min(baseTimeoutMs + (versionGap * 500), baseTimeoutMs * 3);
         const timeoutMs = adaptiveTimeoutMs;
+
         let acked = false;
-        if (wantVersion > 0) {
-          try {
-            const ac = new AbortController();
-            const t = setTimeout(() => ac.abort('timeout'), timeoutMs + 500);
-            const res = await fetch(`${host}/arb/graph/ack`, {
-              method: 'POST',
-              headers,
-              body: JSON.stringify({ version: wantVersion, timeout_ms: timeoutMs }),
-              signal: ac.signal,
-            }).finally(() => clearTimeout(t));
-            if (res?.ok) {
-              const j: any = await res.json().catch(() => ({}));
-              acked = j?.acked === true;
-              // Update lastAckedVersion when ACK succeeds
-              if (acked && wantVersion > this.lastAckedVersion) {
-                this.lastAckedVersion = wantVersion;
-                try { logger.debug('arb.push version acked', { version: wantVersion, last_acked: this.lastAckedVersion }); } catch {}
-              }
-            }
-          } catch (err: any) {
-            try { logger.debug('arb.push ack failed', { kind: job.kind, error: String(err?.message || err) }); } catch {}
-          }
-        } else {
+        let waited = 0;
+        const ackDeadline = start + Math.max(timeoutMs * 2, timeoutMs + 1000);
+        const ackBody = JSON.stringify({ version: wantVersion, timeout_ms: timeoutMs });
+
+        if (wantVersion === 0) {
           acked = true;
+        } else {
+          while (!acked) {
+            try {
+              const ac = new AbortController();
+              const timer = setTimeout(() => ac.abort('timeout'), timeoutMs + 500);
+              const res = await fetch(`${host}/arb/graph/ack`, {
+                method: 'POST',
+                headers,
+                body: ackBody,
+                signal: ac.signal,
+              }).finally(() => clearTimeout(timer));
+              if (res?.ok) {
+                const j: any = await res.json().catch(() => ({}));
+                acked = j?.acked === true;
+                if (acked && wantVersion > this.lastAckedVersion) {
+                  this.lastAckedVersion = wantVersion;
+                  try { logger.debug('arb.push version acked', { version: wantVersion, last_acked: this.lastAckedVersion }); } catch {}
+                }
+              }
+            } catch (err: any) {
+              try { logger.debug('arb.push ack attempt failed', { kind: job.kind, error: String(err?.message || err) }); } catch {}
+            }
+
+            waited = Date.now() - start;
+            if (acked || Date.now() >= ackDeadline) {
+              break;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 150));
+          }
         }
 
-        const waited = Date.now() - start;
+        if (!acked && wantVersion > 0) {
+          try { logger.warn('arb.push ack pending after deadline', { wantVersion, waited_ms: waited }); } catch {}
+        }
+
         if (acked) pushStats.success += 1; else pushStats.failed += 1;
         pushBounded(pushStats.ackMs, waited);
         try {

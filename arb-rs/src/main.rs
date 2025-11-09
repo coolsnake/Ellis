@@ -279,6 +279,8 @@ async fn main() -> anyhow::Result<()> {
                 // Track changed mints and edge ids from pending diffs for scoped detection
                 let mut changed_mints: HashSet<String> = HashSet::new();
                 let mut changed_edge_ids: HashSet<String> = HashSet::new();
+                let mut version_to_commit: Option<u64> = None;
+                let mut ts_to_commit: Option<u64> = None;
                 // Best-effort peek at backend graph version with a short timeout.
                 // Do not advance local last_graph_version here to avoid racing with buffered diffs.
                 let api_base = std::env::var("BACKEND_API_BASE").unwrap_or_else(|_| "http://127.0.0.1:3001/api".into());
@@ -291,13 +293,28 @@ async fn main() -> anyhow::Result<()> {
                 let usdc = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
                 // Apply any buffered diffs now (between detection runs)
                 {
+                    let mut version_slot: Option<u64> = None;
+                    let mut ts_slot: Option<u64> = None;
                     // Extract pending data and config quickly, then drop write lock for expensive calibration
                     let (updates_data, rem_ct, add_ct, upd_ct) = {
                         let mut s = loop_state.write().await;
+                        let pending_version_val = s.pending_graph_version.load(Ordering::Acquire);
+                        let pending_ts_val = s.pending_graph_ts.load(Ordering::Acquire);
                         let rem_ct = s.pending_removed_edge_ids.len();
                         let add_ct = s.pending_added_edges.len();
                         let upd_ct = s.pending_updated_edges.len();
                         let has_updates = !s.pending_removed_edge_ids.is_empty() || !s.pending_added_edges.is_empty() || !s.pending_updated_edges.is_empty();
+
+                        if pending_version_val != u64::MAX {
+                            version_slot = Some(pending_version_val);
+                            if pending_ts_val != u64::MAX {
+                                ts_slot = Some(pending_ts_val);
+                            }
+                            s.pending_graph_version.store(u64::MAX, Ordering::Release);
+                            if pending_ts_val != u64::MAX {
+                                s.pending_graph_ts.store(u64::MAX, Ordering::Release);
+                            }
+                        }
                         
                         if has_updates {
                             let removed = std::mem::take(&mut s.pending_removed_edge_ids);
@@ -313,6 +330,11 @@ async fn main() -> anyhow::Result<()> {
                             (None, 0, 0, 0)
                         }
                     };
+
+                    if version_slot.is_some() {
+                        version_to_commit = version_slot;
+                        ts_to_commit = ts_slot;
+                    }
                     
                     // Build change sets and do calibration outside write lock
                     if let Some((removed, added, updated, calibrate_enabled, graph_snapshot)) = updates_data {
@@ -415,45 +437,8 @@ async fn main() -> anyhow::Result<()> {
                             s.metrics.graph_edges = s.graph.g.edge_count() as u64;
                         }
                     } else {
-                        // No pending updates - still need to check version
-                        tracing::info!("arb.graph.diff: none pending");
-                    }
-                    
-                    // Update version (atomic operations - no lock needed for reads!)
-                    {
-                        let guard = loop_state.read().await;
-                        let pending_v = guard.pending_graph_version.load(Ordering::Acquire);
-                        if pending_v != u64::MAX {
-                            let current_v = guard.last_graph_version.load(Ordering::Acquire);
-                            if pending_v > current_v {
-                                let old_version = current_v;
-                                guard.last_graph_version.store(pending_v, Ordering::Release);
-                                tracing::info!(old_version = old_version, new_version = pending_v, "arb.graph.version: updated");
-                            } else {
-                                tracing::warn!(received_version = pending_v, current_version = current_v, "arb.graph.version: attempted downgrade, ignoring");
-                            }
-                            // Clear pending version atomically (still need write lock for this, but it's quick)
-                            drop(guard);
-                            loop_state.write().await.pending_graph_version.store(u64::MAX, Ordering::Release);
-                            // Update timestamp if pending
-                            let guard = loop_state.read().await;
-                            let pending_ts = guard.pending_graph_ts.load(Ordering::Acquire);
-                            if pending_ts != u64::MAX {
-                                guard.last_graph_ts.store(pending_ts, Ordering::Release);
-                                drop(guard);
-                                loop_state.write().await.pending_graph_ts.store(u64::MAX, Ordering::Release);
-                            }
-                        } else {
-                            let current_v = guard.last_graph_version.load(Ordering::Acquire);
-                            tracing::info!(current_version = current_v, "arb.graph.version: no pending version");
-                            // Update timestamp if pending
-                            let pending_ts = guard.pending_graph_ts.load(Ordering::Acquire);
-                            if pending_ts != u64::MAX {
-                                guard.last_graph_ts.store(pending_ts, Ordering::Release);
-                                drop(guard);
-                                loop_state.write().await.pending_graph_ts.store(u64::MAX, Ordering::Release);
-                            }
-                        }
+                        // No pending updates - detector was already aligned; still commit version if provided
+                        tracing::debug!("arb.graph.diff: none pending");
                     }
                 }
                 // Detect cycles (MVP -log weights)
@@ -1751,6 +1736,18 @@ async fn main() -> anyhow::Result<()> {
                     let len = s.events.len();
                     if len > 200 { s.events.drain(0..(len-200)); }
                 }
+
+                if let Some(v_commit) = version_to_commit {
+                    let mut s = loop_state.write().await;
+                    let current_v = s.last_graph_version.load(Ordering::Acquire);
+                    if v_commit > current_v {
+                        tracing::info!(old_version = current_v, new_version = v_commit, "arb.graph.version: committed");
+                        s.last_graph_version.store(v_commit, Ordering::Release);
+                    }
+                    if let Some(ts_commit) = ts_to_commit {
+                        s.last_graph_ts.store(ts_commit, Ordering::Release);
+                    }
+                }
                 
                 // Update last_detection_ms metric for monitoring only
                 {
@@ -2116,150 +2113,11 @@ async fn arb_graph_update(State(state): State<Arc<RwLock<AppState>>>, headers: H
     if let Some(ts) = req.timestamp { s.pending_graph_ts.store(ts, Ordering::Release); }
     // Record time of receipt for diff_to_detect tracking
     s.metrics.last_graph_push_rx_ms = now_ms();
-    
-    // CRITICAL FIX: Apply buffered diffs immediately instead of waiting for detection loop
-    // This ensures last_graph_version is updated right away so ACK can succeed immediately
-    let has_pending = !s.pending_added_edges.is_empty() || !s.pending_updated_edges.is_empty() || !s.pending_removed_edge_ids.is_empty();
-    let pending_v = s.pending_graph_version.load(Ordering::Acquire);
-    let pending_ts = s.pending_graph_ts.load(Ordering::Acquire);
-    
-    if has_pending && pending_v != u64::MAX {
-        // Extract pending diffs to apply (release lock quickly)
-        let added = std::mem::take(&mut s.pending_added_edges);
-        let updated = std::mem::take(&mut s.pending_updated_edges);
-        let removed = std::mem::take(&mut s.pending_removed_edge_ids);
-        let add_ct = added.len();
-        let upd_ct = updated.len();
-        let rem_ct = removed.len();
-        
-        // Check if calibration is enabled before cloning graph (expensive operation)
-        let calibrate_enabled = {
-            let guard = state.read().await;
-            guard.config.calibrate_magnitude_on_ingest
-        };
-        
-        // Clone graph only if calibration is enabled (expensive operation)
-        let graph_snapshot_for_calib = if calibrate_enabled {
-            drop(s);
-            let guard = state.read().await;
-            Some(guard.graph.clone())
-        } else {
-            None
-        };
-        
-        // Calibrate edges (same logic as detection loop)
-        let mut calibrated_edges: Vec<(String, String, String, i64, f64, f64, f64, String)> = Vec::new();
-        let sol_mint: &str = "So11111111111111111111111111111111111111112";
-        let usdc_mint: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-        
-        for e in added.iter().chain(updated.iter()) {
-            let dex = e.dex.clone().unwrap_or_else(|| "Unknown".to_string());
-            let fee: i64 = e.fee_bps.unwrap_or(0);
-            let liq = e.liquidity.unwrap_or(0.0);
-            let liq_disp = e.liquidity_display.unwrap_or(liq);
-            let pool_id = e.pool_id.clone().unwrap_or_default();
-            let px_raw = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
-            let mut px = px_raw;
-            
-            // Calibrate price magnitude if needed (same logic as detection loop)
-            if px > 0.0 && calibrate_enabled {
-                if let Some(ref graph) = graph_snapshot_for_calib {
-                    let get_usd = |mint: &str, graph: &ArbGraph| -> Option<f64> {
-                        if mint == usdc_mint { return Some(1.0); }
-                        if let Some(idx) = graph.map.get(mint) {
-                            // Prefer direct edges to USDC
-                            for edge in graph.g.edges(*idx) {
-                                let u = edge.source(); let v = edge.target();
-                                let src = graph.g.node_weight(u).cloned().unwrap_or_default();
-                                let dst = graph.g.node_weight(v).cloned().unwrap_or_default();
-                                let r = edge.weight().rate_effective;
-                                if dst == usdc_mint && r > 0.0 { return Some(r); }
-                                if src == usdc_mint && r > 0.0 { return Some(1.0 / r); }
-                            }
-                            // Via SOL
-                            let mut via_sol: Option<f64> = None;
-                            let mut sol_usd: Option<f64> = None;
-                            for edge in graph.g.edge_references() {
-                                let src = graph.g.node_weight(edge.source()).cloned().unwrap_or_default();
-                                let dst = graph.g.node_weight(edge.target()).cloned().unwrap_or_default();
-                                let r = edge.weight().rate_effective;
-                                if r <= 0.0 { continue; }
-                                if src == sol_mint && dst == usdc_mint { sol_usd = Some(r); }
-                                if src == usdc_mint && dst == sol_mint { sol_usd = Some(1.0 / r); }
-                            }
-                            if let Some(su) = sol_usd {
-                                for edge in graph.g.edges(*idx) {
-                                    let u = edge.source(); let v = edge.target();
-                                    let s = graph.g.node_weight(u).cloned().unwrap_or_default();
-                                    let t = graph.g.node_weight(v).cloned().unwrap_or_default();
-                                    let r = edge.weight().rate_effective;
-                                    if r <= 0.0 { continue; }
-                                    if s == mint && t == sol_mint { via_sol = Some(su / r); break; }
-                                    if s == sol_mint && t == mint { via_sol = Some(su * r); break; }
-                                }
-                            }
-                            return via_sol;
-                        }
-                        None
-                    };
-                    let pa = get_usd(&e.source, graph);
-                    let pb = get_usd(&e.target, graph);
-                    if let (Some(pa), Some(pb)) = (pa, pb) {
-                        let refv = pb / pa;
-                        let mut best = px; let mut best_dev = f64::INFINITY; let mut best_k = 0i32;
-                        for k in -8..=8 {
-                            let cand = px * 10f64.powi(k);
-                            if !(cand.is_finite() && cand > 0.0) { continue; }
-                            let dev = (cand / refv).max(refv / cand);
-                            if dev + 1e-12 < best_dev { best_dev = dev; best = cand; best_k = k; }
-                        }
-                        if best_k != 0 { tracing::debug!(mint_a = %e.source, mint_b = %e.target, px_in = px_raw, px_out = best, k = best_k, refv, "arb.magnitude.calibrated.diff"); }
-                        px = best;
-                    }
-                }
-            }
-            let base = if px > 0.0 { 1.0 / px } else { 0.0 };
-            let rate_eff = if base > 0.0 { base * (1.0 - (fee as f64)/10_000.0).max(0.0_f64) } else { 0.0 };
-            calibrated_edges.push((e.source.clone(), e.target.clone(), dex, fee, rate_eff, liq, liq_disp, pool_id));
-        }
-        
-        // Apply removals first, then calibrated edges
-        let mut s = state.write().await;
-        if !removed.is_empty() {
-            let _ = s.graph.remove_edges_by_ids(&removed);
-        }
-        for (source, target, dex, fee, rate_eff, liq, liq_disp, pool_id) in calibrated_edges {
-            s.graph.upsert_edge(&dex, &source, &target, EdgeData { rate_effective: rate_eff, fee_bps: fee, liquidity: liq, dex: dex.clone(), pool_id, liquidity_display: liq_disp });
-        }
-        
-        s.metrics.graph_updates_applied = s.metrics.graph_updates_applied.saturating_add(1);
-        s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.graph.diff: applied immediately add={} upd={} rem={}", add_ct, upd_ct, rem_ct) });
-        tracing::info!(add=add_ct, upd=upd_ct, rem=rem_ct, "arb.graph.diff: applied immediately");
-        let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
-        s.metrics.graph_nodes = s.graph.g.node_count() as u64;
-        s.metrics.graph_edges = s.graph.g.edge_count() as u64;
-        
-        // Update version immediately so ACK can succeed
-        let current_v = s.last_graph_version.load(Ordering::Acquire);
-        if pending_v > current_v {
-            s.last_graph_version.store(pending_v, Ordering::Release);
-            tracing::info!(old_version = current_v, new_version = pending_v, "arb.graph.version: updated immediately");
-        }
-        s.pending_graph_version.store(u64::MAX, Ordering::Release);
-        
-        if pending_ts != u64::MAX {
-            s.last_graph_ts.store(pending_ts, Ordering::Release);
-            s.pending_graph_ts.store(u64::MAX, Ordering::Release);
-        }
-        
-        // Wake detection loop to run detection with updated graph
-        s.wake.notify_one();
-    } else {
-        // No pending diffs to apply, just wake detection loop
-        s.wake.notify_one();
-    }
-    
-    Json(serde_json::json!({"ok": true}))
+    let wake = s.wake.clone();
+    let response = serde_json::json!({"ok": true});
+    drop(s);
+    wake.notify_one();
+    Json(response)
 }
 
 async fn arb_start(State(state): State<Arc<RwLock<AppState>>>, headers: HeaderMap, Json(req): Json<StartReq>) -> Json<serde_json::Value> {
@@ -2829,104 +2687,62 @@ async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: Head
     let want_version = req.version.unwrap_or(0);
     let timeout_ms = req.timeout_ms.unwrap_or(2500);
     let start = std::time::Instant::now();
-    
-    // Log immediately when ACK request arrives
-    tracing::info!(
-        want_version = want_version,
-        timeout_ms = timeout_ms,
-        "arb.graph.ack: request received"
-    );
-    
-    // Check initial state - use atomic reads (no lock needed!)
-    // This eliminates the timeout issue since we don't need to acquire a write lock
-    let initial_state = {
-        let guard = state.read().await;
-        let last = guard.last_graph_version.load(Ordering::Acquire);
-        let pending = guard.pending_graph_version.load(Ordering::Acquire);
-        let pending_val = if pending == u64::MAX { 0 } else { pending };
-        drop(guard);
-        (last, pending_val)
-    };
-    tracing::info!(
-        want_version = want_version,
-        initial_last_version = initial_state.0,
-        initial_pending_version = initial_state.1,
-        initial_effective = initial_state.1.max(initial_state.0),
-        timeout_ms = timeout_ms,
-        "arb.graph.ack: initial state"
-    );
-    
-    // Poll until version is >= want_version or timeout
-    // Check both pending_graph_version (buffered but not yet applied) and last_graph_version (applied)
-    // Use atomic reads - no lock timeout needed!
+
+    tracing::info!(want_version, timeout_ms, "arb.graph.ack: request received");
+
     loop {
         let guard = state.read().await;
         let last_version = guard.last_graph_version.load(Ordering::Acquire);
-        let pending_raw = guard.pending_graph_version.load(Ordering::Acquire);
-        let pending_version = if pending_raw == u64::MAX { 0 } else { pending_raw };
         let current_ts = guard.last_graph_ts.load(Ordering::Acquire);
         drop(guard);
         
-        let effective_version = pending_version.max(last_version);
         let elapsed = start.elapsed().as_millis() as u64;
-        
-        // Log on first iteration, periodically (every 500ms), or when behind (after 500ms) - use INFO level
-        if elapsed == 0 || (elapsed % 500 == 0 && elapsed > 0) || (effective_version < want_version && elapsed > 500) {
+
+        if want_version == 0 || last_version >= want_version {
             tracing::info!(
                 want_version = want_version,
-                last_version = last_version,
-                pending_version = pending_version,
-                effective_version = effective_version,
-                elapsed_ms = elapsed,
-                timeout_ms = timeout_ms,
-                "arb.graph.ack: polling"
-            );
-        }
-        
-        // ACK if either pending or applied version meets the requirement
-        if want_version > 0 && effective_version >= want_version {
-            tracing::info!(
-                want_version = want_version,
-                effective_version = effective_version,
-                elapsed_ms = elapsed,
+                applied_version = last_version,
+                waited_ms = elapsed,
                 "arb.graph.ack: success"
             );
-            return Json(GraphAckResponse { 
-                ok: true, 
-                current_version: effective_version, 
-                current_timestamp: current_ts, 
-                acked: true 
+            return Json(GraphAckResponse {
+                ok: true,
+                current_version: last_version,
+                current_timestamp: current_ts,
+                acked: true,
             });
         }
         
         if elapsed >= timeout_ms {
             tracing::warn!(
                 want_version = want_version,
-                last_version = last_version,
-                pending_version = pending_version,
-                effective_version = effective_version,
                 elapsed_ms = elapsed,
                 timeout_ms = timeout_ms,
                 "arb.graph.ack: timeout"
             );
             break;
         }
-        
+
+        if elapsed == 0 || (elapsed > 0 && elapsed % 500 == 0) {
+            tracing::debug!(
+                want_version = want_version,
+                applied_version = last_version,
+                elapsed_ms = elapsed,
+                timeout_ms = timeout_ms,
+                "arb.graph.ack: waiting"
+            );
+        }
+
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     
-    // Return final state (check both pending and applied)
-    // Use atomic reads - no lock timeout needed!
     let guard = state.read().await;
     let final_version = guard.last_graph_version.load(Ordering::Acquire);
-    let final_pending_raw = guard.pending_graph_version.load(Ordering::Acquire);
-    let final_pending = if final_pending_raw == u64::MAX { 0 } else { final_pending_raw };
     let final_ts = guard.last_graph_ts.load(Ordering::Acquire);
     drop(guard);
-    let final_effective = final_pending.max(final_version);
     Json(GraphAckResponse { 
         ok: true, 
-        current_version: final_effective, 
+        current_version: final_version, 
         current_timestamp: final_ts, 
         acked: false 
     })
