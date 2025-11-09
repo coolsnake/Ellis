@@ -1841,6 +1841,74 @@ export function createArbRouter(io: SocketIOServer): Router {
     return buildTransactionSummary(plan, undefined, undefined);
   }
 
+  // ============================================================================
+  // Arbitrage Executor API Routes
+  // ============================================================================
+
+  // Start the automatic arbitrage executor
+  api.post('/arb/executor/start', async (req: Request, res: Response) => {
+    try {
+      const { getArbExecutor } = await import('../../execution/arbExecutor.js');
+      const { readJson } = await import('../../utils/fs.js');
+      
+      // Load config from file or use provided config
+      let config = req.body || {};
+      if (Object.keys(config).length === 0) {
+        try {
+          const configPath = 'backend/config/arbExecutor.json';
+          config = await readJson(configPath).catch(() => ({}));
+        } catch {}
+      }
+      
+      const executor = getArbExecutor(config);
+      await executor.start();
+      
+      logger.info('arb.executor.api.started', { cat: 'arb', config });
+      res.json({ status: 'started', ...executor.getStatus() });
+    } catch (e: any) {
+      logger.error('arb.executor.api.start_failed', { cat: 'arb', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Stop the automatic arbitrage executor
+  api.post('/arb/executor/stop', async (req: Request, res: Response) => {
+    try {
+      const { stopArbExecutor } = await import('../../execution/arbExecutor.js');
+      stopArbExecutor();
+      logger.info('arb.executor.api.stopped', { cat: 'arb' });
+      res.json({ status: 'stopped' });
+    } catch (e: any) {
+      logger.error('arb.executor.api.stop_failed', { cat: 'arb', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Get executor status
+  api.get('/arb/executor/status', async (req: Request, res: Response) => {
+    try {
+      const { getArbExecutor } = await import('../../execution/arbExecutor.js');
+      const executor = getArbExecutor();
+      res.json(executor.getStatus());
+    } catch (e: any) {
+      res.json({ running: false, error: 'not initialized' });
+    }
+  });
+
+  // Update executor configuration at runtime
+  api.post('/arb/executor/config', async (req: Request, res: Response) => {
+    try {
+      const { getArbExecutor } = await import('../../execution/arbExecutor.js');
+      const executor = getArbExecutor();
+      executor.updateConfig(req.body);
+      logger.info('arb.executor.api.config_updated', { cat: 'arb', updates: req.body });
+      res.json({ status: 'updated', ...executor.getStatus() });
+    } catch (e: any) {
+      logger.error('arb.executor.api.config_update_failed', { cat: 'arb', error: String(e?.message || e) });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   return api;
 }
 
