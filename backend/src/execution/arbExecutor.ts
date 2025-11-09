@@ -37,6 +37,7 @@ export interface ExecutorConfig {
   // Risk management
   maxExecutionsPerMinute?: number;
   blacklistedPaths?: string[];
+  requireStartBalance?: boolean;
 }
 
 interface ExecutionState {
@@ -58,6 +59,7 @@ export class ArbExecutor {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private cleanupTimer: NodeJS.Timeout | null = null;
   private running = false;
+  private walletPublicKey: any = null; // Cached wallet for balance checks
 
   constructor(config: ExecutorConfig) {
     this.config = config;
@@ -82,6 +84,17 @@ export class ArbExecutor {
 
     this.running = true;
     logger.info('arb.executor.starting', { cat: 'arb', config: this.config });
+
+    // Cache wallet public key for balance checks
+    try {
+      const { ensureWallet } = await import('../wallet/wallet.js');
+      const { CONFIG } = await import('../utils/config.js');
+      const wallet = await ensureWallet(CONFIG.walletPath);
+      this.walletPublicKey = wallet.publicKey;
+      logger.debug('arb.executor.wallet_cached', { cat: 'arb', publicKey: wallet.publicKey.toBase58() });
+    } catch (e) {
+      logger.warn('arb.executor.wallet_cache_failed', { cat: 'arb', error: String(e?.message || e) });
+    }
 
     // Connect to arb-rs opportunity stream
     this.connectToOpportunityStream();
@@ -194,7 +207,9 @@ export class ArbExecutor {
         break;
       }
 
-      if (this.shouldExecute(opp)) {
+      // Check if we should execute (now async)
+      const shouldExec = await this.shouldExecute(opp);
+      if (shouldExec) {
         // Don't await - execute in background
         this.executeOpportunity(opp).catch((e) => {
           logger.error('arb.executor.execution_failed', {
@@ -207,7 +222,7 @@ export class ArbExecutor {
     }
   }
 
-  private shouldExecute(opp: Opportunity): boolean {
+  private async shouldExecute(opp: Opportunity): Promise<boolean> {
     // Create opportunity key
     const oppKey = this.getOpportunityKey(opp);
 
@@ -253,6 +268,37 @@ export class ArbExecutor {
     const timeSinceLastExec = Date.now() - this.state.lastExecutionTime;
     if (timeSinceLastExec < 100) { // Minimum 100ms between any executions
       return false;
+    }
+
+    // NEW: Balance validation
+    if (this.config.requireStartBalance !== false && this.walletPublicKey) {
+      try {
+        const { getBalances } = await import('../wallet/wallet.js');
+        const balances = await getBalances(this.walletPublicKey);
+        const startToken = opp.path[0];
+        
+        if (startToken) {
+          const SOL_MINT = 'So11111111111111111111111111111111111111112';
+          const hasBalance = startToken === SOL_MINT 
+            ? balances.sol > 0 
+            : (balances.tokens[startToken] || 0) > 0;
+          
+          if (!hasBalance) {
+            logger.debug('arb.executor.no_balance', {
+              cat: 'arb',
+              path: pathStr,
+              startToken,
+            });
+            return false;
+          }
+        }
+      } catch (e) {
+        // If balance check fails, log but don't block (fail open for safety)
+        logger.warn('arb.executor.balance_check_failed', {
+          cat: 'arb',
+          error: String((e as any)?.message || e),
+        });
+      }
     }
 
     return true;

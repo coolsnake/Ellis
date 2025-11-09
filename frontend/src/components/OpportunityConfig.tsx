@@ -14,6 +14,15 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
     (async () => {
       try { const r = await fetch(`${apiBase}${ROUTES.arb.config}`); if (r.ok) setDet(await r.json()); } catch {}
       try { const r = await fetch(`${apiBase}${ROUTES.exec.config}`); if (r.ok) { const j = await r.json(); setExecMode((j?.mode === 'direct') ? 'direct' : 'simulate'); } } catch {}
+      try { 
+        const r = await fetch(`${apiBase}/arb/executor/config`); 
+        if (r.ok) { 
+          const j = await r.json(); 
+          if (typeof j.requireStartBalance === 'boolean') {
+            set('require_start_balance', j.requireStartBalance);
+          }
+        } 
+      } catch {}
     })();
   }, [apiBase]);
 
@@ -50,11 +59,12 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
         .split(',').map(s => s.trim()).filter(Boolean),
     };
     try {
-      const [r1, r2] = await Promise.all([
+      const [r1, r2, r3] = await Promise.all([
         fetch(`${apiBase}${ROUTES.arb.config}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
         fetch(`${apiBase}${ROUTES.exec.config}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: execMode }) }),
+        fetch(`${apiBase}/arb/executor/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requireStartBalance: !!det.require_start_balance }) }),
       ]);
-      if (!r1.ok || !r2.ok) throw new Error('Failed to save');
+      if (!r1.ok || !r2.ok || !r3.ok) throw new Error('Failed to save');
       onClose();
     } catch (e: any) {
       setError(String(e?.message || e));
@@ -137,6 +147,14 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
                   <option value="direct">direct</option>
                 </select>
               </div>
+              <label className="flex items-center gap-2">
+                <input 
+                  type="checkbox" 
+                  checked={!!det.require_start_balance} 
+                  onChange={e=>set('require_start_balance', e.target.checked)} 
+                />
+                Require wallet balance
+              </label>
             </div>
           </div>
 

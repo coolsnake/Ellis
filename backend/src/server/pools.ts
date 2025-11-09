@@ -1078,7 +1078,7 @@ export function startRaydiumRefreshLoop(): void {
                       const bin = program.coder.accounts.decode('binArray', info.data);
                       if (bin) {
                         isBinArray = true;
-                        logger.info('meteora.ws binarray.inspect', {
+                        logger.debug('meteora.ws binarray.inspect', {
                           id: poolId,
                           gotState: true,
                           keys: Object.keys(bin || {}),

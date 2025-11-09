@@ -1,4 +1,5 @@
 import { Connection, PublicKey, AddressLookupTableAccount, TransactionMessage, VersionedTransaction, AddressLookupTableProgram, Transaction, Keypair } from '@solana/web3.js';
+import BN from 'bn.js';
 import { getConnection } from '../../wallet/wallet.js';
 import { CONFIG } from '../../utils/config.js';
 import { withRpcLimit } from '../../utils/rpcLimiter.js';
@@ -1651,18 +1652,16 @@ export class DexAltManager {
           const deriveBinArray = DLMM?.deriveBinArray;
           
           if (binIdToBinArrayIndex && deriveBinArray) {
-            // Import BN for calculations
-            const BN = (await import('bn.js')).default;
-            
             // Calculate the bin array index for the active bin
             const activeBinArrayIndex = binIdToBinArrayIndex(new BN(activeId));
             const index = activeBinArrayIndex instanceof BN ? activeBinArrayIndex.toNumber() : Number(activeBinArrayIndex);
             
-            // Add bin arrays in a range around the active bin (e.g., -10 to +10)
-            // This covers most swap scenarios without adding too many accounts
-            const binArrayRange = 10;
-            const binArraysAdded: string[] = [];
+            // Add bin arrays in a range around the active bin (e.g., -5 to +5)
+            // Reduced range to avoid too many RPC calls
+            const binArrayRange = 5;
+            const binArraysToCheck: Array<{ index: number; pk: PublicKey }> = [];
             
+            // First, derive all bin arrays we want to check
             for (let i = index - binArrayRange; i <= index + binArrayRange; i++) {
               try {
                 const binArrayPda = deriveBinArray(poolPk, new BN(i), programId);
@@ -1676,32 +1675,81 @@ export class DexAltManager {
                   binArrayPk = new PublicKey(binArrayPda);
                 }
                 
-                // Check if the bin array exists on-chain
-                const connection = getConnection();
-                const binArrayInfo = await withRpcLimit(() => 
-                  connection.getAccountInfo(binArrayPk), 0.5
-                ).catch(() => null);
-                
-                if (binArrayInfo) {
-                  accounts.push(binArrayPk);
-                  binArraysAdded.push(`${i}:${binArrayPk.toBase58().substring(0, 8)}`);
-                }
+                binArraysToCheck.push({ index: i, pk: binArrayPk });
               } catch {}
             }
             
-            try {
-              logger.debug('alt.manager.meteora.dlmm.bin_arrays.added', {
-                cat: 'tx',
-                ctx: {
-                  pool: poolPk.toBase58(),
-                  activeId,
-                  activeBinArrayIndex: index,
-                  binArraysAdded: binArraysAdded.length,
-                  range: `${index - binArrayRange} to ${index + binArrayRange}`,
-                  sample: binArraysAdded.slice(0, 5),
-                },
-              });
-            } catch {}
+            // Batch check existence (getMultipleAccountsInfo is more efficient)
+            if (binArraysToCheck.length > 0) {
+              const connection = getConnection();
+              try {
+                const accountInfos = await withRpcLimit(() => 
+                  connection.getMultipleAccountsInfo(binArraysToCheck.map(b => b.pk)), 1.0
+                ).catch(() => null);
+                
+                if (accountInfos) {
+                  const binArraysAdded: string[] = [];
+                  accountInfos.forEach((info, idx) => {
+                    if (info) {
+                      const binArray = binArraysToCheck[idx];
+                      accounts.push(binArray.pk);
+                      binArraysAdded.push(`${binArray.index}:${binArray.pk.toBase58().substring(0, 8)}`);
+                    }
+                  });
+                  
+                  try {
+                    logger.debug('alt.manager.meteora.dlmm.bin_arrays.added', {
+                      cat: 'tx',
+                      ctx: {
+                        pool: poolPk.toBase58(),
+                        activeId,
+                        activeBinArrayIndex: index,
+                        binArraysAdded: binArraysAdded.length,
+                        binArraysChecked: binArraysToCheck.length,
+                        range: `${index - binArrayRange} to ${index + binArrayRange}`,
+                        sample: binArraysAdded.slice(0, 5),
+                      },
+                    });
+                  } catch {}
+                }
+              } catch (batchError) {
+                // Fallback to individual checks if batch fails
+                try {
+                  logger.debug('alt.manager.meteora.dlmm.bin_arrays.batch_failed_fallback', {
+                    cat: 'tx',
+                    ctx: { pool: poolPk.toBase58(), error: String((batchError as any)?.message || batchError) },
+                  });
+                } catch {}
+                
+                const binArraysAdded: string[] = [];
+                for (const binArray of binArraysToCheck) {
+                  try {
+                    const binArrayInfo = await withRpcLimit(() => 
+                      connection.getAccountInfo(binArray.pk), 0.3
+                    ).catch(() => null);
+                    
+                    if (binArrayInfo) {
+                      accounts.push(binArray.pk);
+                      binArraysAdded.push(`${binArray.index}:${binArray.pk.toBase58().substring(0, 8)}`);
+                    }
+                  } catch {}
+                }
+                
+                try {
+                  logger.debug('alt.manager.meteora.dlmm.bin_arrays.added', {
+                    cat: 'tx',
+                    ctx: {
+                      pool: poolPk.toBase58(),
+                      activeId,
+                      activeBinArrayIndex: index,
+                      binArraysAdded: binArraysAdded.length,
+                      range: `${index - binArrayRange} to ${index + binArrayRange}`,
+                      fallback: true,
+                    },
+                  });
+                } catch {}
+              }
+            }
           }
         } catch (error) {
           try {

@@ -9,6 +9,7 @@
   "maxHops": 3,
   "minReservesUsd": 10000,
   "maxExecutionsPerMinute": 10,
-  "blacklistedPaths": []
+  "blacklistedPaths": [],
+  "requireStartBalance": true
 }
 
