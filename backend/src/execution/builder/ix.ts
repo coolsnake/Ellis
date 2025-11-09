@@ -1948,6 +1948,10 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         }
         
         // Filter remaining accounts, keeping first occurrence
+        // For multihop transactions, limit bin arrays more aggressively
+        const isMultiHop = setupIxs && setupIxs.length > 0; // Heuristic: if there are setup instructions, likely multihop
+        const maxRemainingAccounts = isMultiHop ? 5 : 12; // Limit to 5 bin arrays for multihop, 12 for single hop
+        
         const dedupedRemainingAccounts = [];
         for (let i = coreAccountCount; i < ix.keys.length; i++) {
           const key = ix.keys[i];
@@ -1955,6 +1959,10 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           if (pk) {
             const pkStr = pk.toBase58();
             if (!seen.has(pkStr)) {
+              // Stop adding if we've reached the limit for multihop
+              if (dedupedRemainingAccounts.length >= maxRemainingAccounts) {
+                break;
+              }
               dedupedRemainingAccounts.push(key);
               seen.add(pkStr);
             }
@@ -1975,7 +1983,9 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 originalCount,
                 newCount: ix.keys.length,
                 removedCount,
-                coreAccountCount
+                coreAccountCount,
+                isMultiHop,
+                maxRemainingAccounts
               }
             });
           } catch {}
