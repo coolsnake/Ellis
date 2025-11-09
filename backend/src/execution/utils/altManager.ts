@@ -428,7 +428,7 @@ export class DexAltManager {
                     await this.extendLookupTable(payer, altPk, addressesToAdd);
                   }
                   
-                  this.altAddresses.set(seed, altPk);
+                  // Return the ALT address - caller will handle storing
                   return altPk;
                 }
               }
@@ -468,8 +468,7 @@ export class DexAltManager {
           await this.extendLookupTable(payer, reusable.address, addressesToAdd);
         }
         
-        // Store with the requested seed key
-        this.altAddresses.set(seed, reusable.address);
+        // Return the ALT address - caller will handle storing
         return reusable.address;
       }
     
@@ -629,8 +628,8 @@ export class DexAltManager {
     } catch {}
     
     if (addressesToAdd.length === 0) {
-      // No accounts to add, just cache the empty ALT
-      this.altAddresses.set(seed, lookupTableAddress);
+      // No accounts to add, just return the empty ALT
+      // NOTE: Caller (createAndExtendAlt) will handle storing in altAddresses map
       try {
         logger.warn('alt.manager.created.empty', {
           cat: 'tx',
@@ -731,8 +730,7 @@ export class DexAltManager {
         });
       } catch {}
       
-      // Cache the ALT address anyway
-      this.altAddresses.set(seed, lookupTableAddress);
+      // Return the ALT address - caller will handle storing
       return lookupTableAddress;
     }
     
@@ -747,26 +745,70 @@ export class DexAltManager {
         });
       } catch {}
       
-      const extendIx = AddressLookupTableProgram.extendLookupTable({
-        payer: payer.publicKey,
-        authority: payer.publicKey,
-        lookupTable: lookupTableAddress,
-        addresses: addressesToAdd,
-      });
+      // IMPORTANT: ExtendLookupTable is limited to ~30 addresses per transaction
+      // due to transaction size limits. Split into batches if needed.
+      const BATCH_SIZE = 30;
+      const batches: PublicKey[][] = [];
       
-      const extendTx = new Transaction();
-      extendTx.add(extendIx);
-      const extendBlockhash = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
-      extendTx.recentBlockhash = extendBlockhash.blockhash;
-      extendTx.feePayer = payer.publicKey;
+      for (let i = 0; i < addressesToAdd.length; i += BATCH_SIZE) {
+        batches.push(addressesToAdd.slice(i, i + BATCH_SIZE));
+      }
       
-      extendTx.sign(kp);
+      try {
+        logger.info('alt.manager.extend.batches', {
+          cat: 'tx',
+          ctx: {
+            address: lookupTableAddress.toBase58(),
+            totalAccounts: addressesToAdd.length,
+            batchCount: batches.length,
+            batchSize: BATCH_SIZE,
+          },
+        });
+      } catch {}
       
-      const extendSig = await withRpcLimit(() => connection.sendRawTransaction(extendTx.serialize()));
-      await withRpcLimit(() => connection.confirmTransaction(extendSig, 'confirmed'));
+      const extendSignatures: string[] = [];
       
-      // Cache the new ALT with seed-based key
-      this.altAddresses.set(seed, lookupTableAddress);
+      // Extend ALT in batches
+      for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
+        const batch = batches[batchIdx];
+        
+        try {
+          logger.info('alt.manager.extend.batch', {
+            cat: 'tx',
+            ctx: {
+              address: lookupTableAddress.toBase58(),
+              batchIndex: batchIdx + 1,
+              batchTotal: batches.length,
+              batchSize: batch.length,
+            },
+          });
+        } catch {}
+        
+        const extendIx = AddressLookupTableProgram.extendLookupTable({
+          payer: payer.publicKey,
+          authority: payer.publicKey,
+          lookupTable: lookupTableAddress,
+          addresses: batch,
+        });
+        
+        const extendTx = new Transaction();
+        extendTx.add(extendIx);
+        const extendBlockhash = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
+        extendTx.recentBlockhash = extendBlockhash.blockhash;
+        extendTx.feePayer = payer.publicKey;
+        
+        extendTx.sign(kp);
+        
+        const extendSig = await withRpcLimit(() => connection.sendRawTransaction(extendTx.serialize()));
+        await withRpcLimit(() => connection.confirmTransaction(extendSig, 'confirmed'));
+        
+        extendSignatures.push(extendSig);
+        
+        // Small delay between batches to avoid overwhelming RPC
+        if (batchIdx < batches.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
       
       try {
         logger.info('alt.manager.created', {
@@ -774,8 +816,9 @@ export class DexAltManager {
           ctx: {
             address: lookupTableAddress.toBase58(),
             accountCount: addressesToAdd.length,
+            batchCount: batches.length,
             createSignature: createSig,
-            extendSignature: extendSig,
+            extendSignatures: extendSignatures.slice(0, 3), // Log first 3 for brevity
           },
         });
       } catch {}
@@ -796,8 +839,7 @@ export class DexAltManager {
         });
       } catch {}
       
-      // Still cache the ALT address even if extend failed
-      this.altAddresses.set(seed, lookupTableAddress);
+      // Return the ALT address - caller will handle storing
       return lookupTableAddress;
     }
   } catch (error) {
@@ -1941,7 +1983,9 @@ export class DexAltManager {
     const wallet = await ensureWallet(CONFIG.walletPath);
 
     const accountPks = accounts.map(acc => typeof acc === 'string' ? new PublicKey(acc) : acc);
-    const altSeed = seed || `${category}-alt`;
+    
+    // Use category as the seed directly (no -alt suffix) to avoid duplicates
+    const altSeed = seed || category;
 
     // Check if ALT already exists for this category
     if (this.altAddresses.has(category)) {
@@ -1960,6 +2004,7 @@ export class DexAltManager {
     const accountCount = result.value?.state?.addresses?.length || 0;
 
     // CRITICAL: Add to our tracking map immediately
+    // Only store under the category, not the seed (to avoid duplicates)
     this.altAddresses.set(category, address);
 
     // Save to config

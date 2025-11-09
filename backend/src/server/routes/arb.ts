@@ -360,8 +360,14 @@ export function createArbRouter(io: SocketIOServer): Router {
         return edge.pool_kind === poolType;
       });
 
+      // Filter out reverse edges to avoid showing duplicates in preview
+      const forwardEdgesOnly = filtered.filter(edge => {
+        const poolId = String(edge.pool_id || '');
+        return !poolId.endsWith('-rev');
+      });
+
       // Sort by liquidity metrics
-      filtered.sort((a, b) => {
+      forwardEdgesOnly.sort((a, b) => {
         const getLiquidity = (edge: any): number => {
           if (edge.tvl_usd && edge.tvl_usd > 0) return edge.tvl_usd;
           if (edge.liquidity_display && edge.liquidity_display > 0) return edge.liquidity_display;
@@ -376,10 +382,13 @@ export function createArbRouter(io: SocketIOServer): Router {
       const poolIds = new Set<string>();
       const pools: any[] = [];
       
-      for (const edge of filtered) {
+      for (const edge of forwardEdgesOnly) {
         if (!edge.pool_id) continue;
-        if (poolIds.has(edge.pool_id)) continue;
-        poolIds.add(edge.pool_id);
+        
+        // Clean the pool ID to its base form (remove -fwd/-rev if present)
+        const cleanPoolId = String(edge.pool_id).replace(/-(rev|fwd)$/, '');
+        if (poolIds.has(cleanPoolId)) continue;
+        poolIds.add(cleanPoolId);
         
         const tvl = edge.tvl_usd || edge.liquidity_display || edge.pool_liquidity_raw || edge.liquidity || 0;
         
