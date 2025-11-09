@@ -1981,6 +1981,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     
     // CRITICAL FIX: Ensure token programs are at positions 11-12 AFTER duplicate removal
     // Duplicate removal can shift account positions, so we need to fix this after
+    // IMPORTANT: If we replace an account, we need to check if it's a required PDA and preserve it
     if (ix && Array.isArray(ix.keys)) {
       try {
         const TOKEN_PROGRAM_ID_STR = TOKEN_PROGRAM_ID.toBase58();
@@ -1989,6 +1990,19 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         
         const expectedTokenXProg = acctBase.tokenXProgram ? (acctBase.tokenXProgram instanceof PublicKey ? acctBase.tokenXProgram.toBase58() : String(acctBase.tokenXProgram)) : TOKEN_PROGRAM_ID_STR;
         const expectedTokenYProg = acctBase.tokenYProgram ? (acctBase.tokenYProgram instanceof PublicKey ? acctBase.tokenYProgram.toBase58() : String(acctBase.tokenYProgram)) : TOKEN_PROGRAM_ID_STR;
+        
+        // Derive event_authority PDA to check if accounts are event_authority
+        let eventAuthorityPda: PublicKey | null = null;
+        try {
+          const [eventAuthPda] = PublicKey.findProgramAddressSync(
+            [Buffer.from('__event_authority')],
+            programId
+          );
+          eventAuthorityPda = eventAuthPda;
+        } catch {}
+        
+        // Track accounts that were replaced so we can check if they need to be preserved
+        const replacedAccounts: Array<{ position: number; originalAccount: string }> = [];
         
         // Check and fix position 11 (tokenXProgram)
         if (ix.keys.length > 11 && ix.keys[11]) {
@@ -2006,6 +2020,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 poolId: hop.poolId
               }
             });
+            replacedAccounts.push({ position: 11, originalAccount: pk11Str });
             ix.keys[11] = {
               pubkey: new PublicKey(expectedTokenXProg),
               isSigner: false,
@@ -2015,10 +2030,12 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         }
         
         // Check and fix position 12 (tokenYProgram)
+        let originalAccount12: string | null = null;
         if (ix.keys.length > 12 && ix.keys[12]) {
           const key12 = ix.keys[12];
           const pk12 = (key12 as any).pubkey;
           const pk12Str = pk12 instanceof PublicKey ? pk12.toBase58() : String(pk12);
+          originalAccount12 = pk12Str;
           
           if (!validTokenPrograms.has(pk12Str) || pk12Str !== expectedTokenYProg) {
             logger.warn('meteora.dlmm.fixing_token_program_position', {
@@ -2030,6 +2047,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 poolId: hop.poolId
               }
             });
+            replacedAccounts.push({ position: 12, originalAccount: pk12Str });
             ix.keys[12] = {
               pubkey: new PublicKey(expectedTokenYProg),
               isSigner: false,
@@ -2038,9 +2056,56 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           }
         }
         
+        // Check if any replaced accounts are required PDAs that need to be preserved
+        // Specifically check for event_authority PDA
+        if (eventAuthorityPda && replacedAccounts.length > 0) {
+          const eventAuthStr = eventAuthorityPda.toBase58();
+          
+          for (const { position, originalAccount } of replacedAccounts) {
+            if (originalAccount === eventAuthStr) {
+              // event_authority was replaced - check if it exists elsewhere in the instruction
+              let eventAuthFoundElsewhere = false;
+              for (let i = 0; i < ix.keys.length; i++) {
+                if (i !== position) {
+                  const key = ix.keys[i];
+                  if (key && typeof key === 'object' && (key as any).pubkey) {
+                    const pk = (key as any).pubkey;
+                    const pkStr = pk instanceof PublicKey ? pk.toBase58() : String(pk);
+                    if (pkStr === eventAuthStr) {
+                      eventAuthFoundElsewhere = true;
+                      break;
+                    }
+                  }
+                }
+              }
+              
+              // If event_authority was replaced and not found elsewhere, add it back
+              // Insert it after the token program positions (position 13)
+              if (!eventAuthFoundElsewhere) {
+                const insertPosition = Math.min(13, ix.keys.length);
+                ix.keys.splice(insertPosition, 0, {
+                  pubkey: eventAuthorityPda,
+                  isSigner: false,
+                  isWritable: false
+                });
+                logger.warn('meteora.dlmm.event_authority_restored', {
+                  cat: 'tx',
+                  ctx: {
+                    replacedAt: position,
+                    restoredAt: insertPosition,
+                    account: eventAuthStr,
+                    poolId: hop.poolId
+                  }
+                });
+              }
+            }
+          }
+        }
+        
         // Log final state
         const accountAt11 = ix.keys[11] ? ((ix.keys[11] as any).pubkey instanceof PublicKey ? (ix.keys[11] as any).pubkey.toBase58() : String((ix.keys[11] as any).pubkey)) : 'missing';
         const accountAt12 = ix.keys[12] ? ((ix.keys[12] as any).pubkey instanceof PublicKey ? (ix.keys[12] as any).pubkey.toBase58() : String((ix.keys[12] as any).pubkey)) : 'missing';
+        const accountAt13 = ix.keys[13] ? ((ix.keys[13] as any).pubkey instanceof PublicKey ? (ix.keys[13] as any).pubkey.toBase58() : String((ix.keys[13] as any).pubkey)) : 'missing';
         logger.info('meteora.dlmm.instruction.after_duplicate_removal', {
           cat: 'tx',
           ctx: {
@@ -2048,10 +2113,13 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
             accountCount: ix.keys.length,
             accountAt11,
             accountAt12,
+            accountAt13,
+            originalAccount12,
             expectedTokenXProgram: expectedTokenXProg,
             expectedTokenYProgram: expectedTokenYProg,
             position11Matches: accountAt11 === expectedTokenXProg,
-            position12Matches: accountAt12 === expectedTokenYProg
+            position12Matches: accountAt12 === expectedTokenYProg,
+            replacedAccountsCount: replacedAccounts.length
           }
         });
       } catch {}
@@ -2738,6 +2806,115 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       remainingAccounts: tickArrayKeys,
     });
     let ixs = Array.isArray(res?.instructions) ? res.instructions : (res?.innerTransaction ? res.innerTransaction.instructions : []);
+    
+    // CRITICAL: Decode instruction data to verify the amount actually encoded
+    // The SDK might adjust the amount, so we need to check what was actually encoded
+    if (ixs && ixs.length > 0 && hop.useExactAmount) {
+      try {
+        // Raydium CLMM swap instruction format: 
+        // - First 8 bytes: instruction discriminator
+        // - Next 16 bytes: amountIn (u128, little-endian)
+        // - Next 16 bytes: amountOutMin (u128, little-endian)
+        // - Next 16 bytes: sqrtPriceLimitX64 (u128, little-endian)
+        for (const ix of ixs) {
+          if (ix && ix.data && (Buffer.isBuffer(ix.data) || ix.data instanceof Uint8Array)) {
+            const data = Buffer.isBuffer(ix.data) ? ix.data : Buffer.from(ix.data);
+            if (data.length >= 24) {
+              // Read amountIn from bytes 8-24 (u128, little-endian)
+              const amountInEncoded = data.readBigUInt64LE(8) + (data.readBigUInt64LE(16) << 64n);
+              const expectedAmount = hop.amountInRaw || 0n;
+              
+              if (amountInEncoded !== expectedAmount && expectedAmount > 0n) {
+                try {
+                  logger.warn('raydium.clmm.instruction.amount.mismatch', {
+                    cat: 'tx',
+                    code: LogCode.TX_BUILD_ERR,
+                    ctx: {
+                      pool: hop.poolId,
+                      expectedAmount: expectedAmount.toString(),
+                      encodedAmount: amountInEncoded.toString(),
+                      difference: (amountInEncoded > expectedAmount 
+                        ? (amountInEncoded - expectedAmount).toString() 
+                        : (expectedAmount - amountInEncoded).toString()),
+                      inputMint: hop.inputMint,
+                      outputMint: hop.outputMint,
+                    } as any,
+                  });
+                } catch {}
+                
+                // CRITICAL: If this is a multi-hop swap and the SDK adjusted the amount,
+                // we need to update the hop's amountInRaw to match what was actually encoded
+                // Also update quotedOutputRaw if this is the first hop, so the next hop uses the correct amount
+                // Note: This happens after instruction building, so we can't adjust the next hop in the same pass
+                // But we can log it for debugging and potentially use it in a future optimization
+                if (hop.useExactAmount) {
+                  const originalQuotedOutput = hop.quotedOutputRaw;
+                  hop.amountInRaw = amountInEncoded;
+                  
+                  // If the SDK adjusted the input amount, we should re-quote the output
+                  // to get the actual output that will be received
+                  try {
+                    const { quoteHopOut } = await import('../resolver/quotes.js');
+                    const requotedOutput = await quoteHopOut(hop, amountInEncoded);
+                    if (requotedOutput > 0n) {
+                      hop.quotedOutputRaw = requotedOutput;
+                      try {
+                        logger.info('raydium.clmm.instruction.amount.adjusted_with_requote', {
+                          cat: 'tx',
+                          code: LogCode.TX_BUILD_HOP,
+                          ctx: {
+                            pool: hop.poolId,
+                            adjustedAmountIn: amountInEncoded.toString(),
+                            requotedOutput: requotedOutput.toString(),
+                            originalQuotedOutput: originalQuotedOutput?.toString() || 'N/A',
+                            inputMint: hop.inputMint,
+                            outputMint: hop.outputMint,
+                          } as any,
+                        });
+                      } catch {}
+                    }
+                  } catch (requoteErr) {
+                    try {
+                      logger.debug('raydium.clmm.instruction.requote.failed', {
+                        cat: 'tx',
+                        ctx: {
+                          pool: hop.poolId,
+                          error: String((requoteErr as any)?.message || requoteErr),
+                        } as any,
+                      });
+                    } catch {}
+                  }
+                  
+                  try {
+                    logger.info('raydium.clmm.instruction.amount.adjusted', {
+                      cat: 'tx',
+                      code: LogCode.TX_BUILD_HOP,
+                      ctx: {
+                        pool: hop.poolId,
+                        adjustedAmount: amountInEncoded.toString(),
+                        inputMint: hop.inputMint,
+                        outputMint: hop.outputMint,
+                      } as any,
+                    });
+                  } catch {}
+                }
+              }
+            }
+          }
+        }
+      } catch (decodeErr) {
+        // If decoding fails, log but don't fail - instruction might be in different format
+        try {
+          logger.debug('raydium.clmm.instruction.decode.failed', {
+            cat: 'tx',
+            ctx: {
+              pool: hop.poolId,
+              error: String((decodeErr as any)?.message || decodeErr),
+            } as any,
+          });
+        } catch {}
+      }
+    }
     
     // Log SDK-generated instructions for debugging
     try {
