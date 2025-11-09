@@ -13,6 +13,12 @@ import { dexAltManager } from '../utils/altManager.js';
 import { getFeeCalculator } from '../../utils/feeCalculator.js';
 import { getConnection } from '../../wallet/wallet.js';
 
+// Cache wallet and exec config to avoid file I/O on every transaction build
+let cachedWallet: { publicKey: PublicKey; secretKey: Uint8Array } | null = null;
+let cachedExecConfig: any = null;
+let execConfigCachedAt = 0;
+const CONFIG_CACHE_MS = 5000; // 5 seconds
+
 // Add timing metrics interface
 interface TimingMetrics {
   total: number;
@@ -76,6 +82,46 @@ function logTimingMetrics(
       });
     }
   } catch {}
+}
+
+/**
+ * Get cached wallet to avoid file I/O on every transaction build
+ */
+async function getCachedWallet(): Promise<{ publicKey: PublicKey; secretKey: Uint8Array }> {
+  if (!cachedWallet) {
+    cachedWallet = await ensureWallet(CONFIG.walletPath);
+    try {
+      logger.debug('tx.wallet.cache_init', {
+        cat: 'tx',
+        ctx: { owner: cachedWallet.publicKey.toBase58() },
+      });
+    } catch {}
+  }
+  return cachedWallet;
+}
+
+/**
+ * Get cached exec config to avoid file I/O on every transaction build
+ */
+async function getCachedExecConfig(): Promise<any> {
+  const now = Date.now();
+  if (!cachedExecConfig || (now - execConfigCachedAt) > CONFIG_CACHE_MS) {
+    cachedExecConfig = await loadExecConfig().catch(() => ({ 
+      createAtasInTx: true, 
+      wrapSolInTx: true 
+    }));
+    execConfigCachedAt = now;
+    try {
+      logger.debug('tx.config.cache_refresh', {
+        cat: 'tx',
+        ctx: { 
+          createAtasInTx: cachedExecConfig.createAtasInTx,
+          wrapSolInTx: cachedExecConfig.wrapSolInTx,
+        },
+      });
+    } catch {}
+  }
+  return cachedExecConfig;
 }
 
 export type ComputeBudgetConfig = { computeUnitLimit?: number; computeUnitPriceMicroLamports?: number };
@@ -151,14 +197,14 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
   // Build per-hop placeholders
   const hopIxs: any[] = [];
   
-  // Time wallet initialization
+  // Time wallet initialization - use cached wallet to avoid file I/O
   const walletStart = Date.now();
-  const owner = (await ensureWallet(CONFIG.walletPath)).publicKey;
+  const owner = (await getCachedWallet()).publicKey;
   metrics.setup.wallet = Date.now() - walletStart;
   
-  // Time config loading
+  // Time config loading - use cached config to avoid file I/O
   const configStart = Date.now();
-  const execCfg = await loadExecConfig().catch(() => ({ createAtasInTx: true, wrapSolInTx: true } as any));
+  const execCfg = await getCachedExecConfig();
   metrics.setup.config = Date.now() - configStart;
   
   metrics.setup.total = Date.now() - setupStart;

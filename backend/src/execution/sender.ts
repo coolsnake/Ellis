@@ -9,6 +9,11 @@ import { getTxRelatedLogs } from '../utils/sessionLogs.js';
 import { optimizeAccountOrder } from '../execution/utils/accountOrdering.js';
 const TX_DEBUG_COERCION = !!((CONFIG as any)?.tx?.debugIxCoercion);
 
+// Blockhash caching to avoid RPC calls on every transaction
+// Blockhashes are valid for ~150 seconds, we cache for 30 seconds to be safe
+let cachedBlockhash: { blockhash: string; lastValidBlockHeight: number; fetchedAt: number } | null = null;
+const BLOCKHASH_CACHE_MS = 30000; // 30 seconds
+
 export type SendOptions = {
   computeUnitLimit?: number;
   computeUnitPriceMicroLamports?: number;
@@ -30,6 +35,43 @@ function detectDexesFromPrograms(programIds: string[]): Array<'raydium' | 'orca'
   return Array.from(set);
 }
 
+/**
+ * Get blockhash with caching to reduce RPC calls
+ * Blockhashes are valid for ~150 seconds, we cache for 30 seconds for safety
+ */
+async function getCachedBlockhash(connection: Connection): Promise<{ blockhash: string; lastValidBlockHeight: number }> {
+  const now = Date.now();
+  
+  // Return cached blockhash if still fresh
+  if (cachedBlockhash && (now - cachedBlockhash.fetchedAt) < BLOCKHASH_CACHE_MS) {
+    try {
+      logger.debug('tx.blockhash.cache_hit', {
+        cat: 'tx',
+        ctx: {
+          age: now - cachedBlockhash.fetchedAt,
+          blockhash: cachedBlockhash.blockhash.slice(0, 8),
+        },
+      });
+    } catch {}
+    return { blockhash: cachedBlockhash.blockhash, lastValidBlockHeight: cachedBlockhash.lastValidBlockHeight };
+  }
+  
+  // Fetch fresh blockhash
+  const result = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
+  cachedBlockhash = { ...result, fetchedAt: now };
+  
+  try {
+    logger.debug('tx.blockhash.cache_refresh', {
+      cat: 'tx',
+      ctx: {
+        blockhash: result.blockhash.slice(0, 8),
+        lastValidBlockHeight: result.lastValidBlockHeight,
+      },
+    });
+  } catch {}
+  
+  return result;
+}
 
 function toInstruction(ix: any): TransactionInstruction | null {
   try {
@@ -223,19 +265,41 @@ function sanitizeInstructionKeys(ix: TransactionInstruction): void {
 }
 
 async function loadLookupTables(connection: Connection, addrs: string[]): Promise<AddressLookupTableAccount[]> {
+  if (addrs.length === 0) return [];
+  
+  try {
+    logger.debug('tx.lookup_table.load_start', {
+      cat: 'tx',
+      ctx: { count: addrs.length, addresses: addrs },
+    });
+  } catch {}
+  
+  // Load all ALTs in parallel for faster transaction building
+  const results = await Promise.allSettled(
+    addrs.map(async (a) => {
+      try {
+        const pk = new PublicKey(a);
+        const result = await connection.getAddressLookupTable(pk);
+        return { address: a, account: result.value };
+      } catch (err) {
+        return { address: a, account: null, error: err };
+      }
+    })
+  );
+  
   const out: AddressLookupTableAccount[] = [];
-  for (const a of addrs) {
-    try {
-      const pk = new PublicKey(a);
-      const acc = await connection.getAddressLookupTable(pk).then(r => r.value).catch(() => null);
-      if (acc) {
-        out.push(acc);
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    if (result.status === 'fulfilled') {
+      const { address, account, error } = result.value;
+      if (account) {
+        out.push(account);
         try {
           logger.debug('tx.lookup_table.loaded_individual', {
             cat: 'tx',
             ctx: {
-              address: a,
-              accountCount: acc.state.addresses.length,
+              address,
+              accountCount: account.state.addresses.length,
             },
           });
         } catch {}
@@ -244,24 +308,32 @@ async function loadLookupTables(connection: Connection, addrs: string[]): Promis
           logger.warn('tx.lookup_table.load_failed', {
             cat: 'tx',
             ctx: {
-              address: a,
-              error: 'Failed to load ALT account',
+              address,
+              error: error ? String((error as any)?.message || error) : 'Failed to load ALT account',
             },
           });
         } catch {}
       }
-    } catch (err) {
+    } else {
       try {
         logger.warn('tx.lookup_table.load_error', {
           cat: 'tx',
           ctx: {
-            address: a,
-            error: String((err as any)?.message || err),
+            address: addrs[i],
+            error: String(result.reason?.message || result.reason),
           },
         });
       } catch {}
     }
   }
+  
+  try {
+    logger.debug('tx.lookup_table.load_complete', {
+      cat: 'tx',
+      ctx: { requested: addrs.length, loaded: out.length },
+    });
+  } catch {}
+  
   return out;
 }
 
@@ -429,7 +501,7 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
       try { logger.info('tx.preflight.ix', { idx: i, pid, data: dataKind, keys: keyKinds }); } catch {}
     }
   } catch {}
-  const { blockhash } = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
+  const { blockhash } = await getCachedBlockhash(connection);
   const txId = Math.random().toString(36).slice(2, 10);
   try {
     logger.info('tx.preflight.start', { cat: 'tx', ctx: { txId, ixCount: realIxs.length } as any });
@@ -786,7 +858,7 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
     try { sanitizeInstructionKeys(t); } catch {}
     realIxs.push(t);
   }
-  const { blockhash, lastValidBlockHeight } = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
+  const { blockhash, lastValidBlockHeight } = await getCachedBlockhash(connection);
   const txId = Math.random().toString(36).slice(2, 10);
   try {
     logger.info('tx.send.start', { cat: 'tx', ctx: { txId, ixCount: realIxs.length } as any });

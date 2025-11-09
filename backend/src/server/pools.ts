@@ -1574,6 +1574,238 @@ export function startRaydiumRefreshLoop(): void {
           } catch {}
         };
 
+        // Helper: attach Raydium CLMM vault, observation, and tick array accounts for a given CLMM pool address
+        const attachRaydiumClmmAccounts = async (poolAddr: string) => {
+          try {
+            const pk = new web3.PublicKey(poolAddr);
+            const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+            const acc: any = await withRpcLimit(() => conn.getAccountInfo(pk, CONFIG.system.txCommitment as any));
+            if (!acc || !acc.data) return;
+            const rmod: any = await import('@raydium-io/raydium-sdk-v2').catch(() => null);
+            
+            // Try CLMM pool layout
+            const clmmLayout = rmod?.PoolInfoLayout || rmod?.AmmV3PoolPersonalPosition || rmod?.PoolState;
+            if (!clmmLayout || typeof clmmLayout.decode !== 'function') return;
+            
+            let state: any = null;
+            try { state = clmmLayout.decode((acc as any).data); } catch { return; }
+            
+            // Subscribe to vaults
+            const vA = state?.vaultA?.toBase58?.() || state?.tokenVault0?.toBase58?.();
+            const vB = state?.vaultB?.toBase58?.() || state?.tokenVault1?.toBase58?.();
+            const vaults = Array.from(new Set([vA, vB].filter(Boolean)));
+            for (const v of vaults) {
+              try {
+                const vpk = new web3.PublicKey(v as string);
+                const id = await subscribeAccountWithRetry(vpk, handle);
+                subs.push({ kind: 'account', id });
+                targetedSourceByAccount.set(String(v), 'raydium');
+                debugLogTargeted('raydium', String(v), { kind: 'clmm_vault' });
+              } catch {}
+            }
+            
+            // Subscribe to observationId (oracle/TWAP data)
+            const obsId = state?.observationId?.toBase58?.() || state?.observationKey?.toBase58?.();
+            if (obsId) {
+              try {
+                const obsPk = new web3.PublicKey(obsId);
+                const id = await subscribeAccountWithRetry(obsPk, handle);
+                subs.push({ kind: 'account', id });
+                targetedSourceByAccount.set(String(obsId), 'raydium');
+                debugLogTargeted('raydium', String(obsId), { kind: 'observation' });
+              } catch {}
+            }
+            
+            // Subscribe to oracle
+            const oracle = state?.oracle?.toBase58?.();
+            if (oracle) {
+              try {
+                const oraclePk = new web3.PublicKey(oracle);
+                const id = await subscribeAccountWithRetry(oraclePk, handle);
+                subs.push({ kind: 'account', id });
+                targetedSourceByAccount.set(String(oracle), 'raydium');
+                debugLogTargeted('raydium', String(oracle), { kind: 'oracle' });
+              } catch {}
+            }
+            
+            // Subscribe to active tick arrays (similar to Meteora bins)
+            // Note: Raydium CLMM uses 3 tick arrays (lower, center, upper) based on current tick
+            const currentTick = state?.tickCurrent ?? state?.tick_current;
+            const tickSpacing = state?.tickSpacing ?? state?.tick_spacing;
+            if (currentTick !== undefined && tickSpacing) {
+              try {
+                const PoolUtils = rmod?.PoolUtils;
+                const clmmProgramId = new web3.PublicKey(String((CONFIG as any)?.raydium?.clmmProgram || 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK'));
+                
+                // Derive tick arrays for lower, center, upper positions
+                for (let offset = -1; offset <= 1; offset++) {
+                  try {
+                    // Calculate start tick index for this offset
+                    const startTickIndex = Math.floor(currentTick / (tickSpacing * 60)) + offset;
+                    const actualStartTick = startTickIndex * tickSpacing * 60;
+                    
+                    // Derive tick array PDA: [b"tick_array", pool_id, start_index]
+                    const startIndexBuffer = Buffer.alloc(4);
+                    startIndexBuffer.writeInt32LE(actualStartTick, 0);
+                    const [tickArrayPda] = web3.PublicKey.findProgramAddressSync(
+                      [Buffer.from('tick_array'), pk.toBuffer(), startIndexBuffer],
+                      clmmProgramId
+                    );
+                    
+                    const id = await subscribeAccountWithRetry(tickArrayPda, handle);
+                    subs.push({ kind: 'account', id });
+                    targetedSourceByAccount.set(tickArrayPda.toBase58(), 'raydium');
+                    debugLogTargeted('raydium', tickArrayPda.toBase58(), { kind: 'tick_array', offset });
+                  } catch (err) {
+                    try { logger.debug('raydium.clmm.tickarray.subscribe.fail', { pool: poolAddr, offset, error: String((err as any)?.message || err) }); } catch {}
+                  }
+                }
+              } catch (err) {
+                try { logger.debug('raydium.clmm.tickarray.derive.fail', { pool: poolAddr, error: String((err as any)?.message || err) }); } catch {}
+              }
+            }
+          } catch {}
+        };
+
+        // Helper: attach Orca Whirlpool vault, oracle, and tick array accounts for a given pool address
+        const attachOrcaWhirlpoolAccounts = async (poolAddr: string) => {
+          try {
+            const pk = new web3.PublicKey(poolAddr);
+            const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+            const acc: any = await withRpcLimit(() => conn.getAccountInfo(pk, CONFIG.system.txCommitment as any));
+            if (!acc || !acc.data) return;
+            
+            const sdkAny: any = await import('@orca-so/whirlpools-sdk').catch(() => null);
+            const ParsableWhirlpool = sdkAny?.ParsableWhirlpool;
+            const PDAUtil = sdkAny?.PDAUtil;
+            
+            if (!ParsableWhirlpool || typeof ParsableWhirlpool.parse !== 'function') return;
+            
+            let whirlpoolData: any = null;
+            try { whirlpoolData = ParsableWhirlpool.parse(acc.data); } catch { return; }
+            
+            // Subscribe to vaults
+            const vaultA = whirlpoolData?.tokenVaultA;
+            const vaultB = whirlpoolData?.tokenVaultB;
+            const vaults = [vaultA, vaultB].filter(Boolean);
+            for (const vault of vaults) {
+              try {
+                const id = await subscribeAccountWithRetry(vault, handle);
+                subs.push({ kind: 'account', id });
+                targetedSourceByAccount.set(vault.toBase58(), 'orca');
+                debugLogTargeted('orca', vault.toBase58(), { kind: 'vault' });
+              } catch {}
+            }
+            
+            // Subscribe to oracle
+            if (whirlpoolData?.oracle) {
+              try {
+                const id = await subscribeAccountWithRetry(whirlpoolData.oracle, handle);
+                subs.push({ kind: 'account', id });
+                targetedSourceByAccount.set(whirlpoolData.oracle.toBase58(), 'orca');
+                debugLogTargeted('orca', whirlpoolData.oracle.toBase58(), { kind: 'oracle' });
+              } catch {}
+            }
+            
+            // Subscribe to active tick arrays (similar to Meteora bin arrays)
+            const tickSpacing = whirlpoolData?.tickSpacing;
+            const currentTick = whirlpoolData?.tickCurrentIndex;
+            
+            if (tickSpacing !== undefined && currentTick !== undefined && PDAUtil) {
+              try {
+                const TickUtil = sdkAny?.TickUtil || (await import('@orca-so/whirlpools-sdk/dist/utils/public/tick-utils.js').catch(() => null))?.TickUtil;
+                const orcaProgramId = new web3.PublicKey(String(CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc'));
+                
+                if (TickUtil && typeof TickUtil.getStartTickIndex === 'function') {
+                  // Subscribe to 3 tick arrays: lower, center, upper
+                  for (let offset = -1; offset <= 1; offset++) {
+                    try {
+                      const startTick = TickUtil.getStartTickIndex(currentTick, tickSpacing, offset);
+                      const tickArrayPda = PDAUtil.getTickArray(orcaProgramId, pk, startTick);
+                      
+                      if (tickArrayPda?.publicKey) {
+                        const id = await subscribeAccountWithRetry(tickArrayPda.publicKey, handle);
+                        subs.push({ kind: 'account', id });
+                        targetedSourceByAccount.set(tickArrayPda.publicKey.toBase58(), 'orca');
+                        debugLogTargeted('orca', tickArrayPda.publicKey.toBase58(), { kind: 'tick_array', offset });
+                      }
+                    } catch (err) {
+                      try { logger.debug('orca.whirlpool.tickarray.subscribe.fail', { pool: poolAddr, offset, error: String((err as any)?.message || err) }); } catch {}
+                    }
+                  }
+                }
+              } catch (err) {
+                try { logger.debug('orca.whirlpool.tickarray.derive.fail', { pool: poolAddr, error: String((err as any)?.message || err) }); } catch {}
+              }
+            }
+          } catch {}
+        };
+
+        // Helper: attach Meteora DLMM reserve accounts (reserveX, reserveY) and oracle for a given pool address
+        const attachMeteoraReserves = async (poolAddr: string) => {
+          try {
+            const pk = new web3.PublicKey(poolAddr);
+            const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+            const acc: any = await withRpcLimit(() => conn.getAccountInfo(pk, CONFIG.system.txCommitment as any));
+            if (!acc || !acc.data) return;
+            
+            const program = ensureMeteoraProgram();
+            if (!program) return;
+            const programId = program.programId;
+            
+            // Derive reserves using Meteora SDK
+            const DLMM: any = await import('@meteora-ag/dlmm').catch(() => null);
+            const deriveReserve = DLMM?.DLMM?.deriveReserve;
+            
+            if (typeof deriveReserve === 'function') {
+              try {
+                // Derive reserveX
+                const rxResult = await deriveReserve(programId, pk, true);
+                const reserveX = rxResult?.publicKey || rxResult;
+                if (reserveX) {
+                  const id = await subscribeAccountWithRetry(reserveX, handle);
+                  subs.push({ kind: 'account', id });
+                  targetedSourceByAccount.set(reserveX.toBase58(), 'meteora');
+                  debugLogTargeted('meteora', reserveX.toBase58(), { kind: 'reserveX' });
+                }
+              } catch (err) {
+                try { logger.debug('meteora.reserve.x.subscribe.fail', { pool: poolAddr, error: String((err as any)?.message || err) }); } catch {}
+              }
+              
+              try {
+                // Derive reserveY
+                const ryResult = await deriveReserve(programId, pk, false);
+                const reserveY = ryResult?.publicKey || ryResult;
+                if (reserveY) {
+                  const id = await subscribeAccountWithRetry(reserveY, handle);
+                  subs.push({ kind: 'account', id });
+                  targetedSourceByAccount.set(reserveY.toBase58(), 'meteora');
+                  debugLogTargeted('meteora', reserveY.toBase58(), { kind: 'reserveY' });
+                }
+              } catch (err) {
+                try { logger.debug('meteora.reserve.y.subscribe.fail', { pool: poolAddr, error: String((err as any)?.message || err) }); } catch {}
+              }
+            }
+            
+            // Derive oracle
+            const deriveOracle = DLMM?.DLMM?.deriveOracle;
+            if (typeof deriveOracle === 'function') {
+              try {
+                const oracleResult = await deriveOracle(programId, pk);
+                const oracle = oracleResult?.publicKey || oracleResult;
+                if (oracle) {
+                  const id = await subscribeAccountWithRetry(oracle, handle);
+                  subs.push({ kind: 'account', id });
+                  targetedSourceByAccount.set(oracle.toBase58(), 'meteora');
+                  debugLogTargeted('meteora', oracle.toBase58(), { kind: 'oracle' });
+                }
+              } catch (err) {
+                try { logger.debug('meteora.oracle.subscribe.fail', { pool: poolAddr, error: String((err as any)?.message || err) }); } catch {}
+              }
+            }
+          } catch {}
+        };
+
         // Subscribe to Orca Whirlpool POOL accounts only: prefer graph edge pool ids, else derive PDAs from watchlist
         try {
           const { PublicKey } = web3;
@@ -1639,10 +1871,9 @@ export function startRaydiumRefreshLoop(): void {
                 targetedSourceByAccount.set(acct, 'orca');
                 debugLogTargeted('orca', acct, { kind: 'pool' });
               } catch {}
-              // Opportunistically attach AMM vault listeners for AMM pools
-              // Safe to call for any Raydium pool; function is a no-op for CLMM layouts
-              // Await to respect rate limiter (vault attachments also consume WS attach slots)
-              await attachRaydiumAmmVaults(addr).catch(() => {});
+              // Attach Orca Whirlpool vault, oracle, and tick array listeners
+              // Await to respect rate limiter (additional attachments also consume WS attach slots)
+              await attachOrcaWhirlpoolAccounts(addr).catch(() => {});
             } catch {}
             if (i < uniq.length - 1 && intervalMs > 0) { await sleep(intervalMs); }
           }
@@ -1704,10 +1935,31 @@ export function startRaydiumRefreshLoop(): void {
                 targetedSourceByAccount.set(acct, 'raydium');
                 debugLogTargeted('raydium', acct, { kind: 'pool' });
               } catch {}
-              // Opportunistically attach AMM vault listeners for AMM pools
-              // Safe to call for any Raydium pool; function is a no-op for CLMM layouts
-              // Await to respect rate limiter (vault attachments also consume WS attach slots)
-              await attachRaydiumAmmVaults(addr).catch(() => {});
+              // Detect pool type (AMM vs CLMM) and attach appropriate accounts
+              // Check account owner to determine pool type
+              try {
+                const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+                const poolAcc: any = await withRpcLimit(() => conn.getAccountInfo(pk, CONFIG.system.txCommitment as any));
+                if (poolAcc) {
+                  const owner = poolAcc.owner?.toBase58?.();
+                  const rayAmmOwner = rayAmm.toBase58();
+                  const rayClmmOwner = rayClmm.toBase58();
+                  
+                  if (owner === rayClmmOwner) {
+                    // CLMM pool: attach vaults, observation, tick arrays
+                    await attachRaydiumClmmAccounts(addr).catch(() => {});
+                  } else if (owner === rayAmmOwner) {
+                    // AMM pool: attach vaults
+                    await attachRaydiumAmmVaults(addr).catch(() => {});
+                  } else {
+                    // Unknown type, try AMM first (more common)
+                    await attachRaydiumAmmVaults(addr).catch(() => {});
+                  }
+                }
+              } catch {
+                // Fallback: try AMM first
+                await attachRaydiumAmmVaults(addr).catch(() => {});
+              }
             } catch {}
             if (i < uniqueRay.length - 1 && intervalMsRay > 0) { await sleepRay(intervalMsRay); }
           }
@@ -1765,6 +2017,9 @@ export function startRaydiumRefreshLoop(): void {
                   targetedSourceByAccount.set(acct, 'meteora');
                   debugLogTargeted('meteora', acct, { kind: 'pool' });
                 } catch {}
+                // Attach Meteora reserve and oracle accounts
+                // Await to respect rate limiter (additional attachments also consume WS attach slots)
+                await attachMeteoraReserves(addr).catch(() => {});
                 // Ensure meteoraTargets Set includes this ID for handle() closure
                 meteoraTargets.add(addr);
               } catch (e: any) {
