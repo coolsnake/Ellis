@@ -1743,6 +1743,8 @@ async fn main() -> anyhow::Result<()> {
                     let len = s.events.len();
                     if len > 200 { s.events.drain(0..(len-200)); }
                 }
+                // Drop the write lock before attempting to acquire another one for version commit
+                drop(s);
 
                 if let Some(v_commit) = version_to_commit {
                     let mut s = loop_state.write().await;
