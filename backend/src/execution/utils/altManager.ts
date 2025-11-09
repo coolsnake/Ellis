@@ -999,7 +999,7 @@ export class DexAltManager {
 
   /**
    * Collect detailed accounts for a specific pool ID
-   * @param poolId Pool address
+   * @param poolId Pool address (may include -rev or -fwd suffix)
    * @param dex DEX type
    * @returns Array of PublicKeys for all accounts needed for this pool
    */
@@ -1011,7 +1011,9 @@ export class DexAltManager {
     const connection = getConnection();
     
     try {
-      const poolPk = new PublicKey(poolId);
+      // Strip directional suffixes (-rev, -fwd) from pool_id
+      const cleanPoolId = poolId.replace(/-(rev|fwd)$/, '');
+      const poolPk = new PublicKey(cleanPoolId);
       accounts.push(poolPk);
 
       const dexLower = dex.toLowerCase();
@@ -1034,7 +1036,7 @@ export class DexAltManager {
             try {
               logger.debug('alt.manager.raydium.clmm.basic', {
                 cat: 'tx',
-                ctx: { poolId, size: poolInfo.data.length },
+                ctx: { poolId: cleanPoolId, size: poolInfo.data.length },
               });
             } catch {}
           } else {
@@ -1043,7 +1045,7 @@ export class DexAltManager {
             try {
               logger.debug('alt.manager.raydium.amm.basic', {
                 cat: 'tx',
-                ctx: { poolId, size: poolInfo.data.length },
+                ctx: { poolId: cleanPoolId, size: poolInfo.data.length },
               });
             } catch {}
           }
@@ -1055,7 +1057,7 @@ export class DexAltManager {
         try {
           logger.debug('alt.manager.orca.whirlpool.basic', {
             cat: 'tx',
-            ctx: { poolId },
+            ctx: { poolId: cleanPoolId },
           });
         } catch {}
       } else if (dexLower === 'meteora') {
@@ -1073,7 +1075,7 @@ export class DexAltManager {
             try {
               logger.debug('alt.manager.meteora.dlmm.basic', {
                 cat: 'tx',
-                ctx: { poolId, size: poolInfo.data.length },
+                ctx: { poolId: cleanPoolId, size: poolInfo.data.length },
               });
             } catch {}
           }
@@ -1083,7 +1085,7 @@ export class DexAltManager {
         try {
           logger.debug('alt.manager.meteora.balanced.basic', {
             cat: 'tx',
-            ctx: { poolId },
+            ctx: { poolId: cleanPoolId },
           });
         } catch {}
       }

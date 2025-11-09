@@ -1931,52 +1931,26 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     
     const ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
     
-    // Remove duplicate accounts from remaining accounts section only
-    // Core instruction accounts (first ~15) must preserve SDK ordering
+    // Limit remaining accounts (bin arrays) to prevent transaction size issues
+    // Core instruction accounts (first 15) must preserve SDK ordering
+    // NOTE: We do NOT deduplicate - Solana allows duplicate accounts with different flags
     if (ix && Array.isArray(ix.keys) && ix.keys.length > 15) {
       try {
         const coreAccountCount = 15; // Preserve core instruction accounts
-        const seen = new Set<string>();
         
-        // Add core accounts to seen set
-        for (let i = 0; i < Math.min(coreAccountCount, ix.keys.length); i++) {
-          const key = ix.keys[i];
-          const pk = key?.pubkey instanceof PublicKey ? key.pubkey : (typeof key?.pubkey === 'string' ? new PublicKey(key.pubkey) : null);
-          if (pk) {
-            seen.add(pk.toBase58());
-          }
-        }
-        
-        // Limit bin arrays conservatively to prevent transaction size issues
         // With extended ALT containing Meteora-specific accounts, we can allow more bin arrays
-        // 10 bin arrays should handle most price ranges while staying under tx size limit
-        const maxRemainingAccounts = 10;
+        // 12 bin arrays should handle most price ranges while staying under tx size limit
+        const maxRemainingAccounts = 12;
         
-        const dedupedRemainingAccounts = [];
-        for (let i = coreAccountCount; i < ix.keys.length; i++) {
-          const key = ix.keys[i];
-          const pk = key?.pubkey instanceof PublicKey ? key.pubkey : (typeof key?.pubkey === 'string' ? new PublicKey(key.pubkey) : null);
-          if (pk) {
-            const pkStr = pk.toBase58();
-            if (!seen.has(pkStr)) {
-              // Stop adding if we've reached the limit
-              if (dedupedRemainingAccounts.length >= maxRemainingAccounts) {
-                break;
-              }
-              dedupedRemainingAccounts.push(key);
-              seen.add(pkStr);
-            }
-          }
-        }
-        
-        // Replace remaining accounts with deduplicated and limited version
+        // Simply limit the number of remaining accounts without deduplication
+        // Solana allows duplicate accounts in instructions (with different flags)
         const originalCount = ix.keys.length;
-        ix.keys = [...ix.keys.slice(0, coreAccountCount), ...dedupedRemainingAccounts];
-        const removedCount = originalCount - ix.keys.length;
-        
-        if (removedCount > 0) {
+        if (ix.keys.length > coreAccountCount + maxRemainingAccounts) {
+          ix.keys = [...ix.keys.slice(0, coreAccountCount + maxRemainingAccounts)];
+          
+          const removedCount = originalCount - ix.keys.length;
           try {
-            logger.info('meteora.dlmm.remaining_accounts_deduped', {
+            logger.info('meteora.dlmm.remaining_accounts_limited', {
               cat: 'tx',
               ctx: {
                 poolId: hop.poolId,
