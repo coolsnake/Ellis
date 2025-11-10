@@ -2114,10 +2114,12 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 // getBinArrayLowerUpperBinId takes binArrayIndex, returns [lowerBinId, upperBinId]
                 const [lowerBinId, upperBinId] = getBinArrayLowerUpperBinId(idx);
                 
-                // Expand range to cover potential swap path: active bin array +/- 2-3 bin arrays
+                // Expand range to cover potential swap path: active bin array +/- bin arrays
                 // Swaps can traverse multiple bins, so we need a wider range
+                // For multihop swaps, use smaller expansion to keep transaction size manageable
                 const binArraySize = (DLMM as any)?.MAX_BIN_ARRAY_SIZE ?? new BN(70);
-                const expansionFactor = new BN(3); // Cover 3 bin arrays on each side
+                const totalHops = (hop as any).totalHops || 1;
+                const expansionFactor = totalHops >= 2 ? new BN(1) : new BN(3); // Smaller expansion for multihop
                 const rangeLower = lowerBinId.sub(binArraySize.mul(expansionFactor));
                 const rangeUpper = upperBinId.add(binArraySize.mul(expansionFactor));
                 
@@ -2199,11 +2201,11 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         let maxRemainingAccounts = 5; // Default for single hop
         
         if (totalHops >= 4) {
-          maxRemainingAccounts = 2; // Very aggressive for 4+ hops
+          maxRemainingAccounts = 5; // Allow minimum necessary for 4+ hops
         } else if (totalHops === 3) {
-          maxRemainingAccounts = 2; // Aggressive for 3 hops
+          maxRemainingAccounts = 7; // Allow minimum necessary for 3 hops
         } else if (totalHops === 2) {
-          maxRemainingAccounts = 3; // Moderate for 2 hops
+          maxRemainingAccounts = 10; // Allow sufficient bin arrays for 2 hops
         }
         
         // Simply limit the number of remaining accounts without deduplication
@@ -3492,15 +3494,85 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     // Choose Raydium AMM version; default to 4
     const version = resolveRaydiumAmmVersion(hop.programId);
 
+    // CRITICAL: Get pool's actual mint orientation from cache to match Serum market
+    // The Serum market has a fixed base/quote orientation that we must match
+    // Using hop.inputMint/outputMint would be wrong if swapping in the reverse direction
+    let poolMintA: string | undefined;
+    let poolMintB: string | undefined;
+    let poolDecA: number | undefined;
+    let poolDecB: number | undefined;
+    try {
+      const { executionCache } = await import('../cache.js');
+      const cached = executionCache.getStatic(hop.poolId);
+      if (cached) {
+        poolMintA = cached.mint_a;
+        poolMintB = cached.mint_b;
+        poolDecA = cached.decimals_a;
+        poolDecB = cached.decimals_b;
+      }
+    } catch {}
+    
+    // Determine base/quote mints based on swap direction
+    // If swapping mint_a -> mint_b, then base=mint_a, quote=mint_b
+    // If swapping mint_b -> mint_a, then base=mint_b, quote=mint_a
+    let baseMint: any;
+    let quoteMint: any;
+    let baseDecimals: number;
+    let quoteDecimals: number;
+    
+    if (poolMintA && poolMintB) {
+      // Use pool's actual mints and determine which is base vs quote based on swap direction
+      const swappingAtoB = (hop.inputMint === poolMintA && hop.outputMint === poolMintB);
+      const swappingBtoA = (hop.inputMint === poolMintB && hop.outputMint === poolMintA);
+      
+      if (swappingAtoB) {
+        // Swapping A->B: base=A, quote=B
+        baseMint = toPublicKey(poolMintA);
+        quoteMint = toPublicKey(poolMintB);
+        baseDecimals = poolDecA ?? Number(hop.inputDecimals);
+        quoteDecimals = poolDecB ?? Number(hop.outputDecimals);
+      } else if (swappingBtoA) {
+        // Swapping B->A: base=B, quote=A
+        baseMint = toPublicKey(poolMintB);
+        quoteMint = toPublicKey(poolMintA);
+        baseDecimals = poolDecB ?? Number(hop.inputDecimals);
+        quoteDecimals = poolDecA ?? Number(hop.outputDecimals);
+      } else {
+        // Fallback: mismatch, use hop mints (shouldn't happen)
+        try {
+          logger.warn('raydium.amm.mint_mismatch', {
+            cat: 'tx',
+            ctx: {
+              poolId: hop.poolId,
+              hopInput: hop.inputMint,
+              hopOutput: hop.outputMint,
+              poolMintA,
+              poolMintB
+            }
+          });
+        } catch {}
+        baseMint = toPublicKey(hop.inputMint);
+        quoteMint = toPublicKey(hop.outputMint);
+        baseDecimals = Number(hop.inputDecimals);
+        quoteDecimals = Number(hop.outputDecimals);
+      }
+    } else {
+      // Fallback if mints not in cache: use hop mints
+      baseMint = toPublicKey(hop.inputMint);
+      quoteMint = toPublicKey(hop.outputMint);
+      baseDecimals = Number(hop.inputDecimals);
+      quoteDecimals = Number(hop.outputDecimals);
+    }
+
     // Build pool keys (requires correct base/quote mints & decimals per market)
     let poolKeys = (getAssociatedPoolKeys as any)({
       version,
       marketVersion: 3,
       marketId,
-      baseMint: toPublicKey(hop.inputMint),
-      quoteMint: toPublicKey(hop.outputMint),
-      baseDecimals: Number(hop.inputDecimals),
-      quoteDecimals: Number(hop.outputDecimals),
+      baseMint,
+      quoteMint,
+      baseDecimals,
+      quoteDecimals,
       programId: ammProgramId,
       marketProgramId,
     });

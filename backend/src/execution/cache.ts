@@ -13,6 +13,11 @@ type PoolStatic = {
   // This eliminates RPC calls in builders that need to decode pool state
   rawAccountData?: Buffer;
   rawAccountDataUpdatedMs?: number;
+  // Pool mint orientation (CRITICAL for Raydium AMM to match Serum market)
+  mint_a?: string;
+  mint_b?: string;
+  decimals_a?: number;
+  decimals_b?: number;
   // Raydium AMM market accounts (required for swaps)
   market_id?: string;
   market_program_id?: string;

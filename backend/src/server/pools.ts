@@ -3013,6 +3013,13 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
             programId: pool.dex === 'Raydium' ? '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8' : (existing.programId || ''),
           };
           
+          // CRITICAL: Store pool mints and decimals (required for correct Serum market orientation)
+          // The pool's mint_a/mint_b must match the Serum market's base/quote orientation
+          if (pool.mint_a) staticData.mint_a = pool.mint_a;
+          if (pool.mint_b) staticData.mint_b = pool.mint_b;
+          if (pool.decimals_a != null) staticData.decimals_a = pool.decimals_a;
+          if (pool.decimals_b != null) staticData.decimals_b = pool.decimals_b;
+          
           // Add market accounts for Raydium AMM pools (required for swap execution)
           if (pool.market_id) staticData.market_id = pool.market_id;
           if (pool.market_program_id) staticData.market_program_id = pool.market_program_id;
