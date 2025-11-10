@@ -1336,9 +1336,19 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     } catch {}
 
     // Extend with host/referral fee handling and reserves when available
-    // Note: hostFeeIn removed - passing null causes error 3007 (account owned by wrong program)
-    // The SDK will handle the default behavior when hostFeeIn is undefined
+    // hostFeeIn must be a valid token account for the input token
+    // Use the user's own input token account (userTokenIn) as the host fee recipient
+    // This satisfies the SDK requirement while keeping any fees in the user's wallet
     const acctBase: any = { ...accounts };
+    
+    // Set hostFeeIn to userTokenIn (user's input token account)
+    // This prevents both error 3007 (wrong owner) and "hostFeeIn not provided" errors
+    try {
+      if (accounts.userTokenIn) {
+        acctBase.hostFeeIn = accounts.userTokenIn;
+      }
+    } catch {}
+    
     try {
       if (hop.vaultA) acctBase.reserveX = toPublicKey(hop.vaultA as any);
       if (hop.vaultB) acctBase.reserveY = toPublicKey(hop.vaultB as any);

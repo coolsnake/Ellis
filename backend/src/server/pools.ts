@@ -1833,17 +1833,18 @@ export function startRaydiumRefreshLoop(): void {
                 tracker.indexes.add(index);
                 targetedSourceByAccount.set(acct, 'meteora');
                 debugLogTargeted('meteora', acct, { kind: 'bin_array', index });
+                // Don't fetch initial bin data via RPC - wait for WebSocket update
+                // The first WebSocket update will populate the hash
+                // This eliminates RPC calls during pool updates when price moves to new bins
                 try {
-                  await waitForWsAttachSlot(); // Rate-limit the RPC call
-                  const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-                  const accInfo = await withRpcLimit(
-                    () => conn.getAccountInfo(binPk, CONFIG.system.txCommitment as any),
-                    1,
-                    { module: 'pools', method: 'getAccountInfo' }
-                  ) as any;
-                  if (accInfo?.data) {
-                    tracker.binHashes.set(acct, hashBuffer(accInfo.data));
-                  }
+                  await waitForWsAttachSlot(); // Rate-limit subscription, but don't fetch
+                  logger.debug('meteora.bin.subscribed', { 
+                    pool: poolId, 
+                    index, 
+                    binAccount: acct.slice(0,8)+'…', 
+                    reason: 'awaiting_first_ws_update',
+                    cat: 'pools' 
+                  });
                 } catch {}
               } catch (err) {
                 try { logger.info('meteora.ws bin.subscribe.fail', { pool: poolId, index, error: String((err as any)?.message || err) }); } catch {}
