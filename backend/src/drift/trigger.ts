@@ -487,7 +487,11 @@ export class TriggerBot implements Bot {
 			if (bh) return bh;
 		} catch {}
 		// Fallback to direct RPC if shared fetch failed
-		const recentBlockhash = await (await import('../utils/rpcLimiter.js')).withRpcLimit(() => this.driftClient.connection.getLatestBlockhash({ commitment: 'confirmed' }));
+		const recentBlockhash = await (await import('../utils/rpcLimiter.js')).withRpcLimit(
+			() => this.driftClient.connection.getLatestBlockhash({ commitment: 'confirmed' }),
+			1,
+			{ module: 'drift', method: 'getLatestBlockhash' }
+		);
 		return recentBlockhash.blockhash;
 	}
 

@@ -381,11 +381,15 @@ export class TokenAccountManager {
       const kp = Keypair.fromSecretKey(wallet.secretKey);
       tx.sign(kp);
       
-      const sig = await withRpcLimit(() => 
-        this.connection.sendRawTransaction(tx.serialize())
+      const sig = await withRpcLimit(
+        () => this.connection.sendRawTransaction(tx.serialize()),
+        1,
+        { module: 'wallet', method: 'sendRawTransaction' }
       );
-      await withRpcLimit(() => 
-        this.connection.confirmTransaction(sig, 'confirmed')
+      await withRpcLimit(
+        () => this.connection.confirmTransaction(sig, 'confirmed'),
+        1,
+        { module: 'wallet', method: 'confirmTransaction' }
       );
 
       // Remove from cache and scheduled closures

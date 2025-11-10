@@ -45,7 +45,12 @@ export async function checkTxConfirmation(signature: string): Promise<{ confirme
   try {
     const { getConnection } = await import('../wallet/wallet.js');
     const connection = getConnection();
-    const response = await connection.getSignatureStatus(signature, { searchTransactionHistory: true });
+    const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+    const response = await withRpcLimit(
+      () => connection.getSignatureStatus(signature, { searchTransactionHistory: true }),
+      1,
+      { module: 'server', method: 'getSignatureStatus' }
+    );
     if (!response || !response.value) return { confirmed: false };
     
     const status = response.value;

@@ -538,7 +538,12 @@ async function ensureWhirlpoolTickArrays(
       }
     }
 
-    const infos = await ctx.connection.getMultipleAccountsInfo(requiredKeys);
+    const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+    const infos = await withRpcLimit(
+      () => ctx.connection.getMultipleAccountsInfo(requiredKeys),
+      Math.max(1, Math.ceil(requiredKeys.length / 100)),
+      { module: 'execution', method: 'getMultipleAccountsInfo' }
+    );
     const missing: Array<{ pubkey: PublicKey; startTick: number }> = [];
     for (let i = 0; i < requiredKeys.length; i += 1) {
       if (infos[i]) continue;

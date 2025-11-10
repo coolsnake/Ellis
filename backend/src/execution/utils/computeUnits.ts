@@ -37,10 +37,12 @@ export async function measureComputeUnits(
     const tx = new VersionedTransaction(msg);
     
     // Simulate without signature verification for speed
-    const sim = await connection.simulateTransaction(tx, {
-      sigVerify: false,
-      replaceRecentBlockhash: true,
-    });
+    const { withRpcLimit } = await import('../rpcLimiter.js');
+    const sim = await withRpcLimit(
+      () => connection.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true }),
+      1,
+      { module: 'execution', method: 'simulateTransaction' }
+    );
 
     if (sim.value?.err) {
       // If simulation fails, return a conservative estimate
@@ -130,7 +132,12 @@ async function loadLookupTables(connection: Connection, addrs: string[]): Promis
   for (const a of addrs) {
     try {
       const pk = new PublicKey(a);
-      const acc = await connection.getAddressLookupTable(pk).then(r => r.value).catch(() => null);
+      const { withRpcLimit } = await import('../rpcLimiter.js');
+      const acc = await withRpcLimit(
+        () => connection.getAddressLookupTable(pk),
+        1,
+        { module: 'execution', method: 'getAddressLookupTable' }
+      ).then(r => r.value).catch(() => null);
       if (acc) out.push(acc);
     } catch {}
   }

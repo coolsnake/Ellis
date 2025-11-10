@@ -302,6 +302,13 @@ const wsDeltaStats: Record<'raydium' | 'orca' | 'meteora', { decoded: number; ap
   meteora: { decoded: 0, applied: 0, skipped: 0, skipReasons: {} },
 };
 
+// Decode success/failure tracking for coverage verification
+const wsDecodeStats: Record<'raydium' | 'orca' | 'meteora', { attempts: number; successes: number; failures: number }> = {
+  raydium: { attempts: 0, successes: 0, failures: 0 },
+  orca: { attempts: 0, successes: 0, failures: 0 },
+  meteora: { attempts: 0, successes: 0, failures: 0 },
+};
+
 // Helper function to increment skip reason
 function incrementSkipReason(dex: 'raydium' | 'orca' | 'meteora', reason: string): void {
   const stats = wsDeltaStats[dex];
@@ -764,6 +771,7 @@ export function startRaydiumRefreshLoop(): void {
             };
             if (owner === ownerRayAmm || owner === ownerRayClmm) {
               try { wsCounts.raydium += 1; } catch {}
+              try { wsDecodeStats.raydium.attempts += 1; } catch {}
               const pk58 = toB58Any(pk);
               let updated = false;
               try {
@@ -885,11 +893,29 @@ export function startRaydiumRefreshLoop(): void {
                         const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
                         const idx = next.clmm.findIndex(p => p.id === item.id);
                         if (idx >= 0) next.clmm[idx] = { ...next.clmm[idx], ...item }; else next.clmm.push(item);
+                        try { wsDecodeStats.raydium.successes += 1; } catch {}
                         wsDeltaStats.raydium.decoded += 1;
                         const d = diffNormalizedPools(prev, next);
                         raydiumCache.data = next; raydiumCache.ts = Date.now();
                         const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
-                        if (hasDelta) wsDeltaStats.raydium.applied += 1; else wsDeltaStats.raydium.skipped += 1;
+                        if (hasDelta) { 
+                          wsDeltaStats.raydium.applied += 1; 
+                        } else { 
+                          wsDeltaStats.raydium.skipped += 1;
+                          // Diagnose why no delta detected
+                          const prevPool = prev.clmm.find(p => p.id === item.id);
+                          if (prevPool) {
+                            const reasons: string[] = [];
+                            if ((prevPool as any).sqrt_price_x64_raw === (item as any).sqrt_price_x64_raw) reasons.push('sqrt_price_unchanged');
+                            if ((prevPool as any).liquidity_raw === (item as any).liquidity_raw) reasons.push('liquidity_raw_unchanged');
+                            if (Math.abs((prevPool.liquidity || 0) - (item.liquidity || 0)) === 0) reasons.push('liquidity_unchanged');
+                            if (Math.abs((prevPool.price_a_per_b || 0) - (item.price_a_per_b || 0)) <= 1e-9) reasons.push('price_unchanged');
+                            if ((prevPool as any).price_a_per_b_num === (item as any).price_a_per_b_num && (prevPool as any).price_a_per_b_den === (item as any).price_a_per_b_den) reasons.push('ratio_unchanged');
+                            incrementSkipReason('raydium', reasons.length > 0 ? reasons.join('+') : 'no_delta_detected');
+                          } else {
+                            incrementSkipReason('raydium', 'new_pool');
+                          }
+                        }
                         try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: d.amm.slice(0, 20), clmm: [] }, ts: Date.now() }); } catch {}
                     // Always use incremental graph updates
                     try {
@@ -937,11 +963,27 @@ export function startRaydiumRefreshLoop(): void {
                         const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
                         const idx = next.amm.findIndex(p => p.id === item.id);
                         if (idx >= 0) next.amm[idx] = { ...next.amm[idx], ...item }; else next.amm.push(item);
+                        try { wsDecodeStats.raydium.successes += 1; } catch {}
                         wsDeltaStats.raydium.decoded += 1;
                         const d = diffNormalizedPools(prev, next);
                         raydiumCache.data = next; raydiumCache.ts = Date.now();
                         const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
-                        if (hasDelta) wsDeltaStats.raydium.applied += 1; else wsDeltaStats.raydium.skipped += 1;
+                        if (hasDelta) { 
+                          wsDeltaStats.raydium.applied += 1; 
+                        } else { 
+                          wsDeltaStats.raydium.skipped += 1;
+                          // Diagnose why no delta detected
+                          const prevPool = prev.amm.find(p => p.id === item.id);
+                          if (prevPool) {
+                            const reasons: string[] = [];
+                            if ((prevPool as any).reserve_a_raw === (item as any).reserve_a_raw && (prevPool as any).reserve_b_raw === (item as any).reserve_b_raw) reasons.push('reserves_unchanged');
+                            if (Math.abs((prevPool.liquidity_base || 0) - (item.liquidity_base || 0)) === 0) reasons.push('liquidity_unchanged');
+                            if (Math.abs((prevPool.price_a_per_b || 0) - (item.price_a_per_b || 0)) <= 1e-9) reasons.push('price_unchanged');
+                            incrementSkipReason('raydium', reasons.length > 0 ? reasons.join('+') : 'no_delta_detected');
+                          } else {
+                            incrementSkipReason('raydium', 'new_pool');
+                          }
+                        }
                         try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: d.amm.slice(0, 20), clmm: [] }, ts: Date.now() }); } catch {}
                         // Always use incremental graph updates
                         try {
@@ -964,12 +1006,14 @@ export function startRaydiumRefreshLoop(): void {
                   } catch {}
                 }
               } catch (e:any) {
+                try { wsDecodeStats.raydium.failures += 1; } catch {}
                 try { logger.warn('raydium.ws.decode failed', { id: pk58.slice(0,6)+'…', error: String(e?.message || e) }); } catch {}
               }
               // Unparsed events are tracked in aggregate metrics, no need for individual debug logs
               return;
             } else if (owner === ownerOrca) {
               try { wsCounts.orca += 1; } catch {}
+              try { wsDecodeStats.orca.attempts += 1; } catch {}
               // Attempt to parse and upsert single Whirlpool from account data; fallback to full refresh on failure
               let ok = false;
               try {
@@ -1038,6 +1082,7 @@ export function startRaydiumRefreshLoop(): void {
                   const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
                   const idx = next.clmm.findIndex(p => p.id === id);
                   if (idx >= 0) { next.clmm[idx] = { ...next.clmm[idx], ...clmmItem }; } else { next.clmm.push(clmmItem); }
+                  try { wsDecodeStats.orca.successes += 1; } catch {}
                   wsDeltaStats.orca.decoded += 1;
                   orcaCache.data = next; orcaCache.ts = Date.now();
                   const d = diffNormalizedPools(prev, next);
@@ -1049,7 +1094,24 @@ export function startRaydiumRefreshLoop(): void {
                     const gmod: any = await import('./graph.js');
                     const prevSnap = orcaCache.data ? prev : { amm: [], clmm: [] };
                     const hasDelta = (d.clmm.length || d.amm.length || d.addedClmm || d.removedClmm || d.addedAmm || d.removedAmm);
-                    if (hasDelta) wsDeltaStats.orca.applied += 1; else wsDeltaStats.orca.skipped += 1;
+                    if (hasDelta) { 
+                      wsDeltaStats.orca.applied += 1; 
+                    } else { 
+                      wsDeltaStats.orca.skipped += 1;
+                      // Diagnose why no delta detected
+                      const prevPool = prev.clmm.find(p => p.id === id);
+                      if (prevPool) {
+                        const reasons: string[] = [];
+                        if ((prevPool as any).sqrt_price_x64_raw === (clmmItem as any).sqrt_price_x64_raw) reasons.push('sqrt_price_unchanged');
+                        if ((prevPool as any).liquidity_raw === (clmmItem as any).liquidity_raw) reasons.push('liquidity_raw_unchanged');
+                        if (Math.abs((prevPool.liquidity || 0) - (clmmItem.liquidity || 0)) === 0) reasons.push('liquidity_unchanged');
+                        if (Math.abs((prevPool.price_a_per_b || 0) - (clmmItem.price_a_per_b || 0)) <= 1e-9) reasons.push('price_unchanged');
+                        if ((prevPool as any).price_a_per_b_num === (clmmItem as any).price_a_per_b_num && (prevPool as any).price_a_per_b_den === (clmmItem as any).price_a_per_b_den) reasons.push('ratio_unchanged');
+                        incrementSkipReason('orca', reasons.length > 0 ? reasons.join('+') : 'no_delta_detected');
+                      } else {
+                        incrementSkipReason('orca', 'new_pool');
+                      }
+                    }
                     if (hasDelta) {
                       await scheduleDexApply('orca', prevSnap as any);
                     }
@@ -1057,11 +1119,13 @@ export function startRaydiumRefreshLoop(): void {
                   ok = true;
                 }
               } catch (e:any) {
+                try { wsDecodeStats.orca.failures += 1; } catch {}
                 try { logger.warn('orca.ws.parse failed', { error: String(e?.message || e) }); } catch {}
               }
               // Do not fallback to HTTP refresh when user subscribed; leave updates to manual refresh
             } else if ((ownerMeteora && owner === ownerMeteora) || isMeteoraTarget) {
               try { wsCounts.meteora = (wsCounts.meteora || 0) + 1; } catch {}
+              try { wsDecodeStats.meteora.attempts += 1; } catch {}
               const pk58 = toB58Any(pk);
               const parentPoolId = meteoraBinAccountToPool.get(pk58);
               if (parentPoolId) {
@@ -1197,6 +1261,7 @@ export function startRaydiumRefreshLoop(): void {
                     const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
                     const idx = next.clmm.findIndex(p => p.id === finalItem.id);
                     if (idx >= 0) next.clmm[idx] = { ...next.clmm[idx], ...finalItem }; else next.clmm.push(finalItem);
+                    try { wsDecodeStats.meteora.successes += 1; } catch {}
                     wsDeltaStats.meteora.decoded += 1;
                     const d = diffNormalizedPools(prev, next);
                     meteoraCache.data = next; meteoraCache.ts = Date.now();
@@ -1509,6 +1574,8 @@ export function startRaydiumRefreshLoop(): void {
           const idx = next.clmm.findIndex(p => p.id === poolId);
           if (idx === -1) {
             // Pool snapshot not yet cached; bin state will be included on next pair update
+            wsDeltaStats.meteora.skipped += 1;
+            incrementSkipReason('meteora', 'bin_update_pool_not_cached');
             return;
           }
           const updated: any = { ...next.clmm[idx] };
@@ -2392,6 +2459,11 @@ export function startRaydiumRefreshLoop(): void {
               orca: { ...wsDeltaStats.orca, skipReasons: wsDeltaStats.orca.skipReasons },
               meteora: { ...wsDeltaStats.meteora, skipReasons: wsDeltaStats.meteora.skipReasons },
             };
+            const decodeMetrics = {
+              raydium: { ...wsDecodeStats.raydium },
+              orca: { ...wsDecodeStats.orca },
+              meteora: { ...wsDecodeStats.meteora },
+            };
             logger.info('pools.ws aggregate', { 
               events: snapshot, 
               healthy: wsHealthy, 
@@ -2402,10 +2474,14 @@ export function startRaydiumRefreshLoop(): void {
                 meteora: { attached: attachedMeteoraPools, target: (typeof getWsTargets === 'function' ? (getWsTargets as any)._last?.meteora?.target : undefined) }
               },
               metrics,
+              decodeStats: decodeMetrics,
             });
             wsDeltaStats.raydium = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
             wsDeltaStats.orca = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
             wsDeltaStats.meteora = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
+            wsDecodeStats.raydium = { attempts: 0, successes: 0, failures: 0 };
+            wsDecodeStats.orca = { attempts: 0, successes: 0, failures: 0 };
+            wsDecodeStats.meteora = { attempts: 0, successes: 0, failures: 0 };
             // Emit a dedicated ws-activity event for UI regardless of log filtering
             try { emit('ws-activity', { healthy: wsHealthy, lastEventMs: lastWsEventMs, orca: { attached: attachedOrcaPools, events: snapshot.orca || 0 }, raydium: { attached: attachedRaydiumPools, events: snapshot.raydium || 0 }, meteora: { attached: attachedMeteoraPools, events: snapshot.meteora || 0 } }); } catch {}
             // Aggregate metrics are already logged above via logger.info('pools.ws aggregate', ...), no need for duplicate emit

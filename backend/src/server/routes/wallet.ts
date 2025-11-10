@@ -82,8 +82,17 @@ export function createWalletRouter(io: SocketIOServer): Router {
             ComputeBudgetProgram.setComputeUnitPrice({ microLamports: calculatedFees.priorityFee })
           );
         } catch {}
-        const sig = await connection.sendTransaction(tx, [kp], { skipPreflight: true });
-        await connection.confirmTransaction(sig, 'confirmed');
+        const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+        const sig = await withRpcLimit(
+          () => connection.sendTransaction(tx, [kp], { skipPreflight: true }),
+          1,
+          { module: 'wallet', method: 'sendTransaction' }
+        );
+        await withRpcLimit(
+          () => connection.confirmTransaction(sig, 'confirmed'),
+          1,
+          { module: 'wallet', method: 'confirmTransaction' }
+        );
         res.json({ signature: sig });
         try { addWalletHistory({ type: 'send', time: new Date().toISOString(), token: 'SOL', amount, destination, signature: sig }); } catch {}
         emit('log', { level: 'info', message: `terminal: send SOL ${amount} to ${destination} -> ${sig}`, timestamp: new Date().toISOString() });

@@ -196,12 +196,20 @@ export async function buildCombinedTransaction(
     for (const addr of (obj.addressLookupTableAddresses || [])) altAddresses.add(String(addr));
   }
   const alts: any[] = [];
+  const { withRpcLimit } = await import('../utils/rpcLimiter.js');
   for (const addr of altAddresses) {
-    const { value } = await connection.getAddressLookupTable(new web3.PublicKey(addr));
+    const { value } = await withRpcLimit(
+      () => connection.getAddressLookupTable(new web3.PublicKey(addr)),
+      1,
+      { module: 'jupiter', method: 'getAddressLookupTable' }
+    );
     if (value) alts.push(value);
   }
-  const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-  const bh: any = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
+  const bh: any = await withRpcLimit(
+    () => connection.getLatestBlockhash('finalized'),
+    1,
+    { module: 'jupiter', method: 'getLatestBlockhash' }
+  );
   const blockhash = (bh as any)?.blockhash as string;
   const msg = new web3.TransactionMessage({ payerKey: payer, recentBlockhash: blockhash, instructions: allIxs }).compileToV0Message(alts);
   return new web3.VersionedTransaction(msg);

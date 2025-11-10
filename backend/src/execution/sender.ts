@@ -283,7 +283,12 @@ async function loadLookupTables(connection: Connection, addrs: string[]): Promis
     addrs.map(async (a) => {
       try {
         const pk = new PublicKey(a);
-        const result = await connection.getAddressLookupTable(pk);
+        const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+        const result = await withRpcLimit(
+          () => connection.getAddressLookupTable(pk),
+          1,
+          { module: 'execution', method: 'getAddressLookupTable' }
+        );
         return { address: a, account: result.value };
       } catch (err) {
         return { address: a, account: null, error: err };
@@ -355,7 +360,12 @@ async function getCommonLookupTables(connection: Connection): Promise<AddressLoo
     for (const addr of altAddresses) {
       try {
         const pk = new PublicKey(addr);
-        const acc = await connection.getAddressLookupTable(pk).then(r => r.value).catch(() => null);
+        const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+        const acc = await withRpcLimit(
+          () => connection.getAddressLookupTable(pk),
+          1,
+          { module: 'execution', method: 'getAddressLookupTable' }
+        ).then(r => r.value).catch(() => null);
         if (acc) {
           accounts.push(acc);
           try { 
