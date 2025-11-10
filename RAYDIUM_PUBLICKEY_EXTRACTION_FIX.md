@@ -149,4 +149,5 @@ November 10, 2025
 ## Updates
 - **v1**: Initial fix with basic BN extraction
 - **v2**: Enhanced BN extraction with 4 sub-methods and detailed diagnostics
+- **v3**: Added undefined/null key handling - filters out missing optional accounts
 

@@ -833,6 +833,21 @@ export function startRaydiumRefreshLoop(): void {
         const conn = new web3.Connection(CONFIG.rpcUrl, CONFIG.system.txCommitment as any);
         // Record connection so we can actively close its underlying WS on unsubscribe
         wsConn = conn;
+        
+        // Protect the RPC WebSocket from being called on closed sockets
+        // This prevents web3.js's internal _updateSubscriptions from crashing
+        try {
+          const { protectRpcWebSocket } = await import('../drift/wsHelper.js');
+          protectRpcWebSocket(conn, 'pools.setup');
+        } catch (err) {
+          try { 
+            logger.warn('pools.ws failed to protect WebSocket', { 
+              error: String(err), 
+              cat: 'pools' 
+            }); 
+          } catch {}
+        }
+        
         const ensureMeteoraProgram = (): any | null => {
           if (meteoraProgramInstance) return meteoraProgramInstance;
           try {
@@ -1558,24 +1573,10 @@ export function startRaydiumRefreshLoop(): void {
         };
         // Helper: subscribe with retry/backoff to avoid calling while WS is closing
         const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-        const getRpcWebSocketReadyState = (): number | undefined => {
-          try {
-            const rpcWs: any = (conn as any)?._rpcWebSocket;
-            if (!rpcWs) return undefined;
-            const sockets = [
-              (rpcWs as any)?.underlyingSocket,
-              (rpcWs as any)?._ws,
-              (rpcWs as any)?.socket,
-              (rpcWs as any)?._socket,
-            ];
-            for (const sock of sockets) {
-              const ready = Number((sock as any)?.readyState);
-              if (Number.isFinite(ready) && ready >= 0) return ready;
-            }
-            if ((conn as any)?._rpcWebSocketConnected === true) return 1;
-          } catch {}
-          return undefined;
-        };
+        
+        // Use shared WebSocket utilities
+        const { getWebSocketReadyState, waitUntilWsReady: waitUntilWsReadyShared } = await import('../drift/wsHelper.js');
+        const getRpcWebSocketReadyState = () => getWebSocketReadyState(conn);
         
         // Shared WS attach rate limiter for all RPC operations during attachment
         // This ensures all RPC calls (onAccountChange, getAccountInfo) respect wsAttachPerSec
@@ -1595,42 +1596,17 @@ export function startRaydiumRefreshLoop(): void {
           const maxAttempts = Math.max(1, Number(((CONFIG.system as any)?.wsSubscribeMaxAttempts) || 10));
           const baseBackoffMs = Math.max(50, Number(((CONFIG.system as any)?.wsSubscribeBackoffMs) || 250));
           let attempt = 0;
-          // Probe internal readyState if available to avoid subscribing during CLOSING/CLOSED
-          const waitUntilWsReady = async () => {
-            try {
-              const deadline = Date.now() + Math.max(500, Number(((CONFIG.system as any)?.wsReadyWaitMs) || 3000));
-              const started = Date.now();
-              for (;;) {
-                const rs = getRpcWebSocketReadyState();
-                // 0 CONNECTING, 1 OPEN, 2 CLOSING, 3 CLOSED
-                if (rs === 0 || rs === 1) {
-                  const waited = Date.now() - started;
-                  if (waited > 200) {
-                    try { logger.debug('pools.ws waitUntilWsReady waited', { ms: waited, cat: 'pools' }); } catch {}
-                  }
-                  return;
-                }
-                if (Date.now() >= deadline) {
-                  try { logger.debug('pools.ws waitUntilWsReady waited', { ms: Date.now() - started, cat: 'pools', deadline: true }); } catch {}
-                  return;
-                }
-                if (rs === undefined || rs === 3) {
-                  try { await (conn as any)?._rpcWebSocket?.connect?.(); } catch {}
-                }
-                await sleep(150);
-              }
-            } catch {}
-          };
+          
           // Attempt loop
           for (;;) {
-            await waitUntilWsReady();
+            await waitUntilWsReadyShared(conn, 'pools.subscribeAccount');
             try {
               await waitForWsAttachSlot(); // Rate-limit the RPC call
               const id = await conn.onAccountChange(accountPk, (info: any) => { try { cb(accountPk, info); } catch {} });
               return id as unknown as number;
             } catch (e: any) {
               const msg = String(e?.message || e);
-              const isWsState = msg.includes('socket was not') || msg.includes('readyState');
+              const isWsState = msg.includes('socket was not') || msg.includes('readyState') || msg.includes('not ready');
               attempt += 1;
               if (!isWsState || attempt >= maxAttempts) {
                 // Give up on non-WS errors or after exhausting retries
@@ -1646,38 +1622,15 @@ export function startRaydiumRefreshLoop(): void {
           const maxAttempts = Math.max(1, Number(((CONFIG.system as any)?.wsSubscribeMaxAttempts) || 10));
           const baseBackoffMs = Math.max(50, Number(((CONFIG.system as any)?.wsSubscribeBackoffMs) || 250));
           let attempt = 0;
-          const waitUntilWsReady = async () => {
-            try {
-              const deadline = Date.now() + Math.max(500, Number(((CONFIG.system as any)?.wsReadyWaitMs) || 3000));
-              const started = Date.now();
-              for (;;) {
-                const rs = getRpcWebSocketReadyState();
-                if (rs === 0 || rs === 1) {
-                  const waited = Date.now() - started;
-                  if (waited > 200) {
-                    try { logger.debug('pools.ws waitUntilWsReady waited', { ms: waited, cat: 'pools' }); } catch {}
-                  }
-                  return;
-                }
-                if (Date.now() >= deadline) {
-                  try { logger.debug('pools.ws waitUntilWsReady waited', { ms: Date.now() - started, cat: 'pools', deadline: true }); } catch {}
-                  return;
-                }
-                if (rs === undefined || rs === 3) {
-                  try { await (conn as any)?._rpcWebSocket?.connect?.(); } catch {}
-                }
-                await sleep(150);
-              }
-            } catch {}
-          };
+          
           for (;;) {
-            await waitUntilWsReady();
+            await waitUntilWsReadyShared(conn, 'pools.subscribeProgram');
             try {
               const id = await conn.onProgramAccountChange(programPk, (ch: any) => { try { cb(ch); } catch {} });
               return id as unknown as number;
             } catch (e: any) {
               const msg = String(e?.message || e);
-              const isWsState = msg.includes('socket was not') || msg.includes('readyState');
+              const isWsState = msg.includes('socket was not') || msg.includes('readyState') || msg.includes('not ready');
               attempt += 1;
               if (!isWsState || attempt >= maxAttempts) {
                 throw e;
@@ -2629,38 +2582,9 @@ export function startRaydiumRefreshLoop(): void {
             // Begin async teardown and websocket close; future setups will await wsClosePromise
             wsClosePromise = (async () => {
               try {
-                // First, try to disable the internal subscription update mechanism
-                // to prevent _updateSubscriptions from running while we're closing
-                try {
-                  const rpcWs: any = (wsConn as any)?._rpcWebSocket;
-                  if (rpcWs) {
-                    // Close the underlying WebSocket FIRST to prevent reconnection and _updateSubscriptions
-                    // This prevents the web3.js auto-resubscribe mechanism from firing on a closed socket
-                    try {
-                      const ws = rpcWs.underlyingSocket || rpcWs._ws || rpcWs.socket || rpcWs._socket;
-                      if (ws && typeof ws.close === 'function') {
-                        ws.close();
-                        // Give it a moment to actually transition to CLOSED state
-                        await new Promise(r => setTimeout(r, 50));
-                        try { logger.info('pools.ws underlying socket closed', { cat: 'pools' }); } catch {}
-                      }
-                    } catch {}
-                    
-                    // Clear any pending subscription update timers
-                    // The library may have timers that call _updateSubscriptions
-                    if (rpcWs._subscriptionsByAccountChangeSubscriptionId) {
-                      // Clear the internal subscription map to prevent resubscriptions
-                      try { rpcWs._subscriptionsByAccountChangeSubscriptionId.clear?.(); } catch {}
-                    }
-                    if (rpcWs._subscriptionsByProgramAccountChangeSubscriptionId) {
-                      try { rpcWs._subscriptionsByProgramAccountChangeSubscriptionId.clear?.(); } catch {}
-                    }
-                    // Clear any pending timers that might trigger _updateSubscriptions
-                    if (rpcWs._subscriptionUpdateTimer) {
-                      try { clearTimeout(rpcWs._subscriptionUpdateTimer); rpcWs._subscriptionUpdateTimer = null; } catch {}
-                    }
-                  }
-                } catch {}
+                // Use shared safe close utility to properly close WebSocket and clear subscription maps
+                const { safeCloseWebSocket } = await import('../drift/wsHelper.js');
+                await safeCloseWebSocket(conn, 'pools.unsubscribe');
 
                 // Collect all bin subscriptions from trackers before clearing
                 // These might not be in the subs array if setup() was called multiple times

@@ -234,58 +234,21 @@ export class DriftService {
     const marketOpts = typeof getMarketsAndOraclesForSubscription === 'function' ? (getMarketsAndOraclesForSubscription as any)(this.cluster) : {};
     this.client = await initialize({ connection: this.connection, wallet, opts: { env: this.cluster, accountSubscription: subscription, ...programIdOpt, ...marketOpts } });
     
-    // Wait for WebSocket to be ready before subscribing to avoid "socket was not CONNECTING or OPEN" errors
-    const waitUntilWsReady = async (): Promise<void> => {
-      try {
-        const deadline = Date.now() + Math.max(500, Number(((CONFIG.system as any)?.wsReadyWaitMs) || 5000));
-        const started = Date.now();
-        const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-        const getRpcWebSocketReadyState = (): number | undefined => {
-          try {
-            const rpcWs: any = (this.connection as any)?._rpcWebSocket;
-            if (!rpcWs) return undefined;
-            const sockets = [
-              (rpcWs as any)?.underlyingSocket,
-              (rpcWs as any)?._ws,
-              (rpcWs as any)?.socket,
-              (rpcWs as any)?._socket,
-            ];
-            for (const sock of sockets) {
-              const ready = Number((sock as any)?.readyState);
-              if (Number.isFinite(ready) && ready >= 0) return ready;
-            }
-            if ((this.connection as any)?._rpcWebSocketConnected === true) return 1;
-          } catch {}
-          return undefined;
-        };
-        for (;;) {
-          const rs = getRpcWebSocketReadyState();
-          // 0 CONNECTING, 1 OPEN, 2 CLOSING, 3 CLOSED
-          if (rs === 0 || rs === 1) {
-            const waited = Date.now() - started;
-            if (waited > 200) {
-              try { logger.debug('drift.ws waitUntilWsReady waited', { ms: waited, cat: 'drift' }); } catch {}
-            }
-            return;
-          }
-          if (Date.now() >= deadline) {
-            try { logger.debug('drift.ws waitUntilWsReady timeout', { ms: Date.now() - started, cat: 'drift' }); } catch {}
-            return;
-          }
-          if (rs === undefined || rs === 3) {
-            try { await (this.connection as any)?._rpcWebSocket?.connect?.(); } catch {}
-          }
-          await sleep(150);
-        }
-      } catch {}
-    };
+    // Protect the RPC WebSocket from being called on closed sockets
+    try {
+      const { protectRpcWebSocket } = await import('./wsHelper.js');
+      protectRpcWebSocket(this.connection, 'drift.init');
+    } catch {}
     
+    // Use shared utility to wait for WebSocket to be ready before subscribing
     // Only wait for WebSocket if using websocket subscriptions
     if (subType === 'websocket') {
       try {
-        await waitUntilWsReady();
+        const { waitUntilWsReady } = await import('./wsHelper.js');
+        await waitUntilWsReady(this.connection, 'drift.init.pre-subscribe');
+        try { logger.debug('drift.ws pre-subscribe ready check passed', { cat: 'drift' }); } catch {}
       } catch (e: any) {
-        try { logger.warn('drift.ws waitUntilWsReady error', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+        try { logger.warn('drift.ws pre-subscribe ready check failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
       }
     }
     
@@ -358,51 +321,9 @@ export class DriftService {
     const connection = drift?.connection || this.connection;
     const program = drift?.program;
 
-    // Add this helper function at the start of getSharedInfra
-    const waitUntilWsReady = async (): Promise<void> => {
-      try {
-        const deadline = Date.now() + Math.max(500, Number(((CONFIG.system as any)?.wsReadyWaitMs) || 5000));
-        const started = Date.now();
-        const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-        const getRpcWebSocketReadyState = (): number | undefined => {
-          try {
-            const rpcWs: any = (connection as any)?._rpcWebSocket;
-            if (!rpcWs) return undefined;
-            const sockets = [
-              (rpcWs as any)?.underlyingSocket,
-              (rpcWs as any)?._ws,
-              (rpcWs as any)?.socket,
-              (rpcWs as any)?._socket,
-            ];
-            for (const sock of sockets) {
-              const ready = Number((sock as any)?.readyState);
-              if (Number.isFinite(ready) && ready >= 0) return ready;
-            }
-            if ((connection as any)?._rpcWebSocketConnected === true) return 1;
-          } catch {}
-          return undefined;
-        };
-        for (;;) {
-          const rs = getRpcWebSocketReadyState();
-          // 0 CONNECTING, 1 OPEN, 2 CLOSING, 3 CLOSED
-          if (rs === 0 || rs === 1) {
-            const waited = Date.now() - started;
-            if (waited > 200) {
-              try { logger.debug('drift.ws waitUntilWsReady waited', { ms: waited, cat: 'drift', location: 'getSharedInfra' }); } catch {}
-            }
-            return;
-          }
-          if (Date.now() >= deadline) {
-            try { logger.debug('drift.ws waitUntilWsReady timeout', { ms: Date.now() - started, cat: 'drift', location: 'getSharedInfra' }); } catch {}
-            return;
-          }
-          if (rs === undefined || rs === 3) {
-            try { await (connection as any)?._rpcWebSocket?.connect?.(); } catch {}
-          }
-          await sleep(150);
-        }
-      } catch {}
-    };
+    // Use shared WebSocket utility for ready checks
+    const { waitUntilWsReady } = await import('./wsHelper.js');
+    const waitReady = async () => await waitUntilWsReady(connection, 'drift.getSharedInfra');
 
     // Start shared blockhash cache/warmer once for all bots
     try {
@@ -418,7 +339,7 @@ export class DriftService {
 
     if (!this.sharedSlotSubscriber && sdk?.SlotSubscriber) {
       try {
-        await waitUntilWsReady(); // ADD THIS
+        await waitReady();
         this.sharedSlotSubscriber = new (sdk as any).SlotSubscriber(connection);
         await this.sharedSlotSubscriber.subscribe();
         // Ensure slot timestamp listener is wired to the current emitter
@@ -428,7 +349,7 @@ export class DriftService {
     } else {
       // Best-effort resubscribe if previously unsubscribed
       try {
-        await waitUntilWsReady(); // ADD THIS
+        await waitReady();
         await (this.sharedSlotSubscriber as any)?.subscribe?.();
         this.wireSlotTsListener(true);
         await sleep(spacing);
@@ -437,14 +358,14 @@ export class DriftService {
 
     if (!this.sharedEventSubscriber && sdk?.EventSubscriber) {
       try {
-        await waitUntilWsReady(); // ADD THIS
+        await waitReady();
         this.sharedEventSubscriber = new (sdk as any).EventSubscriber(connection, program);
         await this.sharedEventSubscriber.subscribe();
         await sleep(spacing);
       } catch {}
     } else {
       try { 
-        await waitUntilWsReady(); // ADD THIS
+        await waitReady();
         await (this.sharedEventSubscriber as any)?.subscribe?.(); 
         await sleep(spacing); 
       } catch {}
@@ -486,19 +407,19 @@ export class DriftService {
             const stage = Math.min(3, Math.max(0, this._staleCount));
             try {
               if (stage >= 0) {
-                try { await waitUntilWsReady(); await (this.sharedSlotSubscriber as any)?.subscribe?.(); this.wireSlotTsListener(true); } catch {}
+                try { await waitReady(); await (this.sharedSlotSubscriber as any)?.subscribe?.(); this.wireSlotTsListener(true); } catch {}
               }
               if (stage >= 1) {
-                try { await waitUntilWsReady(); await (this.sharedEventSubscriber as any)?.subscribe?.(); } catch {}
+                try { await waitReady(); await (this.sharedEventSubscriber as any)?.subscribe?.(); } catch {}
               }
               if (stage >= 2) {
-                try { await waitUntilWsReady(); await (this.sharedUserMap as any)?.subscribe?.(); } catch {}
+                try { await waitReady(); await (this.sharedUserMap as any)?.subscribe?.(); } catch {}
               }
               if (stage >= 3) {
                 try {
                   const dl: any = this.sharedDlobSubscriber;
                   const has = dl && typeof dl.getDLOB === 'function' ? !!dl.getDLOB() : true;
-                  if (dl && typeof dl.subscribe === 'function' && !has) { await waitUntilWsReady(); await dl.subscribe(); }
+                  if (dl && typeof dl.subscribe === 'function' && !has) { await waitReady(); await dl.subscribe(); }
                 } catch {}
               }
             } finally {
@@ -537,13 +458,13 @@ export class DriftService {
         } catch {}
       }
       try { 
-        await waitUntilWsReady(); // ADD THIS
+        await waitReady();
         await this.sharedUserMap?.subscribe?.(); 
         await sleep(spacing); 
       } catch {}
     } else {
       try { 
-        await waitUntilWsReady(); // ADD THIS
+        await waitReady();
         await (this.sharedUserMap as any)?.subscribe?.(); 
         await sleep(spacing); 
       } catch {}
@@ -564,14 +485,14 @@ export class DriftService {
           this.sharedOrderSubscriber = new (sdk as any).OrderSubscriber(connection, program);
         }
         try { 
-          await waitUntilWsReady(); // ADD THIS
+          await waitReady();
           await this.sharedOrderSubscriber?.subscribe?.(); 
           await sleep(spacing); 
         } catch {}
       } catch {}
     } else {
       try { 
-        await waitUntilWsReady(); // ADD THIS
+        await waitReady();
         await (this.sharedOrderSubscriber as any)?.subscribe?.(); 
         await sleep(spacing); 
       } catch {}
@@ -587,7 +508,7 @@ export class DriftService {
           driftClient: drift,
           userMapSubscriptionConfig: (() => { try { return drift.userAccountSubscriptionConfig || undefined; } catch { return undefined; } })(),
         });
-        await waitUntilWsReady(); // ADD THIS
+        await waitReady();
         await this.sharedDlobSubscriber.subscribe();
         await sleep(spacing);
       } catch {}
@@ -599,7 +520,7 @@ export class DriftService {
           // If getDLOB exists and returns falsy, attempt to resubscribe
           const has = typeof dl.getDLOB === 'function' ? !!dl.getDLOB() : true;
           if (!has) { 
-            await waitUntilWsReady(); // ADD THIS
+            await waitReady();
             await dl.subscribe(); 
             await sleep(spacing); 
           }

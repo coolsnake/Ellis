@@ -1573,7 +1573,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     // This runs even if getTokensMintFromPoolAddress wasn't available
     // vaultA/vaultB represent pool's mint_a/mint_b, must map to reserveX/reserveY (tokenX/tokenY)
     try {
-      if (hop.vaultA && hop.vaultB && acctBase.reserveX && acctBase.reserveY) {
+      if (hop.vaultA && hop.vaultB) {
         // Fetch pool data to get mint_a/mint_b
         const { peekMeteoraPools } = await import('../../server/pools.js');
         const pools = peekMeteoraPools();
@@ -1598,8 +1598,16 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               if (poolState) {
                 const tkX = (poolState as any)?.tokenXMint || (poolState as any)?.token_x_mint;
                 const tkY = (poolState as any)?.tokenYMint || (poolState as any)?.token_y_mint;
-                if (tkX) tokenXMint = (tkX.publicKey || tkX).toBase58?.() || String(tkX);
-                if (tkY) tokenYMint = (tkY.publicKey || tkY).toBase58?.() || String(tkY);
+                if (tkX) {
+                  tokenXMint = (tkX.publicKey || tkX).toBase58?.() || String(tkX);
+                  // Also set in acctBase for consistency
+                  acctBase.tokenXMint = (tkX.publicKey || tkX);
+                }
+                if (tkY) {
+                  tokenYMint = (tkY.publicKey || tkY).toBase58?.() || String(tkY);
+                  // Also set in acctBase for consistency
+                  acctBase.tokenYMint = (tkY.publicKey || tkY);
+                }
               }
             } catch {}
           }
@@ -1630,6 +1638,16 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 });
               } catch {}
             }
+          } else {
+            // Fallback: if we can't determine token order, use natural mapping
+            if (!acctBase.reserveX) acctBase.reserveX = toPublicKey(hop.vaultA);
+            if (!acctBase.reserveY) acctBase.reserveY = toPublicKey(hop.vaultB);
+            try {
+              logger.debug('meteora.dlmm.reserve_mapped_fallback', {
+                cat: 'tx',
+                ctx: { poolId: hop.poolId, mapping: 'fallback_natural', reason: 'missing_token_info' }
+              });
+            } catch {}
           }
         }
       }
@@ -3678,6 +3696,29 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                 // CRITICAL: Try to extract raw bytes or base58 from deeply nested foreign PublicKey
                 const rawKey = k.pubkey || k.pubKey || k.address;
                 
+                // Handle undefined/null keys - these might be optional accounts in Raydium SDK
+                if (!rawKey || rawKey === undefined || rawKey === null) {
+                  try {
+                    logger.warn('raydium.amm.key.undefined', {
+                      cat: 'tx',
+                      ctx: {
+                        keyIdx,
+                        keyExists: !!k,
+                        hasPubkey: !!k?.pubkey,
+                        hasPubKey: !!k?.pubKey,
+                        hasAddress: !!k?.address,
+                        keyType: typeof k,
+                        keyKeys: k && typeof k === 'object' ? Object.keys(k) : [],
+                        isSigner: !!k?.isSigner,
+                        isWritable: !!k?.isWritable,
+                      }
+                    });
+                  } catch {}
+                  
+                  // Skip this key entirely - return null to filter it out later
+                  return null;
+                }
+                
                 // Method 1: Try toBase58() - but check result is valid
                 if (rawKey && typeof rawKey.toBase58 === 'function') {
                   try {
@@ -3821,7 +3862,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
               } catch (keyErr) {
                 throw new Error(`Failed to normalize key at index ${keyIdx}: ${(keyErr as any)?.message}`);
               }
-            });
+            }).filter((k): k is { pubkey: PublicKey; isSigner: boolean; isWritable: boolean } => k !== null);
             
             out[i] = new TransactionInstruction({
               programId: ammProgramId,
