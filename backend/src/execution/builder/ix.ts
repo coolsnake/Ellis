@@ -167,7 +167,7 @@ async function injectBinArrayMetas(
       let extPk = coercePk((DLMM as any)?.deriveBinArrayBitmapExtension?.(poolPk, programId));
       if (!extPk) {
         try {
-          const [pda] = PublicKey.findProgramAddressSync([Buffer.from('bitmap'), poolPk.toBuffer()], programId);
+          const [pda] = PublicKey.findProgramAddressSync([Buffer.from('bitmap_extension'), poolPk.toBuffer()], programId);
           extPk = pda;
         } catch {}
       }
@@ -1037,13 +1037,13 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       }
       if (!binArrayBitmapExtension) {
         // Fallback: deterministic PDA derivation
-        const [extPda] = PublicKey.findProgramAddressSync([Buffer.from('bitmap'), poolPk.toBuffer()], programId);
+        const [extPda] = PublicKey.findProgramAddressSync([Buffer.from('bitmap_extension'), poolPk.toBuffer()], programId);
         binArrayBitmapExtension = extPda;
       }
     } catch {
       // Last resort: derive PDA directly
       try {
-        const [extPda] = PublicKey.findProgramAddressSync([Buffer.from('bitmap'), poolPk.toBuffer()], programId);
+        const [extPda] = PublicKey.findProgramAddressSync([Buffer.from('bitmap_extension'), poolPk.toBuffer()], programId);
         binArrayBitmapExtension = extPda;
       } catch {}
     }
@@ -1353,7 +1353,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     // The SDK requires this account even if it doesn't exist on-chain yet
     // Solana runtime will handle non-existent accounts appropriately
     if (!binArrayBitmapExtension) {
-      const [extPda] = PublicKey.findProgramAddressSync([Buffer.from('bitmap'), poolPk.toBuffer()], programId);
+      const [extPda] = PublicKey.findProgramAddressSync([Buffer.from('bitmap_extension'), poolPk.toBuffer()], programId);
       binArrayBitmapExtension = extPda;
     }
     
