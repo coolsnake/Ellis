@@ -9,14 +9,32 @@ type PoolStatic = {
   oracle?: string;
   tickSpacing?: number;
   binStep?: number;
+  // OPTIMIZATION: Store raw account data from WebSocket for local decoding
+  // This eliminates RPC calls in builders that need to decode pool state
+  rawAccountData?: Buffer;
+  rawAccountDataUpdatedMs?: number;
 };
 
 type PoolHot = {
   sqrtPriceX64?: bigint;
   currentTickIndex?: number;
   activeId?: number;
-  tickArrays?: { lower?: string; center?: string; upper?: string };
-  binArrays?: { lower?: string; upper?: string };
+  tickArrays?: { 
+    lower?: string; 
+    center?: string; 
+    upper?: string;
+    // OPTIMIZATION: Store actual tick array account data for direct use
+    lowerData?: Buffer;
+    centerData?: Buffer;
+    upperData?: Buffer;
+  };
+  binArrays?: { 
+    lower?: string; 
+    upper?: string;
+    // OPTIMIZATION: Store actual bin array account data for direct use
+    lowerData?: Buffer;
+    upperData?: Buffer;
+  };
 };
 
 type WithExpiry<T> = { value: T; expiresAt: number };

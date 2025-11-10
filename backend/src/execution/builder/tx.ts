@@ -237,6 +237,11 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
       
       // Create a working copy of the hop to avoid mutating the original
       const hop: DirectHop = { ...plan.hops[i] };
+      
+      // Add context about total hops for dynamic account limiting
+      (hop as any).totalHops = plan.hops.length;
+      (hop as any).hopIndex = i;
+      
       hopMetrics.dex = hop.dex || '';
       hopMetrics.variant = hop.variant || '';
       hopMetrics.poolId = hop.poolId || '';
@@ -702,8 +707,21 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
         // Lower threshold for CLMM swaps - they always have many accounts
         const hasClmmSwap = plan.hops.some(h => h.dex === 'raydium' && h.variant === 'clmm');
         const shouldUseAlts = isMultiHop || allAccounts.length > 15 || hasClmmSwap;
+        
+        // Determine which DEXes are used to only include relevant ALTs
+        const dexCategories = new Set<string>();
+        for (const hop of plan.hops) {
+          if (hop.dex === 'raydium') {
+            dexCategories.add(hop.variant === 'clmm' ? 'raydium-clmm' : 'raydium-amm');
+          } else if (hop.dex === 'orca') {
+            dexCategories.add('orca-whirlpool');
+          } else if (hop.dex === 'meteora') {
+            dexCategories.add('meteora-dlmm');
+          }
+        }
+        
         const altAddresses = shouldUseAlts 
-          ? await dexAltManager.getAltAddresses(allAccounts, isMultiHop || hasClmmSwap)
+          ? await dexAltManager.getAltAddresses(allAccounts, isMultiHop || hasClmmSwap, dexCategories)
           : [];
         
         // If we have real instructions, measure them
@@ -833,43 +851,20 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
     // Load DEX-specific ALTs based on hops
     let altAddresses: string[] = [];
     if (shouldUseAlts) {
-      // 1. Always include common ALT
-      const commonAltAddr = dexAltManager.getAllAltAddresses().find(addr => {
-        // Check if this is the common ALT (will be registered with 'common' key)
-        try {
-          for (const [key, value] of (dexAltManager as any).altAddresses.entries()) {
-            if (key === 'common' && value.toBase58() === addr) return true;
-          }
-        } catch {}
-        return false;
-      });
-      if (commonAltAddr) {
-        altAddresses.push(commonAltAddr);
-      }
-      
-      // 2. Load DEX-specific ALTs based on hops
+      // Determine which DEXes are used to only include relevant ALTs
       const dexCategories = new Set<string>();
       for (const hop of plan.hops) {
-        const dex = hop.dex;
-        const variant = hop.variant;
-        if (dex === 'raydium') {
-          dexCategories.add(variant === 'clmm' ? 'raydium-clmm' : 'raydium-amm');
-        } else if (dex === 'orca') {
+        if (hop.dex === 'raydium') {
+          dexCategories.add(hop.variant === 'clmm' ? 'raydium-clmm' : 'raydium-amm');
+        } else if (hop.dex === 'orca') {
           dexCategories.add('orca-whirlpool');
-        } else if (dex === 'meteora') {
+        } else if (hop.dex === 'meteora') {
           dexCategories.add('meteora-dlmm');
         }
       }
       
-      // Add DEX ALTs if they exist
-      for (const category of dexCategories) {
-        try {
-          const altAddr = (dexAltManager as any).altAddresses.get(category);
-          if (altAddr) {
-            altAddresses.push(altAddr.toBase58());
-          }
-        } catch {}
-      }
+      // Use the optimized getAltAddresses method with DEX category filtering
+      altAddresses = await dexAltManager.getAltAddresses(allAccounts, isMultiHop || hasClmmSwap, dexCategories);
       
       // Log ALT usage
       try {

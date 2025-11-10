@@ -1104,6 +1104,18 @@ export function startRaydiumRefreshLoop(): void {
                         const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
                         const idx = next.clmm.findIndex(p => p.id === item.id);
                         if (idx >= 0) next.clmm[idx] = { ...next.clmm[idx], ...item }; else next.clmm.push(item);
+                        
+                        // OPTIMIZATION: Store raw account data in execution cache for builders
+                        try {
+                          const { executionCache } = await import('../execution/cache.js');
+                          const existing = executionCache.getStatic(pk58) || {} as any;
+                          executionCache.setStatic(pk58, {
+                            ...existing,
+                            rawAccountData: Buffer.from(info.data),
+                            rawAccountDataUpdatedMs: Date.now(),
+                          });
+                        } catch {}
+                        
                         try { wsDecodeStats.raydium.successes += 1; } catch {}
                         wsDeltaStats.raydium.decoded += 1;
                         const d = diffNormalizedPools(prev, next);
@@ -1174,6 +1186,18 @@ export function startRaydiumRefreshLoop(): void {
                         const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
                         const idx = next.amm.findIndex(p => p.id === item.id);
                         if (idx >= 0) next.amm[idx] = { ...next.amm[idx], ...item }; else next.amm.push(item);
+                        
+                        // OPTIMIZATION: Store raw account data in execution cache for builders
+                        try {
+                          const { executionCache } = await import('../execution/cache.js');
+                          const existing = executionCache.getStatic(pk58) || {} as any;
+                          executionCache.setStatic(pk58, {
+                            ...existing,
+                            rawAccountData: Buffer.from(info.data),
+                            rawAccountDataUpdatedMs: Date.now(),
+                          });
+                        } catch {}
+                        
                         try { wsDecodeStats.raydium.successes += 1; } catch {}
                         wsDeltaStats.raydium.decoded += 1;
                         const d = diffNormalizedPools(prev, next);

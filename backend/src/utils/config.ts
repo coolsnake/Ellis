@@ -709,6 +709,9 @@ export const CONFIG = {
     frequentTokenKeepOpenMs: Number(process.env.FREQUENT_TOKEN_KEEP_OPEN_MS || 2 * 60 * 60 * 1000), // 2 hours
     frequentTokenThreshold: Number(process.env.FREQUENT_TOKEN_THRESHOLD || 5), // 5 uses = frequent
     autoCloseAccounts: process.env.AUTO_CLOSE_ACCOUNTS !== 'false', // Enable by default
+    // Skip account verification in transaction builders (200-400ms saved per tx)
+    // When enabled, builders trust cached pool data and skip RPC verification calls
+    skipAccountVerification: process.env.SKIP_TX_ACCOUNT_VERIFICATION === 'true',
   },
 };
 

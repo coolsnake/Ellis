@@ -1948,10 +1948,14 @@ export class DexAltManager {
   /**
    * Get ALT addresses for a transaction
    * Returns addresses that should be used based on the accounts in the transaction
+   * @param accounts - Accounts used in the transaction
+   * @param forceMultiHop - Force using ALTs even if account count is low
+   * @param dexCategories - Optional set of DEX categories to filter ALTs (e.g., 'raydium-clmm', 'orca-whirlpool')
    */
   async getAltAddresses(
     accounts: (PublicKey | string)[],
-    forceMultiHop: boolean = false
+    forceMultiHop: boolean = false,
+    dexCategories?: Set<string>
   ): Promise<string[]> {
     await this.initialize();
 
@@ -1960,9 +1964,28 @@ export class DexAltManager {
     // Always use ALTs for multi-hop or if we have many accounts
     // Lower threshold: CLMM swaps typically have 15+ accounts per instruction
     if (forceMultiHop || accounts.length > 15) {
-      for (const addr of this.altAddresses.values()) {
-        addresses.push(addr.toBase58());
+      // If specific DEX categories are provided, only include those ALTs
+      if (dexCategories && dexCategories.size > 0) {
+        // Always include common ALT if it exists
+        const commonAddr = this.altAddresses.get('common');
+        if (commonAddr) {
+          addresses.push(commonAddr.toBase58());
+        }
+        
+        // Only add ALTs for the specified DEX categories
+        for (const category of dexCategories) {
+          const addr = this.altAddresses.get(category);
+          if (addr) {
+            addresses.push(addr.toBase58());
+          }
+        }
+      } else {
+        // Fallback: include all ALTs (backward compatible)
+        for (const addr of this.altAddresses.values()) {
+          addresses.push(addr.toBase58());
+        }
       }
+      
       try {
         logger.info('alt.manager.using_alts', {
           cat: 'tx',
@@ -1970,6 +1993,7 @@ export class DexAltManager {
             accountCount: accounts.length,
             forceMultiHop,
             altCount: addresses.length,
+            categories: dexCategories ? Array.from(dexCategories) : 'all',
             altAddresses: addresses,
           },
         });
@@ -1982,8 +2006,23 @@ export class DexAltManager {
       // If ALTs are explicitly configured, use them
       const configAlts = (CONFIG as any)?.execution?.lookupTableAddresses || [];
       if (configAlts.length > 0) {
-        for (const addr of this.altAddresses.values()) {
-          addresses.push(addr.toBase58());
+        if (dexCategories && dexCategories.size > 0) {
+          // Filter by DEX categories if provided
+          const commonAddr = this.altAddresses.get('common');
+          if (commonAddr) {
+            addresses.push(commonAddr.toBase58());
+          }
+          for (const category of dexCategories) {
+            const addr = this.altAddresses.get(category);
+            if (addr) {
+              addresses.push(addr.toBase58());
+            }
+          }
+        } else {
+          // Use all configured ALTs
+          for (const addr of this.altAddresses.values()) {
+            addresses.push(addr.toBase58());
+          }
         }
         try {
           logger.info('alt.manager.using_config_alts', {
@@ -1991,6 +2030,7 @@ export class DexAltManager {
             ctx: {
               accountCount: accounts.length,
               altCount: addresses.length,
+              categories: dexCategories ? Array.from(dexCategories) : 'all',
               altAddresses: addresses,
             },
           });
@@ -2006,6 +2046,7 @@ export class DexAltManager {
             accountCount: accounts.length,
             forceMultiHop,
             registeredAltCount: this.altAddresses.size,
+            requestedCategories: dexCategories ? Array.from(dexCategories) : undefined,
           },
         });
       } catch {}

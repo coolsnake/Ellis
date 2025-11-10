@@ -32,7 +32,8 @@ async function injectBinArrayMetas(
   DLMM: any,
   connection: any,
   poolPk: PublicKey,
-  programId: PublicKey
+  programId: PublicKey,
+  poolId?: string  // Add poolId parameter to check cache
 ): Promise<number> {
   try {
     let metas: any[] | undefined = undefined;
@@ -67,20 +68,54 @@ async function injectBinArrayMetas(
         const bnjs = await import('bn.js').catch(() => null as any);
         const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
             if (BN) {
+              // OPTIMIZATION: Try to get active bin from cache first (saves 100-200ms RPC call)
+              let activeId: any = undefined;
+              
+              // Try cache first
+              if (poolId) {
+                try {
+                  const { executionCache } = await import('../cache.js');
+                  const hot = executionCache.getHot(poolId);
+                  if (hot?.activeId !== undefined) {
+                    activeId = hot.activeId;
+                    try {
+                      logger.debug('meteora.dlmm.activeId.from_cache', {
+                        cat: 'tx',
+                        ctx: { pool: poolId.slice(0, 8) + '...', activeId: String(activeId) }
+                      });
+                    } catch {}
+                  }
+                } catch {}
+              }
+              
+              // Fallback to RPC if not in cache
+              if (activeId === undefined) {
+                try {
+                  const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+                  const poolState = await withRpcLimit(
+                    () => connection.getAccountInfo(poolPk),
+                    1,
+                    { module: 'execution', method: 'getAccountInfo' }
+                  ) as any;
+                  if (poolState?.data?.length) {
+                    const decode = (DLMM as any)?.decodeAccount;
+                    if (decode) {
+                      const state = decode({ coder: (DLMM as any)?.coder ?? {} }, 'lbPair', poolState.data);
+                      activeId = state?.activeId;
+                      try {
+                        logger.debug('meteora.dlmm.activeId.from_rpc', {
+                          cat: 'tx',
+                          ctx: { pool: poolPk.toBase58().slice(0, 8) + '...', activeId: String(activeId) }
+                        });
+                      } catch {}
+                    }
+                  }
+                } catch {}
+              }
+              
               // Try to get active bin from pool state to use a small range
               try {
-                const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
-                const poolState = await withRpcLimit(
-                  () => connection.getAccountInfo(poolPk),
-                  1,
-                  { module: 'execution', method: 'getAccountInfo' }
-                ) as any;
-                if (poolState?.data?.length) {
-                  const decode = (DLMM as any)?.decodeAccount;
-                  if (decode) {
-                    const state = decode({ coder: (DLMM as any)?.coder ?? {} }, 'lbPair', poolState.data);
-                    const activeId = state?.activeId;
-                    if (activeId !== undefined) {
+                if (activeId !== undefined) {
                       const activeBn = activeId instanceof BN ? activeId : new BN(String(activeId));
                       const idx = binIdToBinArrayIndex(activeBn);
                       const arrIdx = idx instanceof BN ? idx : new BN(String(idx));
@@ -94,8 +129,7 @@ async function injectBinArrayMetas(
                       // Limit to max 5 bin arrays - sufficient for active bin + adjacents
                       metas = rawMetas.slice(0, 5);
                     }
-                  }
-                }
+                  } catch {}
               } catch {}
               // Fallback removed - don't use huge default ranges that return hundreds
             }
@@ -969,7 +1003,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       const ix = await (DLMM as any).swapIx(connection, kp.publicKey, params);
       if (ix) {
         // Safety net: attempt to attach remaining bin-array metas when using fast-path ix
-        await injectBinArrayMetas(ix, DLMM, connection, poolPk, programId);
+        await injectBinArrayMetas(ix, DLMM, connection, poolPk, programId, hop.poolId);
         try { logger.debug('meteora.dlmm.swapIx.ok', { cat: 'tx' }); } catch {}
         return [ix];
       }
@@ -1873,9 +1907,27 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       try {
         const coreAccountCount = 15; // Preserve core instruction accounts
         
-        // Only need active bin array + adjacents for most swaps
-        // 5 bin arrays is sufficient while keeping transaction size minimal
-        const maxRemainingAccounts = 5;
+        // Adaptive limiting based on hop count to prevent transaction size overflow
+        // The more hops in a transaction, the fewer bin arrays we can afford per hop
+        // 
+        // Bin array strategy:
+        // - 1 hop:  5 bin arrays (active + 4 adjacent) - plenty of liquidity coverage
+        // - 2 hops: 3 bin arrays (active + 2 adjacent) - balanced
+        // - 3 hops: 2 bin arrays (active + 1 adjacent) - minimal but functional
+        // - 4+ hops: 2 bin arrays (cannot go lower without breaking swaps)
+        //
+        // Note: Even with 2 bin arrays, most swaps will execute successfully
+        // as long as the price is within the active bin range
+        const totalHops = (hop as any).totalHops || 1;
+        let maxRemainingAccounts = 5; // Default for single hop
+        
+        if (totalHops >= 4) {
+          maxRemainingAccounts = 2; // Very aggressive for 4+ hops
+        } else if (totalHops === 3) {
+          maxRemainingAccounts = 2; // Aggressive for 3 hops
+        } else if (totalHops === 2) {
+          maxRemainingAccounts = 3; // Moderate for 2 hops
+        }
         
         // Simply limit the number of remaining accounts without deduplication
         // Solana allows duplicate accounts in instructions (with different flags)
@@ -1893,7 +1945,9 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 newCount: ix.keys.length,
                 removedCount,
                 coreAccountCount,
-                maxRemainingAccounts
+                maxRemainingAccounts,
+                totalHops,
+                hopIndex: (hop as any).hopIndex || 0
               }
             });
           } catch {}
@@ -2806,6 +2860,17 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       
       // Verify all accounts in each instruction to catch missing accounts early
       // But skip accounts that don't need to exist yet (signers, writable accounts that can be created)
+      // OPTIMIZATION: Skip verification if CONFIG.execution.skipAccountVerification is true (saves 200-400ms)
+      const skipVerification = (CONFIG as any)?.execution?.skipAccountVerification === true;
+      if (skipVerification) {
+        try {
+          logger.debug('raydium.clmm.verification.skipped', {
+            cat: 'tx',
+            ctx: { pool: hop.poolId, reason: 'CONFIG.execution.skipAccountVerification=true' } as any,
+          });
+        } catch {}
+      }
+      
       const verifiedIxs: TransactionInstruction[] = [];
       for (let ixIdx = 0; ixIdx < ixs.length; ixIdx++) {
         const ix = ixs[ixIdx];
@@ -2832,6 +2897,12 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
           const missingAccounts: Array<{ address: string; index: number; isSigner: boolean; isWritable: boolean }> = [];
           const verifiedAccounts: Array<{ address: string; index: number; reason: string }> = [];
           const skippedAccounts: Array<{ address: string; index: number; reason: string }> = [];
+          
+          // Skip verification if configured (trust cached data)
+          if (skipVerification) {
+            verifiedIxs.push(ix);
+            continue;
+          }
           
           // Collect accounts to verify first, then batch fetch to reduce RPC calls
           const accountsToVerify: Array<{ pkObj: PublicKey; pkStr: string; keyIdx: number; keyMeta: any }> = [];
@@ -3095,19 +3166,17 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       throw createBuilderError('RAYDIUM_AMM', String((validationErr as any)?.message || validationErr), hop);
     }
     // Best-effort: derive missing market/program from on-chain pool state
-    // Cache the pool account info to avoid duplicate RPC calls
-    let poolAccountInfo: any = null;
     try {
       if (!hop.market || !hop.serumProgramId) {
         const connection = getConnection();
         const poolPk = toPublicKey(hop.poolId);
         const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
-        poolAccountInfo = await withRpcLimit(
+        const tempPoolAccountInfo = await withRpcLimit(
           () => connection.getAccountInfo(poolPk),
           1,
           { module: 'execution', method: 'getAccountInfo' }
         );
-        if (poolAccountInfo?.data?.length) {
+        if (tempPoolAccountInfo?.data?.length) {
           const rmod: any = await import('@raydium-io/raydium-sdk-v2');
           const layouts = [
             (rmod as any)?.LiquidityStateLayoutV4,
@@ -3117,7 +3186,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
           ].filter(Boolean);
           for (const layout of layouts) {
             try {
-              const state = layout.decode(poolAccountInfo.data);
+              const state = layout.decode(tempPoolAccountInfo.data);
               const mk = state.marketId?.toBase58?.() || state.marketId?.toString?.() || '';
               const mp = state.marketProgramId?.toBase58?.() || state.marketProgramId?.toString?.() || '';
               if (mk && mp) {
@@ -3175,16 +3244,42 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       return !isValidPublicKey(x);
     };
 
-    // Decode AMM state from chain (always) to override any placeholder keys returned by SDK
-    // Reuse cached pool account info if available to avoid duplicate RPC call
+    // Decode AMM state from chain to override any placeholder keys returned by SDK
+    // OPTIMIZATION: Try cached raw account data first (saves 50-150ms RPC call)
+    let poolAccountInfo: any = null;
     try {
-      let acc = poolAccountInfo;
-      if (!acc) {
+      const { executionCache } = await import('../cache.js');
+      const cached = executionCache.getStatic(hop.poolId);
+      if (cached?.rawAccountData) {
+        poolAccountInfo = {
+          data: cached.rawAccountData,
+          owner: new PublicKey(hop.programId || CONFIG.raydium?.ammV4Program || ''),
+        };
+        try {
+          logger.debug('raydium.amm.account.from_cache', {
+            cat: 'tx',
+            ctx: { pool: hop.poolId.slice(0, 8) + '...', age: Date.now() - (cached.rawAccountDataUpdatedMs || 0) }
+          });
+        } catch {}
+      }
+    } catch {}
+    
+    // Fallback to RPC if not in cache
+    if (!poolAccountInfo) {
+      try {
         // Use account cache instead of direct RPC call
         const { accountCache } = await import('../utils/accountCache.js');
-        acc = await accountCache.getAccountInfo(toPublicKey(hop.poolId));
-      }
-      if (acc?.data?.length) {
+        poolAccountInfo = await accountCache.getAccountInfo(toPublicKey(hop.poolId));
+        try {
+          logger.debug('raydium.amm.account.from_rpc', {
+            cat: 'tx',
+            ctx: { pool: hop.poolId.slice(0, 8) + '...' }
+          });
+        } catch {}
+      } catch {}
+    }
+    
+    if (poolAccountInfo?.data?.length) {
         const sdkLayouts: any = await import('@raydium-io/raydium-sdk-v2');
         const layouts = [
           (sdkLayouts as any)?.LiquidityStateLayoutV4,
@@ -3194,7 +3289,7 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
         ].filter(Boolean);
         let state: any = null;
         for (const layout of layouts) {
-          try { state = layout.decode(acc.data); break; } catch {}
+          try { state = layout.decode(poolAccountInfo.data); break; } catch {}
         }
         if (state) {
           // Normalize fields across versions
