@@ -15,8 +15,39 @@ export async function resolveMeteoraDlmm(hop: DirectHop): Promise<DirectHop> {
     if (p) {
       hop.binStep = Number((p as any)?.bin_step || (p as any)?.binStep || hop.binStep || 0);
       hop.activeId = Number((p as any)?.active_id || (p as any)?.activeId || hop.activeId || 0);
-      hop.vaultA = String((p as any)?.account_a || '');
-      hop.vaultB = String((p as any)?.account_b || '');
+      
+      // CRITICAL FIX: Check if hop direction matches pool mint order
+      // If pool is mint_a -> mint_b but hop is mint_b -> mint_a, swap the vaults
+      const poolMintA = String((p as any)?.mint_a || (p as any)?.mintA || '');
+      const poolMintB = String((p as any)?.mint_b || (p as any)?.mintB || '');
+      const accountA = String((p as any)?.account_a || '');
+      const accountB = String((p as any)?.account_b || '');
+      
+      if (poolMintA && poolMintB && accountA && accountB) {
+        // Check if hop input/output matches pool mint_a/mint_b order
+        const isNaturalDirection = (hop.inputMint === poolMintA && hop.outputMint === poolMintB);
+        const isReversedDirection = (hop.inputMint === poolMintB && hop.outputMint === poolMintA);
+        
+        if (isNaturalDirection) {
+          // Natural direction: input=mint_a, output=mint_b
+          // Use account_a as vaultA (input vault), account_b as vaultB (output vault)
+          hop.vaultA = accountA;
+          hop.vaultB = accountB;
+        } else if (isReversedDirection) {
+          // Reversed direction: input=mint_b, output=mint_a
+          // Swap vaults: use account_b as vaultA (input vault), account_a as vaultB (output vault)
+          hop.vaultA = accountB;
+          hop.vaultB = accountA;
+        } else {
+          // Fallback if mints don't match (shouldn't happen in normal operation)
+          hop.vaultA = accountA;
+          hop.vaultB = accountB;
+        }
+      } else {
+        // Fallback if mint/account data is missing
+        hop.vaultA = accountA;
+        hop.vaultB = accountB;
+      }
     }
   } catch {}
   return hop;

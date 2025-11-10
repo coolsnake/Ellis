@@ -3509,7 +3509,88 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       if (Array.isArray(out) && out.length) {
         out = out.map(coerceOne);
       }
-    } catch {}
+    } catch (coerceErr) {
+      // Log coercion failure for debugging
+      try {
+        logger.error('raydium.amm.coerce.err', {
+          cat: 'tx',
+          ctx: {
+            pool: hop.poolId,
+            error: String((coerceErr as any)?.message || coerceErr),
+            outLength: Array.isArray(out) ? out.length : 0
+          }
+        });
+      } catch {}
+    }
+    
+    // CRITICAL FIX: Validate that all instructions have proper PublicKey instances
+    // If any instruction has malformed keys, rebuild it with proper normalization
+    if (Array.isArray(out) && out.length > 0) {
+      for (let i = 0; i < out.length; i++) {
+        const ix = out[i];
+        try {
+          // Verify programId can be converted to base58
+          const pidTest = ix.programId?.toBase58?.();
+          if (!pidTest || pidTest === '[object Object]') {
+            throw new Error('Invalid programId');
+          }
+          // Verify all account keys can be converted
+          for (const k of ix.keys || []) {
+            const pkTest = k.pubkey?.toBase58?.();
+            if (!pkTest || pkTest === '[object Object]') {
+              throw new Error('Invalid account key');
+            }
+          }
+        } catch (validateErr) {
+          // Rebuild this instruction with proper normalization
+          try {
+            logger.warn('raydium.amm.ix.rebuild', {
+              cat: 'tx',
+              ctx: { pool: hop.poolId, ixIndex: i, error: String((validateErr as any)?.message || validateErr) }
+            });
+            
+            // Force rebuild with ammProgramId
+            const newKeys = (ix.keys || []).map((k: any, keyIdx: number) => {
+              let pubkey: PublicKey;
+              try {
+                // Try to extract base58 string first
+                if (k.pubkey && typeof k.pubkey.toBase58 === 'function') {
+                  pubkey = new PublicKey(k.pubkey.toBase58());
+                } else if (typeof k.pubkey === 'string') {
+                  pubkey = new PublicKey(k.pubkey);
+                } else {
+                  // Last resort: use normalizePublicKey
+                  pubkey = normalizePublicKey(k.pubkey);
+                }
+              } catch (keyErr) {
+                throw new Error(`Failed to normalize key at index ${keyIdx}: ${(keyErr as any)?.message}`);
+              }
+              return {
+                pubkey,
+                isSigner: !!k.isSigner,
+                isWritable: !!k.isWritable
+              };
+            });
+            
+            out[i] = new TransactionInstruction({
+              programId: ammProgramId,
+              keys: newKeys,
+              data: Buffer.isBuffer(ix.data) ? ix.data : Buffer.from(ix.data || [])
+            });
+            
+            try {
+              logger.info('raydium.amm.ix.rebuild.ok', {
+                cat: 'tx',
+                ctx: { pool: hop.poolId, ixIndex: i, keyCount: newKeys.length }
+              });
+            } catch {}
+          } catch (rebuildErr) {
+            throw createBuilderError('RAYDIUM_AMM', `Failed to rebuild instruction: ${(rebuildErr as any)?.message}`, hop);
+          }
+        }
+      }
+    }
+    
     if (out && out.length) return out;
     throw createBuilderError('RAYDIUM_AMM', 'bad_ix_shape: no instructions produced', hop);
   } catch (e) {
