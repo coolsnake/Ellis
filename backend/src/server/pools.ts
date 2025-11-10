@@ -1897,8 +1897,17 @@ export function startRaydiumRefreshLoop(): void {
             
             let whirlpoolData: any = null;
             try { 
-              whirlpoolData = ParsableWhirlpool.parse(acc.data);
-              logger.info('orca.attach.parsed', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
+              whirlpoolData = ParsableWhirlpool.parse(pk, acc);
+              logger.info('orca.attach.parsed', { 
+                pool: poolAddr.slice(0,8)+'…', 
+                dataKeys: Object.keys(whirlpoolData || {}),
+                hasTokenVaultA: !!whirlpoolData?.tokenVaultA,
+                hasTokenVaultB: !!whirlpoolData?.tokenVaultB,
+                hasOracle: !!whirlpoolData?.oracle,
+                hasTickSpacing: whirlpoolData?.tickSpacing !== undefined,
+                hasTickCurrentIndex: whirlpoolData?.tickCurrentIndex !== undefined,
+                cat: 'pools' 
+              });
             } catch (err) { 
               logger.info('orca.attach.parse_fail', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
               return;
