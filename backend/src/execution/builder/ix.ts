@@ -1748,16 +1748,49 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       
       const fallbackTokenProg = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
       
+      // Helper to ensure we have a proper PublicKey instance
+      const ensurePublicKey = (value: any, fallback: PublicKey): PublicKey => {
+        if (!value) return fallback;
+        // Already a PublicKey
+        if (value instanceof PublicKey) return value;
+        // Has toBase58 method - extract and create new PublicKey
+        if (typeof value.toBase58 === 'function') {
+          try {
+            return new PublicKey(value.toBase58());
+          } catch {
+            return fallback;
+          }
+        }
+        // String representation
+        if (typeof value === 'string') {
+          try {
+            return new PublicKey(value);
+          } catch {
+            return fallback;
+          }
+        }
+        // Buffer/Uint8Array
+        if (value.length === 32 || (value.buffer && value.buffer.byteLength === 32)) {
+          try {
+            return new PublicKey(value);
+          } catch {
+            return fallback;
+          }
+        }
+        return fallback;
+      };
+      
       // Handle synchronous or asynchronous return
       if (getTokenProgramId && xMint) {
         try {
           const resultX = getTokenProgramId(connection, xMint);
           // Check if it's a Promise
           if (resultX && typeof resultX.then === 'function') {
-            acctBase.tokenXProgram = await resultX.catch(() => fallbackTokenProg);
+            const resolved = await resultX.catch(() => fallbackTokenProg);
+            acctBase.tokenXProgram = ensurePublicKey(resolved, fallbackTokenProg);
           } else {
-            // Synchronous return
-            acctBase.tokenXProgram = resultX || fallbackTokenProg;
+            // Synchronous return - ensure it's a proper PublicKey
+            acctBase.tokenXProgram = ensurePublicKey(resultX, fallbackTokenProg);
           }
           logger.info('meteora.dlmm.token_programs.x_set', { cat: 'tx', ctx: { poolId: hop.poolId, tokenXProgram: acctBase.tokenXProgram?.toBase58?.() || String(acctBase.tokenXProgram) } });
         } catch (e) {
@@ -1771,10 +1804,11 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           const resultY = getTokenProgramId(connection, yMint);
           // Check if it's a Promise
           if (resultY && typeof resultY.then === 'function') {
-            acctBase.tokenYProgram = await resultY.catch(() => fallbackTokenProg);
+            const resolved = await resultY.catch(() => fallbackTokenProg);
+            acctBase.tokenYProgram = ensurePublicKey(resolved, fallbackTokenProg);
           } else {
-            // Synchronous return
-            acctBase.tokenYProgram = resultY || fallbackTokenProg;
+            // Synchronous return - ensure it's a proper PublicKey
+            acctBase.tokenYProgram = ensurePublicKey(resultY, fallbackTokenProg);
           }
           logger.info('meteora.dlmm.token_programs.y_set', { cat: 'tx', ctx: { poolId: hop.poolId, tokenYProgram: acctBase.tokenYProgram?.toBase58?.() || String(acctBase.tokenYProgram) } });
         } catch (e) {
@@ -3960,14 +3994,14 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                   case 4: return (poolKeys as any)?.targetOrders;
                   case 5: return (poolKeys as any)?.vault?.A || (poolKeys as any)?.baseVault;
                   case 6: return (poolKeys as any)?.vault?.B || (poolKeys as any)?.quoteVault;
-                  case 7: return (poolKeys as any)?.marketProgramId;
-                  case 8: return (poolKeys as any)?.marketId;
-                  case 9: return (poolKeys as any)?.marketBids;
-                  case 10: return (poolKeys as any)?.marketAsks;
-                  case 11: return (poolKeys as any)?.marketEventQueue;
-                  case 12: return (poolKeys as any)?.marketBaseVault;
-                  case 13: return (poolKeys as any)?.marketQuoteVault;
-                  case 14: return (poolKeys as any)?.marketAuthority;
+                  case 7: return (poolKeys as any)?.marketProgramId || (poolKeys as any)?.market_program_id;
+                  case 8: return (poolKeys as any)?.marketId || (poolKeys as any)?.market_id;
+                  case 9: return (poolKeys as any)?.marketBids || (poolKeys as any)?.market_bids;
+                  case 10: return (poolKeys as any)?.marketAsks || (poolKeys as any)?.market_asks;
+                  case 11: return (poolKeys as any)?.marketEventQueue || (poolKeys as any)?.market_event_queue;
+                  case 12: return (poolKeys as any)?.marketBaseVault || (poolKeys as any)?.market_base_vault;
+                  case 13: return (poolKeys as any)?.marketQuoteVault || (poolKeys as any)?.market_quote_vault;
+                  case 14: return (poolKeys as any)?.marketAuthority || (poolKeys as any)?.market_authority;
                   case 15: return toPublicKey(hop.userSourceAta);
                   case 16: return toPublicKey(hop.userDestAta);
                   case 17: return kp.publicKey;
