@@ -1752,9 +1752,10 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       const tokenKeg = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
       const isToken2022 = (p: any) => { try { return p && typeof p.equals === 'function' && !p.equals(tokenKeg); } catch { return false; } };
       const needs2022 = isToken2022(acctBase.tokenXProgram) || isToken2022(acctBase.tokenYProgram);
-      if (needs2022 && typeof (methods as any)?.swap2 === 'function') builder = methods.swap2(amountIn, minOut, swapForY, { slices: [] });
-      else if (typeof (methods as any)?.swap === 'function') builder = methods.swap(amountIn, minOut, swapForY);
-      else if (typeof (methods as any)?.swapExactIn === 'function') builder = methods.swapExactIn(amountIn, minOut, swapForY);
+      // NOTE: Anchor methods don't take swapForY - direction is inferred from accounts (reserveX/reserveY)
+      if (needs2022 && typeof (methods as any)?.swap2 === 'function') builder = methods.swap2(amountIn, minOut, { slices: [] });
+      else if (typeof (methods as any)?.swap === 'function') builder = methods.swap(amountIn, minOut);
+      else if (typeof (methods as any)?.swapExactIn === 'function') builder = methods.swapExactIn(amountIn, minOut);
       else throw new Error('DLMM_SWAP_METHOD_MISSING');
     } catch {}
 
@@ -3504,40 +3505,41 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       const poolData = executionCache.getStatic(hop.poolId);
       if (poolData) {
         const cached = poolData as any;
-        // Fill in any missing market accounts from cache
-        if (cached.market_bids && !(poolKeys as any)?.marketBids) {
+        // Fill in any missing OR INVALID market accounts from cache
+        // The SDK sometimes returns placeholder keys, so we need to replace those too
+        if (cached.market_bids && (!(poolKeys as any)?.marketBids || isBadPk((poolKeys as any)?.marketBids))) {
           (poolKeys as any).marketBids = toPublicKey(cached.market_bids);
         }
-        if (cached.market_asks && !(poolKeys as any)?.marketAsks) {
+        if (cached.market_asks && (!(poolKeys as any)?.marketAsks || isBadPk((poolKeys as any)?.marketAsks))) {
           (poolKeys as any).marketAsks = toPublicKey(cached.market_asks);
         }
-        if (cached.market_event_queue && !(poolKeys as any)?.marketEventQueue) {
+        if (cached.market_event_queue && (!(poolKeys as any)?.marketEventQueue || isBadPk((poolKeys as any)?.marketEventQueue))) {
           (poolKeys as any).marketEventQueue = toPublicKey(cached.market_event_queue);
         }
-        if (cached.market_base_vault && !(poolKeys as any)?.marketBaseVault) {
+        if (cached.market_base_vault && (!(poolKeys as any)?.marketBaseVault || isBadPk((poolKeys as any)?.marketBaseVault))) {
           (poolKeys as any).marketBaseVault = toPublicKey(cached.market_base_vault);
         }
-        if (cached.market_quote_vault && !(poolKeys as any)?.marketQuoteVault) {
+        if (cached.market_quote_vault && (!(poolKeys as any)?.marketQuoteVault || isBadPk((poolKeys as any)?.marketQuoteVault))) {
           (poolKeys as any).marketQuoteVault = toPublicKey(cached.market_quote_vault);
         }
-        if (cached.market_authority && !(poolKeys as any)?.marketAuthority) {
+        if (cached.market_authority && (!(poolKeys as any)?.marketAuthority || isBadPk((poolKeys as any)?.marketAuthority))) {
           (poolKeys as any).marketAuthority = toPublicKey(cached.market_authority);
         }
-        if (cached.amm_authority && !(poolKeys as any)?.authority) {
+        if (cached.amm_authority && (!(poolKeys as any)?.authority || isBadPk((poolKeys as any)?.authority))) {
           (poolKeys as any).authority = toPublicKey(cached.amm_authority);
         }
-        if (cached.amm_open_orders && !(poolKeys as any)?.openOrders) {
+        if (cached.amm_open_orders && (!(poolKeys as any)?.openOrders || isBadPk((poolKeys as any)?.openOrders))) {
           (poolKeys as any).openOrders = toPublicKey(cached.amm_open_orders);
         }
-        if (cached.amm_target_orders && !(poolKeys as any)?.targetOrders) {
+        if (cached.amm_target_orders && (!(poolKeys as any)?.targetOrders || isBadPk((poolKeys as any)?.targetOrders))) {
           (poolKeys as any).targetOrders = toPublicKey(cached.amm_target_orders);
         }
-        if (cached.lp_mint && !(poolKeys as any)?.mintLp) {
+        if (cached.lp_mint && (!(poolKeys as any)?.mintLp || isBadPk((poolKeys as any)?.mintLp))) {
           (poolKeys as any).mintLp = toPublicKey(cached.lp_mint);
         }
         
         try {
-          logger.debug('raydium.amm.poolkeys_from_cache', {
+          logger.info('raydium.amm.poolkeys_from_cache', {
             cat: 'tx',
             ctx: {
               pool: hop.poolId.slice(0, 8) + '...',
@@ -3545,7 +3547,10 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
               hasAsks: !!cached.market_asks,
               hasEventQueue: !!cached.market_event_queue,
               hasAuthority: !!cached.amm_authority,
-              hasOpenOrders: !!cached.amm_open_orders
+              hasOpenOrders: !!cached.amm_open_orders,
+              replacedBids: !!(cached.market_bids && (!(poolKeys as any)?.marketBids || isBadPk((poolKeys as any)?.marketBids))),
+              replacedAsks: !!(cached.market_asks && (!(poolKeys as any)?.marketAsks || isBadPk((poolKeys as any)?.marketAsks))),
+              marketBidsValue: (poolKeys as any)?.marketBids?.toBase58?.() || 'missing'
             }
           });
         } catch {}
