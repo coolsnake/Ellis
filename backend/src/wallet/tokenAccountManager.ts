@@ -367,8 +367,10 @@ export class TokenAccountManager {
       const closeIx = createCloseAccountInstruction(address, payer, payer);
       
       // Build and send transaction
-      const { blockhash } = await withRpcLimit(() => 
-        this.connection.getLatestBlockhash('finalized')
+      const { blockhash } = await withRpcLimit(
+        () => this.connection.getLatestBlockhash('finalized'),
+        1,
+        { module: 'wallet', method: 'getLatestBlockhash' }
       );
       const tx = new Transaction().add(closeIx);
       tx.recentBlockhash = blockhash;

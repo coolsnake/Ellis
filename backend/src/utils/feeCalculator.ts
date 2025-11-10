@@ -71,40 +71,40 @@ export class FeeCalculator {
 
   private async updateRecentFees(): Promise<void> {
     try {
-      // Get recent block fees to estimate network congestion
-      const recentBlocks = await this.connection.getBlocks(0, 10); // Get last 10 blocks
-      if (recentBlocks.length === 0) return;
+      // Get recent performance samples to estimate network congestion
+      const { withRpcLimit } = await import('./rpcLimiter.js');
+      const recentSamples = await withRpcLimit(
+        () => this.connection.getRecentPerformanceSamples(10),
+        1,
+        { module: 'utils', method: 'getRecentPerformanceSamples' }
+      ).catch(() => []);
+      
+      if (recentSamples.length === 0) return;
 
-      // Get block production time to estimate congestion
-      const blockTimes = await Promise.all(
-        recentBlocks.slice(0, 5).map(async (slot) => {
-          try {
-            const blockTime = await this.connection.getBlockTime(slot);
-            return blockTime;
-          } catch {
-            return null;
-          }
-        })
-      );
-
-      const validTimes = blockTimes.filter((t): t is number => t !== null);
-      if (validTimes.length > 0) {
-        // Calculate average block time
-        const avgBlockTime = validTimes.reduce((a, b) => a + b, 0) / validTimes.length;
-        
-        // Estimate congestion based on block time (faster = more congested)
-        const congestionFactor = Math.max(0.5, Math.min(2.0, 600 / avgBlockTime)); // 600ms is target
-        this.recentFees.push(congestionFactor * 5000); // Base fee estimate
-        
-        // Keep only last 10 measurements
-        if (this.recentFees.length > 10) {
-          this.recentFees = this.recentFees.slice(-10);
-        }
+      // Calculate average transactions per slot as congestion metric
+      const samples = recentSamples.slice(0, 5);
+      let totalSlots = 0;
+      let totalTransactions = 0;
+      
+      for (const sample of samples) {
+        totalSlots += sample.numSlots;
+        totalTransactions += sample.numTransactions;
+      }
+      
+      if (totalSlots === 0) return;
+      
+      const txPerSlot = totalTransactions / totalSlots;
+      
+      // Calculate congestion factor based on tx/slot (typical is ~1500)
+      const congestionFactor = Math.max(0.5, Math.min(2.0, txPerSlot / 1500));
+      this.recentFees.push(congestionFactor * 5000); // Base fee estimate
+      
+      // Keep only last 10 measurements
+      if (this.recentFees.length > 10) {
+        this.recentFees = this.recentFees.slice(-10);
       }
     } catch (error) {
-      logger.warn('Failed to update recent fees', { error: String(error) });
-      // Fallback to default fee
-      this.recentFees.push(5000);
+      // Silent fail - fee estimation is not critical
     }
   }
 

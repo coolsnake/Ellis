@@ -315,7 +315,10 @@ export class DriftFillerRunner {
             try { await fetch(endpoint.replace(/\/fast$/, '/ping'), { method: 'GET' }); } catch {}
           }
           // Warm Helius RPC via a cheap call
-          try { await this.connection.getBlockHeight('processed'); } catch {}
+          try { 
+            const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+            await withRpcLimit(() => this.connection.getBlockHeight('processed'), 1, { module: 'drift', method: 'getBlockHeight' }); 
+          } catch {}
         } catch {}
       };
       doPing().catch(() => {});

@@ -937,13 +937,15 @@ export function startRaydiumRefreshLoop(): void {
                         const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
                         const idx = next.amm.findIndex(p => p.id === item.id);
                         if (idx >= 0) next.amm[idx] = { ...next.amm[idx], ...item }; else next.amm.push(item);
+                        wsDeltaStats.raydium.decoded += 1;
                         const d = diffNormalizedPools(prev, next);
                         raydiumCache.data = next; raydiumCache.ts = Date.now();
+                        const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
+                        if (hasDelta) wsDeltaStats.raydium.applied += 1; else wsDeltaStats.raydium.skipped += 1;
                         try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: d.amm.slice(0, 20), clmm: [] }, ts: Date.now() }); } catch {}
                         // Always use incremental graph updates
                         try {
                           const gmod: any = await import('./graph.js');
-                          const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
                           if (hasDelta) {
                             await scheduleDexApply('raydium', prev as any);
                           }
