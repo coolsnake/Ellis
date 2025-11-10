@@ -1713,46 +1713,66 @@ export function startRaydiumRefreshLoop(): void {
         // Helper: attach Orca Whirlpool vault, oracle, and tick array accounts for a given pool address
         const attachOrcaWhirlpoolAccounts = async (poolAddr: string) => {
           try {
+            logger.info('orca.attach.start', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
             const pk = new web3.PublicKey(poolAddr);
             const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+            logger.info('orca.attach.fetching', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
             const acc: any = await withRpcLimit(() => conn.getAccountInfo(pk, CONFIG.system.txCommitment as any));
+            logger.info('orca.attach.fetched', { pool: poolAddr.slice(0,8)+'…', hasData: !!acc?.data, cat: 'pools' });
             if (!acc || !acc.data) return;
             
             const sdkAny: any = await import('@orca-so/whirlpools-sdk').catch(() => null);
             const ParsableWhirlpool = sdkAny?.ParsableWhirlpool;
             const PDAUtil = sdkAny?.PDAUtil;
             
-            if (!ParsableWhirlpool || typeof ParsableWhirlpool.parse !== 'function') return;
+            if (!ParsableWhirlpool || typeof ParsableWhirlpool.parse !== 'function') {
+              logger.info('orca.attach.no_sdk', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
+              return;
+            }
             
             let whirlpoolData: any = null;
-            try { whirlpoolData = ParsableWhirlpool.parse(acc.data); } catch { return; }
+            try { whirlpoolData = ParsableWhirlpool.parse(acc.data); } catch (err) { 
+              logger.info('orca.attach.parse_fail', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
+              return;
+            }
+            
+            logger.info('orca.attach.parsed', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
             
             // Subscribe to vaults
             const vaultA = whirlpoolData?.tokenVaultA;
             const vaultB = whirlpoolData?.tokenVaultB;
             const vaults = [vaultA, vaultB].filter(Boolean);
+            logger.info('orca.attach.vaults.start', { pool: poolAddr.slice(0,8)+'…', vaultCount: vaults.length, cat: 'pools' });
             for (const vault of vaults) {
               try {
+                logger.info('orca.attach.vault.subscribing', { pool: poolAddr.slice(0,8)+'…', vault: vault.toBase58().slice(0,8)+'…', cat: 'pools' });
                 const id = await subscribeAccountWithRetry(vault, handle);
                 subs.push({ kind: 'account', id });
                 targetedSourceByAccount.set(vault.toBase58(), 'orca');
                 debugLogTargeted('orca', vault.toBase58(), { kind: 'vault' });
                 // Map vault to parent pool
                 derivedAccountToPool.set(vault.toBase58(), { poolId: poolAddr, accountType: 'vault' });
+                logger.info('orca.attach.vault.subscribed', { pool: poolAddr.slice(0,8)+'…', vault: vault.toBase58().slice(0,8)+'…', cat: 'pools' });
               } catch {}
             }
+            
+            logger.info('orca.attach.vaults.done', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
             
             // Subscribe to oracle
             if (whirlpoolData?.oracle) {
               try {
+                logger.info('orca.attach.oracle.subscribing', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
                 const id = await subscribeAccountWithRetry(whirlpoolData.oracle, handle);
                 subs.push({ kind: 'account', id });
                 targetedSourceByAccount.set(whirlpoolData.oracle.toBase58(), 'orca');
                 debugLogTargeted('orca', whirlpoolData.oracle.toBase58(), { kind: 'oracle' });
                 // Map oracle to parent pool
                 derivedAccountToPool.set(whirlpoolData.oracle.toBase58(), { poolId: poolAddr, accountType: 'oracle' });
+                logger.info('orca.attach.oracle.subscribed', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
               } catch {}
             }
+            
+            logger.info('orca.attach.tickarrays.start', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
             
             // Subscribe to active tick arrays (similar to Meteora bin arrays)
             const tickSpacing = whirlpoolData?.tickSpacing;
@@ -1767,6 +1787,7 @@ export function startRaydiumRefreshLoop(): void {
                   // Subscribe to 3 tick arrays: lower, center, upper
                   for (let offset = -1; offset <= 1; offset++) {
                     try {
+                      logger.info('orca.attach.tickarray.subscribing', { pool: poolAddr.slice(0,8)+'…', offset, cat: 'pools' });
                       const startTick = TickUtil.getStartTickIndex(currentTick, tickSpacing, offset);
                       const tickArrayPda = PDAUtil.getTickArray(orcaProgramId, pk, startTick);
                       
@@ -1777,6 +1798,7 @@ export function startRaydiumRefreshLoop(): void {
                         debugLogTargeted('orca', tickArrayPda.publicKey.toBase58(), { kind: 'tick_array', offset });
                         // Map tick array to parent pool
                         derivedAccountToPool.set(tickArrayPda.publicKey.toBase58(), { poolId: poolAddr, accountType: 'tick_array' });
+                        logger.info('orca.attach.tickarray.subscribed', { pool: poolAddr.slice(0,8)+'…', offset, cat: 'pools' });
                       }
                     } catch (err) {
                       try { logger.info('orca.whirlpool.tickarray.subscribe.fail', { pool: poolAddr, offset, error: String((err as any)?.message || err) }); } catch {}
@@ -1787,7 +1809,11 @@ export function startRaydiumRefreshLoop(): void {
                 try { logger.info('orca.whirlpool.tickarray.derive.fail', { pool: poolAddr, error: String((err as any)?.message || err) }); } catch {}
               }
             }
-          } catch {}
+            
+            logger.info('orca.attach.complete', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
+          } catch (err) {
+            logger.info('orca.attach.error', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
+          }
         };
 
         // Helper: attach Meteora DLMM reserve accounts (reserveX, reserveY) and oracle for a given pool address
