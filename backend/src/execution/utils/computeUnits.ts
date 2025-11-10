@@ -18,7 +18,12 @@ export async function measureComputeUnits(
 
   try {
     const connection = getConnection();
-    const latestBlockhash = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
+    const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+    const latestBlockhash = await withRpcLimit(
+      () => connection.getLatestBlockhash('finalized'),
+      1,
+      { module: 'execution', method: 'getLatestBlockhash' }
+    );
     const blockhash = latestBlockhash.blockhash;
     
     // Load lookup tables if provided
@@ -37,7 +42,6 @@ export async function measureComputeUnits(
     const tx = new VersionedTransaction(msg);
     
     // Simulate without signature verification for speed
-    const { withRpcLimit } = await import('../rpcLimiter.js');
     const sim = await withRpcLimit(
       () => connection.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true }),
       1,
@@ -129,10 +133,10 @@ export function estimateComputeUnits(
 
 async function loadLookupTables(connection: Connection, addrs: string[]): Promise<any[]> {
   const out: any[] = [];
+  const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
   for (const a of addrs) {
     try {
       const pk = new PublicKey(a);
-      const { withRpcLimit } = await import('../rpcLimiter.js');
       const acc = await withRpcLimit(
         () => connection.getAddressLookupTable(pk),
         1,

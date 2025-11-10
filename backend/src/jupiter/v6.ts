@@ -198,12 +198,12 @@ export async function buildCombinedTransaction(
   const alts: any[] = [];
   const { withRpcLimit } = await import('../utils/rpcLimiter.js');
   for (const addr of altAddresses) {
-    const { value } = await withRpcLimit(
+    const result = await withRpcLimit(
       () => connection.getAddressLookupTable(new web3.PublicKey(addr)),
       1,
       { module: 'jupiter', method: 'getAddressLookupTable' }
     );
-    if (value) alts.push(value);
+    if (result?.value) alts.push(result.value);
   }
   const bh: any = await withRpcLimit(
     () => connection.getLatestBlockhash('finalized'),
