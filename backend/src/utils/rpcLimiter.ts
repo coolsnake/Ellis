@@ -302,17 +302,19 @@ export async function acquireRpcSlots(weight = 1): Promise<void> {
   const acquireStart = Date.now();
   
   try {
-    // Fast path: attempt up to one immediate refill
     let iterations = 0;
     for (;;) {
       iterations++;
       refill();
       
-      // Safety check: if we've been waiting too long, log and break out
+      // Safety check: if we've been waiting too long, force through
       if (iterations > 100 || (Date.now() - acquireStart) > 30000) {
         console.error(`[RPC LIMITER] STUCK: waited ${Date.now() - acquireStart}ms, ${iterations} iterations, need=${need}, tokens=${tokens}, maxRps=${maxRps}, capacity=${capacity}`);
-        // Force break to prevent infinite loop
-        break;
+        console.error('[RPC LIMITER] Force-allowing call to prevent deadlock');
+        // Force consume whatever tokens we have and allow the call through
+        // This is better than blocking forever or throwing an error
+        tokens = Math.max(0, tokens - need);
+        return; // EXIT AFTER FORCE-ALLOWING
       }
       
       if (tokens >= need) {
@@ -329,6 +331,7 @@ export async function acquireRpcSlots(weight = 1): Promise<void> {
         await gapChain;
         return;
       }
+      
       // Compute wait until enough tokens accrue
       const deficit = need - tokens;
       const waitMs = Math.ceil((deficit / maxRps) * 1000);

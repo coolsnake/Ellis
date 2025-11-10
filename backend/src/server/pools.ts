@@ -749,7 +749,6 @@ export function startRaydiumRefreshLoop(): void {
               const shortPk = pk ? `${toB58Any(pk).slice(0,6)}…` : '';
               const mapped = targetedSourceByAccount.get(pk58);
               const src = mapped || ((owner === ownerRayAmm || owner === ownerRayClmm) ? 'raydium' : (owner === ownerOrca ? 'orca' : ((ownerMeteora && owner === ownerMeteora) || isMeteoraTarget ? 'meteora' : 'unknown')));
-              logger.debug('pools.ws event', { source: src, account: shortPk, cat: 'pools' });
               // Emit raw event snapshot (truncated) for audit
               const raw = {
                 owner,
@@ -759,21 +758,9 @@ export function startRaydiumRefreshLoop(): void {
               emit('log', { level: 'debug', message: `pools:ws event source=${src} acct=${shortPk}`, timestamp: new Date().toISOString(), context: { cat: 'pools', raw, source: src } });
             } catch {}
             const now = Date.now();
-            const debugLimit = Number((CONFIG.system as any)?.wsDebugAccountLogLimit ?? 10);
-            const maybeDebugAccount = (source: 'raydium' | 'orca' | 'meteora') => {
-              if (!(debugLimit > 0)) return;
-              if (wsDebugCounters[source] >= debugLimit) return;
-              wsDebugCounters[source] += 1;
-              try {
-                logger.debug('pools.ws debug.account', {
-                  source,
-                  account: pk58,
-                  owner,
-                  targeted: targetedSourceByAccount.get(pk58) || null,
-                  dataLen: Number(info?.data?.length ?? 0),
-                  cat: 'pools'
-                });
-              } catch {}
+            // Debug account logging removed - use 'pools.ws aggregate' info logs for monitoring
+            const maybeDebugAccount = (_source: 'raydium' | 'orca' | 'meteora') => {
+              // No-op: debug account logs removed to respect log levels
             };
             if (owner === ownerRayAmm || owner === ownerRayClmm) {
               try { wsCounts.raydium += 1; } catch {}
@@ -785,7 +772,7 @@ export function startRaydiumRefreshLoop(): void {
                   // Try CLMM pool decode first
                   let state: any = null;
                 const clmmLayout = (rmod as any)?.Clmm?.PoolStateLayout || (rmod as any)?.CLMM?.POOL_STATE_LAYOUT || (rmod as any)?.PoolStateLayout || (rmod as any)?.PoolInfoLayout;
-                  if (debugLimit !== 0) maybeDebugAccount('raydium');
+                  maybeDebugAccount('raydium');
                   if (clmmLayout && typeof clmmLayout.decode === 'function') {
                     let clmmDecodeError: any = null;
                     try { state = clmmLayout.decode(info.data); } catch (err: any) { clmmDecodeError = err; state = null; }
@@ -977,7 +964,7 @@ export function startRaydiumRefreshLoop(): void {
               } catch (e:any) {
                 try { logger.warn('raydium.ws.decode failed', { id: pk58.slice(0,6)+'…', error: String(e?.message || e) }); } catch {}
               }
-              if (!updated) { try { logger.debug('pools.ws event (unparsed)', { source: 'raydium', id: pk58.slice(0,6)+'…' }); } catch {} }
+              // Unparsed events are tracked in aggregate metrics, no need for individual debug logs
               return;
             } else if (owner === ownerOrca) {
               try { wsCounts.orca += 1; } catch {}
@@ -990,7 +977,7 @@ export function startRaydiumRefreshLoop(): void {
                 const { ParsableWhirlpool } = sdk as any;
                 const parsed = ParsableWhirlpool.parse(pk, info);
                 if (parsed) {
-                  if (debugLimit !== 0) maybeDebugAccount('orca');
+                  maybeDebugAccount('orca');
                   const id = pk58;
                   const mint_a = parsed.tokenMintA.toBase58();
                   const mint_b = parsed.tokenMintB.toBase58();
@@ -1054,7 +1041,7 @@ export function startRaydiumRefreshLoop(): void {
                   const d = diffNormalizedPools(prev, next);
                   const sample = { amm: [], clmm: d.clmm.slice(0, 20) };
                   emit('pool-updates', { source: 'orca', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now() });
-                  try { logger.debug('pools.delta orca.ws', { id: pk58.slice(0,6)+'…', updatedClmm: d.clmm.length, cat: 'pools' }); } catch {}
+                  // Delta stats are tracked in aggregate metrics
                   // Always use incremental graph updates
                   try {
                     const gmod: any = await import('./graph.js');
@@ -1097,7 +1084,7 @@ export function startRaydiumRefreshLoop(): void {
               // Try on-chain decode via Meteora DLMM SDK; fallback to HTTP refresh if unavailable
               let updated = false;
               try {
-                if (debugLimit !== 0) maybeDebugAccount('meteora');
+                maybeDebugAccount('meteora');
                 const poolId = pk58;
                 const program = ensureMeteoraProgram();
                 let state: any = null;
@@ -1348,7 +1335,7 @@ export function startRaydiumRefreshLoop(): void {
                 throw e;
               }
               const delay = Math.min(5000, Math.floor(baseBackoffMs * Math.pow(1.5, attempt - 1)));
-              try { logger.debug('pools.ws subscribe retry(account)', { attempt, delayMs: delay }); } catch {}
+              // Retry attempts are expected behavior, no need to log each one
               await sleep(delay);
             }
           }
@@ -1394,7 +1381,7 @@ export function startRaydiumRefreshLoop(): void {
                 throw e;
               }
               const delay = Math.min(5000, Math.floor(baseBackoffMs * Math.pow(1.5, attempt - 1)));
-              try { logger.debug('pools.ws subscribe retry(program)', { attempt, delayMs: delay }); } catch {}
+              // Retry attempts are expected behavior, no need to log each one
               await sleep(delay);
             }
           }
@@ -2183,7 +2170,7 @@ export function startRaydiumRefreshLoop(): void {
                 meteoraTargets.add(addr);
               } catch (e: any) {
                 failed++;
-                try { logger.debug('pools.ws meteora subscribe failed for pool', { addr: addr.slice(0,8)+'…', error: String(e?.message || e).slice(0,50) }); } catch {}
+                try { logger.info('pools.ws meteora subscribe failed for pool', { addr: addr.slice(0,8)+'…', error: String(e?.message || e).slice(0,100) }); } catch {}
               }
               if (i < edgeIds.length - 1 && intervalMsMet > 0) { await sleepMet(intervalMsMet); }
             }
@@ -2261,7 +2248,7 @@ export function startRaydiumRefreshLoop(): void {
                         ws.close();
                         // Give it a moment to actually transition to CLOSED state
                         await new Promise(r => setTimeout(r, 50));
-                        try { logger.debug('pools.ws underlying socket closed', { cat: 'pools' }); } catch {}
+                        try { logger.info('pools.ws underlying socket closed', { cat: 'pools' }); } catch {}
                       }
                     } catch {}
                     
@@ -2419,10 +2406,7 @@ export function startRaydiumRefreshLoop(): void {
             wsDeltaStats.meteora = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
             // Emit a dedicated ws-activity event for UI regardless of log filtering
             try { emit('ws-activity', { healthy: wsHealthy, lastEventMs: lastWsEventMs, orca: { attached: attachedOrcaPools, events: snapshot.orca || 0 }, raydium: { attached: attachedRaydiumPools, events: snapshot.raydium || 0 }, meteora: { attached: attachedMeteoraPools, events: snapshot.meteora || 0 } }); } catch {}
-            try {
-              const lastTgts: any = (getWsTargets as any)?._last || {};
-              emit('log', { level: 'debug', message: `pools:ws aggregate ray=${snapshot.raydium} orc=${snapshot.orca} met=${snapshot.meteora} | attach/tgt ray=${attachedRaydiumPools}/${lastTgts?.raydium?.target ?? 'n/a'} orc=${attachedOrcaPools}/${lastTgts?.orca?.target ?? 'n/a'} met=${attachedMeteoraPools}/${lastTgts?.meteora?.target ?? 'n/a'}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } });
-            } catch {}
+            // Aggregate metrics are already logged above via logger.info('pools.ws aggregate', ...), no need for duplicate emit
             // Reconcile targets vs attached (debounced): if attached << targets, trigger retarget
             (async () => {
               try {

@@ -58,6 +58,7 @@ export class ArbExecutor {
   private ws: WebSocket | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private cleanupTimer: NodeJS.Timeout | null = null;
+  private statusTimer: NodeJS.Timeout | null = null; // For periodic status logging
   private running = false;
   private walletPublicKey: any = null; // Cached wallet for balance checks
 
@@ -101,6 +102,22 @@ export class ArbExecutor {
 
     // Start cleanup timer for expired cooldowns
     this.cleanupTimer = setInterval(() => this.cleanupState(), 60000);
+
+    // Start periodic status logging
+    this.statusTimer = setInterval(() => {
+      logger.info('arb.executor.status', {
+        cat: 'arb',
+        enabled: this.config.enabled,
+        inFlight: this.state.inFlight.size,
+        totalExecutions: this.state.totalExecutions,
+        successful: this.state.successfulExecutions,
+        failed: this.state.failedExecutions,
+        successRate: this.state.totalExecutions > 0 
+          ? (this.state.successfulExecutions / this.state.totalExecutions * 100).toFixed(1) + '%'
+          : '0%',
+        executionsThisMinute: this.state.executionsThisMinute,
+      });
+    }, 30000); // Every 30 seconds
   }
 
   stop(): void {
@@ -116,6 +133,10 @@ export class ArbExecutor {
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
       this.cleanupTimer = null;
+    }
+    if (this.statusTimer) {
+      clearInterval(this.statusTimer);
+      this.statusTimer = null;
     }
     logger.info('arb.executor.stopped', { cat: 'arb' });
   }
@@ -181,7 +202,21 @@ export class ArbExecutor {
   }
 
   private async processOpportunities(opportunities: Opportunity[]): Promise<void> {
-    if (!this.config.enabled) return;
+    // Log incoming batch
+    logger.info('arb.executor.batch_received', {
+      cat: 'arb',
+      count: opportunities.length,
+      enabled: this.config.enabled,
+    });
+
+    if (!this.config.enabled) {
+      logger.info('arb.executor.batch_skipped', {
+        cat: 'arb',
+        reason: 'executor_disabled',
+        count: opportunities.length,
+      });
+      return;
+    }
 
     // Reset per-minute counter if needed
     const now = Date.now();
@@ -193,23 +228,43 @@ export class ArbExecutor {
     // Check rate limit
     if (this.config.maxExecutionsPerMinute && 
         this.state.executionsThisMinute >= this.config.maxExecutionsPerMinute) {
+      logger.info('arb.executor.batch_rate_limited', {
+        cat: 'arb',
+        count: opportunities.length,
+        executionsThisMinute: this.state.executionsThisMinute,
+        maxPerMinute: this.config.maxExecutionsPerMinute,
+      });
       return;
     }
 
     // Check concurrent execution limit
     if (this.state.inFlight.size >= this.config.maxConcurrentExecutions) {
+      logger.info('arb.executor.batch_concurrency_limit', {
+        cat: 'arb',
+        count: opportunities.length,
+        inFlight: this.state.inFlight.size,
+        maxConcurrent: this.config.maxConcurrentExecutions,
+      });
       return;
     }
 
     // Process opportunities in order until we hit limits
+    let accepted = 0;
+    let filtered = 0;
     for (const opp of opportunities) {
       if (this.state.inFlight.size >= this.config.maxConcurrentExecutions) {
+        logger.info('arb.executor.batch_stopped_concurrency', {
+          cat: 'arb',
+          processed: accepted + filtered,
+          remaining: opportunities.length - (accepted + filtered),
+        });
         break;
       }
 
       // Check if we should execute (now async)
       const shouldExec = await this.shouldExecute(opp);
       if (shouldExec) {
+        accepted++;
         // Don't await - execute in background
         this.executeOpportunity(opp).catch((e) => {
           logger.error('arb.executor.execution_failed', {
@@ -218,33 +273,82 @@ export class ArbExecutor {
             error: String((e as any)?.message || e),
           });
         });
+      } else {
+        filtered++;
       }
     }
+    
+    // Summary log
+    logger.info('arb.executor.batch_processed', {
+      cat: 'arb',
+      total: opportunities.length,
+      accepted,
+      filtered,
+      inFlight: this.state.inFlight.size,
+    });
   }
 
   private async shouldExecute(opp: Opportunity): Promise<boolean> {
     // Create opportunity key
     const oppKey = this.getOpportunityKey(opp);
+    const pathStr = opp.path.join('->');
+    const profitBps = opp.net_bps ?? opp.profit_bps;
+
+    // Log incoming opportunity for detailed tracing
+    logger.info('arb.executor.opportunity_check', {
+      cat: 'arb',
+      path: pathStr,
+      profitBps,
+      netBps: opp.net_bps,
+      hopCount: opp.hop_count,
+      reservesMin: opp.reserves_min,
+    });
 
     // Check if already in flight
     if (this.state.inFlight.has(oppKey)) {
+      logger.info('arb.executor.filtered', {
+        cat: 'arb',
+        reason: 'already_in_flight',
+        path: pathStr,
+        profitBps,
+      });
       return false;
     }
 
     // Check profit threshold
-    const profitBps = opp.net_bps ?? opp.profit_bps;
     if (profitBps < this.config.minProfitBps) {
+      logger.info('arb.executor.filtered', {
+        cat: 'arb',
+        reason: 'low_profit',
+        path: pathStr,
+        profitBps,
+        threshold: this.config.minProfitBps,
+      });
       return false;
     }
 
     // Check hop count
     if (this.config.maxHops && opp.hop_count && opp.hop_count > this.config.maxHops) {
+      logger.info('arb.executor.filtered', {
+        cat: 'arb',
+        reason: 'too_many_hops',
+        path: pathStr,
+        hopCount: opp.hop_count,
+        maxHops: this.config.maxHops,
+      });
       return false;
     }
 
     // Check reserves
     if (this.config.minReservesUsd && opp.reserves_min && 
         opp.reserves_min < this.config.minReservesUsd) {
+      logger.info('arb.executor.filtered', {
+        cat: 'arb',
+        reason: 'low_reserves',
+        path: pathStr,
+        reservesMin: opp.reserves_min,
+        threshold: this.config.minReservesUsd,
+      });
       return false;
     }
 
@@ -253,24 +357,40 @@ export class ArbExecutor {
     if (lastExecution) {
       const elapsed = Date.now() - lastExecution;
       if (elapsed < this.config.cooldownMs) {
+        logger.info('arb.executor.filtered', {
+          cat: 'arb',
+          reason: 'cooldown',
+          path: pathStr,
+          elapsedMs: elapsed,
+          cooldownMs: this.config.cooldownMs,
+        });
         return false;
       }
     }
 
     // Check blacklist
-    const pathStr = opp.path.join('->');
     if (this.config.blacklistedPaths?.some(bp => pathStr.includes(bp))) {
-      logger.debug('arb.executor.blacklisted', { cat: 'arb', path: pathStr });
+      logger.info('arb.executor.filtered', {
+        cat: 'arb',
+        reason: 'blacklisted',
+        path: pathStr,
+      });
       return false;
     }
 
     // Check global cooldown
     const timeSinceLastExec = Date.now() - this.state.lastExecutionTime;
     if (timeSinceLastExec < 100) { // Minimum 100ms between any executions
+      logger.info('arb.executor.filtered', {
+        cat: 'arb',
+        reason: 'global_cooldown',
+        path: pathStr,
+        elapsedMs: timeSinceLastExec,
+      });
       return false;
     }
 
-    // NEW: Balance validation
+    // Balance validation
     if (this.config.requireStartBalance !== false && this.walletPublicKey) {
       try {
         const { getBalances } = await import('../wallet/wallet.js');
@@ -279,27 +399,47 @@ export class ArbExecutor {
         
         if (startToken) {
           const SOL_MINT = 'So11111111111111111111111111111111111111112';
-          const hasBalance = startToken === SOL_MINT 
-            ? balances.sol > 0 
-            : (balances.tokens[startToken] || 0) > 0;
+          const balance = startToken === SOL_MINT 
+            ? balances.sol 
+            : (balances.tokens[startToken] || 0);
+          const hasBalance = balance > 0;
           
           if (!hasBalance) {
-            logger.debug('arb.executor.no_balance', {
+            logger.info('arb.executor.filtered', {
               cat: 'arb',
+              reason: 'no_balance',
               path: pathStr,
-              startToken,
+              startToken: startToken.slice(0, 8) + '...',
+              balance: 0,
             });
             return false;
           }
+          
+          // Log balance check passed
+          logger.info('arb.executor.balance_check_passed', {
+            cat: 'arb',
+            path: pathStr,
+            startToken: startToken.slice(0, 8) + '...',
+            balance,
+          });
         }
       } catch (e) {
-        // If balance check fails, log but don't block (fail open for safety)
         logger.warn('arb.executor.balance_check_failed', {
           cat: 'arb',
+          path: pathStr,
           error: String((e as any)?.message || e),
         });
       }
     }
+
+    // All checks passed!
+    logger.info('arb.executor.accepted', {
+      cat: 'arb',
+      path: pathStr,
+      profitBps,
+      netBps: opp.net_bps,
+      hopCount: opp.hop_count,
+    });
 
     return true;
   }
