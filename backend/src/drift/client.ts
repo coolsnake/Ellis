@@ -274,7 +274,16 @@ export class DriftService {
         
         for (let attempt = 0; attempt < maxRetries; attempt++) {
           try {
-            await (this.client as any).subscribe();
+            // Import RPC limiter for tracking
+            const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+            
+            // Wrap subscribe call with RPC tracking
+            await withRpcLimit(
+              () => (this.client as any).subscribe(),
+              1,
+              { module: 'drift', method: 'driftSubscribe' }
+            );
+            
             break;
           } catch (e: any) {
             const msg = String(e?.message || e);
@@ -342,8 +351,19 @@ export class DriftService {
     if (!this.sharedSlotSubscriber && sdk?.SlotSubscriber) {
       try {
         await waitReady();
+        
+        // Import RPC limiter for tracking
+        const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+        
         this.sharedSlotSubscriber = new (sdk as any).SlotSubscriber(connection);
-        await this.sharedSlotSubscriber.subscribe();
+        
+        // Wrap subscribe call with RPC tracking
+        await withRpcLimit(
+          () => this.sharedSlotSubscriber.subscribe(),
+          1,
+          { module: 'drift', method: 'slotSubscribe' }
+        );
+        
         // Ensure slot timestamp listener is wired to the current emitter
         this.wireSlotTsListener(true);
         await sleep(spacing);
@@ -352,7 +372,17 @@ export class DriftService {
       // Best-effort resubscribe if previously unsubscribed
       try {
         await waitReady();
-        await (this.sharedSlotSubscriber as any)?.subscribe?.();
+        
+        // Import RPC limiter for tracking
+        const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+        
+        // Wrap subscribe call with RPC tracking
+        await withRpcLimit(
+          () => (this.sharedSlotSubscriber as any)?.subscribe?.(),
+          1,
+          { module: 'drift', method: 'slotSubscribe' }
+        );
+        
         this.wireSlotTsListener(true);
         await sleep(spacing);
       } catch {}
@@ -361,14 +391,35 @@ export class DriftService {
     if (!this.sharedEventSubscriber && sdk?.EventSubscriber) {
       try {
         await waitReady();
+        
+        // Import RPC limiter for tracking
+        const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+        
         this.sharedEventSubscriber = new (sdk as any).EventSubscriber(connection, program);
-        await this.sharedEventSubscriber.subscribe();
+        
+        // Wrap subscribe call with RPC tracking
+        await withRpcLimit(
+          () => this.sharedEventSubscriber.subscribe(),
+          1,
+          { module: 'drift', method: 'logsSubscribe' }
+        );
+        
         await sleep(spacing);
       } catch {}
     } else {
       try { 
         await waitReady();
-        await (this.sharedEventSubscriber as any)?.subscribe?.(); 
+        
+        // Import RPC limiter for tracking
+        const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+        
+        // Wrap subscribe call with RPC tracking
+        await withRpcLimit(
+          () => (this.sharedEventSubscriber as any)?.subscribe?.(),
+          1,
+          { module: 'drift', method: 'logsSubscribe' }
+        );
+        
         await sleep(spacing); 
       } catch {}
     }
@@ -1515,7 +1566,16 @@ export class DriftService {
               if (typeof (user as any).subscribe === 'function') { 
                 const { waitUntilWsReady } = await import('./wsHelper.js');
                 if (this.connection) await waitUntilWsReady(this.connection, 'client.getSubaccounts');
-                await (user as any).subscribe(); 
+                
+                // Import RPC limiter for tracking
+                const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+                
+                // Wrap subscribe call with RPC tracking
+                await withRpcLimit(
+                  () => (user as any).subscribe(),
+                  1,
+                  { module: 'drift', method: 'accountSubscribe' }
+                );
               } 
             } catch {}
           } catch {}

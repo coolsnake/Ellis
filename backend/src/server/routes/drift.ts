@@ -514,7 +514,16 @@ export function createDriftRouter(io: SocketIOServer): Router {
               const { waitUntilWsReady } = await import('../../drift/wsHelper.js');
               const conn = (svc as any)?.connection;
               if (conn) await waitUntilWsReady(conn, 'routes.drift.balances');
-              await user.subscribe(); 
+              
+              // Import RPC limiter for tracking
+              const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+              
+              // Wrap subscribe call with RPC tracking
+              await withRpcLimit(
+                () => user.subscribe(),
+                1,
+                { module: 'drift', method: 'accountSubscribe' }
+              );
             } 
           } catch {}
         }

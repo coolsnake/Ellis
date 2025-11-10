@@ -188,7 +188,17 @@ export class DriftTriggerRunner {
         });
         const { waitUntilWsReady } = await import('./wsHelper.js');
         if (this.connection) await waitUntilWsReady(this.connection, 'triggerRunner.init.priorityFee');
-        await this.priorityFeeSubscriber.subscribe();
+        
+        // Import RPC limiter for tracking
+        const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+        
+        // Wrap subscribe call with RPC tracking
+        await withRpcLimit(
+          () => this.priorityFeeSubscriber.subscribe(),
+          1,
+          { module: 'drift', method: 'accountSubscribe' }
+        );
+        
         try { this.priorityFeeSubscriber.updateAddresses([ this.client?.program?.programId ].filter(Boolean)); } catch {}
       }
     } catch {}

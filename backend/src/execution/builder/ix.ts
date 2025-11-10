@@ -1747,14 +1747,42 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       logger.info('meteora.dlmm.token_programs.mints_extracted', { cat: 'tx', ctx: { poolId: hop.poolId, hasXMint: !!xMint, hasYMint: !!yMint } });
       
       const fallbackTokenProg = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
-      if (getTokenProgramId && xMint) { 
-        acctBase.tokenXProgram = await getTokenProgramId(connection, xMint).catch(() => fallbackTokenProg);
-        logger.info('meteora.dlmm.token_programs.x_set', { cat: 'tx', ctx: { poolId: hop.poolId, tokenXProgram: acctBase.tokenXProgram?.toBase58?.() || String(acctBase.tokenXProgram) } });
+      
+      // Handle synchronous or asynchronous return
+      if (getTokenProgramId && xMint) {
+        try {
+          const resultX = getTokenProgramId(connection, xMint);
+          // Check if it's a Promise
+          if (resultX && typeof resultX.then === 'function') {
+            acctBase.tokenXProgram = await resultX.catch(() => fallbackTokenProg);
+          } else {
+            // Synchronous return
+            acctBase.tokenXProgram = resultX || fallbackTokenProg;
+          }
+          logger.info('meteora.dlmm.token_programs.x_set', { cat: 'tx', ctx: { poolId: hop.poolId, tokenXProgram: acctBase.tokenXProgram?.toBase58?.() || String(acctBase.tokenXProgram) } });
+        } catch (e) {
+          acctBase.tokenXProgram = fallbackTokenProg;
+          logger.warn('meteora.dlmm.token_programs.x_error', { cat: 'tx', ctx: { poolId: hop.poolId, error: String(e) } });
+        }
       }
-      if (getTokenProgramId && yMint) { 
-        acctBase.tokenYProgram = await getTokenProgramId(connection, yMint).catch(() => fallbackTokenProg);
-        logger.info('meteora.dlmm.token_programs.y_set', { cat: 'tx', ctx: { poolId: hop.poolId, tokenYProgram: acctBase.tokenYProgram?.toBase58?.() || String(acctBase.tokenYProgram) } });
+      
+      if (getTokenProgramId && yMint) {
+        try {
+          const resultY = getTokenProgramId(connection, yMint);
+          // Check if it's a Promise
+          if (resultY && typeof resultY.then === 'function') {
+            acctBase.tokenYProgram = await resultY.catch(() => fallbackTokenProg);
+          } else {
+            // Synchronous return
+            acctBase.tokenYProgram = resultY || fallbackTokenProg;
+          }
+          logger.info('meteora.dlmm.token_programs.y_set', { cat: 'tx', ctx: { poolId: hop.poolId, tokenYProgram: acctBase.tokenYProgram?.toBase58?.() || String(acctBase.tokenYProgram) } });
+        } catch (e) {
+          acctBase.tokenYProgram = fallbackTokenProg;
+          logger.warn('meteora.dlmm.token_programs.y_error', { cat: 'tx', ctx: { poolId: hop.poolId, error: String(e) } });
+        }
       }
+      
       if (!acctBase.tokenXProgram) {
         acctBase.tokenXProgram = fallbackTokenProg;
         logger.info('meteora.dlmm.token_programs.x_fallback', { cat: 'tx', ctx: { poolId: hop.poolId } });
@@ -3900,6 +3928,16 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
               ctx: { pool: hop.poolId, ixIndex: i, error: String((validateErr as any)?.message || validateErr) }
             });
             
+            // Helper to check if an address is a placeholder
+            const isPlaceholderAddress = (pk: PublicKey): boolean => {
+              try {
+                const b58 = pk.toBase58();
+                return /^11111/.test(b58);
+              } catch {
+                return false;
+              }
+            };
+            
             // Force rebuild with ammProgramId - use cached poolKeys as source of truth
             // The SDK provides the structure but with invalid keys - use our cached values instead
             const kp = await ensureWallet(CONFIG.walletPath);
@@ -3990,7 +4028,12 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                     const bytes = rawKey.toBytes();
                     if (bytes && bytes.length === 32) {
                       pubkey = new PublicKey(bytes);
-                      return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
+                      // Check if the resulting PublicKey is a placeholder
+                      if (isPlaceholderAddress(pubkey)) {
+                        // Reject placeholder, fall through to next method
+                      } else {
+                        return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
+                      }
                     }
                   } catch {}
                 }
@@ -4001,7 +4044,12 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                     const buffer = rawKey.toBuffer();
                     if (buffer && buffer.length === 32) {
                       pubkey = new PublicKey(buffer);
-                      return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
+                      // Check if the resulting PublicKey is a placeholder
+                      if (isPlaceholderAddress(pubkey)) {
+                        // Reject placeholder, fall through to next method
+                      } else {
+                        return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
+                      }
                     }
                   } catch {}
                 }
@@ -4018,7 +4066,12 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                         try {
                           const bytes = bn.toArrayLike(Uint8Array, 'be', 32);
                           pubkey = new PublicKey(bytes);
-                          return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
+                          // Check if the resulting PublicKey is a placeholder
+                          if (isPlaceholderAddress(pubkey)) {
+                            // Reject placeholder, fall through to next method
+                          } else {
+                            return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
+                          }
                         } catch (bnErr) {
                           try { logger.debug('bn.toArrayLike.failed', { cat: 'tx', ctx: { keyIdx, error: String(bnErr) } }); } catch {}
                         }
@@ -4029,7 +4082,12 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                         try {
                           const arr = bn.toArray('be', 32);
                           pubkey = new PublicKey(Uint8Array.from(arr));
-                          return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
+                          // Check if the resulting PublicKey is a placeholder
+                          if (isPlaceholderAddress(pubkey)) {
+                            // Reject placeholder, fall through to next method
+                          } else {
+                            return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
+                          }
                         } catch (bnErr) {
                           try { logger.debug('bn.toArray.failed', { cat: 'tx', ctx: { keyIdx, error: String(bnErr) } }); } catch {}
                         }
@@ -4048,7 +4106,12 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                             if (offset >= 32) break;
                           }
                           pubkey = new PublicKey(buffer);
-                          return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
+                          // Check if the resulting PublicKey is a placeholder
+                          if (isPlaceholderAddress(pubkey)) {
+                            // Reject placeholder, fall through to next method
+                          } else {
+                            return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
+                          }
                         } catch (bnErr) {
                           try { logger.debug('bn.words.failed', { cat: 'tx', ctx: { keyIdx, error: String(bnErr) } }); } catch {}
                         }
@@ -4061,7 +4124,12 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                           const bytes = Buffer.from(hex, 'hex');
                           if (bytes.length === 32) {
                             pubkey = new PublicKey(bytes);
-                            return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
+                            // Check if the resulting PublicKey is a placeholder
+                            if (isPlaceholderAddress(pubkey)) {
+                              // Reject placeholder, fall through to next method
+                            } else {
+                              return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
+                            }
                           }
                         } catch (bnErr) {
                           try { logger.debug('bn.toString.failed', { cat: 'tx', ctx: { keyIdx, error: String(bnErr) } }); } catch {}

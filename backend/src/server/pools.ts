@@ -1630,12 +1630,22 @@ export function startRaydiumRefreshLoop(): void {
           const baseBackoffMs = Math.max(50, Number(((CONFIG.system as any)?.wsSubscribeBackoffMs) || 250));
           let attempt = 0;
           
+          // Import RPC limiter for tracking
+          const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+          
           // Attempt loop
           for (;;) {
             await waitUntilWsReadyShared(conn, 'pools.subscribeAccount');
             try {
               await waitForWsAttachSlot(); // Rate-limit the RPC call
-              const id = await conn.onAccountChange(accountPk, (info: any) => { try { cb(accountPk, info); } catch {} });
+              
+              // Wrap subscription call with RPC tracking
+              const id = await withRpcLimit(
+                () => conn.onAccountChange(accountPk, (info: any) => { try { cb(accountPk, info); } catch {} }),
+                1,
+                { module: 'pools', method: 'accountSubscribe' }
+              );
+              
               return id as unknown as number;
             } catch (e: any) {
               const msg = String(e?.message || e);
@@ -1656,10 +1666,19 @@ export function startRaydiumRefreshLoop(): void {
           const baseBackoffMs = Math.max(50, Number(((CONFIG.system as any)?.wsSubscribeBackoffMs) || 250));
           let attempt = 0;
           
+          // Import RPC limiter for tracking
+          const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+          
           for (;;) {
             await waitUntilWsReadyShared(conn, 'pools.subscribeProgram');
             try {
-              const id = await conn.onProgramAccountChange(programPk, (ch: any) => { try { cb(ch); } catch {} });
+              // Wrap subscription call with RPC tracking
+              const id = await withRpcLimit(
+                () => conn.onProgramAccountChange(programPk, (ch: any) => { try { cb(ch); } catch {} }),
+                1,
+                { module: 'pools', method: 'programSubscribe' }
+              );
+              
               return id as unknown as number;
             } catch (e: any) {
               const msg = String(e?.message || e);

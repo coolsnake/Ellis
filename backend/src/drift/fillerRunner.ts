@@ -267,7 +267,16 @@ export class DriftFillerRunner {
           this.blockhashSubscriber = new BlockhashSubscriber(this.connection);
           const { waitUntilWsReady } = await import('./wsHelper.js');
           if (this.connection) await waitUntilWsReady(this.connection, 'fillerRunner.init.blockhash');
-          await this.blockhashSubscriber.subscribe();
+          
+          // Import RPC limiter for tracking
+          const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+          
+          // Wrap subscribe call with RPC tracking
+          await withRpcLimit(
+            () => this.blockhashSubscriber.subscribe(),
+            1,
+            { module: 'drift', method: 'slotSubscribe' }
+          );
         } catch {}
       }
       if (PriorityFeeSubscriber) {
@@ -277,7 +286,17 @@ export class DriftFillerRunner {
         });
         const { waitUntilWsReady } = await import('./wsHelper.js');
         if (this.connection) await waitUntilWsReady(this.connection, 'fillerRunner.init.priorityFee');
-        await this.priorityFeeSubscriber.subscribe();
+        
+        // Import RPC limiter for tracking
+        const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+        
+        // Wrap subscribe call with RPC tracking
+        await withRpcLimit(
+          () => this.priorityFeeSubscriber.subscribe(),
+          1,
+          { module: 'drift', method: 'accountSubscribe' }
+        );
+        
         try {
           this.priorityFeeSubscriber.updateAddresses([
             new PublicKey('8BnEgHoWFysVcuFFX7QztDmzuH8r5ZFvyP3sYwn1XTh6'),

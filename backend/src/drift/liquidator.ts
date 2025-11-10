@@ -730,7 +730,17 @@ export class DriftLiquidator {
           const svc = DriftService.getInstance();
           const conn = (svc as any)?.connection;
           if (conn) await waitUntilWsReady(conn, 'liquidator.enqueueIfUnhealthy');
-          await (user as any).subscribe();
+          
+          // Import RPC limiter for tracking
+          const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+          
+          // Wrap subscribe call with RPC tracking
+          await withRpcLimit(
+            () => (user as any).subscribe(),
+            1,
+            { module: 'drift', method: 'accountSubscribe' }
+          );
+          
           this.subscribedUsers.add(String(pkStr));
         }
       } catch {}
@@ -1996,7 +2006,17 @@ export class DriftLiquidator {
               const svc = DriftService.getInstance();
               const conn = (svc as any)?.connection;
               if (conn) await waitUntilWsReady(conn, 'liquidator.probeQueue');
-              await (user as any).subscribe();
+              
+              // Import RPC limiter for tracking
+              const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+              
+              // Wrap subscribe call with RPC tracking
+              await withRpcLimit(
+                () => (user as any).subscribe(),
+                1,
+                { module: 'drift', method: 'accountSubscribe' }
+              );
+              
               this.subscribedUsers.add(key);
             }
           } catch {}
