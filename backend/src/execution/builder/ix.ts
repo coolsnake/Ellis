@@ -1384,9 +1384,16 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       }
     } catch {}
     
+    // Map vaultA/vaultB to reserveX/reserveY based on pool's token order
+    // vaultA/vaultB represent the pool's natural mint_a/mint_b order
+    // We need to determine if the pool's tokenX is mint_a or mint_b, then map accordingly
     try {
-      if (hop.vaultA) acctBase.reserveX = toPublicKey(hop.vaultA as any);
-      if (hop.vaultB) acctBase.reserveY = toPublicKey(hop.vaultB as any);
+      if (hop.vaultA && hop.vaultB) {
+        // We'll determine the correct mapping after we know tokenX/tokenY mints
+        // Store them temporarily - will be corrected below after fetching pool mints
+        acctBase.reserveX = toPublicKey(hop.vaultA as any);
+        acctBase.reserveY = toPublicKey(hop.vaultB as any);
+      }
     } catch {}
 
     // Add token mints, programs and oracle if available/derivable
@@ -1474,6 +1481,48 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
             poolId: hop.poolId
           }
         });
+        
+        // CRITICAL FIX: Correct reserve mapping based on pool token order
+        // vaultA/vaultB represent pool's mint_a/mint_b order (from pool data)
+        // reserveX/reserveY must represent pool's tokenX/tokenY order (for SDK)
+        // We need to map vaultA/vaultB to reserveX/reserveY by comparing mints
+        try {
+          if (hop.vaultA && hop.vaultB) {
+            // Fetch pool's mint_a and mint_b to determine mapping
+            const { peekMeteoraPools } = await import('../../server/pools.js');
+            const pools = peekMeteoraPools();
+            const poolId = hop.poolId.replace(/-rev$/, '');
+            const poolData = (pools.clmm || []).find((p: any) => String(p?.id || '') === poolId);
+            
+            if (poolData) {
+              const poolMintA = String((poolData as any)?.mint_a || '');
+              const poolMintB = String((poolData as any)?.mint_b || '');
+              
+              if (poolMintA && poolMintB) {
+                // Determine if tokenX corresponds to mint_a or mint_b
+                const tokenXIsMintA = tokenXMintPk.toBase58() === poolMintA;
+                const tokenXIsMintB = tokenXMintPk.toBase58() === poolMintB;
+                
+                if (tokenXIsMintA) {
+                  // tokenX=mint_a, tokenY=mint_b => reserveX=vaultA, reserveY=vaultB
+                  acctBase.reserveX = toPublicKey(hop.vaultA);
+                  acctBase.reserveY = toPublicKey(hop.vaultB);
+                } else if (tokenXIsMintB) {
+                  // tokenX=mint_b, tokenY=mint_a => reserveX=vaultB, reserveY=vaultA (swapped!)
+                  acctBase.reserveX = toPublicKey(hop.vaultB);
+                  acctBase.reserveY = toPublicKey(hop.vaultA);
+                }
+              }
+            }
+          }
+        } catch (e: any) {
+          try {
+            logger.debug('meteora.dlmm.reserve_mapping.failed', {
+              cat: 'tx',
+              ctx: { error: String(e?.message || e) }
+            });
+          } catch {}
+        }
       } else {
         // SDK doesn't have getTokensMintFromPoolAddress - this is a problem
         logger.warn('meteora.dlmm.sdk_missing_getTokensMintFromPoolAddress', {
@@ -3549,27 +3598,89 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
               ctx: { pool: hop.poolId, ixIndex: i, error: String((validateErr as any)?.message || validateErr) }
             });
             
-            // Force rebuild with ammProgramId
+            // Force rebuild with ammProgramId - use aggressive extraction for foreign PublicKey objects
             const newKeys = (ix.keys || []).map((k: any, keyIdx: number) => {
               let pubkey: PublicKey;
               try {
-                // Try to extract base58 string first
-                if (k.pubkey && typeof k.pubkey.toBase58 === 'function') {
-                  pubkey = new PublicKey(k.pubkey.toBase58());
-                } else if (typeof k.pubkey === 'string') {
-                  pubkey = new PublicKey(k.pubkey);
-                } else {
-                  // Last resort: use normalizePublicKey
-                  pubkey = normalizePublicKey(k.pubkey);
+                // CRITICAL: Try to extract raw bytes or base58 from deeply nested foreign PublicKey
+                const rawKey = k.pubkey || k.pubKey || k.address;
+                
+                // Method 1: Try toBase58() - but check result is valid
+                if (rawKey && typeof rawKey.toBase58 === 'function') {
+                  try {
+                    const b58 = rawKey.toBase58();
+                    if (b58 && typeof b58 === 'string' && b58.length > 20 && !b58.includes('object')) {
+                      pubkey = new PublicKey(b58);
+                      return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
+                    }
+                  } catch {}
                 }
+                
+                // Method 2: Try toBytes()
+                if (rawKey && typeof rawKey.toBytes === 'function') {
+                  try {
+                    const bytes = rawKey.toBytes();
+                    if (bytes && bytes.length === 32) {
+                      pubkey = new PublicKey(bytes);
+                      return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
+                    }
+                  } catch {}
+                }
+                
+                // Method 3: Try toBuffer()
+                if (rawKey && typeof rawKey.toBuffer === 'function') {
+                  try {
+                    const buffer = rawKey.toBuffer();
+                    if (buffer && buffer.length === 32) {
+                      pubkey = new PublicKey(buffer);
+                      return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
+                    }
+                  } catch {}
+                }
+                
+                // Method 4: Check for internal _bn property (BN-based PublicKey)
+                if (rawKey && typeof rawKey === 'object') {
+                  try {
+                    const bn = rawKey._bn || rawKey.bn;
+                    if (bn && typeof bn.toArrayLike === 'function') {
+                      const bytes = bn.toArrayLike(Uint8Array, 'be', 32);
+                      pubkey = new PublicKey(bytes);
+                      return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
+                    }
+                    if (bn && typeof bn.toArray === 'function') {
+                      const arr = bn.toArray('be', 32);
+                      pubkey = new PublicKey(Uint8Array.from(arr));
+                      return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
+                    }
+                  } catch {}
+                }
+                
+                // Method 5: If it's already a string
+                if (typeof rawKey === 'string' && rawKey.length > 20 && !rawKey.includes('object')) {
+                  pubkey = new PublicKey(rawKey);
+                  return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
+                }
+                
+                // Method 6: Try logging the object structure to understand what we're dealing with
+                try {
+                  logger.error('raydium.amm.key.extraction.failed', {
+                    cat: 'tx',
+                    ctx: {
+                      keyIdx,
+                      hasToBase58: !!(rawKey && typeof rawKey.toBase58 === 'function'),
+                      hasToBytes: !!(rawKey && typeof rawKey.toBytes === 'function'),
+                      hasToBuffer: !!(rawKey && typeof rawKey.toBuffer === 'function'),
+                      hasBN: !!(rawKey && rawKey._bn),
+                      typeof: typeof rawKey,
+                      keys: rawKey && typeof rawKey === 'object' ? Object.keys(rawKey).slice(0, 10) : [],
+                    }
+                  });
+                } catch {}
+                
+                throw new Error(`Failed to extract PublicKey from foreign object at index ${keyIdx}`);
               } catch (keyErr) {
                 throw new Error(`Failed to normalize key at index ${keyIdx}: ${(keyErr as any)?.message}`);
               }
-              return {
-                pubkey,
-                isSigner: !!k.isSigner,
-                isWritable: !!k.isWritable
-              };
             });
             
             out[i] = new TransactionInstruction({

@@ -15,39 +15,10 @@ export async function resolveMeteoraDlmm(hop: DirectHop): Promise<DirectHop> {
     if (p) {
       hop.binStep = Number((p as any)?.bin_step || (p as any)?.binStep || hop.binStep || 0);
       hop.activeId = Number((p as any)?.active_id || (p as any)?.activeId || hop.activeId || 0);
-      
-      // CRITICAL FIX: Check if hop direction matches pool mint order
-      // If pool is mint_a -> mint_b but hop is mint_b -> mint_a, swap the vaults
-      const poolMintA = String((p as any)?.mint_a || (p as any)?.mintA || '');
-      const poolMintB = String((p as any)?.mint_b || (p as any)?.mintB || '');
-      const accountA = String((p as any)?.account_a || '');
-      const accountB = String((p as any)?.account_b || '');
-      
-      if (poolMintA && poolMintB && accountA && accountB) {
-        // Check if hop input/output matches pool mint_a/mint_b order
-        const isNaturalDirection = (hop.inputMint === poolMintA && hop.outputMint === poolMintB);
-        const isReversedDirection = (hop.inputMint === poolMintB && hop.outputMint === poolMintA);
-        
-        if (isNaturalDirection) {
-          // Natural direction: input=mint_a, output=mint_b
-          // Use account_a as vaultA (input vault), account_b as vaultB (output vault)
-          hop.vaultA = accountA;
-          hop.vaultB = accountB;
-        } else if (isReversedDirection) {
-          // Reversed direction: input=mint_b, output=mint_a
-          // Swap vaults: use account_b as vaultA (input vault), account_a as vaultB (output vault)
-          hop.vaultA = accountB;
-          hop.vaultB = accountA;
-        } else {
-          // Fallback if mints don't match (shouldn't happen in normal operation)
-          hop.vaultA = accountA;
-          hop.vaultB = accountB;
-        }
-      } else {
-        // Fallback if mint/account data is missing
-        hop.vaultA = accountA;
-        hop.vaultB = accountB;
-      }
+      // NOTE: vaultA/vaultB always represent the pool's natural token order (mint_a/mint_b)
+      // The instruction builder will handle mapping these to reserves based on swap direction
+      hop.vaultA = String((p as any)?.account_a || '');
+      hop.vaultB = String((p as any)?.account_b || '');
     }
   } catch {}
   return hop;
