@@ -3,7 +3,7 @@
 
 let tokens = 0;
 let lastRefillMs = Date.now();
-const maxRps = Math.max(1, Number(process.env.RPC_MAX_RPS || 35)); // leave buffer under 50 RPS
+const maxRps = Math.max(1, Number(process.env.RPC_MAX_RPS || 50)); // match provider limit
 // Limit burst capacity to at most maxRps; default to ~25% of maxRps to avoid flushes
 const capacity = Math.max(
   1,

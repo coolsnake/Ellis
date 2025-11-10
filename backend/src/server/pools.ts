@@ -1588,16 +1588,19 @@ export function startRaydiumRefreshLoop(): void {
           try {
             logger.info('raydium.amm.attach.start', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
             const pk = new web3.PublicKey(poolAddr);
-            const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+            const { withRpcRetry } = await import('../utils/rpcLimiter.js');
             
-            // Add 5-second timeout to prevent hanging
-            const acc: any = await Promise.race([
-              withRpcLimit(() => conn.getAccountInfo(pk, CONFIG.system.txCommitment as any)),
-              new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('RPC timeout after 5s')), 5000)
-              )
-            ]).catch((err) => {
-              logger.info('raydium.amm.attach.rpc_timeout', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
+            // Use withRpcRetry which handles rate limiting, timeout, and retries
+            const acc: any = await withRpcRetry(
+              () => conn.getAccountInfo(pk, CONFIG.system.txCommitment as any),
+              { 
+                timeoutMs: 5000,  // 5 second timeout per attempt
+                retries: 2,        // 2 retries
+                weight: 1,
+                label: 'raydium.amm.getAccountInfo'
+              }
+            ).catch((err) => {
+              logger.info('raydium.amm.attach.rpc_fail', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
               return null;
             });
             
@@ -1620,7 +1623,7 @@ export function startRaydiumRefreshLoop(): void {
                 const id = await subscribeAccountWithRetry(vpk, handle);
                 subs.push({ kind: 'account', id });
                 targetedSourceByAccount.set(String(v), 'raydium');
-                debugLogTargeted('raydium', String(v), { kind: 'vault' });
+                    debugLogTargeted('raydium', String(v), { kind: 'vault' });
                 derivedAccountToPool.set(String(v), { poolId: poolAddr, accountType: 'vault' });
               } catch {}
             }
@@ -1636,16 +1639,19 @@ export function startRaydiumRefreshLoop(): void {
           try {
             logger.info('raydium.clmm.attach.start', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
             const pk = new web3.PublicKey(poolAddr);
-            const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+            const { withRpcRetry } = await import('../utils/rpcLimiter.js');
             
-            // Add 5-second timeout to prevent hanging
-            const acc: any = await Promise.race([
-              withRpcLimit(() => conn.getAccountInfo(pk, CONFIG.system.txCommitment as any)),
-              new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('RPC timeout after 5s')), 5000)
-              )
-            ]).catch((err) => {
-              logger.info('raydium.clmm.attach.rpc_timeout', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
+            // Use withRpcRetry which handles rate limiting, timeout, and retries
+            const acc: any = await withRpcRetry(
+              () => conn.getAccountInfo(pk, CONFIG.system.txCommitment as any),
+              { 
+                timeoutMs: 5000,  // 5 second timeout per attempt
+                retries: 2,        // 2 retries
+                weight: 1,
+                label: 'raydium.clmm.getAccountInfo'
+              }
+            ).catch((err) => {
+              logger.info('raydium.clmm.attach.rpc_fail', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
               return null;
             });
             
@@ -1670,7 +1676,7 @@ export function startRaydiumRefreshLoop(): void {
                 targetedSourceByAccount.set(String(v), 'raydium');
                 debugLogTargeted('raydium', String(v), { kind: 'clmm_vault' });
                 derivedAccountToPool.set(String(v), { poolId: poolAddr, accountType: 'vault' });
-              } catch {}
+          } catch {}
             }
             
             // Subscribe to observationId
@@ -1742,16 +1748,19 @@ export function startRaydiumRefreshLoop(): void {
           try {
             logger.info('orca.attach.start', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
             const pk = new web3.PublicKey(poolAddr);
-            const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+            const { withRpcRetry } = await import('../utils/rpcLimiter.js');
             
-            // Add 5-second timeout to prevent hanging
-            const acc: any = await Promise.race([
-              withRpcLimit(() => conn.getAccountInfo(pk, CONFIG.system.txCommitment as any)),
-              new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('RPC timeout after 5s')), 5000)
-              )
-            ]).catch((err) => {
-              logger.info('orca.attach.rpc_timeout', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
+            // Use withRpcRetry which handles rate limiting, timeout, and retries
+            const acc: any = await withRpcRetry(
+              () => conn.getAccountInfo(pk, CONFIG.system.txCommitment as any),
+              { 
+                timeoutMs: 5000,  // 5 second timeout per attempt
+                retries: 2,        // 2 retries
+                weight: 1,
+                label: 'orca.getAccountInfo'
+              }
+            ).catch((err) => {
+              logger.info('orca.attach.rpc_fail', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
               return null;
             });
             
