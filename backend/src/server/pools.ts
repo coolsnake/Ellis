@@ -315,7 +315,7 @@ function debugLogTargeted(source: 'raydium' | 'orca' | 'meteora', account: strin
     if (!(limit > 0)) return;
     if (wsTargetDebugCounters[source] >= limit) return;
     wsTargetDebugCounters[source] += 1;
-    logger.debug('pools.ws debug.subscribe', { source, account, ...extra, cat: 'pools' });
+    logger.info('pools.ws debug.subscribe', { source, account, ...extra, cat: 'pools' });
   } catch {}
 }
 let attachedOrcaPools: number = 0;
@@ -645,7 +645,7 @@ export function startRaydiumRefreshLoop(): void {
     }
     try {
       const setup = async () => {
-        if (wsSetupActive) { try { logger.debug('pools.ws setup already active'); } catch {} return; }
+        if (wsSetupActive) { try { logger.info('pools.ws setup already active'); } catch {} return; }
         wsSetupActive = true;
         let web3: any = null;
         try { const mod = ['@solana/web3.js'].join(''); web3 = await import(mod as any); } catch {}
@@ -708,7 +708,7 @@ export function startRaydiumRefreshLoop(): void {
             if (derivedMeta) {
               // This is a vault, reserve, tick array, or oracle account - trigger parent pool refresh
               try {
-                logger.debug('pools.ws derived.account.update', { 
+                logger.info('pools.ws derived.account.update', { 
                   account: pk58.slice(0,8)+'…', 
                   accountType: derivedMeta.accountType,
                   parentPool: derivedMeta.poolId.slice(0,8)+'…',
@@ -726,7 +726,7 @@ export function startRaydiumRefreshLoop(): void {
                   return await handle(parentPk, parentInfo);
                 }
               } catch (err) {
-                try { logger.debug('pools.ws derived.parent.fetch.fail', { parent: derivedMeta.poolId, error: String((err as any)?.message || err) }); } catch {}
+                try { logger.info('pools.ws derived.parent.fetch.fail', { parent: derivedMeta.poolId, error: String((err as any)?.message || err) }); } catch {}
               }
               // If we can't fetch parent, continue processing as normal (will likely be ignored)
             }
@@ -1568,7 +1568,7 @@ export function startRaydiumRefreshLoop(): void {
                   }
                 } catch {}
               } catch (err) {
-                try { logger.debug('meteora.ws bin.subscribe.fail', { pool: poolId, index, error: String((err as any)?.message || err) }); } catch {}
+                try { logger.info('meteora.ws bin.subscribe.fail', { pool: poolId, index, error: String((err as any)?.message || err) }); } catch {}
               }
             }
             // Ensure aggregate reflects any freshly fetched hashes
@@ -1700,11 +1700,11 @@ export function startRaydiumRefreshLoop(): void {
                     // Map tick array to parent pool
                     derivedAccountToPool.set(tickArrayPda.toBase58(), { poolId: poolAddr, accountType: 'tick_array' });
                   } catch (err) {
-                    try { logger.debug('raydium.clmm.tickarray.subscribe.fail', { pool: poolAddr, offset, error: String((err as any)?.message || err) }); } catch {}
+                    try { logger.info('raydium.clmm.tickarray.subscribe.fail', { pool: poolAddr, offset, error: String((err as any)?.message || err) }); } catch {}
                   }
                 }
               } catch (err) {
-                try { logger.debug('raydium.clmm.tickarray.derive.fail', { pool: poolAddr, error: String((err as any)?.message || err) }); } catch {}
+                try { logger.info('raydium.clmm.tickarray.derive.fail', { pool: poolAddr, error: String((err as any)?.message || err) }); } catch {}
               }
             }
           } catch {}
@@ -1779,12 +1779,12 @@ export function startRaydiumRefreshLoop(): void {
                         derivedAccountToPool.set(tickArrayPda.publicKey.toBase58(), { poolId: poolAddr, accountType: 'tick_array' });
                       }
                     } catch (err) {
-                      try { logger.debug('orca.whirlpool.tickarray.subscribe.fail', { pool: poolAddr, offset, error: String((err as any)?.message || err) }); } catch {}
+                      try { logger.info('orca.whirlpool.tickarray.subscribe.fail', { pool: poolAddr, offset, error: String((err as any)?.message || err) }); } catch {}
                     }
                   }
                 }
               } catch (err) {
-                try { logger.debug('orca.whirlpool.tickarray.derive.fail', { pool: poolAddr, error: String((err as any)?.message || err) }); } catch {}
+                try { logger.info('orca.whirlpool.tickarray.derive.fail', { pool: poolAddr, error: String((err as any)?.message || err) }); } catch {}
               }
             }
           } catch {}
@@ -1820,7 +1820,7 @@ export function startRaydiumRefreshLoop(): void {
                   derivedAccountToPool.set(reserveX.toBase58(), { poolId: poolAddr, accountType: 'reserve' });
                 }
               } catch (err) {
-                try { logger.debug('meteora.reserve.x.subscribe.fail', { pool: poolAddr, error: String((err as any)?.message || err) }); } catch {}
+                try { logger.info('meteora.reserve.x.subscribe.fail', { pool: poolAddr, error: String((err as any)?.message || err) }); } catch {}
               }
               
               try {
@@ -1836,7 +1836,7 @@ export function startRaydiumRefreshLoop(): void {
                   derivedAccountToPool.set(reserveY.toBase58(), { poolId: poolAddr, accountType: 'reserve' });
                 }
               } catch (err) {
-                try { logger.debug('meteora.reserve.y.subscribe.fail', { pool: poolAddr, error: String((err as any)?.message || err) }); } catch {}
+                try { logger.info('meteora.reserve.y.subscribe.fail', { pool: poolAddr, error: String((err as any)?.message || err) }); } catch {}
               }
             }
             
@@ -1855,7 +1855,7 @@ export function startRaydiumRefreshLoop(): void {
                   derivedAccountToPool.set(oracle.toBase58(), { poolId: poolAddr, accountType: 'oracle' });
                 }
               } catch (err) {
-                try { logger.debug('meteora.oracle.subscribe.fail', { pool: poolAddr, error: String((err as any)?.message || err) }); } catch {}
+                try { logger.info('meteora.oracle.subscribe.fail', { pool: poolAddr, error: String((err as any)?.message || err) }); } catch {}
               }
             }
           } catch {}
@@ -1928,7 +1928,9 @@ export function startRaydiumRefreshLoop(): void {
               } catch {}
               // Attach Orca Whirlpool vault, oracle, and tick array listeners
               // Await to respect rate limiter (additional attachments also consume WS attach slots)
-              await attachOrcaWhirlpoolAccounts(addr).catch(() => {});
+              await attachOrcaWhirlpoolAccounts(addr).catch((err) => {
+                try { logger.info('orca.attach.fail', { pool: addr.slice(0,8)+'…', error: String(err?.message || err), stack: err?.stack }); } catch {}
+              });
             } catch {}
             if (i < uniq.length - 1 && intervalMs > 0) { await sleep(intervalMs); }
           }
@@ -2002,18 +2004,26 @@ export function startRaydiumRefreshLoop(): void {
                   
                   if (owner === rayClmmOwner) {
                     // CLMM pool: attach vaults, observation, tick arrays
-                    await attachRaydiumClmmAccounts(addr).catch(() => {});
+                    await attachRaydiumClmmAccounts(addr).catch((err) => {
+                      try { logger.info('raydium.clmm.attach.fail', { pool: addr.slice(0,8)+'…', error: String(err?.message || err) }); } catch {}
+                    });
                   } else if (owner === rayAmmOwner) {
                     // AMM pool: attach vaults
-                    await attachRaydiumAmmVaults(addr).catch(() => {});
+                    await attachRaydiumAmmVaults(addr).catch((err) => {
+                      try { logger.info('raydium.amm.attach.fail', { pool: addr.slice(0,8)+'…', error: String(err?.message || err) }); } catch {}
+                    });
                   } else {
                     // Unknown type, try AMM first (more common)
-                    await attachRaydiumAmmVaults(addr).catch(() => {});
+                    await attachRaydiumAmmVaults(addr).catch((err) => {
+                      try { logger.info('raydium.unknown.attach.fail', { pool: addr.slice(0,8)+'…', error: String(err?.message || err) }); } catch {}
+                    });
                   }
                 }
               } catch {
                 // Fallback: try AMM first
-                await attachRaydiumAmmVaults(addr).catch(() => {});
+                await attachRaydiumAmmVaults(addr).catch((err) => {
+                  try { logger.info('raydium.attach.fallback.fail', { pool: addr.slice(0,8)+'…', error: String(err?.message || err) }); } catch {}
+                });
               }
             } catch {}
             if (i < uniqueRay.length - 1 && intervalMsRay > 0) { await sleepRay(intervalMsRay); }
@@ -2074,7 +2084,9 @@ export function startRaydiumRefreshLoop(): void {
                 } catch {}
                 // Attach Meteora reserve and oracle accounts
                 // Await to respect rate limiter (additional attachments also consume WS attach slots)
-                await attachMeteoraReserves(addr).catch(() => {});
+                await attachMeteoraReserves(addr).catch((err) => {
+                  try { logger.info('meteora.attach.fail', { pool: addr.slice(0,8)+'…', error: String(err?.message || err), stack: err?.stack }); } catch {}
+                });
                 // Ensure meteoraTargets Set includes this ID for handle() closure
                 meteoraTargets.add(addr);
               } catch (e: any) {
