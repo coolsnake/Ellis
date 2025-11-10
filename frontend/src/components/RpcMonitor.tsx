@@ -97,7 +97,7 @@ const StatusIndicator: React.FC<{ status: 'good' | 'warning' | 'error' }> = ({ s
   return <span className={`inline-block w-2 h-2 rounded-full ${colors[status]}`} />;
 };
 
-export const RpcMonitor: React.FC = () => {
+const RpcMonitorInner: React.FC = () => {
   const [metrics, setMetrics] = useState<RpcMetrics | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('overview');
   const { socket } = useSocket();
@@ -106,7 +106,13 @@ export const RpcMonitor: React.FC = () => {
     if (!socket) return;
 
     const handleMetrics = (data: RpcMetrics) => {
-      setMetrics(data);
+      try {
+        if (data && data.overall) {
+          setMetrics(data);
+        }
+      } catch (error) {
+        console.error('Error handling RPC metrics:', error);
+      }
     };
 
     socket.on('rpc-metrics', handleMetrics);
@@ -124,14 +130,25 @@ export const RpcMonitor: React.FC = () => {
     );
   }
 
+  // Defensive checks
+  if (!metrics.overall || !metrics.byModule || !metrics.byMethod) {
+    return (
+      <CollapsibleSection title="RPC Monitor" storageKey="rpc-monitor:collapsed" className="mt-4">
+        <div className="text-sm text-yellow-400">Invalid metrics data received</div>
+      </CollapsibleSection>
+    );
+  }
+
   const getHealthStatus = (): 'good' | 'warning' | 'error' => {
-    if (metrics.overall.errors.rate > 10) return 'error';
-    if (metrics.overall.errors.rate > 5 || metrics.overall.latency.p95 > 2000) return 'warning';
+    const errorRate = metrics.overall?.errors?.rate || 0;
+    const p95 = metrics.overall?.latency?.p95 || 0;
+    if (errorRate > 10) return 'error';
+    if (errorRate > 5 || p95 > 2000) return 'warning';
     return 'good';
   };
 
-  const sortedModules = Object.entries(metrics.byModule).sort((a, b) => b[1].count - a[1].count);
-  const sortedMethods = Object.entries(metrics.byMethod).sort((a, b) => b[1].count - a[1].count);
+  const sortedModules = Object.entries(metrics.byModule || {}).sort((a, b) => (b[1]?.count || 0) - (a[1]?.count || 0));
+  const sortedMethods = Object.entries(metrics.byMethod || {}).sort((a, b) => (b[1]?.count || 0) - (a[1]?.count || 0));
 
   return (
     <CollapsibleSection 
@@ -142,7 +159,7 @@ export const RpcMonitor: React.FC = () => {
         <div className="flex items-center gap-2">
           <StatusIndicator status={getHealthStatus()} />
           <span className="text-xs text-gray-400">
-            {metrics.overall.rps.avg1s.toFixed(1)} req/s
+            {(metrics.overall?.rps?.avg1s || 0).toFixed(1)} req/s
           </span>
         </div>
       }
@@ -153,40 +170,40 @@ export const RpcMonitor: React.FC = () => {
           <div>
             <div className="text-xs text-gray-500 uppercase">RPS</div>
             <div className="text-lg font-semibold text-white">
-              {metrics.overall.rps.avg1s.toFixed(1)}
+              {(metrics.overall?.rps?.avg1s || 0).toFixed(1)}
             </div>
             <div className="text-xs text-gray-400">
-              5s: {metrics.overall.rps.avg5s.toFixed(1)} | 
-              30s: {metrics.overall.rps.avg30s.toFixed(1)}
+              5s: {(metrics.overall?.rps?.avg5s || 0).toFixed(1)} | 
+              30s: {(metrics.overall?.rps?.avg30s || 0).toFixed(1)}
             </div>
           </div>
           <div>
             <div className="text-xs text-gray-500 uppercase">Rate Limiter</div>
             <div className="text-lg font-semibold text-white">
-              {metrics.overall.rateLimiter.availableTokens.toFixed(1)}/{metrics.overall.rateLimiter.capacity}
+              {(metrics.overall?.rateLimiter?.availableTokens || 0).toFixed(1)}/{metrics.overall?.rateLimiter?.capacity || 0}
             </div>
             <div className="text-xs text-gray-400">
-              Max: {metrics.overall.rateLimiter.maxRps} RPS | 
-              Q: {metrics.overall.rateLimiter.queueDepth}
+              Max: {metrics.overall?.rateLimiter?.maxRps || 0} RPS | 
+              Q: {metrics.overall?.rateLimiter?.queueDepth || 0}
             </div>
           </div>
           <div>
             <div className="text-xs text-gray-500 uppercase">Success Rate</div>
-            <div className={`text-lg font-semibold ${metrics.overall.success.rate >= 95 ? 'text-green-400' : metrics.overall.success.rate >= 90 ? 'text-yellow-400' : 'text-red-400'}`}>
-              {metrics.overall.success.rate.toFixed(1)}%
+            <div className={`text-lg font-semibold ${(metrics.overall?.success?.rate || 0) >= 95 ? 'text-green-400' : (metrics.overall?.success?.rate || 0) >= 90 ? 'text-yellow-400' : 'text-red-400'}`}>
+              {(metrics.overall?.success?.rate || 0).toFixed(1)}%
             </div>
             <div className="text-xs text-gray-400">
-              {formatNumber(metrics.overall.success.total)}/{formatNumber(metrics.overall.totalCalls)}
+              {formatNumber(metrics.overall?.success?.total || 0)}/{formatNumber(metrics.overall?.totalCalls || 0)}
             </div>
           </div>
           <div>
             <div className="text-xs text-gray-500 uppercase">Latency</div>
             <div className="text-lg font-semibold text-white">
-              {formatMs(metrics.overall.latency.p50)}
+              {formatMs(metrics.overall?.latency?.p50 || 0)}
             </div>
             <div className="text-xs text-gray-400">
-              p95: {formatMs(metrics.overall.latency.p95)} | 
-              p99: {formatMs(metrics.overall.latency.p99)}
+              p95: {formatMs(metrics.overall?.latency?.p95 || 0)} | 
+              p99: {formatMs(metrics.overall?.latency?.p99 || 0)}
             </div>
           </div>
         </div>
@@ -204,9 +221,9 @@ export const RpcMonitor: React.FC = () => {
               }`}
             >
               {mode}
-              {mode === 'errors' && metrics.recentErrors.length > 0 && (
+              {mode === 'errors' && (metrics.recentErrors?.length || 0) > 0 && (
                 <span className="ml-1 text-xs bg-red-900/50 text-red-400 px-1.5 py-0.5 rounded">
-                  {metrics.recentErrors.length}
+                  {metrics.recentErrors?.length || 0}
                 </span>
               )}
             </button>
@@ -294,23 +311,23 @@ export const RpcMonitor: React.FC = () => {
 
           {viewMode === 'errors' && (
             <div className="space-y-2">
-              {metrics.recentErrors.length === 0 ? (
+              {(!metrics.recentErrors || metrics.recentErrors.length === 0) ? (
                 <div className="text-sm text-gray-500 py-4 text-center">No recent errors</div>
               ) : (
-                metrics.recentErrors.map((err, idx) => (
+                (metrics.recentErrors || []).map((err, idx) => (
                   <div key={idx} className="bg-red-900/10 border border-red-900/30 rounded p-2 text-sm">
                     <div className="flex justify-between items-start mb-1">
-                      <span className="text-red-400 font-medium">{err.method}</span>
+                      <span className="text-red-400 font-medium">{err?.method || 'unknown'}</span>
                       <span className="text-gray-500 text-xs">
-                        {formatTimeAgo(Date.now() - err.timestamp)}
+                        {formatTimeAgo(Date.now() - (err?.timestamp || Date.now()))}
                       </span>
                     </div>
                     <div className="text-gray-400 text-xs mb-1">
-                      Module: <span className="text-gray-300">{err.module}</span> | 
-                      Duration: <span className="text-gray-300">{formatMs(err.duration)}</span>
+                      Module: <span className="text-gray-300">{err?.module || 'unknown'}</span> | 
+                      Duration: <span className="text-gray-300">{formatMs(err?.duration || 0)}</span>
                     </div>
                     <div className="text-gray-500 text-xs font-mono break-all">
-                      {err.error}
+                      {err?.error || 'No error message'}
                     </div>
                   </div>
                 ))
@@ -322,4 +339,7 @@ export const RpcMonitor: React.FC = () => {
     </CollapsibleSection>
   );
 };
+
+// Export with simple fallback
+export const RpcMonitor: React.FC = RpcMonitorInner;
 
