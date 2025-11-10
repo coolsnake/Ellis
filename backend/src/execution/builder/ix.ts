@@ -938,6 +938,40 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     const programId = toPublicKey(hop.programId as string, (CONFIG as any)?.meteora?.programId);
     try { logger.info('meteora.dlmm.build.start', { cat: 'tx', ctx: { pool: poolPk?.toBase58?.() || String(poolPk), programId: programId?.toBase58?.() || String(programId), amountInRaw: String(hop.amountInRaw ?? 0n), minOutRaw: String(hop.minOutRaw ?? 0n) } as any }); } catch {}
 
+    // Determine swap direction early for use in fast path
+    const inputMintPk = toPublicKey(hop.inputMint);
+    const outputMintPk = toPublicKey(hop.outputMint);
+    let swapForY = true;  // Default: X->Y
+    try {
+      // Get pool mints via SDK to determine tokenX and tokenY
+      const DLMM: any = await import('@meteora-ag/dlmm').catch(() => null);
+      if (DLMM && typeof DLMM.DLMM?.getTokensMintFromPoolAddress === 'function') {
+        const mints = await DLMM.DLMM.getTokensMintFromPoolAddress(connection, poolPk);
+        const tokenXMintPk = mints?.tokenXMint ? toPublicKey(mints.tokenXMint) : null;
+        const tokenYMintPk = mints?.tokenYMint ? toPublicKey(mints.tokenYMint) : null;
+        
+        if (tokenXMintPk && tokenYMintPk) {
+          const isXToY = inputMintPk.equals(tokenXMintPk) && outputMintPk.equals(tokenYMintPk);
+          const isYToX = inputMintPk.equals(tokenYMintPk) && outputMintPk.equals(tokenXMintPk);
+          swapForY = isXToY;  // X->Y means swapForY=true, Y->X means swapForY=false
+          
+          try {
+            logger.info('meteora.dlmm.swap_direction', {
+              cat: 'tx',
+              ctx: {
+                direction: isXToY ? 'X->Y' : (isYToX ? 'Y->X' : 'UNKNOWN'),
+                inputMint: hop.inputMint,
+                outputMint: hop.outputMint,
+                tokenXMint: tokenXMintPk.toBase58(),
+                tokenYMint: tokenYMintPk.toBase58(),
+                poolId: hop.poolId
+              }
+            });
+          } catch {}
+        }
+      }
+    } catch {}
+
     // Standardized SDK import: prefer ESM dynamic import, cache module
     // Module-level cache to avoid repeated imports
     let mod: any = (buildMeteoraDlmmSwapIxReal as any).__dlmmMod || null;
@@ -997,11 +1031,11 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         userDestAta: toPublicKey(hop.userDestAta),
         amountIn: hop.amountInRaw,
         minOut: hop.minOutRaw,
-        swapForY: swapXtoY,  // CRITICAL: Tell SDK which direction to swap (X->Y vs Y->X)
+        swapForY: swapForY,  // CRITICAL: Tell SDK which direction to swap (X->Y vs Y->X)
         binArrayLower: hop.binArrayLower ? toPublicKey(hop.binArrayLower) : undefined,
         binArrayUpper: hop.binArrayUpper ? toPublicKey(hop.binArrayUpper) : undefined,
       } as any;
-      try { logger.debug('meteora.dlmm.swapIx.call', { cat: 'tx', ctx: { swapForY: swapXtoY } }); } catch {}
+      try { logger.debug('meteora.dlmm.swapIx.call', { cat: 'tx', ctx: { swapForY: swapForY } }); } catch {}
       const ix = await (DLMM as any).swapIx(connection, kp.publicKey, params);
       if (ix) {
         // Safety net: attempt to attach remaining bin-array metas when using fast-path ix
