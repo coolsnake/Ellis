@@ -1738,15 +1738,35 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     // Fetch token program IDs AFTER token mints are confirmed
     // Detect correct token program IDs per mint (Token-2022 support)
     try {
+      logger.info('meteora.dlmm.token_programs.fetch_start', { cat: 'tx', ctx: { poolId: hop.poolId } });
       const getTokenProgramId = (DLMM as any)?.getTokenProgramId;
+      logger.info('meteora.dlmm.token_programs.sdk_function', { cat: 'tx', ctx: { poolId: hop.poolId, exists: !!getTokenProgramId } });
+      
       const xMint = acctBase.tokenXMint ? (acctBase.tokenXMint.publicKey || acctBase.tokenXMint) : undefined;
       const yMint = acctBase.tokenYMint ? (acctBase.tokenYMint.publicKey || acctBase.tokenYMint) : undefined;
+      logger.info('meteora.dlmm.token_programs.mints_extracted', { cat: 'tx', ctx: { poolId: hop.poolId, hasXMint: !!xMint, hasYMint: !!yMint } });
+      
       const fallbackTokenProg = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
-      if (getTokenProgramId && xMint) { acctBase.tokenXProgram = await getTokenProgramId(connection, xMint).catch(() => fallbackTokenProg); }
-      if (getTokenProgramId && yMint) { acctBase.tokenYProgram = await getTokenProgramId(connection, yMint).catch(() => fallbackTokenProg); }
-      if (!acctBase.tokenXProgram) acctBase.tokenXProgram = fallbackTokenProg;
-      if (!acctBase.tokenYProgram) acctBase.tokenYProgram = fallbackTokenProg;
-    } catch {}
+      if (getTokenProgramId && xMint) { 
+        acctBase.tokenXProgram = await getTokenProgramId(connection, xMint).catch(() => fallbackTokenProg);
+        logger.info('meteora.dlmm.token_programs.x_set', { cat: 'tx', ctx: { poolId: hop.poolId, tokenXProgram: acctBase.tokenXProgram?.toBase58?.() || String(acctBase.tokenXProgram) } });
+      }
+      if (getTokenProgramId && yMint) { 
+        acctBase.tokenYProgram = await getTokenProgramId(connection, yMint).catch(() => fallbackTokenProg);
+        logger.info('meteora.dlmm.token_programs.y_set', { cat: 'tx', ctx: { poolId: hop.poolId, tokenYProgram: acctBase.tokenYProgram?.toBase58?.() || String(acctBase.tokenYProgram) } });
+      }
+      if (!acctBase.tokenXProgram) {
+        acctBase.tokenXProgram = fallbackTokenProg;
+        logger.info('meteora.dlmm.token_programs.x_fallback', { cat: 'tx', ctx: { poolId: hop.poolId } });
+      }
+      if (!acctBase.tokenYProgram) {
+        acctBase.tokenYProgram = fallbackTokenProg;
+        logger.info('meteora.dlmm.token_programs.y_fallback', { cat: 'tx', ctx: { poolId: hop.poolId } });
+      }
+      logger.info('meteora.dlmm.token_programs.fetch_complete', { cat: 'tx', ctx: { poolId: hop.poolId, hasX: !!acctBase.tokenXProgram, hasY: !!acctBase.tokenYProgram } });
+    } catch (err) {
+      logger.error('meteora.dlmm.token_programs.fetch_error', { cat: 'tx', ctx: { poolId: hop.poolId, error: String(err) } });
+    }
 
     // Choose swap variant now that token program IDs are known
     try {
@@ -3953,8 +3973,10 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                 if (rawKey && typeof rawKey.toBase58 === 'function') {
                   try {
                     const b58 = rawKey.toBase58();
-                    // Reject placeholders (all 1s, system program, etc.)
-                    const isPlaceholder = /^11111+$/.test(b58);
+                    // Reject placeholders - addresses starting with "11111" are SDK-generated placeholders
+                    // This includes: 11111111111111111111111111111111 (system program)
+                    // and derived placeholders like: 1111135PXthLq2K1NqFisntc8WW162VfQtY1r3mLez
+                    const isPlaceholder = /^11111/.test(b58);
                     if (b58 && typeof b58 === 'string' && b58.length > 20 && !b58.includes('object') && !isPlaceholder) {
                       pubkey = new PublicKey(b58);
                       return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
@@ -4070,7 +4092,8 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                 
                 // Method 5: If it's already a string (but not a placeholder)
                 if (typeof rawKey === 'string' && rawKey.length > 20 && !rawKey.includes('object')) {
-                  const isPlaceholder = /^11111+$/.test(rawKey);
+                  // Reject placeholders - addresses starting with "11111" are SDK-generated placeholders
+                  const isPlaceholder = /^11111/.test(rawKey);
                   if (!isPlaceholder) {
                     pubkey = new PublicKey(rawKey);
                     return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
