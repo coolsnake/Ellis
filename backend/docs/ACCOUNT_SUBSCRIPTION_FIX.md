@@ -4,6 +4,8 @@
 
 Fixed critical issues with WebSocket account subscriptions for DEX pools. Previously, the system was only subscribing to pool accounts, missing critical derived accounts (vaults, oracles, tick arrays) that contain price-sensitive data.
 
+**UPDATE:** Added derived account → parent pool mapping and handle() routing to properly process updates from vault/reserve/tick array accounts.
+
 ## Issues Identified
 
 ### 1. Orca Whirlpool - INCOMPLETE SUBSCRIPTIONS ❌
@@ -11,17 +13,21 @@ Fixed critical issues with WebSocket account subscriptions for DEX pools. Previo
 - ✅ Pool account only
 - ❌ Missing: vaults, oracle, tick arrays
 - ❌ **BUG**: Was incorrectly calling `attachRaydiumAmmVaults()` for Orca pools!
+- ❌ **BUG**: No routing for vault/tick array updates back to pool
 
 **After:**
 - ✅ Pool account
 - ✅ tokenVaultA and tokenVaultB
 - ✅ Oracle account
 - ✅ 3 tick arrays (lower, center, upper) derived based on current tick
+- ✅ Derived accounts mapped to parent pool
+- ✅ handle() function routes updates to parent pool
 
 ### 2. Raydium CLMM - MISSING CRITICAL ACCOUNTS ❌
 **Before:**
 - ✅ Pool account only
 - ❌ Missing: vaults, observationId, oracle, tick arrays
+- ❌ **BUG**: No routing for vault/tick array updates
 
 **After:**
 - ✅ Pool account
@@ -29,28 +35,83 @@ Fixed critical issues with WebSocket account subscriptions for DEX pools. Previo
 - ✅ observationId (TWAP/oracle data)
 - ✅ Oracle account
 - ✅ 3 tick arrays (lower, center, upper) derived based on current tick
+- ✅ Derived accounts mapped to parent pool
+- ✅ handle() function routes updates to parent pool
 
 ### 3. Raydium AMM - PARTIAL ⚠️
 **Before:**
 - ✅ Pool account
 - ✅ baseVault and quoteVault
+- ❌ **BUG**: No routing for vault updates
 
 **After:**
-- ✅ No changes needed (already correct)
+- ✅ Pool account
+- ✅ baseVault and quoteVault
+- ✅ Vaults mapped to parent pool
+- ✅ handle() function routes vault updates to parent pool
 
 ### 4. Meteora DLMM - BEST BUT INCOMPLETE ⚠️
 **Before:**
 - ✅ Pool account
 - ✅ Dynamic bin arrays (excellent implementation!)
 - ❌ Missing: reserveX, reserveY, oracle
+- ❌ **BUG**: No routing for reserve updates
 
 **After:**
 - ✅ Pool account
 - ✅ Dynamic bin arrays (kept existing excellent implementation)
 - ✅ reserveX and reserveY
 - ✅ Oracle account
+- ✅ Reserves mapped to parent pool
+- ✅ handle() function routes reserve updates to parent pool
 
 ## Implementation Details
+
+### New Data Structures
+
+#### `derivedAccountToPool` Map (line 38)
+```typescript
+const derivedAccountToPool: Map<string, { 
+  poolId: string; 
+  accountType: 'vault' | 'reserve' | 'tick_array' | 'oracle' | 'observation' 
+}> = new Map();
+```
+
+Tracks which derived accounts belong to which parent pool. This allows the `handle()` function to route updates from vault/reserve/tick array accounts back to their parent pool.
+
+### Updated handle() Function (lines 699-732)
+
+Added logic at the beginning of the `handle()` function to detect and route derived account updates:
+
+```typescript
+// Check if this is a derived account (vault, reserve, tick array, oracle)
+const derivedMeta = derivedAccountToPool.get(pk58);
+if (derivedMeta) {
+  // This is a vault, reserve, tick array, or oracle account - trigger parent pool refresh
+  logger.debug('pools.ws derived.account.update', { 
+    account: pk58.slice(0,8)+'…', 
+    accountType: derivedMeta.accountType,
+    parentPool: derivedMeta.poolId.slice(0,8)+'…',
+    cat: 'pools' 
+  });
+  
+  // Fetch and process the parent pool account
+  const parentPk = new web3.PublicKey(derivedMeta.poolId);
+  const parentInfo = await conn.getAccountInfo(parentPk);
+  
+  if (parentInfo) {
+    // Recursively call handle() with the parent pool account
+    return await handle(parentPk, parentInfo);
+  }
+}
+```
+
+**How It Works:**
+1. When a vault/reserve/tick array account updates, WebSocket fires the `handle()` callback
+2. `handle()` checks if the account is in `derivedAccountToPool`
+3. If yes, it fetches the parent pool account from RPC
+4. Recursively calls `handle()` with the parent pool, processing it as a normal pool update
+5. This triggers the normal pool decode → price update → graph update flow
 
 ### New Functions Added
 

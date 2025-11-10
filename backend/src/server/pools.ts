@@ -34,6 +34,9 @@ type MeteoraBinTracker = {
 const meteoraBinTrackers: Map<string, MeteoraBinTracker> = new Map();
 const meteoraBinAccountToPool: Map<string, string> = new Map();
 
+// Maps for tracking derived accounts (vaults, reserves, tick arrays) to their parent pool
+const derivedAccountToPool: Map<string, { poolId: string; accountType: 'vault' | 'reserve' | 'tick_array' | 'oracle' | 'observation' }> = new Map();
+
 // WS lifecycle flags: defer websocket subscriptions until graph signals readiness
 let wsAllowed: boolean = false;
 let wsSetupActive: boolean = false;
@@ -697,13 +700,43 @@ export function startRaydiumRefreshLoop(): void {
           try {
             lastWsEventMs = Date.now();
             wsHealthy = true;
+            
+            const pk58 = toB58Any(pk);
+            
+            // Check if this is a derived account (vault, reserve, tick array, oracle)
+            const derivedMeta = derivedAccountToPool.get(pk58);
+            if (derivedMeta) {
+              // This is a vault, reserve, tick array, or oracle account - trigger parent pool refresh
+              try {
+                logger.debug('pools.ws derived.account.update', { 
+                  account: pk58.slice(0,8)+'…', 
+                  accountType: derivedMeta.accountType,
+                  parentPool: derivedMeta.poolId.slice(0,8)+'…',
+                  cat: 'pools' 
+                });
+                
+                // Now fetch and process the parent pool account
+                const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+                const parentPk = new web3.PublicKey(derivedMeta.poolId);
+                const parentInfo: any = await withRpcLimit(() => conn.getAccountInfo(parentPk, CONFIG.system.txCommitment as any));
+                
+                if (parentInfo) {
+                  // Recursively call handle() with the parent pool account
+                  // This will process it through the normal pool update flow
+                  return await handle(parentPk, parentInfo);
+                }
+              } catch (err) {
+                try { logger.debug('pools.ws derived.parent.fetch.fail', { parent: derivedMeta.poolId, error: String((err as any)?.message || err) }); } catch {}
+              }
+              // If we can't fetch parent, continue processing as normal (will likely be ignored)
+            }
+            
             // Lightweight classify: owner indicates which decoder to attempt
             const owner = toB58Any((info as any)?.owner);
             const ownerRayAmm = rayAmm.toBase58();
             const ownerRayClmm = rayClmm.toBase58();
             const ownerOrca = orcaProg.toBase58();
             const ownerMeteora = String((CONFIG as any)?.meteora?.programId || '').trim();
-            const pk58 = toB58Any(pk);
             const isMeteoraTarget = meteoraTargets.has(pk58);
             try {
               const shortPk = pk ? `${toB58Any(pk).slice(0,6)}…` : '';
@@ -1569,6 +1602,8 @@ export function startRaydiumRefreshLoop(): void {
                 subs.push({ kind: 'account', id });
                 targetedSourceByAccount.set(String(v), 'raydium');
                     debugLogTargeted('raydium', String(v), { kind: 'vault' });
+                // Map vault to parent pool
+                derivedAccountToPool.set(String(v), { poolId: poolAddr, accountType: 'vault' });
               } catch {}
             }
           } catch {}
@@ -1601,6 +1636,8 @@ export function startRaydiumRefreshLoop(): void {
                 subs.push({ kind: 'account', id });
                 targetedSourceByAccount.set(String(v), 'raydium');
                 debugLogTargeted('raydium', String(v), { kind: 'clmm_vault' });
+                // Map vault to parent pool
+                derivedAccountToPool.set(String(v), { poolId: poolAddr, accountType: 'vault' });
               } catch {}
             }
             
@@ -1613,6 +1650,8 @@ export function startRaydiumRefreshLoop(): void {
                 subs.push({ kind: 'account', id });
                 targetedSourceByAccount.set(String(obsId), 'raydium');
                 debugLogTargeted('raydium', String(obsId), { kind: 'observation' });
+                // Map observation to parent pool
+                derivedAccountToPool.set(String(obsId), { poolId: poolAddr, accountType: 'observation' });
               } catch {}
             }
             
@@ -1625,6 +1664,8 @@ export function startRaydiumRefreshLoop(): void {
                 subs.push({ kind: 'account', id });
                 targetedSourceByAccount.set(String(oracle), 'raydium');
                 debugLogTargeted('raydium', String(oracle), { kind: 'oracle' });
+                // Map oracle to parent pool
+                derivedAccountToPool.set(String(oracle), { poolId: poolAddr, accountType: 'oracle' });
               } catch {}
             }
             
@@ -1656,6 +1697,8 @@ export function startRaydiumRefreshLoop(): void {
                     subs.push({ kind: 'account', id });
                     targetedSourceByAccount.set(tickArrayPda.toBase58(), 'raydium');
                     debugLogTargeted('raydium', tickArrayPda.toBase58(), { kind: 'tick_array', offset });
+                    // Map tick array to parent pool
+                    derivedAccountToPool.set(tickArrayPda.toBase58(), { poolId: poolAddr, accountType: 'tick_array' });
                   } catch (err) {
                     try { logger.debug('raydium.clmm.tickarray.subscribe.fail', { pool: poolAddr, offset, error: String((err as any)?.message || err) }); } catch {}
                   }
@@ -1694,6 +1737,8 @@ export function startRaydiumRefreshLoop(): void {
                 subs.push({ kind: 'account', id });
                 targetedSourceByAccount.set(vault.toBase58(), 'orca');
                 debugLogTargeted('orca', vault.toBase58(), { kind: 'vault' });
+                // Map vault to parent pool
+                derivedAccountToPool.set(vault.toBase58(), { poolId: poolAddr, accountType: 'vault' });
               } catch {}
             }
             
@@ -1704,6 +1749,8 @@ export function startRaydiumRefreshLoop(): void {
                 subs.push({ kind: 'account', id });
                 targetedSourceByAccount.set(whirlpoolData.oracle.toBase58(), 'orca');
                 debugLogTargeted('orca', whirlpoolData.oracle.toBase58(), { kind: 'oracle' });
+                // Map oracle to parent pool
+                derivedAccountToPool.set(whirlpoolData.oracle.toBase58(), { poolId: poolAddr, accountType: 'oracle' });
               } catch {}
             }
             
@@ -1728,6 +1775,8 @@ export function startRaydiumRefreshLoop(): void {
                         subs.push({ kind: 'account', id });
                         targetedSourceByAccount.set(tickArrayPda.publicKey.toBase58(), 'orca');
                         debugLogTargeted('orca', tickArrayPda.publicKey.toBase58(), { kind: 'tick_array', offset });
+                        // Map tick array to parent pool
+                        derivedAccountToPool.set(tickArrayPda.publicKey.toBase58(), { poolId: poolAddr, accountType: 'tick_array' });
                       }
                     } catch (err) {
                       try { logger.debug('orca.whirlpool.tickarray.subscribe.fail', { pool: poolAddr, offset, error: String((err as any)?.message || err) }); } catch {}
@@ -1767,6 +1816,8 @@ export function startRaydiumRefreshLoop(): void {
                   subs.push({ kind: 'account', id });
                   targetedSourceByAccount.set(reserveX.toBase58(), 'meteora');
                   debugLogTargeted('meteora', reserveX.toBase58(), { kind: 'reserveX' });
+                  // Map reserve to parent pool
+                  derivedAccountToPool.set(reserveX.toBase58(), { poolId: poolAddr, accountType: 'reserve' });
                 }
               } catch (err) {
                 try { logger.debug('meteora.reserve.x.subscribe.fail', { pool: poolAddr, error: String((err as any)?.message || err) }); } catch {}
@@ -1781,6 +1832,8 @@ export function startRaydiumRefreshLoop(): void {
                   subs.push({ kind: 'account', id });
                   targetedSourceByAccount.set(reserveY.toBase58(), 'meteora');
                   debugLogTargeted('meteora', reserveY.toBase58(), { kind: 'reserveY' });
+                  // Map reserve to parent pool
+                  derivedAccountToPool.set(reserveY.toBase58(), { poolId: poolAddr, accountType: 'reserve' });
                 }
               } catch (err) {
                 try { logger.debug('meteora.reserve.y.subscribe.fail', { pool: poolAddr, error: String((err as any)?.message || err) }); } catch {}
@@ -1798,6 +1851,8 @@ export function startRaydiumRefreshLoop(): void {
                   subs.push({ kind: 'account', id });
                   targetedSourceByAccount.set(oracle.toBase58(), 'meteora');
                   debugLogTargeted('meteora', oracle.toBase58(), { kind: 'oracle' });
+                  // Map oracle to parent pool
+                  derivedAccountToPool.set(oracle.toBase58(), { poolId: poolAddr, accountType: 'oracle' });
                 }
               } catch (err) {
                 try { logger.debug('meteora.oracle.subscribe.fail', { pool: poolAddr, error: String((err as any)?.message || err) }); } catch {}
