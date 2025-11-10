@@ -1435,8 +1435,8 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     // Detect correct token program IDs per mint (Token-2022 support)
     try {
       const getTokenProgramId = (DLMM as any)?.getTokenProgramId;
-      const xMint = acctBase.tokenXMint ? (acctBase.tokenXMint.publicKey || acctBase.tokenXMint) : (hop.inputMint ? toPublicKey(hop.inputMint) : undefined);
-      const yMint = acctBase.tokenYMint ? (acctBase.tokenYMint.publicKey || acctBase.tokenYMint) : (hop.outputMint ? toPublicKey(hop.outputMint) : undefined);
+      const xMint = acctBase.tokenXMint ? (acctBase.tokenXMint.publicKey || acctBase.tokenXMint) : undefined;
+      const yMint = acctBase.tokenYMint ? (acctBase.tokenYMint.publicKey || acctBase.tokenYMint) : undefined;
       const fallbackTokenProg = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
       if (getTokenProgramId && xMint) { acctBase.tokenXProgram = await getTokenProgramId(connection, xMint).catch(() => fallbackTokenProg); }
       if (getTokenProgramId && yMint) { acctBase.tokenYProgram = await getTokenProgramId(connection, yMint).catch(() => fallbackTokenProg); }
@@ -3564,30 +3564,54 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     };
 
     // Normalize poolKeys shape to match Raydium SDK expectations (PublicKey fields only)
+    // CRITICAL: If normalization fails, keep the original value instead of returning undefined
     try {
-      const ensurePk = (v: any) => (v && typeof v === 'object' && typeof v.toBase58 === 'function') ? v : (v ? normalizePublicKey(v) : undefined);
+      const ensurePk = (v: any) => {
+        // If already a valid PublicKey, return as-is
+        if (v && typeof v === 'object' && typeof v.toBase58 === 'function') {
+          return v;
+        }
+        // Try to normalize, but if it fails, return the original value (don't destroy it)
+        if (v) {
+          try {
+            return normalizePublicKey(v);
+          } catch {
+            // Normalization failed - return original value
+            return v;
+          }
+        }
+        return undefined;
+      };
       // Ensure mintLp is a PublicKey (not an object)
       const mintLpPk = ensurePk((poolKeys as any)?.mintLp?.address || (poolKeys as any)?.mintLp);
-      (poolKeys as any).mintLp = mintLpPk;
+      if (mintLpPk) (poolKeys as any).mintLp = mintLpPk;
       // Vaults must be { A: PublicKey, B: PublicKey }
-      (poolKeys as any).vault = {
-        A: ensurePk((poolKeys as any)?.vault?.A || (poolKeys as any)?.baseVault),
-        B: ensurePk((poolKeys as any)?.vault?.B || (poolKeys as any)?.quoteVault),
+      const vaultA = ensurePk((poolKeys as any)?.vault?.A || (poolKeys as any)?.baseVault);
+      const vaultB = ensurePk((poolKeys as any)?.vault?.B || (poolKeys as any)?.quoteVault);
+      if (vaultA || vaultB) {
+        (poolKeys as any).vault = {
+          A: vaultA || (poolKeys as any)?.vault?.A,
+          B: vaultB || (poolKeys as any)?.vault?.B,
+        };
+      }
+      // Coerce remaining PublicKey fields (only if ensurePk succeeds)
+      const ensureAndSet = (field: string, value: any) => {
+        const normalized = ensurePk(value);
+        if (normalized) (poolKeys as any)[field] = normalized;
       };
-      // Coerce remaining PublicKey fields
-      (poolKeys as any).id = ensurePk((poolKeys as any).id);
-      (poolKeys as any).programId = ensurePk(ammProgramId);
-      (poolKeys as any).authority = ensurePk((poolKeys as any).authority);
-      (poolKeys as any).openOrders = ensurePk((poolKeys as any).openOrders);
-      (poolKeys as any).targetOrders = ensurePk((poolKeys as any).targetOrders);
-      (poolKeys as any).marketProgramId = ensurePk((poolKeys as any).marketProgramId);
-      (poolKeys as any).marketId = ensurePk((poolKeys as any).marketId);
-      (poolKeys as any).marketEventQueue = ensurePk((poolKeys as any).marketEventQueue);
-      (poolKeys as any).marketBids = ensurePk((poolKeys as any).marketBids);
-      (poolKeys as any).marketAsks = ensurePk((poolKeys as any).marketAsks);
-      (poolKeys as any).marketBaseVault = ensurePk((poolKeys as any).marketBaseVault);
-      (poolKeys as any).marketQuoteVault = ensurePk((poolKeys as any).marketQuoteVault);
-      (poolKeys as any).marketAuthority = ensurePk((poolKeys as any).marketAuthority);
+      ensureAndSet('id', (poolKeys as any).id);
+      ensureAndSet('programId', ammProgramId);
+      ensureAndSet('authority', (poolKeys as any).authority);
+      ensureAndSet('openOrders', (poolKeys as any).openOrders);
+      ensureAndSet('targetOrders', (poolKeys as any).targetOrders);
+      ensureAndSet('marketProgramId', (poolKeys as any).marketProgramId);
+      ensureAndSet('marketId', (poolKeys as any).marketId);
+      ensureAndSet('marketEventQueue', (poolKeys as any).marketEventQueue);
+      ensureAndSet('marketBids', (poolKeys as any).marketBids);
+      ensureAndSet('marketAsks', (poolKeys as any).marketAsks);
+      ensureAndSet('marketBaseVault', (poolKeys as any).marketBaseVault);
+      ensureAndSet('marketQuoteVault', (poolKeys as any).marketQuoteVault);
+      ensureAndSet('marketAuthority', (poolKeys as any).marketAuthority);
     } catch {}
 
     // Fallback Serum/OpenBook program id if decode failed and placeholder/system id was present
@@ -3629,6 +3653,38 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
           marketProgramId: toStr((poolKeys as any)?.marketProgramId),
         });
       }
+    } catch {}
+    
+    // CRITICAL DEBUG: Log poolKeys state before SDK call to verify market accounts
+    try {
+      const toStr = (v: any) => {
+        if (!v) return 'missing';
+        if (typeof v === 'object' && typeof v.toBase58 === 'function') {
+          try {
+            return v.toBase58();
+          } catch {
+            return '[invalid-pk]';
+          }
+        }
+        return String(v);
+      };
+      logger.info('raydium.amm.poolkeys_before_sdk', {
+        cat: 'tx',
+        ctx: {
+          pool: hop.poolId.slice(0, 8) + '...',
+          marketId: toStr((poolKeys as any)?.marketId),
+          marketProgramId: toStr((poolKeys as any)?.marketProgramId),
+          marketBids: toStr((poolKeys as any)?.marketBids),
+          marketAsks: toStr((poolKeys as any)?.marketAsks),
+          marketEventQueue: toStr((poolKeys as any)?.marketEventQueue),
+          marketBaseVault: toStr((poolKeys as any)?.marketBaseVault),
+          marketQuoteVault: toStr((poolKeys as any)?.marketQuoteVault),
+          marketAuthority: toStr((poolKeys as any)?.marketAuthority),
+          authority: toStr((poolKeys as any)?.authority),
+          openOrders: toStr((poolKeys as any)?.openOrders),
+          targetOrders: toStr((poolKeys as any)?.targetOrders),
+        }
+      });
     } catch {}
 
     const BN = (await import('bn.js')).default as any;
