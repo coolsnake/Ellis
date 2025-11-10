@@ -3571,8 +3571,10 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
         const marketEventQueue = asPk(state.marketEventQueue);
         const marketBids = asPk(state.marketBids);
         const marketAsks = asPk(state.marketAsks);
-        const marketBaseVault = asPk(state.marketBaseVault || state.baseVault);
-        const marketQuoteVault = asPk(state.marketQuoteVault || state.quoteVault);
+        // CRITICAL: Do NOT fall back to AMM vaults - Serum market vaults are separate accounts
+        // The execution cache will provide the correct market vaults from on-chain data
+        const marketBaseVault = asPk(state.marketBaseVault);
+        const marketQuoteVault = asPk(state.marketQuoteVault);
         const marketAuthority = asPk(state.marketAuthority);
         poolKeys = {
           ...poolKeys,
