@@ -997,10 +997,11 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         userDestAta: toPublicKey(hop.userDestAta),
         amountIn: hop.amountInRaw,
         minOut: hop.minOutRaw,
+        swapForY: swapXtoY,  // CRITICAL: Tell SDK which direction to swap (X->Y vs Y->X)
         binArrayLower: hop.binArrayLower ? toPublicKey(hop.binArrayLower) : undefined,
         binArrayUpper: hop.binArrayUpper ? toPublicKey(hop.binArrayUpper) : undefined,
       } as any;
-      try { logger.debug('meteora.dlmm.swapIx.call', { cat: 'tx' }); } catch {}
+      try { logger.debug('meteora.dlmm.swapIx.call', { cat: 'tx', ctx: { swapForY: swapXtoY } }); } catch {}
       const ix = await (DLMM as any).swapIx(connection, kp.publicKey, params);
       if (ix) {
         // Safety net: attempt to attach remaining bin-array metas when using fast-path ix
@@ -3766,26 +3767,65 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
               ctx: { pool: hop.poolId, ixIndex: i, error: String((validateErr as any)?.message || validateErr) }
             });
             
-            // Force rebuild with ammProgramId - use aggressive extraction for foreign PublicKey objects
+            // Force rebuild with ammProgramId - use cached poolKeys as source of truth
+            // The SDK provides the structure but with invalid keys - use our cached values instead
+            const kp = await ensureWallet(CONFIG.walletPath);
+            const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+            
+            const buildKeyFromPoolKeys = (keyIdx: number): PublicKey | null => {
+              try {
+                // Map key indices to poolKeys fields based on Raydium AMM instruction layout
+                // Standard Raydium AMM swap instruction has 18 accounts in this order:
+                // 0: Token program, 1: AMM ID, 2: AMM authority, 3: AMM open orders, 4: AMM target orders
+                // 5: AMM coin vault, 6: AMM pc vault, 7: Serum program, 8: Serum market
+                // 9-11: Serum bids/asks/event queue, 12-13: Serum coin/pc vaults, 14: Serum vault signer
+                // 15: User source token, 16: User dest token, 17: User owner
+                
+                switch (keyIdx) {
+                  case 0: return TOKEN_PROGRAM_ID;
+                  case 1: return (poolKeys as any)?.id;
+                  case 2: return (poolKeys as any)?.authority;
+                  case 3: return (poolKeys as any)?.openOrders;
+                  case 4: return (poolKeys as any)?.targetOrders;
+                  case 5: return (poolKeys as any)?.vault?.A || (poolKeys as any)?.baseVault;
+                  case 6: return (poolKeys as any)?.vault?.B || (poolKeys as any)?.quoteVault;
+                  case 7: return (poolKeys as any)?.marketProgramId;
+                  case 8: return (poolKeys as any)?.marketId;
+                  case 9: return (poolKeys as any)?.marketBids;
+                  case 10: return (poolKeys as any)?.marketAsks;
+                  case 11: return (poolKeys as any)?.marketEventQueue;
+                  case 12: return (poolKeys as any)?.marketBaseVault;
+                  case 13: return (poolKeys as any)?.marketQuoteVault;
+                  case 14: return (poolKeys as any)?.marketAuthority;
+                  case 15: return toPublicKey(hop.userSourceAta);
+                  case 16: return toPublicKey(hop.userDestAta);
+                  case 17: return kp.publicKey;
+                  default: return null;
+                }
+              } catch {
+                return null;
+              }
+            };
+            
             const newKeys = (ix.keys || []).map((k: any, keyIdx: number) => {
               let pubkey: PublicKey;
               try {
                 // CRITICAL: Try to extract raw bytes or base58 from deeply nested foreign PublicKey
                 const rawKey = k.pubkey || k.pubKey || k.address;
                 
-                // Handle undefined/null keys - these might be optional accounts in Raydium SDK
+                // Handle undefined/null keys - use cached poolKeys instead
                 if (!rawKey || rawKey === undefined || rawKey === null) {
+                  const fallback = buildKeyFromPoolKeys(keyIdx);
+                  if (fallback) {
+                    return { pubkey: fallback, isSigner: !!k?.isSigner, isWritable: !!k?.isWritable };
+                  }
+                  
                   try {
-                    logger.warn('raydium.amm.key.undefined', {
+                    logger.warn('raydium.amm.key.undefined.no_fallback', {
                       cat: 'tx',
                       ctx: {
                         keyIdx,
                         keyExists: !!k,
-                        hasPubkey: !!k?.pubkey,
-                        hasPubKey: !!k?.pubKey,
-                        hasAddress: !!k?.address,
-                        keyType: typeof k,
-                        keyKeys: k && typeof k === 'object' ? Object.keys(k) : [],
                         isSigner: !!k?.isSigner,
                         isWritable: !!k?.isWritable,
                       }
@@ -3937,20 +3977,40 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                 
                 throw new Error(`Failed to extract PublicKey from foreign object at index ${keyIdx}`);
               } catch (keyErr) {
+                // Final fallback: use poolKeys mapping
+                try {
+                  const fallback = buildKeyFromPoolKeys(keyIdx);
+                  if (fallback) {
+                    try {
+                      logger.info('raydium.amm.key.fallback_used', {
+                        cat: 'tx',
+                        ctx: {
+                          keyIdx,
+                          fallbackAddress: fallback.toBase58().slice(0, 8) + '...',
+                          originalError: String((keyErr as any)?.message || keyErr)
+                        }
+                      });
+                    } catch {}
+                    return { pubkey: fallback, isSigner: !!k?.isSigner, isWritable: !!k?.isWritable };
+                  }
+                } catch {}
+                
                 throw new Error(`Failed to normalize key at index ${keyIdx}: ${(keyErr as any)?.message}`);
               }
-            }).filter((k): k is { pubkey: PublicKey; isSigner: boolean; isWritable: boolean } => k !== null);
+            });
+            
+            const filteredKeys = newKeys.filter((k): k is { pubkey: PublicKey; isSigner: boolean; isWritable: boolean } => k !== null);
             
             out[i] = new TransactionInstruction({
               programId: ammProgramId,
-              keys: newKeys,
+              keys: filteredKeys,
               data: Buffer.isBuffer(ix.data) ? ix.data : Buffer.from(ix.data || [])
             });
             
             try {
               logger.info('raydium.amm.ix.rebuild.ok', {
                 cat: 'tx',
-                ctx: { pool: hop.poolId, ixIndex: i, keyCount: newKeys.length }
+                ctx: { pool: hop.poolId, ixIndex: i, keyCount: filteredKeys.length }
               });
             } catch {}
           } catch (rebuildErr) {
