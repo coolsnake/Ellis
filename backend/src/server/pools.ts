@@ -328,6 +328,57 @@ function debugLogTargeted(source: 'raydium' | 'orca' | 'meteora', account: strin
     logger.info('pools.ws debug.subscribe', { source, account, ...extra, cat: 'pools' });
   } catch {}
 }
+// Batching queue for getAccountInfo calls during subscription setup
+const accountInfoQueue: Map<string, { resolve: (info: any) => void; reject: (err: any) => void }[]> = new Map();
+let accountInfoBatchTimer: NodeJS.Timeout | null = null;
+
+async function batchGetAccountInfo(conn: any, address: string): Promise<any> {
+  return new Promise((resolve, reject) => {
+    if (!accountInfoQueue.has(address)) {
+      accountInfoQueue.set(address, []);
+    }
+    accountInfoQueue.get(address)!.push({ resolve, reject });
+    
+    // Schedule batch processing
+    if (!accountInfoBatchTimer) {
+      accountInfoBatchTimer = setTimeout(async () => {
+        accountInfoBatchTimer = null;
+        const addresses = Array.from(accountInfoQueue.keys());
+        if (addresses.length === 0) return;
+        
+        try {
+          const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+          const web3 = await import('@solana/web3.js');
+          const pks = addresses.map(addr => new web3.PublicKey(addr));
+          
+          // Use getMultipleAccountsInfo for batch fetch
+          const weight = Math.max(1, Math.ceil(addresses.length / 100));
+          const infos = await withRpcLimit(
+            () => conn.getMultipleAccountsInfo(pks, CONFIG.system.txCommitment as any),
+            weight,
+            { module: 'pools', method: 'getMultipleAccountsInfo' }
+          );
+          
+          // Resolve all promises
+          addresses.forEach((addr, idx) => {
+            const waiters = accountInfoQueue.get(addr) || [];
+            const info = infos[idx];
+            waiters.forEach(w => w.resolve(info));
+            accountInfoQueue.delete(addr);
+          });
+        } catch (err) {
+          // Reject all on error
+          addresses.forEach(addr => {
+            const waiters = accountInfoQueue.get(addr) || [];
+            waiters.forEach(w => w.reject(err));
+            accountInfoQueue.delete(addr);
+          });
+        }
+      }, 50); // 50ms batch window
+    }
+  });
+}
+
 let attachedOrcaPools: number = 0;
 let attachedRaydiumPools: number = 0;
 let attachedMeteoraPools: number = 0;
@@ -725,18 +776,14 @@ export function startRaydiumRefreshLoop(): void {
                   cat: 'pools' 
                 });
                 
-                // Now fetch and process the parent pool account
-                const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-                const parentPk = new web3.PublicKey(derivedMeta.poolId);
-                const parentInfo: any = await withRpcLimit(
-                  () => conn.getAccountInfo(parentPk, CONFIG.system.txCommitment as any),
-                  1,
-                  { module: 'pools', method: 'getAccountInfo' }
-                );
+                // Use batched fetch for parent pool account (reduces burst load)
+                const parentInfo: any = await batchGetAccountInfo(conn, derivedMeta.poolId);
                 
                 if (parentInfo) {
                   // Recursively call handle() with the parent pool account
                   // This will process it through the normal pool update flow
+                  const web3 = await import('@solana/web3.js');
+                  const parentPk = new web3.PublicKey(derivedMeta.poolId);
                   return await handle(parentPk, parentInfo);
                 }
               } catch (err) {
