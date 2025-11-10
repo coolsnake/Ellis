@@ -280,6 +280,18 @@ export class DriftService {
       if (typeof (this.client as any)?.subscribe === 'function') {
         const maxRetries = 3;
         const baseDelayMs = 500;
+        
+        // Wait for WebSocket to be ready before first subscription attempt
+        // This prevents "socket was not CONNECTING or OPEN" errors during startup
+        if (subType === 'websocket') {
+          try { 
+            await waitUntilWsReady();
+            try { logger.debug('drift.ws pre-subscribe ready check passed', { cat: 'drift' }); } catch {}
+          } catch (e: any) {
+            try { logger.warn('drift.ws pre-subscribe ready check failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+          }
+        }
+        
         for (let attempt = 0; attempt < maxRetries; attempt++) {
           try {
             await (this.client as any).subscribe();
