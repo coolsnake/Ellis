@@ -41,6 +41,8 @@ struct ArbConfig {
     detection_history_ttl_ms: u64,
     // TTL for opportunities before they expire (default 30s)
     opportunity_ttl_ms: u64,
+    // Base TTL for opportunity persistence calculation (independent of loop timing)
+    opportunity_base_ttl_ms: u64,
     debug_emit_subthreshold: bool,
     debug_top_n: usize,
     near_miss_enable: bool,
@@ -1488,7 +1490,7 @@ async fn main() -> anyhow::Result<()> {
                     };
                     (curr, prev_opps, near_pair, near_list)
                 };
-                // Adaptive stale handling based on config.max_idle_ms and detections stability
+                // Adaptive stale handling based on opportunity_base_ttl_ms and detections stability
                 let now_ms_val = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
                 // Bump detection counts for current opps and prune old entries
                 {
@@ -1502,9 +1504,9 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 let base_ttl = {
-                    // clamp to ≥5s to avoid overly aggressive churn
+                    // Use dedicated config for opportunity base TTL (independent of loop timing)
                     let s = loop_state.read().await;
-                    s.config.max_idle_ms.max(5_000)
+                    s.config.opportunity_base_ttl_ms
                 };
                 let mut merged: Vec<Opportunity> = Vec::new();
                 // Always keep current detections, but enforce detection cap unless executed
@@ -1772,8 +1774,8 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             
-            // Sleep respects configured interval even when disabled to avoid hot loop
-            // Event-driven wait: wake on notify or after max idle interval
+            // Event-driven wait: wake on notify or after fallback timeout
+            // max_idle_ms is now a long fallback timeout (default 1 hour)
             let wake = { let s = loop_state.read().await; s.wake.clone() };
             let idle_ms_sleep = {
                 let s = loop_state.read().await;
@@ -1785,7 +1787,8 @@ async fn main() -> anyhow::Result<()> {
                     tracing::info!("arb.loop.woken");
                 },
                 _ = tokio::time::sleep(timeout) => {
-                    tracing::info!("arb.loop.sleep_complete");
+                    // This should rarely happen in event-driven mode
+                    tracing::info!("arb.loop.timeout_fallback");
                 },
             }
             let iter_end = Instant::now();
@@ -2299,6 +2302,7 @@ struct ConfigReq {
     max_detections_without_exec: Option<usize>,
     detection_history_ttl_ms: Option<u64>,
     opportunity_ttl_ms: Option<u64>,
+    opportunity_base_ttl_ms: Option<u64>,
     debug_emit_subthreshold: Option<bool>,
     debug_top_n: Option<usize>,
     near_miss_enable: Option<bool>,
@@ -2334,6 +2338,7 @@ async fn set_config(
         if cfg.max_detections_without_exec.is_some() { keys.push("max_detections_without_exec"); }
         if cfg.detection_history_ttl_ms.is_some() { keys.push("detection_history_ttl_ms"); }
         if cfg.opportunity_ttl_ms.is_some() { keys.push("opportunity_ttl_ms"); }
+        if cfg.opportunity_base_ttl_ms.is_some() { keys.push("opportunity_base_ttl_ms"); }
         if cfg.debug_emit_subthreshold.is_some() { keys.push("debug_emit_subthreshold"); }
         if cfg.debug_top_n.is_some() { keys.push("debug_top_n"); }
         if cfg.near_miss_enable.is_some() { keys.push("near_miss_enable"); }
@@ -2351,6 +2356,7 @@ async fn set_config(
     if let Some(v) = cfg.max_detections_without_exec { s.config.max_detections_without_exec = v; }
     if let Some(v) = cfg.detection_history_ttl_ms { s.config.detection_history_ttl_ms = v; }
     if let Some(v) = cfg.opportunity_ttl_ms { s.config.opportunity_ttl_ms = v; }
+    if let Some(v) = cfg.opportunity_base_ttl_ms { s.config.opportunity_base_ttl_ms = v; }
     if let Some(v) = cfg.debug_emit_subthreshold { s.config.debug_emit_subthreshold = v; }
     if let Some(v) = cfg.debug_top_n { s.config.debug_top_n = v; }
     if let Some(v) = cfg.near_miss_enable { s.config.near_miss_enable = v; }
@@ -2388,11 +2394,14 @@ fn default_config() -> ArbConfig {
         max_profit_bps: 20000,
         min_notional_usd: 0.0,
         max_hops: 4,
-        max_idle_ms: std::env::var("ARB_IDLE_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(100),
+        // Event-driven loop - max_idle_ms is now a fallback timeout (effectively infinite)
+        max_idle_ms: std::env::var("ARB_IDLE_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(3_600_000), // 1 hour default
         quote_size_usd: 100.0,
         max_detections_without_exec: std::env::var("ARB_MAX_DETECTIONS").ok().and_then(|s| s.parse().ok()).unwrap_or(3),
         detection_history_ttl_ms: std::env::var("ARB_DETECTION_TTL_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(120_000),
         opportunity_ttl_ms: std::env::var("ARB_OPPORTUNITY_TTL_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(30_000),
+        // Base TTL for opportunity persistence - independent of loop timing
+        opportunity_base_ttl_ms: std::env::var("ARB_OPPORTUNITY_BASE_TTL_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(5_000),
         debug_emit_subthreshold: std::env::var("ARB_DEBUG_SUBTHRESHOLD").ok().map(|v| v == "true").unwrap_or(false),
         debug_top_n: std::env::var("ARB_DEBUG_TOP_N").ok().and_then(|s| s.parse().ok()).unwrap_or(5),
         near_miss_enable: std::env::var("ARB_NEAR_MISS_ENABLE").ok().map(|v| v != "false").unwrap_or(true),

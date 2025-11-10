@@ -2789,11 +2789,16 @@ export function startRaydiumRefreshLoop(): void {
             // Reconcile targets vs attached (debounced): if attached << targets, trigger retarget
             (async () => {
               try {
+                // Check if auto-reconciliation is enabled
+                const autoReconcile = (CONFIG.system as any)?.wsAutoReconcile !== false;
+                if (!autoReconcile) return; // Skip reconciliation if disabled
+                
                 const tgt = await getWsTargets();
                 const needRay = Math.max(0, (tgt.raydium.target || 0) - (attachedRaydiumPools || 0));
                 const needOrc = Math.max(0, (tgt.orca.target || 0) - (attachedOrcaPools || 0));
                 const needMet = Math.max(0, (tgt.meteora.target || 0) - (attachedMeteoraPools || 0));
                 const sumNeed = needRay + needOrc + needMet;
+                
                 // Also retarget if significantly over target (shed excess subs)
                 const lastTgts: any = (getWsTargets as any)?._last || {};
                 const tgtRay = Math.max(0, Number(lastTgts?.raydium?.target || 0));
@@ -2802,9 +2807,26 @@ export function startRaydiumRefreshLoop(): void {
                 const overRay = (tgtRay > 0) && (attachedRaydiumPools || 0) > Math.floor(tgtRay * 1.5);
                 const overOrc = (tgtOrc > 0) && (attachedOrcaPools || 0) > Math.floor(tgtOrc * 1.5);
                 const overMet = (tgtMet > 0) && (attachedMeteoraPools || 0) > Math.floor(tgtMet * 1.5);
-                if (sumNeed > 0 || overRay || overOrc || overMet) {
+                
+                // Only reconcile if mismatch exceeds threshold
+                const threshold = Math.max(1, Number((CONFIG.system as any)?.wsReconcileThreshold || 10));
+                const minGap = Number((CONFIG.system as any)?.wsReconcileMinGapMs || 60000);
+                
+                if (sumNeed > threshold || overRay || overOrc || overMet) {
                   const last = (reconcileNow as any)._last || 0;
-                  if (Date.now() - last > 5000) { await reconcileNow(); }
+                  if (Date.now() - last > minGap) {
+                    try {
+                      logger.info('pools.ws reconcile.triggered', {
+                        reason: sumNeed > threshold ? 'missing_subscriptions' : 'excess_subscriptions',
+                        missing: { total: sumNeed, raydium: needRay, orca: needOrc, meteora: needMet },
+                        excess: { raydium: overRay, orca: overOrc, meteora: overMet },
+                        threshold,
+                        minGapMs: minGap,
+                        cat: 'pools'
+                      });
+                    } catch {}
+                    await reconcileNow();
+                  }
                 }
               } catch {}
             })();

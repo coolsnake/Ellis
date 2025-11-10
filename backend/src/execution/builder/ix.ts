@@ -173,16 +173,40 @@ async function injectBinArrayMetas(
       }
       if (extPk) {
         metas = metas || [];
-        const hasExt = metas.some((m: any) => {
+        // Check if bitmap extension is ALREADY in the instruction's keys (SDK might have set it)
+        const alreadyInInstruction = Array.isArray((ix as any).keys) && (ix as any).keys.some((k: any) => {
           try {
-            const pk = coercePk(m?.pubkey || m?.publicKey || m?.address);
-            return pk ? pk.equals(extPk) : false;
+            const pk = k?.pubkey;
+            if (pk && typeof pk.equals === 'function') {
+              return pk.equals(extPk);
+            }
+            return false;
           } catch {
             return false;
           }
         });
-        if (!hasExt) {
-          metas.push({ pubkey: extPk, isWritable: true, isSigner: false });
+        
+        if (alreadyInInstruction) {
+          // SDK already included it - don't add again or modify it
+          try {
+            logger.debug('meteora.dlmm.bitmap_ext.already_in_ix', {
+              cat: 'tx',
+              ctx: { address: extPk.toBase58() }
+            });
+          } catch {}
+        } else {
+          // Not in instruction yet, check if in our metas list
+          const hasExt = metas.some((m: any) => {
+            try {
+              const pk = coercePk(m?.pubkey || m?.publicKey || m?.address);
+              return pk ? pk.equals(extPk) : false;
+            } catch {
+              return false;
+            }
+          });
+          if (!hasExt) {
+            metas.push({ pubkey: extPk, isWritable: true, isSigner: false });
+          }
         }
       }
     } catch {}

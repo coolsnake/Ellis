@@ -138,6 +138,11 @@ export const CONFIG = {
     wsRetargetAttachWaitMs: Number(process.env.WS_RETARGET_ATTACH_WAIT_MS || 25000), // 25s wait for subscriptions
     wsSetupMaxWaitMs: Number(process.env.WS_SETUP_MAX_WAIT_MS || 15000), // 15s max wait for setup to clear
     
+    // WebSocket auto-reconciliation (targets vs attached mismatch detection)
+    wsAutoReconcile: process.env.WS_AUTO_RECONCILE === 'true', // Disabled by default (set to 'true' to enable)
+    wsReconcileMinGapMs: Number(process.env.WS_RECONCILE_MIN_GAP_MS || 60000), // 60s minimum between reconciliations
+    wsReconcileThreshold: Number(process.env.WS_RECONCILE_THRESHOLD || 10), // Min missing/excess pools to trigger
+    
     // Graph diff filter knobs
     graphDiffFilterEnable: (process.env.GRAPH_DIFF_FILTER_ENABLE || 'true') !== 'false',
     graphDiffPriceEps: Number(process.env.GRAPH_DIFF_PRICE_EPS || 0.002),
