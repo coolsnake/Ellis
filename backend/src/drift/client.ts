@@ -241,10 +241,12 @@ export class DriftService {
     } catch {}
     
     // Use shared utility to wait for WebSocket to be ready before subscribing
+    // Import once at the top for use throughout the subscribe logic
+    const { waitUntilWsReady } = await import('./wsHelper.js');
+    
     // Only wait for WebSocket if using websocket subscriptions
     if (subType === 'websocket') {
       try {
-        const { waitUntilWsReady } = await import('./wsHelper.js');
         await waitUntilWsReady(this.connection, 'drift.init.pre-subscribe');
         try { logger.debug('drift.ws pre-subscribe ready check passed', { cat: 'drift' }); } catch {}
       } catch (e: any) {
@@ -263,7 +265,7 @@ export class DriftService {
         // This prevents "socket was not CONNECTING or OPEN" errors during startup
         if (subType === 'websocket') {
           try { 
-            await waitUntilWsReady();
+            await waitUntilWsReady(this.connection, 'drift.init.subscribe');
             try { logger.debug('drift.ws pre-subscribe ready check passed', { cat: 'drift' }); } catch {}
           } catch (e: any) {
             try { logger.warn('drift.ws pre-subscribe ready check failed', { error: String(e?.message || e), cat: 'drift' }); } catch {}
@@ -283,7 +285,7 @@ export class DriftService {
               await new Promise(r => setTimeout(r, delay));
               // Wait for WebSocket again before retrying
               if (subType === 'websocket') {
-                try { await waitUntilWsReady(); } catch {}
+                try { await waitUntilWsReady(this.connection, 'drift.init.retry'); } catch {}
               }
               continue;
             }
