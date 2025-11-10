@@ -37,6 +37,9 @@ const meteoraBinAccountToPool: Map<string, string> = new Map();
 // Maps for tracking derived accounts (vaults, reserves, tick arrays) to their parent pool
 const derivedAccountToPool: Map<string, { poolId: string; accountType: 'vault' | 'reserve' | 'tick_array' | 'oracle' | 'observation' }> = new Map();
 
+// Track which pools have had their derived accounts attached (for lazy loading)
+const poolsWithDerivedAccounts: Set<string> = new Set();
+
 // WS lifecycle flags: defer websocket subscriptions until graph signals readiness
 let wsAllowed: boolean = false;
 let wsSetupActive: boolean = false;
@@ -1581,260 +1584,49 @@ export function startRaydiumRefreshLoop(): void {
         };
 
         // Helper: attach Raydium AMM vault (token) accounts for a given AMM pool address
+        // NOW LAZY: Skip during initial setup, will be attached on first pool update
         const attachRaydiumAmmVaults = async (poolAddr: string) => {
-          try {
-            const pk = new web3.PublicKey(poolAddr);
-            const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-            const acc: any = await withRpcLimit(() => conn.getAccountInfo(pk, CONFIG.system.txCommitment as any));
-            if (!acc || !acc.data) return;
-            const rmod: any = await import('@raydium-io/raydium-sdk-v2').catch(() => null);
-            const ammLayout = rmod?.LiquidityStateLayoutV4 || rmod?.LIQUIDITY_STATE_LAYOUT_V4;
-            if (!ammLayout || typeof ammLayout.decode !== 'function') return;
-            let state: any = null;
-            try { state = ammLayout.decode((acc as any).data); } catch { state = null; }
-            const vA = state?.baseVault?.toBase58?.() || state?.vaultA?.toBase58?.();
-            const vB = state?.quoteVault?.toBase58?.() || state?.vaultB?.toBase58?.();
-            const vaults = Array.from(new Set([vA, vB].filter(Boolean)));
-            for (const v of vaults) {
-              try {
-                const vpk = new web3.PublicKey(v as string);
-                const id = await subscribeAccountWithRetry(vpk, handle);
-                subs.push({ kind: 'account', id });
-                targetedSourceByAccount.set(String(v), 'raydium');
-                    debugLogTargeted('raydium', String(v), { kind: 'vault' });
-                // Map vault to parent pool
-                derivedAccountToPool.set(String(v), { poolId: poolAddr, accountType: 'vault' });
-              } catch {}
-            }
-          } catch {}
+          logger.info('raydium.amm.attach.lazy_skip', { pool: poolAddr.slice(0,8)+'…', reason: 'will_attach_on_first_update', cat: 'pools' });
+          // Lazy loading - will be done in handle() when first pool update arrives
+          return;
         };
 
         // Helper: attach Raydium CLMM vault, observation, and tick array accounts for a given CLMM pool address
+        // NOW LAZY: Skip during initial setup, will be attached on first pool update
         const attachRaydiumClmmAccounts = async (poolAddr: string) => {
-          try {
-            const pk = new web3.PublicKey(poolAddr);
-            const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-            const acc: any = await withRpcLimit(() => conn.getAccountInfo(pk, CONFIG.system.txCommitment as any));
-            if (!acc || !acc.data) return;
-            const rmod: any = await import('@raydium-io/raydium-sdk-v2').catch(() => null);
-            
-            // Try CLMM pool layout
-            const clmmLayout = rmod?.PoolInfoLayout || rmod?.AmmV3PoolPersonalPosition || rmod?.PoolState;
-            if (!clmmLayout || typeof clmmLayout.decode !== 'function') return;
-            
-            let state: any = null;
-            try { state = clmmLayout.decode((acc as any).data); } catch { return; }
-            
-            // Subscribe to vaults
-            const vA = state?.vaultA?.toBase58?.() || state?.tokenVault0?.toBase58?.();
-            const vB = state?.vaultB?.toBase58?.() || state?.tokenVault1?.toBase58?.();
-            const vaults = Array.from(new Set([vA, vB].filter(Boolean)));
-            for (const v of vaults) {
-              try {
-                const vpk = new web3.PublicKey(v as string);
-                const id = await subscribeAccountWithRetry(vpk, handle);
-                subs.push({ kind: 'account', id });
-                targetedSourceByAccount.set(String(v), 'raydium');
-                debugLogTargeted('raydium', String(v), { kind: 'clmm_vault' });
-                // Map vault to parent pool
-                derivedAccountToPool.set(String(v), { poolId: poolAddr, accountType: 'vault' });
-              } catch {}
-            }
-            
-            // Subscribe to observationId (oracle/TWAP data)
-            const obsId = state?.observationId?.toBase58?.() || state?.observationKey?.toBase58?.();
-            if (obsId) {
-              try {
-                const obsPk = new web3.PublicKey(obsId);
-                const id = await subscribeAccountWithRetry(obsPk, handle);
-                subs.push({ kind: 'account', id });
-                targetedSourceByAccount.set(String(obsId), 'raydium');
-                debugLogTargeted('raydium', String(obsId), { kind: 'observation' });
-                // Map observation to parent pool
-                derivedAccountToPool.set(String(obsId), { poolId: poolAddr, accountType: 'observation' });
-              } catch {}
-            }
-            
-            // Subscribe to oracle
-            const oracle = state?.oracle?.toBase58?.();
-            if (oracle) {
-              try {
-                const oraclePk = new web3.PublicKey(oracle);
-                const id = await subscribeAccountWithRetry(oraclePk, handle);
-                subs.push({ kind: 'account', id });
-                targetedSourceByAccount.set(String(oracle), 'raydium');
-                debugLogTargeted('raydium', String(oracle), { kind: 'oracle' });
-                // Map oracle to parent pool
-                derivedAccountToPool.set(String(oracle), { poolId: poolAddr, accountType: 'oracle' });
-              } catch {}
-            }
-            
-            // Subscribe to active tick arrays (similar to Meteora bins)
-            // Note: Raydium CLMM uses 3 tick arrays (lower, center, upper) based on current tick
-            const currentTick = state?.tickCurrent ?? state?.tick_current;
-            const tickSpacing = state?.tickSpacing ?? state?.tick_spacing;
-            if (currentTick !== undefined && tickSpacing) {
-              try {
-                const PoolUtils = rmod?.PoolUtils;
-                const clmmProgramId = new web3.PublicKey(String((CONFIG as any)?.raydium?.clmmProgram || 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK'));
-                
-                // Derive tick arrays for lower, center, upper positions
-                for (let offset = -1; offset <= 1; offset++) {
-                  try {
-                    // Calculate start tick index for this offset
-                    const startTickIndex = Math.floor(currentTick / (tickSpacing * 60)) + offset;
-                    const actualStartTick = startTickIndex * tickSpacing * 60;
-                    
-                    // Derive tick array PDA: [b"tick_array", pool_id, start_index]
-                    const startIndexBuffer = Buffer.alloc(4);
-                    startIndexBuffer.writeInt32LE(actualStartTick, 0);
-                    const [tickArrayPda] = web3.PublicKey.findProgramAddressSync(
-                      [Buffer.from('tick_array'), pk.toBuffer(), startIndexBuffer],
-                      clmmProgramId
-                    );
-                    
-                    const id = await subscribeAccountWithRetry(tickArrayPda, handle);
-                    subs.push({ kind: 'account', id });
-                    targetedSourceByAccount.set(tickArrayPda.toBase58(), 'raydium');
-                    debugLogTargeted('raydium', tickArrayPda.toBase58(), { kind: 'tick_array', offset });
-                    // Map tick array to parent pool
-                    derivedAccountToPool.set(tickArrayPda.toBase58(), { poolId: poolAddr, accountType: 'tick_array' });
-                  } catch (err) {
-                    try { logger.info('raydium.clmm.tickarray.subscribe.fail', { pool: poolAddr, offset, error: String((err as any)?.message || err) }); } catch {}
-                  }
-                }
-              } catch (err) {
-                try { logger.info('raydium.clmm.tickarray.derive.fail', { pool: poolAddr, error: String((err as any)?.message || err) }); } catch {}
-              }
-            }
-          } catch {}
+          logger.info('raydium.clmm.attach.lazy_skip', { pool: poolAddr.slice(0,8)+'…', reason: 'will_attach_on_first_update', cat: 'pools' });
+          // Lazy loading - will be done in handle() when first pool update arrives
+          return;
         };
 
         // Helper: attach Orca Whirlpool vault, oracle, and tick array accounts for a given pool address
+        // NOW LAZY: Skip during initial setup, will be attached on first pool update
         const attachOrcaWhirlpoolAccounts = async (poolAddr: string) => {
-          try {
-            logger.info('orca.attach.start', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
-            const pk = new web3.PublicKey(poolAddr);
-            const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-            logger.info('orca.attach.fetching', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
-            const acc: any = await withRpcLimit(() => conn.getAccountInfo(pk, CONFIG.system.txCommitment as any));
-            logger.info('orca.attach.fetched', { pool: poolAddr.slice(0,8)+'…', hasData: !!acc?.data, cat: 'pools' });
-            if (!acc || !acc.data) return;
-            
-            const sdkAny: any = await import('@orca-so/whirlpools-sdk').catch(() => null);
-            const ParsableWhirlpool = sdkAny?.ParsableWhirlpool;
-            const PDAUtil = sdkAny?.PDAUtil;
-            
-            if (!ParsableWhirlpool || typeof ParsableWhirlpool.parse !== 'function') {
-              logger.info('orca.attach.no_sdk', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
-              return;
-            }
-            
-            let whirlpoolData: any = null;
-            try { whirlpoolData = ParsableWhirlpool.parse(acc.data); } catch (err) { 
-              logger.info('orca.attach.parse_fail', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
-              return;
-            }
-            
-            logger.info('orca.attach.parsed', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
-            
-            // Subscribe to vaults
-            const vaultA = whirlpoolData?.tokenVaultA;
-            const vaultB = whirlpoolData?.tokenVaultB;
-            const vaults = [vaultA, vaultB].filter(Boolean);
-            logger.info('orca.attach.vaults.start', { pool: poolAddr.slice(0,8)+'…', vaultCount: vaults.length, cat: 'pools' });
-            for (const vault of vaults) {
-              try {
-                logger.info('orca.attach.vault.subscribing', { pool: poolAddr.slice(0,8)+'…', vault: vault.toBase58().slice(0,8)+'…', cat: 'pools' });
-                const id = await subscribeAccountWithRetry(vault, handle);
-                subs.push({ kind: 'account', id });
-                targetedSourceByAccount.set(vault.toBase58(), 'orca');
-                debugLogTargeted('orca', vault.toBase58(), { kind: 'vault' });
-                // Map vault to parent pool
-                derivedAccountToPool.set(vault.toBase58(), { poolId: poolAddr, accountType: 'vault' });
-                logger.info('orca.attach.vault.subscribed', { pool: poolAddr.slice(0,8)+'…', vault: vault.toBase58().slice(0,8)+'…', cat: 'pools' });
-              } catch {}
-            }
-            
-            logger.info('orca.attach.vaults.done', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
-            
-            // Subscribe to oracle
-            if (whirlpoolData?.oracle) {
-              try {
-                logger.info('orca.attach.oracle.subscribing', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
-                const id = await subscribeAccountWithRetry(whirlpoolData.oracle, handle);
-                subs.push({ kind: 'account', id });
-                targetedSourceByAccount.set(whirlpoolData.oracle.toBase58(), 'orca');
-                debugLogTargeted('orca', whirlpoolData.oracle.toBase58(), { kind: 'oracle' });
-                // Map oracle to parent pool
-                derivedAccountToPool.set(whirlpoolData.oracle.toBase58(), { poolId: poolAddr, accountType: 'oracle' });
-                logger.info('orca.attach.oracle.subscribed', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
-              } catch {}
-            }
-            
-            logger.info('orca.attach.tickarrays.start', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
-            
-            // Subscribe to active tick arrays (similar to Meteora bin arrays)
-            const tickSpacing = whirlpoolData?.tickSpacing;
-            const currentTick = whirlpoolData?.tickCurrentIndex;
-            
-            if (tickSpacing !== undefined && currentTick !== undefined && PDAUtil) {
-              try {
-                const TickUtil = sdkAny?.TickUtil || (await import('@orca-so/whirlpools-sdk/dist/utils/public/tick-utils.js').catch(() => null))?.TickUtil;
-                const orcaProgramId = new web3.PublicKey(String(CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc'));
-                
-                if (TickUtil && typeof TickUtil.getStartTickIndex === 'function') {
-                  // Subscribe to 3 tick arrays: lower, center, upper
-                  for (let offset = -1; offset <= 1; offset++) {
-                    try {
-                      logger.info('orca.attach.tickarray.subscribing', { pool: poolAddr.slice(0,8)+'…', offset, cat: 'pools' });
-                      const startTick = TickUtil.getStartTickIndex(currentTick, tickSpacing, offset);
-                      const tickArrayPda = PDAUtil.getTickArray(orcaProgramId, pk, startTick);
-                      
-                      if (tickArrayPda?.publicKey) {
-                        const id = await subscribeAccountWithRetry(tickArrayPda.publicKey, handle);
-                        subs.push({ kind: 'account', id });
-                        targetedSourceByAccount.set(tickArrayPda.publicKey.toBase58(), 'orca');
-                        debugLogTargeted('orca', tickArrayPda.publicKey.toBase58(), { kind: 'tick_array', offset });
-                        // Map tick array to parent pool
-                        derivedAccountToPool.set(tickArrayPda.publicKey.toBase58(), { poolId: poolAddr, accountType: 'tick_array' });
-                        logger.info('orca.attach.tickarray.subscribed', { pool: poolAddr.slice(0,8)+'…', offset, cat: 'pools' });
-                      }
-                    } catch (err) {
-                      try { logger.info('orca.whirlpool.tickarray.subscribe.fail', { pool: poolAddr, offset, error: String((err as any)?.message || err) }); } catch {}
-                    }
-                  }
-                }
-              } catch (err) {
-                try { logger.info('orca.whirlpool.tickarray.derive.fail', { pool: poolAddr, error: String((err as any)?.message || err) }); } catch {}
-              }
-            }
-            
-            logger.info('orca.attach.complete', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
-          } catch (err) {
-            logger.info('orca.attach.error', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
-          }
+          logger.info('orca.attach.lazy_skip', { pool: poolAddr.slice(0,8)+'…', reason: 'will_attach_on_first_update', cat: 'pools' });
+          // Lazy loading - will be done in handle() when first pool update arrives
+          return;
         };
 
         // Helper: attach Meteora DLMM reserve accounts (reserveX, reserveY) and oracle for a given pool address
+        // OPTIMIZED: Use SDK derivation without RPC fetch!
         const attachMeteoraReserves = async (poolAddr: string) => {
           try {
+            logger.info('meteora.attach.start', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
             const pk = new web3.PublicKey(poolAddr);
-            const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-            const acc: any = await withRpcLimit(() => conn.getAccountInfo(pk, CONFIG.system.txCommitment as any));
-            if (!acc || !acc.data) return;
-            
             const program = ensureMeteoraProgram();
-            if (!program) return;
+            if (!program) {
+              logger.info('meteora.attach.no_program', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
+              return;
+            }
             const programId = program.programId;
             
-            // Derive reserves using Meteora SDK
+            // NO RPC FETCH NEEDED - Pure SDK derivation!
             const DLMM: any = await import('@meteora-ag/dlmm').catch(() => null);
             const deriveReserve = DLMM?.DLMM?.deriveReserve;
             
             if (typeof deriveReserve === 'function') {
               try {
-                // Derive reserveX
+                // Derive reserveX (deterministic, no RPC)
                 const rxResult = await deriveReserve(programId, pk, true);
                 const reserveX = rxResult?.publicKey || rxResult;
                 if (reserveX) {
@@ -1842,15 +1634,15 @@ export function startRaydiumRefreshLoop(): void {
                   subs.push({ kind: 'account', id });
                   targetedSourceByAccount.set(reserveX.toBase58(), 'meteora');
                   debugLogTargeted('meteora', reserveX.toBase58(), { kind: 'reserveX' });
-                  // Map reserve to parent pool
                   derivedAccountToPool.set(reserveX.toBase58(), { poolId: poolAddr, accountType: 'reserve' });
+                  logger.info('meteora.reserve.x.subscribed', { pool: poolAddr.slice(0,8)+'…', reserve: reserveX.toBase58().slice(0,8)+'…', cat: 'pools' });
                 }
               } catch (err) {
                 try { logger.info('meteora.reserve.x.subscribe.fail', { pool: poolAddr, error: String((err as any)?.message || err) }); } catch {}
               }
               
               try {
-                // Derive reserveY
+                // Derive reserveY (deterministic, no RPC)
                 const ryResult = await deriveReserve(programId, pk, false);
                 const reserveY = ryResult?.publicKey || ryResult;
                 if (reserveY) {
@@ -1858,15 +1650,15 @@ export function startRaydiumRefreshLoop(): void {
                   subs.push({ kind: 'account', id });
                   targetedSourceByAccount.set(reserveY.toBase58(), 'meteora');
                   debugLogTargeted('meteora', reserveY.toBase58(), { kind: 'reserveY' });
-                  // Map reserve to parent pool
                   derivedAccountToPool.set(reserveY.toBase58(), { poolId: poolAddr, accountType: 'reserve' });
+                  logger.info('meteora.reserve.y.subscribed', { pool: poolAddr.slice(0,8)+'…', reserve: reserveY.toBase58().slice(0,8)+'…', cat: 'pools' });
                 }
               } catch (err) {
                 try { logger.info('meteora.reserve.y.subscribe.fail', { pool: poolAddr, error: String((err as any)?.message || err) }); } catch {}
               }
             }
             
-            // Derive oracle
+            // Derive oracle (deterministic, no RPC)
             const deriveOracle = DLMM?.DLMM?.deriveOracle;
             if (typeof deriveOracle === 'function') {
               try {
@@ -1877,14 +1669,18 @@ export function startRaydiumRefreshLoop(): void {
                   subs.push({ kind: 'account', id });
                   targetedSourceByAccount.set(oracle.toBase58(), 'meteora');
                   debugLogTargeted('meteora', oracle.toBase58(), { kind: 'oracle' });
-                  // Map oracle to parent pool
                   derivedAccountToPool.set(oracle.toBase58(), { poolId: poolAddr, accountType: 'oracle' });
+                  logger.info('meteora.oracle.subscribed', { pool: poolAddr.slice(0,8)+'…', oracle: oracle.toBase58().slice(0,8)+'…', cat: 'pools' });
                 }
               } catch (err) {
                 try { logger.info('meteora.oracle.subscribe.fail', { pool: poolAddr, error: String((err as any)?.message || err) }); } catch {}
               }
             }
-          } catch {}
+            
+            logger.info('meteora.attach.complete', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
+          } catch (err) {
+            logger.info('meteora.attach.error', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
+          }
         };
 
         // Subscribe to Orca Whirlpool POOL accounts only: prefer graph edge pool ids, else derive PDAs from watchlist
