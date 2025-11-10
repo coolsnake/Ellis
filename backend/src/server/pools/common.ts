@@ -41,6 +41,14 @@ export function swapABFields<T extends Record<string, any>>(obj: T): T {
       const tmp = out[ka]; out[ka] = out[kb]; out[kb] = tmp;
     }
   }
+  
+  // CRITICAL: Preserve market account fields during canonicalization
+  // These fields are orientation-independent (they reference the Serum market, not the pool orientation)
+  // DO NOT swap or modify: market_id, market_program_id, market_bids, market_asks, market_event_queue,
+  // market_base_vault, market_quote_vault, market_authority, amm_authority, amm_open_orders, 
+  // amm_target_orders, lp_mint
+  // These fields are already correctly set and don't depend on mint_a/mint_b orientation
+  
   return out as T;
 }
 

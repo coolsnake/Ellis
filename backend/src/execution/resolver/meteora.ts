@@ -16,7 +16,7 @@ export async function resolveMeteoraDlmm(hop: DirectHop): Promise<DirectHop> {
     // Debug logging for pool lookup
     try {
       const { logger } = await import('../../utils/logger.js');
-      logger.debug('meteora.resolver.pool_lookup', {
+      logger.info('meteora.resolver.pool_lookup', {
         cat: 'tx',
         ctx: {
           poolId: hop.poolId,
@@ -40,7 +40,7 @@ export async function resolveMeteoraDlmm(hop: DirectHop): Promise<DirectHop> {
       // Debug logging for vaults
       try {
         const { logger } = await import('../../utils/logger.js');
-        logger.debug('meteora.resolver.vaults_set', {
+        logger.info('meteora.resolver.vaults_set', {
           cat: 'tx',
           ctx: {
             poolId: hop.poolId,

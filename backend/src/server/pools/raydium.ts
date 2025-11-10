@@ -749,60 +749,133 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
       let successCount = 0;
       let skipCount = 0;
       
-      //Batch process with concurrency limit
-      const concurrency = Math.max(1, Number((CONFIG.raydium as any)?.marketAccountConcurrency || 5));
-      let idx = 0;
-      const queue = amm.map((pool, poolIdx) => async () => {
-        try {
-          // Fetch pool accounts from chain
-          const poolAccounts = await fetchRaydiumAmmPoolAccounts(pool.id);
-          if (!poolAccounts?.marketId || !poolAccounts?.marketProgramId) {
-            skipCount++;
-            return;
-          }
-          
-          // Fetch Serum market accounts
-          const marketAccounts = await fetchSerumMarketAccounts(
-            poolAccounts.marketId,
-            poolAccounts.marketProgramId
-          );
-          
-          // Update pool with all accounts
-          amm[poolIdx].market_id = poolAccounts.marketId;
-          amm[poolIdx].market_program_id = poolAccounts.marketProgramId;
-          amm[poolIdx].amm_authority = poolAccounts.ammAuthority;
-          amm[poolIdx].amm_open_orders = poolAccounts.ammOpenOrders;
-          amm[poolIdx].amm_target_orders = poolAccounts.ammTargetOrders;
-          amm[poolIdx].lp_mint = poolAccounts.lpMint;
-          amm[poolIdx].account_a = poolAccounts.baseVault || amm[poolIdx].account_a;
-          amm[poolIdx].account_b = poolAccounts.quoteVault || amm[poolIdx].account_b;
-          
-          if (marketAccounts) {
-            amm[poolIdx].market_bids = marketAccounts.bids;
-            amm[poolIdx].market_asks = marketAccounts.asks;
-            amm[poolIdx].market_event_queue = marketAccounts.eventQueue;
-            amm[poolIdx].market_base_vault = marketAccounts.baseVault;
-            amm[poolIdx].market_quote_vault = marketAccounts.quoteVault;
-            amm[poolIdx].market_authority = marketAccounts.authority;
-          }
-          
-          successCount++;
-        } catch (err) {
-          try {
-            logger.debug('raydium.amm.market_accounts.fetch.pool.err', {
-              cat: 'pools',
-              ctx: { poolId: pool.id.slice(0, 8) + '...', error: String((err as any)?.message || err) }
-            });
-          } catch {}
-          skipCount++;
-        }
-      });
+      // Batch process with concurrency limit and throttling to respect RPC limits
+      // Each pool requires 2 RPC calls (pool account + market account) = 2 tokens
+      // With maxRps=50 and capacity=25, we need to throttle aggressively
+      const concurrency = Math.max(1, Math.min(3, Number((CONFIG.raydium as any)?.marketAccountConcurrency || 3)));
+      const delayBetweenBatchesMs = Number((CONFIG.raydium as any)?.marketAccountBatchDelayMs || 100);
+      const batchSize = Number((CONFIG.raydium as any)?.marketAccountBatchSize || 10);
       
-      const workers: Promise<void>[] = [];
-      for (let i = 0; i < concurrency; i++) {
-        workers.push((async () => { while (idx < queue.length) { const my = idx++; await queue[my](); } })());
+      // Process in batches to avoid overwhelming RPC limiter
+      for (let batchStart = 0; batchStart < amm.length; batchStart += batchSize) {
+        const batchEnd = Math.min(batchStart + batchSize, amm.length);
+        const batch = amm.slice(batchStart, batchEnd);
+        
+        let idx = 0;
+        const queue = batch.map((pool, localIdx) => {
+          const poolIdx = batchStart + localIdx;
+          return async () => {
+            try {
+              // Fetch pool accounts from chain
+              const poolAccounts = await fetchRaydiumAmmPoolAccounts(pool.id);
+              if (!poolAccounts?.marketId || !poolAccounts?.marketProgramId) {
+                try {
+                  logger.warn('raydium.amm.market_accounts.no_market_id', {
+                    cat: 'pools',
+                    ctx: { 
+                      poolId: pool.id, 
+                      hasPoolAccounts: !!poolAccounts,
+                      hasMarketId: !!poolAccounts?.marketId,
+                      hasMarketProgramId: !!poolAccounts?.marketProgramId
+                    }
+                  });
+                } catch {}
+                skipCount++;
+                return;
+              }
+              
+              // Fetch Serum market accounts
+              const marketAccounts = await fetchSerumMarketAccounts(
+                poolAccounts.marketId,
+                poolAccounts.marketProgramId
+              );
+              
+              // Update pool with all accounts
+              amm[poolIdx].market_id = poolAccounts.marketId;
+              amm[poolIdx].market_program_id = poolAccounts.marketProgramId;
+              amm[poolIdx].amm_authority = poolAccounts.ammAuthority;
+              amm[poolIdx].amm_open_orders = poolAccounts.ammOpenOrders;
+              amm[poolIdx].amm_target_orders = poolAccounts.ammTargetOrders;
+              amm[poolIdx].lp_mint = poolAccounts.lpMint;
+              amm[poolIdx].account_a = poolAccounts.baseVault || amm[poolIdx].account_a;
+              amm[poolIdx].account_b = poolAccounts.quoteVault || amm[poolIdx].account_b;
+              
+              if (marketAccounts) {
+                amm[poolIdx].market_bids = marketAccounts.bids;
+                amm[poolIdx].market_asks = marketAccounts.asks;
+                amm[poolIdx].market_event_queue = marketAccounts.eventQueue;
+                amm[poolIdx].market_base_vault = marketAccounts.baseVault;
+                amm[poolIdx].market_quote_vault = marketAccounts.quoteVault;
+                amm[poolIdx].market_authority = marketAccounts.authority;
+              } else {
+                try {
+                  logger.warn('raydium.amm.market_accounts.no_market_accounts', {
+                    cat: 'pools',
+                    ctx: { 
+                      poolId: pool.id,
+                      marketId: poolAccounts.marketId
+                    }
+                  });
+                } catch {}
+              }
+              
+              // DEBUG: Log successful fetch for our specific pool
+              if (pool.id === '58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2') {
+                try {
+                  logger.info('raydium.amm.market_accounts.target_pool_enriched', {
+                    cat: 'pools',
+                    ctx: {
+                      poolId: pool.id,
+                      hasMarketId: !!amm[poolIdx].market_id,
+                      hasMarketBids: !!amm[poolIdx].market_bids,
+                      hasMarketAsks: !!amm[poolIdx].market_asks,
+                      hasAmmAuthority: !!amm[poolIdx].amm_authority,
+                      market_id: amm[poolIdx].market_id,
+                      market_bids: amm[poolIdx].market_bids
+                    }
+                  });
+                } catch {}
+              }
+              
+              successCount++;
+            } catch (err) {
+              try {
+                logger.warn('raydium.amm.market_accounts.fetch.pool.err', {
+                  cat: 'pools',
+                  ctx: { poolId: pool.id, error: String((err as any)?.message || err) }
+                });
+              } catch {}
+              skipCount++;
+            }
+          };
+        });
+        
+        // Process this batch with limited concurrency
+        const workers: Promise<void>[] = [];
+        for (let i = 0; i < concurrency; i++) {
+          workers.push((async () => { while (idx < queue.length) { const my = idx++; await queue[my](); } })());
+        }
+        await Promise.all(workers);
+        
+        // Log progress
+        try {
+          logger.debug('raydium.amm.market_accounts.batch.progress', {
+            cat: 'pools',
+            ctx: {
+              processed: batchEnd,
+              total: amm.length,
+              success: successCount,
+              skipped: skipCount,
+              percent: Math.round((batchEnd / amm.length) * 100)
+            }
+          });
+        } catch {}
+        
+        // Delay between batches to let RPC limiter refill
+        if (batchEnd < amm.length && delayBetweenBatchesMs > 0) {
+          await new Promise(resolve => setTimeout(resolve, delayBetweenBatchesMs));
+        }
       }
-      await Promise.all(workers);
       
       const fetchMs = Date.now() - fetchStart;
       logger.info('raydium.amm.market_accounts.fetch.complete', {
@@ -822,8 +895,50 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
     }
   }
 
+  // DEBUG: Log a sample pool before canonicalization to verify market accounts are present
+  if (amm.length > 0) {
+    const samplePool = amm.find(p => p.id === '58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2') || amm[0];
+    try {
+      logger.info('raydium.amm.before_canon.sample', {
+        cat: 'pools',
+        ctx: {
+          id: samplePool.id,
+          hasMarketId: !!samplePool.market_id,
+          hasMarketBids: !!samplePool.market_bids,
+          hasMarketAsks: !!samplePool.market_asks,
+          hasMarketEventQueue: !!samplePool.market_event_queue,
+          hasAmmAuthority: !!samplePool.amm_authority,
+          hasAmmOpenOrders: !!samplePool.amm_open_orders,
+          market_id: samplePool.market_id?.slice(0, 8) + '...',
+          market_bids: samplePool.market_bids?.slice(0, 8) + '...'
+        }
+      });
+    } catch {}
+  }
+
   const ammCanon = canonicalizePairs(amm);
   const clmmCanon = canonicalizePairs(clmm);
+  
+  // DEBUG: Log same pool after canonicalization
+  if (ammCanon.length > 0) {
+    const samplePool = ammCanon.find(p => p.id === '58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2') || ammCanon[0];
+    try {
+      logger.info('raydium.amm.after_canon.sample', {
+        cat: 'pools',
+        ctx: {
+          id: samplePool.id,
+          hasMarketId: !!samplePool.market_id,
+          hasMarketBids: !!samplePool.market_bids,
+          hasMarketAsks: !!samplePool.market_asks,
+          hasMarketEventQueue: !!samplePool.market_event_queue,
+          hasAmmAuthority: !!samplePool.amm_authority,
+          hasAmmOpenOrders: !!samplePool.amm_open_orders,
+          market_id: samplePool.market_id?.slice(0, 8) + '...',
+          market_bids: samplePool.market_bids?.slice(0, 8) + '...'
+        }
+      });
+    } catch {}
+  }
   
   // Verify canonicalization: ensure price inversion happens correctly when mints are swapped
   try {
