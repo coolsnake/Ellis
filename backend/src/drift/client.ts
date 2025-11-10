@@ -80,6 +80,8 @@ export class DriftService {
   private warmupDone: boolean = false;
   private warmupPromise: Promise<void> | null = null;
   private lastWarmupAtMs: number = 0;
+  // Cleanup tracking to prevent race conditions between shutdown and startup
+  private cleanupPromise: Promise<void> | null = null;
 
   static getInstance(): DriftService {
     if (!this.instance) this.instance = new DriftService();
@@ -175,6 +177,15 @@ export class DriftService {
   }
 
   async init(): Promise<void> {
+    // Wait for any pending cleanup to complete before reinitializing
+    // This prevents "socket was not CONNECTING or OPEN" errors from race conditions
+    if (this.cleanupPromise) {
+      try {
+        await this.cleanupPromise.catch(() => {});
+      } catch {}
+      this.cleanupPromise = null;
+    }
+    
     if (this.client) return;
     this.walletKp = await ensureWallet(CONFIG.walletPath);
     // Custom fetch to tag 429s and disable internal 429 retry loop
@@ -805,56 +816,89 @@ export class DriftService {
 
   // Public cleanup method for shutdown - ensures all subscriptions are properly torn down
   async cleanup(): Promise<void> {
-    try {
-      // Unsubscribe all warm users first
-      const warmUnsubscribes: Array<Promise<any>> = [];
-      for (const [pk, warm] of this.warmUsers.entries()) {
+    // Track cleanup with a promise so init() can wait for it to complete
+    // This prevents race conditions between shutdown and startup
+    this.cleanupPromise = (async () => {
+      try {
+        logger.info('drift.cleanup.start', { cat: 'drift' });
+        
+        // Unsubscribe the main client first
         try {
-          const user = (warm as any)?.user;
-          if (user && typeof user.unsubscribe === 'function') {
-            warmUnsubscribes.push((user as any).unsubscribe().catch(() => {}));
+          if (this.client && typeof (this.client as any).unsubscribe === 'function') {
+            await (this.client as any).unsubscribe().catch(() => {});
           }
         } catch {}
-      }
-      if (warmUnsubscribes.length > 0) {
-        try { await Promise.allSettled(warmUnsubscribes); } catch {}
-      }
-      this.warmUsers.clear();
-
-      // Unsubscribe the active user if it exists
-      try {
-        const activeUser = (this.client as any)?.user;
-        if (activeUser && typeof activeUser.unsubscribe === 'function') {
-          await activeUser.unsubscribe().catch(() => {});
+        
+        // Unsubscribe all warm users
+        const warmUnsubscribes: Array<Promise<any>> = [];
+        for (const [pk, warm] of this.warmUsers.entries()) {
+          try {
+            const user = (warm as any)?.user;
+            if (user && typeof user.unsubscribe === 'function') {
+              warmUnsubscribes.push((user as any).unsubscribe().catch(() => {}));
+            }
+          } catch {}
         }
-      } catch {}
+        if (warmUnsubscribes.length > 0) {
+          try { await Promise.allSettled(warmUnsubscribes); } catch {}
+        }
+        this.warmUsers.clear();
 
-      // Clear the Connection's internal subscription maps to prevent _updateSubscriptions
-      // from trying to resubscribe after shutdown
-      try {
-        if (this.connection) {
-          const rpcWs: any = (this.connection as any)?._rpcWebSocket;
-          if (rpcWs) {
-            // Clear subscription maps
-            if (rpcWs._subscriptionsByAccountChangeSubscriptionId) {
-              try { rpcWs._subscriptionsByAccountChangeSubscriptionId.clear?.(); } catch {}
-            }
-            if (rpcWs._subscriptionsByProgramAccountChangeSubscriptionId) {
-              try { rpcWs._subscriptionsByProgramAccountChangeSubscriptionId.clear?.(); } catch {}
-            }
-            // Clear any pending timers that might trigger _updateSubscriptions
-            if (rpcWs._subscriptionUpdateTimer) {
-              try { clearTimeout(rpcWs._subscriptionUpdateTimer); rpcWs._subscriptionUpdateTimer = null; } catch {}
+        // Unsubscribe the active user if it exists
+        try {
+          const activeUser = (this.client as any)?.user;
+          if (activeUser && typeof activeUser.unsubscribe === 'function') {
+            await activeUser.unsubscribe().catch(() => {});
+          }
+        } catch {}
+
+        // Clear the Connection's internal subscription maps to prevent _updateSubscriptions
+        // from trying to resubscribe after shutdown
+        try {
+          if (this.connection) {
+            const rpcWs: any = (this.connection as any)?._rpcWebSocket;
+            if (rpcWs) {
+              // Clear subscription maps
+              if (rpcWs._subscriptionsByAccountChangeSubscriptionId) {
+                try { rpcWs._subscriptionsByAccountChangeSubscriptionId.clear?.(); } catch {}
+              }
+              if (rpcWs._subscriptionsByProgramAccountChangeSubscriptionId) {
+                try { rpcWs._subscriptionsByProgramAccountChangeSubscriptionId.clear?.(); } catch {}
+              }
+              // Clear any pending timers that might trigger _updateSubscriptions
+              if (rpcWs._subscriptionUpdateTimer) {
+                try { clearTimeout(rpcWs._subscriptionUpdateTimer); rpcWs._subscriptionUpdateTimer = null; } catch {}
+              }
+              
+              // Close the WebSocket connection to prevent lingering subscriptions
+              try {
+                const ws = rpcWs.underlyingSocket || rpcWs._ws || rpcWs.socket || rpcWs._socket;
+                if (ws && typeof ws.close === 'function') {
+                  ws.close();
+                }
+              } catch {}
             }
           }
-        }
-      } catch {}
+        } catch {}
 
-      // Teardown infrastructure (shared subscribers, timers, etc.)
-      await this.teardownInfra();
-    } catch (e: any) {
-      try { logger.warn('drift.cleanup.error', { error: String(e?.message || e), cat: 'drift' }); } catch {}
-    }
+        // Teardown infrastructure (shared subscribers, timers, etc.)
+        await this.teardownInfra();
+        
+        // Reset client state to allow reinitialization
+        this.client = null;
+        this.connection = null;
+        this.loader = null;
+        
+        logger.info('drift.cleanup.complete', { cat: 'drift' });
+      } catch (e: any) {
+        try { logger.warn('drift.cleanup.error', { error: String(e?.message || e), cat: 'drift' }); } catch {}
+      }
+    })();
+    
+    // Wait for cleanup to complete
+    try {
+      await this.cleanupPromise;
+    } catch {}
   }
 
   private maybeTeardownInfra(): void {

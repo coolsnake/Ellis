@@ -2253,6 +2253,18 @@ export function startRaydiumRefreshLoop(): void {
                 try {
                   const rpcWs: any = (wsConn as any)?._rpcWebSocket;
                   if (rpcWs) {
+                    // Close the underlying WebSocket FIRST to prevent reconnection and _updateSubscriptions
+                    // This prevents the web3.js auto-resubscribe mechanism from firing on a closed socket
+                    try {
+                      const ws = rpcWs.underlyingSocket || rpcWs._ws || rpcWs.socket || rpcWs._socket;
+                      if (ws && typeof ws.close === 'function') {
+                        ws.close();
+                        // Give it a moment to actually transition to CLOSED state
+                        await new Promise(r => setTimeout(r, 50));
+                        try { logger.debug('pools.ws underlying socket closed', { cat: 'pools' }); } catch {}
+                      }
+                    } catch {}
+                    
                     // Clear any pending subscription update timers
                     // The library may have timers that call _updateSubscriptions
                     if (rpcWs._subscriptionsByAccountChangeSubscriptionId) {
