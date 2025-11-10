@@ -1569,6 +1569,79 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       }
     } catch {}
 
+    // CRITICAL FIX: Correct reserve mapping for all pools (SDK-independent)
+    // This runs even if getTokensMintFromPoolAddress wasn't available
+    // vaultA/vaultB represent pool's mint_a/mint_b, must map to reserveX/reserveY (tokenX/tokenY)
+    try {
+      if (hop.vaultA && hop.vaultB && acctBase.reserveX && acctBase.reserveY) {
+        // Fetch pool data to get mint_a/mint_b
+        const { peekMeteoraPools } = await import('../../server/pools.js');
+        const pools = peekMeteoraPools();
+        const poolId = hop.poolId.replace(/-rev$/, '');
+        const poolData = (pools.clmm || []).find((p: any) => String(p?.id || '') === poolId);
+        
+        if (poolData) {
+          const poolMintA = String((poolData as any)?.mint_a || '');
+          const poolMintB = String((poolData as any)?.mint_b || '');
+          
+          // Try to get tokenX/tokenY from acctBase or derive from pool state
+          let tokenXMint: string | null = null;
+          let tokenYMint: string | null = null;
+          
+          if (acctBase.tokenXMint && acctBase.tokenYMint) {
+            tokenXMint = (acctBase.tokenXMint instanceof PublicKey ? acctBase.tokenXMint : toPublicKey(acctBase.tokenXMint)).toBase58();
+            tokenYMint = (acctBase.tokenYMint instanceof PublicKey ? acctBase.tokenYMint : toPublicKey(acctBase.tokenYMint)).toBase58();
+          } else {
+            // Fallback: try to fetch from pool state directly
+            try {
+              const poolState = await program.account.lbPair.fetch(poolPk);
+              if (poolState) {
+                const tkX = (poolState as any)?.tokenXMint || (poolState as any)?.token_x_mint;
+                const tkY = (poolState as any)?.tokenYMint || (poolState as any)?.token_y_mint;
+                if (tkX) tokenXMint = (tkX.publicKey || tkX).toBase58?.() || String(tkX);
+                if (tkY) tokenYMint = (tkY.publicKey || tkY).toBase58?.() || String(tkY);
+              }
+            } catch {}
+          }
+          
+          if (poolMintA && poolMintB && tokenXMint && tokenYMint) {
+            // Determine if tokenX corresponds to mint_a or mint_b
+            const tokenXIsMintA = tokenXMint === poolMintA;
+            const tokenXIsMintB = tokenXMint === poolMintB;
+            
+            if (tokenXIsMintA) {
+              // tokenX=mint_a, tokenY=mint_b => reserveX=vaultA, reserveY=vaultB
+              acctBase.reserveX = toPublicKey(hop.vaultA);
+              acctBase.reserveY = toPublicKey(hop.vaultB);
+              try {
+                logger.debug('meteora.dlmm.reserve_mapped', {
+                  cat: 'tx',
+                  ctx: { poolId: hop.poolId, mapping: 'natural', tokenX: 'mint_a' }
+                });
+              } catch {}
+            } else if (tokenXIsMintB) {
+              // tokenX=mint_b, tokenY=mint_a => reserveX=vaultB, reserveY=vaultA (swapped!)
+              acctBase.reserveX = toPublicKey(hop.vaultB);
+              acctBase.reserveY = toPublicKey(hop.vaultA);
+              try {
+                logger.debug('meteora.dlmm.reserve_mapped', {
+                  cat: 'tx',
+                  ctx: { poolId: hop.poolId, mapping: 'swapped', tokenX: 'mint_b' }
+                });
+              } catch {}
+            }
+          }
+        }
+      }
+    } catch (e: any) {
+      try {
+        logger.debug('meteora.dlmm.reserve_mapping_fallback.failed', {
+          cat: 'tx',
+          ctx: { poolId: hop.poolId, error: String(e?.message || e) }
+        });
+      } catch {}
+    }
+
     // CRITICAL FIX: Ensure token mints are explicitly set before building instruction
     // This prevents the SDK from using incorrect/cached mints from previous swaps
     try {
@@ -3638,21 +3711,88 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                   } catch {}
                 }
                 
-                // Method 4: Check for internal _bn property (BN-based PublicKey)
+                // Method 4: Check for internal _bn property (BN-based PublicKey) - ENHANCED
                 if (rawKey && typeof rawKey === 'object') {
                   try {
-                    const bn = rawKey._bn || rawKey.bn;
-                    if (bn && typeof bn.toArrayLike === 'function') {
-                      const bytes = bn.toArrayLike(Uint8Array, 'be', 32);
-                      pubkey = new PublicKey(bytes);
-                      return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
+                    const bn = rawKey._bn || rawKey.bn || rawKey.value;
+                    if (bn && typeof bn === 'object') {
+                      // Try multiple BN extraction methods
+                      
+                      // 4a: toArrayLike (most common)
+                      if (typeof bn.toArrayLike === 'function') {
+                        try {
+                          const bytes = bn.toArrayLike(Uint8Array, 'be', 32);
+                          pubkey = new PublicKey(bytes);
+                          return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
+                        } catch (bnErr) {
+                          try { logger.debug('bn.toArrayLike.failed', { cat: 'tx', ctx: { keyIdx, error: String(bnErr) } }); } catch {}
+                        }
+                      }
+                      
+                      // 4b: toArray
+                      if (typeof bn.toArray === 'function') {
+                        try {
+                          const arr = bn.toArray('be', 32);
+                          pubkey = new PublicKey(Uint8Array.from(arr));
+                          return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
+                        } catch (bnErr) {
+                          try { logger.debug('bn.toArray.failed', { cat: 'tx', ctx: { keyIdx, error: String(bnErr) } }); } catch {}
+                        }
+                      }
+                      
+                      // 4c: Direct buffer access from BN.js words array
+                      if (bn.words && Array.isArray(bn.words)) {
+                        try {
+                          // BN.js stores data in 'words' array (26-bit limbs in little-endian)
+                          const buffer = Buffer.alloc(32);
+                          let offset = 0;
+                          for (let i = bn.words.length - 1; i >= 0; i--) {
+                            const word = bn.words[i];
+                            buffer.writeUInt32BE(word >>> 0, offset);
+                            offset += 4;
+                            if (offset >= 32) break;
+                          }
+                          pubkey = new PublicKey(buffer);
+                          return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
+                        } catch (bnErr) {
+                          try { logger.debug('bn.words.failed', { cat: 'tx', ctx: { keyIdx, error: String(bnErr) } }); } catch {}
+                        }
+                      }
+                      
+                      // 4d: toString(16) and parse as hex
+                      if (typeof bn.toString === 'function') {
+                        try {
+                          const hex = bn.toString(16).padStart(64, '0');
+                          const bytes = Buffer.from(hex, 'hex');
+                          if (bytes.length === 32) {
+                            pubkey = new PublicKey(bytes);
+                            return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
+                          }
+                        } catch (bnErr) {
+                          try { logger.debug('bn.toString.failed', { cat: 'tx', ctx: { keyIdx, error: String(bnErr) } }); } catch {}
+                        }
+                      }
+                      
+                      // 4e: Log BN structure for further debugging
+                      try {
+                        logger.error('raydium.amm.bn.structure', {
+                          cat: 'tx',
+                          ctx: {
+                            keyIdx,
+                            bnType: typeof bn,
+                            bnConstructor: bn?.constructor?.name,
+                            bnKeys: Object.keys(bn).slice(0, 15),
+                            hasToArrayLike: typeof bn.toArrayLike,
+                            hasToArray: typeof bn.toArray,
+                            hasWords: Array.isArray(bn.words),
+                            hasToString: typeof bn.toString,
+                          }
+                        });
+                      } catch {}
                     }
-                    if (bn && typeof bn.toArray === 'function') {
-                      const arr = bn.toArray('be', 32);
-                      pubkey = new PublicKey(Uint8Array.from(arr));
-                      return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
-                    }
-                  } catch {}
+                  } catch (bnExtractErr) {
+                    try { logger.debug('bn.extraction.failed', { cat: 'tx', ctx: { keyIdx, error: String(bnExtractErr) } }); } catch {}
+                  }
                 }
                 
                 // Method 5: If it's already a string
