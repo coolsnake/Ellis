@@ -19,17 +19,3 @@ export async function resolveOrca(hop: DirectHop): Promise<DirectHop> {
   return hop;
 }
 
-
-
-      hop.vaultB = String((p as any)?.account_b || '');
-      
-      // Populate tick arrays if available from pool data
-      if ((p as any)?.tick_array_lower) hop.tickArrayLower = hop.tickArrayLower || String((p as any).tick_array_lower);
-      if ((p as any)?.tick_array_center) hop.tickArrayCenter = hop.tickArrayCenter || String((p as any).tick_array_center);
-      if ((p as any)?.tick_array_upper) hop.tickArrayUpper = hop.tickArrayUpper || String((p as any).tick_array_upper);
-    }
-  } catch {}
-  return hop;
-}
-
-
