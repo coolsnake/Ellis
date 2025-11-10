@@ -1584,27 +1584,265 @@ export function startRaydiumRefreshLoop(): void {
         };
 
         // Helper: attach Raydium AMM vault (token) accounts for a given AMM pool address
-        // NOW LAZY: Skip during initial setup, will be attached on first pool update
         const attachRaydiumAmmVaults = async (poolAddr: string) => {
-          logger.info('raydium.amm.attach.lazy_skip', { pool: poolAddr.slice(0,8)+'…', reason: 'will_attach_on_first_update', cat: 'pools' });
-          // Lazy loading - will be done in handle() when first pool update arrives
-          return;
+          try {
+            logger.info('raydium.amm.attach.start', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
+            const pk = new web3.PublicKey(poolAddr);
+            const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+            
+            // Add 5-second timeout to prevent hanging
+            const acc: any = await Promise.race([
+              withRpcLimit(() => conn.getAccountInfo(pk, CONFIG.system.txCommitment as any)),
+              new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('RPC timeout after 5s')), 5000)
+              )
+            ]).catch((err) => {
+              logger.info('raydium.amm.attach.rpc_timeout', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
+              return null;
+            });
+            
+            if (!acc || !acc.data) return;
+            
+            const rmod: any = await import('@raydium-io/raydium-sdk-v2').catch(() => null);
+            const ammLayout = rmod?.LiquidityStateLayoutV4 || rmod?.LIQUIDITY_STATE_LAYOUT_V4;
+            if (!ammLayout || typeof ammLayout.decode !== 'function') return;
+            
+            let state: any = null;
+            try { state = ammLayout.decode((acc as any).data); } catch { state = null; }
+            
+            const vA = state?.baseVault?.toBase58?.() || state?.vaultA?.toBase58?.();
+            const vB = state?.quoteVault?.toBase58?.() || state?.vaultB?.toBase58?.();
+            const vaults = Array.from(new Set([vA, vB].filter(Boolean)));
+            
+            for (const v of vaults) {
+              try {
+                const vpk = new web3.PublicKey(v as string);
+                const id = await subscribeAccountWithRetry(vpk, handle);
+                subs.push({ kind: 'account', id });
+                targetedSourceByAccount.set(String(v), 'raydium');
+                debugLogTargeted('raydium', String(v), { kind: 'vault' });
+                derivedAccountToPool.set(String(v), { poolId: poolAddr, accountType: 'vault' });
+              } catch {}
+            }
+            
+            logger.info('raydium.amm.attach.complete', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
+          } catch (err) {
+            logger.info('raydium.amm.attach.error', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
+          }
         };
 
         // Helper: attach Raydium CLMM vault, observation, and tick array accounts for a given CLMM pool address
-        // NOW LAZY: Skip during initial setup, will be attached on first pool update
         const attachRaydiumClmmAccounts = async (poolAddr: string) => {
-          logger.info('raydium.clmm.attach.lazy_skip', { pool: poolAddr.slice(0,8)+'…', reason: 'will_attach_on_first_update', cat: 'pools' });
-          // Lazy loading - will be done in handle() when first pool update arrives
-          return;
+          try {
+            logger.info('raydium.clmm.attach.start', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
+            const pk = new web3.PublicKey(poolAddr);
+            const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+            
+            // Add 5-second timeout to prevent hanging
+            const acc: any = await Promise.race([
+              withRpcLimit(() => conn.getAccountInfo(pk, CONFIG.system.txCommitment as any)),
+              new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('RPC timeout after 5s')), 5000)
+              )
+            ]).catch((err) => {
+              logger.info('raydium.clmm.attach.rpc_timeout', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
+              return null;
+            });
+            
+            if (!acc || !acc.data) return;
+            
+            const rmod: any = await import('@raydium-io/raydium-sdk-v2').catch(() => null);
+            const clmmLayout = rmod?.PoolInfoLayout || rmod?.AmmV3PoolPersonalPosition || rmod?.PoolState;
+            if (!clmmLayout || typeof clmmLayout.decode !== 'function') return;
+            
+            let state: any = null;
+            try { state = clmmLayout.decode((acc as any).data); } catch { return; }
+            
+            // Subscribe to vaults
+            const vA = state?.vaultA?.toBase58?.() || state?.tokenVault0?.toBase58?.();
+            const vB = state?.vaultB?.toBase58?.() || state?.tokenVault1?.toBase58?.();
+            const vaults = Array.from(new Set([vA, vB].filter(Boolean)));
+            for (const v of vaults) {
+              try {
+                const vpk = new web3.PublicKey(v as string);
+                const id = await subscribeAccountWithRetry(vpk, handle);
+                subs.push({ kind: 'account', id });
+                targetedSourceByAccount.set(String(v), 'raydium');
+                debugLogTargeted('raydium', String(v), { kind: 'clmm_vault' });
+                derivedAccountToPool.set(String(v), { poolId: poolAddr, accountType: 'vault' });
+              } catch {}
+            }
+            
+            // Subscribe to observationId
+            const obsId = state?.observationId?.toBase58?.() || state?.observationKey?.toBase58?.();
+            if (obsId) {
+              try {
+                const obsPk = new web3.PublicKey(obsId);
+                const id = await subscribeAccountWithRetry(obsPk, handle);
+                subs.push({ kind: 'account', id });
+                targetedSourceByAccount.set(String(obsId), 'raydium');
+                debugLogTargeted('raydium', String(obsId), { kind: 'observation' });
+                derivedAccountToPool.set(String(obsId), { poolId: poolAddr, accountType: 'observation' });
+              } catch {}
+            }
+            
+            // Subscribe to oracle
+            const oracle = state?.oracle?.toBase58?.();
+            if (oracle) {
+              try {
+                const oraclePk = new web3.PublicKey(oracle);
+                const id = await subscribeAccountWithRetry(oraclePk, handle);
+                subs.push({ kind: 'account', id });
+                targetedSourceByAccount.set(String(oracle), 'raydium');
+                debugLogTargeted('raydium', String(oracle), { kind: 'oracle' });
+                derivedAccountToPool.set(String(oracle), { poolId: poolAddr, accountType: 'oracle' });
+              } catch {}
+            }
+            
+            // Subscribe to active tick arrays
+            const currentTick = state?.tickCurrent ?? state?.tick_current;
+            const tickSpacing = state?.tickSpacing ?? state?.tick_spacing;
+            if (currentTick !== undefined && tickSpacing) {
+              try {
+                const clmmProgramId = new web3.PublicKey(String((CONFIG as any)?.raydium?.clmmProgram || 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK'));
+                
+                for (let offset = -1; offset <= 1; offset++) {
+                  try {
+                    const startTickIndex = Math.floor(currentTick / (tickSpacing * 60)) + offset;
+                    const actualStartTick = startTickIndex * tickSpacing * 60;
+                    const startIndexBuffer = Buffer.alloc(4);
+                    startIndexBuffer.writeInt32LE(actualStartTick, 0);
+                    const [tickArrayPda] = web3.PublicKey.findProgramAddressSync(
+                      [Buffer.from('tick_array'), pk.toBuffer(), startIndexBuffer],
+                      clmmProgramId
+                    );
+                    
+                    const id = await subscribeAccountWithRetry(tickArrayPda, handle);
+                    subs.push({ kind: 'account', id });
+                    targetedSourceByAccount.set(tickArrayPda.toBase58(), 'raydium');
+                    debugLogTargeted('raydium', tickArrayPda.toBase58(), { kind: 'tick_array', offset });
+                    derivedAccountToPool.set(tickArrayPda.toBase58(), { poolId: poolAddr, accountType: 'tick_array' });
+                  } catch (err) {
+                    logger.info('raydium.clmm.tickarray.subscribe.fail', { pool: poolAddr, offset, error: String((err as any)?.message || err) });
+                  }
+                }
+              } catch (err) {
+                logger.info('raydium.clmm.tickarray.derive.fail', { pool: poolAddr, error: String((err as any)?.message || err) });
+              }
+            }
+            
+            logger.info('raydium.clmm.attach.complete', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
+          } catch (err) {
+            logger.info('raydium.clmm.attach.error', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
+          }
         };
 
         // Helper: attach Orca Whirlpool vault, oracle, and tick array accounts for a given pool address
-        // NOW LAZY: Skip during initial setup, will be attached on first pool update
         const attachOrcaWhirlpoolAccounts = async (poolAddr: string) => {
-          logger.info('orca.attach.lazy_skip', { pool: poolAddr.slice(0,8)+'…', reason: 'will_attach_on_first_update', cat: 'pools' });
-          // Lazy loading - will be done in handle() when first pool update arrives
-          return;
+          try {
+            logger.info('orca.attach.start', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
+            const pk = new web3.PublicKey(poolAddr);
+            const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+            
+            // Add 5-second timeout to prevent hanging
+            const acc: any = await Promise.race([
+              withRpcLimit(() => conn.getAccountInfo(pk, CONFIG.system.txCommitment as any)),
+              new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('RPC timeout after 5s')), 5000)
+              )
+            ]).catch((err) => {
+              logger.info('orca.attach.rpc_timeout', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
+              return null;
+            });
+            
+            if (!acc || !acc.data) {
+              logger.info('orca.attach.no_data', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
+              return;
+            }
+            
+            const sdkAny: any = await import('@orca-so/whirlpools-sdk').catch(() => null);
+            const ParsableWhirlpool = sdkAny?.ParsableWhirlpool;
+            const PDAUtil = sdkAny?.PDAUtil;
+            
+            if (!ParsableWhirlpool || typeof ParsableWhirlpool.parse !== 'function') {
+              logger.info('orca.attach.no_sdk', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
+              return;
+            }
+            
+            let whirlpoolData: any = null;
+            try { 
+              whirlpoolData = ParsableWhirlpool.parse(acc.data);
+              logger.info('orca.attach.parsed', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
+            } catch (err) { 
+              logger.info('orca.attach.parse_fail', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
+              return;
+            }
+            
+            // Subscribe to vaults
+            const vaultA = whirlpoolData?.tokenVaultA;
+            const vaultB = whirlpoolData?.tokenVaultB;
+            const vaults = [vaultA, vaultB].filter(Boolean);
+            for (const vault of vaults) {
+              try {
+                const id = await subscribeAccountWithRetry(vault, handle);
+                subs.push({ kind: 'account', id });
+                targetedSourceByAccount.set(vault.toBase58(), 'orca');
+                debugLogTargeted('orca', vault.toBase58(), { kind: 'vault' });
+                derivedAccountToPool.set(vault.toBase58(), { poolId: poolAddr, accountType: 'vault' });
+              } catch (err) {
+                logger.info('orca.vault.subscribe.fail', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
+              }
+            }
+            
+            // Subscribe to oracle
+            if (whirlpoolData?.oracle) {
+              try {
+                const id = await subscribeAccountWithRetry(whirlpoolData.oracle, handle);
+                subs.push({ kind: 'account', id });
+                targetedSourceByAccount.set(whirlpoolData.oracle.toBase58(), 'orca');
+                debugLogTargeted('orca', whirlpoolData.oracle.toBase58(), { kind: 'oracle' });
+                derivedAccountToPool.set(whirlpoolData.oracle.toBase58(), { poolId: poolAddr, accountType: 'oracle' });
+              } catch (err) {
+                logger.info('orca.oracle.subscribe.fail', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
+              }
+            }
+            
+            // Subscribe to active tick arrays
+            const tickSpacing = whirlpoolData?.tickSpacing;
+            const currentTick = whirlpoolData?.tickCurrentIndex;
+            
+            if (tickSpacing !== undefined && currentTick !== undefined && PDAUtil) {
+              try {
+                const TickUtil = sdkAny?.TickUtil || (await import('@orca-so/whirlpools-sdk/dist/utils/public/tick-utils.js').catch(() => null))?.TickUtil;
+                const orcaProgramId = new web3.PublicKey(String(CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc'));
+                
+                if (TickUtil && typeof TickUtil.getStartTickIndex === 'function') {
+                  for (let offset = -1; offset <= 1; offset++) {
+                    try {
+                      const startTick = TickUtil.getStartTickIndex(currentTick, tickSpacing, offset);
+                      const tickArrayPda = PDAUtil.getTickArray(orcaProgramId, pk, startTick);
+                      
+                      if (tickArrayPda?.publicKey) {
+                        const id = await subscribeAccountWithRetry(tickArrayPda.publicKey, handle);
+                        subs.push({ kind: 'account', id });
+                        targetedSourceByAccount.set(tickArrayPda.publicKey.toBase58(), 'orca');
+                        debugLogTargeted('orca', tickArrayPda.publicKey.toBase58(), { kind: 'tick_array', offset });
+                        derivedAccountToPool.set(tickArrayPda.publicKey.toBase58(), { poolId: poolAddr, accountType: 'tick_array' });
+                      }
+                    } catch (err) {
+                      logger.info('orca.whirlpool.tickarray.subscribe.fail', { pool: poolAddr, offset, error: String((err as any)?.message || err) });
+                    }
+                  }
+                }
+              } catch (err) {
+                logger.info('orca.whirlpool.tickarray.derive.fail', { pool: poolAddr, error: String((err as any)?.message || err) });
+              }
+            }
+            
+            logger.info('orca.attach.complete', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
+          } catch (err) {
+            logger.info('orca.attach.error', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
+          }
         };
 
         // Helper: attach Meteora DLMM reserve accounts (reserveX, reserveY) and oracle for a given pool address
