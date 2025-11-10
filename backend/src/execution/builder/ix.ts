@@ -1035,12 +1035,12 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         binArrayLower: hop.binArrayLower ? toPublicKey(hop.binArrayLower) : undefined,
         binArrayUpper: hop.binArrayUpper ? toPublicKey(hop.binArrayUpper) : undefined,
       } as any;
-      try { logger.debug('meteora.dlmm.swapIx.call', { cat: 'tx', ctx: { swapForY: swapForY } }); } catch {}
+      try { logger.info('meteora.dlmm.swapIx.call', { cat: 'tx', ctx: { swapForY: swapForY } }); } catch {}
       const ix = await (DLMM as any).swapIx(connection, kp.publicKey, params);
       if (ix) {
         // Safety net: attempt to attach remaining bin-array metas when using fast-path ix
         await injectBinArrayMetas(ix, DLMM, connection, poolPk, programId, hop.poolId);
-        try { logger.debug('meteora.dlmm.swapIx.ok', { cat: 'tx' }); } catch {}
+        try { logger.info('meteora.dlmm.swapIx.ok', { cat: 'tx' }); } catch {}
         return [ix];
       }
     }
@@ -1780,6 +1780,23 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       });
     } catch {}
     
+    // Debug: Log ALL fields in acctBase to identify missing accounts
+    try {
+      const acctFields = Object.keys(acctBase);
+      const acctDebug: any = {};
+      for (const key of acctFields) {
+        const val = (acctBase as any)[key];
+        if (val && typeof val.toBase58 === 'function') {
+          acctDebug[key] = val.toBase58();
+        } else if (val) {
+          acctDebug[key] = String(val);
+        } else {
+          acctDebug[key] = null;
+        }
+      }
+      logger.info('meteora.dlmm.acctBase.all_fields', { cat: 'tx', ctx: { poolId: hop.poolId, fields: acctDebug } });
+    } catch {}
+    
     if (typeof (builder as any).accountsPartial === 'function') builder = (builder as any).accountsPartial(acctBase);
     else if (typeof (builder as any).accounts === 'function') builder = (builder as any).accounts(acctBase);
 
@@ -2134,7 +2151,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     }
     
     if (ix) {
-      try { logger.debug('meteora.dlmm.swap.ok', { cat: 'tx' }); } catch {}
+      try { logger.info('meteora.dlmm.swap.ok', { cat: 'tx' }); } catch {}
       return [...setupIxs, ix];
     }
     
@@ -3932,11 +3949,13 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                   return null;
                 }
                 
-                // Method 1: Try toBase58() - but check result is valid
+                // Method 1: Try toBase58() - but check result is valid AND not a placeholder
                 if (rawKey && typeof rawKey.toBase58 === 'function') {
                   try {
                     const b58 = rawKey.toBase58();
-                    if (b58 && typeof b58 === 'string' && b58.length > 20 && !b58.includes('object')) {
+                    // Reject placeholders (all 1s, system program, etc.)
+                    const isPlaceholder = /^11111+$/.test(b58);
+                    if (b58 && typeof b58 === 'string' && b58.length > 20 && !b58.includes('object') && !isPlaceholder) {
                       pubkey = new PublicKey(b58);
                       return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
                     }
@@ -4049,10 +4068,13 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                   }
                 }
                 
-                // Method 5: If it's already a string
+                // Method 5: If it's already a string (but not a placeholder)
                 if (typeof rawKey === 'string' && rawKey.length > 20 && !rawKey.includes('object')) {
-                  pubkey = new PublicKey(rawKey);
-                  return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
+                  const isPlaceholder = /^11111+$/.test(rawKey);
+                  if (!isPlaceholder) {
+                    pubkey = new PublicKey(rawKey);
+                    return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
+                  }
                 }
                 
                 // Method 6: Try logging the object structure to understand what we're dealing with
