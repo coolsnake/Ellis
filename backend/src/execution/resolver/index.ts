@@ -102,11 +102,10 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
         hop.binStep = hop.binStep || stat.binStep;
       }
     }
-    // Compute conservative minOut using default slippage when provided size specified (placeholder)
-    if (hop.amountInRaw > 0n) {
-      const slippage = typeof input.slippageBps === 'number' ? input.slippageBps : cfg.slippageBpsDefault;
-      hop.minOutRaw = applySlippage(hop.amountInRaw, slippage, 'minOut');
-    }
+    // NOTE: minOutRaw is calculated later after quoting (line ~353) using the quoted output amount.
+    // We cannot calculate it here because:
+    // 1. amountInRaw is in input token units, but minOutRaw must be in output token units
+    // 2. We need the actual quoted output to apply slippage correctly
     // Per-DEX refinement hooks (populate program accounts/ticks)
     try {
       if (hop.dex === 'raydium' && hop.variant === 'amm') {
