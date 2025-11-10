@@ -6,7 +6,11 @@ import { getClmmStatic, setClmmStatic, saveClmmCacheToDisk } from '../../executi
 import { withRpcLimit } from '../../utils/rpcLimiter.js';
 
 async function decodeClmmState(connection: Connection, poolPk: PublicKey): Promise<{ programId: PublicKey; ammConfig: PublicKey | null; oracle: PublicKey | null; vaultA: PublicKey | null; vaultB: PublicKey | null; observationId: PublicKey | null; tickCurrent: number; tickSpacing: number } | null> {
-  const acc = await withRpcLimit(() => connection.getAccountInfo(poolPk));
+  const acc = await withRpcLimit(
+    () => connection.getAccountInfo(poolPk),
+    1,
+    { module: 'tasks', method: 'getAccountInfo' }
+  );
   if (!acc?.data?.length) { try { logger.warn('clmm.decode.no_account', { pool: poolPk.toBase58?.() || String(poolPk) }); } catch {}; return null; }
   const programId = acc.owner;
   try {
@@ -62,7 +66,11 @@ async function decodeClmmState(connection: Connection, poolPk: PublicKey): Promi
 async function accountExists(connection: Connection, owner: PublicKey, addr: PublicKey | null): Promise<boolean> {
   if (!addr) return false;
   try {
-    const info = await withRpcLimit(() => connection.getAccountInfo(addr));
+    const info = await withRpcLimit(
+      () => connection.getAccountInfo(addr),
+      1,
+      { module: 'tasks', method: 'getAccountInfo' }
+    );
     return !!(info && info.owner && info.owner.equals(owner));
   } catch {
     return false;

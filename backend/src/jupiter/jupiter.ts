@@ -344,9 +344,24 @@ export async function executeSwap(
   const tx = await (async () => {
     try {
       const { withRpcRetry } = await import('../utils/rpcLimiter.js');
-      return await withRpcRetry(() => connection.getTransaction(sig, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 }), { timeoutMs: 3000, retries: 3, baseMs: 200, maxMs: 1500, label: 'getTx' });
+      return await withRpcRetry(
+        () => connection.getTransaction(sig, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 }),
+        { 
+          timeoutMs: 3000, 
+          retries: 3, 
+          baseMs: 200, 
+          maxMs: 1500, 
+          label: 'getTx',
+          module: 'jupiter',
+          method: 'getTransaction'
+        }
+      );
     } catch {
-      return await (await import('../utils/rpcLimiter.js')).withRpcLimit(() => connection.getTransaction(sig, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 }));
+      return await (await import('../utils/rpcLimiter.js')).withRpcLimit(
+        () => connection.getTransaction(sig, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 }),
+        1,
+        { module: 'jupiter', method: 'getTransaction' }
+      );
     }
   })();
     const meta: any = tx?.meta;

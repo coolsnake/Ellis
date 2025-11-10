@@ -84,15 +84,15 @@ async function injectBinArrayMetas(
                       const activeBn = activeId instanceof BN ? activeId : new BN(String(activeId));
                       const idx = binIdToBinArrayIndex(activeBn);
                       const arrIdx = idx instanceof BN ? idx : new BN(String(idx));
-                      // Get bounds for just the active bin array and adjacent ones
+                      // Get bounds for just the active bin array
                       const [lower, upper] = getBounds(arrIdx);
-                      // Use small range: active bin array +/- 1 bin array worth of bins
-                      const binArraySize = (DLMM as any)?.MAX_BIN_ARRAY_SIZE ?? new BN(70);
-                      const rangeLower = lower.sub(binArraySize);
-                      const rangeUpper = upper.add(binArraySize);
+                      // Use minimal range: just the active bin array bounds (typically 1-3 arrays)
+                      // This is sufficient for most swaps and keeps transaction size minimal
+                      const rangeLower = lower;
+                      const rangeUpper = upper;
                       const rawMetas = getMetas(rangeLower, rangeUpper, poolPk, programId) || [];
-                      // Limit to max 10 bin arrays for swap safety
-                      metas = rawMetas.slice(0, 10);
+                      // Limit to max 5 bin arrays - sufficient for active bin + adjacents
+                      metas = rawMetas.slice(0, 5);
                     }
                   }
                 }
@@ -104,7 +104,7 @@ async function injectBinArrayMetas(
           try {
             metas = getMetas(poolPk, programId) || [];
             // Limit results if it's an array
-            if (Array.isArray(metas)) metas = metas.slice(0, 10);
+            if (Array.isArray(metas)) metas = metas.slice(0, 5);
           } catch {}
         }
       }
@@ -121,8 +121,8 @@ async function injectBinArrayMetas(
             || await getCoverage(connection, programId, poolPk).catch(() => null as any) 
             || await getCoverage({ programId, lbPair: poolPk }).catch(() => null as any);
           const raw = (cov && ((cov as any).metas || (cov as any).accountMetas)) || (Array.isArray(cov) ? cov : []);
-          // Limit to max 10 bin arrays - getCoverage can return all bin arrays in pool
-          metas = Array.isArray(raw) ? raw.slice(0, 10) : [];
+          // Limit to max 5 bin arrays - getCoverage can return all bin arrays in pool
+          metas = Array.isArray(raw) ? raw.slice(0, 5) : [];
         }
       } catch (e: any) {
         try { logger.debug('meteora.dlmm.inject.coverage.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
@@ -1839,12 +1839,12 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       try { logger.warn('meteora.dlmm.remaining.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
     }
     
-    // Add pre-computed bin array metas as remaining accounts (already limited to ~6-7 max)
+    // Add pre-computed bin array metas as remaining accounts (already limited to ~5 max)
     // Only add if SDK helper didn't already set remaining accounts
     if (binArrayMetas && binArrayMetas.length && typeof (builder as any).remainingAccounts === 'function') {
       try {
-        // Safety limit - should already be limited but cap at 10 just in case
-        const limited = binArrayMetas.slice(0, 10);
+        // Safety limit - should already be limited but cap at 5 just in case
+        const limited = binArrayMetas.slice(0, 5);
         if (limited.length) {
           builder = (builder as any).remainingAccounts(limited);
           try { logger.debug('meteora.dlmm.remaining.from_metas', { cat: 'tx', ctx: { count: limited.length } }); } catch {}
@@ -1861,9 +1861,9 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       try {
         const coreAccountCount = 15; // Preserve core instruction accounts
         
-        // With extended ALT containing Meteora-specific accounts, we can allow more bin arrays
-        // 12 bin arrays should handle most price ranges while staying under tx size limit
-        const maxRemainingAccounts = 12;
+        // Only need active bin array + adjacents for most swaps
+        // 5 bin arrays is sufficient while keeping transaction size minimal
+        const maxRemainingAccounts = 5;
         
         // Simply limit the number of remaining accounts without deduplication
         // Solana allows duplicate accounts in instructions (with different flags)
