@@ -2634,10 +2634,6 @@ export function startRaydiumRefreshLoop(): void {
             // Begin async teardown and websocket close; future setups will await wsClosePromise
             wsClosePromise = (async () => {
               try {
-                // Use shared safe close utility to properly close WebSocket and clear subscription maps
-                const { safeCloseWebSocket } = await import('../drift/wsHelper.js');
-                await safeCloseWebSocket(conn, 'pools.unsubscribe');
-
                 // Collect all bin subscriptions from trackers before clearing
                 // These might not be in the subs array if setup() was called multiple times
                 const binSubIds: number[] = [];
@@ -2658,7 +2654,8 @@ export function startRaydiumRefreshLoop(): void {
                 // Only allow RPC calls if socket is OPEN (1), not CONNECTING (0) as CONNECTING may fail
                 const canRpc = (ready === 1); // Only OPEN, not CONNECTING
                 
-                // Unsubscribe from main subs array
+                // Unsubscribe from main subs array BEFORE closing WebSocket
+                // This ensures subscription maps are still intact during unsubscribe
                 for (const s of subs) {
                   try {
                     if (!canRpc) continue;
@@ -2682,9 +2679,15 @@ export function startRaydiumRefreshLoop(): void {
                   } catch {}
                 }
                 
+                // Wait for all unsubscribe operations to complete before closing WebSocket
                 if (canRpc && removals.length) {
                   try { await Promise.allSettled(removals); } catch {}
                 }
+                
+                // NOW close WebSocket and clear subscription maps AFTER unsubscribing
+                // This prevents "Ignored unsubscribe request" warnings from web3.js
+                const { safeCloseWebSocket } = await import('../drift/wsHelper.js');
+                await safeCloseWebSocket(conn, 'pools.unsubscribe');
                 
                 // Clear bin trackers after unsubscribing to prevent stale references
                 try {
@@ -2693,7 +2696,6 @@ export function startRaydiumRefreshLoop(): void {
                 } catch {}
 
                 // Give a small delay to allow any in-flight subscription updates to complete
-                // before closing the socket
                 await new Promise(r => setTimeout(r, 100));
 
                 // Close underlying websocket if present to avoid CLOSING race on next subscribe

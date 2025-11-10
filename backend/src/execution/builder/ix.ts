@@ -493,7 +493,9 @@ async function buildOrcaSwapViaSdk(hop: DirectHop, kp: { publicKey: PublicKey; s
   await ensureOrcaSdkConfig();
   const rpc = getOrcaRpc();
   const signer = await getOrcaSdkSigner(kp);
-  const poolAddr = address(String(hop.poolId));
+  // Strip -rev suffix before creating address (similar to Raydium/Meteora)
+  const poolIdStripped = String(hop.poolId).replace(/-rev$/, '');
+  const poolAddr = address(poolIdStripped);
   const inputMintAddr = address(String(hop.inputMint));
   const amountIn = BigInt(hop.amountInRaw ?? 0n);
   if (amountIn <= 0n) {
@@ -657,7 +659,9 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
   try {
     const connection = getConnection();
     const kp = await ensureWallet(CONFIG.walletPath);
-    const poolAddr = String(hop.poolId);
+    // Strip -rev suffix before using poolId (similar to Raydium/Meteora)
+    const poolIdStripped = String(hop.poolId).replace(/-rev$/, '');
+    const poolAddr = poolIdStripped;
     const inputMint = String(hop.inputMint);
     
     // Pre-build validation: amounts
@@ -668,7 +672,8 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
       const sdkAny: any = await import('@orca-so/whirlpools-sdk').catch(() => null);
       if (sdkAny && hop.poolId && hop.inputMint) {
         const { PublicKey } = await import('@solana/web3.js');
-        const pk = new PublicKey(String(hop.poolId));
+        // Use stripped poolId for PublicKey creation
+        const pk = new PublicKey(poolIdStripped);
         // Use account cache instead of direct RPC call
         const { accountCache } = await import('../utils/accountCache.js');
         const acc = await accountCache.getAccountInfo(pk);
@@ -1086,28 +1091,12 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     let binArrayBitmapExtension: PublicKey | undefined = undefined;
     let binArrayMetas: Array<{ pubkey: PublicKey; isWritable: boolean; isSigner: boolean }> | null = null;
     
-    // Always derive bitmap extension first (required account)
-    try {
-      const deriveBinArrayBitmapExtension = (DLMM as any)?.deriveBinArrayBitmapExtension || (mod as any)?.deriveBinArrayBitmapExtension;
-      if (deriveBinArrayBitmapExtension) {
-        try {
-          const derivedExt = deriveBinArrayBitmapExtension(poolPk, programId);
-          const extPk = Array.isArray(derivedExt) ? derivedExt[0] : derivedExt;
-          binArrayBitmapExtension = extPk instanceof PublicKey ? extPk : new PublicKey(String(extPk));
-        } catch {}
-      }
-      if (!binArrayBitmapExtension) {
-        // Fallback: deterministic PDA derivation
-        const [extPda] = PublicKey.findProgramAddressSync([Buffer.from('bitmap_extension'), poolPk.toBuffer()], programId);
-        binArrayBitmapExtension = extPda;
-      }
-    } catch {
-      // Last resort: derive PDA directly
-      try {
-        const [extPda] = PublicKey.findProgramAddressSync([Buffer.from('bitmap_extension'), poolPk.toBuffer()], programId);
-        binArrayBitmapExtension = extPda;
-      } catch {}
-    }
+    // Use program ID for bitmap extension (standard approach)
+    // Many pools don't have a bitmap extension initialized, and the Meteora program
+    // accepts its own program ID as a placeholder in these cases.
+    // This avoids "AccountOwnedByWrongProgram" errors when the PDA hasn't been initialized.
+    // This matches behavior seen in successful competitor transactions.
+    binArrayBitmapExtension = programId;
     
     try {
       const deriveBinArray = (DLMM as any)?.deriveBinArray || (mod as any)?.deriveBinArray;
@@ -1410,12 +1399,11 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     if (binArrayLower) accounts.binArrayLower = binArrayLower;
     if (binArrayUpper) accounts.binArrayUpper = binArrayUpper;
     
-    // Always include the bitmap extension PDA (required by Meteora SDK)
-    // The SDK requires this account even if it doesn't exist on-chain yet
-    // Solana runtime will handle non-existent accounts appropriately
+    // Use program ID for bitmap extension (standard Meteora approach)
+    // The program accepts its own ID when the bitmap extension isn't needed or initialized
+    // This avoids ownership validation errors for uninitialized PDAs
     if (!binArrayBitmapExtension) {
-      const [extPda] = PublicKey.findProgramAddressSync([Buffer.from('bitmap_extension'), poolPk.toBuffer()], programId);
-      binArrayBitmapExtension = extPda;
+      binArrayBitmapExtension = programId;
     }
     
     // Always include in accounts - SDK requires this field to be present

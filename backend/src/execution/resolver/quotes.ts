@@ -50,7 +50,9 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
       } catch {}
       
       const client = (buildWhirlpoolClient as any)(ctx);
-      const pool = await client.getPool(new PublicKey(hop.poolId));
+      // Strip -rev suffix before creating PublicKey (similar to Raydium/Meteora)
+      const poolIdStripped = hop.poolId.replace(/-rev$/, '');
+      const pool = await client.getPool(new PublicKey(poolIdStripped));
       
       try {
         const poolData = pool.getData ? pool.getData() : null;
