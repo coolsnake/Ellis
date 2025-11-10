@@ -1,8 +1,6 @@
 // Simple token-bucket RPC rate limiter shared process-wide
 // Goal: keep aggregate JSON-RPC calls under provider limit (e.g., 50 RPS) with buffer
 
-let tokens = 0;
-let lastRefillMs = Date.now();
 const maxRps = Math.max(1, Number(process.env.RPC_MAX_RPS || 50)); // match provider limit
 // Limit burst capacity to at most maxRps; default to ~25% of maxRps to avoid flushes
 const capacity = Math.max(
@@ -12,11 +10,24 @@ const capacity = Math.max(
     Number(process.env.RPC_BURST || Math.ceil(maxRps / 4))
   )
 );
+// Start with full capacity so first requests don't block
+let tokens = capacity;
+let lastRefillMs = Date.now();
 // Enforce a small inter-request gap to avoid micro-bursts when tokens accrue
 const minGapMs = Math.max(0, Number(process.env.RPC_MIN_GAP_MS || 20));
 let lastDispatchMs = 0;
 let gapChain: Promise<void> = Promise.resolve();
 let queueDepth = 0; // Track how many requests are waiting for tokens
+
+// Log initial configuration
+console.log(`[RPC LIMITER] Initialized: maxRps=${maxRps}, capacity=${capacity}, minGapMs=${minGapMs}, initialTokens=${tokens}`);
+if (process.env.RPC_MAX_RPS || process.env.RPC_BURST || process.env.RPC_MIN_GAP_MS) {
+  console.log(`[RPC LIMITER] Custom config detected:`, {
+    RPC_MAX_RPS: process.env.RPC_MAX_RPS,
+    RPC_BURST: process.env.RPC_BURST,
+    RPC_MIN_GAP_MS: process.env.RPC_MIN_GAP_MS
+  });
+}
 
 // RPC Metrics tracking
 interface RpcCallRecord {
@@ -267,10 +278,22 @@ export function getRpcMetrics(): any {
 export async function acquireRpcSlots(weight = 1): Promise<void> {
   const need = Math.max(1, Math.floor(weight));
   queueDepth++;
+  const acquireStart = Date.now();
+  
   try {
     // Fast path: attempt up to one immediate refill
+    let iterations = 0;
     for (;;) {
+      iterations++;
       refill();
+      
+      // Safety check: if we've been waiting too long, log and break out
+      if (iterations > 100 || (Date.now() - acquireStart) > 30000) {
+        console.error(`[RPC LIMITER] STUCK: waited ${Date.now() - acquireStart}ms, ${iterations} iterations, need=${need}, tokens=${tokens}, maxRps=${maxRps}, capacity=${capacity}`);
+        // Force break to prevent infinite loop
+        break;
+      }
+      
       if (tokens >= need) {
         tokens -= need;
         // Sequence callers to preserve a minimum gap between dispatches
@@ -303,6 +326,11 @@ export async function withRpcLimit<T>(
   const startTime = Date.now();
   const module = context?.module || 'unknown';
   const method = context?.method || 'unknown';
+  
+  // Log first few RPC calls for debugging
+  if (rpcMetrics.totalCalls < 5) {
+    console.log(`[RPC LIMITER] Call #${rpcMetrics.totalCalls + 1}: module=${module}, method=${method}, weight=${weight}, tokens=${Math.floor(tokens * 100) / 100}`);
+  }
   
   try {
     await acquireRpcSlots(weight);
