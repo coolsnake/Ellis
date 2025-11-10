@@ -1908,6 +1908,7 @@ export function startRaydiumRefreshLoop(): void {
             const vaultA = whirlpoolData?.tokenVaultA;
             const vaultB = whirlpoolData?.tokenVaultB;
             const vaults = [vaultA, vaultB].filter(Boolean);
+            logger.info('orca.vaults.attempting', { pool: poolAddr.slice(0,8)+'…', count: vaults.length, hasA: !!vaultA, hasB: !!vaultB, cat: 'pools' });
             for (const vault of vaults) {
               try {
                 const id = await subscribeAccountWithRetry(vault, handle);
@@ -1915,6 +1916,7 @@ export function startRaydiumRefreshLoop(): void {
                 targetedSourceByAccount.set(vault.toBase58(), 'orca');
                 debugLogTargeted('orca', vault.toBase58(), { kind: 'vault' });
                 derivedAccountToPool.set(vault.toBase58(), { poolId: poolAddr, accountType: 'vault' });
+                logger.info('orca.vault.subscribed', { pool: poolAddr.slice(0,8)+'…', vault: vault.toBase58().slice(0,8)+'…', cat: 'pools' });
               } catch (err) {
                 logger.info('orca.vault.subscribe.fail', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
               }
@@ -1928,14 +1930,18 @@ export function startRaydiumRefreshLoop(): void {
                 targetedSourceByAccount.set(whirlpoolData.oracle.toBase58(), 'orca');
                 debugLogTargeted('orca', whirlpoolData.oracle.toBase58(), { kind: 'oracle' });
                 derivedAccountToPool.set(whirlpoolData.oracle.toBase58(), { poolId: poolAddr, accountType: 'oracle' });
+                logger.info('orca.oracle.subscribed', { pool: poolAddr.slice(0,8)+'…', oracle: whirlpoolData.oracle.toBase58().slice(0,8)+'…', cat: 'pools' });
               } catch (err) {
                 logger.info('orca.oracle.subscribe.fail', { pool: poolAddr.slice(0,8)+'…', error: String(err), cat: 'pools' });
               }
+            } else {
+              logger.info('orca.oracle.missing', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
             }
             
             // Subscribe to active tick arrays
             const tickSpacing = whirlpoolData?.tickSpacing;
             const currentTick = whirlpoolData?.tickCurrentIndex;
+            logger.info('orca.tickarrays.attempting', { pool: poolAddr.slice(0,8)+'…', tickSpacing, currentTick, hasPDAUtil: !!PDAUtil, cat: 'pools' });
             
             if (tickSpacing !== undefined && currentTick !== undefined && PDAUtil) {
               try {
@@ -1943,6 +1949,7 @@ export function startRaydiumRefreshLoop(): void {
                 const orcaProgramId = new web3.PublicKey(String(CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc'));
                 
                 if (TickUtil && typeof TickUtil.getStartTickIndex === 'function') {
+                  let tickArrayCount = 0;
                   for (let offset = -1; offset <= 1; offset++) {
                     try {
                       const startTick = TickUtil.getStartTickIndex(currentTick, tickSpacing, offset);
@@ -1954,15 +1961,21 @@ export function startRaydiumRefreshLoop(): void {
                         targetedSourceByAccount.set(tickArrayPda.publicKey.toBase58(), 'orca');
                         debugLogTargeted('orca', tickArrayPda.publicKey.toBase58(), { kind: 'tick_array', offset });
                         derivedAccountToPool.set(tickArrayPda.publicKey.toBase58(), { poolId: poolAddr, accountType: 'tick_array' });
+                        tickArrayCount++;
                       }
                     } catch (err) {
                       logger.info('orca.whirlpool.tickarray.subscribe.fail', { pool: poolAddr, offset, error: String((err as any)?.message || err) });
                     }
                   }
+                  logger.info('orca.tickarrays.subscribed', { pool: poolAddr.slice(0,8)+'…', count: tickArrayCount, cat: 'pools' });
+                } else {
+                  logger.info('orca.tickarrays.no_tickutil', { pool: poolAddr.slice(0,8)+'…', hasTickUtil: !!TickUtil, cat: 'pools' });
                 }
               } catch (err) {
                 logger.info('orca.whirlpool.tickarray.derive.fail', { pool: poolAddr, error: String((err as any)?.message || err) });
               }
+            } else {
+              logger.info('orca.tickarrays.skipped', { pool: poolAddr.slice(0,8)+'…', reason: !tickSpacing ? 'no_spacing' : !currentTick ? 'no_tick' : 'no_pda', cat: 'pools' });
             }
             
             logger.info('orca.attach.complete', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });

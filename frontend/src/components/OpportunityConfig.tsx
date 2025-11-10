@@ -18,8 +18,27 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
         const r = await fetch(`${apiBase}/arb/executor/config`); 
         if (r.ok) { 
           const j = await r.json(); 
+          // Load executor-specific settings
           if (typeof j.requireStartBalance === 'boolean') {
             set('require_start_balance', j.requireStartBalance);
+          }
+          if (typeof j.minProfitBps === 'number') {
+            set('executor_min_profit_bps', j.minProfitBps);
+          }
+          if (typeof j.maxHops === 'number') {
+            set('executor_max_hops', j.maxHops);
+          }
+          if (typeof j.sizeUsd === 'number') {
+            set('executor_size_usd', j.sizeUsd);
+          }
+          if (typeof j.slippageBps === 'number') {
+            set('executor_slippage_bps', j.slippageBps);
+          }
+          if (typeof j.minReservesUsd === 'number') {
+            set('executor_min_reserves_usd', j.minReservesUsd);
+          }
+          if (typeof j.maxExecutionsPerMinute === 'number') {
+            set('executor_max_per_minute', j.maxExecutionsPerMinute);
           }
         } 
       } catch {}
@@ -62,7 +81,19 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
       const [r1, r2, r3] = await Promise.all([
         fetch(`${apiBase}${ROUTES.arb.config}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
         fetch(`${apiBase}${ROUTES.exec.config}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: execMode }) }),
-        fetch(`${apiBase}/arb/executor/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requireStartBalance: !!det.require_start_balance }) }),
+        fetch(`${apiBase}/arb/executor/config`, { 
+          method: 'POST', 
+          headers: { 'content-type': 'application/json' }, 
+          body: JSON.stringify({ 
+            requireStartBalance: !!det.require_start_balance,
+            minProfitBps: toNum(det.executor_min_profit_bps),
+            maxHops: toOptNum(det.executor_max_hops),
+            sizeUsd: toOptNum(det.executor_size_usd),
+            slippageBps: toOptNum(det.executor_slippage_bps),
+            minReservesUsd: toOptNum(det.executor_min_reserves_usd),
+            maxExecutionsPerMinute: toOptNum(det.executor_max_per_minute),
+          }) 
+        }),
       ]);
       if (!r1.ok || !r2.ok || !r3.ok) throw new Error('Failed to save');
       onClose();
@@ -134,6 +165,69 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
               <label className="flex items-center gap-2"><input type="checkbox" checked={!!det.drop_stable_stable_hops} onChange={e=>set('drop_stable_stable_hops', e.target.checked)} />Drop stable↔stable hops</label>
               <div><label className="block mb-1 text-gray-300">Max SOL↔stable hops</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={det.max_sol_stable_hops ?? ''} onChange={e=>set('max_sol_stable_hops', Number(e.target.value)||0)} /></div>
               <div><label className="block mb-1 text-gray-300">Stable mints (CSV)</label><input type="text" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={det.stable_mints_csv ?? (Array.isArray(det.stable_mints) ? det.stable_mints.join(',') : '')} onChange={e=>set('stable_mints_csv', e.target.value)} placeholder="EPjF...,Es9v...," /></div>
+            </div>
+          </div>
+
+          <div className="bg-gray-700 rounded p-4 border-2 border-blue-500/30">
+            <h3 className="text-lg font-semibold text-white mb-2">Executor Filters (Post-Detection)</h3>
+            <p className="text-xs text-gray-400 mb-3">
+              These filters apply <strong>after</strong> detection. Set detection thresholds lower and execution thresholds higher to see near-miss opportunities.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="block mb-1 text-gray-300">Min Profit for Execution (bps)</label>
+                <input 
+                  type="number" 
+                  className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                  value={det.executor_min_profit_bps ?? 50} 
+                  onChange={e=>set('executor_min_profit_bps', Number(e.target.value)||0)} 
+                />
+              </div>
+              <div>
+                <label className="block mb-1 text-gray-300">Max Hops for Execution</label>
+                <input 
+                  type="number" 
+                  className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                  value={det.executor_max_hops ?? 3} 
+                  onChange={e=>set('executor_max_hops', Number(e.target.value)||0)} 
+                />
+              </div>
+              <div>
+                <label className="block mb-1 text-gray-300">Execution Size (USD)</label>
+                <input 
+                  type="number" 
+                  className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                  value={det.executor_size_usd ?? 100} 
+                  onChange={e=>set('executor_size_usd', Number(e.target.value)||0)} 
+                />
+              </div>
+              <div>
+                <label className="block mb-1 text-gray-300">Slippage (bps)</label>
+                <input 
+                  type="number" 
+                  className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                  value={det.executor_slippage_bps ?? 50} 
+                  onChange={e=>set('executor_slippage_bps', Number(e.target.value)||0)} 
+                />
+              </div>
+              <div>
+                <label className="block mb-1 text-gray-300">Min Reserves (USD)</label>
+                <input 
+                  type="number" 
+                  className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                  value={det.executor_min_reserves_usd ?? 10000} 
+                  onChange={e=>set('executor_min_reserves_usd', Number(e.target.value)||0)} 
+                />
+              </div>
+              <div>
+                <label className="block mb-1 text-gray-300">Max Executions/Min</label>
+                <input 
+                  type="number" 
+                  className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                  value={det.executor_max_per_minute ?? 10} 
+                  onChange={e=>set('executor_max_per_minute', Number(e.target.value)||0)} 
+                />
+              </div>
             </div>
           </div>
 
