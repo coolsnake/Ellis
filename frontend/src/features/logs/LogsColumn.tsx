@@ -2,6 +2,7 @@ import React, { useEffect, useMemo } from 'react';
 import { useLogs } from '../../app/contexts/logs';
 import { LOG_WINDOWS, WINDOW_ORDER, LogWindowConfig, WindowId } from '../../utils/logs';
 import { LogWindow } from '../../components/LogWindow';
+import { RpcMonitor } from '../../components/RpcMonitor';
 
 type LogsColumnProps = {
   className?: string;
@@ -47,6 +48,8 @@ const LogsColumnComponent: React.FC<LogsColumnProps> = ({ className = 'space-y-4
       {windows.map(({ id, title, logs }) => (
         <LogWindow key={id} id={id} title={title} logs={logs} />
       ))}
+      {/* RPC Monitor placed after System log */}
+      <RpcMonitor />
     </div>
   );
 };

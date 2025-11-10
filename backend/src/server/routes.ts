@@ -471,6 +471,19 @@ export function registerRoutes(app: Express, io: SocketIOServer): void {
     }, 3000);
   } catch {}
 
+  // Background: poll and emit RPC metrics for UI monitoring
+  try {
+    setInterval(async () => {
+      try {
+        const { getRpcMetrics } = await import('../utils/rpcLimiter.js');
+        const metrics = getRpcMetrics();
+        emit('rpc-metrics', metrics);
+      } catch (e: any) {
+        // Silent failure - don't spam logs
+      }
+    }, 2000); // Update every 2 seconds
+  } catch {}
+
   
   api.post('/bot/start', async (_req, res) => {
     try {

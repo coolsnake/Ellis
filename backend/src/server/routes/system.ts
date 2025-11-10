@@ -132,6 +132,17 @@ export function createSystemRouter(_io: SocketIOServer): Router {
     }
   });
 
+  api.get('/system/rpc/metrics', async (_req, res) => {
+    try {
+      const { getRpcMetrics } = await import('../../utils/rpcLimiter.js');
+      const metrics = getRpcMetrics();
+      res.json(metrics);
+    } catch (e: any) {
+      logger.error('server: failed to get RPC metrics', { error: String(e?.message || e), cat: 'server' });
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   return api;
 }
 
