@@ -457,7 +457,9 @@ function getOrcaRpc() {
 async function getOrcaSdkSigner(kp: { publicKey: PublicKey; secretKey: Uint8Array }) {
   const pk = kp.publicKey.toBase58();
   if (!orcaSignerCache || orcaSignerCache.pubkey !== pk) {
-    const signer = await createKeyPairSignerFromPrivateKeyBytes(kp.secretKey, false);
+    // Extract only the first 32 bytes (the actual private key)
+    const privateKeyBytes = kp.secretKey.slice(0, 32);
+    const signer = await createKeyPairSignerFromPrivateKeyBytes(privateKeyBytes, false);
     orcaSignerCache = { pubkey: pk, signer };
   }
   return orcaSignerCache.signer;
@@ -2257,15 +2259,31 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       }
     }
 
-    // Check exBitmap BEFORE calling SDK to prevent it from being added if it doesn't exist
-    // Note: This will be batched with observation account check later to reduce RPC calls
+    // Derive exBitmap (tick array bitmap extension) PDA
+    // The SDK may conditionally include this in swap instructions based on pool state.
+    // exBitmap is used for tracking which tick arrays are initialized in pools with
+    // large tick ranges. It's a PDA: [b"exaccount", pool.toBytes()].
+    // 
+    // IMPORTANT: We check if it exists on-chain for logging purposes, but we do NOT
+    // remove it from instructions if it doesn't exist. The SDK's instruction data
+    // encodes account indices, and removing accounts post-generation breaks those indices.
     let exBitmapPk: PublicKey | null = null;
     let exBitmapExists = false;
     try {
       const { getPdaExBitmapAccount } = await import('@raydium-io/raydium-sdk-v2').catch(() => ({ getPdaExBitmapAccount: null }));
       if (getPdaExBitmapAccount) {
         exBitmapPk = getPdaExBitmapAccount(programIdPk, poolIdPk).publicKey;
-        // We'll batch this check with observation account below
+        // We'll check existence later in batch with observation account to reduce RPC calls
+        try {
+          logger.debug('raydium.clmm.exbitmap.derived', {
+            cat: 'tx',
+            ctx: {
+              pool: hop.poolId,
+              exBitmap: exBitmapPk.toBase58(),
+              note: 'Will check existence later - SDK determines if needed in instruction',
+            } as any,
+          });
+        } catch {}
       }
     } catch (e: any) {
       try {
@@ -2721,83 +2739,33 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       }
     }
     
-    // If exBitmap doesn't exist, we need to remove it from the instruction
-    // BUT we need to be careful - the SDK might have encoded account indices in the instruction data
-    // So we need to remove it in a way that doesn't break the instruction
-    if (ixs && ixs.length && exBitmapPk && !exBitmapExists) {
+    // IMPORTANT: Do NOT remove exBitmap from SDK-generated instructions!
+    // The SDK encodes account indices in the instruction data. Removing accounts after
+    // instruction generation shifts all subsequent account indices, causing the program
+    // to read from wrong accounts (e.g. tick arrays) and fail with Custom error 6028.
+    // 
+    // If the SDK includes exBitmap, it means the pool needs it. Even if it doesn't exist
+    // on-chain yet, Solana will handle non-existent accounts appropriately if they're
+    // read-only. Let the SDK manage account inclusion logic - it knows what's needed.
+    //
+    // For reference: Raydium CLMM instruction data format encodes account indices for:
+    // - Tick arrays (3 accounts, indices typically 14-16 in a 17-account instruction)
+    // - exBitmap (typically index 13)
+    // Removing exBitmap (index 13) shifts tick arrays to indices 13-15, but the
+    // instruction data still references 14-16, causing out-of-bounds access.
+    
+    if (exBitmapPk) {
       try {
-        logger.warn('raydium.clmm.exbitmap.removing_from_instruction', {
+        logger.info('raydium.clmm.exbitmap.info', {
           cat: 'tx',
           ctx: {
             pool: hop.poolId,
             exBitmap: exBitmapPk.toBase58(),
-            instructionCount: ixs.length,
-            warning: 'SDK instruction data may reference account indices - removing exBitmap may break the instruction',
+            exists: exBitmapExists,
+            note: 'exBitmap included in SDK instruction - do not remove (instruction data has encoded indices)',
           } as any,
         });
-        
-        // Find the instruction that contains the exBitmap (should be the CLMM swap instruction)
-        const filteredIxs: TransactionInstruction[] = [];
-        for (let ixIdx = 0; ixIdx < ixs.length; ixIdx++) {
-          const ix = ixs[ixIdx];
-          if (ix instanceof TransactionInstruction && Array.isArray(ix.keys)) {
-            // Check if this instruction targets the CLMM program
-            if (ix.programId.equals(programIdPk)) {
-              // This is the CLMM swap instruction - find and remove exBitmap
-              const exBitmapIdx = ix.keys.findIndex((k: any) => {
-                const pk = k?.pubkey;
-                return pk && (pk.equals ? pk.equals(exBitmapPk) : pk.toBase58() === exBitmapPk.toBase58());
-              });
-              
-              if (exBitmapIdx >= 0) {
-                // Remove exBitmap from keys
-                // NOTE: This may break the instruction if the SDK encoded account indices in the data
-                // The instruction data might reference account positions, so removing an account shifts all indices
-                const filteredKeys = ix.keys.filter((_, idx) => idx !== exBitmapIdx);
-                filteredIxs.push(new TransactionInstruction({
-                  programId: ix.programId,
-                  keys: filteredKeys,
-                  data: ix.data, // This data might still reference old account indices
-                }));
-                
-                try {
-                  logger.warn('raydium.clmm.exbitmap.removed_from_instruction', {
-                    cat: 'tx',
-                    ctx: {
-                      pool: hop.poolId,
-                      instructionIndex: ixIdx,
-                      exBitmapIndex: exBitmapIdx,
-                      originalAccountCount: ix.keys.length,
-                      newAccountCount: filteredKeys.length,
-                      warning: 'Instruction data may still reference old account indices',
-                    } as any,
-                  });
-                } catch {}
-              } else {
-                filteredIxs.push(ix);
-              }
-            } else {
-              filteredIxs.push(ix);
-            }
-          } else {
-            filteredIxs.push(ix as TransactionInstruction);
-          }
-        }
-        
-        if (filteredIxs.length > 0) {
-          ixs = filteredIxs;
-        }
-      } catch (e: any) {
-        try {
-          logger.warn('raydium.clmm.exbitmap.removal.failed', {
-            cat: 'tx',
-            ctx: {
-              pool: hop.poolId,
-              error: String(e?.message || e),
-            } as any,
-          });
-        } catch {}
-      }
+      } catch {}
     }
     
     // Verify all critical accounts exist before proceeding
@@ -2941,9 +2909,10 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 continue;
               }
               
-              // Skip exBitmap account - we handle it separately (remove if doesn't exist)
+              // Skip exBitmap account - it's optional and may not exist on-chain
+              // The SDK includes it when needed, and Solana handles non-existent accounts
               if (exBitmapPk && pkStr === exBitmapPk.toBase58()) {
-                skippedAccounts.push({ address: pkStr, index: keyIdx, reason: 'exbitmap_handled_separately' });
+                skippedAccounts.push({ address: pkStr, index: keyIdx, reason: 'exbitmap_optional_account' });
                 continue;
               }
               
