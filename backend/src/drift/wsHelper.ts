@@ -123,17 +123,23 @@ export function protectRpcWebSocket(connection: Connection, location = 'unknown'
             } catch {}
           }
 
-          // Return rejected promise (allows web3.js _updateSubscriptions to handle gracefully)
-          return Promise.reject(
-            new Error(`WebSocket not ready (readyState: ${rs}, expected 0 or 1)`)
-          );
+          // Return a resolved promise with null to prevent unhandled rejection crashes
+          // web3.js's _updateSubscriptions will skip null responses gracefully
+          return Promise.resolve(null);
         }
 
         // Socket is ready, proceed with original call
         return originalCall(...args);
       } catch (e) {
-        // If any error in wrapper, reject rather than throw
-        return Promise.reject(e);
+        // If any error in wrapper, log but return null to prevent crash
+        try {
+          logger.warn('ws.protect.wrapper_error', { 
+            error: String(e), 
+            location, 
+            cat: 'ws' 
+          });
+        } catch {}
+        return Promise.resolve(null);
       }
     };
 
