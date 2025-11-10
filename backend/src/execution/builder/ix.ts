@@ -116,20 +116,19 @@ async function injectBinArrayMetas(
               // Try to get active bin from pool state to use a small range
               try {
                 if (activeId !== undefined) {
-                      const activeBn = activeId instanceof BN ? activeId : new BN(String(activeId));
-                      const idx = binIdToBinArrayIndex(activeBn);
-                      const arrIdx = idx instanceof BN ? idx : new BN(String(idx));
-                      // Get bounds for just the active bin array
-                      const [lower, upper] = getBounds(arrIdx);
-                      // Use minimal range: just the active bin array bounds (typically 1-3 arrays)
-                      // This is sufficient for most swaps and keeps transaction size minimal
-                      const rangeLower = lower;
-                      const rangeUpper = upper;
-                      const rawMetas = getMetas(rangeLower, rangeUpper, poolPk, programId) || [];
-                      // Limit to max 5 bin arrays - sufficient for active bin + adjacents
-                      metas = rawMetas.slice(0, 5);
-                    }
-                  } catch {}
+                  const activeBn = activeId instanceof BN ? activeId : new BN(String(activeId));
+                  const idx = binIdToBinArrayIndex(activeBn);
+                  const arrIdx = idx instanceof BN ? idx : new BN(String(idx));
+                  // Get bounds for just the active bin array
+                  const [lower, upper] = getBounds(arrIdx);
+                  // Use minimal range: just the active bin array bounds (typically 1-3 arrays)
+                  // This is sufficient for most swaps and keeps transaction size minimal
+                  const rangeLower = lower;
+                  const rangeUpper = upper;
+                  const rawMetas = getMetas(rangeLower, rangeUpper, poolPk, programId) || [];
+                  // Limit to max 5 bin arrays - sufficient for active bin + adjacents
+                  metas = rawMetas.slice(0, 5);
+                }
               } catch {}
               // Fallback removed - don't use huge default ranges that return hundreds
             }
