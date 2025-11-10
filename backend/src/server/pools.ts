@@ -711,7 +711,7 @@ export function startRaydiumRefreshLoop(): void {
             if (derivedMeta) {
               // This is a vault, reserve, tick array, or oracle account - trigger parent pool refresh
               try {
-                logger.info('pools.ws derived.account.update', { 
+                logger.debug('pools.ws derived.account.update', { 
                   account: pk58.slice(0,8)+'…', 
                   accountType: derivedMeta.accountType,
                   parentPool: derivedMeta.poolId.slice(0,8)+'…',
