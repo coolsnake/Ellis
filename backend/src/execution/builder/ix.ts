@@ -3273,7 +3273,29 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     } catch (validationErr) {
       throw createBuilderError('RAYDIUM_AMM', String((validationErr as any)?.message || validationErr), hop);
     }
-    // Best-effort: derive missing market/program from on-chain pool state
+    // Best-effort: Use cached market accounts from pool data
+    try {
+      if (!hop.market || !hop.serumProgramId) {
+        const { executionCache } = await import('../cache.js');
+        const poolData = executionCache.getStatic(hop.poolId);
+        if (poolData) {
+          hop.market = hop.market || (poolData as any).market_id;
+          hop.serumProgramId = hop.serumProgramId || (poolData as any).market_program_id;
+          try {
+            logger.debug('raydium.amm.use_cached_market', {
+              cat: 'tx',
+              ctx: {
+                pool: hop.poolId.slice(0, 8) + '...',
+                hasMarket: !!(poolData as any).market_id,
+                hasProgram: !!(poolData as any).market_program_id
+              }
+            });
+          } catch {}
+        }
+      }
+    } catch {}
+    
+    // Fallback: If not in cache, try fetching from chain (backward compatibility)
     try {
       if (!hop.market || !hop.serumProgramId) {
         const connection = getConnection();
@@ -3439,6 +3461,61 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
         } as any;
       }
     }
+
+    // CRITICAL: Use cached market accounts from pool data to fill in missing accounts
+    // This is the preferred path for production as it avoids RPC calls during execution
+    try {
+      const { executionCache } = await import('../cache.js');
+      const poolData = executionCache.getStatic(hop.poolId);
+      if (poolData) {
+        const cached = poolData as any;
+        // Fill in any missing market accounts from cache
+        if (cached.market_bids && !(poolKeys as any)?.marketBids) {
+          (poolKeys as any).marketBids = toPublicKey(cached.market_bids);
+        }
+        if (cached.market_asks && !(poolKeys as any)?.marketAsks) {
+          (poolKeys as any).marketAsks = toPublicKey(cached.market_asks);
+        }
+        if (cached.market_event_queue && !(poolKeys as any)?.marketEventQueue) {
+          (poolKeys as any).marketEventQueue = toPublicKey(cached.market_event_queue);
+        }
+        if (cached.market_base_vault && !(poolKeys as any)?.marketBaseVault) {
+          (poolKeys as any).marketBaseVault = toPublicKey(cached.market_base_vault);
+        }
+        if (cached.market_quote_vault && !(poolKeys as any)?.marketQuoteVault) {
+          (poolKeys as any).marketQuoteVault = toPublicKey(cached.market_quote_vault);
+        }
+        if (cached.market_authority && !(poolKeys as any)?.marketAuthority) {
+          (poolKeys as any).marketAuthority = toPublicKey(cached.market_authority);
+        }
+        if (cached.amm_authority && !(poolKeys as any)?.authority) {
+          (poolKeys as any).authority = toPublicKey(cached.amm_authority);
+        }
+        if (cached.amm_open_orders && !(poolKeys as any)?.openOrders) {
+          (poolKeys as any).openOrders = toPublicKey(cached.amm_open_orders);
+        }
+        if (cached.amm_target_orders && !(poolKeys as any)?.targetOrders) {
+          (poolKeys as any).targetOrders = toPublicKey(cached.amm_target_orders);
+        }
+        if (cached.lp_mint && !(poolKeys as any)?.mintLp) {
+          (poolKeys as any).mintLp = toPublicKey(cached.lp_mint);
+        }
+        
+        try {
+          logger.debug('raydium.amm.poolkeys_from_cache', {
+            cat: 'tx',
+            ctx: {
+              pool: hop.poolId.slice(0, 8) + '...',
+              hasBids: !!cached.market_bids,
+              hasAsks: !!cached.market_asks,
+              hasEventQueue: !!cached.market_event_queue,
+              hasAuthority: !!cached.amm_authority,
+              hasOpenOrders: !!cached.amm_open_orders
+            }
+          });
+        } catch {}
+      }
+    } catch {}
 
     const userKeys = {
       tokenAccountIn: toPublicKey(hop.userSourceAta),

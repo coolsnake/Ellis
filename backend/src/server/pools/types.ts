@@ -26,6 +26,19 @@ export type AmmPool = {
   price_a_per_b_num?: string;
   price_a_per_b_den?: string;
   price_a_per_b_exact?: string;
+  // Raydium AMM-specific: Serum market accounts (required for swaps)
+  market_id?: string;              // Serum market address
+  market_program_id?: string;      // Serum/OpenBook program ID
+  market_bids?: string;            // Serum bids account
+  market_asks?: string;            // Serum asks account
+  market_event_queue?: string;     // Serum event queue
+  market_base_vault?: string;      // Serum base vault
+  market_quote_vault?: string;     // Serum quote vault
+  market_authority?: string;       // Serum vault signer
+  amm_authority?: string;          // Raydium pool authority
+  amm_open_orders?: string;        // Raydium open orders account
+  amm_target_orders?: string;      // Raydium target orders account
+  lp_mint?: string;                // LP token mint
 };
 
 export type ClmmPool = {

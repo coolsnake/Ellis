@@ -527,6 +527,39 @@ export async function retargetPoolWebsockets(): Promise<{ attached: { orca: numb
   } catch {}
   await new Promise(r => setTimeout(r, cooldownMs));
   
+  // Step 3.5: Wait for any active setup to complete before starting new one
+  // This prevents race condition where old setup's cleanup is still running
+  try {
+    const maxWait = Number((CONFIG.system as any)?.wsSetupMaxWaitMs || 10000);
+    const started = Date.now();
+    let waited = false;
+    while (wsSetupActive && (Date.now() - started) < maxWait) {
+      if (!waited) {
+        try { 
+          logger.info('pools.ws retarget.waiting_for_setup_clear', { cat: 'pools' });
+        } catch {}
+        waited = true;
+      }
+      await new Promise(r => setTimeout(r, 100));
+    }
+    if (wsSetupActive) {
+      try { 
+        logger.warn('pools.ws retarget.setup_still_active', { 
+          waitedMs: Date.now() - started, 
+          maxWaitMs: maxWait,
+          cat: 'pools' 
+        }); 
+      } catch {}
+    } else if (waited) {
+      try {
+        logger.info('pools.ws retarget.setup_cleared', { 
+          waitedMs: Date.now() - started,
+          cat: 'pools' 
+        });
+      } catch {}
+    }
+  } catch {}
+  
   // Step 4: Start resubscription in SEQUENTIAL mode (flag tells setup to stagger DEX sources)
   try { 
     // Set sequential mode flag before starting

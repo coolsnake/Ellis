@@ -193,6 +193,181 @@ export async function fetchRaydiumPoolsRaw(): Promise<any> {
   }
 }
 
+/**
+ * Fetches and decodes Raydium AMM pool state from chain to extract Serum market accounts
+ * Uses RPC limiter to avoid rate limiting
+ */
+async function fetchRaydiumAmmPoolAccounts(poolId: string): Promise<{
+  marketId?: string;
+  marketProgramId?: string;
+  ammAuthority?: string;
+  ammOpenOrders?: string;
+  ammTargetOrders?: string;
+  lpMint?: string;
+  baseVault?: string;
+  quoteVault?: string;
+} | null> {
+  try {
+    const { Connection, PublicKey } = await import('@solana/web3.js');
+    const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+    const connection = new Connection(CONFIG.rpcUrl);
+    
+    const poolPk = new PublicKey(poolId);
+    const accountInfo = await withRpcLimit(
+      () => connection.getAccountInfo(poolPk),
+      1,
+      { module: 'pools', method: 'getAccountInfo' }
+    );
+    
+    if (!accountInfo?.data || accountInfo.data.length < 324) {
+      return null;
+    }
+    
+    // Decode Raydium AMM V4 layout
+    // Reference: https://github.com/raydium-io/raydium-sdk-V2/blob/master/src/liquidity/layout.ts
+    const rmod: any = await import('@raydium-io/raydium-sdk-v2');
+    const layouts = [
+      (rmod as any)?.LiquidityStateLayoutV4,
+      (rmod as any)?.liquidityStateV4Layout,
+    ].filter(Boolean);
+    
+    for (const layout of layouts) {
+      try {
+        const state = layout.decode(accountInfo.data);
+        
+        // Extract all required accounts
+        const toBase58 = (v: any) => {
+          if (!v) return undefined;
+          if (typeof v.toBase58 === 'function') return v.toBase58();
+          if (typeof v === 'string') return v;
+          return undefined;
+        };
+        
+        return {
+          marketId: toBase58(state.marketId || state.market_id),
+          marketProgramId: toBase58(state.marketProgramId || state.market_program_id),
+          ammAuthority: toBase58(state.ammAuthority || state.authority || state.owner),
+          ammOpenOrders: toBase58(state.ammOpenOrders || state.openOrders || state.open_orders),
+          ammTargetOrders: toBase58(state.ammTargetOrders || state.targetOrders || state.target_orders),
+          lpMint: toBase58(state.lpMint || state.lp_mint),
+          baseVault: toBase58(state.baseVault || state.coinVault || state.base_vault),
+          quoteVault: toBase58(state.quoteVault || state.pcVault || state.quote_vault),
+        };
+      } catch (decodeErr) {
+        // Try next layout
+        continue;
+      }
+    }
+    
+    return null;
+  } catch (err) {
+    try {
+      logger.debug('raydium.amm.pool_accounts.fetch.err', {
+        cat: 'pools',
+        ctx: { poolId: poolId.slice(0, 8) + '...', error: String((err as any)?.message || err) }
+      });
+    } catch {}
+    return null;
+  }
+}
+
+/**
+ * Fetches and decodes Serum market account to extract market sub-accounts
+ * Uses RPC limiter to avoid rate limiting
+ */
+async function fetchSerumMarketAccounts(marketId: string, marketProgramId: string): Promise<{
+  bids?: string;
+  asks?: string;
+  eventQueue?: string;
+  baseVault?: string;
+  quoteVault?: string;
+  vaultSignerNonce?: number;
+  authority?: string;
+} | null> {
+  try {
+    const { Connection, PublicKey } = await import('@solana/web3.js');
+    const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+    const connection = new Connection(CONFIG.rpcUrl);
+    
+    const marketPk = new PublicKey(marketId);
+    const accountInfo = await withRpcLimit(
+      () => connection.getAccountInfo(marketPk),
+      1,
+      { module: 'pools', method: 'getAccountInfo' }
+    );
+    
+    if (!accountInfo?.data || accountInfo.data.length < 388) {
+      return null;
+    }
+    
+    // Decode Serum/OpenBook market layout
+    // Market state is at specific offsets in the account data
+    // Reference: https://github.com/project-serum/serum-dex/blob/master/dex/src/state.rs
+    const data = accountInfo.data;
+    
+    const readPubkey = (offset: number): string => {
+      const bytes = data.slice(offset, offset + 32);
+      return new PublicKey(bytes).toBase58();
+    };
+    
+    const readU64 = (offset: number): number => {
+      const bytes = data.slice(offset, offset + 8);
+      return Number(bytes.readBigUInt64LE(0));
+    };
+    
+    // Serum Market Layout offsets
+    // bids: offset 101, asks: offset 133, eventQueue: offset 165
+    // baseVault: offset 197, quoteVault: offset 229
+    // vaultSignerNonce: offset 357 (u64)
+    
+    try {
+      const bids = readPubkey(101);
+      const asks = readPubkey(133);
+      const eventQueue = readPubkey(165);
+      const baseVault = readPubkey(197);
+      const quoteVault = readPubkey(229);
+      const vaultSignerNonce = readU64(357);
+      
+      // Derive vault signer (authority) from nonce
+      let authority: string | undefined;
+      try {
+        const [vaultSigner] = await PublicKey.findProgramAddress(
+          [marketPk.toBuffer(), Buffer.from([Number(vaultSignerNonce)])],
+          new PublicKey(marketProgramId)
+        );
+        authority = vaultSigner.toBase58();
+      } catch {}
+      
+      return {
+        bids,
+        asks,
+        eventQueue,
+        baseVault,
+        quoteVault,
+        vaultSignerNonce,
+        authority,
+      };
+    } catch (decodeErr) {
+      try {
+        logger.debug('serum.market.decode.err', {
+          cat: 'pools',
+          ctx: { marketId: marketId.slice(0, 8) + '...', error: String((decodeErr as any)?.message || decodeErr) }
+        });
+      } catch {}
+      return null;
+    }
+  } catch (err) {
+    try {
+      logger.debug('serum.market.fetch.err', {
+        cat: 'pools',
+        ctx: { marketId: marketId.slice(0, 8) + '...', error: String((err as any)?.message || err) }
+      });
+    } catch {}
+    return null;
+  }
+}
+
+
 export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
   const now = Date.now();
   const amm: AmmPool[] = [];
@@ -559,6 +734,89 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         reserve_a_raw: reserveARaw ? reserveARaw.toString() : undefined,
         reserve_b_raw: reserveBRaw ? reserveBRaw.toString() : undefined,
       });
+    }
+  }
+
+  // Batch fetch market accounts for AMM pools (Raydium only)
+  // This enriches pools with Serum market sub-accounts required for swaps
+  const enableMarketFetch = (CONFIG as any)?.raydium?.fetchMarketAccounts !== false;
+  if (enableMarketFetch && amm.length > 0) {
+    try {
+      logger.info('raydium.amm.market_accounts.fetch.start', { count: amm.length, cat: 'pools' });
+      const fetchStart = Date.now();
+      let successCount = 0;
+      let skipCount = 0;
+      
+      //Batch process with concurrency limit
+      const concurrency = Math.max(1, Number((CONFIG.raydium as any)?.marketAccountConcurrency || 5));
+      let idx = 0;
+      const queue = amm.map((pool, poolIdx) => async () => {
+        try {
+          // Fetch pool accounts from chain
+          const poolAccounts = await fetchRaydiumAmmPoolAccounts(pool.id);
+          if (!poolAccounts?.marketId || !poolAccounts?.marketProgramId) {
+            skipCount++;
+            return;
+          }
+          
+          // Fetch Serum market accounts
+          const marketAccounts = await fetchSerumMarketAccounts(
+            poolAccounts.marketId,
+            poolAccounts.marketProgramId
+          );
+          
+          // Update pool with all accounts
+          amm[poolIdx].market_id = poolAccounts.marketId;
+          amm[poolIdx].market_program_id = poolAccounts.marketProgramId;
+          amm[poolIdx].amm_authority = poolAccounts.ammAuthority;
+          amm[poolIdx].amm_open_orders = poolAccounts.ammOpenOrders;
+          amm[poolIdx].amm_target_orders = poolAccounts.ammTargetOrders;
+          amm[poolIdx].lp_mint = poolAccounts.lpMint;
+          amm[poolIdx].account_a = poolAccounts.baseVault || amm[poolIdx].account_a;
+          amm[poolIdx].account_b = poolAccounts.quoteVault || amm[poolIdx].account_b;
+          
+          if (marketAccounts) {
+            amm[poolIdx].market_bids = marketAccounts.bids;
+            amm[poolIdx].market_asks = marketAccounts.asks;
+            amm[poolIdx].market_event_queue = marketAccounts.eventQueue;
+            amm[poolIdx].market_base_vault = marketAccounts.baseVault;
+            amm[poolIdx].market_quote_vault = marketAccounts.quoteVault;
+            amm[poolIdx].market_authority = marketAccounts.authority;
+          }
+          
+          successCount++;
+        } catch (err) {
+          try {
+            logger.debug('raydium.amm.market_accounts.fetch.pool.err', {
+              cat: 'pools',
+              ctx: { poolId: pool.id.slice(0, 8) + '...', error: String((err as any)?.message || err) }
+            });
+          } catch {}
+          skipCount++;
+        }
+      });
+      
+      const workers: Promise<void>[] = [];
+      for (let i = 0; i < concurrency; i++) {
+        workers.push((async () => { while (idx < queue.length) { const my = idx++; await queue[my](); } })());
+      }
+      await Promise.all(workers);
+      
+      const fetchMs = Date.now() - fetchStart;
+      logger.info('raydium.amm.market_accounts.fetch.complete', {
+        total: amm.length,
+        success: successCount,
+        skipped: skipCount,
+        ms: fetchMs,
+        cat: 'pools'
+      });
+    } catch (err) {
+      try {
+        logger.warn('raydium.amm.market_accounts.fetch.failed', {
+          error: String((err as any)?.message || err),
+          cat: 'pools'
+        });
+      } catch {}
     }
   }
 
