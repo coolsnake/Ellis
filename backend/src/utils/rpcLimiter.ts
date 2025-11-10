@@ -1,23 +1,35 @@
 // Simple token-bucket RPC rate limiter shared process-wide
 // Goal: keep aggregate JSON-RPC calls under provider limit (e.g., 50 RPS) with buffer
 
-const maxRps = Math.max(1, Number(process.env.RPC_MAX_RPS || 50)); // match provider limit
-// Limit burst capacity to at most maxRps; default to ~25% of maxRps to avoid flushes
-const capacity = Math.max(
-  1,
-  Math.min(
-    maxRps,
-    Number(process.env.RPC_BURST || Math.ceil(maxRps / 4))
-  )
-);
+// Parse environment variables with defensive fallbacks
+function parseEnvNumber(key: string, defaultValue: number): number {
+  try {
+    const val = process?.env?.[key];
+    if (!val) return defaultValue;
+    const parsed = Number(val);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
+  } catch {
+    return defaultValue;
+  }
+}
+
+const maxRps = parseEnvNumber('RPC_MAX_RPS', 50);
+const burstEnv = parseEnvNumber('RPC_BURST', 0);
+const capacity = burstEnv > 0 ? burstEnv : Math.max(1, Math.ceil(maxRps / 4));
+const minGapMs = parseEnvNumber('RPC_MIN_GAP_MS', 20);
+
+// Validate all values are finite numbers
+if (!Number.isFinite(maxRps) || !Number.isFinite(capacity) || !Number.isFinite(minGapMs)) {
+  console.error('[RPC LIMITER] FATAL: Invalid configuration', { maxRps, capacity, minGapMs });
+  throw new Error('RPC Limiter: Invalid numeric configuration');
+}
+
 // Start with full capacity so first requests don't block
 let tokens = capacity;
 let lastRefillMs = Date.now();
-// Enforce a small inter-request gap to avoid micro-bursts when tokens accrue
-const minGapMs = Math.max(0, Number(process.env.RPC_MIN_GAP_MS || 20));
 let lastDispatchMs = 0;
 let gapChain: Promise<void> = Promise.resolve();
-let queueDepth = 0; // Track how many requests are waiting for tokens
+let queueDepth = 0;
 
 // Log initial configuration
 console.log(`[RPC LIMITER] Initialized: maxRps=${maxRps}, capacity=${capacity}, minGapMs=${minGapMs}, initialTokens=${tokens}`);
@@ -82,6 +94,15 @@ function refill(): void {
   const elapsedMs = now - lastRefillMs;
   if (elapsedMs <= 0) return;
   const add = (elapsedMs / 1000) * maxRps;
+  
+  // Defensive check - if we get NaN, reset to capacity
+  if (!Number.isFinite(add) || !Number.isFinite(tokens)) {
+    console.error('[RPC LIMITER] NaN detected in refill, resetting to capacity', { tokens, add, elapsedMs, maxRps });
+    tokens = capacity;
+    lastRefillMs = now;
+    return;
+  }
+  
   tokens = Math.min(capacity, tokens + add);
   lastRefillMs = now;
 }
