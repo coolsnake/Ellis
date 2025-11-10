@@ -273,7 +273,37 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     } catch {}
     if (!price_ok) { try { logger.warn('meteora.clmm drop by sanity', { id, mint_a, mint_b, price_a_per_b, cat: 'meteora' }); } catch {}; continue; }
     
-    clmm.push({ id, dex: 'Meteora', mint_a, mint_b, fee_bps, sqrt_price_x64: 0, liquidity: 0, tick_spacing: Number((it as any)?.bin_step || (it as any)?.binStep || 0), updated_ms: now, price_a_per_b: (price_a_per_b && price_a_per_b > 0) ? price_a_per_b : undefined, amount_a, amount_b, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, pool_kind: 'clmm', pool_liquidity_raw, tvl_usd, liquidity_display } as any);
+    // Extract vault/reserve accounts (reserveX and reserveY correspond to tokenX and tokenY)
+    let account_a: string | undefined;
+    let account_b: string | undefined;
+    try {
+      const reserveX = String((it as any)?.reserve_x || (it as any)?.reserveX || '');
+      const reserveY = String((it as any)?.reserve_y || (it as any)?.reserveY || '');
+      // For Meteora, account_a/account_b should match mint_a/mint_b orientation
+      // reserveX/reserveY match tokenX/tokenY orientation in the pool state
+      // We need to check if tokenX corresponds to mint_a or mint_b
+      const tokenXMint = String((it as any)?.mint_x || (it as any)?.tokenXMint || tokenA?.mint || '');
+      const tokenYMint = String((it as any)?.mint_y || (it as any)?.tokenYMint || tokenB?.mint || '');
+      
+      if (reserveX && reserveY) {
+        // Determine mapping based on which tokenX/tokenY match mint_a/mint_b
+        if (tokenXMint === mint_a && tokenYMint === mint_b) {
+          // Natural: tokenX=mint_a, tokenY=mint_b => reserveX=account_a, reserveY=account_b
+          account_a = reserveX;
+          account_b = reserveY;
+        } else if (tokenXMint === mint_b && tokenYMint === mint_a) {
+          // Swapped: tokenX=mint_b, tokenY=mint_a => reserveX=account_b, reserveY=account_a
+          account_a = reserveY;
+          account_b = reserveX;
+        } else {
+          // Fallback: assume natural mapping
+          account_a = reserveX;
+          account_b = reserveY;
+        }
+      }
+    } catch {}
+    
+    clmm.push({ id, dex: 'Meteora', mint_a, mint_b, fee_bps, sqrt_price_x64: 0, liquidity: 0, tick_spacing: Number((it as any)?.bin_step || (it as any)?.binStep || 0), updated_ms: now, price_a_per_b: (price_a_per_b && price_a_per_b > 0) ? price_a_per_b : undefined, amount_a, amount_b, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, account_a, account_b, pool_kind: 'clmm', pool_liquidity_raw, tvl_usd, liquidity_display } as any);
   }
   // Canonicalize pairs using unified policy; handles A/B swap and price inversion when needed
   const clmmCanon = canonicalizePairs(clmm);

@@ -2982,6 +2982,63 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
 
       const raw: any = await fetchRaydiumPoolsRawImpl();
       let norm = await normalizeRaydiumPoolsImpl(raw);
+      
+      // Populate execution cache with enriched pool data (including market accounts)
+      // This ensures instruction builders have access to all required Serum market accounts
+      try {
+        const { executionCache } = await import('../execution/cache.js');
+        for (const pool of norm.amm || []) {
+          const existing = executionCache.getStatic(pool.id) || {} as any;
+          const staticData: any = {
+            ...existing,
+            programId: pool.dex === 'Raydium' ? '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8' : (existing.programId || ''),
+          };
+          
+          // Add market accounts for Raydium AMM pools (required for swap execution)
+          if (pool.market_id) staticData.market_id = pool.market_id;
+          if (pool.market_program_id) staticData.market_program_id = pool.market_program_id;
+          if (pool.market_bids) staticData.market_bids = pool.market_bids;
+          if (pool.market_asks) staticData.market_asks = pool.market_asks;
+          if (pool.market_event_queue) staticData.market_event_queue = pool.market_event_queue;
+          if (pool.market_base_vault) staticData.market_base_vault = pool.market_base_vault;
+          if (pool.market_quote_vault) staticData.market_quote_vault = pool.market_quote_vault;
+          if (pool.market_authority) staticData.market_authority = pool.market_authority;
+          if (pool.amm_authority) staticData.amm_authority = pool.amm_authority;
+          if (pool.amm_open_orders) staticData.amm_open_orders = pool.amm_open_orders;
+          if (pool.amm_target_orders) staticData.amm_target_orders = pool.amm_target_orders;
+          if (pool.lp_mint) staticData.lp_mint = pool.lp_mint;
+          
+          executionCache.setStatic(pool.id, staticData);
+        }
+        
+        // Log successful cache population for our target pool
+        try {
+          const targetPool = norm.amm?.find((p: any) => p.id === '58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2');
+          if (targetPool) {
+            logger.info('raydium.execution_cache.target_pool_populated', {
+              cat: 'pools',
+              ctx: {
+                poolId: targetPool.id,
+                hasMarketId: !!targetPool.market_id,
+                hasMarketBids: !!targetPool.market_bids,
+                hasMarketAsks: !!targetPool.market_asks,
+                hasAmmAuthority: !!targetPool.amm_authority
+              }
+            });
+          }
+        } catch {}
+        
+        logger.info('raydium.execution_cache.populated', {
+          cat: 'pools',
+          ctx: { ammCount: norm.amm?.length || 0, clmmCount: norm.clmm?.length || 0 }
+        });
+      } catch (err) {
+        logger.warn('raydium.execution_cache.populate.failed', {
+          cat: 'pools',
+          ctx: { error: String((err as any)?.message || err) }
+        });
+      }
+      
       // Apply universe filtering early so caches are consistent across sources
       try {
         const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');

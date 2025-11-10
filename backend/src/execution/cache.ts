@@ -13,6 +13,19 @@ type PoolStatic = {
   // This eliminates RPC calls in builders that need to decode pool state
   rawAccountData?: Buffer;
   rawAccountDataUpdatedMs?: number;
+  // Raydium AMM market accounts (required for swaps)
+  market_id?: string;
+  market_program_id?: string;
+  market_bids?: string;
+  market_asks?: string;
+  market_event_queue?: string;
+  market_base_vault?: string;
+  market_quote_vault?: string;
+  market_authority?: string;
+  amm_authority?: string;
+  amm_open_orders?: string;
+  amm_target_orders?: string;
+  lp_mint?: string;
 };
 
 type PoolHot = {
