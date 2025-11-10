@@ -1062,7 +1062,11 @@ export class DriftService {
       const { withRpcLimit } = await import('../utils/rpcLimiter.js');
       // Gate large multi-account fetches to avoid RPC bursts; weight scales with chunk size
       const weight = Math.max(1, Math.ceil(keys.length / 5));
-      const infos = await withRpcLimit(() => this.getReadConnection().getMultipleAccountsInfo(keys, 'processed'), weight);
+      const infos = await withRpcLimit(
+        () => this.getReadConnection().getMultipleAccountsInfo(keys, 'processed'),
+        weight,
+        { module: 'drift', method: 'getMultipleAccountsInfo' }
+      );
       const out = new Map<string, any>();
       let coder: any = null;
       try { coder = (this.client as any)?.program?.coder?.accounts || null; } catch {}
@@ -1094,7 +1098,11 @@ export class DriftService {
       const missAt = this.missingRefStats.get(key);
       if (missAt && Date.now() - missAt < this.refStatsTtlMs) return null;
       const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-      const info = await withRpcLimit(() => this.getReadConnection().getAccountInfo(pk, 'processed'));
+      const info = await withRpcLimit(
+        () => this.getReadConnection().getAccountInfo(pk, 'processed'),
+        1,
+        { module: 'drift', method: 'getAccountInfo' }
+      );
       if (info) { this.warmRefStats.add(key); return pk; }
       this.missingRefStats.set(key, Date.now());
       return null;
@@ -1525,7 +1533,11 @@ export class DriftService {
         try {
           const pk = await client.getUserAccountPublicKey?.(Number(id));
           if (!pk) continue;
-          const info = await (await import('../utils/rpcLimiter.js')).withRpcLimit(() => this.getReadConnection().getAccountInfo(pk, 'confirmed'));
+          const info = await (await import('../utils/rpcLimiter.js')).withRpcLimit(
+            () => this.getReadConnection().getAccountInfo(pk, 'confirmed'),
+            1,
+            { module: 'drift', method: 'getAccountInfo' }
+          );
           if (!info) continue;
           // Avoid switching active user; instantiate a polling User for this subaccount
           let user: any = null;
@@ -1609,7 +1621,11 @@ export class DriftService {
       // Preflight: ensure wallet has SOL for fees
       try {
         const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-        const balLamports = await withRpcLimit(() => this.connection!.getBalance(this.walletKp!.publicKey, 'confirmed'));
+        const balLamports = await withRpcLimit(
+          () => this.connection!.getBalance(this.walletKp!.publicKey, 'confirmed'),
+          1,
+          { module: 'drift', method: 'getBalance' }
+        );
         const minLamports = 0.01 * 1_000_000_000; // ~0.01 SOL
         if (balLamports < minLamports) {
           lastReason = `INSUFFICIENT_SOL balance=${(balLamports/1_000_000_000).toFixed(6)} required>=0.01`;
@@ -1625,7 +1641,7 @@ export class DriftService {
         for (let cid = 0; cid < maxCap; cid += 1) {
           try {
             const pk = await client.getUserAccountPublicKey?.(Number(cid));
-            if (pk) { const acc = await (await import('../utils/rpcLimiter.js')).withRpcLimit(() => this.connection!.getAccountInfo(pk, 'confirmed')); if (acc) existing.add(Number(cid)); }
+            if (pk) { const acc = await (await import('../utils/rpcLimiter.js')).withRpcLimit(() => this.connection!.getAccountInfo(pk, 'confirmed'), 1, { module: 'drift', method: 'getAccountInfo' }); if (acc) existing.add(Number(cid)); }
           } catch {}
         }
       } catch {}
@@ -1690,7 +1706,7 @@ export class DriftService {
       const existing2 = new Set<number>();
       try {
         for (const cid of candidateIds) {
-          try { const pk = await client.getUserAccountPublicKey?.(Number(cid)); if (pk) { const acc = await (await import('../utils/rpcLimiter.js')).withRpcLimit(() => this.getReadConnection().getAccountInfo(pk, 'confirmed')); if (acc) existing2.add(Number(cid)); } } catch {}
+          try { const pk = await client.getUserAccountPublicKey?.(Number(cid)); if (pk) { const acc = await (await import('../utils/rpcLimiter.js')).withRpcLimit(() => this.getReadConnection().getAccountInfo(pk, 'confirmed'), 1, { module: 'drift', method: 'getAccountInfo' }); if (acc) existing2.add(Number(cid)); } } catch {}
         }
       } catch {}
       candidateIds = candidateIds.filter((x) => (Number.isFinite(x) && !seenIds.has((seenIds.add(Number(x)), Number(x))) && !existing2.has(Number(x))));

@@ -342,8 +342,10 @@ export class DexAltManager {
       let existing: { value: AddressLookupTableAccount | null } | null = null;
       for (let retry = 0; retry < 3; retry++) {
         try {
-          existing = await withRpcLimit(() => 
-            connection.getAddressLookupTable(derivedAddress)
+          existing = await withRpcLimit(
+            () => connection.getAddressLookupTable(derivedAddress),
+            1,
+            { module: 'alt', method: 'getAddressLookupTable' }
           );
           if (existing && existing.value) break;
         } catch {}
@@ -415,8 +417,10 @@ export class DexAltManager {
             if (!address) continue;
             try {
               const altPk = new PublicKey(address);
-              const result = await withRpcLimit(() => 
-                connection.getAddressLookupTable(altPk)
+              const result = await withRpcLimit(
+                () => connection.getAddressLookupTable(altPk),
+                1,
+                { module: 'alt', method: 'getAddressLookupTable' }
               ).catch(() => ({ value: null }));
               
               if (result.value) {
@@ -490,7 +494,11 @@ export class DexAltManager {
       }
     
     // Get recent slot for ALT creation
-    const recentSlotRaw = await withRpcLimit(() => connection.getSlot('finalized'));
+    const recentSlotRaw = await withRpcLimit(
+      () => connection.getSlot('finalized'),
+      1,
+      { module: 'alt', method: 'getSlot' }
+    );
     const recentSlot = typeof recentSlotRaw === 'number' ? recentSlotRaw : Number(recentSlotRaw);
     
     // Create ALT instruction (returns [instruction, lookupTableAddress])
@@ -509,18 +517,28 @@ export class DexAltManager {
     // The lookup table account must exist before we can extend it
     const createTx = new Transaction();
     createTx.add(createIx);
-    const createBlockhash = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
+    const createBlockhash = await withRpcLimit(
+      () => connection.getLatestBlockhash('finalized'),
+      1,
+      { module: 'alt', method: 'getLatestBlockhash' }
+    );
     createTx.recentBlockhash = createBlockhash.blockhash;
     createTx.feePayer = payer.publicKey;
     
     const kp = Keypair.fromSecretKey(payer.secretKey);
     createTx.sign(kp);
     
-    const createSig = await withRpcLimit(() => connection.sendRawTransaction(createTx.serialize()));
+    const createSig = await withRpcLimit(
+      () => connection.sendRawTransaction(createTx.serialize()),
+      1,
+      { module: 'alt', method: 'sendRawTransaction' }
+    );
     
     // Use 'finalized' commitment for more reliable confirmation
-    const confirmation = await withRpcLimit(() => 
-      connection.confirmTransaction(createSig, 'finalized')
+    const confirmation = await withRpcLimit(
+      () => connection.confirmTransaction(createSig, 'finalized'),
+      1,
+      { module: 'alt', method: 'confirmTransaction' }
     );
     
     // Verify the transaction actually succeeded
@@ -549,8 +567,10 @@ export class DexAltManager {
       await new Promise(resolve => setTimeout(resolve, delay));
       
       try {
-        verifyResult = await withRpcLimit(() => 
-          connection.getAddressLookupTable(lookupTableAddress)
+        verifyResult = await withRpcLimit(
+          () => connection.getAddressLookupTable(lookupTableAddress),
+          1,
+          { module: 'alt', method: 'getAddressLookupTable' }
         );
         
         if (verifyResult && verifyResult.value) {
@@ -586,8 +606,10 @@ export class DexAltManager {
     if (!verifyResult || !verifyResult.value) {
       // Check transaction status one more time
       try {
-        const txStatus = await withRpcLimit(() => 
-          connection.getSignatureStatus(createSig)
+        const txStatus = await withRpcLimit(
+          () => connection.getSignatureStatus(createSig),
+          1,
+          { module: 'alt', method: 'getSignatureStatus' }
         );
         
         if (txStatus.value?.err) {
@@ -675,8 +697,10 @@ export class DexAltManager {
       
       try {
         // Check if account exists and is owned by Address Lookup Table program
-        const accountInfo = await withRpcLimit(() => 
-          connection.getAccountInfo(lookupTableAddress)
+        const accountInfo = await withRpcLimit(
+          () => connection.getAccountInfo(lookupTableAddress),
+          1,
+          { module: 'alt', method: 'getAccountInfo' }
         );
         
         if (accountInfo && accountInfo.owner) {
@@ -684,8 +708,10 @@ export class DexAltManager {
           
           if (isOwnedByAltProgram) {
             // Also verify we can get the lookup table data
-            const altResult = await withRpcLimit(() => 
-              connection.getAddressLookupTable(lookupTableAddress)
+            const altResult = await withRpcLimit(
+              () => connection.getAddressLookupTable(lookupTableAddress),
+              1,
+              { module: 'alt', method: 'getAddressLookupTable' }
             );
             
             if (altResult && altResult.value) {
@@ -810,14 +836,26 @@ export class DexAltManager {
         
         const extendTx = new Transaction();
         extendTx.add(extendIx);
-        const extendBlockhash = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
+        const extendBlockhash = await withRpcLimit(
+          () => connection.getLatestBlockhash('finalized'),
+          1,
+          { module: 'alt', method: 'getLatestBlockhash' }
+        );
         extendTx.recentBlockhash = extendBlockhash.blockhash;
         extendTx.feePayer = payer.publicKey;
         
         extendTx.sign(kp);
         
-        const extendSig = await withRpcLimit(() => connection.sendRawTransaction(extendTx.serialize()));
-        await withRpcLimit(() => connection.confirmTransaction(extendSig, 'confirmed'));
+        const extendSig = await withRpcLimit(
+          () => connection.sendRawTransaction(extendTx.serialize()),
+          1,
+          { module: 'alt', method: 'sendRawTransaction' }
+        );
+        await withRpcLimit(
+          () => connection.confirmTransaction(extendSig, 'confirmed'),
+          1,
+          { module: 'alt', method: 'confirmTransaction' }
+        );
         
         extendSignatures.push(extendSig);
         
@@ -1163,7 +1201,11 @@ export class DexAltManager {
       if (dexLower === 'raydium') {
         // Fetch pool account data to determine if AMM or CLMM
         try {
-          const poolInfo = await withRpcLimit(() => connection.getAccountInfo(poolPk));
+          const poolInfo = await withRpcLimit(
+            () => connection.getAccountInfo(poolPk),
+            1,
+            { module: 'alt', method: 'getAccountInfo' }
+          );
           if (!poolInfo) return accounts;
 
           // Try to determine pool type from account size
@@ -1203,7 +1245,11 @@ export class DexAltManager {
       } else if (dexLower === 'orca') {
         // Orca Whirlpool - parse and extract all accounts
         try {
-          const poolInfo = await withRpcLimit(() => connection.getAccountInfo(poolPk));
+          const poolInfo = await withRpcLimit(
+            () => connection.getAccountInfo(poolPk),
+            1,
+            { module: 'alt', method: 'getAccountInfo' }
+          );
           if (poolInfo) {
             const whirlpoolAccounts = await this.parseOrcaWhirlpoolAccounts(poolPk, poolInfo);
             accounts.push(...whirlpoolAccounts);
@@ -1225,7 +1271,11 @@ export class DexAltManager {
       } else if (dexLower === 'meteora') {
         // Meteora DLMM - parse and extract all accounts
         try {
-          const poolInfo = await withRpcLimit(() => connection.getAccountInfo(poolPk));
+          const poolInfo = await withRpcLimit(
+            () => connection.getAccountInfo(poolPk),
+            1,
+            { module: 'alt', method: 'getAccountInfo' }
+          );
           if (poolInfo) {
             const dlmmAccounts = await this.parseMeteoraDlmmAccounts(poolPk, poolInfo);
             accounts.push(...dlmmAccounts);
@@ -1247,7 +1297,11 @@ export class DexAltManager {
       } else if (dexLower === 'meteora-balanced') {
         // Meteora Balanced AMM accounts
         try {
-          const poolInfo = await withRpcLimit(() => connection.getAccountInfo(poolPk));
+          const poolInfo = await withRpcLimit(
+            () => connection.getAccountInfo(poolPk),
+            1,
+            { module: 'alt', method: 'getAccountInfo' }
+          );
           if (poolInfo) {
             const balancedAccounts = await this.parseMeteoraBalancedAccounts(poolPk, poolInfo);
             accounts.push(...balancedAccounts);
@@ -1654,7 +1708,11 @@ export class DexAltManager {
         );
         // Check if it exists on-chain before adding
         const connection = getConnection();
-        const bitmapInfo = await withRpcLimit(() => connection.getAccountInfo(bitmapExt), 0.5).catch(() => null);
+        const bitmapInfo = await withRpcLimit(
+          () => connection.getAccountInfo(bitmapExt),
+          0.5,
+          { module: 'alt', method: 'getAccountInfo' }
+        ).catch(() => null);
         if (bitmapInfo) {
           accounts.push(bitmapExt);
         }
@@ -1699,8 +1757,10 @@ export class DexAltManager {
             if (binArraysToCheck.length > 0) {
               const connection = getConnection();
               try {
-                const accountInfos = await withRpcLimit(() => 
-                  connection.getMultipleAccountsInfo(binArraysToCheck.map(b => b.pk)), 1.0
+                const accountInfos = await withRpcLimit(
+                  () => connection.getMultipleAccountsInfo(binArraysToCheck.map(b => b.pk)),
+                  1.0,
+                  { module: 'alt', method: 'getMultipleAccountsInfo' }
                 ).catch(() => null);
                 
                 if (accountInfos) {
@@ -1740,8 +1800,10 @@ export class DexAltManager {
                 const binArraysAdded: string[] = [];
                 for (const binArray of binArraysToCheck) {
                   try {
-                    const binArrayInfo = await withRpcLimit(() => 
-                      connection.getAccountInfo(binArray.pk), 0.3
+                    const binArrayInfo = await withRpcLimit(
+                      () => connection.getAccountInfo(binArray.pk),
+                      0.3,
+                      { module: 'alt', method: 'getAccountInfo' }
                     ).catch(() => null);
                     
                     if (binArrayInfo) {
@@ -1970,8 +2032,10 @@ export class DexAltManager {
 
         // Load from chain
         const pk = new PublicKey(addr);
-        const result = await withRpcLimit(() => 
-          connection.getAddressLookupTable(pk)
+        const result = await withRpcLimit(
+          () => connection.getAddressLookupTable(pk),
+          1,
+          { module: 'alt', method: 'getAddressLookupTable' }
         );
 
         if (result && 'value' in result && result.value) {
@@ -2042,8 +2106,10 @@ export class DexAltManager {
     const accountPks = accounts.map(acc => typeof acc === 'string' ? new PublicKey(acc) : acc);
 
     // Check current ALT state
-    const result = await withRpcLimit(() => 
-      connection.getAddressLookupTable(altPk)
+    const result = await withRpcLimit(
+      () => connection.getAddressLookupTable(altPk),
+      1,
+      { module: 'alt', method: 'getAddressLookupTable' }
     ).catch(() => ({ value: null }));
 
     if (!result.value) {
