@@ -1915,8 +1915,10 @@ export function startRaydiumRefreshLoop(): void {
           const perSec = Math.max(1, Number(((CONFIG.system as any)?.wsAttachPerSec) || 10));
           const intervalMs = Math.floor(1000 / perSec);
           const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+          logger.info('pools.ws orca.loop.start', { poolCount: uniq.length, rateLimit: `${perSec}/sec`, intervalMs, cat: 'pools' });
           for (let i = 0; i < uniq.length; i++) {
             const addr = uniq[i];
+            logger.info('pools.ws orca.pool.processing', { index: i, total: uniq.length, pool: addr.slice(0,8)+'…', cat: 'pools' });
             try {
               const pk = new PublicKey(addr);
               const id = await subscribeAccountWithRetry(pk, handle);
@@ -1925,14 +1927,17 @@ export function startRaydiumRefreshLoop(): void {
                 const acct = pk.toBase58();
                 targetedSourceByAccount.set(acct, 'orca');
                 debugLogTargeted('orca', acct, { kind: 'pool' });
+                logger.info('pools.ws orca.pool.subscribed', { index: i, pool: addr.slice(0,8)+'…', cat: 'pools' });
               } catch {}
               // Attach Orca Whirlpool vault, oracle, and tick array listeners
               // Await to respect rate limiter (additional attachments also consume WS attach slots)
               await attachOrcaWhirlpoolAccounts(addr).catch((err) => {
                 try { logger.info('orca.attach.fail', { pool: addr.slice(0,8)+'…', error: String(err?.message || err), stack: err?.stack }); } catch {}
               });
+              logger.info('pools.ws orca.pool.attached', { index: i, pool: addr.slice(0,8)+'…', cat: 'pools' });
             } catch {}
             if (i < uniq.length - 1 && intervalMs > 0) { await sleep(intervalMs); }
+            logger.info('pools.ws orca.pool.complete', { index: i, pool: addr.slice(0,8)+'…', cat: 'pools' });
           }
           attachedOrcaPools = attached;
           logger.info('pools.ws subscribe orca.pools', { attached, target: uniq.length, source: 'orca', ms: Date.now() - startTsOrca });
