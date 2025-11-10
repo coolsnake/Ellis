@@ -113,11 +113,23 @@ export async function getBalances(address: PublicKey, opts?: { force?: boolean }
   }
 
   const task = (async () => {
-    const balanceLamports = await withBackoff<number>(() => withRpcLimit(() => connection.getBalance(address)));
+    const balanceLamports = await withBackoff<number>(() => withRpcLimit(
+      () => connection.getBalance(address),
+      1,
+      { module: 'wallet', method: 'getBalance' }
+    ));
     // Fetch both legacy SPL and Token-2022 accounts, then aggregate by mint
     // Heavier RPCs (parsedTokenAccounts) get higher weight to reduce concurrency
-    const legacyP = withBackoff<any>(() => withRpcLimit(() => connection.getParsedTokenAccountsByOwner(address, { programId: TOKEN_PROGRAM_ID }), 2));
-    const token22P = withBackoff<any>(() => withRpcLimit(() => connection.getParsedTokenAccountsByOwner(address, { programId: TOKEN_2022_PROGRAM_ID }), 2)).catch(() => ({ value: [] }));
+    const legacyP = withBackoff<any>(() => withRpcLimit(
+      () => connection.getParsedTokenAccountsByOwner(address, { programId: TOKEN_PROGRAM_ID }),
+      2,
+      { module: 'wallet', method: 'getParsedTokenAccountsByOwner' }
+    ));
+    const token22P = withBackoff<any>(() => withRpcLimit(
+      () => connection.getParsedTokenAccountsByOwner(address, { programId: TOKEN_2022_PROGRAM_ID }),
+      2,
+      { module: 'wallet', method: 'getParsedTokenAccountsByOwner' }
+    )).catch(() => ({ value: [] }));
     const [legacy, token22] = await Promise.all([legacyP, token22P]);
     const allAccounts = [...(legacy?.value || []), ...((token22 as any)?.value || [])];
     const tokens: Record<string, number> = {};
@@ -211,8 +223,16 @@ export async function wrapSol(amountSol: number): Promise<string> {
   const tx = new Transaction();
   tx.add(SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: ata.address, lamports }));
   tx.add(createSyncNativeInstruction(ata.address));
-  const sig = await withRpcLimit(() => connection.sendTransaction(tx, [kp], { skipPreflight: true }));
-  await withRpcLimit(() => connection.confirmTransaction(sig, 'confirmed'));
+  const sig = await withRpcLimit(
+    () => connection.sendTransaction(tx, [kp], { skipPreflight: true }),
+    1,
+    { module: 'wallet', method: 'sendTransaction' }
+  );
+  await withRpcLimit(
+    () => connection.confirmTransaction(sig, 'confirmed'),
+    1,
+    { module: 'wallet', method: 'confirmTransaction' }
+  );
   return sig;
 }
 
@@ -222,8 +242,16 @@ export async function unwrapSol(): Promise<string> {
   const ata = await getOrCreateAssociatedTokenAccount(connection, kp, NATIVE_MINT, kp.publicKey);
   const tx = new Transaction();
   tx.add(createCloseAccountInstruction(ata.address, kp.publicKey, kp.publicKey));
-  const sig = await withRpcLimit(() => connection.sendTransaction(tx, [kp], { skipPreflight: true }));
-  await withRpcLimit(() => connection.confirmTransaction(sig, 'confirmed'));
+  const sig = await withRpcLimit(
+    () => connection.sendTransaction(tx, [kp], { skipPreflight: true }),
+    1,
+    { module: 'wallet', method: 'sendTransaction' }
+  );
+  await withRpcLimit(
+    () => connection.confirmTransaction(sig, 'confirmed'),
+    1,
+    { module: 'wallet', method: 'confirmTransaction' }
+  );
   return sig;
 }
 
@@ -260,8 +288,16 @@ export async function signAndSendSerializedTransaction(
     
     // Fallback to original versioned transaction
     tx.sign([signer]);
-    const sig = await withRpcLimit(() => connection.sendRawTransaction(tx.serialize(), { skipPreflight: true }));
-    await withRpcLimit(() => connection.confirmTransaction(sig, 'confirmed'));
+    const sig = await withRpcLimit(
+      () => connection.sendRawTransaction(tx.serialize(), { skipPreflight: true }),
+      1,
+      { module: 'wallet', method: 'sendRawTransaction' }
+    );
+    await withRpcLimit(
+      () => connection.confirmTransaction(sig, 'confirmed'),
+      1,
+      { module: 'wallet', method: 'confirmTransaction' }
+    );
     try {
       const id = Math.random().toString(36).slice(2,10);
       await logTxTrace('send', {

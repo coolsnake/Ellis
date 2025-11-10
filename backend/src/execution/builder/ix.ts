@@ -70,7 +70,11 @@ async function injectBinArrayMetas(
               // Try to get active bin from pool state to use a small range
               try {
                 const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
-                const poolState = await withRpcLimit(() => connection.getAccountInfo(poolPk)) as any;
+                const poolState = await withRpcLimit(
+                  () => connection.getAccountInfo(poolPk),
+                  1,
+                  { module: 'execution', method: 'getAccountInfo' }
+                ) as any;
                 if (poolState?.data?.length) {
                   const decode = (DLMM as any)?.decodeAccount;
                   if (decode) {
@@ -1054,7 +1058,11 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                     // Verify account exists on-chain before including it
           try {
                       const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
-                      const accInfo = await withRpcLimit(() => connection.getAccountInfo(finalPk));
+                      const accInfo = await withRpcLimit(
+                        () => connection.getAccountInfo(finalPk),
+                        1,
+                        { module: 'execution', method: 'getAccountInfo' }
+                      );
                       if (accInfo && accInfo.data && accInfo.data.length > 0) {
                         // Account exists, safe to include
                         if (!binArrayLower) binArrayLower = finalPk;
@@ -1213,7 +1221,8 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       const weight = Math.max(1, Math.ceil(tokenAccountsToCheck.length / 5));
       tokenInfos = await withRpcLimit(
         () => connection.getMultipleAccountsInfo(tokenAccountsToCheck),
-        weight
+        weight,
+        { module: 'execution', method: 'getMultipleAccountsInfo' }
       ).catch(() => null);
       
       // Process input token account result
@@ -2115,7 +2124,8 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
         const weight = Math.max(1, Math.ceil(tickArrayPks.length / 5));
         const tickArrayInfos = await withRpcLimit(
           () => connection.getMultipleAccountsInfo(tickArrayPks),
-          weight
+          weight,
+          { module: 'execution', method: 'getMultipleAccountsInfo' }
         ).catch(() => null);
         
         if (tickArrayInfos && tickArrayInfos.length === tickArrayPks.length) {
@@ -2463,7 +2473,11 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
           const keys = accountsToVerify.map(a => a.pkObj);
           // Use weight scaling for batch requests (similar to drift client)
           const weight = Math.max(1, Math.ceil(keys.length / 5));
-          const accountInfos = await withRpcLimit(() => connection.getMultipleAccountsInfo(keys), weight).catch(() => null);
+          const accountInfos = await withRpcLimit(
+            () => connection.getMultipleAccountsInfo(keys),
+            weight,
+            { module: 'execution', method: 'getMultipleAccountsInfo' }
+          ).catch(() => null);
           
           // Process results
           if (accountInfos && accountInfos.length === accountsToVerify.length) {
@@ -2730,7 +2744,8 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
         const weight = Math.max(1, Math.ceil(accountsToCheck.length / 5));
         const accountInfos = await withRpcLimit(
           () => connection.getMultipleAccountsInfo(accountsToCheck),
-          weight
+          weight,
+          { module: 'execution', method: 'getMultipleAccountsInfo' }
         ).catch(() => null);
         
         // Verify observation account exists
@@ -2884,7 +2899,11 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
               const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
               const keys = accountsToVerify.map(a => a.pkObj);
               const weight = Math.max(1, Math.ceil(keys.length / 5));
-              const accountInfos = await withRpcLimit(() => connection.getMultipleAccountsInfo(keys), weight).catch(() => null);
+              const accountInfos = await withRpcLimit(
+                () => connection.getMultipleAccountsInfo(keys),
+                weight,
+                { module: 'execution', method: 'getMultipleAccountsInfo' }
+              ).catch(() => null);
               
               if (accountInfos && Array.isArray(accountInfos) && accountInfos.length === accountsToVerify.length) {
                 for (let i = 0; i < accountsToVerify.length; i++) {
@@ -3066,7 +3085,11 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
         const connection = getConnection();
         const poolPk = toPublicKey(hop.poolId);
         const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
-        poolAccountInfo = await withRpcLimit(() => connection.getAccountInfo(poolPk));
+        poolAccountInfo = await withRpcLimit(
+          () => connection.getAccountInfo(poolPk),
+          1,
+          { module: 'execution', method: 'getAccountInfo' }
+        );
         if (poolAccountInfo?.data?.length) {
           const rmod: any = await import('@raydium-io/raydium-sdk-v2');
           const layouts = [

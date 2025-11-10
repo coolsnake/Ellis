@@ -721,7 +721,11 @@ export function startRaydiumRefreshLoop(): void {
                 // Now fetch and process the parent pool account
                 const { withRpcLimit } = await import('../utils/rpcLimiter.js');
                 const parentPk = new web3.PublicKey(derivedMeta.poolId);
-                const parentInfo: any = await withRpcLimit(() => conn.getAccountInfo(parentPk, CONFIG.system.txCommitment as any));
+                const parentInfo: any = await withRpcLimit(
+                  () => conn.getAccountInfo(parentPk, CONFIG.system.txCommitment as any),
+                  1,
+                  { module: 'pools', method: 'getAccountInfo' }
+                );
                 
                 if (parentInfo) {
                   // Recursively call handle() with the parent pool account
@@ -1565,7 +1569,11 @@ export function startRaydiumRefreshLoop(): void {
                 try {
                   await waitForWsAttachSlot(); // Rate-limit the RPC call
                   const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-                  const accInfo = await withRpcLimit(() => conn.getAccountInfo(binPk, CONFIG.system.txCommitment as any)) as any;
+                  const accInfo = await withRpcLimit(
+                    () => conn.getAccountInfo(binPk, CONFIG.system.txCommitment as any),
+                    1,
+                    { module: 'pools', method: 'getAccountInfo' }
+                  ) as any;
                   if (accInfo?.data) {
                     tracker.binHashes.set(acct, hashBuffer(accInfo.data));
                   }
@@ -1597,6 +1605,8 @@ export function startRaydiumRefreshLoop(): void {
                 timeoutMs: 5000,  // 5 second timeout per attempt
                 retries: 2,        // 2 retries
                 weight: 1,
+                module: 'pools',
+                method: 'getAccountInfo',
                 label: 'raydium.amm.getAccountInfo'
               }
             ).catch((err) => {
@@ -1648,6 +1658,8 @@ export function startRaydiumRefreshLoop(): void {
                 timeoutMs: 5000,  // 5 second timeout per attempt
                 retries: 2,        // 2 retries
                 weight: 1,
+                module: 'pools',
+                method: 'getAccountInfo',
                 label: 'raydium.clmm.getAccountInfo'
               }
             ).catch((err) => {
@@ -1757,6 +1769,8 @@ export function startRaydiumRefreshLoop(): void {
                 timeoutMs: 5000,  // 5 second timeout per attempt
                 retries: 2,        // 2 retries
                 weight: 1,
+                module: 'pools',
+                method: 'getAccountInfo',
                 label: 'orca.getAccountInfo'
               }
             ).catch((err) => {
@@ -2070,7 +2084,11 @@ export function startRaydiumRefreshLoop(): void {
               // Check account owner to determine pool type
               try {
                 const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-                const poolAcc: any = await withRpcLimit(() => conn.getAccountInfo(pk, CONFIG.system.txCommitment as any));
+                const poolAcc: any = await withRpcLimit(
+                  () => conn.getAccountInfo(pk, CONFIG.system.txCommitment as any),
+                  1,
+                  { module: 'pools', method: 'getAccountInfo' }
+                );
                 if (poolAcc) {
                   const owner = poolAcc.owner?.toBase58?.();
                   const rayAmmOwner = rayAmm.toBase58();

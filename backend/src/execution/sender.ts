@@ -57,7 +57,11 @@ async function getCachedBlockhash(connection: Connection): Promise<{ blockhash: 
   }
   
   // Fetch fresh blockhash
-  const result = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
+  const result = await withRpcLimit(
+    () => connection.getLatestBlockhash('finalized'),
+    1,
+    { module: 'execution', method: 'getLatestBlockhash' }
+  );
   cachedBlockhash = { ...result, fetchedAt: now };
   
   try {
@@ -1045,8 +1049,16 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
     // Re-throw other errors
     throw error;
   }
-  const sig = await withRpcLimit(() => connection.sendTransaction(tx, { skipPreflight: true, preflightCommitment: 'confirmed' }));
-  await withRpcLimit(() => connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed'));
+  const sig = await withRpcLimit(
+    () => connection.sendTransaction(tx, { skipPreflight: true, preflightCommitment: 'confirmed' }),
+    1,
+    { module: 'execution', method: 'sendTransaction' }
+  );
+  await withRpcLimit(
+    () => connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed'),
+    1,
+    { module: 'execution', method: 'confirmTransaction' }
+  );
   try {
     const programs = realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId)));
     const dexes = detectDexesFromPrograms(programs);

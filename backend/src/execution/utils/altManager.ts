@@ -58,8 +58,10 @@ export class DexAltManager {
                 
                 // CRITICAL: Validate that the ALT actually exists on-chain
                 // This prevents stale references to deleted ALTs
-                const altAccount = await withRpcLimit(() => 
-                  connection.getAddressLookupTable(pk)
+                const altAccount = await withRpcLimit(
+                  () => connection.getAddressLookupTable(pk),
+                  1,
+                  { module: 'alt', method: 'getAddressLookupTable' }
                 );
                 
                 if (!altAccount.value) {
@@ -200,8 +202,10 @@ export class DexAltManager {
         let result: { value: AddressLookupTableAccount | null } | null = null;
         for (let retry = 0; retry < 3; retry++) {
           try {
-            result = await withRpcLimit(() => 
-              connection.getAddressLookupTable(lookupTableAddress)
+            result = await withRpcLimit(
+              () => connection.getAddressLookupTable(lookupTableAddress),
+              1,
+              { module: 'alt', method: 'getAddressLookupTable' }
             );
             if (result && result.value) break;
           } catch {}
@@ -278,14 +282,26 @@ export class DexAltManager {
     
     const extendTx = new Transaction();
     extendTx.add(extendIx);
-    const extendBlockhash = await withRpcLimit(() => connection.getLatestBlockhash('finalized'));
+    const extendBlockhash = await withRpcLimit(
+      () => connection.getLatestBlockhash('finalized'),
+      1,
+      { module: 'alt', method: 'getLatestBlockhash' }
+    );
     extendTx.recentBlockhash = extendBlockhash.blockhash;
     extendTx.feePayer = payer.publicKey;
     
     extendTx.sign(kp);
     
-    const extendSig = await withRpcLimit(() => connection.sendRawTransaction(extendTx.serialize()));
-    await withRpcLimit(() => connection.confirmTransaction(extendSig, 'confirmed'));
+    const extendSig = await withRpcLimit(
+      () => connection.sendRawTransaction(extendTx.serialize()),
+      1,
+      { module: 'alt', method: 'sendRawTransaction' }
+    );
+    await withRpcLimit(
+      () => connection.confirmTransaction(extendSig, 'confirmed'),
+      1,
+      { module: 'alt', method: 'confirmTransaction' }
+    );
     
     try {
       logger.info('alt.manager.extended', {

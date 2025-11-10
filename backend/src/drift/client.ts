@@ -197,7 +197,11 @@ export class DriftService {
     const originalGetAccountInfo = this.connection.getAccountInfo.bind(this.connection);
     const { withRpcLimit } = await import('../utils/rpcLimiter.js');
     this.connection.getAccountInfo = async function(...args: any[]) {
-      return await withRpcLimit(() => originalGetAccountInfo(...args));
+      return await withRpcLimit(
+        () => originalGetAccountInfo(...args),
+        1,
+        { module: 'drift', method: 'getAccountInfo' }
+      );
     };
     
     const t0 = Date.now();
