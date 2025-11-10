@@ -1336,7 +1336,9 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     } catch {}
 
     // Extend with host/referral fee handling and reserves when available
-    const acctBase: any = { ...accounts, hostFeeIn: null };
+    // Note: hostFeeIn removed - passing null causes error 3007 (account owned by wrong program)
+    // The SDK will handle the default behavior when hostFeeIn is undefined
+    const acctBase: any = { ...accounts };
     try {
       if (hop.vaultA) acctBase.reserveX = toPublicKey(hop.vaultA as any);
       if (hop.vaultB) acctBase.reserveY = toPublicKey(hop.vaultB as any);
