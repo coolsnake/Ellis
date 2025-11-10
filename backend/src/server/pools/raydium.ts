@@ -312,7 +312,9 @@ async function fetchSerumMarketAccounts(marketId: string, marketProgramId: strin
     
     const readU64 = (offset: number): number => {
       const bytes = data.slice(offset, offset + 8);
-      return Number(bytes.readBigUInt64LE(0));
+      // Use DataView for cross-platform compatibility
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      return Number(view.getBigUint64(0, true)); // true = little endian
     };
     
     // Serum Market Layout offsets
