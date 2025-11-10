@@ -1431,18 +1431,6 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       }
     } catch {}
 
-    // Add token mints, programs and oracle if available/derivable
-    // Detect correct token program IDs per mint (Token-2022 support)
-    try {
-      const getTokenProgramId = (DLMM as any)?.getTokenProgramId;
-      const xMint = acctBase.tokenXMint ? (acctBase.tokenXMint.publicKey || acctBase.tokenXMint) : undefined;
-      const yMint = acctBase.tokenYMint ? (acctBase.tokenYMint.publicKey || acctBase.tokenYMint) : undefined;
-      const fallbackTokenProg = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
-      if (getTokenProgramId && xMint) { acctBase.tokenXProgram = await getTokenProgramId(connection, xMint).catch(() => fallbackTokenProg); }
-      if (getTokenProgramId && yMint) { acctBase.tokenYProgram = await getTokenProgramId(connection, yMint).catch(() => fallbackTokenProg); }
-      if (!acctBase.tokenXProgram) acctBase.tokenXProgram = fallbackTokenProg;
-      if (!acctBase.tokenYProgram) acctBase.tokenYProgram = fallbackTokenProg;
-    } catch {}
     try { acctBase.memoProgram = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'); } catch {}
     try {
       const getTokensMintFromPoolAddress = (DLMM as any)?.getTokensMintFromPoolAddress;
@@ -1745,6 +1733,19 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           // Setting them incorrectly could cause the "Invalid token mint" error
         }
       }
+    } catch {}
+
+    // Fetch token program IDs AFTER token mints are confirmed
+    // Detect correct token program IDs per mint (Token-2022 support)
+    try {
+      const getTokenProgramId = (DLMM as any)?.getTokenProgramId;
+      const xMint = acctBase.tokenXMint ? (acctBase.tokenXMint.publicKey || acctBase.tokenXMint) : undefined;
+      const yMint = acctBase.tokenYMint ? (acctBase.tokenYMint.publicKey || acctBase.tokenYMint) : undefined;
+      const fallbackTokenProg = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+      if (getTokenProgramId && xMint) { acctBase.tokenXProgram = await getTokenProgramId(connection, xMint).catch(() => fallbackTokenProg); }
+      if (getTokenProgramId && yMint) { acctBase.tokenYProgram = await getTokenProgramId(connection, yMint).catch(() => fallbackTokenProg); }
+      if (!acctBase.tokenXProgram) acctBase.tokenXProgram = fallbackTokenProg;
+      if (!acctBase.tokenYProgram) acctBase.tokenYProgram = fallbackTokenProg;
     } catch {}
 
     // Choose swap variant now that token program IDs are known
