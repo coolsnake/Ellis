@@ -104,6 +104,16 @@ function refill(): void {
   }
   
   tokens = Math.min(capacity, tokens + add);
+  
+  // Fix floating point precision errors - round to 6 decimal places
+  // This prevents accumulation of tiny residual values like 1.021e-14
+  tokens = Math.round(tokens * 1000000) / 1000000;
+  
+  // Treat anything below 0.000001 as zero
+  if (tokens < 0.000001) {
+    tokens = 0;
+  }
+  
   lastRefillMs = now;
 }
 
@@ -314,11 +324,25 @@ export async function acquireRpcSlots(weight = 1): Promise<void> {
         // Force consume whatever tokens we have and allow the call through
         // This is better than blocking forever or throwing an error
         tokens = Math.max(0, tokens - need);
+        
+        // Fix floating point precision errors
+        tokens = Math.round(tokens * 1000000) / 1000000;
+        if (tokens < 0.000001) {
+          tokens = 0;
+        }
+        
         return; // EXIT AFTER FORCE-ALLOWING
       }
       
       if (tokens >= need) {
         tokens -= need;
+        
+        // Fix floating point precision errors after subtraction
+        tokens = Math.round(tokens * 1000000) / 1000000;
+        if (tokens < 0.000001) {
+          tokens = 0;
+        }
+        
         // Sequence callers to preserve a minimum gap between dispatches
         const prev = gapChain;
         gapChain = (async () => {

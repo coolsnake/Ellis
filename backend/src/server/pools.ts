@@ -328,6 +328,56 @@ function debugLogTargeted(source: 'raydium' | 'orca' | 'meteora', account: strin
     logger.info('pools.ws debug.subscribe', { source, account, ...extra, cat: 'pools' });
   } catch {}
 }
+
+// Helper: parse SPL token account amount from raw account data
+function parseTokenAccountAmount(data: Buffer | Uint8Array): bigint | null {
+  try {
+    // SPL Token account layout: amount is at offset 64 (u64, 8 bytes, little-endian)
+    if (data.length < 72) return null;
+    
+    // Read 8 bytes as little-endian u64
+    const bytes = data.slice(64, 72);
+    let value = 0n;
+    for (let i = 0; i < 8; i++) {
+      value |= BigInt(bytes[i]) << BigInt(i * 8);
+    }
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+// Helper: find a pool in the caches by ID
+function findPoolInCache(poolId: string): { pool: AmmPool | ClmmPool; source: 'raydium' | 'orca' | 'meteora' } | null {
+  // Check Orca
+  const orcaPools = orcaCache.data;
+  if (orcaPools) {
+    const orcaAmm = orcaPools.amm.find(p => p.id === poolId);
+    if (orcaAmm) return { pool: orcaAmm, source: 'orca' };
+    const orcaClmm = orcaPools.clmm.find(p => p.id === poolId);
+    if (orcaClmm) return { pool: orcaClmm, source: 'orca' };
+  }
+  
+  // Check Raydium
+  const raydiumPools = raydiumCache.data;
+  if (raydiumPools) {
+    const rayAmm = raydiumPools.amm.find(p => p.id === poolId);
+    if (rayAmm) return { pool: rayAmm, source: 'raydium' };
+    const rayClmm = raydiumPools.clmm.find(p => p.id === poolId);
+    if (rayClmm) return { pool: rayClmm, source: 'raydium' };
+  }
+  
+  // Check Meteora
+  const meteoraPools = meteoraCache.data;
+  if (meteoraPools) {
+    const metAmm = meteoraPools.amm.find(p => p.id === poolId);
+    if (metAmm) return { pool: metAmm, source: 'meteora' };
+    const metClmm = meteoraPools.clmm.find(p => p.id === poolId);
+    if (metClmm) return { pool: metClmm, source: 'meteora' };
+  }
+  
+  return null;
+}
 // Batching queue for getAccountInfo calls during subscription setup
 const accountInfoQueue: Map<string, { resolve: (info: any) => void; reject: (err: any) => void }[]> = new Map();
 let accountInfoBatchTimer: NodeJS.Timeout | null = null;
@@ -442,24 +492,90 @@ export function getPoolCacheAges(): { raydium: number; orca: number; meteora: nu
 }
 
 // Retarget WS: unsubscribe and re-subscribe to current graph-derived targets
+// Uses sequential subscription with throttling to avoid RPC burst
 export async function retargetPoolWebsockets(): Promise<{ attached: { orca: number; raydium: number; meteora: number } }> {
+  try { 
+    emit('log', { 
+      level: 'info', 
+      message: 'pools:ws retarget.start - sequential resubscription with throttling', 
+      timestamp: new Date().toISOString(), 
+      context: { cat: 'pools' } 
+    }); 
+  } catch {}
+  
+  // Step 1: Unsubscribe all existing subscriptions
   try { disablePoolWebsocketRefreshes(); } catch {}
-  // Wait for websocket cleanup to complete before starting new subscriptions
+  
+  // Step 2: Wait for websocket cleanup to complete before starting new subscriptions
   try { 
     if (wsClosePromise) { 
       await wsClosePromise.catch(() => {}); 
       wsClosePromise = null;
     } 
   } catch {}
-  try { startPoolWebsocketsOnlyOnce(); } catch {}
-  // Give subscriptions a brief moment to attach
-  await new Promise((r) => setTimeout(r, 250));
+  
+  // Step 3: Cooldown period to let RPC limiter refill tokens after unsubscribe burst
+  const cooldownMs = Number((CONFIG.system as any)?.wsRetargetCooldownMs || 2000);
+  try { 
+    logger.info('pools.ws retarget.cooldown', { ms: cooldownMs, cat: 'pools' });
+    emit('log', { 
+      level: 'info', 
+      message: `pools:ws retarget.cooldown ${cooldownMs}ms`, 
+      timestamp: new Date().toISOString(), 
+      context: { cat: 'pools' } 
+    }); 
+  } catch {}
+  await new Promise(r => setTimeout(r, cooldownMs));
+  
+  // Step 4: Start resubscription in SEQUENTIAL mode (flag tells setup to stagger DEX sources)
+  try { 
+    // Set sequential mode flag before starting
+    (startPoolWebsocketsOnlyOnce as any).__sequentialMode = true;
+    startPoolWebsocketsOnlyOnce(); 
+  } catch {}
+  
+  // Step 5: Give subscriptions time to attach with sequential throttling
+  // With sequential mode, this takes longer: (cooldown + orca_time + stagger + raydium_time + stagger + meteora_time)
+  // Estimate: 2s cooldown + 6s orca + 5s stagger + 8s raydium + 5s stagger + 4s meteora = ~30s
+  const attachWaitMs = Number((CONFIG.system as any)?.wsRetargetAttachWaitMs || 15000);
+  try { 
+    logger.info('pools.ws retarget.waiting', { ms: attachWaitMs, reason: 'sequential attachment', cat: 'pools' });
+    emit('log', { 
+      level: 'info', 
+      message: `pools:ws retarget.waiting ${attachWaitMs}ms for sequential attachment`, 
+      timestamp: new Date().toISOString(), 
+      context: { cat: 'pools' } 
+    }); 
+  } catch {}
+  await new Promise(r => setTimeout(r, attachWaitMs));
+  
+  // Step 6: Check health and report results
   try {
     const st = getPoolWsStatus();
+    const attached = { orca: attachedOrcaPools, raydium: attachedRaydiumPools, meteora: attachedMeteoraPools };
     if (!st.healthy) {
-      try { emit('log', { level: 'warn', message: 'pools:ws unhealthy after retarget', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
+      try { 
+        logger.warn('pools.ws retarget.unhealthy', { attached, cat: 'pools' });
+        emit('log', { 
+          level: 'warn', 
+          message: 'pools:ws unhealthy after retarget', 
+          timestamp: new Date().toISOString(), 
+          context: { cat: 'pools', attached } 
+        }); 
+      } catch {}
+    } else {
+      try { 
+        logger.info('pools.ws retarget.complete', { attached, cat: 'pools' });
+        emit('log', { 
+          level: 'info', 
+          message: `pools:ws retarget.complete healthy=true`, 
+          timestamp: new Date().toISOString(), 
+          context: { cat: 'pools', attached } 
+        }); 
+      } catch {}
     }
   } catch {}
+  
   return { attached: { orca: attachedOrcaPools, raydium: attachedRaydiumPools, meteora: attachedMeteoraPools } };
 }
 
@@ -767,29 +883,77 @@ export function startRaydiumRefreshLoop(): void {
             // Check if this is a derived account (vault, reserve, tick array, oracle)
             const derivedMeta = derivedAccountToPool.get(pk58);
             if (derivedMeta) {
-              // This is a vault, reserve, tick array, or oracle account - trigger parent pool refresh
-              try {
-                logger.debug('pools.ws derived.account.update', { 
-                  account: pk58.slice(0,8)+'…', 
-                  accountType: derivedMeta.accountType,
-                  parentPool: derivedMeta.poolId.slice(0,8)+'…',
-                  cat: 'pools' 
-                });
-                
-                // Use batched fetch for parent pool account (reduces burst load)
-                const parentInfo: any = await batchGetAccountInfo(conn, derivedMeta.poolId);
-                
-                if (parentInfo) {
-                  // Recursively call handle() with the parent pool account
-                  // This will process it through the normal pool update flow
-                  const web3 = await import('@solana/web3.js');
-                  const parentPk = new web3.PublicKey(derivedMeta.poolId);
-                  return await handle(parentPk, parentInfo);
+              // Process vault/reserve updates locally without RPC calls
+              if (derivedMeta.accountType === 'vault' || derivedMeta.accountType === 'reserve') {
+                try {
+                  // Parse token account balance
+                  const newBalance = parseTokenAccountAmount(info.data);
+                  if (newBalance === null) {
+                    logger.debug('pools.ws vault.parse.fail', { account: pk58.slice(0,8)+'…', cat: 'pools' });
+                    return; // Can't parse, skip
+                  }
+                  
+                  // Find the pool in our caches
+                  const poolData = findPoolInCache(derivedMeta.poolId);
+                  if (!poolData) {
+                    logger.debug('pools.ws vault.pool.not_found', { 
+                      vault: pk58.slice(0,8)+'…', 
+                      pool: derivedMeta.poolId.slice(0,8)+'…', 
+                      cat: 'pools' 
+                    });
+                    return; // Pool not in cache yet, skip
+                  }
+                  
+                  const { pool, source } = poolData;
+                  
+                  // For CLMM pools: vault changes don't directly change price
+                  // The sqrt_price_x64 field determines price, not vault balances
+                  // Vault changes only affect liquidity availability
+                  // Just wait for the pool WebSocket update to deliver the actual price change
+                  if (pool.pool_kind === 'clmm') {
+                    logger.debug('pools.ws vault.clmm.skip', { 
+                      vault: pk58.slice(0,8)+'…', 
+                      pool: derivedMeta.poolId.slice(0,8)+'…',
+                      reason: 'clmm_price_from_sqrtprice_not_vaults',
+                      cat: 'pools' 
+                    });
+                    return; // CLMM: price isn't derived from vaults, skip
+                  }
+                  
+                  // For AMM pools: we could compute price from vault balances
+                  // But we'd need to track both vaults A and B, and know which vault is which
+                  // For now, rely on pool WebSocket updates
+                  // This still eliminates the RPC call - we're subscribed to the pool account too
+                  logger.debug('pools.ws vault.amm.skip', { 
+                    vault: pk58.slice(0,8)+'…', 
+                    pool: derivedMeta.poolId.slice(0,8)+'…',
+                    balance: newBalance.toString(),
+                    reason: 'amm_awaiting_pool_update',
+                    cat: 'pools' 
+                  });
+                  return;
+                  
+                } catch (err) {
+                  logger.debug('pools.ws vault.process.error', { 
+                    vault: pk58.slice(0,8)+'…', 
+                    error: String(err), 
+                    cat: 'pools' 
+                  });
+                  return;
                 }
-              } catch (err) {
-                try { logger.info('pools.ws derived.parent.fetch.fail', { parent: derivedMeta.poolId, error: String((err as any)?.message || err) }); } catch {}
               }
-              // If we can't fetch parent, continue processing as normal (will likely be ignored)
+              
+              // For tick arrays, oracle, observation accounts
+              // These also don't directly determine price - the pool account does
+              // Skip RPC fetch and let the pool's own WebSocket update handle it
+              logger.debug('pools.ws derived.skip', { 
+                account: pk58.slice(0,8)+'…', 
+                accountType: derivedMeta.accountType,
+                parentPool: derivedMeta.poolId.slice(0,8)+'…',
+                reason: 'awaiting_pool_update',
+                cat: 'pools' 
+              });
+              return;
             }
             
             // Lightweight classify: owner indicates which decoder to attempt
@@ -2069,7 +2233,16 @@ export function startRaydiumRefreshLoop(): void {
           }
         };
 
+        // Check if sequential mode is enabled (used during retarget to avoid RPC burst)
+        const isSequentialMode = suppressInitialOnce === true && !!(startPoolWebsocketsOnlyOnce as any).__sequentialMode;
+        const staggerDelayMs = isSequentialMode ? Number((CONFIG.system as any)?.wsRetargetStaggerMs || 3000) : 0;
+        
+        if (isSequentialMode) {
+          logger.info('pools.ws sequential.mode', { enabled: true, staggerMs: staggerDelayMs, cat: 'pools' });
+        }
+
         // Subscribe to Orca Whirlpool POOL accounts only: prefer graph edge pool ids, else derive PDAs from watchlist
+        logger.info('pools.ws dex.subscribe.start', { dex: 'orca', sequential: isSequentialMode, cat: 'pools' });
         try {
           const { PublicKey } = web3;
           const sdkAny: any = await import('@orca-so/whirlpools-sdk').catch(() => null);
@@ -2120,10 +2293,20 @@ export function startRaydiumRefreshLoop(): void {
           const startTsOrca = Date.now();
           let attached = 0;
           // Rate-limit new attachments per second based on config
-          const perSec = Math.max(1, Number(((CONFIG.system as any)?.wsAttachPerSec) || 10));
+          // During retarget (sequential mode), use slower rate to avoid overwhelming RPC limiter
+          const basePerSec = Math.max(1, Number(((CONFIG.system as any)?.wsAttachPerSec) || 10));
+          const perSec = isSequentialMode 
+            ? Math.max(1, Number((CONFIG.system as any)?.wsRetargetAttachPerSec || Math.floor(basePerSec / 2)))
+            : basePerSec;
           const intervalMs = Math.floor(1000 / perSec);
           const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-          logger.info('pools.ws orca.loop.start', { poolCount: uniq.length, rateLimit: `${perSec}/sec`, intervalMs, cat: 'pools' });
+          logger.info('pools.ws orca.loop.start', { 
+            poolCount: uniq.length, 
+            rateLimit: `${perSec}/sec`, 
+            intervalMs, 
+            sequential: isSequentialMode,
+            cat: 'pools' 
+          });
           for (let i = 0; i < uniq.length; i++) {
             const addr = uniq[i];
             logger.info('pools.ws orca.pool.processing', { index: i, total: uniq.length, pool: addr.slice(0,8)+'…', cat: 'pools' });
@@ -2168,7 +2351,20 @@ export function startRaydiumRefreshLoop(): void {
             }
           }
         }
+        
+        // Stagger delay between DEX sources in sequential mode to avoid RPC burst
+        if (isSequentialMode && staggerDelayMs > 0) {
+          logger.info('pools.ws sequential.stagger', { 
+            afterDex: 'orca', 
+            beforeDex: 'raydium', 
+            delayMs: staggerDelayMs, 
+            cat: 'pools' 
+          });
+          await new Promise(r => setTimeout(r, staggerDelayMs));
+        }
+        
         // Raydium address-level subscriptions when we have known pool ids (from prior refresh)
+        logger.info('pools.ws dex.subscribe.start', { dex: 'raydium', sequential: isSequentialMode, cat: 'pools' });
         try {
           // Prefer graph edge pool ids if available
           const edgePoolIds = new Set<string>();
@@ -2191,9 +2387,20 @@ export function startRaydiumRefreshLoop(): void {
           const uniqueRay = Array.from(new Set(base.filter(Boolean)));
           let attachedRay = 0;
           // Rate-limit new attachments per second based on config
-          const perSecRay = Math.max(1, Number(((CONFIG.system as any)?.wsAttachPerSec) || 10));
+          // During retarget (sequential mode), use slower rate to avoid overwhelming RPC limiter
+          const basePerSecRay = Math.max(1, Number(((CONFIG.system as any)?.wsAttachPerSec) || 10));
+          const perSecRay = isSequentialMode 
+            ? Math.max(1, Number((CONFIG.system as any)?.wsRetargetAttachPerSec || Math.floor(basePerSecRay / 2)))
+            : basePerSecRay;
           const intervalMsRay = Math.floor(1000 / perSecRay);
           const sleepRay = (ms: number) => new Promise(r => setTimeout(r, ms));
+          logger.info('pools.ws raydium.loop.start', { 
+            poolCount: uniqueRay.length, 
+            rateLimit: `${perSecRay}/sec`, 
+            intervalMs: intervalMsRay, 
+            sequential: isSequentialMode,
+            cat: 'pools' 
+          });
           for (let i = 0; i < uniqueRay.length; i++) {
             const addr = uniqueRay[i];
             try {
@@ -2261,7 +2468,20 @@ export function startRaydiumRefreshLoop(): void {
             }
           }
         } catch {}
+        
+        // Stagger delay between DEX sources in sequential mode to avoid RPC burst
+        if (isSequentialMode && staggerDelayMs > 0) {
+          logger.info('pools.ws sequential.stagger', { 
+            afterDex: 'raydium', 
+            beforeDex: 'meteora', 
+            delayMs: staggerDelayMs, 
+            cat: 'pools' 
+          });
+          await new Promise(r => setTimeout(r, staggerDelayMs));
+        }
+        
         // Meteora targeted subscriptions from graph edges. Fallback to cached pools if graph doesn't have edges yet.
+        logger.info('pools.ws dex.subscribe.start', { dex: 'meteora', sequential: isSequentialMode, cat: 'pools' });
         try {
           const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
           
@@ -2285,9 +2505,20 @@ export function startRaydiumRefreshLoop(): void {
             let failed = 0;
             const edgeIds: string[] = targetIds;
             // Rate-limit new attachments per second based on config
-            const perSecMet = Math.max(1, Number(((CONFIG.system as any)?.wsAttachPerSec) || 10));
+            // During retarget (sequential mode), use slower rate to avoid overwhelming RPC limiter
+            const basePerSecMet = Math.max(1, Number(((CONFIG.system as any)?.wsAttachPerSec) || 10));
+            const perSecMet = isSequentialMode 
+              ? Math.max(1, Number((CONFIG.system as any)?.wsRetargetAttachPerSec || Math.floor(basePerSecMet / 2)))
+              : basePerSecMet;
             const intervalMsMet = Math.floor(1000 / perSecMet);
             const sleepMet = (ms: number) => new Promise(r => setTimeout(r, ms));
+            logger.info('pools.ws meteora.loop.start', { 
+              poolCount: edgeIds.length, 
+              rateLimit: `${perSecMet}/sec`, 
+              intervalMs: intervalMsMet, 
+              sequential: isSequentialMode,
+              cat: 'pools' 
+            });
             for (let i = 0; i < edgeIds.length; i++) {
               const addr = edgeIds[i];
               try {
@@ -2581,7 +2812,11 @@ export function startRaydiumRefreshLoop(): void {
       };
       setup()
         .catch((e: any) => logger.warn('pools.ws setup failed', { error: String(e?.message || e) }))
-        .finally(() => { wsSetupActive = false; });
+        .finally(() => { 
+          wsSetupActive = false; 
+          // Clear sequential mode flag after setup completes
+          try { delete (startPoolWebsocketsOnlyOnce as any).__sequentialMode; } catch {}
+        });
     } catch (e: any) {
       logger.warn('pools.ws unavailable', { error: String(e?.message || e) });
     }
