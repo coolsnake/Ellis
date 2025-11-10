@@ -198,7 +198,7 @@ export async function buildCombinedTransaction(
   const alts: any[] = [];
   const { withRpcLimit } = await import('../utils/rpcLimiter.js');
   for (const addr of altAddresses) {
-    const result = await withRpcLimit(
+    const result: any = await withRpcLimit(
       () => connection.getAddressLookupTable(new web3.PublicKey(addr)),
       1,
       { module: 'jupiter', method: 'getAddressLookupTable' }
