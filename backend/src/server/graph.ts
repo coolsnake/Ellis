@@ -228,16 +228,7 @@ async function rebuildGraphNowInternal(io?: SocketIOServer, opts?: { pushToArb?:
       }
     }
     try { logger.info('graph.rebuild.now', { nodes: next.nodes.length, edges: next.edges.length, changed }); } catch {}
-    // Optional: auto-retarget WS if many edges changed
-    try {
-      const auto = !!((CONFIG.system as any)?.autoRetargetOnGraph);
-      const ch = (diff.addedEdges.length + diff.updatedEdges.length + diff.removedEdgeIds.length);
-      const big = ch >= Math.max(50, Number((CONFIG.system as any)?.autoRetargetEdgeThreshold || 200));
-      if (auto && (big || !prev)) {
-        const pools = await import('./pools.js');
-        try { await (pools as any).retargetPoolWebsockets?.(); } catch {}
-      }
-    } catch {}
+    // Note: Graph-triggered auto-retargeting removed - WS retargets now only happen via health monitoring
   } catch (e: any) {
     logger.debug('graph.rebuild.now failed', { error: String(e?.message || e) });
   }

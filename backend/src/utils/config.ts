@@ -124,6 +124,20 @@ export const CONFIG = {
     // CHANGED: Keep 1500 for snapshot TTL (good default)
     graphSnapshotTtlMs: Number(process.env.GRAPH_SNAPSHOT_TTL_MS || 1500),
     // Incremental mode always enabled - config removed
+    
+    // WebSocket health monitoring and auto-reconnection
+    // Health check runs every wsHealthTimeoutMs / 3, triggers retarget if idle for wsHealthTimeoutMs * 2
+    wsHealthTimeoutMs: Number(process.env.WS_HEALTH_TIMEOUT_MS || 30000), // 30s (idle threshold: 60s)
+    wsReconnectMinGapMs: Number(process.env.WS_RECONNECT_MIN_GAP_MS || 15000), // 15s minimum between retargets
+    wsAggLogPeriodMs: Number(process.env.WS_AGG_LOG_PERIOD_MS || 20000), // 20s aggregate logging
+    
+    // WebSocket retarget process configuration (sequential throttling)
+    wsRetargetCooldownMs: Number(process.env.WS_RETARGET_COOLDOWN_MS || 3000), // 3s cooldown after unsubscribe
+    wsRetargetStaggerMs: Number(process.env.WS_RETARGET_STAGGER_MS || 5000), // 5s stagger between DEX sources
+    wsRetargetAttachPerSec: Number(process.env.WS_RETARGET_ATTACH_PER_SEC || 5), // 5 pools/sec during retarget
+    wsRetargetAttachWaitMs: Number(process.env.WS_RETARGET_ATTACH_WAIT_MS || 25000), // 25s wait for subscriptions
+    wsSetupMaxWaitMs: Number(process.env.WS_SETUP_MAX_WAIT_MS || 15000), // 15s max wait for setup to clear
+    
     // Graph diff filter knobs
     graphDiffFilterEnable: (process.env.GRAPH_DIFF_FILTER_ENABLE || 'true') !== 'false',
     graphDiffPriceEps: Number(process.env.GRAPH_DIFF_PRICE_EPS || 0.002),
