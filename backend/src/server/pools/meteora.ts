@@ -563,8 +563,23 @@ function deriveBinArrays(
   DLMM: any
 ): { lower?: string; upper?: string } | undefined {
   try {
-    // Import BN if not already available
-    const BN = (globalThis as any).BN || require('bn.js');
+    // Get BN from DLMM SDK or globalThis (ES modules don't support require())
+    const BN: any = (DLMM as any).BN || (globalThis as any).BN;
+    
+    if (!BN) {
+      // BN not available - return undefined, bins will be derived via SDK fallback during tx build
+      try {
+        logger.debug('meteora.deriveBinArrays.no_bn', {
+          cat: 'meteora',
+          ctx: { 
+            pool: typeof poolPk?.toBase58 === 'function' ? poolPk.toBase58().slice(0, 8) + '...' : String(poolPk).slice(0, 8) + '...',
+            activeId,
+            msg: 'BN not available in DLMM SDK, will use SDK fallback during transaction build'
+          }
+        });
+      } catch {}
+      return undefined;
+    }
     
     const binIdToBinArrayIndex = (DLMM as any)?.binIdToBinArrayIndex;
     const deriveBinArray = (DLMM as any)?.deriveBinArray;

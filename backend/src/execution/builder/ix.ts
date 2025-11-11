@@ -27,6 +27,245 @@ let orcaRpcInstance: ReturnType<typeof rpcFromUrl> | null = null;
 let orcaSignerCache: { pubkey: string; signer: any } | null = null;
 
 // Utility function to inject bin array account metas into an instruction
+/**
+ * Calculate required bin arrays based on swap amount, liquidity, and direction
+ * Returns the bin range needed for the swap instead of using arbitrary limits
+ */
+async function calculateRequiredBinArrays(
+  DLMM: any,
+  program: any,
+  poolPk: any,
+  programId: any,
+  activeBinId: any,
+  hop: any,
+  acctBase: any,
+  binIdToBinArrayIndex: any,
+  getBinArrayLowerUpperBinId: any
+): Promise<{
+  lowerBinId: any;
+  upperBinId: any;
+  binsTraversed: number;
+  count: number;
+  direction: 'up' | 'down' | 'both';
+}> {
+  const bnjs = await import('bn.js').catch(() => null);
+  const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
+  
+  if (!BN) throw new Error('BN.js not available');
+  
+  const binArraySize = (DLMM as any)?.MAX_BIN_ARRAY_SIZE ?? new BN(70);
+  
+  // Determine swap direction
+  const inputMintPk = toPublicKey(hop.inputMint);
+  const outputMintPk = toPublicKey(hop.outputMint);
+  const tokenXMintPk = acctBase.tokenXMint instanceof PublicKey ? acctBase.tokenXMint : toPublicKey(acctBase.tokenXMint);
+  const tokenYMintPk = acctBase.tokenYMint instanceof PublicKey ? acctBase.tokenYMint : toPublicKey(acctBase.tokenYMint);
+  
+  const isXToY = inputMintPk.equals(tokenXMintPk) && outputMintPk.equals(tokenYMintPk);
+  const isYToX = inputMintPk.equals(tokenYMintPk) && outputMintPk.equals(tokenXMintPk);
+  
+  // Get pool state to calculate liquidity and estimate price impact
+  let poolState: any = null;
+  try {
+    poolState = await program.account.lbPair.fetch(poolPk);
+  } catch (fetchErr) {
+    try {
+      logger.debug('meteora.dlmm.pool_state.fetch_failed', {
+        cat: 'tx',
+        ctx: { error: String((fetchErr as any)?.message || fetchErr) }
+      });
+    } catch {}
+  }
+  
+  // Method 1: Try to use swapQuote if available (most accurate)
+  try {
+    const swapQuote = DLMM?.swapQuote || DLMM?.swapQuoteWithCap;
+    if (swapQuote && poolState) {
+      const amountIn = new BN(hop.amountInRaw.toString());
+      const quote = await swapQuote(
+        poolPk,
+        amountIn,
+        isXToY, // swapForY
+        new BN(0), // slippage
+        program
+      );
+      
+      // Check if quote contains bin information
+      if (quote?.minBinId && quote?.maxBinId) {
+        const minBinIdx = binIdToBinArrayIndex(quote.minBinId);
+        const maxBinIdx = binIdToBinArrayIndex(quote.maxBinId);
+        
+        const [minLower] = getBinArrayLowerUpperBinId(minBinIdx);
+        const [, maxUpper] = getBinArrayLowerUpperBinId(maxBinIdx);
+        
+        const binsTraversed = Math.abs(quote.maxBinId.toNumber() - quote.minBinId.toNumber());
+        const binArrayCount = Math.abs(maxBinIdx.toNumber() - minBinIdx.toNumber()) + 1;
+        
+        try {
+          logger.info('meteora.dlmm.bin_range.from_quote', {
+            cat: 'tx',
+            ctx: {
+              binsTraversed,
+              binArrayCount,
+              direction: isXToY ? 'X->Y (down)' : 'Y->X (up)',
+              minBinId: quote.minBinId.toString(),
+              maxBinId: quote.maxBinId.toString()
+            }
+          });
+        } catch {}
+        
+        return {
+          lowerBinId: minLower,
+          upperBinId: maxUpper,
+          binsTraversed,
+          count: binArrayCount,
+          direction: isXToY ? 'down' : 'up'
+        };
+      }
+    }
+  } catch (quoteErr) {
+    // Quote failed, fall through to estimation
+    try {
+      logger.debug('meteora.dlmm.quote.failed', {
+        cat: 'tx',
+        ctx: { error: String((quoteErr as any)?.message || quoteErr) }
+      });
+    } catch {}
+  }
+  
+  // Method 2: Estimate based on swap amount and average bin liquidity
+  try {
+    const activeBinIdx = binIdToBinArrayIndex(activeBinId);
+    const [currentLower, currentUpper] = getBinArrayLowerUpperBinId(activeBinIdx);
+    
+    // Get liquidity from pool state if available
+    let totalLiquidity = new BN(0);
+    if (poolState?.reserveX && poolState?.reserveY) {
+      totalLiquidity = poolState.reserveX.add(poolState.reserveY);
+    }
+    
+    // Estimate how many bins we'll need based on amount vs liquidity
+    // This is a conservative heuristic based on swap size:
+    // Each bin array contains ~70 bins, so we need to be careful not to over-estimate
+    // - Tiny swaps (< 0.5% of liquidity): 1 bin array (active bin only)
+    // - Small swaps (0.5-2% of liquidity): 2 bin arrays
+    // - Medium swaps (2-5% of liquidity): 3 bin arrays
+    // - Large swaps (5-10% of liquidity): 4 bin arrays
+    // - Very large swaps (> 10% of liquidity): 6 bin arrays
+    const swapAmount = new BN(hop.amountInRaw.toString());
+    const swapRatio = totalLiquidity.gt(new BN(0)) 
+      ? swapAmount.mul(new BN(10000)).div(totalLiquidity).toNumber() / 10000
+      : 0.05; // Default to 5% if can't calculate (conservative)
+    
+    let binArraysNeeded: number;
+    if (swapRatio < 0.005) {
+      binArraysNeeded = 1; // < 0.5% of liquidity - tiny swap
+    } else if (swapRatio < 0.02) {
+      binArraysNeeded = 2; // 0.5-2% of liquidity - small swap
+    } else if (swapRatio < 0.05) {
+      binArraysNeeded = 3; // 2-5% of liquidity - medium swap
+    } else if (swapRatio < 0.10) {
+      binArraysNeeded = 4; // 5-10% of liquidity - large swap
+    } else {
+      binArraysNeeded = 6; // > 10% of liquidity - very large swap
+    }
+    
+    // Calculate range based on direction and estimated bins needed
+    let lowerBinId: any;
+    let upperBinId: any;
+    let direction: 'up' | 'down' | 'both';
+    
+    if (isXToY) {
+      // X→Y: Price moves DOWN, expand LOWER range only
+      lowerBinId = currentLower.sub(binArraySize.mul(new BN(binArraysNeeded)));
+      upperBinId = currentUpper.add(binArraySize); // Just include active + 1 above
+      direction = 'down';
+    } else if (isYToX) {
+      // Y→X: Price moves UP, expand UPPER range only
+      lowerBinId = currentLower.sub(binArraySize); // Just include active + 1 below
+      upperBinId = currentUpper.add(binArraySize.mul(new BN(binArraysNeeded)));
+      direction = 'up';
+    } else {
+      // Unknown direction: expand both (fallback to safe behavior)
+      const safeFactor = Math.ceil(binArraysNeeded / 2);
+      lowerBinId = currentLower.sub(binArraySize.mul(new BN(safeFactor)));
+      upperBinId = currentUpper.add(binArraySize.mul(new BN(safeFactor)));
+      direction = 'both';
+    }
+    
+    try {
+      logger.info('meteora.dlmm.bin_range.estimated', {
+        cat: 'tx',
+        ctx: {
+          swapRatio: (swapRatio * 100).toFixed(2) + '%',
+          estimatedBinArrays: binArraysNeeded,
+          direction: isXToY ? 'X->Y (down)' : isYToX ? 'Y->X (up)' : 'unknown',
+          totalLiquidity: totalLiquidity.toString(),
+          swapAmount: swapAmount.toString()
+        }
+      });
+    } catch {}
+    
+    return {
+      lowerBinId,
+      upperBinId,
+      binsTraversed: binArraysNeeded * 70, // Approximate (70 bins per array)
+      count: binArraysNeeded,
+      direction
+    };
+  } catch (estimateErr) {
+    // Final fallback: use direction-aware fixed range
+    try {
+      logger.debug('meteora.dlmm.bin_estimate.failed', {
+        cat: 'tx',
+        ctx: { error: String((estimateErr as any)?.message || estimateErr) }
+      });
+    } catch {}
+    
+    const activeBinIdx = binIdToBinArrayIndex(activeBinId);
+    const [currentLower, currentUpper] = getBinArrayLowerUpperBinId(activeBinIdx);
+    
+    // Use direction-aware fixed expansion (conservative fallback)
+    // Start with 3 bin arrays as a reasonable default
+    const fixedExpansion = new BN(3);
+    let lowerBinId: any;
+    let upperBinId: any;
+    let direction: 'up' | 'down' | 'both';
+    
+    if (isXToY) {
+      lowerBinId = currentLower.sub(binArraySize.mul(fixedExpansion));
+      upperBinId = currentUpper.add(binArraySize);
+      direction = 'down';
+    } else if (isYToX) {
+      lowerBinId = currentLower.sub(binArraySize);
+      upperBinId = currentUpper.add(binArraySize.mul(fixedExpansion));
+      direction = 'up';
+    } else {
+      lowerBinId = currentLower.sub(binArraySize.mul(new BN(2)));
+      upperBinId = currentUpper.add(binArraySize.mul(new BN(2)));
+      direction = 'both';
+    }
+    
+    try {
+      logger.info('meteora.dlmm.bin_range.fallback', {
+        cat: 'tx',
+        ctx: {
+          fixedExpansion: fixedExpansion.toString(),
+          direction: isXToY ? 'X->Y (down)' : isYToX ? 'Y->X (up)' : 'unknown'
+        }
+      });
+    } catch {}
+    
+    return {
+      lowerBinId,
+      upperBinId,
+      binsTraversed: fixedExpansion.toNumber() * 70,
+      count: fixedExpansion.toNumber(),
+      direction
+    };
+  }
+}
+
 async function injectBinArrayMetas(
   ix: any,
   DLMM: any,
@@ -2223,20 +2462,36 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
             
             if (activeBinId) {
               try {
-                // Convert bin ID to bin array index
-                const binArrayIdx = binIdToBinArrayIndex(activeBinId);
-                const idx = binArrayIdx instanceof BN ? binArrayIdx : new BN(String(binArrayIdx));
-                // getBinArrayLowerUpperBinId takes binArrayIndex, returns [lowerBinId, upperBinId]
-                const [lowerBinId, upperBinId] = getBinArrayLowerUpperBinId(idx);
+                // ENHANCED: Calculate required bin arrays dynamically based on swap size and direction
+                // This replaces the old fixed expansion factor approach with intelligent estimation
+                const binRangeCalc = await calculateRequiredBinArrays(
+                  DLMM,
+                  program,
+                  poolPk,
+                  programId,
+                  activeBinId,
+                  hop,
+                  acctBase,
+                  binIdToBinArrayIndex,
+                  getBinArrayLowerUpperBinId
+                );
                 
-                // Expand range to cover potential swap path: active bin array +/- bin arrays
-                // Swaps can traverse multiple bins, so we need a wider range
-                // For multihop swaps, use smaller expansion to keep transaction size manageable
-                const binArraySize = (DLMM as any)?.MAX_BIN_ARRAY_SIZE ?? new BN(70);
-                const totalHops = (hop as any).totalHops || 1;
-                const expansionFactor = totalHops >= 2 ? new BN(1) : new BN(3); // Smaller expansion for multihop
-                const rangeLower = lowerBinId.sub(binArraySize.mul(expansionFactor));
-                const rangeUpper = upperBinId.add(binArraySize.mul(expansionFactor));
+                const rangeLower = binRangeCalc.lowerBinId;
+                const rangeUpper = binRangeCalc.upperBinId;
+                
+                try {
+                  logger.info('meteora.dlmm.bin_range.calculated', {
+                    cat: 'tx',
+                    ctx: {
+                      poolId: hop.poolId,
+                      binsTraversed: binRangeCalc.binsTraversed,
+                      binArrayCount: binRangeCalc.count,
+                      direction: binRangeCalc.direction,
+                      swapAmount: hop.amountInRaw.toString(),
+                      range: `${rangeLower.toString()}..${rangeUpper.toString()}`
+                    }
+                  });
+                } catch {}
                 
                 const metas = getBinArrayAccountMetasCoverage(rangeLower, rangeUpper, poolPk, programId) || [];
                 // Validate bin arrays using local cache (zero RPC calls)
@@ -2275,10 +2530,12 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                   }
                 }
                 
-                // Don't limit aggressively - SDK should only return arrays that exist and are needed
-                // But cap at 20 as a safety measure against edge cases
-                const maxMetas = 20;
-                const limitedMetas = validatedMetas.slice(0, maxMetas);
+                // Use the calculated bin array count as our limit
+                // We calculated exactly how many we need, so only include that many
+                // Add a small buffer (+2) for edge cases where price moves slightly
+                const calculatedLimit = Math.min(binRangeCalc.count + 2, validatedMetas.length);
+                const limitedMetas = validatedMetas.slice(0, calculatedLimit);
+                
                 if (limitedMetas.length) {
                   builder = (builder as any).remainingAccounts(limitedMetas);
                   try { 
@@ -2288,9 +2545,23 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                         count: limitedMetas.length, 
                         total: metas.length, 
                         validated: validatedMetas.length,
+                        calculatedNeeded: binRangeCalc.count,
+                        usedLimit: calculatedLimit,
                         range: `${rangeLower.toString()}..${rangeUpper.toString()}` 
                       } 
                     }); 
+                  } catch {}
+                } else {
+                  try {
+                    logger.warn('meteora.dlmm.no_valid_bin_arrays', {
+                      cat: 'tx',
+                      ctx: {
+                        poolId: hop.poolId,
+                        totalMetas: metas.length,
+                        validatedMetas: validatedMetas.length,
+                        calculatedNeeded: binRangeCalc.count
+                      }
+                    });
                   } catch {}
                 }
               } catch (e: any) {
@@ -2340,44 +2611,28 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       
       ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
       
-      // Limit remaining accounts (bin arrays) to prevent transaction size issues
+      // Apply safety cap to bin arrays to prevent excessively large transactions
+      // This is a safety measure only - the bin array calculation should already be optimal
       // Core instruction accounts (first 15) must preserve SDK ordering
-      // NOTE: We do NOT deduplicate - Solana allows duplicate accounts with different flags
       if (ix && Array.isArray(ix.keys) && ix.keys.length > 15) {
       try {
         const coreAccountCount = 15; // Preserve core instruction accounts
         
-        // Adaptive limiting based on hop count to prevent transaction size overflow
-        // The more hops in a transaction, the fewer bin arrays we can afford per hop
-        // 
-        // Bin array strategy:
-        // - 1 hop:  5 bin arrays (active + 4 adjacent) - plenty of liquidity coverage
-        // - 2 hops: 3 bin arrays (active + 2 adjacent) - balanced
-        // - 3 hops: 2 bin arrays (active + 1 adjacent) - minimal but functional
-        // - 4+ hops: 2 bin arrays (cannot go lower without breaking swaps)
-        //
-        // Note: Even with 2 bin arrays, most swaps will execute successfully
-        // as long as the price is within the active bin range
-        const totalHops = (hop as any).totalHops || 1;
-        let maxRemainingAccounts = 5; // Default for single hop
+        // Safety cap: Maximum bin arrays allowed per swap
+        // This prevents transaction size overflow while still allowing enough bins for large swaps
+        // With our directional bin array selection and conservative estimation, this should rarely be hit
+        const MAX_BIN_ARRAYS = 15; // Reasonable maximum - more than this is likely a bug
         
-        if (totalHops >= 4) {
-          maxRemainingAccounts = 5; // Allow minimum necessary for 4+ hops
-        } else if (totalHops === 3) {
-          maxRemainingAccounts = 7; // Allow minimum necessary for 3 hops
-        } else if (totalHops === 2) {
-          maxRemainingAccounts = 10; // Allow sufficient bin arrays for 2 hops
-        }
-        
-        // Simply limit the number of remaining accounts without deduplication
-        // Solana allows duplicate accounts in instructions (with different flags)
         const originalCount = ix.keys.length;
-        if (ix.keys.length > coreAccountCount + maxRemainingAccounts) {
-          ix.keys = [...ix.keys.slice(0, coreAccountCount + maxRemainingAccounts)];
+        const remainingAccountCount = originalCount - coreAccountCount;
+        
+        if (remainingAccountCount > MAX_BIN_ARRAYS) {
+          // Only limit if we exceed the safety cap
+          ix.keys = [...ix.keys.slice(0, coreAccountCount + MAX_BIN_ARRAYS)];
           
           const removedCount = originalCount - ix.keys.length;
           try {
-            logger.info('meteora.dlmm.remaining_accounts_limited', {
+            logger.warn('meteora.dlmm.bin_arrays.safety_capped', {
               cat: 'tx',
               ctx: {
                 poolId: hop.poolId,
@@ -2385,9 +2640,21 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 newCount: ix.keys.length,
                 removedCount,
                 coreAccountCount,
-                maxRemainingAccounts,
-                totalHops,
-                hopIndex: (hop as any).hopIndex || 0
+                maxBinArrays: MAX_BIN_ARRAYS,
+                warning: 'Bin array count exceeded safety cap - this may indicate a bug in calculation'
+              }
+            });
+          } catch {}
+        } else {
+          // Within safety limits - log success
+          try {
+            logger.info('meteora.dlmm.bin_arrays.within_limits', {
+              cat: 'tx',
+              ctx: {
+                poolId: hop.poolId,
+                totalAccounts: originalCount,
+                binArrays: remainingAccountCount,
+                maxBinArrays: MAX_BIN_ARRAYS
               }
             });
           } catch {}

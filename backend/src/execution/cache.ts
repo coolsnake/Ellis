@@ -50,6 +50,9 @@ type PoolHot = {
   sqrtPriceX64?: bigint;
   currentTickIndex?: number;
   activeId?: number;
+  // OPTIMIZATION: Store liquidity and fee rate for local CLMM quotes (Orca/Raydium)
+  liquidity?: bigint;
+  feeRate?: number;  // Fee rate in basis points
   tickArrays?: { 
     lower?: string; 
     center?: string; 

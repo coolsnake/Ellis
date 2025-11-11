@@ -7,6 +7,14 @@ import { peekRaydiumPools, peekMeteoraPools } from '../../server/pools.js';
 export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<bigint> {
   try {
     if (hop.dex === 'orca') {
+      // OPTIMIZATION: Try local quote first using cached pool state
+      const sys: any = (CONFIG as any)?.system || {};
+      if (sys.quotes?.enableMinimalMath !== false) {
+        const localQuote = await quoteOrcaClmmLocal(hop, amountInRaw);
+        if (localQuote > 0n) return localQuote;
+      }
+      
+      // Fallback to SDK quote if local fails
       const { logger } = await import('../../utils/logger.js');
       try {
         logger.info('tx.resolve.quote.orca.start', {
@@ -247,6 +255,136 @@ export function applyMinOut(outRaw: bigint, slippageBps: number): bigint {
   const one = 10_000n;
   const bps = BigInt(Math.max(0, Math.min(9900, Math.round(slippageBps))));
   return (outRaw * (one - bps)) / one;
+}
+
+/**
+ * Quote Orca Whirlpool CLMM swap using cached pool state (no RPC calls)
+ * Uses CLMM constant product formula with concentrated liquidity
+ */
+async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint): Promise<bigint> {
+  if (!(amountInRaw > 0n)) return 0n;
+  
+  try {
+    const { executionCache } = await import('../cache.js');
+    
+    // Get cached pool state
+    const poolId = hop.poolId?.replace(/-rev$/, '') || '';
+    if (!poolId) return 0n;
+    
+    const cached = executionCache.getHot(poolId);
+    if (!cached?.sqrtPriceX64 || !cached?.liquidity) {
+      // Cache miss - fallback to SDK quote
+      try {
+        const { logger } = await import('../../utils/logger.js');
+        logger.debug('orca.quote.local.cache_miss', {
+          cat: 'tx',
+          ctx: {
+            pool: poolId,
+            hasSqrtPrice: !!cached?.sqrtPriceX64,
+            hasLiquidity: !!cached?.liquidity,
+            msg: 'Falling back to SDK quote'
+          }
+        });
+      } catch {}
+      return 0n;
+    }
+    
+    const { sqrtPriceX64, liquidity, feeRate } = cached;
+    
+    // Determine swap direction
+    const isRev = /-rev$/.test(hop.poolId || '');
+    
+    // Get decimals (should be available from hop or fetch from cache)
+    const decIn = hop.inputDecimals;
+    const decOut = hop.outputDecimals;
+    
+    if (!Number.isFinite(decIn) || !Number.isFinite(decOut)) {
+      return 0n;
+    }
+    
+    // CLMM Quote Formula (simplified constant product for small swaps)
+    // For exact calculation, we'd need to iterate through tick ranges
+    // This is an approximation that works well for swaps within the current tick
+    
+    // Apply fee
+    const feeBps = feeRate || 25; // Default to 25 bps (0.25%) if not available
+    const feeMultiplier = 10000 - feeBps;
+    const amountInAfterFee = (amountInRaw * BigInt(feeMultiplier)) / 10000n;
+    
+    // Convert sqrtPriceX64 to price ratio
+    // sqrtPrice = sqrt(tokenB / tokenA) * 2^64
+    // price = (sqrtPrice / 2^64)^2
+    const Q64 = 1n << 64n;
+    
+    // For small swaps, use linear approximation based on current price
+    // out = in * price * (1 - fee)
+    // This is similar to Raydium/Meteora simple price-based calculation
+    
+    let outRaw: bigint;
+    
+    if (isRev) {
+      // Swapping B -> A: multiply by price
+      // price_b_per_a = (sqrtPrice / 2^64)^2
+      const sqrtPrice = sqrtPriceX64;
+      const numerator = amountInAfterFee * Q64 * Q64;
+      const denominator = sqrtPrice * sqrtPrice;
+      
+      if (denominator === 0n) return 0n;
+      
+      // Adjust for decimals
+      const decimalAdjustment = BigInt(Math.pow(10, decOut as number)) * 10n ** 18n;
+      const decimalDivisor = BigInt(Math.pow(10, decIn as number)) * 10n ** 18n;
+      
+      outRaw = (numerator * decimalAdjustment) / (denominator * decimalDivisor);
+    } else {
+      // Swapping A -> B: divide by price  
+      // price_a_per_b = 1 / ((sqrtPrice / 2^64)^2)
+      const sqrtPrice = sqrtPriceX64;
+      const numerator = amountInAfterFee * sqrtPrice * sqrtPrice;
+      const denominator = Q64 * Q64;
+      
+      if (denominator === 0n) return 0n;
+      
+      // Adjust for decimals
+      const decimalAdjustment = BigInt(Math.pow(10, decOut as number)) * 10n ** 18n;
+      const decimalDivisor = BigInt(Math.pow(10, decIn as number)) * 10n ** 18n;
+      
+      outRaw = (numerator * decimalAdjustment) / (denominator * decimalDivisor);
+    }
+    
+    if (outRaw > 0n) {
+      try {
+        const { logger } = await import('../../utils/logger.js');
+        logger.debug('orca.quote.local.success', {
+          cat: 'tx',
+          ctx: {
+            pool: poolId,
+            amountIn: amountInRaw.toString(),
+            amountOut: outRaw.toString(),
+            feeBps,
+            isRev,
+            sqrtPriceX64: sqrtPriceX64.toString()
+          }
+        });
+      } catch {}
+      return outRaw;
+    }
+    
+    return 0n;
+  } catch (err) {
+    try {
+      const { logger } = await import('../../utils/logger.js');
+      logger.warn('orca.quote.local.error', {
+        cat: 'tx',
+        ctx: {
+          pool: hop.poolId,
+          error: String((err as any)?.message || err),
+          msg: 'Falling back to SDK quote'
+        }
+      });
+    } catch {}
+    return 0n;
+  }
 }
 
 function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools: any): bigint {

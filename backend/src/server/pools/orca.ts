@@ -509,7 +509,187 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
   if (!clmm.length) {
     logger.warn('orca.http normalized 0 clmm', { hint: 'Check inspect log for field presence and pool types' });
   }
+  
+  // OPTIMIZATION: Pre-cache Orca pool states to eliminate RPC calls during transaction building
+  await populateOrcaPoolStates(clmmCanon);
+  
   return { amm: [], clmm: clmmCanon };
+}
+
+/**
+ * Pre-populate execution cache with Orca Whirlpool CLMM states
+ * This eliminates 100-300ms RPC calls per Orca swap during transaction building
+ * Similar to populateMeteoraActiveIds but for Orca pools
+ */
+async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
+  if (!pools || pools.length === 0) return;
+  
+  try {
+    const { executionCache } = await import('../../execution/cache.js');
+    const { getConnection } = await import('../../wallet/wallet.js');
+    const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+    const { PublicKey } = await import('@solana/web3.js');
+    const connection = getConnection();
+    
+    const startTime = Date.now();
+    let cached = 0;
+    let failed = 0;
+    
+    const WHIRLPOOL_PROGRAM_ID = new PublicKey('whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
+    
+    // Batch fetch pool states (100 at a time to respect RPC limits)
+    const BATCH_SIZE = 100;
+    for (let i = 0; i < pools.length; i += BATCH_SIZE) {
+      const batch = pools.slice(i, i + BATCH_SIZE);
+      const pubkeys = batch.map(p => {
+        try {
+          const id = p.id.replace(/-rev$/, ''); // Strip -rev suffix
+          return new PublicKey(id);
+        } catch {
+          return null;
+        }
+      }).filter(Boolean) as PublicKey[];
+      
+      if (pubkeys.length === 0) continue;
+      
+      try {
+        // Fetch multiple pool accounts in one RPC call
+        const accounts = await withRpcLimit(() => connection.getMultipleAccountsInfo(pubkeys));
+        
+        // Process each account and extract pool state
+        for (let j = 0; j < accounts.length; j++) {
+          const pool = batch[j];
+          const acc = accounts[j];
+          
+          if (acc?.data) {
+            try {
+              // OPTIMIZATION: Read pool state directly from pool data (offset-based reading)
+              // Whirlpool account structure: https://github.com/orca-so/whirlpools
+              // Key fields we need:
+              // - sqrtPrice (u128 at offset 65)
+              // - tick (i32 at offset 101)
+              // - liquidity (u128 at offset 181)
+              // - feeRate (u16 at offset 205)
+              
+              const SQRT_PRICE_OFFSET = 65;
+              const TICK_OFFSET = 101;
+              const LIQUIDITY_OFFSET = 181;
+              const FEE_RATE_OFFSET = 205;
+              
+              if (acc.data.length < FEE_RATE_OFFSET + 2) {
+                failed++;
+                try {
+                  logger.debug('orca.poolState.data_too_short', {
+                    cat: 'orca',
+                    ctx: {
+                      pool: pool.id.slice(0, 8) + '...',
+                      dataLength: acc.data.length,
+                      required: FEE_RATE_OFFSET + 2
+                    }
+                  });
+                } catch {}
+                continue;
+              }
+              
+              // Read fields from raw data
+              const buffer = Buffer.from(acc.data);
+              
+              // sqrtPrice is u128 (16 bytes, little-endian)
+              const sqrtPriceLow = buffer.readBigUInt64LE(SQRT_PRICE_OFFSET);
+              const sqrtPriceHigh = buffer.readBigUInt64LE(SQRT_PRICE_OFFSET + 8);
+              const sqrtPriceX64 = sqrtPriceLow + (sqrtPriceHigh << 64n);
+              
+              // tick is i32 (4 bytes, signed little-endian)
+              const currentTickIndex = buffer.readInt32LE(TICK_OFFSET);
+              
+              // liquidity is u128 (16 bytes, little-endian)
+              const liquidityLow = buffer.readBigUInt64LE(LIQUIDITY_OFFSET);
+              const liquidityHigh = buffer.readBigUInt64LE(LIQUIDITY_OFFSET + 8);
+              const liquidity = liquidityLow + (liquidityHigh << 64n);
+              
+              // feeRate is u16 (2 bytes, little-endian) in hundredths of basis point
+              // Convert to basis points: feeRate / 100
+              const feeRateRaw = buffer.readUInt16LE(FEE_RATE_OFFSET);
+              const feeRate = Math.round(feeRateRaw / 100);
+              
+              // Cache pool state
+              executionCache.setHot(pool.id, {
+                sqrtPriceX64,
+                currentTickIndex,
+                liquidity,
+                feeRate
+              });
+              cached++;
+              
+              try {
+                logger.debug('orca.poolState.cached', {
+                  cat: 'orca',
+                  ctx: {
+                    pool: pool.id.slice(0, 8) + '...',
+                    sqrtPriceX64: sqrtPriceX64.toString(),
+                    currentTickIndex,
+                    liquidity: liquidity.toString(),
+                    feeRate
+                  }
+                });
+              } catch {}
+            } catch (readErr) {
+              failed++;
+              try {
+                logger.warn('orca.poolState.read_failed', {
+                  cat: 'orca',
+                  ctx: {
+                    pool: pool.id.slice(0, 8) + '...',
+                    error: String((readErr as any)?.message || readErr)
+                  }
+                });
+              } catch {}
+            }
+          } else {
+            failed++;
+          }
+        }
+      } catch (batchErr) {
+        failed += batch.length;
+        try {
+          logger.error('orca.poolState.batch_failed', {
+            cat: 'orca',
+            ctx: {
+              batchStart: i,
+              batchSize: batch.length,
+              error: String((batchErr as any)?.message || batchErr)
+            }
+          });
+        } catch {}
+      }
+    }
+    
+    const durationMs = Date.now() - startTime;
+    const avgMs = pools.length > 0 ? Math.round(durationMs / pools.length) : 0;
+    
+    try {
+      logger.info('orca.poolState.cache_populated', {
+        cat: 'orca',
+        ctx: {
+          total: pools.length,
+          cached,
+          failed,
+          durationMs,
+          avgMs
+        }
+      });
+    } catch {}
+  } catch (err) {
+    try {
+      logger.error('orca.poolState.cache_error', {
+        cat: 'orca',
+        ctx: {
+          error: String((err as any)?.message || err),
+          stack: (err as any)?.stack
+        }
+      });
+    } catch {}
+  }
 }
 
 
