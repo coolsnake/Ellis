@@ -1096,12 +1096,30 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       let binArrayBitmapExtension: PublicKey | undefined = undefined;
       let binArrayMetas: Array<{ pubkey: PublicKey; isWritable: boolean; isSigner: boolean }> | null = null;
       
-      // Use program ID for bitmap extension (standard approach)
-      // Many pools don't have a bitmap extension initialized, and the Meteora program
-      // accepts its own program ID as a placeholder in these cases.
-      // This avoids "AccountOwnedByWrongProgram" errors when the PDA hasn't been initialized.
-      // This matches behavior seen in successful competitor transactions.
-      binArrayBitmapExtension = programId;
+      // Derive bitmap extension PDA for the pool
+      // The bitmap extension is a PDA derived from ['bitmap_extension', poolPubkey]
+      // and is used by Meteora DLMM to track which bin arrays are initialized
+      try {
+        const deriveFn = (DLMM as any)?.deriveBinArrayBitmapExtension;
+        if (deriveFn) {
+          binArrayBitmapExtension = deriveFn(poolPk, programId);
+        } else {
+          // Fallback: manually derive the PDA
+          const [pda] = PublicKey.findProgramAddressSync(
+            [Buffer.from('bitmap_extension'), poolPk.toBuffer()],
+            programId
+          );
+          binArrayBitmapExtension = pda;
+        }
+      } catch (e) {
+        // If derivation fails, leave it undefined and let the SDK handle it
+        try {
+          logger.debug('meteora.dlmm.bitmap_ext.derivation.failed', { 
+            cat: 'tx', 
+            ctx: { pool: hop.poolId, error: String(e) } 
+          });
+        } catch {}
+      }
       
       try {
       const deriveBinArray = (DLMM as any)?.deriveBinArray || (mod as any)?.deriveBinArray;
