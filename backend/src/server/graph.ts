@@ -1288,8 +1288,10 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         let price: number | undefined = (p as any)?.price_a_per_b as number | undefined;
         // No USD substitution; compute USD TVL and keep pool price only
         if ((!usd || !(usd > 0)) && Number.isFinite(decA) && Number.isFinite(decB)) {
-          const wholeA = Number.isFinite(amtA) ? (amtA / Math.pow(10, decA)) : NaN;
-          const wholeB = Number.isFinite(amtB) ? (amtB / Math.pow(10, decB)) : NaN;
+          // Check if amounts are already in whole units (avoid double-division)
+          const areWhole = (p as any)?.amounts_are_whole === true;
+          const wholeA = Number.isFinite(amtA) ? (areWhole ? amtA : (amtA / Math.pow(10, decA))) : NaN;
+          const wholeB = Number.isFinite(amtB) ? (areWhole ? amtB : (amtB / Math.pow(10, decB))) : NaN;
           if (Number.isFinite(wholeA) && Number.isFinite(wholeB)) {
             usd = tvlUsd(p.mint_a, p.mint_b, wholeA, wholeB);
             if ((!price || price <= 0) && (wholeB as number) > 0) price = (wholeA as number) / (wholeB as number);
