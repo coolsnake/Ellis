@@ -879,7 +879,7 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
                 amm[poolIdx].market_authority = marketAccounts.authority;
               } else {
                 try {
-                  logger.warn('raydium.amm.market_accounts.no_market_accounts', {
+                  logger.debug('raydium.amm.market_accounts.no_market_accounts', {
                     cat: 'pools',
                     ctx: { 
                       poolId: pool.id,

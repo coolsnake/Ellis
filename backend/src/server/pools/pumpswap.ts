@@ -189,25 +189,74 @@ function parseTokenAccountAmount(data: Buffer | Uint8Array): bigint | null {
 }
 
 /**
+ * Helper to parse pump.swap pool fee from pool account data
+ * Based on pump.swap pool account layout analysis
+ * Fee structure is typically stored as u64 representing fee in basis points
+ * Common offsets for AMM pools: around 200-300 bytes into account
+ * We'll try multiple known offsets used by various AMM programs
+ */
+function parsePumpswapPoolFee(data: Buffer | Uint8Array): number | null {
+  try {
+    if (!data || data.length < 100) return null;
+    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+    
+    // Try common fee offset patterns for Solana AMM programs
+    // Most AMMs store fee as u64 or u16 after discriminator and key fields
+    const possibleOffsets = [
+      72,  // Common offset after discriminator + 2 pubkeys
+      88,  // After discriminator + 2 pubkeys + some flags
+      104, // Common offset for fee_numerator
+      216, // Alternative common offset
+      224, // Another pattern seen in AMM programs
+    ];
+    
+    for (const offset of possibleOffsets) {
+      if (buf.length >= offset + 8) {
+        // Try reading as u64 (fee in basis points or numerator)
+        const feeValue = buf.readBigUInt64LE(offset);
+        // Valid fee should be between 1 and 10000 bps (0.01% to 100%)
+        if (feeValue > 0n && feeValue <= 10000n) {
+          return Number(feeValue);
+        }
+      }
+      
+      if (buf.length >= offset + 2) {
+        // Try reading as u16 (fee in basis points)
+        const feeValue = buf.readUInt16LE(offset);
+        // Valid fee should be between 1 and 10000 bps
+        if (feeValue > 0 && feeValue <= 10000) {
+          return feeValue;
+        }
+      }
+    }
+    
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Enriches Pumpswap pools with RPC data (token account balances)
  * This allows us to calculate price and liquidity from actual reserves
  * Returns enriched pools and metrics for monitoring
  */
-export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools: any[]; metrics: { success: number; fail: number; ms: number } }> {
-  if (!pools || pools.length === 0) return { pools, metrics: { success: 0, fail: 0, ms: 0 } };
+export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools: any[]; metrics: { success: number; fail: number; ms: number; feesExtracted: number } }> {
+  if (!pools || pools.length === 0) return { pools, metrics: { success: 0, fail: 0, ms: 0, feesExtracted: 0 } };
   
   const batchSize = Number((CONFIG as any)?.pumpswap?.rpcBatchSize || 100);
   const enabled = ((CONFIG as any)?.pumpswap?.enableRpcEnrichment !== false);
   
   if (!enabled) {
     try { logger.debug('pumpswap.rpc.enrichment.disabled', { cat: 'pumpswap' }); } catch {}
-    return { pools, metrics: { success: 0, fail: 0, ms: 0 } };
+    return { pools, metrics: { success: 0, fail: 0, ms: 0, feesExtracted: 0 } };
   }
   
   const connection = getConnection();
   const enriched: any[] = [];
   let successCount = 0;
   let failCount = 0;
+  let feesExtracted = 0;
   const t0 = Date.now();
   
   try { logger.info('pumpswap.rpc.enrichment.start', { poolCount: pools.length, batchSize, cat: 'pumpswap' }); } catch {}
@@ -216,65 +265,95 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
     const batch = pools.slice(i, i + batchSize);
     
     try {
-      // Collect all vault addresses for this batch
-      const vaultAddresses: PublicKey[] = [];
-      const vaultMapping: Map<string, { poolIndex: number; side: 'base' | 'quote' }> = new Map();
+      // Collect all addresses to fetch: vaults AND pool accounts
+      const allAddresses: PublicKey[] = [];
+      const addressMapping: Map<string, { poolIndex: number; type: 'pool' | 'base_vault' | 'quote_vault' }> = new Map();
       
       for (let j = 0; j < batch.length; j++) {
         const pool = batch[j];
         const poolIdx = i + j;
         
+        // Add pool account itself to fetch fee data
+        if (pool.pubkey) {
+          try {
+            const pk = new PublicKey(pool.pubkey);
+            allAddresses.push(pk);
+            addressMapping.set(pool.pubkey, { poolIndex: poolIdx, type: 'pool' });
+          } catch {}
+        }
+        
+        // Add vault accounts
         if (pool.pool_base_token_account) {
           try {
             const pk = new PublicKey(pool.pool_base_token_account);
-            vaultAddresses.push(pk);
-            vaultMapping.set(pool.pool_base_token_account, { poolIndex: poolIdx, side: 'base' });
+            allAddresses.push(pk);
+            addressMapping.set(pool.pool_base_token_account, { poolIndex: poolIdx, type: 'base_vault' });
           } catch {}
         }
         
         if (pool.pool_quote_token_account) {
           try {
             const pk = new PublicKey(pool.pool_quote_token_account);
-            vaultAddresses.push(pk);
-            vaultMapping.set(pool.pool_quote_token_account, { poolIndex: poolIdx, side: 'quote' });
+            allAddresses.push(pk);
+            addressMapping.set(pool.pool_quote_token_account, { poolIndex: poolIdx, type: 'quote_vault' });
           } catch {}
         }
       }
       
-      if (vaultAddresses.length === 0) {
+      if (allAddresses.length === 0) {
         enriched.push(...batch);
         continue;
       }
       
-      // Fetch all vault accounts in one RPC call
-      const weight = Math.max(1, Math.ceil(vaultAddresses.length / 100));
+      // Fetch all accounts in one RPC call
+      const weight = Math.max(1, Math.ceil(allAddresses.length / 100));
       const accountInfos = await withRpcLimit(
-        () => connection.getMultipleAccountsInfo(vaultAddresses),
+        () => connection.getMultipleAccountsInfo(allAddresses),
         weight,
         { module: 'pools', method: 'getMultipleAccountsInfo' }
       );
       
-      // Create a map of vault address -> balance
+      // Create maps for balances and fees
       const balances = new Map<string, bigint>();
-      for (let k = 0; k < vaultAddresses.length; k++) {
+      const fees = new Map<string, number>(); // pool pubkey -> fee_bps
+      
+      for (let k = 0; k < allAddresses.length; k++) {
         const info = accountInfos[k];
-        if (info?.data) {
+        const address = allAddresses[k].toBase58();
+        const mapping = addressMapping.get(address);
+        
+        if (!info?.data || !mapping) continue;
+        
+        if (mapping.type === 'pool') {
+          // Extract fee from pool account
+          const fee = parsePumpswapPoolFee(info.data);
+          if (fee !== null) {
+            const pool = batch[mapping.poolIndex - i];
+            if (pool && pool.pubkey) {
+              fees.set(pool.pubkey, fee);
+              feesExtracted++;
+            }
+          }
+        } else {
+          // Extract balance from vault account
           const amount = parseTokenAccountAmount(info.data);
           if (amount !== null) {
-            balances.set(vaultAddresses[k].toBase58(), amount);
+            balances.set(address, amount);
           }
         }
       }
       
-      // Enrich each pool in the batch with balance data
+      // Enrich each pool in the batch with balance and fee data
       for (const pool of batch) {
         const baseBalance = pool.pool_base_token_account ? balances.get(pool.pool_base_token_account) : null;
         const quoteBalance = pool.pool_quote_token_account ? balances.get(pool.pool_quote_token_account) : null;
+        const feeBps = pool.pubkey ? fees.get(pool.pubkey) : null;
         
         enriched.push({
           ...pool,
           base_reserve: baseBalance !== null ? baseBalance.toString() : undefined,
           quote_reserve: quoteBalance !== null ? quoteBalance.toString() : undefined,
+          fee_bps: feeBps !== null ? feeBps : undefined, // Add extracted fee
         });
         
         if (baseBalance !== null && quoteBalance !== null) {
@@ -286,9 +365,10 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
       
       try { logger.debug('pumpswap.rpc.enrichment.batch', { 
         batch: Math.floor(i / batchSize) + 1, 
-        vaultCount: vaultAddresses.length, 
+        accountCount: allAddresses.length, 
         success: successCount, 
         fail: failCount,
+        feesExtracted,
         cat: 'pumpswap' 
       }); } catch {}
       
@@ -310,11 +390,12 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
     total: pools.length, 
     success: successCount, 
     fail: failCount,
+    feesExtracted,
     ms,
     cat: 'pumpswap' 
   }); } catch {}
   
-  return { pools: enriched, metrics: { success: successCount, fail: failCount, ms } };
+  return { pools: enriched, metrics: { success: successCount, fail: failCount, ms, feesExtracted } };
 }
 
 export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
@@ -339,6 +420,12 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
       const mint_b = pool.quote_mint;
       
       if (!id || !mint_a || !mint_b) continue;
+      
+      // Use extracted fee if available, otherwise fall back to default
+      const defaultFeeBps = Number((CONFIG as any)?.pumpswap?.defaultFeeBps || 30);
+      const feeBps = pool.fee_bps !== undefined && Number.isFinite(pool.fee_bps) 
+        ? Number(pool.fee_bps) 
+        : defaultFeeBps;
       
       // Try to get decimals from Jupiter map or fallback to common values
       let decA = jupMap[mint_a]?.decimals;
@@ -452,7 +539,7 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
         dex: 'Pumpswap',
         mint_a,
         mint_b,
-        fee_bps: defaultFeeBps,
+        fee_bps: feeBps, // Use extracted fee or default
         price_a_per_b,
         liquidity_base,
         updated_ms: now,
@@ -505,12 +592,18 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
     const withLiq = ammCanon.filter(p => p.liquidity_base > 0).length;
     const withWholeAmounts = ammCanon.filter(p => p.amount_a_whole && p.amount_b_whole).length;
     const withTvl = ammCanon.filter(p => p.tvl_usd && p.tvl_usd > 0).length;
+    const withExtractedFee = ammCanon.filter(p => {
+      const feeBps = Number(p.fee_bps);
+      const defaultFeeBps = Number((CONFIG as any)?.pumpswap?.defaultFeeBps || 30);
+      return feeBps !== defaultFeeBps && feeBps > 0 && feeBps <= 10000;
+    }).length;
     logger.info('pumpswap.graphql normalized', { 
       total: ammCanon.length, 
       withPrice, 
       withLiq,
       withWholeAmounts,
       withTvl,
+      withExtractedFee,
       cat: 'pumpswap', 
       canon 
     });

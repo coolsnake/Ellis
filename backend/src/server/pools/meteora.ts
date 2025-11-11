@@ -338,7 +338,7 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
           // Bitmap extension doesn't exist - store program ID as fallback
           bin_array_bitmap_extension = programId.toBase58();
           try {
-            logger.info('meteora.bitmap_ext.not_found_using_programid', {
+            logger.debug('meteora.bitmap_ext.not_found_using_programid', {
               pool: id,
               programId: bin_array_bitmap_extension,
               cat: 'meteora'

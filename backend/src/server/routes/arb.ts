@@ -209,7 +209,29 @@ export function createArbRouter(io: SocketIOServer): Router {
           const { dexAltManager } = await import('../../execution/utils/altManager.js');
           altStatus = dexAltManager.getStatus();
         } catch {}
-        j = { ...(j || {}), pools: { ...(j?.pools || {}), ...pm }, pools_age_ms: ages, exec, graph_push, alt_status: altStatus };
+        // Add graph edge breakdown by DEX
+        let graph_dex_breakdown: any = null;
+        try {
+          const { getGraphSnapshot } = await import('../graph.js');
+          const snap = await getGraphSnapshot(false);
+          const countDex = (dex: string) => {
+            const pools = new Set<string>();
+            (snap?.edges || []).forEach((e: any) => {
+              if (e.dex === dex && e.pool_id) {
+                const base = String(e.pool_id).replace(/-rev$/, '');
+                pools.add(base);
+              }
+            });
+            return { edges: (snap?.edges || []).filter((e: any) => e.dex === dex).length, pools: pools.size };
+          };
+          graph_dex_breakdown = {
+            raydium: countDex('Raydium'),
+            orca: countDex('Orca'),
+            meteora: countDex('Meteora'),
+            pumpswap: countDex('Pumpswap'),
+          };
+        } catch {}
+        j = { ...(j || {}), pools: { ...(j?.pools || {}), ...pm }, pools_age_ms: ages, exec, graph_push, alt_status: altStatus, graph_dex_breakdown };
       } catch {}
       res.status(r?.status || 200).json(j);
     } catch {

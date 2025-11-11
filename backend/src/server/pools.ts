@@ -456,13 +456,14 @@ export function getWsActivity(): { orca: { attached: number; events: number }; r
 }
 
 // Compute target counts for WS subscriptions based on current graph edges per source
-export async function getWsTargets(): Promise<{ orca: { target: number }; raydium: { target: number }; meteora: { target: number }; pumpswap: { target: number } }> {
+export async function getWsTargets(): Promise<{ orca: { target: number }; raydium: { target: number }; meteora: { target: number }; meteora_balanced: { target: number }; pumpswap: { target: number } }> {
   try {
     const { getGraphSnapshot } = await import('./graph.js');
     const snap = await getGraphSnapshot(false);
     const ray = new Set<string>();
     const orc = new Set<string>();
     const met = new Set<string>();
+    const metBal = new Set<string>();
     const pump = new Set<string>();
     for (const e of (snap?.edges || [])) {
       const pid = String((e as any)?.pool_id || '');
@@ -472,13 +473,14 @@ export async function getWsTargets(): Promise<{ orca: { target: number }; raydiu
       if (dex === 'Raydium') ray.add(base);
       else if (dex === 'Orca') orc.add(base);
       else if (dex === 'Meteora') met.add(base);
+      else if (dex === 'MeteoraBalanced') metBal.add(base);
       else if (dex === 'Pumpswap') pump.add(base);
     }
-    const out = { orca: { target: orc.size }, raydium: { target: ray.size }, meteora: { target: met.size }, pumpswap: { target: pump.size } };
+    const out = { orca: { target: orc.size }, raydium: { target: ray.size }, meteora: { target: met.size }, meteora_balanced: { target: metBal.size }, pumpswap: { target: pump.size } };
     try { (getWsTargets as any)._last = out; } catch {}
     return out;
   } catch {
-    const out = { orca: { target: 0 }, raydium: { target: 0 }, meteora: { target: 0 }, pumpswap: { target: 0 } };
+    const out = { orca: { target: 0 }, raydium: { target: 0 }, meteora: { target: 0 }, meteora_balanced: { target: 0 }, pumpswap: { target: 0 } };
     try { (getWsTargets as any)._last = out; } catch {}
     return out;
   }

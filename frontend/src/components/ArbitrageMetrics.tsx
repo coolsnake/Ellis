@@ -128,28 +128,83 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
         const cat: string = String(evt?.cat || evt?.context?.cat || '').toLowerCase();
         
         // Update fetcher states based on log events
-        if (cat === 'raydium' || cat === 'orca' || cat === 'meteora' || cat === 'pumpswap') {
+        if (cat === 'raydium') {
           if (/fetch start/i.test(msg)) {
-            setFetcherStates(s => ({ ...s, [cat]: 'fetching' }));
-          } else if (/enrichment\.start/i.test(msg)) {
-            setFetcherStates(s => ({ ...s, [cat]: 'enriching' }));
-          } else if (/subscribing/i.test(msg)) {
-            setFetcherStates(s => ({ ...s, [cat]: 'subscribing' }));
-          } else if (/fetch ok/i.test(msg) || /normalized/i.test(msg)) {
-            setFetcherStates(s => ({ ...s, [cat]: 'ready' }));
+            setFetcherStates(s => ({ ...s, raydium: 'fetching' }));
+          } else if (/pool_accounts|market_accounts/i.test(msg)) {
+            setFetcherStates(s => ({ ...s, raydium: 'enriching' }));
+          } else if (/pools\.ws subscribe raydium/i.test(msg)) {
+            setFetcherStates(s => ({ ...s, raydium: 'subscribing' }));
+          } else if (/normalized/i.test(msg) && /pools\.ws subscriptions active/i.test(msg)) {
+            setFetcherStates(s => ({ ...s, raydium: 'ready' }));
           } else if (/error|fail/i.test(msg)) {
-            setFetcherStates(s => ({ ...s, [cat]: 'error' }));
+            setFetcherStates(s => ({ ...s, raydium: 'error' }));
           }
         }
-        if (cat === 'meteora_balanced' || /meteoraBalanced/.test(msg)) {
+        if (cat === 'orca') {
+          if (/fetch start/i.test(msg)) {
+            setFetcherStates(s => ({ ...s, orca: 'fetching' }));
+          } else if (/pools\.ws subscribe orca/i.test(msg)) {
+            setFetcherStates(s => ({ ...s, orca: 'subscribing' }));
+          } else if (/normalized/i.test(msg) && /pools\.ws subscriptions active/i.test(msg)) {
+            setFetcherStates(s => ({ ...s, orca: 'ready' }));
+          } else if (/error|fail/i.test(msg)) {
+            setFetcherStates(s => ({ ...s, orca: 'error' }));
+          }
+        }
+        if (cat === 'meteora') {
+          if (/fetch start/i.test(msg)) {
+            setFetcherStates(s => ({ ...s, meteora: 'fetching' }));
+          } else if (/bitmap_ext|activeId/i.test(msg)) {
+            setFetcherStates(s => ({ ...s, meteora: 'enriching' }));
+          } else if (/pools\.ws subscribe meteora/i.test(msg) || /pools\.ws meteora\.attach/i.test(msg)) {
+            setFetcherStates(s => ({ ...s, meteora: 'subscribing' }));
+          } else if (/normalized/i.test(msg) && /pools\.ws subscriptions active/i.test(msg)) {
+            setFetcherStates(s => ({ ...s, meteora: 'ready' }));
+          } else if (/error|fail/i.test(msg)) {
+            setFetcherStates(s => ({ ...s, meteora: 'error' }));
+          }
+        }
+        if (cat === 'pumpswap') {
+          if (/fetch start/i.test(msg)) {
+            setFetcherStates(s => ({ ...s, pumpswap: 'fetching' }));
+          } else if (/enrichment\.start/i.test(msg)) {
+            setFetcherStates(s => ({ ...s, pumpswap: 'enriching' }));
+          } else if (/pools\.ws subscribe pumpswap/i.test(msg)) {
+            setFetcherStates(s => ({ ...s, pumpswap: 'subscribing' }));
+          } else if (/normalized/i.test(msg) && /pools\.ws subscriptions active/i.test(msg)) {
+            setFetcherStates(s => ({ ...s, pumpswap: 'ready' }));
+          } else if (/error|fail/i.test(msg)) {
+            setFetcherStates(s => ({ ...s, pumpswap: 'error' }));
+          }
+        }
+        
+        // Meteora Balanced
+        if (/meteora\.balanced/i.test(msg)) {
           const key = 'meteora_balanced';
           if (/fetch start/i.test(msg)) {
             setFetcherStates(s => ({ ...s, [key]: 'fetching' }));
-          } else if (/fetch ok/i.test(msg)) {
+          } else if (/normalized/i.test(msg)) {
             setFetcherStates(s => ({ ...s, [key]: 'ready' }));
           } else if (/error|fail/i.test(msg)) {
             setFetcherStates(s => ({ ...s, [key]: 'error' }));
           }
+        }
+        
+        // Check if all subscriptions are active (means we're ready)
+        if (/pools\.ws subscriptions active/i.test(msg)) {
+          // Mark all as ready when subscriptions are fully active
+          setFetcherStates(s => {
+            const updated: Record<string, FetcherState> = {};
+            for (const [key, state] of Object.entries(s)) {
+              if (state === 'subscribing' || state === 'fetching' || state === 'enriching') {
+                updated[key] = 'ready';
+              } else {
+                updated[key] = state;
+              }
+            }
+            return updated;
+          });
         }
         
         const isGraphPush = /^GRAPH\.PUSH\.(SNAPSHOT|DIFF)$/.test(code) || /^(graph:push (snapshot|diff))$/i.test(msg);
@@ -285,6 +340,17 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
                 </div>
               ) : null}
             </div>
+            {m?.graph_dex_breakdown ? (
+              <div className="mt-3 pt-3 border-t border-gray-700">
+                <div className="text-gray-400 text-xs mb-1">Pools in Graph by DEX</div>
+                <div className="flex gap-4 text-xs">
+                  <span className="text-red-300">Raydium: {fmt(m.graph_dex_breakdown.raydium?.pools)} pools ({fmt(m.graph_dex_breakdown.raydium?.edges)} edges)</span>
+                  <span className="text-blue-300">Orca: {fmt(m.graph_dex_breakdown.orca?.pools)} pools ({fmt(m.graph_dex_breakdown.orca?.edges)} edges)</span>
+                  <span className="text-green-300">Meteora: {fmt(m.graph_dex_breakdown.meteora?.pools)} pools ({fmt(m.graph_dex_breakdown.meteora?.edges)} edges)</span>
+                  <span className="text-purple-300">Pumpswap: {fmt(m.graph_dex_breakdown.pumpswap?.pools)} pools ({fmt(m.graph_dex_breakdown.pumpswap?.edges)} edges)</span>
+                </div>
+              </div>
+            ) : null}
           </div>
 
           {/* Pool Fetchers Section */}
