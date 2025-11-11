@@ -26,6 +26,10 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     universePrefilterOrca: false,
     // WS Attach rate (pools per second)
     wsAttachPerSec: 10,
+		// RPC Rate Limiter
+		rpcMaxRps: 50,
+		rpcBurst: 12,
+		rpcMinGapMs: 20,
 		// Raydium (HTTP)
 		ray_cacheTtlMs: 300000,
 		ray_httpConcurrency: 2,
@@ -104,6 +108,10 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             jupiterApiUrl: j?.system?.jupiterApiUrl || prev.jupiterApiUrl,
             // WS attach rate
             wsAttachPerSec: Number(j?.system?.wsAttachPerSec ?? prev.wsAttachPerSec ?? 10),
+            // RPC Rate Limiter
+            rpcMaxRps: Number(j?.system?.rpcMaxRps ?? prev.rpcMaxRps ?? 50),
+            rpcBurst: Number(j?.system?.rpcBurst ?? prev.rpcBurst ?? 12),
+            rpcMinGapMs: Number(j?.system?.rpcMinGapMs ?? prev.rpcMinGapMs ?? 20),
 			ray_cacheTtlMs: Number(j?.raydium?.cacheTtlMs ?? prev.ray_cacheTtlMs),
 			ray_httpConcurrency: Number((j?.raydium?.concurrency ?? j?.raydium?.sdkConcurrency) ?? prev.ray_httpConcurrency),
 			ray_pageSize: Number((j?.raydium?.pageSize ?? j?.raydium?.httpPageSize) ?? (prev.ray_pageSize ?? prev.ray_httpPageSize)),
@@ -175,6 +183,9 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         minDexOverlap: Number(cfg.minDexOverlap),
         universePrefilterOrca: !!cfg.universePrefilterOrca,
         jupiterApiUrl: cfg.jupiterApiUrl,
+        rpcMaxRps: Number(cfg.rpcMaxRps),
+        rpcBurst: Number(cfg.rpcBurst),
+        rpcMinGapMs: Number(cfg.rpcMinGapMs),
       },
 			raydium: {
 			cacheTtlMs: Number(cfg.ray_cacheTtlMs),
@@ -262,6 +273,31 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                 <label className="block text-sm mb-1">WS Attach Rate (pools/sec)</label>
                 <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.wsAttachPerSec} onChange={(e)=>set('wsAttachPerSec', Number(e.target.value)||0)} />
               </div>
+            </div>
+          </div>
+
+          <div className="bg-gray-700 rounded p-4">
+            <h3 className="text-lg font-semibold mb-3">RPC Rate Limiter</h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm mb-1">Max RPS (requests/sec)</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.rpcMaxRps} onChange={(e)=>set('rpcMaxRps', Number(e.target.value)||0)} />
+                <p className="text-xs text-gray-400 mt-1">Maximum RPC calls per second (default: 50)</p>
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Burst Capacity (tokens)</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.rpcBurst} onChange={(e)=>set('rpcBurst', Number(e.target.value)||0)} />
+                <p className="text-xs text-gray-400 mt-1">Token bucket capacity (default: 12). Lower = smoother RPS</p>
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Min Gap (ms)</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.rpcMinGapMs} onChange={(e)=>set('rpcMinGapMs', Number(e.target.value)||0)} />
+                <p className="text-xs text-gray-400 mt-1">Minimum gap between calls (default: 20ms)</p>
+              </div>
+            </div>
+            <div className="mt-2 text-xs text-gray-300 bg-gray-600 rounded p-2">
+              <strong>💡 To reduce RPS spikes:</strong> Lower burst capacity to 4-5 tokens. This limits initial burst while maintaining sustained rate.
+              <br /><strong>⚠️ Note:</strong> Changes require backend restart to take effect (these are read from environment at startup).
             </div>
           </div>
 

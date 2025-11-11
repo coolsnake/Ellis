@@ -1355,10 +1355,31 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       if (binArrayLower) accounts.binArrayLower = binArrayLower;
       if (binArrayUpper) accounts.binArrayUpper = binArrayUpper;
       
-      // NOTE: bitmap extension is NOT set here - the SDK handles it automatically
-      // We previously tried to set binArrayBitmapExtension to the program ID as a fallback,
-      // but this is unnecessary. The SDK includes the correct bitmap extension PDA
-      // when building swap instructions. Just providing the program ID is sufficient.
+      // CRITICAL: SDK requires binArrayBitmapExtension account to be provided
+      // Derive the PDA [bitmap_extension, lb_pair] with DLMM program ID
+      // This is simpler than manual injection - just provide it in accounts upfront
+      try {
+        const [bitmapExt] = PublicKey.findProgramAddressSync(
+          [Buffer.from('bitmap_extension'), poolPk.toBuffer()],
+          programId
+        );
+        accounts.binArrayBitmapExtension = bitmapExt;
+        try {
+          logger.debug('meteora.dlmm.bitmap_ext.derived', {
+            cat: 'tx',
+            ctx: { pool: hop.poolId, address: bitmapExt.toBase58() }
+          });
+        } catch {}
+      } catch (e: any) {
+        // Fallback: use program ID if PDA derivation fails
+        accounts.binArrayBitmapExtension = programId;
+        try {
+          logger.debug('meteora.dlmm.bitmap_ext.fallback_to_programid', {
+            cat: 'tx',
+            ctx: { pool: hop.poolId, error: String(e?.message || e) }
+          });
+        } catch {}
+      }
 
       // Extend with host/referral fee handling and reserves when available
       // hostFeeIn must be a valid token account for the input token
