@@ -38,7 +38,7 @@ describe('graph prices orientation - Raydium AMM forward uses normalized', () =>
       cfg.system.scopePoolsMode = 'none';
       cfg.system.minAmmLiqBase = 0;
       cfg.system.minClmmLiquidity = 0;
-      cfg.system.minDexOverlap = 1;
+      cfg.system.minPoolsPerPair = 1;
       const snap = await getGraphSnapshot(true);
       const edge = (snap.edges || []).find((e: any) => e.dex === 'Raydium' && e.source === USDC && e.target === SOL);
       const edgeRev = (snap.edges || []).find((e: any) => e.dex === 'Raydium' && e.source === SOL && e.target === USDC);

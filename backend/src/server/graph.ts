@@ -580,28 +580,39 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           }
         }
       } catch {}
-      // Optional DEX overlap filter (retain pairs present on at least N sources)
+      // Optional pool count filter (retain pairs with at least N total pools across all DEXes)
       try {
-        const minOverlap = Math.max(1, Number(((CONFIG.system as any)?.minDexOverlap) || 1));
-        if (minOverlap > 1) {
-          const setRay = new Set<string>();
-          for (const p of (ray.amm || [])) setRay.add(`${p.mint_a}-${p.mint_b}`);
-          for (const p of (ray.clmm || [])) setRay.add(`${p.mint_a}-${p.mint_b}`);
-          const setOrc = new Set<string>();
-          for (const p of (orc.amm || [])) setOrc.add(`${p.mint_a}-${p.mint_b}`);
-          for (const p of (orc.clmm || [])) setOrc.add(`${p.mint_a}-${p.mint_b}`);
-          const setMet = new Set<string>();
-          for (const p of (met.amm || [])) setMet.add(`${p.mint_a}-${p.mint_b}`);
-          for (const p of (met.clmm || [])) setMet.add(`${p.mint_a}-${p.mint_b}`);
-          // Include Meteora Balanced (mAMM) pairs in the Meteora set for overlap counting
-          for (const p of (mbl.amm || [])) setMet.add(`${p.mint_a}-${p.mint_b}`);
-          const counts = new Map<string, number>();
-          const bump = (k: string, has: boolean) => { if (!has) return; counts.set(k, (counts.get(k) || 0) + 1); };
-          const all = new Set<string>([...setRay, ...setOrc, ...setMet]);
-          for (const k of all) { bump(k, setRay.has(k)); bump(k, setOrc.has(k)); bump(k, setMet.has(k)); }
+        const minPools = Math.max(1, Number(((CONFIG.system as any)?.minPoolsPerPair) || 1));
+        if (minPools > 1) {
+          // Count total pools per pair (not just DEXes)
+          const poolCounts = new Map<string, number>();
+          const countPools = (arr: any[]) => {
+            for (const p of (arr || [])) {
+              const pairKey = `${p.mint_a}-${p.mint_b}`;
+              poolCounts.set(pairKey, (poolCounts.get(pairKey) || 0) + 1);
+            }
+          };
+          
+          // Count all pools for each pair across all DEXes and types
+          countPools(ray.amm);
+          countPools(ray.clmm);
+          countPools(orc.amm);
+          countPools(orc.clmm);
+          countPools(met.amm);
+          countPools(met.clmm);
+          countPools(mbl.amm);
+          
+          // Allow pairs with at least minPools total pools
           const allow = new Set<string>();
-          for (const [k, v] of counts.entries()) if (v >= minOverlap) allow.add(k);
-          const filt = <T extends { mint_a: string; mint_b: string }>(arr: T[]) => (arr || []).filter(p => allow.has(`${p.mint_a}-${p.mint_b}`));
+          for (const [k, count] of poolCounts.entries()) {
+            if (count >= minPools) {
+              allow.add(k);
+            }
+          }
+          
+          const filt = <T extends { mint_a: string; mint_b: string }>(arr: T[]) => 
+            (arr || []).filter(p => allow.has(`${p.mint_a}-${p.mint_b}`));
+            
           const preMetCt = (met.amm?.length || 0) + (met.clmm?.length || 0);
           const newRay = { amm: filt(ray.amm), clmm: filt(ray.clmm) } as any;
           const newOrc = { amm: filt(orc.amm), clmm: filt(orc.clmm) } as any;

@@ -11,7 +11,7 @@ const RUN = String((globalThis as any)?.process?.env?.RUN_REAL_E2E || '') === 't
     // Disable scoping/filters to keep edges
     cfg.system.scopePools = false;
     cfg.system.scopePoolsMode = 'none';
-    cfg.system.minDexOverlap = 1;
+    cfg.system.minPoolsPerPair = 1;
     cfg.system.minAmmLiqBase = 0;
     cfg.system.minClmmLiquidity = 0;
     // Keep sanity checks on

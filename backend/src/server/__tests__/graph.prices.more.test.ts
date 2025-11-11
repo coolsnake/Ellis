@@ -25,7 +25,7 @@ describe('graph prices orientation - Meteora and Orca are reciprocal', () => {
     cfg.system.scopePoolsMode = 'none';
     cfg.system.minAmmLiqBase = 0;
     cfg.system.minClmmLiquidity = 0;
-    cfg.system.minDexOverlap = 1;
+    cfg.system.minPoolsPerPair = 1;
 
     const snap = await getGraphSnapshot(true);
     const fwd = snap.edges.find((e: any) => e.dex === 'Meteora' && e.source === SOL && e.target === USDC);
@@ -59,7 +59,7 @@ describe('graph prices orientation - Meteora and Orca are reciprocal', () => {
     cfg.system.scopePoolsMode = 'none';
     cfg.system.minAmmLiqBase = 0;
     cfg.system.minClmmLiquidity = 0;
-    cfg.system.minDexOverlap = 1;
+    cfg.system.minPoolsPerPair = 1;
 
     const snap = await getGraphSnapshot(true);
     const fwd = snap.edges.find((e: any) => e.dex === 'Orca' && e.source === usdc && e.target === btc);

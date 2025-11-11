@@ -189,8 +189,8 @@ export const CONFIG = {
     // Lower defaults to avoid over-pruning during discovery; tune via env in prod
     minAmmLiqBase: process.env.MIN_AMM_LIQ_BASE ? Number(process.env.MIN_AMM_LIQ_BASE) : 0,
     minClmmLiquidity: process.env.MIN_CLMM_LIQUIDITY ? Number(process.env.MIN_CLMM_LIQUIDITY) : 0,
-    // Minimum number of distinct DEXes a token pair must appear on to include (1..3)
-    minDexOverlap: Number(process.env.MIN_DEX_OVERLAP || 1),
+    // Minimum number of pools a token pair must have to be included (counts total pools across all DEXes)
+    minPoolsPerPair: Number(process.env.MIN_POOLS_PER_PAIR || 1),
     // Stable pruning controls
     // Comma-separated list of stablecoin mints; defaults to USDC, USDT, USD1
     stableMints: (process.env.STABLE_MINTS || 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB,USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB')

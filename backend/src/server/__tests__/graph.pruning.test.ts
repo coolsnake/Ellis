@@ -7,7 +7,7 @@ describe('graph stable<->stable pruning', () => {
     cfg.system.scopePoolsMode = 'none';
     cfg.system.minAmmLiqBase = 0;
     cfg.system.minClmmLiquidity = 0;
-    cfg.system.minDexOverlap = 1;
+    cfg.system.minPoolsPerPair = 1;
     cfg.system.dropStableStableEdges = true;
     cfg.system.stableMints = [
       'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
@@ -41,7 +41,7 @@ describe('graph stable<->stable pruning', () => {
     cfg.system.scopePoolsMode = 'none';
     cfg.system.minAmmLiqBase = 0;
     cfg.system.minClmmLiquidity = 0;
-    cfg.system.minDexOverlap = 1;
+    cfg.system.minPoolsPerPair = 1;
     cfg.system.dropStableStableEdges = false;
     cfg.system.stableMints = [
       'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',

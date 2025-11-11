@@ -133,6 +133,19 @@ export function getTxRelatedLogs(txId: string | undefined, startTime?: number, e
       /arb\.executor\./i,
     ];
     
+    // Exclusion patterns - filter out graph sync/push logs
+    const excludePatterns = [
+      /^arb\.push/i,           // Graph push operations
+      /arb\.push\.ack/i,       // Graph push acknowledgments
+      /arb\.sync/i,            // Graph sync operations
+      /graph\.(push|sync|version|update)/i,  // Graph state updates
+      /queue_depth/i,          // Queue depth logs
+      /wantversion/i,          // Version synchronization
+      /push_success|push_failed/i,  // Push operation status
+      /kind.*diff/i,           // Graph diff operations
+      /acked.*true/i,          // Acknowledgment logs
+    ];
+    
     // Iterate backwards through recent events (most recent first)
     // Events are stored chronologically, so we start from the end
     // Increase window to ensure we capture all instruction building logs
@@ -146,6 +159,10 @@ export function getTxRelatedLogs(txId: string | undefined, startTime?: number, e
       const msg = String(event.message || '').toLowerCase();
       const ctxStr = JSON.stringify(event.context || {}).toLowerCase();
       
+      // Skip if matches exclusion patterns (graph sync/push logs)
+      const shouldExclude = excludePatterns.some(p => p.test(msg) || p.test(ctxStr));
+      if (shouldExclude) continue;
+      
       // Check if transaction ID matches
       const hasTxId = txId && (
         ctxStr.includes(txId.toLowerCase()) ||
@@ -156,7 +173,8 @@ export function getTxRelatedLogs(txId: string | undefined, startTime?: number, e
       const matchesPattern = txPatterns.some(p => p.test(msg) || p.test(ctxStr));
       
       // Check if cat is 'tx' or 'arb' (transaction/arbitrage category)
-      const isTxCat = event.cat === 'tx' || event.cat === 'arb';
+      // But only include arb logs that are executor-related, not graph sync
+      const isTxCat = event.cat === 'tx' || (event.cat === 'arb' && /arb\.executor\./i.test(msg));
       
       if (hasTxId || matchesPattern || isTxCat) {
         relevant.unshift(event); // Add to beginning to maintain chronological order

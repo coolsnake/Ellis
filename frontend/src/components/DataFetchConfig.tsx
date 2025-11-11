@@ -22,7 +22,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     canonicalizePairs: 'lex',
     minAmmLiqBase: 100000,
     minClmmLiquidity: 100000,
-    minDexOverlap: 2,
+    minPoolsPerPair: 2,
     universePrefilterOrca: false,
     // WS Attach rate (pools per second)
     wsAttachPerSec: 10,
@@ -103,7 +103,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             canonicalizePairs: j?.system?.canonicalizePairs || prev.canonicalizePairs,
             minAmmLiqBase: Number(j?.system?.minAmmLiqBase ?? prev.minAmmLiqBase),
             minClmmLiquidity: Number(j?.system?.minClmmLiquidity ?? prev.minClmmLiquidity),
-            minDexOverlap: Number(j?.system?.minDexOverlap ?? prev.minDexOverlap),
+            minPoolsPerPair: Number(j?.system?.minPoolsPerPair ?? prev.minPoolsPerPair),
             universePrefilterOrca: !!j?.system?.universePrefilterOrca,
             jupiterApiUrl: j?.system?.jupiterApiUrl || prev.jupiterApiUrl,
             // WS attach rate
@@ -180,7 +180,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         canonicalizePairs: cfg.canonicalizePairs,
         minAmmLiqBase: Number(cfg.minAmmLiqBase),
         minClmmLiquidity: Number(cfg.minClmmLiquidity),
-        minDexOverlap: Number(cfg.minDexOverlap),
+        minPoolsPerPair: Number(cfg.minPoolsPerPair),
         universePrefilterOrca: !!cfg.universePrefilterOrca,
         jupiterApiUrl: cfg.jupiterApiUrl,
         rpcMaxRps: Number(cfg.rpcMaxRps),
@@ -346,8 +346,8 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                 <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.minClmmLiquidity} onChange={(e)=>set('minClmmLiquidity', Number(e.target.value)||0)} />
               </div>
               <div>
-                <label className="block text-sm mb-1">Minimum DEX Overlap (1-3)</label>
-                <select className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.minDexOverlap} onChange={(e)=>set('minDexOverlap', Number(e.target.value)||1)}>
+                <label className="block text-sm mb-1">Minimum Pools per Pair (1-3)</label>
+                <select className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.minPoolsPerPair} onChange={(e)=>set('minPoolsPerPair', Number(e.target.value)||1)}>
                   <option value={1}>1</option>
                   <option value={2}>2</option>
                   <option value={3}>3</option>

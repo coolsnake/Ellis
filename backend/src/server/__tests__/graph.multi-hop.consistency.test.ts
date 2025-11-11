@@ -12,7 +12,7 @@ describe('graph multi-hop pricing consistency across mixed DEXes', () => {
     cfg.system.scopePoolsMode = 'none';
     cfg.system.minAmmLiqBase = 0;
     cfg.system.minClmmLiquidity = 0;
-    cfg.system.minDexOverlap = 1;
+    cfg.system.minPoolsPerPair = 1;
 
     const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
     const SOL  = 'So11111111111111111111111111111111111111112';

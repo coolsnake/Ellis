@@ -6,7 +6,7 @@ describe('meteoraBalanced.graph.include', () => {
     // Configure filters to be permissive
     cfg.system.scopePools = false;
     cfg.system.scopePoolsMode = 'none';
-    cfg.system.minDexOverlap = 1;
+    cfg.system.minPoolsPerPair = 1;
     cfg.system.minAmmLiqBase = 0;
     cfg.system.minClmmLiquidity = 0;
     cfg.sanity.enabled = true;

@@ -415,27 +415,10 @@ async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void> {
     let cached = 0;
     let failed = 0;
     
-    // Import Meteora SDK once for all pools
+    // Import Meteora SDK once for all pools (for bin array derivation only)
     const mod = await import('@meteora-ag/dlmm');
     // CRITICAL: Resolve the module structure correctly (same as in instruction builder)
     const DLMM: any = (mod && (mod as any).default) ? (mod as any).default : (((mod as any).DLMM) || mod);
-    
-    // Verify decodeAccount function exists
-    if (!DLMM || typeof (DLMM as any)?.decodeAccount !== 'function') {
-      try {
-        logger.warn('meteora.activeId.sdk_missing_decode', {
-          cat: 'meteora',
-          ctx: { 
-            error: 'decodeAccount function not found in DLMM SDK',
-            hasDefault: !!(mod as any).default,
-            hasDLMM: !!(mod as any).DLMM,
-            keys: DLMM ? Object.keys(DLMM).slice(0, 10) : []
-          }
-        });
-      } catch {}
-      // Can't proceed without decode function - return early
-      return;
-    }
     
     const programId = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
     
@@ -463,40 +446,41 @@ async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void> {
           
           if (acc?.data) {
             try {
-              // Decode Meteora DLMM pool state to extract active bin ID
-              const decode = (DLMM as any).decodeAccount;
-              if (!decode || typeof decode !== 'function') {
+              // OPTIMIZATION: Read activeId directly from pool data (much more reliable than SDK decode)
+              // Meteora DLMM pool structure has activeId at offset 240 as i32 (4 bytes, signed little-endian)
+              // Reference: backend/scripts/analyze-meteora-pool.ts line 75
+              const ACTIVE_ID_OFFSET = 240;
+              
+              if (acc.data.length < ACTIVE_ID_OFFSET + 4) {
                 failed++;
                 try {
-                  logger.debug('meteora.activeId.decode_unavailable', {
+                  logger.debug('meteora.activeId.data_too_short', {
                     cat: 'meteora',
                     ctx: {
                       pool: pool.id.slice(0, 8) + '...',
-                      error: 'decodeAccount not available'
+                      dataLength: acc.data.length,
+                      required: ACTIVE_ID_OFFSET + 4
                     }
                   });
                 } catch {}
                 continue;
               }
               
-              const state = decode(
-                { coder: (DLMM as any).coder ?? {} },
-                'lbPair',
-                acc.data
-              );
+              // Read activeId as signed 32-bit little-endian integer
+              const activeId = Buffer.from(acc.data).readInt32LE(ACTIVE_ID_OFFSET);
               
-              if (state?.activeId !== undefined) {
+              if (activeId !== undefined && activeId !== null) {
                 // ENHANCEMENT: Also derive bin array addresses deterministically
                 const binArrayAddresses = deriveBinArrays(
                   new PublicKey(pool.id),
-                  state.activeId,
+                  activeId,
                   programId,
                   DLMM
                 );
                 
                 // Cache active bin ID AND bin array addresses
                 executionCache.setHot(pool.id, {
-                  activeId: state.activeId,
+                  activeId: activeId,
                   binArrays: binArrayAddresses,
                 });
                 cached++;
@@ -506,12 +490,13 @@ async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void> {
                     cat: 'meteora',
                     ctx: {
                       pool: pool.id.slice(0, 8) + '...',
-                      activeId: state.activeId,
-                      binStep: state.binStep,
+                      activeId: activeId,
                       binArrayCount: binArrayAddresses ? Object.keys(binArrayAddresses).filter(k => binArrayAddresses[k as keyof typeof binArrayAddresses]).length : 0
                     }
                   });
                 } catch {}
+              } else {
+                failed++;
               }
             } catch (decodeErr) {
               failed++;
