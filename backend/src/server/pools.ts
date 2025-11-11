@@ -973,6 +973,13 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
         after: afterCounts,
         cat: 'pools' 
       });
+    } else {
+      logger.info('pools.refresh.phase.tvl_filter.skipped', { 
+        reason: 'thresholds_are_zero',
+        minAmm, 
+        minClmm,
+        cat: 'pools' 
+      });
     }
   } catch (e: any) {
     logger.warn('pools.refresh.phase.tvl_filter.failed', { error: String(e?.message || e), cat: 'pools' });
@@ -1044,6 +1051,12 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
         minPools, 
         before: beforeCounts, 
         after: afterCounts,
+        cat: 'pools' 
+      });
+    } else {
+      logger.info('pools.refresh.phase.min_pools_filter_2nd.skipped', { 
+        reason: 'minPoolsPerPair_is_1',
+        minPools,
         cat: 'pools' 
       });
     }
