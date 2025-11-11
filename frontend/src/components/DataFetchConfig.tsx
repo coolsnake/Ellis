@@ -26,6 +26,16 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     universePrefilterOrca: false,
     // WS Attach rate (pools per second)
     wsAttachPerSec: 10,
+    // DEX Source Control
+    enabledDexSources_raydium: true,
+    enabledDexSources_raydium_amm: true,
+    enabledDexSources_raydium_clmm: true,
+    enabledDexSources_orca: true,
+    enabledDexSources_orca_amm: true,
+    enabledDexSources_orca_clmm: true,
+    enabledDexSources_meteora: true,
+    enabledDexSources_meteora_balanced: true,
+    enabledDexSources_pumpswap: true,
 		// RPC Rate Limiter
 		rpcMaxRps: 50,
 		rpcBurst: 12,
@@ -126,6 +136,16 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             rpcMaxRps: Number(j?.system?.rpcMaxRps ?? prev.rpcMaxRps ?? 50),
             rpcBurst: Number(j?.system?.rpcBurst ?? prev.rpcBurst ?? 12),
             rpcMinGapMs: Number(j?.system?.rpcMinGapMs ?? prev.rpcMinGapMs ?? 20),
+            // DEX Source Control
+            enabledDexSources_raydium: j?.system?.enabledDexSources?.raydium ?? prev.enabledDexSources_raydium ?? true,
+            enabledDexSources_raydium_amm: (typeof j?.system?.enabledDexSources?.raydium === 'object' ? (j.system.enabledDexSources.raydium.amm ?? true) : prev.enabledDexSources_raydium_amm ?? true),
+            enabledDexSources_raydium_clmm: (typeof j?.system?.enabledDexSources?.raydium === 'object' ? (j.system.enabledDexSources.raydium.clmm ?? true) : prev.enabledDexSources_raydium_clmm ?? true),
+            enabledDexSources_orca: j?.system?.enabledDexSources?.orca ?? prev.enabledDexSources_orca ?? true,
+            enabledDexSources_orca_amm: (typeof j?.system?.enabledDexSources?.orca === 'object' ? (j.system.enabledDexSources.orca.amm ?? true) : prev.enabledDexSources_orca_amm ?? true),
+            enabledDexSources_orca_clmm: (typeof j?.system?.enabledDexSources?.orca === 'object' ? (j.system.enabledDexSources.orca.clmm ?? true) : prev.enabledDexSources_orca_clmm ?? true),
+            enabledDexSources_meteora: j?.system?.enabledDexSources?.meteora ?? prev.enabledDexSources_meteora ?? true,
+            enabledDexSources_meteora_balanced: j?.system?.enabledDexSources?.meteora_balanced ?? prev.enabledDexSources_meteora_balanced ?? true,
+            enabledDexSources_pumpswap: j?.system?.enabledDexSources?.pumpswap ?? prev.enabledDexSources_pumpswap ?? true,
 			ray_cacheTtlMs: Number(j?.raydium?.cacheTtlMs ?? prev.ray_cacheTtlMs),
 			ray_httpConcurrency: Number((j?.raydium?.concurrency ?? j?.raydium?.sdkConcurrency) ?? prev.ray_httpConcurrency),
 			ray_pageSize: Number((j?.raydium?.pageSize ?? j?.raydium?.httpPageSize) ?? (prev.ray_pageSize ?? prev.ray_httpPageSize)),
@@ -214,6 +234,17 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         rpcMaxRps: Number(cfg.rpcMaxRps),
         rpcBurst: Number(cfg.rpcBurst),
         rpcMinGapMs: Number(cfg.rpcMinGapMs),
+        enabledDexSources: {
+          raydium: cfg.enabledDexSources_raydium ? 
+            (cfg.enabledDexSources_raydium_amm && cfg.enabledDexSources_raydium_clmm ? true : 
+              { amm: !!cfg.enabledDexSources_raydium_amm, clmm: !!cfg.enabledDexSources_raydium_clmm }) : false,
+          orca: cfg.enabledDexSources_orca ? 
+            (cfg.enabledDexSources_orca_amm && cfg.enabledDexSources_orca_clmm ? true : 
+              { amm: !!cfg.enabledDexSources_orca_amm, clmm: !!cfg.enabledDexSources_orca_clmm }) : false,
+          meteora: !!cfg.enabledDexSources_meteora,
+          meteora_balanced: !!cfg.enabledDexSources_meteora_balanced,
+          pumpswap: !!cfg.enabledDexSources_pumpswap,
+        },
       },
 			raydium: {
 			cacheTtlMs: Number(cfg.ray_cacheTtlMs),
@@ -341,6 +372,132 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             <div className="mt-2 text-xs text-gray-300 bg-gray-600 rounded p-2">
               <strong>💡 To reduce RPS spikes:</strong> Lower burst capacity to 4-5 tokens. This limits initial burst while maintaining sustained rate.
               <br /><strong>⚠️ Note:</strong> Changes require backend restart to take effect (these are read from environment at startup).
+            </div>
+          </div>
+
+          <div className="bg-gray-700 rounded p-4">
+            <h3 className="text-lg font-semibold mb-3">DEX Source Control</h3>
+            <p className="text-xs text-gray-300 mb-3">
+              Control which DEX fetchers run during pool refresh. Disable sources to reduce API load or focus on specific DEXes during testing.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Raydium */}
+              <div className="border border-gray-600 rounded p-3 bg-gray-800/30">
+                <div className="flex items-center gap-2 mb-2">
+                  <input 
+                    type="checkbox" 
+                    checked={!!cfg.enabledDexSources_raydium} 
+                    onChange={(e)=>{
+                      set('enabledDexSources_raydium', e.target.checked);
+                      if (!e.target.checked) {
+                        set('enabledDexSources_raydium_amm', false);
+                        set('enabledDexSources_raydium_clmm', false);
+                      }
+                    }} 
+                  />
+                  <span className="font-semibold">Raydium</span>
+                </div>
+                {cfg.enabledDexSources_raydium && (
+                  <div className="ml-6 space-y-1">
+                    <label className="flex items-center gap-2 text-sm">
+                      <input 
+                        type="checkbox" 
+                        checked={!!cfg.enabledDexSources_raydium_amm} 
+                        onChange={(e)=>set('enabledDexSources_raydium_amm', e.target.checked)} 
+                      />
+                      AMM Pools
+                    </label>
+                    <label className="flex items-center gap-2 text-sm">
+                      <input 
+                        type="checkbox" 
+                        checked={!!cfg.enabledDexSources_raydium_clmm} 
+                        onChange={(e)=>set('enabledDexSources_raydium_clmm', e.target.checked)} 
+                      />
+                      CLMM Pools
+                    </label>
+                  </div>
+                )}
+              </div>
+
+              {/* Orca */}
+              <div className="border border-gray-600 rounded p-3 bg-gray-800/30">
+                <div className="flex items-center gap-2 mb-2">
+                  <input 
+                    type="checkbox" 
+                    checked={!!cfg.enabledDexSources_orca} 
+                    onChange={(e)=>{
+                      set('enabledDexSources_orca', e.target.checked);
+                      if (!e.target.checked) {
+                        set('enabledDexSources_orca_amm', false);
+                        set('enabledDexSources_orca_clmm', false);
+                      }
+                    }} 
+                  />
+                  <span className="font-semibold">Orca</span>
+                </div>
+                {cfg.enabledDexSources_orca && (
+                  <div className="ml-6 space-y-1">
+                    <label className="flex items-center gap-2 text-sm">
+                      <input 
+                        type="checkbox" 
+                        checked={!!cfg.enabledDexSources_orca_amm} 
+                        onChange={(e)=>set('enabledDexSources_orca_amm', e.target.checked)} 
+                      />
+                      AMM Pools
+                    </label>
+                    <label className="flex items-center gap-2 text-sm">
+                      <input 
+                        type="checkbox" 
+                        checked={!!cfg.enabledDexSources_orca_clmm} 
+                        onChange={(e)=>set('enabledDexSources_orca_clmm', e.target.checked)} 
+                      />
+                      CLMM Pools (Whirlpool)
+                    </label>
+                  </div>
+                )}
+              </div>
+
+              {/* Meteora */}
+              <div className="border border-gray-600 rounded p-3 bg-gray-800/30">
+                <label className="flex items-center gap-2">
+                  <input 
+                    type="checkbox" 
+                    checked={!!cfg.enabledDexSources_meteora} 
+                    onChange={(e)=>set('enabledDexSources_meteora', e.target.checked)} 
+                  />
+                  <span className="font-semibold">Meteora DLMM</span>
+                </label>
+                <p className="text-xs text-gray-400 ml-6 mt-1">Dynamic Liquidity Market Maker (CLMM)</p>
+              </div>
+
+              {/* Meteora Balanced */}
+              <div className="border border-gray-600 rounded p-3 bg-gray-800/30">
+                <label className="flex items-center gap-2">
+                  <input 
+                    type="checkbox" 
+                    checked={!!cfg.enabledDexSources_meteora_balanced} 
+                    onChange={(e)=>set('enabledDexSources_meteora_balanced', e.target.checked)} 
+                  />
+                  <span className="font-semibold">Meteora Balanced</span>
+                </label>
+                <p className="text-xs text-gray-400 ml-6 mt-1">Multi-token AMM (mAMM)</p>
+              </div>
+
+              {/* Pumpswap */}
+              <div className="border border-gray-600 rounded p-3 bg-gray-800/30">
+                <label className="flex items-center gap-2">
+                  <input 
+                    type="checkbox" 
+                    checked={!!cfg.enabledDexSources_pumpswap} 
+                    onChange={(e)=>set('enabledDexSources_pumpswap', e.target.checked)} 
+                  />
+                  <span className="font-semibold">Pumpswap</span>
+                </label>
+                <p className="text-xs text-gray-400 ml-6 mt-1">pump.fun AMM pools</p>
+              </div>
+            </div>
+            <div className="mt-3 text-xs text-gray-300 bg-gray-600 rounded p-2">
+              <strong>💡 Tip:</strong> Disable unused DEXes during development to reduce API load and speed up refresh cycles. Changes take effect on the next pool refresh.
             </div>
           </div>
 

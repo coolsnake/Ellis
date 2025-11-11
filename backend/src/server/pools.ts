@@ -624,9 +624,44 @@ export async function retargetPoolWebsockets(): Promise<{ attached: { orca: numb
 
 // Unified refresh orchestrator: fetch all sources and optionally (re)subscribe
 // REFACTORED: Sequential operations with proper filtering stages
-export async function refreshAllSources(force = true, subscribe = true): Promise<{ raydium: PoolsPayload; orca: PoolsPayload; meteora: PoolsPayload; meteora_balanced: PoolsPayload; pumpswap: PoolsPayload }> {
+export interface RefreshSourcesOptions {
+  force?: boolean;
+  subscribe?: boolean;
+  // Control which DEXes to fetch (defaults from config if not specified)
+  sources?: {
+    raydium?: boolean | { amm?: boolean; clmm?: boolean };
+    orca?: boolean | { amm?: boolean; clmm?: boolean };
+    meteora?: boolean;
+    meteora_balanced?: boolean;
+    pumpswap?: boolean;
+  };
+}
+
+export async function refreshAllSources(force = true, subscribe = true, opts?: RefreshSourcesOptions): Promise<{ raydium: PoolsPayload; orca: PoolsPayload; meteora: PoolsPayload; meteora_balanced: PoolsPayload; pumpswap: PoolsPayload }> {
+  // Parse options with backward compatibility
+  const options: RefreshSourcesOptions = {
+    force: opts?.force ?? force,
+    subscribe: opts?.subscribe ?? subscribe,
+    sources: opts?.sources
+  };
+  
+  // Load enabled sources from config (defaults to all enabled)
+  const configSources = (CONFIG.system as any)?.enabledDexSources || {};
+  const shouldFetch = {
+    raydium: options.sources?.raydium ?? configSources.raydium ?? true,
+    orca: options.sources?.orca ?? configSources.orca ?? true,
+    meteora: options.sources?.meteora ?? configSources.meteora ?? true,
+    meteora_balanced: options.sources?.meteora_balanced ?? configSources.meteora_balanced ?? true,
+    pumpswap: options.sources?.pumpswap ?? configSources.pumpswap ?? true,
+  };
+  
   try {
-    logger.info('pools.refresh.start', { force, subscribe, cat: 'pools' });
+    logger.info('pools.refresh.start', { 
+      force: options.force, 
+      subscribe: options.subscribe, 
+      enabledSources: shouldFetch,
+      cat: 'pools' 
+    });
     
     // Deep bootstrap phase: optionally pause feed/API, fetch Jup tokens, then hydrate prices
     if (force) {
@@ -666,13 +701,80 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
   } catch {}
   
   // === PHASE 1: FETCH ALL DEXES IN SEQUENCE (no filtering yet) ===
-  logger.info('pools.refresh.phase.fetch', { cat: 'pools' });
-  let r = await getRaydiumPoolsNormalized(!!force, { skipUniverseFilter: true }).catch(() => ({ amm: [], clmm: [] }));
-  let o = await getOrcaPoolsCached(!!force, { skipUniverseFilter: true }).catch(() => ({ amm: [], clmm: [] }));
-  let m = await getMeteoraPoolsCached(!!force, { skipUniverseFilter: true }).catch(() => ({ amm: [], clmm: [] }));
-  let mb = await getMeteoraBalancedPoolsCached(!!force, { skipUniverseFilter: true }).catch(() => ({ amm: [], clmm: [] }));
-  // Note: Pumpswap doesn't do universe filtering yet, so no change needed
-  let pump = await getPumpswapPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
+  logger.info('pools.refresh.phase.fetch', { enabled: shouldFetch, cat: 'pools' });
+  
+  let r: PoolsPayload = { amm: [], clmm: [] };
+  let o: PoolsPayload = { amm: [], clmm: [] };
+  let m: PoolsPayload = { amm: [], clmm: [] };
+  let mb: PoolsPayload = { amm: [], clmm: [] };
+  let pump: PoolsPayload = { amm: [], clmm: [] };
+  
+  if (shouldFetch.raydium) {
+    try {
+      r = await getRaydiumPoolsNormalized(!!options.force, { skipUniverseFilter: true });
+      // Apply pool type filtering if specified
+      if (typeof options.sources?.raydium === 'object') {
+        const poolTypes = options.sources.raydium;
+        if (poolTypes.amm === false) r.amm = [];
+        if (poolTypes.clmm === false) r.clmm = [];
+      }
+    } catch (err) {
+      logger.warn('pools.refresh.phase.fetch.raydium.failed', { error: String((err as any)?.message || err), cat: 'pools' });
+      r = { amm: [], clmm: [] };
+    }
+  } else {
+    logger.info('pools.refresh.phase.fetch.raydium.skipped', { reason: 'disabled', cat: 'pools' });
+  }
+  
+  if (shouldFetch.orca) {
+    try {
+      o = await getOrcaPoolsCached(!!options.force, { skipUniverseFilter: true });
+      // Apply pool type filtering if specified
+      if (typeof options.sources?.orca === 'object') {
+        const poolTypes = options.sources.orca;
+        if (poolTypes.amm === false) o.amm = [];
+        if (poolTypes.clmm === false) o.clmm = [];
+      }
+    } catch (err) {
+      logger.warn('pools.refresh.phase.fetch.orca.failed', { error: String((err as any)?.message || err), cat: 'pools' });
+      o = { amm: [], clmm: [] };
+    }
+  } else {
+    logger.info('pools.refresh.phase.fetch.orca.skipped', { reason: 'disabled', cat: 'pools' });
+  }
+  
+  if (shouldFetch.meteora) {
+    try {
+      m = await getMeteoraPoolsCached(!!options.force, { skipUniverseFilter: true });
+    } catch (err) {
+      logger.warn('pools.refresh.phase.fetch.meteora.failed', { error: String((err as any)?.message || err), cat: 'pools' });
+      m = { amm: [], clmm: [] };
+    }
+  } else {
+    logger.info('pools.refresh.phase.fetch.meteora.skipped', { reason: 'disabled', cat: 'pools' });
+  }
+  
+  if (shouldFetch.meteora_balanced) {
+    try {
+      mb = await getMeteoraBalancedPoolsCached(!!options.force, { skipUniverseFilter: true });
+    } catch (err) {
+      logger.warn('pools.refresh.phase.fetch.meteora_balanced.failed', { error: String((err as any)?.message || err), cat: 'pools' });
+      mb = { amm: [], clmm: [] };
+    }
+  } else {
+    logger.info('pools.refresh.phase.fetch.meteora_balanced.skipped', { reason: 'disabled', cat: 'pools' });
+  }
+  
+  if (shouldFetch.pumpswap) {
+    try {
+      pump = await getPumpswapPoolsCached(!!options.force);
+    } catch (err) {
+      logger.warn('pools.refresh.phase.fetch.pumpswap.failed', { error: String((err as any)?.message || err), cat: 'pools' });
+      pump = { amm: [], clmm: [] };
+    }
+  } else {
+    logger.info('pools.refresh.phase.fetch.pumpswap.skipped', { reason: 'disabled', cat: 'pools' });
+  }
   
   try {
     const fetchCounts = {
@@ -1100,8 +1202,8 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
   } catch {}
   
   // === PHASE 7: SUBSCRIBE TO RETAINED POOLS PER DEX IN SEQUENCE ===
-  if (subscribe) {
-    logger.info('pools.refresh.phase.subscribe', { cat: 'pools' });
+  if (options.subscribe) {
+    logger.info('pools.refresh.phase.subscribe', { enabled: shouldFetch, cat: 'pools' });
     try {
       // Wait for any existing WebSocket cleanup to complete before starting new subscriptions
       // This prevents race conditions where accountSubscribe is called on a closed socket
@@ -1128,7 +1230,7 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
   // One-shot consolidated graph push after initial forced refresh completes (guarded)
   try {
     (refreshAllSources as any).__didInitialGraphPush = (refreshAllSources as any).__didInitialGraphPush || false;
-    if (force && !(refreshAllSources as any).__didInitialGraphPush) {
+    if (options.force && !(refreshAllSources as any).__didInitialGraphPush) {
       const gmod: any = await import('./graph.js');
       try { await gmod.rebuildGraphNow(); } catch {}
       // Ensure websocket-based pool refreshes are enabled immediately after first graph build
@@ -1136,6 +1238,18 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
       (refreshAllSources as any).__didInitialGraphPush = true;
     }
   } catch {}
+  
+  logger.info('pools.refresh.complete', { 
+    fetched: {
+      raydium: { amm: r.amm?.length || 0, clmm: r.clmm?.length || 0 },
+      orca: { amm: o.amm?.length || 0, clmm: o.clmm?.length || 0 },
+      meteora: { clmm: m.clmm?.length || 0 },
+      meteora_balanced: { amm: mb.amm?.length || 0 },
+      pumpswap: { amm: pump.amm?.length || 0 },
+    },
+    cat: 'pools' 
+  });
+  
   return { raydium: r, orca: o, meteora: m, meteora_balanced: mb, pumpswap: pump };
 }
 

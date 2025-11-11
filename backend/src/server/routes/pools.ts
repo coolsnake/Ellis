@@ -220,14 +220,34 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
       const cfg = req.body || {};
       if (cfg.force == null) cfg.force = true;
       if (cfg.subscribe == null) cfg.subscribe = true;
+      
+      // Parse sources configuration from request body
+      // Example: { sources: { raydium: true, orca: false, meteora: true } }
+      // Or granular: { sources: { raydium: { amm: true, clmm: false } } }
+      const sources = cfg.sources || undefined;
+      
       const { refreshAllSources } = await import('../pools.js');
       const { getGraphSnapshot } = await import('../graph.js');
       const { enablePoolWebsocketRefreshes, getWsActivity, getPoolCacheAges } = await import('../pools.js');
-      const out = await refreshAllSources(!!cfg.force, !!cfg.subscribe);
+      
+      const out = await refreshAllSources(!!cfg.force, !!cfg.subscribe, { sources });
       const snap = await getGraphSnapshot(true);
       const ws = getWsActivity();
       const ages = getPoolCacheAges();
-      res.json({ ok: true, counts: { raydium: out.raydium, orca: out.orca, meteora: out.meteora, meteora_balanced: out.meteora_balanced, pumpswap: out.pumpswap }, graph: { nodes: (snap.nodes || []).length, edges: (snap.edges || []).length }, ws, ages });
+      
+      res.json({ 
+        ok: true, 
+        counts: { 
+          raydium: { amm: out.raydium?.amm?.length || 0, clmm: out.raydium?.clmm?.length || 0 },
+          orca: { amm: out.orca?.amm?.length || 0, clmm: out.orca?.clmm?.length || 0 },
+          meteora: { clmm: out.meteora?.clmm?.length || 0 },
+          meteora_balanced: { amm: out.meteora_balanced?.amm?.length || 0 },
+          pumpswap: { amm: out.pumpswap?.amm?.length || 0 },
+        }, 
+        graph: { nodes: (snap.nodes || []).length, edges: (snap.edges || []).length }, 
+        ws, 
+        ages 
+      });
       emit('log', { level: 'info', message: 'pools:refresh triggered', timestamp: new Date().toISOString(), context: { cat: 'pools' } });
     } catch (e: any) {
       res.status(500).json({ ok: false, error: String(e?.message || e) });
