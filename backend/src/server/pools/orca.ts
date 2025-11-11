@@ -548,7 +548,7 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
         } catch {
           return null;
         }
-      }).filter(Boolean) as PublicKey[];
+      }).filter((pk): pk is InstanceType<typeof PublicKey> => pk !== null);
       
       if (pubkeys.length === 0) continue;
       
