@@ -10,7 +10,7 @@ import { anyToBigInt, ratioToDecimalString, sqrtPriceX64ToPriceRatio } from './p
 import { fetchRaydiumPoolsRaw as fetchRaydiumPoolsRawImpl, normalizeRaydiumPools as normalizeRaydiumPoolsImpl } from './pools/raydium.js';
 import { fetchOrcaHttp as fetchOrcaHttpImpl, normalizeOrcaHttp as normalizeOrcaHttpImpl, deriveOrcaFeeBps } from './pools/orca.js';
 import { fetchMeteoraHttp as fetchMeteoraHttpImpl, normalizeMeteoraHttp as normalizeMeteoraHttpImpl } from './pools/meteora.js';
-import { fetchPumpswapGraphQL as fetchPumpswapGraphQLImpl, normalizePumpswapPools as normalizePumpswapPoolsImpl } from './pools/pumpswap.js';
+import { fetchPumpswapGraphQL as fetchPumpswapGraphQLImpl, normalizePumpswapPools as normalizePumpswapPoolsImpl, enrichPumpswapPoolsWithRpc as enrichPumpswapPoolsWithRpcImpl } from './pools/pumpswap.js';
 import { validateCrossDexPrices, verifyCanonicalization } from './pools/validation.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './pools/httpLog.js';
 import { fetchMeteoraBalancedHttp as fetchMeteoraBalancedHttpImpl, normalizeMeteoraBalancedHttp as normalizeMeteoraBalancedHttpImpl, fetchMeteoraBalancedAll as fetchMeteoraBalancedAllImpl } from './pools/meteoraBalanced.js';
@@ -3018,7 +3018,7 @@ export async function getPumpswapPoolsCached(force = false): Promise<PoolsPayloa
       const raw = await fetchPumpswapGraphQLImpl();
       
       // Enrich pools with RPC data (token account balances)
-      const enrichResult = await (poolsMod.enrichPumpswapPoolsWithRpc as any)?.(raw) || { pools: raw, metrics: { success: 0, fail: 0, ms: 0 } };
+      const enrichResult = await enrichPumpswapPoolsWithRpcImpl(raw);
       const enrichedRaw = enrichResult.pools || raw;
       poolsMetrics.pumpswap.enrichmentSuccess = enrichResult.metrics?.success || 0;
       poolsMetrics.pumpswap.enrichmentFail = enrichResult.metrics?.fail || 0;
