@@ -26,10 +26,45 @@ function mapDexToJupIncludes(label: string): string[] {
 
 async function deriveSizeAtomsFromUsd(path: string[], sizeUsd: number): Promise<number> {
   const { getPriceByMint } = await import('../server/priceStore.js');
-  const dec0 = (await resolveMint(path[0])).decimals ?? 6;
+  const mintInfo = await resolveMint(path[0]);
+  const dec0 = mintInfo.decimals ?? 6;
   const px = Number(getPriceByMint(path[0])?.usdc ?? 0);
+  
   if (px <= 0) return 0;
-  return Math.floor((sizeUsd / px) * Math.pow(10, dec0));
+  
+  // Validate decimals are reasonable (0-12)
+  const decimals = Math.max(0, Math.min(12, dec0));
+  
+  // Use BigInt with micro-precision for stability (same approach as resolver)
+  // atoms = (usdAmt * 10^decimals) / usdPx, with micro precision
+  const usdAmtMicro = BigInt(Math.round(sizeUsd * 1_000_000));
+  const usdPxMicro = BigInt(Math.round(px * 1_000_000));
+  const scale = 10n ** BigInt(decimals);
+  
+  const result = (usdAmtMicro * scale) / usdPxMicro;
+  
+  // Convert back to number and add bounds checking
+  const atoms = Number(result);
+  
+  // Safety check: if result seems unreasonably large, log warning
+  // For SOL (9 decimals), 100 USD at $100/SOL = 1 SOL = 1e9 lamports
+  // If we get > 1e12 for a reasonable USD amount, something is wrong
+  const maxReasonableAtoms = Math.pow(10, decimals + 6); // 1M tokens max
+  if (atoms > maxReasonableAtoms) {
+    try {
+      logger.warn('deriveSizeAtomsFromUsd.suspicious_result', {
+        cat: 'jupiter',
+        mint: path[0],
+        sizeUsd,
+        price: px,
+        decimals,
+        atoms,
+        maxReasonable: maxReasonableAtoms
+      });
+    } catch {}
+  }
+  
+  return Math.max(0, Math.floor(atoms));
 }
 
 async function computeHopMinOutsFromRates(plan: PlanLike, sizeAtoms: number, hopRatesUi: number[]): Promise<number[]> {
@@ -229,13 +264,42 @@ export async function executeAggregateWithJupiter(args: {
   const kp = await ensureWallet(CONFIG.walletPath);
   const slippageBps = Math.max(1, Number(args.slippageBps ?? (CONFIG.fees?.jupiterSlippageBps ?? 50)));
 
-  // Determine input atoms
+  // Determine input atoms using improved conversion with BigInt precision
   let sizeAtoms = Math.max(0, Math.floor(Number(args.sizeAtoms || 0)));
   if (!sizeAtoms && args.sizeUsd && args.sizeUsd > 0) {
     const { getPriceByMint } = await import('../server/priceStore.js');
-    const dec0 = (await resolveMint(args.inputMint)).decimals ?? 6;
+    const mintInfo = await resolveMint(args.inputMint);
+    const dec0 = mintInfo.decimals ?? 6;
     const px = Number(getPriceByMint(args.inputMint)?.usdc ?? 0);
-    if (px > 0) sizeAtoms = Math.floor((args.sizeUsd / px) * Math.pow(10, dec0));
+    
+    if (px > 0) {
+      // Validate decimals
+      const decimals = Math.max(0, Math.min(12, dec0));
+      
+      // Use BigInt with micro-precision for stability
+      const usdAmtMicro = BigInt(Math.round(args.sizeUsd * 1_000_000));
+      const usdPxMicro = BigInt(Math.round(px * 1_000_000));
+      const scale = 10n ** BigInt(decimals);
+      
+      const result = (usdAmtMicro * scale) / usdPxMicro;
+      sizeAtoms = Math.max(0, Math.floor(Number(result)));
+      
+      // Safety check
+      const maxReasonableAtoms = Math.pow(10, decimals + 6);
+      if (sizeAtoms > maxReasonableAtoms) {
+        try {
+          logger.warn('executeAggregateWithJupiter.suspicious_size', {
+            cat: 'jupiter',
+            inputMint: args.inputMint,
+            sizeUsd: args.sizeUsd,
+            price: px,
+            decimals,
+            sizeAtoms,
+            maxReasonable: maxReasonableAtoms
+          });
+        } catch {}
+      }
+    }
   }
   if (!sizeAtoms) throw new Error('missing_input_amount');
 

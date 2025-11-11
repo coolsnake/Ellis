@@ -118,6 +118,9 @@ export async function writeTxFullDump(
       hops: payload.hops || payload.plan?.hops,
     },
     
+    // Expected outputs for sanity checking (from arb-rs calculations)
+    expectedOutputs: payload.expectedOutputs || null,
+    
     // Executor logs (session logs related to this transaction)
     executorLogs: payload.executorLogs || payload.txLogs || [],
     

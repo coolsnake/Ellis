@@ -53,96 +53,153 @@ async function injectBinArrayMetas(
       return undefined;
     };
     
-    // Try primary method: getBinArrayAccountMetasCoverage with bounds
+    // OPTIMIZATION: First try to get bin arrays from cache (pre-computed during pool refresh)
+    if (poolId) {
+      try {
+        const { executionCache } = await import('../cache.js');
+        const hot = executionCache.getHot(poolId);
+        
+        if (hot?.binArrays) {
+          // Use cached bin array addresses!
+          const cachedMetas: any[] = [];
+          
+          if (hot.binArrays.lower) {
+            try {
+              cachedMetas.push({
+                pubkey: new PublicKey(hot.binArrays.lower),
+                isWritable: true,
+                isSigner: false
+              });
+            } catch {}
+          }
+          
+          if (hot.binArrays.upper) {
+            try {
+              cachedMetas.push({
+                pubkey: new PublicKey(hot.binArrays.upper),
+                isWritable: true,
+                isSigner: false
+              });
+            } catch {}
+          }
+          
+          if (cachedMetas.length > 0) {
+            metas = cachedMetas;
+            try {
+              logger.debug('meteora.dlmm.binArrays.from_cache', {
+                cat: 'tx',
+                ctx: { 
+                  pool: poolId.slice(0, 8) + '...', 
+                  count: cachedMetas.length,
+                  lower: hot.binArrays.lower?.slice(0, 8) + '...',
+                  upper: hot.binArrays.upper?.slice(0, 8) + '...'
+                }
+              });
+            } catch {}
+          }
+        }
+      } catch (cacheErr) {
+        try {
+          logger.debug('meteora.dlmm.binArrays.cache_lookup_failed', {
+            cat: 'tx',
+            ctx: { error: String((cacheErr as any)?.message || cacheErr) }
+          });
+        } catch {}
+      }
+    }
+    
+    // Try primary method: getBinArrayAccountMetasCoverage with bounds (only if cache miss)
     // Note: Do NOT use large ranges - getBinArrayAccountMetasCoverage returns ALL arrays in range
     // For swaps, we only need a few bin arrays around the active bin
-    try {
-      const getBounds = (DLMM as any)?.getBinArrayLowerUpperBinId;
-      const getMetas = (DLMM as any)?.getBinArrayAccountMetasCoverage;
-      const binIdToBinArrayIndex = (DLMM as any)?.binIdToBinArrayIndex;
-      
-      if (getBounds && getMetas && binIdToBinArrayIndex) {
-        const coverageFnArgCount = getMetas.length;
-        if (coverageFnArgCount >= 4) {
-          try {
-        const bnjs = await import('bn.js').catch(() => null as any);
-        const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
-            if (BN) {
-              // OPTIMIZATION: Try to get active bin from cache first (saves 100-200ms RPC call)
-              let activeId: any = undefined;
-              
-              // Try cache first
-              if (poolId) {
-                try {
-                  const { executionCache } = await import('../cache.js');
-                  const hot = executionCache.getHot(poolId);
-                  if (hot?.activeId !== undefined) {
-                    activeId = hot.activeId;
-                    try {
-                      logger.debug('meteora.dlmm.activeId.from_cache', {
-                        cat: 'tx',
-                        ctx: { pool: poolId.slice(0, 8) + '...', activeId: String(activeId) }
-                      });
-                    } catch {}
-                  }
-                } catch {}
-              }
-              
-              // Fallback to RPC if not in cache
-              if (activeId === undefined) {
-                try {
-                  const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
-                  const poolState = await withRpcLimit(
-                    () => connection.getAccountInfo(poolPk),
-                    1,
-                    { module: 'execution', method: 'getAccountInfo' }
-                  ) as any;
-                  if (poolState?.data?.length) {
-                    const decode = (DLMM as any)?.decodeAccount;
-                    if (decode) {
-                      const state = decode({ coder: (DLMM as any)?.coder ?? {} }, 'lbPair', poolState.data);
-                      activeId = state?.activeId;
+    if (!metas || metas.length === 0) {
+      try {
+        const getBounds = (DLMM as any)?.getBinArrayLowerUpperBinId;
+        const getMetas = (DLMM as any)?.getBinArrayAccountMetasCoverage;
+        const binIdToBinArrayIndex = (DLMM as any)?.binIdToBinArrayIndex;
+        
+        if (getBounds && getMetas && binIdToBinArrayIndex) {
+          const coverageFnArgCount = getMetas.length;
+          if (coverageFnArgCount >= 4) {
+            try {
+          const bnjs = await import('bn.js').catch(() => null as any);
+          const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
+              if (BN) {
+                // OPTIMIZATION: Try to get active bin from cache first (saves 100-200ms RPC call)
+                let activeId: any = undefined;
+                
+                // Try cache first
+                if (poolId) {
+                  try {
+                    const { executionCache } = await import('../cache.js');
+                    const hot = executionCache.getHot(poolId);
+                    if (hot?.activeId !== undefined) {
+                      activeId = hot.activeId;
                       try {
-                        logger.debug('meteora.dlmm.activeId.from_rpc', {
+                        logger.debug('meteora.dlmm.activeId.from_cache', {
                           cat: 'tx',
-                          ctx: { pool: poolPk.toBase58().slice(0, 8) + '...', activeId: String(activeId) }
+                          ctx: { pool: poolId.slice(0, 8) + '...', activeId: String(activeId) }
                         });
                       } catch {}
                     }
+                  } catch {}
+                }
+                
+                // Fallback to RPC if not in cache
+                if (activeId === undefined) {
+                  try {
+                    const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+                    const poolState = await withRpcLimit(
+                      () => connection.getAccountInfo(poolPk),
+                      1,
+                      { module: 'execution', method: 'getAccountInfo' }
+                    ) as any;
+                    if (poolState?.data?.length) {
+                      const decode = (DLMM as any)?.decodeAccount;
+                      if (decode) {
+                        const state = decode({ coder: (DLMM as any)?.coder ?? {} }, 'lbPair', poolState.data);
+                        activeId = state?.activeId;
+                        try {
+                          logger.debug('meteora.dlmm.activeId.from_rpc', {
+                            cat: 'tx',
+                            ctx: { pool: poolPk.toBase58().slice(0, 8) + '...', activeId: String(activeId) }
+                          });
+                        } catch {}
+                      }
+                    }
+                  } catch {}
+                }
+                
+                // Try to get active bin from pool state to use a small range
+                try {
+                  if (activeId !== undefined) {
+                    const activeBn = activeId instanceof BN ? activeId : new BN(String(activeId));
+                    const idx = binIdToBinArrayIndex(activeBn);
+                    const arrIdx = idx instanceof BN ? idx : new BN(String(idx));
+                    // Get bounds for just the active bin array
+                    const [lower, upper] = getBounds(arrIdx);
+                    // Use minimal range: just the active bin array bounds (typically 1-3 arrays)
+                    // This is sufficient for most swaps and keeps transaction size minimal
+                    const rangeLower = lower;
+                    const rangeUpper = upper;
+                    const rawMetas = getMetas(rangeLower, rangeUpper, poolPk, programId) || [];
+                    // Limit to max 5 bin arrays - sufficient for active bin + adjacents
+                    metas = rawMetas.slice(0, 5);
                   }
                 } catch {}
+                // Fallback removed - don't use huge default ranges that return hundreds
               }
-              
-              // Try to get active bin from pool state to use a small range
-              try {
-                if (activeId !== undefined) {
-                  const activeBn = activeId instanceof BN ? activeId : new BN(String(activeId));
-                  const idx = binIdToBinArrayIndex(activeBn);
-                  const arrIdx = idx instanceof BN ? idx : new BN(String(idx));
-                  // Get bounds for just the active bin array
-                  const [lower, upper] = getBounds(arrIdx);
-                  // Use minimal range: just the active bin array bounds (typically 1-3 arrays)
-                  // This is sufficient for most swaps and keeps transaction size minimal
-                  const rangeLower = lower;
-                  const rangeUpper = upper;
-                  const rawMetas = getMetas(rangeLower, rangeUpper, poolPk, programId) || [];
-                  // Limit to max 5 bin arrays - sufficient for active bin + adjacents
-                  metas = rawMetas.slice(0, 5);
-                }
-              } catch {}
-              // Fallback removed - don't use huge default ranges that return hundreds
-            }
-          } catch {}
-        } else {
-          try {
-            metas = getMetas(poolPk, programId) || [];
-            // Limit results if it's an array
-            if (Array.isArray(metas)) metas = metas.slice(0, 5);
-          } catch {}
+            } catch {}
+          } else {
+            try {
+              metas = getMetas(poolPk, programId) || [];
+              // Limit results if it's an array
+              if (Array.isArray(metas)) metas = metas.slice(0, 5);
+            } catch {}
+          }
         }
+      } catch (e: any) {
+        try { logger.debug('meteora.dlmm.inject.bounds.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
       }
-    } catch (e: any) {
-      try { logger.debug('meteora.dlmm.inject.bounds.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
     }
     
     // Fallback: try generic coverage helper (but limit results - can return hundreds)
@@ -1024,8 +1081,37 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         const ixResult = await (DLMM as any).swapIx(connection, kp.publicKey, params);
         if (ixResult) {
           // Safety net: attempt to attach remaining bin-array metas when using fast-path ix
-          await injectBinArrayMetas(ixResult, DLMM, connection, poolPk, programId, hop.poolId);
-          try { logger.info('meteora.dlmm.swapIx.ok', { cat: 'tx' }); } catch {}
+          const injected = await injectBinArrayMetas(ixResult, DLMM, connection, poolPk, programId, hop.poolId);
+          
+          // CRITICAL: Verify bin arrays were added - fail fast if they weren't
+          const totalAccounts = Array.isArray(ixResult.keys) ? ixResult.keys.length : 0;
+          if (totalAccounts < 16) {
+            const errorMsg = `Meteora swap missing bin arrays: only ${totalAccounts} accounts (need 16+)`;
+            try {
+              logger.error('meteora.dlmm.no_bin_arrays', {
+                cat: 'tx',
+                code: LogCode.TX_BUILD_ERR,
+                ctx: {
+                  pool: hop.poolId,
+                  totalAccounts,
+                  injected,
+                  msg: errorMsg
+                }
+              });
+            } catch {}
+            throw createBuilderError('METEORA', errorMsg, hop);
+          }
+          
+          try { 
+            logger.info('meteora.dlmm.swapIx.ok', { 
+              cat: 'tx', 
+              ctx: { 
+                totalAccounts, 
+                injected,
+                binArraysPresent: totalAccounts >= 16
+              } 
+            }); 
+          } catch {}
           return [ixResult];
         }
       }
@@ -2483,17 +2569,86 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     }
     } catch {}
 
-    const mintAAddress = toPublicKey(hop.inputMint).toBase58();
-    const mintBAddress = toPublicKey(hop.outputMint).toBase58();
+    // CRITICAL: Get pool's actual mint orientation from cache
+    // The pool's mintA/mintB orientation is FIXED in the pool state
+    // We must use the pool's actual mintA/mintB, not swap them based on swap direction
+    // This prevents constraint violations when swapping in reverse direction
+    let poolMintA: string | undefined;
+    let poolMintB: string | undefined;
+    let poolDecA: number | undefined;
+    let poolDecB: number | undefined;
+    try {
+      const { executionCache } = await import('../cache.js');
+      const cached = executionCache.getStatic(hop.poolId);
+      if (cached) {
+        poolMintA = cached.mint_a;
+        poolMintB = cached.mint_b;
+        poolDecA = cached.decimals_a;
+        poolDecB = cached.decimals_b;
+      }
+    } catch {}
+    
+    // If pool mints not in cache, try to get from poolKeysFromApi
+    if ((!poolMintA || !poolMintB) && poolKeysFromApi) {
+      const apiMintA = poolKeysFromApi.mintA?.address || poolKeysFromApi.mintA;
+      const apiMintB = poolKeysFromApi.mintB?.address || poolKeysFromApi.mintB;
+      if (apiMintA) poolMintA = poolMintA || apiMintA;
+      if (apiMintB) poolMintB = poolMintB || apiMintB;
+    }
+    
+    // Fallback to hop mints if still not available (shouldn't happen in normal operation)
+    if (!poolMintA || !poolMintB) {
+      try {
+        logger.warn('raydium.clmm.pool_mints.missing', {
+          cat: 'tx',
+          ctx: {
+            pool: hop.poolId,
+            note: 'Using hop.inputMint/outputMint as fallback - this may cause constraint violations on reverse swaps'
+          } as any
+        });
+      } catch {}
+      poolMintA = poolMintA || hop.inputMint;
+      poolMintB = poolMintB || hop.outputMint;
+    }
+
+    // Use pool's ACTUAL mintA/mintB orientation (not swapped based on swap direction)
+    const mintAAddress = toPublicKey(poolMintA).toBase58();
+    const mintBAddress = toPublicKey(poolMintB).toBase58();
+    
+    // Determine which mint is input/output for token program IDs
+    const isSwappingAtoB = hop.inputMint === poolMintA && hop.outputMint === poolMintB;
+    
+    // Log mint orientation for debugging constraint violations
+    try {
+      logger.info('raydium.clmm.mint_orientation', {
+        cat: 'tx',
+        ctx: {
+          pool: hop.poolId,
+          poolMintA,
+          poolMintB,
+          hopInputMint: hop.inputMint,
+          hopOutputMint: hop.outputMint,
+          isSwappingAtoB,
+          note: 'Using pool\'s actual mint orientation to prevent constraint violations'
+        } as any
+      });
+    } catch {}
+    const mintATokenProgram = isSwappingAtoB 
+      ? (hop.inputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID.toBase58() : TOKEN_PROGRAM_ID.toBase58())
+      : (hop.outputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID.toBase58() : TOKEN_PROGRAM_ID.toBase58());
+    const mintBTokenProgram = isSwappingAtoB
+      ? (hop.outputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID.toBase58() : TOKEN_PROGRAM_ID.toBase58())
+      : (hop.inputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID.toBase58() : TOKEN_PROGRAM_ID.toBase58());
+    
     const mintAInfo = {
       address: mintAAddress,
-      decimals: Number(hop.inputDecimals ?? 0),
-      programId: hop.inputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID.toBase58() : TOKEN_PROGRAM_ID.toBase58(),
+      decimals: poolDecA ?? Number(hop.inputDecimals ?? 0),
+      programId: mintATokenProgram,
     } as any;
     const mintBInfo = {
       address: mintBAddress,
-      decimals: Number(hop.outputDecimals ?? 0),
-      programId: hop.outputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID.toBase58() : TOKEN_PROGRAM_ID.toBase58(),
+      decimals: poolDecB ?? Number(hop.outputDecimals ?? 0),
+      programId: mintBTokenProgram,
     } as any;
 
     // Use config from API if available, otherwise use cached/decoded values
@@ -2517,14 +2672,16 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     } as any;
     
     // Prefer API-fetched poolKeys, fallback to constructed
+    // NOTE: vaultA corresponds to mintA (pool's mint_a) and vaultB corresponds to mintB (pool's mint_b)
+    // The hop.vaultA/vaultB should already be correctly mapped from cache/resolver
     const poolKeys: any = poolKeysFromApi || {
       id: poolId,
       programId,
       mintA: mintAInfo,
       mintB: mintBInfo,
       vault: {
-        A: toPublicKey(hop.vaultA as any).toBase58(),
-        B: toPublicKey(hop.vaultB as any).toBase58(),
+        A: toPublicKey(hop.vaultA as any).toBase58(),  // vaultA maps to mintA (pool's mint_a)
+        B: toPublicKey(hop.vaultB as any).toBase58(),  // vaultB maps to mintB (pool's mint_b)
       },
       observationId: observationId.toBase58(),
       config: configInfo,

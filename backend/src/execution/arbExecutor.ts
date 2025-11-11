@@ -547,13 +547,52 @@ export class ArbExecutor {
           await writeTxFullDump('preflight', {
             id: oppKey,
             txId: oppKey,
-            opportunity: opp, // Full opportunity object from arb-rs
+            opportunity: {
+              // Include ALL opportunity fields from arb-rs
+              ...opp,
+              // Ensure all fields are explicitly included
+              path: opp.path,
+              profit_bps: opp.profit_bps,
+              net_bps: opp.net_bps,
+              est_profit_usd: opp.est_profit_usd,
+              dexes: opp.dexes,
+              hop_dexes: opp.hop_dexes,
+              hop_rates: opp.hop_rates,
+              hop_outs: opp.hop_outs,
+              hop_pool_ids: opp.hop_pool_ids,
+              hop_fee_bps: opp.hop_fee_bps,
+              hop_liquidity_display: opp.hop_liquidity_display,
+              hop_count: opp.hop_count,
+              rate_product: opp.rate_product,
+              link_edges_used: opp.link_edges_used,
+              link_penalty_bps_total: opp.link_penalty_bps_total,
+              min_edge_liquidity: opp.min_edge_liquidity,
+              est_capacity: opp.est_capacity,
+              bottleneck: opp.bottleneck,
+              detected_ms: opp.detected_ms,
+              first_seen_ms: opp.first_seen_ms,
+              last_verified_ms: opp.last_verified_ms,
+              detections: opp.detections,
+            },
             plan,
             dexes, // Include all DEXes involved
             execConfig: execCfg,
             built,
             sim: simResult,
             executorLogs: txLogs,
+            // Add calculated expected outputs for sanity checking
+            expectedOutputs: opp.hop_outs ? {
+              // Expected output at each hop (from arb-rs calculations)
+              hopOutputs: opp.hop_outs,
+              // Expected rates at each hop
+              hopRates: opp.hop_rates,
+              // Expected fees at each hop
+              hopFees: opp.hop_fee_bps,
+              // Overall rate product (should be > 1.0 for profitable arb)
+              rateProduct: opp.rate_product,
+              // Expected final output (last hop output)
+              finalOutput: opp.hop_outs && opp.hop_outs.length > 0 ? opp.hop_outs[opp.hop_outs.length - 1] : null,
+            } : null,
           });
         } catch {}
         
@@ -583,7 +622,33 @@ export class ArbExecutor {
           await writeTxFullDump('execute', {
             id: oppKey,
             txId: oppKey,
-            opportunity: opp, // Full opportunity object from arb-rs
+            opportunity: {
+              // Include ALL opportunity fields from arb-rs
+              ...opp,
+              // Ensure all fields are explicitly included
+              path: opp.path,
+              profit_bps: opp.profit_bps,
+              net_bps: opp.net_bps,
+              est_profit_usd: opp.est_profit_usd,
+              dexes: opp.dexes,
+              hop_dexes: opp.hop_dexes,
+              hop_rates: opp.hop_rates,
+              hop_outs: opp.hop_outs,
+              hop_pool_ids: opp.hop_pool_ids,
+              hop_fee_bps: opp.hop_fee_bps,
+              hop_liquidity_display: opp.hop_liquidity_display,
+              hop_count: opp.hop_count,
+              rate_product: opp.rate_product,
+              link_edges_used: opp.link_edges_used,
+              link_penalty_bps_total: opp.link_penalty_bps_total,
+              min_edge_liquidity: opp.min_edge_liquidity,
+              est_capacity: opp.est_capacity,
+              bottleneck: opp.bottleneck,
+              detected_ms: opp.detected_ms,
+              first_seen_ms: opp.first_seen_ms,
+              last_verified_ms: opp.last_verified_ms,
+              detections: opp.detections,
+            },
             plan,
             dexes, // Include all DEXes involved
             execConfig: execCfg,
@@ -591,6 +656,19 @@ export class ArbExecutor {
             send: sendResult,
             signature,
             executorLogs: txLogs,
+            // Add calculated expected outputs for sanity checking
+            expectedOutputs: opp.hop_outs ? {
+              // Expected output at each hop (from arb-rs calculations)
+              hopOutputs: opp.hop_outs,
+              // Expected rates at each hop
+              hopRates: opp.hop_rates,
+              // Expected fees at each hop
+              hopFees: opp.hop_fee_bps,
+              // Overall rate product (should be > 1.0 for profitable arb)
+              rateProduct: opp.rate_product,
+              // Expected final output (last hop output)
+              finalOutput: opp.hop_outs && opp.hop_outs.length > 0 ? opp.hop_outs[opp.hop_outs.length - 1] : null,
+            } : null,
           });
         } catch {}
 

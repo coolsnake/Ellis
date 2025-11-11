@@ -25,6 +25,16 @@ export async function resolveMint(symbolOrMint: string): Promise<{ mint: string;
     resolveCache[upper] = map[upper];
     return map[upper];
   }
+  
+  // Hard-coded SOL mint address check (most common case)
+  const SOL_MINT = 'So11111111111111111111111111111111111111112';
+  if (input === SOL_MINT || upper === 'SOL') {
+    const sol = { mint: SOL_MINT, decimals: 9 };
+    resolveCache[upper] = sol;
+    resolveCache[SOL_MINT] = sol;
+    return sol;
+  }
+  
   // If looks like a mint (base58-ish and long), assume provided is a mint address
   if (input.length > 30) {
     // Try to fetch decimals on-chain for accurate handling
@@ -36,6 +46,23 @@ export async function resolveMint(symbolOrMint: string): Promise<{ mint: string;
       resolveCache[upper] = out;
       return out;
     } catch {
+      // Don't default to 6 - try to check if it's a known mint first
+      // Check if it matches SOL mint
+      if (input === SOL_MINT) {
+        const sol = { mint: SOL_MINT, decimals: 9 };
+        resolveCache[upper] = sol;
+        resolveCache[SOL_MINT] = sol;
+        return sol;
+      }
+      // Last resort: default to 6, but log warning
+      try {
+        const { logger } = await import('./logger.js');
+        logger.warn('resolveMint.fallback_decimals', {
+          cat: 'tokens',
+          mint: input,
+          fallbackDecimals: 6
+        });
+      } catch {}
       return { mint: input, decimals: 6 };
     }
   }

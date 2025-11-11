@@ -128,6 +128,9 @@ export function getTxRelatedLogs(txId: string | undefined, startTime?: number, e
       // Instruction details
       /\.(ix\.|instruction)/i,
       /\.(builder|build|swap)/i,
+      // Arb executor patterns - capture opportunity acceptance and execution logs
+      /^arb\.executor\.(accepted|attempt|simulated|success|failed|opportunity_check|opportunity_data|cycle_closed|balance_check|filtered)/i,
+      /arb\.executor\./i,
     ];
     
     // Iterate backwards through recent events (most recent first)
@@ -152,8 +155,8 @@ export function getTxRelatedLogs(txId: string | undefined, startTime?: number, e
       // Check if message matches transaction patterns
       const matchesPattern = txPatterns.some(p => p.test(msg) || p.test(ctxStr));
       
-      // Check if cat is 'tx' (transaction category)
-      const isTxCat = event.cat === 'tx';
+      // Check if cat is 'tx' or 'arb' (transaction/arbitrage category)
+      const isTxCat = event.cat === 'tx' || event.cat === 'arb';
       
       if (hasTxId || matchesPattern || isTxCat) {
         relevant.unshift(event); // Add to beginning to maintain chronological order

@@ -398,7 +398,7 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
 }
 
 /**
- * Pre-populate execution cache with Meteora active bin IDs
+ * Pre-populate execution cache with Meteora active bin IDs and bin array addresses
  * This eliminates 100-200ms RPC calls per Meteora swap during transaction building
  */
 async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void> {
@@ -414,6 +414,10 @@ async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void> {
     const startTime = Date.now();
     let cached = 0;
     let failed = 0;
+    
+    // Import Meteora SDK once for all pools
+    const DLMM = await import('@meteora-ag/dlmm');
+    const programId = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
     
     // Batch fetch pool states (100 at a time to respect RPC limits)
     const BATCH_SIZE = 100;
@@ -440,7 +444,6 @@ async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void> {
           if (acc?.data) {
             try {
               // Decode Meteora DLMM pool state to extract active bin ID
-              const DLMM = await import('@meteora-ag/dlmm');
               const state = (DLMM as any).decodeAccount?.(
                 { coder: (DLMM as any).coder ?? {} },
                 'lbPair',
@@ -448,9 +451,18 @@ async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void> {
               );
               
               if (state?.activeId !== undefined) {
-                // Cache active bin ID with 30-second TTL (refreshes on next pool update)
+                // ENHANCEMENT: Also derive bin array addresses deterministically
+                const binArrayAddresses = deriveBinArrays(
+                  new PublicKey(pool.id),
+                  state.activeId,
+                  programId,
+                  DLMM
+                );
+                
+                // Cache active bin ID AND bin array addresses
                 executionCache.setHot(pool.id, {
                   activeId: state.activeId,
+                  binArrays: binArrayAddresses,
                 });
                 cached++;
                 
@@ -460,7 +472,8 @@ async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void> {
                     ctx: {
                       pool: pool.id.slice(0, 8) + '...',
                       activeId: state.activeId,
-                      binStep: state.binStep
+                      binStep: state.binStep,
+                      binArrayCount: binArrayAddresses ? Object.keys(binArrayAddresses).filter(k => binArrayAddresses[k as keyof typeof binArrayAddresses]).length : 0
                     }
                   });
                 } catch {}
@@ -516,6 +529,71 @@ async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void> {
         ctx: { error: String((err as any)?.message || err) }
       });
     } catch {}
+  }
+}
+
+/**
+ * Derive bin array addresses from active bin ID
+ * This is deterministic and requires no RPC calls
+ */
+function deriveBinArrays(
+  poolPk: any,
+  activeId: number,
+  programId: any,
+  DLMM: any
+): { lower?: string; upper?: string } | undefined {
+  try {
+    // Import BN if not already available
+    const BN = (globalThis as any).BN || require('bn.js');
+    
+    const binIdToBinArrayIndex = (DLMM as any)?.binIdToBinArrayIndex;
+    const deriveBinArray = (DLMM as any)?.deriveBinArray;
+    
+    if (!binIdToBinArrayIndex || !deriveBinArray) {
+      return undefined;
+    }
+    
+    // Convert activeId to bin array index
+    const activeBn = new BN(activeId);
+    const idx = binIdToBinArrayIndex(activeBn);
+    const arrIdx = idx instanceof BN ? idx : new BN(String(idx));
+    
+    // Get current and adjacent bin array indexes
+    // Most swaps need the active bin array and potentially one on either side
+    const currentIdx = arrIdx;
+    const lowerIdx = arrIdx.sub(new BN(1));
+    const upperIdx = arrIdx.add(new BN(1));
+    
+    // Derive PDA addresses for bin arrays
+    const result: { lower?: string; upper?: string } = {};
+    
+    try {
+      const lowerArray = deriveBinArray(poolPk, lowerIdx, programId);
+      const lowerPk = Array.isArray(lowerArray) ? lowerArray[0] : lowerArray;
+      result.lower = typeof lowerPk?.toBase58 === 'function' ? lowerPk.toBase58() : String(lowerPk);
+    } catch {}
+    
+    try {
+      const upperArray = deriveBinArray(poolPk, upperIdx, programId);
+      const upperPk = Array.isArray(upperArray) ? upperArray[0] : upperArray;
+      result.upper = typeof upperPk?.toBase58 === 'function' ? upperPk.toBase58() : String(upperPk);
+    } catch {}
+    
+    // Return undefined if we couldn't derive any addresses
+    if (!result.lower && !result.upper) {
+      return undefined;
+    }
+    
+    return result;
+  } catch (err) {
+    try {
+      const poolStr = typeof poolPk?.toBase58 === 'function' ? poolPk.toBase58().slice(0, 8) + '...' : String(poolPk).slice(0, 8) + '...';
+      logger.warn('meteora.deriveBinArrays.failed', {
+        cat: 'meteora',
+        ctx: { pool: poolStr, activeId, error: String((err as any)?.message || err) }
+      });
+    } catch {}
+    return undefined;
   }
 }
 
