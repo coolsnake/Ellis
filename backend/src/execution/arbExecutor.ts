@@ -13,13 +13,32 @@ interface Opportunity {
   hop_dexes?: string[];      // Per-hop DEX array (matches hop_pool_ids length)
   profit_bps: number;
   net_bps?: number;
+  est_profit_usd?: number;
   hop_count?: number;
   hop_pool_ids?: string[];
+  hop_rates?: number[];
+  hop_outs?: number[];
+  hop_fee_bps?: number[];
+  hop_liquidity_display?: number[];
+  rate_product?: number;
+  link_edges_used?: number;
+  link_penalty_bps_total?: number;
+  min_edge_liquidity?: number;
+  est_capacity?: number;
+  bottleneck?: {
+    from?: string;
+    to?: string;
+    dex?: string;
+    rate?: number;
+    liquidity?: number;
+    fee_bps?: number;
+  };
   reserves_min?: number;
   estimated_input_amount?: number;
   estimated_output_amount?: number;
   first_seen_ms?: number;
   detected_ms?: number;
+  last_verified_ms?: number;
   detections?: number;
 }
 
