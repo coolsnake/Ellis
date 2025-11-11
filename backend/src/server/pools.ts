@@ -956,8 +956,8 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
   orcaCache.ts = Date.now();
   meteoraCache.data = m;
   meteoraCache.ts = Date.now();
-  meteoraBalancedCache.data = mb;
-  meteoraBalancedCache.ts = Date.now();
+  metbalCache.data = mb;
+  metbalCache.ts = Date.now();
   pumpswapCache.data = pump;
   pumpswapCache.ts = Date.now();
 
@@ -3740,11 +3740,13 @@ export async function getPumpswapPoolsCached(force = false): Promise<PoolsPayloa
   return pumpswapCache.inflight;
 }
 
-export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPayload> {
+export async function getRaydiumPoolsNormalized(force = false, opts?: { skipUniverseFilter?: boolean }): Promise<PoolsPayload> {
   const ttlMs = Number(CONFIG.raydium?.cacheTtlMs || 300_000);
   const minForceGap = Math.max(1000, Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000));
   (getRaydiumPoolsNormalized as any).__lastForceAt = (getRaydiumPoolsNormalized as any).__lastForceAt || 0;
   const now = Date.now();
+  // Capture opts for use in closure
+  const skipUniverseFilter = opts?.skipUniverseFilter === true;
   // In non-forced mode, never initiate a fetch. Only return cached data (even if stale) or empty.
   if (!force) {
     if (raydiumCache.data && now - raydiumCache.ts < ttlMs) return raydiumCache.data;
@@ -3877,8 +3879,7 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
       
       // Apply universe filtering early so caches are consistent across sources
       try {
-        const skipUniverse = opts?.skipUniverseFilter === true;
-        if (!skipUniverse) {
+        if (!skipUniverseFilter) {
           const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
           const mode: any = (CONFIG.system as any)?.tokenUniverseMode || 'jupiter';
           const uni = await computeTokenUniverse(mode);
@@ -4018,7 +4019,7 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
   return raydiumCache.inflight;
 }
 
-export async function getOrcaPoolsCached(force = false): Promise<PoolsPayload> {
+export async function getOrcaPoolsCached(force = false, opts?: { skipUniverseFilter?: boolean }): Promise<PoolsPayload> {
   const ttlMs = CONFIG.orca?.cacheTtlMs ?? 300_000; // 5 minutes default
   const minForceGap = Math.max(1000, Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000));
   (getOrcaPoolsCached as any).__lastForceAt = (getOrcaPoolsCached as any).__lastForceAt || 0;
@@ -4038,7 +4039,7 @@ export async function getOrcaPoolsCached(force = false): Promise<PoolsPayload> {
   orcaCache.inflight = (async () => {
     try {
       const t0 = Date.now();
-      const data = await getOrcaPoolsNormalized();
+      const data = await getOrcaPoolsNormalized(opts);
       const prev = orcaCache.data;
       orcaCache.data = data;
       orcaCache.ts = Date.now();
@@ -4084,7 +4085,7 @@ export async function getOrcaPoolsCached(force = false): Promise<PoolsPayload> {
   return orcaCache.inflight;
 }
 
-export async function getOrcaPoolsNormalized(): Promise<PoolsPayload> {
+export async function getOrcaPoolsNormalized(opts?: { skipUniverseFilter?: boolean }): Promise<PoolsPayload> {
   logger.info('orca.fetch start', {
     mode: 'http',
     uniMode: (CONFIG.system as any)?.tokenUniverseMode || 'jupiter',
@@ -4111,8 +4112,8 @@ export async function getOrcaPoolsNormalized(): Promise<PoolsPayload> {
         } catch {        }
         // Apply universe filtering early so caches are consistent across sources
         try {
-          const skipUniverse = opts?.skipUniverseFilter === true;
-          if (!skipUniverse) {
+          const skipUniverseFilter = opts?.skipUniverseFilter === true;
+          if (!skipUniverseFilter) {
             const uniModeAny: any = (CONFIG.system as any)?.tokenUniverseMode || 'jupiter';
             const isTest = String(((globalThis as any)?.process?.env?.NODE_ENV) || '') === 'test';
             const isVitest = !!((globalThis as any)?.vi || (globalThis as any)?.vitest || (String(((globalThis as any)?.process?.env?.VITEST) || '') === 'true'));
@@ -4195,11 +4196,13 @@ export async function getOrcaPoolsNormalized(): Promise<PoolsPayload> {
   }
 }
 
-export async function getMeteoraPoolsCached(force = false): Promise<PoolsPayload> {
+export async function getMeteoraPoolsCached(force = false, opts?: { skipUniverseFilter?: boolean }): Promise<PoolsPayload> {
   const ttlMs = Number(((CONFIG as any)?.meteora?.cacheTtlMs) || 300_000);
   const minForceGap = Math.max(1000, Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000));
   (getMeteoraPoolsCached as any).__lastForceAt = (getMeteoraPoolsCached as any).__lastForceAt || 0;
   const now = Date.now();
+  // Capture opts for use in closure
+  const skipUniverseFilter = opts?.skipUniverseFilter === true;
   if (!force) {
     if (meteoraCache.data && now - meteoraCache.ts < ttlMs) return meteoraCache.data;
     return meteoraCache.data || { amm: [], clmm: [] };
@@ -4232,8 +4235,7 @@ export async function getMeteoraPoolsCached(force = false): Promise<PoolsPayload
       } catch {}
       // Optionally apply universe filtering early (disabled by default for Meteora)
       try {
-        const skipUniverse = opts?.skipUniverseFilter === true;
-        if (!skipUniverse) {
+        if (!skipUniverseFilter) {
           const prefilter = !!((CONFIG as any)?.meteora?.universePrefilter);
           if (prefilter) {
             const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
