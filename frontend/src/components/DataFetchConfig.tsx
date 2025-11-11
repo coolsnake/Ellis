@@ -628,7 +628,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                 <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.pumpswap_validationSamples || 10} onChange={(e)=>set('pumpswap_validationSamples', Number(e.target.value)||0)} />
               </div>
               <div className="md:col-span-3 text-xs text-gray-300">
-                Fetches pools involving SOL + USDC via Shyft's GraphQL API for pump.fun/Pumpswap coverage. RPC enrichment fetches token account balances to calculate accurate prices and liquidity. Price validation compares Pumpswap prices against other DEXes and logs deviations >5%. Page Delay helps avoid rate limits.
+                Fetches pools involving SOL + USDC via Shyft's GraphQL API for pump.fun/Pumpswap coverage. RPC enrichment fetches token account balances to calculate accurate prices and liquidity. Price validation compares Pumpswap prices against other DEXes and logs deviations &gt;5%. Page Delay helps avoid rate limits.
               </div>
             </div>
           </div>
