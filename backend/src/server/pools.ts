@@ -3439,4 +3439,9 @@ export async function getMeteoraPoolsCached(force = false): Promise<PoolsPayload
 
 const meteoraProgram = createProgram(await import('@solana/web3.js').then(m => m.Connection).then(() => undefined));
 
+// Add this export function near the other exports (around line 2928)
+export function isMeteoraBinArraySubscribed(accountAddress: string): boolean {
+  return meteoraBinAccountToPool.has(accountAddress);
+}
+
 

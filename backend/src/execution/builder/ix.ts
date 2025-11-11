@@ -1847,12 +1847,70 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       const tokenKeg = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
       const isToken2022 = (p: any) => { try { return p && typeof p.equals === 'function' && !p.equals(tokenKeg); } catch { return false; } };
       const needs2022 = isToken2022(acctBase.tokenXProgram) || isToken2022(acctBase.tokenYProgram);
+      
+      // Log method availability for debugging
+      try {
+        logger.info('meteora.dlmm.method_selection', {
+          cat: 'tx',
+          ctx: {
+            poolId: hop.poolId,
+            needs2022,
+            hasSwap2: typeof (methods as any)?.swap2 === 'function',
+            hasSwap: typeof (methods as any)?.swap === 'function',
+            hasSwapExactIn: typeof (methods as any)?.swapExactIn === 'function',
+            tokenXProgram: acctBase.tokenXProgram?.toBase58?.() || String(acctBase.tokenXProgram),
+            tokenYProgram: acctBase.tokenYProgram?.toBase58?.() || String(acctBase.tokenYProgram)
+          }
+        });
+      } catch {}
+      
       // NOTE: Anchor methods don't take swapForY - direction is inferred from accounts (reserveX/reserveY)
-      if (needs2022 && typeof (methods as any)?.swap2 === 'function') builder = methods.swap2(amountIn, minOut, { slices: [] });
-      else if (typeof (methods as any)?.swap === 'function') builder = methods.swap(amountIn, minOut);
-      else if (typeof (methods as any)?.swapExactIn === 'function') builder = methods.swapExactIn(amountIn, minOut);
-      else throw new Error('DLMM_SWAP_METHOD_MISSING');
-    } catch {}
+      if (needs2022 && typeof (methods as any)?.swap2 === 'function') {
+        builder = methods.swap2(amountIn, minOut, { slices: [] });
+        try { logger.info('meteora.dlmm.using_swap2', { cat: 'tx', ctx: { poolId: hop.poolId } }); } catch {}
+      } else if (typeof (methods as any)?.swap === 'function') {
+        builder = methods.swap(amountIn, minOut);
+        try { logger.info('meteora.dlmm.using_swap', { cat: 'tx', ctx: { poolId: hop.poolId } }); } catch {}
+      } else if (typeof (methods as any)?.swapExactIn === 'function') {
+        builder = methods.swapExactIn(amountIn, minOut);
+        try { logger.info('meteora.dlmm.using_swapExactIn', { cat: 'tx', ctx: { poolId: hop.poolId } }); } catch {}
+      } else {
+        const error = new Error('DLMM_SWAP_METHOD_MISSING');
+        try {
+          logger.error('meteora.dlmm.method_missing', {
+            cat: 'tx',
+            code: LogCode.TX_BUILD_ERR,
+            ctx: {
+              poolId: hop.poolId,
+              needs2022,
+              hasSwap2: typeof (methods as any)?.swap2 === 'function',
+              hasSwap: typeof (methods as any)?.swap === 'function',
+              hasSwapExactIn: typeof (methods as any)?.swapExactIn === 'function'
+            }
+          });
+        } catch {}
+        throw error;
+      }
+      
+      // Validate builder was created
+      if (!builder) {
+        throw new Error('DLMM_BUILDER_NULL');
+      }
+    } catch (e: any) {
+      try {
+        logger.error('meteora.dlmm.method_selection_error', {
+          cat: 'tx',
+          code: LogCode.TX_BUILD_ERR,
+          ctx: {
+            poolId: hop.poolId,
+            error: String(e?.message || e),
+            stack: e?.stack
+          }
+        });
+      } catch {}
+      // Re-throw to prevent continuing with invalid builder
+      throw wrapBuilderError(e, 'METEORA_DLMM', 'method selection failed', hop);
+    }
 
     // Prefer accountsPartial so optional nulls are honored
     // Ensure tokenXMint and tokenYMint are explicitly included in acctBase
@@ -2136,18 +2194,66 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 const rangeUpper = upperBinId.add(binArraySize.mul(expansionFactor));
                 
                 const metas = getBinArrayAccountMetasCoverage(rangeLower, rangeUpper, poolPk, programId) || [];
+                // Validate bin arrays using local cache (zero RPC calls)
+                const validatedMetas: any[] = [];
+                if (Array.isArray(metas) && metas.length > 0) {
+                  try {
+                    // Import the validation function
+                    const { isMeteoraBinArraySubscribed } = await import('../../server/pools.js');
+                    
+                    for (const meta of metas) {
+                      try {
+                        const pk = meta?.pubkey || meta?.publicKey || meta?.address;
+                        const accountAddress = pk instanceof PublicKey ? pk.toBase58() : 
+                                             (typeof pk?.toBase58 === 'function' ? pk.toBase58() : String(pk));
+                        
+                        // Check if this bin array is in our local cache (means it exists and we're subscribed)
+                        if (accountAddress && isMeteoraBinArraySubscribed(accountAddress)) {
+                          validatedMetas.push(meta);
+                        } else {
+                          // Not in cache - might not exist, skip it to avoid error 3007
+                          try { 
+                            logger.debug('meteora.dlmm.bin_array.not_in_cache', { 
+                              cat: 'tx', 
+                              ctx: { account: accountAddress?.slice(0, 8) + '...' } 
+                            }); 
+                          } catch {}
+                        }
+                      } catch (e: any) {
+                        // Skip invalid meta entries
+                        try { logger.debug('meteora.dlmm.validate_meta.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
+                      }
+                    }
+                  } catch (e: any) {
+                    try { logger.debug('meteora.dlmm.validate_metas.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
+                    // If validation fails, don't use any metas to be safe
+                  }
+                }
+                
                 // Don't limit aggressively - SDK should only return arrays that exist and are needed
                 // But cap at 20 as a safety measure against edge cases
                 const maxMetas = 20;
-                const limitedMetas = Array.isArray(metas) ? metas.slice(0, maxMetas) : [];
+                const limitedMetas = validatedMetas.slice(0, maxMetas);
                 if (limitedMetas.length) {
                   builder = (builder as any).remainingAccounts(limitedMetas);
-                  try { logger.info('meteora.dlmm.remaining.ok', { cat: 'tx', ctx: { count: limitedMetas.length, total: metas.length, range: `${rangeLower.toString()}..${rangeUpper.toString()}` } }); } catch {}
-          }
-        } catch (e: any) {
-          try { logger.debug('meteora.dlmm.remaining.bounds.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
+                  try { 
+                    logger.info('meteora.dlmm.remaining.ok', { 
+                      cat: 'tx', 
+                      ctx: { 
+                        count: limitedMetas.length, 
+                        total: metas.length, 
+                        validated: validatedMetas.length,
+                        range: `${rangeLower.toString()}..${rangeUpper.toString()}` 
+                      } 
+                    }); 
+                  } catch {}
+                }
+              } catch (e: any) {
+                try { logger.debug('meteora.dlmm.remaining.bounds.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
               }
             }
+          } catch (e: any) {
+            try { logger.debug('meteora.dlmm.remaining.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
           }
         } catch (e: any) {
           try { logger.debug('meteora.dlmm.remaining.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}

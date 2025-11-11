@@ -40,14 +40,41 @@ export async function logTxTrace(kind: TraceKind, entry: Record<string, any>): P
   await appendJsonl(file, entry);
 }
 
-// New: write per-dex full dumps (overwrite on each save)
+// New: write per-dex full dumps (separate file for each attempt)
 export async function writeDexFullDump(dex: 'raydium' | 'orca' | 'meteora', phase: 'preflight' | 'execute', payload: Record<string, any>): Promise<void> {
-  const file = resolve(LOG_DIR_SAFE, `${dex}.${phase}.full.json`);
-  const dir = dirname(file);
+  const dir = resolve(LOG_DIR_SAFE, `${dex}-${phase}-attempts`);
   if (!existsSync(dir)) {
     await mkdir(dir, { recursive: true });
   }
-  const data = JSON.stringify(payload, null, 2);
+  
+  // Extract identifiers for filename
+  const id = payload.id || payload.txId || payload.txLogs?.[0]?.txId || 'unknown';
+  const signature = payload.signature || payload.send?.signature || null;
+  const hasError = !!(payload.err || payload.sim?.value?.err || payload.send?.err);
+  const status = hasError ? 'failed' : 'success';
+  
+  // Create unique filename: timestamp-id-signature-status.json
+  const timestamp = Date.now();
+  const idPart = String(id).slice(0, 16); // Truncate long IDs
+  const sigPart = signature ? `-${String(signature).slice(0, 8)}` : '';
+  const filename = `${timestamp}-${idPart}${sigPart}-${status}.json`;
+  const file = resolve(dir, filename);
+  
+  // Include metadata in the payload
+  const enrichedPayload = {
+    ...payload,
+    _metadata: {
+      timestamp,
+      dex,
+      phase,
+      status,
+      id,
+      signature: signature || null,
+      hasError,
+    },
+  };
+  
+  const data = JSON.stringify(enrichedPayload, null, 2);
   await writeFile(file, data, { encoding: 'utf8' });
 }
 

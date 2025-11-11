@@ -786,6 +786,7 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
     const txLogs = getTxRelatedLogs(txId, Date.now() - 10000, Date.now(), 200);
     for (const d of dexes) {
       await writeDexFullDump(d, 'preflight', {
+        txId,
         kind: 'sender.preflight',
         ixCount: realIxs.length,
         skipped,
@@ -1075,6 +1076,7 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
     const txLogs = getTxRelatedLogs(txId, Date.now() - 20000, Date.now(), 300);
     for (const d of dexes) {
       await writeDexFullDump(d, 'execute', {
+        txId,
         kind: 'sender.execute',
         ixCount: realIxs.length,
         programs,
