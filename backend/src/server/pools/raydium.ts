@@ -623,6 +623,8 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         // Derive execution-critical accounts for Raydium CLMM
         let observation_state: string | undefined;
         let ex_bitmap: string | undefined;
+        let account_a: string | undefined;
+        let account_b: string | undefined;
         try {
           const { PublicKey } = await import('@solana/web3.js');
           const poolPk = new PublicKey(id);
@@ -645,6 +647,35 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
             );
             ex_bitmap = exBitmapPda.toBase58();
           } catch {}
+          
+          // Extract vault accounts from CLMM cache (these are obtained from on-chain decoding)
+          try {
+            const { getClmmStatic } = await import('../../execution/clmmCache.js');
+            const cached = typeof getClmmStatic === 'function' ? getClmmStatic(id) : null;
+            if (cached?.vaultA) account_a = cached.vaultA;
+            if (cached?.vaultB) account_b = cached.vaultB;
+            
+            // Log vault extraction for debugging
+            try {
+              logger.debug('raydium.clmm.vaults.extracted', {
+                cat: 'raydium',
+                ctx: { 
+                  pool: id, 
+                  hasVaultA: !!account_a, 
+                  hasVaultB: !!account_b,
+                  vaultA: account_a?.slice(0, 8) + '...',
+                  vaultB: account_b?.slice(0, 8) + '...'
+                }
+              });
+            } catch {}
+          } catch (e: any) {
+            try {
+              logger.debug('raydium.clmm.vaults.cache_miss', {
+                cat: 'raydium',
+                ctx: { pool: id, error: String(e?.message || e) }
+              });
+            } catch {}
+          }
         } catch (e: any) {
           try {
             logger.debug('raydium.clmm.exec_accounts.derivation.failed', {
@@ -678,6 +709,8 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
           amount_b_whole,
           pool_liquidity_raw,
           liquidity_display: tvl_usd,
+          account_a,
+          account_b,
           observation_state,
           ex_bitmap,
         });
