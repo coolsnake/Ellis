@@ -2713,7 +2713,7 @@ export function startRaydiumRefreshLoop(): void {
                     const vaultAPk = new web3.PublicKey(pool.account_a);
                     const vaultAId = await subscribeAccountWithRetry(vaultAPk, handle);
                     subs.push({ kind: 'account', id: vaultAId });
-                    derivedAccountToPool.set(pool.account_a, { poolId: addr, accountType: 'vault', side: 'a' });
+                    derivedAccountToPool.set(pool.account_a, { poolId: addr, accountType: 'vault' });
                     targetedSourceByAccount.set(pool.account_a, 'pumpswap');
                     debugLogTargeted('pumpswap' as any, pool.account_a, { kind: 'vault', side: 'a' });
                   }
@@ -2721,7 +2721,7 @@ export function startRaydiumRefreshLoop(): void {
                     const vaultBPk = new web3.PublicKey(pool.account_b);
                     const vaultBId = await subscribeAccountWithRetry(vaultBPk, handle);
                     subs.push({ kind: 'account', id: vaultBId });
-                    derivedAccountToPool.set(pool.account_b, { poolId: addr, accountType: 'vault', side: 'b' });
+                    derivedAccountToPool.set(pool.account_b, { poolId: addr, accountType: 'vault' });
                     targetedSourceByAccount.set(pool.account_b, 'pumpswap');
                     debugLogTargeted('pumpswap' as any, pool.account_b, { kind: 'vault', side: 'b' });
                   }
