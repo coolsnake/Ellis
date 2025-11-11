@@ -82,6 +82,8 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     pumpswap_httpBackoffMs: 500,
     pumpswap_defaultFeeBps: 30,
     pumpswap_minLiqBase: 0,
+    pumpswap_pageSize: 1000,
+    pumpswap_maxPages: 10,
     // Jupiter
     jupiterApiUrl: '',
     jupiterPauseApi: false,
@@ -159,6 +161,8 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             pumpswap_httpBackoffMs: Number(j?.pumpswap?.httpBackoffMs ?? prev.pumpswap_httpBackoffMs ?? 500),
             pumpswap_defaultFeeBps: Number(j?.pumpswap?.defaultFeeBps ?? prev.pumpswap_defaultFeeBps ?? 30),
             pumpswap_minLiqBase: Number(j?.pumpswap?.minLiqBase ?? prev.pumpswap_minLiqBase ?? 0),
+            pumpswap_pageSize: Number(j?.pumpswap?.pageSize ?? prev.pumpswap_pageSize ?? 1000),
+            pumpswap_maxPages: Number(j?.pumpswap?.maxPages ?? prev.pumpswap_maxPages ?? 10),
             // Sanity
             sanity_enabled: (j?.sanity?.enabled ?? true) !== false,
             sanity_maxPriceDeviation: Number(j?.sanity?.maxPriceDeviation ?? prev.sanity_maxPriceDeviation),
@@ -245,6 +249,8 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         httpBackoffMs: Number(cfg.pumpswap_httpBackoffMs || 500),
         defaultFeeBps: Number(cfg.pumpswap_defaultFeeBps || 30),
         minLiqBase: Number(cfg.pumpswap_minLiqBase || 0),
+        pageSize: Number(cfg.pumpswap_pageSize || 1000),
+        maxPages: Number(cfg.pumpswap_maxPages || 10),
       },
       sanity: {
         enabled: !!cfg.sanity_enabled,
@@ -577,6 +583,14 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
               <div>
                 <label className="block text-sm mb-1">Min Liquidity (USD)</label>
                 <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.pumpswap_minLiqBase || 0} onChange={(e)=>set('pumpswap_minLiqBase', Number(e.target.value)||0)} />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Page Size</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.pumpswap_pageSize || 1000} onChange={(e)=>set('pumpswap_pageSize', Number(e.target.value)||0)} />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Max Pages</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.pumpswap_maxPages || 10} onChange={(e)=>set('pumpswap_maxPages', Number(e.target.value)||0)} />
               </div>
               <div className="md:col-span-3 text-xs text-gray-300">
                 Fetches pools involving SOL + USDC via Shyft's GraphQL API for pump.fun/Pumpswap coverage.

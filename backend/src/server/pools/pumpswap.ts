@@ -20,15 +20,17 @@ export async function fetchPumpswapGraphQL(): Promise<any> {
 
   const retries = Number((CONFIG as any)?.pumpswap?.maxHttpRetries || 2);
   const backoffMs = Number((CONFIG as any)?.pumpswap?.httpBackoffMs || 500);
+  const pageSize = Number((CONFIG as any)?.pumpswap?.pageSize || 1000);
+  const maxPages = Number((CONFIG as any)?.pumpswap?.maxPages || 10);
   
   const pools = new Map<string, any>(); // Dedupe by pubkey
   
   // Fetch pools involving SOL
-  const solPools = await fetchPoolsForToken(SOL_MINT, apiKey, retries, backoffMs);
+  const solPools = await fetchPoolsForToken(SOL_MINT, apiKey, retries, backoffMs, pageSize, maxPages);
   for (const p of solPools) pools.set(p.pubkey, p);
   
   // Fetch pools involving USDC
-  const usdcPools = await fetchPoolsForToken(USDC_MINT, apiKey, retries, backoffMs);
+  const usdcPools = await fetchPoolsForToken(USDC_MINT, apiKey, retries, backoffMs, pageSize, maxPages);
   for (const p of usdcPools) pools.set(p.pubkey, p);
   
   const allPools = Array.from(pools.values());
@@ -43,86 +45,116 @@ async function fetchPoolsForToken(
   mintAddress: string, 
   apiKey: string, 
   retries: number, 
-  backoffMs: number
+  backoffMs: number,
+  pageSize: number,
+  maxPages: number
 ): Promise<any[]> {
-  const query = `
-    query GetPumpswapPools {
-      pump_fun_amm_Pool(where: {_or: [
-        {base_mint: {_eq: "${mintAddress}"}}, 
-        {quote_mint: {_eq: "${mintAddress}"}}
-      ]}) {
-        base_mint
-        quote_mint
-        pubkey
-        creator
-        lp_mint
-        lp_supply
-        pool_base_token_account
-        pool_quote_token_account
-        pool_bump
-        index
+  const allPools: any[] = [];
+  let offset = 0;
+  let page = 0;
+  
+  while (page < maxPages) {
+    const query = `
+      query GetPumpswapPools {
+        pump_fun_amm_Pool(
+          where: {_or: [
+            {base_mint: {_eq: "${mintAddress}"}}, 
+            {quote_mint: {_eq: "${mintAddress}"}}
+          ]},
+          limit: ${pageSize},
+          offset: ${offset}
+        ) {
+          base_mint
+          quote_mint
+          pubkey
+          creator
+          lp_mint
+          lp_supply
+          pool_base_token_account
+          pool_quote_token_account
+          pool_bump
+          index
+        }
       }
-    }
-  `;
-  
-  const url = 'https://programs.shyft.to/v0/graphql/accounts';
-  const params = new URLSearchParams({ 
-    api_key: apiKey, 
-    network: 'mainnet-beta' 
-  });
-  
-  // eslint-disable-next-line no-undef
-  const fetchFn: any = (globalThis as any).fetch || fetch;
-  
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      const cid = httpLogStart({ source: 'pumpswap', url: `${url}?${params}`, extra: { mint: mintAddress } });
-      const res = await fetchFn(`${url}?${params}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, operationName: 'GetPumpswapPools' })
-      });
-      
-      if (res?.status === 429) {
-        try { emit('log', { level: 'warn', message: 'arb:429 source=pumpswap kind=graphql', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
-        try { logger.warn('pumpswap.graphql 429', { mint: mintAddress, cat: 'pumpswap' }); } catch {}
-        httpLog429({ source: 'pumpswap', url: `${url}?${params}`, cid });
+    `;
+    
+    const url = 'https://programs.shyft.to/v0/graphql/accounts';
+    const params = new URLSearchParams({ 
+      api_key: apiKey, 
+      network: 'mainnet-beta' 
+    });
+    
+    // eslint-disable-next-line no-undef
+    const fetchFn: any = (globalThis as any).fetch || fetch;
+    
+    let pagePools: any[] = [];
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const cid = httpLogStart({ source: 'pumpswap', url: `${url}?${params}`, extra: { mint: mintAddress, page, offset } });
+        const res = await fetchFn(`${url}?${params}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query, operationName: 'GetPumpswapPools' })
+        });
+        
+        if (res?.status === 429) {
+          try { emit('log', { level: 'warn', message: 'arb:429 source=pumpswap kind=graphql', timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+          try { logger.warn('pumpswap.graphql 429', { mint: mintAddress, page, cat: 'pumpswap' }); } catch {}
+          httpLog429({ source: 'pumpswap', url: `${url}?${params}`, cid });
+          if (attempt < retries) {
+            await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
+            continue;
+          }
+          throw new Error('429');
+        }
+        
+        if (!res?.ok) {
+          httpLogNonOk({ source: 'pumpswap', url: `${url}?${params}`, cid, status: res?.status });
+          throw new Error(`http ${res?.status}`);
+        }
+        
+        const json = await res.json();
+        if (json?.errors) {
+          try { logger.warn('pumpswap.graphql errors', { errors: JSON.stringify(json.errors), cat: 'pumpswap' }); } catch {}
+          throw new Error(`GraphQL errors: ${JSON.stringify(json.errors)}`);
+        }
+        
+        pagePools = json?.data?.pump_fun_amm_Pool || [];
+        httpLogResponse({ source: 'pumpswap', url: `${url}?${params}`, cid, status: res.status, ms: 0, count: pagePools.length });
+        break; // Success, exit retry loop
+      } catch (e: any) {
+        const msg = String(e?.message || e);
+        if (/429/.test(msg) && attempt < retries) {
+          await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
+          continue;
+        }
         if (attempt < retries) {
           await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
           continue;
         }
-        throw new Error('429');
+        try { logger.warn('pumpswap.graphql fetch failed', { mint: mintAddress, page, error: msg, cat: 'pumpswap' }); } catch {}
+        break; // Exit retry loop on final failure
       }
-      
-      if (!res?.ok) {
-        httpLogNonOk({ source: 'pumpswap', url: `${url}?${params}`, cid, status: res?.status });
-        throw new Error(`http ${res?.status}`);
-      }
-      
-      const json = await res.json();
-      if (json?.errors) {
-        try { logger.warn('pumpswap.graphql errors', { errors: JSON.stringify(json.errors), cat: 'pumpswap' }); } catch {}
-        throw new Error(`GraphQL errors: ${JSON.stringify(json.errors)}`);
-      }
-      
-      const pools = json?.data?.pump_fun_amm_Pool || [];
-      httpLogResponse({ source: 'pumpswap', url: `${url}?${params}`, cid, status: res.status, ms: 0, count: pools.length });
-      return pools;
-    } catch (e: any) {
-      const msg = String(e?.message || e);
-      if (/429/.test(msg) && attempt < retries) {
-        await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
-        continue;
-      }
-      if (attempt < retries) {
-        await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
-        continue;
-      }
-      try { logger.warn('pumpswap.graphql fetch failed', { mint: mintAddress, error: msg, cat: 'pumpswap' }); } catch {}
-      return [];
     }
+    
+    if (pagePools.length === 0) {
+      // No more results, exit pagination loop
+      break;
+    }
+    
+    allPools.push(...pagePools);
+    try { logger.debug('pumpswap.graphql page', { mint: mintAddress, page, count: pagePools.length, total: allPools.length, cat: 'pumpswap' }); } catch {}
+    
+    // If we got fewer results than pageSize, we've reached the end
+    if (pagePools.length < pageSize) {
+      break;
+    }
+    
+    offset += pageSize;
+    page++;
   }
-  return [];
+  
+  return allPools;
 }
 
 export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {

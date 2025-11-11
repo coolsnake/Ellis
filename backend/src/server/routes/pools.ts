@@ -200,7 +200,7 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
       const snap = await getGraphSnapshot(true);
       const ws = getWsActivity();
       const ages = getPoolCacheAges();
-      res.json({ ok: true, counts: { raydium: out.raydium, orca: out.orca, meteora: out.meteora }, graph: { nodes: (snap.nodes || []).length, edges: (snap.edges || []).length }, ws, ages });
+      res.json({ ok: true, counts: { raydium: out.raydium, orca: out.orca, meteora: out.meteora, meteora_balanced: out.meteora_balanced, pumpswap: out.pumpswap }, graph: { nodes: (snap.nodes || []).length, edges: (snap.edges || []).length }, ws, ages });
       emit('log', { level: 'info', message: 'pools:refresh triggered', timestamp: new Date().toISOString(), context: { cat: 'pools' } });
     } catch (e: any) {
       res.status(500).json({ ok: false, error: String(e?.message || e) });

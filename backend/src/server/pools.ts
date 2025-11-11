@@ -617,7 +617,7 @@ export async function retargetPoolWebsockets(): Promise<{ attached: { orca: numb
 }
 
 // Unified refresh orchestrator: fetch all sources and optionally (re)subscribe
-export async function refreshAllSources(force = true, subscribe = true): Promise<{ raydium: PoolsPayload; orca: PoolsPayload; meteora: PoolsPayload; meteora_balanced: PoolsPayload }> {
+export async function refreshAllSources(force = true, subscribe = true): Promise<{ raydium: PoolsPayload; orca: PoolsPayload; meteora: PoolsPayload; meteora_balanced: PoolsPayload; pumpswap: PoolsPayload }> {
   try {
     // Deep bootstrap phase: optionally pause feed/API, fetch Jup tokens, then hydrate prices
     if (force) {
@@ -655,10 +655,12 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
       }
     }
   } catch {}
+  // Sequential fetching to prevent concurrent API load
   const r = await getRaydiumPoolsNormalized(!!force).catch(() => ({ amm: [], clmm: [] }));
   const o = await getOrcaPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
   const m = await getMeteoraPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
   const mb = await getMeteoraBalancedPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
+  const pump = await getPumpswapPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
 
   // Post-fetch bootstrap: if pricing coverage is low, hydrate prices for all fetched mints and rebuild graph
   try {
@@ -669,7 +671,7 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
         try { for (const p of (pp?.amm || [])) { if (p?.mint_a) mintSet.add(String(p.mint_a)); if (p?.mint_b) mintSet.add(String(p.mint_b)); } } catch {}
         try { for (const p of (pp?.clmm || [])) { if (p?.mint_a) mintSet.add(String(p.mint_a)); if (p?.mint_b) mintSet.add(String(p.mint_b)); } } catch {}
       };
-      addFrom(r); addFrom(o); addFrom(m); addFrom(mb);
+      addFrom(r); addFrom(o); addFrom(m); addFrom(mb); addFrom(pump);
       if (mintSet.size > 0) {
         const pricedMap = getAllPrices() || {};
         let pricedCount = 0;
@@ -754,6 +756,20 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
       try { logger.debug('pools.pair_sol_usdc.skip', { source: 'meteora', reason: 'no_sol_usdc', cat: 'pools' }); } catch {}
       try { emit('log', { level: 'debug', message: 'pools:pair_sol_usdc.skip source=meteora reason=no_sol_usdc', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
     }
+    const pumpPick = pickOne(pump);
+    if (pumpPick) {
+      const { forward, reverse } = compute(pumpPick);
+      if (forward && reverse) {
+        try { logger.debug('pools.pair_sol_usdc', { source: 'pumpswap', id: pumpPick.id, kind: pumpPick.pool_kind || 'amm', forward_usdc_per_sol: forward, reverse_sol_per_usdc: reverse, cat: 'pools' }); } catch {}
+        try { emit('log', { level: 'info', message: `pools:pair_sol_usdc source=pumpswap id=${pumpPick.id} kind=${pumpPick.pool_kind || 'amm'} fwd=${forward} rev=${reverse}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
+      } else {
+        try { logger.debug('pools.pair_sol_usdc.skip', { source: 'pumpswap', reason: 'invalid_price_or_orientation', id: pumpPick.id, a: pumpPick.mint_a, b: pumpPick.mint_b, px: pumpPick.price_a_per_b, cat: 'pools' }); } catch {}
+        try { emit('log', { level: 'debug', message: `pools:pair_sol_usdc.skip source=pumpswap reason=invalid_price_or_orientation id=${pumpPick.id} a=${pumpPick.mint_a} b=${pumpPick.mint_b} px=${pumpPick.price_a_per_b}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
+      }
+    } else {
+      try { logger.debug('pools.pair_sol_usdc.skip', { source: 'pumpswap', reason: 'no_sol_usdc', cat: 'pools' }); } catch {}
+      try { emit('log', { level: 'debug', message: 'pools:pair_sol_usdc.skip source=pumpswap reason=no_sol_usdc', timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
+    }
   } catch (e:any) {
     try { logger.warn('pools.pair_sol_usdc.failed', { error: String(e?.message || e), cat: 'pools' }); } catch {}
     try { emit('log', { level: 'warn', message: `pools:pair_sol_usdc.failed error=${String(e?.message || e)}`, timestamp: new Date().toISOString(), context: { cat: 'pools' } }); } catch {}
@@ -795,7 +811,7 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
       (refreshAllSources as any).__didInitialGraphPush = true;
     }
   } catch {}
-  return { raydium: r, orca: o, meteora: m, meteora_balanced: mb };
+  return { raydium: r, orca: o, meteora: m, meteora_balanced: mb, pumpswap: pump };
 }
 
 export function startRaydiumRefreshLoop(): void {
