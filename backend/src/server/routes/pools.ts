@@ -233,7 +233,7 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
       const { getPoolWsStatus, getWsActivity, getWsTargets } = await import('../pools.js');
       const st = getPoolWsStatus();
       const ws = getWsActivity();
-      let targets: any = { orca: { target: 0 }, raydium: { target: 0 }, meteora: { target: 0 } };
+      let targets: any = { orca: { target: 0 }, raydium: { target: 0 }, meteora: { target: 0 }, pumpswap: { target: 0 } };
       try { targets = await getWsTargets(); } catch {}
       res.json({ wsEnabled: st.enabled, wsHealthy: st.healthy, lastEventMs: st.lastEventMs, ws, targets });
     } catch (e: any) {

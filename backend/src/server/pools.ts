@@ -319,11 +319,11 @@ function incrementSkipReason(dex: 'raydium' | 'orca' | 'meteora', reason: string
   if (!stats.skipReasons) stats.skipReasons = {};
   stats.skipReasons[reason] = (stats.skipReasons[reason] || 0) + 1;
 }
-const wsDebugCounters: Record<'raydium' | 'orca' | 'meteora', number> = { raydium: 0, orca: 0, meteora: 0 };
-const wsTargetDebugCounters: Record<'raydium' | 'orca' | 'meteora', number> = { raydium: 0, orca: 0, meteora: 0 };
+const wsDebugCounters: Record<'raydium' | 'orca' | 'meteora' | 'pumpswap', number> = { raydium: 0, orca: 0, meteora: 0, pumpswap: 0 };
+const wsTargetDebugCounters: Record<'raydium' | 'orca' | 'meteora' | 'pumpswap', number> = { raydium: 0, orca: 0, meteora: 0, pumpswap: 0 };
 let meteoraProgramInstance: any | null = null;
 
-function debugLogTargeted(source: 'raydium' | 'orca' | 'meteora', account: string, extra: Record<string, unknown>): void {
+function debugLogTargeted(source: 'raydium' | 'orca' | 'meteora' | 'pumpswap', account: string, extra: Record<string, unknown>): void {
   try {
     const limit = Number((CONFIG.system as any)?.wsDebugAccountLogLimit ?? 10);
     if (!(limit > 0)) return;
@@ -436,6 +436,7 @@ async function batchGetAccountInfo(conn: any, address: string): Promise<any> {
 let attachedOrcaPools: number = 0;
 let attachedRaydiumPools: number = 0;
 let attachedMeteoraPools: number = 0;
+let attachedPumpswapPools: number = 0;
 
 // When true, the next call to startRaydiumRefreshLoop will attach WS subscriptions
 // without starting timers or triggering an extra initial HTTP warmup fetch.
@@ -455,13 +456,14 @@ export function getWsActivity(): { orca: { attached: number; events: number }; r
 }
 
 // Compute target counts for WS subscriptions based on current graph edges per source
-export async function getWsTargets(): Promise<{ orca: { target: number }; raydium: { target: number }; meteora: { target: number } }> {
+export async function getWsTargets(): Promise<{ orca: { target: number }; raydium: { target: number }; meteora: { target: number }; pumpswap: { target: number } }> {
   try {
     const { getGraphSnapshot } = await import('./graph.js');
     const snap = await getGraphSnapshot(false);
     const ray = new Set<string>();
     const orc = new Set<string>();
     const met = new Set<string>();
+    const pump = new Set<string>();
     for (const e of (snap?.edges || [])) {
       const pid = String((e as any)?.pool_id || '');
       if (!pid) continue;
@@ -470,12 +472,13 @@ export async function getWsTargets(): Promise<{ orca: { target: number }; raydiu
       if (dex === 'Raydium') ray.add(base);
       else if (dex === 'Orca') orc.add(base);
       else if (dex === 'Meteora') met.add(base);
+      else if (dex === 'Pumpswap') pump.add(base);
     }
-    const out = { orca: { target: orc.size }, raydium: { target: ray.size }, meteora: { target: met.size } };
+    const out = { orca: { target: orc.size }, raydium: { target: ray.size }, meteora: { target: met.size }, pumpswap: { target: pump.size } };
     try { (getWsTargets as any)._last = out; } catch {}
     return out;
   } catch {
-    const out = { orca: { target: 0 }, raydium: { target: 0 }, meteora: { target: 0 } };
+    const out = { orca: { target: 0 }, raydium: { target: 0 }, meteora: { target: 0 }, pumpswap: { target: 0 } };
     try { (getWsTargets as any)._last = out; } catch {}
     return out;
   }
@@ -919,7 +922,7 @@ export function startRaydiumRefreshLoop(): void {
         const orcaProg = new web3.PublicKey(String(CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc').trim());
         const subs: Array<{ kind: 'account' | 'program'; id: number }> = [];
         // Track explicit targets so we can classify events for SPL Token vault accounts (e.g., Raydium AMM vaults)
-        const targetedSourceByAccount: Map<string, 'raydium' | 'orca' | 'meteora'> = new Map();
+        const targetedSourceByAccount: Map<string, 'raydium' | 'orca' | 'meteora' | 'pumpswap'> = new Map();
         // Debounce frequent program change bursts to at most one refresh per source per min gap
         const minGap = Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000);
         let lastRay = 0; let lastOrc = 0;
@@ -2631,6 +2634,122 @@ export function startRaydiumRefreshLoop(): void {
           logger.warn('pools.ws meteora subscribe failed', { error: String(e?.message || e), stack: String(e?.stack || '').slice(0,200) });
           attachedMeteoraPools = 0;
         }
+        
+        // Stagger delay between DEX sources in sequential mode
+        if (isSequentialMode && staggerDelayMs > 0) {
+          logger.info('pools.ws sequential.stagger', { 
+            afterDex: 'meteora', 
+            beforeDex: 'pumpswap', 
+            delayMs: staggerDelayMs, 
+            cat: 'pools' 
+          });
+          await new Promise(r => setTimeout(r, staggerDelayMs));
+        }
+        
+        // Pumpswap pool subscriptions
+        logger.info('pools.ws dex.subscribe.start', { dex: 'pumpswap', sequential: isSequentialMode, cat: 'pools' });
+        try {
+          const { PUMPSWAP_PROGRAM_ID } = await import('./pools/pumpswap.js');
+          const pumpswapProg = new web3.PublicKey(PUMPSWAP_PROGRAM_ID);
+          
+          // Get pool IDs from cache or graph
+          const edgePoolIds = new Set<string>();
+          try {
+            const gmod: any = await import('./graph.js');
+            const snap = await gmod.getGraphSnapshot(false);
+            for (const e of (snap?.edges || [])) {
+              const dex = String((e as any)?.dex || '');
+              if (dex !== 'Pumpswap') continue;
+              const pid = String((e as any)?.pool_id || '');
+              if (pid) edgePoolIds.add(pid.replace(/-rev$/,''));
+            }
+            try { logger.info('pools.ws targets.pumpswap from graph', { size: edgePoolIds.size }); } catch {}
+          } catch {}
+          
+          const pumpKnown: string[] = [];
+          try { for (const p of (pumpswapCache.data?.amm || [])) if (p?.id) pumpKnown.push(String(p.id)); } catch {}
+          
+          const startTsPump = Date.now();
+          const base = edgePoolIds.size > 0 ? Array.from(edgePoolIds) : pumpKnown;
+          const uniquePump = Array.from(new Set(base.filter(Boolean)));
+          let attachedPump = 0;
+          
+          // Rate-limit attachments
+          const basePerSecPump = Math.max(1, Number(((CONFIG.system as any)?.wsAttachPerSec) || 10));
+          const perSecPump = isSequentialMode 
+            ? Math.max(1, Number((CONFIG.system as any)?.wsRetargetAttachPerSec || Math.floor(basePerSecPump / 2)))
+            : basePerSecPump;
+          const intervalMsPump = Math.floor(1000 / perSecPump);
+          const sleepPump = (ms: number) => new Promise(r => setTimeout(r, ms));
+          
+          logger.info('pools.ws pumpswap.loop.start', { 
+            poolCount: uniquePump.length, 
+            rateLimit: `${perSecPump}/sec`, 
+            intervalMs: intervalMsPump, 
+            sequential: isSequentialMode,
+            cat: 'pools' 
+          });
+          
+          for (let i = 0; i < uniquePump.length; i++) {
+            const addr = uniquePump[i];
+            try {
+              const pk = new web3.PublicKey(addr);
+              const id = await subscribeAccountWithRetry(pk, handle);
+              subs.push({ kind: 'account', id }); 
+              attachedPump++;
+              
+              try {
+                const acct = pk.toBase58();
+                targetedSourceByAccount.set(acct, 'pumpswap');
+                debugLogTargeted('pumpswap' as any, acct, { kind: 'pool' });
+                logger.debug('pools.ws pumpswap.pool.subscribed', { index: i, pool: addr.slice(0,8)+'…', cat: 'pools' });
+              } catch {}
+              
+              // Attach vault listeners for Pumpswap AMM pools
+              try {
+                const pool = pumpswapCache.data?.amm?.find(p => p.id === addr);
+                if (pool) {
+                  if (pool.account_a) {
+                    const vaultAPk = new web3.PublicKey(pool.account_a);
+                    const vaultAId = await subscribeAccountWithRetry(vaultAPk, handle);
+                    subs.push({ kind: 'account', id: vaultAId });
+                    derivedAccountToPool.set(pool.account_a, { poolId: addr, accountType: 'vault', side: 'a' });
+                    targetedSourceByAccount.set(pool.account_a, 'pumpswap');
+                    debugLogTargeted('pumpswap' as any, pool.account_a, { kind: 'vault', side: 'a' });
+                  }
+                  if (pool.account_b) {
+                    const vaultBPk = new web3.PublicKey(pool.account_b);
+                    const vaultBId = await subscribeAccountWithRetry(vaultBPk, handle);
+                    subs.push({ kind: 'account', id: vaultBId });
+                    derivedAccountToPool.set(pool.account_b, { poolId: addr, accountType: 'vault', side: 'b' });
+                    targetedSourceByAccount.set(pool.account_b, 'pumpswap');
+                    debugLogTargeted('pumpswap' as any, pool.account_b, { kind: 'vault', side: 'b' });
+                  }
+                }
+              } catch (e: any) {
+                try { logger.debug('pools.ws pumpswap.vault.attach.fail', { pool: addr.slice(0,8)+'…', error: String(e?.message || e), cat: 'pools' }); } catch {}
+              }
+            } catch {}
+            
+            if (i < uniquePump.length - 1 && intervalMsPump > 0) { await sleepPump(intervalMsPump); }
+          }
+          
+          attachedPumpswapPools = attachedPump;
+          logger.info('pools.ws subscribe pumpswap.pools', { attached: attachedPump, target: uniquePump.length, source: 'pumpswap', ms: Date.now() - startTsPump });
+          
+          // Program-level fallback when configured
+          if (attachedPump === 0 && !!((CONFIG.system as any)?.pumpswapWsProgramFallback)) {
+            try { logger.info('pools.ws subscribe pumpswap(program)', { source: 'pumpswap', cat: 'pools' }); } catch {}
+            {
+              const id = await subscribeProgramWithRetry(pumpswapProg, (ch: any) => handle(ch.accountId, ch.accountInfo));
+              subs.push({ kind: 'program', id });
+            }
+            attachedPumpswapPools = 1;
+          }
+        } catch (e:any) {
+          logger.warn('pools.ws pumpswap subscribe failed', { error: String(e?.message || e), stack: String(e?.stack || '').slice(0,200) });
+          attachedPumpswapPools = 0;
+        }
 
         wsUnsubscribe = () => {
           try {
@@ -2802,29 +2921,32 @@ export function startRaydiumRefreshLoop(): void {
                 const needRay = Math.max(0, (tgt.raydium.target || 0) - (attachedRaydiumPools || 0));
                 const needOrc = Math.max(0, (tgt.orca.target || 0) - (attachedOrcaPools || 0));
                 const needMet = Math.max(0, (tgt.meteora.target || 0) - (attachedMeteoraPools || 0));
-                const sumNeed = needRay + needOrc + needMet;
+                const needPump = Math.max(0, (tgt.pumpswap.target || 0) - (attachedPumpswapPools || 0));
+                const sumNeed = needRay + needOrc + needMet + needPump;
                 
                 // Also retarget if significantly over target (shed excess subs)
                 const lastTgts: any = (getWsTargets as any)?._last || {};
                 const tgtRay = Math.max(0, Number(lastTgts?.raydium?.target || 0));
                 const tgtOrc = Math.max(0, Number(lastTgts?.orca?.target || 0));
                 const tgtMet = Math.max(0, Number(lastTgts?.meteora?.target || 0));
+                const tgtPump = Math.max(0, Number(lastTgts?.pumpswap?.target || 0));
                 const overRay = (tgtRay > 0) && (attachedRaydiumPools || 0) > Math.floor(tgtRay * 1.5);
                 const overOrc = (tgtOrc > 0) && (attachedOrcaPools || 0) > Math.floor(tgtOrc * 1.5);
                 const overMet = (tgtMet > 0) && (attachedMeteoraPools || 0) > Math.floor(tgtMet * 1.5);
+                const overPump = (tgtPump > 0) && (attachedPumpswapPools || 0) > Math.floor(tgtPump * 1.5);
                 
                 // Only reconcile if mismatch exceeds threshold
                 const threshold = Math.max(1, Number((CONFIG.system as any)?.wsReconcileThreshold || 10));
                 const minGap = Number((CONFIG.system as any)?.wsReconcileMinGapMs || 60000);
                 
-                if (sumNeed > threshold || overRay || overOrc || overMet) {
+                if (sumNeed > threshold || overRay || overOrc || overMet || overPump) {
                   const last = (reconcileNow as any)._last || 0;
                   if (Date.now() - last > minGap) {
                     try {
                       logger.info('pools.ws reconcile.triggered', {
                         reason: sumNeed > threshold ? 'missing_subscriptions' : 'excess_subscriptions',
-                        missing: { total: sumNeed, raydium: needRay, orca: needOrc, meteora: needMet },
-                        excess: { raydium: overRay, orca: overOrc, meteora: overMet },
+                        missing: { total: sumNeed, raydium: needRay, orca: needOrc, meteora: needMet, pumpswap: needPump },
+                        excess: { raydium: overRay, orca: overOrc, meteora: overMet, pumpswap: overPump },
                         threshold,
                         minGapMs: minGap,
                         cat: 'pools'

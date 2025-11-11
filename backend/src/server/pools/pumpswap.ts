@@ -13,6 +13,9 @@ import { withRpcLimit } from '../../utils/rpcLimiter.js';
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
+// Pumpswap AMM program ID
+export const PUMPSWAP_PROGRAM_ID = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
+
 export async function fetchPumpswapGraphQL(): Promise<any> {
   const CACHE_PATH = joinPath(CONFIG.cacheDir, 'pumpswap-raw-sample.json');
   const apiKey = (CONFIG as any)?.pumpswap?.shyftApiKey || '';
