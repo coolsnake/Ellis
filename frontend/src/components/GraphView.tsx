@@ -69,7 +69,6 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
   const laidOutRef = useRef(false);
 	const forceLayoutRef = useRef(false);
   const lastVersionRef = useRef<number>(0);
-  const [needsResync, setNeedsResync] = useState(false);
   const [selection, setSelection] = useState<
     | { kind: 'node'; id: string; label?: string; degree?: number; neighbors?: number }
     | { kind: 'edge'; id: string; source: string; target: string; dex: string; fee_bps?: number; liquidity?: number; weight?: number; price_a_per_b?: number; tvl_usd?: number; pool_id?: string; source_account?: string; target_account?: string; combined_edges?: Array<{ dex: string; pool_id?: string; fee_bps?: number; liquidity?: number; price_a_per_b?: number; tvl_usd?: number; pool_kind?: string; direction?: string; pool_liquidity_raw?: number }> }
@@ -755,244 +754,12 @@ useEffect(() => {
     };
   }, [containerRef.current]);
 
+  // DISABLED: Real-time socket updates removed - graph now only updates via manual "Refresh Graph" button
+  // This allows the graph to be a stable snapshot for validation and analysis rather than continuously updating
   useEffect(() => {
 		if (!effectiveSocket) return;
 
-		// Coalesce latest event; snapshots take precedence over diffs
-		let latestSnap: GraphSnapshot | null = null;
-		let latestDiff: GraphDiff | null = null;
-		let scheduled = false;
-
-    const applyDiff = (diff: GraphDiff, sharedPrevPos?: Map<string, { x: number; y: number }>) => {
-      const cy = cyRef.current; if (!cy) return;
-      if (!pageVisibleRef.current || !isVisibleRef.current) return;
-			withBatch(cy, () => {
-        const prevPos = sharedPrevPos || new Map<string, { x: number; y: number }>();
-        if (!sharedPrevPos) {
-          try { cy.nodes().forEach((n) => { prevPos.set(n.id(), { x: n.position('x'), y: n.position('y') }); }); } catch {}
-        }
-				snapshotInitializedRef.current = true;
-				try {
-					const cur = Number(lastVersionRef.current || 0);
-					const inc = Number(diff?.version || 0);
-					if (inc <= cur) return;
-					if (cur > 0 && inc !== cur + 1) {
-						setNeedsResync(true);
-						try { effectiveSocket.emit('graph:request-snapshot'); } catch {}
-						return;
-					}
-					lastVersionRef.current = inc;
-				} catch {}
-				try { if (typeof diff?.version === 'number') lastVersionRef.current = Math.max(lastVersionRef.current || 0, Number(diff.version)); } catch {}
-				const touchedPairs = new Set<string>();
-				try {
-					const remIds = Array.isArray(diff.removedEdgeIds) ? diff.removedEdgeIds : [];
-					for (const id of remIds) {
-						const el = cy.getElementById(String(id));
-						if (el && el.length && el.isEdge()) {
-							if (el.data('combined') !== 1) {
-								rawEdgeCountRef.current = Math.max(0, rawEdgeCountRef.current - 1);
-							}
-							const a = String(el.data('source'));
-							const b = String(el.data('target'));
-							touchedPairs.add(`${a}|${b}`);
-						}
-					}
-				} catch {}
-				if (diff.removedEdgeIds?.length) cy.remove(diff.removedEdgeIds.map((id) => `#${id}`).join(','));
-				if (diff.removedNodeIds?.length) cy.remove(diff.removedNodeIds.map((id) => `#${id}`).join(','));
-			if (diff.removedNodeIds?.length) recountRawEdgeCount(cy);
-			const hideKind = new Set<string>();
-			if (!filterKind.AMM) hideKind.add('amm');
-			if (!filterKind.CLMM) hideKind.add('clmm');
-			const rawLimit = maxEdgesRef.current;
-			const newNodeIds = new Set<string>();
-	for (const n of [...(diff.addedNodes||[]), ...(diff.updatedNodes||[])]) {
-				try {
-					const id = String(n.id);
-					const existing = cy.getElementById(id);
-					if (existing && existing.length && existing.isNode()) {
-						existing.data('label', '');
-					} else {
-						cy.add({ data: { id, label: '' } });
-						newNodeIds.add(id);
-					}
-				} catch {}
-				}
-			for (const e of [...(diff.addedEdges||[]), ...(diff.updatedEdges||[])]) {
-					const kind = (e as any).pool_kind;
-					if (kind === 'amm' || kind === 'clmm') {
-						if (hideKind.has(kind)) continue;
-					}
-					const data: any = { id: e.id, source: e.source, target: e.target, dex: e.dex, fee_bps: e.fee_bps, liquidity: e.liquidity, liquidity_display: (e as any).liquidity_display, weight: e.weight, price_a_per_b: (e as any).price_a_per_b, tvl_usd: (e as any).tvl_usd, pool_id: (e as any).pool_id, source_account: (e as any).source_account, target_account: (e as any).target_account, pool_kind: (e as any).pool_kind, direction: (e as any).direction, pool_liquidity_raw: (e as any).pool_liquidity_raw };
-					try {
-						const id = String(e.id);
-						const el = cy.getElementById(id);
-					if (el && el.length && el.isEdge()) {
-						el.data(data);
-					} else {
-						if (rawLimit > 0 && rawEdgeCountRef.current >= rawLimit) {
-							continue;
-						}
-						cy.add({ data } as any);
-						rawEdgeCountRef.current += 1;
-					}
-					} catch {}
-				try {
-					const a = String(e.source);
-					const b = String(e.target);
-					touchedPairs.add(`${a}|${b}`);
-				} catch {}
-				}
-				try {
-					const highlightIds: string[] = [];
-					for (const e of [...(diff.addedEdges||[]), ...(diff.updatedEdges||[])]) { if (e?.id) { highlightIds.push(String(e.id), `${String(e.id)}-rev`); } }
-					if (highlightIds.length) {
-						const sel = cy.$(highlightIds.map((id) => `#${id}`).join(','));
-						sel.addClass('highlighted');
-						setTimeout(() => { try { sel.removeClass('highlighted'); } catch {} }, 500);
-					}
-				} catch {}
-        try {
-          const queue = pairQueueRef.current;
-          for (const key of touchedPairs) queue.push(key);
-          const MAX_PER_FRAME = 400;
-          const nowBatch = queue.splice(0, MAX_PER_FRAME);
-          for (const key of nowBatch) {
-            const [a, b] = key.split('|');
-            ensureCombinedForPair(cy, a, b);
-          }
-          if (queue.length) {
-            requestAnimationFrame(() => {
-              const cy2 = cyRef.current; if (!cy2) { queue.length = 0; return; }
-              const more = queue.splice(0, MAX_PER_FRAME);
-              for (const key2 of more) {
-                const [a2, b2] = key2.split('|');
-                ensureCombinedForPair(cy2, a2, b2);
-              }
-            });
-          }
-        } catch {}
-			if (newNodeIds.size > 0) {
-				seedPositionsForNewNodes(cy, prevPos, newNodeIds);
-			}
-			});
-		};
-
-		const applySnapshot = (snap: GraphSnapshot) => {
-			const cy = cyRef.current; if (!cy) return;
-			if (!pageVisibleRef.current || !isVisibleRef.current) return; // Guard against rendering when not visible
-			withBatch(cy, () => {
-				const incomingVer = Number(snap?.version || 0);
-				const haveContent = cy.nodes().length > 0;
-				if (haveContent && snapshotInitializedRef.current && incomingVer <= (lastVersionRef.current || 0)) return;
-				lastVersionRef.current = incomingVer;
-				setNeedsResync(false);
-				const hadLayout = !!laidOutRef.current;
-				const preservePositions = hadLayout && !forceLayoutRef.current;
-				const prevPos = new Map<string, { x: number; y: number }>();
-				try { cy.nodes().forEach((n) => { prevPos.set(n.id(), { x: n.position('x'), y: n.position('y') }); }); } catch {}
-				cy.elements().remove();
-				cy.add(toElements(snap));
-				recountRawEdgeCount(cy);
-				if (preservePositions) {
-					try { cy.nodes().forEach((n) => { const p = prevPos.get(n.id()); if (p) n.position(p); }); } catch {}
-				}
-				seedPositionsForNewNodes(cy, prevPos);
-				if (!laidOutRef.current || forceLayoutRef.current) {
-					const attemptLayout = () => {
-						const el = containerRef.current;
-					const w = (el?.clientWidth || 0);
-					const h = (el?.clientHeight || 0);
-					scheduleResize();
-						if (w > 0 && h > 0) {
-							runLayout(forceLayoutRef.current ? 'always' : 'first');
-							forceLayoutRef.current = false;
-						} else {
-							requestAnimationFrame(attemptLayout);
-						}
-					};
-					requestAnimationFrame(attemptLayout);
-				}
-				snapshotInitializedRef.current = true;
-			});
-		};
-
-    const flush = () => {
-			scheduled = false;
-			const snap = latestSnap; const diff = latestDiff;
-			latestSnap = null; latestDiff = null;
-			if (snap) {
-				applySnapshot(snap);
-      } else if (diff) {
-        const cy = cyRef.current;
-        let sharedPrevPos: Map<string, { x: number; y: number }> | undefined;
-        try {
-          sharedPrevPos = new Map();
-          cy?.nodes().forEach((n: any) => { sharedPrevPos!.set(n.id(), { x: n.position('x'), y: n.position('y') }); });
-        } catch {}
-        // Adapt chunk size to current frame budget: smaller chunks under load
-        const chunkSize = avgFrameMsRef.current > 24 ? 100 : (avgFrameMsRef.current > 20 ? 150 : 300);
-				const copy: GraphDiff = {
-					...diff,
-					addedEdges: Array.isArray(diff.addedEdges) ? diff.addedEdges.slice() : [],
-					updatedEdges: Array.isArray(diff.updatedEdges) ? diff.updatedEdges.slice() : [],
-					addedNodes: Array.isArray(diff.addedNodes) ? diff.addedNodes.slice() : [],
-					updatedNodes: Array.isArray(diff.updatedNodes) ? diff.updatedNodes.slice() : [],
-				};
-				const runChunks = () => {
-					if (!copy.addedNodes?.length && !copy.updatedNodes?.length && !copy.addedEdges?.length && !copy.updatedEdges?.length) return;
-					const d: GraphDiff = { ...copy, addedNodes: [], updatedNodes: [], addedEdges: [], updatedEdges: [] } as any;
-					if (copy.addedNodes?.length) d.addedNodes = copy.addedNodes.splice(0, chunkSize);
-					if (copy.updatedNodes?.length) d.updatedNodes = copy.updatedNodes.splice(0, chunkSize);
-					if (copy.addedEdges?.length) d.addedEdges = copy.addedEdges.splice(0, chunkSize);
-					if (copy.updatedEdges?.length) d.updatedEdges = copy.updatedEdges.splice(0, chunkSize);
-          applyDiff(d, sharedPrevPos);
-					if (copy.addedNodes?.length || copy.updatedNodes?.length || copy.addedEdges?.length || copy.updatedEdges?.length) {
-						requestAnimationFrame(runChunks);
-					}
-				};
-				runChunks();
-			}
-		};
-    const schedule = () => {
-      if (scheduled) return;
-      if (!pageVisibleRef.current || !isVisibleRef.current) return;
-      if (skipNextFrameRef.current) { skipNextFrameRef.current = false; return; }
-      scheduled = true;
-      busyRef.current = true;
-      try { effectiveSocket?.emit('graph:busy'); } catch {}
-      const startTs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-      // Flush once per frame; manage backpressure and adaptive degrade
-      requestAnimationFrame(() => {
-        try { flush(); } finally {
-          busyRef.current = false;
-          updatePerfBudget(startTs);
-          try { effectiveSocket?.emit('graph:idle'); } catch {}
-        }
-      });
-    };
-
-		const onDiff = (diff: GraphDiff) => {
-			try {
-				const adds = (diff?.addedEdges?.length || 0) + (diff?.updatedEdges?.length || 0) + (diff?.removedEdgeIds?.length || 0);
-				const nodes = (diff?.addedNodes?.length || 0) + (diff?.updatedNodes?.length || 0) + (diff?.removedNodeIds?.length || 0);
-				if (adds > 1500 || nodes > 1500) {
-					setNeedsResync(true);
-					try { effectiveSocket.emit('graph:request-snapshot'); } catch {}
-					latestDiff = null;
-					return;
-				}
-			} catch {}
-			latestDiff = diff; schedule();
-		};
-		const onSnapshot = (_snap: GraphSnapshot) => {
-			// Prefer controlled fetch with visibility/idle gating and lite payload
-			idle(() => { try { loadSnapshot(); } catch {} }, 0);
-		};
-		const onRebase = () => {
-			idle(() => { try { loadSnapshot(); } catch {} }, 0);
-		};
+		// Keep only the highlight listener for path visualization (triggered from arbitrage panel)
 		const onHighlight = (payload: { edgeIds?: string[]; pairs?: Array<{ source: string; target: string; dex?: string }> }) => {
 			// Defer to idle to avoid blocking main thread
 			idle(() => {
@@ -1000,42 +767,11 @@ useEffect(() => {
 			}, 100); // 100ms timeout to allow interaction to settle
 		};
 
-		effectiveSocket.on('graph-update', onDiff);
-		effectiveSocket.on('graph-snapshot', onSnapshot);
-		effectiveSocket.on('graph-rebase', onRebase);
 		effectiveSocket.on('graph-highlight', onHighlight);
 		return () => {
-			effectiveSocket.off('graph-update', onDiff);
-			effectiveSocket.off('graph-snapshot', onSnapshot);
-			effectiveSocket.off('graph-rebase', onRebase);
 			effectiveSocket.off('graph-highlight', onHighlight);
 		};
-	}, [effectiveSocket, filterDex.Raydium, filterDex.Orca, filterDex.Meteora, filterKind.AMM, filterKind.CLMM, layoutName]);
-
-  // Optional snapshot-only polling mode guarded by backend config via system endpoint is not available here;
-  // implement a frontend flag by environment or assume disabled by default. If enabled, prefer polling snapshots when visible.
-  const SNAPSHOT_ONLY = false; // set true if switching to snapshot-only mode
-  useEffect(() => {
-    if (!SNAPSHOT_ONLY) return;
-    let timer: any = null;
-    const pollMs = 10000;
-    const tick = () => { if (pageVisibleRef.current && isVisibleRef.current) loadSnapshot(); };
-    timer = setInterval(tick, pollMs);
-    return () => { try { clearInterval(timer); } catch {} };
-  }, [apiBase]);
-
-  // On becoming visible for the first time, load a snapshot if none has been applied
-  useEffect(() => {
-    const onVis = () => {
-      try {
-        if (document.visibilityState === 'visible' && !snapshotInitializedRef.current) {
-          loadSnapshot();
-        }
-      } catch {}
-    };
-    try { document.addEventListener('visibilitychange', onVis); } catch {}
-    return () => { try { document.removeEventListener('visibilitychange', onVis); } catch {} };
-  }, [apiBase]);
+	}, [effectiveSocket]);
 
   // Initialize cy configuration when instance is available
 	const onCyReady = (cy: cytoscape.Core) => {
@@ -1222,11 +958,6 @@ useEffect(() => {
 						<input type="checkbox" checked={filterKind.CLMM} onChange={(e) => setFilterKind((p) => ({ ...p, CLMM: e.target.checked }))} /> CLMM
 					</label>
             <button className="px-2 py-1 border rounded text-sm" onClick={loadSnapshot} disabled={loading}>Refresh Graph</button>
-            {needsResync ? (
-              <button className="px-2 py-1 border rounded text-sm bg-yellow-600/60" onClick={() => { try { socket?.emit('graph:request-snapshot'); } catch {}; }}>
-                Resync
-              </button>
-            ) : null}
             <button className="px-2 py-1 border rounded text-sm" onClick={refitAndResize}>Refit & Resize</button>
           </div>
 				{error ? <div className="text-red-400 text-xs pointer-events-auto">{error}</div> : null}
