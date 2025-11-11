@@ -423,7 +423,12 @@ export class TriggerBot implements Bot {
 		const { waitUntilWsReady } = await import('./wsHelper.js');
 		const conn = (this.driftClient as any)?.connection;
 		if (conn) await waitUntilWsReady(conn, 'trigger.init.dlob');
-		await this.dlobSubscriber.subscribe();
+		const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+		await withRpcLimit(
+			() => this.dlobSubscriber.subscribe(),
+			1,
+			{ module: 'drift', method: 'accountSubscribe' }
+		);
 
 		this.lookupTableAccounts =
 			await this.driftClient.fetchAllLookupTableAccounts();
@@ -436,7 +441,12 @@ export class TriggerBot implements Bot {
 			const { waitUntilWsReady } = await import('./wsHelper.js');
 			const conn = (this.driftClient as any)?.connection;
 			if (conn) await waitUntilWsReady(conn, 'trigger.init.pythLazer');
-			await this.pythLazerClient.subscribe();
+			const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+			await withRpcLimit(
+				() => this.pythLazerClient.subscribe(),
+				1,
+				{ module: 'drift', method: 'accountSubscribe' }
+			);
 			await this.pythPullClient.subscribePriceFeedUpdates(
 				this.pythPullFeedIdsToCrank.map((x) => x.feedId),
 				(priceFeed) => {

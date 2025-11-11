@@ -460,19 +460,52 @@ export class DriftService {
             const stage = Math.min(3, Math.max(0, this._staleCount));
             try {
               if (stage >= 0) {
-                try { await waitReady(); await (this.sharedSlotSubscriber as any)?.subscribe?.(); this.wireSlotTsListener(true); } catch {}
+                try { 
+                  await waitReady(); 
+                  const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+                  await withRpcLimit(
+                    () => (this.sharedSlotSubscriber as any)?.subscribe?.(),
+                    1,
+                    { module: 'drift', method: 'slotSubscribe' }
+                  );
+                  this.wireSlotTsListener(true); 
+                } catch {}
               }
               if (stage >= 1) {
-                try { await waitReady(); await (this.sharedEventSubscriber as any)?.subscribe?.(); } catch {}
+                try { 
+                  await waitReady(); 
+                  const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+                  await withRpcLimit(
+                    () => (this.sharedEventSubscriber as any)?.subscribe?.(),
+                    1,
+                    { module: 'drift', method: 'logsSubscribe' }
+                  );
+                } catch {}
               }
               if (stage >= 2) {
-                try { await waitReady(); await (this.sharedUserMap as any)?.subscribe?.(); } catch {}
+                try { 
+                  await waitReady(); 
+                  const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+                  await withRpcLimit(
+                    () => (this.sharedUserMap as any)?.subscribe?.(),
+                    1,
+                    { module: 'drift', method: 'accountSubscribe' }
+                  );
+                } catch {}
               }
               if (stage >= 3) {
                 try {
                   const dl: any = this.sharedDlobSubscriber;
                   const has = dl && typeof dl.getDLOB === 'function' ? !!dl.getDLOB() : true;
-                  if (dl && typeof dl.subscribe === 'function' && !has) { await waitReady(); await dl.subscribe(); }
+                  if (dl && typeof dl.subscribe === 'function' && !has) { 
+                    await waitReady(); 
+                    const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+                    await withRpcLimit(
+                      () => dl.subscribe(),
+                      1,
+                      { module: 'drift', method: 'accountSubscribe' }
+                    );
+                  }
                 } catch {}
               }
             } finally {
@@ -512,13 +545,23 @@ export class DriftService {
       }
       try { 
         await waitReady();
-        await this.sharedUserMap?.subscribe?.(); 
+        const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+        await withRpcLimit(
+          () => this.sharedUserMap?.subscribe?.(),
+          1,
+          { module: 'drift', method: 'accountSubscribe' }
+        );
         await sleep(spacing); 
       } catch {}
     } else {
       try { 
         await waitReady();
-        await (this.sharedUserMap as any)?.subscribe?.(); 
+        const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+        await withRpcLimit(
+          () => (this.sharedUserMap as any)?.subscribe?.(),
+          1,
+          { module: 'drift', method: 'accountSubscribe' }
+        );
         await sleep(spacing); 
       } catch {}
     }
@@ -562,7 +605,12 @@ export class DriftService {
           userMapSubscriptionConfig: (() => { try { return drift.userAccountSubscriptionConfig || undefined; } catch { return undefined; } })(),
         });
         await waitReady();
-        await this.sharedDlobSubscriber.subscribe();
+        const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+        await withRpcLimit(
+          () => this.sharedDlobSubscriber.subscribe(),
+          1,
+          { module: 'drift', method: 'accountSubscribe' }
+        );
         await sleep(spacing);
       } catch {}
     } else {
@@ -574,7 +622,12 @@ export class DriftService {
           const has = typeof dl.getDLOB === 'function' ? !!dl.getDLOB() : true;
           if (!has) { 
             await waitReady();
-            await dl.subscribe(); 
+            const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+            await withRpcLimit(
+              () => dl.subscribe(),
+              1,
+              { module: 'drift', method: 'accountSubscribe' }
+            );
             await sleep(spacing); 
           }
         }

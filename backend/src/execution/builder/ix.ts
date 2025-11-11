@@ -1118,7 +1118,22 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         try {
           const deriveFn = (DLMM as any)?.deriveBinArrayBitmapExtension;
           if (deriveFn) {
-            binArrayBitmapExtension = deriveFn(poolPk, programId);
+            const derived = deriveFn(poolPk, programId);
+            // Handle both PublicKey and [PublicKey, number] tuple returns
+            // Some SDK versions return the full findProgramAddressSync tuple
+            if (Array.isArray(derived)) {
+              binArrayBitmapExtension = derived[0];
+              try {
+                logger.debug('meteora.dlmm.bitmap_ext.tuple_extracted', { 
+                  cat: 'tx', 
+                  ctx: { pool: hop.poolId, address: binArrayBitmapExtension.toBase58() } 
+                });
+              } catch {}
+            } else if (derived instanceof PublicKey) {
+              binArrayBitmapExtension = derived;
+            } else if (derived && typeof derived.toBase58 === 'function') {
+              binArrayBitmapExtension = derived;
+            }
           } else {
             // Fallback: manually derive the PDA
             const [pda] = PublicKey.findProgramAddressSync(

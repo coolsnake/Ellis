@@ -1611,20 +1611,6 @@ export function startRaydiumRefreshLoop(): void {
         const { getWebSocketReadyState, waitUntilWsReady: waitUntilWsReadyShared } = await import('../drift/wsHelper.js');
         const getRpcWebSocketReadyState = () => getWebSocketReadyState(conn);
         
-        // Shared WS attach rate limiter for all RPC operations during attachment
-        // This ensures all RPC calls (onAccountChange, getAccountInfo) respect wsAttachPerSec
-        const wsAttachPerSec = Math.max(1, Number(((CONFIG.system as any)?.wsAttachPerSec) || 10));
-        const wsAttachIntervalMs = Math.floor(1000 / wsAttachPerSec);
-        let lastWsAttachMs = 0;
-        const waitForWsAttachSlot = async () => {
-          const now = Date.now();
-          const elapsed = now - lastWsAttachMs;
-          if (elapsed < wsAttachIntervalMs) {
-            await sleep(wsAttachIntervalMs - elapsed);
-          }
-          lastWsAttachMs = Date.now();
-        };
-        
         const subscribeAccountWithRetry = async (accountPk: any, cb: (pk: any, info: any) => void): Promise<number> => {
           const maxAttempts = Math.max(1, Number(((CONFIG.system as any)?.wsSubscribeMaxAttempts) || 10));
           const baseBackoffMs = Math.max(50, Number(((CONFIG.system as any)?.wsSubscribeBackoffMs) || 250));
@@ -1637,9 +1623,7 @@ export function startRaydiumRefreshLoop(): void {
           for (;;) {
             await waitUntilWsReadyShared(conn, 'pools.subscribeAccount');
             try {
-              await waitForWsAttachSlot(); // Rate-limit the RPC call
-              
-              // Wrap subscription call with RPC tracking
+              // Wrap subscription call with RPC tracking and rate limiting
               const id = await withRpcLimit(
                 () => conn.onAccountChange(accountPk, (info: any) => { try { cb(accountPk, info); } catch {} }),
                 1,
@@ -1866,7 +1850,6 @@ export function startRaydiumRefreshLoop(): void {
                 // The first WebSocket update will populate the hash
                 // This eliminates RPC calls during pool updates when price moves to new bins
                 try {
-                  await waitForWsAttachSlot(); // Rate-limit subscription, but don't fetch
                   logger.debug('meteora.bin.subscribed', { 
                     pool: poolId, 
                     index, 
