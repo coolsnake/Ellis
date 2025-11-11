@@ -3037,6 +3037,118 @@ export async function getPumpswapPoolsCached(force = false): Promise<PoolsPayloa
           norm = filtered as any;
         }
       } catch {}
+      
+      // Apply TVL-based filtering (similar to Raydium)
+      try {
+        const globalAmm = Number(((CONFIG.system as any)?.minAmmLiqBase) ?? 0);
+        const minAmmUsd = Math.max(globalAmm, Number(((CONFIG as any)?.pumpswap?.minLiqBase) || 0));
+        if (minAmmUsd > 0) {
+          const beforeAmm = norm.amm.length;
+          const amm = norm.amm.filter(p => Number((p as any).liquidity_base || 0) >= minAmmUsd);
+          if (amm.length !== beforeAmm) { 
+            try { logger.info('pumpswap.filter tvl', { minAmmUsd, beforeAmm, afterAmm: amm.length, cat: 'pumpswap' }); } catch {} 
+          }
+          norm = { amm, clmm: [] } as any;
+        }
+      } catch {}
+      
+      // Cross-DEX price validation for Pumpswap pools
+      try {
+        const enableValidation = ((CONFIG as any)?.pumpswap?.validatePrices !== false);
+        const maxSamples = Number(((CONFIG as any)?.pumpswap?.validationSamples || 10));
+        if (enableValidation && norm.amm.length > 0) {
+          // Get other DEX pools for comparison
+          const rayPools = raydiumCache.data?.amm || [];
+          const orcaPools = orcaCache.data?.amm || [];
+          const metPools = meteoraBalCache.data?.amm || [];
+          
+          // Build a map of (mint_a, mint_b) -> pools from other DEXes
+          const otherDexPools = new Map<string, Array<{ dex: string; price: number; liquidity: number; pool: any }>>();
+          const addPool = (pools: any[], dexName: string) => {
+            for (const p of pools) {
+              if (!p.mint_a || !p.mint_b || !p.price_a_per_b || p.price_a_per_b <= 0) continue;
+              const key = `${p.mint_a}:${p.mint_b}`;
+              if (!otherDexPools.has(key)) otherDexPools.set(key, []);
+              otherDexPools.get(key)!.push({
+                dex: dexName,
+                price: p.price_a_per_b,
+                liquidity: Number((p as any).liquidity_base || (p as any).tvl_usd || 0),
+                pool: p
+              });
+            }
+          };
+          addPool(rayPools, 'Raydium');
+          addPool(orcaPools, 'Orca');
+          addPool(metPools, 'Meteora');
+          
+          // Compare Pumpswap pools against other DEXes
+          let compared = 0;
+          let withinTolerance = 0;
+          let outsideTolerance = 0;
+          const samples: any[] = [];
+          
+          for (const pump of norm.amm) {
+            if (!pump.price_a_per_b || pump.price_a_per_b <= 0) continue;
+            const key = `${pump.mint_a}:${pump.mint_b}`;
+            const others = otherDexPools.get(key);
+            if (!others || others.length === 0) continue;
+            
+            // Compare against the most liquid pool from other DEXes
+            const mostLiquid = others.reduce((best, curr) => 
+              curr.liquidity > best.liquidity ? curr : best
+            );
+            
+            const pumpPrice = pump.price_a_per_b;
+            const otherPrice = mostLiquid.price;
+            const deviation = Math.abs(pumpPrice - otherPrice) / otherPrice;
+            const deviationPct = (deviation * 100).toFixed(2);
+            
+            compared++;
+            
+            // Log if deviation exceeds 5%
+            if (deviation > 0.05) {
+              outsideTolerance++;
+              if (samples.length < maxSamples) {
+                samples.push({
+                  pair: `${pump.mint_a.slice(0, 6)}.../${pump.mint_b.slice(0, 6)}...`,
+                  pumpPrice: pumpPrice.toFixed(6),
+                  pumpLiq: Number((pump as any).liquidity_base || 0).toFixed(2),
+                  otherDex: mostLiquid.dex,
+                  otherPrice: otherPrice.toFixed(6),
+                  otherLiq: mostLiquid.liquidity.toFixed(2),
+                  deviationPct: `${deviationPct}%`,
+                  poolId: pump.id.slice(0, 8) + '...'
+                });
+              }
+            } else {
+              withinTolerance++;
+            }
+          }
+          
+          if (compared > 0) {
+            try {
+              logger.info('pumpswap.price.validation', {
+                compared,
+                withinTolerance,
+                outsideTolerance,
+                tolerancePct: 5,
+                cat: 'pumpswap'
+              });
+              
+              if (samples.length > 0) {
+                logger.warn('pumpswap.price.deviations', {
+                  count: samples.length,
+                  samples,
+                  cat: 'pumpswap'
+                });
+              }
+            } catch {}
+          }
+        }
+      } catch (e: any) {
+        try { logger.warn('pumpswap.price.validation.error', { error: String(e?.message || e), cat: 'pumpswap' }); } catch {}
+      }
+      
       const prev = pumpswapCache.data;
       pumpswapCache.data = norm; pumpswapCache.ts = Date.now();
       poolsMetrics.pumpswap.fetches += 1;

@@ -87,6 +87,8 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     pumpswap_pageDelayMs: 200,
     pumpswap_enableRpcEnrichment: true,
     pumpswap_rpcBatchSize: 100,
+    pumpswap_validatePrices: true,
+    pumpswap_validationSamples: 10,
     // Jupiter
     jupiterApiUrl: '',
     jupiterPauseApi: false,
@@ -169,6 +171,8 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             pumpswap_pageDelayMs: Number(j?.pumpswap?.pageDelayMs ?? prev.pumpswap_pageDelayMs ?? 200),
             pumpswap_enableRpcEnrichment: (j?.pumpswap?.enableRpcEnrichment !== false),
             pumpswap_rpcBatchSize: Number(j?.pumpswap?.rpcBatchSize ?? prev.pumpswap_rpcBatchSize ?? 100),
+            pumpswap_validatePrices: (j?.pumpswap?.validatePrices !== false),
+            pumpswap_validationSamples: Number(j?.pumpswap?.validationSamples ?? prev.pumpswap_validationSamples ?? 10),
             // Sanity
             sanity_enabled: (j?.sanity?.enabled ?? true) !== false,
             sanity_maxPriceDeviation: Number(j?.sanity?.maxPriceDeviation ?? prev.sanity_maxPriceDeviation),
@@ -260,6 +264,8 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         pageDelayMs: Number(cfg.pumpswap_pageDelayMs || 200),
         enableRpcEnrichment: !!cfg.pumpswap_enableRpcEnrichment,
         rpcBatchSize: Number(cfg.pumpswap_rpcBatchSize || 100),
+        validatePrices: !!cfg.pumpswap_validatePrices,
+        validationSamples: Number(cfg.pumpswap_validationSamples || 10),
       },
       sanity: {
         enabled: !!cfg.sanity_enabled,
@@ -613,8 +619,16 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                 <input type="checkbox" checked={!!cfg.pumpswap_enableRpcEnrichment} onChange={(e)=>set('pumpswap_enableRpcEnrichment', e.target.checked)} />
                 Enable RPC Enrichment (fetches token balances for price/liquidity)
               </label>
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={!!cfg.pumpswap_validatePrices} onChange={(e)=>set('pumpswap_validatePrices', e.target.checked)} />
+                Validate Prices (compare against other DEXes)
+              </label>
+              <div>
+                <label className="block text-sm mb-1">Validation Samples (log count)</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.pumpswap_validationSamples || 10} onChange={(e)=>set('pumpswap_validationSamples', Number(e.target.value)||0)} />
+              </div>
               <div className="md:col-span-3 text-xs text-gray-300">
-                Fetches pools involving SOL + USDC via Shyft's GraphQL API for pump.fun/Pumpswap coverage. RPC enrichment fetches token account balances to calculate accurate prices and liquidity. Page Delay helps avoid rate limits.
+                Fetches pools involving SOL + USDC via Shyft's GraphQL API for pump.fun/Pumpswap coverage. RPC enrichment fetches token account balances to calculate accurate prices and liquidity. Price validation compares Pumpswap prices against other DEXes and logs deviations >5%. Page Delay helps avoid rate limits.
               </div>
             </div>
           </div>

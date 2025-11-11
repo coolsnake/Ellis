@@ -60,7 +60,7 @@ export function createSystemRouter(_io: SocketIOServer): Router {
         orca?: { apiUrl?: string; programId?: string; configPubkey?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; pageSize?: number; maxPages?: number; minAmmLiqBase?: number; minClmmLiquidity?: number };
         meteora?: { apiUrl?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; pageSize?: number; maxPages?: number; minClmmLiquidity?: number; universePrefilter?: boolean };
         meteoraBalanced?: { apiUrl?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; pageSize?: number; maxPages?: number };
-        pumpswap?: { shyftApiKey?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; defaultFeeBps?: number; minLiqBase?: number; pageSize?: number; maxPages?: number; pageDelayMs?: number; enableRpcEnrichment?: boolean; rpcBatchSize?: number };
+        pumpswap?: { shyftApiKey?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; defaultFeeBps?: number; minLiqBase?: number; pageSize?: number; maxPages?: number; pageDelayMs?: number; enableRpcEnrichment?: boolean; rpcBatchSize?: number; validatePrices?: boolean; validationSamples?: number };
         sanity?: { enabled?: boolean; maxPriceDeviation?: number; feeMin?: number; feeMax?: number; writeSamples?: boolean; sampleRate?: number; sanity_applyRaydiumAmm?: boolean; sanity_applyOrcaClmm?: boolean };
       };
       if (rpcUrl) CONFIG.rpcUrl = rpcUrl;

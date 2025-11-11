@@ -634,6 +634,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const newRay = { amm: filt(ray.amm), clmm: filt(ray.clmm) } as any;
           const newOrc = { amm: filt(orc.amm), clmm: filt(orc.clmm) } as any;
           const newMet = { amm: filt(met.amm), clmm: filt(met.clmm) } as any;
+          const newMbl = { amm: filt(mbl.amm || []), clmm: filt(mbl.clmm || []) } as any;
+          const newPump = { amm: filt(pump.amm || []), clmm: filt(pump.clmm || []) } as any;
           // Fallback: if overlap filtering would drop all Meteora pairs and there were some, keep Meteora
           const postMetCt = (newMet.amm?.length || 0) + (newMet.clmm?.length || 0);
           if (preMetCt > 0 && postMetCt === 0) {
@@ -643,6 +645,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           }
           ray = newRay as any;
           orc = newOrc as any;
+          mbl = newMbl as any;
+          pump = newPump as any;
         }
       } catch {}
       const tokenMap = await loadTokenMap().catch(() => ({} as Record<string, { mint: string; decimals: number }>));
