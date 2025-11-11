@@ -240,7 +240,7 @@ export function getRpcMetrics(): any {
       },
       weight: Math.round(avgWeight * 100) / 100,
       costTotal: totalWeight,
-      lastCall: now - stats.lastCall,
+      lastCall: stats.lastCall === 0 ? 0 : now - stats.lastCall,
     };
   }
   
@@ -258,7 +258,7 @@ export function getRpcMetrics(): any {
         p95: percentile(sortedLatencies, 95),
         p99: percentile(sortedLatencies, 99),
       },
-      lastCall: now - stats.lastCall,
+      lastCall: stats.lastCall === 0 ? 0 : now - stats.lastCall,
     };
   }
   

@@ -18,7 +18,9 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
     edge_allow: {
       raydium: { amm: true, clmm: true },
       orca: { amm: true, clmm: true },
-      meteora: { amm: true, clmm: true },
+      meteora: { clmm: true },
+      meteoraBalanced: { amm: true },
+      pumpswap: { amm: true },
     },
   });
   const [saving, setSaving] = useState(false);
@@ -46,8 +48,13 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
               clmm: det?.edge_allow?.orca?.clmm !== false,
             },
             meteora: {
-              amm: det?.edge_allow?.meteora?.amm !== false,
               clmm: det?.edge_allow?.meteora?.clmm !== false,
+            },
+            meteoraBalanced: {
+              amm: det?.edge_allow?.meteoraBalanced?.amm !== false,
+            },
+            pumpswap: {
+              amm: det?.edge_allow?.pumpswap?.amm !== false,
             },
           },
         }));
@@ -115,21 +122,25 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
 
           <div className="bg-gray-700 rounded p-4">
             <h3 className="text-lg font-semibold mb-3">Arb Graph Edges</h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="col-span-1 md:col-span-1">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div className="col-span-1">
                 <div className="font-semibold mb-2">Raydium</div>
                 <label className="flex items-center gap-2 mb-2"><input type="checkbox" checked={!!cfg.edge_allow?.raydium?.amm} onChange={(e)=>set('edge_allow', { ...cfg.edge_allow, raydium: { ...(cfg.edge_allow?.raydium||{}), amm: e.target.checked } })} />AMM</label>
                 <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.edge_allow?.raydium?.clmm} onChange={(e)=>set('edge_allow', { ...cfg.edge_allow, raydium: { ...(cfg.edge_allow?.raydium||{}), clmm: e.target.checked } })} />CLMM</label>
               </div>
-              <div className="col-span-1 md:col-span-1">
+              <div className="col-span-1">
                 <div className="font-semibold mb-2">Orca</div>
                 <label className="flex items-center gap-2 mb-2"><input type="checkbox" checked={!!cfg.edge_allow?.orca?.amm} onChange={(e)=>set('edge_allow', { ...cfg.edge_allow, orca: { ...(cfg.edge_allow?.orca||{}), amm: e.target.checked } })} />AMM</label>
-                <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.edge_allow?.orca?.clmm} onChange={(e)=>set('edge_allow', { ...cfg.edge_allow, orca: { ...(cfg.edge_allow?.orca||{}), clmm: e.target.checked } })} />CLMM</label>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.edge_allow?.orca?.clmm} onChange={(e)=>set('edge_allow', { ...cfg.edge_allow, orca: { ...(cfg.edge_allow?.orca||{}), clmm: e.target.checked } })} />Whirlpool</label>
               </div>
-              <div className="col-span-1 md:col-span-1">
+              <div className="col-span-1">
                 <div className="font-semibold mb-2">Meteora</div>
-                <label className="flex items-center gap-2 mb-2"><input type="checkbox" checked={!!cfg.edge_allow?.meteora?.amm} onChange={(e)=>set('edge_allow', { ...cfg.edge_allow, meteora: { ...(cfg.edge_allow?.meteora||{}), amm: e.target.checked } })} />AMM (Balanced)</label>
-                <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.edge_allow?.meteora?.clmm} onChange={(e)=>set('edge_allow', { ...cfg.edge_allow, meteora: { ...(cfg.edge_allow?.meteora||{}), clmm: e.target.checked } })} />CLMM (DLMM)</label>
+                <label className="flex items-center gap-2 mb-2"><input type="checkbox" checked={!!cfg.edge_allow?.meteora?.clmm} onChange={(e)=>set('edge_allow', { ...cfg.edge_allow, meteora: { ...(cfg.edge_allow?.meteora||{}), clmm: e.target.checked } })} />DLMM</label>
+                <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.edge_allow?.meteoraBalanced?.amm} onChange={(e)=>set('edge_allow', { ...cfg.edge_allow, meteoraBalanced: { ...(cfg.edge_allow?.meteoraBalanced||{}), amm: e.target.checked } })} />Balanced</label>
+              </div>
+              <div className="col-span-1">
+                <div className="font-semibold mb-2">Pumpswap</div>
+                <label className="flex items-center gap-2 mb-2"><input type="checkbox" checked={!!cfg.edge_allow?.pumpswap?.amm} onChange={(e)=>set('edge_allow', { ...cfg.edge_allow, pumpswap: { ...(cfg.edge_allow?.pumpswap||{}), amm: e.target.checked } })} />AMM</label>
               </div>
             </div>
             <div className="text-xs opacity-70 mt-3">Uncheck to exclude edges from the arbitrage graph. Changes take effect on save.</div>

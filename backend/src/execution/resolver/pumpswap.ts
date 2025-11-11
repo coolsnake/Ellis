@@ -29,11 +29,11 @@ export async function resolvePumpswap(hop: DirectHop): Promise<DirectHop> {
       }
       
       // Store reserve data for quoting (if available from RPC enrichment)
-      if ((p as any)?.amount_a) {
-        (hop as any).reserveA = String((p as any).amount_a);
+      if ((p as any)?.amount_a_whole) {
+        (hop as any).reserveA = Number((p as any).amount_a_whole);
       }
-      if ((p as any)?.amount_b) {
-        (hop as any).reserveB = String((p as any).amount_b);
+      if ((p as any)?.amount_b_whole) {
+        (hop as any).reserveB = Number((p as any).amount_b_whole);
       }
     }
   } catch (e) {

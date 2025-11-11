@@ -147,7 +147,7 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
 
       amm.push({
         id,
-        dex: 'Meteora',
+        dex: 'MeteoraBalanced',
         mint_a,
         mint_b,
         fee_bps,
@@ -207,7 +207,7 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
       const liquidity_base = (wholeA > 0 && wholeB > 0) ? Math.min(wholeA, wholeB) : 0;
       amm.push({
         id,
-        dex: 'Meteora',
+        dex: 'MeteoraBalanced',
         mint_a,
         mint_b,
         fee_bps,

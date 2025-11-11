@@ -135,8 +135,6 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
             setFetcherStates(s => ({ ...s, raydium: 'enriching' }));
           } else if (/pools\.ws subscribe raydium/i.test(msg)) {
             setFetcherStates(s => ({ ...s, raydium: 'subscribing' }));
-          } else if (/normalized/i.test(msg) && /pools\.ws subscriptions active/i.test(msg)) {
-            setFetcherStates(s => ({ ...s, raydium: 'ready' }));
           } else if (/error|fail/i.test(msg)) {
             setFetcherStates(s => ({ ...s, raydium: 'error' }));
           }
@@ -146,8 +144,6 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
             setFetcherStates(s => ({ ...s, orca: 'fetching' }));
           } else if (/pools\.ws subscribe orca/i.test(msg)) {
             setFetcherStates(s => ({ ...s, orca: 'subscribing' }));
-          } else if (/normalized/i.test(msg) && /pools\.ws subscriptions active/i.test(msg)) {
-            setFetcherStates(s => ({ ...s, orca: 'ready' }));
           } else if (/error|fail/i.test(msg)) {
             setFetcherStates(s => ({ ...s, orca: 'error' }));
           }
@@ -159,8 +155,6 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
             setFetcherStates(s => ({ ...s, meteora: 'enriching' }));
           } else if (/pools\.ws subscribe meteora/i.test(msg) || /pools\.ws meteora\.attach/i.test(msg)) {
             setFetcherStates(s => ({ ...s, meteora: 'subscribing' }));
-          } else if (/normalized/i.test(msg) && /pools\.ws subscriptions active/i.test(msg)) {
-            setFetcherStates(s => ({ ...s, meteora: 'ready' }));
           } else if (/error|fail/i.test(msg)) {
             setFetcherStates(s => ({ ...s, meteora: 'error' }));
           }
@@ -172,35 +166,32 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
             setFetcherStates(s => ({ ...s, pumpswap: 'enriching' }));
           } else if (/pools\.ws subscribe pumpswap/i.test(msg)) {
             setFetcherStates(s => ({ ...s, pumpswap: 'subscribing' }));
-          } else if (/normalized/i.test(msg) && /pools\.ws subscriptions active/i.test(msg)) {
-            setFetcherStates(s => ({ ...s, pumpswap: 'ready' }));
           } else if (/error|fail/i.test(msg)) {
             setFetcherStates(s => ({ ...s, pumpswap: 'error' }));
           }
         }
         
-        // Meteora Balanced
+        // Meteora Balanced - now has subscriptions
         if (/meteora\.balanced/i.test(msg)) {
           const key = 'meteora_balanced';
           if (/fetch start/i.test(msg)) {
             setFetcherStates(s => ({ ...s, [key]: 'fetching' }));
-          } else if (/normalized/i.test(msg)) {
-            setFetcherStates(s => ({ ...s, [key]: 'ready' }));
+          } else if (/pools\.ws subscribe.*balanced/i.test(msg) || /pools\.ws.*meteora.*balanced/i.test(msg)) {
+            setFetcherStates(s => ({ ...s, [key]: 'subscribing' }));
           } else if (/error|fail/i.test(msg)) {
             setFetcherStates(s => ({ ...s, [key]: 'error' }));
           }
         }
         
-        // Check if all subscriptions are active (means we're ready)
+        // ONLY mark as ready when all subscriptions are fully active
         if (/pools\.ws subscriptions active/i.test(msg)) {
-          // Mark all as ready when subscriptions are fully active
+          // Mark all DEXes with subscriptions as ready
           setFetcherStates(s => {
-            const updated: Record<string, FetcherState> = {};
-            for (const [key, state] of Object.entries(s)) {
-              if (state === 'subscribing' || state === 'fetching' || state === 'enriching') {
+            const updated: Record<string, FetcherState> = { ...s };
+            // Only mark as ready if they were in a loading state (not already ready, not error, not idle)
+            for (const key of ['raydium', 'orca', 'meteora', 'meteora_balanced', 'pumpswap']) {
+              if (updated[key] === 'subscribing' || updated[key] === 'fetching' || updated[key] === 'enriching') {
                 updated[key] = 'ready';
-              } else {
-                updated[key] = state;
               }
             }
             return updated;
@@ -228,7 +219,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
 
   const fmt = (v: any) => typeof v === 'number' ? v.toLocaleString() : String(v || '-');
   const ago = (ms?: number) => {
-    if (!ms) return '-';
+    if (!ms || ms === 0) return '-';
     const s = Math.max(0, Math.floor((Date.now() - ms)/1000));
     return `${s}s ago`;
   };
@@ -419,7 +410,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
                 </div>
                 <div className="flex items-center gap-4 text-sm">
                   {meteoraPools ? (
-                    <span className="text-gray-300">CLMM: {fmt(meteoraPools.clmm?.length)}</span>
+                    <span className="text-gray-300">DLMM: {fmt(meteoraPools.clmm?.length || 0)}</span>
                   ) : <span className="text-gray-500">-</span>}
                   {poolsStats?.meteora ? (
                     <>
@@ -471,7 +462,7 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
                 </div>
                 <div className="flex items-center gap-4 text-sm">
                   {pumpswapPools ? (
-                    <span className="text-gray-300">AMM: {fmt(pumpswapPools.amm?.length)}</span>
+                    <span className="text-gray-300">AMM: {fmt(pumpswapPools.amm?.length || 0)}</span>
                   ) : <span className="text-gray-500">-</span>}
                   {poolsStats?.pumpswap ? (
                     <>

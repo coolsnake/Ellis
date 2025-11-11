@@ -64,7 +64,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 	const [layoutName, setLayoutName] = useState<'fcose' | 'cose' | 'grid' | 'circle'>('fcose');
-	const [filterDex, setFilterDex] = useState<{ Raydium: boolean; Orca: boolean; Meteora: boolean; Pumpswap: boolean }>({ Raydium: true, Orca: true, Meteora: true, Pumpswap: true });
+	const [filterDex, setFilterDex] = useState<{ Raydium: boolean; Orca: boolean; Meteora: boolean; MeteoraBalanced: boolean; Pumpswap: boolean }>({ Raydium: true, Orca: true, Meteora: true, MeteoraBalanced: true, Pumpswap: true });
 	const [filterKind, setFilterKind] = useState<{ AMM: boolean; CLMM: boolean }>({ AMM: true, CLMM: true });
   const laidOutRef = useRef(false);
 	const forceLayoutRef = useRef(false);
@@ -202,6 +202,8 @@ useEffect(() => {
 		if (!filterDex.Raydium) hideDex.add('Raydium');
 		if (!filterDex.Orca) hideDex.add('Orca');
 		if (!filterDex.Meteora) hideDex.add('Meteora');
+		if (!filterDex.MeteoraBalanced) hideDex.add('MeteoraBalanced');
+		if (!filterDex.Pumpswap) hideDex.add('Pumpswap');
 		const hideKind = new Set<string>();
 		if (!filterKind.AMM) hideKind.add('amm');
 		if (!filterKind.CLMM) hideKind.add('clmm');
@@ -423,6 +425,8 @@ useEffect(() => {
 					if (!filterDex.Raydium && dx === 'Raydium') return false;
 					if (!filterDex.Orca && dx === 'Orca') return false;
 					if (!filterDex.Meteora && dx === 'Meteora') return false;
+					if (!filterDex.MeteoraBalanced && dx === 'MeteoraBalanced') return false;
+					if (!filterDex.Pumpswap && dx === 'Pumpswap') return false;
 					return true;
 				});
 			} catch {}
@@ -670,7 +674,7 @@ useEffect(() => {
 		// Changing filters can drastically change geometry; request a fresh layout
 		forceLayoutRef.current = true;
 		loadSnapshot();
-	}, [filterDex.Raydium, filterDex.Orca, filterDex.Meteora, filterKind.AMM, filterKind.CLMM]);
+	}, [filterDex.Raydium, filterDex.Orca, filterDex.Meteora, filterDex.MeteoraBalanced, filterDex.Pumpswap, filterKind.AMM, filterKind.CLMM]);
 
   // Ensure we don't leave the server thinking we're busy after unmount
   useEffect(() => {
@@ -946,7 +950,10 @@ useEffect(() => {
 					<input type="checkbox" checked={filterDex.Orca} onChange={(e) => setFilterDex((p) => ({ ...p, Orca: e.target.checked }))} /> Orca
 				</label>
 				<label className="text-sm flex items-center gap-1">
-					<input type="checkbox" checked={filterDex.Meteora} onChange={(e) => setFilterDex((p) => ({ ...p, Meteora: e.target.checked }))} /> Meteora
+					<input type="checkbox" checked={filterDex.Meteora} onChange={(e) => setFilterDex((p) => ({ ...p, Meteora: e.target.checked }))} /> Meteora DLMM
+				</label>
+				<label className="text-sm flex items-center gap-1">
+					<input type="checkbox" checked={filterDex.MeteoraBalanced} onChange={(e) => setFilterDex((p) => ({ ...p, MeteoraBalanced: e.target.checked }))} /> Meteora Balanced
 				</label>
 				<label className="text-sm flex items-center gap-1">
 					<input type="checkbox" checked={filterDex.Pumpswap} onChange={(e) => setFilterDex((p) => ({ ...p, Pumpswap: e.target.checked }))} /> Pumpswap

@@ -495,37 +495,10 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       const metRaw = overrides?.meteora ?? (typeof poolsMod.peekMeteoraPools === 'function' ? poolsMod.peekMeteoraPools() : { amm: [], clmm: [] });
       const mblRaw = overrides?.meteora_balanced ?? (typeof poolsMod.peekMeteoraBalancedPools === 'function' ? poolsMod.peekMeteoraBalancedPools() : { amm: [], clmm: [] });
       const pumpRaw = overrides?.pumpswap ?? (typeof poolsMod.peekPumpswapPools === 'function' ? poolsMod.peekPumpswapPools() : { amm: [], clmm: [] });
-      // Apply scoping according to CONFIG.system.scopePools and scopePoolsMode via universe helper
-      const mode = String((CONFIG.system as any)?.scopePoolsMode || 'jupiter');
-      const scoped = CONFIG.system.scopePools !== false && mode !== 'none';
+      
+      // Pools are already filtered by universe, minPools, and TVL in refreshAllSources
+      // Use the cached results directly without re-filtering
       let ray = rayRaw; let orc = orcRaw; let met = metRaw; let mbl = mblRaw; let pump = pumpRaw;
-      if (scoped) {
-        try {
-          const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
-          const universe = await computeTokenUniverse(mode as any);
-          const anchorBridging = !!((CONFIG.system as any)?.enableAnchorBridging);
-          const rScoped = filterPoolsByUniverse(rayRaw as any, universe, anchorBridging);
-          const oScoped = filterPoolsByUniverse(orcRaw as any, universe, anchorBridging);
-          const mScoped = filterPoolsByUniverse(metRaw as any, universe, anchorBridging);
-          const mbScoped = filterPoolsByUniverse(mblRaw as any, universe, anchorBridging);
-          const pScoped = filterPoolsByUniverse(pumpRaw as any, universe, anchorBridging);
-          const upstreamR = (rayRaw.amm?.length || 0) + (rayRaw.clmm?.length || 0);
-          const scopedR = (rScoped.amm.length || 0) + (rScoped.clmm.length || 0);
-          const upstreamO = (orcRaw.amm?.length || 0) + (orcRaw.clmm?.length || 0);
-          const scopedO = (oScoped.amm.length || 0) + (oScoped.clmm.length || 0);
-          const upstreamM = (metRaw.amm?.length || 0) + (metRaw.clmm?.length || 0);
-          const scopedM = (mScoped.amm.length || 0) + (mScoped.clmm.length || 0);
-          ray = (upstreamR > 0 && scopedR === 0) ? rayRaw : rScoped as any;
-          orc = (upstreamO > 0 && scopedO === 0) ? orcRaw : oScoped as any;
-          met = (upstreamM > 0 && scopedM === 0) ? metRaw : mScoped as any;
-          const upstreamMb = (mblRaw.amm?.length || 0) + (mblRaw.clmm?.length || 0);
-          const scopedMb = (mbScoped.amm.length || 0) + (mbScoped.clmm.length || 0);
-          mbl = (upstreamMb > 0 && scopedMb === 0) ? mblRaw : mbScoped as any;
-          const upstreamP = (pumpRaw.amm?.length || 0) + (pumpRaw.clmm?.length || 0);
-          const scopedP = (pScoped.amm.length || 0) + (pScoped.clmm.length || 0);
-          pump = (upstreamP > 0 && scopedP === 0) ? pumpRaw : pScoped as any;
-        } catch {}
-      }
       // Before building, ensure we actually retained pools after scoping/filters
       try {
         const count =
@@ -541,114 +514,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           return { version: (lastSnapshot?.version || 0), timestamp: Date.now(), nodes: [], edges: [] } as GraphSnapshot;
         }
       } catch {}
-      // Apply global TVL/liquidity thresholds after scoping, before graph build
-      try {
-        const minAmm = Math.max(0, Number(((CONFIG.system as any)?.minAmmLiqBase) ?? 0));
-        const minClmm = Math.max(0, Number(((CONFIG.system as any)?.minClmmLiquidity) ?? 0));
-        if (minAmm > 0 || minClmm > 0) {
-          const valAmm = (p: any) => {
-            const tvl = Number((p as any)?.tvl_usd ?? 0);
-            if (Number.isFinite(tvl) && tvl > 0) return tvl;
-            const disp = Number((p as any)?.liquidity_display ?? 0);
-            if (Number.isFinite(disp) && disp > 0) return disp;
-            const base = Number((p as any)?.liquidity_base ?? 0);
-            return Number.isFinite(base) && base > 0 ? base : 0;
-          };
-          const valClmm = (p: any) => {
-            const tvl = Number((p as any)?.tvl_usd ?? 0);
-            if (Number.isFinite(tvl) && tvl > 0) return tvl;
-            const disp = Number((p as any)?.liquidity_display ?? 0);
-            if (Number.isFinite(disp) && disp > 0) return disp;
-            const liq = Number((p as any)?.liquidity ?? 0);
-            if (Number.isFinite(liq) && liq > 0) return liq;
-            const raw = Number((p as any)?.pool_liquidity_raw ?? 0);
-            return Number.isFinite(raw) && raw > 0 ? raw : 0;
-          };
-          const filt = (norm: { amm: any[]; clmm: any[] }) => ({
-            amm: minAmm > 0 ? (norm.amm || []).filter((p: any) => valAmm(p) >= minAmm) : (norm.amm || []),
-            clmm: minClmm > 0 ? (norm.clmm || []).filter((p: any) => valClmm(p) >= minClmm) : (norm.clmm || []),
-          });
-          const before = {
-            ray: { a: ray.amm?.length || 0, c: ray.clmm?.length || 0 },
-            orc: { a: orc.amm?.length || 0, c: orc.clmm?.length || 0 },
-            met: { a: met.amm?.length || 0, c: met.clmm?.length || 0 },
-            pump: { a: pump.amm?.length || 0, c: pump.clmm?.length || 0 },
-          };
-          ray = filt(ray) as any;
-          orc = filt(orc) as any;
-          met = filt(met) as any;
-          pump = filt(pump) as any;
-          const after = {
-            ray: { a: ray.amm?.length || 0, c: ray.clmm?.length || 0 },
-            orc: { a: orc.amm?.length || 0, c: orc.clmm?.length || 0 },
-            met: { a: met.amm?.length || 0, c: met.clmm?.length || 0 },
-            pump: { a: pump.amm?.length || 0, c: pump.clmm?.length || 0 },
-          };
-          if (before.ray.a !== after.ray.a || before.ray.c !== after.ray.c || before.orc.a !== after.orc.a || before.orc.c !== after.orc.c || before.met.c !== after.met.c) {
-            try { logger.info('graph.filter tvl', { minAmm, minClmm, before, after }); } catch {}
-          }
-        }
-      } catch {}
-      // Optional pool count filter (retain pairs with at least N total pools across all DEXes)
-      try {
-        const minPools = Math.max(1, Number(((CONFIG.system as any)?.minPoolsPerPair) || 1));
-        if (minPools > 1) {
-          // Helper to create canonical pair key (always sort mints lexicographically)
-          const canonicalPairKey = (mintA: string, mintB: string): string => {
-            const a = String(mintA || '');
-            const b = String(mintB || '');
-            return a <= b ? `${a}-${b}` : `${b}-${a}`;
-          };
-          
-          // Count total pools per pair (not just DEXes)
-          const poolCounts = new Map<string, number>();
-          const countPools = (arr: any[]) => {
-            for (const p of (arr || [])) {
-              const pairKey = canonicalPairKey(p.mint_a, p.mint_b);
-              poolCounts.set(pairKey, (poolCounts.get(pairKey) || 0) + 1);
-            }
-          };
-          
-          // Count all pools for each pair across all DEXes and types
-          countPools(ray.amm);
-          countPools(ray.clmm);
-          countPools(orc.amm);
-          countPools(orc.clmm);
-          countPools(met.amm);
-          countPools(met.clmm);
-          countPools(mbl.amm);
-          countPools(pump.amm);
-          
-          // Allow pairs with at least minPools total pools
-          const allow = new Set<string>();
-          for (const [k, count] of poolCounts.entries()) {
-            if (count >= minPools) {
-              allow.add(k);
-            }
-          }
-          
-          const filt = <T extends { mint_a: string; mint_b: string }>(arr: T[]) => 
-            (arr || []).filter(p => allow.has(canonicalPairKey(p.mint_a, p.mint_b)));
-            
-          const preMetCt = (met.amm?.length || 0) + (met.clmm?.length || 0);
-          const newRay = { amm: filt(ray.amm), clmm: filt(ray.clmm) } as any;
-          const newOrc = { amm: filt(orc.amm), clmm: filt(orc.clmm) } as any;
-          const newMet = { amm: filt(met.amm), clmm: filt(met.clmm) } as any;
-          const newMbl = { amm: filt(mbl.amm || []), clmm: filt(mbl.clmm || []) } as any;
-          const newPump = { amm: filt(pump.amm || []), clmm: filt(pump.clmm || []) } as any;
-          // Fallback: if overlap filtering would drop all Meteora pairs and there were some, keep Meteora
-          const postMetCt = (newMet.amm?.length || 0) + (newMet.clmm?.length || 0);
-          if (preMetCt > 0 && postMetCt === 0) {
-            met = met as any;
-          } else {
-            met = newMet as any;
-          }
-          ray = newRay as any;
-          orc = newOrc as any;
-          mbl = newMbl as any;
-          pump = newPump as any;
-        }
-      } catch {}
+      // Pools are already filtered by TVL in refreshAllSources - skip duplicate filtering
+      // Pools are already filtered by minPoolsPerPair in refreshAllSources - skip duplicate filtering
       const tokenMap = await loadTokenMap().catch(() => ({} as Record<string, { mint: string; decimals: number }>));
       const labelByMint: Record<string, string> = {};
       const decimalsByMint: Record<string, number> = {};

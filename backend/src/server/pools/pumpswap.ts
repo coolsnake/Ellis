@@ -403,7 +403,8 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
   const amm: AmmPool[] = [];
   const pools = Array.isArray(raw) ? raw : [];
   
-  const defaultFeeBps = Number((CONFIG as any)?.pumpswap?.defaultFeeBps || 30);
+  // PumpSwap total fee: 20 bps LP fee + 5 bps protocol fee = 25 bps total
+  const defaultFeeBps = Number((CONFIG as any)?.pumpswap?.defaultFeeBps || 25);
   const minLiqBase = Number((CONFIG as any)?.pumpswap?.minLiqBase || 0);
   
   // Load Jupiter token map for decimals lookup
@@ -422,7 +423,8 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
       if (!id || !mint_a || !mint_b) continue;
       
       // Use extracted fee if available, otherwise fall back to default
-      const defaultFeeBps = Number((CONFIG as any)?.pumpswap?.defaultFeeBps || 30);
+      // PumpSwap total fee: 20 bps LP fee + 5 bps protocol fee = 25 bps total
+      const defaultFeeBps = Number((CONFIG as any)?.pumpswap?.defaultFeeBps || 25);
       const feeBps = pool.fee_bps !== undefined && Number.isFinite(pool.fee_bps) 
         ? Number(pool.fee_bps) 
         : defaultFeeBps;
@@ -464,9 +466,12 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
           baseReserve = Number(baseReserveRaw) / Math.pow(10, decA);
           quoteReserve = Number(quoteReserveRaw) / Math.pow(10, decB);
           
-          // Price = amount of A per 1 unit of B
+          // Price = marginal rate for small swaps with fees applied
+          // For constant product AMM: marginal_price = (reserveOut / reserveIn) * (1 - fee)
+          // This represents the actual exchange rate a trader would get
           if (quoteReserve > 0) {
-            price_a_per_b = baseReserve / quoteReserve;
+            const feeMultiplier = 1 - (feeBps / 10_000);
+            price_a_per_b = (baseReserve / quoteReserve) * feeMultiplier;
           }
           
           // Calculate high-precision price for exact calculations

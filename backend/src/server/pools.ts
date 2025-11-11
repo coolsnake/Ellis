@@ -434,9 +434,10 @@ async function batchGetAccountInfo(conn: any, address: string): Promise<any> {
 }
 
 let attachedOrcaPools: number = 0;
-let attachedRaydiumPools: number = 0;
-let attachedMeteoraPools: number = 0;
-let attachedPumpswapPools: number = 0;
+  let attachedRaydiumPools: number = 0;
+  let attachedMeteoraPools: number = 0;
+  let attachedPumpswapPools: number = 0;
+  let attachedMeteoraBalancedPools: number = 0;
 
 // When true, the next call to startRaydiumRefreshLoop will attach WS subscriptions
 // without starting timers or triggering an extra initial HTTP warmup fetch.
@@ -502,7 +503,7 @@ export function getPoolCacheAges(): { raydium: number; orca: number; meteora: nu
 
 // Retarget WS: unsubscribe and re-subscribe to current graph-derived targets
 // Uses sequential subscription with throttling to avoid RPC burst
-export async function retargetPoolWebsockets(): Promise<{ attached: { orca: number; raydium: number; meteora: number } }> {
+export async function retargetPoolWebsockets(): Promise<{ attached: { orca: number; raydium: number; meteora: number; meteora_balanced: number; pumpswap: number } }> {
   try { 
     emit('log', { 
       level: 'info', 
@@ -594,7 +595,7 @@ export async function retargetPoolWebsockets(): Promise<{ attached: { orca: numb
   // Step 6: Check health and report results
   try {
     const st = getPoolWsStatus();
-    const attached = { orca: attachedOrcaPools, raydium: attachedRaydiumPools, meteora: attachedMeteoraPools };
+    const attached = { orca: attachedOrcaPools, raydium: attachedRaydiumPools, meteora: attachedMeteoraPools, meteora_balanced: attachedMeteoraBalancedPools, pumpswap: attachedPumpswapPools };
     if (!st.healthy) {
       try { 
         logger.warn('pools.ws retarget.unhealthy', { attached, cat: 'pools' });
@@ -618,12 +619,15 @@ export async function retargetPoolWebsockets(): Promise<{ attached: { orca: numb
     }
   } catch {}
   
-  return { attached: { orca: attachedOrcaPools, raydium: attachedRaydiumPools, meteora: attachedMeteoraPools } };
+  return { attached: { orca: attachedOrcaPools, raydium: attachedRaydiumPools, meteora: attachedMeteoraPools, meteora_balanced: attachedMeteoraBalancedPools, pumpswap: attachedPumpswapPools } };
 }
 
 // Unified refresh orchestrator: fetch all sources and optionally (re)subscribe
+// REFACTORED: Sequential operations with proper filtering stages
 export async function refreshAllSources(force = true, subscribe = true): Promise<{ raydium: PoolsPayload; orca: PoolsPayload; meteora: PoolsPayload; meteora_balanced: PoolsPayload; pumpswap: PoolsPayload }> {
   try {
+    logger.info('pools.refresh.start', { force, subscribe, cat: 'pools' });
+    
     // Deep bootstrap phase: optionally pause feed/API, fetch Jup tokens, then hydrate prices
     if (force) {
       let shouldResumeFeed = false;
@@ -660,12 +664,302 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
       }
     }
   } catch {}
-  // Sequential fetching to prevent concurrent API load
-  const r = await getRaydiumPoolsNormalized(!!force).catch(() => ({ amm: [], clmm: [] }));
-  const o = await getOrcaPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
-  const m = await getMeteoraPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
-  const mb = await getMeteoraBalancedPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
-  const pump = await getPumpswapPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
+  
+  // === PHASE 1: FETCH ALL DEXES IN SEQUENCE (no filtering yet) ===
+  logger.info('pools.refresh.phase.fetch', { cat: 'pools' });
+  let r = await getRaydiumPoolsNormalized(!!force, { skipUniverseFilter: true }).catch(() => ({ amm: [], clmm: [] }));
+  let o = await getOrcaPoolsCached(!!force, { skipUniverseFilter: true }).catch(() => ({ amm: [], clmm: [] }));
+  let m = await getMeteoraPoolsCached(!!force, { skipUniverseFilter: true }).catch(() => ({ amm: [], clmm: [] }));
+  let mb = await getMeteoraBalancedPoolsCached(!!force, { skipUniverseFilter: true }).catch(() => ({ amm: [], clmm: [] }));
+  // Note: Pumpswap doesn't do universe filtering yet, so no change needed
+  let pump = await getPumpswapPoolsCached(!!force).catch(() => ({ amm: [], clmm: [] }));
+  
+  try {
+    const fetchCounts = {
+      raydium: { amm: r.amm?.length || 0, clmm: r.clmm?.length || 0 },
+      orca: { amm: o.amm?.length || 0, clmm: o.clmm?.length || 0 },
+      meteora: { amm: m.amm?.length || 0, clmm: m.clmm?.length || 0 },
+      meteora_balanced: { amm: mb.amm?.length || 0, clmm: mb.clmm?.length || 0 },
+      pumpswap: { amm: pump.amm?.length || 0, clmm: pump.clmm?.length || 0 },
+    };
+    logger.info('pools.refresh.phase.fetch.complete', { counts: fetchCounts, cat: 'pools' });
+  } catch {}
+  
+  // === PHASE 2: FILTER BY UNIVERSE (across all DEXes) ===
+  logger.info('pools.refresh.phase.universe_filter', { cat: 'pools' });
+  try {
+    const mode = String((CONFIG.system as any)?.scopePoolsMode || 'jupiter');
+    const scoped = CONFIG.system.scopePools !== false && mode !== 'none';
+    if (scoped) {
+      const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
+      const universe = await computeTokenUniverse(mode as any);
+      const anchorBridging = !!((CONFIG.system as any)?.enableAnchorBridging);
+      
+      const rScoped = filterPoolsByUniverse(r as any, universe, anchorBridging);
+      const oScoped = filterPoolsByUniverse(o as any, universe, anchorBridging);
+      const mScoped = filterPoolsByUniverse(m as any, universe, anchorBridging);
+      const mbScoped = filterPoolsByUniverse(mb as any, universe, anchorBridging);
+      const pScoped = filterPoolsByUniverse(pump as any, universe, anchorBridging);
+      
+      const beforeCounts = {
+        raydium: (r.amm?.length || 0) + (r.clmm?.length || 0),
+        orca: (o.amm?.length || 0) + (o.clmm?.length || 0),
+        meteora: (m.amm?.length || 0) + (m.clmm?.length || 0),
+        meteora_balanced: (mb.amm?.length || 0) + (mb.clmm?.length || 0),
+        pumpswap: (pump.amm?.length || 0) + (pump.clmm?.length || 0),
+      };
+      
+      r = rScoped as any;
+      o = oScoped as any;
+      m = mScoped as any;
+      mb = mbScoped as any;
+      pump = pScoped as any;
+      
+      const afterCounts = {
+        raydium: (r.amm?.length || 0) + (r.clmm?.length || 0),
+        orca: (o.amm?.length || 0) + (o.clmm?.length || 0),
+        meteora: (m.amm?.length || 0) + (m.clmm?.length || 0),
+        meteora_balanced: (mb.amm?.length || 0) + (mb.clmm?.length || 0),
+        pumpswap: (pump.amm?.length || 0) + (pump.clmm?.length || 0),
+      };
+      
+      logger.info('pools.refresh.phase.universe_filter.complete', { 
+        mode, 
+        before: beforeCounts, 
+        after: afterCounts,
+        cat: 'pools' 
+      });
+    }
+  } catch (e: any) {
+    logger.warn('pools.refresh.phase.universe_filter.failed', { error: String(e?.message || e), cat: 'pools' });
+  }
+  
+  // === PHASE 3: FILTER BY MINIMUM POOLS PER PAIR (first pass) ===
+  logger.info('pools.refresh.phase.min_pools_filter', { cat: 'pools' });
+  try {
+    const minPools = Math.max(1, Number(((CONFIG.system as any)?.minPoolsPerPair) || 1));
+    if (minPools > 1) {
+      const canonicalPairKey = (mintA: string, mintB: string): string => {
+        const a = String(mintA || '');
+        const b = String(mintB || '');
+        return a <= b ? `${a}-${b}` : `${b}-${a}`;
+      };
+      
+      // Count total pools per pair across all DEXes
+      const poolCounts = new Map<string, number>();
+      const countPools = (arr: any[]) => {
+        for (const p of (arr || [])) {
+          const pairKey = canonicalPairKey(p.mint_a, p.mint_b);
+          poolCounts.set(pairKey, (poolCounts.get(pairKey) || 0) + 1);
+        }
+      };
+      
+      countPools(r.amm);
+      countPools(r.clmm);
+      countPools(o.amm);
+      countPools(o.clmm);
+      countPools(m.amm);
+      countPools(m.clmm);
+      countPools(mb.amm);
+      countPools(pump.amm);
+      
+      // Allow pairs with at least minPools total pools
+      const allow = new Set<string>();
+      for (const [k, count] of poolCounts.entries()) {
+        if (count >= minPools) {
+          allow.add(k);
+        }
+      }
+      
+      const filt = <T extends { mint_a: string; mint_b: string }>(arr: T[]) => 
+        (arr || []).filter(p => allow.has(canonicalPairKey(p.mint_a, p.mint_b)));
+      
+      const beforeCounts = {
+        raydium: (r.amm?.length || 0) + (r.clmm?.length || 0),
+        orca: (o.amm?.length || 0) + (o.clmm?.length || 0),
+        meteora: (m.amm?.length || 0) + (m.clmm?.length || 0),
+        meteora_balanced: (mb.amm?.length || 0) + (mb.clmm?.length || 0),
+        pumpswap: (pump.amm?.length || 0) + (pump.clmm?.length || 0),
+      };
+      
+      r = { amm: filt(r.amm), clmm: filt(r.clmm) } as any;
+      o = { amm: filt(o.amm), clmm: filt(o.clmm) } as any;
+      m = { amm: filt(m.amm), clmm: filt(m.clmm) } as any;
+      mb = { amm: filt(mb.amm || []), clmm: filt(mb.clmm || []) } as any;
+      pump = { amm: filt(pump.amm || []), clmm: filt(pump.clmm || []) } as any;
+      
+      const afterCounts = {
+        raydium: (r.amm?.length || 0) + (r.clmm?.length || 0),
+        orca: (o.amm?.length || 0) + (o.clmm?.length || 0),
+        meteora: (m.amm?.length || 0) + (m.clmm?.length || 0),
+        meteora_balanced: (mb.amm?.length || 0) + (mb.clmm?.length || 0),
+        pumpswap: (pump.amm?.length || 0) + (pump.clmm?.length || 0),
+      };
+      
+      logger.info('pools.refresh.phase.min_pools_filter.complete', { 
+        minPools, 
+        before: beforeCounts, 
+        after: afterCounts,
+        cat: 'pools' 
+      });
+    }
+  } catch (e: any) {
+    logger.warn('pools.refresh.phase.min_pools_filter.failed', { error: String(e?.message || e), cat: 'pools' });
+  }
+  
+  // === PHASE 4: ENRICH ALL DEXES IN SEQUENCE ===
+  // Note: Pumpswap enrichment already happens in fetchPumpswapGraphQL (RPC reserves)
+  // Orca/Raydium/Meteora enrichment happens in their normalizers
+  // No additional enrichment phase needed currently
+  logger.info('pools.refresh.phase.enrich', { note: 'enrichment_embedded_in_normalizers', cat: 'pools' });
+  
+  // === PHASE 5: FILTER BY TVL/LIQUIDITY ===
+  logger.info('pools.refresh.phase.tvl_filter', { cat: 'pools' });
+  try {
+    const minAmm = Math.max(0, Number(((CONFIG.system as any)?.minAmmLiqBase) ?? 0));
+    const minClmm = Math.max(0, Number(((CONFIG.system as any)?.minClmmLiquidity) ?? 0));
+    if (minAmm > 0 || minClmm > 0) {
+      const valAmm = (p: any) => {
+        const tvl = Number((p as any)?.tvl_usd ?? 0);
+        if (Number.isFinite(tvl) && tvl > 0) return tvl;
+        const disp = Number((p as any)?.liquidity_display ?? 0);
+        if (Number.isFinite(disp) && disp > 0) return disp;
+        const base = Number((p as any)?.liquidity_base ?? 0);
+        return Number.isFinite(base) && base > 0 ? base : 0;
+      };
+      const valClmm = (p: any) => {
+        const tvl = Number((p as any)?.tvl_usd ?? 0);
+        if (Number.isFinite(tvl) && tvl > 0) return tvl;
+        const disp = Number((p as any)?.liquidity_display ?? 0);
+        if (Number.isFinite(disp) && disp > 0) return disp;
+        const liq = Number((p as any)?.liquidity ?? 0);
+        if (Number.isFinite(liq) && liq > 0) return liq;
+        const raw = Number((p as any)?.pool_liquidity_raw ?? 0);
+        return Number.isFinite(raw) && raw > 0 ? raw : 0;
+      };
+      const filt = (norm: { amm: any[]; clmm: any[] }) => ({
+        amm: minAmm > 0 ? (norm.amm || []).filter((p: any) => valAmm(p) >= minAmm) : (norm.amm || []),
+        clmm: minClmm > 0 ? (norm.clmm || []).filter((p: any) => valClmm(p) >= minClmm) : (norm.clmm || []),
+      });
+      
+      const beforeCounts = {
+        raydium: { a: r.amm?.length || 0, c: r.clmm?.length || 0 },
+        orca: { a: o.amm?.length || 0, c: o.clmm?.length || 0 },
+        meteora: { a: m.amm?.length || 0, c: m.clmm?.length || 0 },
+        meteora_balanced: { a: mb.amm?.length || 0, c: mb.clmm?.length || 0 },
+        pumpswap: { a: pump.amm?.length || 0, c: pump.clmm?.length || 0 },
+      };
+      
+      r = filt(r) as any;
+      o = filt(o) as any;
+      m = filt(m) as any;
+      mb = filt(mb) as any;
+      pump = filt(pump) as any;
+      
+      const afterCounts = {
+        raydium: { a: r.amm?.length || 0, c: r.clmm?.length || 0 },
+        orca: { a: o.amm?.length || 0, c: o.clmm?.length || 0 },
+        meteora: { a: m.amm?.length || 0, c: m.clmm?.length || 0 },
+        meteora_balanced: { a: mb.amm?.length || 0, c: mb.clmm?.length || 0 },
+        pumpswap: { a: pump.amm?.length || 0, c: pump.clmm?.length || 0 },
+      };
+      
+      logger.info('pools.refresh.phase.tvl_filter.complete', { 
+        minAmm, 
+        minClmm, 
+        before: beforeCounts, 
+        after: afterCounts,
+        cat: 'pools' 
+      });
+    }
+  } catch (e: any) {
+    logger.warn('pools.refresh.phase.tvl_filter.failed', { error: String(e?.message || e), cat: 'pools' });
+  }
+  
+  // === PHASE 6: FILTER BY MINIMUM POOLS PER PAIR (second pass after TVL filtering) ===
+  logger.info('pools.refresh.phase.min_pools_filter_2nd', { cat: 'pools' });
+  try {
+    const minPools = Math.max(1, Number(((CONFIG.system as any)?.minPoolsPerPair) || 1));
+    if (minPools > 1) {
+      const canonicalPairKey = (mintA: string, mintB: string): string => {
+        const a = String(mintA || '');
+        const b = String(mintB || '');
+        return a <= b ? `${a}-${b}` : `${b}-${a}`;
+      };
+      
+      // Count total pools per pair across all DEXes again
+      const poolCounts = new Map<string, number>();
+      const countPools = (arr: any[]) => {
+        for (const p of (arr || [])) {
+          const pairKey = canonicalPairKey(p.mint_a, p.mint_b);
+          poolCounts.set(pairKey, (poolCounts.get(pairKey) || 0) + 1);
+        }
+      };
+      
+      countPools(r.amm);
+      countPools(r.clmm);
+      countPools(o.amm);
+      countPools(o.clmm);
+      countPools(m.amm);
+      countPools(m.clmm);
+      countPools(mb.amm);
+      countPools(pump.amm);
+      
+      // Allow pairs with at least minPools total pools
+      const allow = new Set<string>();
+      for (const [k, count] of poolCounts.entries()) {
+        if (count >= minPools) {
+          allow.add(k);
+        }
+      }
+      
+      const filt = <T extends { mint_a: string; mint_b: string }>(arr: T[]) => 
+        (arr || []).filter(p => allow.has(canonicalPairKey(p.mint_a, p.mint_b)));
+      
+      const beforeCounts = {
+        raydium: (r.amm?.length || 0) + (r.clmm?.length || 0),
+        orca: (o.amm?.length || 0) + (o.clmm?.length || 0),
+        meteora: (m.amm?.length || 0) + (m.clmm?.length || 0),
+        meteora_balanced: (mb.amm?.length || 0) + (mb.clmm?.length || 0),
+        pumpswap: (pump.amm?.length || 0) + (pump.clmm?.length || 0),
+      };
+      
+      r = { amm: filt(r.amm), clmm: filt(r.clmm) } as any;
+      o = { amm: filt(o.amm), clmm: filt(o.clmm) } as any;
+      m = { amm: filt(m.amm), clmm: filt(m.clmm) } as any;
+      mb = { amm: filt(mb.amm || []), clmm: filt(mb.clmm || []) } as any;
+      pump = { amm: filt(pump.amm || []), clmm: filt(pump.clmm || []) } as any;
+      
+      const afterCounts = {
+        raydium: (r.amm?.length || 0) + (r.clmm?.length || 0),
+        orca: (o.amm?.length || 0) + (o.clmm?.length || 0),
+        meteora: (m.amm?.length || 0) + (m.clmm?.length || 0),
+        meteora_balanced: (mb.amm?.length || 0) + (mb.clmm?.length || 0),
+        pumpswap: (pump.amm?.length || 0) + (pump.clmm?.length || 0),
+      };
+      
+      logger.info('pools.refresh.phase.min_pools_filter_2nd.complete', { 
+        minPools, 
+        before: beforeCounts, 
+        after: afterCounts,
+        cat: 'pools' 
+      });
+    }
+  } catch (e: any) {
+    logger.warn('pools.refresh.phase.min_pools_filter_2nd.failed', { error: String(e?.message || e), cat: 'pools' });
+  }
+  
+  // Update caches with filtered results
+  raydiumCache.data = r;
+  raydiumCache.ts = Date.now();
+  orcaCache.data = o;
+  orcaCache.ts = Date.now();
+  meteoraCache.data = m;
+  meteoraCache.ts = Date.now();
+  meteoraBalancedCache.data = mb;
+  meteoraBalancedCache.ts = Date.now();
+  pumpswapCache.data = pump;
+  pumpswapCache.ts = Date.now();
 
   // Post-fetch bootstrap: if pricing coverage is low, hydrate prices for all fetched mints and rebuild graph
   try {
@@ -691,6 +985,17 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
       }
     }
   } catch {}
+  
+  logger.info('pools.refresh.phase.complete_all_filtering', { 
+    finalCounts: {
+      raydium: { amm: r.amm?.length || 0, clmm: r.clmm?.length || 0 },
+      orca: { amm: o.amm?.length || 0, clmm: o.clmm?.length || 0 },
+      meteora: { amm: m.amm?.length || 0, clmm: m.clmm?.length || 0 },
+      meteora_balanced: { amm: mb.amm?.length || 0, clmm: mb.clmm?.length || 0 },
+      pumpswap: { amm: pump.amm?.length || 0, clmm: pump.clmm?.length || 0 },
+    },
+    cat: 'pools'
+  });
   // Pair diagnostics: log a single SOL-USDC pool per fetcher
   try {
     const SOL = 'So11111111111111111111111111111111111111112';
@@ -793,7 +1098,10 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
       try { logger.info(`pools:bootstrap feed.resume enabled=${shouldEnable}`, { cat: 'pools' }); } catch {}
     }
   } catch {}
+  
+  // === PHASE 7: SUBSCRIBE TO RETAINED POOLS PER DEX IN SEQUENCE ===
   if (subscribe) {
+    logger.info('pools.refresh.phase.subscribe', { cat: 'pools' });
     try {
       // Wait for any existing WebSocket cleanup to complete before starting new subscriptions
       // This prevents race conditions where accountSubscribe is called on a closed socket
@@ -801,9 +1109,21 @@ export async function refreshAllSources(force = true, subscribe = true): Promise
         await wsClosePromise.catch(() => {});
         wsClosePromise = null;
       }
+      
+      // Sequential subscription: enable WS and start refresh loop
+      // The refresh loop internally handles sequential DEX subscription via startPoolWebsocketsOnlyOnce
       enablePoolWebsocketRefreshes();
+      
+      // Small delay to ensure WS connection is fully established before subscribing
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      logger.info('pools.refresh.phase.subscribe.start_loop', { cat: 'pools' });
       startRaydiumRefreshLoop();
-    } catch {}
+      
+      logger.info('pools.refresh.phase.subscribe.complete', { cat: 'pools' });
+    } catch (e: any) {
+      logger.warn('pools.refresh.phase.subscribe.failed', { error: String(e?.message || e), cat: 'pools' });
+    }
   }
   // One-shot consolidated graph push after initial forced refresh completes (guarded)
   try {
@@ -2752,6 +3072,122 @@ export function startRaydiumRefreshLoop(): void {
           logger.warn('pools.ws pumpswap subscribe failed', { error: String(e?.message || e), stack: String(e?.stack || '').slice(0,200) });
           attachedPumpswapPools = 0;
         }
+        
+        // Stagger delay between DEX sources in sequential mode
+        if (isSequentialMode && staggerDelayMs > 0) {
+          logger.info('pools.ws sequential.stagger', { 
+            afterDex: 'pumpswap', 
+            beforeDex: 'meteora_balanced', 
+            delayMs: staggerDelayMs, 
+            cat: 'pools' 
+          });
+          await new Promise(r => setTimeout(r, staggerDelayMs));
+        }
+        
+        // Meteora Balanced pool subscriptions (AMM)
+        logger.info('pools.ws dex.subscribe.start', { dex: 'meteora_balanced', sequential: isSequentialMode, cat: 'pools' });
+        try {
+          // Get pool IDs from graph edges
+          const edgePoolIds = new Set<string>();
+          try {
+            const gmod: any = await import('./graph.js');
+            const snap = await gmod.getGraphSnapshot(false);
+            for (const e of (snap?.edges || [])) {
+              const dex = String((e as any)?.dex || '');
+              if (dex !== 'MeteoraBalanced') continue;
+              const pid = String((e as any)?.pool_id || '');
+              if (pid) edgePoolIds.add(pid.replace(/-rev$/,''));
+            }
+            try { logger.info('pools.ws targets.meteora_balanced from graph', { size: edgePoolIds.size }); } catch {}
+          } catch {}
+          
+          // Fallback: use cache
+          const mbalKnown: string[] = [];
+          try { 
+            for (const p of (metbalCache.data?.amm || [])) {
+              if (p?.id) mbalKnown.push(String(p.id)); 
+            }
+          } catch {}
+          
+          const startTsMbal = Date.now();
+          const base = edgePoolIds.size > 0 ? Array.from(edgePoolIds) : mbalKnown;
+          const uniqueMbal = Array.from(new Set(base.filter(Boolean)));
+          let attachedMbal = 0;
+          
+          // Rate-limit attachments
+          const basePerSecMbal = Math.max(1, Number(((CONFIG.system as any)?.wsAttachPerSec) || 10));
+          const perSecMbal = isSequentialMode 
+            ? Math.max(1, Number((CONFIG.system as any)?.wsRetargetAttachPerSec || Math.floor(basePerSecMbal / 2)))
+            : basePerSecMbal;
+          const intervalMsMbal = Math.floor(1000 / perSecMbal);
+          const sleepMbal = (ms: number) => new Promise(r => setTimeout(r, ms));
+          
+          logger.info('pools.ws meteora_balanced.loop.start', { 
+            poolCount: uniqueMbal.length, 
+            rateLimit: `${perSecMbal}/sec`, 
+            intervalMs: intervalMsMbal, 
+            sequential: isSequentialMode,
+            cat: 'pools' 
+          });
+          
+          for (let i = 0; i < uniqueMbal.length; i++) {
+            const addr = uniqueMbal[i];
+            try {
+              const pk = new web3.PublicKey(addr);
+              const id = await subscribeAccountWithRetry(pk, handle);
+              subs.push({ kind: 'account', id }); 
+              attachedMbal++;
+              
+              try {
+                const acct = pk.toBase58();
+                targetedSourceByAccount.set(acct, 'pumpswap' as any);
+                debugLogTargeted('pumpswap' as any, acct, { kind: 'pool', source: 'meteora_balanced' });
+                logger.debug('pools.ws meteora_balanced.pool.subscribed', { index: i, pool: addr.slice(0,8)+'…', cat: 'pools' });
+              } catch {}
+              
+              // Attach vault listeners for Meteora Balanced AMM pools
+              try {
+                const pool = metbalCache.data?.amm?.find(p => p.id === addr);
+                if (pool) {
+                  if ((pool as any).account_a) {
+                    const vaultAPk = new web3.PublicKey((pool as any).account_a);
+                    const vaultAId = await subscribeAccountWithRetry(vaultAPk, handle);
+                    subs.push({ kind: 'account', id: vaultAId });
+                    derivedAccountToPool.set((pool as any).account_a, { poolId: addr, accountType: 'vault' });
+                    targetedSourceByAccount.set((pool as any).account_a, 'pumpswap' as any);
+                    debugLogTargeted('pumpswap' as any, (pool as any).account_a, { kind: 'vault', side: 'a', source: 'meteora_balanced' });
+                  }
+                  if ((pool as any).account_b) {
+                    const vaultBPk = new web3.PublicKey((pool as any).account_b);
+                    const vaultBId = await subscribeAccountWithRetry(vaultBPk, handle);
+                    subs.push({ kind: 'account', id: vaultBId });
+                    derivedAccountToPool.set((pool as any).account_b, { poolId: addr, accountType: 'vault' });
+                    targetedSourceByAccount.set((pool as any).account_b, 'pumpswap' as any);
+                    debugLogTargeted('pumpswap' as any, (pool as any).account_b, { kind: 'vault', side: 'b', source: 'meteora_balanced' });
+                  }
+                }
+              } catch (e: any) {
+                try { logger.debug('pools.ws meteora_balanced.vault.attach.fail', { pool: addr.slice(0,8)+'…', error: String(e?.message || e), cat: 'pools' }); } catch {}
+              }
+            } catch {}
+            
+            if (i < uniqueMbal.length - 1 && intervalMsMbal > 0) { await sleepMbal(intervalMsMbal); }
+          }
+          
+          attachedMeteoraBalancedPools = attachedMbal;
+          logger.info('pools.ws subscribe meteora_balanced.pools', { 
+            attached: attachedMbal, 
+            target: uniqueMbal.length, 
+            source: 'meteora_balanced', 
+            ms: Date.now() - startTsMbal 
+          });
+        } catch (e: any) {
+          logger.warn('pools.ws meteora_balanced subscribe failed', { 
+            error: String(e?.message || e), 
+            stack: String(e?.stack || '').slice(0,200) 
+          });
+          attachedMeteoraBalancedPools = 0;
+        }
 
         wsUnsubscribe = () => {
           try {
@@ -3057,7 +3493,7 @@ export function peekMeteoraBalancedPools(): PoolsPayload { return metbalCache.da
 export function peekPumpswapPools(): PoolsPayload { return pumpswapCache.data || { amm: [], clmm: [] }; }
 
 
-export async function getMeteoraBalancedPoolsCached(force = false): Promise<PoolsPayload> {
+export async function getMeteoraBalancedPoolsCached(force = false, opts?: { skipUniverseFilter?: boolean }): Promise<PoolsPayload> {
   const ttlMs = Number(((CONFIG as any)?.meteoraBalanced?.cacheTtlMs) || 300_000);
   const minForceGap = Math.max(1000, Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000));
   (getMeteoraBalancedPoolsCached as any).__lastForceAt = (getMeteoraBalancedPoolsCached as any).__lastForceAt || 0;
@@ -3084,7 +3520,7 @@ export async function getMeteoraBalancedPoolsCached(force = false): Promise<Pool
       const prev = metbalCache.data;
       metbalCache.data = norm; metbalCache.ts = Date.now();
       poolsMetrics.meteora_balanced.fetches = (poolsMetrics.meteora_balanced.fetches || 0) + 1;
-      poolsMetrics.meteora_balanced.lastMs = Date.now() - t0;
+      poolsMetrics.meteora_balanced.lastMs = Date.now();
       poolsMetrics.meteora_balanced.lastAmm = (norm.amm || []).length;
       try {
         const d = diffNormalizedPools(prev || { amm: [], clmm: [] }, norm);
@@ -3276,9 +3712,9 @@ export async function getPumpswapPoolsCached(force = false): Promise<PoolsPayloa
       const prev = pumpswapCache.data;
       pumpswapCache.data = norm; pumpswapCache.ts = Date.now();
       poolsMetrics.pumpswap.fetches += 1;
-      poolsMetrics.pumpswap.lastMs = Date.now() - t0;
+      poolsMetrics.pumpswap.lastMs = Date.now();
       poolsMetrics.pumpswap.lastAmm = norm.amm.length;
-      try { logger.info('pumpswap.fetch normalized', { amm: norm.amm.length, ms: poolsMetrics.pumpswap.lastMs, cat: 'pumpswap' }); } catch {}
+      try { logger.info('pumpswap.fetch normalized', { amm: norm.amm.length, ms: Date.now() - t0, cat: 'pumpswap' }); } catch {}
       try { emit('log', { level: 'info', message: `arb:pools pumpswap.fetch ok amm=${norm.amm.length}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
       try {
         const d = diffNormalizedPools(prev || { amm: [], clmm: [] }, norm);
@@ -3441,18 +3877,21 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
       
       // Apply universe filtering early so caches are consistent across sources
       try {
-        const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
-        const mode: any = (CONFIG.system as any)?.tokenUniverseMode || 'jupiter';
-        const uni = await computeTokenUniverse(mode);
-        const beforeAmm = norm.amm.length, beforeClmm = norm.clmm.length;
-        const scoped = filterPoolsByUniverse(norm as any, uni, !!((CONFIG.system as any)?.enableAnchorBridging));
-        if (scoped.amm.length !== beforeAmm || scoped.clmm.length !== beforeClmm) {
-          poolsMetrics.raydium.filteredAmm += (beforeAmm - scoped.amm.length);
-          poolsMetrics.raydium.filteredClmm += (beforeClmm - scoped.clmm.length);
-          poolsMetrics.raydium.universe = String(mode);
-          try { logger.info('raydium.universe.filter', { mode, beforeAmm, beforeClmm, afterAmm: scoped.amm.length, afterClmm: scoped.clmm.length }); } catch {}
+        const skipUniverse = opts?.skipUniverseFilter === true;
+        if (!skipUniverse) {
+          const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
+          const mode: any = (CONFIG.system as any)?.tokenUniverseMode || 'jupiter';
+          const uni = await computeTokenUniverse(mode);
+          const beforeAmm = norm.amm.length, beforeClmm = norm.clmm.length;
+          const scoped = filterPoolsByUniverse(norm as any, uni, !!((CONFIG.system as any)?.enableAnchorBridging));
+          if (scoped.amm.length !== beforeAmm || scoped.clmm.length !== beforeClmm) {
+            poolsMetrics.raydium.filteredAmm += (beforeAmm - scoped.amm.length);
+            poolsMetrics.raydium.filteredClmm += (beforeClmm - scoped.clmm.length);
+            poolsMetrics.raydium.universe = String(mode);
+            try { logger.info('raydium.universe.filter', { mode, beforeAmm, beforeClmm, afterAmm: scoped.amm.length, afterClmm: scoped.clmm.length }); } catch {}
+          }
+          norm = scoped as any;
         }
-        norm = scoped as any;
       } catch {}
 
       // Apply token blocklist (exclude pools containing any blocked mint)
@@ -3484,10 +3923,10 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
       } catch {}
 
       poolsMetrics.raydium.fetches += 1;
-      poolsMetrics.raydium.lastMs = Date.now() - t0;
+      poolsMetrics.raydium.lastMs = Date.now();
       poolsMetrics.raydium.lastAmm = norm.amm.length;
       poolsMetrics.raydium.lastClmm = norm.clmm.length;
-      logger.info('raydium.fetch normalized', { amm: norm.amm.length, clmm: norm.clmm.length, ms: poolsMetrics.raydium.lastMs, cat: 'raydium', canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
+      logger.info('raydium.fetch normalized', { amm: norm.amm.length, clmm: norm.clmm.length, ms: Date.now() - t0, cat: 'raydium', canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
       try { emit('log', { level: 'info', message: `arb:pools raydium.fetch ok amm=${norm.amm.length} clmm=${norm.clmm.length}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
 
       const prev = raydiumCache.data;
@@ -3604,7 +4043,7 @@ export async function getOrcaPoolsCached(force = false): Promise<PoolsPayload> {
       orcaCache.data = data;
       orcaCache.ts = Date.now();
       poolsMetrics.orca.fetches += 1;
-      poolsMetrics.orca.lastMs = Date.now() - t0;
+      poolsMetrics.orca.lastMs = Date.now();
       poolsMetrics.orca.lastAmm = (data.amm || []).length;
       poolsMetrics.orca.lastClmm = (data.clmm || []).length;
       // Emit socket event when normalized cache changes
@@ -3669,26 +4108,29 @@ export async function getOrcaPoolsNormalized(): Promise<PoolsPayload> {
             }
             norm = filtered as any;
           }
-        } catch {}
+        } catch {        }
         // Apply universe filtering early so caches are consistent across sources
         try {
-          const uniModeAny: any = (CONFIG.system as any)?.tokenUniverseMode || 'jupiter';
-          const isTest = String(((globalThis as any)?.process?.env?.NODE_ENV) || '') === 'test';
-          const isVitest = !!((globalThis as any)?.vi || (globalThis as any)?.vitest || (String(((globalThis as any)?.process?.env?.VITEST) || '') === 'true'));
-          const skipUniverse = isTest || isVitest || String(uniModeAny) === 'none';
+          const skipUniverse = opts?.skipUniverseFilter === true;
           if (!skipUniverse) {
-            const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
-            const uni = await computeTokenUniverse(uniModeAny);
-            const beforeAmm = norm.amm.length, beforeClmm = norm.clmm.length;
-            const scoped = filterPoolsByUniverse(norm as any, uni, !!((CONFIG.system as any)?.enableAnchorBridging));
-            if (scoped.amm.length !== beforeAmm || scoped.clmm.length !== beforeClmm) {
-              poolsMetrics.orca.lastAmm = scoped.amm.length;
-              poolsMetrics.orca.lastClmm = scoped.clmm.length;
-              try { logger.info('orca.universe.filter', { mode: uniModeAny, beforeAmm, beforeClmm, afterAmm: scoped.amm.length, afterClmm: scoped.clmm.length }); } catch {}
+            const uniModeAny: any = (CONFIG.system as any)?.tokenUniverseMode || 'jupiter';
+            const isTest = String(((globalThis as any)?.process?.env?.NODE_ENV) || '') === 'test';
+            const isVitest = !!((globalThis as any)?.vi || (globalThis as any)?.vitest || (String(((globalThis as any)?.process?.env?.VITEST) || '') === 'true'));
+            const skipUniverseMode = isTest || isVitest || String(uniModeAny) === 'none';
+            if (!skipUniverseMode) {
+              const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
+              const uni = await computeTokenUniverse(uniModeAny);
+              const beforeAmm = norm.amm.length, beforeClmm = norm.clmm.length;
+              const scoped = filterPoolsByUniverse(norm as any, uni, !!((CONFIG.system as any)?.enableAnchorBridging));
+              if (scoped.amm.length !== beforeAmm || scoped.clmm.length !== beforeClmm) {
+                poolsMetrics.orca.lastAmm = scoped.amm.length;
+                poolsMetrics.orca.lastClmm = scoped.clmm.length;
+                try { logger.info('orca.universe.filter', { mode: uniModeAny, beforeAmm, beforeClmm, afterAmm: scoped.amm.length, afterClmm: scoped.clmm.length }); } catch {}
+              }
+              norm = scoped as any;
+            } else {
+              try { logger.info('orca.universe.filter skip', { reason: isTest ? 'test' : 'mode:none' }); } catch {}
             }
-            norm = scoped as any;
-          } else {
-            try { logger.info('orca.universe.filter skip', { reason: isTest ? 'test' : 'mode:none' }); } catch {}
           }
         } catch {}
         // Defer TVL filtering to graph-level to avoid early pruning across sources
@@ -3790,15 +4232,18 @@ export async function getMeteoraPoolsCached(force = false): Promise<PoolsPayload
       } catch {}
       // Optionally apply universe filtering early (disabled by default for Meteora)
       try {
-        const prefilter = !!((CONFIG as any)?.meteora?.universePrefilter);
-        if (prefilter) {
-          const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
-          const mode: any = (CONFIG.system as any)?.tokenUniverseMode || 'jupiter';
-          const uni = await computeTokenUniverse(mode);
-          const beforeClmm = norm.clmm.length;
-          const scoped = filterPoolsByUniverse(norm as any, uni, !!((CONFIG.system as any)?.enableAnchorBridging));
-          if (scoped.clmm.length !== beforeClmm) { try { logger.info('meteora.universe.filter', { mode, beforeClmm, afterClmm: scoped.clmm.length }); } catch {} }
-          norm = { amm: [], clmm: scoped.clmm } as any;
+        const skipUniverse = opts?.skipUniverseFilter === true;
+        if (!skipUniverse) {
+          const prefilter = !!((CONFIG as any)?.meteora?.universePrefilter);
+          if (prefilter) {
+            const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
+            const mode: any = (CONFIG.system as any)?.tokenUniverseMode || 'jupiter';
+            const uni = await computeTokenUniverse(mode);
+            const beforeClmm = norm.clmm.length;
+            const scoped = filterPoolsByUniverse(norm as any, uni, !!((CONFIG.system as any)?.enableAnchorBridging));
+            if (scoped.clmm.length !== beforeClmm) { try { logger.info('meteora.universe.filter', { mode, beforeClmm, afterClmm: scoped.clmm.length }); } catch {} }
+            norm = { amm: [], clmm: scoped.clmm } as any;
+          }
         }
       } catch {}
        // TVL filter (apply global thresholds on top of per-source)
@@ -3858,9 +4303,9 @@ export async function getMeteoraPoolsCached(force = false): Promise<PoolsPayload
       }
       
       poolsMetrics.meteora.fetches += 1;
-      poolsMetrics.meteora.lastMs = Date.now() - t0;
+      poolsMetrics.meteora.lastMs = Date.now();
       poolsMetrics.meteora.lastClmm = norm.clmm.length;
-      try { logger.info('meteora.fetch normalized', { clmm: norm.clmm.length, ms: poolsMetrics.meteora.lastMs, cat: 'meteora' }); } catch {}
+      try { logger.info('meteora.fetch normalized', { clmm: norm.clmm.length, ms: Date.now() - t0, cat: 'meteora' }); } catch {}
       try { emit('log', { level: 'info', message: `arb:pools meteora.fetch ok clmm=${norm.clmm.length}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
       try {
         const d = diffNormalizedPools(prev || { amm: [], clmm: [] }, norm);
