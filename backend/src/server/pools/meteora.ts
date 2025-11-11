@@ -303,12 +303,72 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       }
     } catch {}
     
-    // NOTE: Bitmap extension is NOT needed - the Meteora SDK handles it automatically
-    // We previously derived bin_array_bitmap_extension and stored it in pool data,
-    // but this is unnecessary. The SDK includes the correct bitmap extension PDA 
-    // when building swap instructions. Just providing the program ID is sufficient.
+    // Derive and check bitmap extension account
+    // Some pools require an actual bitmap extension PDA, others can use program ID
+    let bin_array_bitmap_extension: string | undefined;
+    try {
+      const { Connection, PublicKey } = await import('@solana/web3.js');
+      const { getConnection } = await import('../../wallet/wallet.js');
+      
+      const poolPk = new PublicKey(id);
+      const programId = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+      
+      // Derive the bitmap extension PDA
+      const [bitmapExtPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('bitmap_extension'), poolPk.toBuffer()],
+        programId
+      );
+      
+      // Check if it exists on-chain (use connection from wallet module)
+      try {
+        const connection = getConnection();
+        const bitmapExtInfo = await connection.getAccountInfo(bitmapExtPda);
+        
+        if (bitmapExtInfo && bitmapExtInfo.owner.equals(programId)) {
+          // Bitmap extension exists - store the PDA
+          bin_array_bitmap_extension = bitmapExtPda.toBase58();
+          try {
+            logger.info('meteora.bitmap_ext.found', {
+              pool: id,
+              bitmapExt: bin_array_bitmap_extension,
+              cat: 'meteora'
+            });
+          } catch {}
+        } else {
+          // Bitmap extension doesn't exist - store program ID as fallback
+          bin_array_bitmap_extension = programId.toBase58();
+          try {
+            logger.info('meteora.bitmap_ext.not_found_using_programid', {
+              pool: id,
+              programId: bin_array_bitmap_extension,
+              cat: 'meteora'
+            });
+          } catch {}
+        }
+      } catch (rpcErr) {
+        // RPC error - default to program ID (conservative)
+        bin_array_bitmap_extension = programId.toBase58();
+        try {
+          logger.info('meteora.bitmap_ext.check_failed', {
+            pool: id,
+            error: String((rpcErr as any)?.message || rpcErr),
+            fallback: 'program_id',
+            cat: 'meteora'
+          });
+        } catch {}
+      }
+    } catch (err) {
+      // Derivation error - pool will work without bitmap extension in most cases
+      try {
+        logger.info('meteora.bitmap_ext.derive_failed', {
+          pool: id,
+          error: String((err as any)?.message || err),
+          cat: 'meteora'
+        });
+      } catch {}
+    }
     
-    clmm.push({ id, dex: 'Meteora', mint_a, mint_b, fee_bps, sqrt_price_x64: 0, liquidity: 0, tick_spacing: Number((it as any)?.bin_step || (it as any)?.binStep || 0), updated_ms: now, price_a_per_b: (price_a_per_b && price_a_per_b > 0) ? price_a_per_b : undefined, amount_a, amount_b, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, account_a, account_b, pool_kind: 'clmm', pool_liquidity_raw, tvl_usd, liquidity_display } as any);
+    clmm.push({ id, dex: 'Meteora', mint_a, mint_b, fee_bps, sqrt_price_x64: 0, liquidity: 0, tick_spacing: Number((it as any)?.bin_step || (it as any)?.binStep || 0), updated_ms: now, price_a_per_b: (price_a_per_b && price_a_per_b > 0) ? price_a_per_b : undefined, amount_a, amount_b, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, account_a, account_b, bin_array_bitmap_extension, pool_kind: 'clmm', pool_liquidity_raw, tvl_usd, liquidity_display } as any);
   }
   // Canonicalize pairs using unified policy; handles A/B swap and price inversion when needed
   const clmmCanon = canonicalizePairs(clmm);
@@ -330,7 +390,133 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     const canon = String(((CONFIG as any)?.system?.canonicalizePairs) || 'lex');
     logger.info('meteora.http normalized', { clmm: clmmCanon.length, cat: 'meteora', canon });
   } catch {}
+  
+  // OPTIMIZATION: Pre-cache active bin IDs to eliminate RPC calls during transaction building
+  await populateMeteoraActiveIds(clmmCanon);
+  
   return { amm: [], clmm: clmmCanon };
+}
+
+/**
+ * Pre-populate execution cache with Meteora active bin IDs
+ * This eliminates 100-200ms RPC calls per Meteora swap during transaction building
+ */
+async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void> {
+  if (pools.length === 0) return;
+  
+  try {
+    const { executionCache } = await import('../../execution/cache.js');
+    const { getConnection } = await import('../../wallet/wallet.js');
+    const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+    const { PublicKey } = await import('@solana/web3.js');
+    const connection = getConnection();
+    
+    const startTime = Date.now();
+    let cached = 0;
+    let failed = 0;
+    
+    // Batch fetch pool states (100 at a time to respect RPC limits)
+    const BATCH_SIZE = 100;
+    for (let i = 0; i < pools.length; i += BATCH_SIZE) {
+      const batch = pools.slice(i, i + BATCH_SIZE);
+      
+      try {
+        const pks = batch.map(p => new PublicKey(p.id));
+        
+        // Use getMultipleAccountsInfo for efficient batch fetching
+        // Weight = number of accounts / 100 (RPC limiter convention)
+        const weight = Math.max(1, Math.ceil(batch.length / 100));
+        const accounts = await withRpcLimit(
+          () => connection.getMultipleAccountsInfo(pks),
+          weight,
+          { module: 'pools', method: 'getMultipleAccountsInfo' }
+        );
+        
+        // Process each account and extract active bin ID
+        for (let j = 0; j < accounts.length; j++) {
+          const pool = batch[j];
+          const acc = accounts[j];
+          
+          if (acc?.data) {
+            try {
+              // Decode Meteora DLMM pool state to extract active bin ID
+              const DLMM = await import('@meteora-ag/dlmm');
+              const state = (DLMM as any).decodeAccount?.(
+                { coder: (DLMM as any).coder ?? {} },
+                'lbPair',
+                acc.data
+              );
+              
+              if (state?.activeId !== undefined) {
+                // Cache active bin ID with 30-second TTL (refreshes on next pool update)
+                executionCache.setHot(pool.id, {
+                  activeId: state.activeId,
+                });
+                cached++;
+                
+                try {
+                  logger.debug('meteora.activeId.cached', {
+                    cat: 'meteora',
+                    ctx: {
+                      pool: pool.id.slice(0, 8) + '...',
+                      activeId: state.activeId,
+                      binStep: state.binStep
+                    }
+                  });
+                } catch {}
+              }
+            } catch (decodeErr) {
+              failed++;
+              try {
+                logger.warn('meteora.activeId.decode_failed', {
+                  cat: 'meteora',
+                  ctx: {
+                    pool: pool.id.slice(0, 8) + '...',
+                    error: String((decodeErr as any)?.message || decodeErr)
+                  }
+                });
+              } catch {}
+            }
+          } else {
+            failed++;
+          }
+        }
+      } catch (batchErr) {
+        failed += batch.length;
+        try {
+          logger.warn('meteora.activeId.batch_failed', {
+            cat: 'meteora',
+            ctx: {
+              batchIndex: Math.floor(i / BATCH_SIZE),
+              batchSize: batch.length,
+              error: String((batchErr as any)?.message || batchErr)
+            }
+          });
+        } catch {}
+      }
+    }
+    
+    const durationMs = Date.now() - startTime;
+    try {
+      logger.info('meteora.activeId.cache_populated', {
+        cat: 'meteora',
+        ctx: {
+          total: pools.length,
+          cached,
+          failed,
+          durationMs,
+          avgMs: pools.length > 0 ? Math.round(durationMs / pools.length) : 0
+        }
+      });
+    } catch {}
+  } catch (err) {
+    try {
+      logger.warn('meteora.activeId.populate_failed', {
+        cat: 'meteora',
+        ctx: { error: String((err as any)?.message || err) }
+      });
+    } catch {}
+  }
 }
 
 

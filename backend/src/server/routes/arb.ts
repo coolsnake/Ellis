@@ -753,7 +753,6 @@ export function createArbRouter(io: SocketIOServer): Router {
       const { resolveDirectPlan } = await import('../../execution/resolver/index.js');
       const { ResolveDirectSchema } = await import('../routes/schemas.js');
       const { assembleAndSimulate } = await import('../../execution/sender.js');
-      const { writeDexFullDump } = await import('../../utils/txTrace.js');
       const { loadExecConfig } = await import('../execConfigStore.js');
 
       const input = req.body || {};
@@ -930,19 +929,28 @@ export function createArbRouter(io: SocketIOServer): Router {
       try {
         const dexes = Array.from(new Set((plan.hops || []).map((h:any)=>String(h?.dex||'').toLowerCase())));
         const txLogs = getTxRelatedLogs(id, Date.now() - 30000, Date.now(), 200);
-        for (const d of dexes) {
-          if (d === 'raydium' || d === 'orca' || d === 'meteora') {
-            await writeDexFullDump(d as any, 'preflight', {
-              id,
-              path: plan.path,
-              hops: plan.hops,
-              exec: execCfg,
-              built,
-              sim,
-              txLogs,
-            });
-          }
-        }
+        const { writeTxFullDump } = await import('../../utils/txTrace.js');
+        // Write single consolidated file instead of one per DEX
+        await writeTxFullDump('preflight', {
+          id,
+          txId: id,
+          path: plan.path,
+          hops: plan.hops,
+          plan, // Full execution plan
+          dexes, // Include all DEXes involved
+          exec: execCfg,
+          execConfig: execCfg, // Alias for clarity
+          built,
+          sim,
+          executorLogs: txLogs, // Include executor logs
+          // Include opportunity data if available from request
+          opportunity: (req.body as any)?.opportunity || {
+            path: plan.path,
+            hop_pool_ids: plan.hops?.map((h: any) => h.poolId),
+            hop_dexes: plan.hops?.map((h: any) => h.dex),
+            dexes: Array.from(new Set(plan.hops?.map((h: any) => h.dex))),
+          },
+        });
       } catch {}
       try { pushBounded(execStats.preflightMs, Date.now() - tPre0); } catch {}
 
@@ -1085,7 +1093,6 @@ export function createArbRouter(io: SocketIOServer): Router {
       const { resolveDirectPlan } = await import('../../execution/resolver/index.js');
       const { ResolveDirectSchema } = await import('../routes/schemas.js');
       const { assembleAndSend, assembleAndSimulate } = await import('../../execution/sender.js');
-      const { writeDexFullDump } = await import('../../utils/txTrace.js');
       const { addTxRecord } = await import('../txHistory.js');
       const { loadExecConfig } = await import('../execConfigStore.js');
 
@@ -1246,19 +1253,28 @@ export function createArbRouter(io: SocketIOServer): Router {
         try {
           const dexes = Array.from(new Set((plan.hops || []).map((h:any)=>String(h?.dex||'').toLowerCase())));
           const txLogs = getTxRelatedLogs(id, Date.now() - 30000, Date.now(), 200);
-          for (const d of dexes) {
-            if (d === 'raydium' || d === 'orca' || d === 'meteora') {
-              await writeDexFullDump(d as any, 'preflight', {
-                id,
-                path: plan.path,
-                hops: plan.hops,
-                exec: execCfg,
-                built,
-                sim,
-                txLogs,
-              });
-            }
-          }
+          const { writeTxFullDump } = await import('../../utils/txTrace.js');
+          // Write single consolidated file instead of one per DEX
+          await writeTxFullDump('preflight', {
+            id,
+            txId: id,
+            path: plan.path,
+            hops: plan.hops,
+            plan, // Full execution plan
+            dexes, // Include all DEXes involved
+            exec: execCfg,
+            execConfig: execCfg, // Alias for clarity
+            built,
+            sim,
+            executorLogs: txLogs, // Include executor logs
+            // Include opportunity data if available from request
+            opportunity: (req.body as any)?.opportunity || {
+              path: plan.path,
+              hop_pool_ids: plan.hops?.map((h: any) => h.poolId),
+              hop_dexes: plan.hops?.map((h: any) => h.dex),
+              dexes: Array.from(new Set(plan.hops?.map((h: any) => h.dex))),
+            },
+          });
         } catch {}
       } catch (e: any) {
         try { logger.info('tx.preflight.err', { cat: 'tx', code: LogCode.TX_PREFLIGHT_ERR, ctx: { id, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode, error: String(e?.message || e) } as any }); } catch {}
@@ -1345,19 +1361,28 @@ export function createArbRouter(io: SocketIOServer): Router {
           const dexes = Array.from(new Set((plan.hops || []).map((h:any)=>String(h?.dex||'').toLowerCase())));
           // Capture logs from a wider window to include preflight logs too
           const txLogs = getTxRelatedLogs(id, Date.now() - 60000, Date.now(), 300);
-          for (const d of dexes) {
-            if (d === 'raydium' || d === 'orca' || d === 'meteora') {
-              await writeDexFullDump(d as any, 'execute', {
-                id,
-                path: plan.path,
-                hops: plan.hops,
-                exec: execCfg,
-                built,
-                send: sendRes,
-                txLogs,
-              });
-            }
-          }
+          const { writeTxFullDump } = await import('../../utils/txTrace.js');
+          // Write single consolidated file instead of one per DEX
+          await writeTxFullDump('execute', {
+            id,
+            txId: id,
+            path: plan.path,
+            hops: plan.hops,
+            plan, // Full execution plan
+            dexes, // Include all DEXes involved
+            exec: execCfg,
+            execConfig: execCfg,
+            built,
+            send: sendRes,
+            executorLogs: txLogs, // Include executor logs
+            // Include opportunity data if available from request
+            opportunity: (req.body as any)?.opportunity || {
+              path: plan.path,
+              hop_pool_ids: plan.hops?.map((h: any) => h.poolId),
+              hop_dexes: plan.hops?.map((h: any) => h.dex),
+              dexes: Array.from(new Set(plan.hops?.map((h: any) => h.dex))),
+            },
+          });
         } catch {}
         try { pushBounded(execStats.sendMs, Date.now() - tSend0); execStats.sendOk += 1; } catch {}
         const signatures: string[] = [sendRes.signature];

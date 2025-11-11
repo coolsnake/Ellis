@@ -535,6 +535,28 @@ export class ArbExecutor {
           computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
           lookupTableAddresses: altAddresses,
         });
+        
+        // Log full dump with opportunity data
+        try {
+          const { writeTxFullDump } = await import('../utils/txTrace.js');
+          const { getTxRelatedLogs } = await import('../utils/sessionLogs.js');
+          const dexes = Array.from(new Set(plan.hops.map((h: any) => h.dex)));
+          const txLogs = getTxRelatedLogs(oppKey, Date.now() - 30000, Date.now(), 200);
+          
+          // Write single consolidated file instead of one per DEX
+          await writeTxFullDump('preflight', {
+            id: oppKey,
+            txId: oppKey,
+            opportunity: opp, // Full opportunity object from arb-rs
+            plan,
+            dexes, // Include all DEXes involved
+            execConfig: execCfg,
+            built,
+            sim: simResult,
+            executorLogs: txLogs,
+          });
+        } catch {}
+        
         logger.info('arb.executor.simulated', {
           cat: 'arb',
           path: pathStr,
@@ -549,6 +571,28 @@ export class ArbExecutor {
           lookupTableAddresses: altAddresses,
         });
         signature = sendResult?.signature || null;
+
+        // Log full dump with opportunity data
+        try {
+          const { writeTxFullDump } = await import('../utils/txTrace.js');
+          const { getTxRelatedLogs } = await import('../utils/sessionLogs.js');
+          const dexes = Array.from(new Set(plan.hops.map((h: any) => h.dex)));
+          const txLogs = getTxRelatedLogs(oppKey, Date.now() - 60000, Date.now(), 300);
+          
+          // Write single consolidated file instead of one per DEX
+          await writeTxFullDump('execute', {
+            id: oppKey,
+            txId: oppKey,
+            opportunity: opp, // Full opportunity object from arb-rs
+            plan,
+            dexes, // Include all DEXes involved
+            execConfig: execCfg,
+            built,
+            send: sendResult,
+            signature,
+            executorLogs: txLogs,
+          });
+        } catch {}
 
         if (signature) {
           logger.info('arb.executor.success', {

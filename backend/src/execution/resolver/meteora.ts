@@ -37,17 +37,25 @@ export async function resolveMeteoraDlmm(hop: DirectHop): Promise<DirectHop> {
       hop.vaultA = accountA;
       hop.vaultB = accountB;
       
-      // Debug logging for vaults
+      // Pass bitmap extension from pool cache (checked during pool normalization)
+      const bitmapExt = String((p as any)?.bin_array_bitmap_extension || '');
+      if (bitmapExt) {
+        hop.bitmapExtension = bitmapExt;
+      }
+      
+      // Debug logging for vaults and bitmap extension
       try {
         const { logger } = await import('../../utils/logger.js');
-        logger.info('meteora.resolver.vaults_set', {
+        logger.info('meteora.resolver.accounts_set', {
           cat: 'tx',
           ctx: {
             poolId: hop.poolId,
             vaultA: accountA,
             vaultB: accountB,
             hasVaultA: !!accountA,
-            hasVaultB: !!accountB
+            hasVaultB: !!accountB,
+            bitmapExtension: bitmapExt || 'not_cached',
+            hasBitmapExtension: !!bitmapExt
           }
         });
       } catch {}

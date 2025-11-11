@@ -60,6 +60,7 @@ export type DirectHop = {
   binArrayUpper?: string;
   reserveX?: string;
   reserveY?: string;
+  bitmapExtension?: string;  // Meteora DLMM bitmap extension (PDA or program ID)
 };
 
 export type ExecutionPlan = {

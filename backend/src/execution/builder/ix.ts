@@ -1355,15 +1355,22 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       if (binArrayLower) accounts.binArrayLower = binArrayLower;
       if (binArrayUpper) accounts.binArrayUpper = binArrayUpper;
       
-      // CRITICAL: SDK requires binArrayBitmapExtension account to be provided
-      // Simple approach: just provide the DLMM program ID (LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo)
-      // This works even if the bitmap extension PDA isn't initialized yet
-      // Many successful integrations use this approach
-      accounts.binArrayBitmapExtension = programId;
+      // Use cached bitmap extension from pool data (checked during pool normalization)
+      // Some pools require an actual bitmap extension PDA, others can use program ID
+      // Falls back to program ID if not set in pool data
+      accounts.binArrayBitmapExtension = hop.bitmapExtension 
+        ? toPublicKey(hop.bitmapExtension) 
+        : programId;
+      
       try {
-        logger.debug('meteora.dlmm.bitmap_ext.using_programid', {
+        logger.info('meteora.dlmm.bitmap_ext.from_pool_cache', {
           cat: 'tx',
-          ctx: { pool: hop.poolId, programId: programId.toBase58() }
+          ctx: { 
+            pool: hop.poolId, 
+            bitmapExt: accounts.binArrayBitmapExtension.toBase58(),
+            fromCache: !!hop.bitmapExtension,
+            usingProgramIdFallback: !hop.bitmapExtension
+          }
         });
       } catch {}
 

@@ -1,7 +1,6 @@
 import { Connection, PublicKey, TransactionMessage, VersionedTransaction, ComputeBudgetProgram, AddressLookupTableAccount, TransactionInstruction } from '@solana/web3.js';
 import { ensureWallet, getConnection } from '../wallet/wallet.js';
 import { withRpcLimit } from '../utils/rpcLimiter.js';
-import { writeDexFullDump } from '../utils/txTrace.js';
 import { CONFIG } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 import { LogCode } from '../utils/logging.js';
@@ -784,20 +783,24 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
     const programs = realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId)));
     const dexes = detectDexesFromPrograms(programs);
     const txLogs = getTxRelatedLogs(txId, Date.now() - 10000, Date.now(), 200);
-    for (const d of dexes) {
-      await writeDexFullDump(d, 'preflight', {
-        txId,
-        kind: 'sender.preflight',
-        ixCount: realIxs.length,
-        skipped,
-        programs,
-        opts,
-        wireBase64,
-        logs: sim.value?.logs,
-        err: sim.value?.err || null,
-        txLogs,
-      });
-    }
+    const { writeTxFullDump } = await import('../utils/txTrace.js');
+    // Write single consolidated file instead of one per DEX
+    await writeTxFullDump('preflight', {
+      txId,
+      id: txId,
+      kind: 'sender.preflight',
+      ixCount: realIxs.length,
+      skipped,
+      programs,
+      dexes, // Include all DEXes involved
+      opts,
+      wireBase64,
+      logs: sim.value?.logs,
+      err: sim.value?.err || null,
+      sim: sim.value,
+      executorLogs: txLogs, // Include executor logs
+      // Note: opportunity data not available here, but can be passed from caller
+    });
   } catch {}
   return { logs: sim.value?.logs, err: sim.value?.err, wireBase64 };
 }
@@ -1074,18 +1077,20 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
     const programs = realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId)));
     const dexes = detectDexesFromPrograms(programs);
     const txLogs = getTxRelatedLogs(txId, Date.now() - 20000, Date.now(), 300);
-    for (const d of dexes) {
-      await writeDexFullDump(d, 'execute', {
-        txId,
-        kind: 'sender.execute',
-        ixCount: realIxs.length,
-        programs,
-        opts,
-        wireBase64,
-        signature: sig,
-        txLogs,
-      });
-    }
+    const { writeTxFullDump } = await import('../utils/txTrace.js');
+    // Write single consolidated file instead of one per DEX
+    await writeTxFullDump('execute', {
+      txId,
+      id: txId,
+      kind: 'sender.execute',
+      ixCount: realIxs.length,
+      programs,
+      dexes, // Include all DEXes involved
+      opts,
+      wireBase64,
+      signature: sig,
+      executorLogs: txLogs, // Include executor logs
+    });
   } catch {}
   return { signature: sig, wireBase64 };
 }
