@@ -358,30 +358,42 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
       // Calculate price and liquidity from RPC-enriched reserves
       let price_a_per_b = 0;
       let liquidity_base = 0;
+      let baseReserve = 0;
+      let quoteReserve = 0;
+      let baseReserveRaw = 0n;
+      let quoteReserveRaw = 0n;
+      let baseUsdPrice = 0;
+      let quoteUsdPrice = 0;
+      let pool_liquidity_raw = 0;
+      let price_a_per_b_exact: string | undefined;
       
       if (pool.base_reserve && pool.quote_reserve) {
         try {
           // Parse reserves as BigInt from string
-          const baseReserveRaw = BigInt(pool.base_reserve);
-          const quoteReserveRaw = BigInt(pool.quote_reserve);
+          baseReserveRaw = BigInt(pool.base_reserve);
+          quoteReserveRaw = BigInt(pool.quote_reserve);
           
           // Convert to whole tokens using decimals
-          const baseReserve = Number(baseReserveRaw) / Math.pow(10, decA);
-          const quoteReserve = Number(quoteReserveRaw) / Math.pow(10, decB);
+          baseReserve = Number(baseReserveRaw) / Math.pow(10, decA);
+          quoteReserve = Number(quoteReserveRaw) / Math.pow(10, decB);
           
           // Price = amount of A per 1 unit of B
           if (quoteReserve > 0) {
             price_a_per_b = baseReserve / quoteReserve;
           }
           
-          // For liquidity, we can use the formula: 2 * sqrt(base * quote) for constant product AMM
-          // But for simplicity, we'll sum the USD value of both sides if we have prices
-          // For now, use a simple heuristic based on reserves
+          // Calculate high-precision price for exact calculations
+          // price_a_per_b_exact = (baseReserveRaw * 10^decB) / quoteReserveRaw
+          // This gives us the price with proper decimal adjustment
+          if (quoteReserveRaw > 0n) {
+            try {
+              const numerator = baseReserveRaw * BigInt(Math.pow(10, decB));
+              const priceExactBigInt = numerator / quoteReserveRaw;
+              price_a_per_b_exact = priceExactBigInt.toString();
+            } catch {}
+          }
           
           // Try to get USD prices from the price store
-          let baseUsdPrice = 0;
-          let quoteUsdPrice = 0;
-          
           try {
             const { getPriceByMint } = await import('../priceStore.js');
             const priceA = getPriceByMint(mint_a);
@@ -392,17 +404,28 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
           
           // Calculate USD liquidity if we have prices
           if (baseUsdPrice > 0 && quoteUsdPrice > 0) {
-            liquidity_base = (baseReserve * baseUsdPrice) + (quoteReserve * quoteUsdPrice);
+            const baseUsdValue = baseReserve * baseUsdPrice;
+            const quoteUsdValue = quoteReserve * quoteUsdPrice;
+            liquidity_base = baseUsdValue + quoteUsdValue;
+            // pool_liquidity_raw is the minimum of the two sides (for routing preference)
+            pool_liquidity_raw = Math.min(baseUsdValue, quoteUsdValue);
           } else if (baseUsdPrice > 0) {
             liquidity_base = baseReserve * baseUsdPrice * 2; // Estimate total from one side
+            pool_liquidity_raw = baseReserve * baseUsdPrice;
           } else if (quoteUsdPrice > 0) {
             liquidity_base = quoteReserve * quoteUsdPrice * 2;
+            pool_liquidity_raw = quoteReserve * quoteUsdPrice;
           } else if (mint_b === USDC_MINT) {
             // If quote is USDC, use quote reserve * 2 as USD liquidity
             liquidity_base = quoteReserve * 2;
+            pool_liquidity_raw = quoteReserve;
           } else if (mint_a === USDC_MINT) {
             // If base is USDC, use base reserve * 2 as USD liquidity
             liquidity_base = baseReserve * 2;
+            pool_liquidity_raw = baseReserve;
+          } else {
+            // No USD prices available, use minimum reserve as heuristic
+            pool_liquidity_raw = Math.min(baseReserve, quoteReserve);
           }
         } catch (e: any) {
           try { logger.warn('pumpswap.normalize.price.calc.failed', { 
@@ -437,12 +460,23 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
         account_b: pool.pool_quote_token_account,
         pool_kind: 'amm',
         lp_mint: pool.lp_mint,
-        // Store decimals for later use
+        // Decimals for proper unit conversion
         decimals_a: decA,
         decimals_b: decB,
-        // Store raw reserves for potential future use
-        amount_a: pool.base_reserve ? BigInt(pool.base_reserve).toString() : undefined,
-        amount_b: pool.quote_reserve ? BigInt(pool.quote_reserve).toString() : undefined,
+        // Whole unit amounts (human-readable) - matches other DEX implementations
+        amount_a_whole: baseReserve,
+        amount_b_whole: quoteReserve,
+        amounts_are_whole: true,
+        // Raw reserves in smallest units (for exact calculations)
+        reserve_a_raw: pool.base_reserve || undefined,
+        reserve_b_raw: pool.quote_reserve || undefined,
+        // Liquidity metrics for routing and filtering
+        pool_liquidity_raw,
+        liquidity_display: liquidity_base || pool_liquidity_raw,
+        // High-precision price for exact calculations (if available)
+        price_a_per_b_exact,
+        // TVL in USD if we could calculate it
+        tvl_usd: liquidity_base > 0 ? liquidity_base : undefined,
       } as any);
     } catch (e: any) {
       try { logger.warn('pumpswap.normalize.pool.failed', { error: String(e?.message || e), cat: 'pumpswap' }); } catch {}
@@ -469,10 +503,14 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
     const canon = String(((CONFIG as any)?.system?.canonicalizePairs) || 'quoteHierarchy');
     const withPrice = ammCanon.filter(p => p.price_a_per_b > 0).length;
     const withLiq = ammCanon.filter(p => p.liquidity_base > 0).length;
+    const withWholeAmounts = ammCanon.filter(p => p.amount_a_whole && p.amount_b_whole).length;
+    const withTvl = ammCanon.filter(p => p.tvl_usd && p.tvl_usd > 0).length;
     logger.info('pumpswap.graphql normalized', { 
       total: ammCanon.length, 
       withPrice, 
-      withLiq, 
+      withLiq,
+      withWholeAmounts,
+      withTvl,
       cat: 'pumpswap', 
       canon 
     });
