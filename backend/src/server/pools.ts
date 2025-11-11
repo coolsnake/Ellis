@@ -3177,7 +3177,7 @@ export async function getPumpswapPoolsCached(force = false): Promise<PoolsPayloa
       // Cross-DEX price validation for Pumpswap pools
       try {
         const enableValidation = ((CONFIG as any)?.pumpswap?.validatePrices !== false);
-        const maxSamples = Number(((CONFIG as any)?.pumpswap?.validationSamples || 10));
+        const maxSamples = Number(((CONFIG as any)?.pumpswap?.validationSamples || 5));
         if (enableValidation && norm.amm.length > 0) {
           // Get other DEX pools for comparison
           const rayPools = raydiumCache.data?.amm || [];
@@ -3526,7 +3526,8 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
         const allPools = {
           raydium: raydiumCache.data || { amm: [], clmm: [] },
           orca: orcaCache.data || { amm: [], clmm: [] },
-          meteora: meteoraCache.data || { amm: [], clmm: [] }
+          meteora: meteoraCache.data || { amm: [], clmm: [] },
+          pumpswap: pumpswapCache.data || { amm: [], clmm: [] }
         };
         validateCrossDexPrices(allPools);
       } catch {}
