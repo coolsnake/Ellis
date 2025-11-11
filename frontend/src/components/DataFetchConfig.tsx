@@ -75,6 +75,13 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     // meteora_maxPages
     meteora_minClmmLiquidity: 0,
     meteora_universePrefilter: false,
+    // Pumpswap (Shyft GraphQL)
+    pumpswap_shyftApiKey: '',
+    pumpswap_cacheTtlMs: 60000,
+    pumpswap_maxHttpRetries: 2,
+    pumpswap_httpBackoffMs: 500,
+    pumpswap_defaultFeeBps: 30,
+    pumpswap_minLiqBase: 0,
     // Jupiter
     jupiterApiUrl: '',
     jupiterPauseApi: false,
@@ -145,6 +152,13 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             meteoraBalanced_httpBackoffMs: Number(j?.meteoraBalanced?.httpBackoffMs ?? prev.meteoraBalanced_httpBackoffMs),
             meteoraBalanced_pageSize: Number(j?.meteoraBalanced?.pageSize ?? prev.meteoraBalanced_pageSize),
             meteoraBalanced_maxPages: Number(j?.meteoraBalanced?.maxPages ?? prev.meteoraBalanced_maxPages),
+            // Pumpswap
+            pumpswap_shyftApiKey: j?.pumpswap?.shyftApiKey || prev.pumpswap_shyftApiKey || '',
+            pumpswap_cacheTtlMs: Number(j?.pumpswap?.cacheTtlMs ?? prev.pumpswap_cacheTtlMs ?? 60000),
+            pumpswap_maxHttpRetries: Number(j?.pumpswap?.maxHttpRetries ?? prev.pumpswap_maxHttpRetries ?? 2),
+            pumpswap_httpBackoffMs: Number(j?.pumpswap?.httpBackoffMs ?? prev.pumpswap_httpBackoffMs ?? 500),
+            pumpswap_defaultFeeBps: Number(j?.pumpswap?.defaultFeeBps ?? prev.pumpswap_defaultFeeBps ?? 30),
+            pumpswap_minLiqBase: Number(j?.pumpswap?.minLiqBase ?? prev.pumpswap_minLiqBase ?? 0),
             // Sanity
             sanity_enabled: (j?.sanity?.enabled ?? true) !== false,
             sanity_maxPriceDeviation: Number(j?.sanity?.maxPriceDeviation ?? prev.sanity_maxPriceDeviation),
@@ -223,6 +237,14 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         httpBackoffMs: Number(cfg.meteoraBalanced_httpBackoffMs),
         pageSize: Number(cfg.meteoraBalanced_pageSize),
         maxPages: Number(cfg.meteoraBalanced_maxPages),
+      },
+      pumpswap: {
+        shyftApiKey: String(cfg.pumpswap_shyftApiKey || ''),
+        cacheTtlMs: Number(cfg.pumpswap_cacheTtlMs || 60000),
+        maxHttpRetries: Number(cfg.pumpswap_maxHttpRetries || 2),
+        httpBackoffMs: Number(cfg.pumpswap_httpBackoffMs || 500),
+        defaultFeeBps: Number(cfg.pumpswap_defaultFeeBps || 30),
+        minLiqBase: Number(cfg.pumpswap_minLiqBase || 0),
       },
       sanity: {
         enabled: !!cfg.sanity_enabled,
@@ -519,6 +541,45 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
               <div>
                 <label className="block text-sm mb-1">Max Pages</label>
                 <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.meteoraBalanced_maxPages} onChange={(e)=>set('meteoraBalanced_maxPages', Number(e.target.value)||0)} />
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-gray-700 rounded p-4">
+            <h3 className="text-lg font-semibold mb-3">Pumpswap (Shyft GraphQL)</h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="md:col-span-3">
+                <label className="block text-sm mb-1">Shyft API Key</label>
+                <input 
+                  type="text" 
+                  className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                  value={cfg.pumpswap_shyftApiKey || ''} 
+                  onChange={(e)=>set('pumpswap_shyftApiKey', e.target.value)} 
+                  placeholder="YOUR_SHYFT_API_KEY" 
+                />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Cache TTL (ms)</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.pumpswap_cacheTtlMs || 60000} onChange={(e)=>set('pumpswap_cacheTtlMs', Number(e.target.value)||0)} />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Max HTTP Retries</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.pumpswap_maxHttpRetries || 2} onChange={(e)=>set('pumpswap_maxHttpRetries', Number(e.target.value)||0)} />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">HTTP Backoff (ms)</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.pumpswap_httpBackoffMs || 500} onChange={(e)=>set('pumpswap_httpBackoffMs', Number(e.target.value)||0)} />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Default Fee (bps)</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.pumpswap_defaultFeeBps || 30} onChange={(e)=>set('pumpswap_defaultFeeBps', Number(e.target.value)||0)} />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Min Liquidity (USD)</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.pumpswap_minLiqBase || 0} onChange={(e)=>set('pumpswap_minLiqBase', Number(e.target.value)||0)} />
+              </div>
+              <div className="md:col-span-3 text-xs text-gray-300">
+                Fetches pools involving SOL + USDC via Shyft's GraphQL API for pump.fun/Pumpswap coverage.
               </div>
             </div>
           </div>

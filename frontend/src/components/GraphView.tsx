@@ -64,7 +64,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 	const [layoutName, setLayoutName] = useState<'fcose' | 'cose' | 'grid' | 'circle'>('fcose');
-	const [filterDex, setFilterDex] = useState<{ Raydium: boolean; Orca: boolean; Meteora: boolean }>({ Raydium: true, Orca: true, Meteora: true });
+	const [filterDex, setFilterDex] = useState<{ Raydium: boolean; Orca: boolean; Meteora: boolean; Pumpswap: boolean }>({ Raydium: true, Orca: true, Meteora: true, Pumpswap: true });
 	const [filterKind, setFilterKind] = useState<{ AMM: boolean; CLMM: boolean }>({ AMM: true, CLMM: true });
   const laidOutRef = useRef(false);
 	const forceLayoutRef = useRef(false);
@@ -1211,6 +1211,9 @@ useEffect(() => {
 				</label>
 				<label className="text-sm flex items-center gap-1">
 					<input type="checkbox" checked={filterDex.Meteora} onChange={(e) => setFilterDex((p) => ({ ...p, Meteora: e.target.checked }))} /> Meteora
+				</label>
+				<label className="text-sm flex items-center gap-1">
+					<input type="checkbox" checked={filterDex.Pumpswap} onChange={(e) => setFilterDex((p) => ({ ...p, Pumpswap: e.target.checked }))} /> Pumpswap
 				</label>
 					<label className="text-sm flex items-center gap-1">
 						<input type="checkbox" checked={filterKind.AMM} onChange={(e) => setFilterKind((p) => ({ ...p, AMM: e.target.checked }))} /> AMM

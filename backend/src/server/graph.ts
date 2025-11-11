@@ -494,10 +494,11 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       const orcRaw = overrides?.orca ?? (typeof poolsMod.peekOrcaPools === 'function' ? poolsMod.peekOrcaPools() : { amm: [], clmm: [] });
       const metRaw = overrides?.meteora ?? (typeof poolsMod.peekMeteoraPools === 'function' ? poolsMod.peekMeteoraPools() : { amm: [], clmm: [] });
       const mblRaw = overrides?.meteora_balanced ?? (typeof poolsMod.peekMeteoraBalancedPools === 'function' ? poolsMod.peekMeteoraBalancedPools() : { amm: [], clmm: [] });
+      const pumpRaw = overrides?.pumpswap ?? (typeof poolsMod.peekPumpswapPools === 'function' ? poolsMod.peekPumpswapPools() : { amm: [], clmm: [] });
       // Apply scoping according to CONFIG.system.scopePools and scopePoolsMode via universe helper
       const mode = String((CONFIG.system as any)?.scopePoolsMode || 'jupiter');
       const scoped = CONFIG.system.scopePools !== false && mode !== 'none';
-      let ray = rayRaw; let orc = orcRaw; let met = metRaw; let mbl = mblRaw;
+      let ray = rayRaw; let orc = orcRaw; let met = metRaw; let mbl = mblRaw; let pump = pumpRaw;
       if (scoped) {
         try {
           const { computeTokenUniverse, filterPoolsByUniverse } = await import('./universe.js');
@@ -507,6 +508,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const oScoped = filterPoolsByUniverse(orcRaw as any, universe, anchorBridging);
           const mScoped = filterPoolsByUniverse(metRaw as any, universe, anchorBridging);
           const mbScoped = filterPoolsByUniverse(mblRaw as any, universe, anchorBridging);
+          const pScoped = filterPoolsByUniverse(pumpRaw as any, universe, anchorBridging);
           const upstreamR = (rayRaw.amm?.length || 0) + (rayRaw.clmm?.length || 0);
           const scopedR = (rScoped.amm.length || 0) + (rScoped.clmm.length || 0);
           const upstreamO = (orcRaw.amm?.length || 0) + (orcRaw.clmm?.length || 0);
@@ -519,6 +521,9 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const upstreamMb = (mblRaw.amm?.length || 0) + (mblRaw.clmm?.length || 0);
           const scopedMb = (mbScoped.amm.length || 0) + (mbScoped.clmm.length || 0);
           mbl = (upstreamMb > 0 && scopedMb === 0) ? mblRaw : mbScoped as any;
+          const upstreamP = (pumpRaw.amm?.length || 0) + (pumpRaw.clmm?.length || 0);
+          const scopedP = (pScoped.amm.length || 0) + (pScoped.clmm.length || 0);
+          pump = (upstreamP > 0 && scopedP === 0) ? pumpRaw : pScoped as any;
         } catch {}
       }
       // Before building, ensure we actually retained pools after scoping/filters
@@ -527,7 +532,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           (ray?.amm?.length || 0) + (ray?.clmm?.length || 0) +
           (orc?.amm?.length || 0) + (orc?.clmm?.length || 0) +
           (met?.amm?.length || 0) + (met?.clmm?.length || 0) +
-          (mbl?.amm?.length || 0) + (mbl?.clmm?.length || 0);
+          (mbl?.amm?.length || 0) + (mbl?.clmm?.length || 0) +
+          (pump?.amm?.length || 0) + (pump?.clmm?.length || 0);
         if (count <= 0) {
           try { logger.debug('graph.snapshot.skip', { reason: 'no_retained_pools' }); } catch {}
           if (lastSnapshot) return lastSnapshot;
@@ -566,14 +572,17 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             ray: { a: ray.amm?.length || 0, c: ray.clmm?.length || 0 },
             orc: { a: orc.amm?.length || 0, c: orc.clmm?.length || 0 },
             met: { a: met.amm?.length || 0, c: met.clmm?.length || 0 },
+            pump: { a: pump.amm?.length || 0, c: pump.clmm?.length || 0 },
           };
           ray = filt(ray) as any;
           orc = filt(orc) as any;
           met = filt(met) as any;
+          pump = filt(pump) as any;
           const after = {
             ray: { a: ray.amm?.length || 0, c: ray.clmm?.length || 0 },
             orc: { a: orc.amm?.length || 0, c: orc.clmm?.length || 0 },
             met: { a: met.amm?.length || 0, c: met.clmm?.length || 0 },
+            pump: { a: pump.amm?.length || 0, c: pump.clmm?.length || 0 },
           };
           if (before.ray.a !== after.ray.a || before.ray.c !== after.ray.c || before.orc.a !== after.orc.a || before.orc.c !== after.orc.c || before.met.c !== after.met.c) {
             try { logger.info('graph.filter tvl', { minAmm, minClmm, before, after }); } catch {}
@@ -608,6 +617,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           countPools(met.amm);
           countPools(met.clmm);
           countPools(mbl.amm);
+          countPools(pump.amm);
           
           // Allow pairs with at least minPools total pools
           const allow = new Set<string>();
@@ -1349,6 +1359,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         }
       } catch {}
       const mblValid = validatePoolsForGraph(mbl as any);
+      const pumpValid = validatePoolsForGraph(pump as any);
       const adjustByPowerOfTen = (val: number, target: number): number => {
         if (!(val > 0) || !(target > 0)) return val;
         const ratio = target / val;
@@ -1423,6 +1434,26 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         addEdge(p.mint_a, p.mint_b, 'Meteora', p.fee_bps, liqDisplay, fwd, usd, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
         const pidRev = pid ? `${pid}-rev` : undefined;
         addEdge(p.mint_b, p.mint_a, 'Meteora', p.fee_bps, liqDisplay, rev, usd, pidRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse');
+      }
+      // Pumpswap AMM
+      for (const p of (pumpValid.amm || [])) {
+        ammTotal++;
+        const pid = safePoolId(p);
+        const liqBase = Number((p as any)?.liquidity_base);
+        const liqDisplay = (p as any)?.liquidity_display ?? (Number.isFinite(liqBase) && liqBase > 0 ? liqBase : undefined);
+        let price: number | undefined = (p as any)?.price_a_per_b as number | undefined;
+        let usd: number | undefined = (p as any)?.tvl_usd;
+        // Pumpswap pools may lack price data from Shyft (need RPC for reserves)
+        // For now, if no price, we skip the edge
+        if (!price || !(price > 0)) {
+          try { logger.debug('graph.skip.edge.no_price', { dex: 'Pumpswap', kind: 'amm', pool_id: pid, mint_a: p.mint_a, mint_b: p.mint_b, reason: 'no_pool_price' }); } catch {};
+          continue;
+        }
+        const fwd = clampPrice(price);
+        const rev = fwd && fwd > 0 ? (1 / fwd) : undefined;
+        addEdge(p.mint_a, p.mint_b, 'Pumpswap', p.fee_bps, liqDisplay, fwd, usd, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
+        const pidRev = pid ? `${pid}-rev` : undefined;
+        addEdge(p.mint_b, p.mint_a, 'Pumpswap', p.fee_bps, liqDisplay, rev, usd, pidRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse');
       }
       for (const p of (orcValid.clmm || [])) {
         // amounts from HTTP (raw token units) need decimals to convert to whole tokens for USD TVL

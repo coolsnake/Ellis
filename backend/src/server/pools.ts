@@ -10,6 +10,7 @@ import { anyToBigInt, ratioToDecimalString, sqrtPriceX64ToPriceRatio } from './p
 import { fetchRaydiumPoolsRaw as fetchRaydiumPoolsRawImpl, normalizeRaydiumPools as normalizeRaydiumPoolsImpl } from './pools/raydium.js';
 import { fetchOrcaHttp as fetchOrcaHttpImpl, normalizeOrcaHttp as normalizeOrcaHttpImpl, deriveOrcaFeeBps } from './pools/orca.js';
 import { fetchMeteoraHttp as fetchMeteoraHttpImpl, normalizeMeteoraHttp as normalizeMeteoraHttpImpl } from './pools/meteora.js';
+import { fetchPumpswapGraphQL as fetchPumpswapGraphQLImpl, normalizePumpswapPools as normalizePumpswapPoolsImpl } from './pools/pumpswap.js';
 import { validateCrossDexPrices, verifyCanonicalization } from './pools/validation.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './pools/httpLog.js';
 import { fetchMeteoraBalancedHttp as fetchMeteoraBalancedHttpImpl, normalizeMeteoraBalancedHttp as normalizeMeteoraBalancedHttpImpl, fetchMeteoraBalancedAll as fetchMeteoraBalancedAllImpl } from './pools/meteoraBalanced.js';
@@ -23,6 +24,7 @@ const raydiumCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<
 const orcaCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 const meteoraCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 const metbalCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
+const pumpswapCache: { data: PoolsPayload | null; ts: number; inflight?: Promise<PoolsPayload> } = { data: null, ts: 0 };
 const METEORA_DEFAULT_PROGRAM_ID = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
 const METEORA_BIN_BITMAP_SIZE = 512;
 type MeteoraBinTracker = {
@@ -75,6 +77,7 @@ const poolsMetrics: {
   orca: { fetches: number; lastMs: number; lastAmm: number; lastClmm: number };
   meteora: { fetches: number; lastMs: number; lastClmm: number };
   meteora_balanced: { fetches: number; lastMs: number; lastAmm: number };
+  pumpswap: { fetches: number; lastMs: number; lastAmm: number };
 } = {
   raydium: {
     fetches: 0, lastMs: 0, lastAmm: 0, lastClmm: 0,
@@ -85,6 +88,7 @@ const poolsMetrics: {
   orca: { fetches: 0, lastMs: 0, lastAmm: 0, lastClmm: 0 },
   meteora: { fetches: 0, lastMs: 0, lastClmm: 0 },
   meteora_balanced: { fetches: 0, lastMs: 0, lastAmm: 0 },
+  pumpswap: { fetches: 0, lastMs: 0, lastAmm: 0 },
 };
 
 export function getPoolsMetrics(): any {
@@ -2910,6 +2914,7 @@ export function peekRaydiumPools(): PoolsPayload { return raydiumCache.data || {
 export function peekOrcaPools(): PoolsPayload { return orcaCache.data || { amm: [], clmm: [] }; }
 export function peekMeteoraPools(): PoolsPayload { return meteoraCache.data || { amm: [], clmm: [] }; }
 export function peekMeteoraBalancedPools(): PoolsPayload { return metbalCache.data || { amm: [], clmm: [] }; }
+export function peekPumpswapPools(): PoolsPayload { return pumpswapCache.data || { amm: [], clmm: [] }; }
 
 
 export async function getMeteoraBalancedPoolsCached(force = false): Promise<PoolsPayload> {
@@ -2971,6 +2976,72 @@ export async function getMeteoraBalancedPoolsCached(force = false): Promise<Pool
     }
   })();
   return metbalCache.inflight;
+}
+
+export async function getPumpswapPoolsCached(force = false): Promise<PoolsPayload> {
+  const ttlMs = Number((CONFIG as any)?.pumpswap?.cacheTtlMs || 60_000);
+  const minForceGap = Math.max(1000, Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000));
+  (getPumpswapPoolsCached as any).__lastForceAt = (getPumpswapPoolsCached as any).__lastForceAt || 0;
+  const now = Date.now();
+  if (!force) {
+    if (pumpswapCache.data && now - pumpswapCache.ts < ttlMs) return pumpswapCache.data;
+    return pumpswapCache.data || { amm: [], clmm: [] };
+  }
+  if (force) {
+    const last = (getPumpswapPoolsCached as any).__lastForceAt as number;
+    if (now - last < minForceGap && pumpswapCache.data) return pumpswapCache.data as any;
+    (getPumpswapPoolsCached as any).__lastForceAt = now;
+  }
+  if (pumpswapCache.inflight) return pumpswapCache.inflight;
+  pumpswapCache.inflight = (async () => {
+    try {
+      const mode = 'graphql';
+      try { logger.info('pumpswap.fetch start', { mode, ttlMs, cat: 'pumpswap' }); } catch {}
+      try { emit('log', { level: 'info', message: `arb:pools pumpswap.fetch start mode=${mode}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+      const t0 = Date.now();
+      const raw = await fetchPumpswapGraphQLImpl();
+      let norm = await normalizePumpswapPoolsImpl(raw);
+      // Apply token blocklist (exclude pools containing any blocked mint)
+      try {
+        const blist = new Set<string>(Array.isArray((CONFIG.system as any)?.tokenBlocklistMints) ? (CONFIG.system as any).tokenBlocklistMints : []);
+        if (blist.size > 0) {
+          const beforeAmm = (norm.amm || []).length;
+          const filtered = applyTokenMintBlocklist(norm as any, blist);
+          if ((filtered.amm || []).length !== beforeAmm) {
+            try { logger.info('pumpswap.blocklist.filter', { beforeAmm, afterAmm: filtered.amm.length }); } catch {}
+          }
+          norm = filtered as any;
+        }
+      } catch {}
+      const prev = pumpswapCache.data;
+      pumpswapCache.data = norm; pumpswapCache.ts = Date.now();
+      poolsMetrics.pumpswap.fetches += 1;
+      poolsMetrics.pumpswap.lastMs = Date.now() - t0;
+      poolsMetrics.pumpswap.lastAmm = norm.amm.length;
+      try { logger.info('pumpswap.fetch normalized', { amm: norm.amm.length, ms: poolsMetrics.pumpswap.lastMs, cat: 'pumpswap' }); } catch {}
+      try { emit('log', { level: 'info', message: `arb:pools pumpswap.fetch ok amm=${norm.amm.length}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
+      try {
+        const d = diffNormalizedPools(prev || { amm: [], clmm: [] }, norm);
+        const sample = { amm: d.amm.slice(0, 100), clmm: [] };
+        emit('pools-update', { source: 'pumpswap', amm: norm.amm.length, clmm: 0, ts: Date.now() });
+        emit('pool-updates', { source: 'pumpswap', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now() });
+        const hasDelta = d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm;
+        try {
+          const gmod: any = await import('./graph.js');
+          if (hasDelta && typeof gmod.applyPoolUpdates === 'function') {
+            // Fire-and-forget: don't await to avoid blocking HTTP fetchers
+            void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: true }).catch((err: any) => {
+              try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'pumpswap', cat: 'graph' }); } catch {}
+            });
+          }
+        } catch {}
+      } catch {}
+      return pumpswapCache.data!;
+    } finally {
+      pumpswapCache.inflight = undefined;
+    }
+  })();
+  return pumpswapCache.inflight;
 }
 
 export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPayload> {
