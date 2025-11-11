@@ -416,7 +416,27 @@ async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void> {
     let failed = 0;
     
     // Import Meteora SDK once for all pools
-    const DLMM = await import('@meteora-ag/dlmm');
+    const mod = await import('@meteora-ag/dlmm');
+    // CRITICAL: Resolve the module structure correctly (same as in instruction builder)
+    const DLMM: any = (mod && (mod as any).default) ? (mod as any).default : (((mod as any).DLMM) || mod);
+    
+    // Verify decodeAccount function exists
+    if (!DLMM || typeof (DLMM as any)?.decodeAccount !== 'function') {
+      try {
+        logger.warn('meteora.activeId.sdk_missing_decode', {
+          cat: 'meteora',
+          ctx: { 
+            error: 'decodeAccount function not found in DLMM SDK',
+            hasDefault: !!(mod as any).default,
+            hasDLMM: !!(mod as any).DLMM,
+            keys: DLMM ? Object.keys(DLMM).slice(0, 10) : []
+          }
+        });
+      } catch {}
+      // Can't proceed without decode function - return early
+      return;
+    }
+    
     const programId = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
     
     // Batch fetch pool states (100 at a time to respect RPC limits)
@@ -444,7 +464,22 @@ async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void> {
           if (acc?.data) {
             try {
               // Decode Meteora DLMM pool state to extract active bin ID
-              const state = (DLMM as any).decodeAccount?.(
+              const decode = (DLMM as any).decodeAccount;
+              if (!decode || typeof decode !== 'function') {
+                failed++;
+                try {
+                  logger.debug('meteora.activeId.decode_unavailable', {
+                    cat: 'meteora',
+                    ctx: {
+                      pool: pool.id.slice(0, 8) + '...',
+                      error: 'decodeAccount not available'
+                    }
+                  });
+                } catch {}
+                continue;
+              }
+              
+              const state = decode(
                 { coder: (DLMM as any).coder ?? {} },
                 'lbPair',
                 acc.data

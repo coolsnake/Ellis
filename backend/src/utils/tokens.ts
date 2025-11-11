@@ -35,38 +35,51 @@ export async function resolveMint(symbolOrMint: string): Promise<{ mint: string;
     return sol;
   }
   
-  // If looks like a mint (base58-ish and long), assume provided is a mint address
+  // If looks like a mint (base58-ish and long), validate it's actually a mint before resolving
   if (input.length > 30) {
     // Try to fetch decimals on-chain for accurate handling
     try {
       const conn = new Connection(CONFIG.rpcUrl, { commitment: 'confirmed', disableRetryOnRateLimit: true } as any);
-      const mintInfo = await getMint(conn, new PublicKey(input));
-      const decimals = Number(mintInfo.decimals ?? 6);
-      const out = { mint: input, decimals };
-      resolveCache[upper] = out;
-      return out;
-    } catch {
-      // Don't default to 6 - try to check if it's a known mint first
-      // Check if it matches SOL mint
+      const mintPk = new PublicKey(input);
+      
+      // First check if account exists and is owned by Token Program
+      // This prevents trying to resolve non-mint accounts (like pool addresses, vault addresses, etc.)
+      const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+      const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
+      
+      const accountInfo = await conn.getAccountInfo(mintPk, 'confirmed').catch(() => null);
+      if (accountInfo) {
+        const owner = accountInfo.owner.toBase58();
+        const isTokenProgram = owner === TOKEN_PROGRAM_ID.toBase58() || owner === TOKEN_2022_PROGRAM_ID.toBase58();
+        
+        // Only try to get mint info if account is owned by Token Program
+        if (isTokenProgram) {
+          const mintInfo = await getMint(conn, mintPk);
+          const decimals = Number(mintInfo.decimals ?? 6);
+          const out = { mint: input, decimals };
+          resolveCache[upper] = out;
+          return out;
+        } else {
+          // Account exists but is not a mint - don't try to resolve it
+          // This is likely a pool address, vault address, or other account type
+          // Don't log warning - this is expected for non-mint addresses
+          // Continue to Token API search in case it's actually a symbol
+        }
+      } else {
+        // Account doesn't exist - continue to Token API search
+      }
+    } catch (e: any) {
+      // Network error or other issue - try to check if it matches SOL mint
       if (input === SOL_MINT) {
         const sol = { mint: SOL_MINT, decimals: 9 };
         resolveCache[upper] = sol;
         resolveCache[SOL_MINT] = sol;
         return sol;
       }
-      // Last resort: default to 6, but log warning
-      try {
-        const { logger } = await import('./logger.js');
-        logger.warn('resolveMint.fallback_decimals', {
-          cat: 'tokens',
-          mint: input,
-          fallbackDecimals: 6
-        });
-      } catch {}
-      return { mint: input, decimals: 6 };
+      // For other errors, continue to Token API search
     }
   }
-  // Otherwise, try Token API V2 search
+  // Try Token API V2 search (for symbols or if mint resolution failed)
   const results = await searchTokens(input).catch(() => []);
   const first = results[0];
   if (first?.id) {
