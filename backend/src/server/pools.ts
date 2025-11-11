@@ -3060,7 +3060,7 @@ export async function getPumpswapPoolsCached(force = false): Promise<PoolsPayloa
           // Get other DEX pools for comparison
           const rayPools = raydiumCache.data?.amm || [];
           const orcaPools = orcaCache.data?.amm || [];
-          const metPools = meteoraBalCache.data?.amm || [];
+          const metPools = metbalCache.data?.amm || [];
           
           // Build a map of (mint_a, mint_b) -> pools from other DEXes
           const otherDexPools = new Map<string, Array<{ dex: string; price: number; liquidity: number; pool: any }>>();
