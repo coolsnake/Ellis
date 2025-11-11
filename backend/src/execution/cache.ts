@@ -33,8 +33,7 @@ type PoolStatic = {
   amm_target_orders?: string;
   lp_mint?: string;
   // CLMM execution-critical accounts (cached to avoid RPC calls during instruction building)
-  // Meteora DLMM-specific
-  bin_array_bitmap_extension?: string;  // PDA for tracking initialized bin arrays
+  // Meteora DLMM: bitmap_extension is handled automatically by the SDK, no need to cache
   // Raydium CLMM-specific
   observation_state?: string;           // Observation state account (oracle data)
   ex_bitmap?: string;                   // Extended bitmap for tick array tracking

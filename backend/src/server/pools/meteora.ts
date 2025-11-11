@@ -303,28 +303,12 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       }
     } catch {}
     
-    // Derive execution-critical accounts for Meteora DLMM
-    let bin_array_bitmap_extension: string | undefined;
-    try {
-      // Derive bitmap extension PDA: [b"bitmap_extension", lb_pair.key()]
-      const { PublicKey } = await import('@solana/web3.js');
-      const poolPk = new PublicKey(id);
-      const programId = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
-      const [pda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('bitmap_extension'), poolPk.toBuffer()],
-        programId
-      );
-      bin_array_bitmap_extension = pda.toBase58();
-    } catch (e: any) {
-      try {
-        logger.debug('meteora.bitmap_ext.derivation.failed', {
-          cat: 'meteora',
-          ctx: { pool: id, error: String(e?.message || e) }
-        });
-      } catch {}
-    }
+    // NOTE: Bitmap extension is NOT needed - the Meteora SDK handles it automatically
+    // We previously derived bin_array_bitmap_extension and stored it in pool data,
+    // but this is unnecessary. The SDK includes the correct bitmap extension PDA 
+    // when building swap instructions. Just providing the program ID is sufficient.
     
-    clmm.push({ id, dex: 'Meteora', mint_a, mint_b, fee_bps, sqrt_price_x64: 0, liquidity: 0, tick_spacing: Number((it as any)?.bin_step || (it as any)?.binStep || 0), updated_ms: now, price_a_per_b: (price_a_per_b && price_a_per_b > 0) ? price_a_per_b : undefined, amount_a, amount_b, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, account_a, account_b, pool_kind: 'clmm', pool_liquidity_raw, tvl_usd, liquidity_display, bin_array_bitmap_extension } as any);
+    clmm.push({ id, dex: 'Meteora', mint_a, mint_b, fee_bps, sqrt_price_x64: 0, liquidity: 0, tick_spacing: Number((it as any)?.bin_step || (it as any)?.binStep || 0), updated_ms: now, price_a_per_b: (price_a_per_b && price_a_per_b > 0) ? price_a_per_b : undefined, amount_a, amount_b, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, account_a, account_b, pool_kind: 'clmm', pool_liquidity_raw, tvl_usd, liquidity_display } as any);
   }
   // Canonicalize pairs using unified policy; handles A/B swap and price inversion when needed
   const clmmCanon = canonicalizePairs(clmm);

@@ -162,54 +162,10 @@ async function injectBinArrayMetas(
       }
     }
     
-    // Ensure bitmap extension PDA meta is included
-    try {
-      let extPk = coercePk((DLMM as any)?.deriveBinArrayBitmapExtension?.(poolPk, programId));
-      if (!extPk) {
-        try {
-          const [pda] = PublicKey.findProgramAddressSync([Buffer.from('bitmap_extension'), poolPk.toBuffer()], programId);
-          extPk = pda;
-        } catch {}
-      }
-      if (extPk) {
-        metas = metas || [];
-        // Check if bitmap extension is ALREADY in the instruction's keys (SDK might have set it)
-        const alreadyInInstruction = Array.isArray((ix as any).keys) && (ix as any).keys.some((k: any) => {
-          try {
-            const pk = k?.pubkey;
-            if (pk && typeof pk.equals === 'function') {
-              return pk.equals(extPk);
-            }
-            return false;
-          } catch {
-            return false;
-          }
-        });
-        
-        if (alreadyInInstruction) {
-          // SDK already included it - don't add again or modify it
-          try {
-            logger.debug('meteora.dlmm.bitmap_ext.already_in_ix', {
-              cat: 'tx',
-              ctx: { address: extPk.toBase58() }
-            });
-          } catch {}
-        } else {
-          // Not in instruction yet, check if in our metas list
-          const hasExt = metas.some((m: any) => {
-            try {
-              const pk = coercePk(m?.pubkey || m?.publicKey || m?.address);
-              return pk ? pk.equals(extPk) : false;
-            } catch {
-              return false;
-            }
-          });
-          if (!hasExt) {
-            metas.push({ pubkey: extPk, isWritable: true, isSigner: false });
-          }
-        }
-      }
-    } catch {}
+    // NOTE: Bitmap extension is handled automatically by the Meteora SDK
+    // The SDK includes the correct bitmap extension PDA when building swap instructions
+    // We don't need to derive or inject it ourselves - just provide the program ID
+    // This aligns with best practices observed in other Meteora integrations
     
     // Inject metas into instruction
     if (Array.isArray(metas) && metas.length && Array.isArray((ix as any).keys)) {
@@ -1093,65 +1049,13 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       // Derive optional accounts
       let binArrayLower: PublicKey | undefined = hop.binArrayLower ? toPublicKey(hop.binArrayLower) : undefined;
       let binArrayUpper: PublicKey | undefined = hop.binArrayUpper ? toPublicKey(hop.binArrayUpper) : undefined;
-      let binArrayBitmapExtension: PublicKey | undefined = undefined;
       let binArrayMetas: Array<{ pubkey: PublicKey; isWritable: boolean; isSigner: boolean }> | null = null;
       
-      // Try to get bitmap extension from cache first (avoids repeated PDA derivation)
-      try {
-        const { executionCache } = await import('../../execution/cache.js');
-        const cached = executionCache.getStatic(hop.poolId);
-        if (cached?.bin_array_bitmap_extension) {
-          binArrayBitmapExtension = new PublicKey(cached.bin_array_bitmap_extension);
-          try {
-            logger.debug('meteora.dlmm.bitmap_ext.from_cache', {
-              cat: 'tx',
-              ctx: { pool: hop.poolId, address: binArrayBitmapExtension.toBase58() }
-            });
-          } catch {}
-        }
-      } catch {}
-      
-      // If not cached, derive bitmap extension PDA for the pool
-      // The bitmap extension is a PDA derived from ['bitmap_extension', poolPubkey]
-      // and is used by Meteora DLMM to track which bin arrays are initialized
-      if (!binArrayBitmapExtension) {
-        try {
-          const deriveFn = (DLMM as any)?.deriveBinArrayBitmapExtension;
-          if (deriveFn) {
-            const derived = deriveFn(poolPk, programId);
-            // Handle both PublicKey and [PublicKey, number] tuple returns
-            // Some SDK versions return the full findProgramAddressSync tuple
-            if (Array.isArray(derived)) {
-              binArrayBitmapExtension = derived[0];
-              try {
-                logger.debug('meteora.dlmm.bitmap_ext.tuple_extracted', { 
-                  cat: 'tx', 
-                  ctx: { pool: hop.poolId, address: binArrayBitmapExtension.toBase58() } 
-                });
-              } catch {}
-            } else if (derived instanceof PublicKey) {
-              binArrayBitmapExtension = derived;
-            } else if (derived && typeof derived.toBase58 === 'function') {
-              binArrayBitmapExtension = derived;
-            }
-          } else {
-            // Fallback: manually derive the PDA
-            const [pda] = PublicKey.findProgramAddressSync(
-              [Buffer.from('bitmap_extension'), poolPk.toBuffer()],
-              programId
-            );
-            binArrayBitmapExtension = pda;
-          }
-        } catch (e) {
-          // If derivation fails, leave it undefined and let the SDK handle it
-          try {
-            logger.debug('meteora.dlmm.bitmap_ext.derivation.failed', { 
-              cat: 'tx', 
-              ctx: { pool: hop.poolId, error: String(e) } 
-            });
-          } catch {}
-        }
-      }
+      // NOTE: Bitmap extension is NOT needed - the Meteora SDK handles it automatically
+      // We previously derived bin_array_bitmap_extension ourselves, but this is unnecessary.
+      // The SDK includes the correct bitmap extension PDA when building swap instructions.
+      // Just providing the program ID is sufficient, which aligns with best practices
+      // observed in other Meteora integrations.
       
       try {
       const deriveBinArray = (DLMM as any)?.deriveBinArray || (mod as any)?.deriveBinArray;
@@ -1255,11 +1159,10 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       // needed for the swap path. Manual derivation can include non-existent PDAs which
       // causes AccountDiscriminatorMismatch errors.
       // Let the SDK determine required bin arrays via remainingAccounts (below).
-
-      // Always include bitmap extension in coverage metas (required by SDK)
-      if (binArrayBitmapExtension) {
-        pushMeta(binArrayBitmapExtension);
-      }
+      
+      // NOTE: Bitmap extension is NOT included in coverageMetas - the SDK handles it automatically
+      // We previously added bitmap extension to metas, but this is unnecessary and can cause issues.
+      // The SDK includes the correct bitmap extension PDA when building swap instructions.
 
       binArrayMetas = coverageMetas.length ? coverageMetas : null;
       } catch {}
@@ -1452,23 +1355,10 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       if (binArrayLower) accounts.binArrayLower = binArrayLower;
       if (binArrayUpper) accounts.binArrayUpper = binArrayUpper;
       
-      // Use program ID for bitmap extension (standard Meteora approach)
-      // The program accepts its own ID when the bitmap extension isn't needed or initialized
-      // This avoids ownership validation errors for uninitialized PDAs
-      if (!binArrayBitmapExtension) {
-      binArrayBitmapExtension = programId;
-      }
-      
-      // Always include in accounts - SDK requires this field to be present
-      accounts.binArrayBitmapExtension = binArrayBitmapExtension;
-      
-      // Log for debugging purposes
-      try {
-      logger.debug('meteora.dlmm.ext.included', { 
-        cat: 'tx', 
-        ctx: { address: binArrayBitmapExtension.toBase58() } 
-      });
-      } catch {}
+      // NOTE: bitmap extension is NOT set here - the SDK handles it automatically
+      // We previously tried to set binArrayBitmapExtension to the program ID as a fallback,
+      // but this is unnecessary. The SDK includes the correct bitmap extension PDA
+      // when building swap instructions. Just providing the program ID is sufficient.
 
       // Extend with host/referral fee handling and reserves when available
       // hostFeeIn must be a valid token account for the input token
@@ -2195,7 +2085,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         reserveY: to58((acctBase as any)?.reserveY),
         binArrayLower: to58(binArrayLower),
         binArrayUpper: to58(binArrayUpper),
-        bitmapExt: to58((acctBase as any)?.binArrayBitmapExtension) || null
+        note: 'bitmap_extension handled automatically by SDK'
       }});
       } catch {}
 

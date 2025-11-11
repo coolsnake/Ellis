@@ -1699,24 +1699,10 @@ export class DexAltManager {
       if (tokenXMint) accounts.push(tokenXMint);
       if (tokenYMint) accounts.push(tokenYMint);
 
-      // Derive bitmapExtension (if it exists)
-      // BitmapExtension PDA: [b"bitmap_extension", lb_pair.key()]
-      try {
-        const [bitmapExt] = PublicKey.findProgramAddressSync(
-          [Buffer.from('bitmap_extension'), poolPk.toBuffer()],
-          programId
-        );
-        // Check if it exists on-chain before adding
-        const connection = getConnection();
-        const bitmapInfo = await withRpcLimit(
-          () => connection.getAccountInfo(bitmapExt),
-          0.5,
-          { module: 'alt', method: 'getAccountInfo' }
-        ).catch(() => null);
-        if (bitmapInfo) {
-          accounts.push(bitmapExt);
-        }
-      } catch {}
+      // NOTE: Bitmap extension is NOT added to ALT - the Meteora SDK handles it automatically
+      // We previously derived and checked for bitmap extension to add to ALT, but this is
+      // unnecessary. The SDK includes the correct bitmap extension PDA when building swap
+      // instructions, and it doesn't need to be in the ALT for the transaction to work.
 
       // Add bin arrays around the active bin
       // Bin arrays are PDAs that follow a deterministic pattern
