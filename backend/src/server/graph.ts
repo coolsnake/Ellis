@@ -584,11 +584,18 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       try {
         const minPools = Math.max(1, Number(((CONFIG.system as any)?.minPoolsPerPair) || 1));
         if (minPools > 1) {
+          // Helper to create canonical pair key (always sort mints lexicographically)
+          const canonicalPairKey = (mintA: string, mintB: string): string => {
+            const a = String(mintA || '');
+            const b = String(mintB || '');
+            return a <= b ? `${a}-${b}` : `${b}-${a}`;
+          };
+          
           // Count total pools per pair (not just DEXes)
           const poolCounts = new Map<string, number>();
           const countPools = (arr: any[]) => {
             for (const p of (arr || [])) {
-              const pairKey = `${p.mint_a}-${p.mint_b}`;
+              const pairKey = canonicalPairKey(p.mint_a, p.mint_b);
               poolCounts.set(pairKey, (poolCounts.get(pairKey) || 0) + 1);
             }
           };
@@ -611,7 +618,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           }
           
           const filt = <T extends { mint_a: string; mint_b: string }>(arr: T[]) => 
-            (arr || []).filter(p => allow.has(`${p.mint_a}-${p.mint_b}`));
+            (arr || []).filter(p => allow.has(canonicalPairKey(p.mint_a, p.mint_b)));
             
           const preMetCt = (met.amm?.length || 0) + (met.clmm?.length || 0);
           const newRay = { amm: filt(ray.amm), clmm: filt(ray.clmm) } as any;

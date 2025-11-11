@@ -1908,7 +1908,9 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       } catch {}
       
       // NOTE: Anchor methods don't take swapForY - direction is inferred from accounts (reserveX/reserveY)
-      if (needs2022 && typeof (methods as any)?.swap2 === 'function') {
+      // PREFER swap2 if available (newer, more robust) regardless of Token-2022
+      // swap2 handles bitmap extension edge cases better than the older swap method
+      if (typeof (methods as any)?.swap2 === 'function') {
         builder = methods.swap2(amountIn, minOut, { slices: [] });
         try { logger.info('meteora.dlmm.using_swap2', { cat: 'tx', ctx: { poolId: hop.poolId } }); } catch {}
       } else if (typeof (methods as any)?.swap === 'function') {
@@ -2520,12 +2522,6 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       throw createBuilderError('RAYDIUM_CLMM', 'observationId missing (cache/config)', hop);
     }
 
-    const ownerInfo = {
-      wallet: kp.publicKey,
-      tokenAccountA: toPublicKey(hop.userSourceAta),
-      tokenAccountB: toPublicKey(hop.userDestAta),
-    };
-
     // Verify ammConfig account exists on-chain before using it
     const configIdPk = hop.ammConfig ? toPublicKey(hop.ammConfig) : null;
     if (!configIdPk) {
@@ -2633,6 +2629,17 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
         } as any
       });
     } catch {}
+    
+    // CRITICAL: ownerInfo.tokenAccountA/B must match pool's mintA/mintB orientation
+    // Not the swap direction (source/dest)
+    // When swapping A→B: tokenAccountA = source (mintA), tokenAccountB = dest (mintB)
+    // When swapping B→A: tokenAccountA = dest (mintA), tokenAccountB = source (mintB)
+    const ownerInfo = {
+      wallet: kp.publicKey,
+      tokenAccountA: isSwappingAtoB ? toPublicKey(hop.userSourceAta) : toPublicKey(hop.userDestAta),
+      tokenAccountB: isSwappingAtoB ? toPublicKey(hop.userDestAta) : toPublicKey(hop.userSourceAta),
+    };
+    
     const mintATokenProgram = isSwappingAtoB 
       ? (hop.inputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID.toBase58() : TOKEN_PROGRAM_ID.toBase58())
       : (hop.outputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID.toBase58() : TOKEN_PROGRAM_ID.toBase58());
