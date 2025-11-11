@@ -77,7 +77,7 @@ const poolsMetrics: {
   orca: { fetches: number; lastMs: number; lastAmm: number; lastClmm: number };
   meteora: { fetches: number; lastMs: number; lastClmm: number };
   meteora_balanced: { fetches: number; lastMs: number; lastAmm: number };
-  pumpswap: { fetches: number; lastMs: number; lastAmm: number };
+  pumpswap: { fetches: number; lastMs: number; lastAmm: number; enrichmentSuccess: number; enrichmentFail: number; enrichmentMs: number };
 } = {
   raydium: {
     fetches: 0, lastMs: 0, lastAmm: 0, lastClmm: 0,
@@ -88,7 +88,7 @@ const poolsMetrics: {
   orca: { fetches: 0, lastMs: 0, lastAmm: 0, lastClmm: 0 },
   meteora: { fetches: 0, lastMs: 0, lastClmm: 0 },
   meteora_balanced: { fetches: 0, lastMs: 0, lastAmm: 0 },
-  pumpswap: { fetches: 0, lastMs: 0, lastAmm: 0 },
+  pumpswap: { fetches: 0, lastMs: 0, lastAmm: 0, enrichmentSuccess: 0, enrichmentFail: 0, enrichmentMs: 0 },
 };
 
 export function getPoolsMetrics(): any {
@@ -3016,7 +3016,15 @@ export async function getPumpswapPoolsCached(force = false): Promise<PoolsPayloa
       try { emit('log', { level: 'info', message: `arb:pools pumpswap.fetch start mode=${mode}`, timestamp: new Date().toISOString(), context: { cat: 'arb' } }); } catch {}
       const t0 = Date.now();
       const raw = await fetchPumpswapGraphQLImpl();
-      let norm = await normalizePumpswapPoolsImpl(raw);
+      
+      // Enrich pools with RPC data (token account balances)
+      const enrichResult = await (poolsMod.enrichPumpswapPoolsWithRpc as any)?.(raw) || { pools: raw, metrics: { success: 0, fail: 0, ms: 0 } };
+      const enrichedRaw = enrichResult.pools || raw;
+      poolsMetrics.pumpswap.enrichmentSuccess = enrichResult.metrics?.success || 0;
+      poolsMetrics.pumpswap.enrichmentFail = enrichResult.metrics?.fail || 0;
+      poolsMetrics.pumpswap.enrichmentMs = enrichResult.metrics?.ms || 0;
+      
+      let norm = await normalizePumpswapPoolsImpl(enrichedRaw);
       // Apply token blocklist (exclude pools containing any blocked mint)
       try {
         const blist = new Set<string>(Array.isArray((CONFIG.system as any)?.tokenBlocklistMints) ? (CONFIG.system as any).tokenBlocklistMints : []);

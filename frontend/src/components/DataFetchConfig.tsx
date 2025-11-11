@@ -84,6 +84,9 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     pumpswap_minLiqBase: 0,
     pumpswap_pageSize: 1000,
     pumpswap_maxPages: 10,
+    pumpswap_pageDelayMs: 200,
+    pumpswap_enableRpcEnrichment: true,
+    pumpswap_rpcBatchSize: 100,
     // Jupiter
     jupiterApiUrl: '',
     jupiterPauseApi: false,
@@ -163,6 +166,9 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             pumpswap_minLiqBase: Number(j?.pumpswap?.minLiqBase ?? prev.pumpswap_minLiqBase ?? 0),
             pumpswap_pageSize: Number(j?.pumpswap?.pageSize ?? prev.pumpswap_pageSize ?? 1000),
             pumpswap_maxPages: Number(j?.pumpswap?.maxPages ?? prev.pumpswap_maxPages ?? 10),
+            pumpswap_pageDelayMs: Number(j?.pumpswap?.pageDelayMs ?? prev.pumpswap_pageDelayMs ?? 200),
+            pumpswap_enableRpcEnrichment: (j?.pumpswap?.enableRpcEnrichment !== false),
+            pumpswap_rpcBatchSize: Number(j?.pumpswap?.rpcBatchSize ?? prev.pumpswap_rpcBatchSize ?? 100),
             // Sanity
             sanity_enabled: (j?.sanity?.enabled ?? true) !== false,
             sanity_maxPriceDeviation: Number(j?.sanity?.maxPriceDeviation ?? prev.sanity_maxPriceDeviation),
@@ -251,6 +257,9 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         minLiqBase: Number(cfg.pumpswap_minLiqBase || 0),
         pageSize: Number(cfg.pumpswap_pageSize || 1000),
         maxPages: Number(cfg.pumpswap_maxPages || 10),
+        pageDelayMs: Number(cfg.pumpswap_pageDelayMs || 200),
+        enableRpcEnrichment: !!cfg.pumpswap_enableRpcEnrichment,
+        rpcBatchSize: Number(cfg.pumpswap_rpcBatchSize || 100),
       },
       sanity: {
         enabled: !!cfg.sanity_enabled,
@@ -592,8 +601,20 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                 <label className="block text-sm mb-1">Min Liquidity (USD)</label>
                 <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.pumpswap_minLiqBase || 0} onChange={(e)=>set('pumpswap_minLiqBase', Number(e.target.value)||0)} />
               </div>
+              <div>
+                <label className="block text-sm mb-1">Page Delay (ms)</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.pumpswap_pageDelayMs || 200} onChange={(e)=>set('pumpswap_pageDelayMs', Number(e.target.value)||0)} />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">RPC Batch Size</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.pumpswap_rpcBatchSize || 100} onChange={(e)=>set('pumpswap_rpcBatchSize', Number(e.target.value)||0)} />
+              </div>
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={!!cfg.pumpswap_enableRpcEnrichment} onChange={(e)=>set('pumpswap_enableRpcEnrichment', e.target.checked)} />
+                Enable RPC Enrichment (fetches token balances for price/liquidity)
+              </label>
               <div className="md:col-span-3 text-xs text-gray-300">
-                Fetches pools involving SOL + USDC via Shyft's GraphQL API for pump.fun/Pumpswap coverage.
+                Fetches pools involving SOL + USDC via Shyft's GraphQL API for pump.fun/Pumpswap coverage. RPC enrichment fetches token account balances to calculate accurate prices and liquidity. Page Delay helps avoid rate limits.
               </div>
             </div>
           </div>
