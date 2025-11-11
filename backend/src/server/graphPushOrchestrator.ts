@@ -477,7 +477,8 @@ class GraphPushOrchestrator {
           logger.info('arb.push ack', { kind: job.kind, acked, waited_ms: waited, wantVersion, queue_depth: this.queue.length, push_success: pushStats.success, push_failed: pushStats.failed });
         } catch {}
 
-        await notifyArbServiceRefreshImpl();
+        // Removed notifyArbServiceRefreshImpl() - it was causing duplicate detection cycles.
+        // The ack mechanism already ensures arb-rs processes the update; no need to wake it again.
 
         // Clear in-flight tracking after job completes
         if (wantVersion > 0 && this.inFlightVersion === wantVersion) {

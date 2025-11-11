@@ -3,6 +3,7 @@ import { ensureDir, readJson, writeJson, joinPath } from '../utils/fs.js';
 
 type PoolStatic = {
   programId: string;
+  dex?: string;
   vaults?: { a?: string; b?: string };
   authorities?: Record<string, string>;
   serum?: Record<string, string>;
@@ -31,6 +32,19 @@ type PoolStatic = {
   amm_open_orders?: string;
   amm_target_orders?: string;
   lp_mint?: string;
+  // CLMM execution-critical accounts (cached to avoid RPC calls during instruction building)
+  // Meteora DLMM-specific
+  bin_array_bitmap_extension?: string;  // PDA for tracking initialized bin arrays
+  // Raydium CLMM-specific
+  observation_state?: string;           // Observation state account (oracle data)
+  ex_bitmap?: string;                   // Extended bitmap for tick array tracking
+  // Orca Whirlpool-specific
+  token_vault_a?: string;               // Token vault A
+  token_vault_b?: string;               // Token vault B
+  // Generic vault/account references
+  account_a?: string;
+  account_b?: string;
+  tick_spacing?: number;
 };
 
 type PoolHot = {

@@ -1096,29 +1096,46 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       let binArrayBitmapExtension: PublicKey | undefined = undefined;
       let binArrayMetas: Array<{ pubkey: PublicKey; isWritable: boolean; isSigner: boolean }> | null = null;
       
-      // Derive bitmap extension PDA for the pool
+      // Try to get bitmap extension from cache first (avoids repeated PDA derivation)
+      try {
+        const { executionCache } = await import('../../execution/cache.js');
+        const cached = executionCache.getStatic(hop.poolId);
+        if (cached?.bin_array_bitmap_extension) {
+          binArrayBitmapExtension = new PublicKey(cached.bin_array_bitmap_extension);
+          try {
+            logger.debug('meteora.dlmm.bitmap_ext.from_cache', {
+              cat: 'tx',
+              ctx: { pool: hop.poolId, address: binArrayBitmapExtension.toBase58() }
+            });
+          } catch {}
+        }
+      } catch {}
+      
+      // If not cached, derive bitmap extension PDA for the pool
       // The bitmap extension is a PDA derived from ['bitmap_extension', poolPubkey]
       // and is used by Meteora DLMM to track which bin arrays are initialized
-      try {
-        const deriveFn = (DLMM as any)?.deriveBinArrayBitmapExtension;
-        if (deriveFn) {
-          binArrayBitmapExtension = deriveFn(poolPk, programId);
-        } else {
-          // Fallback: manually derive the PDA
-          const [pda] = PublicKey.findProgramAddressSync(
-            [Buffer.from('bitmap_extension'), poolPk.toBuffer()],
-            programId
-          );
-          binArrayBitmapExtension = pda;
-        }
-      } catch (e) {
-        // If derivation fails, leave it undefined and let the SDK handle it
+      if (!binArrayBitmapExtension) {
         try {
-          logger.debug('meteora.dlmm.bitmap_ext.derivation.failed', { 
-            cat: 'tx', 
-            ctx: { pool: hop.poolId, error: String(e) } 
-          });
-        } catch {}
+          const deriveFn = (DLMM as any)?.deriveBinArrayBitmapExtension;
+          if (deriveFn) {
+            binArrayBitmapExtension = deriveFn(poolPk, programId);
+          } else {
+            // Fallback: manually derive the PDA
+            const [pda] = PublicKey.findProgramAddressSync(
+              [Buffer.from('bitmap_extension'), poolPk.toBuffer()],
+              programId
+            );
+            binArrayBitmapExtension = pda;
+          }
+        } catch (e) {
+          // If derivation fails, leave it undefined and let the SDK handle it
+          try {
+            logger.debug('meteora.dlmm.bitmap_ext.derivation.failed', { 
+              cat: 'tx', 
+              ctx: { pool: hop.poolId, error: String(e) } 
+            });
+          } catch {}
+        }
       }
       
       try {
@@ -2687,32 +2704,51 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     // encodes account indices, and removing accounts post-generation breaks those indices.
     let exBitmapPk: PublicKey | null = null;
     let exBitmapExists = false;
+    
+    // Try to get exBitmap from cache first (avoids repeated PDA derivation)
     try {
-      const { getPdaExBitmapAccount } = await import('@raydium-io/raydium-sdk-v2').catch(() => ({ getPdaExBitmapAccount: null }));
-      if (getPdaExBitmapAccount) {
-        exBitmapPk = getPdaExBitmapAccount(programIdPk, poolIdPk).publicKey;
-        // We'll check existence later in batch with observation account to reduce RPC calls
+      const { executionCache } = await import('../../execution/cache.js');
+      const cached = executionCache.getStatic(hop.poolId);
+      if (cached?.ex_bitmap) {
+        exBitmapPk = new PublicKey(cached.ex_bitmap);
         try {
-          logger.debug('raydium.clmm.exbitmap.derived', {
+          logger.debug('raydium.clmm.exbitmap.from_cache', {
+            cat: 'tx',
+            ctx: { pool: hop.poolId, address: exBitmapPk.toBase58() }
+          });
+        } catch {}
+      }
+    } catch {}
+    
+    // If not cached, derive it using SDK
+    if (!exBitmapPk) {
+      try {
+        const { getPdaExBitmapAccount } = await import('@raydium-io/raydium-sdk-v2').catch(() => ({ getPdaExBitmapAccount: null }));
+        if (getPdaExBitmapAccount) {
+          exBitmapPk = getPdaExBitmapAccount(programIdPk, poolIdPk).publicKey;
+          // We'll check existence later in batch with observation account to reduce RPC calls
+          try {
+            logger.debug('raydium.clmm.exbitmap.derived', {
+              cat: 'tx',
+              ctx: {
+                pool: hop.poolId,
+                exBitmap: exBitmapPk.toBase58(),
+                note: 'Will check existence later - SDK determines if needed in instruction',
+              } as any,
+            });
+          } catch {}
+        }
+      } catch (e: any) {
+        try {
+          logger.debug('raydium.clmm.exbitmap.derive.failed', {
             cat: 'tx',
             ctx: {
               pool: hop.poolId,
-              exBitmap: exBitmapPk.toBase58(),
-              note: 'Will check existence later - SDK determines if needed in instruction',
+              error: String(e?.message || e),
             } as any,
           });
         } catch {}
       }
-    } catch (e: any) {
-      try {
-        logger.debug('raydium.clmm.exbitmap.derive.failed', {
-          cat: 'tx',
-          ctx: {
-            pool: hop.poolId,
-            error: String(e?.message || e),
-          } as any,
-        });
-      } catch {}
     }
 
     const BN = (await import('bn.js')).default as any;

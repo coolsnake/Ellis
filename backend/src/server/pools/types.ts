@@ -71,6 +71,16 @@ export type ClmmPool = {
   price_a_per_b_num?: string;
   price_a_per_b_den?: string;
   price_a_per_b_exact?: string;
+  // Execution-critical accounts (cached to avoid RPC calls during instruction building)
+  // Meteora DLMM-specific
+  bin_array_bitmap_extension?: string;  // PDA for tracking initialized bin arrays
+  // Raydium CLMM-specific
+  observation_state?: string;           // Observation state account (oracle data)
+  ex_bitmap?: string;                   // Extended bitmap for tick array tracking
+  // Orca Whirlpool-specific
+  oracle?: string;                      // Oracle account for price observation
+  token_vault_a?: string;               // Token vault A (alternative name for account_a)
+  token_vault_b?: string;               // Token vault B (alternative name for account_b)
 };
 
 export type PoolsPayload = { amm: AmmPool[]; clmm: ClmmPool[] };

@@ -410,6 +410,51 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
         }
       } catch {}
       if (usdDevOkOrca) {
+        // Derive/extract execution-critical accounts for Orca Whirlpool
+        let oracle: string | undefined;
+        let token_vault_a: string | undefined;
+        let token_vault_b: string | undefined;
+        let account_a: string | undefined;
+        let account_b: string | undefined;
+        try {
+          // Extract oracle if present in API response
+          const oracleFromApi = String((it as any)?.oracle ?? '');
+          if (oracleFromApi && oracleFromApi !== '11111111111111111111111111111111') {
+            oracle = oracleFromApi;
+          } else {
+            // Derive oracle PDA: [b"oracle", whirlpool.key()]
+            try {
+              const { PublicKey } = await import('@solana/web3.js');
+              const poolPk = new PublicKey(id);
+              const programId = new PublicKey('whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
+              const [oraclePda] = PublicKey.findProgramAddressSync(
+                [Buffer.from('oracle'), poolPk.toBuffer()],
+                programId
+              );
+              oracle = oraclePda.toBase58();
+            } catch {}
+          }
+          
+          // Extract vault accounts from API response
+          const vaultA = String((it as any)?.tokenVaultA ?? (it as any)?.token_vault_a ?? (it as any)?.vaultA ?? '');
+          const vaultB = String((it as any)?.tokenVaultB ?? (it as any)?.token_vault_b ?? (it as any)?.vaultB ?? '');
+          if (vaultA && vaultA !== '11111111111111111111111111111111') {
+            token_vault_a = vaultA;
+            account_a = vaultA;  // Use vault as account_a
+          }
+          if (vaultB && vaultB !== '11111111111111111111111111111111') {
+            token_vault_b = vaultB;
+            account_b = vaultB;  // Use vault as account_b
+          }
+        } catch (e: any) {
+          try {
+            logger.debug('orca.exec_accounts.extraction.failed', {
+              cat: 'orca',
+              ctx: { pool: id, error: String(e?.message || e) }
+            });
+          } catch {}
+        }
+        
         clmm.push({
           id,
           dex: 'Orca',
@@ -430,10 +475,15 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
           amount_b: cAmtB,
           decimals_a: Number.isFinite(cDecA) ? cDecA : undefined,
           decimals_b: Number.isFinite(cDecB) ? cDecB : undefined,
+          account_a,
+          account_b,
           pool_kind: 'clmm',
           pool_liquidity_raw,
           tvl_usd,
           liquidity_display,
+          oracle,
+          token_vault_a,
+          token_vault_b,
         });
       } else {
         try { logger.warn('orca.clmm drop by sanity', { id, mint_a: cA, mint_b: cB, price_a_per_b: priceDerived, cat: 'orca' }); } catch {}

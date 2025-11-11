@@ -619,6 +619,41 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
             if (Number.isFinite(min) && min > 0) pool_liquidity_raw = min;
           }
         } catch {}
+        
+        // Derive execution-critical accounts for Raydium CLMM
+        let observation_state: string | undefined;
+        let ex_bitmap: string | undefined;
+        try {
+          const { PublicKey } = await import('@solana/web3.js');
+          const poolPk = new PublicKey(id);
+          const programId = new PublicKey('CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK');
+          
+          // Derive observation state PDA: [b"observation", pool.key()]
+          try {
+            const [observationPda] = PublicKey.findProgramAddressSync(
+              [Buffer.from('observation'), poolPk.toBuffer()],
+              programId
+            );
+            observation_state = observationPda.toBase58();
+          } catch {}
+          
+          // Derive exBitmap (tick array bitmap extension) PDA: [b"exaccount", pool.key()]
+          try {
+            const [exBitmapPda] = PublicKey.findProgramAddressSync(
+              [Buffer.from('exaccount'), poolPk.toBuffer()],
+              programId
+            );
+            ex_bitmap = exBitmapPda.toBase58();
+          } catch {}
+        } catch (e: any) {
+          try {
+            logger.debug('raydium.clmm.exec_accounts.derivation.failed', {
+              cat: 'raydium',
+              ctx: { pool: id, error: String(e?.message || e) }
+            });
+          } catch {}
+        }
+        
         clmm.push({
           id,
           dex: 'Raydium',
@@ -643,6 +678,8 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
           amount_b_whole,
           pool_liquidity_raw,
           liquidity_display: tvl_usd,
+          observation_state,
+          ex_bitmap,
         });
       }
     } else {

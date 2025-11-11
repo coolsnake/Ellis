@@ -3030,6 +3030,8 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
       // This ensures instruction builders have access to all required Serum market accounts
       try {
         const { executionCache } = await import('../execution/cache.js');
+        
+        // Populate AMM pools with market accounts
         for (const pool of norm.amm || []) {
           const existing = executionCache.getStatic(pool.id) || {} as any;
           const staticData: any = {
@@ -3061,6 +3063,35 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
           executionCache.setStatic(pool.id, staticData);
         }
         
+        // Populate CLMM pools with execution-critical accounts
+        for (const pool of norm.clmm || []) {
+          const existing = executionCache.getStatic(pool.id) || {} as any;
+          const staticData: any = {
+            ...existing,
+            programId: 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK',
+            dex: 'Raydium',
+          };
+          
+          // Store pool mints and decimals
+          if (pool.mint_a) staticData.mint_a = pool.mint_a;
+          if (pool.mint_b) staticData.mint_b = pool.mint_b;
+          if (pool.decimals_a != null) staticData.decimals_a = pool.decimals_a;
+          if (pool.decimals_b != null) staticData.decimals_b = pool.decimals_b;
+          
+          // Store execution-critical accounts (observation_state, ex_bitmap)
+          if (pool.observation_state) staticData.observation_state = pool.observation_state;
+          if (pool.ex_bitmap) staticData.ex_bitmap = pool.ex_bitmap;
+          
+          // Store vault/account references
+          if (pool.account_a) staticData.account_a = pool.account_a;
+          if (pool.account_b) staticData.account_b = pool.account_b;
+          
+          // Store tick spacing
+          if (pool.tick_spacing) staticData.tick_spacing = pool.tick_spacing;
+          
+          executionCache.setStatic(pool.id, staticData);
+        }
+        
         // Log successful cache population for our target pool
         try {
           const targetPool = norm.amm?.find((p: any) => p.id === '58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2');
@@ -3080,7 +3111,12 @@ export async function getRaydiumPoolsNormalized(force = false): Promise<PoolsPay
         
         logger.info('raydium.execution_cache.populated', {
           cat: 'pools',
-          ctx: { ammCount: norm.amm?.length || 0, clmmCount: norm.clmm?.length || 0 }
+          ctx: { 
+            ammCount: norm.amm?.length || 0, 
+            clmmCount: norm.clmm?.length || 0,
+            clmmWithExBitmap: (norm.clmm || []).filter((p: any) => p.ex_bitmap).length,
+            clmmWithObservationState: (norm.clmm || []).filter((p: any) => p.observation_state).length,
+          }
         });
       } catch (err) {
         logger.warn('raydium.execution_cache.populate.failed', {
@@ -3341,6 +3377,58 @@ export async function getOrcaPoolsNormalized(): Promise<PoolsPayload> {
           }
         } catch {}
         // Defer TVL filtering to graph-level to avoid early pruning across sources
+  
+  // Populate execution cache with Orca Whirlpool pool data
+  try {
+    const { executionCache } = await import('../execution/cache.js');
+    for (const pool of norm.clmm || []) {
+      const existing = executionCache.getStatic(pool.id) || {} as any;
+      const staticData: any = {
+        ...existing,
+        programId: 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc',
+        dex: 'Orca',
+      };
+      
+      // Store pool mints and decimals
+      if (pool.mint_a) staticData.mint_a = pool.mint_a;
+      if (pool.mint_b) staticData.mint_b = pool.mint_b;
+      if (pool.decimals_a != null) staticData.decimals_a = pool.decimals_a;
+      if (pool.decimals_b != null) staticData.decimals_b = pool.decimals_b;
+      
+      // Store execution-critical accounts (oracle, vaults)
+      if (pool.oracle) staticData.oracle = pool.oracle;
+      if (pool.token_vault_a) staticData.token_vault_a = pool.token_vault_a;
+      if (pool.token_vault_b) staticData.token_vault_b = pool.token_vault_b;
+      
+      // Store vault/account references
+      if (pool.account_a) staticData.account_a = pool.account_a;
+      if (pool.account_b) staticData.account_b = pool.account_b;
+      
+      // Store tick spacing
+      if (pool.tick_spacing) staticData.tick_spacing = pool.tick_spacing;
+      
+      executionCache.setStatic(pool.id, staticData);
+    }
+    
+    try {
+      logger.info('orca.execution_cache.populated', {
+        cat: 'pools',
+        ctx: {
+          poolCount: (norm.clmm || []).length,
+          withOracle: (norm.clmm || []).filter((p: any) => p.oracle).length,
+          withVaults: (norm.clmm || []).filter((p: any) => p.token_vault_a && p.token_vault_b).length,
+        }
+      });
+    } catch {}
+  } catch (e: any) {
+    try {
+      logger.warn('orca.execution_cache.population.failed', {
+        cat: 'pools',
+        ctx: { error: String(e?.message || e) }
+      });
+    } catch {}
+  }
+  
   logger.info('orca.http normalized', { clmm: norm.clmm.length, canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
         return norm;
     } catch (e: any) {
@@ -3402,6 +3490,58 @@ export async function getMeteoraPoolsCached(force = false): Promise<PoolsPayload
       // Defer TVL filtering to graph-level to avoid early pruning across sources
       const prev = meteoraCache.data;
       meteoraCache.data = norm; meteoraCache.ts = Date.now();
+      
+      // Populate execution cache with Meteora DLMM pool data
+      // This ensures instruction builders have access to execution-critical accounts
+      try {
+        const { executionCache } = await import('../execution/cache.js');
+        for (const pool of norm.clmm || []) {
+          const existing = executionCache.getStatic(pool.id) || {} as any;
+          const staticData: any = {
+            ...existing,
+            programId: 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo',
+            dex: 'Meteora',
+          };
+          
+          // Store pool mints and decimals
+          if (pool.mint_a) staticData.mint_a = pool.mint_a;
+          if (pool.mint_b) staticData.mint_b = pool.mint_b;
+          if (pool.decimals_a != null) staticData.decimals_a = pool.decimals_a;
+          if (pool.decimals_b != null) staticData.decimals_b = pool.decimals_b;
+          
+          // Store execution-critical accounts (bin_array_bitmap_extension)
+          if (pool.bin_array_bitmap_extension) {
+            staticData.bin_array_bitmap_extension = pool.bin_array_bitmap_extension;
+          }
+          
+          // Store vault/reserve accounts
+          if (pool.account_a) staticData.account_a = pool.account_a;
+          if (pool.account_b) staticData.account_b = pool.account_b;
+          
+          // Store tick spacing (bin_step for Meteora)
+          if (pool.tick_spacing) staticData.tick_spacing = pool.tick_spacing;
+          
+          executionCache.setStatic(pool.id, staticData);
+        }
+        
+        try {
+          logger.info('meteora.execution_cache.populated', {
+            cat: 'pools',
+            ctx: {
+              poolCount: (norm.clmm || []).length,
+              withBitmapExt: (norm.clmm || []).filter((p: any) => p.bin_array_bitmap_extension).length,
+            }
+          });
+        } catch {}
+      } catch (e: any) {
+        try {
+          logger.warn('meteora.execution_cache.population.failed', {
+            cat: 'pools',
+            ctx: { error: String(e?.message || e) }
+          });
+        } catch {}
+      }
+      
       poolsMetrics.meteora.fetches += 1;
       poolsMetrics.meteora.lastMs = Date.now() - t0;
       poolsMetrics.meteora.lastClmm = norm.clmm.length;
