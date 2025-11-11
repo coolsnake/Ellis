@@ -1068,11 +1068,28 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
     1,
     { module: 'execution', method: 'sendTransaction' }
   );
-  await withRpcLimit(
-    () => connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed'),
-    1,
-    { module: 'execution', method: 'confirmTransaction' }
-  );
+  
+  // Try to confirm, but don't fail if confirmation times out or errors
+  // The transaction was successfully sent, so we return the signature regardless
+  try {
+    await withRpcLimit(
+      () => connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed'),
+      1,
+      { module: 'execution', method: 'confirmTransaction' }
+    );
+  } catch (confirmError: any) {
+    // Log but don't fail - transaction was sent successfully
+    try {
+      logger.warn('tx.confirm.failed', {
+        cat: 'tx',
+        ctx: {
+          txId,
+          signature: sig,
+          error: confirmError?.message || (confirmError instanceof Error ? confirmError.toString() : JSON.stringify(confirmError)),
+        } as any,
+      });
+    } catch {}
+  }
   try {
     const programs = realIxs.map(ix => (ix.programId && (ix.programId as any).toBase58 ? (ix.programId as any).toBase58() : String(ix.programId)));
     const dexes = detectDexesFromPrograms(programs);

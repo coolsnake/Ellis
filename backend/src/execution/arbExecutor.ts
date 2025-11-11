@@ -864,10 +864,13 @@ export class ArbExecutor {
     } catch (e: any) {
       this.state.failedExecutions++;
       
+      // Better error serialization
+      const errorMsg = e?.message || (e instanceof Error ? e.toString() : JSON.stringify(e));
+      
       logger.error('arb.executor.failed', {
         cat: 'arb',
         path: pathStr,
-        error: String(e?.message || e),
+        error: errorMsg,
         durationMs: Date.now() - startTime,
         // Include opportunity data for context
         opportunity: {
@@ -899,7 +902,7 @@ export class ArbExecutor {
       // Emit failure to frontend
       emit('arb:execution:failed', {
         path: pathStr,
-        error: String(e?.message || e),
+        error: errorMsg,
         timestamp: Date.now(),
       });
     } finally {
