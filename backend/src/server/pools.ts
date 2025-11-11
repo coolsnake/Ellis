@@ -3606,7 +3606,11 @@ export function clearAllPoolCaches(): void {
   try { raydiumCache.data = undefined as any; raydiumCache.ts = 0; raydiumCache.inflight = undefined; } catch {}
   try { orcaCache.data = undefined as any; orcaCache.ts = 0; orcaCache.inflight = undefined; } catch {}
   try { meteoraCache.data = undefined as any; meteoraCache.ts = 0; meteoraCache.inflight = undefined; } catch {}
+  try { metbalCache.data = undefined as any; metbalCache.ts = 0; metbalCache.inflight = undefined; } catch {}
+  try { pumpswapCache.data = undefined as any; pumpswapCache.ts = 0; pumpswapCache.inflight = undefined; } catch {}
   try { enrichMemo.clear(); } catch {}
+  try { meteoraBinTrackers.clear(); } catch {}
+  try { meteoraBinAccountToPool.clear(); } catch {}
   try { logger.info('pools.caches cleared'); } catch {}
 }
 

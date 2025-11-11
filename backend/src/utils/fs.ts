@@ -27,4 +27,16 @@ export function joinPath(...parts: string[]): string {
   return path.resolve(...parts);
 }
 
+export async function deleteFile(filePath: string): Promise<void> {
+  try {
+    await fs.unlink(filePath);
+  } catch (error: any) {
+    if (error && error.code === 'ENOENT') {
+      // File doesn't exist, ignore
+      return;
+    }
+    throw error;
+  }
+}
+
 

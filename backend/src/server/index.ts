@@ -395,8 +395,39 @@ export async function shutdown() {
     // Shutdown arb-rs process first
     try { shutdownRustProcess(); } catch {}
 
-    // Stop timers and clear in-memory caches to force fresh pools/graph on next boot
-    try { const pools = await import('./pools.js'); (pools as any).stopPoolRefreshLoop?.(); (pools as any).disablePoolWebsocketRefreshes?.(); (pools as any).clearAllPoolCaches?.(); } catch {}
+    // Stop timers and clear in-memory caches
+    try { 
+      const pools = await import('./pools.js'); 
+      (pools as any).stopPoolRefreshLoop?.(); 
+      (pools as any).disablePoolWebsocketRefreshes?.(); 
+      (pools as any).clearAllPoolCaches?.(); 
+    } catch {}
+    
+    // Delete persistent cache files to force fresh data on next boot
+    try {
+      const { deleteFile, joinPath } = await import('../utils/fs.js');
+      const { CONFIG } = await import('../utils/config.js');
+      
+      // Execution cache snapshot
+      try { 
+        await deleteFile(joinPath(CONFIG.cacheDir, 'dex-accounts.json')); 
+        logger.info('Deleted dex-accounts.json cache');
+      } catch {}
+      
+      // CLMM cache
+      try { 
+        await deleteFile(joinPath(CONFIG.cacheDir, 'raydium-clmm-cache.json')); 
+        logger.info('Deleted raydium-clmm-cache.json');
+      } catch {}
+      
+      // Pool startup cache
+      try { 
+        await deleteFile(joinPath(CONFIG.cacheDir, 'pools-startup.json')); 
+        logger.info('Deleted pools-startup.json');
+      } catch {}
+    } catch (e) {
+      try { logger.warn('Cache file cleanup failed', { error: String(e) }); } catch {}
+    }
     
     // Cleanup Drift subscriptions to prevent _updateSubscriptions errors on startup
     try {
@@ -407,13 +438,20 @@ export async function shutdown() {
       }
     } catch {}
     
-    // Reset in-memory graph snapshot so nothing is reused
-    try { const graph = await import('./graph.js'); (graph as any).rebuildGraphNow?.(undefined); } catch {}
+    // Write session logs
     const file = await writeSessionLogAndClear();
     if (file) { try { logger.info('Session log written', { file }); } catch {} }
-    // Also write consolidated log merging backend UI logs with arb-rs session (if available)
-    try { const cfile = await writeConsolidatedSessionLog(); if (cfile) { try { logger.info('Consolidated session log written', { file: cfile }); } catch {} } } catch {}
+    
+    // Write consolidated log
+    try { 
+      const cfile = await writeConsolidatedSessionLog(); 
+      if (cfile) { try { logger.info('Consolidated session log written', { file: cfile }); } catch {} } 
   } catch {}
+    
+    logger.info('Shutdown complete - all caches cleared for fresh restart');
+  } catch (e) {
+    try { logger.error('Shutdown error', { error: String(e) }); } catch {}
+  }
   process.exit(0);
 }
 process.on('SIGINT', shutdown);
