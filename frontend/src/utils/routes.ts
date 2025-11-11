@@ -25,6 +25,7 @@ export const ROUTES = {
     orca: '/arb/pools/orca',
     meteora: '/arb/pools/meteora',
     meteoraBalanced: '/arb/pools/meteora-balanced',
+    pumpswap: '/arb/pools/pumpswap',
     refresh: '/arb/pools/refresh',
     subscribe: '/arb/pools/subscribe',
     unsubscribe: '/arb/pools/unsubscribe',

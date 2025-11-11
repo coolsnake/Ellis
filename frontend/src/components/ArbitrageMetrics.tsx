@@ -2,6 +2,9 @@ import React from 'react';
 import { ROUTES } from '../utils/routes';
 import { useSocket } from '../app/contexts/socket';
 
+// Fetcher state tracking
+type FetcherState = 'idle' | 'fetching' | 'enriching' | 'subscribing' | 'ready' | 'error';
+
 export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; socket?: any }> = (
   { apiBase, paused, socket }: { apiBase: string; paused?: boolean; socket?: any }
 ) => {
@@ -11,8 +14,8 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
   const [pools, setPools] = React.useState<any | null>(null);
   const [orcaPools, setOrcaPools] = React.useState<any | null>(null);
   const [meteoraPools, setMeteoraPools] = React.useState<any | null>(null);
-  
   const [mblPools, setMblPools] = React.useState<any | null>(null);
+  const [pumpswapPools, setPumpswapPools] = React.useState<any | null>(null);
   const [poolsStats, setPoolsStats] = React.useState<any | null>(null);
   const [subscribed, setSubscribed] = React.useState<boolean>(false);
   const [wsHealthy, setWsHealthy] = React.useState<boolean>(false);
@@ -23,6 +26,15 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
   const [wsTargets, setWsTargets] = React.useState<{ orca?: number; raydium?: number; meteora?: number }>({});
   const [altStatus, setAltStatus] = React.useState<any | null>(null);
   const [altActionLoading, setAltActionLoading] = React.useState<string | null>(null);
+  
+  // DEX fetcher states
+  const [fetcherStates, setFetcherStates] = React.useState<Record<string, FetcherState>>({
+    raydium: 'idle',
+    orca: 'idle',
+    meteora: 'idle',
+    meteora_balanced: 'idle',
+    pumpswap: 'idle',
+  });
 
   const fetchMetrics = async () => {
     try {
@@ -69,40 +81,10 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
         }
       } catch {}
       fetch(`${apiBase}${ROUTES.pools.raydium}`, { headers }).then(r=>r.json()).then(setPools).catch(()=>{});
-    } catch {}
-    try {
-      const headers: Record<string, string> = {};
-      try {
-        const s = localStorage.getItem('authCreds');
-        if (s) {
-          const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
-          if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
-        }
-      } catch {}
       fetch(`${apiBase}${ROUTES.pools.orca}`, { headers }).then(r=>r.json()).then(setOrcaPools).catch(()=>{});
-    } catch {}
-    try {
-      const headers: Record<string, string> = {};
-      try {
-        const s = localStorage.getItem('authCreds');
-        if (s) {
-          const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
-          if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
-        }
-      } catch {}
       fetch(`${apiBase}${ROUTES.pools.meteora}`, { headers }).then(r=>r.json()).then(setMeteoraPools).catch(()=>{});
-    } catch {}
-    
-    try {
-      const headers: Record<string, string> = {};
-      try {
-        const s = localStorage.getItem('authCreds');
-        if (s) {
-          const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
-          if (creds && creds.user && creds.pass) headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
-        }
-      } catch {}
       fetch(`${apiBase}${ROUTES.pools.meteoraBalanced}`, { headers }).then(r=>r.json()).then(setMblPools).catch(()=>{});
+      fetch(`${apiBase}${ROUTES.pools.pumpswap}`, { headers }).then(r=>r.json()).then(setPumpswapPools).catch(()=>{});
     } catch {}
     fetchMetrics();
     try { window.dispatchEvent(new CustomEvent('graph-refresh')); } catch {}
@@ -144,11 +126,35 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
         const msg: string = (evt?.message || '').toString();
         const code: string = String(evt?.code || '').toUpperCase();
         const cat: string = String(evt?.cat || evt?.context?.cat || '').toLowerCase();
-        const isPretradeArb = /\bpretrade:arb\b/i.test(msg) || /^PRETRADE\./.test(code);
-        const isOpportunityCat = cat === 'opportunity';
+        
+        // Update fetcher states based on log events
+        if (cat === 'raydium' || cat === 'orca' || cat === 'meteora' || cat === 'pumpswap') {
+          if (/fetch start/i.test(msg)) {
+            setFetcherStates(s => ({ ...s, [cat]: 'fetching' }));
+          } else if (/enrichment\.start/i.test(msg)) {
+            setFetcherStates(s => ({ ...s, [cat]: 'enriching' }));
+          } else if (/subscribing/i.test(msg)) {
+            setFetcherStates(s => ({ ...s, [cat]: 'subscribing' }));
+          } else if (/fetch ok/i.test(msg) || /normalized/i.test(msg)) {
+            setFetcherStates(s => ({ ...s, [cat]: 'ready' }));
+          } else if (/error|fail/i.test(msg)) {
+            setFetcherStates(s => ({ ...s, [cat]: 'error' }));
+          }
+        }
+        if (cat === 'meteora_balanced' || /meteoraBalanced/.test(msg)) {
+          const key = 'meteora_balanced';
+          if (/fetch start/i.test(msg)) {
+            setFetcherStates(s => ({ ...s, [key]: 'fetching' }));
+          } else if (/fetch ok/i.test(msg)) {
+            setFetcherStates(s => ({ ...s, [key]: 'ready' }));
+          } else if (/error|fail/i.test(msg)) {
+            setFetcherStates(s => ({ ...s, [key]: 'error' }));
+          }
+        }
+        
         const isGraphPush = /^GRAPH\.PUSH\.(SNAPSHOT|DIFF)$/.test(code) || /^(graph:push (snapshot|diff))$/i.test(msg);
         const isArbPush = /^ARB\.PUSH\.SNAPSHOT$/.test(code) || /^arb:push snapshot$/i.test(msg);
-        if (isPretradeArb || isOpportunityCat || isGraphPush || isArbPush) {
+        if (isGraphPush || isArbPush) {
           requestMetrics();
         }
       } catch {}
@@ -172,12 +178,35 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
     return `${s}s ago`;
   };
 
+  const getStateColor = (state: FetcherState) => {
+    switch (state) {
+      case 'ready': return 'bg-green-600 border-green-500';
+      case 'fetching': return 'bg-blue-600 border-blue-500';
+      case 'enriching': return 'bg-yellow-600 border-yellow-500';
+      case 'subscribing': return 'bg-purple-600 border-purple-500';
+      case 'error': return 'bg-red-600 border-red-500';
+      default: return 'bg-gray-600 border-gray-500';
+    }
+  };
+
+  const getStateLabel = (state: FetcherState) => {
+    switch (state) {
+      case 'ready': return '✓';
+      case 'fetching': return '↻';
+      case 'enriching': return '⚡';
+      case 'subscribing': return '📡';
+      case 'error': return '✗';
+      default: return '○';
+    }
+  };
+
   return (
     <div className="p-3 border rounded bg-gray-900">
-      <div className="flex items-center justify-between mb-2">
+      {/* Header with Actions */}
+      <div className="flex items-center justify-between mb-3 pb-2 border-b border-gray-700">
         <h3 className="text-lg font-semibold">Arbitrage Metrics</h3>
         <div className="flex items-center gap-2">
-          <button className="px-2 py-1 border rounded bg-green-700/70" onClick={async()=>{
+          <button className="px-2 py-1 text-sm border rounded bg-green-700/70 hover:bg-green-700" onClick={async()=>{
             try {
               const headers: Record<string, string> = { 'content-type': 'application/json' };
               try {
@@ -191,8 +220,8 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
               setArbEnabled(v => !v);
             } catch {}
           }}>{arbEnabled ? 'Stop Arb' : 'Start Arb'}</button>
-          <button className="px-2 py-1 border rounded" onClick={refreshPoolsAndMetrics}>Refresh Pools</button>
-          <button className="px-2 py-1 border rounded" onClick={async ()=>{
+          <button className="px-2 py-1 text-sm border rounded hover:bg-gray-700" onClick={refreshPoolsAndMetrics}>Refresh Pools</button>
+          <button className="px-2 py-1 text-sm border rounded hover:bg-gray-700" onClick={async ()=>{
             try {
               const headers: Record<string, string> = { 'content-type': 'application/json' };
               try {
@@ -206,63 +235,237 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
               fetchMetrics();
             } catch {}
           }}>Retarget WS</button>
-          <span className={`px-2 py-0.5 text-xs rounded border ${wsHealthy ? 'bg-green-700/50 border-green-600' : 'bg-yellow-700/50 border-yellow-600'}`}>
-            {wsHealthy ? `WS Active: Ray ${wsDetails.raydium?.attached||0}/${wsTargets.raydium||0} ev=${wsDetails.raydium?.events||0}, Orca ${wsDetails.orca?.attached||0}/${wsTargets.orca||0} ev=${wsDetails.orca?.events||0}, Met ${wsDetails.meteora?.attached||0}/${wsTargets.meteora||0} ev=${wsDetails.meteora?.events||0} · idle ${ago(lastEventMs)}` : `WS Idle · idle ${ago(lastEventMs)}`}
-          </span>
-          {altStatus ? (
-            <span className={`px-2 py-0.5 text-xs rounded border ${altStatus.initialized && altStatus.altCount > 0 ? 'bg-green-700/50 border-green-600' : 'bg-yellow-700/50 border-yellow-600'}`} title={altStatus.startupStatus?.errors?.length ? `Errors: ${altStatus.startupStatus.errors.join(', ')}` : undefined}>
-              ALTs: {altStatus.altCount || 0} {altStatus.categories?.length ? `(${altStatus.categories.join(', ')})` : ''} {altStatus.startupStatus?.errors?.length ? `⚠ ${altStatus.startupStatus.errors.length} err` : ''}
-            </span>
-          ) : null}
         </div>
       </div>
+
       {!m ? <div className="text-sm opacity-70">Loading...</div> : (
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-sm">
-          <div><div className="text-gray-400">Active Opps</div><div>{fmt(m.opportunities_active)}</div></div>
-          <div><div className="text-gray-400">Max Profit (bps)</div><div>{fmt(m.max_profit_bps)}</div></div>
-          <div><div className="text-gray-400">Avg Profit (bps)</div><div>{typeof m.avg_profit_bps === 'number' ? m.avg_profit_bps.toFixed(2) : '-'}</div></div>
-          <div><div className="text-gray-400">Graph Nodes</div><div>{fmt((typeof m.backend_graph_nodes === 'number' && m.backend_graph_nodes > 0) ? m.backend_graph_nodes : m.graph_nodes)}</div></div>
-          <div><div className="text-gray-400">Graph Edges</div><div>{fmt((typeof m.backend_graph_edges === 'number' && m.backend_graph_edges > 0) ? m.backend_graph_edges : m.graph_edges)}</div></div>
-          <div><div className="text-gray-400">Last Detection</div><div>{ago(m.last_detection_ms)}</div></div>
-          <div><div className="text-gray-400">Ingestion (ms)</div><div>{fmt(m.ingestion_duration_ms)}</div></div>
-          <div><div className="text-gray-400">Detection (ms)</div><div>{fmt(m.detection_duration_ms)}</div></div>
-          {typeof m?.diff_to_detect_ms === 'number' ? (<div><div className="text-gray-400">Arb diff→detect (ms)</div><div>{fmt(m.diff_to_detect_ms)}</div></div>) : null}
-          {typeof m?.arb_graph_version_delta === 'number' || typeof m?.arb_graph_age_ms === 'number' ? (
-            <div><div className="text-gray-400">Backend↔arb-rs Graph</div><div>Δv={fmt(m.arb_graph_version_delta)} age={fmt(m.arb_graph_age_ms)}ms</div></div>
-          ) : null}
-          <div className="col-span-2"><div className="text-gray-400">Requests (Jup/Ray/Orca)</div><div>{fmt(m.ingestion_requests_total_jupiter)} / {fmt(m.ingestion_requests_total_raydium)} / {fmt(m.ingestion_requests_total_orca)}</div></div>
-          <div className="col-span-2"><div className="text-gray-400">Errors (Jup/Ray/Orca)</div><div>{fmt(m.ingestion_errors_total_jupiter)} / {fmt(m.ingestion_errors_total_raydium)} / {fmt(m.ingestion_errors_total_orca)}</div></div>
-          <div><div className="text-gray-400">WS Pushes</div><div>{fmt(m.ws_push_total)}</div></div>
-          <div><div className="text-gray-400">WS Skipped</div><div>{fmt(m.ws_skipped_nochange_total)}</div></div>
-          <div className="col-span-2 border-t border-gray-700 pt-2">
-            <div className="text-gray-400">Raydium Pools (scoped)</div>
-            {!pools ? <div className="opacity-70">-</div> : (
-              <div>AMM: {fmt(pools.amm?.length)} CLMM: {fmt(pools.clmm?.length)}</div>
-            )}
-          </div>
-            <div className="col-span-2">
-            <div className="text-gray-400">Orca Pools (scoped)</div>
-            {!orcaPools ? <div className="opacity-70">-</div> : (
-              <div>AMM: {fmt(orcaPools.amm?.length)} CLMM: {fmt(orcaPools.clmm?.length)}</div>
-            )}
-          </div>
-            <div className="col-span-2">
-              <div className="text-gray-400">Meteora Pools (scoped)</div>
-              {!meteoraPools ? <div className="opacity-70">-</div> : (
-                <div>CLMM: {fmt(meteoraPools.clmm?.length)}</div>
-              )}
+        <div className="space-y-4">
+          {/* Graph State Section */}
+          <div className="border border-gray-700 rounded p-3 bg-gray-800/50">
+            <h4 className="text-md font-semibold mb-2 text-blue-300">Graph State</h4>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+              <div>
+                <div className="text-gray-400 text-xs">Nodes</div>
+                <div className="text-lg font-mono">{fmt((typeof m.backend_graph_nodes === 'number' && m.backend_graph_nodes > 0) ? m.backend_graph_nodes : m.graph_nodes)}</div>
+              </div>
+              <div>
+                <div className="text-gray-400 text-xs">Edges</div>
+                <div className="text-lg font-mono">{fmt((typeof m.backend_graph_edges === 'number' && m.backend_graph_edges > 0) ? m.backend_graph_edges : m.graph_edges)}</div>
+              </div>
+              <div>
+                <div className="text-gray-400 text-xs">Last Detection</div>
+                <div className="text-sm">{ago(m.last_detection_ms)}</div>
+              </div>
+              <div>
+                <div className="text-gray-400 text-xs">Detect Duration</div>
+                <div className="text-sm">{fmt(m.detection_duration_ms)}ms</div>
+              </div>
+              {m?.graph_push ? (
+                <>
+                  <div>
+                    <div className="text-gray-400 text-xs">Graph Pushes</div>
+                    <div className="text-sm">✓ {fmt(m.graph_push.success)} / ✗ {fmt(m.graph_push.failed)}</div>
+                  </div>
+                  <div>
+                    <div className="text-gray-400 text-xs">Push Latency (p50/p95)</div>
+                    <div className="text-sm">{fmt(m.graph_push.p50)}ms / {fmt(m.graph_push.p95)}ms</div>
+                  </div>
+                </>
+              ) : null}
+              {typeof m?.diff_to_detect_ms === 'number' ? (
+                <div>
+                  <div className="text-gray-400 text-xs">Diff→Detect</div>
+                  <div className="text-sm">{fmt(m.diff_to_detect_ms)}ms</div>
+                </div>
+              ) : null}
+              {typeof m?.arb_graph_version_delta === 'number' || typeof m?.arb_graph_age_ms === 'number' ? (
+                <div>
+                  <div className="text-gray-400 text-xs">Backend↔Arb-rs</div>
+                  <div className="text-xs">Δv={fmt(m.arb_graph_version_delta)} age={fmt(m.arb_graph_age_ms)}ms</div>
+                </div>
+              ) : null}
             </div>
-            
-            <div className="col-span-2">
-              <div className="text-gray-400">Meteora Balanced Pools (scoped)</div>
-              {!mblPools ? <div className="opacity-70">-</div> : (
-                <div>AMM: {fmt(mblPools.amm?.length)}</div>
-              )}
+          </div>
+
+          {/* Pool Fetchers Section */}
+          <div className="border border-gray-700 rounded p-3 bg-gray-800/50">
+            <h4 className="text-md font-semibold mb-2 text-green-300">Pool Fetchers</h4>
+            <div className="space-y-2">
+              {/* Raydium */}
+              <div className="flex items-center justify-between p-2 bg-gray-900/50 rounded">
+                <div className="flex items-center gap-2">
+                  <span className={`w-6 h-6 flex items-center justify-center rounded border text-xs ${getStateColor(fetcherStates.raydium)}`} title={fetcherStates.raydium}>
+                    {getStateLabel(fetcherStates.raydium)}
+                  </span>
+                  <span className="font-semibold">Raydium</span>
+                </div>
+                <div className="flex items-center gap-4 text-sm">
+                  {pools ? (
+                    <span className="text-gray-300">AMM: {fmt(pools.amm?.length)} / CLMM: {fmt(pools.clmm?.length)}</span>
+                  ) : <span className="text-gray-500">-</span>}
+                  {poolsStats?.raydium ? (
+                    <>
+                      <span className="text-gray-400 text-xs">{fmt(poolsStats.raydium.fetches)} fetches</span>
+                      <span className="text-gray-400 text-xs">{ago(poolsStats.raydium.lastMs)}</span>
+                    </>
+                  ) : null}
+                  {poolAges?.raydium != null && poolAges?.ttl?.raydium != null ? (
+                    <span className={`text-xs px-1 rounded border ${Number(poolAges.raydium) > Number(poolAges.ttl.raydium) ? 'bg-yellow-800/50 border-yellow-700' : 'bg-green-800/40 border-green-700'}`}>
+                      {(Number(poolAges.raydium) / 1000).toFixed(1)}s / {(Number(poolAges.ttl.raydium) / 1000).toFixed(0)}s
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+
+              {/* Orca */}
+              <div className="flex items-center justify-between p-2 bg-gray-900/50 rounded">
+                <div className="flex items-center gap-2">
+                  <span className={`w-6 h-6 flex items-center justify-center rounded border text-xs ${getStateColor(fetcherStates.orca)}`} title={fetcherStates.orca}>
+                    {getStateLabel(fetcherStates.orca)}
+                  </span>
+                  <span className="font-semibold">Orca</span>
+                </div>
+                <div className="flex items-center gap-4 text-sm">
+                  {orcaPools ? (
+                    <span className="text-gray-300">AMM: {fmt(orcaPools.amm?.length)} / CLMM: {fmt(orcaPools.clmm?.length)}</span>
+                  ) : <span className="text-gray-500">-</span>}
+                  {poolsStats?.orca ? (
+                    <>
+                      <span className="text-gray-400 text-xs">{fmt(poolsStats.orca.fetches)} fetches</span>
+                      <span className="text-gray-400 text-xs">{ago(poolsStats.orca.lastMs)}</span>
+                    </>
+                  ) : null}
+                  {poolAges?.orca != null && poolAges?.ttl?.orca != null ? (
+                    <span className={`text-xs px-1 rounded border ${Number(poolAges.orca) > Number(poolAges.ttl.orca) ? 'bg-yellow-800/50 border-yellow-700' : 'bg-green-800/40 border-green-700'}`}>
+                      {(Number(poolAges.orca) / 1000).toFixed(1)}s / {(Number(poolAges.ttl.orca) / 1000).toFixed(0)}s
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+
+              {/* Meteora DLMM */}
+              <div className="flex items-center justify-between p-2 bg-gray-900/50 rounded">
+                <div className="flex items-center gap-2">
+                  <span className={`w-6 h-6 flex items-center justify-center rounded border text-xs ${getStateColor(fetcherStates.meteora)}`} title={fetcherStates.meteora}>
+                    {getStateLabel(fetcherStates.meteora)}
+                  </span>
+                  <span className="font-semibold">Meteora DLMM</span>
+                </div>
+                <div className="flex items-center gap-4 text-sm">
+                  {meteoraPools ? (
+                    <span className="text-gray-300">CLMM: {fmt(meteoraPools.clmm?.length)}</span>
+                  ) : <span className="text-gray-500">-</span>}
+                  {poolsStats?.meteora ? (
+                    <>
+                      <span className="text-gray-400 text-xs">{fmt(poolsStats.meteora.fetches)} fetches</span>
+                      <span className="text-gray-400 text-xs">{ago(poolsStats.meteora.lastMs)}</span>
+                    </>
+                  ) : null}
+                  {poolAges?.meteora != null && poolAges?.ttl?.meteora != null ? (
+                    <span className={`text-xs px-1 rounded border ${Number(poolAges.meteora) > Number(poolAges.ttl.meteora) ? 'bg-yellow-800/50 border-yellow-700' : 'bg-green-800/40 border-green-700'}`}>
+                      {(Number(poolAges.meteora) / 1000).toFixed(1)}s / {(Number(poolAges.ttl.meteora) / 1000).toFixed(0)}s
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+
+              {/* Meteora Balanced */}
+              <div className="flex items-center justify-between p-2 bg-gray-900/50 rounded">
+                <div className="flex items-center gap-2">
+                  <span className={`w-6 h-6 flex items-center justify-center rounded border text-xs ${getStateColor(fetcherStates.meteora_balanced)}`} title={fetcherStates.meteora_balanced}>
+                    {getStateLabel(fetcherStates.meteora_balanced)}
+                  </span>
+                  <span className="font-semibold">Meteora Balanced</span>
+                </div>
+                <div className="flex items-center gap-4 text-sm">
+                  {mblPools ? (
+                    <span className="text-gray-300">AMM: {fmt(mblPools.amm?.length)}</span>
+                  ) : <span className="text-gray-500">-</span>}
+                  {poolsStats?.meteora_balanced ? (
+                    <>
+                      <span className="text-gray-400 text-xs">{fmt(poolsStats.meteora_balanced.fetches)} fetches</span>
+                      <span className="text-gray-400 text-xs">{ago(poolsStats.meteora_balanced.lastMs)}</span>
+                    </>
+                  ) : null}
+                  {poolAges?.meteora_balanced != null && poolAges?.ttl?.meteora_balanced != null ? (
+                    <span className={`text-xs px-1 rounded border ${Number(poolAges.meteora_balanced) > Number(poolAges.ttl.meteora_balanced) ? 'bg-yellow-800/50 border-yellow-700' : 'bg-green-800/40 border-green-700'}`}>
+                      {(Number(poolAges.meteora_balanced) / 1000).toFixed(1)}s / {(Number(poolAges.ttl.meteora_balanced) / 1000).toFixed(0)}s
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+
+              {/* Pumpswap */}
+              <div className="flex items-center justify-between p-2 bg-gray-900/50 rounded">
+                <div className="flex items-center gap-2">
+                  <span className={`w-6 h-6 flex items-center justify-center rounded border text-xs ${getStateColor(fetcherStates.pumpswap)}`} title={fetcherStates.pumpswap}>
+                    {getStateLabel(fetcherStates.pumpswap)}
+                  </span>
+                  <span className="font-semibold">Pumpswap</span>
+                </div>
+                <div className="flex items-center gap-4 text-sm">
+                  {pumpswapPools ? (
+                    <span className="text-gray-300">AMM: {fmt(pumpswapPools.amm?.length)}</span>
+                  ) : <span className="text-gray-500">-</span>}
+                  {poolsStats?.pumpswap ? (
+                    <>
+                      <span className="text-gray-400 text-xs">{fmt(poolsStats.pumpswap.fetches)} fetches</span>
+                      <span className="text-gray-400 text-xs">{ago(poolsStats.pumpswap.lastMs)}</span>
+                      {(poolsStats.pumpswap.enrichmentSuccess > 0 || poolsStats.pumpswap.enrichmentFail > 0) ? (
+                        <span className="text-xs text-purple-300" title="RPC Enrichment">
+                          ⚡{fmt(poolsStats.pumpswap.enrichmentSuccess)}✓ {poolsStats.pumpswap.enrichmentFail > 0 ? `${fmt(poolsStats.pumpswap.enrichmentFail)}✗` : ''} ({fmt(poolsStats.pumpswap.enrichmentMs)}ms)
+                        </span>
+                      ) : null}
+                    </>
+                  ) : null}
+                  {poolAges?.pumpswap != null && poolAges?.ttl?.pumpswap != null ? (
+                    <span className={`text-xs px-1 rounded border ${Number(poolAges.pumpswap) > Number(poolAges.ttl.pumpswap) ? 'bg-yellow-800/50 border-yellow-700' : 'bg-green-800/40 border-green-700'}`}>
+                      {(Number(poolAges.pumpswap) / 1000).toFixed(1)}s / {(Number(poolAges.ttl.pumpswap) / 1000).toFixed(0)}s
+                    </span>
+                  ) : null}
+                </div>
+              </div>
             </div>
+          </div>
+
+          {/* WebSocket Activity Section */}
+          <div className="border border-gray-700 rounded p-3 bg-gray-800/50">
+            <h4 className="text-md font-semibold mb-2 text-purple-300">WebSocket Activity</h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+              <div className="flex items-center gap-2">
+                <span className={`px-2 py-1 text-xs rounded border ${wsHealthy ? 'bg-green-700/50 border-green-600' : 'bg-yellow-700/50 border-yellow-600'}`}>
+                  {wsHealthy ? '✓ Active' : '○ Idle'}
+                </span>
+                <span className="text-gray-400 text-xs">Last event: {ago(lastEventMs)}</span>
+              </div>
+              <div className="flex items-center gap-4">
+                <div>
+                  <span className="text-gray-400 text-xs">Raydium:</span>
+                  <span className="ml-1 text-sm">{wsDetails.raydium?.attached||0}/{wsTargets.raydium||0} ({wsDetails.raydium?.events||0} ev)</span>
+                </div>
+                <div>
+                  <span className="text-gray-400 text-xs">Orca:</span>
+                  <span className="ml-1 text-sm">{wsDetails.orca?.attached||0}/{wsTargets.orca||0} ({wsDetails.orca?.events||0} ev)</span>
+                </div>
+                <div>
+                  <span className="text-gray-400 text-xs">Meteora:</span>
+                  <span className="ml-1 text-sm">{wsDetails.meteora?.attached||0}/{wsTargets.meteora||0} ({wsDetails.meteora?.events||0} ev)</span>
+                </div>
+              </div>
+            </div>
+            {typeof m.ws_push_total === 'number' || typeof m.ws_skipped_nochange_total === 'number' ? (
+              <div className="mt-2 pt-2 border-t border-gray-700 flex gap-4 text-xs text-gray-400">
+                <span>Pushes: {fmt(m.ws_push_total)}</span>
+                <span>Skipped (no change): {fmt(m.ws_skipped_nochange_total)}</span>
+              </div>
+            ) : null}
+          </div>
+
+          {/* ALT Management Section */}
           {altStatus ? (
-            <div className="col-span-2 border-t border-gray-700 pt-2">
+            <div className="border border-gray-700 rounded p-3 bg-gray-800/50">
               <div className="flex items-center justify-between mb-2">
-                <div className="text-gray-400">Address Lookup Tables (ALTs)</div>
+                <h4 className="text-md font-semibold text-amber-300">Address Lookup Tables</h4>
                 <div className="flex items-center gap-2">
                   <button 
                     className={`px-2 py-1 text-xs border rounded ${altActionLoading === 'extend-common' ? 'bg-gray-700 opacity-50 cursor-not-allowed' : 'bg-blue-700 hover:bg-blue-600'}`}
@@ -375,66 +578,9 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
               </div>
             </div>
           ) : null}
-          {poolAges ? (
-            <div className="col-span-2">
-              <div className="text-gray-400">Pool Cache Age</div>
-              <div className="flex gap-2 text-xs">
-                <span className={`px-1 rounded border ${Number(poolAges.raydium) > Number(poolAges.ttl?.raydium) ? 'bg-yellow-800/50 border-yellow-700' : 'bg-green-800/40 border-green-700'}`}>Ray {fmt(poolAges.raydium)}ms / TTL {fmt(poolAges.ttl?.raydium)}ms</span>
-                <span className={`px-1 rounded border ${Number(poolAges.orca) > Number(poolAges.ttl?.orca) ? 'bg-yellow-800/50 border-yellow-700' : 'bg-green-800/40 border-green-700'}`}>Orc {fmt(poolAges.orca)}ms / TTL {fmt(poolAges.ttl?.orca)}ms</span>
-                <span className={`px-1 rounded border ${Number(poolAges.meteora) > Number(poolAges.ttl?.meteora) ? 'bg-yellow-800/50 border-yellow-700' : 'bg-green-800/40 border-green-700'}`}>Met {fmt(poolAges.meteora)}ms / TTL {fmt(poolAges.ttl?.meteora)}ms</span>
-                
-                <span className={`px-1 rounded border ${Number(poolAges.meteora_balanced) > Number(poolAges.ttl?.meteora_balanced) ? 'bg-yellow-800/50 border-yellow-700' : 'bg-green-800/40 border-green-700'}`}>MetBal {fmt(poolAges.meteora_balanced)}ms / TTL {fmt(poolAges.ttl?.meteora_balanced)}ms</span>
-              </div>
-            </div>
-          ) : null}
-          {poolsStats ? (
-            <div className="col-span-2 border-t border-gray-700 pt-2">
-              <div className="text-gray-400">Pool Fetch Stats</div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                <div>
-                  <div className="text-gray-400">Raydium Fetches / Last Ms</div>
-                  <div>{fmt(poolsStats.raydium?.fetches)} / {fmt(poolsStats.raydium?.lastMs)}</div>
-                </div>
-                <div>
-                  <div className="text-gray-400">Raydium Last (AMM/CLMM) &rarr; Filtered</div>
-                  <div>{fmt(poolsStats.raydium?.lastAmm)} / {fmt(poolsStats.raydium?.lastClmm)} {'\u2192'} {fmt(poolsStats.raydium?.filteredAmm)} / {fmt(poolsStats.raydium?.filteredClmm)}</div>
-                </div>
-                <div>
-                  <div className="text-gray-400">Raydium Universe / Zero-Overlap Skips</div>
-                  <div>{String(poolsStats.raydium?.universe || '-')} / {fmt(poolsStats.raydium?.zeroOverlapSkips)}</div>
-                </div>
-                <div>
-                  <div className="text-gray-400">Orca Fetches / Last Ms</div>
-                  <div>{fmt(poolsStats.orca?.fetches)} / {fmt(poolsStats.orca?.lastMs)}</div>
-                </div>
-                <div>
-                  <div className="text-gray-400">Orca Last (AMM/CLMM)</div>
-                  <div>{fmt(poolsStats.orca?.lastAmm)} / {fmt(poolsStats.orca?.lastClmm)}</div>
-                </div>
-                <div>
-                  <div className="text-gray-400">Meteora Fetches / Last Ms</div>
-                  <div>{fmt(poolsStats.meteora?.fetches)} / {fmt(poolsStats.meteora?.lastMs)}</div>
-                </div>
-                <div>
-                  <div className="text-gray-400">Meteora Last (CLMM)</div>
-                  <div>{fmt(poolsStats.meteora?.lastClmm)}</div>
-                </div>
-                
-                <div>
-                  <div className="text-gray-400">Meteora Balanced Fetches / Last Ms</div>
-                  <div>{fmt(poolsStats.meteora_balanced?.fetches)} / {fmt(poolsStats.meteora_balanced?.lastMs)}</div>
-                </div>
-                <div>
-                  <div className="text-gray-400">Meteora Balanced Last (AMM)</div>
-                  <div>{fmt(poolsStats.meteora_balanced?.lastAmm)}</div>
-                </div>
-              </div>
-            </div>
-          ) : null}
         </div>
       )}
     </div>
   );
 };
-
 

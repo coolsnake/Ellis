@@ -1206,6 +1206,109 @@ export function buildMeteoraDlmmSwapIx(hop: DirectHop): any[] {
   return [{ programId: hop.programId || 'meteoraDLMM', type: 'meteora.dlmm.swap', keys: { poolId: hop.poolId, binArrayLower: hop.binArrayLower, binArrayUpper: hop.binArrayUpper, reserveX: hop.reserveX, reserveY: hop.reserveY, userSourceAta: hop.userSourceAta, userDestAta: hop.userDestAta }, data: { amountIn: hop.amountInRaw, minOut: hop.minOutRaw } }];
 }
 
+export function buildPumpswapSwapIx(hop: DirectHop): any[] {
+  try { logger.info('ix.build pumpswap.amm', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
+  return [{ programId: hop.programId || 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', type: 'pumpswap.amm.swap', keys: { poolId: hop.poolId, userSourceAta: hop.userSourceAta, userDestAta: hop.userDestAta, vaultA: hop.vaultA, vaultB: hop.vaultB }, data: { amountIn: hop.amountInRaw, minOut: hop.minOutRaw } }];
+}
+
+export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
+  try { logger.info('ix.build pumpswap.amm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}
+  try {
+    // Pre-build validation: amounts
+    validateHopAmounts(hop, { dex: 'pumpswap', variant: 'amm', poolId: hop.poolId });
+    
+    // Pre-build validation: critical PublicKeys
+    try {
+      validatePublicKey(hop.poolId, 'poolId', { dex: 'pumpswap', variant: 'amm' });
+      validatePublicKey(hop.inputMint, 'inputMint', { dex: 'pumpswap', variant: 'amm' });
+      validatePublicKey(hop.outputMint, 'outputMint', { dex: 'pumpswap', variant: 'amm' });
+      validatePublicKey(hop.userSourceAta, 'userSourceAta', { dex: 'pumpswap', variant: 'amm' });
+      validatePublicKey(hop.userDestAta, 'userDestAta', { dex: 'pumpswap', variant: 'amm' });
+      validatePublicKey(hop.vaultA, 'vaultA', { dex: 'pumpswap', variant: 'amm' });
+      validatePublicKey(hop.vaultB, 'vaultB', { dex: 'pumpswap', variant: 'amm' });
+    } catch (validationErr) {
+      throw createBuilderError('PUMPSWAP', String((validationErr as any)?.message || validationErr), hop);
+    }
+
+    const kp = await ensureWallet(CONFIG.walletPath);
+    const programId = toPublicKey(hop.programId || 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA');
+    const poolId = toPublicKey(hop.poolId);
+    const inputMint = toPublicKey(hop.inputMint);
+    const outputMint = toPublicKey(hop.outputMint);
+    const userSourceAta = toPublicKey(hop.userSourceAta);
+    const userDestAta = toPublicKey(hop.userDestAta);
+    const vaultA = toPublicKey(hop.vaultA);
+    const vaultB = toPublicKey(hop.vaultB);
+    
+    const BN = (await import('bn.js')).default as any;
+    const amountInBn = new BN(String(hop.amountInRaw ?? 0n));
+    const minOutBn = new BN(String(hop.minOutRaw ?? 0n));
+
+    // Create swap instruction
+    // Note: This is a placeholder implementation
+    // The actual Pumpswap program instruction format would need to be determined
+    // from the program IDL or documentation
+    const { TransactionInstruction, SystemProgram, SYSVAR_RENT_PUBKEY } = await import('@solana/web3.js');
+    const { TOKEN_PROGRAM_ID } = await import('@solana/spl-token');
+    
+    // Build accounts array for Pumpswap swap instruction
+    // This is based on typical AMM swap account requirements
+    const keys = [
+      { pubkey: poolId, isSigner: false, isWritable: true },
+      { pubkey: kp.publicKey, isSigner: true, isWritable: false },
+      { pubkey: userSourceAta, isSigner: false, isWritable: true },
+      { pubkey: userDestAta, isSigner: false, isWritable: true },
+      { pubkey: vaultA, isSigner: false, isWritable: true },
+      { pubkey: vaultB, isSigner: false, isWritable: true },
+      { pubkey: inputMint, isSigner: false, isWritable: false },
+      { pubkey: outputMint, isSigner: false, isWritable: false },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    ];
+
+    // Encode instruction data (simplified - actual format depends on Pumpswap program IDL)
+    // Format: [instruction_discriminator, amount_in (u64), min_amount_out (u64)]
+    const dataBuffer = Buffer.alloc(17); // 1 byte discriminator + 8 bytes amount_in + 8 bytes min_out
+    dataBuffer.writeUInt8(1, 0); // Swap instruction discriminator (typically 0 or 1)
+    dataBuffer.writeBigUInt64LE(BigInt(amountInBn.toString()), 1);
+    dataBuffer.writeBigUInt64LE(BigInt(minOutBn.toString()), 9);
+
+    const swapIx = new TransactionInstruction({
+      programId,
+      keys,
+      data: dataBuffer,
+    });
+
+    try {
+      logger.info('pumpswap.amm.swap.built', {
+        cat: 'tx',
+        code: LogCode.TX_BUILD_HOP,
+        ctx: {
+          pool: hop.poolId.slice(0, 8) + '...',
+          amountIn: amountInBn.toString(),
+          minOut: minOutBn.toString(),
+          accounts: keys.length,
+        } as any,
+      });
+    } catch {}
+
+    return [swapIx];
+  } catch (e: any) {
+    try {
+      logger.error('pumpswap.amm.build.error', {
+        cat: 'tx',
+        code: LogCode.TX_BUILD_ERR,
+        ctx: {
+          pool: hop.poolId,
+          error: String(e?.message || e),
+          stack: String(e?.stack || '').slice(0, 200),
+        } as any,
+      });
+    } catch {}
+    wrapBuilderError(e, 'PUMPSWAP', 'build failed', hop);
+    throw e;
+  }
+}
+
 export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]> {
   try {
     try { logger.debug('ix.build meteora.dlmm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}

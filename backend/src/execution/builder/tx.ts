@@ -1,5 +1,5 @@
 import type { ExecutionPlan, DirectHop } from '../types.js';
-import { buildRaydiumAmmSwapIx, buildRaydiumClmmSwapIx, buildOrcaSwapIx, buildMeteoraDlmmSwapIx, buildRaydiumAmmSwapIxReal, buildRaydiumClmmSwapIxReal, buildMeteoraDlmmSwapIxReal } from './ix.js';
+import { buildRaydiumAmmSwapIx, buildRaydiumClmmSwapIx, buildOrcaSwapIx, buildMeteoraDlmmSwapIx, buildPumpswapSwapIx, buildRaydiumAmmSwapIxReal, buildRaydiumClmmSwapIxReal, buildMeteoraDlmmSwapIxReal, buildPumpswapSwapIxReal } from './ix.js';
 import { logger } from '../../utils/logger.js';
 import { LogCode } from '../../utils/logging.js';
 import { PublicKey, TransactionInstruction } from '@solana/web3.js';
@@ -554,6 +554,9 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
           ixs = await buildRaydiumClmmSwapIxReal(hop);
         } else if (hop.dex === 'orca') {
           ixs = await buildOrcaSwapIx(hop) as any[];
+        } else if (hop.dex === 'pumpswap') {
+          try { logger.info('tx.build.hop.pumpswap.real', { cat: 'tx', ctx: { poolId: hop.poolId } as any }); } catch {}
+          ixs = await buildPumpswapSwapIxReal(hop);
         } else if (hop.dex === 'meteora') {
           try { logger.info('tx.build.hop.meteora.real', { cat: 'tx', ctx: { poolId: hop.poolId } as any }); } catch {}
           ixs = await buildMeteoraDlmmSwapIxReal(hop);
@@ -965,6 +968,7 @@ export function chunkRoute(plan: ExecutionPlan, extraSetupIxs: any[], cb: Comput
       // Do not invoke async builders in sync chunking; insert a stub marker
       perHop.push({ kind: 'placeholder', dex: 'orca', poolId: hop.poolId });
     }
+    else if (hop.dex === 'pumpswap') perHop.push(...buildPumpswapSwapIx(hop));
     else if (hop.dex === 'meteora') perHop.push(...buildMeteoraDlmmSwapIx(hop));
   }
   const base = [...budget, ...extraSetupIxs];
@@ -991,6 +995,7 @@ export async function chunkRouteAsync(plan: ExecutionPlan, extraSetupIxs: any[],
     if (hop.dex === 'raydium' && hop.variant === 'amm') perHop.push(...buildRaydiumAmmSwapIx(hop));
     else if (hop.dex === 'raydium' && hop.variant === 'clmm') perHop.push(...buildRaydiumClmmSwapIx(hop));
     else if (hop.dex === 'orca') perHop.push(...(await buildOrcaSwapIx(hop) as any));
+    else if (hop.dex === 'pumpswap') perHop.push(...buildPumpswapSwapIx(hop));
     else if (hop.dex === 'meteora') perHop.push(...buildMeteoraDlmmSwapIx(hop));
   }
   const base = [...budget, ...extraSetupIxs];

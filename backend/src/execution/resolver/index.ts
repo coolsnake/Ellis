@@ -42,6 +42,8 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       }
     } else if (dex === 'orca') {
       variant = 'clmm';
+    } else if (dex === 'pumpswap') {
+      variant = 'amm';
     } else {
       variant = 'dlmm';
     }
@@ -77,6 +79,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
         if (dex === 'raydium') return variant === 'clmm' ? (CONFIG.raydium?.clmmProgram || '') : (CONFIG.raydium?.ammV4Program || '');
         if (dex === 'orca') return CONFIG.orca?.programId || '';
         if (dex === 'meteora') return (CONFIG.meteora?.programId as any) || '';
+        if (dex === 'pumpswap') return 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
         return '';
       })(),
       inputMint,
@@ -117,6 +120,9 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       } else if (hop.dex === 'orca') {
         const { resolveOrca } = await import('./orca.js');
         return await resolveOrca(hop);
+      } else if (hop.dex === 'pumpswap') {
+        const { resolvePumpswap } = await import('./pumpswap.js');
+        return await resolvePumpswap(hop);
       } else {
         const { resolveMeteoraDlmm } = await import('./meteora.js');
         return await resolveMeteoraDlmm(hop);
