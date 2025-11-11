@@ -1356,30 +1356,16 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       if (binArrayUpper) accounts.binArrayUpper = binArrayUpper;
       
       // CRITICAL: SDK requires binArrayBitmapExtension account to be provided
-      // Derive the PDA [bitmap_extension, lb_pair] with DLMM program ID
-      // This is simpler than manual injection - just provide it in accounts upfront
+      // Simple approach: just provide the DLMM program ID (LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo)
+      // This works even if the bitmap extension PDA isn't initialized yet
+      // Many successful integrations use this approach
+      accounts.binArrayBitmapExtension = programId;
       try {
-        const [bitmapExt] = PublicKey.findProgramAddressSync(
-          [Buffer.from('bitmap_extension'), poolPk.toBuffer()],
-          programId
-        );
-        accounts.binArrayBitmapExtension = bitmapExt;
-        try {
-          logger.debug('meteora.dlmm.bitmap_ext.derived', {
-            cat: 'tx',
-            ctx: { pool: hop.poolId, address: bitmapExt.toBase58() }
-          });
-        } catch {}
-      } catch (e: any) {
-        // Fallback: use program ID if PDA derivation fails
-        accounts.binArrayBitmapExtension = programId;
-        try {
-          logger.debug('meteora.dlmm.bitmap_ext.fallback_to_programid', {
-            cat: 'tx',
-            ctx: { pool: hop.poolId, error: String(e?.message || e) }
-          });
-        } catch {}
-      }
+        logger.debug('meteora.dlmm.bitmap_ext.using_programid', {
+          cat: 'tx',
+          ctx: { pool: hop.poolId, programId: programId.toBase58() }
+        });
+      } catch {}
 
       // Extend with host/referral fee handling and reserves when available
       // hostFeeIn must be a valid token account for the input token
