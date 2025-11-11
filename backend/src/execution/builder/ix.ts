@@ -1005,100 +1005,105 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     // Module-level cache to avoid repeated imports
     let mod: any = (buildMeteoraDlmmSwapIxReal as any).__dlmmMod || null;
   
-  if (!mod) {
-    // Primary: ESM dynamic import (recommended for modern Node.js)
-    const specs = [
-      '@meteora-ag/dlmm',
-      '@meteora-ag/dlmm-sdk',
-    ];
-    
-    for (const spec of specs) {
-      try {
-        mod = await import(spec);
-        if (mod) {
-          try { logger.debug('meteora.dlmm.import.ok', { cat: 'tx', ctx: { spec, keys: Object.keys(mod || {}) } }); } catch {}
-          // Cache the module
-          (buildMeteoraDlmmSwapIxReal as any).__dlmmMod = mod;
-          break;
-        }
-      } catch (e: any) {
-        try { logger.warn('meteora.dlmm.import.fail', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { spec, error: String(e?.message || e) } }); } catch {}
-      }
-    }
-    
-    // Fallback: try ts-client specifically if main imports failed
     if (!mod) {
-      try {
-        // Dynamic import may fail if ts-client path doesn't exist - that's ok
-        // @ts-expect-error - ts-client path may not exist, handled by catch
-        mod = await import('@meteora-ag/dlmm/ts-client').catch(() => null);
-        if (mod) {
-          try { logger.debug('meteora.dlmm.import.ok', { cat: 'tx', ctx: { spec: '@meteora-ag/dlmm/ts-client' } }); } catch {}
-          (buildMeteoraDlmmSwapIxReal as any).__dlmmMod = mod;
+      // Primary: ESM dynamic import (recommended for modern Node.js)
+      const specs = [
+        '@meteora-ag/dlmm',
+        '@meteora-ag/dlmm-sdk',
+      ];
+      
+      for (const spec of specs) {
+        try {
+          mod = await import(spec);
+          if (mod) {
+            try { logger.debug('meteora.dlmm.import.ok', { cat: 'tx', ctx: { spec, keys: Object.keys(mod || {}) } }); } catch {}
+            // Cache the module
+            (buildMeteoraDlmmSwapIxReal as any).__dlmmMod = mod;
+            break;
+          }
+        } catch (e: any) {
+          try { logger.warn('meteora.dlmm.import.fail', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { spec, error: String(e?.message || e) } }); } catch {}
         }
-      } catch (e: any) {
-        try { logger.warn('meteora.dlmm.import.fail', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { spec: '@meteora-ag/dlmm/ts-client', error: String(e?.message || e) } }); } catch {}
+      }
+      
+      // Fallback: try ts-client specifically if main imports failed
+      if (!mod) {
+        try {
+          // Dynamic import may fail if ts-client path doesn't exist - that's ok
+          // @ts-expect-error - ts-client path may not exist, handled by catch
+          mod = await import('@meteora-ag/dlmm/ts-client').catch(() => null);
+          if (mod) {
+            try { logger.debug('meteora.dlmm.import.ok', { cat: 'tx', ctx: { spec: '@meteora-ag/dlmm/ts-client' } }); } catch {}
+            (buildMeteoraDlmmSwapIxReal as any).__dlmmMod = mod;
+          }
+        } catch (e: any) {
+          try { logger.warn('meteora.dlmm.import.fail', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { spec: '@meteora-ag/dlmm/ts-client', error: String(e?.message || e) } }); } catch {}
+        }
       }
     }
-  }
 
-  if (!mod) {
-    try { logger.error('meteora.dlmm.import.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: 'ALL_IMPORTS_FAILED' } }); } catch {}
-    throw createBuilderError('METEORA_DLMM', 'failed to load SDK module', hop);
-  }
-
-  // Resolve default export / namespace
-  const DLMM: any = (mod && (mod as any).default) ? (mod as any).default : (((mod as any).DLMM) || mod);
-
-  // 3) Fast path: if swapIx exists, use it
-  try {
-    if (typeof (DLMM as any)?.swapIx === 'function') {
-      const params = {
-        pool: poolPk,
-        programId,
-        userSourceAta: toPublicKey(hop.userSourceAta),
-        userDestAta: toPublicKey(hop.userDestAta),
-        amountIn: hop.amountInRaw,
-        minOut: hop.minOutRaw,
-        swapForY: swapForY,  // CRITICAL: Tell SDK which direction to swap (X->Y vs Y->X)
-        binArrayLower: hop.binArrayLower ? toPublicKey(hop.binArrayLower) : undefined,
-        binArrayUpper: hop.binArrayUpper ? toPublicKey(hop.binArrayUpper) : undefined,
-      } as any;
-      try { logger.info('meteora.dlmm.swapIx.call', { cat: 'tx', ctx: { swapForY: swapForY } }); } catch {}
-      const ix = await (DLMM as any).swapIx(connection, kp.publicKey, params);
-      if (ix) {
-        // Safety net: attempt to attach remaining bin-array metas when using fast-path ix
-        await injectBinArrayMetas(ix, DLMM, connection, poolPk, programId, hop.poolId);
-        try { logger.info('meteora.dlmm.swapIx.ok', { cat: 'tx' }); } catch {}
-        return [ix];
-      }
+    if (!mod) {
+      try { logger.error('meteora.dlmm.import.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: 'ALL_IMPORTS_FAILED' } }); } catch {}
+      throw createBuilderError('METEORA_DLMM', 'failed to load SDK module', hop);
     }
-  } catch (e: any) {
-    try { logger.warn('meteora.dlmm.swapIx.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
-    // Continue to fallback path
-  }
 
-  // 4) ts-client fallback: Anchor program path
-  try {
-    const createProgram = (DLMM as any)?.createProgram || (mod as any)?.createProgram;
-    if (!createProgram) throw new Error('DLMM_CREATE_PROGRAM_MISSING');
-    const program = createProgram(connection, programId);
-    try { logger.debug('meteora.dlmm.program.ok', { cat: 'tx' }); } catch {}
+    // Resolve default export / namespace
+    const DLMM: any = (mod && (mod as any).default) ? (mod as any).default : (((mod as any).DLMM) || mod);
 
-    // Derive optional accounts
-    let binArrayLower: PublicKey | undefined = hop.binArrayLower ? toPublicKey(hop.binArrayLower) : undefined;
-    let binArrayUpper: PublicKey | undefined = hop.binArrayUpper ? toPublicKey(hop.binArrayUpper) : undefined;
-    let binArrayBitmapExtension: PublicKey | undefined = undefined;
-    let binArrayMetas: Array<{ pubkey: PublicKey; isWritable: boolean; isSigner: boolean }> | null = null;
-    
-    // Use program ID for bitmap extension (standard approach)
-    // Many pools don't have a bitmap extension initialized, and the Meteora program
-    // accepts its own program ID as a placeholder in these cases.
-    // This avoids "AccountOwnedByWrongProgram" errors when the PDA hasn't been initialized.
-    // This matches behavior seen in successful competitor transactions.
-    binArrayBitmapExtension = programId;
-    
+    // 3) Fast path: if swapIx exists, use it
     try {
+      if (typeof (DLMM as any)?.swapIx === 'function') {
+        const params = {
+          pool: poolPk,
+          programId,
+          userSourceAta: toPublicKey(hop.userSourceAta),
+          userDestAta: toPublicKey(hop.userDestAta),
+          amountIn: hop.amountInRaw,
+          minOut: hop.minOutRaw,
+          swapForY: swapForY,  // CRITICAL: Tell SDK which direction to swap (X->Y vs Y->X)
+          binArrayLower: hop.binArrayLower ? toPublicKey(hop.binArrayLower) : undefined,
+          binArrayUpper: hop.binArrayUpper ? toPublicKey(hop.binArrayUpper) : undefined,
+        } as any;
+        try { logger.info('meteora.dlmm.swapIx.call', { cat: 'tx', ctx: { swapForY: swapForY } }); } catch {}
+        const ixResult = await (DLMM as any).swapIx(connection, kp.publicKey, params);
+        if (ixResult) {
+          // Safety net: attempt to attach remaining bin-array metas when using fast-path ix
+          await injectBinArrayMetas(ixResult, DLMM, connection, poolPk, programId, hop.poolId);
+          try { logger.info('meteora.dlmm.swapIx.ok', { cat: 'tx' }); } catch {}
+          return [ixResult];
+        }
+      }
+    } catch (e: any) {
+      try { logger.warn('meteora.dlmm.swapIx.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
+      // Continue to fallback path
+    }
+
+    // Declare variables at outer scope so they're accessible after try-catch
+    const setupIxs: TransactionInstruction[] = [];
+    let builder: any = null;
+    let ix: any = null;
+
+    // 4) ts-client fallback: Anchor program path
+    try {
+      const createProgram = (DLMM as any)?.createProgram || (mod as any)?.createProgram;
+      if (!createProgram) throw new Error('DLMM_CREATE_PROGRAM_MISSING');
+      const program = createProgram(connection, programId);
+      try { logger.debug('meteora.dlmm.program.ok', { cat: 'tx' }); } catch {}
+
+      // Derive optional accounts
+      let binArrayLower: PublicKey | undefined = hop.binArrayLower ? toPublicKey(hop.binArrayLower) : undefined;
+      let binArrayUpper: PublicKey | undefined = hop.binArrayUpper ? toPublicKey(hop.binArrayUpper) : undefined;
+      let binArrayBitmapExtension: PublicKey | undefined = undefined;
+      let binArrayMetas: Array<{ pubkey: PublicKey; isWritable: boolean; isSigner: boolean }> | null = null;
+      
+      // Use program ID for bitmap extension (standard approach)
+      // Many pools don't have a bitmap extension initialized, and the Meteora program
+      // accepts its own program ID as a placeholder in these cases.
+      // This avoids "AccountOwnedByWrongProgram" errors when the PDA hasn't been initialized.
+      // This matches behavior seen in successful competitor transactions.
+      binArrayBitmapExtension = programId;
+      
+      try {
       const deriveBinArray = (DLMM as any)?.deriveBinArray || (mod as any)?.deriveBinArray;
       const binIdToBinArrayIndex = (DLMM as any)?.binIdToBinArrayIndex || (mod as any)?.binIdToBinArrayIndex;
       
@@ -1207,24 +1212,22 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       }
 
       binArrayMetas = coverageMetas.length ? coverageMetas : null;
-    } catch {}
+      } catch {}
 
-    const BN = (await import('bn.js')).default as any;
-    const amountIn = new BN(String(hop.amountInRaw ?? 0n));
-    const minOut = new BN(String(hop.minOutRaw ?? 0n));
-    const methods = (program as any)?.methods || {};
-    const setupIxs: TransactionInstruction[] = [];
-    let builder: any = null;
+      const BN = (await import('bn.js')).default as any;
+      const amountIn = new BN(String(hop.amountInRaw ?? 0n));
+      const minOut = new BN(String(hop.minOutRaw ?? 0n));
+      const methods = (program as any)?.methods || {};
 
-    const accounts: any = {
+      const accounts: any = {
       lbPair: poolPk,
       user: kp.publicKey,
       userTokenIn: toPublicKey(hop.userSourceAta),
       userTokenOut: toPublicKey(hop.userDestAta),
-    };
-    
-    // Log token account details for debugging
-    try {
+      };
+      
+      // Log token account details for debugging
+      try {
       logger.debug('meteora.dlmm.accounts.detail', { 
         cat: 'tx', 
         ctx: {
@@ -1235,11 +1238,11 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           poolId: hop.poolId
         } 
       });
-    } catch {}
-    
-    // Validate token accounts - batch fetch both at once to reduce RPC calls
-    let tokenInfos: any[] | null = null;
-    try {
+      } catch {}
+      
+      // Validate token accounts - batch fetch both at once to reduce RPC calls
+      let tokenInfos: any[] | null = null;
+      try {
       const userTokenInPk = toPublicKey(hop.userSourceAta);
       const expectedInputMint = toPublicKey(hop.inputMint);
       const userTokenOutPk = toPublicKey(hop.userDestAta);
@@ -1386,7 +1389,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           }
         }
       }
-    } catch (validateErr) {
+      } catch (validateErr) {
       // Non-fatal: log but continue
       try { 
         logger.debug('meteora.dlmm.token.validation.failed', { 
@@ -1394,57 +1397,57 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           ctx: { error: String((validateErr as any)?.message || validateErr) } 
         }); 
       } catch {}
-    }
-    
-    if (binArrayLower) accounts.binArrayLower = binArrayLower;
-    if (binArrayUpper) accounts.binArrayUpper = binArrayUpper;
-    
-    // Use program ID for bitmap extension (standard Meteora approach)
-    // The program accepts its own ID when the bitmap extension isn't needed or initialized
-    // This avoids ownership validation errors for uninitialized PDAs
-    if (!binArrayBitmapExtension) {
+      }
+      
+      if (binArrayLower) accounts.binArrayLower = binArrayLower;
+      if (binArrayUpper) accounts.binArrayUpper = binArrayUpper;
+      
+      // Use program ID for bitmap extension (standard Meteora approach)
+      // The program accepts its own ID when the bitmap extension isn't needed or initialized
+      // This avoids ownership validation errors for uninitialized PDAs
+      if (!binArrayBitmapExtension) {
       binArrayBitmapExtension = programId;
-    }
-    
-    // Always include in accounts - SDK requires this field to be present
-    accounts.binArrayBitmapExtension = binArrayBitmapExtension;
-    
-    // Log for debugging purposes
-    try {
+      }
+      
+      // Always include in accounts - SDK requires this field to be present
+      accounts.binArrayBitmapExtension = binArrayBitmapExtension;
+      
+      // Log for debugging purposes
+      try {
       logger.debug('meteora.dlmm.ext.included', { 
         cat: 'tx', 
         ctx: { address: binArrayBitmapExtension.toBase58() } 
       });
-    } catch {}
+      } catch {}
 
-    // Extend with host/referral fee handling and reserves when available
-    // hostFeeIn must be a valid token account for the input token
-    // Use the user's own input token account (userTokenIn) as the host fee recipient
-    // This satisfies the SDK requirement while keeping any fees in the user's wallet
-    const acctBase: any = { ...accounts };
-    
-    // Set hostFeeIn to userTokenIn (user's input token account)
-    // This prevents both error 3007 (wrong owner) and "hostFeeIn not provided" errors
-    try {
+      // Extend with host/referral fee handling and reserves when available
+      // hostFeeIn must be a valid token account for the input token
+      // Use the user's own input token account (userTokenIn) as the host fee recipient
+      // This satisfies the SDK requirement while keeping any fees in the user's wallet
+      const acctBase: any = { ...accounts };
+      
+      // Set hostFeeIn to userTokenIn (user's input token account)
+      // This prevents both error 3007 (wrong owner) and "hostFeeIn not provided" errors
+      try {
       if (accounts.userTokenIn) {
         acctBase.hostFeeIn = accounts.userTokenIn;
       }
-    } catch {}
-    
-    // Map vaultA/vaultB to reserveX/reserveY based on pool's token order
-    // vaultA/vaultB represent the pool's natural mint_a/mint_b order
-    // We need to determine if the pool's tokenX is mint_a or mint_b, then map accordingly
-    try {
+      } catch {}
+      
+      // Map vaultA/vaultB to reserveX/reserveY based on pool's token order
+      // vaultA/vaultB represent the pool's natural mint_a/mint_b order
+      // We need to determine if the pool's tokenX is mint_a or mint_b, then map accordingly
+      try {
       if (hop.vaultA && hop.vaultB) {
         // We'll determine the correct mapping after we know tokenX/tokenY mints
         // Store them temporarily - will be corrected below after fetching pool mints
         acctBase.reserveX = toPublicKey(hop.vaultA as any);
         acctBase.reserveY = toPublicKey(hop.vaultB as any);
       }
-    } catch {}
+      } catch {}
 
-    try { acctBase.memoProgram = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'); } catch {}
-    try {
+      try { acctBase.memoProgram = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'); } catch {}
+      try {
       const getTokensMintFromPoolAddress = (DLMM as any)?.getTokensMintFromPoolAddress;
       if (getTokensMintFromPoolAddress) {
         const mints = await getTokensMintFromPoolAddress(connection, poolPk).catch((e: any) => {
@@ -1565,7 +1568,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           ctx: { poolId: hop.poolId }
         });
       }
-    } catch (e: any) {
+      } catch (e: any) {
       // Re-throw validation/configuration errors
       if (e?.code === 'METEORA_DLMM' || (typeof e?.message === 'string' && (
         e.message.includes('Swap direction') || 
@@ -1581,9 +1584,9 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           ctx: { error: String(e?.message || e) } 
         }); 
       } catch {}
-    }
-    // Derive reserves if not already provided
-    try {
+      }
+      // Derive reserves if not already provided
+      try {
       const deriveReserve = (DLMM as any)?.deriveReserve;
       if (typeof deriveReserve === 'function') {
         if (!acctBase.reserveX) {
@@ -1595,19 +1598,19 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           if (ry) acctBase.reserveY = (ry as any).publicKey || ry;
         }
       }
-    } catch {}
-    try {
+      } catch {}
+      try {
       const deriveOracle = (DLMM as any)?.deriveOracle;
       if (deriveOracle) {
         const orc = await deriveOracle(programId, poolPk).catch(() => null as any);
         if (orc) acctBase.oracle = (orc as any).publicKey || orc;
       }
-    } catch {}
+      } catch {}
 
-    // CRITICAL FIX: Correct reserve mapping for all pools (SDK-independent)
-    // This runs even if getTokensMintFromPoolAddress wasn't available
-    // vaultA/vaultB represent pool's mint_a/mint_b, must map to reserveX/reserveY (tokenX/tokenY)
-    try {
+      // CRITICAL FIX: Correct reserve mapping for all pools (SDK-independent)
+      // This runs even if getTokensMintFromPoolAddress wasn't available
+      // vaultA/vaultB represent pool's mint_a/mint_b, must map to reserveX/reserveY (tokenX/tokenY)
+      try {
       if (hop.vaultA && hop.vaultB) {
         // Fetch pool data to get mint_a/mint_b
         const { peekMeteoraPools } = await import('../../server/pools.js');
@@ -1686,18 +1689,18 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           }
         }
       }
-    } catch (e: any) {
+      } catch (e: any) {
       try {
         logger.debug('meteora.dlmm.reserve_mapping_fallback.failed', {
           cat: 'tx',
           ctx: { poolId: hop.poolId, error: String(e?.message || e) }
         });
       } catch {}
-    }
+      }
 
-    // CRITICAL FIX: Ensure token mints are explicitly set before building instruction
-    // This prevents the SDK from using incorrect/cached mints from previous swaps
-    try {
+      // CRITICAL FIX: Ensure token mints are explicitly set before building instruction
+      // This prevents the SDK from using incorrect/cached mints from previous swaps
+      try {
       if (!acctBase.tokenXMint || !acctBase.tokenYMint) {
         const inputMintPk = toPublicKey(hop.inputMint);
         const outputMintPk = toPublicKey(hop.outputMint);
@@ -1745,11 +1748,11 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           // Setting them incorrectly could cause the "Invalid token mint" error
         }
       }
-    } catch {}
+      } catch {}
 
-    // Fetch token program IDs AFTER token mints are confirmed
-    // Detect correct token program IDs per mint (Token-2022 support)
-    try {
+      // Fetch token program IDs AFTER token mints are confirmed
+      // Detect correct token program IDs per mint (Token-2022 support)
+      try {
       logger.info('meteora.dlmm.token_programs.fetch_start', { cat: 'tx', ctx: { poolId: hop.poolId } });
       const getTokenProgramId = (DLMM as any)?.getTokenProgramId;
       logger.info('meteora.dlmm.token_programs.sdk_function', { cat: 'tx', ctx: { poolId: hop.poolId, exists: !!getTokenProgramId } });
@@ -1838,12 +1841,12 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         logger.info('meteora.dlmm.token_programs.y_fallback', { cat: 'tx', ctx: { poolId: hop.poolId } });
       }
       logger.info('meteora.dlmm.token_programs.fetch_complete', { cat: 'tx', ctx: { poolId: hop.poolId, hasX: !!acctBase.tokenXProgram, hasY: !!acctBase.tokenYProgram } });
-    } catch (err) {
+      } catch (err) {
       logger.error('meteora.dlmm.token_programs.fetch_error', { cat: 'tx', ctx: { poolId: hop.poolId, error: String(err) } });
-    }
+      }
 
-    // Choose swap variant now that token program IDs are known
-    try {
+      // Choose swap variant now that token program IDs are known
+      try {
       const tokenKeg = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
       const isToken2022 = (p: any) => { try { return p && typeof p.equals === 'function' && !p.equals(tokenKeg); } catch { return false; } };
       const needs2022 = isToken2022(acctBase.tokenXProgram) || isToken2022(acctBase.tokenYProgram);
@@ -1896,7 +1899,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       if (!builder) {
         throw new Error('DLMM_BUILDER_NULL');
       }
-    } catch (e: any) {
+      } catch (e: any) {
       try {
         logger.error('meteora.dlmm.method_selection_error', {
           cat: 'tx',
@@ -1910,12 +1913,12 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       } catch {}
       // Re-throw to prevent continuing with invalid builder
       throw wrapBuilderError(e, 'METEORA_DLMM', 'method selection failed', hop);
-    }
+      }
 
-    // Prefer accountsPartial so optional nulls are honored
-    // Ensure tokenXMint and tokenYMint are explicitly included in acctBase
-    // CRITICAL: Log acctBase before passing to SDK to debug token mint issues
-    try {
+      // Prefer accountsPartial so optional nulls are honored
+      // Ensure tokenXMint and tokenYMint are explicitly included in acctBase
+      // CRITICAL: Log acctBase before passing to SDK to debug token mint issues
+      try {
       logger.info('meteora.dlmm.acctBase.before_sdk', {
         cat: 'tx',
         ctx: {
@@ -1930,10 +1933,10 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           userTokenOut: acctBase.userTokenOut ? (acctBase.userTokenOut instanceof PublicKey ? acctBase.userTokenOut.toBase58() : String(acctBase.userTokenOut)) : 'missing'
         }
       });
-    } catch {}
-    
-    // Debug: Log ALL fields in acctBase to identify missing accounts
-    try {
+      } catch {}
+      
+      // Debug: Log ALL fields in acctBase to identify missing accounts
+      try {
       const acctFields = Object.keys(acctBase);
       const acctDebug: any = {};
       for (const key of acctFields) {
@@ -1947,15 +1950,15 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         }
       }
       logger.info('meteora.dlmm.acctBase.all_fields', { cat: 'tx', ctx: { poolId: hop.poolId, fields: acctDebug } });
-    } catch {}
-    
-    if (typeof (builder as any).accountsPartial === 'function') builder = (builder as any).accountsPartial(acctBase);
-    else if (typeof (builder as any).accounts === 'function') builder = (builder as any).accounts(acctBase);
+      } catch {}
+      
+      if (typeof (builder as any).accountsPartial === 'function') builder = (builder as any).accountsPartial(acctBase);
+      else if (typeof (builder as any).accounts === 'function') builder = (builder as any).accounts(acctBase);
 
-    // Final validation: ensure userTokenIn and userTokenOut are correct before building instruction
-    // This catches cases where the SDK might have modified accounts
-    let accountsWereCorrected = false;
-    try {
+      // Final validation: ensure userTokenIn and userTokenOut are correct before building instruction
+      // This catches cases where the SDK might have modified accounts
+      let accountsWereCorrected = false;
+      try {
       const { deriveAta } = await import('../accounts.js');
       
       // Validate userTokenIn
@@ -2032,17 +2035,17 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           }
         } catch {}
       }
-    } catch (finalValErr) {
+      } catch (finalValErr) {
       try { 
         logger.debug('meteora.dlmm.final_validation.failed', { 
           cat: 'tx', 
           ctx: { error: String((finalValErr as any)?.message || finalValErr) } 
         }); 
       } catch {}
-    }
+      }
 
-    // Enhanced validation: ensure userTokenOut matches pool's tokenX/tokenY based on swap direction
-    try {
+      // Enhanced validation: ensure userTokenOut matches pool's tokenX/tokenY based on swap direction
+      try {
       const tokenXMint = acctBase.tokenXMint ? (acctBase.tokenXMint instanceof PublicKey ? acctBase.tokenXMint : toPublicKey(acctBase.tokenXMint)) : null;
       const tokenYMint = acctBase.tokenYMint ? (acctBase.tokenYMint instanceof PublicKey ? acctBase.tokenYMint : toPublicKey(acctBase.tokenYMint)) : null;
       const inputMintPk = toPublicKey(hop.inputMint);
@@ -2122,17 +2125,17 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           } catch {}
         }
       }
-    } catch (poolValErr) {
+      } catch (poolValErr) {
       try { 
         logger.debug('meteora.dlmm.pool_token_validation.failed', { 
           cat: 'tx', 
           ctx: { error: String((poolValErr as any)?.message || poolValErr) } 
         }); 
       } catch {}
-    }
+      }
 
-    // Log key accounts for DLMM swap for observability
-    try {
+      // Log key accounts for DLMM swap for observability
+      try {
       const to58 = (x: any) => (x && typeof x.toBase58 === 'function') ? x.toBase58() : (typeof x === 'string' ? x : undefined);
       logger.info('meteora.dlmm.accounts', { cat: 'tx', ctx: {
         pool: to58(poolPk),
@@ -2144,10 +2147,10 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         binArrayUpper: to58(binArrayUpper),
         bitmapExt: to58((acctBase as any)?.binArrayBitmapExtension) || null
       }});
-    } catch {}
+      } catch {}
 
-    // Supply remaining accounts for bin arrays using documented helpers (applies to swap and swap2)
-    try {
+      // Supply remaining accounts for bin arrays using documented helpers (applies to swap and swap2)
+      try {
       const getBinArrayLowerUpperBinId = (DLMM as any)?.getBinArrayLowerUpperBinId || (mod as any)?.getBinArrayLowerUpperBinId;
       const getBinArrayAccountMetasCoverage = (DLMM as any)?.getBinArrayAccountMetasCoverage || (mod as any)?.getBinArrayAccountMetasCoverage;
       const binIdToBinArrayIndex = (DLMM as any)?.binIdToBinArrayIndex || (mod as any)?.binIdToBinArrayIndex;
@@ -2276,13 +2279,13 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           try { logger.debug('meteora.dlmm.remaining.coverage.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
         }
       }
-    } catch (e: any) {
+      } catch (e: any) {
       try { logger.warn('meteora.dlmm.remaining.failed', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
-    }
-    
-    // Add pre-computed bin array metas as remaining accounts (already limited to ~5 max)
-    // Only add if SDK helper didn't already set remaining accounts
-    if (binArrayMetas && binArrayMetas.length && typeof (builder as any).remainingAccounts === 'function') {
+      }
+      
+      // Add pre-computed bin array metas as remaining accounts (already limited to ~5 max)
+      // Only add if SDK helper didn't already set remaining accounts
+      if (binArrayMetas && binArrayMetas.length && typeof (builder as any).remainingAccounts === 'function') {
       try {
         // Safety limit - should already be limited but cap at 5 just in case
         const limited = binArrayMetas.slice(0, 5);
@@ -2291,14 +2294,14 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           try { logger.debug('meteora.dlmm.remaining.from_metas', { cat: 'tx', ctx: { count: limited.length } }); } catch {}
         }
       } catch {}
-    }
-    
-    const ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
-    
-    // Limit remaining accounts (bin arrays) to prevent transaction size issues
-    // Core instruction accounts (first 15) must preserve SDK ordering
-    // NOTE: We do NOT deduplicate - Solana allows duplicate accounts with different flags
-    if (ix && Array.isArray(ix.keys) && ix.keys.length > 15) {
+      }
+      
+      ix = (typeof builder.instruction === 'function') ? await builder.instruction() : null;
+      
+      // Limit remaining accounts (bin arrays) to prevent transaction size issues
+      // Core instruction accounts (first 15) must preserve SDK ordering
+      // NOTE: We do NOT deduplicate - Solana allows duplicate accounts with different flags
+      if (ix && Array.isArray(ix.keys) && ix.keys.length > 15) {
       try {
         const coreAccountCount = 15; // Preserve core instruction accounts
         
@@ -2348,6 +2351,11 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           } catch {}
         }
       } catch {}
+      }
+    } catch (e: any) {
+      // Catch errors from ts-client fallback path
+      try { logger.warn('meteora.dlmm.tsclient.fallback.err', { cat: 'tx', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e) } }); } catch {}
+      // Don't throw here - let execution continue to final error handling below
     }
     
     if (ix) {
