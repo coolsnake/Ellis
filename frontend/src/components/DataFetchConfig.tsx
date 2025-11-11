@@ -577,20 +577,20 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                 <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.pumpswap_httpBackoffMs || 500} onChange={(e)=>set('pumpswap_httpBackoffMs', Number(e.target.value)||0)} />
               </div>
               <div>
-                <label className="block text-sm mb-1">Default Fee (bps)</label>
-                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.pumpswap_defaultFeeBps || 30} onChange={(e)=>set('pumpswap_defaultFeeBps', Number(e.target.value)||0)} />
-              </div>
-              <div>
-                <label className="block text-sm mb-1">Min Liquidity (USD)</label>
-                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.pumpswap_minLiqBase || 0} onChange={(e)=>set('pumpswap_minLiqBase', Number(e.target.value)||0)} />
-              </div>
-              <div>
                 <label className="block text-sm mb-1">Page Size</label>
                 <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.pumpswap_pageSize || 1000} onChange={(e)=>set('pumpswap_pageSize', Number(e.target.value)||0)} />
               </div>
               <div>
                 <label className="block text-sm mb-1">Max Pages</label>
                 <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.pumpswap_maxPages || 10} onChange={(e)=>set('pumpswap_maxPages', Number(e.target.value)||0)} />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Default Fee (bps)</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.pumpswap_defaultFeeBps || 30} onChange={(e)=>set('pumpswap_defaultFeeBps', Number(e.target.value)||0)} />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">Min Liquidity (USD)</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.pumpswap_minLiqBase || 0} onChange={(e)=>set('pumpswap_minLiqBase', Number(e.target.value)||0)} />
               </div>
               <div className="md:col-span-3 text-xs text-gray-300">
                 Fetches pools involving SOL + USDC via Shyft's GraphQL API for pump.fun/Pumpswap coverage.

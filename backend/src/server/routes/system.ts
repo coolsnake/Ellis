@@ -41,6 +41,7 @@ export function createSystemRouter(_io: SocketIOServer): Router {
         orca: CONFIG.orca,
         meteora: (CONFIG as any).meteora,
         meteoraBalanced: (CONFIG as any).meteoraBalanced,
+        pumpswap: (CONFIG as any).pumpswap,
         sanity: (CONFIG as any).sanity,
       });
     } catch (e: any) {
@@ -51,7 +52,7 @@ export function createSystemRouter(_io: SocketIOServer): Router {
 
   api.post('/system/config', async (req, res) => {
     try {
-      const { rpcUrl, system, fees, raydium, orca, meteora, meteoraBalanced, sanity } = req.body as {
+      const { rpcUrl, system, fees, raydium, orca, meteora, meteoraBalanced, pumpswap, sanity } = req.body as {
         rpcUrl?: string;
         system?: any;
         fees?: any;
@@ -59,6 +60,7 @@ export function createSystemRouter(_io: SocketIOServer): Router {
         orca?: { apiUrl?: string; programId?: string; configPubkey?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; pageSize?: number; maxPages?: number; minAmmLiqBase?: number; minClmmLiquidity?: number };
         meteora?: { apiUrl?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; pageSize?: number; maxPages?: number; minClmmLiquidity?: number; universePrefilter?: boolean };
         meteoraBalanced?: { apiUrl?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; pageSize?: number; maxPages?: number };
+        pumpswap?: { shyftApiKey?: string; cacheTtlMs?: number; maxHttpRetries?: number; httpBackoffMs?: number; defaultFeeBps?: number; minLiqBase?: number; pageSize?: number; maxPages?: number };
         sanity?: { enabled?: boolean; maxPriceDeviation?: number; feeMin?: number; feeMax?: number; writeSamples?: boolean; sampleRate?: number; sanity_applyRaydiumAmm?: boolean; sanity_applyOrcaClmm?: boolean };
       };
       if (rpcUrl) CONFIG.rpcUrl = rpcUrl;
@@ -91,6 +93,7 @@ export function createSystemRouter(_io: SocketIOServer): Router {
       if (orca) CONFIG.orca = { ...CONFIG.orca, ...orca } as any;
       if (meteora) (CONFIG as any).meteora = { ...(CONFIG as any).meteora, ...meteora } as any;
       if (meteoraBalanced) (CONFIG as any).meteoraBalanced = { ...(CONFIG as any).meteoraBalanced, ...meteoraBalanced } as any;
+      if (pumpswap) (CONFIG as any).pumpswap = { ...(CONFIG as any).pumpswap, ...pumpswap } as any;
       if (sanity) (CONFIG as any).sanity = { ...(CONFIG as any).sanity, ...sanity } as any;
       try {
         if (system && Object.prototype.hasOwnProperty.call(system, 'enableLogging')) {
