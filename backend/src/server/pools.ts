@@ -660,6 +660,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
       force: options.force, 
       subscribe: options.subscribe, 
       enabledSources: shouldFetch,
+      caller: new Error().stack?.split('\n')?.[2]?.trim() || 'unknown',
       cat: 'pools' 
     });
     
