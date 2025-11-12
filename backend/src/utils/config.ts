@@ -717,6 +717,11 @@ export const CONFIG = {
     apiUrlV2: process.env.METEORA_BALANCED_API_URL_V2 || 'https://dammv2-api.meteora.ag/pools',
     // Optional: hide pools below this TVL threshold (USD) for v1 API
     hideLowTvl: Number(process.env.METEORA_BALANCED_HIDE_LOW_TVL || 0),
+    // Optional: minimum liquidity threshold (USD) for filtering pools (applies after normalization)
+    minLiqBase: Number(process.env.METEORA_BALANCED_MIN_LIQ_BASE || 0),
+    // Enable RPC enrichment to fetch vault balances for precise reserve data
+    enableRpcEnrichment: process.env.METEORA_BALANCED_ENABLE_RPC_ENRICHMENT !== 'false',
+    rpcBatchSize: Number(process.env.METEORA_BALANCED_RPC_BATCH_SIZE || 100),
     pageSize: Number(process.env.METEORA_BALANCED_HTTP_PAGE_SIZE || 50),
     maxPages: Number(process.env.METEORA_BALANCED_HTTP_MAX_PAGES || 10),
     cacheTtlMs: Number(process.env.METEORA_BALANCED_CACHE_TTL_MS || 300_000),

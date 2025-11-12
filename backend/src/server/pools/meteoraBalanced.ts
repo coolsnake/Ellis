@@ -144,7 +144,38 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
         } catch {}
       }
       
-      const tvl_usd = Number(it?.tvl ?? it?.tvlUsd ?? it?.tvl_usd);
+      // Parse TVL and apply scaling if needed (API may return in milli-USD)
+      const tvlRaw = Number(it?.tvl ?? it?.tvlUsd ?? it?.tvl_usd ?? 0);
+      const wholeA = (Number.isFinite(amtAraw) && Number.isFinite(decA)) ? (amtAraw / Math.pow(10, decA as number)) : NaN;
+      const wholeB = (Number.isFinite(amtBraw) && Number.isFinite(decB)) ? (amtBraw / Math.pow(10, decB as number)) : NaN;
+      
+      // IMPORTANT: Meteora Balanced API may return TVL in milli-USD (10^-3)
+      // Heuristic: if TVL is suspiciously small compared to reserves, scale it up by 1000x
+      let tvl_usd: number | undefined = undefined;
+      if (Number.isFinite(tvlRaw) && tvlRaw > 0) {
+        if (Number.isFinite(wholeA) && Number.isFinite(wholeB)) {
+          const minReserve = Math.min(wholeA, wholeB);
+          // If minReserve is > 1 but TVL is < 1% of it, likely needs scaling
+          if (minReserve > 1 && tvlRaw < minReserve * 0.01 && tvlRaw * 1000 < minReserve * 100) {
+            tvl_usd = tvlRaw * 1000;  // Scale from milli-USD to USD
+            try {
+              logger.debug('meteora.balanced.tvl.scaled', {
+                id,
+                tvlRaw,
+                tvlScaled: tvl_usd,
+                minReserve,
+                scaleFactor: 1000,
+                cat: 'meteora'
+              });
+            } catch {}
+          } else {
+            tvl_usd = tvlRaw;  // Use as-is
+          }
+        } else {
+          tvl_usd = tvlRaw;  // No reserve data to compare, use as-is
+        }
+      }
+      
       // Prefer v2 base_fee/dynamic_fee (assumed percent); fallback to existing numeric fields
       let fee_bps = (() => {
         try {
@@ -157,9 +188,6 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
         } catch {}
         return toFeeBps(it);
       })();
-
-      const wholeA = (Number.isFinite(amtAraw) && Number.isFinite(decA)) ? (amtAraw / Math.pow(10, decA as number)) : NaN;
-      const wholeB = (Number.isFinite(amtBraw) && Number.isFinite(decB)) ? (amtBraw / Math.pow(10, decB as number)) : NaN;
 
       let price_a_per_b = 0;
       if (Number.isFinite(wholeA) && Number.isFinite(wholeB) && (wholeB as number) > 0) {
@@ -193,6 +221,17 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
         ? Math.min(wholeA as number, wholeB as number)
         : 0;
 
+      // Calculate pool_liquidity_raw with proper priority
+      const pool_liquidity_raw = (() => {
+        // Priority 1: Use scaled TVL USD if available and valid
+        if (tvl_usd != null && tvl_usd > 0) return tvl_usd;
+        
+        // Priority 2: Use min of reserves (token units) when available
+        if (liquidity_base > 0) return liquidity_base;
+        
+        return undefined;
+      })();
+
       amm.push({
         id,
         dex: 'MeteoraBalanced',
@@ -208,13 +247,39 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
         amounts_are_whole: Number.isFinite(wholeA) || Number.isFinite(wholeB) ? true : undefined,
         decimals_a: Number.isFinite(decA as any) ? (decA as number) : undefined,
         decimals_b: Number.isFinite(decB as any) ? (decB as number) : undefined,
-        tvl_usd: Number.isFinite(tvl_usd) && tvl_usd > 0 ? tvl_usd : undefined,
-        liquidity_display: Number.isFinite(tvl_usd) && tvl_usd > 0 ? tvl_usd : (liquidity_base > 0 ? liquidity_base : undefined),
+        tvl_usd: tvl_usd != null && tvl_usd > 0 ? tvl_usd : undefined,
+        pool_liquidity_raw,
+        liquidity_display: tvl_usd != null && tvl_usd > 0 ? tvl_usd : (liquidity_base > 0 ? liquidity_base : undefined),
       });
     } catch {}
   }
 
   const ammCanon = canonicalizePairs(amm);
+  
+  // Optional: Apply minimum liquidity filtering
+  try {
+    const minLiqBase = Number((CONFIG as any)?.meteoraBalanced?.minLiqBase || 0);
+    if (minLiqBase > 0) {
+      const beforeFilter = ammCanon.length;
+      const filtered = ammCanon.filter(p => {
+        const liq = p.tvl_usd ?? p.pool_liquidity_raw ?? p.liquidity_base ?? 0;
+        return liq >= minLiqBase;
+      });
+      if (filtered.length !== beforeFilter) {
+        try {
+          logger.info('meteora.balanced.filter.min_liq', {
+            before: beforeFilter,
+            after: filtered.length,
+            minLiqBase,
+            cat: 'meteora'
+          });
+        } catch {}
+      }
+      try { logger.info('meteora.balanced normalized', { amm: filtered.length, cat: 'meteora' }); } catch {}
+      return { amm: filtered, clmm: [] };
+    }
+  } catch {}
+  
   try { logger.info('meteora.balanced normalized', { amm: ammCanon.length, cat: 'meteora' }); } catch {}
   return { amm: ammCanon, clmm: [] };
 }
@@ -244,7 +309,30 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
       let price_a_per_b = 0;
       if (wholeB > 0 && wholeA > 0) price_a_per_b = wholeA / wholeB;
       else if (usdA > 0 && usdB > 0) price_a_per_b = usdA / usdB;
-      const tvl_usd = toNum((it as any)?.pool_tvl);
+      
+      // Parse TVL and apply scaling if needed
+      const tvlRaw = toNum((it as any)?.pool_tvl);
+      let tvl_usd = 0;
+      if (tvlRaw > 0) {
+        const minReserve = (wholeA > 0 && wholeB > 0) ? Math.min(wholeA, wholeB) : 0;
+        // If minReserve is > 1 but TVL is < 1% of it, likely needs scaling
+        if (minReserve > 1 && tvlRaw < minReserve * 0.01 && tvlRaw * 1000 < minReserve * 100) {
+          tvl_usd = tvlRaw * 1000;  // Scale from milli-USD to USD
+          try {
+            logger.debug('meteora.balanced.v1.tvl.scaled', {
+              id,
+              tvlRaw,
+              tvlScaled: tvl_usd,
+              minReserve,
+              scaleFactor: 1000,
+              cat: 'meteora'
+            });
+          } catch {}
+        } else {
+          tvl_usd = tvlRaw;
+        }
+      }
+      
       // Convert total_fee_pct (percent string) to bps
       let fee_bps = (() => {
         const s = String((it as any)?.total_fee_pct ?? '').trim();
@@ -252,7 +340,16 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
         if (Number.isFinite(n)) return Math.round(n * 100);
         return 0;
       })();
+      
       const liquidity_base = (wholeA > 0 && wholeB > 0) ? Math.min(wholeA, wholeB) : 0;
+      
+      // Calculate pool_liquidity_raw
+      const pool_liquidity_raw = (() => {
+        if (tvl_usd > 0) return tvl_usd;
+        if (liquidity_base > 0) return liquidity_base;
+        return undefined;
+      })();
+      
       amm.push({
         id,
         dex: 'MeteoraBalanced',
@@ -266,11 +363,37 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
         amount_a_whole: wholeA > 0 ? wholeA : undefined,
         amount_b_whole: wholeB > 0 ? wholeB : undefined,
         tvl_usd: tvl_usd > 0 ? tvl_usd : undefined,
+        pool_liquidity_raw,
         liquidity_display: (tvl_usd > 0) ? tvl_usd : (liquidity_base > 0 ? liquidity_base : undefined),
       } as any);
     } catch {}
   }
   const ammCanon = canonicalizePairs(amm);
+  
+  // Optional: Apply minimum liquidity filtering
+  try {
+    const minLiqBase = Number((CONFIG as any)?.meteoraBalanced?.minLiqBase || 0);
+    if (minLiqBase > 0) {
+      const beforeFilter = ammCanon.length;
+      const filtered = ammCanon.filter(p => {
+        const liq = p.tvl_usd ?? p.pool_liquidity_raw ?? p.liquidity_base ?? 0;
+        return liq >= minLiqBase;
+      });
+      if (filtered.length !== beforeFilter) {
+        try {
+          logger.info('meteora.balanced.v1.filter.min_liq', {
+            before: beforeFilter,
+            after: filtered.length,
+            minLiqBase,
+            cat: 'meteora'
+          });
+        } catch {}
+      }
+      try { logger.info('meteora.balanced.v1 normalized', { amm: filtered.length, cat: 'meteora' }); } catch {}
+      return { amm: filtered, clmm: [] } as any;
+    }
+  } catch {}
+  
   try { logger.info('meteora.balanced.v1 normalized', { amm: ammCanon.length, cat: 'meteora' }); } catch {}
   return { amm: ammCanon, clmm: [] } as any;
 }
@@ -458,6 +581,23 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
       const jupDecB = jupMap[vaults.mintB]?.decimals;
       if (Number.isFinite(jupDecA)) pool.decimalsA = jupDecA;
       if (Number.isFinite(jupDecB)) pool.decimalsB = jupDecB;
+      
+      // Calculate whole amounts and pool_liquidity_raw
+      const decA = pool.decimalsA;
+      const decB = pool.decimalsB;
+      if (Number.isFinite(decA) && Number.isFinite(decB)) {
+        const wholeA = Number(vaultAData.amount) / Math.pow(10, decA);
+        const wholeB = Number(vaultBData.amount) / Math.pow(10, decB);
+        
+        // Store raw reserves as strings for precise calculations
+        pool.reserve_a_raw = vaultAData.amount.toString();
+        pool.reserve_b_raw = vaultBData.amount.toString();
+        
+        // Calculate pool_liquidity_raw from enriched data
+        if (Number.isFinite(wholeA) && Number.isFinite(wholeB)) {
+          pool.pool_liquidity_raw = Math.min(wholeA, wholeB);
+        }
+      }
     }
   }
 
