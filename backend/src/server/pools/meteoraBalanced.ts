@@ -498,16 +498,24 @@ export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[
   const url = (() => {
     const sp = new URLSearchParams();
     
+    // Determine if we need to add address parameters
+    // Address is required when: anchorTokensOnly is true OR hideLowTvl is configured
+    // (Meteora v1 API requires address parameter when using hide_low_tvl filter)
+    const needsAddress = anchorTokensOnly || cfg.hideLowTvl;
+    
     // Filter by anchor tokens if enabled (SOL, USDC)
-    if (anchorTokensOnly) {
+    if (needsAddress) {
       sp.append('address', 'So11111111111111111111111111111111111111112'); // SOL
       sp.append('address', 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'); // USDC
     }
     
     // hide_low_tvl expects a number (minimum TVL threshold in USD)
-    // If minLiqBase is set, use it; otherwise use a small default if hideLowTvl is enabled
+    // Support both boolean (true) and numeric configurations
     if (cfg.hideLowTvl === true && minLiqBase > 0) {
       sp.append('hide_low_tvl', String(minLiqBase));
+    } else if (typeof cfg.hideLowTvl === 'number' && cfg.hideLowTvl > 0) {
+      // If hideLowTvl is configured as a number, use it directly
+      sp.append('hide_low_tvl', String(cfg.hideLowTvl));
     }
     
     // hide_low_apr is a boolean

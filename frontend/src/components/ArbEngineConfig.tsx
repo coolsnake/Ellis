@@ -6,16 +6,18 @@ import { useModalConfig } from '../app/hooks/useModalConfig';
 type Props = { apiBase: string; onClose: () => void };
 
 export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
-  // Persist UI preferences to localStorage
+  // Persist UI preferences AND form values to localStorage
   const [uiPrefs, updateUiPrefs] = useModalConfig('arbEngineConfig', {
     expandedSections: {
       execution: true,
       nearMiss: true,
       edgeAllow: true,
     },
+    // Save last used configuration values
+    lastValues: null as any,
   });
   
-  const [cfg, setCfg] = useState<any>({
+  const [cfg, setCfg] = useState<any>(uiPrefs.lastValues || {
     mode: 'simulate',
     slippageBpsDefault: 50,
     computeUnitLimit: 1000000,
@@ -33,6 +35,11 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
       pumpswap: { amm: true },
     },
   });
+  
+  // Save configuration values to localStorage when they change
+  useEffect(() => {
+    updateUiPrefs({ lastValues: cfg });
+  }, [cfg]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 

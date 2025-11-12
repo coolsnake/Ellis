@@ -195,7 +195,7 @@ function parseTokenAccountAmount(data: Buffer | Uint8Array): bigint | null {
  * Common offsets for AMM pools: around 200-300 bytes into account
  * We'll try multiple known offsets used by various AMM programs
  */
-function parsePumpswapPoolFee(data: Buffer | Uint8Array): number | null {
+export function parsePumpswapPoolFee(data: Buffer | Uint8Array): number | null {
   try {
     if (!data || data.length < 100) return null;
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);

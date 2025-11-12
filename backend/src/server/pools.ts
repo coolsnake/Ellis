@@ -299,22 +299,26 @@ let healthTimer: any | undefined;
 let lastWsEventMs: number = 0;
 let wsHealthy: boolean = false;
 let aggTimer: any | undefined;
-const wsCounts: { raydium: number; orca: number; meteora?: number } = { raydium: 0, orca: 0, meteora: 0 };
-const wsDeltaStats: Record<'raydium' | 'orca' | 'meteora', { decoded: number; applied: number; skipped: number; skipReasons?: Record<string, number> }> = {
+const wsCounts: { raydium: number; orca: number; meteora?: number; pumpswap?: number; meteora_balanced?: number } = { raydium: 0, orca: 0, meteora: 0, pumpswap: 0, meteora_balanced: 0 };
+const wsDeltaStats: Record<'raydium' | 'orca' | 'meteora' | 'pumpswap' | 'meteora_balanced', { decoded: number; applied: number; skipped: number; skipReasons?: Record<string, number> }> = {
   raydium: { decoded: 0, applied: 0, skipped: 0, skipReasons: {} },
   orca: { decoded: 0, applied: 0, skipped: 0, skipReasons: {} },
   meteora: { decoded: 0, applied: 0, skipped: 0, skipReasons: {} },
+  pumpswap: { decoded: 0, applied: 0, skipped: 0, skipReasons: {} },
+  meteora_balanced: { decoded: 0, applied: 0, skipped: 0, skipReasons: {} },
 };
 
 // Decode success/failure tracking for coverage verification
-const wsDecodeStats: Record<'raydium' | 'orca' | 'meteora', { attempts: number; successes: number; failures: number }> = {
+const wsDecodeStats: Record<'raydium' | 'orca' | 'meteora' | 'pumpswap' | 'meteora_balanced', { attempts: number; successes: number; failures: number }> = {
   raydium: { attempts: 0, successes: 0, failures: 0 },
   orca: { attempts: 0, successes: 0, failures: 0 },
   meteora: { attempts: 0, successes: 0, failures: 0 },
+  pumpswap: { attempts: 0, successes: 0, failures: 0 },
+  meteora_balanced: { attempts: 0, successes: 0, failures: 0 },
 };
 
 // Helper function to increment skip reason
-function incrementSkipReason(dex: 'raydium' | 'orca' | 'meteora', reason: string): void {
+function incrementSkipReason(dex: 'raydium' | 'orca' | 'meteora' | 'pumpswap' | 'meteora_balanced', reason: string): void {
   const stats = wsDeltaStats[dex];
   if (!stats.skipReasons) stats.skipReasons = {};
   stats.skipReasons[reason] = (stats.skipReasons[reason] || 0) + 1;
@@ -322,6 +326,114 @@ function incrementSkipReason(dex: 'raydium' | 'orca' | 'meteora', reason: string
 const wsDebugCounters: Record<'raydium' | 'orca' | 'meteora' | 'meteora_balanced' | 'pumpswap', number> = { raydium: 0, orca: 0, meteora: 0, meteora_balanced: 0, pumpswap: 0 };
 const wsTargetDebugCounters: Record<'raydium' | 'orca' | 'meteora' | 'meteora_balanced' | 'pumpswap', number> = { raydium: 0, orca: 0, meteora: 0, meteora_balanced: 0, pumpswap: 0 };
 let meteoraProgramInstance: any | null = null;
+
+// Validation counters for detailed failure tracking
+const wsValidationStats: Record<'raydium' | 'orca' | 'meteora' | 'pumpswap' | 'meteora_balanced', { 
+  missingMints: number; 
+  invalidPrice: number; 
+  invalidLiquidity: number;
+  invalidFee: number;
+  invalidTick: number;
+  emptyMints: number;
+}> = {
+  raydium: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
+  orca: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
+  meteora: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
+  pumpswap: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
+  meteora_balanced: { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 },
+};
+
+/**
+ * Validates a decoded pool to ensure all critical fields are present and valid
+ * Returns validation result with specific failure reasons for debugging
+ */
+function validateDecodedPool(
+  dex: 'raydium' | 'orca' | 'meteora' | 'pumpswap' | 'meteora_balanced',
+  pool: { mint_a?: string; mint_b?: string; price_a_per_b?: number; liquidity?: number; liquidity_base?: number; fee_bps?: number; tick_spacing?: number; sqrt_price_x64?: number },
+  poolId: string
+): { valid: boolean; reasons: string[] } {
+  const reasons: string[] = [];
+  
+  // Validate mints
+  if (!pool.mint_a || !pool.mint_b) {
+    reasons.push('missing_mints');
+    try { wsValidationStats[dex].missingMints += 1; } catch {}
+  } else if (pool.mint_a.length === 0 || pool.mint_b.length === 0) {
+    reasons.push('empty_mints');
+    try { wsValidationStats[dex].emptyMints += 1; } catch {}
+  } else if (pool.mint_a === pool.mint_b) {
+    reasons.push('identical_mints');
+    try { wsValidationStats[dex].missingMints += 1; } catch {}
+  }
+  
+  // Validate price (for pools that should have it)
+  if (pool.price_a_per_b != null) {
+    if (!Number.isFinite(pool.price_a_per_b) || pool.price_a_per_b <= 0) {
+      reasons.push('invalid_price');
+      try { wsValidationStats[dex].invalidPrice += 1; } catch {}
+    }
+    // Sanity check: price should be within reasonable bounds (0.00000001 to 100000000)
+    if (pool.price_a_per_b && (pool.price_a_per_b < 1e-8 || pool.price_a_per_b > 1e8)) {
+      reasons.push('price_out_of_bounds');
+      try { wsValidationStats[dex].invalidPrice += 1; } catch {}
+    }
+  }
+  
+  // Validate liquidity (different fields for AMM vs CLMM)
+  const liq = pool.liquidity ?? pool.liquidity_base;
+  if (liq != null) {
+    if (!Number.isFinite(liq) || liq < 0) {
+      reasons.push('invalid_liquidity');
+      try { wsValidationStats[dex].invalidLiquidity += 1; } catch {}
+    }
+  }
+  
+  // Validate fee
+  if (pool.fee_bps != null) {
+    if (!Number.isFinite(pool.fee_bps) || pool.fee_bps < 0 || pool.fee_bps > 10000) {
+      reasons.push('invalid_fee');
+      try { wsValidationStats[dex].invalidFee += 1; } catch {}
+    }
+  }
+  
+  // Validate tick spacing for CLMM
+  if (pool.tick_spacing != null) {
+    if (!Number.isFinite(pool.tick_spacing) || pool.tick_spacing <= 0) {
+      reasons.push('invalid_tick_spacing');
+      try { wsValidationStats[dex].invalidTick += 1; } catch {}
+    }
+  }
+  
+  // Validate sqrt_price_x64 for CLMM
+  if (pool.sqrt_price_x64 != null) {
+    if (!Number.isFinite(pool.sqrt_price_x64) || pool.sqrt_price_x64 <= 0) {
+      reasons.push('invalid_sqrt_price');
+      try { wsValidationStats[dex].invalidPrice += 1; } catch {}
+    }
+  }
+  
+  const valid = reasons.length === 0;
+  
+  // Log validation failures
+  if (!valid && reasons.length > 0) {
+    try {
+      logger.warn(`${dex}.ws.validation.failed`, {
+        poolId: poolId.slice(0, 8) + '…',
+        reasons,
+        mint_a: pool.mint_a?.slice(0, 8) + '…',
+        mint_b: pool.mint_b?.slice(0, 8) + '…',
+        price_a_per_b: pool.price_a_per_b,
+        liquidity: pool.liquidity,
+        liquidity_base: pool.liquidity_base,
+        fee_bps: pool.fee_bps,
+        tick_spacing: pool.tick_spacing,
+        cat: 'pools'
+      });
+    } catch {}
+  }
+  
+  return { valid, reasons };
+}
 
 function debugLogTargeted(source: 'raydium' | 'orca' | 'meteora' | 'meteora_balanced' | 'pumpswap', account: string, extra: Record<string, unknown>): void {
   try {
@@ -1493,9 +1605,9 @@ export function startRaydiumRefreshLoop(): void {
             const ownerOrca = orcaProg.toBase58();
             const ownerMeteora = String((CONFIG as any)?.meteora?.programId || '').trim();
             const isMeteoraTarget = meteoraTargets.has(pk58);
+            const mapped = targetedSourceByAccount.get(pk58);
             try {
               const shortPk = pk ? `${toB58Any(pk).slice(0,6)}…` : '';
-              const mapped = targetedSourceByAccount.get(pk58);
               const src = mapped || ((owner === ownerRayAmm || owner === ownerRayClmm) ? 'raydium' : (owner === ownerOrca ? 'orca' : ((ownerMeteora && owner === ownerMeteora) || isMeteoraTarget ? 'meteora' : 'unknown')));
               // Emit raw event snapshot (truncated) for audit
               const raw = {
@@ -1630,6 +1742,17 @@ export function startRaydiumRefreshLoop(): void {
                           decimals_a: precision.decA,
                           decimals_b: precision.decB,
                         } as any;
+                        
+                        // Validate decoded pool before applying
+                        const validation = validateDecodedPool('raydium', item, pk58);
+                        if (!validation.valid) {
+                          try { wsDecodeStats.raydium.failures += 1; } catch {}
+                          incrementSkipReason('raydium', `validation_failed:${validation.reasons.join(',')}`);
+                          try { logger.warn('raydium.ws clmm.validation.failed', { id: pk58, reasons: validation.reasons, cat: 'pools' }); } catch {}
+                          updated = true; // Mark as processed to avoid further handling
+                          throw new Error(`validation failed: ${validation.reasons.join(',')}`); // Skip this update
+                        }
+                        
                         const prev = raydiumCache.data || { amm: [], clmm: [] };
                         const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
                         const idx = next.clmm.findIndex(p => p.id === item.id);
@@ -1712,6 +1835,17 @@ export function startRaydiumRefreshLoop(): void {
                         } catch {}
                         const liqBase = (rA > 0 && rB > 0) ? Math.min(rA, rB) : 0;
                         const item: AmmPool = { id: pk58, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps: Number((state as any).tradeFeeRate || (state as any).feeRate || 0), price_a_per_b, liquidity_base: liqBase, updated_ms: Date.now(), pool_kind: 'amm', liquidity_display: liqBase } as any;
+                        
+                        // Validate decoded pool before applying
+                        const validation = validateDecodedPool('raydium', item, pk58);
+                        if (!validation.valid) {
+                          try { wsDecodeStats.raydium.failures += 1; } catch {}
+                          incrementSkipReason('raydium', `validation_failed:${validation.reasons.join(',')}`);
+                          try { logger.warn('raydium.ws amm.validation.failed', { id: pk58, reasons: validation.reasons, cat: 'pools' }); } catch {}
+                          updated = true;
+                          throw new Error(`validation failed: ${validation.reasons.join(',')}`);
+                        }
+                        
                         const prev = raydiumCache.data || { amm: [], clmm: [] };
                         const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
                         const idx = next.amm.findIndex(p => p.id === item.id);
@@ -1843,6 +1977,16 @@ export function startRaydiumRefreshLoop(): void {
                     decimals_a: precision.decA,
                     decimals_b: precision.decB,
                   } as any;
+                  
+                  // Validate decoded pool before applying
+                  const validation = validateDecodedPool('orca', clmmItem, id);
+                  if (!validation.valid) {
+                    try { wsDecodeStats.orca.failures += 1; } catch {}
+                    incrementSkipReason('orca', `validation_failed:${validation.reasons.join(',')}`);
+                    try { logger.warn('orca.ws validation.failed', { id, reasons: validation.reasons, cat: 'pools' }); } catch {}
+                    throw new Error(`validation failed: ${validation.reasons.join(',')}`);
+                  }
+                  
                   const prev = orcaCache.data || { amm: [], clmm: [] };
                   const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
                   const idx = next.clmm.findIndex(p => p.id === id);
@@ -2022,6 +2166,17 @@ export function startRaydiumRefreshLoop(): void {
                     if (tickSpacing) (item as any).bin_step = tickSpacing;
                     const [canonicalItem] = canonicalizePairs([{ ...item }]);
                     const finalItem = canonicalItem || item;
+                    
+                    // Validate decoded pool before applying
+                    const validation = validateDecodedPool('meteora', finalItem, poolId);
+                    if (!validation.valid) {
+                      try { wsDecodeStats.meteora.failures += 1; } catch {}
+                      incrementSkipReason('meteora', `validation_failed:${validation.reasons.join(',')}`);
+                      try { logger.warn('meteora.ws validation.failed', { id: poolId, reasons: validation.reasons, cat: 'pools' }); } catch {}
+                      updated = true;
+                      throw new Error(`validation failed: ${validation.reasons.join(',')}`);
+                    }
+                    
                     const prev = meteoraCache.data || { amm: [], clmm: [] };
                     const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
                     const idx = next.clmm.findIndex(p => p.id === finalItem.id);
@@ -2080,6 +2235,205 @@ export function startRaydiumRefreshLoop(): void {
                 }
               }
               return;
+            } else if (mapped === 'pumpswap') {
+              // Pumpswap AMM pool decode
+              try { wsCounts.pumpswap = (wsCounts.pumpswap || 0) + 1; } catch {}
+              try { wsDecodeStats.pumpswap.attempts += 1; } catch {}
+              const pk58 = toB58Any(pk);
+              let updated = false;
+              try {
+                if (!info?.data || info.data.length < 100) {
+                  throw new Error('pumpswap account data too short');
+                }
+                
+                // Decode pool state from account data
+                const buf = Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data);
+                
+                // Common Solana program account layout: 8-byte discriminator, then data fields
+                // Extract mint addresses (typically at offsets after discriminator)
+                // Note: These offsets are based on typical Pumpswap pool account structure
+                // You may need to adjust based on actual program layout
+                const web3 = await import('@solana/web3.js');
+                let mint_a: string;
+                let mint_b: string;
+                let account_a: string;
+                let account_b: string;
+                
+                try {
+                  // Try to decode PublicKeys from common offsets
+                  // Offset 8: base mint, 40: quote mint, 72: base vault, 104: quote vault
+                  mint_a = new web3.PublicKey(buf.slice(8, 40)).toBase58();
+                  mint_b = new web3.PublicKey(buf.slice(40, 72)).toBase58();
+                  account_a = new web3.PublicKey(buf.slice(72, 104)).toBase58();
+                  account_b = new web3.PublicKey(buf.slice(104, 136)).toBase58();
+                } catch (err: any) {
+                  throw new Error(`failed to parse pool pubkeys: ${err.message}`);
+                }
+                
+                // Extract fee using helper function
+                const { parsePumpswapPoolFee } = await import('./pools/pumpswap.js');
+                const fee_bps = parsePumpswapPoolFee(info.data) || Number((CONFIG as any)?.pumpswap?.defaultFeeBps || 25);
+                
+                // Fetch vault balances to calculate reserves and price
+                const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+                const { Connection } = await import('@solana/web3.js');
+                const connection = conn as InstanceType<typeof Connection>;
+                const vaultAccounts = await withRpcLimit(
+                  () => connection.getMultipleAccountsInfo([
+                    new web3.PublicKey(account_a),
+                    new web3.PublicKey(account_b)
+                  ]),
+                  1,
+                  { module: 'pools', method: 'getMultipleAccountsInfo' }
+                );
+                const [vaultA, vaultB] = vaultAccounts as any[];
+                
+                const baseReserve = vaultA?.data ? parseTokenAccountAmount(vaultA.data) : null;
+                const quoteReserve = vaultB?.data ? parseTokenAccountAmount(vaultB.data) : null;
+                
+                if (!baseReserve || !quoteReserve) {
+                  throw new Error('failed to parse vault balances');
+                }
+                
+                // Get decimals and calculate price
+                const tok = await import('../utils/tokens.js');
+                const tokenA = await (tok as any).resolveMint(mint_a);
+                const tokenB = await (tok as any).resolveMint(mint_b);
+                const decA = Number(tokenA?.decimals ?? 9);
+                const decB = Number(tokenB?.decimals ?? 6);
+                
+                const baseWholeTokens = Number(baseReserve) / Math.pow(10, decA);
+                const quoteWholeTokens = Number(quoteReserve) / Math.pow(10, decB);
+                
+                // Calculate price with fee adjustment
+                const feeMultiplier = 1 - (fee_bps / 10_000);
+                const price_a_per_b = quoteWholeTokens > 0 
+                  ? (baseWholeTokens / quoteWholeTokens) * feeMultiplier 
+                  : 0;
+                
+                const liquidity_base = Math.min(baseWholeTokens, quoteWholeTokens);
+                
+                // Create pool item
+                const item: AmmPool = {
+                  id: pk58,
+                  dex: 'Pumpswap',
+                  mint_a,
+                  mint_b,
+                  fee_bps,
+                  price_a_per_b,
+                  liquidity_base,
+                  updated_ms: Date.now(),
+                  pool_kind: 'amm',
+                  account_a,
+                  account_b,
+                  decimals_a: decA,
+                  decimals_b: decB,
+                  amount_a_whole: baseWholeTokens,
+                  amount_b_whole: quoteWholeTokens,
+                  amounts_are_whole: true,
+                  reserve_a_raw: baseReserve.toString(),
+                  reserve_b_raw: quoteReserve.toString(),
+                  pool_liquidity_raw: liquidity_base,
+                  liquidity_display: liquidity_base,
+                } as any;
+                
+                // Validate decoded pool before applying
+                const validation = validateDecodedPool('pumpswap', item, pk58);
+                if (!validation.valid) {
+                  try { wsDecodeStats.pumpswap.failures += 1; } catch {}
+                  incrementSkipReason('pumpswap', `validation_failed:${validation.reasons.join(',')}`);
+                  try { logger.warn('pumpswap.ws validation.failed', { id: pk58, reasons: validation.reasons, cat: 'pools' }); } catch {}
+                  throw new Error(`validation failed: ${validation.reasons.join(',')}`);
+                }
+                
+                // Update cache
+                const prev = pumpswapCache.data || { amm: [], clmm: [] };
+                const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
+                const idx = next.amm.findIndex(p => p.id === item.id);
+                if (idx >= 0) next.amm[idx] = { ...next.amm[idx], ...item }; else next.amm.push(item);
+                
+                try { wsDecodeStats.pumpswap.successes += 1; } catch {}
+                wsDeltaStats.pumpswap.decoded += 1;
+                
+                const d = diffNormalizedPools(prev, next);
+                pumpswapCache.data = next;
+                pumpswapCache.ts = Date.now();
+                
+                const hasDelta = (d.amm.length || d.clmm.length);
+                if (hasDelta) {
+                  wsDeltaStats.pumpswap.applied += 1;
+                  
+                  // Apply to graph
+                  try {
+                    const gmod: any = await import('./graph.js');
+                    await scheduleDexApply('raydium', prev as any); // Reuse raydium scheduler for now
+                  } catch {}
+                } else {
+                  wsDeltaStats.pumpswap.skipped += 1;
+                  const prevPool = prev.amm.find(p => p.id === item.id);
+                  if (prevPool) {
+                    const reasons: string[] = [];
+                    if ((prevPool as any).reserve_a_raw === (item as any).reserve_a_raw && (prevPool as any).reserve_b_raw === (item as any).reserve_b_raw) reasons.push('reserves_unchanged');
+                    if (Math.abs((prevPool.liquidity_base || 0) - (item.liquidity_base || 0)) === 0) reasons.push('liquidity_unchanged');
+                    if (Math.abs((prevPool.price_a_per_b || 0) - (item.price_a_per_b || 0)) <= 1e-9) reasons.push('price_unchanged');
+                    incrementSkipReason('pumpswap', reasons.length > 0 ? reasons.join('+') : 'no_delta_detected');
+                  } else {
+                    incrementSkipReason('pumpswap', 'new_pool');
+                  }
+                }
+                
+                updated = true;
+                
+              } catch (e: any) {
+                try { wsDecodeStats.pumpswap.failures += 1; } catch {}
+                try { logger.warn('pumpswap.ws.decode failed', { id: pk58, error: String(e?.message || e), cat: 'pools' }); } catch {}
+                
+                // Fallback to HTTP refresh
+                const minGap = Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000);
+                const last = (getPumpswapPoolsCached as any).__lastForceAt || 0;
+                const nowMs = Date.now();
+                if (nowMs - last >= minGap) {
+                  (getPumpswapPoolsCached as any).__lastForceAt = nowMs;
+                  try { logger.debug('pumpswap.ws pool.refresh_trigger', { id: pk58, cat: 'pools' }); } catch {}
+                  getPumpswapPoolsCached(true).catch(() => {});
+                }
+              }
+              if (updated) {
+                return;
+              }
+            } else if (mapped === 'meteora_balanced') {
+              // Meteora Balanced (DAMM) v1/v2 pool decode
+              try { wsCounts.meteora_balanced = (wsCounts.meteora_balanced || 0) + 1; } catch {}
+              try { wsDecodeStats.meteora_balanced.attempts += 1; } catch {}
+              const pk58 = toB58Any(pk);
+              let updated = false;
+              try {
+                if (!info?.data || info.data.length < 100) {
+                  throw new Error('meteora_balanced account data too short');
+                }
+                
+                // Note: Meteora Balanced uses constant product AMM with dynamic fees
+                // The account structure varies between v1 and v2
+                // For now, use HTTP fallback and log that we received the update
+                throw new Error('on-chain decode not yet implemented for meteora_balanced');
+                
+              } catch (e: any) {
+                try { wsDecodeStats.meteora_balanced.failures += 1; } catch {}
+                try { logger.warn('meteora_balanced.ws.decode failed', { id: pk58, error: String(e?.message || e), cat: 'pools' }); } catch {}
+                
+                // Fallback to HTTP refresh
+                const minGap = Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000);
+                const last = (getMeteoraBalancedPoolsCached as any).__lastForceAt || 0;
+                const nowMs = Date.now();
+                if (nowMs - last >= minGap) {
+                  (getMeteoraBalancedPoolsCached as any).__lastForceAt = nowMs;
+                  try { logger.debug('meteora_balanced.ws pool.refresh_trigger', { id: pk58, cat: 'pools' }); } catch {}
+                  getMeteoraBalancedPoolsCached(true).catch(() => {});
+                }
+              }
+              if (updated) {
+                return;
+              }
             } else if (pk) {
               // Fallback: if account belongs to any known program, refresh both
               // Disabled while subscribed
@@ -3453,17 +3807,34 @@ export function startRaydiumRefreshLoop(): void {
         const aggPeriod = Math.max(5000, Number((CONFIG.system as any)?.wsAggLogPeriodMs || 15000));
         aggTimer = setInterval(() => {
           try {
-            const snapshot = { raydium: wsCounts.raydium, orca: wsCounts.orca, meteora: wsCounts.meteora } as any;
-            wsCounts.raydium = 0; wsCounts.orca = 0; wsCounts.meteora = 0;
+            const snapshot = { 
+              raydium: wsCounts.raydium, 
+              orca: wsCounts.orca, 
+              meteora: wsCounts.meteora,
+              pumpswap: wsCounts.pumpswap || 0,
+              meteora_balanced: wsCounts.meteora_balanced || 0
+            } as any;
+            wsCounts.raydium = 0; wsCounts.orca = 0; wsCounts.meteora = 0; wsCounts.pumpswap = 0; wsCounts.meteora_balanced = 0;
             const metrics = {
               raydium: { ...wsDeltaStats.raydium, skipReasons: wsDeltaStats.raydium.skipReasons },
               orca: { ...wsDeltaStats.orca, skipReasons: wsDeltaStats.orca.skipReasons },
               meteora: { ...wsDeltaStats.meteora, skipReasons: wsDeltaStats.meteora.skipReasons },
+              pumpswap: { ...wsDeltaStats.pumpswap, skipReasons: wsDeltaStats.pumpswap.skipReasons },
+              meteora_balanced: { ...wsDeltaStats.meteora_balanced, skipReasons: wsDeltaStats.meteora_balanced.skipReasons },
             };
             const decodeMetrics = {
               raydium: { ...wsDecodeStats.raydium },
               orca: { ...wsDecodeStats.orca },
               meteora: { ...wsDecodeStats.meteora },
+              pumpswap: { ...wsDecodeStats.pumpswap },
+              meteora_balanced: { ...wsDecodeStats.meteora_balanced },
+            };
+            const validationMetrics = {
+              raydium: { ...wsValidationStats.raydium },
+              orca: { ...wsValidationStats.orca },
+              meteora: { ...wsValidationStats.meteora },
+              pumpswap: { ...wsValidationStats.pumpswap },
+              meteora_balanced: { ...wsValidationStats.meteora_balanced },
             };
             logger.info('pools.ws aggregate', { 
               events: snapshot, 
@@ -3472,17 +3843,29 @@ export function startRaydiumRefreshLoop(): void {
               counts: {
                 raydium: { attached: attachedRaydiumPools, target: (typeof getWsTargets === 'function' ? (getWsTargets as any)._last?.raydium?.target : undefined) },
                 orca: { attached: attachedOrcaPools, target: (typeof getWsTargets === 'function' ? (getWsTargets as any)._last?.orca?.target : undefined) },
-                meteora: { attached: attachedMeteoraPools, target: (typeof getWsTargets === 'function' ? (getWsTargets as any)._last?.meteora?.target : undefined) }
+                meteora: { attached: attachedMeteoraPools, target: (typeof getWsTargets === 'function' ? (getWsTargets as any)._last?.meteora?.target : undefined) },
+                pumpswap: { attached: attachedPumpswapPools, target: (typeof getWsTargets === 'function' ? (getWsTargets as any)._last?.pumpswap?.target : undefined) },
+                meteora_balanced: { attached: attachedMeteoraBalancedPools, target: (typeof getWsTargets === 'function' ? (getWsTargets as any)._last?.meteora_balanced?.target : undefined) }
               },
               metrics,
               decodeStats: decodeMetrics,
+              validationStats: validationMetrics,
             });
             wsDeltaStats.raydium = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
             wsDeltaStats.orca = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
             wsDeltaStats.meteora = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
+            wsDeltaStats.pumpswap = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
+            wsDeltaStats.meteora_balanced = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
             wsDecodeStats.raydium = { attempts: 0, successes: 0, failures: 0 };
             wsDecodeStats.orca = { attempts: 0, successes: 0, failures: 0 };
             wsDecodeStats.meteora = { attempts: 0, successes: 0, failures: 0 };
+            wsDecodeStats.pumpswap = { attempts: 0, successes: 0, failures: 0 };
+            wsDecodeStats.meteora_balanced = { attempts: 0, successes: 0, failures: 0 };
+            wsValidationStats.raydium = { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 };
+            wsValidationStats.orca = { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 };
+            wsValidationStats.meteora = { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 };
+            wsValidationStats.pumpswap = { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 };
+            wsValidationStats.meteora_balanced = { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 };
             // Emit a dedicated ws-activity event for UI regardless of log filtering
             try { emit('ws-activity', { healthy: wsHealthy, lastEventMs: lastWsEventMs, orca: { attached: attachedOrcaPools, events: snapshot.orca || 0 }, raydium: { attached: attachedRaydiumPools, events: snapshot.raydium || 0 }, meteora: { attached: attachedMeteoraPools, events: snapshot.meteora || 0 } }); } catch {}
             // Aggregate metrics are already logged above via logger.info('pools.ws aggregate', ...), no need for duplicate emit

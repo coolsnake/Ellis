@@ -13,20 +13,42 @@ export interface AllModalConfigs {
   [key: string]: any;
 }
 
+// Sensitive keys that should never be exported/imported
+const SENSITIVE_KEYS = [
+  'authCreds',
+  'password',
+  'pass',
+  'apiKey',
+  'secret',
+  'token',
+  'privateKey',
+  'keypath',
+];
+
 /**
- * Export all modal configurations from localStorage
+ * Check if a localStorage key contains sensitive data
+ */
+const isSensitiveKey = (key: string): boolean => {
+  const lowerKey = key.toLowerCase();
+  return SENSITIVE_KEYS.some(sensitive => lowerKey.includes(sensitive.toLowerCase()));
+};
+
+/**
+ * Export all modal configurations from localStorage (excluding sensitive data)
  */
 export const exportAllModalConfigs = (): AllModalConfigs => {
   const configs: AllModalConfigs = {};
   
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
-    if (key?.startsWith('modalConfig_')) {
+    if (key?.startsWith('modalConfig_') && !isSensitiveKey(key)) {
       try {
         const value = localStorage.getItem(key);
         if (value) {
           const modalName = key.replace('modalConfig_', '');
-          configs[modalName] = JSON.parse(value);
+          const parsed = JSON.parse(value);
+          // Filter out sensitive fields from the parsed object
+          configs[modalName] = filterSensitiveFields(parsed);
         }
       } catch (err) {
         console.warn(`Failed to export config for ${key}:`, err);
@@ -35,6 +57,25 @@ export const exportAllModalConfigs = (): AllModalConfigs => {
   }
   
   return configs;
+};
+
+/**
+ * Recursively filter sensitive fields from an object
+ */
+const filterSensitiveFields = (obj: any): any => {
+  if (!obj || typeof obj !== 'object') return obj;
+  
+  if (Array.isArray(obj)) {
+    return obj.map(filterSensitiveFields);
+  }
+  
+  const filtered: any = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (!isSensitiveKey(key)) {
+      filtered[key] = filterSensitiveFields(value);
+    }
+  }
+  return filtered;
 };
 
 /**

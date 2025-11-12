@@ -14,16 +14,18 @@ export const ExecutionConfigModal: React.FC<Props> = ({ apiBase = '/api', onClos
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
-  // Persist UI preferences to localStorage
+  // Persist UI preferences AND form values to localStorage
   const [uiPrefs, updateUiPrefs] = useModalConfig('executionConfig', {
     expandedSections: {
       jito: true,
       rpcSend: true,
       drift: true,
     },
+    // Save last used form values (excluding sensitive fields like keypaths)
+    lastValues: null as any,
   });
   
-  const [form, setForm] = useState<any>({
+  const [form, setForm] = useState<any>(uiPrefs.lastValues || {
     jito: { enabled: false, blockEngineUrl: '', tipPayerKeypath: '', bundleTimeoutMs: 1200, tipMode: 'dynamic', fixedTipLamports: 10000, tipShare: 0.3, useDontFrontAccount: false, tipAccount: '' },
     rpcSend: { secondaryRpcUrls: '', sendTimeoutMs: 1200 },
     drift: {
@@ -33,6 +35,19 @@ export const ExecutionConfigModal: React.FC<Props> = ({ apiBase = '/api', onClos
       feeMultipliersText: '{"perp-0":1.0}',
     },
   });
+  
+  // Save form values to localStorage when they change (excluding sensitive fields)
+  useEffect(() => {
+    const sanitized = {
+      jito: {
+        ...form.jito,
+        tipPayerKeypath: '', // Don't persist keypaths
+      },
+      rpcSend: form.rpcSend,
+      drift: form.drift,
+    };
+    updateUiPrefs({ lastValues: sanitized });
+  }, [form]);
 
   useEffect(() => {
     let ok = true;
