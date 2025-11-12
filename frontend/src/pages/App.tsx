@@ -28,6 +28,7 @@ import { CollapsibleSection } from '../components/CollapsibleSection';
 import { AltManagementModal } from '../components/AltManagementModal';
 import { setLogLevel as setFrontendLogLevel } from '../utils/logger';
 import { downloadModalConfigs, uploadModalConfigs, clearAllModalConfigs } from '../utils/modalConfigManager';
+import { LocalStorageDebug } from '../components/LocalStorageDebug';
 import { maskRpcUrl } from '../utils/mask';
 import { useSystem } from '../app/contexts/system';
 import { useWallet } from '../app/contexts/wallet';
@@ -1714,7 +1715,7 @@ export const App: React.FC = () => {
               <p className="text-sm text-gray-300 mb-3">
                 Export, import, or reset your modal UI preferences (expanded sections, filter settings, etc.)
               </p>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap gap-2 mb-4">
                 <button 
                   onClick={downloadModalConfigs} 
                   className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 text-sm"
@@ -1737,6 +1738,8 @@ export const App: React.FC = () => {
                   🗑️ Reset All UI Preferences
                 </button>
               </div>
+              {/* Debug component */}
+              <LocalStorageDebug />
             </div>
           )}
         </CollapsibleSection>

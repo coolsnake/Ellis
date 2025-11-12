@@ -22,11 +22,13 @@ export function useModalConfig<T extends ModalConfig>(
       const saved = localStorage.getItem(storageKey);
       if (saved) {
         const parsed = JSON.parse(saved);
+        console.log(`[useModalConfig] Loaded config for ${modalId}:`, parsed);
         return { ...defaults, ...parsed };
       }
     } catch (err) {
       console.warn(`Failed to load config for ${modalId}:`, err);
     }
+    console.log(`[useModalConfig] Using defaults for ${modalId}:`, defaults);
     return defaults;
   });
 
@@ -34,10 +36,11 @@ export function useModalConfig<T extends ModalConfig>(
   useEffect(() => {
     try {
       localStorage.setItem(storageKey, JSON.stringify(config));
+      console.log(`[useModalConfig] Saved config for ${modalId}:`, config);
     } catch (err) {
       console.warn(`Failed to save config for ${modalId}:`, err);
     }
-  }, [config, storageKey]);
+  }, [config, storageKey, modalId]);
 
   // Update function (merges partial updates)
   const updateConfig = (updates: Partial<T>) => {
