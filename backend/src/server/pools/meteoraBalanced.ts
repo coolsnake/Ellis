@@ -10,13 +10,32 @@ import { PublicKey } from '@solana/web3.js';
 export async function fetchMeteoraBalancedHttp(): Promise<any> {
   const RAW_PATH = joinPath(CONFIG.cacheDir, 'meteora-balanced-raw-sample.json');
   try {
-    const baseUnsafe = (CONFIG as any)?.meteoraBalanced?.apiUrl || '';
+    const cfg = (CONFIG as any)?.meteoraBalanced || {};
+    const baseUnsafe = cfg.apiUrl || '';
     const base = validateHttpUrl(baseUnsafe) || '';
     if (!base) { try { await writeJson(RAW_PATH, []); } catch {}; return []; }
-    const retries = Number(((CONFIG as any)?.meteoraBalanced?.maxHttpRetries) || 2);
-    const backoffMs = Number(((CONFIG as any)?.meteoraBalanced?.httpBackoffMs) || 500);
-    const maxPages = Number(((CONFIG as any)?.meteoraBalanced?.maxPages) || 3);
-    const size = Number(((CONFIG as any)?.meteoraBalanced?.pageSize) || 200);
+    
+    // Check if we should use anchor-tokens-only mode (higher quality, more efficient)
+    const anchorTokensOnly = cfg.anchorTokensOnly !== false; // Default: true
+    if (anchorTokensOnly) {
+      // Use the V1 fetcher which already implements anchor-token filtering
+      try {
+        logger.info('meteora.balanced.fetch using anchor-tokens-only mode', { cat: 'meteora' });
+      } catch {}
+      return await fetchMeteoraBalancedV1Http(base);
+    }
+    
+    // Otherwise, fetch all pools with quality filters
+    const retries = Number(cfg.maxHttpRetries || 2);
+    const backoffMs = Number(cfg.httpBackoffMs || 500);
+    const maxPages = Number(cfg.maxPages || 3);
+    const size = Number(cfg.pageSize || 200);
+    
+    // API-level quality filters
+    const hideLowTvl = cfg.hideLowTvl === true;
+    const hideLowApr = cfg.hideLowApr === true;
+    const tokensVerified = cfg.tokensVerified === true;
+    
     // eslint-disable-next-line no-undef
     const fetchFn: any = (globalThis as any).fetch || fetch;
     // Build candidate bases with a safe v1->v2 fallback for DAMM
@@ -39,6 +58,10 @@ export async function fetchMeteoraBalancedHttp(): Promise<any> {
           const sp = new URLSearchParams();
           if (Number.isFinite(size) && size > 0) sp.append('limit', String(size));
           sp.append('page', String(page));
+          // Add quality filters to API request
+          if (hideLowTvl) sp.append('hide_low_tvl', 'true');
+          if (hideLowApr) sp.append('hide_low_apr', 'true');
+          if (tokensVerified) sp.append('tokens_verified', 'true');
           const qs = sp.toString();
           return qs ? `${baseCandidate}?${qs}` : baseCandidate;
         })();
@@ -66,6 +89,15 @@ export async function fetchMeteoraBalancedHttp(): Promise<any> {
       }
       if (out.length > 0) {
         try { await writeJson(RAW_PATH, out); } catch {}
+        try {
+          logger.info('meteora.balanced.fetch complete', {
+            count: out.length,
+            hideLowTvl,
+            hideLowApr,
+            tokensVerified,
+            cat: 'meteora'
+          });
+        } catch {}
         return out;
       }
       // If this candidate produced nothing, try next candidate (e.g., v2)
@@ -410,21 +442,22 @@ export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[
   const backoffMs = Number(cfg.httpBackoffMs || 500);
   const maxPages = Number(cfg.maxPages || 3);
   const size = Number(cfg.pageSize || 200);
+  
+  // API-level quality filters
+  const hideLowTvl = cfg.hideLowTvl === true;
+  const hideLowApr = cfg.hideLowApr === true;
+  const tokensVerified = cfg.tokensVerified === true;
+  
   // eslint-disable-next-line no-undef
   const fetchFn: any = (globalThis as any).fetch || fetch;
   const out: any[] = [];
-  const hideLow = (() => {
-    try {
-      const raw = (CONFIG as any)?.meteoraBalanced?.hideLowTvl;
-      if (raw == null) return undefined;
-      const n = Number(raw);
-      return Number.isFinite(n) && n > 0 ? n : undefined;
-    } catch { return undefined; }
-  })();
+  
+  // Only fetch anchor token pairs (SOL, USDC) for higher quality
   const anchors: string[] = [
     'So11111111111111111111111111111111111111112', // SOL
     'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
   ];
+  
   for (const addr of anchors) {
     let page = 0;
     for (let i = 0; i < (maxPages && maxPages > 0 ? maxPages : Number.POSITIVE_INFINITY); i++) {
@@ -433,7 +466,10 @@ export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[
         sp.append('address', addr);
         if (Number.isFinite(size) && size > 0) sp.append('limit', String(size));
         sp.append('page', String(page));
-        if (hideLow != null) sp.append('hide_low_tvl', String(hideLow));
+        // Add quality filters to API request
+        if (hideLowTvl) sp.append('hide_low_tvl', 'true');
+        if (hideLowApr) sp.append('hide_low_apr', 'true');
+        if (tokensVerified) sp.append('tokens_verified', 'true');
         const qs = sp.toString();
         return qs ? `${base}?${qs}` : base;
       })();
@@ -472,6 +508,18 @@ export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[
     const id = String(it?.pool_address || it?.address || it?.id || '');
     if (id && !seen.has(id)) { seen.add(id); dedup.push(it); }
   }
+  
+  try {
+    logger.info('meteora.balanced.v1.fetch complete', {
+      count: dedup.length,
+      hideLowTvl,
+      hideLowApr,
+      tokensVerified,
+      anchorTokens: anchors.length,
+      cat: 'meteora'
+    });
+  } catch {}
+  
   return dedup;
 }
 
@@ -640,6 +688,12 @@ export async function fetchMeteoraBalancedV2Http(baseUrl?: string): Promise<any[
   const backoffMs = Number(cfg.httpBackoffMs || 500);
   const maxPages = Number(cfg.maxPages || 3);
   const size = Number(cfg.pageSize || 200);
+  
+  // API-level quality filters
+  const hideLowTvl = cfg.hideLowTvl === true;
+  const hideLowApr = cfg.hideLowApr === true;
+  const tokensVerified = cfg.tokensVerified === true;
+  
   // eslint-disable-next-line no-undef
   const fetchFn: any = (globalThis as any).fetch || fetch;
   const out: any[] = [];
@@ -649,6 +703,10 @@ export async function fetchMeteoraBalancedV2Http(baseUrl?: string): Promise<any[
       const sp = new URLSearchParams();
       if (Number.isFinite(size) && size > 0) sp.append('limit', String(size));
       sp.append('page', String(page));
+      // Add quality filters to API request
+      if (hideLowTvl) sp.append('hide_low_tvl', 'true');
+      if (hideLowApr) sp.append('hide_low_apr', 'true');
+      if (tokensVerified) sp.append('tokens_verified', 'true');
       const qs = sp.toString();
       return qs ? `${base}?${qs}` : base;
     })();
@@ -681,6 +739,17 @@ export async function fetchMeteoraBalancedV2Http(baseUrl?: string): Promise<any[
     // Respect 10 RPS: space requests ~100ms apart
     await new Promise(r => setTimeout(r, 110));
   }
+  
+  try {
+    logger.info('meteora.balanced.v2.fetch complete', {
+      count: out.length,
+      hideLowTvl,
+      hideLowApr,
+      tokensVerified,
+      cat: 'meteora'
+    });
+  } catch {}
+  
   return out;
 }
 

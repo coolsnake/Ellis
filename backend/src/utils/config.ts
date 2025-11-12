@@ -715,11 +715,15 @@ export const CONFIG = {
   meteoraBalanced: {
     apiUrl: process.env.METEORA_BALANCED_API_URL || 'https://damm-api.meteora.ag/pools',
     apiUrlV2: process.env.METEORA_BALANCED_API_URL_V2 || 'https://dammv2-api.meteora.ag/pools',
-    // Optional: hide pools below this TVL threshold (USD) for v1 API
-    hideLowTvl: Number(process.env.METEORA_BALANCED_HIDE_LOW_TVL || 0),
+    // API-level filtering parameters (applied during fetch)
+    hideLowTvl: process.env.METEORA_BALANCED_HIDE_LOW_TVL === 'true' || process.env.METEORA_BALANCED_HIDE_LOW_TVL === '1' || false, // Default: false for backward compatibility
+    hideLowApr: process.env.METEORA_BALANCED_HIDE_LOW_APR === 'true' || process.env.METEORA_BALANCED_HIDE_LOW_APR === '1' || false, // Default: false
+    tokensVerified: process.env.METEORA_BALANCED_TOKENS_VERIFIED === 'true' || process.env.METEORA_BALANCED_TOKENS_VERIFIED === '1' || false, // Default: false for backward compatibility
     // Optional: minimum liquidity threshold (USD) for filtering pools (applies after normalization)
     // Default: $50 to filter out rugpulled/dust pools
     minLiqBase: Number(process.env.METEORA_BALANCED_MIN_LIQ_BASE || 50),
+    // Only fetch pools paired with anchor tokens (SOL, USDC) - more efficient and higher quality
+    anchorTokensOnly: process.env.METEORA_BALANCED_ANCHOR_TOKENS_ONLY !== 'false', // Default: true (enabled)
     // Enable RPC enrichment to fetch vault balances for precise reserve data
     enableRpcEnrichment: process.env.METEORA_BALANCED_ENABLE_RPC_ENRICHMENT !== 'false',
     rpcBatchSize: Number(process.env.METEORA_BALANCED_RPC_BATCH_SIZE || 100),

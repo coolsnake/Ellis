@@ -71,7 +71,14 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     meteora_maxPages: 50,
     // Meteora Balanced (mAMM)
     meteoraBalanced_apiUrl: 'https://damm-api.meteora.ag/pools',
-    meteoraBalanced_hideLowTvl: 0,
+    meteoraBalanced_apiUrlV2: 'https://dammv2-api.meteora.ag/pools',
+    meteoraBalanced_hideLowTvl: false,
+    meteoraBalanced_hideLowApr: false,
+    meteoraBalanced_tokensVerified: false,
+    meteoraBalanced_minLiqBase: 50,
+    meteoraBalanced_anchorTokensOnly: true,
+    meteoraBalanced_enableRpcEnrichment: true,
+    meteoraBalanced_rpcBatchSize: 100,
     meteoraBalanced_cacheTtlMs: 300000,
     meteoraBalanced_maxHttpRetries: 2,
     meteoraBalanced_httpBackoffMs: 500,
@@ -174,6 +181,14 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             meteora_universePrefilter: !!j?.meteora?.universePrefilter,
             // Meteora Balanced
             meteoraBalanced_apiUrl: j?.meteoraBalanced?.apiUrl || prev.meteoraBalanced_apiUrl,
+            meteoraBalanced_apiUrlV2: j?.meteoraBalanced?.apiUrlV2 || prev.meteoraBalanced_apiUrlV2,
+            meteoraBalanced_hideLowTvl: j?.meteoraBalanced?.hideLowTvl === true,
+            meteoraBalanced_hideLowApr: j?.meteoraBalanced?.hideLowApr === true,
+            meteoraBalanced_tokensVerified: j?.meteoraBalanced?.tokensVerified === true,
+            meteoraBalanced_minLiqBase: Number(j?.meteoraBalanced?.minLiqBase ?? prev.meteoraBalanced_minLiqBase ?? 50),
+            meteoraBalanced_anchorTokensOnly: j?.meteoraBalanced?.anchorTokensOnly !== false,
+            meteoraBalanced_enableRpcEnrichment: j?.meteoraBalanced?.enableRpcEnrichment !== false,
+            meteoraBalanced_rpcBatchSize: Number(j?.meteoraBalanced?.rpcBatchSize ?? prev.meteoraBalanced_rpcBatchSize ?? 100),
             meteoraBalanced_cacheTtlMs: Number(j?.meteoraBalanced?.cacheTtlMs ?? prev.meteoraBalanced_cacheTtlMs),
             meteoraBalanced_maxHttpRetries: Number(j?.meteoraBalanced?.maxHttpRetries ?? prev.meteoraBalanced_maxHttpRetries),
             meteoraBalanced_httpBackoffMs: Number(j?.meteoraBalanced?.httpBackoffMs ?? prev.meteoraBalanced_httpBackoffMs),
@@ -277,6 +292,14 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
       },
       meteoraBalanced: {
         apiUrl: cfg.meteoraBalanced_apiUrl,
+        apiUrlV2: cfg.meteoraBalanced_apiUrlV2,
+        hideLowTvl: !!cfg.meteoraBalanced_hideLowTvl,
+        hideLowApr: !!cfg.meteoraBalanced_hideLowApr,
+        tokensVerified: !!cfg.meteoraBalanced_tokensVerified,
+        minLiqBase: Number(cfg.meteoraBalanced_minLiqBase ?? 50),
+        anchorTokensOnly: cfg.meteoraBalanced_anchorTokensOnly !== false,
+        enableRpcEnrichment: cfg.meteoraBalanced_enableRpcEnrichment !== false,
+        rpcBatchSize: Number(cfg.meteoraBalanced_rpcBatchSize ?? 100),
         cacheTtlMs: Number(cfg.meteoraBalanced_cacheTtlMs),
         maxHttpRetries: Number(cfg.meteoraBalanced_maxHttpRetries),
         httpBackoffMs: Number(cfg.meteoraBalanced_httpBackoffMs),
@@ -696,11 +719,93 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
 
           <div className="bg-gray-700 rounded p-4">
             <h3 className="text-lg font-semibold mb-3">Meteora Balanced (mAMM)</h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="md:col-span-2">
-                <label className="block text-sm mb-1">API URL</label>
-                <input type="url" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.meteoraBalanced_apiUrl} onChange={(e)=>set('meteoraBalanced_apiUrl', e.target.value)} placeholder="https://damm-api.meteora.ag/v1/pairs" />
+            
+            {/* Quality Filtering Section */}
+            <div className="mb-4 p-3 bg-gray-800/50 rounded border border-gray-600">
+              <h4 className="text-sm font-semibold mb-2 text-blue-400">🎯 Quality Filters (API-Level)</h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <label className="flex items-center gap-2 text-sm">
+                  <input 
+                    type="checkbox" 
+                    checked={!!cfg.meteoraBalanced_anchorTokensOnly} 
+                    onChange={(e)=>set('meteoraBalanced_anchorTokensOnly', e.target.checked)} 
+                  />
+                  <span>Anchor Tokens Only (SOL/USDC)</span>
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input 
+                    type="checkbox" 
+                    checked={!!cfg.meteoraBalanced_hideLowTvl} 
+                    onChange={(e)=>set('meteoraBalanced_hideLowTvl', e.target.checked)} 
+                  />
+                  <span>Hide Low TVL Pools</span>
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input 
+                    type="checkbox" 
+                    checked={!!cfg.meteoraBalanced_hideLowApr} 
+                    onChange={(e)=>set('meteoraBalanced_hideLowApr', e.target.checked)} 
+                  />
+                  <span>Hide Low APR Pools</span>
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input 
+                    type="checkbox" 
+                    checked={!!cfg.meteoraBalanced_tokensVerified} 
+                    onChange={(e)=>set('meteoraBalanced_tokensVerified', e.target.checked)} 
+                  />
+                  <span>Verified Tokens Only</span>
+                </label>
               </div>
+              <div className="mt-2 text-xs text-gray-400">
+                💡 <strong>Anchor Tokens Only</strong> (recommended) fetches only SOL/USDC pairs for best quality and ~95% fewer API calls
+              </div>
+            </div>
+
+            {/* API URLs */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="block text-sm mb-1">API URL (V1)</label>
+                <input type="url" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 text-sm" value={cfg.meteoraBalanced_apiUrl} onChange={(e)=>set('meteoraBalanced_apiUrl', e.target.value)} placeholder="https://damm-api.meteora.ag/pools" />
+              </div>
+              <div>
+                <label className="block text-sm mb-1">API URL (V2)</label>
+                <input type="url" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 text-sm" value={cfg.meteoraBalanced_apiUrlV2} onChange={(e)=>set('meteoraBalanced_apiUrlV2', e.target.value)} placeholder="https://dammv2-api.meteora.ag/pools" />
+              </div>
+            </div>
+
+            {/* Post-Fetch Filtering & RPC Enrichment */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+              <div>
+                <label className="block text-sm mb-1">Min Liquidity (USD)</label>
+                <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.meteoraBalanced_minLiqBase} onChange={(e)=>set('meteoraBalanced_minLiqBase', Number(e.target.value)||0)} />
+                <span className="text-xs text-gray-400">Post-fetch filter (default: 50)</span>
+              </div>
+              <div>
+                <label className="flex items-center gap-2 mb-1">
+                  <input 
+                    type="checkbox" 
+                    checked={!!cfg.meteoraBalanced_enableRpcEnrichment} 
+                    onChange={(e)=>set('meteoraBalanced_enableRpcEnrichment', e.target.checked)} 
+                  />
+                  <span className="text-sm">Enable RPC Enrichment</span>
+                </label>
+                <p className="text-xs text-gray-400 mt-1">Fetch vault balances for precise reserves</p>
+              </div>
+              <div>
+                <label className="block text-sm mb-1">RPC Batch Size</label>
+                <input 
+                  type="number" 
+                  className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                  value={cfg.meteoraBalanced_rpcBatchSize} 
+                  onChange={(e)=>set('meteoraBalanced_rpcBatchSize', Number(e.target.value)||100)} 
+                  disabled={!cfg.meteoraBalanced_enableRpcEnrichment}
+                />
+              </div>
+            </div>
+
+            {/* HTTP Configuration */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
                 <label className="block text-sm mb-1">Cache TTL (ms)</label>
                 <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.meteoraBalanced_cacheTtlMs} onChange={(e)=>set('meteoraBalanced_cacheTtlMs', Number(e.target.value)||0)} />
