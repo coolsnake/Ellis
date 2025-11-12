@@ -1315,9 +1315,18 @@ export function startRaydiumRefreshLoop(): void {
   // Kick immediately once activated so data is available without waiting
   // Kick immediately once, but respect min-force gap for subsequent calls
   if (!suppressInitialOnce) {
-    try { getRaydiumPoolsNormalized(true).catch(() => {}); } catch {}
-    try { getOrcaPoolsCached(true).catch(() => {}); } catch {}
-    try { getMeteoraPoolsCached(true).catch(() => {}); } catch {}
+    // Respect DEX source control configuration
+    const configSources = (CONFIG.system as any)?.enabledDexSources || {};
+    
+    if (configSources.raydium !== false) {
+      try { getRaydiumPoolsNormalized(true).catch(() => {}); } catch {}
+    }
+    if (configSources.orca !== false) {
+      try { getOrcaPoolsCached(true).catch(() => {}); } catch {}
+    }
+    if (configSources.meteora !== false) {
+      try { getMeteoraPoolsCached(true).catch(() => {}); } catch {}
+    }
   }
 
   // Optional: subscribe to on-chain account changes to push updates into caches (auto-enabled)

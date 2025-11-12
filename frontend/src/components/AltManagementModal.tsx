@@ -1,6 +1,7 @@
 // @ts-nocheck
 import React, { useState, useEffect } from 'react';
 import { ROUTES } from '../utils/routes';
+import { useModalConfig } from '../app/hooks/useModalConfig';
 
 interface AltStatus {
   initialized: boolean;
@@ -72,13 +73,24 @@ export const AltManagementModal: React.FC<{ onClose: () => void; apiBase: string
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [preview, setPreview] = useState<{ dex: string; pools: PoolPreview[] } | null>(null);
-  const [poolCounts, setPoolCounts] = useState<{ [key: string]: number }>({
-    'raydium-amm': 50,
-    'raydium-clmm': 50,
-    'orca-whirlpool': 50,
-    'meteora-dlmm': 50,
+  
+  // Persist pool counts to localStorage
+  const [uiPrefs, updateUiPrefs] = useModalConfig('altManagement', {
+    poolCounts: {
+      'raydium-amm': 50,
+      'raydium-clmm': 50,
+      'orca-whirlpool': 50,
+      'meteora-dlmm': 50,
+    },
   });
+  
+  const [poolCounts, setPoolCounts] = useState<{ [key: string]: number }>(uiPrefs.poolCounts);
   const [deletingCategory, setDeletingCategory] = useState<string | null>(null);
+  
+  // Persist pool counts when they change
+  useEffect(() => {
+    updateUiPrefs({ poolCounts });
+  }, [poolCounts]);
 
   useEffect(() => {
     loadAltStatus();

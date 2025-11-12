@@ -6,6 +6,7 @@ import cytoscape, { ElementDefinition } from 'cytoscape';
 import type { NodeSingular, EdgeSingular } from 'cytoscape';
 // @ts-ignore - types may be missing in some environments
 import fcose from 'cytoscape-fcose';
+import { useModalConfig } from '../app/hooks/useModalConfig';
 
 cytoscape.use(fcose);
 
@@ -63,9 +64,19 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
   };
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-	const [layoutName, setLayoutName] = useState<'fcose' | 'cose' | 'grid' | 'circle'>('fcose');
-	const [filterDex, setFilterDex] = useState<{ Raydium: boolean; Orca: boolean; Meteora: boolean; MeteoraBalanced: boolean; Pumpswap: boolean }>({ Raydium: true, Orca: true, Meteora: true, MeteoraBalanced: true, Pumpswap: true });
-	const [filterKind, setFilterKind] = useState<{ AMM: boolean; CLMM: boolean }>({ AMM: true, CLMM: true });
+  
+  // Persist graph preferences to localStorage
+  const [graphPrefs, updateGraphPrefs] = useModalConfig('graphView', {
+    layoutName: 'fcose' as 'fcose' | 'cose' | 'grid' | 'circle',
+    filterDex: { Raydium: true, Orca: true, Meteora: true, MeteoraBalanced: true, Pumpswap: true },
+    filterKind: { AMM: true, CLMM: true },
+    combineEdges: true,
+    maxEdges: 1200,
+  });
+  
+	const [layoutName, setLayoutName] = useState<'fcose' | 'cose' | 'grid' | 'circle'>(graphPrefs.layoutName);
+	const [filterDex, setFilterDex] = useState<{ Raydium: boolean; Orca: boolean; Meteora: boolean; MeteoraBalanced: boolean; Pumpswap: boolean }>(graphPrefs.filterDex);
+	const [filterKind, setFilterKind] = useState<{ AMM: boolean; CLMM: boolean }>(graphPrefs.filterKind);
   const laidOutRef = useRef(false);
 	const forceLayoutRef = useRef(false);
   const lastVersionRef = useRef<number>(0);
@@ -76,18 +87,39 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
     | null
   >(null);
   // Debug: allow disabling combined edges to show per-DEX edges directly
-  const [combineEdges, setCombineEdges] = useState<boolean>(true);
+  const [combineEdges, setCombineEdges] = useState<boolean>(graphPrefs.combineEdges);
 
 	// Track active user interaction (pan/zoom) to gate expensive work
 	const interactingRef = useRef(false);
 
 	// Optional cap for rendered edges by priority to reduce overdraw
-	const [maxEdges, setMaxEdges] = useState<number>(1200);
+	const [maxEdges, setMaxEdges] = useState<number>(graphPrefs.maxEdges);
 	const combineEdgesRef = useRef<boolean>(combineEdges);
 	useEffect(() => { combineEdgesRef.current = combineEdges; }, [combineEdges]);
 	const maxEdgesRef = useRef<number>(maxEdges);
 	useEffect(() => { maxEdgesRef.current = maxEdges; }, [maxEdges]);
 	const rawEdgeCountRef = useRef<number>(0);
+
+  // Persist preferences when they change
+  useEffect(() => {
+    updateGraphPrefs({ layoutName });
+  }, [layoutName]);
+  
+  useEffect(() => {
+    updateGraphPrefs({ filterDex });
+  }, [filterDex]);
+  
+  useEffect(() => {
+    updateGraphPrefs({ filterKind });
+  }, [filterKind]);
+  
+  useEffect(() => {
+    updateGraphPrefs({ combineEdges });
+  }, [combineEdges]);
+  
+  useEffect(() => {
+    updateGraphPrefs({ maxEdges });
+  }, [maxEdges]);
 
 	// Queue for recomputing combined edges across frames
 	const pairQueueRef = useRef<string[]>([]);
