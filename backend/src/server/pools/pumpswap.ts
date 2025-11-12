@@ -466,21 +466,20 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
           baseReserve = Number(baseReserveRaw) / Math.pow(10, decA);
           quoteReserve = Number(quoteReserveRaw) / Math.pow(10, decB);
           
-          // Price = marginal rate for small swaps with fees applied
-          // For constant product AMM: marginal_price = (reserveOut / reserveIn) * (1 - fee)
-          // This represents the actual exchange rate a trader would get
+          // Spot price = reserve ratio (pure pool price without fees)
+          // Fees are applied during swap execution, not in the spot price
           if (quoteReserve > 0) {
-            const feeMultiplier = 1 - (feeBps / 10_000);
-            price_a_per_b = (baseReserve / quoteReserve) * feeMultiplier;
+            price_a_per_b = baseReserve / quoteReserve;
           }
           
-          // Calculate high-precision price for exact calculations
-          // price_a_per_b_exact = (baseReserveRaw * 10^decB) / quoteReserveRaw
-          // This gives us the price with proper decimal adjustment
+          // Calculate high-precision price for exact calculations with proper decimal adjustment
+          // price_a_per_b = (baseRaw / 10^decA) / (quoteRaw / 10^decB)
+          //               = (baseRaw * 10^decB) / (quoteRaw * 10^decA)
           if (quoteReserveRaw > 0n) {
             try {
               const numerator = baseReserveRaw * BigInt(Math.pow(10, decB));
-              const priceExactBigInt = numerator / quoteReserveRaw;
+              const denominator = quoteReserveRaw * BigInt(Math.pow(10, decA));
+              const priceExactBigInt = numerator / denominator;
               price_a_per_b_exact = priceExactBigInt.toString();
             } catch {}
           }

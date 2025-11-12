@@ -2305,10 +2305,10 @@ export function startRaydiumRefreshLoop(): void {
                 const baseWholeTokens = Number(baseReserve) / Math.pow(10, decA);
                 const quoteWholeTokens = Number(quoteReserve) / Math.pow(10, decB);
                 
-                // Calculate price with fee adjustment
-                const feeMultiplier = 1 - (fee_bps / 10_000);
+                // Calculate spot price (reserve ratio without fees)
+                // Fees are applied during swap execution, not in the spot price
                 const price_a_per_b = quoteWholeTokens > 0 
-                  ? (baseWholeTokens / quoteWholeTokens) * feeMultiplier 
+                  ? (baseWholeTokens / quoteWholeTokens)
                   : 0;
                 
                 const liquidity_base = Math.min(baseWholeTokens, quoteWholeTokens);
