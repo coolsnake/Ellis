@@ -920,8 +920,27 @@ export async function fetchMeteoraBalancedV2Http(baseUrl?: string): Promise<any[
 }
 
 export async function fetchMeteoraBalancedAll(): Promise<PoolsPayload> {
-  const v2 = await fetchMeteoraBalancedV2Http();
-  const v1 = await fetchMeteoraBalancedV1Http();
+  const cfg: any = (CONFIG as any)?.meteoraBalanced || {};
+  
+  // Fetch v2 with explicit v2 URL
+  const v2Url = cfg.apiUrlV2 || 'https://dammv2-api.meteora.ag/pools';
+  const v2 = await fetchMeteoraBalancedV2Http(v2Url);
+  
+  // Fetch v1 with explicit v1 URL
+  // CRITICAL: Pass explicit URL to ensure v1 fetcher uses correct endpoint
+  const v1Url = cfg.apiUrl || 'https://damm-api.meteora.ag/pools';
+  const v1 = await fetchMeteoraBalancedV1Http(v1Url);
+  
+  // Log fetch results for debugging
+  try {
+    logger.info('meteora.balanced.all.fetch', {
+      v1Count: v1.length,
+      v2Count: v2.length,
+      v1Url,
+      v2Url,
+      cat: 'meteora'
+    });
+  } catch {}
   
   // Enrich v2 pools with RPC data (vault balances)
   const enrichResult = await enrichMeteoraBalancedWithRpc(v2);
@@ -934,6 +953,16 @@ export async function fetchMeteoraBalancedAll(): Promise<PoolsPayload> {
   // Keep them separate since they have distinct DEX labels and require different swap logic
   const combinedAmm = [...normV2.amm, ...normV1.amm];
   const ammCanon = canonicalizePairs(combinedAmm);
+  
+  try {
+    logger.info('meteora.balanced.all.normalized', {
+      v1NormCount: normV1.amm.length,
+      v2NormCount: normV2.amm.length,
+      combinedCount: ammCanon.length,
+      cat: 'meteora'
+    });
+  } catch {}
+  
   return { amm: ammCanon, clmm: [] } as any;
 }
 

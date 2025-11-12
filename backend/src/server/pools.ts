@@ -3091,6 +3091,19 @@ export function startRaydiumRefreshLoop(): void {
         }
 
         // Subscribe to Orca Whirlpool POOL accounts only: prefer graph edge pool ids, else derive PDAs from watchlist
+        // CRITICAL: Check if Orca is enabled in dex source control before subscribing
+        const orcaEnabled = (() => {
+          try {
+            const configSources = (CONFIG.system as any)?.enabledDexSources || {};
+            return configSources.orca !== false;
+          } catch {
+            return true; // Default to enabled if no config
+          }
+        })();
+        
+        if (!orcaEnabled) {
+          try { logger.info('pools.ws dex.subscribe.skipped', { dex: 'orca', reason: 'disabled_in_source_control', cat: 'pools' }); } catch {}
+        } else {
         logger.info('pools.ws dex.subscribe.start', { dex: 'orca', sequential: isSequentialMode, cat: 'pools' });
         try {
           const { PublicKey } = web3;
@@ -3200,6 +3213,7 @@ export function startRaydiumRefreshLoop(): void {
             }
           }
         }
+        } // End of orcaEnabled check
         
         // Stagger delay between DEX sources in sequential mode to avoid RPC burst
         if (isSequentialMode && staggerDelayMs > 0) {
@@ -3213,6 +3227,19 @@ export function startRaydiumRefreshLoop(): void {
         }
         
         // Raydium address-level subscriptions when we have known pool ids (from prior refresh)
+        // CRITICAL: Check if Raydium is enabled in dex source control before subscribing
+        const raydiumEnabled = (() => {
+          try {
+            const configSources = (CONFIG.system as any)?.enabledDexSources || {};
+            return configSources.raydium !== false;
+          } catch {
+            return true; // Default to enabled if no config
+          }
+        })();
+        
+        if (!raydiumEnabled) {
+          try { logger.info('pools.ws dex.subscribe.skipped', { dex: 'raydium', reason: 'disabled_in_source_control', cat: 'pools' }); } catch {}
+        } else {
         logger.info('pools.ws dex.subscribe.start', { dex: 'raydium', sequential: isSequentialMode, cat: 'pools' });
         try {
           // Prefer graph edge pool ids if available
@@ -3317,6 +3344,7 @@ export function startRaydiumRefreshLoop(): void {
             }
           }
         } catch {}
+        } // End of raydiumEnabled check
         
         // Stagger delay between DEX sources in sequential mode to avoid RPC burst
         if (isSequentialMode && staggerDelayMs > 0) {
@@ -3330,6 +3358,19 @@ export function startRaydiumRefreshLoop(): void {
         }
         
         // Meteora targeted subscriptions from graph edges. Fallback to cached pools if graph doesn't have edges yet.
+        // CRITICAL: Check if Meteora is enabled in dex source control before subscribing
+        const meteoraEnabled = (() => {
+          try {
+            const configSources = (CONFIG.system as any)?.enabledDexSources || {};
+            return configSources.meteora !== false;
+          } catch {
+            return true; // Default to enabled if no config
+          }
+        })();
+        
+        if (!meteoraEnabled) {
+          try { logger.info('pools.ws dex.subscribe.skipped', { dex: 'meteora', reason: 'disabled_in_source_control', cat: 'pools' }); } catch {}
+        } else {
         logger.info('pools.ws dex.subscribe.start', { dex: 'meteora', sequential: isSequentialMode, cat: 'pools' });
         try {
           const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -3447,6 +3488,7 @@ export function startRaydiumRefreshLoop(): void {
           logger.warn('pools.ws meteora subscribe failed', { error: String(e?.message || e), stack: String(e?.stack || '').slice(0,200) });
           attachedMeteoraPools = 0;
         }
+        } // End of meteoraEnabled check
         
         // Stagger delay between DEX sources in sequential mode
         if (isSequentialMode && staggerDelayMs > 0) {
@@ -3460,6 +3502,19 @@ export function startRaydiumRefreshLoop(): void {
         }
         
         // Pumpswap pool subscriptions
+        // CRITICAL: Check if Pumpswap is enabled in dex source control before subscribing
+        const pumpswapEnabled = (() => {
+          try {
+            const configSources = (CONFIG.system as any)?.enabledDexSources || {};
+            return configSources.pumpswap !== false;
+          } catch {
+            return true; // Default to enabled if no config
+          }
+        })();
+        
+        if (!pumpswapEnabled) {
+          try { logger.info('pools.ws dex.subscribe.skipped', { dex: 'pumpswap', reason: 'disabled_in_source_control', cat: 'pools' }); } catch {}
+        } else {
         logger.info('pools.ws dex.subscribe.start', { dex: 'pumpswap', sequential: isSequentialMode, cat: 'pools' });
         try {
           const { PUMPSWAP_PROGRAM_ID } = await import('./pools/pumpswap.js');
@@ -3563,6 +3618,7 @@ export function startRaydiumRefreshLoop(): void {
           logger.warn('pools.ws pumpswap subscribe failed', { error: String(e?.message || e), stack: String(e?.stack || '').slice(0,200) });
           attachedPumpswapPools = 0;
         }
+        } // End of pumpswapEnabled check
         
         // Stagger delay between DEX sources in sequential mode
         if (isSequentialMode && staggerDelayMs > 0) {
@@ -3576,6 +3632,19 @@ export function startRaydiumRefreshLoop(): void {
         }
         
         // Meteora Balanced pool subscriptions (AMM)
+        // CRITICAL: Check if Meteora Balanced is enabled in dex source control before subscribing
+        const meteoraBalancedEnabled = (() => {
+          try {
+            const configSources = (CONFIG.system as any)?.enabledDexSources || {};
+            return configSources.meteora_balanced !== false;
+          } catch {
+            return true; // Default to enabled if no config
+          }
+        })();
+        
+        if (!meteoraBalancedEnabled) {
+          try { logger.info('pools.ws dex.subscribe.skipped', { dex: 'meteora_balanced', reason: 'disabled_in_source_control', cat: 'pools' }); } catch {}
+        } else {
         logger.info('pools.ws dex.subscribe.start', { dex: 'meteora_balanced', sequential: isSequentialMode, cat: 'pools' });
         try {
           // Get pool IDs from graph edges
@@ -3680,6 +3749,7 @@ export function startRaydiumRefreshLoop(): void {
           });
           attachedMeteoraBalancedPools = 0;
         }
+        } // End of meteoraBalancedEnabled check
 
         wsUnsubscribe = () => {
           try {

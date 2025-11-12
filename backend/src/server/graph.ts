@@ -1636,6 +1636,31 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         logger.debug('graph.edges sample', { amm: sampleAmm, clmm: sampleClmm, cat: 'graph' });
       } catch {}
 
+      // CRITICAL: Clean up nodes that have no incident edges (respecting token universe)
+      // This prevents orphan tokens from Jupiter token lists or previous pool fetches
+      // from lingering in the graph when they no longer have any pools
+      const incident = new Map<string, number>();
+      for (const edge of Object.values(edgesMap)) {
+        incident.set(edge.source, (incident.get(edge.source) || 0) + 1);
+        incident.set(edge.target, (incident.get(edge.target) || 0) + 1);
+      }
+      let removedOrphanNodes = 0;
+      for (const nodeId of Object.keys(nodesMap)) {
+        if (!incident.has(nodeId)) {
+          delete nodesMap[nodeId];
+          removedOrphanNodes++;
+        }
+      }
+      if (removedOrphanNodes > 0) {
+        try { 
+          logger.info('graph.cleanup.orphan_nodes', { 
+            removed: removedOrphanNodes, 
+            reason: 'no_incident_edges', 
+            cat: 'graph' 
+          }); 
+        } catch {}
+      }
+
       const snapshot: GraphSnapshot = {
         version: (lastSnapshot?.version || 0) + 1,
         timestamp: Date.now(),
