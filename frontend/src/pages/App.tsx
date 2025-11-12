@@ -740,7 +740,7 @@ export const App: React.FC = () => {
           }
           return;
         }
-        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: wallet commands: generate | refresh | send TOKEN|MINT AMOUNT ADDRESS | addtoken TOKEN|MINT | wrap AMOUNT | unwrap' }) });
+        await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: wallet commands: generate | refresh | send TOKEN|MINT AMOUNT ADDRESS | addtoken TOKEN|MINT | wrap AMOUNT | unwrap (unwraps all wSOL)' }) });
         return;
       }
       if (ns === 'watchlist') {
@@ -1312,7 +1312,7 @@ export const App: React.FC = () => {
       if (ns === 'help') {
         const lines = [
           'Help — Commands',
-          'wallet: generate | refresh | send TOKEN|MINT AMOUNT ADDRESS | addtoken TOKEN|MINT',
+          'wallet: generate | refresh | send TOKEN|MINT AMOUNT ADDRESS | addtoken TOKEN|MINT | wrap AMOUNT | unwrap',
           'watchlist: add QUERY|MINT | remove SYMBOL|MINT | list',
           'strategies are now configured via the UI panels (no terminal commands)',
           'bot: start | stop',

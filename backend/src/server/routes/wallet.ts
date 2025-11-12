@@ -226,7 +226,10 @@ export function createWalletRouter(io: SocketIOServer): Router {
       emit('log', { level: 'info', message: `terminal: unwrap SOL success sig=${sig}`, timestamp: new Date().toLocaleTimeString() });
       res.json({ signature: sig });
     } catch (e: any) {
-      res.status(500).json({ error: String(e?.message || e) });
+      const errMsg = String(e?.message || e);
+      logger.error('wallet: unwrap failed', { error: errMsg, cat: 'wallet' });
+      emit('log', { level: 'error', message: `terminal: unwrap SOL failed: ${errMsg}`, timestamp: new Date().toLocaleTimeString() });
+      res.status(400).json({ error: errMsg });
     }
   });
 
