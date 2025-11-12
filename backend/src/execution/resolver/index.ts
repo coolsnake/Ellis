@@ -18,7 +18,14 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
   logger.debug('tx.resolve.start', { cat: 'tx', code: LogCode.TX_RESOLVE_START, ctx: { hopCount: path.length - 1 } as any });
   const hops: DirectHop[] = await Promise.all(path.slice(0, -1).map(async (_mint, i) => {
     const dexv = String(dexes[i] || '').toLowerCase();
-    const dex = (dexv.includes('raydium') ? 'raydium' : (dexv.includes('orca') ? 'orca' : (dexv.includes('pumpswap') ? 'pumpswap' : 'meteora'))) as DirectHop['dex'];
+    // Map graph DEX names to execution DEX types
+    const dex = (
+      dexv.includes('raydium') ? 'raydium' : 
+      dexv.includes('orca') ? 'orca' : 
+      dexv.includes('pumpswap') ? 'pumpswap' :
+      dexv.includes('meteorabalanced') ? 'meteora_balanced' :  // MeteoraBalanced_v1 or MeteoraBalanced_v2
+      'meteora'  // Default to Meteora DLMM
+    ) as DirectHop['dex'];
     const poolId = String(hopPoolIds[i]);
     let variant: DirectHop['variant'];
     if (dex === 'raydium') {
@@ -44,8 +51,17 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       variant = 'clmm';
     } else if (dex === 'pumpswap') {
       variant = 'amm';
+    } else if (dex === 'meteora_balanced') {
+      // Detect DAMM v1 vs v2 from DEX name
+      if (dexv.includes('_v1')) {
+        variant = 'damm_v1';
+      } else if (dexv.includes('_v2')) {
+        variant = 'damm_v2';
+      } else {
+        variant = 'damm_v1';  // Default to v1 if unclear
+      }
     } else {
-      variant = 'dlmm';
+      variant = 'dlmm';  // Meteora DLMM
     }
     const inputMint = path[i];
     const outputMint = path[i+1];
@@ -79,6 +95,10 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
         if (dex === 'raydium') return variant === 'clmm' ? (CONFIG.raydium?.clmmProgram || '') : (CONFIG.raydium?.ammV4Program || '');
         if (dex === 'orca') return CONFIG.orca?.programId || '';
         if (dex === 'meteora') return (CONFIG.meteora?.programId as any) || '';
+        if (dex === 'meteora_balanced') {
+          const balanced = (CONFIG.meteora?.amm as any) || {};
+          return variant === 'damm_v1' ? (balanced.v1ProgramId || '') : (balanced.v2ProgramId || '');
+        }
         if (dex === 'pumpswap') return 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
         return '';
       })(),
@@ -123,6 +143,9 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       } else if (hop.dex === 'pumpswap') {
         const { resolvePumpswap } = await import('./pumpswap.js');
         return await resolvePumpswap(hop);
+      } else if (hop.dex === 'meteora_balanced') {
+        const { resolveMeteoraDamm } = await import('./meteoraDamm.js');
+        return await resolveMeteoraDamm(hop);
       } else {
         const { resolveMeteoraDlmm } = await import('./meteora.js');
         return await resolveMeteoraDlmm(hop);

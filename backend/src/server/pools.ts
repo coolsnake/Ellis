@@ -319,11 +319,11 @@ function incrementSkipReason(dex: 'raydium' | 'orca' | 'meteora', reason: string
   if (!stats.skipReasons) stats.skipReasons = {};
   stats.skipReasons[reason] = (stats.skipReasons[reason] || 0) + 1;
 }
-const wsDebugCounters: Record<'raydium' | 'orca' | 'meteora' | 'pumpswap', number> = { raydium: 0, orca: 0, meteora: 0, pumpswap: 0 };
-const wsTargetDebugCounters: Record<'raydium' | 'orca' | 'meteora' | 'pumpswap', number> = { raydium: 0, orca: 0, meteora: 0, pumpswap: 0 };
+const wsDebugCounters: Record<'raydium' | 'orca' | 'meteora' | 'meteora_balanced' | 'pumpswap', number> = { raydium: 0, orca: 0, meteora: 0, meteora_balanced: 0, pumpswap: 0 };
+const wsTargetDebugCounters: Record<'raydium' | 'orca' | 'meteora' | 'meteora_balanced' | 'pumpswap', number> = { raydium: 0, orca: 0, meteora: 0, meteora_balanced: 0, pumpswap: 0 };
 let meteoraProgramInstance: any | null = null;
 
-function debugLogTargeted(source: 'raydium' | 'orca' | 'meteora' | 'pumpswap', account: string, extra: Record<string, unknown>): void {
+function debugLogTargeted(source: 'raydium' | 'orca' | 'meteora' | 'meteora_balanced' | 'pumpswap', account: string, extra: Record<string, unknown>): void {
   try {
     const limit = Number((CONFIG.system as any)?.wsDebugAccountLogLimit ?? 10);
     if (!(limit > 0)) return;
@@ -474,7 +474,7 @@ export async function getWsTargets(): Promise<{ orca: { target: number }; raydiu
       if (dex === 'Raydium') ray.add(base);
       else if (dex === 'Orca') orc.add(base);
       else if (dex === 'Meteora') met.add(base);
-      else if (dex === 'MeteoraBalanced') metBal.add(base);
+      else if (dex.startsWith('MeteoraBalanced')) metBal.add(base);
       else if (dex === 'Pumpswap') pump.add(base);
     }
     const out = { orca: { target: orc.size }, raydium: { target: ray.size }, meteora: { target: met.size }, meteora_balanced: { target: metBal.size }, pumpswap: { target: pump.size } };
@@ -1381,7 +1381,7 @@ export function startRaydiumRefreshLoop(): void {
         const orcaProg = new web3.PublicKey(String(CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc').trim());
         const subs: Array<{ kind: 'account' | 'program'; id: number }> = [];
         // Track explicit targets so we can classify events for SPL Token vault accounts (e.g., Raydium AMM vaults)
-        const targetedSourceByAccount: Map<string, 'raydium' | 'orca' | 'meteora' | 'pumpswap'> = new Map();
+        const targetedSourceByAccount: Map<string, 'raydium' | 'orca' | 'meteora' | 'meteora_balanced' | 'pumpswap'> = new Map();
         // Debounce frequent program change bursts to at most one refresh per source per min gap
         const minGap = Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000);
         let lastRay = 0; let lastOrc = 0;
@@ -3231,7 +3231,8 @@ export function startRaydiumRefreshLoop(): void {
             const snap = await gmod.getGraphSnapshot(false);
             for (const e of (snap?.edges || [])) {
               const dex = String((e as any)?.dex || '');
-              if (dex !== 'MeteoraBalanced') continue;
+              // Match MeteoraBalanced, MeteoraBalanced_v1, MeteoraBalanced_v2
+              if (!dex.startsWith('MeteoraBalanced')) continue;
               const pid = String((e as any)?.pool_id || '');
               if (pid) edgePoolIds.add(pid.replace(/-rev$/,''));
             }
@@ -3277,8 +3278,8 @@ export function startRaydiumRefreshLoop(): void {
               
               try {
                 const acct = pk.toBase58();
-                targetedSourceByAccount.set(acct, 'pumpswap' as any);
-                debugLogTargeted('pumpswap' as any, acct, { kind: 'pool', source: 'meteora_balanced' });
+                targetedSourceByAccount.set(acct, 'meteora_balanced');
+                debugLogTargeted('meteora_balanced', acct, { kind: 'pool' });
                 logger.debug('pools.ws meteora_balanced.pool.subscribed', { index: i, pool: addr.slice(0,8)+'…', cat: 'pools' });
               } catch {}
               
@@ -3291,16 +3292,16 @@ export function startRaydiumRefreshLoop(): void {
                     const vaultAId = await subscribeAccountWithRetry(vaultAPk, handle);
                     subs.push({ kind: 'account', id: vaultAId });
                     derivedAccountToPool.set((pool as any).account_a, { poolId: addr, accountType: 'vault' });
-                    targetedSourceByAccount.set((pool as any).account_a, 'pumpswap' as any);
-                    debugLogTargeted('pumpswap' as any, (pool as any).account_a, { kind: 'vault', side: 'a', source: 'meteora_balanced' });
+                    targetedSourceByAccount.set((pool as any).account_a, 'meteora_balanced');
+                    debugLogTargeted('meteora_balanced', (pool as any).account_a, { kind: 'vault', side: 'a' });
                   }
                   if ((pool as any).account_b) {
                     const vaultBPk = new web3.PublicKey((pool as any).account_b);
                     const vaultBId = await subscribeAccountWithRetry(vaultBPk, handle);
                     subs.push({ kind: 'account', id: vaultBId });
                     derivedAccountToPool.set((pool as any).account_b, { poolId: addr, accountType: 'vault' });
-                    targetedSourceByAccount.set((pool as any).account_b, 'pumpswap' as any);
-                    debugLogTargeted('pumpswap' as any, (pool as any).account_b, { kind: 'vault', side: 'b', source: 'meteora_balanced' });
+                    targetedSourceByAccount.set((pool as any).account_b, 'meteora_balanced');
+                    debugLogTargeted('meteora_balanced', (pool as any).account_b, { kind: 'vault', side: 'b' });
                   }
                 }
               } catch (e: any) {

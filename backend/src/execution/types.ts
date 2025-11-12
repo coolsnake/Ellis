@@ -1,7 +1,7 @@
 // Core types for direct execution (multi-hop) across DEXes
 
-export type Dex = 'raydium' | 'orca' | 'meteora' | 'pumpswap';
-export type Variant = 'amm' | 'clmm' | 'dlmm';
+export type Dex = 'raydium' | 'orca' | 'meteora' | 'meteora_balanced' | 'pumpswap';
+export type Variant = 'amm' | 'clmm' | 'dlmm' | 'damm_v1' | 'damm_v2';
 
 export type DirectHop = {
   dex: Dex;

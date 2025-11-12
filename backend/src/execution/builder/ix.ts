@@ -1309,6 +1309,134 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
   }
 }
 
+export async function buildMeteoraDammSwapIxReal(hop: DirectHop): Promise<any[]> {
+  try { 
+    logger.info('ix.build meteora.damm.real', { 
+      pool: hop.poolId, 
+      variant: hop.variant,
+      cat: 'tx', 
+      code: LogCode.TX_BUILD_HOP 
+    }); 
+  } catch {}
+  
+  try {
+    // Pre-build validation: amounts
+    validateHopAmounts(hop, { dex: 'meteora_balanced', variant: hop.variant, poolId: hop.poolId });
+    
+    // Pre-build validation: critical PublicKeys
+    try {
+      validatePublicKey(hop.poolId, 'poolId', { dex: 'meteora_balanced', variant: hop.variant });
+      validatePublicKey(hop.inputMint, 'inputMint', { dex: 'meteora_balanced', variant: hop.variant });
+      validatePublicKey(hop.outputMint, 'outputMint', { dex: 'meteora_balanced', variant: hop.variant });
+      validatePublicKey(hop.userSourceAta, 'userSourceAta', { dex: 'meteora_balanced', variant: hop.variant });
+      validatePublicKey(hop.userDestAta, 'userDestAta', { dex: 'meteora_balanced', variant: hop.variant });
+      validatePublicKey(hop.vaultA, 'vaultA', { dex: 'meteora_balanced', variant: hop.variant });
+      validatePublicKey(hop.vaultB, 'vaultB', { dex: 'meteora_balanced', variant: hop.variant });
+    } catch (validationErr) {
+      throw createBuilderError('METEORA_BALANCED', String((validationErr as any)?.message || validationErr), hop);
+    }
+
+    const kp = await ensureWallet(CONFIG.walletPath);
+    const programId = toPublicKey(hop.programId);
+    
+    // Pool address might be stored separately from poolId
+    const poolAddress = toPublicKey((hop as any).poolAddress || hop.poolId.replace(/-rev$/, ''));
+    const inputMint = toPublicKey(hop.inputMint);
+    const outputMint = toPublicKey(hop.outputMint);
+    const userSourceAta = toPublicKey(hop.userSourceAta);
+    const userDestAta = toPublicKey(hop.userDestAta);
+    const vaultA = toPublicKey(hop.vaultA);
+    const vaultB = toPublicKey(hop.vaultB);
+    
+    const BN = (await import('bn.js')).default as any;
+    const amountInBn = new BN(String(hop.amountInRaw ?? 0n));
+    const minOutBn = new BN(String(hop.minOutRaw ?? 0n));
+
+    const { TransactionInstruction } = await import('@solana/web3.js');
+    const { TOKEN_PROGRAM_ID } = await import('@solana/spl-token');
+    
+    // Determine if we're using Token-2022 for either token
+    const inputTokenProgram = hop.inputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+    const outputTokenProgram = hop.outputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+    
+    // Build accounts array for Meteora Balanced swap instruction
+    // Note: The exact account order depends on the program IDL
+    // This is a placeholder that matches typical AMM patterns
+    const keys = [
+      { pubkey: poolAddress, isSigner: false, isWritable: true },
+      { pubkey: kp.publicKey, isSigner: true, isWritable: false },
+      { pubkey: userSourceAta, isSigner: false, isWritable: true },
+      { pubkey: userDestAta, isSigner: false, isWritable: true },
+      { pubkey: vaultA, isSigner: false, isWritable: true },
+      { pubkey: vaultB, isSigner: false, isWritable: true },
+      { pubkey: inputMint, isSigner: false, isWritable: false },
+      { pubkey: outputMint, isSigner: false, isWritable: false },
+      { pubkey: inputTokenProgram, isSigner: false, isWritable: false },
+      { pubkey: outputTokenProgram, isSigner: false, isWritable: false },
+    ];
+
+    // Encode instruction data
+    // Format: [instruction_discriminator (8 bytes for Anchor), amount_in (u64), min_amount_out (u64)]
+    // Note: Anchor discriminators are 8-byte sighash of "global:swap"
+    // This is a placeholder - actual discriminator needs to be determined from IDL
+    const dataBuffer = Buffer.alloc(24); // 8 bytes discriminator + 8 bytes amount_in + 8 bytes min_out
+    
+    // Placeholder discriminator (needs to be replaced with actual value from IDL)
+    // For now, using a common swap discriminator pattern
+    dataBuffer.writeBigUInt64LE(0xf8c69e91e17587c8n, 0); // Placeholder discriminator
+    dataBuffer.writeBigUInt64LE(BigInt(amountInBn.toString()), 8);
+    dataBuffer.writeBigUInt64LE(BigInt(minOutBn.toString()), 16);
+
+    const swapIx = new TransactionInstruction({
+      programId,
+      keys,
+      data: dataBuffer,
+    });
+
+    try {
+      logger.info('meteora.damm.swap.built', {
+        cat: 'tx',
+        code: LogCode.TX_BUILD_HOP,
+        ctx: {
+          pool: hop.poolId.slice(0, 8) + '...',
+          variant: hop.variant,
+          amountIn: amountInBn.toString(),
+          minOut: minOutBn.toString(),
+          accounts: keys.length,
+        } as any,
+      });
+    } catch {}
+
+    // TODO: Replace this placeholder with actual Meteora Balanced SDK integration
+    // once the SDK is available or IDL is parsed
+    logger.warn('meteora.damm.placeholder', {
+      cat: 'tx',
+      ctx: {
+        message: 'Using placeholder instruction builder - needs IDL integration',
+        variant: hop.variant,
+        pool: hop.poolId,
+      } as any,
+    });
+
+    return [swapIx];
+  } catch (e: any) {
+    try {
+      logger.error('meteora.damm.build.error', {
+        cat: 'tx',
+        code: LogCode.TX_BUILD_ERR,
+        ctx: {
+          pool: hop.poolId,
+          variant: hop.variant,
+          error: String(e?.message || e),
+          stack: String(e?.stack || '').slice(0, 200),
+        } as any,
+      });
+    } catch {}
+    wrapBuilderError(e, 'METEORA_BALANCED', 'build failed', hop);
+    throw e;
+  }
+}
+
 export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]> {
   try {
     try { logger.debug('ix.build meteora.dlmm.real', { pool: hop.poolId, cat: 'tx', code: LogCode.TX_BUILD_HOP }); } catch {}

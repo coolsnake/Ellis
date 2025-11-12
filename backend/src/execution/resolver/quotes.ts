@@ -249,6 +249,53 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
         }
       }
       return 0n;
+    } else if (hop.dex === 'meteora_balanced') {
+      // Meteora Balanced (DAMM) constant product AMM quoting
+      const sys: any = (CONFIG as any)?.system || {};
+      if (sys.quotes?.enableMinimalMath !== false) {
+        const isRev = /-rev$/.test(hop.poolId || '');
+        const id = hop.poolId.replace(/-rev$/, '');
+        
+        // Import Meteora Balanced pools
+        const { peekMeteoraBalancedPools } = await import('../../server/pools.js');
+        const dammPools = peekMeteoraBalancedPools();
+        const p = (dammPools.amm || []).find((x: any) => String(x?.id || '') === id);
+        
+        if (p) {
+          // Get fee from pool (typically 10-30 bps for DAMM)
+          const feeBps = Number((p as any)?.fee_bps || 10);
+          const decIn = Number(
+            hop.inputDecimals ?? (isRev ? (p as any)?.decimals_b : (p as any)?.decimals_a) ?? 0,
+          );
+          const decOut = Number(
+            hop.outputDecimals ?? (isRev ? (p as any)?.decimals_a : (p as any)?.decimals_b) ?? 0,
+          );
+          const fee = Math.max(0, 1 - (Math.min(9900, Math.max(0, feeBps)) / 10_000));
+          
+          if (Number.isFinite(decIn) && Number.isFinite(decOut)) {
+            const reserveInWhole = Number(
+              isRev
+                ? (p as any)?.amount_b_whole ?? 0
+                : (p as any)?.amount_a_whole ?? 0,
+            );
+            const reserveOutWhole = Number(
+              isRev
+                ? (p as any)?.amount_a_whole ?? 0
+                : (p as any)?.amount_b_whole ?? 0,
+            );
+            const amtIn = Number(amountInRaw) / Math.pow(10, decIn);
+            
+            if (reserveInWhole > 0 && reserveOutWhole > 0 && Number.isFinite(amtIn)) {
+              // Constant product formula: out = (in * fee * reserveOut) / (reserveIn + in * fee)
+              const amtInAfterFee = amtIn * fee;
+              const outWhole = (amtInAfterFee * reserveOutWhole) / (reserveInWhole + amtInAfterFee);
+              const outRaw = BigInt(Math.floor(outWhole * Math.pow(10, decOut)));
+              if (outRaw > 0n) return outRaw;
+            }
+          }
+        }
+      }
+      return 0n;
     } else if (hop.dex === 'meteora') {
       const sys: any = (CONFIG as any)?.system || {};
       if (sys.quotes?.enableMinimalMath !== false) {

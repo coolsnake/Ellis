@@ -1,5 +1,5 @@
 import type { ExecutionPlan, DirectHop } from '../types.js';
-import { buildRaydiumAmmSwapIx, buildRaydiumClmmSwapIx, buildOrcaSwapIx, buildMeteoraDlmmSwapIx, buildPumpswapSwapIx, buildRaydiumAmmSwapIxReal, buildRaydiumClmmSwapIxReal, buildMeteoraDlmmSwapIxReal, buildPumpswapSwapIxReal } from './ix.js';
+import { buildRaydiumAmmSwapIx, buildRaydiumClmmSwapIx, buildOrcaSwapIx, buildMeteoraDlmmSwapIx, buildPumpswapSwapIx, buildRaydiumAmmSwapIxReal, buildRaydiumClmmSwapIxReal, buildMeteoraDlmmSwapIxReal, buildPumpswapSwapIxReal, buildMeteoraDammSwapIxReal } from './ix.js';
 import { logger } from '../../utils/logger.js';
 import { LogCode } from '../../utils/logging.js';
 import { PublicKey, TransactionInstruction } from '@solana/web3.js';
@@ -557,6 +557,9 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
         } else if (hop.dex === 'pumpswap') {
           try { logger.info('tx.build.hop.pumpswap.real', { cat: 'tx', ctx: { poolId: hop.poolId } as any }); } catch {}
           ixs = await buildPumpswapSwapIxReal(hop);
+        } else if (hop.dex === 'meteora_balanced') {
+          try { logger.info('tx.build.hop.meteora.damm.real', { cat: 'tx', ctx: { poolId: hop.poolId, variant: hop.variant } as any }); } catch {}
+          ixs = await buildMeteoraDammSwapIxReal(hop);
         } else if (hop.dex === 'meteora') {
           try { logger.info('tx.build.hop.meteora.real', { cat: 'tx', ctx: { poolId: hop.poolId } as any }); } catch {}
           ixs = await buildMeteoraDlmmSwapIxReal(hop);
