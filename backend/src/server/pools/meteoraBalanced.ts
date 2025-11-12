@@ -637,7 +637,7 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
   const conn = new web3.Connection(CONFIG.rpcUrl, CONFIG.system.txCommitment as any);
   
   const batchSize = 100;
-  const vaultData: Map<string, { amount: bigint; decimals: number }> = new Map();
+  const vaultData: Map<string, { amount: bigint }> = new Map();
   const lpMintData: Map<string, bigint> = new Map();
   let successCount = 0;
   let failCount = 0;
@@ -661,9 +661,9 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
             // SPL Token account layout: amount is at offset 64 (8 bytes, little-endian)
             const buf = Buffer.from(account.data);
             const amount = buf.readBigUInt64LE(64);
-            // Decimals is at offset 44 (1 byte)
-            const decimals = buf.readUInt8(44);
-            vaultData.set(address, { amount, decimals });
+            // Don't read decimals from vault - they can be stale/incorrect
+            // We'll get correct decimals from mint metadata via Jupiter token map
+            vaultData.set(address, { amount });
             successCount++;
           } catch (e) {
             failCount++;
@@ -743,14 +743,39 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
     if (vaultAData && vaultBData) {
       pool.reserveA = Number(vaultAData.amount);
       pool.reserveB = Number(vaultBData.amount);
-      pool.decimalsA = vaultAData.decimals;
-      pool.decimalsB = vaultBData.decimals;
+      // Don't set decimals from vault - they can be stale/incorrect
+      // We'll use Jupiter token map as the only source of truth
       
-      // Also try to get decimals from Jupiter if vault decimals seem wrong
+      // Get decimals ONLY from Jupiter token map (mint's true decimals)
       const jupDecA = jupMap[vaults.mintA]?.decimals;
       const jupDecB = jupMap[vaults.mintB]?.decimals;
-      if (Number.isFinite(jupDecA)) pool.decimalsA = jupDecA;
-      if (Number.isFinite(jupDecB)) pool.decimalsB = jupDecB;
+      
+      // CRITICAL: Set decimals from Jupiter - this is the only source of truth
+      if (Number.isFinite(jupDecA)) {
+        pool.decimalsA = jupDecA;
+      } else {
+        // Log warning if Jupiter doesn't have decimals for this mint
+        try {
+          logger.warn('meteora.balanced.rpc.missing_decimals_a', {
+            pool: pool.pool_address || pool.id,
+            mintA: vaults.mintA,
+            cat: 'meteora'
+          });
+        } catch {}
+      }
+      
+      if (Number.isFinite(jupDecB)) {
+        pool.decimalsB = jupDecB;
+      } else {
+        // Log warning if Jupiter doesn't have decimals for this mint
+        try {
+          logger.warn('meteora.balanced.rpc.missing_decimals_b', {
+            pool: pool.pool_address || pool.id,
+            mintB: vaults.mintB,
+            cat: 'meteora'
+          });
+        } catch {}
+      }
       
       // Calculate whole amounts and pool_liquidity_raw
       const decA = pool.decimalsA;

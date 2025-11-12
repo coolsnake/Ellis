@@ -429,6 +429,18 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
         ? Number(pool.fee_bps) 
         : defaultFeeBps;
       
+      // Log when using default fee vs extracted fee for debugging
+      if (feeBps === defaultFeeBps && pool.fee_bps === undefined) {
+        try {
+          logger.debug('pumpswap.normalize.using_default_fee', {
+            pool: id,
+            defaultFeeBps,
+            reason: 'fee_not_extracted_from_rpc',
+            cat: 'pumpswap'
+          });
+        } catch {}
+      }
+      
       // Try to get decimals from Jupiter map or fallback to common values
       let decA = jupMap[mint_a]?.decimals;
       let decB = jupMap[mint_b]?.decimals;
@@ -634,10 +646,14 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
     const withWholeAmounts = ammCanon.filter(p => p.amount_a_whole && p.amount_b_whole).length;
     const withTvl = ammCanon.filter(p => p.tvl_usd && p.tvl_usd > 0).length;
     const withLpSupply = ammCanon.filter(p => p.lp_supply && p.lp_supply !== '0').length;
+    const defaultFeeBps = Number((CONFIG as any)?.pumpswap?.defaultFeeBps || 25);
     const withExtractedFee = ammCanon.filter(p => {
       const feeBps = Number(p.fee_bps);
-      const defaultFeeBps = Number((CONFIG as any)?.pumpswap?.defaultFeeBps || 30);
       return feeBps !== defaultFeeBps && feeBps > 0 && feeBps <= 10000;
+    }).length;
+    const withDefaultFee = ammCanon.filter(p => {
+      const feeBps = Number(p.fee_bps);
+      return feeBps === defaultFeeBps;
     }).length;
     logger.info('pumpswap.graphql normalized', { 
       total: ammCanon.length, 
@@ -647,6 +663,8 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
       withTvl,
       withLpSupply,
       withExtractedFee,
+      withDefaultFee,
+      defaultFeeBps,
       cat: 'pumpswap', 
       canon 
     });

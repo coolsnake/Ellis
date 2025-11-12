@@ -296,7 +296,7 @@ let wsUnsubscribe: (() => void) | undefined;
 let wsConn: any | undefined;
 let wsClosePromise: Promise<void> | null = null;
 let healthTimer: any | undefined;
-let lastWsEventMs: number = 0;
+let lastWsEventMs: number = Date.now();
 let wsHealthy: boolean = false;
 let aggTimer: any | undefined;
 const wsCounts: { raydium: number; orca: number; meteora?: number; pumpswap?: number; meteora_balanced?: number } = { raydium: 0, orca: 0, meteora: 0, pumpswap: 0, meteora_balanced: 0 };
@@ -4019,7 +4019,7 @@ export function stopPoolRefreshLoop(): void {
   try { if (meteoraTimer) { clearInterval(meteoraTimer); meteoraTimer = undefined; } } catch {}
   try { if (healthTimer) { clearInterval(healthTimer); healthTimer = undefined; } } catch {}
   try { if (wsUnsubscribe) { wsUnsubscribe(); wsUnsubscribe = undefined; } } catch {}
-  wsHealthy = false; lastWsEventMs = 0;
+  wsHealthy = false; lastWsEventMs = Date.now();
   
   // Clear Meteora bin trackers to prevent stale subscription references
   try {
@@ -4044,7 +4044,7 @@ export function disablePoolWebsocketRefreshes(): void {
   try {
     if (wsUnsubscribe) { wsUnsubscribe(); wsUnsubscribe = undefined; }
     if (healthTimer) { clearInterval(healthTimer); healthTimer = undefined; }
-    wsHealthy = false; lastWsEventMs = 0;
+    wsHealthy = false; lastWsEventMs = Date.now();
     // Reset wsSetupActive to allow new setup to proceed
     wsSetupActive = false;
     
