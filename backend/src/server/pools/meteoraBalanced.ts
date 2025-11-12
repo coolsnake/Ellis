@@ -145,6 +145,11 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
       const mint_b = String(it?.token_b_mint || toMint(b) || toMint(b?.info) || it?.mintB || '');
       if (!id || !mint_a || !mint_b) continue;
 
+      // Extract pool version to determine which program this pool uses
+      // This is CRITICAL: v1 and v2 use different on-chain programs
+      const poolVersion = Number(it?.pool_version ?? 2); // Default to v2 for V2 API
+      const dex = poolVersion === 1 ? 'MeteoraBalanced_v1' : 'MeteoraBalanced_v2';
+
       const decA = toDec(a?.decimals ?? it?.decimalsA);
       const decB = toDec(b?.decimals ?? it?.decimalsB);
       const amtAraw = Number(it?.reserveA ?? it?.amountA ?? it?.tokenAmountA ?? 0);
@@ -267,7 +272,7 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
 
       amm.push({
         id,
-        dex: 'MeteoraBalanced',
+        dex,  // 'MeteoraBalanced_v1' or 'MeteoraBalanced_v2' based on pool_version
         mint_a,
         mint_b,
         fee_bps,
@@ -345,6 +350,11 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
       const mint_b = String(mints?.[1] || '');
       if (!id || !mint_a || !mint_b) continue;
       
+      // Extract pool version - V1 API provides this field
+      // This is CRITICAL: v1 and v2 use different on-chain programs
+      const poolVersion = Number(it?.pool_version ?? 1); // Default to v1 for V1 API
+      const dex = poolVersion === 1 ? 'MeteoraBalanced_v1' : 'MeteoraBalanced_v2';
+      
       // Get decimals from Jupiter map or API if available
       const lp_decimal = Number(it?.lp_decimal);
       const decimalsA = jupMap[mint_a]?.decimals;
@@ -417,7 +427,7 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
       
       amm.push({
         id,
-        dex: 'MeteoraBalanced',
+        dex,  // 'MeteoraBalanced_v1' or 'MeteoraBalanced_v2' based on pool_version
         mint_a,
         mint_b,
         fee_bps,
@@ -805,7 +815,10 @@ export async function fetchMeteoraBalancedAll(): Promise<PoolsPayload> {
   
   const normV2 = await normalizeMeteoraBalancedHttp(enrichedV2);
   const normV1 = await normalizeMeteoraBalancedV1(v1);
-  const combinedAmm = mergeBalancedPools(normV2.amm, normV1.amm);
+  
+  // IMPORTANT: Do NOT merge - v1 and v2 are different pool types (different programs)
+  // Keep them separate since they have distinct DEX labels and require different swap logic
+  const combinedAmm = [...normV2.amm, ...normV1.amm];
   const ammCanon = canonicalizePairs(combinedAmm);
   return { amm: ammCanon, clmm: [] } as any;
 }

@@ -1324,13 +1324,14 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const liqBase = Number((p as any)?.liquidity_base);
         const liqDisplay = (p as any)?.liquidity_display ?? ((usd && usd > 0) ? usd : (Number.isFinite(liqBase) && liqBase > 0 ? liqBase : undefined));
         // If no pool price, skip and log; do not use USD substitution
-        if (!price || !(price > 0)) { try { logger.debug('graph.skip.edge.no_price', { dex: 'MeteoraBalanced', kind: 'amm', pool_id: pid, mint_a: p.mint_a, mint_b: p.mint_b, reason: 'no_pool_price' }); } catch {}; continue; }
+        const dexName = (p as any)?.dex || 'MeteoraBalanced';  // Use pool's dex field (v1 vs v2)
+        if (!price || !(price > 0)) { try { logger.debug('graph.skip.edge.no_price', { dex: dexName, kind: 'amm', pool_id: pid, mint_a: p.mint_a, mint_b: p.mint_b, reason: 'no_pool_price' }); } catch {}; continue; }
         const fwd = clampPrice(price);
         const rev = fwd && fwd > 0 ? (1 / fwd) : undefined;
         const rawLiqMbal = Number((p as any).pool_liquidity_raw || (p as any).liquidity_base || 0) || undefined;
-        addEdge(p.mint_a, p.mint_b, 'MeteoraBalanced', p.fee_bps, liqDisplay, fwd, usd, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward', rawLiqMbal);
+        addEdge(p.mint_a, p.mint_b, dexName, p.fee_bps, liqDisplay, fwd, usd, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward', rawLiqMbal);
         const pidRev = pid ? `${pid}-rev` : undefined;
-        addEdge(p.mint_b, p.mint_a, 'MeteoraBalanced', p.fee_bps, liqDisplay, rev, usd, pidRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse', rawLiqMbal);
+        addEdge(p.mint_b, p.mint_a, dexName, p.fee_bps, liqDisplay, rev, usd, pidRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse', rawLiqMbal);
       }
       // Pumpswap AMM
       for (const p of (pumpValid.amm || [])) {
