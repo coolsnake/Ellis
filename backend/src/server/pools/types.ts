@@ -39,6 +39,11 @@ export type AmmPool = {
   amm_open_orders?: string;        // Raydium open orders account
   amm_target_orders?: string;      // Raydium target orders account
   lp_mint?: string;                // LP token mint
+  lp_supply?: string;              // LP token supply (for rugpull detection)
+  // Rugpull detection flags
+  is_rugpulled?: boolean;          // True if LP supply is zero but vaults have tokens
+  vault_a_whole?: number;          // Vault A balance in whole tokens (for debugging)
+  vault_b_whole?: number;          // Vault B balance in whole tokens (for debugging)
 };
 
 export type ClmmPool = {

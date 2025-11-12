@@ -606,9 +606,10 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
     jupMap = await loadJupiterTokenMap().catch(() => ({}));
   } catch {}
 
-  // Collect all vault addresses
+  // Collect all vault addresses and LP mints
   const vaultAddresses: string[] = [];
-  const poolToVaults: Map<number, { vaultA: string; vaultB: string; mintA: string; mintB: string }> = new Map();
+  const lpMintAddresses: string[] = [];
+  const poolToVaults: Map<number, { vaultA: string; vaultB: string; mintA: string; mintB: string; lpMint?: string }> = new Map();
   
   for (let i = 0; i < pools.length; i++) {
     const pool = pools[i];
@@ -616,10 +617,14 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
     const vaultB = pool?.token_b_vault;
     const mintA = pool?.token_a_mint;
     const mintB = pool?.token_b_mint;
+    const lpMint = pool?.lp_mint;
     
     if (vaultA && vaultB && mintA && mintB) {
       vaultAddresses.push(vaultA, vaultB);
-      poolToVaults.set(i, { vaultA, vaultB, mintA, mintB });
+      if (lpMint) {
+        lpMintAddresses.push(lpMint);
+      }
+      poolToVaults.set(i, { vaultA, vaultB, mintA, mintB, lpMint });
     }
   }
 
@@ -633,9 +638,11 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
   
   const batchSize = 100;
   const vaultData: Map<string, { amount: bigint; decimals: number }> = new Map();
+  const lpMintData: Map<string, bigint> = new Map();
   let successCount = 0;
   let failCount = 0;
 
+  // Fetch vault balances
   for (let i = 0; i < vaultAddresses.length; i += batchSize) {
     const batch = vaultAddresses.slice(i, i + batchSize);
     const pubkeys = batch.map(addr => new PublicKey(addr));
@@ -677,6 +684,56 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
     }
   }
 
+  // Fetch LP mint supply data to detect rugpulls
+  if (lpMintAddresses.length > 0) {
+    try {
+      logger.info('meteora.balanced.rpc.lp_mint_fetch.start', { 
+        count: lpMintAddresses.length, 
+        cat: 'meteora' 
+      });
+    } catch {}
+    
+    for (let i = 0; i < lpMintAddresses.length; i += batchSize) {
+      const batch = lpMintAddresses.slice(i, i + batchSize);
+      const pubkeys = batch.map(addr => new PublicKey(addr));
+      
+      try {
+        await new Promise(r => setTimeout(r, 50));
+        const accounts = await conn.getMultipleAccountsInfo(pubkeys);
+        
+        for (let j = 0; j < accounts.length; j++) {
+          const account = accounts[j];
+          const address = batch[j];
+          
+          if (account && account.data && account.data.length >= 44) {
+            try {
+              // SPL Token Mint layout: supply is u64 at offset 36
+              const buf = Buffer.from(account.data);
+              const supply = buf.readBigUInt64LE(36);
+              lpMintData.set(address, supply);
+            } catch {}
+          }
+        }
+      } catch (e) {
+        try {
+          logger.warn('meteora.balanced.rpc.lp_mint_batch.failed', { 
+            error: String((e as any)?.message || e), 
+            batch: i / batchSize,
+            cat: 'meteora' 
+          });
+        } catch {}
+      }
+    }
+    
+    try {
+      logger.info('meteora.balanced.rpc.lp_mint_fetch.complete', { 
+        fetched: lpMintData.size,
+        total: lpMintAddresses.length,
+        cat: 'meteora' 
+      });
+    } catch {}
+  }
+
   // Enrich pools with reserve data
   for (const [poolIdx, vaults] of poolToVaults.entries()) {
     const pool = pools[poolIdx];
@@ -705,20 +762,66 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
         // Store raw reserves as strings for precise calculations
         pool.reserve_a_raw = vaultAData.amount.toString();
         pool.reserve_b_raw = vaultBData.amount.toString();
+        pool.vault_a_whole = wholeA;
+        pool.vault_b_whole = wholeB;
         
-        // IMPORTANT: Do NOT override pool_liquidity_raw from API data
-        // Vaults can have tokens even when pool liquidity is zero (rugpulled pools)
-        // Only set pool_liquidity_raw if it's not already set from API
-        if (!pool.pool_liquidity_raw && Number.isFinite(wholeA) && Number.isFinite(wholeB)) {
-          const minVault = Math.min(wholeA, wholeB);
-          // Only use vault-based liquidity if it's significant (> $10 equivalent)
-          // This helps filter out dust/rugpulled pools
-          if (minVault > 10) {
+        // Get LP supply for rugpull detection
+        const lpMint = vaults.lpMint;
+        const lpSupply = lpMint ? lpMintData.get(lpMint) : undefined;
+        const minVault = Math.min(wholeA, wholeB);
+        
+        // RUGPULL DETECTION: Check if LP supply is zero or suspiciously low
+        const isRugpulled = (() => {
+          if (!lpSupply || lpSupply === 0n) {
+            // No LP tokens in circulation = rugpulled or empty pool
+            return minVault > 1; // Only flag as rugpull if vaults have significant tokens
+          }
+          
+          // Check if LP supply is very low compared to vault balances
+          const lpSupplyNum = Number(lpSupply);
+          const minVaultRaw = Math.min(Number(vaultAData.amount), Number(vaultBData.amount));
+          
+          // If vaults have significant value but LP supply is dust (< 1000 units)
+          // Normal pools have meaningful LP supply relative to reserves
+          if (minVaultRaw > 1_000_000_000 && lpSupplyNum < 1000) {
+            return true;
+          }
+          
+          return false;
+        })();
+        
+        if (isRugpulled) {
+          // Mark pool as rugpulled - set liquidity to near-zero to exclude from routing
+          pool.pool_liquidity_raw = 0.001;
+          pool.is_rugpulled = true;
+          pool.lp_supply = lpSupply ? lpSupply.toString() : '0';
+          
+          try {
+            logger.warn('meteora.balanced.rpc.rugpull_detected', {
+              pool: pool.pool_address || pool.id,
+              vaultA: wholeA.toFixed(6),
+              vaultB: wholeB.toFixed(6),
+              lpSupply: lpSupply ? lpSupply.toString() : 'null',
+              mintA: vaults.mintA,
+              mintB: vaults.mintB,
+              cat: 'meteora'
+            });
+          } catch {}
+        } else {
+          // Pool appears healthy - use API TVL if available, otherwise calculate from vaults
+          // Store LP supply for reference
+          if (lpSupply) {
+            pool.lp_supply = lpSupply.toString();
+          }
+          
+          // Only set pool_liquidity_raw from vaults if API didn't provide it
+          if (!pool.pool_liquidity_raw && minVault > 10) {
             pool.pool_liquidity_raw = minVault;
             try {
               logger.debug('meteora.balanced.rpc.liquidity_from_vaults', {
                 pool: pool.pool_address || pool.id,
-                minVault,
+                minVault: minVault.toFixed(6),
+                lpSupply: lpSupply ? lpSupply.toString() : 'null',
                 cat: 'meteora'
               });
             } catch {}

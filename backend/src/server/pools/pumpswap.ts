@@ -462,6 +462,42 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
           baseReserveRaw = BigInt(pool.base_reserve);
           quoteReserveRaw = BigInt(pool.quote_reserve);
           
+          // RUGPULL DETECTION: Check LP supply
+          const lpSupply = pool.lp_supply ? BigInt(pool.lp_supply) : 0n;
+          
+          if (lpSupply === 0n) {
+            // No LP tokens = rugpulled pool, skip entirely
+            try { 
+              logger.debug('pumpswap.normalize.rugpull_detected', { 
+                pool: id, 
+                mint_a,
+                mint_b,
+                baseReserve: pool.base_reserve,
+                quoteReserve: pool.quote_reserve,
+                lpSupply: '0',
+                cat: 'pumpswap' 
+              }); 
+            } catch {}
+            continue;  // Skip this pool
+          }
+          
+          // Check for suspiciously low LP supply relative to reserves
+          const minReserve = baseReserveRaw < quoteReserveRaw ? baseReserveRaw : quoteReserveRaw;
+          if (lpSupply > 0n && minReserve > 1_000_000_000n && lpSupply < 1000n) {
+            // Likely rugpull: high reserves but nearly zero LP supply
+            try { 
+              logger.warn('pumpswap.normalize.low_lp_supply', { 
+                pool: id,
+                mint_a,
+                mint_b,
+                minReserve: minReserve.toString(),
+                lpSupply: lpSupply.toString(),
+                cat: 'pumpswap' 
+              }); 
+            } catch {}
+            continue;  // Skip suspicious pools
+          }
+          
           // Convert to whole tokens using decimals
           baseReserve = Number(baseReserveRaw) / Math.pow(10, decA);
           quoteReserve = Number(quoteReserveRaw) / Math.pow(10, decB);
@@ -551,6 +587,7 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
         account_b: pool.pool_quote_token_account,
         pool_kind: 'amm',
         lp_mint: pool.lp_mint,
+        lp_supply: pool.lp_supply || undefined, // Store LP supply for reference
         // Decimals for proper unit conversion
         decimals_a: decA,
         decimals_b: decB,
@@ -596,6 +633,7 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
     const withLiq = ammCanon.filter(p => p.liquidity_base > 0).length;
     const withWholeAmounts = ammCanon.filter(p => p.amount_a_whole && p.amount_b_whole).length;
     const withTvl = ammCanon.filter(p => p.tvl_usd && p.tvl_usd > 0).length;
+    const withLpSupply = ammCanon.filter(p => p.lp_supply && p.lp_supply !== '0').length;
     const withExtractedFee = ammCanon.filter(p => {
       const feeBps = Number(p.fee_bps);
       const defaultFeeBps = Number((CONFIG as any)?.pumpswap?.defaultFeeBps || 30);
@@ -607,6 +645,7 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
       withLiq,
       withWholeAmounts,
       withTvl,
+      withLpSupply,
       withExtractedFee,
       cat: 'pumpswap', 
       canon 
