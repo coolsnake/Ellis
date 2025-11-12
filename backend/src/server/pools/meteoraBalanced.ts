@@ -116,6 +116,33 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
       const decB = toDec(b?.decimals ?? it?.decimalsB);
       const amtAraw = Number(it?.reserveA ?? it?.amountA ?? it?.tokenAmountA ?? 0);
       const amtBraw = Number(it?.reserveB ?? it?.amountB ?? it?.tokenAmountB ?? 0);
+      
+      // Log first pool's raw data structure for debugging
+      if (arr.indexOf(it) === 0) {
+        try {
+          logger.info('meteora.balanced.api_sample', {
+            hasTokenA: !!it?.tokenA,
+            hasTokenB: !!it?.tokenB,
+            hasMintA: !!it?.mintA,
+            hasMintB: !!it?.mintB,
+            hasReserveA: it?.reserveA !== undefined,
+            hasReserveB: it?.reserveB !== undefined,
+            hasAmountA: it?.amountA !== undefined,
+            hasAmountB: it?.amountB !== undefined,
+            hasTokenADecimals: !!a?.decimals,
+            hasTokenBDecimals: !!b?.decimals,
+            hasDecimalsA: it?.decimalsA !== undefined,
+            hasDecimalsB: it?.decimalsB !== undefined,
+            hasTvl: it?.tvl !== undefined,
+            hasPrice: it?.price !== undefined,
+            apiKeys: Object.keys(it).slice(0, 15),
+            tokenAKeys: Object.keys(a).slice(0, 10),
+            tokenBKeys: Object.keys(b).slice(0, 10),
+            cat: 'meteora'
+          });
+        } catch {}
+      }
+      
       const tvl_usd = Number(it?.tvl ?? it?.tvlUsd ?? it?.tvl_usd);
       // Prefer v2 base_fee/dynamic_fee (assumed percent); fallback to existing numeric fields
       let fee_bps = (() => {
@@ -140,6 +167,26 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
         const p = Number(it?.price ?? it?.price_a_per_b ?? it?.priceAperB);
         if (Number.isFinite(p) && p > 0) price_a_per_b = p;
       }
+      
+      // Log pools without price for debugging
+      if (!(price_a_per_b > 0)) {
+        try { 
+          logger.debug('meteora.balanced.no_price', { 
+            id, 
+            mint_a, 
+            mint_b, 
+            hasWholeA: Number.isFinite(wholeA), 
+            hasWholeB: Number.isFinite(wholeB),
+            wholeA: Number.isFinite(wholeA) ? wholeA : 'NaN',
+            wholeB: Number.isFinite(wholeB) ? wholeB : 'NaN',
+            hasAmtAraw: Number.isFinite(amtAraw),
+            hasAmtBraw: Number.isFinite(amtBraw),
+            hasDecA: Number.isFinite(decA),
+            hasDecB: Number.isFinite(decB),
+            cat: 'meteora' 
+          }); 
+        } catch {}
+      }
 
       const liquidity_base = (Number.isFinite(wholeA) && Number.isFinite(wholeB))
         ? Math.min(wholeA as number, wholeB as number)
@@ -151,7 +198,7 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
         mint_a,
         mint_b,
         fee_bps,
-        price_a_per_b: Number.isFinite(price_a_per_b) ? price_a_per_b : 0,
+        price_a_per_b: (price_a_per_b > 0) ? price_a_per_b : undefined,
         liquidity_base,
         updated_ms: now,
         pool_kind: 'amm',
