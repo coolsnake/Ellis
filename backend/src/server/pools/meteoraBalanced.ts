@@ -322,10 +322,19 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
   const now = Date.now();
   const amm: AmmPool[] = [];
   const arr: any[] = Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : []);
+  
+  // Load Jupiter token map for decimals lookup
+  let jupMap: Record<string, { decimals: number }> = {};
+  try {
+    const { loadJupiterTokenMap } = await import('../../utils/tokens.js');
+    jupMap = await loadJupiterTokenMap().catch(() => ({}));
+  } catch {}
+  
   const toNum = (v: any): number => {
     const n = Number(v);
     return Number.isFinite(n) ? n : 0;
   };
+  
   for (const it of (arr || [])) {
     try {
       const id = String(it?.pool_address || '');
@@ -335,13 +344,25 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
       const mint_a = String(mints?.[0] || '');
       const mint_b = String(mints?.[1] || '');
       if (!id || !mint_a || !mint_b) continue;
+      
+      // Get decimals from Jupiter map or API if available
+      const lp_decimal = Number(it?.lp_decimal);
+      const decimalsA = jupMap[mint_a]?.decimals;
+      const decimalsB = jupMap[mint_b]?.decimals;
+      
+      // Parse amounts - V1 API provides whole token amounts (already converted from raw)
       const wholeA = toNum(amounts?.[0]);
       const wholeB = toNum(amounts?.[1]);
       const usdA = toNum(usdAmounts?.[0]);
       const usdB = toNum(usdAmounts?.[1]);
+      
+      // Calculate price
       let price_a_per_b = 0;
-      if (wholeB > 0 && wholeA > 0) price_a_per_b = wholeA / wholeB;
-      else if (usdA > 0 && usdB > 0) price_a_per_b = usdA / usdB;
+      if (wholeB > 0 && wholeA > 0) {
+        price_a_per_b = wholeA / wholeB;
+      } else if (usdA > 0 && usdB > 0) {
+        price_a_per_b = usdA / usdB;
+      }
       
       // Parse TVL and apply scaling if needed
       const tvlRaw = toNum((it as any)?.pool_tvl);
@@ -384,6 +405,16 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
         return undefined;
       })();
       
+      // Calculate reserve_a_raw and reserve_b_raw (convert back to raw if we have decimals)
+      let reserve_a_raw: string | undefined;
+      let reserve_b_raw: string | undefined;
+      if (decimalsA != null && wholeA > 0) {
+        reserve_a_raw = BigInt(Math.floor(wholeA * Math.pow(10, decimalsA))).toString();
+      }
+      if (decimalsB != null && wholeB > 0) {
+        reserve_b_raw = BigInt(Math.floor(wholeB * Math.pow(10, decimalsB))).toString();
+      }
+      
       amm.push({
         id,
         dex: 'MeteoraBalanced',
@@ -396,6 +427,10 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
         pool_kind: 'amm',
         amount_a_whole: wholeA > 0 ? wholeA : undefined,
         amount_b_whole: wholeB > 0 ? wholeB : undefined,
+        decimals_a: decimalsA,
+        decimals_b: decimalsB,
+        reserve_a_raw,
+        reserve_b_raw,
         tvl_usd: tvl_usd > 0 ? tvl_usd : undefined,
         pool_liquidity_raw,
         liquidity_display: (tvl_usd > 0) ? tvl_usd : (liquidity_base > 0 ? liquidity_base : undefined),
@@ -440,87 +475,94 @@ export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[
   if (!base) return [];
   const retries = Number(cfg.maxHttpRetries || 2);
   const backoffMs = Number(cfg.httpBackoffMs || 500);
-  const maxPages = Number(cfg.maxPages || 3);
-  const size = Number(cfg.pageSize || 200);
   
-  // API-level quality filters
-  const hideLowTvl = cfg.hideLowTvl === true;
+  // API-level quality filters (V1 API specific)
   const hideLowApr = cfg.hideLowApr === true;
-  const tokensVerified = cfg.tokensVerified === true;
+  const minLiqBase = Number(cfg.minLiqBase || 0);
+  const anchorTokensOnly = cfg.anchorTokensOnly !== false;
   
   // eslint-disable-next-line no-undef
   const fetchFn: any = (globalThis as any).fetch || fetch;
-  const out: any[] = [];
   
-  // Only fetch anchor token pairs (SOL, USDC) for higher quality
-  const anchors: string[] = [
-    'So11111111111111111111111111111111111111112', // SOL
-    'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-  ];
+  // Build URL with query parameters
+  const url = (() => {
+    const sp = new URLSearchParams();
+    
+    // Filter by anchor tokens if enabled (SOL, USDC)
+    if (anchorTokensOnly) {
+      sp.append('address', 'So11111111111111111111111111111111111111112'); // SOL
+      sp.append('address', 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'); // USDC
+    }
+    
+    // hide_low_tvl expects a number (minimum TVL threshold in USD)
+    // If minLiqBase is set, use it; otherwise use a small default if hideLowTvl is enabled
+    if (cfg.hideLowTvl === true && minLiqBase > 0) {
+      sp.append('hide_low_tvl', String(minLiqBase));
+    }
+    
+    // hide_low_apr is a boolean
+    if (hideLowApr) {
+      sp.append('hide_low_apr', 'true');
+    }
+    
+    const qs = sp.toString();
+    return qs ? `${base}?${qs}` : base;
+  })();
   
-  for (const addr of anchors) {
-    let page = 0;
-    for (let i = 0; i < (maxPages && maxPages > 0 ? maxPages : Number.POSITIVE_INFINITY); i++) {
-      const url = (() => {
-        const sp = new URLSearchParams();
-        sp.append('address', addr);
-        if (Number.isFinite(size) && size > 0) sp.append('limit', String(size));
-        sp.append('page', String(page));
-        // Add quality filters to API request
-        if (hideLowTvl) sp.append('hide_low_tvl', 'true');
-        if (hideLowApr) sp.append('hide_low_apr', 'true');
-        if (tokensVerified) sp.append('tokens_verified', 'true');
-        const qs = sp.toString();
-        return qs ? `${base}?${qs}` : base;
-      })();
-      const cid = httpLogStart({ source: 'meteora_balanced', url });
-      let res: any = null; let ok = false;
-      for (let attempt = 0; attempt <= retries; attempt++) {
-        res = await fetchFn(url, { headers: { accept: 'application/json' } });
-        if (res?.status === 429) { httpLog429({ source: 'meteora_balanced', url, cid }); await new Promise(r => setTimeout(r, backoffMs * (attempt + 1))); continue; }
-        if (!res?.ok) {
-          const txt = await res?.text?.();
-          httpLogNonOk({ source: 'meteora_balanced', url, cid, status: res?.status || 0, bodySample: (txt || '').slice(0, 200) });
-          if (attempt < retries) { await new Promise(r => setTimeout(r, backoffMs * (attempt + 1))); continue; }
-        }
-        ok = true; break;
+  const cid = httpLogStart({ source: 'meteora_balanced_v1', url });
+  let res: any = null;
+  let ok = false;
+  
+  // Retry logic
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      res = await fetchFn(url, { headers: { accept: 'application/json' } });
+      if (res?.status === 429) {
+        httpLog429({ source: 'meteora_balanced_v1', url, cid });
+        await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
+        continue;
       }
-      if (!ok || !res?.ok) { httpLogResponse({ source: 'meteora_balanced', url, cid, status: res?.status || 0, ms: 0, count: 0 }); break; }
-      const json: any = await res.json().catch(() => null);
-      const data = Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []);
-      out.push(...data);
-      httpLogResponse({ source: 'meteora_balanced', url, cid, status: res.status, ms: 0, count: data.length });
-      const hasMore = (() => {
-        if (json?.next || json?.hasNextPage) return true;
-        const pages = Number(json?.pages || 0);
-        const curr = Number(json?.current_page || (page + 1));
-        return pages > 0 && curr < pages;
-      })();
-      if (!hasMore) break;
-      page += 1;
-      await new Promise(r => setTimeout(r, 110));
+      if (!res?.ok) {
+        const txt = await res?.text?.();
+        httpLogNonOk({ source: 'meteora_balanced_v1', url, cid, status: res?.status || 0, bodySample: (txt || '').slice(0, 200) });
+        if (attempt < retries) {
+          await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
+          continue;
+        }
+      }
+      ok = true;
+      break;
+    } catch (err: any) {
+      if (attempt < retries) {
+        await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
+        continue;
+      }
     }
   }
-  // Deduplicate by pool address/id
-  const seen = new Set<string>();
-  const dedup: any[] = [];
-  for (const it of out) {
-    const id = String(it?.pool_address || it?.address || it?.id || '');
-    if (id && !seen.has(id)) { seen.add(id); dedup.push(it); }
+  
+  if (!ok || !res?.ok) {
+    httpLogResponse({ source: 'meteora_balanced_v1', url, cid, status: res?.status || 0, ms: 0, count: 0 });
+    return [];
   }
+  
+  const json: any = await res.json().catch(() => null);
+  // V1 API returns a direct array of pools
+  const data = Array.isArray(json) ? json : [];
+  
+  httpLogResponse({ source: 'meteora_balanced_v1', url, cid, status: res.status, ms: 0, count: data.length });
   
   try {
     logger.info('meteora.balanced.v1.fetch complete', {
-      count: dedup.length,
-      hideLowTvl,
+      count: data.length,
+      anchorTokensOnly,
+      hideLowTvl: cfg.hideLowTvl === true,
       hideLowApr,
-      tokensVerified,
-      anchorTokens: anchors.length,
+      minLiqBase,
       cat: 'meteora'
     });
   } catch {}
   
-  return dedup;
+  return data;
 }
 
 // RPC enrichment: fetch vault token balances to calculate reserves and price
