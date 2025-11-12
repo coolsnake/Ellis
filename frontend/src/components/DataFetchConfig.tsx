@@ -511,6 +511,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                   <option value="watchlist">watchlist</option>
                   <option value="intersection">intersection</option>
                   <option value="union">union</option>
+                  <option value="minpools">minpools</option>
                 </select>
               </div>
               <div>

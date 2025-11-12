@@ -156,7 +156,8 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
         if (Number.isFinite(wholeA) && Number.isFinite(wholeB)) {
           const minReserve = Math.min(wholeA, wholeB);
           // If minReserve is > 1 but TVL is < 1% of it, likely needs scaling
-          if (minReserve > 1 && tvlRaw < minReserve * 0.01 && tvlRaw * 1000 < minReserve * 100) {
+          // BUT: Don't scale if absolute TVL < 0.1 (likely rugpulled or dust)
+          if (minReserve > 1 && tvlRaw < minReserve * 0.01 && tvlRaw * 1000 < minReserve * 100 && tvlRaw >= 0.1) {
             tvl_usd = tvlRaw * 1000;  // Scale from milli-USD to USD
             try {
               logger.debug('meteora.balanced.tvl.scaled', {
@@ -316,7 +317,8 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
       if (tvlRaw > 0) {
         const minReserve = (wholeA > 0 && wholeB > 0) ? Math.min(wholeA, wholeB) : 0;
         // If minReserve is > 1 but TVL is < 1% of it, likely needs scaling
-        if (minReserve > 1 && tvlRaw < minReserve * 0.01 && tvlRaw * 1000 < minReserve * 100) {
+        // BUT: Don't scale if absolute TVL < 0.1 (likely rugpulled or dust)
+        if (minReserve > 1 && tvlRaw < minReserve * 0.01 && tvlRaw * 1000 < minReserve * 100 && tvlRaw >= 0.1) {
           tvl_usd = tvlRaw * 1000;  // Scale from milli-USD to USD
           try {
             logger.debug('meteora.balanced.v1.tvl.scaled', {
@@ -593,9 +595,23 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
         pool.reserve_a_raw = vaultAData.amount.toString();
         pool.reserve_b_raw = vaultBData.amount.toString();
         
-        // Calculate pool_liquidity_raw from enriched data
-        if (Number.isFinite(wholeA) && Number.isFinite(wholeB)) {
-          pool.pool_liquidity_raw = Math.min(wholeA, wholeB);
+        // IMPORTANT: Do NOT override pool_liquidity_raw from API data
+        // Vaults can have tokens even when pool liquidity is zero (rugpulled pools)
+        // Only set pool_liquidity_raw if it's not already set from API
+        if (!pool.pool_liquidity_raw && Number.isFinite(wholeA) && Number.isFinite(wholeB)) {
+          const minVault = Math.min(wholeA, wholeB);
+          // Only use vault-based liquidity if it's significant (> $10 equivalent)
+          // This helps filter out dust/rugpulled pools
+          if (minVault > 10) {
+            pool.pool_liquidity_raw = minVault;
+            try {
+              logger.debug('meteora.balanced.rpc.liquidity_from_vaults', {
+                pool: pool.pool_address || pool.id,
+                minVault,
+                cat: 'meteora'
+              });
+            } catch {}
+          }
         }
       }
     }

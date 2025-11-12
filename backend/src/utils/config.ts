@@ -718,7 +718,8 @@ export const CONFIG = {
     // Optional: hide pools below this TVL threshold (USD) for v1 API
     hideLowTvl: Number(process.env.METEORA_BALANCED_HIDE_LOW_TVL || 0),
     // Optional: minimum liquidity threshold (USD) for filtering pools (applies after normalization)
-    minLiqBase: Number(process.env.METEORA_BALANCED_MIN_LIQ_BASE || 0),
+    // Default: $50 to filter out rugpulled/dust pools
+    minLiqBase: Number(process.env.METEORA_BALANCED_MIN_LIQ_BASE || 50),
     // Enable RPC enrichment to fetch vault balances for precise reserve data
     enableRpcEnrichment: process.env.METEORA_BALANCED_ENABLE_RPC_ENRICHMENT !== 'false',
     rpcBatchSize: Number(process.env.METEORA_BALANCED_RPC_BATCH_SIZE || 100),

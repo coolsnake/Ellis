@@ -586,6 +586,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         accountB?: string,
         poolKind?: 'amm' | 'clmm',
         direction?: 'forward' | 'reverse',
+        pool_liquidity_raw?: number,
       ) => {
         // Honor DEX/pool-kind allowlist
         try { if (!isDexKindAllowed(dex, (poolKind as any) || 'amm', edgeAllow)) return; } catch {}
@@ -656,6 +657,24 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const liq = useUsd !== undefined ? useUsd : Math.log10(Math.max(10, liqRaw));
         const weight = Math.max(1, liq) / Math.max(1, Number(fee_bps || 1));
         const feeRounded = Number.isFinite(Number(fee_bps)) ? Math.round(Number(fee_bps)) : undefined;
+        
+        // Determine pool_liquidity_raw value
+        const poolLiqRaw = (() => {
+          // Priority 1: Use explicitly provided pool_liquidity_raw
+          if (pool_liquidity_raw != null && Number.isFinite(pool_liquidity_raw) && pool_liquidity_raw > 0) {
+            return pool_liquidity_raw;
+          }
+          // Priority 2: Use TVL USD if available
+          if (useUsd != null) {
+            return useUsd;
+          }
+          // Priority 3: Use raw liquidity if available
+          if (liqRaw > 0) {
+            return liqRaw;
+          }
+          return undefined;
+        })();
+        
         edgesMap[id] = {
           id,
           source: a,
@@ -672,6 +691,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           tvl_usd,
           pool_kind: poolKind,
           direction,
+          pool_liquidity_raw: poolLiqRaw,
         };
         if (!nodesMap[a]) nodesMap[a] = { id: a, label: labelByMint[a] };
         if (!nodesMap[b]) nodesMap[b] = { id: b, label: labelByMint[b] };
@@ -954,10 +974,11 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           }
         );
         const revAmmRay = (fwdAmmRay && fwdAmmRay > 0) ? (1 / fwdAmmRay) : undefined;
-        addEdge(p.mint_a, p.mint_b, 'Raydium', p.fee_bps, liqParamAmm, fwdAmmRay, usd, pidAmm, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
+        const rawLiqAmm = Number((p as any).pool_liquidity_raw || (p as any).liquidity_base || 0) || undefined;
+        addEdge(p.mint_a, p.mint_b, 'Raydium', p.fee_bps, liqParamAmm, fwdAmmRay, usd, pidAmm, (p as any).account_a, (p as any).account_b, 'amm', 'forward', rawLiqAmm);
         // Use a distinct id for reverse edge when poolId exists to avoid overwriting forward
         const pidAmmRev = pidAmm ? `${pidAmm}-rev` : undefined;
-        addEdge(p.mint_b, p.mint_a, 'Raydium', p.fee_bps, liqParamAmm, revAmmRay, usd, pidAmmRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse');
+        addEdge(p.mint_b, p.mint_a, 'Raydium', p.fee_bps, liqParamAmm, revAmmRay, usd, pidAmmRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse', rawLiqAmm);
         try { if (fwdAmmRay && revAmmRay) { const prod = fwdAmmRay * revAmmRay; if (!(prod > 1/1.02 && prod < 1.02)) { consistency.ray.amm++; logger.debug('graph.consistency.raydium.amm', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, fwd: fwdAmmRay, rev: revAmmRay, prod }); } } } catch {}
         try {
           const eid = pidAmm || `${p.mint_a}->${p.mint_b}-Raydium`;
@@ -1169,9 +1190,10 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             }
           }
         } catch {}
-        addEdge(p.mint_a, p.mint_b, 'Raydium', p.fee_bps, liqDisplay, fwdR, usd, pidClmm, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
+        const rawLiqClmm = Number((p as any).pool_liquidity_raw || (p as any).liquidity || 0) || undefined;
+        addEdge(p.mint_a, p.mint_b, 'Raydium', p.fee_bps, liqDisplay, fwdR, usd, pidClmm, (p as any).account_a, (p as any).account_b, 'clmm', 'forward', rawLiqClmm);
         const pidClmmRev = pidClmm ? `${pidClmm}-rev` : undefined;
-        addEdge(p.mint_b, p.mint_a, 'Raydium', p.fee_bps, liqDisplay, revR, usd, pidClmmRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse');
+        addEdge(p.mint_b, p.mint_a, 'Raydium', p.fee_bps, liqDisplay, revR, usd, pidClmmRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse', rawLiqClmm);
         try {
           if (fwdR && revR) {
             const prod = fwdR * revR;
@@ -1271,9 +1293,10 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         // Forward + reverse with strict reciprocal rule and consistency guard
         const fwdAmm = (priceAmmOrca && priceAmmOrca > 0) ? priceAmmOrca : undefined;
         const revAmm = (fwdAmm && fwdAmm > 0) ? (1 / fwdAmm) : undefined;
-        addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaAmm, fwdAmm, undefined, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
+        const rawLiqOrcaAmm = Number((p as any).pool_liquidity_raw || (p as any).liquidity_base || 0) || undefined;
+        addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaAmm, fwdAmm, undefined, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward', rawLiqOrcaAmm);
         const pidAmmOrcaRev = pid ? `${pid}-rev` : undefined;
-        addEdge(p.mint_b, p.mint_a, 'Orca', p.fee_bps, liqParamOrcaAmm, revAmm, undefined, pidAmmOrcaRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse');
+        addEdge(p.mint_b, p.mint_a, 'Orca', p.fee_bps, liqParamOrcaAmm, revAmm, undefined, pidAmmOrcaRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse', rawLiqOrcaAmm);
         try { if (fwdAmm && revAmm) { const prod = fwdAmm * revAmm; if (!(prod > 1/1.02 && prod < 1.02)) { consistency.orc.amm++; logger.debug('graph.consistency.orca.amm', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, fwd: fwdAmm, rev: revAmm, prod }); } } } catch {}
       }
       // (Saber removed)
@@ -1304,9 +1327,10 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         if (!price || !(price > 0)) { try { logger.debug('graph.skip.edge.no_price', { dex: 'MeteoraBalanced', kind: 'amm', pool_id: pid, mint_a: p.mint_a, mint_b: p.mint_b, reason: 'no_pool_price' }); } catch {}; continue; }
         const fwd = clampPrice(price);
         const rev = fwd && fwd > 0 ? (1 / fwd) : undefined;
-        addEdge(p.mint_a, p.mint_b, 'MeteoraBalanced', p.fee_bps, liqDisplay, fwd, usd, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
+        const rawLiqMbal = Number((p as any).pool_liquidity_raw || (p as any).liquidity_base || 0) || undefined;
+        addEdge(p.mint_a, p.mint_b, 'MeteoraBalanced', p.fee_bps, liqDisplay, fwd, usd, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward', rawLiqMbal);
         const pidRev = pid ? `${pid}-rev` : undefined;
-        addEdge(p.mint_b, p.mint_a, 'MeteoraBalanced', p.fee_bps, liqDisplay, rev, usd, pidRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse');
+        addEdge(p.mint_b, p.mint_a, 'MeteoraBalanced', p.fee_bps, liqDisplay, rev, usd, pidRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse', rawLiqMbal);
       }
       // Pumpswap AMM
       for (const p of (pumpValid.amm || [])) {
@@ -1324,9 +1348,10 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         }
         const fwd = clampPrice(price);
         const rev = fwd && fwd > 0 ? (1 / fwd) : undefined;
-        addEdge(p.mint_a, p.mint_b, 'Pumpswap', p.fee_bps, liqDisplay, fwd, usd, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward');
+        const rawLiqPump = Number((p as any).pool_liquidity_raw || (p as any).liquidity_base || 0) || undefined;
+        addEdge(p.mint_a, p.mint_b, 'Pumpswap', p.fee_bps, liqDisplay, fwd, usd, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward', rawLiqPump);
         const pidRev = pid ? `${pid}-rev` : undefined;
-        addEdge(p.mint_b, p.mint_a, 'Pumpswap', p.fee_bps, liqDisplay, rev, usd, pidRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse');
+        addEdge(p.mint_b, p.mint_a, 'Pumpswap', p.fee_bps, liqDisplay, rev, usd, pidRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse', rawLiqPump);
       }
       for (const p of (orcValid.clmm || [])) {
         // amounts from HTTP (raw token units) need decimals to convert to whole tokens for USD TVL
@@ -1380,9 +1405,10 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         // Forward + reverse with strict reciprocal rule and consistency guard
         const fwdClmm = clampPrice((priceClmmOrca && priceClmmOrca > 0) ? priceClmmOrca : undefined);
         const revClmm = (fwdClmm && fwdClmm > 0) ? (1 / fwdClmm) : undefined;
-        addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaClmm, fwdClmm, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
+        const rawLiqOrcaClmm = Number((p as any).pool_liquidity_raw || (p as any).liquidity || 0) || undefined;
+        addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaClmm, fwdClmm, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward', rawLiqOrcaClmm);
         const pidClmmOrcaRev = pid ? `${pid}-rev` : undefined;
-        addEdge(p.mint_b, p.mint_a, 'Orca', p.fee_bps, liqParamOrcaClmm, revClmm, usd, pidClmmOrcaRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse');
+        addEdge(p.mint_b, p.mint_a, 'Orca', p.fee_bps, liqParamOrcaClmm, revClmm, usd, pidClmmOrcaRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse', rawLiqOrcaClmm);
         try { if (fwdClmm && revClmm) { const prod = fwdClmm * revClmm; if (!(prod > 1/1.02 && prod < 1.02)) { consistency.orc.clmm++; logger.debug('graph.consistency.orca.clmm', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, fwd: fwdClmm, rev: revClmm, prod }); } } } catch {}
         try {
           const eid = pid || `${p.mint_a}->${p.mint_b}-Orca`;
@@ -1517,9 +1543,10 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             }
           }
         } catch {}
-        addEdge(p.mint_a, p.mint_b, 'Meteora', p.fee_bps, liqParam, fwdMet, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward');
+        const rawLiqMet = Number((p as any).pool_liquidity_raw || (p as any).liquidity || 0) || undefined;
+        addEdge(p.mint_a, p.mint_b, 'Meteora', p.fee_bps, liqParam, fwdMet, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward', rawLiqMet);
         const pidRev = pid ? `${pid}-rev` : undefined;
-        addEdge(p.mint_b, p.mint_a, 'Meteora', p.fee_bps, liqParam, revMet, usd, pidRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse');
+        addEdge(p.mint_b, p.mint_a, 'Meteora', p.fee_bps, liqParam, revMet, usd, pidRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse', rawLiqMet);
         try { if (fwdMet && revMet) { const prod = fwdMet * revMet; if (!(prod > 1/1.02 && prod < 1.02)) { consistency.met.clmm++; logger.debug('graph.consistency.meteora.clmm', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, fwd: fwdMet, rev: revMet, prod }); } } } catch {}
         try {
           const eid = pid || `${p.mint_a}->${p.mint_b}-Meteora`;
