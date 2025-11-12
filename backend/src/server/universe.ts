@@ -171,15 +171,28 @@ export async function computeTokenUniverseByMinPools(anchors?: Set<string>, incl
     
     return tokenSet;
   } catch (e) {
-    // If something goes wrong, return empty set (will trigger fallback to Jupiter)
+    // If something goes wrong, return empty set
+    // The calling code should handle empty universe appropriately based on mode
     return new Set<string>();
   }
 }
 
 export async function computeTokenUniverse(mode?: UniverseMode): Promise<Set<string>> {
-  const selected = (mode || (CONFIG.system as any)?.tokenUniverseMode || 'jupiter') as UniverseMode;
+  const selected = (mode || (CONFIG.system as any)?.tokenUniverseMode || 'union') as UniverseMode;
   const anchors = getAnchorSet();
   const includeAnchors = (CONFIG.system as any)?.includeAnchorsInUniverse !== false;
+  
+  // Log the selected mode for debugging
+  try {
+    const { logger } = await import('../utils/logger.js');
+    logger.debug('universe.compute.mode', { 
+      selected, 
+      providedMode: mode, 
+      configMode: (CONFIG.system as any)?.tokenUniverseMode, 
+      cat: 'universe' 
+    });
+  } catch {}
+  
   if (selected === 'jupiter') {
     const s = await getJupiterTokenSet(); if (includeAnchors) { for (const m of anchors) s.add(m); } return s;
   }
@@ -198,6 +211,16 @@ export async function computeTokenUniverse(mode?: UniverseMode): Promise<Set<str
   if (selected === 'minpools') {
     const set = await computeTokenUniverseByMinPools(anchors, includeAnchors);
     if (set.size === 0) {
+      // CRITICAL: Only fallback to Jupiter in minpools mode, not in union/intersection
+      // This is appropriate because minpools is a quality filter that might legitimately be empty
+      try {
+        const { logger } = await import('../utils/logger.js');
+        logger.warn('universe.minpools.empty_fallback_to_jupiter', { 
+          mode: selected, 
+          reason: 'minpools_filter_produced_no_tokens',
+          cat: 'universe' 
+        });
+      } catch {}
       const fallback = await getJupiterTokenSet();
       if (includeAnchors) { for (const m of anchors) fallback.add(m); }
       return fallback;
@@ -207,9 +230,30 @@ export async function computeTokenUniverse(mode?: UniverseMode): Promise<Set<str
   
   let set = computeTokenUniverseFromSets(ray, orc, selected, met, metBal, pump, anchors);
   
-  // Fallback: if empty, use Jupiter set to avoid emptying graph/routes
-  if (set.size === 0) set = await getJupiterTokenSet();
-  if (includeAnchors) { for (const m of anchors) set.add(m); }
+  // IMPORTANT: Don't fallback to Jupiter for union/intersection modes
+  // If the universe is empty in these modes, it means there are no pools fetched yet
+  // Falling back to Jupiter would incorrectly filter out new tokens not on the Jupiter list
+  if (set.size === 0) {
+    try {
+      const { logger } = await import('../utils/logger.js');
+      logger.warn('universe.compute.empty_universe', { 
+        mode: selected, 
+        raydiumTokens: ray.size,
+        orcaTokens: orc.size,
+        meteoraTokens: met.size,
+        meteoraBalancedTokens: metBal.size,
+        pumpswapTokens: pump.size,
+        reason: 'no_pools_fetched_yet_or_all_filtered',
+        cat: 'universe' 
+      });
+    } catch {}
+    // Return empty set instead of falling back to Jupiter
+    // This ensures we don't accidentally filter out new tokens
+    if (includeAnchors) { for (const m of anchors) set.add(m); }
+  } else {
+    if (includeAnchors) { for (const m of anchors) set.add(m); }
+  }
+  
   return set;
 }
 
