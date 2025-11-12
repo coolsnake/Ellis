@@ -5,6 +5,7 @@ import { writeJson, joinPath } from '../../utils/fs.js';
 import type { AmmPool, PoolsPayload } from './types.js';
 import { canonicalizePairs, validateHttpUrl } from './common.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
+import { PublicKey } from '@solana/web3.js';
 
 export async function fetchMeteoraBalancedHttp(): Promise<any> {
   const RAW_PATH = joinPath(CONFIG.cacheDir, 'meteora-balanced-raw-sample.json');
@@ -349,6 +350,131 @@ export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[
   return dedup;
 }
 
+// RPC enrichment: fetch vault token balances to calculate reserves and price
+export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pools: any[]; metrics: { success: number; fail: number; ms: number } }> {
+  const t0 = Date.now();
+  const enableEnrichment = (CONFIG as any)?.meteoraBalanced?.enableRpcEnrichment !== false;
+  
+  if (!enableEnrichment || !pools || pools.length === 0) {
+    return { pools, metrics: { success: 0, fail: 0, ms: 0 } };
+  }
+
+  try {
+    logger.info('meteora.balanced.rpc.enrichment.start', { poolCount: pools.length, cat: 'meteora' });
+  } catch {}
+
+  // Load Jupiter token map for decimals
+  let jupMap: Record<string, { decimals: number }> = {};
+  try {
+    const { loadJupiterTokenMap } = await import('../../utils/tokens.js');
+    jupMap = await loadJupiterTokenMap().catch(() => ({}));
+  } catch {}
+
+  // Collect all vault addresses
+  const vaultAddresses: string[] = [];
+  const poolToVaults: Map<number, { vaultA: string; vaultB: string; mintA: string; mintB: string }> = new Map();
+  
+  for (let i = 0; i < pools.length; i++) {
+    const pool = pools[i];
+    const vaultA = pool?.token_a_vault;
+    const vaultB = pool?.token_b_vault;
+    const mintA = pool?.token_a_mint;
+    const mintB = pool?.token_b_mint;
+    
+    if (vaultA && vaultB && mintA && mintB) {
+      vaultAddresses.push(vaultA, vaultB);
+      poolToVaults.set(i, { vaultA, vaultB, mintA, mintB });
+    }
+  }
+
+  if (vaultAddresses.length === 0) {
+    return { pools, metrics: { success: 0, fail: 0, ms: Date.now() - t0 } };
+  }
+
+  // Fetch vault account data via RPC
+  const web3 = await import('@solana/web3.js');
+  const conn = new web3.Connection(CONFIG.rpcUrl, CONFIG.system.txCommitment as any);
+  
+  const batchSize = 100;
+  const vaultData: Map<string, { amount: bigint; decimals: number }> = new Map();
+  let successCount = 0;
+  let failCount = 0;
+
+  for (let i = 0; i < vaultAddresses.length; i += batchSize) {
+    const batch = vaultAddresses.slice(i, i + batchSize);
+    const pubkeys = batch.map(addr => new PublicKey(addr));
+    
+    try {
+      // Simple delay for rate limiting
+      await new Promise(r => setTimeout(r, 50));
+      const accounts = await conn.getMultipleAccountsInfo(pubkeys);
+      
+      for (let j = 0; j < accounts.length; j++) {
+        const account = accounts[j];
+        const address = batch[j];
+        
+        if (account && account.data && account.data.length >= 72) {
+          try {
+            // SPL Token account layout: amount is at offset 64 (8 bytes, little-endian)
+            const buf = Buffer.from(account.data);
+            const amount = buf.readBigUInt64LE(64);
+            // Decimals is at offset 44 (1 byte)
+            const decimals = buf.readUInt8(44);
+            vaultData.set(address, { amount, decimals });
+            successCount++;
+          } catch (e) {
+            failCount++;
+          }
+        } else {
+          failCount++;
+        }
+      }
+    } catch (e) {
+      failCount += batch.length;
+      try {
+        logger.warn('meteora.balanced.rpc.batch.failed', { 
+          error: String((e as any)?.message || e), 
+          batch: i / batchSize,
+          cat: 'meteora' 
+        });
+      } catch {}
+    }
+  }
+
+  // Enrich pools with reserve data
+  for (const [poolIdx, vaults] of poolToVaults.entries()) {
+    const pool = pools[poolIdx];
+    const vaultAData = vaultData.get(vaults.vaultA);
+    const vaultBData = vaultData.get(vaults.vaultB);
+    
+    if (vaultAData && vaultBData) {
+      pool.reserveA = Number(vaultAData.amount);
+      pool.reserveB = Number(vaultBData.amount);
+      pool.decimalsA = vaultAData.decimals;
+      pool.decimalsB = vaultBData.decimals;
+      
+      // Also try to get decimals from Jupiter if vault decimals seem wrong
+      const jupDecA = jupMap[vaults.mintA]?.decimals;
+      const jupDecB = jupMap[vaults.mintB]?.decimals;
+      if (Number.isFinite(jupDecA)) pool.decimalsA = jupDecA;
+      if (Number.isFinite(jupDecB)) pool.decimalsB = jupDecB;
+    }
+  }
+
+  const ms = Date.now() - t0;
+  try {
+    logger.info('meteora.balanced.rpc.enrichment.complete', { 
+      total: vaultAddresses.length, 
+      success: successCount, 
+      fail: failCount, 
+      ms,
+      cat: 'meteora' 
+    });
+  } catch {}
+
+  return { pools, metrics: { success: successCount, fail: failCount, ms } };
+}
+
 export async function fetchMeteoraBalancedV2Http(baseUrl?: string): Promise<any[]> {
   const cfg: any = (CONFIG as any)?.meteoraBalanced || {};
   const baseUnsafe = baseUrl || cfg.apiUrlV2 || '';
@@ -405,7 +531,12 @@ export async function fetchMeteoraBalancedV2Http(baseUrl?: string): Promise<any[
 export async function fetchMeteoraBalancedAll(): Promise<PoolsPayload> {
   const v2 = await fetchMeteoraBalancedV2Http();
   const v1 = await fetchMeteoraBalancedV1Http();
-  const normV2 = await normalizeMeteoraBalancedHttp(v2);
+  
+  // Enrich v2 pools with RPC data (vault balances)
+  const enrichResult = await enrichMeteoraBalancedWithRpc(v2);
+  const enrichedV2 = enrichResult.pools;
+  
+  const normV2 = await normalizeMeteoraBalancedHttp(enrichedV2);
   const normV1 = await normalizeMeteoraBalancedV1(v1);
   const combinedAmm = mergeBalancedPools(normV2.amm, normV1.amm);
   const ammCanon = canonicalizePairs(combinedAmm);
