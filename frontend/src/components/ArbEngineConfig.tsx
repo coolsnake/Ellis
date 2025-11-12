@@ -1,10 +1,20 @@
 import React, { useEffect, useState } from 'react';
 import { ROUTES } from '../utils/routes';
 import type { ExecEngineConfigPublic } from 'shared/config-types';
+import { useModalConfig } from '../app/hooks/useModalConfig';
 
 type Props = { apiBase: string; onClose: () => void };
 
 export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
+  // Persist UI preferences to localStorage
+  const [uiPrefs, updateUiPrefs] = useModalConfig('arbEngineConfig', {
+    expandedSections: {
+      execution: true,
+      nearMiss: true,
+      edgeAllow: true,
+    },
+  });
+  
   const [cfg, setCfg] = useState<any>({
     mode: 'simulate',
     slippageBpsDefault: 50,
@@ -94,6 +104,15 @@ export const ArbEngineConfig: React.FC<Props> = ({ apiBase, onClose }) => {
     if (!v) return; setCfg((p: any) => ({ ...p, [k]: (Array.isArray(p[k]) ? p[k] : []).includes(v) ? p[k] : [...(p[k]||[]), v] }));
   };
   const removeListItem = (k: 'dex_allow', i: number) => setCfg((p: any) => ({ ...p, [k]: (p[k]||[]).filter((_: any, idx: number) => idx !== i) }));
+
+  const toggleSection = (section: 'execution' | 'nearMiss' | 'edgeAllow') => {
+    updateUiPrefs({
+      expandedSections: {
+        ...uiPrefs.expandedSections,
+        [section]: !uiPrefs.expandedSections[section],
+      },
+    });
+  };
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">

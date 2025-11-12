@@ -27,6 +27,7 @@ import { GraphView } from '../components/GraphView';
 import { CollapsibleSection } from '../components/CollapsibleSection';
 import { AltManagementModal } from '../components/AltManagementModal';
 import { setLogLevel as setFrontendLogLevel } from '../utils/logger';
+import { downloadModalConfigs, uploadModalConfigs, clearAllModalConfigs } from '../utils/modalConfigManager';
 import { maskRpcUrl } from '../utils/mask';
 import { useSystem } from '../app/contexts/system';
 import { useWallet } from '../app/contexts/wallet';
@@ -75,9 +76,33 @@ export const App: React.FC = () => {
   const [showAltModal, setShowAltModal] = useState(false);
   const [showLiqConfig, setShowLiqConfig] = useState(false);
   const [showGraph, setShowGraph] = useState(false);
+  const [showModalConfigManager, setShowModalConfigManager] = useState(false);
   // socket managed by context; remove local ref after full migration
   const lastSystemRef = useRef<number>(Date.now());
   const { credentials } = useAuth();
+  
+  // Handler for modal config import
+  const handleImportModalConfigs = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    try {
+      await uploadModalConfigs(file);
+      alert('Modal configurations imported successfully! Refresh to see changes.');
+    } catch (err) {
+      alert('Failed to import configurations: ' + String(err));
+    }
+    // Reset input so same file can be selected again
+    e.target.value = '';
+  };
+  
+  // Handler for clearing modal configs
+  const handleClearModalConfigs = () => {
+    if (confirm('Are you sure you want to reset all modal preferences? This cannot be undone.')) {
+      clearAllModalConfigs();
+      alert('All modal configurations have been cleared! Refresh to see changes.');
+    }
+  };
 
   // Track last received backend heartbeat (via socket 'system' event updating `system`)
   useEffect(() => {
@@ -1676,10 +1701,44 @@ export const App: React.FC = () => {
               <button onClick={()=>setShowOpportunityConfig(true)} className="px-3 py-1 bg-fuchsia-600 text-white rounded text-sm hover:bg-fuchsia-700">Opportunity Config</button>
               <button onClick={()=>setShowGraphConfig(true)} className="px-3 py-1 bg-teal-600 text-white rounded text-sm hover:bg-teal-700">Graph Config</button>
               <button onClick={()=>setShowAltModal(true)} className="px-3 py-1 bg-purple-600 text-white rounded text-sm hover:bg-purple-700">Manage ALTs</button>
+              <button onClick={()=>setShowModalConfigManager(!showModalConfigManager)} className="px-3 py-1 bg-yellow-600 text-white rounded text-sm hover:bg-yellow-700">UI Prefs</button>
             </>
           )}
         >
           <ArbitrageSection apiBase={apiBase} showGraph={showGraph} onToggleGraph={()=>setShowGraph(v=>!v)} paused={showArbConfig || showSystemConfig || showFeeConfig} />
+          
+          {/* UI Preferences Export/Import Panel */}
+          {showModalConfigManager && (
+            <div className="mt-3 p-4 bg-gray-800 border border-yellow-600 rounded">
+              <h3 className="text-lg font-semibold text-yellow-400 mb-3">UI Preferences Manager</h3>
+              <p className="text-sm text-gray-300 mb-3">
+                Export, import, or reset your modal UI preferences (expanded sections, filter settings, etc.)
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <button 
+                  onClick={downloadModalConfigs} 
+                  className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 text-sm"
+                >
+                  📥 Export UI Preferences
+                </button>
+                <label className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 cursor-pointer text-sm">
+                  📤 Import UI Preferences
+                  <input 
+                    type="file" 
+                    accept=".json" 
+                    onChange={handleImportModalConfigs} 
+                    className="hidden" 
+                  />
+                </label>
+                <button 
+                  onClick={handleClearModalConfigs} 
+                  className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 text-sm"
+                >
+                  🗑️ Reset All UI Preferences
+                </button>
+              </div>
+            </div>
+          )}
         </CollapsibleSection>
         <ConfigsSection
           apiBase={apiBase}
