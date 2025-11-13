@@ -2469,29 +2469,31 @@ export function startRaydiumRefreshLoop(): void {
                   throw new Error('pumpswap account data too short');
                 }
                 
-                // Decode pool state from account data
-                const buf = Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data);
-                
-                // Common Solana program account layout: 8-byte discriminator, then data fields
-                // Extract mint addresses (typically at offsets after discriminator)
-                // Note: These offsets are based on typical Pumpswap pool account structure
-                // You may need to adjust based on actual program layout
-                const web3 = await import('@solana/web3.js');
-                let mint_a: string;
-                let mint_b: string;
-                let account_a: string;
-                let account_b: string;
-                
-                try {
-                  // Try to decode PublicKeys from common offsets
-                  // Offset 8: base mint, 40: quote mint, 72: base vault, 104: quote vault
-                  mint_a = new web3.PublicKey(buf.slice(8, 40)).toBase58();
-                  mint_b = new web3.PublicKey(buf.slice(40, 72)).toBase58();
-                  account_a = new web3.PublicKey(buf.slice(72, 104)).toBase58();
-                  account_b = new web3.PublicKey(buf.slice(104, 136)).toBase58();
-                } catch (err: any) {
-                  throw new Error(`failed to parse pool pubkeys: ${err.message}`);
+                // CRITICAL: Look up pool in cache to get vault addresses
+                // Don't try to decode from raw data - offsets may vary by pool version
+                const pool = pumpswapCache.data?.amm?.find(p => p.id === pk58);
+                if (!pool) {
+                  throw new Error('pool not in cache');
                 }
+                
+                account_a = (pool as any).account_a;
+                account_b = (pool as any).account_b;
+                const mint_a = pool.mint_a;
+                const mint_b = pool.mint_b;
+                
+                if (!account_a || !account_b) {
+                  throw new Error('pool missing vault addresses in cache');
+                }
+                
+                // Log vault addresses for debugging
+                try {
+                  logger.debug('pumpswap.ws.vaults_from_cache', {
+                    pool: pk58.slice(0,8) + '…',
+                    vaultA: account_a.slice(0,8) + '…',
+                    vaultB: account_b.slice(0,8) + '…',
+                    cat: 'pools'
+                  });
+                } catch {}
                 
                 // Extract fee using helper function
                 const { parsePumpswapPoolFee } = await import('./pools/pumpswap.js');
