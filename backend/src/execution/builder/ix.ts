@@ -1328,6 +1328,19 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
       
       // Check if coin_creator is the System Program (meaning no creator fees for this pool)
       const SYSTEM_PROGRAM_ID = SystemProgram.programId.toBase58();
+      
+      try {
+        logger.info('pumpswap.system_program_check', {
+          cat: 'tx',
+          ctx: { 
+            poolId: hop.poolId.slice(0, 12),
+            creator: creator,
+            systemProgramId: SYSTEM_PROGRAM_ID,
+            matches: creator === SYSTEM_PROGRAM_ID,
+          }
+        });
+      } catch {}
+      
       if (creator === SYSTEM_PROGRAM_ID) {
         // No creator fees - use System Program as placeholders
         coinCreatorVaultAuthority = SYSTEM_PROGRAM_ID;
@@ -1339,6 +1352,8 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
             ctx: { 
               poolId: hop.poolId.slice(0, 12),
               note: 'coin_creator_is_system_program',
+              coinCreatorVaultAta: coinCreatorVaultAta,
+              coinCreatorVaultAuthority: coinCreatorVaultAuthority,
             }
           });
         } catch {}

@@ -910,6 +910,10 @@ export interface RefreshSourcesOptions {
 }
 
 export async function refreshAllSources(force = true, subscribe = true, opts?: RefreshSourcesOptions): Promise<{ raydium: PoolsPayload; orca: PoolsPayload; meteora: PoolsPayload; meteora_balanced: PoolsPayload; pumpswap: PoolsPayload }> {
+  // Mark that we're in a refresh cycle - individual fetchers should skip incremental graph updates
+  // until all filtering is complete to avoid building huge unfiltered snapshots
+  (refreshAllSources as any).__inProgress = true;
+  
   // Parse options with backward compatibility
   const options: RefreshSourcesOptions = {
     force: opts?.force ?? force,
@@ -1110,6 +1114,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
   }
   
   // === PHASE 3: FILTER BY MINIMUM POOLS PER PAIR (first pass) ===
+  // This filter is applied regardless of token universe mode to ensure pool quality
   logger.info('pools.refresh.phase.min_pools_filter', { cat: 'pools' });
   try {
     const minPools = Math.max(1, Number(((CONFIG.system as any)?.minPoolsPerPair) || 1));
@@ -1175,6 +1180,12 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
         minPools, 
         before: beforeCounts, 
         after: afterCounts,
+        cat: 'pools' 
+      });
+    } else {
+      logger.info('pools.refresh.phase.min_pools_filter.skipped', { 
+        reason: 'minPoolsPerPair_is_1',
+        minPools,
         cat: 'pools' 
       });
     }
