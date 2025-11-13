@@ -1282,6 +1282,20 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
     const poolBaseMint = String((poolData as any)?.mint_a || '');
     const poolQuoteMint = String((poolData as any)?.mint_b || '');
     
+    // Debug logging
+    try {
+      logger.info('pumpswap.swap.direction.check', {
+        cat: 'tx',
+        ctx: {
+          poolId: hop.poolId.slice(0, 8) + '...',
+          inputMint: hop.inputMint.slice(0, 8) + '...',
+          outputMint: hop.outputMint.slice(0, 8) + '...',
+          poolBaseMint: poolBaseMint.slice(0, 8) + '...',
+          poolQuoteMint: poolQuoteMint.slice(0, 8) + '...',
+        }
+      });
+    } catch {}
+    
     // Determine swap direction and choose instruction
     const isSellingBase = hop.inputMint === poolBaseMint && hop.outputMint === poolQuoteMint;
     const isBuyingBase = hop.inputMint === poolQuoteMint && hop.outputMint === poolBaseMint;
@@ -1290,9 +1304,11 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
       throw createBuilderError('PUMPSWAP', `Mint mismatch: input=${hop.inputMint}, output=${hop.outputMint}, poolBase=${poolBaseMint}, poolQuote=${poolQuoteMint}`, hop);
     }
     
-    // Derive protocol fee recipient token account (ATA for the output mint)
+    // Derive protocol fee recipient token account
+    // Protocol fees are ALWAYS collected in the QUOTE token (not base)
+    // This is because fees come from the quote side of swaps
     const protocolFeeRecipientTokenAccount = getAssociatedTokenAddressSync(
-      outputMint,
+      toPublicKey(poolQuoteMint), // Always use quote mint for fee collection
       protocolFeeRecipient,
       true // allowOwnerOffCurve
     );

@@ -1025,7 +1025,7 @@ export const App: React.FC = () => {
           // New: multihop helpers for UI terminal
           if (action === 'multihop') {
             const mode = (parts[2] || '').toLowerCase(); // sim|exec
-            const target = (parts[3] || '').toLowerCase(); // ray-amm|ray-clmm|orca|meteora OR ray+orca, ray-amm+met, etc.
+            const target = (parts[3] || '').toLowerCase(); // ray-amm|ray-clmm|orca|meteora|damm-v1|damm-v2|pumpswap OR ray+orca, damm-v1+pumpswap, etc.
             const sizeSol = Number(parts[4] || 0.01);
             const slippageBps = Number(parts[5] || 50);
             const poolIds = parts.slice(6).filter(Boolean); // All remaining args are pool IDs
@@ -1034,7 +1034,7 @@ export const App: React.FC = () => {
             const isTwoDex = target.includes('+');
             
             if (!['sim','exec'].includes(mode)) {
-              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: arb multihop sim|exec ray-amm|ray-clmm|orca|meteora|ray+orca|ray-amm+met|... [SIZE_SOL] [SLIPPAGE_BPS] [POOL_ID_1] [POOL_ID_2] ...' }) });
+              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: arb multihop sim|exec ray-amm|ray-clmm|orca|meteora|damm-v1|damm-v2|pumpswap|ray+orca|damm-v1+pumpswap|... [SIZE_SOL] [SLIPPAGE_BPS] [POOL_ID_1] [POOL_ID_2] ...' }) });
               return;
             }
             
@@ -1045,17 +1045,17 @@ export const App: React.FC = () => {
             let path: string[] = [];
             
             if (isTwoDex) {
-              // Parse 2-dex format: e.g., "ray+orca", "ray-amm+met", "ray-clmm+orca"
+              // Parse 2-dex format: e.g., "ray+orca", "ray-amm+met", "damm-v1+pumpswap"
               const dexParts = target.split('+').map(s => s.trim().toLowerCase());
               if (dexParts.length !== 2) {
-                await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: arb multihop sim|exec DEX1+DEX2 [SIZE_SOL] [SLIPPAGE_BPS] [POOL_ID_1] [POOL_ID_2] (e.g., ray+orca, ray-amm+met)' }) });
+                await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: arb multihop sim|exec DEX1+DEX2 [SIZE_SOL] [SLIPPAGE_BPS] [POOL_ID_1] [POOL_ID_2] (e.g., ray+orca, damm-v1+pumpswap, ray-clmm+damm-v2)' }) });
                 return;
               }
               
               const [dex1, dex2] = dexParts;
               
               // Validate DEX names
-              const validDexes = ['ray-amm', 'ray-clmm', 'ray', 'orca', 'meteora', 'met'];
+              const validDexes = ['ray-amm', 'ray-clmm', 'ray', 'orca', 'meteora', 'met', 'damm-v1', 'damm-v2', 'pumpswap'];
               const normalizeDex = (d: string) => {
                 if (d === 'ray') return 'ray-amm'; // default ray to ray-amm
                 if (d === 'met') return 'meteora';
@@ -1066,16 +1066,20 @@ export const App: React.FC = () => {
               const normDex2 = normalizeDex(dex2);
               
               if (!validDexes.includes(normDex1) || !validDexes.includes(normDex2)) {
-                await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: invalid DEX names. Use: ray-amm, ray-clmm, ray, orca, meteora, met' }) });
+                await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: invalid DEX names. Use: ray-amm, ray-clmm, ray, orca, meteora, met, damm-v1, damm-v2, pumpswap' }) });
                 return;
               }
               
               // Map to dexKey, dexForPick, preferForPick for each DEX
               const mapDex = (d: string) => {
-                const dexKey = d === 'ray-amm' ? 'raydium.amm' : (d === 'ray-clmm' ? 'raydium.clmm' : (d === 'orca' ? 'orca.clmm' : 'meteora'));
-                const dexForPick = d.startsWith('ray') ? 'raydium' : (d === 'orca' ? 'orca' : 'meteora');
-                const preferForPick = d === 'ray-amm' ? 'amm' : (d === 'ray-clmm' ? 'clmm' : undefined);
-                return { dexKey, dexForPick, preferForPick };
+                if (d === 'ray-amm') return { dexKey: 'raydium.amm', dexForPick: 'raydium', preferForPick: 'amm' };
+                if (d === 'ray-clmm') return { dexKey: 'raydium.clmm', dexForPick: 'raydium', preferForPick: 'clmm' };
+                if (d === 'orca') return { dexKey: 'orca.clmm', dexForPick: 'orca', preferForPick: undefined };
+                if (d === 'meteora') return { dexKey: 'meteora', dexForPick: 'meteora', preferForPick: undefined };
+                if (d === 'damm-v1') return { dexKey: 'MeteoraBalanced_v1', dexForPick: 'meteora-balanced', preferForPick: undefined };
+                if (d === 'damm-v2') return { dexKey: 'MeteoraBalanced_v2', dexForPick: 'meteora-balanced', preferForPick: undefined };
+                if (d === 'pumpswap') return { dexKey: 'Pumpswap', dexForPick: 'pumpswap', preferForPick: undefined };
+                return { dexKey: 'meteora', dexForPick: 'meteora', preferForPick: undefined };
               };
               
               const dex1Map = mapDex(normDex1);
@@ -1086,27 +1090,62 @@ export const App: React.FC = () => {
               preferForPicks = [dex1Map.preferForPick, dex2Map.preferForPick];
               numHops = 2;
               
-              // Build 2-hop path: SOL -> USDC -> USDT
-              path = [SOL, USDC, USDT];
+              // Build 2-hop path: SOL -> USDC -> SOL
+              path = [SOL, USDC, SOL];
             } else {
               // Original single-DEX multihop logic
-              if (!['ray-amm','ray-clmm','orca','meteora'].includes(target)) {
-                await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: arb multihop sim|exec ray-amm|ray-clmm|orca|meteora [SIZE_SOL] [SLIPPAGE_BPS] [POOL_ID_1] [POOL_ID_2] ...' }) });
+              const validSingleDex = ['ray-amm','ray-clmm','orca','meteora','damm-v1','damm-v2','pumpswap'];
+              if (!validSingleDex.includes(target)) {
+                await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: arb multihop sim|exec ray-amm|ray-clmm|orca|meteora|damm-v1|damm-v2|pumpswap [SIZE_SOL] [SLIPPAGE_BPS] [POOL_ID_1] [POOL_ID_2] ...' }) });
                 return;
               }
               
               // Determine DEX key for each hop
-              const dexKey = target === 'ray-amm' ? 'raydium.amm' : (target === 'ray-clmm' ? 'raydium.clmm' : (target === 'orca' ? 'orca.clmm' : 'meteora'));
-              const dexForPick = target.startsWith('ray') ? 'raydium' : (target as any);
-              const preferForPick = target === 'ray-amm' ? 'amm' : (target === 'ray-clmm' ? 'clmm' : undefined);
+              let dexKey: string;
+              let dexForPick: string;
+              let preferForPick: string | undefined;
+              
+              if (target === 'ray-amm') {
+                dexKey = 'raydium.amm';
+                dexForPick = 'raydium';
+                preferForPick = 'amm';
+              } else if (target === 'ray-clmm') {
+                dexKey = 'raydium.clmm';
+                dexForPick = 'raydium';
+                preferForPick = 'clmm';
+              } else if (target === 'orca') {
+                dexKey = 'orca.clmm';
+                dexForPick = 'orca';
+                preferForPick = undefined;
+              } else if (target === 'meteora') {
+                dexKey = 'meteora';
+                dexForPick = 'meteora';
+                preferForPick = undefined;
+              } else if (target === 'damm-v1') {
+                dexKey = 'MeteoraBalanced_v1';
+                dexForPick = 'meteora-balanced';
+                preferForPick = undefined;
+              } else if (target === 'damm-v2') {
+                dexKey = 'MeteoraBalanced_v2';
+                dexForPick = 'meteora-balanced';
+                preferForPick = undefined;
+              } else if (target === 'pumpswap') {
+                dexKey = 'Pumpswap';
+                dexForPick = 'pumpswap';
+                preferForPick = undefined;
+              } else {
+                dexKey = 'meteora';
+                dexForPick = 'meteora';
+                preferForPick = undefined;
+              }
               
               // Determine number of hops (default to 2-hop if no pools specified)
               numHops = Math.max(2, poolIds.length || 2);
               
-              // Build path first: SOL -> USDC -> USDT -> ... (alternating for numHops)
+              // Build path first: SOL -> USDC -> SOL -> ... (alternating for numHops)
               path = [SOL];
               for (let i = 0; i < numHops; i++) {
-                path.push(i % 2 === 0 ? USDC : USDT);
+                path.push(i % 2 === 0 ? USDC : SOL);
               }
               
               dexKeys = Array(numHops).fill(dexKey);

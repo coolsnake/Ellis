@@ -77,4 +77,32 @@ vitest run backend/tests/singlehop.newdex.test.ts
 # Optional actual broadcast after preflight success:
 RUN_LIVE_SINGLEHOP=true RUN_LIVE_SINGLEHOP_EXECUTE=true \
 vitest run backend/tests/singlehop.newdex.test.ts
+
+# Test multi-hop routes with new DEXes
+RUN_LIVE_MULTIHOP=true \
+vitest run backend/tests/multihop.newdex.test.ts
+
+# With actual execution:
+RUN_LIVE_MULTIHOP=true RUN_LIVE_MULTIHOP_EXECUTE=true \
+vitest run backend/tests/multihop.newdex.test.ts
 ```
+
+## Multi-hop Testing
+
+Multi-hop routes test arbitrage opportunities across multiple pools and DEXes.
+
+### Terminal Commands
+
+```bash
+# Single-DEX multi-hop (SOL → USDC → SOL)
+arb multihop sim damm-v1 0.01 100
+arb multihop sim damm-v2 0.01 100
+
+# Multi-DEX multi-hop (cross-DEX arbitrage)
+arb multihop sim ray-clmm+damm-v1 0.01 100
+arb multihop sim orca+damm-v2 0.01 100
+arb multihop sim meteora+damm-v1 0.01 100
+arb multihop sim damm-v1+damm-v2 0.01 100
+```
+
+See [Terminal Commands](../terminal-commands-newdex.md) for full multi-hop command documentation.
