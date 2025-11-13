@@ -472,7 +472,7 @@ function parseTokenAccountAmount(data: Buffer | Uint8Array): bigint | null {
 async function preloadPumpswapVaultCache(): Promise<void> {
   const pools = pumpswapCache.data?.amm || [];
   if (pools.length === 0) {
-    try { logger.debug('pumpswap.vault_cache.preload.skip', { reason: 'no_pools', cat: 'pools' }); } catch {}
+    try { logger.info('pumpswap.vault_cache.preload.skip', { reason: 'no_pools', cat: 'pools' }); } catch {}
     return;
   }
   
@@ -483,7 +483,7 @@ async function preloadPumpswapVaultCache(): Promise<void> {
   }
   
   if (vaults.length === 0) {
-    try { logger.debug('pumpswap.vault_cache.preload.skip', { reason: 'no_vaults', cat: 'pools' }); } catch {}
+    try { logger.info('pumpswap.vault_cache.preload.skip', { reason: 'no_vaults', cat: 'pools' }); } catch {}
     return;
   }
   

@@ -1288,6 +1288,20 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
     let coinCreatorVaultAta = String((poolData as any)?.coin_creator_vault_ata || '');
     let coinCreatorVaultAuthority = String((poolData as any)?.coin_creator_vault_authority || '');
     
+    // Validate creator is a proper base58 address
+    try {
+      logger.info('pumpswap.creator.from_cache', {
+        cat: 'tx',
+        ctx: {
+          poolId: hop.poolId.slice(0, 12),
+          creator: creator,
+          creatorLength: creator.length,
+          first12: creator.slice(0, 12),
+          last12: creator.slice(-12),
+        }
+      });
+    } catch {}
+    
     if (!poolBaseMint || !poolQuoteMint || !onchainBaseVault || !onchainQuoteVault || !creator) {
       throw createBuilderError('PUMPSWAP', 'Pool missing on-chain mint/vault/creator data in cache', hop);
     }

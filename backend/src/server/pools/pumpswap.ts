@@ -374,7 +374,7 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
                   creators.set(pool.pubkey, coinCreatorBase58);
                   
                   try {
-                    logger.debug('pumpswap.extract.coin_creator.success', {
+                    logger.info('pumpswap.extract.coin_creator.success', {
                       pool: pool.pubkey.slice(0, 12),
                       coinCreator: coinCreatorBase58.slice(0, 12),
                       isSystemProgram: coinCreatorBase58 === '11111111111111111111111111111111',
@@ -426,7 +426,7 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
         }
       }
       
-      try { logger.debug('pumpswap.rpc.enrichment.batch', { 
+      try { logger.info('pumpswap.rpc.enrichment.batch', { 
         batch: Math.floor(i / batchSize) + 1, 
         accountCount: allAddresses.length, 
         success: successCount, 
