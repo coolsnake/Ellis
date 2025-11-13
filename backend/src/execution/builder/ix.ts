@@ -1305,91 +1305,47 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
             hasCoinCreatorVaultAuthority: !!coinCreatorVaultAuthority,
             coinCreatorVaultAtaValue: coinCreatorVaultAta || 'null',
             coinCreatorVaultAuthorityValue: coinCreatorVaultAuthority || 'null',
-            poolBaseMint: poolBaseMint.slice(0, 12),
+            creator: creator.slice(0, 12),
           }
         });
       } catch {}
       
       const { PublicKey } = await import('@solana/web3.js');
+      const creatorPubkey = toPublicKey(creator);
       
-      // Check if this is a pump.fun token by trying to derive the bonding curve
-      // Non-pump.fun tokens (like USDC, USDT, etc.) won't have bonding curves
-      const PUMP_FUN_PROGRAM_ID = toPublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
+      // Derive coin creator vault authority using PumpSwap program
+      // PDA derived from seeds: ["creator_vault", coin_creator]
+      // Source: https://github.com/pump-fun/pump-public-docs/blob/main/docs/PUMP_SWAP_CREATOR_FEE_README.md
+      const [vaultAuthority] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from('creator_vault'),
+          creatorPubkey.toBuffer(),
+        ],
+        programId // PumpSwap program ID
+      );
+      coinCreatorVaultAuthority = vaultAuthority.toBase58();
+      
+      // Derive coin creator vault ATA
+      // This is the vault authority's ATA for the quote mint
+      // Source: https://github.com/pump-fun/pump-public-docs/blob/main/docs/PUMP_SWAP_CREATOR_FEE_README.md
+      coinCreatorVaultAta = getAssociatedTokenAddressSync(
+        toPublicKey(poolQuoteMint), // Quote mint (SOL in most cases)
+        vaultAuthority,
+        true // allowOwnerOffCurve
+      ).toBase58();
       
       try {
-        // Try to derive the bonding curve PDA from pump.fun program
-        // This is the "coin creator vault authority"
-        const [bondingCurvePda] = PublicKey.findProgramAddressSync(
-          [
-            Buffer.from('bonding-curve'),
-            toPublicKey(poolBaseMint).toBuffer(), // The base mint (meme token)
-          ],
-          PUMP_FUN_PROGRAM_ID
-        );
-        
-        // Check if the bonding curve account actually exists on-chain
-        const { getConnection } = await import('../../wallet/wallet.js');
-        const connection = getConnection();
-        const bondingCurveInfo = await connection.getAccountInfo(bondingCurvePda);
-        
-        if (bondingCurveInfo && bondingCurveInfo.owner.equals(PUMP_FUN_PROGRAM_ID)) {
-          // This is a pump.fun token with an active bonding curve
-          coinCreatorVaultAuthority = bondingCurvePda.toBase58();
-          
-          // The coin creator vault ATA is the bonding curve's ATA for the base mint
-          coinCreatorVaultAta = getAssociatedTokenAddressSync(
-            toPublicKey(poolBaseMint),
-            bondingCurvePda,
-            true // allowOwnerOffCurve
-          ).toBase58();
-          
-          try {
-            logger.info('pumpswap.fallback.derived_pumpfun_accounts', {
-              cat: 'tx',
-              ctx: { 
-                poolId: hop.poolId.slice(0, 12),
-                derivedAta: coinCreatorVaultAta.slice(0, 12),
-                derivedAuthority: coinCreatorVaultAuthority.slice(0, 12),
-                baseMint: poolBaseMint.slice(0, 12),
-                type: 'pumpfun_token',
-              }
-            });
-          } catch {}
-        } else {
-          // Not a pump.fun token - use System Program as placeholder
-          // The program will skip these accounts if they're not needed
-          coinCreatorVaultAuthority = '11111111111111111111111111111111';
-          coinCreatorVaultAta = '11111111111111111111111111111111';
-          
-          try {
-            logger.info('pumpswap.fallback.no_bonding_curve', {
-              cat: 'tx',
-              ctx: { 
-                poolId: hop.poolId.slice(0, 12),
-                baseMint: poolBaseMint.slice(0, 12),
-                type: 'non_pumpfun_token',
-                note: 'using_system_program_placeholders',
-              }
-            });
-          } catch {}
-        }
-      } catch (e: any) {
-        // Failed to derive or check bonding curve - use System Program as fallback
-        coinCreatorVaultAuthority = '11111111111111111111111111111111';
-        coinCreatorVaultAta = '11111111111111111111111111111111';
-        
-        try {
-          logger.info('pumpswap.fallback.derive_failed', {
-            cat: 'tx',
-            ctx: { 
-              poolId: hop.poolId.slice(0, 12),
-              baseMint: poolBaseMint.slice(0, 12),
-              error: String(e?.message || e),
-              note: 'using_system_program_placeholders',
-            }
-          });
-        } catch {}
-      }
+        logger.info('pumpswap.fallback.derived_accounts', {
+          cat: 'tx',
+          ctx: { 
+            poolId: hop.poolId.slice(0, 12),
+            creator: creator.slice(0, 12),
+            derivedAuthority: coinCreatorVaultAuthority.slice(0, 12),
+            derivedAta: coinCreatorVaultAta.slice(0, 12),
+            quoteMint: poolQuoteMint.slice(0, 12),
+          }
+        });
+      } catch {}
     }
     
     // Use the stored on-chain vaults directly - no mapping needed!
