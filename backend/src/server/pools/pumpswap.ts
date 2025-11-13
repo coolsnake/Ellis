@@ -354,22 +354,25 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
             }
           }
           
-          // Extract on-chain creator from pool account (offset 8-39)
-          // Pool account structure: [discriminator(8), creator(32), ...]
+          // Extract on-chain coin_creator from pool account
+          // Pool account structure: [discriminator(8), pool_bump(1), index(2), creator(32), 
+          //   base_mint(32), quote_mint(32), lp_mint(32), pool_base_token_account(32), 
+          //   pool_quote_token_account(32), lp_supply(8), coin_creator(32), ...]
+          // coin_creator offset = 8+1+2+32+32+32+32+32+32+8 = 211
           try {
             const buf = Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data);
-            if (buf.length >= 40) {
+            if (buf.length >= 243) { // 211 + 32
               const { PublicKey } = await import('@solana/web3.js');
-              const creatorBytes = buf.subarray(8, 40);
-              const creatorPubkey = new PublicKey(creatorBytes);
+              const coinCreatorBytes = buf.subarray(211, 243);
+              const coinCreatorPubkey = new PublicKey(coinCreatorBytes);
               const pool = batch[mapping.poolIndex - i];
               if (pool && pool.pubkey) {
-                creators.set(pool.pubkey, creatorPubkey.toBase58());
+                creators.set(pool.pubkey, coinCreatorPubkey.toBase58());
               }
             }
           } catch (e: any) {
             try {
-              logger.warn('pumpswap.extract.creator.failed', {
+              logger.warn('pumpswap.extract.coin_creator.failed', {
                 pool: address,
                 error: String(e?.message || e),
                 cat: 'pumpswap'
@@ -397,9 +400,9 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
           base_reserve: baseBalance !== null ? baseBalance.toString() : undefined,
           quote_reserve: quoteBalance !== null ? quoteBalance.toString() : undefined,
           fee_bps: feeBps !== null ? feeBps : undefined, // Add extracted fee
-          onchain_creator: onchainCreator || pool.creator, // Use on-chain creator if available, fallback to GraphQL creator
-          // Note: coin_creator_vault addresses cannot be extracted from pool account
-          // They will be derived during transaction building from onchain_creator
+          onchain_creator: onchainCreator || pool.creator, // On-chain coin_creator (offset 211), fallback to GraphQL creator
+          // Note: coin_creator_vault addresses will be derived during transaction building
+          // If coin_creator is System Program, no creator fees apply to this pool
         });
         
         if (baseBalance !== null && quoteBalance !== null) {
