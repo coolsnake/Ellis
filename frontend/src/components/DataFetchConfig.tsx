@@ -225,6 +225,51 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
   }, [apiBase]);
 
   const set = (k: string, v: any) => setCfg((p: any) => ({ ...p, [k]: v }));
+  
+  const [stoppingWs, setStoppingWs] = useState(false);
+  
+  const handleStopWs = async () => {
+    if (stoppingWs) return;
+    setStoppingWs(true);
+    try {
+      const headers: Record<string, string> = { 'content-type': 'application/json' };
+      try {
+        const s = localStorage.getItem('authCreds');
+        if (s) {
+          const creds = JSON.parse(s || '{}') as { user?: string; pass?: string };
+          if (creds && creds.user && creds.pass) {
+            headers['Authorization'] = `Basic ${btoa(`${creds.user}:${creds.pass}`)}`;
+          }
+        }
+      } catch {}
+      
+      const response = await fetch(`${apiBase}/arb/pools/unsubscribe`, {
+        method: 'POST',
+        headers
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Failed to stop WebSocket: ${response.statusText}`);
+      }
+      
+      const result = await response.json();
+      if (result.ok) {
+        setError(null);
+        // Optionally show a success message
+        try {
+          const tempSuccess = document.createElement('div');
+          tempSuccess.className = 'text-green-400 text-sm mb-2';
+          tempSuccess.textContent = '✅ WebSocket subscriptions stopped successfully';
+          document.querySelector('.space-y-6')?.prepend(tempSuccess);
+          setTimeout(() => tempSuccess.remove(), 3000);
+        } catch {}
+      }
+    } catch (err: any) {
+      setError(`Failed to stop WebSocket: ${err.message || err}`);
+    } finally {
+      setStoppingWs(false);
+    }
+  };
 
   const onSave = async () => {
     if (saving) return; setSaving(true); setError(null);
@@ -358,6 +403,17 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             <h3 className="text-lg font-semibold mb-3">System Refresh</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.enablePoolWs} onChange={(e)=>set('enablePoolWs', e.target.checked)} />Enable Pool Websocket</label>
+              <div className="flex items-center gap-2">
+                <button 
+                  onClick={handleStopWs}
+                  disabled={stoppingWs}
+                  className="px-3 py-1 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded text-sm font-medium text-white transition-colors"
+                  title="Immediately unsubscribe all pool and vault WebSocket subscriptions"
+                >
+                  {stoppingWs ? 'Stopping...' : '🛑 Stop WS'}
+                </button>
+                <span className="text-xs text-gray-400">Unsubscribe all pools & vaults</span>
+              </div>
             <div>
               <label className="block text-sm mb-1">Unified Refresh Period (ms)</label>
               <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.poolsRefreshMs} onChange={(e)=>set('poolsRefreshMs', Number(e.target.value)||0)} />
