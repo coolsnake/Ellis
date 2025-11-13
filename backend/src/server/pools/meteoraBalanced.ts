@@ -295,6 +295,21 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
 
   const ammCanon = canonicalizePairs(amm);
   
+  // Count pools with and without prices for diagnostics
+  try {
+    const withPrice = ammCanon.filter(p => Number.isFinite(p.price_a_per_b) && (p.price_a_per_b || 0) > 0).length;
+    const withoutPrice = ammCanon.length - withPrice;
+    if (withoutPrice > 0) {
+      logger.info('meteora.balanced.v2.price_coverage', {
+        total: ammCanon.length,
+        withPrice,
+        withoutPrice,
+        percentageWithPrice: Math.round((withPrice / ammCanon.length) * 100),
+        cat: 'meteora'
+      });
+    }
+  } catch {}
+  
   // Optional: Apply minimum liquidity filtering
   try {
     const minLiqBase = Number((CONFIG as any)?.meteoraBalanced?.minLiqBase || 0);
@@ -471,6 +486,21 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
     } catch {}
   }
   const ammCanon = canonicalizePairs(amm);
+  
+  // Count pools with and without prices for diagnostics
+  try {
+    const withPrice = ammCanon.filter(p => Number.isFinite(p.price_a_per_b) && (p.price_a_per_b || 0) > 0).length;
+    const withoutPrice = ammCanon.length - withPrice;
+    if (withoutPrice > 0) {
+      logger.info('meteora.balanced.v1.price_coverage', {
+        total: ammCanon.length,
+        withPrice,
+        withoutPrice,
+        percentageWithPrice: Math.round((withPrice / ammCanon.length) * 100),
+        cat: 'meteora'
+      });
+    }
+  } catch {}
   
   // Optional: Apply minimum liquidity filtering
   try {
