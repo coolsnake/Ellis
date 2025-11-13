@@ -1270,40 +1270,33 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
     );
     
     // Determine if we're swapping in the base→quote or quote→base direction
-    // CRITICAL: We must fetch the ACTUAL on-chain pool mint order, NOT the canonicalized cache data
-    // The cache may have swapped the mints for display purposes, but we need the real on-chain structure
-    const { Connection, PublicKey } = await import('@solana/web3.js');
-    const rpcUrl = CONFIG.rpcUrl || 'https://api.mainnet-beta.solana.com';
-    const conn = new Connection(rpcUrl);
+    // Fetch the original on-chain mint order from cache (stored before canonicalization)
+    const { peekPumpswapPools } = await import('../../server/pools.js');
+    const pools = peekPumpswapPools();
+    const poolData = (pools.amm || []).find((p: any) => String(p?.id || '') === hop.poolId.replace(/-rev$/, ''));
     
-    let poolBaseMint: string;
-    let poolQuoteMint: string;
-    
-    try {
-      const poolAccount = await conn.getAccountInfo(poolId);
-      if (!poolAccount || poolAccount.owner.toBase58() !== programId.toBase58()) {
-        throw new Error('Pool account not found or owned by wrong program');
-      }
-      
-      // Parse pool account data according to pumpswap structure:
-      // [discriminator(8), bump(1), index(2), creator(32), base_mint(32), quote_mint(32), ...]
-      const data = poolAccount.data;
-      const baseMintPubkey = new PublicKey(data.subarray(43, 75));
-      const quoteMintPubkey = new PublicKey(data.subarray(75, 107));
-      poolBaseMint = baseMintPubkey.toBase58();
-      poolQuoteMint = quoteMintPubkey.toBase58();
-    } catch (e: any) {
-      try {
-        logger.error('pumpswap.pool.fetch.failed', {
-          cat: 'tx',
-          ctx: {
-            poolId: hop.poolId,
-            error: String(e?.message || e),
-          }
-        });
-      } catch {}
-      throw createBuilderError('PUMPSWAP', `Failed to fetch pool account: ${String(e?.message || e)}`, hop);
+    if (!poolData) {
+      throw createBuilderError('PUMPSWAP', 'Pool data not found in cache', hop);
     }
+    
+    // Get the original on-chain mint order (before canonicalization)
+    const poolBaseMint = String((poolData as any)?.onchain_base_mint || '');
+    const poolQuoteMint = String((poolData as any)?.onchain_quote_mint || '');
+    
+    if (!poolBaseMint || !poolQuoteMint) {
+      throw createBuilderError('PUMPSWAP', 'Pool missing on-chain mint data in cache', hop);
+    }
+    
+    // Get the canonicalized mints from cache
+    const cacheMintA = String((poolData as any)?.mint_a || '');
+    const cacheMintB = String((poolData as any)?.mint_b || '');
+    
+    // Check if cache has the mints in the same order as on-chain
+    const cacheMatchesOnChain = cacheMintA === poolBaseMint && cacheMintB === poolQuoteMint;
+    
+    // If cache was canonicalized (mints swapped), we need to swap vaultA and vaultB
+    const poolBaseVault = cacheMatchesOnChain ? vaultA : vaultB;
+    const poolQuoteVault = cacheMatchesOnChain ? vaultB : vaultA;
     
     // Debug logging
     try {
@@ -1315,6 +1308,10 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
           outputMint: hop.outputMint.slice(0, 8) + '...',
           poolBaseMint: poolBaseMint.slice(0, 8) + '...',
           poolQuoteMint: poolQuoteMint.slice(0, 8) + '...',
+          cacheMintA: cacheMintA.slice(0, 8) + '...',
+          cacheMintB: cacheMintB.slice(0, 8) + '...',
+          cacheMatchesOnChain,
+          vaultSwapped: !cacheMatchesOnChain,
         }
       });
     } catch {}
@@ -1386,8 +1383,8 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
       { pubkey: toPublicKey(poolQuoteMint), isSigner: false, isWritable: false }, // #5 Quote Mint
       { pubkey: isSellingBase ? userSourceAta : userDestAta, isSigner: false, isWritable: true }, // #6 User Base Token Account
       { pubkey: isSellingBase ? userDestAta : userSourceAta, isSigner: false, isWritable: true }, // #7 User Quote Token Account
-      { pubkey: vaultA, isSigner: false, isWritable: true },                   // #8 Pool Base Token Account
-      { pubkey: vaultB, isSigner: false, isWritable: true },                   // #9 Pool Quote Token Account
+      { pubkey: poolBaseVault, isSigner: false, isWritable: true },            // #8 Pool Base Token Account
+      { pubkey: poolQuoteVault, isSigner: false, isWritable: true },           // #9 Pool Quote Token Account
       { pubkey: protocolFeeRecipient, isSigner: false, isWritable: false },    // #10 Protocol Fee Recipient
       { pubkey: protocolFeeRecipientTokenAccount, isSigner: false, isWritable: true }, // #11 Protocol Fee Recipient Token Account
       { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },        // #12 Base Token Program
@@ -1408,8 +1405,8 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
           quoteMint: poolQuoteMint.slice(0, 8) + '...',
           userBaseAta: (isSellingBase ? userSourceAta : userDestAta).toBase58().slice(0, 8) + '...',
           userQuoteAta: (isSellingBase ? userDestAta : userSourceAta).toBase58().slice(0, 8) + '...',
-          poolBaseVault: vaultA.toBase58().slice(0, 8) + '...',
-          poolQuoteVault: vaultB.toBase58().slice(0, 8) + '...',
+          poolBaseVault: poolBaseVault.toBase58().slice(0, 8) + '...',
+          poolQuoteVault: poolQuoteVault.toBase58().slice(0, 8) + '...',
           protocolFeeRecipient: protocolFeeRecipient.toBase58(),
           protocolFeeTokenAccount: protocolFeeRecipientTokenAccount.toBase58(),
         }
