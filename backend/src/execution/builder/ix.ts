@@ -1380,6 +1380,10 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
       }
     }
     
+    // NOW convert the creator vault addresses to PublicKey (after fallback derivation)
+    const creatorVaultAta = toPublicKey(coinCreatorVaultAta);
+    const creatorVaultAuthority = toPublicKey(coinCreatorVaultAuthority);
+    
     // Use the stored on-chain vaults directly - no mapping needed!
     // These vault addresses are the ACTUAL on-chain addresses and won't be affected by canonicalization
     const poolBaseVault = toPublicKey(onchainBaseVault);
@@ -1464,9 +1468,8 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
     const FEE_CONFIG = toPublicKey('5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx');
     const FEE_PROGRAM = toPublicKey('Pump9x3FRC86zy4T1N3V99RG9ejwokxgvXBfRRgxUoZ'); // Pump Fees Program
     
-    // Use pool-specific accounts from cache (extracted during enrichment)
-    const creatorVaultAta = toPublicKey(coinCreatorVaultAta);
-    const creatorVaultAuthority = toPublicKey(coinCreatorVaultAuthority);
+    // NOTE: creatorVaultAta and creatorVaultAuthority are converted to PublicKey AFTER fallback derivation
+    // See below after the fallback block
     
     // Derive user volume accumulator - PDA derived from user
     const [userVolumeAccumulator] = await (async () => {
