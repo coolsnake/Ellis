@@ -617,10 +617,12 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
         price_a_per_b_exact,
         // TVL in USD if we could calculate it
         tvl_usd: liquidity_base > 0 ? liquidity_base : undefined,
-        // Store original on-chain mint order BEFORE canonicalization
+        // Store original on-chain mint and vault order BEFORE canonicalization
         // This is critical for instruction building to avoid RPC calls
         onchain_base_mint: mint_a,  // Original base mint from on-chain pool
         onchain_quote_mint: mint_b, // Original quote mint from on-chain pool
+        onchain_base_vault: pool.pool_base_token_account,  // Original base vault
+        onchain_quote_vault: pool.pool_quote_token_account, // Original quote vault
       } as any);
     } catch (e: any) {
       try { logger.warn('pumpswap.normalize.pool.failed', { error: String(e?.message || e), cat: 'pumpswap' }); } catch {}

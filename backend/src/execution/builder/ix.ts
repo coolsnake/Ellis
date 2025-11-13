@@ -1270,7 +1270,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
     );
     
     // Determine if we're swapping in the base→quote or quote→base direction
-    // Fetch the original on-chain mint order from cache (stored before canonicalization)
+    // Fetch the original on-chain mint and vault order from cache (stored before canonicalization)
     const { peekPumpswapPools } = await import('../../server/pools.js');
     const pools = peekPumpswapPools();
     const poolData = (pools.amm || []).find((p: any) => String(p?.id || '') === hop.poolId.replace(/-rev$/, ''));
@@ -1279,23 +1279,20 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
       throw createBuilderError('PUMPSWAP', 'Pool data not found in cache', hop);
     }
     
-    // Get the original on-chain mint order (before canonicalization)
+    // Get the original on-chain mint and vault order (before canonicalization)
     const poolBaseMint = String((poolData as any)?.onchain_base_mint || '');
     const poolQuoteMint = String((poolData as any)?.onchain_quote_mint || '');
+    const onchainBaseVault = String((poolData as any)?.onchain_base_vault || '');
+    const onchainQuoteVault = String((poolData as any)?.onchain_quote_vault || '');
     
-    if (!poolBaseMint || !poolQuoteMint) {
-      throw createBuilderError('PUMPSWAP', 'Pool missing on-chain mint data in cache', hop);
+    if (!poolBaseMint || !poolQuoteMint || !onchainBaseVault || !onchainQuoteVault) {
+      throw createBuilderError('PUMPSWAP', 'Pool missing on-chain mint/vault data in cache', hop);
     }
     
-    // IMPORTANT: vaultA/vaultB (account_a/account_b) were ALREADY swapped by canonicalization
-    // along with the mints. So mint_a corresponds to account_a, mint_b to account_b.
-    // We need to map the on-chain base/quote to the canonicalized accounts.
-    const cacheMintA = String((poolData as any)?.mint_a || '');
-    const cacheMintB = String((poolData as any)?.mint_b || '');
-    
-    // Determine which vault is base and which is quote based on canonicalized mints
-    const poolBaseVault = cacheMintA === poolBaseMint ? vaultA : vaultB;
-    const poolQuoteVault = cacheMintA === poolBaseMint ? vaultB : vaultA;
+    // Use the stored on-chain vaults directly - no mapping needed!
+    // These vault addresses are the ACTUAL on-chain addresses and won't be affected by canonicalization
+    const poolBaseVault = toPublicKey(onchainBaseVault);
+    const poolQuoteVault = toPublicKey(onchainQuoteVault);
     
     // Debug logging
     try {
@@ -1307,9 +1304,8 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
           outputMint: hop.outputMint.slice(0, 8) + '...',
           poolBaseMint: poolBaseMint.slice(0, 8) + '...',
           poolQuoteMint: poolQuoteMint.slice(0, 8) + '...',
-          cacheMintA: cacheMintA.slice(0, 8) + '...',
-          cacheMintB: cacheMintB.slice(0, 8) + '...',
-          vaultAisBase: cacheMintA === poolBaseMint,
+          poolBaseVault: onchainBaseVault.slice(0, 8) + '...',
+          poolQuoteVault: onchainQuoteVault.slice(0, 8) + '...',
         }
       });
     } catch {}
