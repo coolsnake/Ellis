@@ -1311,13 +1311,13 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
       } catch {}
       
       const { PublicKey, SystemProgram } = await import('@solana/web3.js');
-      const creatorPubkey = toPublicKey(creator);
       
       // Check if coin_creator is the System Program (meaning no creator fees for this pool)
-      if (creator === SystemProgram.programId.toBase58() || creator === '11111111111111111111111111111111') {
+      const SYSTEM_PROGRAM_ID = SystemProgram.programId.toBase58();
+      if (creator === SYSTEM_PROGRAM_ID) {
         // No creator fees - use System Program as placeholders
-        coinCreatorVaultAuthority = SystemProgram.programId.toBase58();
-        coinCreatorVaultAta = SystemProgram.programId.toBase58();
+        coinCreatorVaultAuthority = SYSTEM_PROGRAM_ID;
+        coinCreatorVaultAta = SYSTEM_PROGRAM_ID;
         
         try {
           logger.info('pumpswap.no_creator_fees', {
@@ -1330,6 +1330,8 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
         } catch {}
       } else {
         // Real coin creator - derive vault authority using PumpSwap program
+        const creatorPubkey = toPublicKey(creator);
+        
         // PDA derived from seeds: ["creator_vault", coin_creator]
         // Source: https://github.com/pump-fun/pump-public-docs/blob/main/docs/PUMP_SWAP_CREATOR_FEE_README.md
         const [vaultAuthority] = PublicKey.findProgramAddressSync(
