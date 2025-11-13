@@ -1270,17 +1270,40 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
     );
     
     // Determine if we're swapping in the base→quote or quote→base direction
-    // We need to fetch the pool data to see which mint is base and which is quote
-    const { peekPumpswapPools } = await import('../../server/pools.js');
-    const pools = peekPumpswapPools();
-    const poolData = (pools.amm || []).find((p: any) => String(p?.id || '') === hop.poolId.replace(/-rev$/, ''));
+    // CRITICAL: We must fetch the ACTUAL on-chain pool mint order, NOT the canonicalized cache data
+    // The cache may have swapped the mints for display purposes, but we need the real on-chain structure
+    const { Connection, PublicKey } = await import('@solana/web3.js');
+    const rpcUrl = CONFIG.rpcUrl || 'https://api.mainnet-beta.solana.com';
+    const conn = new Connection(rpcUrl);
     
-    if (!poolData) {
-      throw createBuilderError('PUMPSWAP', 'Pool data not found in cache', hop);
+    let poolBaseMint: string;
+    let poolQuoteMint: string;
+    
+    try {
+      const poolAccount = await conn.getAccountInfo(poolId);
+      if (!poolAccount || poolAccount.owner.toBase58() !== programId.toBase58()) {
+        throw new Error('Pool account not found or owned by wrong program');
+      }
+      
+      // Parse pool account data according to pumpswap structure:
+      // [discriminator(8), bump(1), index(2), creator(32), base_mint(32), quote_mint(32), ...]
+      const data = poolAccount.data;
+      const baseMintPubkey = new PublicKey(data.subarray(43, 75));
+      const quoteMintPubkey = new PublicKey(data.subarray(75, 107));
+      poolBaseMint = baseMintPubkey.toBase58();
+      poolQuoteMint = quoteMintPubkey.toBase58();
+    } catch (e: any) {
+      try {
+        logger.error('pumpswap.pool.fetch.failed', {
+          cat: 'tx',
+          ctx: {
+            poolId: hop.poolId,
+            error: String(e?.message || e),
+          }
+        });
+      } catch {}
+      throw createBuilderError('PUMPSWAP', `Failed to fetch pool account: ${String(e?.message || e)}`, hop);
     }
-    
-    const poolBaseMint = String((poolData as any)?.mint_a || '');
-    const poolQuoteMint = String((poolData as any)?.mint_b || '');
     
     // Debug logging
     try {
