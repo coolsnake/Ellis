@@ -365,9 +365,23 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
               const { PublicKey } = await import('@solana/web3.js');
               const coinCreatorBytes = buf.subarray(211, 243);
               const coinCreatorPubkey = new PublicKey(coinCreatorBytes);
-              const pool = batch[mapping.poolIndex - i];
-              if (pool && pool.pubkey) {
-                creators.set(pool.pubkey, coinCreatorPubkey.toBase58());
+              const coinCreatorBase58 = coinCreatorPubkey.toBase58();
+              
+              // Validate that we got a proper base58 string
+              if (coinCreatorBase58 && coinCreatorBase58.length >= 32) {
+                const pool = batch[mapping.poolIndex - i];
+                if (pool && pool.pubkey) {
+                  creators.set(pool.pubkey, coinCreatorBase58);
+                  
+                  try {
+                    logger.debug('pumpswap.extract.coin_creator.success', {
+                      pool: pool.pubkey.slice(0, 12),
+                      coinCreator: coinCreatorBase58.slice(0, 12),
+                      isSystemProgram: coinCreatorBase58 === '11111111111111111111111111111111',
+                      cat: 'pumpswap'
+                    });
+                  } catch {}
+                }
               }
             }
           } catch (e: any) {
