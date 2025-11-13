@@ -1298,8 +1298,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
     );
 
     let instructionType: string;
-    let discriminator: Buffer;
-    let dataBuffer: Buffer;
+    let instructionData: Buffer;
     
     if (isSellingBase) {
       // SELL instruction: sell exact base to receive at least min quote
@@ -1309,13 +1308,14 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
         .update('global:sell')
         .digest()
         .subarray(0, 8);
-      discriminator = Buffer.from(sellDiscriminatorBytes);
+      const sellDiscriminator = Buffer.from(sellDiscriminatorBytes);
       
       // Encode instruction data: [discriminator (8 bytes), base_amount_in (u64), min_quote_amount_out (u64)]
-      dataBuffer = Buffer.alloc(8 + 8 + 8);
-      discriminator.copy(dataBuffer, 0);
-      dataBuffer.writeBigUInt64LE(BigInt(amountInBn.toString()), 8);
-      dataBuffer.writeBigUInt64LE(BigInt(minOutBn.toString()), 16);
+      const buffer = Buffer.alloc(8 + 8 + 8);
+      sellDiscriminator.copy(buffer, 0);
+      buffer.writeBigUInt64LE(BigInt(amountInBn.toString()), 8);
+      buffer.writeBigUInt64LE(BigInt(minOutBn.toString()), 16);
+      instructionData = buffer;
     } else {
       // BUY instruction: buy exact base with at most max quote
       // Anchor discriminator: first 8 bytes of sha256("global:buy")
@@ -1324,16 +1324,17 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
         .update('global:buy')
         .digest()
         .subarray(0, 8);
-      discriminator = Buffer.from(buyDiscriminatorBytes);
+      const buyDiscriminator = Buffer.from(buyDiscriminatorBytes);
       
       // Encode instruction data: [discriminator (8 bytes), base_amount_out (u64), max_quote_amount_in (u64)]
       // For buy: we want to receive minOut (base), and we're willing to pay up to amountIn (quote)
       // But since we have exact quote input, we need to convert this to: buy as much base as possible with exact quote
       // This means: base_amount_out = minOut, max_quote_amount_in = amountIn
-      dataBuffer = Buffer.alloc(8 + 8 + 8);
-      discriminator.copy(dataBuffer, 0);
-      dataBuffer.writeBigUInt64LE(BigInt(minOutBn.toString()), 8);   // base_amount_out (what we want to receive)
-      dataBuffer.writeBigUInt64LE(BigInt(amountInBn.toString()), 16); // max_quote_amount_in (max we'll pay)
+      const buffer = Buffer.alloc(8 + 8 + 8);
+      buyDiscriminator.copy(buffer, 0);
+      buffer.writeBigUInt64LE(BigInt(minOutBn.toString()), 8);   // base_amount_out (what we want to receive)
+      buffer.writeBigUInt64LE(BigInt(amountInBn.toString()), 16); // max_quote_amount_in (max we'll pay)
+      instructionData = buffer;
     }
 
     // Build accounts array (15 accounts total)
@@ -1359,7 +1360,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
     const swapIx = new TransactionInstruction({
       programId,
       keys,
-      data: dataBuffer,
+      data: instructionData,
     });
 
     try {
