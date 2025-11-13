@@ -1285,15 +1285,41 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
     const onchainBaseVault = String((poolData as any)?.onchain_base_vault || '');
     const onchainQuoteVault = String((poolData as any)?.onchain_quote_vault || '');
     const creator = String((poolData as any)?.creator || '');
-    const coinCreatorVaultAta = String((poolData as any)?.coin_creator_vault_ata || '');
-    const coinCreatorVaultAuthority = String((poolData as any)?.coin_creator_vault_authority || '');
+    let coinCreatorVaultAta = String((poolData as any)?.coin_creator_vault_ata || '');
+    let coinCreatorVaultAuthority = String((poolData as any)?.coin_creator_vault_authority || '');
     
     if (!poolBaseMint || !poolQuoteMint || !onchainBaseVault || !onchainQuoteVault || !creator) {
       throw createBuilderError('PUMPSWAP', 'Pool missing on-chain mint/vault/creator data in cache', hop);
     }
     
+    // If coin creator vault addresses aren't in cache (old pool data), derive them as fallback
+    // This provides backward compatibility until pools are re-enriched
     if (!coinCreatorVaultAta || !coinCreatorVaultAuthority) {
-      throw createBuilderError('PUMPSWAP', 'Pool missing coin creator vault addresses - pool may need re-enrichment', hop);
+      try {
+        logger.info('pumpswap.fallback.derive_accounts', {
+          cat: 'tx',
+          ctx: { poolId: hop.poolId.slice(0, 12), reason: 'missing_from_cache' }
+        });
+      } catch {}
+      
+      const creatorPubkey = toPublicKey(creator);
+      
+      // Derive coin creator vault ATA - creator's associated token account for the base mint
+      coinCreatorVaultAta = getAssociatedTokenAddressSync(
+        toPublicKey(poolBaseMint),
+        creatorPubkey,
+        true // allowOwnerOffCurve
+      ).toBase58();
+      
+      // Derive coin creator vault authority - PDA derived from creator
+      const [authority] = await (async () => {
+        const { PublicKey } = await import('@solana/web3.js');
+        return PublicKey.findProgramAddressSync(
+          [Buffer.from('coin_creator_vault_authority'), creatorPubkey.toBuffer()],
+          programId
+        );
+      })();
+      coinCreatorVaultAuthority = authority.toBase58();
     }
     
     // Use the stored on-chain vaults directly - no mapping needed!

@@ -208,8 +208,32 @@ export function parsePumpswapPoolAccounts(data: Buffer | Uint8Array): {
   coinCreatorVaultAuthority: string | null;
 } {
   try {
-    if (!data || data.length < 300) return { coinCreatorVaultAta: null, coinCreatorVaultAuthority: null };
+    if (!data) {
+      try { logger.info('pumpswap.parse.pool.accounts', { error: 'no data', cat: 'pumpswap' }); } catch {}
+      return { coinCreatorVaultAta: null, coinCreatorVaultAuthority: null };
+    }
+    
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+    
+    // Log data size for debugging
+    try { 
+      logger.info('pumpswap.parse.pool.accounts.size', { 
+        size: buf.length, 
+        hasEnoughData: buf.length >= 300,
+        cat: 'pumpswap' 
+      }); 
+    } catch {}
+    
+    if (buf.length < 300) {
+      try { 
+        logger.info('pumpswap.parse.pool.accounts.too_small', { 
+          size: buf.length, 
+          required: 300,
+          cat: 'pumpswap' 
+        }); 
+      } catch {}
+      return { coinCreatorVaultAta: null, coinCreatorVaultAuthority: null };
+    }
     
     const { PublicKey } = require('@solana/web3.js');
     
@@ -229,18 +253,23 @@ export function parsePumpswapPoolAccounts(data: Buffer | Uint8Array): {
       try {
         const pk = new PublicKey(buf.subarray(coinCreatorVaultAtaOffset, coinCreatorVaultAtaOffset + 32));
         coinCreatorVaultAta = pk.toBase58();
-      } catch {}
+      } catch (e) {
+        try { logger.info('pumpswap.parse.vault_ata.failed', { error: String(e), cat: 'pumpswap' }); } catch {}
+      }
     }
     
     if (buf.length >= coinCreatorVaultAuthorityOffset + 32) {
       try {
         const pk = new PublicKey(buf.subarray(coinCreatorVaultAuthorityOffset, coinCreatorVaultAuthorityOffset + 32));
         coinCreatorVaultAuthority = pk.toBase58();
-      } catch {}
+      } catch (e) {
+        try { logger.info('pumpswap.parse.vault_authority.failed', { error: String(e), cat: 'pumpswap' }); } catch {}
+      }
     }
     
     return { coinCreatorVaultAta, coinCreatorVaultAuthority };
-  } catch {
+  } catch (e) {
+    try { logger.info('pumpswap.parse.pool.accounts.error', { error: String(e), cat: 'pumpswap' }); } catch {}
     return { coinCreatorVaultAta: null, coinCreatorVaultAuthority: null };
   }
 }
