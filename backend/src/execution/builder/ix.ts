@@ -1287,16 +1287,15 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
       throw createBuilderError('PUMPSWAP', 'Pool missing on-chain mint data in cache', hop);
     }
     
-    // Get the canonicalized mints from cache
+    // IMPORTANT: vaultA/vaultB (account_a/account_b) were ALREADY swapped by canonicalization
+    // along with the mints. So mint_a corresponds to account_a, mint_b to account_b.
+    // We need to map the on-chain base/quote to the canonicalized accounts.
     const cacheMintA = String((poolData as any)?.mint_a || '');
     const cacheMintB = String((poolData as any)?.mint_b || '');
     
-    // Check if cache has the mints in the same order as on-chain
-    const cacheMatchesOnChain = cacheMintA === poolBaseMint && cacheMintB === poolQuoteMint;
-    
-    // If cache was canonicalized (mints swapped), we need to swap vaultA and vaultB
-    const poolBaseVault = cacheMatchesOnChain ? vaultA : vaultB;
-    const poolQuoteVault = cacheMatchesOnChain ? vaultB : vaultA;
+    // Determine which vault is base and which is quote based on canonicalized mints
+    const poolBaseVault = cacheMintA === poolBaseMint ? vaultA : vaultB;
+    const poolQuoteVault = cacheMintA === poolBaseMint ? vaultB : vaultA;
     
     // Debug logging
     try {
@@ -1310,8 +1309,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
           poolQuoteMint: poolQuoteMint.slice(0, 8) + '...',
           cacheMintA: cacheMintA.slice(0, 8) + '...',
           cacheMintB: cacheMintB.slice(0, 8) + '...',
-          cacheMatchesOnChain,
-          vaultSwapped: !cacheMatchesOnChain,
+          vaultAisBase: cacheMintA === poolBaseMint,
         }
       });
     } catch {}
