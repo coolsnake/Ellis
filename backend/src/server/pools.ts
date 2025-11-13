@@ -1591,45 +1591,26 @@ export function startRaydiumRefreshLoop(): void {
   // Auto-start timers/WS when allowed by config and graph readiness
 
     if (!wsEnabled && !suppressInitialOnce) {
+    // Use unified refresh timer to ensure all filters (minPoolsPerPair, TVL, universe) are consistently applied
     rayTimer = setInterval(() => {
       try {
-        logger.info('pools.refresh timer raydium', { cat: 'pools' });
-        emit('log', { level: 'debug', message: 'pools:refresh timer source=raydium', timestamp: new Date().toISOString(), context: { cat: 'pools' } });
+        logger.info('pools.refresh timer refreshAllSources', { cat: 'pools' });
+        emit('log', { level: 'debug', message: 'pools:refresh timer unified (with filters)', timestamp: new Date().toISOString(), context: { cat: 'pools' } });
       } catch {}
-      getRaydiumPoolsNormalized(true).catch(() => {});
+      refreshAllSources(true).catch(() => {});
     }, rayPeriod);
-    orcaTimer = setInterval(() => {
-      try {
-        logger.info('pools.refresh timer orca', { cat: 'pools' });
-        emit('log', { level: 'debug', message: 'pools:refresh timer source=orca', timestamp: new Date().toISOString(), context: { cat: 'pools' } });
-      } catch {}
-      getOrcaPoolsCached(true).catch(() => {});
-    }, orcaPeriod);
-    meteoraTimer = setInterval(() => {
-      try {
-        logger.info('pools.refresh timer meteora', { cat: 'pools' });
-        emit('log', { level: 'debug', message: 'pools:refresh timer source=meteora', timestamp: new Date().toISOString(), context: { cat: 'pools' } });
-      } catch {}
-      getMeteoraPoolsCached(true).catch(() => {});
-    }, meteoraPeriod);
+    // Note: Individual DEX timers (orca, meteora) removed - refreshAllSources handles all sources with consistent filtering
   }
     // Proceed to initial fetch and optional WS
 
   // Kick immediately once activated so data is available without waiting
   // Kick immediately once, but respect min-force gap for subsequent calls
   if (!suppressInitialOnce) {
-    // Respect DEX source control configuration
-    const configSources = (CONFIG.system as any)?.enabledDexSources || {};
-    
-    if (configSources.raydium !== false) {
-      try { getRaydiumPoolsNormalized(true).catch(() => {}); } catch {}
-    }
-    if (configSources.orca !== false) {
-      try { getOrcaPoolsCached(true).catch(() => {}); } catch {}
-    }
-    if (configSources.meteora !== false) {
-      try { getMeteoraPoolsCached(true).catch(() => {}); } catch {}
-    }
+    // Use refreshAllSources to ensure all filters (minPoolsPerPair, TVL, universe) are applied consistently
+    // This respects DEX source control configuration internally
+    try { 
+      refreshAllSources(true).catch(() => {}); 
+    } catch {}
   }
 
   // Optional: subscribe to on-chain account changes to push updates into caches (auto-enabled)
