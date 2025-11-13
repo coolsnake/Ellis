@@ -1517,10 +1517,29 @@ export function startRaydiumRefreshLoop(): void {
 
         const handle = async (pk: any, info: any) => {
           try {
+            const beforeMs = lastWsEventMs;
             lastWsEventMs = Date.now();
             wsHealthy = true;
             
             const pk58 = toB58Any(pk);
+            
+            // Log event reception for debugging health check issues
+            const programOwner = info.owner?.toBase58?.() || '';
+            const mapped = programToSource.get(programOwner);
+            
+            // Debug log for pumpswap and meteora_balanced events to track idle timer
+            if (mapped === 'pumpswap' || mapped === 'meteora_balanced') {
+              const idleBeforeMs = Date.now() - beforeMs;
+              try {
+                logger.debug('pools.ws.event_received', {
+                  source: mapped,
+                  account: pk58.slice(0, 8) + '…',
+                  idleBeforeMs,
+                  program: programOwner.slice(0, 8) + '…',
+                  cat: 'pools'
+                });
+              } catch {}
+            }
             
             // Check if this is a derived account (vault, reserve, tick array, oracle)
             const derivedMeta = derivedAccountToPool.get(pk58);

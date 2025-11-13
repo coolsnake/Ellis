@@ -301,14 +301,36 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
       const beforeFilter = ammCanon.length;
       const filtered = ammCanon.filter(p => {
         const liq = p.tvl_usd ?? p.pool_liquidity_raw ?? p.liquidity_base ?? 0;
+        const hasDecimals = Number.isFinite(p.decimals_a) && Number.isFinite(p.decimals_b);
+        
+        // Log pools that are filtered out due to missing data
+        if (liq < minLiqBase && liq === 0 && !hasDecimals) {
+          try {
+            logger.debug('meteora.balanced.filter.no_liq_no_decimals', {
+              pool: p.id,
+              mintA: p.mint_a,
+              mintB: p.mint_b,
+              cat: 'meteora'
+            });
+          } catch {}
+        }
+        
         return liq >= minLiqBase;
       });
       if (filtered.length !== beforeFilter) {
         try {
+          // Count how many were filtered due to missing decimals
+          const filteredNoDecimals = ammCanon.filter(p => {
+            const liq = p.tvl_usd ?? p.pool_liquidity_raw ?? p.liquidity_base ?? 0;
+            const hasDecimals = Number.isFinite(p.decimals_a) && Number.isFinite(p.decimals_b);
+            return liq < minLiqBase && !hasDecimals;
+          }).length;
+          
           logger.info('meteora.balanced.filter.min_liq', {
             before: beforeFilter,
             after: filtered.length,
             minLiqBase,
+            filteredNoDecimals,
             cat: 'meteora'
           });
         } catch {}
@@ -494,43 +516,91 @@ export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[
   // eslint-disable-next-line no-undef
   const fetchFn: any = (globalThis as any).fetch || fetch;
   
-  // Build URL with query parameters
-  const url = (() => {
-    const sp = new URLSearchParams();
-    
-    // Determine if we're going to add hide_low_tvl parameter
-    // hide_low_tvl expects a number (minimum TVL threshold in USD)
-    // Support both boolean (true) and numeric configurations
-    let willAddHideLowTvl = false;
-    if (cfg.hideLowTvl === true && minLiqBase > 0) {
-      sp.append('hide_low_tvl', String(minLiqBase));
-      willAddHideLowTvl = true;
-    } else if (typeof cfg.hideLowTvl === 'number' && cfg.hideLowTvl > 0) {
-      // If hideLowTvl is configured as a number, use it directly
-      sp.append('hide_low_tvl', String(cfg.hideLowTvl));
-      willAddHideLowTvl = true;
-    }
-    
-    // Address is required when: anchorTokensOnly is true OR hide_low_tvl is being used
-    // (Meteora v1 API requires address parameter when using hide_low_tvl filter)
-    const needsAddress = anchorTokensOnly || willAddHideLowTvl;
-    
-    // Filter by anchor tokens if enabled (SOL, USDC)
-    if (needsAddress) {
-      sp.append('address', 'So11111111111111111111111111111111111111112'); // SOL
-      sp.append('address', 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'); // USDC
-    }
-    
-    // hide_low_apr is a boolean
-    if (hideLowApr) {
-      sp.append('hide_low_apr', 'true');
-    }
-    
-    const qs = sp.toString();
-    return qs ? `${base}?${qs}` : base;
-  })();
+  // CRITICAL FIX: Meteora v1 API doesn't support multiple address parameters
+  // We need to fetch SOL and USDC pools separately and merge them
+  const allPools = new Map<string, any>(); // Dedupe by pool address
   
-  const cid = httpLogStart({ source: 'meteora_balanced_v1', url });
+  if (anchorTokensOnly || (cfg.hideLowTvl === true && minLiqBase > 0)) {
+    // Fetch SOL pools
+    const solUrl = (() => {
+      const sp = new URLSearchParams();
+      sp.append('address', 'So11111111111111111111111111111111111111112'); // SOL
+      if (cfg.hideLowTvl === true && minLiqBase > 0) {
+        sp.append('hide_low_tvl', String(minLiqBase));
+      }
+      if (hideLowApr) sp.append('hide_low_apr', 'true');
+      return `${base}?${sp.toString()}`;
+    })();
+    
+    const solPools = await fetchV1WithRetry(solUrl, fetchFn, retries, backoffMs, 'SOL');
+    for (const pool of solPools) {
+      const poolAddr = pool?.pool_address || pool?.address || pool?.pubkey;
+      if (poolAddr) allPools.set(String(poolAddr), pool);
+    }
+    
+    // Small delay between requests
+    await new Promise(r => setTimeout(r, 200));
+    
+    // Fetch USDC pools
+    const usdcUrl = (() => {
+      const sp = new URLSearchParams();
+      sp.append('address', 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'); // USDC
+      if (cfg.hideLowTvl === true && minLiqBase > 0) {
+        sp.append('hide_low_tvl', String(minLiqBase));
+      }
+      if (hideLowApr) sp.append('hide_low_apr', 'true');
+      return `${base}?${sp.toString()}`;
+    })();
+    
+    const usdcPools = await fetchV1WithRetry(usdcUrl, fetchFn, retries, backoffMs, 'USDC');
+    for (const pool of usdcPools) {
+      const poolAddr = pool?.pool_address || pool?.address || pool?.pubkey;
+      if (poolAddr) allPools.set(String(poolAddr), pool);
+    }
+    
+    const data = Array.from(allPools.values());
+    
+    try {
+      logger.info('meteora.balanced.v1.fetch complete', {
+        count: data.length,
+        anchorTokensOnly,
+        hideLowTvl: cfg.hideLowTvl === true,
+        hideLowApr,
+        minLiqBase,
+        cat: 'meteora'
+      });
+    } catch {}
+    
+    return data;
+  } else {
+    // No filters, fetch all pools
+    const url = base;
+    const data = await fetchV1WithRetry(url, fetchFn, retries, backoffMs, 'all');
+    
+    try {
+      logger.info('meteora.balanced.v1.fetch complete', {
+        count: data.length,
+        anchorTokensOnly: false,
+        hideLowTvl: false,
+        hideLowApr,
+        minLiqBase,
+        cat: 'meteora'
+      });
+    } catch {}
+    
+    return data;
+  }
+}
+
+// Helper function to fetch v1 API with retry logic
+async function fetchV1WithRetry(
+  url: string, 
+  fetchFn: any, 
+  retries: number, 
+  backoffMs: number,
+  tokenLabel: string
+): Promise<any[]> {
+  const cid = httpLogStart({ source: 'meteora_balanced_v1', url, extra: { token: tokenLabel } });
   let res: any = null;
   let ok = false;
   
@@ -573,12 +643,9 @@ export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[
   httpLogResponse({ source: 'meteora_balanced_v1', url, cid, status: res.status, ms: 0, count: data.length });
   
   try {
-    logger.info('meteora.balanced.v1.fetch complete', {
+    logger.debug('meteora.balanced.v1.fetch.token', {
+      token: tokenLabel,
       count: data.length,
-      anchorTokensOnly,
-      hideLowTvl: cfg.hideLowTvl === true,
-      hideLowApr,
-      minLiqBase,
       cat: 'meteora'
     });
   } catch {}
@@ -734,6 +801,64 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
     } catch {}
   }
 
+  // Collect missing mint addresses for batch RPC fetch
+  const missingMints = new Set<string>();
+  for (const [poolIdx, vaults] of poolToVaults.entries()) {
+    if (!jupMap[vaults.mintA]?.decimals) missingMints.add(vaults.mintA);
+    if (!jupMap[vaults.mintB]?.decimals) missingMints.add(vaults.mintB);
+  }
+  
+  // Fetch missing mint decimals via RPC in batches
+  const mintDecimals = new Map<string, number>();
+  if (missingMints.size > 0) {
+    try {
+      logger.info('meteora.balanced.rpc.fetch_missing_decimals', {
+        count: missingMints.size,
+        cat: 'meteora'
+      });
+    } catch {}
+    
+    const missingMintArray = Array.from(missingMints);
+    for (let i = 0; i < missingMintArray.length; i += batchSize) {
+      const batch = missingMintArray.slice(i, i + batchSize);
+      const pubkeys = batch.map(addr => new PublicKey(addr));
+      
+      try {
+        await new Promise(r => setTimeout(r, 50));
+        const accounts = await conn.getMultipleAccountsInfo(pubkeys);
+        
+        for (let j = 0; j < accounts.length; j++) {
+          const account = accounts[j];
+          const mintAddress = batch[j];
+          
+          if (account && account.data && account.data.length >= 45) {
+            try {
+              // SPL Token Mint layout: decimals is u8 at offset 44
+              const decimals = account.data[44];
+              mintDecimals.set(mintAddress, decimals);
+            } catch {}
+          }
+        }
+      } catch (e) {
+        try {
+          logger.warn('meteora.balanced.rpc.mint_batch.failed', {
+            error: String((e as any)?.message || e),
+            batch: i / batchSize,
+            cat: 'meteora'
+          });
+        } catch {}
+      }
+    }
+    
+    try {
+      logger.info('meteora.balanced.rpc.fetch_missing_decimals.complete', {
+        fetched: mintDecimals.size,
+        total: missingMints.size,
+        cat: 'meteora'
+      });
+    } catch {}
+  }
+  
   // Enrich pools with reserve data
   for (const [poolIdx, vaults] of poolToVaults.entries()) {
     const pool = pools[poolIdx];
@@ -746,15 +871,23 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
       // Don't set decimals from vault - they can be stale/incorrect
       // We'll use Jupiter token map as the only source of truth
       
-      // Get decimals ONLY from Jupiter token map (mint's true decimals)
-      const jupDecA = jupMap[vaults.mintA]?.decimals;
-      const jupDecB = jupMap[vaults.mintB]?.decimals;
+      // Get decimals from Jupiter token map OR RPC fallback
+      let jupDecA = jupMap[vaults.mintA]?.decimals;
+      let jupDecB = jupMap[vaults.mintB]?.decimals;
       
-      // CRITICAL: Set decimals from Jupiter - this is the only source of truth
+      // Fallback to RPC-fetched decimals if Jupiter doesn't have them
+      if (!Number.isFinite(jupDecA)) {
+        jupDecA = mintDecimals.get(vaults.mintA);
+      }
+      if (!Number.isFinite(jupDecB)) {
+        jupDecB = mintDecimals.get(vaults.mintB);
+      }
+      
+      // CRITICAL: Set decimals from Jupiter or RPC fallback
       if (Number.isFinite(jupDecA)) {
         pool.decimalsA = jupDecA;
       } else {
-        // Log warning if Jupiter doesn't have decimals for this mint
+        // Log warning if we still don't have decimals after RPC fallback
         try {
           logger.warn('meteora.balanced.rpc.missing_decimals_a', {
             pool: pool.pool_address || pool.id,
@@ -767,7 +900,7 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
       if (Number.isFinite(jupDecB)) {
         pool.decimalsB = jupDecB;
       } else {
-        // Log warning if Jupiter doesn't have decimals for this mint
+        // Log warning if we still don't have decimals after RPC fallback
         try {
           logger.warn('meteora.balanced.rpc.missing_decimals_b', {
             pool: pool.pool_address || pool.id,
