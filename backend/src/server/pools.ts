@@ -1683,6 +1683,17 @@ export function startRaydiumRefreshLoop(): void {
             
             const pk58 = toB58Any(pk);
             
+            // Log at entry to track event routing
+            try {
+              logger.debug('pools.ws handle.entry', {
+                account: pk58.slice(0,8) + '…',
+                dataLength: info?.data?.length || 0,
+                isDerived: derivedAccountToPool.has(pk58),
+                isTargeted: targetedSourceByAccount.has(pk58),
+                cat: 'pools'
+              });
+            } catch {}
+            
             // Check if this is a derived account (vault, reserve, tick array, oracle)
             const derivedMeta = derivedAccountToPool.get(pk58);
             if (derivedMeta) {
@@ -2440,7 +2451,19 @@ export function startRaydiumRefreshLoop(): void {
               try { wsCounts.pumpswap = (wsCounts.pumpswap || 0) + 1; } catch {}
               try { wsDecodeStats.pumpswap.attempts += 1; } catch {}
               const pk58 = toB58Any(pk);
+              
+              // Log entry to pumpswap decoder
+              try {
+                logger.debug('pools.ws pumpswap.decode.start', {
+                  pool: pk58.slice(0,8) + '…',
+                  dataLength: info?.data?.length || 0,
+                  cat: 'pools'
+                });
+              } catch {}
+              
               let updated = false;
+              let account_a: string | undefined;
+              let account_b: string | undefined;
               try {
                 if (!info?.data || info.data.length < 100) {
                   throw new Error('pumpswap account data too short');
@@ -2553,6 +2576,17 @@ export function startRaydiumRefreshLoop(): void {
                 try { wsDecodeStats.pumpswap.successes += 1; } catch {}
                 wsDeltaStats.pumpswap.decoded += 1;
                 
+                // Log successful decode
+                try {
+                  logger.debug('pumpswap.ws.decode.success', {
+                    pool: pk58.slice(0,8) + '…',
+                    baseReserve: baseReserve.toString(),
+                    quoteReserve: quoteReserve.toString(),
+                    price: price_a_per_b,
+                    cat: 'pools'
+                  });
+                } catch {}
+                
                 const d = diffNormalizedPools(prev, next);
                 pumpswapCache.data = next;
                 pumpswapCache.ts = Date.now();
@@ -2584,7 +2618,18 @@ export function startRaydiumRefreshLoop(): void {
                 
               } catch (e: any) {
                 try { wsDecodeStats.pumpswap.failures += 1; } catch {}
-                try { logger.warn('pumpswap.ws.decode failed', { id: pk58, error: String(e?.message || e), cat: 'pools' }); } catch {}
+                try { 
+                  logger.warn('pumpswap.ws.decode failed', { 
+                    id: pk58.slice(0,8) + '…', 
+                    error: String(e?.message || e),
+                    dataLength: info?.data?.length || 0,
+                    hasVaultA: !!(account_a),
+                    hasVaultB: !!(account_b),
+                    vaultACached: account_a ? vaultBalanceCache.has(account_a) : false,
+                    vaultBCached: account_b ? vaultBalanceCache.has(account_b) : false,
+                    cat: 'pools' 
+                  }); 
+                } catch {}
                 
                 // Fallback to HTTP refresh
                 const minGap = Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000);
@@ -2764,10 +2809,41 @@ export function startRaydiumRefreshLoop(): void {
             try {
               // Wrap subscription call with RPC tracking and rate limiting
               const id = await withRpcLimit(
-                () => conn.onAccountChange(accountPk, (info: any) => { try { cb(accountPk, info); } catch {} }),
+                () => conn.onAccountChange(accountPk, (info: any) => { 
+                  try { 
+                    // Log every WebSocket event for diagnostics
+                    try {
+                      logger.debug('pools.ws event.received', {
+                        account: accountPk.toBase58().slice(0,8) + '…',
+                        subscriptionId: id,
+                        dataLength: info?.data?.length || 0,
+                        cat: 'pools'
+                      });
+                    } catch {}
+                    cb(accountPk, info); 
+                  } catch (callbackErr: any) {
+                    // Log callback errors (should never happen but catch just in case)
+                    try {
+                      logger.warn('pools.ws event.callback_error', {
+                        account: accountPk.toBase58().slice(0,8) + '…',
+                        error: String(callbackErr?.message || callbackErr),
+                        cat: 'pools'
+                      });
+                    } catch {}
+                  }
+                }),
                 1,
                 { module: 'pools', method: 'accountSubscribe' }
               );
+              
+              // Log successful subscription
+              try {
+                logger.debug('pools.ws subscribe.success', {
+                  account: accountPk.toBase58().slice(0,8) + '…',
+                  subscriptionId: id,
+                  cat: 'pools'
+                });
+              } catch {}
               
               return id as unknown as number;
             } catch (e: any) {

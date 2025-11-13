@@ -1269,6 +1269,27 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
       PROTOCOL_FEE_RECIPIENTS[Math.floor(Math.random() * PROTOCOL_FEE_RECIPIENTS.length)]
     );
     
+    // Determine if we're swapping in the base→quote or quote→base direction
+    // We need to fetch the pool data to see which mint is base and which is quote
+    const { peekPumpswapPools } = await import('../../server/pools.js');
+    const pools = peekPumpswapPools();
+    const poolData = (pools.amm || []).find((p: any) => String(p?.id || '') === hop.poolId.replace(/-rev$/, ''));
+    
+    if (!poolData) {
+      throw createBuilderError('PUMPSWAP', 'Pool data not found in cache', hop);
+    }
+    
+    const poolBaseMint = String((poolData as any)?.mint_a || '');
+    const poolQuoteMint = String((poolData as any)?.mint_b || '');
+    
+    // Determine swap direction and choose instruction
+    const isSellingBase = hop.inputMint === poolBaseMint && hop.outputMint === poolQuoteMint;
+    const isBuyingBase = hop.inputMint === poolQuoteMint && hop.outputMint === poolBaseMint;
+    
+    if (!isSellingBase && !isBuyingBase) {
+      throw createBuilderError('PUMPSWAP', `Mint mismatch: input=${hop.inputMint}, output=${hop.outputMint}, poolBase=${poolBaseMint}, poolQuote=${poolQuoteMint}`, hop);
+    }
+    
     // Derive protocol fee recipient token account (ATA for the output mint)
     const protocolFeeRecipientTokenAccount = getAssociatedTokenAddressSync(
       outputMint,
@@ -1276,24 +1297,55 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
       true // allowOwnerOffCurve
     );
 
-    // Use 'sell' instruction for exact input swaps (selling exact base to receive at least min quote)
-    // Anchor discriminator: first 8 bytes of sha256("global:sell")
-    const sellDiscriminatorBytes = crypto.createHash('sha256')
-      .update('global:sell')
-      .digest()
-      .subarray(0, 8);
-    const sellDiscriminator = Buffer.from(sellDiscriminatorBytes);
+    let instructionType: string;
+    let discriminator: Buffer;
+    let dataBuffer: Buffer;
+    
+    if (isSellingBase) {
+      // SELL instruction: sell exact base to receive at least min quote
+      // Anchor discriminator: first 8 bytes of sha256("global:sell")
+      instructionType = 'sell';
+      const sellDiscriminatorBytes = crypto.createHash('sha256')
+        .update('global:sell')
+        .digest()
+        .subarray(0, 8);
+      discriminator = Buffer.from(sellDiscriminatorBytes);
+      
+      // Encode instruction data: [discriminator (8 bytes), base_amount_in (u64), min_quote_amount_out (u64)]
+      dataBuffer = Buffer.alloc(8 + 8 + 8);
+      discriminator.copy(dataBuffer, 0);
+      dataBuffer.writeBigUInt64LE(BigInt(amountInBn.toString()), 8);
+      dataBuffer.writeBigUInt64LE(BigInt(minOutBn.toString()), 16);
+    } else {
+      // BUY instruction: buy exact base with at most max quote
+      // Anchor discriminator: first 8 bytes of sha256("global:buy")
+      instructionType = 'buy';
+      const buyDiscriminatorBytes = crypto.createHash('sha256')
+        .update('global:buy')
+        .digest()
+        .subarray(0, 8);
+      discriminator = Buffer.from(buyDiscriminatorBytes);
+      
+      // Encode instruction data: [discriminator (8 bytes), base_amount_out (u64), max_quote_amount_in (u64)]
+      // For buy: we want to receive minOut (base), and we're willing to pay up to amountIn (quote)
+      // But since we have exact quote input, we need to convert this to: buy as much base as possible with exact quote
+      // This means: base_amount_out = minOut, max_quote_amount_in = amountIn
+      dataBuffer = Buffer.alloc(8 + 8 + 8);
+      discriminator.copy(dataBuffer, 0);
+      dataBuffer.writeBigUInt64LE(BigInt(minOutBn.toString()), 8);   // base_amount_out (what we want to receive)
+      dataBuffer.writeBigUInt64LE(BigInt(amountInBn.toString()), 16); // max_quote_amount_in (max we'll pay)
+    }
 
-    // Build accounts array for sell instruction (15 accounts total)
+    // Build accounts array (15 accounts total)
     // Account order per pumpswap program requirements
     const keys = [
       { pubkey: poolId, isSigner: false, isWritable: true },                    // #1 Pool
       { pubkey: kp.publicKey, isSigner: true, isWritable: true },              // #2 User (writable for fee payment)
       { pubkey: GLOBAL_CONFIG, isSigner: false, isWritable: false },           // #3 Global Config
-      { pubkey: inputMint, isSigner: false, isWritable: false },               // #4 Base Mint (what we're selling)
-      { pubkey: outputMint, isSigner: false, isWritable: false },              // #5 Quote Mint (what we receive)
-      { pubkey: userSourceAta, isSigner: false, isWritable: true },            // #6 User Base Token Account
-      { pubkey: userDestAta, isSigner: false, isWritable: true },              // #7 User Quote Token Account
+      { pubkey: toPublicKey(poolBaseMint), isSigner: false, isWritable: false }, // #4 Base Mint
+      { pubkey: toPublicKey(poolQuoteMint), isSigner: false, isWritable: false }, // #5 Quote Mint
+      { pubkey: isSellingBase ? userSourceAta : userDestAta, isSigner: false, isWritable: true }, // #6 User Base Token Account
+      { pubkey: isSellingBase ? userDestAta : userSourceAta, isSigner: false, isWritable: true }, // #7 User Quote Token Account
       { pubkey: vaultA, isSigner: false, isWritable: true },                   // #8 Pool Base Token Account
       { pubkey: vaultB, isSigner: false, isWritable: true },                   // #9 Pool Quote Token Account
       { pubkey: protocolFeeRecipient, isSigner: false, isWritable: false },    // #10 Protocol Fee Recipient
@@ -1303,12 +1355,6 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // #14 System Program
       { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, // #15 Associated Token Program
     ];
-
-    // Encode instruction data for sell: [discriminator (8 bytes), base_amount_in (u64), min_quote_amount_out (u64)]
-    const dataBuffer = Buffer.alloc(8 + 8 + 8);
-    sellDiscriminator.copy(dataBuffer, 0);
-    dataBuffer.writeBigUInt64LE(BigInt(amountInBn.toString()), 8);
-    dataBuffer.writeBigUInt64LE(BigInt(minOutBn.toString()), 16);
 
     const swapIx = new TransactionInstruction({
       programId,
@@ -1325,7 +1371,8 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
           amountIn: amountInBn.toString(),
           minOut: minOutBn.toString(),
           accounts: keys.length,
-          instruction: 'sell',
+          instruction: instructionType,
+          direction: isSellingBase ? 'base→quote' : 'quote→base',
         } as any,
       });
     } catch {}
