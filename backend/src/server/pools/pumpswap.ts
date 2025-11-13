@@ -190,112 +190,20 @@ function parseTokenAccountAmount(data: Buffer | Uint8Array): bigint | null {
 
 /**
  * Parse Pumpswap pool account structure to extract execution-critical addresses
- * Pool structure (observed from on-chain data):
- * - discriminator: 8 bytes
- * - bump: 1 byte
- * - index: 2 bytes (u16)
- * - creator: 32 bytes (Pubkey)
- * - base_mint: 32 bytes (Pubkey)
- * - quote_mint: 32 bytes (Pubkey)
- * - lp_mint: 32 bytes (Pubkey)
- * - pool_base_token_account: 32 bytes (Pubkey)
- * - pool_quote_token_account: 32 bytes (Pubkey)
- * - coin_creator_vault_ata: 32 bytes (Pubkey) - at offset ~235
- * - coin_creator_vault_authority: 32 bytes (Pubkey) - at offset ~267
+ * 
+ * NOTE: After testing, we found that the coin creator vault addresses are NOT
+ * reliably stored in the pool account data (offsets returned all zeros = System Program).
+ * These addresses need to be derived from the creator and base mint.
+ * 
+ * This function is kept for future reference but currently returns null.
  */
 export async function parsePumpswapPoolAccounts(data: Buffer | Uint8Array): Promise<{ 
   coinCreatorVaultAta: string | null; 
   coinCreatorVaultAuthority: string | null;
 }> {
-  try {
-    if (!data) {
-      try { logger.info('pumpswap.parse.pool.accounts', { error: 'no data', cat: 'pumpswap' }); } catch {}
-      return { coinCreatorVaultAta: null, coinCreatorVaultAuthority: null };
-    }
-    
-    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-    
-    // Log data size for debugging
-    try { 
-      logger.info('pumpswap.parse.pool.accounts.size', { 
-        size: buf.length, 
-        hasEnoughData: buf.length >= 300,
-        cat: 'pumpswap' 
-      }); 
-    } catch {}
-    
-    if (buf.length < 300) {
-      try { 
-        logger.info('pumpswap.parse.pool.accounts.too_small', { 
-          size: buf.length, 
-          required: 300,
-          cat: 'pumpswap' 
-        }); 
-      } catch {}
-      return { coinCreatorVaultAta: null, coinCreatorVaultAuthority: null };
-    }
-    
-    const { PublicKey } = await import('@solana/web3.js');
-    
-    // Based on observed pool structure, these accounts appear after the standard pool fields
-    // Offset calculations:
-    // 8 (discriminator) + 1 (bump) + 2 (index) + 32 (creator) + 32 (base_mint) + 32 (quote_mint) 
-    // + 32 (lp_mint) + 32 (base_vault) + 32 (quote_vault) = 203 bytes
-    // Then additional fields follow, including coin_creator_vault_ata and authority
-    
-    const coinCreatorVaultAtaOffset = 235; // Observed from real pool data
-    const coinCreatorVaultAuthorityOffset = 267; // Observed from real pool data
-    
-    let coinCreatorVaultAta: string | null = null;
-    let coinCreatorVaultAuthority: string | null = null;
-    
-    if (buf.length >= coinCreatorVaultAtaOffset + 32) {
-      try {
-        const pk = new PublicKey(buf.subarray(coinCreatorVaultAtaOffset, coinCreatorVaultAtaOffset + 32));
-        coinCreatorVaultAta = pk.toBase58();
-      } catch (e) {
-        try { 
-          logger.info('pumpswap.parse.vault_ata.failed', { 
-            error: String(e), 
-            offset: coinCreatorVaultAtaOffset,
-            bytesHex: buf.subarray(coinCreatorVaultAtaOffset, coinCreatorVaultAtaOffset + 32).toString('hex').slice(0, 64),
-            cat: 'pumpswap' 
-          }); 
-        } catch {}
-      }
-    }
-    
-    if (buf.length >= coinCreatorVaultAuthorityOffset + 32) {
-      try {
-        const pk = new PublicKey(buf.subarray(coinCreatorVaultAuthorityOffset, coinCreatorVaultAuthorityOffset + 32));
-        coinCreatorVaultAuthority = pk.toBase58();
-      } catch (e) {
-        try { 
-          logger.info('pumpswap.parse.vault_authority.failed', { 
-            error: String(e),
-            offset: coinCreatorVaultAuthorityOffset,
-            bytesHex: buf.subarray(coinCreatorVaultAuthorityOffset, Math.min(coinCreatorVaultAuthorityOffset + 32, buf.length)).toString('hex').slice(0, 64),
-            cat: 'pumpswap' 
-          }); 
-        } catch {}
-      }
-    }
-    
-    try {
-      logger.info('pumpswap.parse.result', {
-        hasAta: !!coinCreatorVaultAta,
-        hasAuthority: !!coinCreatorVaultAuthority,
-        ata: coinCreatorVaultAta?.slice(0, 12),
-        authority: coinCreatorVaultAuthority?.slice(0, 12),
-        cat: 'pumpswap'
-      });
-    } catch {}
-    
-    return { coinCreatorVaultAta, coinCreatorVaultAuthority };
-  } catch (e) {
-    try { logger.info('pumpswap.parse.pool.accounts.error', { error: String(e), cat: 'pumpswap' }); } catch {}
-    return { coinCreatorVaultAta: null, coinCreatorVaultAuthority: null };
-  }
+  // These addresses cannot be reliably extracted from pool account data
+  // They must be derived during transaction building
+  return { coinCreatorVaultAta: null, coinCreatorVaultAuthority: null };
 }
 
 /**
@@ -423,10 +331,9 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
         { module: 'pools', method: 'getMultipleAccountsInfo' }
       );
       
-      // Create maps for balances, fees, and pool accounts
+      // Create maps for balances and fees
       const balances = new Map<string, bigint>();
       const fees = new Map<string, number>(); // pool pubkey -> fee_bps
-      const poolAccounts = new Map<string, { coinCreatorVaultAta: string | null; coinCreatorVaultAuthority: string | null }>(); // pool pubkey -> accounts
       
       for (let k = 0; k < allAddresses.length; k++) {
         const info = accountInfos[k];
@@ -445,24 +352,6 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
               feesExtracted++;
             }
           }
-          
-          // Extract pool-specific accounts for transaction building
-          const accounts = await parsePumpswapPoolAccounts(info.data);
-          const pool = batch[mapping.poolIndex - i];
-          if (pool && pool.pubkey) {
-            poolAccounts.set(pool.pubkey, accounts);
-            // Debug: log first extracted accounts for verification
-            if (poolAccounts.size === 1) {
-              try {
-                logger.info('pumpswap.pool.accounts.extracted.first', {
-                  cat: 'pumpswap',
-                  poolId: pool.pubkey.slice(0, 12),
-                  coinCreatorVaultAta: accounts.coinCreatorVaultAta?.slice(0, 12),
-                  coinCreatorVaultAuthority: accounts.coinCreatorVaultAuthority?.slice(0, 12),
-                });
-              } catch {}
-            }
-          }
         } else {
           // Extract balance from vault account
           const amount = parseTokenAccountAmount(info.data);
@@ -472,20 +361,19 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
         }
       }
       
-      // Enrich each pool in the batch with balance, fee, and account data
+      // Enrich each pool in the batch with balance and fee data
       for (const pool of batch) {
         const baseBalance = pool.pool_base_token_account ? balances.get(pool.pool_base_token_account) : null;
         const quoteBalance = pool.pool_quote_token_account ? balances.get(pool.pool_quote_token_account) : null;
         const feeBps = pool.pubkey ? fees.get(pool.pubkey) : null;
-        const accounts = pool.pubkey ? poolAccounts.get(pool.pubkey) : null;
         
         enriched.push({
           ...pool,
           base_reserve: baseBalance !== null ? baseBalance.toString() : undefined,
           quote_reserve: quoteBalance !== null ? quoteBalance.toString() : undefined,
           fee_bps: feeBps !== null ? feeBps : undefined, // Add extracted fee
-          coin_creator_vault_ata: accounts?.coinCreatorVaultAta || undefined,
-          coin_creator_vault_authority: accounts?.coinCreatorVaultAuthority || undefined,
+          // Note: coin_creator_vault addresses cannot be extracted from pool account
+          // They will be derived during transaction building from creator + base_mint
         });
         
         if (baseBalance !== null && quoteBalance !== null) {
@@ -755,9 +643,7 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
         onchain_quote_mint: mint_b, // Original quote mint from on-chain pool
         onchain_base_vault: pool.pool_base_token_account,  // Original base vault
         onchain_quote_vault: pool.pool_quote_token_account, // Original quote vault
-        creator: pool.creator, // Pool creator for deriving vault authority
-        coin_creator_vault_ata: pool.coin_creator_vault_ata, // Extracted from pool account during enrichment
-        coin_creator_vault_authority: pool.coin_creator_vault_authority, // Extracted from pool account during enrichment
+        creator: pool.creator, // Pool creator for deriving vault authority during transaction building
       } as any);
     } catch (e: any) {
       try { logger.warn('pumpswap.normalize.pool.failed', { error: String(e?.message || e), cat: 'pumpswap' }); } catch {}
