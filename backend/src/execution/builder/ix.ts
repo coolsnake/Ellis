@@ -1355,12 +1355,13 @@ export async function buildMeteoraDammSwapIxReal(hop: DirectHop): Promise<any[]>
             const pool = await (AmmImpl as any).create(connection, poolAddress);
             
             if (pool && typeof pool.swap === 'function') {
-              const swapResult = await pool.swap(
-                kp.publicKey,
-                toPublicKey(hop.inputMint),
-                amountIn,
-                minOut
-              );
+              // SDK swap method likely takes an options object
+              const swapResult = await pool.swap({
+                user: kp.publicKey,
+                inTokenMint: toPublicKey(hop.inputMint),
+                inAmount: amountIn,
+                minOutAmount: minOut,
+              });
               
               if (swapResult?.transaction?.instructions) {
                 try {
@@ -1395,13 +1396,14 @@ export async function buildMeteoraDammSwapIxReal(hop: DirectHop): Promise<any[]>
             const cpAmm = new CpAmm(connection);
             
             if (typeof cpAmm.swap === 'function') {
-              const swapResult = await cpAmm.swap(
-                poolAddress,
-                kp.publicKey,
-                toPublicKey(hop.inputMint),
-                amountIn,
-                minOut
-              );
+              // SDK swap method likely takes an options object
+              const swapResult = await cpAmm.swap({
+                pool: poolAddress,
+                user: kp.publicKey,
+                inTokenMint: toPublicKey(hop.inputMint),
+                inAmount: amountIn,
+                minOutAmount: minOut,
+              });
               
               if (swapResult?.instructions) {
                 try {
