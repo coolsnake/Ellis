@@ -32,7 +32,7 @@ export async function fetchMeteoraBalancedHttp(): Promise<any> {
     const size = Number(cfg.pageSize || 200);
     
     // API-level quality filters
-    const hideLowTvl = cfg.hideLowTvl === true;
+    const minLiqBase = Number(cfg.minLiqBase || 0); // For hide_low_tvl API parameter
     const hideLowApr = cfg.hideLowApr === true;
     const tokensVerified = cfg.tokensVerified === true;
     
@@ -59,7 +59,8 @@ export async function fetchMeteoraBalancedHttp(): Promise<any> {
           if (Number.isFinite(size) && size > 0) sp.append('limit', String(size));
           sp.append('page', String(page));
           // Add quality filters to API request
-          if (hideLowTvl) sp.append('hide_low_tvl', 'true');
+          // hide_low_tvl expects a number (minimum TVL in USD)
+          if (minLiqBase > 0) sp.append('hide_low_tvl', String(minLiqBase));
           if (hideLowApr) sp.append('hide_low_apr', 'true');
           if (tokensVerified) sp.append('tokens_verified', 'true');
           const qs = sp.toString();
@@ -92,7 +93,7 @@ export async function fetchMeteoraBalancedHttp(): Promise<any> {
         try {
           logger.info('meteora.balanced.fetch complete', {
             count: out.length,
-            hideLowTvl,
+            minLiqBase,
             hideLowApr,
             tokensVerified,
             cat: 'meteora'
@@ -520,12 +521,14 @@ export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[
   // We need to fetch SOL and USDC pools separately and merge them
   const allPools = new Map<string, any>(); // Dedupe by pool address
   
-  if (anchorTokensOnly || (cfg.hideLowTvl === true && minLiqBase > 0)) {
+  if (anchorTokensOnly) {
     // Fetch SOL pools
+    // NOTE: According to Meteora API docs, address[] parameter filters pools containing that token
     const solUrl = (() => {
       const sp = new URLSearchParams();
       sp.append('address', 'So11111111111111111111111111111111111111112'); // SOL
-      if (cfg.hideLowTvl === true && minLiqBase > 0) {
+      // Apply hide_low_tvl only if explicitly configured (API expects a number for minimum TVL)
+      if (minLiqBase > 0) {
         sp.append('hide_low_tvl', String(minLiqBase));
       }
       if (hideLowApr) sp.append('hide_low_apr', 'true');
@@ -545,7 +548,8 @@ export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[
     const usdcUrl = (() => {
       const sp = new URLSearchParams();
       sp.append('address', 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'); // USDC
-      if (cfg.hideLowTvl === true && minLiqBase > 0) {
+      // Apply hide_low_tvl only if explicitly configured (API expects a number for minimum TVL)
+      if (minLiqBase > 0) {
         sp.append('hide_low_tvl', String(minLiqBase));
       }
       if (hideLowApr) sp.append('hide_low_apr', 'true');
@@ -564,7 +568,6 @@ export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[
       logger.info('meteora.balanced.v1.fetch complete', {
         count: data.length,
         anchorTokensOnly,
-        hideLowTvl: cfg.hideLowTvl === true,
         hideLowApr,
         minLiqBase,
         cat: 'meteora'

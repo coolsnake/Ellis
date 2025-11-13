@@ -1529,6 +1529,16 @@ export function startRaydiumRefreshLoop(): void {
             // Check if this is a derived account (vault, reserve, tick array, oracle)
             const derivedMeta = derivedAccountToPool.get(pk58);
             if (derivedMeta) {
+              // CRITICAL FIX: Increment event counter for the parent DEX
+              // Vault events need to be counted so they show up in aggregate logs
+              // and keep the WebSocket health check alive
+              const vaultSource = targetedSourceByAccount.get(pk58);
+              if (vaultSource === 'pumpswap') {
+                try { wsCounts.pumpswap = (wsCounts.pumpswap || 0) + 1; } catch {}
+              } else if (vaultSource === 'meteora_balanced') {
+                try { wsCounts.meteora_balanced = (wsCounts.meteora_balanced || 0) + 1; } catch {}
+              }
+              
               // Process vault/reserve updates locally without RPC calls
               if (derivedMeta.accountType === 'vault' || derivedMeta.accountType === 'reserve') {
                 try {
