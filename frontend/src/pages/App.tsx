@@ -966,23 +966,26 @@ export const App: React.FC = () => {
           // New: single-hop helpers for UI terminal
           if (action === 'singlehop') {
             const mode = (parts[2] || '').toLowerCase(); // sim|exec
-            const target = (parts[3] || '').toLowerCase(); // ray-amm|ray-clmm|orca|meteora
+            const target = (parts[3] || '').toLowerCase(); // ray-amm|ray-clmm|orca|meteora|damm-v1|damm-v2|pumpswap
             const sizeSol = Number(parts[4] || 0.01);
             const slippageBps = Number(parts[5] || 50);
             const poolId = parts[6];
-            if (!['sim','exec'].includes(mode) || !['ray-amm','ray-clmm','orca','meteora'].includes(target)) {
-              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: arb singlehop sim|exec ray-amm|ray-clmm|orca|meteora [SIZE_SOL] [SLIPPAGE_BPS] [POOL_ID]' }) });
+            const validTargets = ['ray-amm','ray-clmm','orca','meteora','damm-v1','damm-v2','pumpswap'];
+            if (!['sim','exec'].includes(mode) || !validTargets.includes(target)) {
+              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: arb singlehop sim|exec ray-amm|ray-clmm|orca|meteora|damm-v1|damm-v2|pumpswap [SIZE_SOL] [SLIPPAGE_BPS] [POOL_ID]' }) });
               return;
             }
             // Pick pool if not provided
-            const dexForPick = target.startsWith('ray') ? 'raydium' : (target as any);
+            const dexForPick = target.startsWith('ray') ? 'raydium' : 
+                               target.startsWith('damm') ? 'meteora-balanced' :
+                               (target as any);
             const preferForPick = target === 'ray-amm' ? 'amm' : (target === 'ray-clmm' ? 'clmm' : undefined);
             const pid = poolId || await pickPoolId(
               dexForPick as any,
               preferForPick ? { prefer: preferForPick } : undefined,
             );
             if (!pid) {
-              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: no USDC/USDT pool found for ${target}` }) });
+              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: no pool found for ${target}` }) });
               return;
             }
             const route = ((): string => {
@@ -990,11 +993,19 @@ export const App: React.FC = () => {
                 if (target === 'ray-amm') return ROUTES.arb.simulateSendRaydiumAmm;
                 if (target === 'ray-clmm') return ROUTES.arb.simulateSendRaydiumClmm;
                 if (target === 'orca') return ROUTES.arb.simulateSendOrca;
+                if (target === 'meteora') return ROUTES.arb.simulateSendMeteora;
+                if (target === 'damm-v1') return ROUTES.arb.simulateSendMeteoraBalancedV1;
+                if (target === 'damm-v2') return ROUTES.arb.simulateSendMeteoraBalancedV2;
+                if (target === 'pumpswap') return ROUTES.arb.simulateSendPumpswap;
                 return ROUTES.arb.simulateSendMeteora;
               }
               if (target === 'ray-amm') return ROUTES.arb.executeRaydiumAmm;
               if (target === 'ray-clmm') return ROUTES.arb.executeRaydiumClmm;
               if (target === 'orca') return ROUTES.arb.executeOrca;
+              if (target === 'meteora') return ROUTES.arb.executeMeteora;
+              if (target === 'damm-v1') return ROUTES.arb.executeMeteoraBalancedV1;
+              if (target === 'damm-v2') return ROUTES.arb.executeMeteoraBalancedV2;
+              if (target === 'pumpswap') return ROUTES.arb.executePumpswap;
               return ROUTES.arb.executeMeteora;
             })();
             const payload: any = { path: [SOL, USDC], poolId: pid, size: sizeSol, slippageBps };

@@ -60,6 +60,12 @@ export const ROUTES = {
     executeOrca: '/arb/execute/orca',
     simulateSendMeteora: '/arb/simulate-send/meteora',
     executeMeteora: '/arb/execute/meteora',
+    simulateSendMeteoraBalancedV1: '/arb/simulate-send/meteora-balanced-v1',
+    executeMeteoraBalancedV1: '/arb/execute/meteora-balanced-v1',
+    simulateSendMeteoraBalancedV2: '/arb/simulate-send/meteora-balanced-v2',
+    executeMeteoraBalancedV2: '/arb/execute/meteora-balanced-v2',
+    simulateSendPumpswap: '/arb/simulate-send/pumpswap',
+    executePumpswap: '/arb/execute/pumpswap',
     // ALT management endpoints
     alts: {
       status: '/arb/alts/status',
