@@ -189,6 +189,63 @@ function parseTokenAccountAmount(data: Buffer | Uint8Array): bigint | null {
 }
 
 /**
+ * Parse Pumpswap pool account structure to extract execution-critical addresses
+ * Pool structure (observed from on-chain data):
+ * - discriminator: 8 bytes
+ * - bump: 1 byte
+ * - index: 2 bytes (u16)
+ * - creator: 32 bytes (Pubkey)
+ * - base_mint: 32 bytes (Pubkey)
+ * - quote_mint: 32 bytes (Pubkey)
+ * - lp_mint: 32 bytes (Pubkey)
+ * - pool_base_token_account: 32 bytes (Pubkey)
+ * - pool_quote_token_account: 32 bytes (Pubkey)
+ * - coin_creator_vault_ata: 32 bytes (Pubkey) - at offset ~235
+ * - coin_creator_vault_authority: 32 bytes (Pubkey) - at offset ~267
+ */
+export function parsePumpswapPoolAccounts(data: Buffer | Uint8Array): { 
+  coinCreatorVaultAta: string | null; 
+  coinCreatorVaultAuthority: string | null;
+} {
+  try {
+    if (!data || data.length < 300) return { coinCreatorVaultAta: null, coinCreatorVaultAuthority: null };
+    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+    
+    const { PublicKey } = require('@solana/web3.js');
+    
+    // Based on observed pool structure, these accounts appear after the standard pool fields
+    // Offset calculations:
+    // 8 (discriminator) + 1 (bump) + 2 (index) + 32 (creator) + 32 (base_mint) + 32 (quote_mint) 
+    // + 32 (lp_mint) + 32 (base_vault) + 32 (quote_vault) = 203 bytes
+    // Then additional fields follow, including coin_creator_vault_ata and authority
+    
+    const coinCreatorVaultAtaOffset = 235; // Observed from real pool data
+    const coinCreatorVaultAuthorityOffset = 267; // Observed from real pool data
+    
+    let coinCreatorVaultAta: string | null = null;
+    let coinCreatorVaultAuthority: string | null = null;
+    
+    if (buf.length >= coinCreatorVaultAtaOffset + 32) {
+      try {
+        const pk = new PublicKey(buf.subarray(coinCreatorVaultAtaOffset, coinCreatorVaultAtaOffset + 32));
+        coinCreatorVaultAta = pk.toBase58();
+      } catch {}
+    }
+    
+    if (buf.length >= coinCreatorVaultAuthorityOffset + 32) {
+      try {
+        const pk = new PublicKey(buf.subarray(coinCreatorVaultAuthorityOffset, coinCreatorVaultAuthorityOffset + 32));
+        coinCreatorVaultAuthority = pk.toBase58();
+      } catch {}
+    }
+    
+    return { coinCreatorVaultAta, coinCreatorVaultAuthority };
+  } catch {
+    return { coinCreatorVaultAta: null, coinCreatorVaultAuthority: null };
+  }
+}
+
+/**
  * Helper to parse pump.swap pool fee from pool account data
  * Based on pump.swap pool account layout analysis
  * Fee structure is typically stored as u64 representing fee in basis points
@@ -313,9 +370,10 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
         { module: 'pools', method: 'getMultipleAccountsInfo' }
       );
       
-      // Create maps for balances and fees
+      // Create maps for balances, fees, and pool accounts
       const balances = new Map<string, bigint>();
       const fees = new Map<string, number>(); // pool pubkey -> fee_bps
+      const poolAccounts = new Map<string, { coinCreatorVaultAta: string | null; coinCreatorVaultAuthority: string | null }>(); // pool pubkey -> accounts
       
       for (let k = 0; k < allAddresses.length; k++) {
         const info = accountInfos[k];
@@ -334,6 +392,24 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
               feesExtracted++;
             }
           }
+          
+          // Extract pool-specific accounts for transaction building
+          const accounts = parsePumpswapPoolAccounts(info.data);
+          const pool = batch[mapping.poolIndex - i];
+          if (pool && pool.pubkey) {
+            poolAccounts.set(pool.pubkey, accounts);
+            // Debug: log first extracted accounts for verification
+            if (Object.keys(poolAccounts).length === 1) {
+              try {
+                logger.info('pumpswap.pool.accounts.extracted.first', {
+                  cat: 'pumpswap',
+                  poolId: pool.pubkey.slice(0, 12),
+                  coinCreatorVaultAta: accounts.coinCreatorVaultAta?.slice(0, 12),
+                  coinCreatorVaultAuthority: accounts.coinCreatorVaultAuthority?.slice(0, 12),
+                });
+              } catch {}
+            }
+          }
         } else {
           // Extract balance from vault account
           const amount = parseTokenAccountAmount(info.data);
@@ -343,17 +419,20 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
         }
       }
       
-      // Enrich each pool in the batch with balance and fee data
+      // Enrich each pool in the batch with balance, fee, and account data
       for (const pool of batch) {
         const baseBalance = pool.pool_base_token_account ? balances.get(pool.pool_base_token_account) : null;
         const quoteBalance = pool.pool_quote_token_account ? balances.get(pool.pool_quote_token_account) : null;
         const feeBps = pool.pubkey ? fees.get(pool.pubkey) : null;
+        const accounts = pool.pubkey ? poolAccounts.get(pool.pubkey) : null;
         
         enriched.push({
           ...pool,
           base_reserve: baseBalance !== null ? baseBalance.toString() : undefined,
           quote_reserve: quoteBalance !== null ? quoteBalance.toString() : undefined,
           fee_bps: feeBps !== null ? feeBps : undefined, // Add extracted fee
+          coin_creator_vault_ata: accounts?.coinCreatorVaultAta || undefined,
+          coin_creator_vault_authority: accounts?.coinCreatorVaultAuthority || undefined,
         });
         
         if (baseBalance !== null && quoteBalance !== null) {
@@ -624,6 +703,8 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
         onchain_base_vault: pool.pool_base_token_account,  // Original base vault
         onchain_quote_vault: pool.pool_quote_token_account, // Original quote vault
         creator: pool.creator, // Pool creator for deriving vault authority
+        coin_creator_vault_ata: pool.coin_creator_vault_ata, // Extracted from pool account during enrichment
+        coin_creator_vault_authority: pool.coin_creator_vault_authority, // Extracted from pool account during enrichment
       } as any);
     } catch (e: any) {
       try { logger.warn('pumpswap.normalize.pool.failed', { error: String(e?.message || e), cat: 'pumpswap' }); } catch {}
