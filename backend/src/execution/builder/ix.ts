@@ -1244,33 +1244,70 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
     const amountInBn = new BN(String(hop.amountInRaw ?? 0n));
     const minOutBn = new BN(String(hop.minOutRaw ?? 0n));
 
-    // Create swap instruction
-    // Note: This is a placeholder implementation
-    // The actual Pumpswap program instruction format would need to be determined
-    // from the program IDL or documentation
-    const { TransactionInstruction, SystemProgram, SYSVAR_RENT_PUBKEY } = await import('@solana/web3.js');
-    const { TOKEN_PROGRAM_ID } = await import('@solana/spl-token');
+    // Import required modules
+    const { TransactionInstruction, SystemProgram } = await import('@solana/web3.js');
+    const { TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } = await import('@solana/spl-token');
+    const crypto = await import('crypto');
     
-    // Build accounts array for Pumpswap swap instruction
-    // This is based on typical AMM swap account requirements
+    // Pumpswap Global Config account (constant across all pumpswap transactions)
+    // Source: https://github.com/pump-fun/pump-public-docs/blob/main/docs/PUMP_SWAP_README.md
+    const GLOBAL_CONFIG = toPublicKey('ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw');
+    
+    // Protocol fee recipients (randomly choose one from the 8 available)
+    // It's recommended to randomly choose a different one for each transaction to improve throughput
+    const PROTOCOL_FEE_RECIPIENTS = [
+      '62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV',
+      '7VtfL8fvgNfhz17qKRMjzQEXgbdpnHHHQRh54R9jP2RJ',
+      '7hTckgnGnLQR6sdH7YkqFTAA7VwTfYFaZ6EhEsU3saCX',
+      '9rPYyANsfQZw3DnDmKE3YCQF5E8oD89UXoHn9JFEhJUz',
+      'AVmoTthdrX6tKt4nDjco2D775W2YK3sDhxPcMmzUAmTY',
+      'FWsW1xNtWscwNmKv6wVsU1iTzRN6wmmk3MjxRP5tT7hz',
+      'G5UZAVbAf46s7cKWoyKu8kYTip9DGTpbLZ2qa9Aq69dP',
+      'JCRGumoE9Qi5BBgULTgdgTLjSgkCMSbF62ZZfGs84JeU'
+    ];
+    const protocolFeeRecipient = toPublicKey(
+      PROTOCOL_FEE_RECIPIENTS[Math.floor(Math.random() * PROTOCOL_FEE_RECIPIENTS.length)]
+    );
+    
+    // Derive protocol fee recipient token account (ATA for the output mint)
+    const protocolFeeRecipientTokenAccount = getAssociatedTokenAddressSync(
+      outputMint,
+      protocolFeeRecipient,
+      true // allowOwnerOffCurve
+    );
+
+    // Use 'sell' instruction for exact input swaps (selling exact base to receive at least min quote)
+    // Anchor discriminator: first 8 bytes of sha256("global:sell")
+    const sellDiscriminator = crypto.createHash('sha256')
+      .update('global:sell')
+      .digest()
+      .subarray(0, 8);
+
+    // Build accounts array for sell instruction (15 accounts total)
+    // Account order per pumpswap program requirements
     const keys = [
-      { pubkey: poolId, isSigner: false, isWritable: true },
-      { pubkey: kp.publicKey, isSigner: true, isWritable: false },
-      { pubkey: userSourceAta, isSigner: false, isWritable: true },
-      { pubkey: userDestAta, isSigner: false, isWritable: true },
-      { pubkey: vaultA, isSigner: false, isWritable: true },
-      { pubkey: vaultB, isSigner: false, isWritable: true },
-      { pubkey: inputMint, isSigner: false, isWritable: false },
-      { pubkey: outputMint, isSigner: false, isWritable: false },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: poolId, isSigner: false, isWritable: true },                    // #1 Pool
+      { pubkey: kp.publicKey, isSigner: true, isWritable: true },              // #2 User (writable for fee payment)
+      { pubkey: GLOBAL_CONFIG, isSigner: false, isWritable: false },           // #3 Global Config
+      { pubkey: inputMint, isSigner: false, isWritable: false },               // #4 Base Mint (what we're selling)
+      { pubkey: outputMint, isSigner: false, isWritable: false },              // #5 Quote Mint (what we receive)
+      { pubkey: userSourceAta, isSigner: false, isWritable: true },            // #6 User Base Token Account
+      { pubkey: userDestAta, isSigner: false, isWritable: true },              // #7 User Quote Token Account
+      { pubkey: vaultA, isSigner: false, isWritable: true },                   // #8 Pool Base Token Account
+      { pubkey: vaultB, isSigner: false, isWritable: true },                   // #9 Pool Quote Token Account
+      { pubkey: protocolFeeRecipient, isSigner: false, isWritable: false },    // #10 Protocol Fee Recipient
+      { pubkey: protocolFeeRecipientTokenAccount, isSigner: false, isWritable: true }, // #11 Protocol Fee Recipient Token Account
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },        // #12 Base Token Program
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },        // #13 Quote Token Program
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // #14 System Program
+      { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, // #15 Associated Token Program
     ];
 
-    // Encode instruction data (simplified - actual format depends on Pumpswap program IDL)
-    // Format: [instruction_discriminator, amount_in (u64), min_amount_out (u64)]
-    const dataBuffer = Buffer.alloc(17); // 1 byte discriminator + 8 bytes amount_in + 8 bytes min_out
-    dataBuffer.writeUInt8(1, 0); // Swap instruction discriminator (typically 0 or 1)
-    dataBuffer.writeBigUInt64LE(BigInt(amountInBn.toString()), 1);
-    dataBuffer.writeBigUInt64LE(BigInt(minOutBn.toString()), 9);
+    // Encode instruction data for sell: [discriminator (8 bytes), base_amount_in (u64), min_quote_amount_out (u64)]
+    const dataBuffer = Buffer.alloc(8 + 8 + 8);
+    sellDiscriminator.copy(dataBuffer, 0);
+    dataBuffer.writeBigUInt64LE(BigInt(amountInBn.toString()), 8);
+    dataBuffer.writeBigUInt64LE(BigInt(minOutBn.toString()), 16);
 
     const swapIx = new TransactionInstruction({
       programId,
@@ -1287,6 +1324,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
           amountIn: amountInBn.toString(),
           minOut: minOutBn.toString(),
           accounts: keys.length,
+          instruction: 'sell',
         } as any,
       });
     } catch {}

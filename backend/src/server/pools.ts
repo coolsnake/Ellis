@@ -467,6 +467,162 @@ function parseTokenAccountAmount(data: Buffer | Uint8Array): bigint | null {
   }
 }
 
+// Pre-populate vault balance cache for pumpswap pools before WebSocket subscriptions
+// This prevents pool decode failures when pool events arrive before vault events
+async function preloadPumpswapVaultCache(): Promise<void> {
+  const pools = pumpswapCache.data?.amm || [];
+  if (pools.length === 0) {
+    try { logger.debug('pumpswap.vault_cache.preload.skip', { reason: 'no_pools', cat: 'pools' }); } catch {}
+    return;
+  }
+  
+  const vaults: string[] = [];
+  for (const pool of pools) {
+    if ((pool as any).account_a) vaults.push((pool as any).account_a);
+    if ((pool as any).account_b) vaults.push((pool as any).account_b);
+  }
+  
+  if (vaults.length === 0) {
+    try { logger.debug('pumpswap.vault_cache.preload.skip', { reason: 'no_vaults', cat: 'pools' }); } catch {}
+    return;
+  }
+  
+  try {
+    logger.info('pumpswap.vault_cache.preload.start', { vaultCount: vaults.length, cat: 'pools' });
+    
+    const web3 = await import('@solana/web3.js');
+    const batchSize = 100;
+    let cached = 0;
+    let failed = 0;
+    
+    for (let i = 0; i < vaults.length; i += batchSize) {
+      const batch = vaults.slice(i, i + batchSize);
+      const pubkeys = batch.map(v => new web3.PublicKey(v));
+      
+      try {
+        // Small delay for rate limiting
+        if (i > 0) await new Promise(r => setTimeout(r, 50));
+        
+        const accounts = await wsConn.getMultipleAccountsInfo(pubkeys);
+        
+        for (let j = 0; j < accounts.length; j++) {
+          const acc = accounts[j];
+          const vaultAddr = batch[j];
+          
+          if (acc?.data && acc.data.length >= 72) {
+            const amount = parseTokenAccountAmount(acc.data);
+            if (amount !== null) {
+              vaultBalanceCache.set(vaultAddr, amount);
+              cached++;
+            } else {
+              failed++;
+            }
+          } else {
+            failed++;
+          }
+        }
+      } catch (e: any) {
+        logger.warn('pumpswap.vault_cache.preload.batch_failed', { 
+          batchIndex: Math.floor(i / batchSize),
+          error: String(e?.message || e), 
+          cat: 'pools' 
+        });
+        failed += batch.length;
+      }
+    }
+    
+    logger.info('pumpswap.vault_cache.preload.complete', { 
+      cached, 
+      failed,
+      total: vaults.length,
+      cat: 'pools' 
+    });
+  } catch (e: any) {
+    logger.warn('pumpswap.vault_cache.preload.failed', { 
+      error: String(e?.message || e), 
+      cat: 'pools' 
+    });
+  }
+}
+
+// Pre-populate vault balance cache for meteora_balanced pools before WebSocket subscriptions
+// This prevents pool decode failures when pool events arrive before vault events
+async function preloadMeteoraBalancedVaultCache(): Promise<void> {
+  const pools = metbalCache.data?.amm || [];
+  if (pools.length === 0) {
+    try { logger.debug('meteora_balanced.vault_cache.preload.skip', { reason: 'no_pools', cat: 'pools' }); } catch {}
+    return;
+  }
+  
+  const vaults: string[] = [];
+  for (const pool of pools) {
+    if ((pool as any).account_a) vaults.push((pool as any).account_a);
+    if ((pool as any).account_b) vaults.push((pool as any).account_b);
+  }
+  
+  if (vaults.length === 0) {
+    try { logger.debug('meteora_balanced.vault_cache.preload.skip', { reason: 'no_vaults', cat: 'pools' }); } catch {}
+    return;
+  }
+  
+  try {
+    logger.info('meteora_balanced.vault_cache.preload.start', { vaultCount: vaults.length, cat: 'pools' });
+    
+    const web3 = await import('@solana/web3.js');
+    const batchSize = 100;
+    let cached = 0;
+    let failed = 0;
+    
+    for (let i = 0; i < vaults.length; i += batchSize) {
+      const batch = vaults.slice(i, i + batchSize);
+      const pubkeys = batch.map(v => new web3.PublicKey(v));
+      
+      try {
+        // Small delay for rate limiting
+        if (i > 0) await new Promise(r => setTimeout(r, 50));
+        
+        const accounts = await wsConn.getMultipleAccountsInfo(pubkeys);
+        
+        for (let j = 0; j < accounts.length; j++) {
+          const acc = accounts[j];
+          const vaultAddr = batch[j];
+          
+          if (acc?.data && acc.data.length >= 72) {
+            const amount = parseTokenAccountAmount(acc.data);
+            if (amount !== null) {
+              vaultBalanceCache.set(vaultAddr, amount);
+              cached++;
+            } else {
+              failed++;
+            }
+          } else {
+            failed++;
+          }
+        }
+      } catch (e: any) {
+        logger.warn('meteora_balanced.vault_cache.preload.batch_failed', { 
+          batchIndex: Math.floor(i / batchSize),
+          error: String(e?.message || e), 
+          cat: 'pools' 
+        });
+        failed += batch.length;
+      }
+    }
+    
+    logger.info('meteora_balanced.vault_cache.preload.complete', { 
+      cached, 
+      failed,
+      total: vaults.length,
+      cat: 'pools' 
+    });
+  } catch (e: any) {
+    logger.warn('meteora_balanced.vault_cache.preload.failed', { 
+      error: String(e?.message || e), 
+      cat: 'pools' 
+    });
+  }
+}
+
 // Helper: find a pool in the caches by ID
 function findPoolInCache(poolId: string): { pool: AmmPool | ClmmPool; source: 'raydium' | 'orca' | 'meteora' } | null {
   // Check Orca
@@ -3705,6 +3861,12 @@ export function startRaydiumRefreshLoop(): void {
             cat: 'pools' 
           });
           
+          // CRITICAL: Pre-populate vault balance cache before subscribing to WebSocket
+          // This ensures pool events can decode immediately without waiting for vault events
+          if (uniquePump.length > 0) {
+            await preloadPumpswapVaultCache();
+          }
+          
           for (let i = 0; i < uniquePump.length; i++) {
             const addr = uniquePump[i];
             try {
@@ -3837,6 +3999,12 @@ export function startRaydiumRefreshLoop(): void {
             sequential: isSequentialMode,
             cat: 'pools' 
           });
+          
+          // CRITICAL: Pre-populate vault balance cache before subscribing to WebSocket
+          // This ensures pool events can decode immediately without waiting for vault events
+          if (uniqueMbal.length > 0) {
+            await preloadMeteoraBalancedVaultCache();
+          }
           
           for (let i = 0; i < uniqueMbal.length; i++) {
             const addr = uniqueMbal[i];
