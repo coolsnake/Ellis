@@ -153,39 +153,27 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
 
       const decA = toDec(a?.decimals ?? it?.decimalsA);
       const decB = toDec(b?.decimals ?? it?.decimalsB);
-      const amtAraw = Number(it?.reserveA ?? it?.amountA ?? it?.tokenAmountA ?? 0);
-      const amtBraw = Number(it?.reserveB ?? it?.amountB ?? it?.tokenAmountB ?? 0);
       
-      // Log first pool's raw data structure for debugging
-      if (arr.indexOf(it) === 0) {
-        try {
-          logger.info('meteora.balanced.api_sample', {
-            hasTokenA: !!it?.tokenA,
-            hasTokenB: !!it?.tokenB,
-            hasMintA: !!it?.mintA,
-            hasMintB: !!it?.mintB,
-            hasReserveA: it?.reserveA !== undefined,
-            hasReserveB: it?.reserveB !== undefined,
-            hasAmountA: it?.amountA !== undefined,
-            hasAmountB: it?.amountB !== undefined,
-            hasTokenADecimals: !!a?.decimals,
-            hasTokenBDecimals: !!b?.decimals,
-            hasDecimalsA: it?.decimalsA !== undefined,
-            hasDecimalsB: it?.decimalsB !== undefined,
-            hasTvl: it?.tvl !== undefined,
-            hasPrice: it?.price !== undefined,
-            apiKeys: Object.keys(it).slice(0, 15),
-            tokenAKeys: Object.keys(a).slice(0, 10),
-            tokenBKeys: Object.keys(b).slice(0, 10),
-            cat: 'meteora'
-          });
-        } catch {}
+      // CRITICAL: Check if we have pre-converted whole amounts from RPC enrichment
+      // If vault_a_whole exists, use it directly (already divided by decimals)
+      // Otherwise, try to parse from API's raw amounts
+      let wholeA: number;
+      let wholeB: number;
+      
+      if (it?.vault_a_whole !== undefined && it?.vault_b_whole !== undefined) {
+        // Use enriched whole amounts (already converted)
+        wholeA = Number(it.vault_a_whole);
+        wholeB = Number(it.vault_b_whole);
+      } else {
+        // Fall back to API's raw amounts and convert them
+        const amtAraw = Number(it?.reserveA ?? it?.amountA ?? it?.tokenAmountA ?? 0);
+        const amtBraw = Number(it?.reserveB ?? it?.amountB ?? it?.tokenAmountB ?? 0);
+        wholeA = (Number.isFinite(amtAraw) && Number.isFinite(decA)) ? (amtAraw / Math.pow(10, decA as number)) : NaN;
+        wholeB = (Number.isFinite(amtBraw) && Number.isFinite(decB)) ? (amtBraw / Math.pow(10, decB as number)) : NaN;
       }
       
       // Parse TVL and apply scaling if needed (API may return in milli-USD)
       const tvlRaw = Number(it?.tvl ?? it?.tvlUsd ?? it?.tvl_usd ?? 0);
-      const wholeA = (Number.isFinite(amtAraw) && Number.isFinite(decA)) ? (amtAraw / Math.pow(10, decA as number)) : NaN;
-      const wholeB = (Number.isFinite(amtBraw) && Number.isFinite(decB)) ? (amtBraw / Math.pow(10, decB as number)) : NaN;
       
       // IMPORTANT: Meteora Balanced API may return TVL in milli-USD (10^-3)
       // Heuristic: if TVL is suspiciously small compared to reserves, scale it up by 1000x
@@ -247,10 +235,9 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
             hasWholeB: Number.isFinite(wholeB),
             wholeA: Number.isFinite(wholeA) ? wholeA : 'NaN',
             wholeB: Number.isFinite(wholeB) ? wholeB : 'NaN',
-            hasAmtAraw: Number.isFinite(amtAraw),
-            hasAmtBraw: Number.isFinite(amtBraw),
             hasDecA: Number.isFinite(decA),
             hasDecB: Number.isFinite(decB),
+            hasVaultWhole: it?.vault_a_whole !== undefined,
             cat: 'meteora' 
           }); 
         } catch {}
@@ -769,6 +756,7 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
   const batchSize = 100;
   const vaultData: Map<string, { amount: bigint }> = new Map();
   const lpMintData: Map<string, bigint> = new Map();
+  const rugpullDetected = new Set<string>(); // Track rugpulled pools to avoid duplicate logging
   let successCount = 0;
   let failCount = 0;
 
@@ -929,10 +917,9 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
     const vaultBData = vaultData.get(vaults.vaultB);
     
     if (vaultAData && vaultBData) {
-      pool.reserveA = Number(vaultAData.amount);
-      pool.reserveB = Number(vaultBData.amount);
-      // Don't set decimals from vault - they can be stale/incorrect
-      // We'll use Jupiter token map as the only source of truth
+      // CRITICAL: Store WHOLE amounts (already divided by decimals), not raw amounts
+      // The normalizer expects these fields to be in whole token units
+      // DO NOT set reserveA/reserveB here as they would be double-converted
       
       // Get decimals from Jupiter token map OR RPC fallback
       let jupDecA = jupMap[vaults.mintA]?.decimals;
@@ -980,11 +967,14 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
         const wholeA = Number(vaultAData.amount) / Math.pow(10, decA);
         const wholeB = Number(vaultBData.amount) / Math.pow(10, decB);
         
-        // Store raw reserves as strings for precise calculations
-        pool.reserve_a_raw = vaultAData.amount.toString();
-        pool.reserve_b_raw = vaultBData.amount.toString();
+        // Store CONVERTED amounts that normalizer can use directly
+        // Normalizer will look for vault_a_whole / vault_b_whole
         pool.vault_a_whole = wholeA;
         pool.vault_b_whole = wholeB;
+        
+        // Also store raw reserves as strings for precise calculations
+        pool.reserve_a_raw = vaultAData.amount.toString();
+        pool.reserve_b_raw = vaultBData.amount.toString();
         
         // Get LP supply for rugpull detection
         const lpMint = vaults.lpMint;
@@ -1017,17 +1007,21 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
           pool.is_rugpulled = true;
           pool.lp_supply = lpSupply ? lpSupply.toString() : '0';
           
-          try {
-            logger.warn('meteora.balanced.rpc.rugpull_detected', {
-              pool: pool.pool_address || pool.id,
-              vaultA: wholeA.toFixed(6),
-              vaultB: wholeB.toFixed(6),
-              lpSupply: lpSupply ? lpSupply.toString() : 'null',
-              mintA: vaults.mintA,
-              mintB: vaults.mintB,
-              cat: 'meteora'
-            });
-          } catch {}
+          const poolId = pool.pool_address || pool.id;
+          if (poolId && !rugpullDetected.has(poolId)) {
+            rugpullDetected.add(poolId);
+            try {
+              logger.warn('meteora.balanced.rpc.rugpull_detected', {
+                pool: poolId,
+                vaultA: wholeA.toFixed(6),
+                vaultB: wholeB.toFixed(6),
+                lpSupply: lpSupply ? lpSupply.toString() : 'null',
+                mintA: vaults.mintA,
+                mintB: vaults.mintB,
+                cat: 'meteora'
+              });
+            } catch {}
+          }
         } else {
           // Pool appears healthy - use API TVL if available, otherwise calculate from vaults
           // Store LP supply for reference
@@ -1057,7 +1051,8 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
     logger.info('meteora.balanced.rpc.enrichment.complete', { 
       total: vaultAddresses.length, 
       success: successCount, 
-      fail: failCount, 
+      fail: failCount,
+      rugpulls: rugpullDetected.size,
       ms,
       cat: 'meteora' 
     });
