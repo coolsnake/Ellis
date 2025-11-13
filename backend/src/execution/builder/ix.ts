@@ -1284,9 +1284,10 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
     const poolQuoteMint = String((poolData as any)?.onchain_quote_mint || '');
     const onchainBaseVault = String((poolData as any)?.onchain_base_vault || '');
     const onchainQuoteVault = String((poolData as any)?.onchain_quote_vault || '');
+    const creator = String((poolData as any)?.creator || '');
     
-    if (!poolBaseMint || !poolQuoteMint || !onchainBaseVault || !onchainQuoteVault) {
-      throw createBuilderError('PUMPSWAP', 'Pool missing on-chain mint/vault data in cache', hop);
+    if (!poolBaseMint || !poolQuoteMint || !onchainBaseVault || !onchainQuoteVault || !creator) {
+      throw createBuilderError('PUMPSWAP', 'Pool missing on-chain mint/vault/creator data in cache', hop);
     }
     
     // Use the stored on-chain vaults directly - no mapping needed!
@@ -1367,7 +1368,41 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
       instructionData = buffer;
     }
 
-    // Build accounts array (22 accounts total - verified from real transaction)
+    // Pumpswap constant addresses (from real transactions)
+    const EVENT_AUTHORITY = toPublicKey('GS4CU59F31iL7aR2Q8zVS8DRrcRnXX1yjQ66TqNVQnaR');
+    const GLOBAL_VOLUME_ACCUMULATOR = toPublicKey('C2aFPdENg4A2HQsmrd5rTw5TaYBX5Ku887cWjbFKtZpw');
+    const FEE_CONFIG = toPublicKey('5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx');
+    const FEE_PROGRAM = toPublicKey('Pump9x3FRC86zy4T1N3V99RG9ejwokxgvXBfRRgxUoZ'); // Pump Fees Program
+    
+    // Derive pool-specific and user-specific accounts
+    const creatorPubkey = toPublicKey(creator);
+    
+    // #18: Coin Creator Vault ATA - creator's associated token account for the base mint
+    const coinCreatorVaultAta = getAssociatedTokenAddressSync(
+      toPublicKey(poolBaseMint),
+      creatorPubkey,
+      true // allowOwnerOffCurve
+    );
+    
+    // #19: Coin Creator Vault Authority - PDA derived from creator
+    const [coinCreatorVaultAuthority] = await (async () => {
+      const { PublicKey } = await import('@solana/web3.js');
+      return PublicKey.findProgramAddressSync(
+        [Buffer.from('coin_creator_vault_authority'), creatorPubkey.toBuffer()],
+        programId
+      );
+    })();
+    
+    // #21: User Volume Accumulator - PDA derived from user
+    const [userVolumeAccumulator] = await (async () => {
+      const { PublicKey } = await import('@solana/web3.js');
+      return PublicKey.findProgramAddressSync(
+        [Buffer.from('user_volume_accumulator'), kp.publicKey.toBuffer()],
+        programId
+      );
+    })();
+    
+    // Build accounts array (24 accounts total for USDC-WSOL pool - verified from real transaction)
     // Account order per pumpswap program requirements (verified from real transactions)
     const keys = [
       { pubkey: poolId, isSigner: false, isWritable: true },                    // #0 Pool
@@ -1385,9 +1420,14 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
       { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },        // #12 Quote Token Program
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // #13 System Program
       { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, // #14 Associated Token Program
-      // Additional accounts required by pumpswap (accounts 15-21 from real transactions)
-      { pubkey: toPublicKey('GS4CU59F31iL7aR2Q8zVS8DRrcRnXX1yjQ66TqNVQnaR'), isSigner: false, isWritable: false }, // #15 Event Authority
+      { pubkey: EVENT_AUTHORITY, isSigner: false, isWritable: false },         // #15 Event Authority
       { pubkey: programId, isSigner: false, isWritable: false },               // #16 Program (pumpswap itself)
+      { pubkey: coinCreatorVaultAta, isSigner: false, isWritable: true },      // #17 Coin Creator Vault ATA (writable)
+      { pubkey: coinCreatorVaultAuthority, isSigner: false, isWritable: false }, // #18 Coin Creator Vault Authority
+      { pubkey: GLOBAL_VOLUME_ACCUMULATOR, isSigner: false, isWritable: true }, // #19 Global Volume Accumulator (writable)
+      { pubkey: userVolumeAccumulator, isSigner: false, isWritable: true },    // #20 User Volume Accumulator (writable)
+      { pubkey: FEE_CONFIG, isSigner: false, isWritable: false },              // #21 Fee Config
+      { pubkey: FEE_PROGRAM, isSigner: false, isWritable: false },             // #22 Fee Program
     ];
     
     // Debug logging for accounts

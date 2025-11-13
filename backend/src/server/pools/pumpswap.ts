@@ -623,6 +623,7 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
         onchain_quote_mint: mint_b, // Original quote mint from on-chain pool
         onchain_base_vault: pool.pool_base_token_account,  // Original base vault
         onchain_quote_vault: pool.pool_quote_token_account, // Original quote vault
+        creator: pool.creator, // Pool creator for deriving vault authority
       } as any);
     } catch (e: any) {
       try { logger.warn('pumpswap.normalize.pool.failed', { error: String(e?.message || e), cat: 'pumpswap' }); } catch {}
