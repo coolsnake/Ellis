@@ -1336,56 +1336,144 @@ export async function buildMeteoraDammSwapIxReal(hop: DirectHop): Promise<any[]>
       throw createBuilderError('METEORA_BALANCED', String((validationErr as any)?.message || validationErr), hop);
     }
 
+    const connection = getConnection();
     const kp = await ensureWallet(CONFIG.walletPath);
     const programId = toPublicKey(hop.programId);
-    
-    // Pool address might be stored separately from poolId
     const poolAddress = toPublicKey((hop as any).poolAddress || hop.poolId.replace(/-rev$/, ''));
-    const inputMint = toPublicKey(hop.inputMint);
-    const outputMint = toPublicKey(hop.outputMint);
-    const userSourceAta = toPublicKey(hop.userSourceAta);
-    const userDestAta = toPublicKey(hop.userDestAta);
-    const vaultA = toPublicKey(hop.vaultA);
-    const vaultB = toPublicKey(hop.vaultB);
     
     const BN = (await import('bn.js')).default as any;
-    const amountInBn = new BN(String(hop.amountInRaw ?? 0n));
-    const minOutBn = new BN(String(hop.minOutRaw ?? 0n));
+    const amountIn = new BN(String(hop.amountInRaw ?? 0n));
+    const minOut = new BN(String(hop.minOutRaw ?? 0n));
+
+    // Try SDK-based approach first
+    try {
+      // DAMM v1 SDK
+      if (hop.variant === 'damm_v1') {
+        try {
+          const AmmImpl = await import('@meteora-ag/dynamic-amm-sdk').then(m => m.default || m);
+          if (AmmImpl && typeof (AmmImpl as any).create === 'function') {
+            const pool = await (AmmImpl as any).create(connection, poolAddress);
+            
+            if (pool && typeof pool.swap === 'function') {
+              const swapResult = await pool.swap(
+                kp.publicKey,
+                toPublicKey(hop.inputMint),
+                amountIn,
+                minOut
+              );
+              
+              if (swapResult?.transaction?.instructions) {
+                try {
+                  logger.info('meteora.damm.v1.sdk.success', {
+                    cat: 'tx',
+                    code: LogCode.TX_BUILD_HOP,
+                    ctx: {
+                      pool: hop.poolId.slice(0, 8) + '...',
+                      ixCount: swapResult.transaction.instructions.length,
+                    } as any,
+                  });
+                } catch {}
+                return swapResult.transaction.instructions;
+              }
+            }
+          }
+        } catch (e: any) {
+          try {
+            logger.warn('meteora.damm.v1.sdk.fallback', {
+              cat: 'tx',
+              ctx: { error: String(e?.message || e), pool: hop.poolId } as any,
+            });
+          } catch {}
+        }
+      }
+      
+      // DAMM v2 SDK
+      if (hop.variant === 'damm_v2') {
+        try {
+          const { CpAmm } = await import('@meteora-ag/cp-amm-sdk');
+          if (CpAmm) {
+            const cpAmm = new CpAmm(connection);
+            
+            if (typeof cpAmm.swap === 'function') {
+              const swapResult = await cpAmm.swap(
+                poolAddress,
+                kp.publicKey,
+                toPublicKey(hop.inputMint),
+                amountIn,
+                minOut
+              );
+              
+              if (swapResult?.instructions) {
+                try {
+                  logger.info('meteora.damm.v2.sdk.success', {
+                    cat: 'tx',
+                    code: LogCode.TX_BUILD_HOP,
+                    ctx: {
+                      pool: hop.poolId.slice(0, 8) + '...',
+                      ixCount: swapResult.instructions.length,
+                    } as any,
+                  });
+                } catch {}
+                return swapResult.instructions;
+              }
+            }
+          }
+        } catch (e: any) {
+          try {
+            logger.warn('meteora.damm.v2.sdk.fallback', {
+              cat: 'tx',
+              ctx: { error: String(e?.message || e), pool: hop.poolId } as any,
+            });
+          } catch {}
+        }
+      }
+    } catch (sdkErr: any) {
+      try {
+        logger.warn('meteora.damm.sdk.import.failed', {
+          cat: 'tx',
+          ctx: { error: String(sdkErr?.message || sdkErr) } as any,
+        });
+      } catch {}
+    }
+
+    // Fallback: Manual instruction building
+    try {
+      logger.info('meteora.damm.manual.fallback', {
+        cat: 'tx',
+        ctx: {
+          message: 'SDK unavailable, using manual instruction builder',
+          variant: hop.variant,
+          pool: hop.poolId,
+        } as any,
+      });
+    } catch {}
 
     const { TransactionInstruction } = await import('@solana/web3.js');
     const { TOKEN_PROGRAM_ID } = await import('@solana/spl-token');
     
-    // Determine if we're using Token-2022 for either token
     const inputTokenProgram = hop.inputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
     const outputTokenProgram = hop.outputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
     
-    // Build accounts array for Meteora Balanced swap instruction
-    // Note: The exact account order depends on the program IDL
-    // This is a placeholder that matches typical AMM patterns
+    // Manual instruction building based on typical AMM patterns
     const keys = [
       { pubkey: poolAddress, isSigner: false, isWritable: true },
       { pubkey: kp.publicKey, isSigner: true, isWritable: false },
-      { pubkey: userSourceAta, isSigner: false, isWritable: true },
-      { pubkey: userDestAta, isSigner: false, isWritable: true },
-      { pubkey: vaultA, isSigner: false, isWritable: true },
-      { pubkey: vaultB, isSigner: false, isWritable: true },
-      { pubkey: inputMint, isSigner: false, isWritable: false },
-      { pubkey: outputMint, isSigner: false, isWritable: false },
+      { pubkey: toPublicKey(hop.userSourceAta), isSigner: false, isWritable: true },
+      { pubkey: toPublicKey(hop.userDestAta), isSigner: false, isWritable: true },
+      { pubkey: toPublicKey(hop.vaultA), isSigner: false, isWritable: true },
+      { pubkey: toPublicKey(hop.vaultB), isSigner: false, isWritable: true },
+      { pubkey: toPublicKey(hop.inputMint), isSigner: false, isWritable: false },
+      { pubkey: toPublicKey(hop.outputMint), isSigner: false, isWritable: false },
       { pubkey: inputTokenProgram, isSigner: false, isWritable: false },
       { pubkey: outputTokenProgram, isSigner: false, isWritable: false },
     ];
 
-    // Encode instruction data
-    // Format: [instruction_discriminator (8 bytes for Anchor), amount_in (u64), min_amount_out (u64)]
-    // Note: Anchor discriminators are 8-byte sighash of "global:swap"
-    // This is a placeholder - actual discriminator needs to be determined from IDL
-    const dataBuffer = Buffer.alloc(24); // 8 bytes discriminator + 8 bytes amount_in + 8 bytes min_out
-    
-    // Placeholder discriminator (needs to be replaced with actual value from IDL)
-    // For now, using a common swap discriminator pattern
-    dataBuffer.writeBigUInt64LE(0xf8c69e91e17587c8n, 0); // Placeholder discriminator
-    dataBuffer.writeBigUInt64LE(BigInt(amountInBn.toString()), 8);
-    dataBuffer.writeBigUInt64LE(BigInt(minOutBn.toString()), 16);
+    // Anchor discriminator for swap instruction (8 bytes)
+    // This needs to be determined from the actual IDL
+    const dataBuffer = Buffer.alloc(24);
+    dataBuffer.writeBigUInt64LE(0xf8c69e91e17587c8n, 0); // Placeholder
+    dataBuffer.writeBigUInt64LE(BigInt(amountIn.toString()), 8);
+    dataBuffer.writeBigUInt64LE(BigInt(minOut.toString()), 16);
 
     const swapIx = new TransactionInstruction({
       programId,
@@ -1394,29 +1482,16 @@ export async function buildMeteoraDammSwapIxReal(hop: DirectHop): Promise<any[]>
     });
 
     try {
-      logger.info('meteora.damm.swap.built', {
+      logger.warn('meteora.damm.manual.warning', {
         cat: 'tx',
-        code: LogCode.TX_BUILD_HOP,
         ctx: {
-          pool: hop.poolId.slice(0, 8) + '...',
+          message: 'Using manual instruction builder with placeholder discriminator',
           variant: hop.variant,
-          amountIn: amountInBn.toString(),
-          minOut: minOutBn.toString(),
-          accounts: keys.length,
+          pool: hop.poolId,
+          note: 'This may fail - install SDK for production use',
         } as any,
       });
     } catch {}
-
-    // TODO: Replace this placeholder with actual Meteora Balanced SDK integration
-    // once the SDK is available or IDL is parsed
-    logger.warn('meteora.damm.placeholder', {
-      cat: 'tx',
-      ctx: {
-        message: 'Using placeholder instruction builder - needs IDL integration',
-        variant: hop.variant,
-        pool: hop.poolId,
-      } as any,
-    });
 
     return [swapIx];
   } catch (e: any) {

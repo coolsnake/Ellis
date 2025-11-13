@@ -268,6 +268,10 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
         liquidity_base,
         updated_ms: now,
         pool_kind: 'amm',
+        // Vault addresses for swap instructions
+        account_a: String(it?.token_a_vault || ''),
+        account_b: String(it?.token_b_vault || ''),
+        lp_mint: String(it?.lp_mint || ''),
         amount_a_whole: Number.isFinite(wholeA) ? wholeA as number : undefined,
         amount_b_whole: Number.isFinite(wholeB) ? wholeB as number : undefined,
         amounts_are_whole: Number.isFinite(wholeA) || Number.isFinite(wholeB) ? true : undefined,
@@ -460,6 +464,10 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
         liquidity_base,
         updated_ms: now,
         pool_kind: 'amm',
+        // Vault addresses for swap instructions (V1 API structure)
+        account_a: String((it as any)?.pool_token_vaults?.[0] || ''),
+        account_b: String((it as any)?.pool_token_vaults?.[1] || ''),
+        lp_mint: String((it as any)?.lp_mint || ''),
         amount_a_whole: wholeA > 0 ? wholeA : undefined,
         amount_b_whole: wholeB > 0 ? wholeB : undefined,
         decimals_a: decimalsA,

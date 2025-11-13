@@ -1810,6 +1810,223 @@ export function createArbRouter(io: SocketIOServer): Router {
     }
   });
 
+  // Meteora Balanced (DAMM) v1 - simulate-send
+  api.post('/arb/simulate-send/meteora-balanced-v1', async (req, res) => {
+    try {
+      const body = req.body || {};
+      let payload: any = {};
+      if (body && body.plan && Array.isArray(body.plan?.hops)) {
+        payload = { ...body, plan: { ...body.plan, hops: (body.plan.hops || []).map((h: any) => ({ ...h, dex: 'meteora_balanced', variant: 'damm_v1' })) } };
+      } else {
+        const path: string[] = Array.isArray(body.path) ? body.path : [];
+        const hopPoolIdsIn: string[] = Array.isArray(body.hopPoolIds) ? (body.hopPoolIds as any[]).map((x: any) => String(x)) : [];
+        const fallbackPid: string | undefined = body.poolId ? String(body.poolId) : undefined;
+        const hopCount = Math.max(0, path.length - 1);
+        if (hopCount <= 0) return res.status(400).json({ error: 'invalid path' });
+        let ids: string[] = hopPoolIdsIn;
+        if (ids.length !== hopCount) {
+          if (!fallbackPid) return res.status(400).json({ error: 'missing hopPoolIds and poolId' });
+          ids = Array.from({ length: hopCount }, () => String(fallbackPid));
+        }
+        if (ids.some((s) => !s)) return res.status(400).json({ error: 'invalid hopPoolIds' });
+        const dexes = Array.from({ length: hopCount }, () => 'MeteoraBalanced_v1');
+        payload = {
+          path,
+          hopPoolIds: ids,
+          dexes,
+          size: body.size,
+          sizeUsd: body.sizeUsd,
+          slippageBps: body.slippageBps,
+        };
+      }
+      req.body = payload;
+      return (api as any).handle({ ...req, url: '/arb/simulate-send', originalUrl: '/arb/simulate-send', path: '/arb/simulate-send', method: 'POST' }, res, () => {});
+    } catch (e: any) {
+      return res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Meteora Balanced (DAMM) v2 - simulate-send
+  api.post('/arb/simulate-send/meteora-balanced-v2', async (req, res) => {
+    try {
+      const body = req.body || {};
+      let payload: any = {};
+      if (body && body.plan && Array.isArray(body.plan?.hops)) {
+        payload = { ...body, plan: { ...body.plan, hops: (body.plan.hops || []).map((h: any) => ({ ...h, dex: 'meteora_balanced', variant: 'damm_v2' })) } };
+      } else {
+        const path: string[] = Array.isArray(body.path) ? body.path : [];
+        const hopPoolIdsIn: string[] = Array.isArray(body.hopPoolIds) ? (body.hopPoolIds as any[]).map((x: any) => String(x)) : [];
+        const fallbackPid: string | undefined = body.poolId ? String(body.poolId) : undefined;
+        const hopCount = Math.max(0, path.length - 1);
+        if (hopCount <= 0) return res.status(400).json({ error: 'invalid path' });
+        let ids: string[] = hopPoolIdsIn;
+        if (ids.length !== hopCount) {
+          if (!fallbackPid) return res.status(400).json({ error: 'missing hopPoolIds and poolId' });
+          ids = Array.from({ length: hopCount }, () => String(fallbackPid));
+        }
+        if (ids.some((s) => !s)) return res.status(400).json({ error: 'invalid hopPoolIds' });
+        const dexes = Array.from({ length: hopCount }, () => 'MeteoraBalanced_v2');
+        payload = {
+          path,
+          hopPoolIds: ids,
+          dexes,
+          size: body.size,
+          sizeUsd: body.sizeUsd,
+          slippageBps: body.slippageBps,
+        };
+      }
+      req.body = payload;
+      return (api as any).handle({ ...req, url: '/arb/simulate-send', originalUrl: '/arb/simulate-send', path: '/arb/simulate-send', method: 'POST' }, res, () => {});
+    } catch (e: any) {
+      return res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Pumpswap - simulate-send
+  api.post('/arb/simulate-send/pumpswap', async (req, res) => {
+    try {
+      const body = req.body || {};
+      let payload: any = {};
+      if (body && body.plan && Array.isArray(body.plan?.hops)) {
+        payload = { ...body, plan: { ...body.plan, hops: (body.plan.hops || []).map((h: any) => ({ ...h, dex: 'pumpswap', variant: 'amm' })) } };
+      } else {
+        const path: string[] = Array.isArray(body.path) ? body.path : [];
+        const hopPoolIdsIn: string[] = Array.isArray(body.hopPoolIds) ? (body.hopPoolIds as any[]).map((x: any) => String(x)) : [];
+        const fallbackPid: string | undefined = body.poolId ? String(body.poolId) : undefined;
+        const hopCount = Math.max(0, path.length - 1);
+        if (hopCount <= 0) return res.status(400).json({ error: 'invalid path' });
+        let ids: string[] = hopPoolIdsIn;
+        if (ids.length !== hopCount) {
+          if (!fallbackPid) return res.status(400).json({ error: 'missing hopPoolIds and poolId' });
+          ids = Array.from({ length: hopCount }, () => String(fallbackPid));
+        }
+        if (ids.some((s) => !s)) return res.status(400).json({ error: 'invalid hopPoolIds' });
+        const dexes = Array.from({ length: hopCount }, () => 'Pumpswap');
+        payload = {
+          path,
+          hopPoolIds: ids,
+          dexes,
+          size: body.size,
+          sizeUsd: body.sizeUsd,
+          slippageBps: body.slippageBps,
+        };
+      }
+      req.body = payload;
+      return (api as any).handle({ ...req, url: '/arb/simulate-send', originalUrl: '/arb/simulate-send', path: '/arb/simulate-send', method: 'POST' }, res, () => {});
+    } catch (e: any) {
+      return res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Execute endpoints for new DEXes
+  api.post('/arb/execute/meteora-balanced-v1', async (req, res) => {
+    try {
+      const body = req.body || {};
+      let payload: any = {};
+      if (body && body.plan && Array.isArray(body.plan?.hops)) {
+        payload = { ...body, plan: { ...body.plan, hops: (body.plan.hops || []).map((h: any) => ({ ...h, dex: 'meteora_balanced', variant: 'damm_v1' })) } };
+      } else {
+        const path: string[] = Array.isArray(body.path) ? body.path : [];
+        const hopPoolIdsIn: string[] = Array.isArray(body.hopPoolIds) ? (body.hopPoolIds as any[]).map((x: any) => String(x)) : [];
+        const fallbackPid: string | undefined = body.poolId ? String(body.poolId) : undefined;
+        const hopCount = Math.max(0, path.length - 1);
+        if (hopCount <= 0) return res.status(400).json({ error: 'invalid path' });
+        let ids: string[] = hopPoolIdsIn;
+        if (ids.length !== hopCount) {
+          if (!fallbackPid) return res.status(400).json({ error: 'missing hopPoolIds and poolId' });
+          ids = Array.from({ length: hopCount }, () => String(fallbackPid));
+        }
+        if (ids.some((s) => !s)) return res.status(400).json({ error: 'invalid hopPoolIds' });
+        const dexes = Array.from({ length: hopCount }, () => 'MeteoraBalanced_v1');
+        payload = {
+          path,
+          hopPoolIds: ids,
+          dexes,
+          size: body.size,
+          sizeUsd: body.sizeUsd,
+          slippageBps: body.slippageBps,
+          forceDirect: body.forceDirect,
+        };
+      }
+      req.body = payload;
+      return (api as any).handle({ ...req, url: '/arb/execute', originalUrl: '/arb/execute', path: '/arb/execute', method: 'POST' }, res, () => {});
+    } catch (e: any) {
+      return res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.post('/arb/execute/meteora-balanced-v2', async (req, res) => {
+    try {
+      const body = req.body || {};
+      let payload: any = {};
+      if (body && body.plan && Array.isArray(body.plan?.hops)) {
+        payload = { ...body, plan: { ...body.plan, hops: (body.plan.hops || []).map((h: any) => ({ ...h, dex: 'meteora_balanced', variant: 'damm_v2' })) } };
+      } else {
+        const path: string[] = Array.isArray(body.path) ? body.path : [];
+        const hopPoolIdsIn: string[] = Array.isArray(body.hopPoolIds) ? (body.hopPoolIds as any[]).map((x: any) => String(x)) : [];
+        const fallbackPid: string | undefined = body.poolId ? String(body.poolId) : undefined;
+        const hopCount = Math.max(0, path.length - 1);
+        if (hopCount <= 0) return res.status(400).json({ error: 'invalid path' });
+        let ids: string[] = hopPoolIdsIn;
+        if (ids.length !== hopCount) {
+          if (!fallbackPid) return res.status(400).json({ error: 'missing hopPoolIds and poolId' });
+          ids = Array.from({ length: hopCount }, () => String(fallbackPid));
+        }
+        if (ids.some((s) => !s)) return res.status(400).json({ error: 'invalid hopPoolIds' });
+        const dexes = Array.from({ length: hopCount }, () => 'MeteoraBalanced_v2');
+        payload = {
+          path,
+          hopPoolIds: ids,
+          dexes,
+          size: body.size,
+          sizeUsd: body.sizeUsd,
+          slippageBps: body.slippageBps,
+          forceDirect: body.forceDirect,
+        };
+      }
+      req.body = payload;
+      return (api as any).handle({ ...req, url: '/arb/execute', originalUrl: '/arb/execute', path: '/arb/execute', method: 'POST' }, res, () => {});
+    } catch (e: any) {
+      return res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  api.post('/arb/execute/pumpswap', async (req, res) => {
+    try {
+      const body = req.body || {};
+      let payload: any = {};
+      if (body && body.plan && Array.isArray(body.plan?.hops)) {
+        payload = { ...body, plan: { ...body.plan, hops: (body.plan.hops || []).map((h: any) => ({ ...h, dex: 'pumpswap', variant: 'amm' })) } };
+      } else {
+        const path: string[] = Array.isArray(body.path) ? body.path : [];
+        const hopPoolIdsIn: string[] = Array.isArray(body.hopPoolIds) ? (body.hopPoolIds as any[]).map((x: any) => String(x)) : [];
+        const fallbackPid: string | undefined = body.poolId ? String(body.poolId) : undefined;
+        const hopCount = Math.max(0, path.length - 1);
+        if (hopCount <= 0) return res.status(400).json({ error: 'invalid path' });
+        let ids: string[] = hopPoolIdsIn;
+        if (ids.length !== hopCount) {
+          if (!fallbackPid) return res.status(400).json({ error: 'missing hopPoolIds and poolId' });
+          ids = Array.from({ length: hopCount }, () => String(fallbackPid));
+        }
+        if (ids.some((s) => !s)) return res.status(400).json({ error: 'invalid hopPoolIds' });
+        const dexes = Array.from({ length: hopCount }, () => 'Pumpswap');
+        payload = {
+          path,
+          hopPoolIds: ids,
+          dexes,
+          size: body.size,
+          sizeUsd: body.sizeUsd,
+          slippageBps: body.slippageBps,
+          forceDirect: body.forceDirect,
+        };
+      }
+      req.body = payload;
+      return (api as any).handle({ ...req, url: '/arb/execute', originalUrl: '/arb/execute', path: '/arb/execute', method: 'POST' }, res, () => {});
+    } catch (e: any) {
+      return res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
   api.get('/arb/tx-history', async (_req: Request, res: Response) => {
     try {
       const { getTxHistory } = await import('../txHistory.js');

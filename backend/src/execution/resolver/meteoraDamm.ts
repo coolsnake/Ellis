@@ -18,11 +18,11 @@ export async function resolveMeteoraDamm(hop: DirectHop): Promise<DirectHop> {
     
     if (p) {
       // Populate vault addresses (token accounts for token A and B)
-      hop.vaultA = String((p as any)?.vault_a || '');
-      hop.vaultB = String((p as any)?.vault_b || '');
+      hop.vaultA = String((p as any)?.account_a || '');
+      hop.vaultB = String((p as any)?.account_b || '');
       
       // Store pool address for swap instruction
-      (hop as any).poolAddress = String((p as any)?.address || id);
+      (hop as any).poolAddress = String((p as any)?.id || id);
       
       // Decimals (prefer token meta, but keep as fallback if provided)
       if (!Number.isFinite(Number(hop.inputDecimals)) && Number.isFinite((p as any)?.decimals_a)) {
