@@ -1374,23 +1374,23 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
     }
 
     // Build accounts array (15 accounts total)
-    // Account order per pumpswap program requirements
+    // Account order per pumpswap program requirements (from docs)
     const keys = [
+      { pubkey: kp.publicKey, isSigner: true, isWritable: true },              // #0 User (signer, writable for fee payment)
       { pubkey: poolId, isSigner: false, isWritable: true },                    // #1 Pool
-      { pubkey: kp.publicKey, isSigner: true, isWritable: true },              // #2 User (writable for fee payment)
-      { pubkey: GLOBAL_CONFIG, isSigner: false, isWritable: false },           // #3 Global Config
-      { pubkey: toPublicKey(poolBaseMint), isSigner: false, isWritable: false }, // #4 Base Mint
-      { pubkey: toPublicKey(poolQuoteMint), isSigner: false, isWritable: false }, // #5 Quote Mint
-      { pubkey: isSellingBase ? userSourceAta : userDestAta, isSigner: false, isWritable: true }, // #6 User Base Token Account
-      { pubkey: isSellingBase ? userDestAta : userSourceAta, isSigner: false, isWritable: true }, // #7 User Quote Token Account
-      { pubkey: poolBaseVault, isSigner: false, isWritable: true },            // #8 Pool Base Token Account
-      { pubkey: poolQuoteVault, isSigner: false, isWritable: true },           // #9 Pool Quote Token Account
-      { pubkey: protocolFeeRecipient, isSigner: false, isWritable: false },    // #10 Protocol Fee Recipient
-      { pubkey: protocolFeeRecipientTokenAccount, isSigner: false, isWritable: true }, // #11 Protocol Fee Recipient Token Account
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },        // #12 Base Token Program
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },        // #13 Quote Token Program
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // #14 System Program
-      { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, // #15 Associated Token Program
+      { pubkey: GLOBAL_CONFIG, isSigner: false, isWritable: false },           // #2 Global Config
+      { pubkey: toPublicKey(poolBaseMint), isSigner: false, isWritable: false }, // #3 Base Mint
+      { pubkey: toPublicKey(poolQuoteMint), isSigner: false, isWritable: false }, // #4 Quote Mint
+      { pubkey: isSellingBase ? userSourceAta : userDestAta, isSigner: false, isWritable: true }, // #5 User Base Token Account
+      { pubkey: isSellingBase ? userDestAta : userSourceAta, isSigner: false, isWritable: true }, // #6 User Quote Token Account
+      { pubkey: poolBaseVault, isSigner: false, isWritable: true },            // #7 Pool Base Token Account
+      { pubkey: poolQuoteVault, isSigner: false, isWritable: true },           // #8 Pool Quote Token Account
+      { pubkey: protocolFeeRecipient, isSigner: false, isWritable: false },    // #9 Protocol Fee Recipient
+      { pubkey: protocolFeeRecipientTokenAccount, isSigner: false, isWritable: true }, // #10 Protocol Fee Recipient Token Account
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },        // #11 Base Token Program
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },        // #12 Quote Token Program
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // #13 System Program
+      { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, // #14 Associated Token Program
     ];
     
     // Debug logging for accounts
