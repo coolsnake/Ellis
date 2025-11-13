@@ -1395,6 +1395,23 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
     },
     cat: 'pools'
   });
+  
+  // === PHASE 8: CROSS-DEX VALIDATION ===
+  // Validate prices across DEXes after all filtering is complete
+  try {
+    const { validateCrossDexPrices } = await import('./pools/validation.js');
+    const allPools = {
+      raydium: r,
+      orca: o,
+      meteora: m,
+      meteora_balanced: mb,
+      pumpswap: pump
+    };
+    validateCrossDexPrices(allPools);
+  } catch (e: any) {
+    logger.warn('pools.refresh.phase.validation.failed', { error: String(e?.message || e), cat: 'pools' });
+  }
+  
   // Pair diagnostics: log a single SOL-USDC pool per fetcher
   try {
     const SOL = 'So11111111111111111111111111111111111111112';
@@ -1535,6 +1552,9 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
       (refreshAllSources as any).__didInitialGraphPush = true;
     }
   } catch {}
+  
+  // Clear the in-progress flag now that all filtering and graph building is complete
+  (refreshAllSources as any).__inProgress = false;
   
   logger.info('pools.refresh.complete', { 
     fetched: {
@@ -4553,23 +4573,29 @@ export async function getMeteoraBalancedPoolsCached(force = false, opts?: { skip
         emit('pool-updates', { source: 'meteora_balanced', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample: { amm: d.amm.slice(0, 50), clmm: [] }, ts: Date.now() });
         const inc = !!((CONFIG.system as any)?.graphIncrementalMode);
         const hasDelta = d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm;
-        try {
-          const gmod: any = await import('./graph.js');
-          if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
-            // Fire-and-forget: don't await to avoid blocking HTTP fetchers
-            void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: true }).catch((err: any) => {
-              try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'meteora_balanced', cat: 'graph' }); } catch {}
-            });
-          } else if (!inc && hasDelta) {
-            // Non-incremental mode: schedule rebuild only (only one path)
-            const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
-            const delta = d.amm.length + d.clmm.length + d.addedAmm + d.addedClmm + d.removedAmm + d.removedClmm;
-            // Only schedule if threshold met (0 means always, but check delta > 0 to avoid empty rebuilds)
-            if ((thresh === 0 && delta > 0) || delta >= thresh) {
-              gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
+        // Skip incremental updates during startup/refresh - let refreshAllSources rebuild after filtering
+        const skipIncremental = (refreshAllSources as any).__inProgress === true;
+        if (!skipIncremental) {
+          try {
+            const gmod: any = await import('./graph.js');
+            if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
+              // Fire-and-forget: don't await to avoid blocking HTTP fetchers
+              void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: true }).catch((err: any) => {
+                try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'meteora_balanced', cat: 'graph' }); } catch {}
+              });
+            } else if (!inc && hasDelta) {
+              // Non-incremental mode: schedule rebuild only (only one path)
+              const thresh = Math.max(0, Number((CONFIG.system as any)?.graphDeltaRebuildThreshold || 0));
+              const delta = d.amm.length + d.clmm.length + d.addedAmm + d.addedClmm + d.removedAmm + d.removedClmm;
+              // Only schedule if threshold met (0 means always, but check delta > 0 to avoid empty rebuilds)
+              if ((thresh === 0 && delta > 0) || delta >= thresh) {
+                gmod.scheduleGraphRebuild(undefined, Math.max(50, Number((CONFIG.system as any)?.graphRebuildDebounceMs || 150)));
+              }
             }
-          }
-        } catch {}
+          } catch {}
+        } else {
+          try { logger.debug('graph.update.skipped_during_refresh', { source: 'meteora_balanced', reason: 'filtering_in_progress', cat: 'graph' }); } catch {}
+        }
       } catch {}
       return norm;
     } finally {
@@ -4747,15 +4773,21 @@ export async function getPumpswapPoolsCached(force = false): Promise<PoolsPayloa
         emit('pools-update', { source: 'pumpswap', amm: norm.amm.length, clmm: 0, ts: Date.now() });
         emit('pool-updates', { source: 'pumpswap', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now() });
         const hasDelta = d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm;
-        try {
-          const gmod: any = await import('./graph.js');
-          if (hasDelta && typeof gmod.applyPoolUpdates === 'function') {
-            // Fire-and-forget: don't await to avoid blocking HTTP fetchers
-            void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: true }).catch((err: any) => {
-              try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'pumpswap', cat: 'graph' }); } catch {}
-            });
-          }
-        } catch {}
+        // Skip incremental updates during startup/refresh - let refreshAllSources rebuild after filtering
+        const skipIncremental = (refreshAllSources as any).__inProgress === true;
+        if (!skipIncremental) {
+          try {
+            const gmod: any = await import('./graph.js');
+            if (hasDelta && typeof gmod.applyPoolUpdates === 'function') {
+              // Fire-and-forget: don't await to avoid blocking HTTP fetchers
+              void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: true }).catch((err: any) => {
+                try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'pumpswap', cat: 'graph' }); } catch {}
+              });
+            }
+          } catch {}
+        } else {
+          try { logger.debug('graph.update.skipped_during_refresh', { source: 'pumpswap', reason: 'filtering_in_progress', cat: 'graph' }); } catch {}
+        }
       } catch {}
       return pumpswapCache.data!;
     } finally {
@@ -4977,27 +5009,24 @@ export async function getRaydiumPoolsNormalized(force = false, opts?: { skipUniv
         const sample = { amm: d.amm.slice(0, 100), clmm: d.clmm.slice(0, 100) };
         emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now(), canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
         const hasDelta = d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm;
-        try {
-          const gmod: any = await import('./graph.js');
-          if (hasDelta && typeof gmod.applyPoolUpdates === 'function') {
-            // Fire-and-forget: don't await to avoid blocking HTTP fetchers
-            void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: true }).catch((err: any) => {
-              try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'raydium', cat: 'graph' }); } catch {}
-            });
-          }
-        } catch {}
+        // Skip incremental updates during startup/refresh - let refreshAllSources rebuild after filtering
+        const skipIncremental = (refreshAllSources as any).__inProgress === true;
+        if (!skipIncremental) {
+          try {
+            const gmod: any = await import('./graph.js');
+            if (hasDelta && typeof gmod.applyPoolUpdates === 'function') {
+              // Fire-and-forget: don't await to avoid blocking HTTP fetchers
+              void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: true }).catch((err: any) => {
+                try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'raydium', cat: 'graph' }); } catch {}
+              });
+            }
+          } catch {}
+        } else {
+          try { logger.debug('graph.update.skipped_during_refresh', { source: 'raydium', reason: 'filtering_in_progress', cat: 'graph' }); } catch {}
+        }
         try { logger.info('pools.delta raydium', { updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, cat: 'pools' }); } catch {}
       } catch {}
-      // Cross-DEX validation: Compare prices across all DEXes
-      try {
-        const allPools = {
-          raydium: raydiumCache.data || { amm: [], clmm: [] },
-          orca: orcaCache.data || { amm: [], clmm: [] },
-          meteora: meteoraCache.data || { amm: [], clmm: [] },
-          pumpswap: pumpswapCache.data || { amm: [], clmm: [] }
-        };
-        validateCrossDexPrices(allPools);
-      } catch {}
+      // Cross-DEX validation moved to refreshAllSources after all filtering (Phase 8)
       // Opportunistic price warmup (anchors + top-N pool mints) after first source completes
       try {
         const sys: any = (CONFIG as any)?.system || {};
@@ -5091,15 +5120,21 @@ export async function getOrcaPoolsCached(force = false, opts?: { skipUniverseFil
         emit('pool-updates', { source: 'orca', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now(), canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
         try { logger.debug('pools.delta orca', { updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, cat: 'pools' }); } catch {}
         const hasDelta = d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm;
-        try {
-          const gmod: any = await import('./graph.js');
-          if (hasDelta && typeof gmod.applyPoolUpdates === 'function') {
-            // Fire-and-forget: don't await to avoid blocking HTTP fetchers
-            void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, data, { pushToArb: true }).catch((err: any) => {
-              try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'orca', cat: 'graph' }); } catch {}
-            });
-          }
-        } catch {}
+        // Skip incremental updates during startup/refresh - let refreshAllSources rebuild after filtering
+        const skipIncremental = (refreshAllSources as any).__inProgress === true;
+        if (!skipIncremental) {
+          try {
+            const gmod: any = await import('./graph.js');
+            if (hasDelta && typeof gmod.applyPoolUpdates === 'function') {
+              // Fire-and-forget: don't await to avoid blocking HTTP fetchers
+              void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, data, { pushToArb: true }).catch((err: any) => {
+                try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'orca', cat: 'graph' }); } catch {}
+              });
+            }
+          } catch {}
+        } else {
+          try { logger.debug('graph.update.skipped_during_refresh', { source: 'orca', reason: 'filtering_in_progress', cat: 'graph' }); } catch {}
+        }
       } catch {}
       // Graph rebuilds now orchestrated by refresh endpoint; avoid redundant triggers here
       return data;
@@ -5340,15 +5375,21 @@ export async function getMeteoraPoolsCached(force = false, opts?: { skipUniverse
         emit('pools-update', { source: 'meteora', amm: 0, clmm: norm.clmm.length, ts: Date.now() });
         emit('pool-updates', { source: 'meteora', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now() });
         const hasDelta = d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm;
-        try {
-          const gmod: any = await import('./graph.js');
-          if (hasDelta && typeof gmod.applyPoolUpdates === 'function') {
-            // Fire-and-forget: don't await to avoid blocking HTTP fetchers
-            void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: true }).catch((err: any) => {
-              try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'meteora', cat: 'graph' }); } catch {}
-            });
-          }
-        } catch {}
+        // Skip incremental updates during startup/refresh - let refreshAllSources rebuild after filtering
+        const skipIncremental = (refreshAllSources as any).__inProgress === true;
+        if (!skipIncremental) {
+          try {
+            const gmod: any = await import('./graph.js');
+            if (hasDelta && typeof gmod.applyPoolUpdates === 'function') {
+              // Fire-and-forget: don't await to avoid blocking HTTP fetchers
+              void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: true }).catch((err: any) => {
+                try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'meteora', cat: 'graph' }); } catch {}
+              });
+            }
+          } catch {}
+        } else {
+          try { logger.debug('graph.update.skipped_during_refresh', { source: 'meteora', reason: 'filtering_in_progress', cat: 'graph' }); } catch {}
+        }
       } catch {}
       // Graph rebuilds now orchestrated by refresh endpoint; avoid redundant triggers here
       return meteoraCache.data!;
