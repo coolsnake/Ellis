@@ -1278,10 +1278,11 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
 
     // Use 'sell' instruction for exact input swaps (selling exact base to receive at least min quote)
     // Anchor discriminator: first 8 bytes of sha256("global:sell")
-    const sellDiscriminator = crypto.createHash('sha256')
+    const sellDiscriminatorBytes = crypto.createHash('sha256')
       .update('global:sell')
       .digest()
       .subarray(0, 8);
+    const sellDiscriminator = Buffer.from(sellDiscriminatorBytes);
 
     // Build accounts array for sell instruction (15 accounts total)
     // Account order per pumpswap program requirements
