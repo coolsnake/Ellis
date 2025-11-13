@@ -1608,11 +1608,11 @@ export function startRaydiumRefreshLoop(): void {
             const isMeteoraTarget = meteoraTargets.has(pk58);
             const mapped = targetedSourceByAccount.get(pk58);
             
-            // Debug log for pumpswap and meteora_balanced events to track idle timer
+            // Info log for pumpswap and meteora_balanced events to track idle timer
             if (mapped === 'pumpswap' || mapped === 'meteora_balanced') {
               const idleBeforeMs = Date.now() - beforeMs;
               try {
-                logger.debug('pools.ws.event_received', {
+                logger.info('pools.ws.event_received', {
                   source: mapped,
                   account: pk58.slice(0, 8) + '…',
                   idleBeforeMs,
