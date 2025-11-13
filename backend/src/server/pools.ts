@@ -407,8 +407,9 @@ function validateDecodedPool(
     }
   }
   
-  // Validate sqrt_price_x64 for CLMM
-  if (pool.sqrt_price_x64 != null) {
+  // Validate sqrt_price_x64 for CLMM (except Meteora which uses bin-based pricing)
+  // Meteora DLMM doesn't store sqrt_price_x64; it calculates price from activeId/binStep
+  if (pool.sqrt_price_x64 != null && dex !== 'meteora') {
     if (!Number.isFinite(pool.sqrt_price_x64) || pool.sqrt_price_x64 <= 0) {
       reasons.push('invalid_sqrt_price');
       try { wsValidationStats[dex].invalidPrice += 1; } catch {}

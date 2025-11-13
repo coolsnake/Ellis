@@ -19,4 +19,13 @@ thiserror = "1"
 base64 = "0.22"
 once_cell = "1"
 
+[profile.release]
+# Maximum optimizations for production performance
+opt-level = 3
+# Link-time optimization for better performance (slower build, faster runtime)
+lto = true
+# Single codegen unit for better optimization (slower build, faster runtime)
+codegen-units = 1
+# Strip debug symbols to reduce binary size
+strip = true
 

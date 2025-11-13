@@ -363,6 +363,25 @@ async fn main() -> anyhow::Result<()> {
                         let sol_mint: &str  = "So11111111111111111111111111111111111111112";
                         let usdc_mint: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
                         
+                        // OPTIMIZATION: Pre-compute SOL/USDC price and cache USD lookups to avoid O(E) scans per edge
+                        let mut usd_cache: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+                        let sol_usd_cached: Option<f64> = if calibrate_enabled && graph_snapshot.is_some() {
+                            let graph = graph_snapshot.as_ref().unwrap();
+                            // Find SOL/USDC price once
+                            let mut sol_usd: Option<f64> = None;
+                            for edge in graph.g.edge_references() {
+                                let src = graph.g.node_weight(edge.source()).cloned().unwrap_or_default();
+                                let dst = graph.g.node_weight(edge.target()).cloned().unwrap_or_default();
+                                let r = edge.weight().rate_effective;
+                                if r <= 0.0 { continue; }
+                                if src == sol_mint && dst == usdc_mint { sol_usd = Some(r); break; }
+                                if src == usdc_mint && dst == sol_mint { sol_usd = Some(1.0 / r); break; }
+                            }
+                            sol_usd
+                        } else {
+                            None
+                        };
+                        
                         for e in added.iter().chain(updated.iter()) {
                             let dex = e.dex.clone().unwrap_or_else(|| "Unknown".to_string());
                             let fee: i64 = e.fee_bps.unwrap_or(0);
@@ -374,8 +393,11 @@ async fn main() -> anyhow::Result<()> {
                             
                             if px > 0.0 && calibrate_enabled {
                                 if let Some(ref graph) = graph_snapshot {
-                                    let get_usd = |mint: &str, graph: &ArbGraph| -> Option<f64> {
+                                    // Optimized USD lookup with caching
+                                    let get_usd_cached = |mint: &str, graph: &ArbGraph, cache: &mut std::collections::HashMap<String, f64>, sol_usd: Option<f64>| -> Option<f64> {
                                         if mint == usdc_mint { return Some(1.0); }
+                                        if let Some(&price) = cache.get(mint) { return Some(price); }
+                                        
                                         if let Some(idx) = graph.map.get(mint) {
                                             // Prefer direct edges to USDC
                                             for edge in graph.g.edges(*idx) {
@@ -383,20 +405,10 @@ async fn main() -> anyhow::Result<()> {
                                                 let src = graph.g.node_weight(u).cloned().unwrap_or_default();
                                                 let dst = graph.g.node_weight(v).cloned().unwrap_or_default();
                                                 let r = edge.weight().rate_effective;
-                                                if dst == usdc_mint && r > 0.0 { return Some(r); }
-                                                if src == usdc_mint && r > 0.0 { return Some(1.0 / r); }
+                                                if dst == usdc_mint && r > 0.0 { cache.insert(mint.to_string(), r); return Some(r); }
+                                                if src == usdc_mint && r > 0.0 { let price = 1.0 / r; cache.insert(mint.to_string(), price); return Some(price); }
                                             }
-                                            // Via SOL
-                                            let mut via_sol: Option<f64> = None;
-                                            let mut sol_usd: Option<f64> = None;
-                                            for edge in graph.g.edge_references() {
-                                                let src = graph.g.node_weight(edge.source()).cloned().unwrap_or_default();
-                                                let dst = graph.g.node_weight(edge.target()).cloned().unwrap_or_default();
-                                                let r = edge.weight().rate_effective;
-                                                if r <= 0.0 { continue; }
-                                                if src == sol_mint && dst == usdc_mint { sol_usd = Some(r); }
-                                                if src == usdc_mint && dst == sol_mint { sol_usd = Some(1.0 / r); }
-                                            }
+                                            // Via SOL (use cached price)
                                             if let Some(su) = sol_usd {
                                                 for edge in graph.g.edges(*idx) {
                                                     let u = edge.source(); let v = edge.target();
@@ -404,16 +416,15 @@ async fn main() -> anyhow::Result<()> {
                                                     let t = graph.g.node_weight(v).cloned().unwrap_or_default();
                                                     let r = edge.weight().rate_effective;
                                                     if r <= 0.0 { continue; }
-                                                    if s == *mint && t == sol_mint { via_sol = Some(su / r); break; }
-                                                    if s == sol_mint && t == *mint { via_sol = Some(su * r); break; }
+                                                    if s == mint && t == sol_mint { let price = su / r; cache.insert(mint.to_string(), price); return Some(price); }
+                                                    if s == sol_mint && t == mint { let price = su * r; cache.insert(mint.to_string(), price); return Some(price); }
                                                 }
                                             }
-                                            return via_sol;
                                         }
                                         None
                                     };
-                                    let pa = get_usd(&e.source, graph);
-                                    let pb = get_usd(&e.target, graph);
+                                    let pa = get_usd_cached(&e.source, graph, &mut usd_cache, sol_usd_cached);
+                                    let pb = get_usd_cached(&e.target, graph, &mut usd_cache, sol_usd_cached);
                                     if let (Some(pa), Some(pb)) = (pa, pb) {
                                         let refv = pb / pa;
                                         let mut best = px; let mut best_dev = f64::INFINITY; let mut best_k = 0i32;
