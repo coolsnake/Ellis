@@ -1367,11 +1367,11 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
       instructionData = buffer;
     }
 
-    // Build accounts array (15 accounts total)
-    // Account order per pumpswap program requirements (from docs)
+    // Build accounts array (22 accounts total - verified from real transaction)
+    // Account order per pumpswap program requirements (verified from real transactions)
     const keys = [
-      { pubkey: kp.publicKey, isSigner: true, isWritable: true },              // #0 User (signer, writable for fee payment)
-      { pubkey: poolId, isSigner: false, isWritable: true },                    // #1 Pool
+      { pubkey: poolId, isSigner: false, isWritable: true },                    // #0 Pool
+      { pubkey: kp.publicKey, isSigner: true, isWritable: true },              // #1 User (signer, writable for fee payment)
       { pubkey: GLOBAL_CONFIG, isSigner: false, isWritable: false },           // #2 Global Config
       { pubkey: toPublicKey(poolBaseMint), isSigner: false, isWritable: false }, // #3 Base Mint
       { pubkey: toPublicKey(poolQuoteMint), isSigner: false, isWritable: false }, // #4 Quote Mint
@@ -1385,6 +1385,9 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
       { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },        // #12 Quote Token Program
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // #13 System Program
       { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, // #14 Associated Token Program
+      // Additional accounts required by pumpswap (accounts 15-21 from real transactions)
+      { pubkey: toPublicKey('GS4CU59F31iL7aR2Q8zVS8DRrcRnXX1yjQ66TqNVQnaR'), isSigner: false, isWritable: false }, // #15 Event Authority
+      { pubkey: programId, isSigner: false, isWritable: false },               // #16 Program (pumpswap itself)
     ];
     
     // Debug logging for accounts
@@ -1403,6 +1406,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
           poolQuoteVault: poolQuoteVault.toBase58().slice(0, 8) + '...',
           protocolFeeRecipient: protocolFeeRecipient.toBase58(),
           protocolFeeTokenAccount: protocolFeeRecipientTokenAccount.toBase58(),
+          fullAccountOrder: keys.map((k, i) => `${i}:${k.pubkey.toBase58().slice(0,8)}`).join(','),
         }
       });
     } catch {}
