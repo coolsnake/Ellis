@@ -203,10 +203,10 @@ function parseTokenAccountAmount(data: Buffer | Uint8Array): bigint | null {
  * - coin_creator_vault_ata: 32 bytes (Pubkey) - at offset ~235
  * - coin_creator_vault_authority: 32 bytes (Pubkey) - at offset ~267
  */
-export function parsePumpswapPoolAccounts(data: Buffer | Uint8Array): { 
+export async function parsePumpswapPoolAccounts(data: Buffer | Uint8Array): Promise<{ 
   coinCreatorVaultAta: string | null; 
   coinCreatorVaultAuthority: string | null;
-} {
+}> {
   try {
     if (!data) {
       try { logger.info('pumpswap.parse.pool.accounts', { error: 'no data', cat: 'pumpswap' }); } catch {}
@@ -235,7 +235,7 @@ export function parsePumpswapPoolAccounts(data: Buffer | Uint8Array): {
       return { coinCreatorVaultAta: null, coinCreatorVaultAuthority: null };
     }
     
-    const { PublicKey } = require('@solana/web3.js');
+    const { PublicKey } = await import('@solana/web3.js');
     
     // Based on observed pool structure, these accounts appear after the standard pool fields
     // Offset calculations:
@@ -423,12 +423,12 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
           }
           
           // Extract pool-specific accounts for transaction building
-          const accounts = parsePumpswapPoolAccounts(info.data);
+          const accounts = await parsePumpswapPoolAccounts(info.data);
           const pool = batch[mapping.poolIndex - i];
           if (pool && pool.pubkey) {
             poolAccounts.set(pool.pubkey, accounts);
             // Debug: log first extracted accounts for verification
-            if (Object.keys(poolAccounts).length === 1) {
+            if (poolAccounts.size === 1) {
               try {
                 logger.info('pumpswap.pool.accounts.extracted.first', {
                   cat: 'pumpswap',
