@@ -254,7 +254,14 @@ export async function parsePumpswapPoolAccounts(data: Buffer | Uint8Array): Prom
         const pk = new PublicKey(buf.subarray(coinCreatorVaultAtaOffset, coinCreatorVaultAtaOffset + 32));
         coinCreatorVaultAta = pk.toBase58();
       } catch (e) {
-        try { logger.info('pumpswap.parse.vault_ata.failed', { error: String(e), cat: 'pumpswap' }); } catch {}
+        try { 
+          logger.info('pumpswap.parse.vault_ata.failed', { 
+            error: String(e), 
+            offset: coinCreatorVaultAtaOffset,
+            bytesHex: buf.subarray(coinCreatorVaultAtaOffset, coinCreatorVaultAtaOffset + 32).toString('hex').slice(0, 64),
+            cat: 'pumpswap' 
+          }); 
+        } catch {}
       }
     }
     
@@ -263,9 +270,26 @@ export async function parsePumpswapPoolAccounts(data: Buffer | Uint8Array): Prom
         const pk = new PublicKey(buf.subarray(coinCreatorVaultAuthorityOffset, coinCreatorVaultAuthorityOffset + 32));
         coinCreatorVaultAuthority = pk.toBase58();
       } catch (e) {
-        try { logger.info('pumpswap.parse.vault_authority.failed', { error: String(e), cat: 'pumpswap' }); } catch {}
+        try { 
+          logger.info('pumpswap.parse.vault_authority.failed', { 
+            error: String(e),
+            offset: coinCreatorVaultAuthorityOffset,
+            bytesHex: buf.subarray(coinCreatorVaultAuthorityOffset, Math.min(coinCreatorVaultAuthorityOffset + 32, buf.length)).toString('hex').slice(0, 64),
+            cat: 'pumpswap' 
+          }); 
+        } catch {}
       }
     }
+    
+    try {
+      logger.info('pumpswap.parse.result', {
+        hasAta: !!coinCreatorVaultAta,
+        hasAuthority: !!coinCreatorVaultAuthority,
+        ata: coinCreatorVaultAta?.slice(0, 12),
+        authority: coinCreatorVaultAuthority?.slice(0, 12),
+        cat: 'pumpswap'
+      });
+    } catch {}
     
     return { coinCreatorVaultAta, coinCreatorVaultAuthority };
   } catch (e) {

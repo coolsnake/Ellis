@@ -1298,7 +1298,14 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
       try {
         logger.info('pumpswap.fallback.derive_accounts', {
           cat: 'tx',
-          ctx: { poolId: hop.poolId.slice(0, 12), reason: 'missing_from_cache' }
+          ctx: { 
+            poolId: hop.poolId.slice(0, 12), 
+            reason: 'missing_from_cache',
+            hasCoinCreatorVaultAta: !!coinCreatorVaultAta,
+            hasCoinCreatorVaultAuthority: !!coinCreatorVaultAuthority,
+            coinCreatorVaultAtaValue: coinCreatorVaultAta || 'null',
+            coinCreatorVaultAuthorityValue: coinCreatorVaultAuthority || 'null',
+          }
         });
       } catch {}
       
@@ -1320,6 +1327,17 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
         );
       })();
       coinCreatorVaultAuthority = authority.toBase58();
+      
+      try {
+        logger.info('pumpswap.fallback.derived_accounts', {
+          cat: 'tx',
+          ctx: { 
+            poolId: hop.poolId.slice(0, 12),
+            derivedAta: coinCreatorVaultAta.slice(0, 12),
+            derivedAuthority: coinCreatorVaultAuthority.slice(0, 12),
+          }
+        });
+      } catch {}
     }
     
     // Use the stored on-chain vaults directly - no mapping needed!
