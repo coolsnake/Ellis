@@ -104,18 +104,24 @@ describe.skipIf(!RUN)('singlehop.newdex', () => {
     }
   }, 120_000);
 
-  it('pumpswap simulate-send (any available pool)', async () => {
+  it('pumpswap simulate-send (first available pool)', async () => {
     const pools = await getJson(`${BASE}/arb/pools/pumpswap?minUsd=1000`);
     expect(pools.ok).toBe(true);
-    const id = pickPoolIdByTvl(pools.json?.amm || []);
+    // Try to find SOL/USDC pool first, but fallback to any pool
+    let id = pickPoolIdByTvl(pools.json?.amm || [], SOL, USDC);
+    if (!id) {
+      // No SOL/USDC pool (pumpswap is for pump.fun tokens), use any available pool
+      id = pickPoolIdByTvl(pools.json?.amm || []);
+    }
     if (!id) {
       console.log('No pumpswap pool available for test, skipping');
       return;
     }
-    // Get the pool to determine the path
+    // Get the pool to determine the actual path (use pool's mints, not hardcoded SOL/USDC)
     const pool = (pools.json?.amm || []).find((p: any) => p?.id === id);
     expect(!!pool).toBe(true);
     const path = [pool?.mint_a, pool?.mint_b];
+    console.log(`Testing pumpswap with pool ${id} (${path[0].slice(0, 8)}.../${path[1].slice(0, 8)}...)`);
     const sim = await postJson(`${BASE}/arb/simulate-send/pumpswap`, {
       path,
       poolId: id,

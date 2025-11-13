@@ -825,7 +825,7 @@ export const App: React.FC = () => {
         const USDT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
 
         const pickPoolId = async (
-          dex: 'raydium'|'orca'|'meteora',
+          dex: 'raydium'|'orca'|'meteora'|'meteora-balanced'|'pumpswap',
           options?: { prefer?: 'amm' | 'clmm'; inputMint?: string; outputMint?: string },
         ): Promise<string | null> => {
           const resp = await fetch(`${apiBase}/arb/pools/${dex}?sort=tvl`);
@@ -838,12 +838,26 @@ export const App: React.FC = () => {
               if (prefer === 'amm') return [...ammList, ...clmmList];
               if (prefer === 'clmm') return [...clmmList, ...ammList];
             }
+            // For pumpswap and meteora-balanced, only AMM pools exist
+            if (dex === 'pumpswap' || dex === 'meteora-balanced') return ammList;
             return [...clmmList, ...ammList];
           })();
           
           // If input/output mints are provided, filter by that pair; otherwise default to SOL/USDC
           const inputMint = options?.inputMint || SOL;
           const outputMint = options?.outputMint || USDC;
+          
+          // For pumpswap, if no SOL/USDC pool exists, return first available pool
+          // (pumpswap is for pump.fun meme tokens, not typically SOL/USDC)
+          if (dex === 'pumpswap') {
+            const match = list.find((p: any) => {
+              const a = String(p?.mint_a || p?.mintA || '').trim();
+              const b = String(p?.mint_b || p?.mintB || '').trim();
+              return (a === inputMint && b === outputMint) || (a === outputMint && b === inputMint);
+            });
+            // If no match for requested pair, return first available pool
+            return match ? String(match.id) : (list.length > 0 ? String(list[0].id) : null);
+          }
           
           const match = list.find((p: any) => {
             const a = String(p?.mint_a || p?.mintA || '').trim();

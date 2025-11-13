@@ -2597,10 +2597,22 @@ export function startRaydiumRefreshLoop(): void {
                 if (hasDelta) {
                   wsDeltaStats.pumpswap.applied += 1;
                   
-                  // Apply to graph
+                  // Apply to graph using proper incremental update
                   try {
                     const gmod: any = await import('./graph.js');
-                    await scheduleDexApply('raydium', prev as any); // Reuse raydium scheduler for now
+                    if (typeof gmod.applyPoolUpdates === 'function') {
+                      // Fire-and-forget: don't await to avoid blocking WebSocket handler
+                      void gmod.applyPoolUpdates(prev, next, { pushToArb: true }).catch((err: any) => {
+                        try { 
+                          logger.warn('graph.update.fire_forget_failed', { 
+                            error: String(err?.message || err), 
+                            source: 'pumpswap', 
+                            pool: pk58.slice(0,8) + '…',
+                            cat: 'graph' 
+                          }); 
+                        } catch {}
+                      });
+                    }
                   } catch {}
                 } else {
                   wsDeltaStats.pumpswap.skipped += 1;
@@ -2736,10 +2748,22 @@ export function startRaydiumRefreshLoop(): void {
                 if (hasDelta) {
                   wsDeltaStats.meteora_balanced.applied += 1;
                   
-                  // Apply to graph incrementally
+                  // Apply to graph using proper incremental update
                   try {
                     const gmod: any = await import('./graph.js');
-                    await scheduleDexApply('raydium', prev as any); // Reuse raydium scheduler for now
+                    if (typeof gmod.applyPoolUpdates === 'function') {
+                      // Fire-and-forget: don't await to avoid blocking WebSocket handler
+                      void gmod.applyPoolUpdates(prev, next, { pushToArb: true }).catch((err: any) => {
+                        try { 
+                          logger.warn('graph.update.fire_forget_failed', { 
+                            error: String(err?.message || err), 
+                            source: 'meteora_balanced', 
+                            pool: pk58.slice(0,8) + '…',
+                            cat: 'graph' 
+                          }); 
+                        } catch {}
+                      });
+                    }
                   } catch {}
                 } else {
                   wsDeltaStats.meteora_balanced.skipped += 1;
