@@ -525,6 +525,8 @@ export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[
   if (!base) return [];
   const retries = Number(cfg.maxHttpRetries || 2);
   const backoffMs = Number(cfg.httpBackoffMs || 500);
+  const maxPages = Number(cfg.maxPages || 10);
+  const pageSize = Number(cfg.pageSize || 100);
   
   // API-level quality filters (V1 API specific)
   const hideLowApr = cfg.hideLowApr === true;
@@ -534,76 +536,182 @@ export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[
   // eslint-disable-next-line no-undef
   const fetchFn: any = (globalThis as any).fetch || fetch;
   
-  // CRITICAL FIX: Meteora v1 API doesn't support multiple address parameters
-  // We need to fetch SOL and USDC pools separately and merge them
+  // Use the new /pools/search endpoint with include_token_mints filter
+  // This endpoint supports pagination and proper token filtering in a single request
+  const searchBase = base.replace(/\/pools\/?$/, '/pools/search');
   const allPools = new Map<string, any>(); // Dedupe by pool address
   
   if (anchorTokensOnly) {
-    // Fetch SOL pools
-    // NOTE: According to Meteora API docs, address[] parameter filters pools containing that token
-    const solUrl = (() => {
-      const sp = new URLSearchParams();
-      sp.append('address', 'So11111111111111111111111111111111111111112'); // SOL
-      // Apply hide_low_tvl only if explicitly configured (API expects a number for minimum TVL)
-      if (minLiqBase > 0) {
-        sp.append('hide_low_tvl', String(minLiqBase));
+    // Fetch pools containing SOL or USDC using the new search endpoint with pagination
+    const tokenMints = [
+      'So11111111111111111111111111111111111111112', // SOL
+      'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' // USDC
+    ];
+    
+    let page = 0;
+    let hasMore = true;
+    let totalFetched = 0;
+    
+    while (hasMore && page < maxPages) {
+      const url = (() => {
+        const sp = new URLSearchParams();
+        sp.append('page', String(page));
+        sp.append('size', String(pageSize));
+        
+        // Add token mint filters - the API will return pools containing ANY of these tokens
+        for (const mint of tokenMints) {
+          sp.append('include_token_mints', mint);
+        }
+        
+        // Apply quality filters
+        if (minLiqBase > 0) {
+          sp.append('hide_low_tvl', String(minLiqBase));
+        }
+        if (hideLowApr) {
+          sp.append('hide_low_apr', 'true');
+        }
+        
+        // Filter for dynamic pool type (V1 pools)
+        sp.append('pool_type', 'dynamic');
+        
+        // Sort by TVL descending for quality
+        sp.append('sort_key', 'tvl');
+        sp.append('order_by', 'desc');
+        
+        return `${searchBase}?${sp.toString()}`;
+      })();
+      
+      const poolsData = await fetchV1SearchWithRetry(
+        url, 
+        fetchFn, 
+        retries, 
+        backoffMs, 
+        `anchor_page_${page}`
+      );
+      
+      // Handle response structure from /pools/search endpoint
+      // Response can be: { data: [...], page: number, total_count: number }
+      // or just an array for backwards compatibility
+      let pools: any[] = [];
+      if (Array.isArray(poolsData)) {
+        pools = poolsData;
+      } else if (poolsData?.data) {
+        // If data is an array, use it; if it's a single object, wrap it
+        pools = Array.isArray(poolsData.data) ? poolsData.data : [poolsData.data];
       }
-      if (hideLowApr) sp.append('hide_low_apr', 'true');
-      return `${base}?${sp.toString()}`;
-    })();
-    
-    const solPools = await fetchV1WithRetry(solUrl, fetchFn, retries, backoffMs, 'SOL');
-    for (const pool of solPools) {
-      const poolAddr = pool?.pool_address || pool?.address || pool?.pubkey;
-      if (poolAddr) allPools.set(String(poolAddr), pool);
-    }
-    
-    // Small delay between requests
-    await new Promise(r => setTimeout(r, 200));
-    
-    // Fetch USDC pools
-    const usdcUrl = (() => {
-      const sp = new URLSearchParams();
-      sp.append('address', 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'); // USDC
-      // Apply hide_low_tvl only if explicitly configured (API expects a number for minimum TVL)
-      if (minLiqBase > 0) {
-        sp.append('hide_low_tvl', String(minLiqBase));
+      
+      if (pools.length === 0) {
+        hasMore = false;
+      } else {
+        for (const pool of pools) {
+          const poolAddr = pool?.pool_address || pool?.address || pool?.pubkey;
+          if (poolAddr) {
+            allPools.set(String(poolAddr), pool);
+          }
+        }
+        totalFetched += pools.length;
+        page++;
+        
+        // If we got fewer results than page size, we've reached the end
+        if (pools.length < pageSize) {
+          hasMore = false;
+        }
       }
-      if (hideLowApr) sp.append('hide_low_apr', 'true');
-      return `${base}?${sp.toString()}`;
-    })();
-    
-    const usdcPools = await fetchV1WithRetry(usdcUrl, fetchFn, retries, backoffMs, 'USDC');
-    for (const pool of usdcPools) {
-      const poolAddr = pool?.pool_address || pool?.address || pool?.pubkey;
-      if (poolAddr) allPools.set(String(poolAddr), pool);
+      
+      // Small delay between requests to respect rate limits
+      if (hasMore && page < maxPages) {
+        await new Promise(r => setTimeout(r, 200));
+      }
     }
     
     const data = Array.from(allPools.values());
     
     try {
-      logger.info('meteora.balanced.v1.fetch complete', {
+      logger.info('meteora.balanced.v1.fetch complete (search API)', {
         count: data.length,
+        pages: page,
+        totalFetched,
         anchorTokensOnly,
         hideLowApr,
         minLiqBase,
+        endpoint: 'pools/search',
         cat: 'meteora'
       });
     } catch {}
     
     return data;
   } else {
-    // No filters, fetch all pools
-    const url = base;
-    const data = await fetchV1WithRetry(url, fetchFn, retries, backoffMs, 'all');
+    // No anchor token filter, fetch all pools with pagination
+    let page = 0;
+    let hasMore = true;
+    let totalFetched = 0;
+    
+    while (hasMore && page < maxPages) {
+      const url = (() => {
+        const sp = new URLSearchParams();
+        sp.append('page', String(page));
+        sp.append('size', String(pageSize));
+        
+        // Apply quality filters
+        if (minLiqBase > 0) {
+          sp.append('hide_low_tvl', String(minLiqBase));
+        }
+        if (hideLowApr) {
+          sp.append('hide_low_apr', 'true');
+        }
+        
+        // Filter for dynamic pool type (V1 pools)
+        sp.append('pool_type', 'dynamic');
+        
+        // Sort by TVL descending
+        sp.append('sort_key', 'tvl');
+        sp.append('order_by', 'desc');
+        
+        return `${searchBase}?${sp.toString()}`;
+      })();
+      
+      const poolsData = await fetchV1SearchWithRetry(url, fetchFn, retries, backoffMs, `all_page_${page}`);
+      
+      let pools: any[] = [];
+      if (Array.isArray(poolsData)) {
+        pools = poolsData;
+      } else if (poolsData?.data) {
+        pools = Array.isArray(poolsData.data) ? poolsData.data : [poolsData.data];
+      }
+      
+      if (pools.length === 0) {
+        hasMore = false;
+      } else {
+        for (const pool of pools) {
+          const poolAddr = pool?.pool_address || pool?.address || pool?.pubkey;
+          if (poolAddr) {
+            allPools.set(String(poolAddr), pool);
+          }
+        }
+        totalFetched += pools.length;
+        page++;
+        
+        if (pools.length < pageSize) {
+          hasMore = false;
+        }
+      }
+      
+      if (hasMore && page < maxPages) {
+        await new Promise(r => setTimeout(r, 200));
+      }
+    }
+    
+    const data = Array.from(allPools.values());
     
     try {
-      logger.info('meteora.balanced.v1.fetch complete', {
+      logger.info('meteora.balanced.v1.fetch complete (search API)', {
         count: data.length,
+        pages: page,
+        totalFetched,
         anchorTokensOnly: false,
-        hideLowTvl: false,
         hideLowApr,
         minLiqBase,
+        endpoint: 'pools/search',
         cat: 'meteora'
       });
     } catch {}
@@ -612,14 +720,15 @@ export async function fetchMeteoraBalancedV1Http(baseUrl?: string): Promise<any[
   }
 }
 
-// Helper function to fetch v1 API with retry logic
-async function fetchV1WithRetry(
+// Helper function to fetch v1 search API with retry logic
+// Supports both the new /pools/search endpoint and legacy responses
+async function fetchV1SearchWithRetry(
   url: string, 
   fetchFn: any, 
   retries: number, 
   backoffMs: number,
   tokenLabel: string
-): Promise<any[]> {
+): Promise<any> {
   const cid = httpLogStart({ source: 'meteora_balanced_v1', url, extra: { token: tokenLabel } });
   let res: any = null;
   let ok = false;
@@ -638,7 +747,7 @@ async function fetchV1WithRetry(
         httpLogNonOk({ source: 'meteora_balanced_v1', url, cid, status: res?.status || 0, bodySample: (txt || '').slice(0, 200) });
         // Log the actual error response for debugging
         try {
-          logger.warn('meteora.balanced.v1.fetch.error', {
+          logger.warn('meteora.balanced.v1.search.fetch.error', {
             token: tokenLabel,
             status: res?.status || 0,
             statusText: res?.statusText || '',
@@ -656,7 +765,7 @@ async function fetchV1WithRetry(
       break;
     } catch (err: any) {
       try {
-        logger.warn('meteora.balanced.v1.fetch.exception', {
+        logger.warn('meteora.balanced.v1.search.fetch.exception', {
           token: tokenLabel,
           error: String(err?.message || err),
           cat: 'meteora'
@@ -675,32 +784,44 @@ async function fetchV1WithRetry(
   }
   
   const json: any = await res.json().catch(() => null);
-  // V1 API returns a direct array of pools
-  const data = Array.isArray(json) ? json : [];
   
-  httpLogResponse({ source: 'meteora_balanced_v1', url, cid, status: res.status, ms: 0, count: data.length });
+  // Handle both response formats:
+  // 1. New /pools/search endpoint: { data: [...] | {...}, page: number, total_count: number }
+  // 2. Legacy endpoint: [...] (direct array)
+  let count = 0;
+  if (json?.data) {
+    // New search API format - return the whole response object
+    count = Array.isArray(json.data) ? json.data.length : 1;
+  } else if (Array.isArray(json)) {
+    // Legacy format - direct array
+    count = json.length;
+  }
+  
+  httpLogResponse({ source: 'meteora_balanced_v1', url, cid, status: res.status, ms: 0, count });
   
   // Log response details for debugging
   try {
-    if (data.length === 0) {
-      logger.warn('meteora.balanced.v1.fetch.empty_response', {
+    if (count === 0) {
+      logger.warn('meteora.balanced.v1.search.fetch.empty_response', {
         token: tokenLabel,
         url: url.slice(0, 200),
         responseIsArray: Array.isArray(json),
+        hasData: !!json?.data,
         responseType: typeof json,
         cat: 'meteora'
       });
     } else {
-      logger.debug('meteora.balanced.v1.fetch.token', {
+      logger.debug('meteora.balanced.v1.search.fetch.token', {
         token: tokenLabel,
-        count: data.length,
-        firstPool: data[0]?.pool_address?.slice(0, 8) + '…' || 'unknown',
+        count,
+        responseFormat: json?.data ? 'search_api' : 'legacy_array',
         cat: 'meteora'
       });
     }
   } catch {}
   
-  return data;
+  // Return the full response (will be handled by caller)
+  return json || [];
 }
 
 // RPC enrichment: fetch vault token balances to calculate reserves and price
