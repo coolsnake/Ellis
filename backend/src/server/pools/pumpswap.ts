@@ -331,9 +331,10 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
         { module: 'pools', method: 'getMultipleAccountsInfo' }
       );
       
-      // Create maps for balances and fees
+      // Create maps for balances, fees, and creators
       const balances = new Map<string, bigint>();
       const fees = new Map<string, number>(); // pool pubkey -> fee_bps
+      const creators = new Map<string, string>(); // pool pubkey -> on-chain creator
       
       for (let k = 0; k < allAddresses.length; k++) {
         const info = accountInfos[k];
@@ -352,6 +353,29 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
               feesExtracted++;
             }
           }
+          
+          // Extract on-chain creator from pool account (offset 8-39)
+          // Pool account structure: [discriminator(8), creator(32), ...]
+          try {
+            const buf = Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data);
+            if (buf.length >= 40) {
+              const { PublicKey } = await import('@solana/web3.js');
+              const creatorBytes = buf.subarray(8, 40);
+              const creatorPubkey = new PublicKey(creatorBytes);
+              const pool = batch[mapping.poolIndex - i];
+              if (pool && pool.pubkey) {
+                creators.set(pool.pubkey, creatorPubkey.toBase58());
+              }
+            }
+          } catch (e: any) {
+            try {
+              logger.warn('pumpswap.extract.creator.failed', {
+                pool: address,
+                error: String(e?.message || e),
+                cat: 'pumpswap'
+              });
+            } catch {}
+          }
         } else {
           // Extract balance from vault account
           const amount = parseTokenAccountAmount(info.data);
@@ -361,19 +385,21 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
         }
       }
       
-      // Enrich each pool in the batch with balance and fee data
+      // Enrich each pool in the batch with balance, fee, and creator data
       for (const pool of batch) {
         const baseBalance = pool.pool_base_token_account ? balances.get(pool.pool_base_token_account) : null;
         const quoteBalance = pool.pool_quote_token_account ? balances.get(pool.pool_quote_token_account) : null;
         const feeBps = pool.pubkey ? fees.get(pool.pubkey) : null;
+        const onchainCreator = pool.pubkey ? creators.get(pool.pubkey) : null;
         
         enriched.push({
           ...pool,
           base_reserve: baseBalance !== null ? baseBalance.toString() : undefined,
           quote_reserve: quoteBalance !== null ? quoteBalance.toString() : undefined,
           fee_bps: feeBps !== null ? feeBps : undefined, // Add extracted fee
+          onchain_creator: onchainCreator || pool.creator, // Use on-chain creator if available, fallback to GraphQL creator
           // Note: coin_creator_vault addresses cannot be extracted from pool account
-          // They will be derived during transaction building from creator + base_mint
+          // They will be derived during transaction building from onchain_creator
         });
         
         if (baseBalance !== null && quoteBalance !== null) {
@@ -643,7 +669,7 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
         onchain_quote_mint: mint_b, // Original quote mint from on-chain pool
         onchain_base_vault: pool.pool_base_token_account,  // Original base vault
         onchain_quote_vault: pool.pool_quote_token_account, // Original quote vault
-        creator: pool.creator, // Pool creator for deriving vault authority during transaction building
+        creator: pool.onchain_creator || pool.creator, // On-chain pool creator (extracted from pool account data during enrichment)
       } as any);
     } catch (e: any) {
       try { logger.warn('pumpswap.normalize.pool.failed', { error: String(e?.message || e), cat: 'pumpswap' }); } catch {}

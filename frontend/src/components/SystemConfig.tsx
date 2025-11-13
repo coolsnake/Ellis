@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import type { SystemConfigRequest, SystemConfigResponse, SharedSystemConfig, SharedFeesConfig } from 'shared/config-types';
+import { useModalConfig } from '../app/hooks/useModalConfig';
 
 interface SystemConfigProps {
   onSave: (config: SystemConfigRequest) => void;
@@ -8,9 +9,14 @@ interface SystemConfigProps {
 }
 
 export const SystemConfig: React.FC<SystemConfigProps> = ({ onSave, onCancel, initialConfig }) => {
+  // Persist ALL configuration values to localStorage (excluding RPC URL which may contain secrets)
+  const [uiPrefs, updateUiPrefs] = useModalConfig('systemConfig', {
+    lastValues: null as any,
+  });
+  
   const initialized = useRef(false);
   const userEdited = useRef(false);
-  const [config, setConfig] = useState({
+  const [config, setConfig] = useState(uiPrefs.lastValues || {
     rpcUrl: '',
     jupiterApiUrl: '',
     targetTickTimeMs: 2000,
@@ -50,6 +56,17 @@ export const SystemConfig: React.FC<SystemConfigProps> = ({ onSave, onCancel, in
       rateLimit?: Record<string, { perSec?: number; minIntervalMs?: number }>;
     },
   });
+  
+  // Save ALL configuration values to localStorage when they change (excluding sensitive RPC URLs)
+  useEffect(() => {
+    if (userEdited.current) {
+      const sanitized = {
+        ...config,
+        rpcUrl: '', // Don't persist RPC URLs which may contain auth tokens
+      };
+      updateUiPrefs({ lastValues: sanitized });
+    }
+  }, [config]);
 
   useEffect(() => {
     // Initialize from props once to avoid heartbeat updates resetting form edits

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ROUTES } from '../utils/routes';
+import { useModalConfig } from '../app/hooks/useModalConfig';
 
 type Props = {
   apiBase: string;
@@ -8,7 +9,12 @@ type Props = {
 };
 
 export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) => {
-  const [cfg, setCfg] = useState<any>({
+  // Persist ALL configuration values to localStorage
+  const [uiPrefs, updateUiPrefs] = useModalConfig('dataFetchConfig', {
+    lastValues: null as any,
+  });
+  
+  const [cfg, setCfg] = useState<any>(uiPrefs.lastValues || {
 		// System
 		enablePoolWs: true,
     poolsRefreshMs: 60000,
@@ -113,6 +119,15 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  
+  // Save ALL configuration values to localStorage when they change (excluding API keys)
+  useEffect(() => {
+    const sanitized = {
+      ...cfg,
+      pumpswap_shyftApiKey: '', // Don't persist API keys
+    };
+    updateUiPrefs({ lastValues: sanitized });
+  }, [cfg]);
 
   useEffect(() => {
     (async () => {

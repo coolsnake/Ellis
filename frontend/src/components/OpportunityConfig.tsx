@@ -1,14 +1,25 @@
 import React, { useEffect, useState } from 'react';
 import { ROUTES } from '../utils/routes';
+import { useModalConfig } from '../app/hooks/useModalConfig';
 
 type Props = { apiBase: string; onClose: () => void };
 
 export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
-  const [det, setDet] = useState<any>({});
+  // Persist ALL configuration values to localStorage
+  const [uiPrefs, updateUiPrefs] = useModalConfig('opportunityConfig', {
+    lastValues: null as any,
+  });
+  
+  const [det, setDet] = useState<any>(uiPrefs.lastValues || {});
   const [execMode, setExecMode] = useState<'simulate'|'direct'>('simulate');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const set = (k: string, v: any) => setDet((p: any) => ({ ...p, [k]: v }));
+  
+  // Save ALL configuration values to localStorage when they change
+  useEffect(() => {
+    updateUiPrefs({ lastValues: det });
+  }, [det]);
 
   useEffect(() => {
     (async () => {
