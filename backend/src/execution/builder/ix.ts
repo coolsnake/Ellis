@@ -1372,6 +1372,26 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // #14 System Program
       { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, // #15 Associated Token Program
     ];
+    
+    // Debug logging for accounts
+    try {
+      logger.info('pumpswap.accounts.debug', {
+        cat: 'tx',
+        ctx: {
+          pool: poolId.toBase58().slice(0, 8) + '...',
+          user: kp.publicKey.toBase58().slice(0, 8) + '...',
+          globalConfig: GLOBAL_CONFIG.toBase58(),
+          baseMint: poolBaseMint.slice(0, 8) + '...',
+          quoteMint: poolQuoteMint.slice(0, 8) + '...',
+          userBaseAta: (isSellingBase ? userSourceAta : userDestAta).toBase58().slice(0, 8) + '...',
+          userQuoteAta: (isSellingBase ? userDestAta : userSourceAta).toBase58().slice(0, 8) + '...',
+          poolBaseVault: vaultA.toBase58().slice(0, 8) + '...',
+          poolQuoteVault: vaultB.toBase58().slice(0, 8) + '...',
+          protocolFeeRecipient: protocolFeeRecipient.toBase58(),
+          protocolFeeTokenAccount: protocolFeeRecipientTokenAccount.toBase58(),
+        }
+      });
+    } catch {}
 
     const swapIx = new TransactionInstruction({
       programId,
