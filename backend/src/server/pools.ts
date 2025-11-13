@@ -42,6 +42,9 @@ const derivedAccountToPool: Map<string, { poolId: string; accountType: 'vault' |
 // Track which pools have had their derived accounts attached (for lazy loading)
 const poolsWithDerivedAccounts: Set<string> = new Set();
 
+// Track vault balances in memory for instant WS-based pool updates (eliminates RPC calls)
+const vaultBalanceCache: Map<string, bigint> = new Map();
+
 // WS lifecycle flags: defer websocket subscriptions until graph signals readiness
 let wsAllowed: boolean = false;
 let wsSetupActive: boolean = false;
@@ -1536,6 +1539,19 @@ export function startRaydiumRefreshLoop(): void {
                     return; // Can't parse, skip
                   }
                   
+                  // CRITICAL: Cache the vault balance for instant pool price updates
+                  // This eliminates RPC calls when pool events arrive
+                  vaultBalanceCache.set(pk58, newBalance);
+                  
+                  try {
+                    logger.debug('pools.ws vault.balance_cached', {
+                      vault: pk58.slice(0,8)+'…',
+                      balance: newBalance.toString(),
+                      poolId: derivedMeta.poolId.slice(0,8)+'…',
+                      cat: 'pools'
+                    });
+                  } catch {}
+                  
                   // Find the pool in our caches
                   const poolData = findPoolInCache(derivedMeta.poolId);
                   if (!poolData) {
@@ -1566,12 +1582,13 @@ export function startRaydiumRefreshLoop(): void {
                   // For AMM pools: we could compute price from vault balances
                   // But we'd need to track both vaults A and B, and know which vault is which
                   // For now, rely on pool WebSocket updates
-                  // This still eliminates the RPC call - we're subscribed to the pool account too
-                  logger.debug('pools.ws vault.amm.skip', { 
+                  // The vault balances are now cached, so when the pool update arrives,
+                  // we can use cached vaults instead of making RPC calls
+                  logger.debug('pools.ws vault.amm.cached', { 
                     vault: pk58.slice(0,8)+'…', 
                     pool: derivedMeta.poolId.slice(0,8)+'…',
                     balance: newBalance.toString(),
-                    reason: 'amm_awaiting_pool_update',
+                    reason: 'awaiting_pool_update_with_cached_vaults',
                     cat: 'pools' 
                   });
                   return;
@@ -2290,26 +2307,24 @@ export function startRaydiumRefreshLoop(): void {
                 const { parsePumpswapPoolFee } = await import('./pools/pumpswap.js');
                 const fee_bps = parsePumpswapPoolFee(info.data) || Number((CONFIG as any)?.pumpswap?.defaultFeeBps || 25);
                 
-                // Fetch vault balances to calculate reserves and price
-                const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-                const { Connection } = await import('@solana/web3.js');
-                const connection = conn as InstanceType<typeof Connection>;
-                const vaultAccounts = await withRpcLimit(
-                  () => connection.getMultipleAccountsInfo([
-                    new web3.PublicKey(account_a),
-                    new web3.PublicKey(account_b)
-                  ]),
-                  1,
-                  { module: 'pools', method: 'getMultipleAccountsInfo' }
-                );
-                const [vaultA, vaultB] = vaultAccounts as any[];
-                
-                const baseReserve = vaultA?.data ? parseTokenAccountAmount(vaultA.data) : null;
-                const quoteReserve = vaultB?.data ? parseTokenAccountAmount(vaultB.data) : null;
+                // CRITICAL FIX: Use cached vault balances from WebSocket subscriptions
+                // This eliminates RPC calls and makes pool updates instant
+                const baseReserve = vaultBalanceCache.get(account_a);
+                const quoteReserve = vaultBalanceCache.get(account_b);
                 
                 if (!baseReserve || !quoteReserve) {
-                  throw new Error('failed to parse vault balances');
+                  throw new Error(`vault balances not in cache (vaultA: ${account_a.slice(0,8)}=${!!baseReserve}, vaultB: ${account_b.slice(0,8)}=${!!quoteReserve})`);
                 }
+                
+                // Log successful cache hit
+                try {
+                  logger.debug('pumpswap.ws.vault_cache_hit', {
+                    pool: pk58.slice(0,8)+'…',
+                    baseReserve: baseReserve.toString(),
+                    quoteReserve: quoteReserve.toString(),
+                    cat: 'pools'
+                  });
+                } catch {}
                 
                 // Get decimals and calculate price
                 const tok = await import('../utils/tokens.js');
@@ -2428,10 +2443,115 @@ export function startRaydiumRefreshLoop(): void {
                   throw new Error('meteora_balanced account data too short');
                 }
                 
-                // Note: Meteora Balanced uses constant product AMM with dynamic fees
-                // The account structure varies between v1 and v2
-                // For now, use HTTP fallback and log that we received the update
-                throw new Error('on-chain decode not yet implemented for meteora_balanced');
+                // Find pool in cache to get vault addresses and token metadata
+                const pool = metbalCache.data?.amm?.find(p => p.id === pk58);
+                if (!pool) {
+                  throw new Error('pool not in cache');
+                }
+                
+                const account_a = (pool as any).account_a;
+                const account_b = (pool as any).account_b;
+                const mint_a = pool.mint_a;
+                const mint_b = pool.mint_b;
+                
+                if (!account_a || !account_b) {
+                  throw new Error('pool missing vault addresses');
+                }
+                
+                // CRITICAL: Use cached vault balances from WebSocket subscriptions
+                // This eliminates RPC calls and makes pool updates instant
+                const baseReserve = vaultBalanceCache.get(account_a);
+                const quoteReserve = vaultBalanceCache.get(account_b);
+                
+                if (!baseReserve || !quoteReserve) {
+                  throw new Error(`vault balances not in cache (vaultA: ${account_a.slice(0,8)}=${!!baseReserve}, vaultB: ${account_b.slice(0,8)}=${!!quoteReserve})`);
+                }
+                
+                // Get decimals and fee from existing pool data (already enriched with Jupiter/RPC)
+                const decA = pool.decimals_a ?? 9;
+                const decB = pool.decimals_b ?? 6;
+                const fee_bps = pool.fee_bps ?? 30;
+                
+                const baseWholeTokens = Number(baseReserve) / Math.pow(10, decA);
+                const quoteWholeTokens = Number(quoteReserve) / Math.pow(10, decB);
+                
+                // Calculate spot price (reserve ratio without fees)
+                const price_a_per_b = quoteWholeTokens > 0 
+                  ? (baseWholeTokens / quoteWholeTokens)
+                  : 0;
+                
+                const liquidity_base = Math.min(baseWholeTokens, quoteWholeTokens);
+                
+                // Create updated pool item (preserve all existing fields)
+                const item: AmmPool = {
+                  ...pool, // Keep all existing fields including dex label, mints, etc.
+                  price_a_per_b,
+                  liquidity_base,
+                  updated_ms: Date.now(),
+                  amount_a_whole: baseWholeTokens,
+                  amount_b_whole: quoteWholeTokens,
+                  reserve_a_raw: baseReserve.toString(),
+                  reserve_b_raw: quoteReserve.toString(),
+                  pool_liquidity_raw: liquidity_base,
+                  liquidity_display: liquidity_base,
+                } as any;
+                
+                // Validate decoded pool before applying
+                const validation = validateDecodedPool('meteora_balanced', item, pk58);
+                if (!validation.valid) {
+                  try { wsDecodeStats.meteora_balanced.failures += 1; } catch {}
+                  incrementSkipReason('meteora_balanced', `validation_failed:${validation.reasons.join(',')}`);
+                  try { logger.warn('meteora_balanced.ws validation.failed', { id: pk58, reasons: validation.reasons, cat: 'pools' }); } catch {}
+                  throw new Error(`validation failed: ${validation.reasons.join(',')}`);
+                }
+                
+                // Update cache incrementally
+                const prev = metbalCache.data || { amm: [], clmm: [] };
+                const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
+                const idx = next.amm.findIndex(p => p.id === item.id);
+                if (idx >= 0) next.amm[idx] = { ...next.amm[idx], ...item }; else next.amm.push(item);
+                
+                try { wsDecodeStats.meteora_balanced.successes += 1; } catch {}
+                wsDeltaStats.meteora_balanced.decoded += 1;
+                
+                const d = diffNormalizedPools(prev, next);
+                metbalCache.data = next;
+                metbalCache.ts = Date.now();
+                
+                const hasDelta = (d.amm.length || d.clmm.length);
+                if (hasDelta) {
+                  wsDeltaStats.meteora_balanced.applied += 1;
+                  
+                  // Apply to graph incrementally
+                  try {
+                    const gmod: any = await import('./graph.js');
+                    await scheduleDexApply('raydium', prev as any); // Reuse raydium scheduler for now
+                  } catch {}
+                } else {
+                  wsDeltaStats.meteora_balanced.skipped += 1;
+                  const prevPool = prev.amm.find(p => p.id === item.id);
+                  if (prevPool) {
+                    const reasons: string[] = [];
+                    if ((prevPool as any).reserve_a_raw === (item as any).reserve_a_raw && (prevPool as any).reserve_b_raw === (item as any).reserve_b_raw) reasons.push('reserves_unchanged');
+                    if (Math.abs((prevPool.liquidity_base || 0) - (item.liquidity_base || 0)) === 0) reasons.push('liquidity_unchanged');
+                    if (Math.abs((prevPool.price_a_per_b || 0) - (item.price_a_per_b || 0)) <= 1e-9) reasons.push('price_unchanged');
+                    incrementSkipReason('meteora_balanced', reasons.length > 0 ? reasons.join('+') : 'no_delta_detected');
+                  } else {
+                    incrementSkipReason('meteora_balanced', 'new_pool');
+                  }
+                }
+                
+                updated = true;
+                
+                try {
+                  logger.debug('meteora_balanced.ws.vault_cache_hit', {
+                    pool: pk58.slice(0,8)+'…',
+                    baseReserve: baseReserve.toString(),
+                    quoteReserve: quoteReserve.toString(),
+                    price: price_a_per_b.toFixed(6),
+                    cat: 'pools'
+                  });
+                } catch {}
                 
               } catch (e: any) {
                 try { wsDecodeStats.meteora_balanced.failures += 1; } catch {}
@@ -4041,6 +4161,7 @@ export function stopPoolRefreshLoop(): void {
   try {
     meteoraBinTrackers.clear();
     meteoraBinAccountToPool.clear();
+    vaultBalanceCache.clear(); // Clear vault cache to prevent stale data
   } catch {}
   
   try { logger.info('pools.stop all timers and ws unsubscribed'); } catch {}
@@ -4069,6 +4190,7 @@ export function disablePoolWebsocketRefreshes(): void {
     try {
       meteoraBinTrackers.clear();
       meteoraBinAccountToPool.clear();
+      vaultBalanceCache.clear(); // Clear vault cache to prevent stale data
     } catch {}
     
     logger.info('pools.ws unsubscribed');

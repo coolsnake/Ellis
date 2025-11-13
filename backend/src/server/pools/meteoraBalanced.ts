@@ -616,6 +616,17 @@ async function fetchV1WithRetry(
       if (!res?.ok) {
         const txt = await res?.text?.();
         httpLogNonOk({ source: 'meteora_balanced_v1', url, cid, status: res?.status || 0, bodySample: (txt || '').slice(0, 200) });
+        // Log the actual error response for debugging
+        try {
+          logger.warn('meteora.balanced.v1.fetch.error', {
+            token: tokenLabel,
+            status: res?.status || 0,
+            statusText: res?.statusText || '',
+            bodySample: (txt || '').slice(0, 500),
+            url: url.slice(0, 200),
+            cat: 'meteora'
+          });
+        } catch {}
         if (attempt < retries) {
           await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
           continue;
@@ -624,6 +635,13 @@ async function fetchV1WithRetry(
       ok = true;
       break;
     } catch (err: any) {
+      try {
+        logger.warn('meteora.balanced.v1.fetch.exception', {
+          token: tokenLabel,
+          error: String(err?.message || err),
+          cat: 'meteora'
+        });
+      } catch {}
       if (attempt < retries) {
         await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
         continue;
@@ -642,12 +660,24 @@ async function fetchV1WithRetry(
   
   httpLogResponse({ source: 'meteora_balanced_v1', url, cid, status: res.status, ms: 0, count: data.length });
   
+  // Log response details for debugging
   try {
-    logger.debug('meteora.balanced.v1.fetch.token', {
-      token: tokenLabel,
-      count: data.length,
-      cat: 'meteora'
-    });
+    if (data.length === 0) {
+      logger.warn('meteora.balanced.v1.fetch.empty_response', {
+        token: tokenLabel,
+        url: url.slice(0, 200),
+        responseIsArray: Array.isArray(json),
+        responseType: typeof json,
+        cat: 'meteora'
+      });
+    } else {
+      logger.debug('meteora.balanced.v1.fetch.token', {
+        token: tokenLabel,
+        count: data.length,
+        firstPool: data[0]?.pool_address?.slice(0, 8) + '…' || 'unknown',
+        cat: 'meteora'
+      });
+    }
   } catch {}
   
   return data;
