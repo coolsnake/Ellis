@@ -1309,24 +1309,30 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
         });
       } catch {}
       
-      const creatorPubkey = toPublicKey(creator);
+      const { PublicKey } = await import('@solana/web3.js');
       
-      // Derive coin creator vault ATA - creator's associated token account for the base mint
+      // PUMP.FUN PROGRAM (not PumpSwap!)
+      // PumpSwap is the AMM for trading pump.fun tokens, which still have bonding curves on pump.fun
+      const PUMP_FUN_PROGRAM_ID = toPublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
+      
+      // Derive the bonding curve PDA from pump.fun program
+      // This is the "coin creator vault authority"
+      const [bondingCurvePda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from('bonding-curve'),
+          toPublicKey(poolBaseMint).toBuffer(), // The base mint (meme token)
+        ],
+        PUMP_FUN_PROGRAM_ID
+      );
+      coinCreatorVaultAuthority = bondingCurvePda.toBase58();
+      
+      // The coin creator vault ATA is the bonding curve's associated token account
+      // for the base mint (meme token)
       coinCreatorVaultAta = getAssociatedTokenAddressSync(
         toPublicKey(poolBaseMint),
-        creatorPubkey,
+        bondingCurvePda, // The bonding curve PDA is the owner
         true // allowOwnerOffCurve
       ).toBase58();
-      
-      // Derive coin creator vault authority - PDA derived from creator
-      const [authority] = await (async () => {
-        const { PublicKey } = await import('@solana/web3.js');
-        return PublicKey.findProgramAddressSync(
-          [Buffer.from('coin_creator_vault_authority'), creatorPubkey.toBuffer()],
-          programId
-        );
-      })();
-      coinCreatorVaultAuthority = authority.toBase58();
       
       try {
         logger.info('pumpswap.fallback.derived_accounts', {
@@ -1335,6 +1341,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
             poolId: hop.poolId.slice(0, 12),
             derivedAta: coinCreatorVaultAta.slice(0, 12),
             derivedAuthority: coinCreatorVaultAuthority.slice(0, 12),
+            baseMint: poolBaseMint.slice(0, 12),
           }
         });
       } catch {}

@@ -74,6 +74,7 @@ npm -C backend ci --no-audit --no-fund
   - `ARB_SHARED_SECRET`: shared token for backend→arb-rs graph pushes (Authorization: Bearer <secret>)
   - `ARB_WAIT_FOR_DETECT` (backend): when set to `true`, backend waits for a detection cycle to complete after each graph push. Default `false` for better concurrency.
   - `ARB_ACK_TIMEOUT_MS` (backend): time in ms to wait for arb-rs to report a graph version >= pushed version. Default `2500`.
+  - `SHYFT_API_KEY`: Shyft GraphQL API key for Pumpswap pool fetching (optional)
 - Frontend:
   - `VITE_API_BASE`: e.g., `http://localhost:3001/api`
   - `VITE_WS_URL`: e.g., `http://localhost:3001`

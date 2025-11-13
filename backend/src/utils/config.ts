@@ -733,6 +733,22 @@ export const CONFIG = {
     maxHttpRetries: Number(process.env.METEORA_BALANCED_HTTP_MAX_RETRIES || 2),
     httpBackoffMs: Number(process.env.METEORA_BALANCED_HTTP_BACKOFF_MS || 500),
   },
+  // Pumpswap configuration (Shyft GraphQL)
+  pumpswap: {
+    shyftApiKey: process.env.SHYFT_API_KEY || '',
+    cacheTtlMs: Number(process.env.PUMPSWAP_CACHE_TTL_MS || 60_000),
+    maxHttpRetries: Number(process.env.PUMPSWAP_HTTP_MAX_RETRIES || 2),
+    httpBackoffMs: Number(process.env.PUMPSWAP_HTTP_BACKOFF_MS || 500),
+    defaultFeeBps: Number(process.env.PUMPSWAP_DEFAULT_FEE_BPS || 100), // 1% default fee
+    minLiqBase: Number(process.env.PUMPSWAP_MIN_LIQ_BASE || 0),
+    pageSize: Number(process.env.PUMPSWAP_PAGE_SIZE || 1000),
+    maxPages: Number(process.env.PUMPSWAP_MAX_PAGES || 10),
+    pageDelayMs: Number(process.env.PUMPSWAP_PAGE_DELAY_MS || 200),
+    enableRpcEnrichment: process.env.PUMPSWAP_ENABLE_RPC_ENRICHMENT !== 'false',
+    rpcBatchSize: Number(process.env.PUMPSWAP_RPC_BATCH_SIZE || 100),
+    validatePrices: process.env.PUMPSWAP_VALIDATE_PRICES === 'true',
+    validationSamples: Number(process.env.PUMPSWAP_VALIDATION_SAMPLES || 10),
+  },
   execution: {
     accountKeepOpenMs: Number(process.env.ACCOUNT_KEEP_OPEN_MS || 30 * 60 * 1000), // 30 min default
     frequentTokenKeepOpenMs: Number(process.env.FREQUENT_TOKEN_KEEP_OPEN_MS || 2 * 60 * 60 * 1000), // 2 hours
