@@ -390,13 +390,19 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
             
             // Extract protocol_fee_recipient at offset 243
             if (buf.length >= 275) { // 243 + 32
-              const { PublicKey } = await import('@solana/web3.js');
+              const { PublicKey, SystemProgram } = await import('@solana/web3.js');
               const protocolRecipientBytes = buf.subarray(243, 275);
               const protocolRecipientPubkey = new PublicKey(protocolRecipientBytes);
               const protocolRecipientBase58 = protocolRecipientPubkey.toBase58();
               
-              // Validate that we got a proper base58 string
-              if (protocolRecipientBase58 && protocolRecipientBase58.length >= 32) {
+              // System Program ID - means no protocol fee recipient configured
+              const SYSTEM_PROGRAM_ID = SystemProgram.programId.toBase58();
+              
+              // Validate that we got a proper base58 string and it's not System Program
+              // System Program ID at this offset means the field is empty/unconfigured
+              if (protocolRecipientBase58 && 
+                  protocolRecipientBase58.length >= 32 && 
+                  protocolRecipientBase58 !== SYSTEM_PROGRAM_ID) {
                 const pool = batch[mapping.poolIndex - i];
                 if (pool && pool.pubkey) {
                   protocolRecipients.set(pool.pubkey, protocolRecipientBase58);
@@ -410,6 +416,15 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
                     });
                   } catch {}
                 }
+              } else if (protocolRecipientBase58 === SYSTEM_PROGRAM_ID) {
+                // Log when System Program is found (means field is empty/not configured)
+                try {
+                  logger.debug('pumpswap.extract.protocol_recipient.system_program', {
+                    pool: batch[mapping.poolIndex - i]?.pubkey?.slice(0, 12),
+                    note: 'protocol_fee_recipient_not_configured_will_use_fallback',
+                    cat: 'pumpswap'
+                  });
+                } catch {}
               }
             }
           } catch (e: any) {

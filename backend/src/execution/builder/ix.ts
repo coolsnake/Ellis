@@ -753,6 +753,21 @@ async function buildOrcaSwapViaSdk(hop: DirectHop, kp: { publicKey: PublicKey; s
   if (amountIn <= 0n) {
     throw createBuilderError('ORCA', 'input amount must be positive for swapInstructions', hop);
   }
+  
+  // Log RPC call warning - this SDK method makes internal RPC calls
+  try {
+    logger.warn('orca.sdk.swapInstructions.rpc_call', {
+      cat: 'tx',
+      code: LogCode.TX_BUILD_HOP,
+      ctx: {
+        pool: hop.poolId,
+        warning: 'Orca swapInstructions SDK makes internal RPC calls - consider local implementation',
+        amountIn: amountIn.toString(),
+        slippageBps
+      } as any
+    });
+  } catch {}
+  
   const params: any = { inputAmount: amountIn, mint: inputMintAddr };
   if (typeof OrcaWhirlpools.swapInstructions !== 'function') {
     throw createBuilderError('ORCA', 'swapInstructions not available in @orca-so/whirlpools', hop);
@@ -1031,6 +1046,18 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
     
     // Use context-based SDK approach instead of global state
     try {
+      // Log RPC call warning - this fallback also makes RPC calls
+      try {
+        logger.warn('orca.sdk.fallback.rpc_call', {
+          cat: 'tx',
+          code: LogCode.TX_BUILD_HOP,
+          ctx: {
+            pool: hop.poolId,
+            warning: 'Orca fallback (client.getPool) makes RPC calls - implement local building',
+          } as any
+        });
+      } catch {}
+      
       const { WhirlpoolContext, buildWhirlpoolClient, swapQuoteByInputToken } = await import('@orca-so/whirlpools-sdk');
       const { Percentage } = await import('@orca-so/common-sdk');
       const { PublicKey } = await import('@solana/web3.js');
@@ -1053,7 +1080,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
         },
       );
       const client = (buildWhirlpoolClient as any)(ctx);
-      const pool = await client.getPool(new PublicKey(poolAddr));
+      const pool = await client.getPool(new PublicKey(poolAddr)); // RPC CALL HERE
       
       const slippage = (Percentage as any).fromFraction(slippageBps, 10_000);
       const amountInBn = new BN(String(hop.amountInRaw ?? 0n));
@@ -3810,68 +3837,55 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       hop.tickArrayUpper,
     ].filter(Boolean);
     
-    // Batch fetch all tick arrays at once to reduce RPC calls
+    // OPTIMIZATION: Trust tick arrays from cache without RPC verification
+    // The cached tick arrays come from WebSocket subscriptions that monitor these accounts
+    // If they're in our cache, they exist and are valid - let the chain reject if not
     if (tickArrayCandidates.length > 0) {
-      try {
-        const connection = getConnection();
-        const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
-        const tickArrayPks = tickArrayCandidates.map(addr => toPublicKey(addr));
-        const weight = Math.max(1, Math.ceil(tickArrayPks.length / 5));
-        const tickArrayInfos = await withRpcLimit(
-          () => connection.getMultipleAccountsInfo(tickArrayPks),
-          weight,
-          { module: 'execution', method: 'getMultipleAccountsInfo' }
-        ).catch(() => null);
-        
-        if (tickArrayInfos && tickArrayInfos.length === tickArrayPks.length) {
-          for (let i = 0; i < tickArrayPks.length; i++) {
-            const tickPk = tickArrayPks[i];
-            const tickAcc = tickArrayInfos[i];
-            // Just verify account exists with data - don't check owner (chain will validate program ownership)
-            if (tickAcc && tickAcc.data && tickAcc.data.length > 0) {
-              tickArrayKeys.push(tickPk);
-              try { 
-                logger.debug('raydium.clmm.tickarray.verified', { 
-                  cat: 'tx', 
-                  ctx: { 
-                    pool: hop.poolId, 
-                    tickArray: tickPk.toBase58(),
-                    owner: tickAcc.owner.toBase58(),
-                    dataLen: tickAcc.data.length 
-                  } as any 
-                }); 
-              } catch {}
-            } else {
-              try { 
-                logger.debug('raydium.clmm.tickarray.missing', { 
-                  cat: 'tx', 
-                  ctx: { 
-                    pool: hop.poolId, 
-                    tickArray: tickPk.toBase58(),
-                    exists: !!tickAcc,
-                    hasData: !!(tickAcc && tickAcc.data?.length) 
-                  } as any 
-                }); 
-              } catch {}
-            }
-          }
+      for (const addr of tickArrayCandidates) {
+        try {
+          const pk = toPublicKey(addr);
+          tickArrayKeys.push(pk);
+          try { 
+            logger.debug('raydium.clmm.tickarray.from_cache', { 
+              cat: 'tx', 
+              ctx: { 
+                pool: hop.poolId, 
+                tickArray: pk.toBase58(),
+              } as any 
+            }); 
+          } catch {}
+        } catch (e: any) {
+          try { 
+            logger.debug('raydium.clmm.tickarray.invalid_address', { 
+              cat: 'tx', 
+              ctx: { 
+                pool: hop.poolId, 
+                tickArray: String(addr),
+                error: String(e?.message || e) 
+              } as any 
+            }); 
+          } catch {}
         }
-      } catch (e: any) {
-        try { 
-          logger.debug('raydium.clmm.tickarray.verify.error', { 
-            cat: 'tx', 
-            ctx: { 
-              pool: hop.poolId, 
-              error: String(e?.message || e) 
-            } as any 
-          }); 
-        } catch {}
       }
     }
     
     if (!tickArrayKeys.length) {
       throw createBuilderError('RAYDIUM_CLMM', 'no valid tick arrays found for swap (all accounts missing or invalid)', hop);
     }
+    
+    try {
+      logger.info('raydium.clmm.tickarrays.using_cached', {
+        cat: 'tx',
+        code: LogCode.TX_BUILD_HOP,
+        ctx: {
+          pool: hop.poolId,
+          count: tickArrayKeys.length,
+          center: hop.tickArrayCenter?.slice(0, 8) + '…',
+          lower: hop.tickArrayLower?.slice(0, 8) + '…',
+          upper: hop.tickArrayUpper?.slice(0, 8) + '…'
+        } as any
+      });
+    } catch {}
     
     // Sort tick arrays: center first (most likely needed), then others
     const centerPk = hop.tickArrayCenter ? toPublicKey(hop.tickArrayCenter) : null;
@@ -3881,6 +3895,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
         tickArrayKeys.unshift(tickArrayKeys.splice(centerIdx, 1)[0]);
       }
     }
+
 
     // Derive exBitmap (tick array bitmap extension) PDA
     // The SDK may conditionally include this in swap instructions based on pool state.
@@ -4469,13 +4484,14 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       
       // Verify all accounts in each instruction to catch missing accounts early
       // But skip accounts that don't need to exist yet (signers, writable accounts that can be created)
-      // OPTIMIZATION: Skip verification if CONFIG.execution.skipAccountVerification is true (saves 200-400ms)
-      const skipVerification = (CONFIG as any)?.execution?.skipAccountVerification === true;
+      // OPTIMIZATION: Skip verification by default (trust cached data from WebSocket subscriptions)
+      // Set CONFIG.execution.skipAccountVerification=false to enable verification (for debugging)
+      const skipVerification = (CONFIG as any)?.execution?.skipAccountVerification !== false; // Default: true (skip verification)
       if (skipVerification) {
         try {
           logger.debug('raydium.clmm.verification.skipped', {
             cat: 'tx',
-            ctx: { pool: hop.poolId, reason: 'CONFIG.execution.skipAccountVerification=true' } as any,
+            ctx: { pool: hop.poolId, reason: 'trusting_cached_data (CONFIG.execution.skipAccountVerification!=false)' } as any,
           });
         } catch {}
       }

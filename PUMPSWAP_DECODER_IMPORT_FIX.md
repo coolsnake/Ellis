@@ -127,4 +127,5 @@ Expected log pattern:
 - `VAULT_CACHE_PRELOAD_FIX.md` - Vault balance caching system
 - `VAULT_ADDRESS_LOOKUP_FIX.md` - Vault address resolution from cache
 - `DIAGNOSTIC_LOGGING_ADDED.md` - WebSocket event logging system
+- `PUMPSWAP_PROTOCOL_RECIPIENT_VALIDATION_FIX.md` - Protocol recipient System Program ID validation
 

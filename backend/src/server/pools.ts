@@ -913,6 +913,22 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
   // Track last call time to prevent excessive refreshes
   (refreshAllSources as any).__lastCallTime = Date.now();
   
+  // Prevent recursive calls from subscribe phase
+  if ((refreshAllSources as any).__isRunning) {
+    try {
+      logger.info('pools.refresh.skipped', { reason: 'already_running', cat: 'pools' });
+    } catch {}
+    // Return cached data if available
+    return {
+      raydium: raydiumCache.data || { amm: [], clmm: [] },
+      orca: orcaCache.data || { amm: [], clmm: [] },
+      meteora: meteoraCache.data || { amm: [], clmm: [] },
+      meteora_balanced: metbalCache.data || { amm: [], clmm: [] },
+      pumpswap: pumpswapCache.data || { amm: [], clmm: [] }
+    };
+  }
+  (refreshAllSources as any).__isRunning = true;
+  
   // Mark that we're in a refresh cycle - individual fetchers should skip incremental graph updates
   // until all filtering is complete to avoid building huge unfiltered snapshots
   (refreshAllSources as any).__inProgress = true;
@@ -1558,6 +1574,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
   
   // Clear the in-progress flag now that all filtering and graph building is complete
   (refreshAllSources as any).__inProgress = false;
+  (refreshAllSources as any).__isRunning = false;
   
   logger.info('pools.refresh.complete', { 
     fetched: {
@@ -2219,6 +2236,56 @@ export function startRaydiumRefreshLoop(): void {
                     decimals_b: precision.decB,
                   } as any;
                   
+                  // OPTIMIZATION: Cache Orca pool state in execution cache to avoid RPC calls during tx building
+                  try {
+                    const { executionCache } = await import('../execution/cache.js');
+                    
+                    // Store static pool data (vaults, oracle, program ID)
+                    executionCache.setStatic(id, {
+                      programId: parsed.whirlpoolsConfig ? parsed.whirlpoolsConfig.toBase58() : (CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc'),
+                      vaults: {
+                        a: parsed.tokenVaultA ? parsed.tokenVaultA.toBase58() : undefined,
+                        b: parsed.tokenVaultB ? parsed.tokenVaultB.toBase58() : undefined
+                      },
+                      oracle: parsed.oracle ? parsed.oracle.toBase58() : undefined,
+                      tickSpacing: tick_spacing,
+                      mint_a,
+                      mint_b,
+                      decimals_a: precision.decA,
+                      decimals_b: precision.decB,
+                      // Store raw account data for local parsing during tx building
+                      rawAccountData: info?.data ? Buffer.from(info.data) : undefined,
+                      rawAccountDataUpdatedMs: Date.now()
+                    });
+                    
+                    // Store hot pool data (frequently changing price/liquidity)
+                    executionCache.setHot(id, {
+                      sqrtPriceX64: sqrtRaw,
+                      currentTickIndex: Number(parsed.tickCurrentIndex),
+                      liquidity: liquidityRaw,
+                      feeRate: fee_bps
+                    });
+                    
+                    try {
+                      logger.debug('orca.ws.cache_updated', {
+                        pool: id.slice(0, 8) + '…',
+                        hasRawData: !!info?.data,
+                        sqrtPrice: sqrtRaw?.toString(),
+                        currentTick: parsed.tickCurrentIndex,
+                        liquidity: liquidityRaw?.toString(),
+                        cat: 'pools'
+                      });
+                    } catch {}
+                  } catch (cacheErr) {
+                    try {
+                      logger.warn('orca.ws.cache_update_failed', {
+                        pool: id.slice(0, 8) + '…',
+                        error: String((cacheErr as any)?.message || cacheErr),
+                        cat: 'pools'
+                      });
+                    } catch {}
+                  }
+                  
                   // Validate decoded pool before applying
                   const validation = validateDecodedPool('orca', clmmItem, id);
                   if (!validation.valid) {
@@ -2405,6 +2472,57 @@ export function startRaydiumRefreshLoop(): void {
                     if (tracker?.aggregate) (item as any).meteora_bin_hash = tracker.aggregate;
                     if (Number.isFinite(activeId as any)) (item as any).active_id = Number(activeId);
                     if (tickSpacing) (item as any).bin_step = tickSpacing;
+                    
+                    // OPTIMIZATION: Cache Meteora active bin ID and state in execution cache
+                    try {
+                      const { executionCache } = await import('../execution/cache.js');
+                      
+                      // Store static pool data
+                      executionCache.setStatic(poolId, {
+                        programId: String(program?.programId?.toBase58() || ''),
+                        vaults: {
+                          a: accountA,
+                          b: accountB
+                        },
+                        binStep: tickSpacing,
+                        mint_a: tokenX,
+                        mint_b: tokenY,
+                        decimals_a: decA,
+                        decimals_b: decB,
+                        // Store raw account data for local parsing during tx building
+                        rawAccountData: info?.data ? Buffer.from(info.data) : undefined,
+                        rawAccountDataUpdatedMs: Date.now()
+                      });
+                      
+                      // Store hot pool data (frequently changing active bin ID)
+                      if (Number.isFinite(activeId as any)) {
+                        executionCache.setHot(poolId, {
+                          activeId: Number(activeId),
+                          sqrtPriceX64: sqrtPriceRaw,
+                          liquidity: liquidityRaw,
+                          feeRate: feeBps
+                        });
+                        
+                        try {
+                          logger.debug('meteora.ws.cache_updated', {
+                            pool: poolId.slice(0, 8) + '…',
+                            activeId: Number(activeId),
+                            binStep: tickSpacing,
+                            hasRawData: !!info?.data,
+                            cat: 'pools'
+                          });
+                        } catch {}
+                      }
+                    } catch (cacheErr) {
+                      try {
+                        logger.warn('meteora.ws.cache_update_failed', {
+                          pool: poolId.slice(0, 8) + '…',
+                          error: String((cacheErr as any)?.message || cacheErr),
+                          cat: 'pools'
+                        });
+                      } catch {}
+                    }
+                    
                     const [canonicalItem] = canonicalizePairs([{ ...item }]);
                     const finalItem = canonicalItem || item;
                     
@@ -3418,6 +3536,8 @@ export function startRaydiumRefreshLoop(): void {
                 
                 if (TickUtil && typeof TickUtil.getStartTickIndex === 'function') {
                   let tickArrayCount = 0;
+                  const tickArrayAddresses: { lower?: string; center?: string; upper?: string } = {};
+                  
                   for (let offset = -1; offset <= 1; offset++) {
                     try {
                       const startTick = TickUtil.getStartTickIndex(currentTick, tickSpacing, offset);
@@ -3429,12 +3549,39 @@ export function startRaydiumRefreshLoop(): void {
                         targetedSourceByAccount.set(tickArrayPda.publicKey.toBase58(), 'orca');
                         debugLogTargeted('orca', tickArrayPda.publicKey.toBase58(), { kind: 'tick_array', offset });
                         derivedAccountToPool.set(tickArrayPda.publicKey.toBase58(), { poolId: poolAddr, accountType: 'tick_array' });
+                        
+                        // Store tick array address by offset
+                        const address = tickArrayPda.publicKey.toBase58();
+                        if (offset === -1) tickArrayAddresses.lower = address;
+                        else if (offset === 0) tickArrayAddresses.center = address;
+                        else if (offset === 1) tickArrayAddresses.upper = address;
+                        
                         tickArrayCount++;
                       }
                     } catch (err) {
                       logger.info('orca.whirlpool.tickarray.subscribe.fail', { pool: poolAddr, offset, error: String((err as any)?.message || err) });
                     }
                   }
+                  
+                  // Cache tick array addresses in execution cache
+                  try {
+                    const { executionCache } = await import('../execution/cache.js');
+                    const existing = executionCache.getHot(poolAddr);
+                    executionCache.setHot(poolAddr, {
+                      ...existing,
+                      tickArrays: tickArrayAddresses
+                    });
+                    
+                    logger.info('orca.tickarrays.cached', { 
+                      pool: poolAddr.slice(0,8)+'…', 
+                      count: tickArrayCount,
+                      lower: tickArrayAddresses.lower?.slice(0,8) + '…',
+                      center: tickArrayAddresses.center?.slice(0,8) + '…',
+                      upper: tickArrayAddresses.upper?.slice(0,8) + '…',
+                      cat: 'pools' 
+                    });
+                  } catch {}
+                  
                   logger.info('orca.tickarrays.subscribed', { pool: poolAddr.slice(0,8)+'…', count: tickArrayCount, cat: 'pools' });
                 } else {
                   logger.info('orca.tickarrays.no_tickutil', { pool: poolAddr.slice(0,8)+'…', hasTickUtil: !!TickUtil, cat: 'pools' });
