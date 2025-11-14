@@ -1261,83 +1261,126 @@ export function createArbRouter(io: SocketIOServer): Router {
       try { emit('log', { level: 'info', message: 'tx.intents', context: { cat: 'tx', id, intent } }); } catch {}
       try { emit('log', { level: 'info', message: 'tx.ixs', context: { cat: 'tx', id, ixCount: built.ixCount, items: ixs } }); } catch {}
 
-      // Require successful preflight before sending
-      try { logger.info('tx.preflight.start', { cat: 'tx', code: LogCode.TX_PREFLIGHT_START, ctx: { ixCount: built.ixCount, sizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode } as any }); } catch {}
-      let sim: any;
-      try {
-        // Use ALT addresses from built transaction, fallback to exec config
-        const altAddresses = built.lookupTableAddresses || execCfg.lookupTableAddresses || [];
-        sim = await assembleAndSimulate(built.instructions, {
-          computeUnitLimit: execCfg.computeUnitLimit,
-          computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
-          lookupTableAddresses: altAddresses,
-        } as any);
+      // Optional: Pre-send simulation validation (can be skipped for speed)
+      // Controlled by CONFIG.execution.skipPresendSimulation (env: SKIP_PRESEND_SIMULATION=true)
+      const skipPresendSim = (CONFIG as any)?.execution?.skipPresendSimulation === true;
+      
+      let sim: any = null;
+      
+      if (skipPresendSim) {
+        // Skip simulation for maximum speed
         try {
-          const dexes = Array.from(new Set((plan.hops || []).map((h:any)=>String(h?.dex||'').toLowerCase())));
-          const txLogs = getTxRelatedLogs(id, Date.now() - 30000, Date.now(), 200);
-          const { writeTxFullDump } = await import('../../utils/txTrace.js');
-          // Write single consolidated file instead of one per DEX
-          await writeTxFullDump('preflight', {
-            id,
-            txId: id,
-            path: plan.path,
-            hops: plan.hops,
-            plan, // Full execution plan
-            dexes, // Include all DEXes involved
-            exec: execCfg,
-            execConfig: execCfg, // Alias for clarity
-            built,
-            sim,
-            executorLogs: txLogs, // Include executor logs
-            // Include opportunity data if available from request
-            opportunity: (req.body as any)?.opportunity || {
-              path: plan.path,
-              hop_pool_ids: plan.hops?.map((h: any) => h.poolId),
-              hop_dexes: plan.hops?.map((h: any) => h.dex),
-              dexes: Array.from(new Set(plan.hops?.map((h: any) => h.dex))),
-            },
+          logger.info('tx.presend_simulation.skipped', {
+            cat: 'tx',
+            code: LogCode.TX_PREFLIGHT_START,
+            ctx: {
+              id,
+              ixCount: built.ixCount,
+              sizeBytes: built.sizeBytes,
+              mode: forceDirect ? 'direct(force)' : mode,
+              reason: 'SKIP_PRESEND_SIMULATION=true',
+              note: '100-200ms saved, sending directly without validation'
+            } as any
           });
         } catch {}
-      } catch (e: any) {
-        try { logger.info('tx.preflight.err', { cat: 'tx', code: LogCode.TX_PREFLIGHT_ERR, ctx: { id, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode, error: String(e?.message || e) } as any }); } catch {}
-        return res.status(400).json({ id, mode, error: 'preflight_throw' });
-      }
-      await logTxTrace('preflight', {
-        id, timeMs: Date.now(),
-        graph,
-        oppKey,
-        path: plan.path,
-        hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })),
-        ixCount: built.ixCount, txSizeBytes: built.sizeBytes,
-        exec: {
-          computeUnitLimit: execCfg.computeUnitLimit,
-          computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
-          lookupTableAddresses: execCfg.lookupTableAddresses,
-        },
-        intent,
-        ixs,
-        wireBase64: (sim as any)?.wireBase64,
-        logs: (sim as any)?.logs || [],
-        err: (sim as any)?.err || null,
-      });
-      try { emit('log', { level: 'info', message: 'pretrade:arb simulate result', timestamp: new Date().toISOString(), context: { cat: 'arb', code: 'PRETRADE.SIM.END', mode: (execCfg as any)?.mode, ...(sim as any)?.err ? { err: String((sim as any).err) } : {} } }); } catch {}
-      try {
-        if ((sim as any)?.err) {
-          const errStr = toErrString((sim as any)?.err);
-          logger.info('tx.preflight.err', { cat: 'tx', code: LogCode.TX_PREFLIGHT_ERR, ctx: { id, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode, logCount: Array.isArray((sim as any)?.logs) ? (sim as any).logs.length : 0, error: errStr } as any });
-        } else {
-          logger.info('tx.preflight.ok', { cat: 'tx', code: LogCode.TX_PREFLIGHT_OK, ctx: { id, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode, logCount: Array.isArray((sim as any)?.logs) ? (sim as any).logs.length : 0 } as any });
-        }
-      } catch {}
-      if ((sim as any)?.err) {
-        try { execStats.preflightErr += 1; } catch {}
+        
+        // Log that we're skipping for tracing purposes
+        await logTxTrace('presend_sim_skipped', {
+          id, timeMs: Date.now(),
+          graph,
+          oppKey,
+          path: plan.path,
+          hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })),
+          ixCount: built.ixCount, txSizeBytes: built.sizeBytes,
+          exec: {
+            computeUnitLimit: execCfg.computeUnitLimit,
+            computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
+            lookupTableAddresses: execCfg.lookupTableAddresses,
+          },
+          intent,
+          ixs,
+          skipped: true,
+        });
+        
+        try { execStats.preflightOk += 1; } catch {}
+      } else {
+        // Require successful preflight before sending
+        try { logger.info('tx.preflight.start', { cat: 'tx', code: LogCode.TX_PREFLIGHT_START, ctx: { ixCount: built.ixCount, sizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode } as any }); } catch {}
         try {
-          await addTxRecord({ id, timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature: null, status: 'sim_err', error: String((sim as any)?.err) });
-          try { emit('tx:history.updated', { id, status: 'sim_err' }); } catch {}
+          // Use ALT addresses from built transaction, fallback to exec config
+          const altAddresses = built.lookupTableAddresses || execCfg.lookupTableAddresses || [];
+          sim = await assembleAndSimulate(built.instructions, {
+            computeUnitLimit: execCfg.computeUnitLimit,
+            computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
+            lookupTableAddresses: altAddresses,
+          } as any);
+          try {
+            const dexes = Array.from(new Set((plan.hops || []).map((h:any)=>String(h?.dex||'').toLowerCase())));
+            const txLogs = getTxRelatedLogs(id, Date.now() - 30000, Date.now(), 200);
+            const { writeTxFullDump } = await import('../../utils/txTrace.js');
+            // Write single consolidated file instead of one per DEX
+            await writeTxFullDump('preflight', {
+              id,
+              txId: id,
+              path: plan.path,
+              hops: plan.hops,
+              plan, // Full execution plan
+              dexes, // Include all DEXes involved
+              exec: execCfg,
+              execConfig: execCfg, // Alias for clarity
+              built,
+              sim,
+              executorLogs: txLogs, // Include executor logs
+              // Include opportunity data if available from request
+              opportunity: (req.body as any)?.opportunity || {
+                path: plan.path,
+                hop_pool_ids: plan.hops?.map((h: any) => h.poolId),
+                hop_dexes: plan.hops?.map((h: any) => h.dex),
+                dexes: Array.from(new Set(plan.hops?.map((h: any) => h.dex))),
+              },
+            });
+          } catch {}
+        } catch (e: any) {
+          try { logger.info('tx.preflight.err', { cat: 'tx', code: LogCode.TX_PREFLIGHT_ERR, ctx: { id, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode, error: String(e?.message || e) } as any }); } catch {}
+          return res.status(400).json({ id, mode, error: 'preflight_throw' });
+        }
+        await logTxTrace('preflight', {
+          id, timeMs: Date.now(),
+          graph,
+          oppKey,
+          path: plan.path,
+          hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })),
+          ixCount: built.ixCount, txSizeBytes: built.sizeBytes,
+          exec: {
+            computeUnitLimit: execCfg.computeUnitLimit,
+            computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
+            lookupTableAddresses: execCfg.lookupTableAddresses,
+          },
+          intent,
+          ixs,
+          wireBase64: (sim as any)?.wireBase64,
+          logs: (sim as any)?.logs || [],
+          err: (sim as any)?.err || null,
+        });
+        try { emit('log', { level: 'info', message: 'pretrade:arb simulate result', timestamp: new Date().toISOString(), context: { cat: 'arb', code: 'PRETRADE.SIM.END', mode: (execCfg as any)?.mode, ...(sim as any)?.err ? { err: String((sim as any).err) } : {} } }); } catch {}
+        try {
+          if ((sim as any)?.err) {
+            const errStr = toErrString((sim as any)?.err);
+            logger.info('tx.preflight.err', { cat: 'tx', code: LogCode.TX_PREFLIGHT_ERR, ctx: { id, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode, logCount: Array.isArray((sim as any)?.logs) ? (sim as any).logs.length : 0, error: errStr } as any });
+          } else {
+            logger.info('tx.preflight.ok', { cat: 'tx', code: LogCode.TX_PREFLIGHT_OK, ctx: { id, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode, logCount: Array.isArray((sim as any)?.logs) ? (sim as any).logs.length : 0 } as any });
+          }
         } catch {}
-        return res.status(400).json({ id, mode, error: 'preflight_failed', logs: (sim as any)?.logs || [], ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
+        if ((sim as any)?.err) {
+          try { execStats.preflightErr += 1; } catch {}
+          try {
+            await addTxRecord({ id, timeMs: Date.now(), path: plan.path, hops: plan.hops.map((h:any)=>({ dex:h.dex, variant:h.variant, poolId:h.poolId })), ixCount: built.ixCount, txSizeBytes: built.sizeBytes, signature: null, status: 'sim_err', error: String((sim as any)?.err) });
+            try { emit('tx:history.updated', { id, status: 'sim_err' }); } catch {}
+          } catch {}
+          return res.status(400).json({ id, mode, error: 'preflight_failed', logs: (sim as any)?.logs || [], ixCount: built.ixCount, txSizeBytes: built.sizeBytes });
+        }
+        try { execStats.preflightOk += 1; } catch {}
       }
-      try { execStats.preflightOk += 1; } catch {}
 
       // Pre-execution slippage check: re-quote immediately before sending
       try {
@@ -1519,6 +1562,9 @@ export function createArbRouter(io: SocketIOServer): Router {
   });
   api.post('/arb/execute/orca', async (req, res) => {
     try {
+      try { emit('log', { level: 'info', message: 'pretrade:arb execute orca start', timestamp: new Date().toISOString(), context: { cat: 'arb', code: 'PRETRADE.EXEC.ORCA.START' } }); } catch {}
+      try { logger.info('pretrade:arb execute orca start', { cat: 'arb', code: LogCode.API_REQUEST, ctx: { body: req.body } as any }); } catch {}
+      
       const body = req.body || {};
       // Normalize into generic /arb/execute input with dex set to orca.clmm
       let payload: any = {};
@@ -1529,13 +1575,25 @@ export function createArbRouter(io: SocketIOServer): Router {
         const hopPoolIdsIn: string[] = Array.isArray(body.hopPoolIds) ? (body.hopPoolIds as any[]).map((x: any) => String(x)) : [];
         const fallbackPid: string | undefined = (body.poolId || body.whirlpoolId) ? String(body.poolId || body.whirlpoolId) : undefined;
         const hopCount = Math.max(0, path.length - 1);
-        if (hopCount <= 0) return res.status(400).json({ error: 'invalid path' });
+        
+        try { logger.debug('orca.execute.payload_construction', { cat: 'arb', ctx: { pathLength: path.length, hopCount, hopPoolIdsInLength: hopPoolIdsIn.length, fallbackPid, hasPath: path.length > 0 } as any }); } catch {}
+        
+        if (hopCount <= 0) {
+          try { logger.warn('orca.execute.invalid_path', { cat: 'arb', ctx: { path, hopCount } as any }); } catch {}
+          return res.status(400).json({ error: 'invalid path' });
+        }
         let ids: string[] = hopPoolIdsIn;
         if (ids.length !== hopCount) {
-          if (!fallbackPid) return res.status(400).json({ error: 'missing hopPoolIds and poolId' });
+          if (!fallbackPid) {
+            try { logger.warn('orca.execute.missing_pool_id', { cat: 'arb', ctx: { hopCount, hopPoolIdsInLength: ids.length, body } as any }); } catch {}
+            return res.status(400).json({ error: 'missing hopPoolIds and poolId' });
+          }
           ids = Array.from({ length: hopCount }, () => String(fallbackPid));
         }
-        if (ids.some((s) => !s)) return res.status(400).json({ error: 'invalid hopPoolIds' });
+        if (ids.some((s) => !s)) {
+          try { logger.warn('orca.execute.invalid_pool_ids', { cat: 'arb', ctx: { ids } as any }); } catch {}
+          return res.status(400).json({ error: 'invalid hopPoolIds' });
+        }
         const dexes = Array.from({ length: hopCount }, () => 'orca.clmm');
         payload = {
           path,
@@ -1546,11 +1604,15 @@ export function createArbRouter(io: SocketIOServer): Router {
           slippageBps: body.slippageBps,
           forceDirect: body.forceDirect,
         };
+        
+        try { logger.debug('orca.execute.payload_ready', { cat: 'arb', ctx: { payloadPath: payload.path, payloadHopPoolIds: payload.hopPoolIds, payloadDexes: payload.dexes } as any }); } catch {}
       }
       // Delegate to generic executor
       req.body = payload;
       return (api as any).handle({ ...req, url: '/arb/execute', originalUrl: '/arb/execute', path: '/arb/execute', method: 'POST' }, res, () => {});
     } catch (e: any) {
+      try { logger.error('orca.execute.error', { cat: 'arb', code: LogCode.API_ERROR, ctx: { error: String(e?.message || e), stack: e?.stack } as any }); } catch {}
+      try { emit('log', { level: 'error', message: `orca execute error: ${String(e?.message || e)}`, timestamp: new Date().toISOString(), context: { cat: 'arb', code: 'PRETRADE.EXEC.ORCA.ERROR' } }); } catch {}
       return res.status(400).json({ error: String(e?.message || e) });
     }
   });
@@ -1558,6 +1620,9 @@ export function createArbRouter(io: SocketIOServer): Router {
   // Convenience: preflight (simulate-send) a two-hop Orca Whirlpool swap
   api.post('/arb/simulate-send/orca', async (req, res) => {
     try {
+      try { emit('log', { level: 'info', message: 'pretrade:arb simulate-send orca start', timestamp: new Date().toISOString(), context: { cat: 'arb', code: 'PRETRADE.SIM.ORCA.START' } }); } catch {}
+      try { logger.info('pretrade:arb simulate-send orca start', { cat: 'arb', code: LogCode.API_REQUEST, ctx: { body: req.body } as any }); } catch {}
+      
       const body = req.body || {};
       let payload: any = {};
       if (body && body.plan && Array.isArray(body.plan?.hops)) {
@@ -1567,13 +1632,25 @@ export function createArbRouter(io: SocketIOServer): Router {
         const hopPoolIdsIn: string[] = Array.isArray(body.hopPoolIds) ? (body.hopPoolIds as any[]).map((x: any) => String(x)) : [];
         const fallbackPid: string | undefined = (body.poolId || body.whirlpoolId) ? String(body.poolId || body.whirlpoolId) : undefined;
         const hopCount = Math.max(0, path.length - 1);
-        if (hopCount <= 0) return res.status(400).json({ error: 'invalid path' });
+        
+        try { logger.debug('orca.simulate.payload_construction', { cat: 'arb', ctx: { pathLength: path.length, hopCount, hopPoolIdsInLength: hopPoolIdsIn.length, fallbackPid, hasPath: path.length > 0 } as any }); } catch {}
+        
+        if (hopCount <= 0) {
+          try { logger.warn('orca.simulate.invalid_path', { cat: 'arb', ctx: { path, hopCount } as any }); } catch {}
+          return res.status(400).json({ error: 'invalid path' });
+        }
         let ids: string[] = hopPoolIdsIn;
         if (ids.length !== hopCount) {
-          if (!fallbackPid) return res.status(400).json({ error: 'missing hopPoolIds and poolId' });
+          if (!fallbackPid) {
+            try { logger.warn('orca.simulate.missing_pool_id', { cat: 'arb', ctx: { hopCount, hopPoolIdsInLength: ids.length, body } as any }); } catch {}
+            return res.status(400).json({ error: 'missing hopPoolIds and poolId' });
+          }
           ids = Array.from({ length: hopCount }, () => String(fallbackPid));
         }
-        if (ids.some((s) => !s)) return res.status(400).json({ error: 'invalid hopPoolIds' });
+        if (ids.some((s) => !s)) {
+          try { logger.warn('orca.simulate.invalid_pool_ids', { cat: 'arb', ctx: { ids } as any }); } catch {}
+          return res.status(400).json({ error: 'invalid hopPoolIds' });
+        }
         const dexes = Array.from({ length: hopCount }, () => 'orca.clmm');
         payload = {
           path,
@@ -1583,10 +1660,14 @@ export function createArbRouter(io: SocketIOServer): Router {
           sizeUsd: body.sizeUsd,
           slippageBps: body.slippageBps,
         };
+        
+        try { logger.debug('orca.simulate.payload_ready', { cat: 'arb', ctx: { payloadPath: payload.path, payloadHopPoolIds: payload.hopPoolIds, payloadDexes: payload.dexes } as any }); } catch {}
       }
       req.body = payload;
       return (api as any).handle({ ...req, url: '/arb/simulate-send', originalUrl: '/arb/simulate-send', path: '/arb/simulate-send', method: 'POST' }, res, () => {});
     } catch (e: any) {
+      try { logger.error('orca.simulate.error', { cat: 'arb', code: LogCode.API_ERROR, ctx: { error: String(e?.message || e), stack: e?.stack } as any }); } catch {}
+      try { emit('log', { level: 'error', message: `orca simulate error: ${String(e?.message || e)}`, timestamp: new Date().toISOString(), context: { cat: 'arb', code: 'PRETRADE.SIM.ORCA.ERROR' } }); } catch {}
       return res.status(400).json({ error: String(e?.message || e) });
     }
   });
