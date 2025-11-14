@@ -259,15 +259,15 @@ export function parsePumpswapPoolFee(data: Buffer | Uint8Array): number | null {
  * This allows us to calculate price and liquidity from actual reserves
  * Returns enriched pools and metrics for monitoring
  */
-export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools: any[]; metrics: { success: number; fail: number; ms: number; feesExtracted: number } }> {
-  if (!pools || pools.length === 0) return { pools, metrics: { success: 0, fail: 0, ms: 0, feesExtracted: 0 } };
+export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools: any[]; metrics: { success: number; fail: number; ms: number; feesExtracted: number; protocolRecipientsExtracted: number } }> {
+  if (!pools || pools.length === 0) return { pools, metrics: { success: 0, fail: 0, ms: 0, feesExtracted: 0, protocolRecipientsExtracted: 0 } };
   
   const batchSize = Number((CONFIG as any)?.pumpswap?.rpcBatchSize || 100);
   const enabled = ((CONFIG as any)?.pumpswap?.enableRpcEnrichment !== false);
   
   if (!enabled) {
     try { logger.debug('pumpswap.rpc.enrichment.disabled', { cat: 'pumpswap' }); } catch {}
-    return { pools, metrics: { success: 0, fail: 0, ms: 0, feesExtracted: 0 } };
+    return { pools, metrics: { success: 0, fail: 0, ms: 0, feesExtracted: 0, protocolRecipientsExtracted: 0 } };
   }
   
   const connection = getConnection();
@@ -275,6 +275,7 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
   let successCount = 0;
   let failCount = 0;
   let feesExtracted = 0;
+  let protocolRecipientsExtracted = 0;
   const t0 = Date.now();
   
   try { logger.info('pumpswap.rpc.enrichment.start', { poolCount: pools.length, batchSize, cat: 'pumpswap' }); } catch {}
@@ -331,10 +332,11 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
         { module: 'pools', method: 'getMultipleAccountsInfo' }
       );
       
-      // Create maps for balances, fees, and creators
+      // Create maps for balances, fees, creators, and protocol recipients
       const balances = new Map<string, bigint>();
       const fees = new Map<string, number>(); // pool pubkey -> fee_bps
       const creators = new Map<string, string>(); // pool pubkey -> on-chain creator
+      const protocolRecipients = new Map<string, string>(); // pool pubkey -> protocol_fee_recipient
       
       for (let k = 0; k < allAddresses.length; k++) {
         const info = accountInfos[k];
@@ -357,8 +359,9 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
           // Extract on-chain coin_creator from pool account
           // Pool account structure: [discriminator(8), pool_bump(1), index(2), creator(32), 
           //   base_mint(32), quote_mint(32), lp_mint(32), pool_base_token_account(32), 
-          //   pool_quote_token_account(32), lp_supply(8), coin_creator(32), ...]
+          //   pool_quote_token_account(32), lp_supply(8), coin_creator(32), protocol_fee_recipient(32), ...]
           // coin_creator offset = 8+1+2+32+32+32+32+32+32+8 = 211
+          // protocol_fee_recipient offset = 211+32 = 243
           try {
             const buf = Buffer.isBuffer(info.data) ? info.data : Buffer.from(info.data);
             if (buf.length >= 243) { // 211 + 32
@@ -384,9 +387,34 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
                 }
               }
             }
+            
+            // Extract protocol_fee_recipient at offset 243
+            if (buf.length >= 275) { // 243 + 32
+              const { PublicKey } = await import('@solana/web3.js');
+              const protocolRecipientBytes = buf.subarray(243, 275);
+              const protocolRecipientPubkey = new PublicKey(protocolRecipientBytes);
+              const protocolRecipientBase58 = protocolRecipientPubkey.toBase58();
+              
+              // Validate that we got a proper base58 string
+              if (protocolRecipientBase58 && protocolRecipientBase58.length >= 32) {
+                const pool = batch[mapping.poolIndex - i];
+                if (pool && pool.pubkey) {
+                  protocolRecipients.set(pool.pubkey, protocolRecipientBase58);
+                  protocolRecipientsExtracted++;
+                  
+                  try {
+                    logger.info('pumpswap.extract.protocol_recipient.success', {
+                      pool: pool.pubkey.slice(0, 12),
+                      protocolRecipient: protocolRecipientBase58.slice(0, 12),
+                      cat: 'pumpswap'
+                    });
+                  } catch {}
+                }
+              }
+            }
           } catch (e: any) {
             try {
-              logger.warn('pumpswap.extract.coin_creator.failed', {
+              logger.warn('pumpswap.extract.pool_fields.failed', {
                 pool: address,
                 error: String(e?.message || e),
                 cat: 'pumpswap'
@@ -402,12 +430,13 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
         }
       }
       
-      // Enrich each pool in the batch with balance, fee, and creator data
+      // Enrich each pool in the batch with balance, fee, creator, and protocol recipient data
       for (const pool of batch) {
         const baseBalance = pool.pool_base_token_account ? balances.get(pool.pool_base_token_account) : null;
         const quoteBalance = pool.pool_quote_token_account ? balances.get(pool.pool_quote_token_account) : null;
         const feeBps = pool.pubkey ? fees.get(pool.pubkey) : null;
         const onchainCreator = pool.pubkey ? creators.get(pool.pubkey) : null;
+        const protocolRecipient = pool.pubkey ? protocolRecipients.get(pool.pubkey) : null;
         
         enriched.push({
           ...pool,
@@ -415,6 +444,7 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
           quote_reserve: quoteBalance !== null ? quoteBalance.toString() : undefined,
           fee_bps: feeBps !== null ? feeBps : undefined, // Add extracted fee
           onchain_creator: onchainCreator || pool.creator, // On-chain coin_creator (offset 211), fallback to GraphQL creator
+          protocol_fee_recipient: protocolRecipient || undefined, // On-chain protocol_fee_recipient (offset 243)
           // Note: coin_creator_vault addresses will be derived during transaction building
           // If coin_creator is System Program, no creator fees apply to this pool
         });
@@ -432,6 +462,7 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
         success: successCount, 
         fail: failCount,
         feesExtracted,
+        protocolRecipientsExtracted,
         cat: 'pumpswap' 
       }); } catch {}
       
@@ -454,11 +485,12 @@ export async function enrichPumpswapPoolsWithRpc(pools: any[]): Promise<{ pools:
     success: successCount, 
     fail: failCount,
     feesExtracted,
+    protocolRecipientsExtracted,
     ms,
     cat: 'pumpswap' 
   }); } catch {}
   
-  return { pools: enriched, metrics: { success: successCount, fail: failCount, ms, feesExtracted } };
+  return { pools: enriched, metrics: { success: successCount, fail: failCount, ms, feesExtracted, protocolRecipientsExtracted } };
 }
 
 export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
@@ -687,6 +719,7 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
         onchain_base_vault: pool.pool_base_token_account,  // Original base vault
         onchain_quote_vault: pool.pool_quote_token_account, // Original quote vault
         creator: pool.onchain_creator || pool.creator, // On-chain pool creator (extracted from pool account data during enrichment)
+        protocol_fee_recipient: pool.protocol_fee_recipient || undefined, // On-chain protocol fee recipient (offset 243)
       } as any);
     } catch (e: any) {
       try { logger.warn('pumpswap.normalize.pool.failed', { error: String(e?.message || e), cat: 'pumpswap' }); } catch {}

@@ -1253,22 +1253,6 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
     // Source: https://github.com/pump-fun/pump-public-docs/blob/main/docs/PUMP_SWAP_README.md
     const GLOBAL_CONFIG = toPublicKey('ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw');
     
-    // Protocol fee recipients (randomly choose one from the 8 available)
-    // It's recommended to randomly choose a different one for each transaction to improve throughput
-    const PROTOCOL_FEE_RECIPIENTS = [
-      '62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV',
-      '7VtfL8fvgNfhz17qKRMjzQEXgbdpnHHHQRh54R9jP2RJ',
-      '7hTckgnGnLQR6sdH7YkqFTAA7VwTfYFaZ6EhEsU3saCX',
-      '9rPYyANsfQZw3DnDmKE3YCQF5E8oD89UXoHn9JFEhJUz',
-      'AVmoTthdrX6tKt4nDjco2D775W2YK3sDhxPcMmzUAmTY',
-      'FWsW1xNtWscwNmKv6wVsU1iTzRN6wmmk3MjxRP5tT7hz',
-      'G5UZAVbAf46s7cKWoyKu8kYTip9DGTpbLZ2qa9Aq69dP',
-      'JCRGumoE9Qi5BBgULTgdgTLjSgkCMSbF62ZZfGs84JeU'
-    ];
-    const protocolFeeRecipient = toPublicKey(
-      PROTOCOL_FEE_RECIPIENTS[Math.floor(Math.random() * PROTOCOL_FEE_RECIPIENTS.length)]
-    );
-    
     // Determine if we're swapping in the base→quote or quote→base direction
     // Fetch the original on-chain mint and vault order from cache (stored before canonicalization)
     const { peekPumpswapPools } = await import('../../server/pools.js');
@@ -1287,6 +1271,49 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
     const creator = String((poolData as any)?.creator || '');
     let coinCreatorVaultAta = String((poolData as any)?.coin_creator_vault_ata || '');
     let coinCreatorVaultAuthority = String((poolData as any)?.coin_creator_vault_authority || '');
+    
+    // Get protocol_fee_recipient from pool data (extracted from pool account at offset 243)
+    // If not available, fall back to a list of known recipients
+    let protocolFeeRecipientAddress = String((poolData as any)?.protocol_fee_recipient || '');
+    
+    if (!protocolFeeRecipientAddress || protocolFeeRecipientAddress.length < 32) {
+      // Fallback to known protocol fee recipients if not extracted from pool data
+      // It's recommended to randomly choose a different one for each transaction to improve throughput
+      const PROTOCOL_FEE_RECIPIENTS = [
+        '62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV',
+        '7VtfL8fvgNfhz17qKRMjzQEXgbdpnHHHQRh54R9jP2RJ',
+        '7hTckgnGnLQR6sdH7YkqFTAA7VwTfYFaZ6EhEsU3saCX',
+        '9rPYyANsfQZw3DnDmKE3YCQF5E8oD89UXoHn9JFEhJUz',
+        'AVmoTthdrX6tKt4nDjco2D775W2YK3sDhxPcMmzUAmTY',
+        'FWsW1xNtWscwNmKv6wVsU1iTzRN6wmmk3MjxRP5tT7hz',
+        'G5UZAVbAf46s7cKWoyKu8kYTip9DGTpbLZ2qa9Aq69dP',
+        'JCRGumoE9Qi5BBgULTgdgTLjSgkCMSbF62ZZfGs84JeU'
+      ];
+      protocolFeeRecipientAddress = PROTOCOL_FEE_RECIPIENTS[Math.floor(Math.random() * PROTOCOL_FEE_RECIPIENTS.length)];
+      
+      try {
+        logger.info('pumpswap.protocol_recipient.fallback', {
+          cat: 'tx',
+          ctx: {
+            poolId: hop.poolId.slice(0, 12),
+            selected: protocolFeeRecipientAddress.slice(0, 12),
+            reason: 'not_in_cache',
+          }
+        });
+      } catch {}
+    } else {
+      try {
+        logger.info('pumpswap.protocol_recipient.from_cache', {
+          cat: 'tx',
+          ctx: {
+            poolId: hop.poolId.slice(0, 12),
+            protocolRecipient: protocolFeeRecipientAddress.slice(0, 12),
+          }
+        });
+      } catch {}
+    }
+    
+    const protocolFeeRecipient = toPublicKey(protocolFeeRecipientAddress);
     
     // Validate creator is a proper base58 address
     try {
