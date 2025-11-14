@@ -1588,7 +1588,6 @@ export function createArbRouter(io: SocketIOServer): Router {
   });
   api.post('/arb/execute/orca', async (req, res) => {
     try {
-      try { emit('log', { level: 'info', message: 'pretrade:arb execute orca start', timestamp: new Date().toISOString(), context: { cat: 'arb', code: 'PRETRADE.EXEC.ORCA.START' } }); } catch {}
       try { logger.info('pretrade:arb execute orca start', { cat: 'arb', code: LogCode.API_REQUEST, ctx: { body: req.body } as any }); } catch {}
       
       const body = req.body || {};
@@ -1602,7 +1601,7 @@ export function createArbRouter(io: SocketIOServer): Router {
         const fallbackPid: string | undefined = (body.poolId || body.whirlpoolId) ? String(body.poolId || body.whirlpoolId) : undefined;
         const hopCount = Math.max(0, path.length - 1);
         
-        try { logger.debug('orca.execute.payload_construction', { cat: 'arb', ctx: { pathLength: path.length, hopCount, hopPoolIdsInLength: hopPoolIdsIn.length, fallbackPid, hasPath: path.length > 0 } as any }); } catch {}
+        try { logger.info('orca.execute.payload_construction', { cat: 'arb', ctx: { pathLength: path.length, hopCount, hopPoolIdsInLength: hopPoolIdsIn.length, fallbackPid, hasPath: path.length > 0 } as any }); } catch {}
         
         if (hopCount <= 0) {
           try { logger.warn('orca.execute.invalid_path', { cat: 'arb', ctx: { path, hopCount } as any }); } catch {}
@@ -1631,14 +1630,13 @@ export function createArbRouter(io: SocketIOServer): Router {
           forceDirect: body.forceDirect,
         };
         
-        try { logger.debug('orca.execute.payload_ready', { cat: 'arb', ctx: { payloadPath: payload.path, payloadHopPoolIds: payload.hopPoolIds, payloadDexes: payload.dexes } as any }); } catch {}
+        try { logger.info('orca.execute.payload_ready', { cat: 'arb', ctx: { payloadPath: payload.path, payloadHopPoolIds: payload.hopPoolIds, payloadDexes: payload.dexes } as any }); } catch {}
       }
       // Delegate to generic executor
       req.body = payload;
       return (api as any).handle({ ...req, url: '/arb/execute', originalUrl: '/arb/execute', path: '/arb/execute', method: 'POST' }, res, () => {});
     } catch (e: any) {
       try { logger.error('orca.execute.error', { cat: 'arb', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e), stack: e?.stack } as any }); } catch {}
-      try { emit('log', { level: 'error', message: `orca execute error: ${String(e?.message || e)}`, timestamp: new Date().toISOString(), context: { cat: 'arb', code: 'PRETRADE.EXEC.ORCA.ERROR' } }); } catch {}
       return res.status(400).json({ error: String(e?.message || e) });
     }
   });
@@ -1646,7 +1644,6 @@ export function createArbRouter(io: SocketIOServer): Router {
   // Convenience: preflight (simulate-send) a two-hop Orca Whirlpool swap
   api.post('/arb/simulate-send/orca', async (req, res) => {
     try {
-      try { emit('log', { level: 'info', message: 'pretrade:arb simulate-send orca start', timestamp: new Date().toISOString(), context: { cat: 'arb', code: 'PRETRADE.SIM.ORCA.START' } }); } catch {}
       try { logger.info('pretrade:arb simulate-send orca start', { cat: 'arb', code: LogCode.API_REQUEST, ctx: { body: req.body } as any }); } catch {}
       
       const body = req.body || {};
@@ -1659,7 +1656,7 @@ export function createArbRouter(io: SocketIOServer): Router {
         const fallbackPid: string | undefined = (body.poolId || body.whirlpoolId) ? String(body.poolId || body.whirlpoolId) : undefined;
         const hopCount = Math.max(0, path.length - 1);
         
-        try { logger.debug('orca.simulate.payload_construction', { cat: 'arb', ctx: { pathLength: path.length, hopCount, hopPoolIdsInLength: hopPoolIdsIn.length, fallbackPid, hasPath: path.length > 0 } as any }); } catch {}
+        try { logger.info('orca.simulate.payload_construction', { cat: 'arb', ctx: { pathLength: path.length, hopCount, hopPoolIdsInLength: hopPoolIdsIn.length, fallbackPid, hasPath: path.length > 0 } as any }); } catch {}
         
         if (hopCount <= 0) {
           try { logger.warn('orca.simulate.invalid_path', { cat: 'arb', ctx: { path, hopCount } as any }); } catch {}
@@ -1687,13 +1684,12 @@ export function createArbRouter(io: SocketIOServer): Router {
           slippageBps: body.slippageBps,
         };
         
-        try { logger.debug('orca.simulate.payload_ready', { cat: 'arb', ctx: { payloadPath: payload.path, payloadHopPoolIds: payload.hopPoolIds, payloadDexes: payload.dexes } as any }); } catch {}
+        try { logger.info('orca.simulate.payload_ready', { cat: 'arb', ctx: { payloadPath: payload.path, payloadHopPoolIds: payload.hopPoolIds, payloadDexes: payload.dexes } as any }); } catch {}
       }
       req.body = payload;
       return (api as any).handle({ ...req, url: '/arb/simulate-send', originalUrl: '/arb/simulate-send', path: '/arb/simulate-send', method: 'POST' }, res, () => {});
     } catch (e: any) {
       try { logger.error('orca.simulate.error', { cat: 'arb', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e), stack: e?.stack } as any }); } catch {}
-      try { emit('log', { level: 'error', message: `orca simulate error: ${String(e?.message || e)}`, timestamp: new Date().toISOString(), context: { cat: 'arb', code: 'PRETRADE.SIM.ORCA.ERROR' } }); } catch {}
       return res.status(400).json({ error: String(e?.message || e) });
     }
   });

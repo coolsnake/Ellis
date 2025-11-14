@@ -767,7 +767,7 @@ async function buildOrcaSwapIxLocal(hop: DirectHop, kp: { publicKey: PublicKey; 
   }
   
   try {
-    logger.debug('orca.local.build.start', {
+    logger.info('orca.local.build.start', {
       cat: 'tx',
       ctx: {
         pool: hop.poolId,
@@ -1165,7 +1165,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
           } catch {}
         } else if (quoteInputAmount === hop.amountInRaw) {
           try {
-            logger.debug('orca.local.exact_amount.verified', {
+            logger.info('orca.local.exact_amount.verified', {
               cat: 'tx',
               ctx: {
                 pool: hop.poolId,
@@ -1178,9 +1178,9 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
       }
       
       if (estOut !== null && estOut !== undefined) {
-        try { logger.debug('orca.local.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: String(estOut), mode: 'local' } as any }); } catch {}
+        try { logger.info('orca.local.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: String(estOut), mode: 'local' } as any }); } catch {}
       }
-      try { logger.debug('orca.local.ix.ready', { cat: 'tx', ctx: { count: localResult.instructions.length, mode: 'local' } as any }); } catch {}
+      try { logger.info('orca.local.ix.ready', { cat: 'tx', ctx: { count: localResult.instructions.length, mode: 'local' } as any }); } catch {}
       return localResult.instructions;
     } catch (localErr) {
       const msg = String((localErr as any)?.message || localErr);
