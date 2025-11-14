@@ -175,6 +175,15 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
   if (Array.isArray(raw?.pools)) arrCandidates.push(raw.pools);
   if (Array.isArray(raw?.whirlpools)) arrCandidates.push(raw.whirlpools);
   const arr: any[] = arrCandidates.find(a => Array.isArray(a) && a.length) || (Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : []));
+  
+  // Enrich missing token decimals before price calculations
+  try {
+    const { enrichPoolTokenDecimals } = await import('../../utils/tokens.js');
+    await enrichPoolTokenDecimals(arr, { logger });
+  } catch (err: any) {
+    try { logger.warn('orca.normalizer.enrich.failed', { error: String(err?.message || err), cat: 'pools' }); } catch {}
+  }
+  
   for (const it of arr) {
     const id = String(it?.address || it?.id || '');
     const tokenA = it?.tokenA || it?.token_a || {};

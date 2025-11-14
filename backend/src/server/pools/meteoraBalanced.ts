@@ -120,6 +120,14 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
   if (Array.isArray(raw?.data)) arrCandidates.push(raw.data);
   const arr: any[] = arrCandidates.find(a => Array.isArray(a) && a.length) || (Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : []));
 
+  // Enrich missing token decimals before price calculations
+  try {
+    const { enrichPoolTokenDecimals } = await import('../../utils/tokens.js');
+    await enrichPoolTokenDecimals(arr, { logger });
+  } catch (err: any) {
+    try { logger.warn('meteora.balanced.normalizer.enrich.failed', { error: String(err?.message || err), cat: 'pools' }); } catch {}
+  }
+
   const toMint = (v: any): string => {
     if (!v) return '';
     if (typeof v === 'string') return v;
@@ -356,6 +364,14 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
   const now = Date.now();
   const amm: AmmPool[] = [];
   const arr: any[] = Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : []);
+  
+  // Enrich missing token decimals before price calculations
+  try {
+    const { enrichPoolTokenDecimals } = await import('../../utils/tokens.js');
+    await enrichPoolTokenDecimals(arr, { logger });
+  } catch (err: any) {
+    try { logger.warn('meteora.balanced.v1.normalizer.enrich.failed', { error: String(err?.message || err), cat: 'pools' }); } catch {}
+  }
   
   // Load Jupiter token map for decimals lookup
   let jupMap: Record<string, { decimals: number }> = {};

@@ -2281,7 +2281,42 @@ async fn ws_opportunities(ws: WebSocketUpgrade, State(state): State<Arc<RwLock<A
                 let mut s = state.write().await;
                 s.metrics.ws_skipped_nochange_total += 1;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            
+            // Use tokio::select! to handle incoming messages (ping/pong) while sleeping
+            // This prevents WebSocket timeouts when no data changes occur
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_millis(1500)) => {
+                    // Normal sleep expired, continue to next iteration
+                }
+                msg = socket.recv() => {
+                    // Handle incoming messages (ping/pong frames, client messages)
+                    match msg {
+                        Some(Ok(Message::Close(_))) => {
+                            // Client requested close
+                            let _ = socket.close().await;
+                            break;
+                        }
+                        Some(Ok(Message::Ping(data))) => {
+                            // Respond to ping with pong
+                            if socket.send(Message::Pong(data)).await.is_err() { break; }
+                        }
+                        Some(Ok(Message::Pong(_))) => {
+                            // Pong received, ignore
+                        }
+                        Some(Ok(_)) => {
+                            // Other message types, ignore
+                        }
+                        Some(Err(_)) => {
+                            // Error receiving message, close connection
+                            break;
+                        }
+                        None => {
+                            // Connection closed
+                            break;
+                        }
+                    }
+                }
+            }
         }
     })
 }

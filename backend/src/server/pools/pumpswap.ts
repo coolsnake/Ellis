@@ -513,6 +513,14 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
   const amm: AmmPool[] = [];
   const pools = Array.isArray(raw) ? raw : [];
   
+  // Enrich missing token decimals before price calculations
+  try {
+    const { enrichPoolTokenDecimals } = await import('../../utils/tokens.js');
+    await enrichPoolTokenDecimals(pools, { logger });
+  } catch (err: any) {
+    try { logger.warn('pumpswap.normalizer.enrich.failed', { error: String(err?.message || err), cat: 'pools' }); } catch {}
+  }
+  
   // PumpSwap total fee: 20 bps LP fee + 5 bps protocol fee = 25 bps total
   const defaultFeeBps = Number((CONFIG as any)?.pumpswap?.defaultFeeBps || 25);
   const minLiqBase = Number((CONFIG as any)?.pumpswap?.minLiqBase || 0);

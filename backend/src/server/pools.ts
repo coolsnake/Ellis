@@ -166,13 +166,21 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> { r
 
 // Synchronous default normalizer for tests that import without awaiting.
 // Mirrors core fields from normalizeRaydiumPools but avoids async imports and network calls.
-export function defaultNormalizeRaydiumPools(raw: any): PoolsPayload {
+export async function defaultNormalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
   const now = Date.now();
   const amm: any[] = [];
   const clmm: any[] = [];
   const arr: any[] = Array.isArray(raw?.data?.data)
     ? raw.data.data
     : (Array.isArray(raw?.data) ? raw.data : (Array.isArray(raw) ? raw : []));
+  
+  // Enrich missing token decimals before price calculations
+  try {
+    const { enrichPoolTokenDecimals } = await import('../utils/tokens.js');
+    await enrichPoolTokenDecimals(arr, { logger });
+  } catch (err: any) {
+    try { logger.warn('raydium.normalizer.enrich.failed', { error: String(err?.message || err), cat: 'pools' }); } catch {}
+  }
   const toMint = (v: any): string => {
     if (!v) return '';
     if (typeof v === 'string') return v;
@@ -1004,7 +1012,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
     }
   } catch {}
   
-  // === PHASE 1: FETCH ALL DEXES IN SEQUENCE (no filtering yet) ===
+  // === PHASE 1: FETCH RAW DATA FROM ALL DEXES ===
   logger.info('pools.refresh.phase.fetch', { enabled: shouldFetch, cat: 'pools' });
   
   let r: PoolsPayload = { amm: [], clmm: [] };
@@ -1012,6 +1020,10 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
   let m: PoolsPayload = { amm: [], clmm: [] };
   let mb: PoolsPayload = { amm: [], clmm: [] };
   let pump: PoolsPayload = { amm: [], clmm: [] };
+  
+  // Note: The fetch functions call normalizers which need decimals
+  // Normalizers load Jupiter token map at start, so enrichment must happen before first fetch
+  // We enrich based on previously cached pools to pre-populate decimals for known tokens
   
   if (shouldFetch.raydium) {
     try {

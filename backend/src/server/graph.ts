@@ -523,14 +523,17 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         if (info?.mint) labelByMint[info.mint] = sym;
         if (info?.mint && Number.isFinite((info as any)?.decimals)) decimalsByMint[info.mint] = Number((info as any).decimals);
       }
+      let jupiterMap: Record<string, { symbol: string; decimals: number }> = {};
       try {
         const { loadJupiterTokenMap } = await import('../utils/tokens.js');
-        const jmap = await loadJupiterTokenMap();
-        for (const [mint, meta] of Object.entries(jmap)) {
+        jupiterMap = await loadJupiterTokenMap();
+        for (const [mint, meta] of Object.entries(jupiterMap)) {
           if (!labelByMint[mint] && meta?.symbol) labelByMint[mint] = meta.symbol;
           if (Number.isFinite((meta as any)?.decimals) && decimalsByMint[mint] == null) decimalsByMint[mint] = Number((meta as any).decimals);
         }
       } catch {}
+      // Note: Token decimals enrichment now happens during refreshAllSources (Phase 0)
+      // before normalizers run, ensuring accurate price calculations
       // Diagnostics: verify pool-reported decimals match authoritative decimals
       const diagDecimals = (
         mintA: string,
