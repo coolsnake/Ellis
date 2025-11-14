@@ -1311,7 +1311,7 @@ export function createArbRouter(io: SocketIOServer): Router {
         } catch {}
         
         // Log that we're skipping for tracing purposes
-        await logTxTrace('presend_sim_skipped', {
+        await logTxTrace('preflight', {
           id, timeMs: Date.now(),
           graph,
           oppKey,
@@ -1637,7 +1637,7 @@ export function createArbRouter(io: SocketIOServer): Router {
       req.body = payload;
       return (api as any).handle({ ...req, url: '/arb/execute', originalUrl: '/arb/execute', path: '/arb/execute', method: 'POST' }, res, () => {});
     } catch (e: any) {
-      try { logger.error('orca.execute.error', { cat: 'arb', code: LogCode.API_ERROR, ctx: { error: String(e?.message || e), stack: e?.stack } as any }); } catch {}
+      try { logger.error('orca.execute.error', { cat: 'arb', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e), stack: e?.stack } as any }); } catch {}
       try { emit('log', { level: 'error', message: `orca execute error: ${String(e?.message || e)}`, timestamp: new Date().toISOString(), context: { cat: 'arb', code: 'PRETRADE.EXEC.ORCA.ERROR' } }); } catch {}
       return res.status(400).json({ error: String(e?.message || e) });
     }
@@ -1692,7 +1692,7 @@ export function createArbRouter(io: SocketIOServer): Router {
       req.body = payload;
       return (api as any).handle({ ...req, url: '/arb/simulate-send', originalUrl: '/arb/simulate-send', path: '/arb/simulate-send', method: 'POST' }, res, () => {});
     } catch (e: any) {
-      try { logger.error('orca.simulate.error', { cat: 'arb', code: LogCode.API_ERROR, ctx: { error: String(e?.message || e), stack: e?.stack } as any }); } catch {}
+      try { logger.error('orca.simulate.error', { cat: 'arb', code: LogCode.TX_BUILD_ERR, ctx: { error: String(e?.message || e), stack: e?.stack } as any }); } catch {}
       try { emit('log', { level: 'error', message: `orca simulate error: ${String(e?.message || e)}`, timestamp: new Date().toISOString(), context: { cat: 'arb', code: 'PRETRADE.SIM.ORCA.ERROR' } }); } catch {}
       return res.status(400).json({ error: String(e?.message || e) });
     }
