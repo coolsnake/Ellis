@@ -1120,7 +1120,33 @@ export function createArbRouter(io: SocketIOServer): Router {
 
       const input = req.body || {};
       const parsed = ResolveDirectSchema.parse(input);
-      const plan = input?.plan && Array.isArray(input.plan?.hops) ? input.plan : await resolveDirectPlan(parsed as any, {} as any);
+      // Build a resolve input from provided plan (if any), otherwise use parsed arrays
+      const basePlan = (input && (input as any).plan && Array.isArray((input as any).plan?.hops)) ? (input as any).plan : undefined;
+      const resolveInput = basePlan
+        ? {
+            path: basePlan.path,
+            hopPoolIds: basePlan.hops.map((h: any) => String(h.poolId)),
+            dexes: basePlan.hops.map((h: any) => String(h.dex)),
+            size: (input as any).size,
+            sizeUsd: (input as any).sizeUsd,
+            slippageBps: (input as any).slippageBps,
+          }
+        : (parsed as any);
+      // Always resolve using the quote's path/pools/dexes -> fills mints, decimals, and amounts
+      const plan = await resolveDirectPlan(resolveInput as any, {} as any);
+      // Apply optional per-hop overrides from the provided quote/plan
+      if (basePlan) {
+        for (let i = 0; i < plan.hops.length && i < basePlan.hops.length; i += 1) {
+          const src = basePlan.hops[i] as any;
+          if (src.inputMint)  plan.hops[i].inputMint  = String(src.inputMint);
+          if (src.outputMint) plan.hops[i].outputMint = String(src.outputMint);
+          // NOTE: Do NOT override amountInRaw here - it breaks amount propagation between hops.
+          // The resolver already correctly sets amountInRaw based on previous hop's output.
+          if (src.minOutRaw !== undefined && src.minOutRaw !== null) {
+            try { plan.hops[i].minOutRaw = BigInt(String(src.minOutRaw)); } catch {}
+          }
+        }
+      }
       // Build intent early so we log even if build fails
       const { executionCache } = await import('../../execution/cache.js');
       // Correlate and soft-check alignment (warn-only)

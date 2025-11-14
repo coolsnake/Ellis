@@ -2737,21 +2737,20 @@ async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: Head
         let guard = state.read().await;
         let last_version = guard.last_graph_version.load(Ordering::Acquire);
         let pending_version = guard.pending_graph_version.load(Ordering::Acquire);
-        let effective_version = if pending_version != u64::MAX { pending_version.max(last_version) } else { last_version };
         let current_ts = guard.last_graph_ts.load(Ordering::Acquire);
         drop(guard);
         
         let elapsed = start.elapsed().as_millis() as u64;
 
-        // Check both committed and pending versions (pending versions will be committed soon)
-        if want_version == 0 || effective_version >= want_version {
-            // If effective_version >= want_version, we can ack even if it's only pending (will be committed soon)
-            let acked = effective_version >= want_version;
+        // Only ACK based on committed version (last_version), not pending version
+        // This ensures the graph is actually updated before we acknowledge
+        // The wake notification ensures the detection loop processes pending diffs promptly
+        if want_version == 0 || last_version >= want_version {
+            let acked = last_version >= want_version;
             tracing::info!(
                 want_version = want_version,
                 applied_version = last_version,
                 pending_version = if pending_version != u64::MAX { Some(pending_version) } else { None },
-                effective_version = effective_version,
                 waited_ms = elapsed,
                 acked = acked,
                 "arb.graph.ack: success"
@@ -2767,6 +2766,8 @@ async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: Head
         if elapsed >= timeout_ms {
             tracing::warn!(
                 want_version = want_version,
+                applied_version = last_version,
+                pending_version = if pending_version != u64::MAX { Some(pending_version) } else { None },
                 elapsed_ms = elapsed,
                 timeout_ms = timeout_ms,
                 "arb.graph.ack: timeout"
@@ -2778,6 +2779,7 @@ async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: Head
             tracing::debug!(
                 want_version = want_version,
                 applied_version = last_version,
+                pending_version = if pending_version != u64::MAX { Some(pending_version) } else { None },
                 elapsed_ms = elapsed,
                 timeout_ms = timeout_ms,
                 "arb.graph.ack: waiting"

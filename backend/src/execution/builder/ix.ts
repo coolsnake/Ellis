@@ -5743,6 +5743,40 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
               }
             };
             
+            // Helper to determine correct isWritable flag for Raydium AMM instruction
+            // The SDK sometimes provides incorrect writable flags
+            const getCorrectWritableFlag = (keyIdx: number, sdkWritable: boolean): boolean => {
+              // Based on successful Raydium AMM transactions:
+              // Writable accounts: 1 (AMM ID), 3 (open orders), 4 (target orders), 
+              //                    5 (coin vault), 6 (pc vault), 8 (market), 
+              //                    9 (bids), 10 (asks), 11 (event queue),
+              //                    12 (market base vault), 13 (market quote vault), 
+              //                    14 (market authority/vault signer),
+              //                    15 (user source), 16 (user dest), 17 (user owner)
+              // Readonly accounts: 0 (token program), 2 (AMM authority), 7 (serum program)
+              switch (keyIdx) {
+                case 0: return false;  // Token program - readonly
+                case 1: return true;   // AMM ID - writable
+                case 2: return false;  // AMM authority - readonly
+                case 3: return true;   // AMM open orders - writable
+                case 4: return true;   // AMM target orders - writable
+                case 5: return true;   // Pool coin vault - writable
+                case 6: return true;   // Pool pc vault - writable
+                case 7: return false;  // Serum program - readonly
+                case 8: return true;   // Serum market - writable
+                case 9: return true;   // Serum bids - writable
+                case 10: return true;  // Serum asks - writable
+                case 11: return true;  // Serum event queue - writable
+                case 12: return true;  // Serum base vault - writable
+                case 13: return true;  // Serum quote vault - writable
+                case 14: return true;  // Serum vault signer (market authority) - writable (CRITICAL!)
+                case 15: return true;  // User source token - writable
+                case 16: return true;  // User dest token - writable
+                case 17: return true;  // User owner - writable
+                default: return sdkWritable; // Fallback to SDK value for unknown indices
+              }
+            };
+            
             const newKeys = (ix.keys || []).map((k: any, keyIdx: number) => {
               let pubkey: PublicKey;
               try {
@@ -5753,7 +5787,11 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                 if (!rawKey || rawKey === undefined || rawKey === null) {
                   const fallback = buildKeyFromPoolKeys(keyIdx);
                   if (fallback) {
-                    return { pubkey: fallback, isSigner: !!k?.isSigner, isWritable: !!k?.isWritable };
+                    return { 
+                      pubkey: fallback, 
+                      isSigner: !!k?.isSigner, 
+                      isWritable: getCorrectWritableFlag(keyIdx, !!k?.isWritable)
+                    };
                   }
                   
                   try {
@@ -5782,7 +5820,11 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                     const isPlaceholder = /^11111/.test(b58);
                     if (b58 && typeof b58 === 'string' && b58.length > 20 && !b58.includes('object') && !isPlaceholder) {
                       pubkey = new PublicKey(b58);
-                      return { pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable };
+                      return { 
+                        pubkey, 
+                        isSigner: !!k.isSigner, 
+                        isWritable: getCorrectWritableFlag(keyIdx, !!k.isWritable)
+                      };
                     }
                   } catch {}
                 }
@@ -5968,7 +6010,11 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                           }
                         });
                       } catch {}
-                      return { pubkey: normalized, isSigner: !!k?.isSigner, isWritable: !!k?.isWritable };
+                      return { 
+                        pubkey: normalized, 
+                        isSigner: !!k?.isSigner, 
+                        isWritable: getCorrectWritableFlag(keyIdx, !!k?.isWritable)
+                      };
                     } catch (normErr) {
                       // If normalization fails, try using fallback as-is (last resort)
                       try {
@@ -5980,7 +6026,11 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                           }
                         });
                       } catch {}
-                      return { pubkey: fallback, isSigner: !!k?.isSigner, isWritable: !!k?.isWritable };
+                      return { 
+                        pubkey: fallback, 
+                        isSigner: !!k?.isSigner, 
+                        isWritable: getCorrectWritableFlag(keyIdx, !!k?.isWritable)
+                      };
                     }
                   }
                 } catch {}
