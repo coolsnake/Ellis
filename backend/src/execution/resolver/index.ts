@@ -138,8 +138,11 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
         const { resolveRaydiumClmm } = await import('./raydiumClmm.js');
         return await resolveRaydiumClmm(hop);
       } else if (hop.dex === 'orca') {
+        try { logger.debug('tx.resolve.orca.start', { cat: 'tx', code: LogCode.TX_RESOLVE_START, ctx: { poolId: hop.poolId, inputMint: hop.inputMint, outputMint: hop.outputMint } as any }); } catch {}
         const { resolveOrca } = await import('./orca.js');
-        return await resolveOrca(hop);
+        const resolved = await resolveOrca(hop);
+        try { logger.debug('tx.resolve.orca.complete', { cat: 'tx', code: LogCode.TX_RESOLVE_OK, ctx: { poolId: resolved.poolId, hasTickArrays: !!(resolved.tickArrayLower && resolved.tickArrayCenter && resolved.tickArrayUpper) } as any }); } catch {}
+        return resolved;
       } else if (hop.dex === 'pumpswap') {
         const { resolvePumpswap } = await import('./pumpswap.js');
         return await resolvePumpswap(hop);

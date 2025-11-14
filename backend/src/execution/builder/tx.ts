@@ -553,7 +553,9 @@ export async function buildDirectArbTx(plan: ExecutionPlan, extraSetupIxs: any[]
         } else if (hop.dex === 'raydium' && hop.variant === 'clmm') {
           ixs = await buildRaydiumClmmSwapIxReal(hop);
         } else if (hop.dex === 'orca') {
+          try { logger.info('tx.build.hop.orca.start', { cat: 'tx', code: LogCode.TX_BUILD_HOP, ctx: { poolId: hop.poolId, variant: hop.variant, inputMint: hop.inputMint, outputMint: hop.outputMint, amountInRaw: hop.amountInRaw?.toString() } as any }); } catch {}
           ixs = await buildOrcaSwapIx(hop) as any[];
+          try { logger.info('tx.build.hop.orca.complete', { cat: 'tx', code: LogCode.TX_BUILD_HOP, ctx: { poolId: hop.poolId, instructionCount: ixs.length } as any }); } catch {}
         } else if (hop.dex === 'pumpswap') {
           try { logger.info('tx.build.hop.pumpswap.real', { cat: 'tx', ctx: { poolId: hop.poolId } as any }); } catch {}
           ixs = await buildPumpswapSwapIxReal(hop);
