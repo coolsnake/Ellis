@@ -167,6 +167,17 @@ async function rebuildGraphNowInternal(io?: SocketIOServer, opts?: { pushToArb?:
         return;
       }
     }
+    
+    // DIAGNOSTIC: Log rebuild trigger source
+    try {
+      const gap = lastRebuildMs > 0 ? (nowMs - lastRebuildMs) : -1;
+      logger.info('graph.rebuild.triggered', { 
+        source: opts?.source || 'unknown',
+        gap_ms: gap,
+        pushToArb: opts?.pushToArb || false,
+        cat: 'graph'
+      });
+    } catch {}
 
     const prev = lastSnapshot;
     const next = await getGraphSnapshot(true);

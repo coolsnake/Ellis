@@ -386,7 +386,39 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
           const decIn = Number(hop.inputDecimals ?? (isRev ? (p as any)?.decimals_b : (p as any)?.decimals_a) ?? 0);
           const decOut = Number(hop.outputDecimals ?? (isRev ? (p as any)?.decimals_a : (p as any)?.decimals_b) ?? 0);
           const fee = Math.max(0, 1 - (Math.min(9900, Math.max(0, feeBps)) / 10_000));
-          const px = Number((p as any)?.price_a_per_b || 0);
+          let px = Number((p as any)?.price_a_per_b || 0);
+          
+          // FALLBACK: Calculate price from reserves if missing
+          if (!(px > 0)) {
+            const amtA = Number((p as any)?.amount_a || 0);
+            const amtB = Number((p as any)?.amount_b || 0);
+            const decA = Number((p as any)?.decimals_a ?? hop.inputDecimals ?? 9);
+            const decB = Number((p as any)?.decimals_b ?? hop.outputDecimals ?? 6);
+            
+            if (amtA > 0 && amtB > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
+              const wholeA = amtA / Math.pow(10, decA);
+              const wholeB = amtB / Math.pow(10, decB);
+              if (wholeB > 0) {
+                px = wholeA / wholeB;
+                try {
+                  const { logger } = await import('../../utils/logger.js');
+                  logger.info('meteora.dlmm.quote.price_from_reserves', {
+                    cat: 'tx',
+                    ctx: {
+                      poolId: hop.poolId,
+                      amtA,
+                      amtB,
+                      decA,
+                      decB,
+                      wholeA,
+                      wholeB,
+                      calculatedPrice: px,
+                    }
+                  });
+                } catch {}
+              }
+            }
+          }
           
           try {
             const { logger } = await import('../../utils/logger.js');
@@ -707,7 +739,48 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
     return 0n;
   }
 
-  const ratio = extractClmmPriceRatio(pool, isRev);
+  let ratio = extractClmmPriceRatio(pool, isRev);
+  
+  // FALLBACK: Calculate price ratio from amount_a_whole and amount_b_whole if missing
+  if (!ratio) {
+    const wholeA = Number((pool as any)?.amount_a_whole || 0);
+    const wholeB = Number((pool as any)?.amount_b_whole || 0);
+    
+    if (wholeA > 0 && wholeB > 0 && Number.isFinite(wholeA) && Number.isFinite(wholeB)) {
+      // price_a_per_b = wholeA / wholeB (how many B per 1 A)
+      const price = wholeB / wholeA;
+      if (price > 0 && Number.isFinite(price)) {
+        // Convert to ratio with high precision
+        const scale = 1_000_000_000_000; // 1 trillion for precision
+        const numerator = BigInt(Math.round(price * scale));
+        const denominator = BigInt(scale);
+        
+        if (isRev) {
+          ratio = { numerator: denominator, denominator: numerator };
+        } else {
+          ratio = { numerator, denominator };
+        }
+        
+        try {
+          import('../../utils/logger.js').then(({ logger }) => {
+            logger.info('raydium.clmm.quote.price_from_reserves', {
+              cat: 'tx',
+              ctx: {
+                poolId: hop.poolId,
+                wholeA,
+                wholeB,
+                calculatedPrice: price,
+                numerator: numerator.toString(),
+                denominator: denominator.toString(),
+                isRev,
+              }
+            });
+          });
+        } catch {}
+      }
+    }
+  }
+  
   if (!ratio) {
     try {
       import('../../utils/logger.js').then(({ logger }) => {
@@ -719,6 +792,8 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
               price_a_per_b: (pool as any)?.price_a_per_b,
               price_a_per_b_num: (pool as any)?.price_a_per_b_num,
               price_a_per_b_den: (pool as any)?.price_a_per_b_den,
+              amount_a_whole: (pool as any)?.amount_a_whole,
+              amount_b_whole: (pool as any)?.amount_b_whole,
             }
           }
         });
