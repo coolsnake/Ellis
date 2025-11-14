@@ -761,6 +761,10 @@ export const CONFIG = {
     // When enabled (default), transactions are sent directly without simulation
     // Disable for debugging (SKIP_TX_PREFLIGHT=false) to catch errors before sending
     skipPreflight: process.env.SKIP_TX_PREFLIGHT !== 'false', // Default: true (skip for speed)
+    // Skip pre-send simulation validation (assembleAndSimulate) (100-200ms saved per tx)
+    // When enabled, transactions are sent immediately without local simulation first
+    // Disable for debugging (SKIP_PRESEND_SIMULATION=false) to validate before send
+    skipPresendSimulation: process.env.SKIP_PRESEND_SIMULATION === 'true', // Default: false (run simulation for safety)
   },
 };
 

@@ -5322,40 +5322,41 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       }
     }
 
-    // CRITICAL: Use cached market accounts from pool data to fill in missing accounts
-    // This is the preferred path for production as it avoids RPC calls during execution
+    // CRITICAL: Use cached market accounts from pool data - ALWAYS prefer cache over SDK
+    // Cached values are the source of truth from on-chain data
+    // The SDK sometimes computes PDAs that don't match actual on-chain values
     try {
       const { executionCache } = await import('../cache.js');
       const poolData = executionCache.getStatic(hop.poolId);
       if (poolData) {
         const cached = poolData as any;
-        // Fill in any missing OR INVALID market accounts from cache
-        // The SDK sometimes returns placeholder keys, so we need to replace those too
-        if (cached.market_bids && (!(poolKeys as any)?.marketBids || isBadPk((poolKeys as any)?.marketBids))) {
+        // UNCONDITIONALLY use cached values when available - they're always correct
+        // The SDK may return computed PDAs (like market_authority) that don't match on-chain reality
+        if (cached.market_bids) {
           (poolKeys as any).marketBids = toPublicKey(cached.market_bids);
         }
-        if (cached.market_asks && (!(poolKeys as any)?.marketAsks || isBadPk((poolKeys as any)?.marketAsks))) {
+        if (cached.market_asks) {
           (poolKeys as any).marketAsks = toPublicKey(cached.market_asks);
         }
-        if (cached.market_event_queue && (!(poolKeys as any)?.marketEventQueue || isBadPk((poolKeys as any)?.marketEventQueue))) {
+        if (cached.market_event_queue) {
           (poolKeys as any).marketEventQueue = toPublicKey(cached.market_event_queue);
         }
-        if (cached.market_base_vault && (!(poolKeys as any)?.marketBaseVault || isBadPk((poolKeys as any)?.marketBaseVault))) {
+        if (cached.market_base_vault) {
           (poolKeys as any).marketBaseVault = toPublicKey(cached.market_base_vault);
         }
-        if (cached.market_quote_vault && (!(poolKeys as any)?.marketQuoteVault || isBadPk((poolKeys as any)?.marketQuoteVault))) {
+        if (cached.market_quote_vault) {
           (poolKeys as any).marketQuoteVault = toPublicKey(cached.market_quote_vault);
         }
-        if (cached.market_authority && (!(poolKeys as any)?.marketAuthority || isBadPk((poolKeys as any)?.marketAuthority))) {
+        if (cached.market_authority) {
           (poolKeys as any).marketAuthority = toPublicKey(cached.market_authority);
         }
-        if (cached.amm_authority && (!(poolKeys as any)?.authority || isBadPk((poolKeys as any)?.authority))) {
+        if (cached.amm_authority) {
           (poolKeys as any).authority = toPublicKey(cached.amm_authority);
         }
-        if (cached.amm_open_orders && (!(poolKeys as any)?.openOrders || isBadPk((poolKeys as any)?.openOrders))) {
+        if (cached.amm_open_orders) {
           (poolKeys as any).openOrders = toPublicKey(cached.amm_open_orders);
         }
-        if (cached.amm_target_orders && (!(poolKeys as any)?.targetOrders || isBadPk((poolKeys as any)?.targetOrders))) {
+        if (cached.amm_target_orders) {
           (poolKeys as any).targetOrders = toPublicKey(cached.amm_target_orders);
         }
         if (cached.lp_mint && (!(poolKeys as any)?.mintLp || isBadPk((poolKeys as any)?.mintLp))) {
