@@ -741,6 +741,151 @@ async function getOrcaSdkSigner(kp: { publicKey: PublicKey; secretKey: Uint8Arra
   return orcaSignerCache.signer;
 }
 
+/**
+ * Build Orca swap instruction locally without RPC calls
+ * Uses cached pool state from executionCache
+ */
+async function buildOrcaSwapIxLocal(hop: DirectHop, kp: { publicKey: PublicKey; secretKey: Uint8Array }): Promise<{ instructions: TransactionInstruction[]; quote: any }> {
+  const startTime = performance.now();
+  
+  // Get cached pool data (NO RPC!)
+  const { executionCache } = await import('../cache.js');
+  const staticData = executionCache.getStatic(hop.poolId);
+  const hot = executionCache.getHot(hop.poolId);
+  
+  if (!staticData || !hot) {
+    throw createBuilderError('ORCA', 'Pool data not in execution cache - cannot build locally', hop);
+  }
+  
+  // Get tick arrays from cache (NO RPC!)
+  const tickArrayLower = hot.tickArrays?.lower;
+  const tickArrayCenter = hot.tickArrays?.center;
+  const tickArrayUpper = hot.tickArrays?.upper;
+  
+  if (!tickArrayLower || !tickArrayCenter || !tickArrayUpper) {
+    throw createBuilderError('ORCA', 'Tick arrays not in cache - cannot build locally', hop);
+  }
+  
+  try {
+    logger.debug('orca.local.build.start', {
+      cat: 'tx',
+      ctx: {
+        pool: hop.poolId,
+        hasStatic: !!staticData,
+        hasHot: !!hot,
+        hasTickArrays: !!(tickArrayLower && tickArrayCenter && tickArrayUpper),
+      } as any
+    });
+  } catch {}
+  
+  // Determine swap direction
+  const inputMintStr = String(hop.inputMint);
+  const mintA = staticData.mint_a;
+  const mintB = staticData.mint_b;
+  const aToB = inputMintStr === mintA;
+  
+  if (!aToB && inputMintStr !== mintB) {
+    throw createBuilderError('ORCA', `Input mint ${inputMintStr} does not match pool mints (A: ${mintA}, B: ${mintB})`, hop);
+  }
+  
+  // Get vault addresses
+  const vaultA = staticData.vaults?.a;
+  const vaultB = staticData.vaults?.b;
+  const oracle = staticData.oracle;
+  
+  if (!vaultA || !vaultB) {
+    throw createBuilderError('ORCA', 'Vault addresses not in cache', hop);
+  }
+  
+  // Build instruction accounts (based on Orca Whirlpool swap account layout)
+  const programId = toPublicKey(staticData.programId || (CONFIG as any).orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
+  
+  const keys = [
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, // #0 tokenProgram
+    { pubkey: kp.publicKey, isSigner: true, isWritable: false }, // #1 tokenAuthority (signer)
+    { pubkey: toPublicKey(hop.poolId), isSigner: false, isWritable: true }, // #2 whirlpool
+    { pubkey: toPublicKey(hop.userSourceAta), isSigner: false, isWritable: true }, // #3 tokenOwnerAccountA or tokenOwnerAccountB (input)
+    { pubkey: toPublicKey(vaultA), isSigner: false, isWritable: true }, // #4 tokenVaultA
+    { pubkey: toPublicKey(vaultB), isSigner: false, isWritable: true }, // #5 tokenVaultB
+    { pubkey: toPublicKey(tickArrayLower), isSigner: false, isWritable: true }, // #6 tickArray0
+    { pubkey: toPublicKey(tickArrayCenter), isSigner: false, isWritable: true }, // #7 tickArray1
+    { pubkey: toPublicKey(tickArrayUpper), isSigner: false, isWritable: true }, // #8 tickArray2
+    { pubkey: toPublicKey(hop.userDestAta), isSigner: false, isWritable: true }, // #9 tokenOwnerAccountB or tokenOwnerAccountA (output)
+  ];
+  
+  // Add oracle if available
+  if (oracle) {
+    keys.push({ pubkey: toPublicKey(oracle), isSigner: false, isWritable: false }); // #10 oracle (optional)
+  }
+  
+  // Encode swap instruction data
+  // Orca uses Anchor discriminator: sha256("global:swap")[0..8]
+  // For Whirlpool swap, the discriminator is: 0xf8c69e91e17587c8
+  // Followed by: amount (u64), otherAmountThreshold (u64), sqrtPriceLimit (u128), amountSpecifiedIsInput (bool), aToB (bool)
+  
+  const dataBuffer = Buffer.alloc(42); // 8 + 8 + 8 + 16 + 1 + 1
+  let offset = 0;
+  
+  // Discriminator (8 bytes)
+  dataBuffer.writeBigUInt64LE(0xf8c69e91e17587c8n, offset);
+  offset += 8;
+  
+  // amount (u64) - input amount
+  dataBuffer.writeBigUInt64LE(BigInt(hop.amountInRaw ?? 0n), offset);
+  offset += 8;
+  
+  // otherAmountThreshold (u64) - minimum output amount
+  dataBuffer.writeBigUInt64LE(BigInt(hop.minOutRaw ?? 0n), offset);
+  offset += 8;
+  
+  // sqrtPriceLimit (u128) - 0 means no limit
+  dataBuffer.writeBigUInt64LE(0n, offset); // low 64 bits
+  offset += 8;
+  dataBuffer.writeBigUInt64LE(0n, offset); // high 64 bits
+  offset += 8;
+  
+  // amountSpecifiedIsInput (bool) - true for exact input swaps
+  dataBuffer.writeUInt8(1, offset);
+  offset += 1;
+  
+  // aToB (bool) - swap direction
+  dataBuffer.writeUInt8(aToB ? 1 : 0, offset);
+  offset += 1;
+  
+  const swapIx = new TransactionInstruction({
+    keys,
+    programId,
+    data: dataBuffer,
+  });
+  
+  const buildTime = performance.now() - startTime;
+  
+  try {
+    logger.info('orca.local.build.success', {
+      cat: 'tx',
+      ctx: {
+        pool: hop.poolId,
+        aToB,
+        amountIn: hop.amountInRaw?.toString(),
+        minOut: hop.minOutRaw?.toString(),
+        buildTimeMs: buildTime.toFixed(2),
+        accountCount: keys.length,
+      } as any
+    });
+  } catch {}
+  
+  // Create a minimal quote object for compatibility
+  const quote = {
+    tokenEstOut: hop.minOutRaw,
+    tokenMinOut: hop.minOutRaw,
+    estimatedAmountOut: hop.minOutRaw,
+    inputAmount: hop.amountInRaw,
+    tokenAmountIn: hop.amountInRaw,
+  };
+  
+  return { instructions: [swapIx], quote };
+}
+
 async function buildOrcaSwapViaSdk(hop: DirectHop, kp: { publicKey: PublicKey; secretKey: Uint8Array }, slippageBps: number): Promise<{ instructions: TransactionInstruction[]; quote: any }> {
   await ensureOrcaSdkConfig();
   const rpc = getOrcaRpc();
@@ -993,6 +1138,69 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
       });
     } catch {}
     
+    // PRIMARY PATH: Try local builder first (NO RPC calls!)
+    try {
+      const localResult = await buildOrcaSwapIxLocal(hop, kp);
+      const quoteAny = localResult.quote as any;
+      const estOut = quoteAny?.tokenEstOut ?? quoteAny?.tokenMinOut ?? quoteAny?.estimatedAmountOut ?? null;
+      
+      // For multihop with exact amounts, verify the local builder used the exact input amount
+      if (hop.useExactAmount && hop.amountInRaw > 0n) {
+        const quoteInputAmount = BigInt((quoteAny?.inputAmount ?? quoteAny?.tokenAmountIn ?? 0));
+        if (quoteInputAmount > 0n && quoteInputAmount !== hop.amountInRaw) {
+          try {
+            logger.warn('orca.local.exact_amount.mismatch', {
+              cat: 'tx',
+              code: LogCode.TX_BUILD_ERR,
+              ctx: {
+                pool: hop.poolId,
+                expectedInput: hop.amountInRaw.toString(),
+                quoteInput: quoteInputAmount.toString(),
+                difference: (quoteInputAmount > hop.amountInRaw 
+                  ? (quoteInputAmount - hop.amountInRaw).toString() 
+                  : (hop.amountInRaw - quoteInputAmount).toString()),
+                mode: 'local',
+              }
+            });
+          } catch {}
+        } else if (quoteInputAmount === hop.amountInRaw) {
+          try {
+            logger.debug('orca.local.exact_amount.verified', {
+              cat: 'tx',
+              ctx: {
+                pool: hop.poolId,
+                exactInput: hop.amountInRaw.toString(),
+                mode: 'local',
+              }
+            });
+          } catch {}
+        }
+      }
+      
+      if (estOut !== null && estOut !== undefined) {
+        try { logger.debug('orca.local.quote.ok', { cat: 'tx', ctx: { estimatedOutRaw: String(estOut), mode: 'local' } as any }); } catch {}
+      }
+      try { logger.debug('orca.local.ix.ready', { cat: 'tx', ctx: { count: localResult.instructions.length, mode: 'local' } as any }); } catch {}
+      return localResult.instructions;
+    } catch (localErr) {
+      const msg = String((localErr as any)?.message || localErr);
+      if (msg.includes('ORCA_BUILD_FAILED')) {
+        throw localErr;
+      }
+      // Log and fallback to SDK
+      try { 
+        logger.warn('orca.local.fallback_to_sdk', { 
+          cat: 'tx', 
+          ctx: { 
+            pool: hop.poolId, 
+            error: msg,
+            reason: 'Local build failed, falling back to SDK (will make RPC calls)'
+          } as any 
+        }); 
+      } catch {}
+    }
+    
+    // FALLBACK PATH: Try SDK if local build failed
     try {
       const sdkResult = await buildOrcaSwapViaSdk(hop, kp, slippageBps);
       const quoteAny = sdkResult.quote as any;
@@ -2085,35 +2293,86 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     const inputMintPk = toPublicKey(hop.inputMint);
     const outputMintPk = toPublicKey(hop.outputMint);
     let swapForY = true;  // Default: X->Y
+    
+    // Try to get mints from execution cache first (NO RPC!)
+    let tokenXMintPk: PublicKey | null = null;
+    let tokenYMintPk: PublicKey | null = null;
+    
     try {
-      // Get pool mints via SDK to determine tokenX and tokenY
-      const DLMM: any = await import('@meteora-ag/dlmm').catch(() => null);
-      if (DLMM && typeof DLMM.DLMM?.getTokensMintFromPoolAddress === 'function') {
-        const mints = await DLMM.DLMM.getTokensMintFromPoolAddress(connection, poolPk);
-        const tokenXMintPk = mints?.tokenXMint ? toPublicKey(mints.tokenXMint) : null;
-        const tokenYMintPk = mints?.tokenYMint ? toPublicKey(mints.tokenYMint) : null;
+      const { executionCache } = await import('../cache.js');
+      const staticData = executionCache.getStatic(hop.poolId);
+      
+      if (staticData?.mint_a && staticData?.mint_b) {
+        tokenXMintPk = toPublicKey(staticData.mint_a);
+        tokenYMintPk = toPublicKey(staticData.mint_b);
         
-        if (tokenXMintPk && tokenYMintPk) {
-          const isXToY = inputMintPk.equals(tokenXMintPk) && outputMintPk.equals(tokenYMintPk);
-          const isYToX = inputMintPk.equals(tokenYMintPk) && outputMintPk.equals(tokenXMintPk);
-          swapForY = isXToY;  // X->Y means swapForY=true, Y->X means swapForY=false
-          
+        try {
+          logger.debug('meteora.dlmm.mints_from_cache', {
+            cat: 'tx',
+            ctx: {
+              pool: hop.poolId.slice(0, 8) + '…',
+              mintX: staticData.mint_a,
+              mintY: staticData.mint_b,
+              source: 'execution_cache'
+            }
+          });
+        } catch {}
+      }
+    } catch {}
+    
+    // Fallback: Get pool mints via SDK RPC call if not in cache
+    if (!tokenXMintPk || !tokenYMintPk) {
+      try {
+        const DLMM: any = await import('@meteora-ag/dlmm').catch(() => null);
+        if (DLMM && typeof DLMM.DLMM?.getTokensMintFromPoolAddress === 'function') {
           try {
-            logger.info('meteora.dlmm.swap_direction', {
+            logger.info('meteora.dlmm.mints_from_rpc', {
               cat: 'tx',
               ctx: {
-                direction: isXToY ? 'X->Y' : (isYToX ? 'Y->X' : 'UNKNOWN'),
-                inputMint: hop.inputMint,
-                outputMint: hop.outputMint,
-                tokenXMint: tokenXMintPk.toBase58(),
-                tokenYMint: tokenYMintPk.toBase58(),
-                poolId: hop.poolId
+                pool: hop.poolId.slice(0, 8) + '…',
+                reason: 'Mints not in cache, making RPC call',
+                warning: 'This will slow down transaction building'
               }
             });
           } catch {}
+          
+          const mints = await DLMM.DLMM.getTokensMintFromPoolAddress(connection, poolPk);
+          tokenXMintPk = mints?.tokenXMint ? toPublicKey(mints.tokenXMint) : null;
+          tokenYMintPk = mints?.tokenYMint ? toPublicKey(mints.tokenYMint) : null;
         }
+      } catch (e: any) {
+        try {
+          logger.warn('meteora.dlmm.mints_fetch_failed', {
+            cat: 'tx',
+            ctx: {
+              pool: hop.poolId.slice(0, 8) + '…',
+              error: String(e?.message || e)
+            }
+          });
+        } catch {}
       }
-    } catch {}
+    }
+    
+    // Determine swap direction
+    if (tokenXMintPk && tokenYMintPk) {
+      const isXToY = inputMintPk.equals(tokenXMintPk) && outputMintPk.equals(tokenYMintPk);
+      const isYToX = inputMintPk.equals(tokenYMintPk) && outputMintPk.equals(tokenXMintPk);
+      swapForY = isXToY;  // X->Y means swapForY=true, Y->X means swapForY=false
+      
+      try {
+        logger.info('meteora.dlmm.swap_direction', {
+          cat: 'tx',
+          ctx: {
+            direction: isXToY ? 'X->Y' : (isYToX ? 'Y->X' : 'UNKNOWN'),
+            inputMint: hop.inputMint,
+            outputMint: hop.outputMint,
+            tokenXMint: tokenXMintPk.toBase58(),
+            tokenYMint: tokenYMintPk.toBase58(),
+            poolId: hop.poolId
+          }
+        });
+      } catch {}
+    }
 
     // Standardized SDK import: prefer ESM dynamic import, cache module
     // Module-level cache to avoid repeated imports
@@ -5115,23 +5374,29 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
     };
 
     // Normalize poolKeys shape to match Raydium SDK expectations (PublicKey fields only)
-    // CRITICAL: If normalization fails, keep the original value instead of returning undefined
+    // CRITICAL: Always normalize PublicKeys to fix broken BN structures from SDK
     try {
       const ensurePk = (v: any) => {
-        // If already a valid PublicKey, return as-is
-        if (v && typeof v === 'object' && typeof v.toBase58 === 'function') {
+        if (!v) return undefined;
+        
+        // Always try to normalize, even if it looks like a valid PublicKey
+        // Some PublicKeys from the SDK have broken BN internals that need reconstruction
+        try {
+          return normalizePublicKey(v);
+        } catch {
+          // If normalization fails but it has toBase58, try to use it
+          if (v && typeof v === 'object' && typeof v.toBase58 === 'function') {
+            try {
+              // Attempt to reconstruct from base58 string
+              return new PublicKey(v.toBase58());
+            } catch {
+              // Last resort: return original value
+              return v;
+            }
+          }
+          // Normalization failed - return original value as last resort
           return v;
         }
-        // Try to normalize, but if it fails, return the original value (don't destroy it)
-        if (v) {
-          try {
-            return normalizePublicKey(v);
-          } catch {
-            // Normalization failed - return original value
-            return v;
-          }
-        }
-        return undefined;
       };
       // Ensure mintLp is a PublicKey (not an object)
       const mintLpPk = ensurePk((poolKeys as any)?.mintLp?.address || (poolKeys as any)?.mintLp);

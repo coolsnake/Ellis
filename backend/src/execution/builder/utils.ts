@@ -116,6 +116,7 @@ export function normalizePublicKey(value: any): PublicKey {
     if (inner && typeof inner === 'object') {
       const bn = (inner as any)._bn || (inner as any).bn || (inner as any).value;
       if (bn && typeof bn === 'object') {
+        // Try with BN methods first (proper BN instance)
         if (typeof bn.toArrayLike === 'function') {
           try {
             return new PublicKey(bn.toArrayLike(Uint8Array, 'be', 32));
@@ -124,6 +125,26 @@ export function normalizePublicKey(value: any): PublicKey {
         if (typeof bn.toArray === 'function') {
           try {
             return new PublicKey(Uint8Array.from(bn.toArray('be', 32)));
+          } catch {}
+        }
+        
+        // Handle plain BN structures (deserialized BN without methods)
+        // These are BN objects that lost their prototype (from JSON serialization, worker transfer, etc.)
+        if (bn.words && Array.isArray(bn.words) && bn.words.length > 0) {
+          try {
+            // Import BN class to reconstruct proper BN instance
+            const BN = require('bn.js');
+            
+            // Reconstruct BN from plain structure
+            const reconstructed = new BN(0);
+            reconstructed.words = bn.words;
+            reconstructed.length = bn.length || bn.words.length;
+            reconstructed.negative = bn.negative || 0;
+            reconstructed.red = bn.red || null;
+            
+            // Now we can use toArrayLike on the proper BN instance
+            const bytes = reconstructed.toArrayLike(Uint8Array, 'be', 32);
+            return new PublicKey(bytes);
           } catch {}
         }
       }
