@@ -757,6 +757,10 @@ export const CONFIG = {
     // Skip account verification in transaction builders (200-400ms saved per tx)
     // When enabled, builders trust cached pool data and skip RPC verification calls
     skipAccountVerification: process.env.SKIP_TX_ACCOUNT_VERIFICATION === 'true',
+    // Skip preflight simulation when sending transactions (100-200ms saved per tx)
+    // When enabled (default), transactions are sent directly without simulation
+    // Disable for debugging (SKIP_TX_PREFLIGHT=false) to catch errors before sending
+    skipPreflight: process.env.SKIP_TX_PREFLIGHT !== 'false', // Default: true (skip for speed)
   },
 };
 

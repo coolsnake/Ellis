@@ -5267,7 +5267,21 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       }
       if (state) {
         // Normalize fields across versions
-        const asPk = (v: any) => (v?.toBase58 ? v : (v ? normalizePublicKey(v) : undefined));
+        // CRITICAL: Always normalize even if toBase58 exists - object might have broken BN internals
+        const asPk = (v: any) => {
+          if (!v) return undefined;
+          try {
+            return normalizePublicKey(v);
+          } catch {
+            // If normalization fails but it has toBase58, try to reconstruct from base58
+            if (v && typeof v.toBase58 === 'function') {
+              try {
+                return new PublicKey(v.toBase58());
+              } catch {}
+            }
+            return undefined;
+          }
+        };
         const baseVault = asPk(state.baseVault || state.coinVault || state.vaultA);
         const quoteVault = asPk(state.quoteVault || state.pcVault || state.vaultB);
         const authority = asPk(state.owner || state.ammAuthority || state.authority);
@@ -5940,17 +5954,33 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                 try {
                   const fallback = buildKeyFromPoolKeys(keyIdx);
                   if (fallback) {
+                    // CRITICAL: Normalize the fallback value too! It might have broken BN internals
                     try {
-                      logger.info('raydium.amm.key.fallback_used', {
-                        cat: 'tx',
-                        ctx: {
-                          keyIdx,
-                          fallbackAddress: fallback.toBase58().slice(0, 8) + '...',
-                          originalError: String((keyErr as any)?.message || keyErr)
-                        }
-                      });
-                    } catch {}
-                    return { pubkey: fallback, isSigner: !!k?.isSigner, isWritable: !!k?.isWritable };
+                      const normalized = normalizePublicKey(fallback);
+                      try {
+                        logger.info('raydium.amm.key.fallback_used', {
+                          cat: 'tx',
+                          ctx: {
+                            keyIdx,
+                            fallbackAddress: normalized.toBase58().slice(0, 8) + '...',
+                            originalError: String((keyErr as any)?.message || keyErr)
+                          }
+                        });
+                      } catch {}
+                      return { pubkey: normalized, isSigner: !!k?.isSigner, isWritable: !!k?.isWritable };
+                    } catch (normErr) {
+                      // If normalization fails, try using fallback as-is (last resort)
+                      try {
+                        logger.warn('raydium.amm.key.fallback_norm_failed', {
+                          cat: 'tx',
+                          ctx: {
+                            keyIdx,
+                            normError: String((normErr as any)?.message || normErr)
+                          }
+                        });
+                      } catch {}
+                      return { pubkey: fallback, isSigner: !!k?.isSigner, isWritable: !!k?.isWritable };
+                    }
                   }
                 } catch {}
                 

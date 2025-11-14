@@ -17,6 +17,7 @@ export type SendOptions = {
   computeUnitLimit?: number;
   computeUnitPriceMicroLamports?: number;
   lookupTableAddresses?: string[];
+  skipPreflight?: boolean; // Default: true for speed. Set to false for debugging.
 };
 function detectDexesFromPrograms(programIds: string[]): Array<'raydium' | 'orca' | 'meteora'> {
   const set = new Set<'raydium' | 'orca' | 'meteora'>();
@@ -1078,22 +1079,41 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
     throw error;
   }
   
-  // Log before RPC send attempt
+  // CRITICAL: DO NOT rate limit transaction sends - they are time-sensitive
+  // Rate limiting here can cause stale blockhashes, missed opportunities, and failures
+  // 
+  // Preflight check behavior:
+  // - skipPreflight: true (default) - Skip simulation, send directly (fastest, ~50-80ms)
+  // - skipPreflight: false - Run simulation first, may reject invalid transactions (slower, +100-200ms)
+  // 
+  // Priority order for skipPreflight:
+  // 1. opts.skipPreflight (explicit per-call override)
+  // 2. CONFIG.execution.skipPreflight (global default from env SKIP_TX_PREFLIGHT)
+  // 3. true (hardcoded default if neither is set)
+  const skipPreflight = opts?.skipPreflight !== undefined 
+    ? opts.skipPreflight 
+    : ((CONFIG as any)?.execution?.skipPreflight !== false); // Default: true
+  
   try {
     logger.info('tx.send.rpc_call_start', {
       cat: 'tx',
       ctx: {
         txId,
         sizeBytes: wireBase64.length,
-        skipPreflight: true,
-        note: 'bypassing_rate_limit_for_critical_tx_send',
+        skipPreflight,
+        note: skipPreflight 
+          ? 'skipping_preflight_for_speed' 
+          : 'running_preflight_simulation',
+        source: opts?.skipPreflight !== undefined ? 'opts' : 'CONFIG',
       } as any,
     });
   } catch {}
   
-  // CRITICAL: DO NOT rate limit transaction sends - they are time-sensitive
-  // Rate limiting here can cause stale blockhashes, missed opportunities, and failures
-  const sig = await connection.sendTransaction(tx, { skipPreflight: true, preflightCommitment: 'confirmed' });
+  const sig = await connection.sendTransaction(tx, { 
+    skipPreflight, 
+    preflightCommitment: skipPreflight ? 'confirmed' : 'processed',
+    maxRetries: 0 // We handle retries ourselves
+  });
   
   // Log after successful RPC send
   try {
