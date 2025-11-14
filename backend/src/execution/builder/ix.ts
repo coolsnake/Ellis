@@ -1341,142 +1341,233 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
         });
       } catch {}
       
-      // CRITICAL FIX: Even when coin_creator is System Program, we still need to derive
-      // the creator vault accounts from the MEME TOKEN'S creator (from mint metadata)
-      // The coin_creator being System Program just means no creator fees are configured in pool,
-      // but the accounts must still be present in the transaction.
+      // CRITICAL FIX: Identify which mint is the pump.fun meme token
+      // After canonicalization, poolBaseMint might be SOL/USDC instead of the meme token
+      // The meme token is whichever mint is NOT SOL or USDC
+      const SOL_MINT = 'So11111111111111111111111111111111111111112';
+      const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
       
-      // For Pumpswap pools, the base mint is always the meme token (pump.fun token)
-      // We need to fetch the creator from the base mint's Metaplex metadata
-      const connection = await (async () => {
-        const { getConnection } = await import('../../wallet/wallet.js');
-        return getConnection();
-      })();
+      let memeTokenMint: string | null = null;
+      let isStablecoinPair = false;
       
-      const PUMP_PROGRAM_ID = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
-      const METADATA_PROGRAM_ID = new PublicKey('metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s');
-      const memeTokenMint = toPublicKey(poolBaseMint);
-      
-      // Derive metadata PDA
-      const [metadataPda] = PublicKey.findProgramAddressSync(
-        [
-          Buffer.from('metadata'),
-          METADATA_PROGRAM_ID.toBuffer(),
-          memeTokenMint.toBuffer(),
-        ],
-        METADATA_PROGRAM_ID
-      );
-      
-      try {
-        logger.info('pumpswap.fetching_mint_metadata', {
-          cat: 'tx',
-          ctx: { 
-            poolId: hop.poolId.slice(0, 12),
-            memeTokenMint: poolBaseMint.slice(0, 12),
-            metadataPda: metadataPda.toBase58().slice(0, 12),
-            poolCoinCreator: creator.slice(0, 12),
-          }
-        });
-      } catch {}
-      
-      // Fetch metadata account to get the real creator
-      let actualCreator: string = creator;
-      try {
-        const metadataAccount = await connection.getAccountInfo(metadataPda);
-        if (metadataAccount && metadataAccount.data.length > 0) {
-          // Parse Metaplex metadata to extract creator
-          // Metadata structure: key(1) + updateAuthority(32) + mint(32) + name(variable) + ...
-          // Creators array starts after: key(1) + updateAuthority(32) + mint(32) + name + symbol + uri + sellerFeeBasisPoints(2) + hasCreators(1)
-          // For simplicity, we'll extract the first creator from the creators array
-          // The update authority (bytes 1-33) is often the creator for pump.fun tokens
-          if (metadataAccount.data.length >= 33) {
-            const updateAuthority = new PublicKey(metadataAccount.data.subarray(1, 33));
-            actualCreator = updateAuthority.toBase58();
-            
-            try {
-              logger.info('pumpswap.metadata_creator_found', {
-                cat: 'tx',
-                ctx: {
-                  poolId: hop.poolId.slice(0, 12),
-                  actualCreator: actualCreator.slice(0, 12),
-                  wasSystemProgram: creator === SYSTEM_PROGRAM_ID,
-                }
-              });
-            } catch {}
-          }
-        }
-      } catch (metadataErr: any) {
+      if (poolBaseMint !== SOL_MINT && poolBaseMint !== USDC_MINT) {
+        memeTokenMint = poolBaseMint;
+      } else if (poolQuoteMint !== SOL_MINT && poolQuoteMint !== USDC_MINT) {
+        memeTokenMint = poolQuoteMint;
+      } else {
+        // Both are SOL/USDC - this is a stablecoin pair pool
+        // For these pools, we can't derive creator from token metadata
+        // We'll use the pool's creator field directly
+        isStablecoinPair = true;
+        
         try {
-          logger.warn('pumpswap.metadata_fetch_failed', {
+          logger.info('pumpswap.stablecoin_pair_detected', {
             cat: 'tx',
             ctx: {
               poolId: hop.poolId.slice(0, 12),
-              error: String(metadataErr?.message || metadataErr),
-              willUseFallback: true,
+              poolBaseMint: poolBaseMint.slice(0, 12),
+              poolQuoteMint: poolQuoteMint.slice(0, 12),
+              note: 'will_use_pool_creator_directly',
             }
           });
         } catch {}
-        // If metadata fetch fails, use pool's coin_creator (might be System Program)
-        // This will at least allow the transaction to build, even if creator fees don't work
       }
       
-      // Now derive the creator vault accounts using the actual creator
-      if (actualCreator === SYSTEM_PROGRAM_ID) {
-        // Still System Program after metadata check - use pump.fun bonding curve as fallback
-        // This shouldn't happen for real pump.fun tokens, but handle gracefully
+      if (!isStablecoinPair && memeTokenMint) {
+        // Meme token found - fetch its creator from metadata
         try {
-          logger.warn('pumpswap.creator_still_system_program', {
+          logger.info('pumpswap.identify_meme_token', {
             cat: 'tx',
             ctx: {
               poolId: hop.poolId.slice(0, 12),
-              note: 'using_bonding_curve_authority_as_fallback',
+              poolBaseMint: poolBaseMint.slice(0, 12),
+              poolQuoteMint: poolQuoteMint.slice(0, 12),
+              memeTokenMint: memeTokenMint.slice(0, 12),
+              isBaseTheMeme: memeTokenMint === poolBaseMint,
             }
           });
         } catch {}
         
-        // Use the bonding curve PDA as creator (common for pump.fun tokens)
-        const [bondingCurvePda] = PublicKey.findProgramAddressSync(
-          [Buffer.from('bonding-curve'), memeTokenMint.toBuffer()],
+        // For Pumpswap pools, we need to fetch the creator from the meme token's Metaplex metadata
+        const memeTokenMintPk = toPublicKey(memeTokenMint);
+        const PUMP_PROGRAM_ID = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
+        const METADATA_PROGRAM_ID = new PublicKey('metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s');
+        
+        // Derive metadata PDA for the meme token
+        const [metadataPda] = PublicKey.findProgramAddressSync(
+          [
+            Buffer.from('metadata'),
+            METADATA_PROGRAM_ID.toBuffer(),
+            memeTokenMintPk.toBuffer(),
+          ],
+          METADATA_PROGRAM_ID
+        );
+        
+        try {
+          logger.info('pumpswap.fetching_mint_metadata', {
+            cat: 'tx',
+            ctx: { 
+              poolId: hop.poolId.slice(0, 12),
+              memeTokenMint: memeTokenMint.slice(0, 12),
+              metadataPda: metadataPda.toBase58().slice(0, 12),
+              poolCoinCreator: creator.slice(0, 12),
+            }
+          });
+        } catch {}
+        
+        // Fetch metadata account to get the real creator
+        const connection = await (async () => {
+          const { getConnection } = await import('../../wallet/wallet.js');
+          return getConnection();
+        })();
+        
+        let actualCreator: string = creator;
+        try {
+          const metadataAccount = await connection.getAccountInfo(metadataPda);
+          if (metadataAccount && metadataAccount.data.length > 0) {
+            // Parse Metaplex metadata to extract creator
+            // The update authority (bytes 1-33) is often the creator for pump.fun tokens
+            if (metadataAccount.data.length >= 33) {
+              const updateAuthority = new PublicKey(metadataAccount.data.subarray(1, 33));
+              actualCreator = updateAuthority.toBase58();
+              
+              try {
+                logger.info('pumpswap.metadata_creator_found', {
+                  cat: 'tx',
+                  ctx: {
+                    poolId: hop.poolId.slice(0, 12),
+                    actualCreator: actualCreator.slice(0, 12),
+                    wasSystemProgram: creator === SYSTEM_PROGRAM_ID,
+                  }
+                });
+              } catch {}
+            }
+          }
+        } catch (metadataErr: any) {
+          try {
+            logger.warn('pumpswap.metadata_fetch_failed', {
+              cat: 'tx',
+              ctx: {
+                poolId: hop.poolId.slice(0, 12),
+                error: String(metadataErr?.message || metadataErr),
+                willUseFallback: true,
+              }
+            });
+          } catch {}
+        }
+        
+        // Now derive the creator vault accounts using the actual creator
+        if (actualCreator === SYSTEM_PROGRAM_ID) {
+          // Still System Program after metadata check - use pump.fun bonding curve as fallback
+          try {
+            logger.warn('pumpswap.creator_still_system_program', {
+              cat: 'tx',
+              ctx: {
+                poolId: hop.poolId.slice(0, 12),
+                note: 'using_bonding_curve_authority_as_fallback',
+              }
+            });
+          } catch {}
+          
+          // Use the bonding curve PDA as creator
+          const [bondingCurvePda] = PublicKey.findProgramAddressSync(
+            [Buffer.from('bonding-curve'), memeTokenMintPk.toBuffer()],
+            PUMP_PROGRAM_ID
+          );
+          actualCreator = bondingCurvePda.toBase58();
+        }
+        
+        // Derive creator vault authority and ATA using the actual creator
+        const creatorPubkey = toPublicKey(actualCreator);
+          
+        // PDA derived from seeds: ["creator-vault-authority", coin_creator]
+        // IMPORTANT: Uses Pump Program ID, not PumpSwap Program ID
+        const [vaultAuthority] = PublicKey.findProgramAddressSync(
+          [
+            Buffer.from('creator-vault-authority'),
+            creatorPubkey.toBuffer(),
+          ],
           PUMP_PROGRAM_ID
         );
-        actualCreator = bondingCurvePda.toBase58();
-      }
-      
-      // Derive creator vault authority and ATA using the actual creator
-      const creatorPubkey = toPublicKey(actualCreator);
+        coinCreatorVaultAuthority = vaultAuthority.toBase58();
         
-      // PDA derived from seeds: ["creator-vault-authority", coin_creator]
-      // IMPORTANT: Uses Pump Program ID, not PumpSwap Program ID
-      const [vaultAuthority] = PublicKey.findProgramAddressSync(
-        [
-          Buffer.from('creator-vault-authority'),
-          creatorPubkey.toBuffer(),
-        ],
-        PUMP_PROGRAM_ID // Pump Program ID (bonding curve program)
-      );
-      coinCreatorVaultAuthority = vaultAuthority.toBase58();
-      
-      // Derive coin creator vault ATA
-      // This is the vault authority's ATA for the quote mint
-      coinCreatorVaultAta = getAssociatedTokenAddressSync(
-        toPublicKey(poolQuoteMint), // Quote mint (fees collected in quote token)
-        vaultAuthority,
-        true // allowOwnerOffCurve
-      ).toBase58();
-      
-      try {
-        logger.info('pumpswap.fallback.derived_accounts', {
-          cat: 'tx',
-          ctx: { 
-            poolId: hop.poolId.slice(0, 12),
-            poolCoinCreator: creator.slice(0, 12),
-            actualCreator: actualCreator.slice(0, 12),
-            derivedAuthority: coinCreatorVaultAuthority.slice(0, 12),
-            derivedAta: coinCreatorVaultAta.slice(0, 12),
-            quoteMint: poolQuoteMint.slice(0, 12),
-          }
-        });
-      } catch {}
+        // Derive coin creator vault ATA
+        coinCreatorVaultAta = getAssociatedTokenAddressSync(
+          toPublicKey(poolQuoteMint), // Quote mint (fees collected in quote token)
+          vaultAuthority,
+          true // allowOwnerOffCurve
+        ).toBase58();
+        
+        try {
+          logger.info('pumpswap.fallback.derived_accounts', {
+            cat: 'tx',
+            ctx: { 
+              poolId: hop.poolId.slice(0, 12),
+              poolCoinCreator: creator.slice(0, 12),
+              actualCreator: actualCreator.slice(0, 12),
+              derivedAuthority: coinCreatorVaultAuthority.slice(0, 12),
+              derivedAta: coinCreatorVaultAta.slice(0, 12),
+              quoteMint: poolQuoteMint.slice(0, 12),
+            }
+          });
+        } catch {}
+      } else {
+        // Stablecoin pair (SOL/USDC) - use pool creator directly or bonding curve
+        // For SOL/USDC pools, we'll derive using the pool's creator if it's valid,
+        // otherwise use a placeholder that matches expected addresses
+        const PUMP_PROGRAM_ID = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
+        
+        let poolCreatorToUse = creator;
+        if (creator === SYSTEM_PROGRAM_ID) {
+          // No specific creator - use a deterministic PDA based on the pool ID
+          // This ensures consistent addresses for the same pool
+          const poolPk = toPublicKey(hop.poolId.replace(/-rev$/, ''));
+          const [poolBasedPda] = PublicKey.findProgramAddressSync(
+            [Buffer.from('pool-creator'), poolPk.toBuffer()],
+            PUMP_PROGRAM_ID
+          );
+          poolCreatorToUse = poolBasedPda.toBase58();
+          
+          try {
+            logger.info('pumpswap.stablecoin_using_pool_pda', {
+              cat: 'tx',
+              ctx: {
+                poolId: hop.poolId.slice(0, 12),
+                derivedCreator: poolCreatorToUse.slice(0, 12),
+              }
+            });
+          } catch {}
+        }
+        
+        const creatorPubkey = toPublicKey(poolCreatorToUse);
+        const [vaultAuthority] = PublicKey.findProgramAddressSync(
+          [
+            Buffer.from('creator-vault-authority'),
+            creatorPubkey.toBuffer(),
+          ],
+          PUMP_PROGRAM_ID
+        );
+        coinCreatorVaultAuthority = vaultAuthority.toBase58();
+        
+        coinCreatorVaultAta = getAssociatedTokenAddressSync(
+          toPublicKey(poolQuoteMint),
+          vaultAuthority,
+          true
+        ).toBase58();
+        
+        try {
+          logger.info('pumpswap.stablecoin.derived_accounts', {
+            cat: 'tx',
+            ctx: { 
+              poolId: hop.poolId.slice(0, 12),
+              poolCreator: creator.slice(0, 12),
+              usedCreator: poolCreatorToUse.slice(0, 12),
+              derivedAuthority: coinCreatorVaultAuthority.slice(0, 12),
+              derivedAta: coinCreatorVaultAta.slice(0, 12),
+            }
+          });
+        } catch {}
+      }
     }
     
     // NOW convert the creator vault addresses to PublicKey (after fallback derivation)
