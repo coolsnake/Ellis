@@ -98,6 +98,10 @@ export function computeIncrementalGraphUpdate(request: GraphIncrementalRequest):
   const updatedEdges: GraphEdge[] = [];
   const addedNodes: GraphNode[] = [];
   const removedNodeIds: string[] = [];
+  
+  // Track edge IDs that existed in the original snapshot for accurate "added" vs "restored" distinction
+  const originalEdgeIds = new Set(prevSnapshot.edges.map((e) => String(e.id)));
+  const originalNodeIds = new Set(prevSnapshot.nodes.map((n) => String(n.id)));
 
   const getUsd = buildPriceAccessor(priceMap || {});
   const considered: Pool[] = [...(nextPools?.amm || []), ...(nextPools?.clmm || [])] as Pool[];
@@ -119,7 +123,14 @@ export function computeIncrementalGraphUpdate(request: GraphIncrementalRequest):
       const current = edgesMap.get(edge.id);
       if (!current) {
         edgesMap.set(edge.id, edge);
-        addedEdges.push(edge);
+        // Only report as "added" if it's truly new (wasn't in the original snapshot)
+        // This prevents churn from showing as additions when edges are temporarily removed then re-added
+        if (!originalEdgeIds.has(edge.id)) {
+          addedEdges.push(edge);
+        } else {
+          // Edge was in original snapshot but got removed earlier in this cycle; treat as update
+          updatedEdges.push(edge);
+        }
       } else {
         edgesMap.set(edge.id, edge);
         if (edgeChangedSimple(current, edge) || changed) {
@@ -133,12 +144,18 @@ export function computeIncrementalGraphUpdate(request: GraphIncrementalRequest):
     if (mintA && !nodesMap.has(mintA)) {
       const node: GraphNode = { id: mintA };
       nodesMap.set(mintA, node);
-      addedNodes.push(node);
+      // Only report as "added" if it's truly new (wasn't in the original snapshot)
+      if (!originalNodeIds.has(mintA)) {
+        addedNodes.push(node);
+      }
     }
     if (mintB && !nodesMap.has(mintB)) {
       const node: GraphNode = { id: mintB };
       nodesMap.set(mintB, node);
-      addedNodes.push(node);
+      // Only report as "added" if it's truly new (wasn't in the original snapshot)
+      if (!originalNodeIds.has(mintB)) {
+        addedNodes.push(node);
+      }
     }
   }
 

@@ -250,7 +250,7 @@ export async function enrichMissingDecimals(
                   resolveCache[mint] = { mint, decimals };
                   
                   if (logger) {
-                    logger.debug('token.enrich.found', {
+                    logger.info('token.enrich.found', {
                       mint,
                       decimals,
                       cat: 'tokens'
@@ -260,7 +260,7 @@ export async function enrichMissingDecimals(
               }
             } else {
               if (logger) {
-                logger.debug('token.enrich.not_mint', {
+                logger.info('token.enrich.not_mint', {
                   mint,
                   owner,
                   cat: 'tokens'

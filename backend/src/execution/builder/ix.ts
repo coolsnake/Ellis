@@ -5350,8 +5350,11 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
         if (cached.market_authority) {
           (poolKeys as any).marketAuthority = toPublicKey(cached.market_authority);
         }
+        // AMM Authority: try both cache fields (amm_authority or owner)
         if (cached.amm_authority) {
           (poolKeys as any).authority = toPublicKey(cached.amm_authority);
+        } else if (cached.owner) {
+          (poolKeys as any).authority = toPublicKey(cached.owner);
         }
         if (cached.amm_open_orders) {
           (poolKeys as any).openOrders = toPublicKey(cached.amm_open_orders);

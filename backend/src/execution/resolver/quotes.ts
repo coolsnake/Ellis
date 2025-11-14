@@ -154,7 +154,38 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
       const ray = minimalMathAllowed ? peekRaydiumPools() : null;
 
       if (minimalMathAllowed && ray && hop.variant === 'clmm') {
+        try {
+          const { logger } = await import('../../utils/logger.js');
+          logger.info('raydium.clmm.quote.attempt', {
+            cat: 'tx',
+            ctx: {
+              poolId: hop.poolId,
+              amountInRaw: amountInRaw.toString(),
+              inputMint: hop.inputMint,
+              outputMint: hop.outputMint,
+              inputDecimals: hop.inputDecimals,
+              outputDecimals: hop.outputDecimals,
+              hasRayData: !!ray,
+              clmmPoolCount: ray?.clmm?.length || 0,
+            }
+          });
+        } catch {}
+        
         const clmmOut = quoteRaydiumClmmFromSnapshot(hop, amountInRaw, ray);
+        
+        try {
+          const { logger } = await import('../../utils/logger.js');
+          logger.info('raydium.clmm.quote.result', {
+            cat: 'tx',
+            ctx: {
+              poolId: hop.poolId,
+              amountInRaw: amountInRaw.toString(),
+              quotedOut: clmmOut.toString(),
+              success: clmmOut > 0n,
+            }
+          });
+        } catch {}
+        
         if (clmmOut > 0n) return clmmOut;
       }
 
@@ -303,22 +334,138 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
         const id = hop.poolId.replace(/-rev$/, '');
         const met = peekMeteoraPools();
         const p = (met.clmm || []).find((x: any) => String(x?.id || '') === id);
+        
+        try {
+          const { logger } = await import('../../utils/logger.js');
+          logger.info('meteora.dlmm.quote.attempt', {
+            cat: 'tx',
+            ctx: {
+              poolId: hop.poolId,
+              strippedId: id,
+              amountInRaw: amountInRaw.toString(),
+              inputMint: hop.inputMint,
+              outputMint: hop.outputMint,
+              inputDecimals: hop.inputDecimals,
+              outputDecimals: hop.outputDecimals,
+              isRev,
+              hasMetData: !!met,
+              clmmPoolCount: met?.clmm?.length || 0,
+              poolFound: !!p,
+            }
+          });
+        } catch {}
+        
         if (p) {
           const feeBps = Number((p as any)?.fee_bps || 0);
           const decIn = Number(hop.inputDecimals ?? (isRev ? (p as any)?.decimals_b : (p as any)?.decimals_a) ?? 0);
           const decOut = Number(hop.outputDecimals ?? (isRev ? (p as any)?.decimals_a : (p as any)?.decimals_b) ?? 0);
           const fee = Math.max(0, 1 - (Math.min(9900, Math.max(0, feeBps)) / 10_000));
+          const px = Number((p as any)?.price_a_per_b || 0);
+          
+          try {
+            const { logger } = await import('../../utils/logger.js');
+            logger.info('meteora.dlmm.quote.pool_data', {
+              cat: 'tx',
+              ctx: {
+                poolId: hop.poolId,
+                feeBps,
+                decIn,
+                decOut,
+                fee,
+                priceAPerB: px,
+                decimalsFinite: Number.isFinite(decIn) && Number.isFinite(decOut),
+                pricePositive: px > 0,
+                poolData: {
+                  mint_a: (p as any)?.mint_a,
+                  mint_b: (p as any)?.mint_b,
+                  decimals_a: (p as any)?.decimals_a,
+                  decimals_b: (p as any)?.decimals_b,
+                  fee_bps: (p as any)?.fee_bps,
+                  price_a_per_b: (p as any)?.price_a_per_b,
+                }
+              }
+            });
+          } catch {}
+          
           if (Number.isFinite(decIn) && Number.isFinite(decOut)) {
-            const px = Number((p as any)?.price_a_per_b || 0);
             if (px > 0) {
               const amtIn = Number(amountInRaw) / Math.pow(10, decIn);
               if (Number.isFinite(amtIn)) {
                 const outWhole = (isRev ? amtIn * px : amtIn / px) * fee;
                 const outRaw = BigInt(Math.floor(outWhole * Math.pow(10, decOut)));
+                
+                try {
+                  const { logger } = await import('../../utils/logger.js');
+                  logger.info('meteora.dlmm.quote.calculation', {
+                    cat: 'tx',
+                    ctx: {
+                      poolId: hop.poolId,
+                      amountInRaw: amountInRaw.toString(),
+                      amtIn,
+                      outWhole,
+                      outRaw: outRaw.toString(),
+                      success: outRaw > 0n,
+                      formula: isRev ? 'amtIn * px * fee' : '(amtIn / px) * fee',
+                    }
+                  });
+                } catch {}
+                
                 if (outRaw > 0n) return outRaw;
+              } else {
+                try {
+                  const { logger } = await import('../../utils/logger.js');
+                  logger.warn('meteora.dlmm.quote.invalid_amtIn', {
+                    cat: 'tx',
+                    ctx: {
+                      poolId: hop.poolId,
+                      amountInRaw: amountInRaw.toString(),
+                      decIn,
+                      amtIn,
+                      isFinite: Number.isFinite(amtIn),
+                    }
+                  });
+                } catch {}
               }
+            } else {
+              try {
+                const { logger } = await import('../../utils/logger.js');
+                logger.warn('meteora.dlmm.quote.no_price', {
+                  cat: 'tx',
+                  ctx: {
+                    poolId: hop.poolId,
+                    priceAPerB: px,
+                    poolHasPrice: (p as any)?.price_a_per_b !== undefined,
+                  }
+                });
+              } catch {}
             }
+          } else {
+            try {
+              const { logger } = await import('../../utils/logger.js');
+              logger.warn('meteora.dlmm.quote.invalid_decimals', {
+                cat: 'tx',
+                ctx: {
+                  poolId: hop.poolId,
+                  decIn,
+                  decOut,
+                  decInFinite: Number.isFinite(decIn),
+                  decOutFinite: Number.isFinite(decOut),
+                }
+              });
+            } catch {}
           }
+        } else {
+          try {
+            const { logger } = await import('../../utils/logger.js');
+            logger.warn('meteora.dlmm.quote.pool_not_found', {
+              cat: 'tx',
+              ctx: {
+                poolId: hop.poolId,
+                strippedId: id,
+                availablePoolIds: (met?.clmm || []).slice(0, 5).map((x: any) => x?.id),
+              }
+            });
+          } catch {}
         }
       }
       return 0n;
@@ -482,18 +629,77 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint): Promise<
 }
 
 function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools: any): bigint {
-  if (!(amountInRaw > 0n)) return 0n;
-  if (!pools || !Array.isArray(pools.clmm)) return 0n;
+  if (!(amountInRaw > 0n)) {
+    try {
+      import('../../utils/logger.js').then(({ logger }) => {
+        logger.warn('raydium.clmm.quote.zero_input', {
+          cat: 'tx',
+          ctx: { poolId: hop.poolId, amountInRaw: amountInRaw.toString() }
+        });
+      });
+    } catch {}
+    return 0n;
+  }
+  
+  if (!pools || !Array.isArray(pools.clmm)) {
+    try {
+      import('../../utils/logger.js').then(({ logger }) => {
+        logger.warn('raydium.clmm.quote.no_pools_data', {
+          cat: 'tx',
+          ctx: {
+            poolId: hop.poolId,
+            hasPools: !!pools,
+            hasClmm: pools && Array.isArray(pools.clmm),
+            clmmLength: pools?.clmm?.length || 0,
+          }
+        });
+      });
+    } catch {}
+    return 0n;
+  }
 
   const rawPoolId = String(hop.poolId || '');
   if (!rawPoolId) return 0n;
   const isRev = rawPoolId.endsWith('-rev');
   const baseId = rawPoolId.replace(/-rev$/, '');
   const pool = (pools.clmm || []).find((x: any) => String(x?.id || '') === baseId);
-  if (!pool) return 0n;
+  
+  if (!pool) {
+    try {
+      import('../../utils/logger.js').then(({ logger }) => {
+        logger.warn('raydium.clmm.quote.pool_not_found', {
+          cat: 'tx',
+          ctx: {
+            poolId: hop.poolId,
+            baseId,
+            isRev,
+            availablePoolIds: (pools.clmm || []).slice(0, 5).map((x: any) => x?.id),
+          }
+        });
+      });
+    } catch {}
+    return 0n;
+  }
 
   const ratio = extractClmmPriceRatio(pool, isRev);
-  if (!ratio) return 0n;
+  if (!ratio) {
+    try {
+      import('../../utils/logger.js').then(({ logger }) => {
+        logger.warn('raydium.clmm.quote.no_price_ratio', {
+          cat: 'tx',
+          ctx: {
+            poolId: hop.poolId,
+            poolData: {
+              price_a_per_b: (pool as any)?.price_a_per_b,
+              price_a_per_b_num: (pool as any)?.price_a_per_b_num,
+              price_a_per_b_den: (pool as any)?.price_a_per_b_den,
+            }
+          }
+        });
+      });
+    } catch {}
+    return 0n;
+  }
   const { numerator: priceNumerator, denominator: priceDenominator } = ratio;
 
   const decInCandidate =
