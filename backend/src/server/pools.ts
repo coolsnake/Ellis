@@ -10,7 +10,7 @@ import { anyToBigInt, ratioToDecimalString, sqrtPriceX64ToPriceRatio } from './p
 import { fetchRaydiumPoolsRaw as fetchRaydiumPoolsRawImpl, normalizeRaydiumPools as normalizeRaydiumPoolsImpl } from './pools/raydium.js';
 import { fetchOrcaHttp as fetchOrcaHttpImpl, normalizeOrcaHttp as normalizeOrcaHttpImpl, deriveOrcaFeeBps } from './pools/orca.js';
 import { fetchMeteoraHttp as fetchMeteoraHttpImpl, normalizeMeteoraHttp as normalizeMeteoraHttpImpl } from './pools/meteora.js';
-import { fetchPumpswapGraphQL as fetchPumpswapGraphQLImpl, normalizePumpswapPools as normalizePumpswapPoolsImpl, enrichPumpswapPoolsWithRpc as enrichPumpswapPoolsWithRpcImpl } from './pools/pumpswap.js';
+import { fetchPumpswapGraphQL as fetchPumpswapGraphQLImpl, normalizePumpswapPools as normalizePumpswapPoolsImpl, enrichPumpswapPoolsWithRpc as enrichPumpswapPoolsWithRpcImpl, parsePumpswapPoolFee } from './pools/pumpswap.js';
 import { validateCrossDexPrices, verifyCanonicalization } from './pools/validation.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './pools/httpLog.js';
 import { fetchMeteoraBalancedHttp as fetchMeteoraBalancedHttpImpl, normalizeMeteoraBalancedHttp as normalizeMeteoraBalancedHttpImpl, fetchMeteoraBalancedAll as fetchMeteoraBalancedAllImpl } from './pools/meteoraBalanced.js';
@@ -2525,8 +2525,7 @@ export function startRaydiumRefreshLoop(): void {
                   });
                 } catch {}
                 
-                // Extract fee using helper function
-                const { parsePumpswapPoolFee } = await import('./pools/pumpswap.js');
+                // Extract fee using helper function (now statically imported)
                 const fee_bps = parsePumpswapPoolFee(info.data) || Number((CONFIG as any)?.pumpswap?.defaultFeeBps || 25);
                 
                 // CRITICAL FIX: Use cached vault balances from WebSocket subscriptions
