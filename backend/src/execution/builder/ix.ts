@@ -1430,6 +1430,19 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
       throw createBuilderError('PUMPSWAP', `Invalid poolQuoteMint: ${poolQuoteMint}`, hop);
     }
     
+    try {
+      logger.info('pumpswap.mints.validation', {
+        cat: 'tx',
+        ctx: {
+          poolId: hop.poolId.slice(0, 12),
+          poolBaseMint,
+          poolQuoteMint,
+          poolBaseMintLen: poolBaseMint.length,
+          poolQuoteMintLen: poolQuoteMint.length,
+        }
+      });
+    } catch {}
+    
     // Determine swap direction and choose instruction
     const isSellingBase = hop.inputMint === poolBaseMint && hop.outputMint === poolQuoteMint;
     const isBuyingBase = hop.inputMint === poolQuoteMint && hop.outputMint === poolBaseMint;
