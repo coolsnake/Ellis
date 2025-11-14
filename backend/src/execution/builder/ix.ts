@@ -1401,6 +1401,14 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
     const creatorVaultAta = toPublicKey(coinCreatorVaultAta);
     const creatorVaultAuthority = toPublicKey(coinCreatorVaultAuthority);
     
+    // Validate vault addresses before conversion
+    if (!onchainBaseVault || onchainBaseVault.length < 32) {
+      throw createBuilderError('PUMPSWAP', `Invalid onchainBaseVault: ${onchainBaseVault}`, hop);
+    }
+    if (!onchainQuoteVault || onchainQuoteVault.length < 32) {
+      throw createBuilderError('PUMPSWAP', `Invalid onchainQuoteVault: ${onchainQuoteVault}`, hop);
+    }
+    
     // Use the stored on-chain vaults directly - no mapping needed!
     // These vault addresses are the ACTUAL on-chain addresses and won't be affected by canonicalization
     const poolBaseVault = toPublicKey(onchainBaseVault);
