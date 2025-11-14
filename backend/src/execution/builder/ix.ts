@@ -1358,24 +1358,26 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
           });
         } catch {}
       } else {
-        // Real coin creator - derive vault authority using PumpSwap program
+        // Real coin creator - derive vault authority using PUMP PROGRAM (not PumpSwap)
+        // Per https://github.com/pump-fun/pump-public-docs/blob/main/docs/PUMP_SWAP_CREATOR_FEE_README.md
+        const PUMP_PROGRAM_ID = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
         const creatorPubkey = toPublicKey(creator);
         
-        // PDA derived from seeds: ["creator_vault", coin_creator]
-        // Source: https://github.com/pump-fun/pump-public-docs/blob/main/docs/PUMP_SWAP_CREATOR_FEE_README.md
+        // PDA derived from seeds: ["creator-vault-authority", coin_creator]
+        // IMPORTANT: Uses Pump Program ID, not PumpSwap Program ID
         const [vaultAuthority] = PublicKey.findProgramAddressSync(
           [
-            Buffer.from('creator_vault'),
+            Buffer.from('creator-vault-authority'),
             creatorPubkey.toBuffer(),
           ],
-          programId // PumpSwap program ID
+          PUMP_PROGRAM_ID // Pump Program ID (bonding curve program)
         );
         coinCreatorVaultAuthority = vaultAuthority.toBase58();
         
         // Derive coin creator vault ATA
         // This is the vault authority's ATA for the quote mint
         coinCreatorVaultAta = getAssociatedTokenAddressSync(
-          toPublicKey(poolQuoteMint), // Quote mint (SOL in most cases)
+          toPublicKey(poolQuoteMint), // Quote mint (fees collected in quote token)
           vaultAuthority,
           true // allowOwnerOffCurve
         ).toBase58();
@@ -1479,49 +1481,35 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
 
     // Pumpswap constant addresses (from real transactions)
     const EVENT_AUTHORITY = toPublicKey('GS4CU59F31iL7aR2Q8zVS8DRrcRnXX1yjQ66TqNVQnaR');
-    const GLOBAL_VOLUME_ACCUMULATOR = toPublicKey('C2aFPdENg4A2HQsmrd5rTw5TaYBX5Ku887cWjbFKtZpw');
     const FEE_CONFIG = toPublicKey('5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx');
     const FEE_PROGRAM = toPublicKey('Pump9x3FRC86zy4T1N3V99RG9ejwokxgvXBfRRgxUoZ'); // Pump Fees Program
     
-    // NOTE: creatorVaultAta and creatorVaultAuthority are converted to PublicKey AFTER fallback derivation
-    // See below after the fallback block
-    
-    // Derive user volume accumulator - PDA derived from user
-    const [userVolumeAccumulator] = await (async () => {
-      const { PublicKey } = await import('@solana/web3.js');
-      return PublicKey.findProgramAddressSync(
-        [Buffer.from('user_volume_accumulator'), kp.publicKey.toBuffer()],
-        programId
-      );
-    })();
-    
-    // Build accounts array (23 accounts total)
-    // Account order per pumpswap program requirements
-    // Based on real transaction analysis and preflight error feedback
+    // Build accounts array (21 accounts total)
+    // Account order per on-chain transaction analysis
+    // Reference: https://github.com/pump-fun/pump-public-docs/blob/main/docs/PUMP_SWAP_README.md
+    // NOTE: Global Volume Accumulator and User Volume Accumulator are OPTIONAL and NOT included in standard swaps
     const keys = [
-      { pubkey: kp.publicKey, isSigner: true, isWritable: true },              // #0 User (signer, writable for fee payment)
-      { pubkey: poolId, isSigner: false, isWritable: true },                    // #1 Pool
-      { pubkey: isSellingBase ? userSourceAta : userDestAta, isSigner: false, isWritable: true }, // #2 User Base Token Account
-      { pubkey: isSellingBase ? userDestAta : userSourceAta, isSigner: false, isWritable: true }, // #3 User Quote Token Account
-      { pubkey: poolBaseVault, isSigner: false, isWritable: true },            // #4 Pool Base Token Account
-      { pubkey: poolQuoteVault, isSigner: false, isWritable: true },           // #5 Pool Quote Token Account
-      { pubkey: protocolFeeRecipientTokenAccount, isSigner: false, isWritable: true }, // #6 Protocol Fee Recipient Token Account
-      { pubkey: creatorVaultAta, isSigner: false, isWritable: true },          // #7 Coin Creator Vault ATA (writable)
-      { pubkey: GLOBAL_VOLUME_ACCUMULATOR, isSigner: false, isWritable: true }, // #8 Global Volume Accumulator (writable)
-      { pubkey: userVolumeAccumulator, isSigner: false, isWritable: true },    // #9 User Volume Accumulator (writable)
-      { pubkey: GLOBAL_CONFIG, isSigner: false, isWritable: false },           // #10 Global Config
-      { pubkey: toPublicKey(poolBaseMint), isSigner: false, isWritable: false }, // #11 Base Mint
-      { pubkey: toPublicKey(poolQuoteMint), isSigner: false, isWritable: false }, // #12 Quote Mint
-      { pubkey: protocolFeeRecipient, isSigner: false, isWritable: false },    // #13 Protocol Fee Recipient
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },        // #14 Base Token Program
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },        // #15 Quote Token Program
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // #16 System Program
-      { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, // #17 Associated Token Program
-      { pubkey: EVENT_AUTHORITY, isSigner: false, isWritable: false },         // #18 Event Authority
-      { pubkey: programId, isSigner: false, isWritable: false },               // #19 Program (pumpswap itself)
-      { pubkey: creatorVaultAuthority, isSigner: false, isWritable: false },   // #20 Coin Creator Vault Authority
-      { pubkey: FEE_CONFIG, isSigner: false, isWritable: false },              // #21 Fee Config
-      { pubkey: FEE_PROGRAM, isSigner: false, isWritable: false },             // #22 Fee Program
+      { pubkey: poolId, isSigner: false, isWritable: true },                    // #1 Pool (writable)
+      { pubkey: kp.publicKey, isSigner: true, isWritable: true },              // #2 User (signer, writable)
+      { pubkey: GLOBAL_CONFIG, isSigner: false, isWritable: true },            // #3 Global Config (writable)
+      { pubkey: toPublicKey(poolBaseMint), isSigner: false, isWritable: false }, // #4 Base Mint
+      { pubkey: toPublicKey(poolQuoteMint), isSigner: false, isWritable: false }, // #5 Quote Mint
+      { pubkey: isSellingBase ? userSourceAta : userDestAta, isSigner: false, isWritable: true }, // #6 User Base Token Account
+      { pubkey: isSellingBase ? userDestAta : userSourceAta, isSigner: false, isWritable: true }, // #7 User Quote Token Account
+      { pubkey: poolBaseVault, isSigner: false, isWritable: true },            // #8 Pool Base Token Account
+      { pubkey: poolQuoteVault, isSigner: false, isWritable: true },           // #9 Pool Quote Token Account
+      { pubkey: protocolFeeRecipient, isSigner: false, isWritable: false },    // #10 Protocol Fee Recipient
+      { pubkey: protocolFeeRecipientTokenAccount, isSigner: false, isWritable: true }, // #11 Protocol Fee Recipient Token Account
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },        // #12 Base Token Program
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },        // #13 Quote Token Program
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // #14 System Program
+      { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, // #15 Associated Token Program
+      { pubkey: EVENT_AUTHORITY, isSigner: false, isWritable: false },         // #16 Event Authority
+      { pubkey: programId, isSigner: false, isWritable: false },               // #17 Program (pumpswap)
+      { pubkey: creatorVaultAta, isSigner: false, isWritable: true },          // #18 Coin Creator Vault ATA
+      { pubkey: creatorVaultAuthority, isSigner: false, isWritable: false },   // #19 Coin Creator Vault Authority
+      { pubkey: FEE_CONFIG, isSigner: false, isWritable: false },              // #20 Fee Config
+      { pubkey: FEE_PROGRAM, isSigner: false, isWritable: false },             // #21 Fee Program
     ];
     
     // Debug logging for accounts
@@ -1542,11 +1530,9 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
           protocolFeeTokenAccount: protocolFeeRecipientTokenAccount.toBase58(),
           coinCreatorVaultAta: creatorVaultAta.toBase58().slice(0, 8) + '...',
           coinCreatorVaultAuthority: creatorVaultAuthority.toBase58().slice(0, 8) + '...',
-          globalVolumeAccumulator: GLOBAL_VOLUME_ACCUMULATOR.toBase58().slice(0, 8) + '...',
-          userVolumeAccumulator: userVolumeAccumulator.toBase58().slice(0, 8) + '...',
           feeConfig: FEE_CONFIG.toBase58().slice(0, 8) + '...',
           feeProgram: FEE_PROGRAM.toBase58().slice(0, 8) + '...',
-          fullAccountOrder: keys.map((k, i) => `${i}:${k.pubkey.toBase58().slice(0,8)}`).join(','),
+          fullAccountOrder: keys.map((k, i) => `${i+1}:${k.pubkey.toBase58().slice(0,8)}`).join(','),
         }
       });
     } catch {}
