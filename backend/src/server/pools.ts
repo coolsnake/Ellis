@@ -507,9 +507,9 @@ async function preloadPumpswapVaultCache(): Promise<void> {
           () => wsConn.getMultipleAccountsInfo(pubkeys),
           weight,
           { module: 'pools', method: 'getMultipleAccountsInfo' }
-        );
+        ) as Array<{ data: Buffer; executable: boolean; lamports: number; owner: any; rentEpoch?: number } | null>;
         
-        for (let j = 0; j < (accounts?.length || 0); j++) {
+        for (let j = 0; j < accounts.length; j++) {
           const acc = accounts[j];
           const vaultAddr = batch[j];
           
@@ -589,9 +589,9 @@ async function preloadMeteoraBalancedVaultCache(): Promise<void> {
           () => wsConn.getMultipleAccountsInfo(pubkeys),
           weight,
           { module: 'pools', method: 'getMultipleAccountsInfo' }
-        );
+        ) as Array<{ data: Buffer; executable: boolean; lamports: number; owner: any; rentEpoch?: number } | null>;
         
-        for (let j = 0; j < (accounts?.length || 0); j++) {
+        for (let j = 0; j < accounts.length; j++) {
           const acc = accounts[j];
           const vaultAddr = batch[j];
           
