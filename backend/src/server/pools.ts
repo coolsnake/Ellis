@@ -2438,16 +2438,68 @@ export function startRaydiumRefreshLoop(): void {
                     } catch {}
                     if (Number.isFinite(activeId as any) && Number.isFinite(binStep as any) && decA != null && decB != null) {
                       try {
-                        const f = Math.pow(1.0001, Number(binStep));
-                        if (f > 0) {
-                          const bPerA = Math.pow(f, Number(activeId)) * Math.pow(10, (decA as number) - (decB as number));
-                          const candidates = [
-                            bPerA > 0 ? (1 / bPerA) : 0,
-                            bPerA,
-                          ].filter(v => Number.isFinite(v) && v > 0);
-                          if (candidates.length) price_a_per_b = candidates[0];
+                        const f = Math.pow(1 + binStep / 10000, 1); // More stable: 1.0001 = 1 + 0.0001
+                        
+                        // CRITICAL: Guard against overflow by clamping activeId
+                        const clampedActiveId = Math.max(-100000, Math.min(100000, Number(activeId)));
+                        
+                        // Use log-space calculation to avoid overflow
+                        // log(price) = activeId * log(f) + (decA - decB) * log(10)
+                        const logPrice = clampedActiveId * Math.log(f) + ((decA as number) - (decB as number)) * Math.log(10);
+                        
+                        // Convert back from log space with overflow guard
+                        if (Math.abs(logPrice) < 700) { // e^700 ≈ 1e304, safe limit
+                          const bPerA = Math.exp(logPrice);
+                          
+                          if (Number.isFinite(bPerA) && bPerA > 0) {
+                            // bPerA is already B per 1 A (which is 1/A per B)
+                            // We want A per B, so take reciprocal
+                            price_a_per_b = 1 / bPerA;
+                            
+                            // Sanity check: price should be in reasonable range
+                            if (!Number.isFinite(price_a_per_b) || price_a_per_b <= 0 || price_a_per_b > 1e15) {
+                              price_a_per_b = undefined;
+                              try {
+                                logger.warn('meteora.ws.price.overflow', {
+                                  id: poolId,
+                                  activeId: Number(activeId),
+                                  clampedActiveId,
+                                  binStep,
+                                  logPrice,
+                                  bPerA,
+                                  computed: price_a_per_b,
+                                  cat: 'pools'
+                                });
+                              } catch {}
+                            }
+                          }
+                        } else {
+                          // Price is too extreme, log and skip
+                          try {
+                            logger.warn('meteora.ws.price.extreme', {
+                              id: poolId,
+                              activeId: Number(activeId),
+                              clampedActiveId,
+                              binStep,
+                              logPrice,
+                              wouldOverflow: true,
+                              cat: 'pools'
+                            });
+                          } catch {}
                         }
-                      } catch {}
+                      } catch (err: any) {
+                        try {
+                          logger.warn('meteora.ws.price.calc_failed', {
+                            id: poolId,
+                            activeId,
+                            binStep,
+                            decA,
+                            decB,
+                            error: String(err?.message || err),
+                            cat: 'pools'
+                          });
+                        } catch {}
+                      }
                     }
                   }
                   if (tokenX && tokenY) {

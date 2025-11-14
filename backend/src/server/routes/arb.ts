@@ -1810,7 +1810,17 @@ export function createArbRouter(io: SocketIOServer): Router {
       const body = req.body || {};
       let payload: any = {};
       if (body && body.plan && Array.isArray(body.plan?.hops)) {
-        payload = { ...body, plan: { ...body.plan, hops: (body.plan.hops || []).map((h: any) => ({ ...h, dex: 'raydium', variant: 'clmm' })) } };
+        // Don't forward the plan directly - extract path/poolIds/dexes to force proper resolution
+        // This ensures amount propagation works correctly for multihop
+        const plan = body.plan;
+        payload = {
+          path: plan.path,
+          hopPoolIds: (plan.hops || []).map((h: any) => String(h.poolId)),
+          dexes: (plan.hops || []).map(() => 'raydium.clmm'),
+          size: body.size,
+          sizeUsd: body.sizeUsd,
+          slippageBps: body.slippageBps,
+        };
       } else {
         const path: string[] = Array.isArray(body.path) ? body.path : [];
         const hopPoolIdsIn: string[] = Array.isArray(body.hopPoolIds) ? (body.hopPoolIds as any[]).map((x: any) => String(x)) : [];
@@ -1883,7 +1893,17 @@ export function createArbRouter(io: SocketIOServer): Router {
       const body = req.body || {};
       let payload: any = {};
       if (body && body.plan && Array.isArray(body.plan?.hops)) {
-        payload = { ...body, plan: { ...body.plan, hops: (body.plan.hops || []).map((h: any) => ({ ...h, dex: 'meteora', variant: 'dlmm' })) } };
+        // Don't forward the plan directly - extract path/poolIds/dexes to force proper resolution
+        // This ensures amount propagation works correctly for multihop
+        const plan = body.plan;
+        payload = {
+          path: plan.path,
+          hopPoolIds: (plan.hops || []).map((h: any) => String(h.poolId)),
+          dexes: (plan.hops || []).map(() => 'meteora'),
+          size: body.size,
+          sizeUsd: body.sizeUsd,
+          slippageBps: body.slippageBps,
+        };
       } else {
         const path: string[] = Array.isArray(body.path) ? body.path : [];
         const hopPoolIdsIn: string[] = Array.isArray(body.hopPoolIds) ? (body.hopPoolIds as any[]).map((x: any) => String(x)) : [];

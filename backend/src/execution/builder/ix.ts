@@ -5717,22 +5717,27 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
                 // 9-11: Serum bids/asks/event queue, 12-13: Serum coin/pc vaults, 14: Serum vault signer
                 // 15: User source token, 16: User dest token, 17: User owner
                 
+                // For old/deprecated Serum markets, Raydium uses pool ID as placeholder
+                const poolId = (poolKeys as any)?.id;
+                
                 switch (keyIdx) {
                   case 0: return TOKEN_PROGRAM_ID;
-                  case 1: return (poolKeys as any)?.id;
+                  case 1: return poolId;
                   case 2: return (poolKeys as any)?.authority;
                   case 3: return (poolKeys as any)?.openOrders;
                   case 4: return (poolKeys as any)?.targetOrders;
                   case 5: return (poolKeys as any)?.vault?.A || (poolKeys as any)?.baseVault;
                   case 6: return (poolKeys as any)?.vault?.B || (poolKeys as any)?.quoteVault;
                   case 7: return (poolKeys as any)?.marketProgramId || (poolKeys as any)?.market_program_id;
-                  case 8: return (poolKeys as any)?.marketId || (poolKeys as any)?.market_id;
-                  case 9: return (poolKeys as any)?.marketBids || (poolKeys as any)?.market_bids;
-                  case 10: return (poolKeys as any)?.marketAsks || (poolKeys as any)?.market_asks;
-                  case 11: return (poolKeys as any)?.marketEventQueue || (poolKeys as any)?.market_event_queue;
-                  case 12: return (poolKeys as any)?.marketBaseVault || (poolKeys as any)?.market_base_vault;
-                  case 13: return (poolKeys as any)?.marketQuoteVault || (poolKeys as any)?.market_quote_vault;
-                  case 14: return (poolKeys as any)?.marketAuthority || (poolKeys as any)?.market_authority;
+                  // For Serum market accounts (8-14), PRIMARY: use pool ID (works for old markets)
+                  // FALLBACK: use actual Serum addresses if pool ID doesn't work
+                  case 8: return poolId || (poolKeys as any)?.marketId || (poolKeys as any)?.market_id;
+                  case 9: return poolId || (poolKeys as any)?.marketBids || (poolKeys as any)?.market_bids;
+                  case 10: return poolId || (poolKeys as any)?.marketAsks || (poolKeys as any)?.market_asks;
+                  case 11: return poolId || (poolKeys as any)?.marketEventQueue || (poolKeys as any)?.market_event_queue;
+                  case 12: return poolId || (poolKeys as any)?.marketBaseVault || (poolKeys as any)?.market_base_vault;
+                  case 13: return poolId || (poolKeys as any)?.marketQuoteVault || (poolKeys as any)?.market_quote_vault;
+                  case 14: return poolId || (poolKeys as any)?.marketAuthority || (poolKeys as any)?.market_authority;
                   case 15: return toPublicKey(hop.userSourceAta);
                   case 16: return toPublicKey(hop.userDestAta);
                   case 17: return kp.publicKey;

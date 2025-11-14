@@ -11,6 +11,8 @@ The second hop in multi-hop swaps was not using the exact output from the first 
 This issue occurred on both Raydium CLMM and Meteora CLMM pools.
 
 ## Root Cause
+
+### Problem 1: Main Execute Endpoint
 In `backend/src/server/routes/arb.ts`, the `/arb/execute` endpoint had this logic:
 
 ```typescript
@@ -22,6 +24,19 @@ This meant:
 - The amount propagation logic in `resolveDirectPlan` was **bypassed**
 - Each hop retained whatever `amountInRaw` value was in the original request
 - The second hop never received the exact output from the first hop
+
+### Problem 2: Convenience Endpoints Forwarding Plans
+The convenience endpoints (`/arb/simulate-send/meteora`, `/arb/simulate-send/raydium-clmm`, etc.) were forwarding the entire plan object with pre-set amounts:
+
+```typescript
+if (body && body.plan && Array.isArray(body.plan?.hops)) {
+  payload = { ...body, plan: { ...body.plan, hops: (body.plan.hops || []).map((h: any) => ({ ...h, dex: 'meteora', variant: 'dlmm' })) } };
+}
+```
+
+This meant:
+- When a plan was provided to a convenience endpoint, it was forwarded with all the original hop data including `amountInRaw` values
+- Even though the main endpoint would try to resolve it, the pre-set amounts would interfere with proper propagation
 
 ## Solution
 Changed the `/arb/execute` endpoint to work like the `/arb/simulate` endpoint:
@@ -113,16 +128,40 @@ if (i > 0 && prevHop?.quotedOutputRaw && prevHop.quotedOutputRaw > 0n) {
 This acts as a final safety net to catch and correct any amount mismatches before building instructions.
 
 ## Files Modified
-- `backend/src/server/routes/arb.ts` - Fixed execute endpoint to always resolve plans
+- `backend/src/server/routes/arb.ts`:
+  - Fixed `/arb/execute` endpoint to always resolve plans
+  - Fixed `/arb/simulate-send` endpoint (already had the pattern, but verified)
+  - Fixed `/arb/simulate-send/meteora` convenience endpoint to not forward plans
+  - Fixed `/arb/simulate-send/raydium-clmm` convenience endpoint to not forward plans
 
-## Testing
-After this fix, multi-hop swaps should:
+## How to Apply the Fix
+
+### Backend
+1. The TypeScript code has been compiled successfully
+2. **Restart the backend server** for the changes to take effect:
+   ```bash
+   # Stop the current backend process
+   # Then restart it
+   cd backend
+   npm start
+   ```
+
+### Testing
+After restarting the backend, multi-hop swaps should:
 1. Quote the first hop with the user-specified amount
 2. Use the exact output from hop 1 as the input for hop 2
 3. Use the exact output from hop 2 as the input for hop 3 (if applicable)
 4. And so on for any number of hops
 
 The transaction simulation should show the correct amounts propagating through each hop without any discrepancies.
+
+### Test Cases
+You can test with the terminal commands:
+- `arb multihop sim meteora 0.01 50` - Test Meteora DLMM 2-hop
+- `arb multihop sim raydium-clmm 0.01 50` - Test Raydium CLMM 2-hop
+- `arb multihop sim ray+orca 0.01 50` - Test 2-DEX multihop
+
+The second hop should now use the exact output from the first hop (e.g., 1.42 USDC) instead of a default amount (e.g., 10 USDC).
 
 ## Related Files
 - `backend/src/execution/resolver/index.ts` - Contains the amount propagation logic
