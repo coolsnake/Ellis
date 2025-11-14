@@ -5714,36 +5714,34 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
             const buildKeyFromPoolKeys = (keyIdx: number): PublicKey | null => {
               try {
                 // Map key indices to poolKeys fields based on Raydium AMM instruction layout
-                // Standard Raydium AMM swap instruction has 18 accounts in this order:
-                // 0: Token program, 1: AMM ID, 2: AMM authority, 3: AMM open orders, 4: AMM target orders
-                // 5: AMM coin vault, 6: AMM pc vault, 7: Serum program, 8: Serum market
-                // 9-11: Serum bids/asks/event queue, 12-13: Serum coin/pc vaults, 14: Serum vault signer
-                // 15: User source token, 16: User dest token, 17: User owner
+                // SIMPLIFIED 17-account layout (for old Serum pools):
+                // 0: Token program, 1: AMM ID, 2: AMM authority, 3: AMM open orders (POOL ID)
+                // 4: Pool coin vault, 5: Pool pc vault, 6: Serum program (POOL ID)
+                // 7-13: Serum market accounts (ALL POOL ID), 14: User source, 15: User dest, 16: User owner
                 
-                // For old/deprecated Serum markets, Raydium uses pool ID as placeholder
+                // For old/deprecated Serum markets, Raydium uses pool ID as placeholder for most accounts
                 const poolId = (poolKeys as any)?.id;
+                const authority = (poolKeys as any)?.authority;
                 
                 switch (keyIdx) {
                   case 0: return TOKEN_PROGRAM_ID;
-                  case 1: return poolId;
-                  case 2: return (poolKeys as any)?.authority;
-                  case 3: return (poolKeys as any)?.openOrders;
-                  case 4: return (poolKeys as any)?.targetOrders;
-                  case 5: return (poolKeys as any)?.vault?.A || (poolKeys as any)?.baseVault;
-                  case 6: return (poolKeys as any)?.vault?.B || (poolKeys as any)?.quoteVault;
-                  case 7: return (poolKeys as any)?.marketProgramId || (poolKeys as any)?.market_program_id;
-                  // For Serum market accounts (8-14), PRIMARY: use pool ID (works for old markets)
-                  // FALLBACK: use actual Serum addresses if pool ID doesn't work
-                  case 8: return poolId || (poolKeys as any)?.marketId || (poolKeys as any)?.market_id;
-                  case 9: return poolId || (poolKeys as any)?.marketBids || (poolKeys as any)?.market_bids;
-                  case 10: return poolId || (poolKeys as any)?.marketAsks || (poolKeys as any)?.market_asks;
-                  case 11: return poolId || (poolKeys as any)?.marketEventQueue || (poolKeys as any)?.market_event_queue;
-                  case 12: return poolId || (poolKeys as any)?.marketBaseVault || (poolKeys as any)?.market_base_vault;
-                  case 13: return poolId || (poolKeys as any)?.marketQuoteVault || (poolKeys as any)?.market_quote_vault;
-                  case 14: return poolId || (poolKeys as any)?.marketAuthority || (poolKeys as any)?.market_authority;
-                  case 15: return toPublicKey(hop.userSourceAta);
-                  case 16: return toPublicKey(hop.userDestAta);
-                  case 17: return kp.publicKey;
+                  case 1: return poolId; // AMM ID
+                  case 2: return authority; // AMM Authority (must be V4 authority, not upgrade authority!)
+                  case 3: return poolId; // AMM open orders - use pool ID for old markets
+                  case 4: return (poolKeys as any)?.vault?.A || (poolKeys as any)?.baseVault; // Pool coin vault
+                  case 5: return (poolKeys as any)?.vault?.B || (poolKeys as any)?.quoteVault; // Pool pc vault
+                  case 6: return poolId; // Serum program - use pool ID
+                  // For Serum market accounts (7-13), use pool ID as placeholder
+                  case 7: return poolId; // Serum market
+                  case 8: return poolId; // Serum bids
+                  case 9: return poolId; // Serum asks
+                  case 10: return poolId; // Serum event queue
+                  case 11: return poolId; // Serum coin vault
+                  case 12: return poolId; // Serum pc vault
+                  case 13: return poolId; // Serum vault signer
+                  case 14: return toPublicKey(hop.userSourceAta);
+                  case 15: return toPublicKey(hop.userDestAta);
+                  case 16: return kp.publicKey;
                   default: return null;
                 }
               } catch {
@@ -5754,33 +5752,30 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
             // Helper to determine correct isWritable flag for Raydium AMM instruction
             // The SDK sometimes provides incorrect writable flags
             const getCorrectWritableFlag = (keyIdx: number, sdkWritable: boolean): boolean => {
-              // Based on successful Raydium AMM transactions:
-              // Writable accounts: 1 (AMM ID), 3 (open orders), 4 (target orders), 
-              //                    5 (coin vault), 6 (pc vault), 8 (market), 
-              //                    9 (bids), 10 (asks), 11 (event queue),
-              //                    12 (market base vault), 13 (market quote vault), 
-              //                    14 (market authority/vault signer),
-              //                    15 (user source), 16 (user dest), 17 (user owner)
-              // Readonly accounts: 0 (token program), 2 (AMM authority), 7 (serum program)
+              // Based on successful Raydium AMM transactions (17-account simplified layout):
+              // Writable accounts: 1 (AMM ID), 3 (open orders/pool ID), 
+              //                    4 (coin vault), 5 (pc vault), 
+              //                    6 (serum program/pool ID), 7-13 (serum accounts/pool ID),
+              //                    14 (user source), 15 (user dest), 16 (user owner)
+              // Readonly accounts: 0 (token program), 2 (AMM authority)
               switch (keyIdx) {
                 case 0: return false;  // Token program - readonly
                 case 1: return true;   // AMM ID - writable
                 case 2: return false;  // AMM authority - readonly
-                case 3: return true;   // AMM open orders - writable
-                case 4: return true;   // AMM target orders - writable
-                case 5: return true;   // Pool coin vault - writable
-                case 6: return true;   // Pool pc vault - writable
-                case 7: return false;  // Serum program - readonly
-                case 8: return true;   // Serum market - writable
-                case 9: return true;   // Serum bids - writable
-                case 10: return true;  // Serum asks - writable
-                case 11: return true;  // Serum event queue - writable
-                case 12: return true;  // Serum base vault - writable
-                case 13: return true;  // Serum quote vault - writable
-                case 14: return true;  // Serum vault signer (market authority) - writable (CRITICAL!)
-                case 15: return true;  // User source token - writable
-                case 16: return true;  // User dest token - writable
-                case 17: return true;  // User owner - writable
+                case 3: return true;   // AMM open orders (pool ID) - writable
+                case 4: return true;   // Pool coin vault - writable
+                case 5: return true;   // Pool pc vault - writable
+                case 6: return true;   // Serum program (pool ID) - writable
+                case 7: return true;   // Serum market (pool ID) - writable
+                case 8: return true;   // Serum bids (pool ID) - writable
+                case 9: return true;   // Serum asks (pool ID) - writable
+                case 10: return true;  // Serum event queue (pool ID) - writable
+                case 11: return true;  // Serum coin vault (pool ID) - writable
+                case 12: return true;  // Serum pc vault (pool ID) - writable
+                case 13: return true;  // Serum vault signer (pool ID) - writable
+                case 14: return true;  // User source token - writable
+                case 15: return true;  // User dest token - writable
+                case 16: return true;  // User owner - writable
                 default: return sdkWritable; // Fallback to SDK value for unknown indices
               }
             };
@@ -6047,18 +6042,54 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
               }
             });
             
-            const filteredKeys = newKeys.filter((k): k is { pubkey: PublicKey; isSigner: boolean; isWritable: boolean } => k !== null);
+            // CRITICAL: For old Serum pools, manually build 17-account instruction (no target orders)
+            // This matches the successful transaction pattern where pool ID is used as placeholder
+            const manualKeys: { pubkey: PublicKey; isSigner: boolean; isWritable: boolean }[] = [];
+            
+            // Log the authority we're using (critical for debugging)
+            try {
+              const authority = (poolKeys as any)?.authority;
+              logger.info('raydium.amm.using_authority', {
+                cat: 'tx',
+                ctx: {
+                  pool: hop.poolId.slice(0, 8) + '...',
+                  authority: authority ? (typeof authority.toBase58 === 'function' ? authority.toBase58() : String(authority)) : 'MISSING',
+                  hasOwner: !!((poolKeys as any)?.owner),
+                  hasAuthority: !!authority
+                }
+              });
+            } catch {}
+            
+            // Build exactly 17 accounts in order
+            for (let keyIdx = 0; keyIdx < 17; keyIdx++) {
+              const pk = buildKeyFromPoolKeys(keyIdx);
+              if (!pk) {
+                try {
+                  logger.error('raydium.amm.missing_key', {
+                    cat: 'tx',
+                    ctx: { keyIdx, pool: hop.poolId }
+                  });
+                } catch {}
+                throw new Error(`Missing required key at index ${keyIdx}`);
+              }
+              
+              manualKeys.push({
+                pubkey: normalizePublicKey(pk),
+                isSigner: keyIdx === 16, // Only user owner is signer
+                isWritable: getCorrectWritableFlag(keyIdx, false)
+              });
+            }
             
             out[i] = new TransactionInstruction({
               programId: ammProgramId,
-              keys: filteredKeys,
+              keys: manualKeys,
               data: Buffer.isBuffer(ix.data) ? ix.data : Buffer.from(ix.data || [])
             });
             
             try {
               logger.info('raydium.amm.ix.rebuild.ok', {
                 cat: 'tx',
-                ctx: { pool: hop.poolId, ixIndex: i, keyCount: filteredKeys.length }
+                ctx: { pool: hop.poolId, ixIndex: i, keyCount: manualKeys.length }
               });
             } catch {}
           } catch (rebuildErr) {

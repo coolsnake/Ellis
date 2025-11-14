@@ -156,6 +156,19 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
       if (minimalMathAllowed && ray && hop.variant === 'clmm') {
         try {
           const { logger } = await import('../../utils/logger.js');
+          const isRev = /-rev$/.test(hop.poolId || '');
+          const baseId = hop.poolId.replace(/-rev$/, '');
+          const pool = (ray.clmm || []).find((x: any) => String(x?.id || '') === baseId);
+          
+          // Log ALL fields from the found pool to see what we actually have
+          const poolFields = pool ? Object.keys(pool).reduce((acc: any, key) => {
+            const val = (pool as any)[key];
+            if (val !== undefined && val !== null) {
+              acc[key] = String(val);
+            }
+            return acc;
+          }, {}) : null;
+          
           logger.info('raydium.clmm.quote.attempt', {
             cat: 'tx',
             ctx: {
@@ -167,6 +180,8 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
               outputDecimals: hop.outputDecimals,
               hasRayData: !!ray,
               clmmPoolCount: ray?.clmm?.length || 0,
+              poolFound: !!pool,
+              poolFields: poolFields, // Log ALL pool fields
             }
           });
         } catch {}
@@ -337,6 +352,16 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
         
         try {
           const { logger } = await import('../../utils/logger.js');
+          
+          // Log ALL fields from the found pool to see what we actually have
+          const poolFields = p ? Object.keys(p).reduce((acc: any, key) => {
+            const val = (p as any)[key];
+            if (val !== undefined && val !== null) {
+              acc[key] = String(val);
+            }
+            return acc;
+          }, {}) : null;
+          
           logger.info('meteora.dlmm.quote.attempt', {
             cat: 'tx',
             ctx: {
@@ -351,6 +376,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
               hasMetData: !!met,
               clmmPoolCount: met?.clmm?.length || 0,
               poolFound: !!p,
+              poolFields: poolFields, // Log ALL pool fields
             }
           });
         } catch {}
@@ -717,7 +743,24 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
 
   const scaleIn = decimalScale(decInCandidate);
   const scaleOut = decimalScale(decOutCandidate);
-  if (!scaleIn || !scaleOut) return 0n;
+  
+  if (!scaleIn || !scaleOut) {
+    try {
+      import('../../utils/logger.js').then(({ logger }) => {
+        logger.warn('raydium.clmm.quote.invalid_decimal_scale', {
+          cat: 'tx',
+          ctx: {
+            poolId: hop.poolId,
+            decInCandidate,
+            decOutCandidate,
+            scaleIn: scaleIn?.toString() || 'null',
+            scaleOut: scaleOut?.toString() || 'null',
+          }
+        });
+      });
+    } catch {}
+    return 0n;
+  }
 
   const feeBpsBig = BigInt(clampFeeBps((pool as any)?.fee_bps ?? (hop as any)?.fee_bps));
   const feeNumerator = 10_000n - feeBpsBig;
@@ -725,9 +768,50 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
 
   const numerator = amountInRaw * priceDenominator * scaleOut * feeNumerator;
   const denominator = scaleIn * priceNumerator * feeDenominator;
-  if (!(denominator > 0n)) return 0n;
+  
+  if (!(denominator > 0n)) {
+    try {
+      import('../../utils/logger.js').then(({ logger }) => {
+        logger.warn('raydium.clmm.quote.zero_denominator', {
+          cat: 'tx',
+          ctx: {
+            poolId: hop.poolId,
+            scaleIn: scaleIn.toString(),
+            priceNumerator: priceNumerator.toString(),
+            feeDenominator: feeDenominator.toString(),
+            denominator: denominator.toString(),
+          }
+        });
+      });
+    } catch {}
+    return 0n;
+  }
 
   const out = numerator / denominator;
+  
+  try {
+    import('../../utils/logger.js').then(({ logger }) => {
+      logger.info('raydium.clmm.quote.calculated', {
+        cat: 'tx',
+        ctx: {
+          poolId: hop.poolId,
+          amountInRaw: amountInRaw.toString(),
+          out: out.toString(),
+          success: out > 0n,
+          calculation: {
+            priceNumerator: priceNumerator.toString(),
+            priceDenominator: priceDenominator.toString(),
+            scaleIn: scaleIn.toString(),
+            scaleOut: scaleOut.toString(),
+            feeBpsBig: feeBpsBig.toString(),
+            decInCandidate,
+            decOutCandidate,
+          }
+        }
+      });
+    });
+  } catch {}
+  
   return out > 0n ? out : 0n;
 }
 
