@@ -910,6 +910,9 @@ export interface RefreshSourcesOptions {
 }
 
 export async function refreshAllSources(force = true, subscribe = true, opts?: RefreshSourcesOptions): Promise<{ raydium: PoolsPayload; orca: PoolsPayload; meteora: PoolsPayload; meteora_balanced: PoolsPayload; pumpswap: PoolsPayload }> {
+  // Track last call time to prevent excessive refreshes
+  (refreshAllSources as any).__lastCallTime = Date.now();
+  
   // Mark that we're in a refresh cycle - individual fetchers should skip incremental graph updates
   // until all filtering is complete to avoid building huge unfiltered snapshots
   (refreshAllSources as any).__inProgress = true;
@@ -1606,11 +1609,26 @@ export function startRaydiumRefreshLoop(): void {
   // Kick immediately once activated so data is available without waiting
   // Kick immediately once, but respect min-force gap for subsequent calls
   if (!suppressInitialOnce) {
-    // Use refreshAllSources to ensure all filters (minPoolsPerPair, TVL, universe) are applied consistently
-    // This respects DEX source control configuration internally
-    try { 
-      refreshAllSources(true).catch(() => {}); 
-    } catch {}
+    // Only call refreshAllSources if it wasn't just called by subscribe flow
+    // Check if a refresh happened in the last 5 seconds to prevent double refresh
+    const lastRefresh = (refreshAllSources as any).__lastCallTime || 0;
+    const now = Date.now();
+    if (now - lastRefresh > 5000) {
+      (refreshAllSources as any).__lastCallTime = now;
+      // Use refreshAllSources to ensure all filters (minPoolsPerPair, TVL, universe) are applied consistently
+      // This respects DEX source control configuration internally
+      try { 
+        refreshAllSources(true).catch(() => {}); 
+      } catch {}
+    } else {
+      try {
+        logger.info('pools.refresh.initial.skipped', { 
+          reason: 'recent_refresh', 
+          lastRefreshMs: now - lastRefresh,
+          cat: 'pools' 
+        });
+      } catch {}
+    }
   }
 
   // Optional: subscribe to on-chain account changes to push updates into caches (auto-enabled)
@@ -2657,14 +2675,26 @@ export function startRaydiumRefreshLoop(): void {
                   }); 
                 } catch {}
                 
-                // Fallback to HTTP refresh
-                const minGap = Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000);
-                const last = (getPumpswapPoolsCached as any).__lastForceAt || 0;
-                const nowMs = Date.now();
-                if (nowMs - last >= minGap) {
-                  (getPumpswapPoolsCached as any).__lastForceAt = nowMs;
-                  try { logger.debug('pumpswap.ws pool.refresh_trigger', { id: pk58, cat: 'pools' }); } catch {}
-                  getPumpswapPoolsCached(true).catch(() => {});
+                // Fallback to HTTP refresh - only if explicitly enabled in config
+                // This prevents excessive full refreshes when WS decode fails
+                const enableWsFallbackRefresh = ((CONFIG as any)?.pumpswap?.enableWsFallbackRefresh === true);
+                if (enableWsFallbackRefresh) {
+                  const minGap = Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000);
+                  const last = (getPumpswapPoolsCached as any).__lastForceAt || 0;
+                  const nowMs = Date.now();
+                  if (nowMs - last >= minGap) {
+                    (getPumpswapPoolsCached as any).__lastForceAt = nowMs;
+                    try { logger.debug('pumpswap.ws pool.refresh_trigger', { id: pk58, cat: 'pools' }); } catch {}
+                    getPumpswapPoolsCached(true).catch(() => {});
+                  }
+                } else {
+                  try { 
+                    logger.debug('pumpswap.ws.fallback_refresh.disabled', { 
+                      id: pk58.slice(0, 8), 
+                      note: 'set_enableWsFallbackRefresh_true_to_enable',
+                      cat: 'pools' 
+                    }); 
+                  } catch {}
                 }
               }
               if (updated) {
