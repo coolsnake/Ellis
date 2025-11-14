@@ -881,6 +881,7 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
   // Fetch vault account data via RPC
   const web3 = await import('@solana/web3.js');
   const conn = new web3.Connection(CONFIG.rpcUrl, CONFIG.system.txCommitment as any);
+  const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
   
   const batchSize = 100;
   const vaultData: Map<string, { amount: bigint }> = new Map();
@@ -895,9 +896,13 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
     const pubkeys = batch.map(addr => new PublicKey(addr));
     
     try {
-      // Simple delay for rate limiting
-      await new Promise(r => setTimeout(r, 50));
-      const accounts = await conn.getMultipleAccountsInfo(pubkeys);
+      // Use RPC limiter for rate limiting (replaces simple delay)
+      const weight = Math.max(1, Math.ceil(pubkeys.length / 100));
+      const accounts = await withRpcLimit(
+        () => conn.getMultipleAccountsInfo(pubkeys),
+        weight,
+        { module: 'pools', method: 'getMultipleAccountsInfo' }
+      );
       
       for (let j = 0; j < accounts.length; j++) {
         const account = accounts[j];
@@ -945,8 +950,12 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
       const pubkeys = batch.map(addr => new PublicKey(addr));
       
       try {
-        await new Promise(r => setTimeout(r, 50));
-        const accounts = await conn.getMultipleAccountsInfo(pubkeys);
+        const weight = Math.max(1, Math.ceil(pubkeys.length / 100));
+        const accounts = await withRpcLimit(
+          () => conn.getMultipleAccountsInfo(pubkeys),
+          weight,
+          { module: 'pools', method: 'getMultipleAccountsInfo' }
+        );
         
         for (let j = 0; j < accounts.length; j++) {
           const account = accounts[j];
@@ -1004,8 +1013,12 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
       const pubkeys = batch.map(addr => new PublicKey(addr));
       
       try {
-        await new Promise(r => setTimeout(r, 50));
-        const accounts = await conn.getMultipleAccountsInfo(pubkeys);
+        const weight = Math.max(1, Math.ceil(pubkeys.length / 100));
+        const accounts = await withRpcLimit(
+          () => conn.getMultipleAccountsInfo(pubkeys),
+          weight,
+          { module: 'pools', method: 'getMultipleAccountsInfo' }
+        );
         
         for (let j = 0; j < accounts.length; j++) {
           const account = accounts[j];

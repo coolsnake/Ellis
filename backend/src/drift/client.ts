@@ -485,11 +485,17 @@ export class DriftService {
               if (stage >= 2) {
                 try { 
                   await waitReady(); 
-                  const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-                  await withRpcLimit(
-                    () => (this.sharedUserMap as any)?.subscribe?.(),
-                    1,
-                    { module: 'drift', method: 'accountSubscribe' }
+                  const { withRpcLimit, withDebounce } = await import('../utils/rpcLimiter.js');
+                  await withDebounce(
+                    'drift:userMap:subscribe',
+                    async () => {
+                      return await withRpcLimit(
+                        () => (this.sharedUserMap as any)?.subscribe?.(),
+                        1,
+                        { module: 'drift', method: 'accountSubscribe' }
+                      );
+                    },
+                    200
                   );
                 } catch {}
               }
@@ -499,11 +505,17 @@ export class DriftService {
                   const has = dl && typeof dl.getDLOB === 'function' ? !!dl.getDLOB() : true;
                   if (dl && typeof dl.subscribe === 'function' && !has) { 
                     await waitReady(); 
-                    const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-                    await withRpcLimit(
-                      () => dl.subscribe(),
-                      1,
-                      { module: 'drift', method: 'accountSubscribe' }
+                    const { withRpcLimit, withDebounce } = await import('../utils/rpcLimiter.js');
+                    await withDebounce(
+                      'drift:dlobSubscriber:subscribe',
+                      async () => {
+                        return await withRpcLimit(
+                          () => dl.subscribe(),
+                          1,
+                          { module: 'drift', method: 'accountSubscribe' }
+                        );
+                      },
+                      200
                     );
                   }
                 } catch {}
@@ -545,22 +557,34 @@ export class DriftService {
       }
       try { 
         await waitReady();
-        const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-        await withRpcLimit(
-          () => this.sharedUserMap?.subscribe?.(),
-          1,
-          { module: 'drift', method: 'accountSubscribe' }
+        const { withRpcLimit, withDebounce } = await import('../utils/rpcLimiter.js');
+        await withDebounce(
+          'drift:userMap:subscribe:initial',
+          async () => {
+            return await withRpcLimit(
+              () => this.sharedUserMap?.subscribe?.(),
+              1,
+              { module: 'drift', method: 'accountSubscribe' }
+            );
+          },
+          200
         );
         await sleep(spacing); 
       } catch {}
     } else {
       try { 
         await waitReady();
-        const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-        await withRpcLimit(
-          () => (this.sharedUserMap as any)?.subscribe?.(),
-          1,
-          { module: 'drift', method: 'accountSubscribe' }
+        const { withRpcLimit, withDebounce } = await import('../utils/rpcLimiter.js');
+        await withDebounce(
+          'drift:userMap:subscribe:resubscribe',
+          async () => {
+            return await withRpcLimit(
+              () => (this.sharedUserMap as any)?.subscribe?.(),
+              1,
+              { module: 'drift', method: 'accountSubscribe' }
+            );
+          },
+          200
         );
         await sleep(spacing); 
       } catch {}
@@ -605,11 +629,17 @@ export class DriftService {
           userMapSubscriptionConfig: (() => { try { return drift.userAccountSubscriptionConfig || undefined; } catch { return undefined; } })(),
         });
         await waitReady();
-        const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-        await withRpcLimit(
-          () => this.sharedDlobSubscriber.subscribe(),
-          1,
-          { module: 'drift', method: 'accountSubscribe' }
+        const { withRpcLimit, withDebounce } = await import('../utils/rpcLimiter.js');
+        await withDebounce(
+          'drift:dlobSubscriber:subscribe:main',
+          async () => {
+            return await withRpcLimit(
+              () => this.sharedDlobSubscriber.subscribe(),
+              1,
+              { module: 'drift', method: 'accountSubscribe' }
+            );
+          },
+          200
         );
         await sleep(spacing);
       } catch {}
@@ -622,11 +652,17 @@ export class DriftService {
           const has = typeof dl.getDLOB === 'function' ? !!dl.getDLOB() : true;
           if (!has) { 
             await waitReady();
-            const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-            await withRpcLimit(
-              () => dl.subscribe(),
-              1,
-              { module: 'drift', method: 'accountSubscribe' }
+            const { withRpcLimit, withDebounce } = await import('../utils/rpcLimiter.js');
+            await withDebounce(
+              'drift:dlobSubscriber:subscribe:resub',
+              async () => {
+                return await withRpcLimit(
+                  () => dl.subscribe(),
+                  1,
+                  { module: 'drift', method: 'accountSubscribe' }
+                );
+              },
+              200
             );
             await sleep(spacing); 
           }

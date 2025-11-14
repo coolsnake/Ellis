@@ -37,6 +37,7 @@ function detectDexesFromPrograms(programIds: string[]): Array<'raydium' | 'orca'
 /**
  * Get blockhash with caching to reduce RPC calls
  * Blockhashes are valid for ~150 seconds, we cache for 30 seconds for safety
+ * CRITICAL: Do NOT rate limit blockhash fetching - it's part of transaction execution
  */
 async function getCachedBlockhash(connection: Connection): Promise<{ blockhash: string; lastValidBlockHeight: number }> {
   const now = Date.now();
@@ -55,12 +56,8 @@ async function getCachedBlockhash(connection: Connection): Promise<{ blockhash: 
     return { blockhash: cachedBlockhash.blockhash, lastValidBlockHeight: cachedBlockhash.lastValidBlockHeight };
   }
   
-  // Fetch fresh blockhash
-  const result = await withRpcLimit(
-    () => connection.getLatestBlockhash('finalized'),
-    1,
-    { module: 'execution', method: 'getLatestBlockhash' }
-  );
+  // Fetch fresh blockhash WITHOUT rate limiting - this is transaction-critical
+  const result = await connection.getLatestBlockhash('finalized');
   cachedBlockhash = { ...result, fetchedAt: now };
   
   try {
@@ -69,6 +66,7 @@ async function getCachedBlockhash(connection: Connection): Promise<{ blockhash: 
       ctx: {
         blockhash: result.blockhash.slice(0, 8),
         lastValidBlockHeight: result.lastValidBlockHeight,
+        note: 'bypassed_rate_limit_for_critical_tx',
       },
     });
   } catch {}
@@ -1038,6 +1036,22 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
     tx = new VersionedTransaction(msg);
     tx.sign([kp]);
     wireBase64 = Buffer.from(tx.serialize()).toString('base64');
+    
+    // Log successful serialization for send
+    try {
+      const rawSizeBytes = tx.serialize().length;
+      const base64SizeBytes = wireBase64.length;
+      logger.info('tx.send.serialized', {
+        cat: 'tx',
+        ctx: {
+          txId,
+          rawSizeBytes,
+          base64SizeBytes,
+          ixCount: realIxs.length,
+          altCount: lookupTables.length,
+        } as any,
+      });
+    } catch {}
   } catch (error: any) {
     const errorMsg = String(error?.message || error);
     // Check if it's a size/encoding-related error
@@ -1063,20 +1077,40 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
     // Re-throw other errors
     throw error;
   }
-  const sig = await withRpcLimit(
-    () => connection.sendTransaction(tx, { skipPreflight: true, preflightCommitment: 'confirmed' }),
-    1,
-    { module: 'execution', method: 'sendTransaction' }
-  );
+  
+  // Log before RPC send attempt
+  try {
+    logger.info('tx.send.rpc_call_start', {
+      cat: 'tx',
+      ctx: {
+        txId,
+        sizeBytes: wireBase64.length,
+        skipPreflight: true,
+        note: 'bypassing_rate_limit_for_critical_tx_send',
+      } as any,
+    });
+  } catch {}
+  
+  // CRITICAL: DO NOT rate limit transaction sends - they are time-sensitive
+  // Rate limiting here can cause stale blockhashes, missed opportunities, and failures
+  const sig = await connection.sendTransaction(tx, { skipPreflight: true, preflightCommitment: 'confirmed' });
+  
+  // Log after successful RPC send
+  try {
+    logger.info('tx.send.rpc_call_success', {
+      cat: 'tx',
+      ctx: {
+        txId,
+        signature: sig,
+      } as any,
+    });
+  } catch {}
   
   // Try to confirm, but don't fail if confirmation times out or errors
   // The transaction was successfully sent, so we return the signature regardless
+  // CRITICAL: DO NOT rate limit confirmation either - it's part of transaction execution
   try {
-    await withRpcLimit(
-      () => connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed'),
-      1,
-      { module: 'execution', method: 'confirmTransaction' }
-    );
+    await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed');
   } catch (confirmError: any) {
     // Log but don't fail - transaction was sent successfully
     try {

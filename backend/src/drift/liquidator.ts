@@ -732,13 +732,19 @@ export class DriftLiquidator {
           if (conn) await waitUntilWsReady(conn, 'liquidator.enqueueIfUnhealthy');
           
           // Import RPC limiter for tracking
-          const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+          const { withRpcLimit, withDebounce } = await import('../utils/rpcLimiter.js');
           
-          // Wrap subscribe call with RPC tracking
-          await withRpcLimit(
-            () => (user as any).subscribe(),
-            1,
-            { module: 'drift', method: 'accountSubscribe' }
+          // Wrap subscribe call with debouncing and RPC tracking
+          await withDebounce(
+            `liquidator:user:subscribe:${pkStr}`,
+            async () => {
+              return await withRpcLimit(
+                () => (user as any).subscribe(),
+                1,
+                { module: 'drift', method: 'accountSubscribe' }
+              );
+            },
+            200
           );
           
           this.subscribedUsers.add(String(pkStr));
@@ -2007,14 +2013,20 @@ export class DriftLiquidator {
               const conn = (svc as any)?.connection;
               if (conn) await waitUntilWsReady(conn, 'liquidator.probeQueue');
               
-              // Import RPC limiter for tracking
-              const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+              // Import RPC limiter and debouncing
+              const { withRpcLimit, withDebounce } = await import('../utils/rpcLimiter.js');
               
-              // Wrap subscribe call with RPC tracking
-              await withRpcLimit(
-                () => (user as any).subscribe(),
-                1,
-                { module: 'drift', method: 'accountSubscribe' }
+              // Wrap subscribe call with debouncing and RPC tracking
+              await withDebounce(
+                `liquidator:probeQueue:user:subscribe:${key}`,
+                async () => {
+                  return await withRpcLimit(
+                    () => (user as any).subscribe(),
+                    1,
+                    { module: 'drift', method: 'accountSubscribe' }
+                  );
+                },
+                200
               );
               
               this.subscribedUsers.add(key);

@@ -1566,61 +1566,58 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
           });
         } catch {}
       } else {
-        // Stablecoin pair (SOL/USDC) - use pool creator directly or bonding curve
-        // For SOL/USDC pools, we'll derive using the pool's creator if it's valid,
-        // otherwise use a placeholder that matches expected addresses
+        // Stablecoin pair (SOL/USDC) - use pool creator directly
+        // For SOL/USDC pools, if creator is System Program, use System Program for creator vaults
+        // This means no creator fees are configured for this pool
         const PUMP_PROGRAM_ID = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
         
-        let poolCreatorToUse = creator;
         if (creator === SYSTEM_PROGRAM_ID) {
-          // No specific creator - use a deterministic PDA based on the pool ID
-          // This ensures consistent addresses for the same pool
-          const poolPk = toPublicKey(hop.poolId.replace(/-rev$/, ''));
-          const [poolBasedPda] = PublicKey.findProgramAddressSync(
-            [Buffer.from('pool-creator'), poolPk.toBuffer()],
-            PUMP_PROGRAM_ID
-          );
-          poolCreatorToUse = poolBasedPda.toBase58();
+          // No creator configured - use System Program for creator vault accounts
+          // This indicates no creator fees for this stablecoin pair pool
+          coinCreatorVaultAuthority = SYSTEM_PROGRAM_ID;
+          coinCreatorVaultAta = SYSTEM_PROGRAM_ID;
           
           try {
-            logger.info('pumpswap.stablecoin_using_pool_pda', {
+            logger.info('pumpswap.stablecoin.no_creator_fees', {
               cat: 'tx',
               ctx: {
                 poolId: hop.poolId.slice(0, 12),
-                derivedCreator: poolCreatorToUse.slice(0, 12),
+                note: 'using_system_program_for_creator_vaults',
+                coinCreatorVaultAuthority: SYSTEM_PROGRAM_ID.slice(0, 12),
+                coinCreatorVaultAta: SYSTEM_PROGRAM_ID.slice(0, 12),
+              }
+            });
+          } catch {}
+        } else {
+          // Pool has a valid creator - derive creator vault accounts normally
+          const creatorPubkey = toPublicKey(creator);
+          const [vaultAuthority] = PublicKey.findProgramAddressSync(
+            [
+              Buffer.from('creator-vault-authority'),
+              creatorPubkey.toBuffer(),
+            ],
+            PUMP_PROGRAM_ID
+          );
+          coinCreatorVaultAuthority = vaultAuthority.toBase58();
+          
+          coinCreatorVaultAta = getAssociatedTokenAddressSync(
+            toPublicKey(poolQuoteMint),
+            vaultAuthority,
+            true
+          ).toBase58();
+          
+          try {
+            logger.info('pumpswap.stablecoin.with_creator', {
+              cat: 'tx',
+              ctx: { 
+                poolId: hop.poolId.slice(0, 12),
+                poolCreator: creator.slice(0, 12),
+                derivedAuthority: coinCreatorVaultAuthority.slice(0, 12),
+                derivedAta: coinCreatorVaultAta.slice(0, 12),
               }
             });
           } catch {}
         }
-        
-        const creatorPubkey = toPublicKey(poolCreatorToUse);
-        const [vaultAuthority] = PublicKey.findProgramAddressSync(
-          [
-            Buffer.from('creator-vault-authority'),
-            creatorPubkey.toBuffer(),
-          ],
-          PUMP_PROGRAM_ID
-        );
-        coinCreatorVaultAuthority = vaultAuthority.toBase58();
-        
-        coinCreatorVaultAta = getAssociatedTokenAddressSync(
-          toPublicKey(poolQuoteMint),
-          vaultAuthority,
-          true
-        ).toBase58();
-        
-        try {
-          logger.info('pumpswap.stablecoin.derived_accounts', {
-            cat: 'tx',
-            ctx: { 
-              poolId: hop.poolId.slice(0, 12),
-              poolCreator: creator.slice(0, 12),
-              usedCreator: poolCreatorToUse.slice(0, 12),
-              derivedAuthority: coinCreatorVaultAuthority.slice(0, 12),
-              derivedAta: coinCreatorVaultAta.slice(0, 12),
-            }
-          });
-        } catch {}
       }
     }
     

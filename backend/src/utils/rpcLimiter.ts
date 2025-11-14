@@ -505,5 +505,100 @@ export async function withRpcRetry<T>(
   throw lastErr;
 }
 
+// Debounce state management for subscription attempts
+interface DebounceState {
+  lastCall: number;
+  timer: NodeJS.Timeout | null;
+  pendingPromise: Promise<void> | null;
+  pendingResolve: (() => void) | null;
+}
+
+const debounceStates = new Map<string, DebounceState>();
+
+/**
+ * Debounce function for subscription attempts and other RPC calls
+ * Prevents rapid-fire calls by enforcing a minimum delay between executions
+ * 
+ * @param key - Unique identifier for the debounced operation
+ * @param fn - Function to execute (will be debounced)
+ * @param delayMs - Minimum delay in milliseconds between calls (default: 100ms)
+ * @returns Promise that resolves when the function executes
+ */
+export async function withDebounce<T>(
+  key: string,
+  fn: () => Promise<T> | T,
+  delayMs = 100
+): Promise<T> {
+  const now = Date.now();
+  let state = debounceStates.get(key);
+  
+  if (!state) {
+    state = {
+      lastCall: 0,
+      timer: null,
+      pendingPromise: null,
+      pendingResolve: null,
+    };
+    debounceStates.set(key, state);
+  }
+  
+  // Clear any existing timer
+  if (state.timer) {
+    clearTimeout(state.timer);
+    state.timer = null;
+  }
+  
+  const elapsed = now - state.lastCall;
+  const waitTime = Math.max(0, delayMs - elapsed);
+  
+  if (waitTime === 0) {
+    // Execute immediately
+    state.lastCall = now;
+    return await fn();
+  }
+  
+  // Wait before executing
+  return new Promise<T>((resolve, reject) => {
+    state!.timer = setTimeout(async () => {
+      state!.lastCall = Date.now();
+      state!.timer = null;
+      try {
+        const result = await fn();
+        resolve(result);
+      } catch (err) {
+        reject(err);
+      }
+    }, waitTime);
+  });
+}
+
+/**
+ * Rate limiter for subscription attempts
+ * Prevents subscription storms by throttling subscription calls
+ * Uses both debouncing and RPC limiter
+ * 
+ * @param key - Unique identifier for the subscription (e.g., account pubkey)
+ * @param fn - Subscription function to execute
+ * @param context - RPC limiter context
+ * @returns Promise that resolves with the subscription result
+ */
+export async function withSubscriptionRateLimit<T>(
+  key: string,
+  fn: () => Promise<T>,
+  context?: { module?: string; method?: string }
+): Promise<T> {
+  // First apply debouncing to prevent rapid-fire attempts
+  return withDebounce(
+    `sub:${key}`,
+    async () => {
+      // Then apply RPC rate limiting
+      return withRpcLimit(fn, 1, {
+        module: context?.module || 'subscription',
+        method: context?.method || 'accountSubscribe',
+      });
+    },
+    250 // 250ms debounce for subscriptions
+  );
+}
 
 

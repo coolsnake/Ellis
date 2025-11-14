@@ -423,11 +423,17 @@ export class TriggerBot implements Bot {
 		const { waitUntilWsReady } = await import('./wsHelper.js');
 		const conn = (this.driftClient as any)?.connection;
 		if (conn) await waitUntilWsReady(conn, 'trigger.init.dlob');
-		const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-		await withRpcLimit(
-			() => this.dlobSubscriber.subscribe(),
-			1,
-			{ module: 'drift', method: 'accountSubscribe' }
+		const { withRpcLimit, withDebounce } = await import('../utils/rpcLimiter.js');
+		await withDebounce(
+			'trigger:dlobSubscriber:subscribe',
+			async () => {
+				return await withRpcLimit(
+					() => this.dlobSubscriber.subscribe(),
+					1,
+					{ module: 'drift', method: 'accountSubscribe' }
+				);
+			},
+			200
 		);
 
 		this.lookupTableAccounts =
@@ -441,11 +447,17 @@ export class TriggerBot implements Bot {
 			const { waitUntilWsReady } = await import('./wsHelper.js');
 			const conn = (this.driftClient as any)?.connection;
 			if (conn) await waitUntilWsReady(conn, 'trigger.init.pythLazer');
-			const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-			await withRpcLimit(
-				() => this.pythLazerClient.subscribe(),
-				1,
-				{ module: 'drift', method: 'accountSubscribe' }
+			const { withRpcLimit, withDebounce } = await import('../utils/rpcLimiter.js');
+			await withDebounce(
+				'trigger:pythLazer:subscribe',
+				async () => {
+					return await withRpcLimit(
+						() => this.pythLazerClient.subscribe(),
+						1,
+						{ module: 'drift', method: 'accountSubscribe' }
+					);
+				},
+				200
 			);
 			await this.pythPullClient.subscribePriceFeedUpdates(
 				this.pythPullFeedIdsToCrank.map((x) => x.feedId),

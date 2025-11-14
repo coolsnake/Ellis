@@ -189,14 +189,20 @@ export class DriftTriggerRunner {
         const { waitUntilWsReady } = await import('./wsHelper.js');
         if (this.connection) await waitUntilWsReady(this.connection, 'triggerRunner.init.priorityFee');
         
-        // Import RPC limiter for tracking
-        const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+        // Import RPC limiter and debouncing
+        const { withRpcLimit, withDebounce } = await import('../utils/rpcLimiter.js');
         
-        // Wrap subscribe call with RPC tracking
-        await withRpcLimit(
-          () => this.priorityFeeSubscriber.subscribe(),
-          1,
-          { module: 'drift', method: 'accountSubscribe' }
+        // Wrap subscribe call with debouncing and RPC tracking
+        await withDebounce(
+          'triggerRunner:priorityFeeSubscriber:subscribe',
+          async () => {
+            return await withRpcLimit(
+              () => this.priorityFeeSubscriber.subscribe(),
+              1,
+              { module: 'drift', method: 'accountSubscribe' }
+            );
+          },
+          200
         );
         
         try { this.priorityFeeSubscriber.updateAddresses([ this.client?.program?.programId ].filter(Boolean)); } catch {}

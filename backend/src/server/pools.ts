@@ -491,6 +491,7 @@ async function preloadPumpswapVaultCache(): Promise<void> {
     logger.info('pumpswap.vault_cache.preload.start', { vaultCount: vaults.length, cat: 'pools' });
     
     const web3 = await import('@solana/web3.js');
+    const { withRpcLimit } = await import('../utils/rpcLimiter.js');
     const batchSize = 100;
     let cached = 0;
     let failed = 0;
@@ -500,12 +501,15 @@ async function preloadPumpswapVaultCache(): Promise<void> {
       const pubkeys = batch.map(v => new web3.PublicKey(v));
       
       try {
-        // Small delay for rate limiting
-        if (i > 0) await new Promise(r => setTimeout(r, 50));
+        // Use RPC limiter for rate limiting (replaces simple delay)
+        const weight = Math.max(1, Math.ceil(pubkeys.length / 100));
+        const accounts = await withRpcLimit(
+          () => wsConn.getMultipleAccountsInfo(pubkeys),
+          weight,
+          { module: 'pools', method: 'getMultipleAccountsInfo' }
+        );
         
-        const accounts = await wsConn.getMultipleAccountsInfo(pubkeys);
-        
-        for (let j = 0; j < accounts.length; j++) {
+        for (let j = 0; j < (accounts?.length || 0); j++) {
           const acc = accounts[j];
           const vaultAddr = batch[j];
           
@@ -569,6 +573,7 @@ async function preloadMeteoraBalancedVaultCache(): Promise<void> {
     logger.info('meteora_balanced.vault_cache.preload.start', { vaultCount: vaults.length, cat: 'pools' });
     
     const web3 = await import('@solana/web3.js');
+    const { withRpcLimit } = await import('../utils/rpcLimiter.js');
     const batchSize = 100;
     let cached = 0;
     let failed = 0;
@@ -578,12 +583,15 @@ async function preloadMeteoraBalancedVaultCache(): Promise<void> {
       const pubkeys = batch.map(v => new web3.PublicKey(v));
       
       try {
-        // Small delay for rate limiting
-        if (i > 0) await new Promise(r => setTimeout(r, 50));
+        // Use RPC limiter for rate limiting (replaces simple delay)
+        const weight = Math.max(1, Math.ceil(pubkeys.length / 100));
+        const accounts = await withRpcLimit(
+          () => wsConn.getMultipleAccountsInfo(pubkeys),
+          weight,
+          { module: 'pools', method: 'getMultipleAccountsInfo' }
+        );
         
-        const accounts = await wsConn.getMultipleAccountsInfo(pubkeys);
-        
-        for (let j = 0; j < accounts.length; j++) {
+        for (let j = 0; j < (accounts?.length || 0); j++) {
           const acc = accounts[j];
           const vaultAddr = batch[j];
           
@@ -2985,40 +2993,49 @@ export function startRaydiumRefreshLoop(): void {
           const baseBackoffMs = Math.max(50, Number(((CONFIG.system as any)?.wsSubscribeBackoffMs) || 250));
           let attempt = 0;
           
-          // Import RPC limiter for tracking
-          const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+          // Import RPC limiter and debouncing
+          const { withRpcLimit, withDebounce } = await import('../utils/rpcLimiter.js');
+          
+          // Use account pubkey as debounce key to prevent duplicate rapid subscriptions
+          const debounceKey = `pools:accountSubscribe:${accountPk.toBase58()}`;
           
           // Attempt loop
           for (;;) {
             await waitUntilWsReadyShared(conn, 'pools.subscribeAccount');
             try {
-              // Wrap subscription call with RPC tracking and rate limiting
-              const id = await withRpcLimit(
-                () => conn.onAccountChange(accountPk, (info: any) => { 
-                  try { 
-                    // Log every WebSocket event for diagnostics
-                    try {
-                      logger.debug('pools.ws event.received', {
-                        account: accountPk.toBase58().slice(0,8) + '…',
-                        subscriptionId: id,
-                        dataLength: info?.data?.length || 0,
-                        cat: 'pools'
-                      });
-                    } catch {}
-                    cb(accountPk, info); 
-                  } catch (callbackErr: any) {
-                    // Log callback errors (should never happen but catch just in case)
-                    try {
-                      logger.warn('pools.ws event.callback_error', {
-                        account: accountPk.toBase58().slice(0,8) + '…',
-                        error: String(callbackErr?.message || callbackErr),
-                        cat: 'pools'
-                      });
-                    } catch {}
-                  }
-                }),
-                1,
-                { module: 'pools', method: 'accountSubscribe' }
+              // Apply debouncing and rate limiting to prevent rapid-fire subscription attempts
+              const id = await withDebounce(
+                debounceKey,
+                async () => {
+                  return await withRpcLimit(
+                    () => conn.onAccountChange(accountPk, (info: any) => { 
+                      try { 
+                        // Log every WebSocket event for diagnostics
+                        try {
+                          logger.debug('pools.ws event.received', {
+                            account: accountPk.toBase58().slice(0,8) + '…',
+                            subscriptionId: id,
+                            dataLength: info?.data?.length || 0,
+                            cat: 'pools'
+                          });
+                        } catch {}
+                        cb(accountPk, info); 
+                      } catch (callbackErr: any) {
+                        // Log callback errors (should never happen but catch just in case)
+                        try {
+                          logger.warn('pools.ws event.callback_error', {
+                            account: accountPk.toBase58().slice(0,8) + '…',
+                            error: String(callbackErr?.message || callbackErr),
+                            cat: 'pools'
+                          });
+                        } catch {}
+                      }
+                    }),
+                    1,
+                    { module: 'pools', method: 'accountSubscribe' }
+                  );
+                },
+                150 // 150ms debounce for account subscriptions
               );
               
               // Log successful subscription
@@ -3050,17 +3067,26 @@ export function startRaydiumRefreshLoop(): void {
           const baseBackoffMs = Math.max(50, Number(((CONFIG.system as any)?.wsSubscribeBackoffMs) || 250));
           let attempt = 0;
           
-          // Import RPC limiter for tracking
-          const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+          // Import RPC limiter and debouncing
+          const { withRpcLimit, withDebounce } = await import('../utils/rpcLimiter.js');
+          
+          // Use program pubkey as debounce key
+          const debounceKey = `pools:programSubscribe:${programPk.toBase58()}`;
           
           for (;;) {
             await waitUntilWsReadyShared(conn, 'pools.subscribeProgram');
             try {
-              // Wrap subscription call with RPC tracking
-              const id = await withRpcLimit(
-                () => conn.onProgramAccountChange(programPk, (ch: any) => { try { cb(ch); } catch {} }),
-                1,
-                { module: 'pools', method: 'programSubscribe' }
+              // Apply debouncing and rate limiting to prevent rapid-fire subscription attempts
+              const id = await withDebounce(
+                debounceKey,
+                async () => {
+                  return await withRpcLimit(
+                    () => conn.onProgramAccountChange(programPk, (ch: any) => { try { cb(ch); } catch {} }),
+                    1,
+                    { module: 'pools', method: 'programSubscribe' }
+                  );
+                },
+                150 // 150ms debounce for program subscriptions
               );
               
               return id as unknown as number;
