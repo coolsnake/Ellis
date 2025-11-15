@@ -1400,11 +1400,50 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             const s64 = Number((p as any)?.sqrt_price_x64 || 0);
             const decA = Number((p as any)?.decimals_a ?? decimalsByMint[p.mint_a] ?? NaN);
             const decB = Number((p as any)?.decimals_b ?? decimalsByMint[p.mint_b] ?? NaN);
+            // DIAGNOSTIC: Log why price derivation fails
+            if (s64 <= 0) {
+              try {
+                logger.debug('graph.orca.price.no_sqrt', {
+                  pool_id: pid?.slice(0, 8),
+                  mint_a: p.mint_a,
+                  mint_b: p.mint_b,
+                  sqrt_price_x64: s64,
+                  cat: 'graph'
+                });
+              } catch {}
+            } else if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
+              try {
+                logger.warn('graph.orca.price.no_decimals', {
+                  pool_id: pid?.slice(0, 8),
+                  mint_a: p.mint_a,
+                  mint_b: p.mint_b,
+                  decimals_a: decA,
+                  decimals_b: decB,
+                  decimals_a_finite: Number.isFinite(decA),
+                  decimals_b_finite: Number.isFinite(decB),
+                  cat: 'graph'
+                });
+              } catch {}
+            }
             if (s64 > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
               const ratio = s64 / Math.pow(2, 64);
               const scale = Math.pow(10, decB - decA);
               const derived = scale / (ratio * ratio); // A per 1 B
               if (Number.isFinite(derived) && derived > 0) priceClmmOrca = derived;
+              else {
+                try {
+                  logger.warn('graph.orca.price.invalid_derived', {
+                    pool_id: pid?.slice(0, 8),
+                    mint_a: p.mint_a,
+                    mint_b: p.mint_b,
+                    sqrt_price_x64: s64,
+                    ratio,
+                    scale,
+                    derived,
+                    cat: 'graph'
+                  });
+                } catch {}
+              }
             }
           } catch {}
         }
@@ -1432,6 +1471,23 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const fwdClmm = clampPrice((priceClmmOrca && priceClmmOrca > 0) ? priceClmmOrca : undefined);
         const revClmm = (fwdClmm && fwdClmm > 0) ? (1 / fwdClmm) : undefined;
         const rawLiqOrcaClmm = Number((p as any).pool_liquidity_raw || (p as any).liquidity || 0) || undefined;
+        // DIAGNOSTIC: Log when we fail to create edge due to missing price
+        if (!fwdClmm) {
+          try {
+            logger.warn('graph.orca.edge.skipped', {
+              pool_id: pid?.slice(0, 8),
+              mint_a: p.mint_a,
+              mint_b: p.mint_b,
+              priceClmmOrca,
+              fwdClmm,
+              sqrt_price_x64: (p as any)?.sqrt_price_x64,
+              decimals_a: (p as any)?.decimals_a,
+              decimals_b: (p as any)?.decimals_b,
+              reason: 'no_valid_forward_price',
+              cat: 'graph'
+            });
+          } catch {}
+        }
         addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaClmm, fwdClmm, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward', rawLiqOrcaClmm);
         const pidClmmOrcaRev = pid ? `${pid}-rev` : undefined;
         addEdge(p.mint_b, p.mint_a, 'Orca', p.fee_bps, liqParamOrcaClmm, revClmm, usd, pidClmmOrcaRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse', rawLiqOrcaClmm);

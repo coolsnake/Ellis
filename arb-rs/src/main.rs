@@ -820,7 +820,12 @@ async fn main() -> anyhow::Result<()> {
                         |reason: &'static str,
                          labels: &[String],
                          profit_bps: Option<i64>,
-                         net_bps: Option<i64>| {
+                         net_bps: Option<i64>,
+                         dexes: Option<&[String]>,
+                         hop_dexes: Option<&[String]>,
+                         hop_rates: Option<&[f64]>,
+                         hop_outs: Option<&[f64]>,
+                         hop_pool_ids: Option<&[String]>| {
                             if rejected_samples.len() >= REJECTED_DEBUG_LIMIT {
                                 return;
                             }
@@ -833,6 +838,11 @@ async fn main() -> anyhow::Result<()> {
                                 hop_count: Some(labels.len()),
                                 profit_bps,
                                 net_bps,
+                                dexes: dexes.map(|v| v.to_vec()),
+                                hop_dexes: hop_dexes.map(|v| v.to_vec()),
+                                hop_rates: hop_rates.map(|v| v.to_vec()),
+                                hop_outs: hop_outs.map(|v| v.to_vec()),
+                                hop_pool_ids: hop_pool_ids.map(|v| v.to_vec()),
                             });
                         };
                     for c in cycles.into_iter() {
@@ -849,12 +859,32 @@ async fn main() -> anyhow::Result<()> {
                             }
                         }
                         if nlen < 2 {
-                            record_rejected("rejected_too_short", &labels, None, None);
+                            record_rejected(
+                                "rejected_too_short",
+                                &labels,
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                            );
                             rejected_too_short += 1;
                             continue;
                         }
                         if nlen > max_hops {
-                            record_rejected("rejected_too_long", &labels, None, None);
+                            record_rejected(
+                                "rejected_too_long",
+                                &labels,
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                            );
                             rejected_too_long += 1;
                             continue;
                         }
@@ -875,7 +905,17 @@ async fn main() -> anyhow::Result<()> {
                         // Validate node indices are in bounds before processing
                         let node_count = node_count_total;
                         if c.nodes.iter().any(|&i| i >= node_count) {
-                            record_rejected("rejected_too_short", &labels, None, None);
+                            record_rejected(
+                                "rejected_too_short",
+                                &labels,
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                            );
                             rejected_too_short += 1;
                             continue;
                         }
@@ -1303,6 +1343,11 @@ async fn main() -> anyhow::Result<()> {
                                 &canon_labels,
                                 Some(profit_bps),
                                 Some(net_bps),
+                                Some(&dexes),
+                                Some(&hop_dexes),
+                                Some(&hop_rates),
+                                Some(&hop_outs),
+                                Some(&hop_pool_ids),
                             );
                             rejected_too_high_profit += 1;
                             continue;

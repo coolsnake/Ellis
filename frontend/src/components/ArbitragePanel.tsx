@@ -37,6 +37,11 @@ type RejectedOpportunity = {
   hop_count?: number;
   profit_bps?: number;
   net_bps?: number;
+  dexes?: string[];
+  hop_dexes?: string[];
+  hop_rates?: number[];
+  hop_outs?: number[];
+  hop_pool_ids?: string[];
 };
 
 type OpportunitiesSummary = {
@@ -201,7 +206,9 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
         const rejectedSig = Array.isArray(rejected)
           ? rejected.map((rej) => {
               const path = Array.isArray(rej.path) ? rej.path.join('>') : '';
-              return `${rej.reason}:${path}:${rej.profit_bps ?? ''}:${rej.net_bps ?? ''}:${rej.hop_count ?? ''}`;
+              const rateSig = Array.isArray(rej.hop_rates) ? rej.hop_rates.map((r) => Number.isFinite(r) ? Number(r).toFixed(6) : String(r)).join(',') : '';
+              const poolSig = Array.isArray(rej.hop_pool_ids) ? rej.hop_pool_ids.join(',') : '';
+              return `${rej.reason}:${path}:${rej.profit_bps ?? ''}:${rej.net_bps ?? ''}:${rej.hop_count ?? ''}:${rateSig}:${poolSig}`;
             }).join('|')
           : '';
 
@@ -635,7 +642,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
           <div className="font-semibold mb-1">Rejected Opportunities (debug)</div>
           <div className="space-y-1">
             {rejectedDebug.map((rej, i) => (
-              <div key={`${rej.reason}:${(rej.path || []).join('>')}:${i}`} className="font-mono space-y-0.5">
+              <div key={`${rej.reason}:${(rej.path || []).join('>')}:${i}`} className="font-mono space-y-1">
                 <div className="flex items-center gap-2 flex-wrap text-[11px]">
                   <span className="px-1 py-0.5 rounded bg-red-900/40 text-red-100 uppercase tracking-wide">{formatRejectedReason(rej.reason)}</span>
                   {typeof rej.hop_count === 'number' && <span>Hops: {rej.hop_count}</span>}
@@ -643,6 +650,34 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
                   {typeof rej.net_bps === 'number' && rej.net_bps !== rej.profit_bps && <span>Net: {fmtPctFromBps(rej.net_bps)}</span>}
                 </div>
                 <div>{(rej.path || []).map(sym).join(' → ') || '—'}</div>
+                {Array.isArray(rej.dexes) && rej.dexes.length > 0 && (
+                  <div className="text-[11px] opacity-80">Dexes: {rej.dexes.join(', ')}</div>
+                )}
+                {(() => {
+                  const pathArr = Array.isArray(rej.path) ? rej.path : [];
+                  if (pathArr.length <= 1) return null;
+                  return (
+                    <div className="space-y-0.5 text-[11px] opacity-80">
+                      {pathArr.slice(0, -1).map((mint, idx) => {
+                        const next = pathArr[idx + 1];
+                        const dex = rej.hop_dexes?.[idx];
+                        const rate = rej.hop_rates?.[idx];
+                        const out = rej.hop_outs?.[idx];
+                        const pool = rej.hop_pool_ids?.[idx];
+                        const poolLabel = pool ? (pool.length > 10 ? `${pool.slice(0,4)}…${pool.slice(-4)}` : pool) : null;
+                        return (
+                          <div key={`${mint}->${next}:${idx}`} className="flex flex-wrap gap-2">
+                            <span className="font-semibold">{sym(mint)} → {sym(next)}</span>
+                            {dex && <span>{dex}</span>}
+                            {typeof rate === 'number' && isFinite(rate) && <span>rate {rate.toFixed(6)}</span>}
+                            {typeof out === 'number' && isFinite(out) && <span>out {fmt(out, 4)}</span>}
+                            {poolLabel && <span>pool {poolLabel}</span>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
               </div>
             ))}
           </div>

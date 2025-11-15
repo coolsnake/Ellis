@@ -108,4 +108,14 @@ pub struct RejectedOpportunity {
     pub profit_bps: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub net_bps: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dexes: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hop_dexes: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hop_rates: Option<Vec<f64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hop_outs: Option<Vec<f64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hop_pool_ids: Option<Vec<String>>,
 }
