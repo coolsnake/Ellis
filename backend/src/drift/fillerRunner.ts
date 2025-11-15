@@ -717,11 +717,15 @@ export class DriftFillerRunner {
             method: 'sendTransaction',
             params: [ base64, { encoding: 'base64', skipPreflight: true, maxRetries: 0 } ],
           } as any;
-          const res = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-          });
+          const res = await withRpcLimit(
+            () => fetch(endpoint, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body),
+            }),
+            1,
+            { module: 'sender', method: 'sendTransaction' }
+          );
           const json = await res.json().catch(() => ({} as any));
           if ((json as any)?.error) throw new Error(String((json as any).error?.message || 'SENDER_ERROR'));
           const sig = String((json as any)?.result || '');

@@ -1,4 +1,5 @@
 import { logger } from '../utils/logger.js';
+import { withRpcLimit } from '../utils/rpcLimiter.js';
 export type SendResult = { signature?: string; ok: boolean; err?: string };
 
 export async function sendWithRetry(wireTxBase64: string, rpcUrl: string, opts?: { maxMs?: number }): Promise<SendResult> {
@@ -10,7 +11,11 @@ export async function sendWithRetry(wireTxBase64: string, rpcUrl: string, opts?:
     attempt += 1;
     try {
       // eslint-disable-next-line no-undef
-      const resp = await fetch(rpcUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ method: 'sendTransaction', params: [wireTxBase64, { skipPreflight: true, maxRetries: 0, encoding: 'base64' }], jsonrpc: '2.0', id: `arb-${start}-${attempt}` }) });
+      const resp = await withRpcLimit(
+        () => fetch(rpcUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ method: 'sendTransaction', params: [wireTxBase64, { skipPreflight: true, maxRetries: 0, encoding: 'base64' }], jsonrpc: '2.0', id: `arb-${start}-${attempt}` }) }),
+        1,
+        { module: 'tx.send', method: 'sendTransaction' }
+      );
       const json = await resp.json().catch(() => ({}));
       const sig = json?.result as string | undefined;
       if (sig) { try { logger.info('tx.rpc.send.ok', { cat: 'tx', url: rpcUrl, attempt, ms: Date.now() - start }); } catch {}; return { ok: true, signature: sig }; }

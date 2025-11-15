@@ -1029,7 +1029,7 @@ export class DriftService {
       const maxPages = Math.max(1, Number(driftCfg?.prefetchGpaMaxPages ?? 5));
       const totalLimit = Math.max(100, Math.min(100000, Number(limit || (pageSize * maxPages))));
 
-      const { acquireRpcSlots, withRpcTimeout } = await import('../utils/rpcLimiter.js');
+      const { withRpcLimit, withRpcTimeout } = await import('../utils/rpcLimiter.js');
       let delayMs = 500;
       let paginationKey: any = undefined;
       let fetched = 0;
@@ -1045,13 +1045,18 @@ export class DriftService {
         if (paginationKey) { (params as any).paginationKey = paginationKey; }
         const body: any = { jsonrpc: '2.0', id: 1, method: 'getProgramAccountsV2', params: [programId, params] };
 
-        for (let attempt = 0; attempt < 4; attempt += 1) {
-          await acquireRpcSlots(1);
-          const res: any = await withRpcTimeout(
-            fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+        const execRpc = (rpcBody: any, label: string) => withRpcLimit(
+          () => withRpcTimeout(
+            fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rpcBody) }),
             3000,
-            'helius.gpa.page'
-          );
+            label
+          ),
+          1,
+          { module: 'drift.helius', method: String(rpcBody?.method || 'getProgramAccountsV2') }
+        );
+
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          const res: any = await execRpc(body, 'helius.gpa.page');
           if (res?.status === 429) {
             const retryAfter = Number(res.headers?.get?.('retry-after') || 0) * 1000;
             const jitter = 1 + (Math.random() * 0.2 - 0.1);
@@ -1066,11 +1071,7 @@ export class DriftService {
           if ((json as any)?.error || (!Array.isArray(json?.result?.accounts) && !Array.isArray(json?.result))) {
             try {
               const bodyV1: any = { jsonrpc: '2.0', id: 1, method: 'getProgramAccounts', params: [programId, params] };
-              const res2: any = await withRpcTimeout(
-                fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(bodyV1) }),
-                3000,
-                'helius.gpa.page.fallback'
-              );
+              const res2: any = await execRpc(bodyV1, 'helius.gpa.page.fallback');
               json = await res2.json().catch(() => ({}));
             } catch {}
           }
@@ -1118,7 +1119,7 @@ export class DriftService {
       const driftCfg: any = ((CONFIG as any)?.drift || {});
       const pageSize = Math.max(500, Math.min(10000, Number(driftCfg?.prefetchGpaPageSize ?? 2000)));
       const totalLimit = Math.max(100, Math.min(200000, Number(limit || pageSize)));
-      const { acquireRpcSlots, withRpcTimeout } = await import('../utils/rpcLimiter.js');
+      const { withRpcLimit, withRpcTimeout } = await import('../utils/rpcLimiter.js');
       let paginationKey: any = undefined;
       let fetched = 0;
       while (fetched < totalLimit) {
@@ -1128,21 +1129,28 @@ export class DriftService {
         if (changedOnly && this.lastPrefetchSlot > 0) { (params as any).changedSinceSlot = Number(this.lastPrefetchSlot); }
         if (paginationKey) { (params as any).paginationKey = paginationKey; }
         const body: any = { jsonrpc: '2.0', id: 1, method: 'getProgramAccountsV2', params: [programId, params] };
-        await acquireRpcSlots(1);
-        const res: any = await withRpcTimeout(
-          fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
-          3000,
-          'helius.gpa.keys'
+        const res: any = await withRpcLimit(
+          () => withRpcTimeout(
+            fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+            3000,
+            'helius.gpa.keys'
+          ),
+          1,
+          { module: 'drift.helius', method: 'getProgramAccountsV2' }
         );
         let json = await res.json().catch(() => ({}));
         // Fallback to getProgramAccounts if V2 unsupported
         if ((json as any)?.error || (!Array.isArray(json?.result?.accounts) && !Array.isArray(json?.result))) {
           try {
             const bodyV1: any = { jsonrpc: '2.0', id: 1, method: 'getProgramAccounts', params: [programId, params] };
-            const res2: any = await withRpcTimeout(
-              fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(bodyV1) }),
-              3000,
-              'helius.gpa.keys.fallback'
+            const res2: any = await withRpcLimit(
+              () => withRpcTimeout(
+                fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(bodyV1) }),
+                3000,
+                'helius.gpa.keys.fallback'
+              ),
+              1,
+              { module: 'drift.helius', method: 'getProgramAccounts' }
             );
             json = await res2.json().catch(() => ({}));
           } catch {}

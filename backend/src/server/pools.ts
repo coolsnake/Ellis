@@ -17,6 +17,7 @@ import { fetchMeteoraBalancedHttp as fetchMeteoraBalancedHttpImpl, normalizeMete
 import { canonicalizePairs } from './pools/common.js';
 import { createProgram } from '@meteora-ag/dlmm';
 import { PoolInfoLayout as RaydiumClmmLayout } from '@raydium-io/raydium-sdk-v2/lib/raydium/clmm/layout.js';
+import { getTickArrayStartIndexByTick, deriveTickArrayPda } from '../execution/raydiumTickArrays.js';
 import BN from 'bn.js';
 import { createHash } from 'crypto';
 
@@ -96,6 +97,155 @@ const poolsMetrics: {
 
 export function getPoolsMetrics(): any {
   return poolsMetrics;
+}
+
+type RaydiumClmmDerivedFields = {
+  programId?: string;
+  oracle?: string;
+  observationState?: string;
+  ammConfig?: string;
+  vaultA?: string;
+  vaultB?: string;
+  tickSpacing?: number;
+  tickCurrent?: number;
+  tickArrays?: { lower?: string; center?: string; upper?: string };
+};
+
+async function deriveRaydiumClmmCacheFields(
+  poolId: string,
+  rawAccountData: Buffer,
+  opts?: { programId?: string }
+): Promise<RaydiumClmmDerivedFields | null> {
+  if (!rawAccountData?.length) return null;
+  if (!RaydiumClmmLayout || typeof RaydiumClmmLayout.decode !== 'function') return null;
+  try {
+    const state: any = RaydiumClmmLayout.decode(rawAccountData);
+    const tickSpacing = Number(state?.tickSpacing ?? state?.tick_spacing ?? 0);
+    const tickCurrent = Number(state?.tickCurrent ?? state?.tick_current ?? 0);
+    const oracle = toB58Any(state?.oracle);
+    const observationState = toB58Any(state?.observationId || state?.observation_id || state?.observationAccount || state?.observation_account);
+    const ammConfig = toB58Any(state?.ammConfig || state?.amm_config || state?.config);
+    const vaultA = toB58Any(state?.vaultA || state?.tokenVault0 || state?.tokenVaultA || state?.baseVault);
+    const vaultB = toB58Any(state?.vaultB || state?.tokenVault1 || state?.tokenVaultB || state?.quoteVault);
+    const programIdStr = opts?.programId
+      || toB58Any(state?.owner)
+      || String((CONFIG as any)?.raydium?.clmmProgram || 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK');
+    let tickArrays: { lower?: string; center?: string; upper?: string } | undefined;
+    if (Number.isFinite(tickSpacing) && tickSpacing > 0 && Number.isFinite(tickCurrent)) {
+      try {
+        const { PublicKey } = await import('@solana/web3.js');
+        const programPk = new PublicKey(programIdStr);
+        const poolPk = new PublicKey(poolId);
+        const centerStart = getTickArrayStartIndexByTick(tickCurrent, tickSpacing);
+        const delta = 60 * Math.max(1, tickSpacing);
+        const [lowerPk, centerPk, upperPk] = await Promise.all([
+          deriveTickArrayPda(programPk, poolPk, centerStart - delta),
+          deriveTickArrayPda(programPk, poolPk, centerStart),
+          deriveTickArrayPda(programPk, poolPk, centerStart + delta),
+        ]);
+        tickArrays = {
+          lower: lowerPk?.toBase58(),
+          center: centerPk?.toBase58(),
+          upper: upperPk?.toBase58(),
+        };
+      } catch (err: any) {
+        try { logger.debug('raydium.clmm.tickarray.derive_failed', { pool: poolId.slice(0, 8) + '…', error: String(err?.message || err) }); } catch {}
+      }
+    }
+    return {
+      programId: programIdStr,
+      oracle,
+      observationState,
+      ammConfig,
+      vaultA,
+      vaultB,
+      tickSpacing: Number.isFinite(tickSpacing) && tickSpacing > 0 ? tickSpacing : undefined,
+      tickCurrent: Number.isFinite(tickCurrent) ? tickCurrent : undefined,
+      tickArrays,
+    };
+  } catch (err: any) {
+    try { logger.debug('raydium.clmm.raw.decode_failed', { pool: poolId.slice(0, 8) + '…', error: String(err?.message || err) }); } catch {}
+    return null;
+  }
+}
+
+type MeteoraBinHelpers = {
+  getBounds?: (activeBin: BN) => [BN, BN];
+  binIdToBinArrayIndex?: (binId: BN) => BN | number;
+};
+
+let meteoraBinHelpersPromise: Promise<MeteoraBinHelpers> | null = null;
+
+async function getMeteoraBinHelpers(): Promise<MeteoraBinHelpers> {
+  if (!meteoraBinHelpersPromise) {
+    meteoraBinHelpersPromise = (async () => {
+      try {
+        const mod: any = await import('@meteora-ag/dlmm');
+        const root = (mod && (mod as any).default) ? (mod as any).default : mod;
+        const getBounds = root?.getBinArrayLowerUpperBinId || root?.DLMM?.getBinArrayLowerUpperBinId || mod?.getBinArrayLowerUpperBinId;
+        const binIdToBinArrayIndex = root?.binIdToBinArrayIndex || root?.DLMM?.binIdToBinArrayIndex || mod?.binIdToBinArrayIndex;
+        return { getBounds, binIdToBinArrayIndex };
+      } catch (err: any) {
+        try { logger.warn('meteora.bin.helpers.import_failed', { error: String(err?.message || err), cat: 'pools' }); } catch {}
+        return { getBounds: undefined, binIdToBinArrayIndex: undefined };
+      }
+    })();
+  }
+  return meteoraBinHelpersPromise;
+}
+
+async function deriveMeteoraBinArrayAddresses(
+  pairPk: any,
+  programId: any,
+  activeId?: number
+): Promise<{ lower?: string; upper?: string }> {
+  if (!Number.isFinite(activeId as number)) return {};
+  const helpers = await getMeteoraBinHelpers();
+  if (!helpers.getBounds || !helpers.binIdToBinArrayIndex) return {};
+  const activeBn = new BN(String(activeId));
+  let lowerIdx: number | undefined;
+  let upperIdx: number | undefined;
+  try {
+    const [lowerBin, upperBin] = helpers.getBounds(activeBn) || [];
+    if (!lowerBin && !upperBin) return {};
+    const toInt = (val: BN | number | undefined): number | undefined => {
+      if (val == null) return undefined;
+      if (typeof val === 'number') return val;
+      try { return Number(val.toString()); } catch { return undefined; }
+    };
+    const lowerIdxBn = lowerBin ? helpers.binIdToBinArrayIndex!(lowerBin) : undefined;
+    const upperIdxBn = upperBin ? helpers.binIdToBinArrayIndex!(upperBin) : undefined;
+    lowerIdx = toInt(lowerIdxBn as any);
+    upperIdx = toInt(upperIdxBn as any);
+  } catch (err: any) {
+    try { logger.debug('meteora.bin.bounds_failed', { error: String(err?.message || err), cat: 'pools' }); } catch {}
+    return {};
+  }
+  if (lowerIdx == null && upperIdx == null) return {};
+  try {
+    const { PublicKey } = await import('@solana/web3.js');
+    const poolPk = pairPk instanceof PublicKey ? pairPk : new PublicKey(pairPk);
+    const programPk = programId instanceof PublicKey ? programId : new PublicKey(programId);
+    const deriveAddr = (idx?: number): string | undefined => {
+      if (idx == null) return undefined;
+      const idxBn = new BN(idx);
+      const seed = idxBn.isNeg()
+        ? idxBn.toTwos(64).toArrayLike(Buffer, 'le', 8)
+        : idxBn.toArrayLike(Buffer, 'le', 8);
+      const [pda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('bin_array'), poolPk.toBuffer(), Buffer.from(seed)],
+        programPk
+      );
+      return pda?.toBase58();
+    };
+    return {
+      lower: deriveAddr(lowerIdx),
+      upper: deriveAddr(upperIdx),
+    };
+  } catch (err: any) {
+    try { logger.debug('meteora.bin.addr_failed', { error: String(err?.message || err), cat: 'pools' }); } catch {}
+    return {};
+  }
 }
 
 // Raydium HTTP fetcher is implemented in ./pools/raydium.ts
@@ -736,11 +886,19 @@ export function startPoolWebsocketsOnlyOnce(): void {
   startRaydiumRefreshLoop();
 }
 
-export function getWsActivity(): { orca: { attached: number; events: number }; raydium: { attached: number; events: number }; meteora: { attached: number; events: number } } {
+export function getWsActivity(): {
+  orca: { attached: number; events: number };
+  raydium: { attached: number; events: number };
+  meteora: { attached: number; events: number };
+  pumpswap: { attached: number; events: number };
+  meteora_balanced: { attached: number; events: number };
+} {
   return {
     orca: { attached: attachedOrcaPools, events: wsCounts.orca || 0 },
     raydium: { attached: attachedRaydiumPools, events: wsCounts.raydium || 0 },
     meteora: { attached: attachedMeteoraPools, events: (wsCounts.meteora || 0) as number },
+    pumpswap: { attached: attachedPumpswapPools, events: wsCounts.pumpswap || 0 },
+    meteora_balanced: { attached: attachedMeteoraBalancedPools, events: wsCounts.meteora_balanced || 0 },
   };
 }
 
@@ -2036,16 +2194,44 @@ export function startRaydiumRefreshLoop(): void {
                         const idx = next.clmm.findIndex(p => p.id === item.id);
                         if (idx >= 0) next.clmm[idx] = { ...next.clmm[idx], ...item }; else next.clmm.push(item);
                         
-                        // OPTIMIZATION: Store raw account data in execution cache for builders
+                        // OPTIMIZATION: Store raw account data + derived tick arrays in execution cache for builders
                         try {
                           const { executionCache } = await import('../execution/cache.js');
+                          const rawBuffer = Buffer.isBuffer(info.data) ? Buffer.from(info.data) : Buffer.from(info.data ?? []);
                           const existing = executionCache.getStatic(pk58) || {} as any;
-                          executionCache.setStatic(pk58, {
+                          const derived = await deriveRaydiumClmmCacheFields(pk58, rawBuffer, { programId: owner?.toString?.() });
+                          const nextStatic: any = {
                             ...existing,
-                            rawAccountData: Buffer.from(info.data),
+                            rawAccountData: rawBuffer,
                             rawAccountDataUpdatedMs: Date.now(),
-                          });
-                        } catch {}
+                          };
+                          if (derived) {
+                            if (derived.programId) nextStatic.programId = derived.programId;
+                            if (derived.oracle) nextStatic.oracle = derived.oracle;
+                            if (derived.observationState) nextStatic.observation_state = derived.observationState;
+                            if (derived.ammConfig) (nextStatic as any).amm_config = derived.ammConfig;
+                            if (derived.vaultA) nextStatic.account_a = derived.vaultA;
+                            if (derived.vaultB) nextStatic.account_b = derived.vaultB;
+                            if (derived.tickSpacing) nextStatic.tick_spacing = derived.tickSpacing;
+                            if (derived.tickArrays?.lower) nextStatic.tickArrayLower = derived.tickArrays.lower;
+                            if (derived.tickArrays?.center) nextStatic.tickArrayCenter = derived.tickArrays.center;
+                            if (derived.tickArrays?.upper) nextStatic.tickArrayUpper = derived.tickArrays.upper;
+                          }
+                          executionCache.setStatic(pk58, nextStatic);
+                          if (derived?.tickArrays || derived?.tickCurrent !== undefined) {
+                            const hotExisting = executionCache.getHot(pk58) || {};
+                            executionCache.setHot(pk58, {
+                              ...hotExisting,
+                              currentTickIndex: derived?.tickCurrent ?? hotExisting.currentTickIndex,
+                              tickArrays: {
+                                ...(hotExisting?.tickArrays || {}),
+                                ...(derived?.tickArrays || {}),
+                              },
+                            });
+                          }
+                        } catch (cacheErr) {
+                          try { logger.debug('raydium.ws.cache_update_failed', { pool: pk58.slice(0, 8) + '…', error: String((cacheErr as any)?.message || cacheErr) }); } catch {}
+                        }
                         
                         try { wsDecodeStats.raydium.successes += 1; } catch {}
                         wsDeltaStats.raydium.decoded += 1;
@@ -2544,19 +2730,19 @@ export function startRaydiumRefreshLoop(): void {
                     if (tracker?.aggregate) (item as any).meteora_bin_hash = tracker.aggregate;
                     if (Number.isFinite(activeId as any)) (item as any).active_id = Number(activeId);
                     if (tickSpacing) (item as any).bin_step = tickSpacing;
+                    const binArrayAddresses = await deriveMeteoraBinArrayAddresses(pk, program?.programId, typeof activeId === 'number' ? Number(activeId) : undefined);
+                    if (binArrayAddresses.lower) (item as any).bin_array_lower = binArrayAddresses.lower;
+                    if (binArrayAddresses.upper) (item as any).bin_array_upper = binArrayAddresses.upper;
                     
                     // OPTIMIZATION: Cache Meteora active bin ID and state in execution cache
                     try {
                       const { executionCache } = await import('../execution/cache.js');
-                      
-                    const existing = executionCache.getStatic(poolId) || {} as any;
-                    // Store static pool data
-                      executionCache.setStatic(poolId, {
+                      const rawBuffer = Buffer.isBuffer(info.data) ? Buffer.from(info.data) : Buffer.from(info.data ?? []);
+                      const existing = executionCache.getStatic(poolId) || {} as any;
+                      const nextStatic: any = {
+                        ...existing,
                         programId: String(program?.programId?.toBase58() || ''),
-                        vaults: {
-                          a: accountA,
-                          b: accountB
-                        },
+                        vaults: { a: accountA, b: accountB },
                         binStep: tickSpacing,
                         mint_a: tokenX,
                         mint_b: tokenY,
@@ -2564,20 +2750,30 @@ export function startRaydiumRefreshLoop(): void {
                         decimals_b: decB,
                         token_program_a: existing.token_program_a,
                         token_program_b: existing.token_program_b,
+                        account_a: accountA,
+                        account_b: accountB,
+                        bin_array_bitmap_extension: existing.bin_array_bitmap_extension,
                         // Store raw account data for local parsing during tx building
-                        rawAccountData: info?.data ? Buffer.from(info.data) : undefined,
+                        rawAccountData: rawBuffer,
                         rawAccountDataUpdatedMs: Date.now()
-                      });
+                      };
+                      if (binArrayAddresses.lower) nextStatic.bin_array_lower = binArrayAddresses.lower;
+                      if (binArrayAddresses.upper) nextStatic.bin_array_upper = binArrayAddresses.upper;
+                      executionCache.setStatic(poolId, nextStatic);
                       
-                      // Store hot pool data (frequently changing active bin ID)
-                      if (Number.isFinite(activeId as any)) {
-                      const existingHot = executionCache.getHot(poolId);
+                      // Store hot pool data (frequently changing active bin ID / bin arrays)
+                      if (Number.isFinite(activeId as any) || binArrayAddresses.lower || binArrayAddresses.upper) {
+                        const existingHot = executionCache.getHot(poolId) || {};
                         executionCache.setHot(poolId, {
-                        ...existingHot,
-                          activeId: Number(activeId),
-                          sqrtPriceX64: sqrtPriceRaw,
-                          liquidity: liquidityRaw,
-                          feeRate: feeBps
+                          ...existingHot,
+                          activeId: Number.isFinite(activeId as any) ? Number(activeId) : existingHot.activeId,
+                          sqrtPriceX64: sqrtPriceRaw ?? existingHot.sqrtPriceX64,
+                          liquidity: liquidityRaw ?? existingHot.liquidity,
+                          feeRate: Number.isFinite(feeBps) ? feeBps : existingHot.feeRate,
+                          binArrays: {
+                            ...(existingHot.binArrays || {}),
+                            ...binArrayAddresses,
+                          },
                         });
                         
                         try {
@@ -4555,7 +4751,17 @@ export function startRaydiumRefreshLoop(): void {
         };
         logger.info('pools.ws subscriptions active');
         // Immediately emit a ws-activity snapshot so UI reflects attached counts without waiting for first aggregate tick
-        try { emit('ws-activity', { healthy: wsHealthy, lastEventMs: lastWsEventMs, orca: { attached: attachedOrcaPools, events: 0 }, raydium: { attached: attachedRaydiumPools, events: 0 }, meteora: { attached: attachedMeteoraPools, events: 0 } }); } catch {}
+        try {
+          emit('ws-activity', {
+            healthy: wsHealthy,
+            lastEventMs: lastWsEventMs,
+            orca: { attached: attachedOrcaPools, events: 0 },
+            raydium: { attached: attachedRaydiumPools, events: 0 },
+            meteora: { attached: attachedMeteoraPools, events: 0 },
+            pumpswap: { attached: attachedPumpswapPools, events: 0 },
+            meteora_balanced: { attached: attachedMeteoraBalancedPools, events: 0 },
+          });
+        } catch {}
 
         // Health monitor: if no WS events for timeoutMs, trigger periodic refresh as fallback
         const timeoutMs = Math.max(5000, Number((CONFIG.system as any)?.wsHealthTimeoutMs || 15000));
@@ -4646,7 +4852,17 @@ export function startRaydiumRefreshLoop(): void {
             wsValidationStats.pumpswap = { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 };
             wsValidationStats.meteora_balanced = { missingMints: 0, invalidPrice: 0, invalidLiquidity: 0, invalidFee: 0, invalidTick: 0, emptyMints: 0 };
             // Emit a dedicated ws-activity event for UI regardless of log filtering
-            try { emit('ws-activity', { healthy: wsHealthy, lastEventMs: lastWsEventMs, orca: { attached: attachedOrcaPools, events: snapshot.orca || 0 }, raydium: { attached: attachedRaydiumPools, events: snapshot.raydium || 0 }, meteora: { attached: attachedMeteoraPools, events: snapshot.meteora || 0 } }); } catch {}
+            try {
+              emit('ws-activity', {
+                healthy: wsHealthy,
+                lastEventMs: lastWsEventMs,
+                orca: { attached: attachedOrcaPools, events: snapshot.orca || 0 },
+                raydium: { attached: attachedRaydiumPools, events: snapshot.raydium || 0 },
+                meteora: { attached: attachedMeteoraPools, events: snapshot.meteora || 0 },
+                pumpswap: { attached: attachedPumpswapPools, events: snapshot.pumpswap || 0 },
+                meteora_balanced: { attached: attachedMeteoraBalancedPools, events: snapshot.meteora_balanced || 0 },
+              });
+            } catch {}
             // Aggregate metrics are already logged above via logger.info('pools.ws aggregate', ...), no need for duplicate emit
             // Reconcile targets vs attached (debounced): if attached << targets, trigger retarget
             (async () => {
@@ -5618,6 +5834,8 @@ export async function getMeteoraPoolsCached(force = false, opts?: { skipUniverse
           if (pool.bin_array_bitmap_extension) {
             staticData.bin_array_bitmap_extension = pool.bin_array_bitmap_extension;
           }
+          if ((pool as any).bin_array_lower) staticData.bin_array_lower = (pool as any).bin_array_lower;
+          if ((pool as any).bin_array_upper) staticData.bin_array_upper = (pool as any).bin_array_upper;
           
           // Store vault/reserve accounts
           if (pool.account_a) staticData.account_a = pool.account_a;
@@ -5625,6 +5843,7 @@ export async function getMeteoraPoolsCached(force = false, opts?: { skipUniverse
           
           // Store tick spacing (bin_step for Meteora)
           if (pool.tick_spacing) staticData.tick_spacing = pool.tick_spacing;
+          if ((pool as any).bin_step) staticData.binStep = (pool as any).bin_step;
           
           executionCache.setStatic(pool.id, staticData);
         }

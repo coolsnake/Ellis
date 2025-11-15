@@ -60,6 +60,11 @@ export async function resolveMeteoraDlmm(hop: DirectHop): Promise<DirectHop> {
         hop.bitmapExtension = bitmapExt;
       }
       
+      const binLower = String((p as any)?.bin_array_lower || '');
+      const binUpper = String((p as any)?.bin_array_upper || '');
+      if (binLower && !hop.binArrayLower) hop.binArrayLower = binLower;
+      if (binUpper && !hop.binArrayUpper) hop.binArrayUpper = binUpper;
+      
       // Debug logging for vaults and bitmap extension
       try {
         const { logger } = await import('../../utils/logger.js');

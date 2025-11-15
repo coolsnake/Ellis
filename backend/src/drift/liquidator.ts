@@ -518,6 +518,7 @@ export class DriftLiquidator {
   private async discoverUsersViaHeliusGpaV2(maxDiscover: number): Promise<string[]> {
     const out: string[] = [];
     try {
+      const { withRpcLimit } = await import('../utils/rpcLimiter.js');
       const driftSvc = DriftService.getInstance();
       const drift: any = (driftSvc as any).client;
       const conn: any = (DriftService.getInstance() as any).connection;
@@ -536,7 +537,11 @@ export class DriftLiquidator {
           params: [programId, { encoding: 'base64', filters, dataSlice: { offset: 0, length: 0 }, limit: Math.min(10000, Math.max(1000, maxDiscover)) }]
         };
         if (paginationKey) (body.params[1] as any).paginationKey = paginationKey;
-        const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const res = await withRpcLimit(
+          () => fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+          1,
+          { module: 'drift.liquidator', method: 'getProgramAccountsV2' }
+        );
         const json = await res.json();
         const accounts = json?.result?.accounts || json?.result || [];
         if (!Array.isArray(accounts) || accounts.length === 0) break;
@@ -567,7 +572,12 @@ export class DriftLiquidator {
         jsonrpc: '2.0', id: 1, method: 'getProgramAccountsV2',
         params: [programId, { encoding: 'base64', filters, dataSlice: { offset: 0, length: 0 }, limit: maxBatch, changedSinceSlot: Number(this.lastDiscoverySlot || 0) }]
       };
-      const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const { withRpcLimit } = await import('../utils/rpcLimiter.js');
+      const res = await withRpcLimit(
+        () => fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+        1,
+        { module: 'drift.liquidator', method: 'getProgramAccountsV2' }
+      );
       const json = await res.json();
       const accounts = json?.result?.accounts || json?.result || [];
       if (Array.isArray(accounts) && accounts.length > 0) {

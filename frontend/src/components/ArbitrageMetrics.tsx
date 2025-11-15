@@ -4,6 +4,10 @@ import { useSocket } from '../app/contexts/socket';
 
 // Fetcher state tracking
 type FetcherState = 'idle' | 'fetching' | 'enriching' | 'subscribing' | 'ready' | 'error';
+type DexKey = 'raydium' | 'orca' | 'meteora' | 'meteora_balanced' | 'pumpswap';
+type WsStats = { attached?: number; events?: number };
+type WsTargetsState = Partial<Record<DexKey, number>>;
+type WsDetailsState = Partial<Record<DexKey, WsStats>>;
 
 export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; socket?: any }> = (
   { apiBase, paused, socket }: { apiBase: string; paused?: boolean; socket?: any }
@@ -21,9 +25,9 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
   const [wsHealthy, setWsHealthy] = React.useState<boolean>(false);
   const [lastEventMs, setLastEventMs] = React.useState<number>(0);
   const [arbEnabled, setArbEnabled] = React.useState<boolean>(false);
-  const [wsDetails, setWsDetails] = React.useState<{ orca?: { attached?: number; events?: number }, raydium?: { attached?: number; events?: number }, meteora?: { attached?: number; events?: number } }>({});
+  const [wsDetails, setWsDetails] = React.useState<WsDetailsState>({});
   const [poolAges, setPoolAges] = React.useState<any | null>(null);
-  const [wsTargets, setWsTargets] = React.useState<{ orca?: number; raydium?: number; meteora?: number }>({});
+  const [wsTargets, setWsTargets] = React.useState<WsTargetsState>({});
   const [altStatus, setAltStatus] = React.useState<any | null>(null);
   const [altActionLoading, setAltActionLoading] = React.useState<string | null>(null);
   
@@ -96,7 +100,25 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
     fetch(`${apiBase}${ROUTES.arb.metricsJson}`).catch(()=>{});
     // Probe arb config to detect enabled state
     fetch(`${apiBase}${ROUTES.arb.config}`).then(r=>r.json()).then((j)=>{ if (j && typeof j.enabled === 'boolean') setArbEnabled(!!j.enabled); }).catch(()=>{});
-    fetch(`${apiBase}${ROUTES.pools.subscriptions}`).then(r=>r.json()).then((j)=>{ setSubscribed(!!j.wsEnabled); setWsHealthy(!!j.wsHealthy); setLastEventMs(Number(j.lastEventMs||0)); setWsDetails(j.ws || {}); setWsTargets({ orca: j?.targets?.orca?.target, raydium: j?.targets?.raydium?.target, meteora: j?.targets?.meteora?.target }); }).catch(()=>{});
+    fetch(`${apiBase}${ROUTES.pools.subscriptions}`).then(r=>r.json()).then((j)=>{
+      setSubscribed(!!j.wsEnabled);
+      setWsHealthy(!!j.wsHealthy);
+      setLastEventMs(Number(j.lastEventMs||0));
+      setWsDetails({
+        raydium: j.ws?.raydium,
+        orca: j.ws?.orca,
+        meteora: j.ws?.meteora,
+        meteora_balanced: j.ws?.meteora_balanced,
+        pumpswap: j.ws?.pumpswap,
+      });
+      setWsTargets({
+        raydium: j?.targets?.raydium?.target,
+        orca: j?.targets?.orca?.target,
+        meteora: j?.targets?.meteora?.target,
+        meteora_balanced: j?.targets?.meteora_balanced?.target,
+        pumpswap: j?.targets?.pumpswap?.target,
+      });
+    }).catch(()=>{});
     return () => {};
   }, [paused]);
 
@@ -118,7 +140,13 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
         if (!evt) return;
         setWsHealthy(!!evt.healthy);
         setLastEventMs(Number(evt.lastEventMs || 0));
-        setWsDetails({ orca: evt.orca, raydium: evt.raydium, meteora: evt.meteora });
+        setWsDetails({
+          raydium: evt.raydium,
+          orca: evt.orca,
+          meteora: evt.meteora,
+          meteora_balanced: evt.meteora_balanced,
+          pumpswap: evt.pumpswap,
+        });
       } catch {}
     };
     const onArbLog = (evt: any) => {
@@ -245,6 +273,14 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
       default: return '○';
     }
   };
+
+  const wsDexList: Array<{ key: DexKey; label: string }> = [
+    { key: 'raydium', label: 'Raydium' },
+    { key: 'orca', label: 'Orca' },
+    { key: 'meteora', label: 'Meteora DLMM' },
+    { key: 'meteora_balanced', label: 'Meteora Balanced' },
+    { key: 'pumpswap', label: 'Pumpswap' },
+  ];
 
   return (
     <div className="p-3 border rounded bg-gray-900">
@@ -495,19 +531,15 @@ export const ArbitrageMetrics: React.FC<{ apiBase: string; paused?: boolean; soc
                 </span>
                 <span className="text-gray-400 text-xs">Last event: {ago(lastEventMs)}</span>
               </div>
-              <div className="flex items-center gap-4">
-                <div>
-                  <span className="text-gray-400 text-xs">Raydium:</span>
-                  <span className="ml-1 text-sm">{wsDetails.raydium?.attached||0}/{wsTargets.raydium||0} ({wsDetails.raydium?.events||0} ev)</span>
-                </div>
-                <div>
-                  <span className="text-gray-400 text-xs">Orca:</span>
-                  <span className="ml-1 text-sm">{wsDetails.orca?.attached||0}/{wsTargets.orca||0} ({wsDetails.orca?.events||0} ev)</span>
-                </div>
-                <div>
-                  <span className="text-gray-400 text-xs">Meteora:</span>
-                  <span className="ml-1 text-sm">{wsDetails.meteora?.attached||0}/{wsTargets.meteora||0} ({wsDetails.meteora?.events||0} ev)</span>
-                </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                {wsDexList.map(({ key, label }) => (
+                  <div key={key} className="flex items-center gap-1">
+                    <span className="text-gray-400 text-xs">{label}:</span>
+                    <span className="ml-1 text-sm">
+                      {wsDetails[key]?.attached || 0}/{wsTargets[key] || 0} ({wsDetails[key]?.events || 0} ev)
+                    </span>
+                  </div>
+                ))}
               </div>
             </div>
             {typeof m.ws_push_total === 'number' || typeof m.ws_skipped_nochange_total === 'number' ? (

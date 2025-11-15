@@ -8,6 +8,16 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
   // Prefer statics from in-memory exec cache.
   const stat = executionCache.getStatic(hop.poolId);
   if (stat?.programId) hop.programId = stat.programId;
+  if (stat?.oracle && !hop.oracle) hop.oracle = stat.oracle;
+  if (stat?.account_a && !hop.vaultA) hop.vaultA = stat.account_a;
+  if (stat?.account_b && !hop.vaultB) hop.vaultB = stat.account_b;
+  if (stat?.tick_spacing && !hop.tickSpacing) hop.tickSpacing = stat.tick_spacing;
+  if (stat?.tickArrayLower && !hop.tickArrayLower) hop.tickArrayLower = stat.tickArrayLower;
+  if (stat?.tickArrayCenter && !hop.tickArrayCenter) hop.tickArrayCenter = stat.tickArrayCenter;
+  if (stat?.tickArrayUpper && !hop.tickArrayUpper) hop.tickArrayUpper = stat.tickArrayUpper;
+  if (stat?.observation_state && !hop.observationId) hop.observationId = stat.observation_state;
+  if ((stat as any)?.amm_config && !hop.ammConfig) hop.ammConfig = (stat as any).amm_config;
+  if (stat?.ex_bitmap && !(hop as any).exBitmap) (hop as any).exBitmap = stat.ex_bitmap;
 
   // Load from CLMM static cache (authoritative for arrays/oracle).
   const cached = getClmmStatic(hop.poolId.replace(/-rev$/, ''));

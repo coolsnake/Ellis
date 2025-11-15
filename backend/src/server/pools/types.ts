@@ -63,6 +63,8 @@ export type ClmmPool = {
   amount_b?: number;
   decimals_a?: number;
   decimals_b?: number;
+  active_id?: number;
+  bin_step?: number;
   // Optional token vault accounts for CLMM pool
   account_a?: string;
   account_b?: string;
@@ -82,9 +84,15 @@ export type ClmmPool = {
   bin_array_bitmap_extension?: string;  // PDA for tracking initialized bin arrays
   token_program_a?: 'spl-token' | 'token-2022';
   token_program_b?: 'spl-token' | 'token-2022';
+  meteora_bin_hash?: string;
+  bin_array_lower?: string;
+  bin_array_upper?: string;
   // Raydium CLMM-specific
   observation_state?: string;           // Observation state account (oracle data)
   ex_bitmap?: string;                   // Extended bitmap for tick array tracking
+  tick_array_lower?: string;
+  tick_array_center?: string;
+  tick_array_upper?: string;
   // Orca Whirlpool-specific
   oracle?: string;                      // Oracle account for price observation
   token_vault_a?: string;               // Token vault A (alternative name for account_a)

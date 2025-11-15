@@ -5,11 +5,13 @@ type PoolStatic = {
   programId: string;
   dex?: string;
   vaults?: { a?: string; b?: string };
+  // Common execution accounts
   authorities?: Record<string, string>;
   serum?: Record<string, string>;
   oracle?: string;
   tickSpacing?: number;
   binStep?: number;
+  amm_config?: string;
   // OPTIMIZATION: Store raw account data from WebSocket for local decoding
   // This eliminates RPC calls in builders that need to decode pool state
   rawAccountData?: Buffer;
@@ -39,6 +41,9 @@ type PoolStatic = {
   // Raydium CLMM-specific
   observation_state?: string;           // Observation state account (oracle data)
   ex_bitmap?: string;                   // Extended bitmap for tick array tracking
+  tickArrayLower?: string;
+  tickArrayCenter?: string;
+  tickArrayUpper?: string;
   // Orca Whirlpool-specific
   token_vault_a?: string;               // Token vault A
   token_vault_b?: string;               // Token vault B
@@ -46,6 +51,7 @@ type PoolStatic = {
   account_a?: string;
   account_b?: string;
   tick_spacing?: number;
+  bin_array_bitmap_extension?: string;
 };
 
 type PoolHot = {

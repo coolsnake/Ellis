@@ -828,43 +828,66 @@ export const App: React.FC = () => {
           dex: 'raydium'|'orca'|'meteora'|'meteora-balanced'|'pumpswap',
           options?: { prefer?: 'amm' | 'clmm'; inputMint?: string; outputMint?: string },
         ): Promise<string | null> => {
-          const resp = await fetch(`${apiBase}/arb/pools/${dex}?sort=tvl`);
-          const json = await resp.json();
-          const prefer = options?.prefer;
-          const clmmList: any[] = Array.isArray(json?.clmm) ? json.clmm : [];
-          const ammList: any[] = Array.isArray(json?.amm) ? json.amm : [];
-          const list = (() => {
-            if (dex === 'raydium') {
-              if (prefer === 'amm') return [...ammList, ...clmmList];
-              if (prefer === 'clmm') return [...clmmList, ...ammList];
+          const cacheBust = Date.now().toString(36);
+          const url = `${apiBase}/arb/pools/${dex}?sort=tvl&_=${cacheBust}`;
+          try {
+            const resp = await fetch(url, { cache: 'no-store' });
+            const raw = await resp.text();
+            if (!resp.ok) {
+              const reason = raw?.trim() ? ` ${raw.trim().slice(0, 160)}` : '';
+              throw new Error(`http ${resp.status}${reason}`);
             }
-            // For pumpswap and meteora-balanced, only AMM pools exist
-            if (dex === 'pumpswap' || dex === 'meteora-balanced') return ammList;
-            return [...clmmList, ...ammList];
-          })();
-          
-          // If input/output mints are provided, filter by that pair; otherwise default to SOL/USDC
-          const inputMint = options?.inputMint || SOL;
-          const outputMint = options?.outputMint || USDC;
-          
-          // For pumpswap, if no SOL/USDC pool exists, return first available pool
-          // (pumpswap is for pump.fun meme tokens, not typically SOL/USDC)
-          if (dex === 'pumpswap') {
+            let json: any = {};
+            try {
+              json = raw ? JSON.parse(raw) : {};
+            } catch {
+              throw new Error('invalid pool response');
+            }
+            const prefer = options?.prefer;
+            const clmmList: any[] = Array.isArray(json?.clmm) ? json.clmm : [];
+            const ammList: any[] = Array.isArray(json?.amm) ? json.amm : [];
+            const list = (() => {
+              if (dex === 'raydium') {
+                if (prefer === 'amm') return [...ammList, ...clmmList];
+                if (prefer === 'clmm') return [...clmmList, ...ammList];
+              }
+              // For pumpswap and meteora-balanced, only AMM pools exist
+              if (dex === 'pumpswap' || dex === 'meteora-balanced') return ammList;
+              return [...clmmList, ...ammList];
+            })();
+            
+            // If input/output mints are provided, filter by that pair; otherwise default to SOL/USDC
+            const inputMint = options?.inputMint || SOL;
+            const outputMint = options?.outputMint || USDC;
+            
+            // For pumpswap, if no SOL/USDC pool exists, return first available pool
+            // (pumpswap is for pump.fun meme tokens, not typically SOL/USDC)
+            if (dex === 'pumpswap') {
+              const match = list.find((p: any) => {
+                const a = String(p?.mint_a || p?.mintA || '').trim();
+                const b = String(p?.mint_b || p?.mintB || '').trim();
+                return (a === inputMint && b === outputMint) || (a === outputMint && b === inputMint);
+              });
+              // If no match for requested pair, return first available pool
+              return match ? String(match.id) : (list.length > 0 ? String(list[0].id) : null);
+            }
+            
             const match = list.find((p: any) => {
               const a = String(p?.mint_a || p?.mintA || '').trim();
               const b = String(p?.mint_b || p?.mintB || '').trim();
               return (a === inputMint && b === outputMint) || (a === outputMint && b === inputMint);
             });
-            // If no match for requested pair, return first available pool
-            return match ? String(match.id) : (list.length > 0 ? String(list[0].id) : null);
+            return match ? String(match.id) : null;
+          } catch (err: any) {
+            try {
+              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ level: 'error', message: `terminal: failed to load ${dex} pools (${String(err?.message || err)})` }),
+              });
+            } catch {}
+            return null;
           }
-          
-          const match = list.find((p: any) => {
-            const a = String(p?.mint_a || p?.mintA || '').trim();
-            const b = String(p?.mint_b || p?.mintB || '').trim();
-            return (a === inputMint && b === outputMint) || (a === outputMint && b === inputMint);
-          });
-          return match ? String(match.id) : null;
         };
 
         const buildTwoHopBody = async (dex: 'raydium'|'orca'|'meteora', variant?: 'amm'|'clmm', poolId?: string) => {
