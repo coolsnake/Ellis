@@ -32,6 +32,7 @@ mod algos;
 use algos::{detect_near_miss_cycles, detect_negative_cycles, detect_negative_cycles_filtered};
 
 const REJECTED_DEBUG_LIMIT: usize = 15;
+const REJECTED_DEBUG_TTL_MS: u64 = 30_000;
 
 #[derive(Default, serde::Serialize, serde::Deserialize, Clone)]
 struct ArbConfig {
@@ -115,6 +116,7 @@ struct AppState {
     config: ArbConfig,
     opportunities: Vec<Opportunity>,
     rejected_opportunities: Vec<RejectedOpportunity>,
+    rejected_opportunities_updated_ms: u64,
     graph: ArbGraph,
     metrics: Metrics,
     events: Vec<EventItem>,
@@ -292,6 +294,7 @@ async fn main() -> anyhow::Result<()> {
         config: default_config(),
         opportunities: Vec::new(),
         rejected_opportunities: Vec::new(),
+        rejected_opportunities_updated_ms: 0,
         graph: ArbGraph::new(),
         metrics: Metrics::default(),
         events: Vec::new(),
@@ -321,6 +324,7 @@ async fn main() -> anyhow::Result<()> {
             s.graph = ArbGraph::new();
             s.opportunities.clear();
             s.rejected_opportunities.clear();
+            s.rejected_opportunities_updated_ms = 0;
             s.near_miss = None;
             s.near_miss_shortfall_bps = None;
             s.pending_added_edges.clear();
@@ -2682,7 +2686,16 @@ async fn main() -> anyhow::Result<()> {
 
                 // Always check and update near_misses if they changed (even if opportunities didn't)
                 let mut s = loop_state.write().await;
-                s.rejected_opportunities = rejected_samples;
+                if !rejected_samples.is_empty() {
+                    s.rejected_opportunities = rejected_samples;
+                    s.rejected_opportunities_updated_ms = now_ms_val;
+                } else {
+                    let last = s.rejected_opportunities_updated_ms;
+                    if last > 0 && now_ms_val.saturating_sub(last) > REJECTED_DEBUG_TTL_MS {
+                        s.rejected_opportunities.clear();
+                        s.rejected_opportunities_updated_ms = 0;
+                    }
+                }
                 let mut near_misses_changed = false;
                 // Build top-K near-misses list for UI with updated profit values
                 let mut nlist = near_list;
@@ -4194,6 +4207,7 @@ mod tests {
             },
             opportunities: Vec::new(),
             rejected_opportunities: Vec::new(),
+            rejected_opportunities_updated_ms: 0,
             graph: ArbGraph::new(),
             metrics: Metrics::default(),
             events: Vec::new(),
@@ -4728,6 +4742,7 @@ mod e2e_tests {
             config: default_config(),
             opportunities: Vec::new(),
             rejected_opportunities: Vec::new(),
+            rejected_opportunities_updated_ms: 0,
             graph: ArbGraph::new(),
             metrics: Metrics::default(),
             events: Vec::new(),
@@ -4842,6 +4857,7 @@ mod e2e_tests {
             config: default_config(),
             opportunities: Vec::new(),
             rejected_opportunities: Vec::new(),
+            rejected_opportunities_updated_ms: 0,
             graph: ArbGraph::new(),
             metrics: Metrics::default(),
             events: Vec::new(),
