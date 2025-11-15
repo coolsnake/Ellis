@@ -311,9 +311,9 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
     const incomingPrice = Number(it?.price ?? it?.price_a_per_b ?? it?.priceAperB ?? 0);
     if (isWhirlpool && id && sqrt_price_x64 > 0) {
       const sqrtRaw = anyToBigInt(sqrtPriceStr);
-      let priceRatio = sqrtRaw && Number.isFinite(decA) && Number.isFinite(decB)
-        ? sqrtPriceX64ToPriceRatio(sqrtRaw, decA as number, decB as number)
-        : null;
+      // Store original decimals for comparison
+      const origDecA = decA;
+      const origDecB = decB;
       let cA = mint_a; let cB = mint_b; let cDecA = decA; let cDecB = decB; let cAmtA = amount_a; let cAmtB = amount_b;
       
       // Ensure decimals are definitely set before computing price
@@ -337,6 +337,28 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
         } catch {}
       }
       
+      // CRITICAL: Calculate priceRatio AFTER decimals are finalized to ensure consistency
+      let priceRatio = sqrtRaw && Number.isFinite(cDecA) && Number.isFinite(cDecB)
+        ? sqrtPriceX64ToPriceRatio(sqrtRaw, cDecA as number, cDecB as number)
+        : null;
+      
+      // DIAGNOSTIC: Log if decimals changed (which would invalidate any earlier price calculation)
+      if ((Number.isFinite(origDecA) && Number.isFinite(cDecA) && origDecA !== cDecA) ||
+          (Number.isFinite(origDecB) && Number.isFinite(cDecB) && origDecB !== cDecB)) {
+        try {
+          logger.info('orca.decimals.updated', {
+            id: id.slice(0, 8) + '...',
+            mint_a: cA?.slice(0, 8) + '...',
+            mint_b: cB?.slice(0, 8) + '...',
+            origDecA,
+            origDecB,
+            finalDecA: cDecA,
+            finalDecB: cDecB,
+            cat: 'orca'
+          });
+        } catch {}
+      }
+      
       let priceFromSqrt = 0;
       if (sqrt_price_x64 > 0 && Number.isFinite(cDecA) && Number.isFinite(cDecB)) {
         try {
@@ -351,7 +373,8 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
           const aPerB = scale / (ratio * ratio);
           
           // DIAGNOSTIC: Log price calculation details for debugging magnitude issues
-          const shouldLog = (id.includes('JCD6') || id.includes('HrLm') || id.includes('C1Mg'));
+          const shouldLog = (id.includes('JCD6') || id.includes('HrLm') || id.includes('C1Mg') || 
+                           id.includes('21gTfx') || id.includes('FpCMFD'));
           if (shouldLog || (aPerB > 10000 || aPerB < 0.0001)) {
             try {
               logger.info('orca.priceFromSqrt.details', {
@@ -371,6 +394,33 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
           }
           
           if (Number.isFinite(aPerB) && aPerB > 0) priceFromSqrt = aPerB;
+          
+          // CONSISTENCY CHECK: Compare manual calculation with priceRatio.float
+          if (priceRatio?.float && Number.isFinite(priceRatio.float) && priceRatio.float > 0) {
+            const priceFromRatio = priceRatio.float;
+            const priceDiff = Math.abs(priceFromSqrt - priceFromRatio);
+            const priceRatio_pct = priceFromRatio > 0 ? (priceDiff / priceFromRatio) * 100 : 0;
+            
+            // If there's a significant difference, log it and prefer the precise ratio calculation
+            if (priceRatio_pct > 1) {  // More than 1% difference
+              try {
+                logger.warn('orca.price.calculation.mismatch', {
+                  id: id.slice(0, 8) + '...',
+                  mint_a: cA?.slice(0, 8) + '...',
+                  mint_b: cB?.slice(0, 8) + '...',
+                  priceFromManual: priceFromSqrt,
+                  priceFromRatio: priceFromRatio,
+                  diff_pct: priceRatio_pct,
+                  decA: cDecA,
+                  decB: cDecB,
+                  hint: 'Using priceRatio.float as it is more precise',
+                  cat: 'orca'
+                });
+              } catch {}
+              // Prefer the precise bigint-based calculation
+              priceFromSqrt = priceFromRatio;
+            }
+          }
         } catch (e) {
           // If sqrt calculation fails, log for debugging
           try {
@@ -612,7 +662,45 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
     }
   }
   // Canonicalize pairs using unified policy; handles A/B swap and price inversion when needed
+  // DIAGNOSTIC: Log specific pools BEFORE canonicalization
+  try {
+    const trackedPools = ['21gTfxAnhUDjJGZJDkTXctGFKT8TeiXx6pN1CEg9K1uW', 'FpCMFDFGYotvufJ7HrFHsWEiiQCGbkLCtwHiDnh7o28Q'];
+    for (const pool of clmm) {
+      if (trackedPools.some(tid => pool.id.includes(tid))) {
+        logger.info('orca.pre-canonicalization.tracked', {
+          id: pool.id,
+          mint_a: pool.mint_a,
+          mint_b: pool.mint_b,
+          price_a_per_b: pool.price_a_per_b,
+          decimals_a: (pool as any).decimals_a,
+          decimals_b: (pool as any).decimals_b,
+          sqrt_price_x64: pool.sqrt_price_x64,
+          cat: 'orca'
+        });
+      }
+    }
+  } catch {}
+  
   const clmmCanon = canonicalizePairs(clmm);
+  
+  // DIAGNOSTIC: Log specific pools after canonicalization to track price changes
+  try {
+    const trackedPools = ['21gTfxAnhUDjJGZJDkTXctGFKT8TeiXx6pN1CEg9K1uW', 'FpCMFDFGYotvufJ7HrFHsWEiiQCGbkLCtwHiDnh7o28Q'];
+    for (const pool of clmmCanon) {
+      if (trackedPools.some(tid => pool.id.includes(tid))) {
+        logger.info('orca.canonicalized.tracked', {
+          id: pool.id,
+          mint_a: pool.mint_a,
+          mint_b: pool.mint_b,
+          price_a_per_b: pool.price_a_per_b,
+          decimals_a: (pool as any).decimals_a,
+          decimals_b: (pool as any).decimals_b,
+          sqrt_price_x64: pool.sqrt_price_x64,
+          cat: 'orca'
+        });
+      }
+    }
+  } catch {}
   
   // Verify canonicalization: ensure price inversion happens correctly when mints are swapped
   try {

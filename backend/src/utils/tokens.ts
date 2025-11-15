@@ -22,11 +22,50 @@ export async function loadTokenMap(): Promise<TokenMap> {
 
 const resolveCache: Record<string, { mint: string; decimals: number }> = {};
 
+// File write lock to prevent race conditions when multiple calls try to update tokens.json
+let tokenMapWriteLock: Promise<void> | null = null;
+
+async function safeWriteTokenMap(updates: Record<string, { mint: string; decimals: number }>): Promise<void> {
+  // Wait for any in-progress write to complete
+  while (tokenMapWriteLock) {
+    try {
+      await tokenMapWriteLock;
+    } catch {}
+  }
+  
+  // Acquire lock
+  const lockPromise = (async () => {
+    try {
+      const current = await loadTokenMap().catch(() => ({
+        SOL: { mint: 'So11111111111111111111111111111111111111112', decimals: 9 },
+        USDC: { mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', decimals: 6 },
+      }));
+      
+      // Merge updates
+      for (const [key, value] of Object.entries(updates)) {
+        const prev = current[key] || {} as any;
+        current[key] = { ...prev, ...value };
+      }
+      
+      await writeJson(CONFIG.tokensPath, current);
+    } finally {
+      // Release lock
+      tokenMapWriteLock = null;
+    }
+  })();
+  
+  tokenMapWriteLock = lockPromise;
+  await lockPromise;
+}
+
 export async function resolveMint(symbolOrMint: string): Promise<{ mint: string; decimals: number }> {
   const input = symbolOrMint || '';
   const upper = input.toUpperCase();
   if (resolveCache[upper]) return resolveCache[upper];
-  const map = await loadTokenMap();
+  const map = await loadTokenMap().catch(() => ({
+    SOL: { mint: 'So11111111111111111111111111111111111111112', decimals: 9 },
+    USDC: { mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', decimals: 6 },
+  }));
   if (map[upper]) {
     resolveCache[upper] = map[upper];
     return map[upper];
@@ -89,11 +128,13 @@ export async function resolveMint(symbolOrMint: string): Promise<{ mint: string;
   const results = await searchTokens(input).catch(() => []);
   const first = results[0];
   if (first?.id) {
-    // persist mapping for future lookups (merge to preserve existing fields like usdc/sol)
-    const current = await loadTokenMap();
-    const prev = current[upper] || {} as any;
-    current[upper] = { ...prev, mint: first.id, decimals: first.decimals ?? 6 } as any;
-    await writeJson(CONFIG.tokensPath, current);
+    // Update in-memory cache immediately
+    const result = { mint: first.id, decimals: first.decimals ?? 6 };
+    resolveCache[upper] = result;
+    
+    // Persist mapping for future lookups (non-blocking with lock to prevent races)
+    safeWriteTokenMap({ [upper]: result }).catch(() => {});
+    
     // Opportunistic price bootstrap for the newly discovered token
     try {
       const { fetchPricesByMints } = await import('../jupiter/jupiter.js');
@@ -101,8 +142,8 @@ export async function resolveMint(symbolOrMint: string): Promise<{ mint: string;
       const fresh = await fetchPricesByMints([first.id], { catOverride: 'token-resolve' });
       setPrices(fresh);
     } catch {}
-    resolveCache[upper] = current[upper];
-    return current[upper];
+    
+    return result;
   }
   throw new Error(`Unknown token: ${symbolOrMint}`);
 }

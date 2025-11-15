@@ -13,6 +13,18 @@ export async function readJson<T>(filePath: string, fallback: T): Promise<T> {
     if (error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) {
       return fallback;
     }
+    // Handle corrupted/incomplete JSON (race condition during concurrent writes)
+    if (error && error.message && error.message.includes('JSON')) {
+      // Try one more time after a brief delay in case file write is completing
+      await new Promise(resolve => setTimeout(resolve, 10));
+      try {
+        const content = await fs.readFile(filePath, 'utf-8');
+        return JSON.parse(content) as T;
+      } catch {
+        // Still failed - return fallback rather than crashing
+        return fallback;
+      }
+    }
     throw error;
   }
 }
