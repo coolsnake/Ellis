@@ -2034,6 +2034,22 @@ export function startRaydiumRefreshLoop(): void {
             const isMeteoraTarget = meteoraTargets.has(pk58);
             const mapped = targetedSourceByAccount.get(pk58);
             
+            // CRITICAL FIX: Reject SPL token accounts (vaults) from being decoded as pools
+            // Vaults are owned by the Token Program, not DEX programs
+            // This prevents vault addresses from being used as pool IDs in the graph
+            const TOKEN_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+            if (owner === TOKEN_PROGRAM_ID) {
+              try {
+                logger.debug('pools.ws vault.rejected', {
+                  account: pk58.slice(0,8)+'…',
+                  reason: 'spl_token_account_cannot_be_pool',
+                  owner: TOKEN_PROGRAM_ID,
+                  cat: 'pools'
+                });
+              } catch {}
+              return; // Skip SPL token accounts entirely
+            }
+            
             // Info log for pumpswap and meteora_balanced events to track idle timer
             if (mapped === 'pumpswap' || mapped === 'meteora_balanced') {
               const idleBeforeMs = Date.now() - beforeMs;
@@ -2191,6 +2207,41 @@ export function startRaydiumRefreshLoop(): void {
                       // Skip adding to CLMM list if tickSpacing is invalid (must be > 0 for valid CLMM pools)
                       if (tick > 0) {
                         const fee = Number((state as any).tradeFeeRate ?? (state as any).feeRate ?? (state as any).fee_rate ?? 0);
+                        
+                        // CRITICAL VALIDATION: Ensure this is actually a pool account, not a vault
+                        // Pools must have valid mints, and the account address should NOT be in derivedAccountToPool
+                        const isKnownDerivedAccount = derivedAccountToPool.has(pk58);
+                        if (isKnownDerivedAccount) {
+                          const derivedMeta = derivedAccountToPool.get(pk58);
+                          try {
+                            logger.warn('raydium.ws clmm.vault_as_pool.prevented', {
+                              account: pk58.slice(0,8)+'…',
+                              accountType: derivedMeta?.accountType,
+                              parentPool: derivedMeta?.poolId?.slice(0,8)+'…',
+                              reason: 'account_is_vault_not_pool',
+                              cat: 'pools'
+                            });
+                          } catch {}
+                          throw new Error('vault account cannot be decoded as pool');
+                        }
+                        
+                        // Additional validation: Pools should have vault fields in their state
+                        const hasVaultFields = !!(
+                          (state as any)?.vaultA || (state as any)?.tokenVault0 || 
+                          (state as any)?.vaultB || (state as any)?.tokenVault1
+                        );
+                        if (!hasVaultFields) {
+                          try {
+                            logger.debug('raydium.ws clmm.missing_vault_fields', {
+                              account: pk58.slice(0,8)+'…',
+                              reason: 'pool_must_have_vault_fields',
+                              stateKeys: Object.keys(state || {}).slice(0, 20),
+                              cat: 'pools'
+                            });
+                          } catch {}
+                          // Don't throw here, as some SDK versions might use different field names
+                        }
+                        
                         const item: ClmmPool = {
                           id: pk58,
                           dex: 'Raydium',
@@ -2332,6 +2383,23 @@ export function startRaydiumRefreshLoop(): void {
                           if (wholeA > 0 && wholeB > 0) price_a_per_b = wholeA / wholeB;
                         } catch {}
                         const liqBase = (rA > 0 && rB > 0) ? Math.min(rA, rB) : 0;
+                        
+                        // CRITICAL VALIDATION: Ensure this is actually a pool account, not a vault
+                        const isKnownDerivedAccount = derivedAccountToPool.has(pk58);
+                        if (isKnownDerivedAccount) {
+                          const derivedMeta = derivedAccountToPool.get(pk58);
+                          try {
+                            logger.warn('raydium.ws amm.vault_as_pool.prevented', {
+                              account: pk58.slice(0,8)+'…',
+                              accountType: derivedMeta?.accountType,
+                              parentPool: derivedMeta?.poolId?.slice(0,8)+'…',
+                              reason: 'account_is_vault_not_pool',
+                              cat: 'pools'
+                            });
+                          } catch {}
+                          throw new Error('vault account cannot be decoded as pool');
+                        }
+                        
                         const item: AmmPool = { id: pk58, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps: Number((state as any).tradeFeeRate || (state as any).feeRate || 0), price_a_per_b, liquidity_base: liqBase, updated_ms: Date.now(), pool_kind: 'amm', liquidity_display: liqBase } as any;
                         
                         // Validate decoded pool before applying
@@ -2497,6 +2565,23 @@ export function startRaydiumRefreshLoop(): void {
                   const liquidity = Number(parsed.liquidity);
                   const tick_spacing = Number(parsed.tickSpacing);
                   const fee_bps = deriveOrcaFeeBps(parsed as any);
+                  
+                  // CRITICAL VALIDATION: Ensure this is actually a pool account, not a vault
+                  const isKnownDerivedAccount = derivedAccountToPool.has(id);
+                  if (isKnownDerivedAccount) {
+                    const derivedMeta = derivedAccountToPool.get(id);
+                    try {
+                      logger.warn('orca.ws vault_as_pool.prevented', {
+                        account: id.slice(0,8)+'…',
+                        accountType: derivedMeta?.accountType,
+                        parentPool: derivedMeta?.poolId?.slice(0,8)+'…',
+                        reason: 'account_is_vault_not_pool',
+                        cat: 'pools'
+                      });
+                    } catch {}
+                    throw new Error('vault account cannot be decoded as pool');
+                  }
+                  
                   const clmmItem: ClmmPool = {
                     id,
                     dex: 'Orca',
@@ -2814,6 +2899,23 @@ export function startRaydiumRefreshLoop(): void {
                     const liquidity = liquidityRaw ? Number(liquidityRaw) : Number((state as any)?.liquidity ?? 0);
                     const sqrtPriceRaw = anyToBigInt((state as any)?.sqrtPriceX64 ?? (state as any)?.sqrt_price_x64 ?? 0);
                     const feeBps = Number((state as any)?.tradeFeeRate ?? (state as any)?.feeRate ?? (state as any)?.fee_rate ?? (state as any)?.fees ?? 0);
+                    
+                    // CRITICAL VALIDATION: Ensure this is actually a pool account, not a reserve/bin array
+                    const isKnownDerivedAccount = derivedAccountToPool.has(poolId);
+                    if (isKnownDerivedAccount) {
+                      const derivedMeta = derivedAccountToPool.get(poolId);
+                      try {
+                        logger.warn('meteora.ws derived_as_pool.prevented', {
+                          account: poolId.slice(0,8)+'…',
+                          accountType: derivedMeta?.accountType,
+                          parentPool: derivedMeta?.poolId?.slice(0,8)+'…',
+                          reason: 'account_is_derived_not_pool',
+                          cat: 'pools'
+                        });
+                      } catch {}
+                      throw new Error('derived account cannot be decoded as pool');
+                    }
+                    
                     const item: ClmmPool = {
                       id: poolId,
                       dex: 'Meteora',
@@ -5093,15 +5195,23 @@ export function disablePoolWebsocketRefreshes(): void {
     // Reset wsSetupActive to allow new setup to proceed
     wsSetupActive = false;
     
-    // Clear Meteora bin trackers to prevent stale subscription references
+    // Clear ALL tracking maps to prevent stale subscription references
     // that could trigger _updateSubscriptions after shutdown
     try {
+      // Meteora bin trackers
       meteoraBinTrackers.clear();
       meteoraBinAccountToPool.clear();
-      vaultBalanceCache.clear(); // Clear vault cache to prevent stale data
+      
+      // Derived account mappings (vaults, reserves, tick arrays, oracles, observations)
+      // These track all accounts subscribed to for pools in the graph
+      derivedAccountToPool.clear();
+      poolsWithDerivedAccounts.clear();
+      
+      // Vault balance cache
+      vaultBalanceCache.clear();
     } catch {}
     
-    logger.info('pools.ws unsubscribed');
+    logger.info('pools.ws unsubscribed - all subscriptions and tracking maps cleared');
   } catch {}
 }
 

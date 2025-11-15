@@ -165,6 +165,23 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       .map(it => String(it?.address || it?.id || it?.poolAddress || ''))
       .filter(id => typeof id === 'string' && id.length > 0)
   );
+  const anchorDecimals = new Map<string, number>([
+    ['So11111111111111111111111111111111111111112', 9],
+    ['EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', 6],
+    ['Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', 6],
+    ['USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB', 6],
+  ]);
+  const resolveAuthoritativeDecimals = (mint: string, fallback?: number): number | undefined => {
+    if (!mint) return Number.isFinite(fallback as number) ? Number(fallback) : undefined;
+    const anchor = anchorDecimals.get(mint);
+    if (Number.isFinite(anchor)) return anchor as number;
+    const enriched = enrichedDecimals.get(mint);
+    if (Number.isFinite(enriched)) return enriched;
+    const jup = jupMap?.[mint];
+    if (Number.isFinite(jup?.decimals)) return Number(jup.decimals);
+    if (Number.isFinite(fallback as number)) return Number(fallback);
+    return undefined;
+  };
   
   // Enrich missing token decimals before price calculations
   try {
@@ -456,6 +473,12 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
   }
   // Canonicalize pairs using unified policy; handles A/B swap and price inversion when needed
   const clmmCanon = canonicalizePairs(clmm);
+  for (const pool of clmmCanon) {
+    const da = resolveAuthoritativeDecimals(pool.mint_a, (pool as any)?.decimals_a);
+    const db = resolveAuthoritativeDecimals(pool.mint_b, (pool as any)?.decimals_b);
+    if (Number.isFinite(da)) (pool as any).decimals_a = da;
+    if (Number.isFinite(db)) (pool as any).decimals_b = db;
+  }
   
   // Verify canonicalization: ensure price inversion happens correctly when mints are swapped
   try {

@@ -495,6 +495,34 @@ class GraphPushOrchestrator {
         }
 
         if (acked) pushStats.success += 1; else pushStats.failed += 1;
+        
+        // If we have too many consecutive failures (10+), force a snapshot resync
+        if (!acked && pushStats.failed >= 10 && pushStats.success < 3) {
+          try {
+            logger.warn('arb.push excessive failures, triggering resync', { 
+              failed: pushStats.failed, 
+              success: pushStats.success 
+            });
+            
+            // Clear the queue and send a fresh snapshot
+            this.queue.length = 0;
+            this.queuedVersions.clear();
+            
+            const { getGraphSnapshot } = await import('./graph.js');
+            const snap = await getGraphSnapshot(true);
+            if (snap && Array.isArray((snap as any).edges) && (snap as any).edges.length > 0) {
+              // Reset stats before enqueueing
+              pushStats.success = 0;
+              pushStats.failed = 0;
+              await this.enqueueSnapshot(snap);
+            }
+          } catch (e: any) {
+            try {
+              logger.error('arb.push resync failed', { error: String(e?.message || e) });
+            } catch {}
+          }
+        }
+        
         pushBounded(pushStats.ackMs, waited);
         try {
           logger.info('arb.push ack', { kind: job.kind, acked, waited_ms: waited, wantVersion, queue_depth: this.queue.length, push_success: pushStats.success, push_failed: pushStats.failed });

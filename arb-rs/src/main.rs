@@ -131,6 +131,9 @@ struct AppState {
     pending_removed_edge_ids: Vec<String>,
     pending_graph_version: AtomicU64, // Changed to AtomicU64, use u64::MAX as "None" sentinel
     pending_graph_ts: AtomicU64,      // Changed to AtomicU64, use u64::MAX as "None" sentinel
+    // Resync tracking
+    consecutive_empty_cycles: AtomicU64,
+    last_resync_attempt_ms: AtomicU64,
     // Event-driven wakeup for detection loop
     wake: Arc<Notify>,
     // Detection bookkeeping and execution markers
@@ -308,6 +311,8 @@ async fn main() -> anyhow::Result<()> {
         pending_removed_edge_ids: Vec::new(),
         pending_graph_version: AtomicU64::new(u64::MAX),
         pending_graph_ts: AtomicU64::new(u64::MAX),
+        consecutive_empty_cycles: AtomicU64::new(0),
+        last_resync_attempt_ms: AtomicU64::new(0),
         wake: Arc::new(Notify::new()),
         detection_counts: std::collections::HashMap::new(),
         executed_keys: std::collections::HashSet::new(),
@@ -3008,6 +3013,92 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
 
+                // RESYNC LOGIC: Detect if we're falling behind and need to request a snapshot
+                {
+                    let s = loop_state.read().await;
+                    let last_version = s.last_graph_version.load(Ordering::Acquire);
+                    let pending_version = s.pending_graph_version.load(Ordering::Acquire);
+                    let last_resync = s.last_resync_attempt_ms.load(Ordering::Acquire);
+                    let now = now_ms();
+                    
+                    // Track empty cycles (no pending updates)
+                    let empty_cycle = pending_version == u64::MAX && 
+                                      s.pending_added_edges.is_empty() && 
+                                      s.pending_updated_edges.is_empty() && 
+                                      s.pending_removed_edge_ids.is_empty();
+                    
+                    if empty_cycle {
+                        let prev_empty = s.consecutive_empty_cycles.fetch_add(1, Ordering::Relaxed);
+                        
+                        // After 5 empty cycles, check if we're out of sync (but not more often than every 30 seconds)
+                        if prev_empty >= 4 && now.saturating_sub(last_resync) > 30_000 {
+                            drop(s);
+                            
+                            // Query backend for current version
+                            let api_base = std::env::var("BACKEND_API_BASE")
+                                .unwrap_or_else(|_| "http://127.0.0.1:3001/api".into());
+                            let version_url = format!("{}/arb/graph/version", api_base.trim_end_matches('/'));
+                            
+                            if let Ok(Ok(resp)) = tokio::time::timeout(
+                                std::time::Duration::from_millis(500),
+                                reqwest::Client::new().get(&version_url).send(),
+                            ).await {
+                                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                    if let Some(backend_version) = json["version"].as_u64() {
+                                        let version_gap = backend_version.saturating_sub(last_version);
+                                        
+                                        // If we're 5+ versions behind, request resync
+                                        if version_gap >= 5 {
+                                            tracing::warn!(
+                                                last_version,
+                                                backend_version,
+                                                gap = version_gap,
+                                                "arb.resync: detected version lag, requesting snapshot"
+                                            );
+                                            
+                                            // Update last resync attempt time
+                                            loop_state.read().await.last_resync_attempt_ms.store(now, Ordering::Release);
+                                            
+                                            // Request snapshot from backend
+                                            let snapshot_url = format!("{}/arb/graph/current", api_base.trim_end_matches('/'));
+                                            if let Ok(Ok(snap_resp)) = tokio::time::timeout(
+                                                std::time::Duration::from_millis(5000),
+                                                reqwest::Client::new().get(&snapshot_url).send()
+                                            ).await {
+                                                if let Ok(snap_json) = snap_resp.json::<GraphSnapshotReq>().await {
+                                                    // Process snapshot
+                                                    let result = handle_graph_snapshot(loop_state.clone(), snap_json).await;
+                                                    tracing::info!(result = ?result, "arb.resync: snapshot applied");
+                                                    
+                                                    // Reset empty cycle counter after successful resync
+                                                    loop_state.read().await.consecutive_empty_cycles.store(0, Ordering::Relaxed);
+                                                } else {
+                                                    tracing::warn!("arb.resync: failed to parse snapshot response");
+                                                }
+                                            } else {
+                                                tracing::warn!("arb.resync: snapshot request timeout or error");
+                                            }
+                                        } else if version_gap > 0 {
+                                            tracing::info!(
+                                                last_version,
+                                                backend_version,
+                                                gap = version_gap,
+                                                "arb.resync: minor version lag, waiting for push"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // Reset counter after check
+                            loop_state.read().await.consecutive_empty_cycles.store(0, Ordering::Relaxed);
+                        }
+                    } else {
+                        // Reset counter when we get updates
+                        s.consecutive_empty_cycles.store(0, Ordering::Relaxed);
+                    }
+                }
+
                 // Update last_detection_ms metric for monitoring only
                 {
                     let mut s = loop_state.write().await;
@@ -4916,6 +5007,8 @@ mod e2e_tests {
             pending_removed_edge_ids: Vec::new(),
             pending_graph_version: AtomicU64::new(u64::MAX),
             pending_graph_ts: AtomicU64::new(u64::MAX),
+            consecutive_empty_cycles: AtomicU64::new(0),
+            last_resync_attempt_ms: AtomicU64::new(0),
             wake: Arc::new(Notify::new()),
             detection_counts: HashMap::new(),
             executed_keys: HashSet::new(),

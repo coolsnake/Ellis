@@ -624,6 +624,34 @@ export function createArbRouter(io: SocketIOServer): Router {
     }
   });
 
+  // Endpoint for arb-rs to request current graph snapshot when it detects version lag
+  api.get('/arb/graph/current', async (req, res) => {
+    try {
+      const { getGraphSnapshot } = await import('../graph.js');
+      const snap = await getGraphSnapshot(true);
+      
+      if (!snap || !Array.isArray((snap as any).edges) || (snap as any).edges.length === 0) {
+        return res.status(404).json({ error: 'no_graph' });
+      }
+      
+      try {
+        logger.info('arb.graph.current', { 
+          version: snap.version, 
+          edges: snap.edges?.length,
+          nodes: snap.nodes?.length,
+          cat: 'arb' 
+        });
+      } catch {}
+      
+      return res.json({ graph: snap });
+    } catch (e: any) {
+      try {
+        logger.error('arb.graph.current error', { error: String(e?.message || e) });
+      } catch {}
+      return res.status(500).json({ error: 'internal_error' });
+    }
+  });
+
   api.post('/arb/start', async (req, res) => {
     try {
       const body = req.body || {};
