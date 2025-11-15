@@ -3058,7 +3058,7 @@ export function startRaydiumRefreshLoop(): void {
           let attempt = 0;
           
           // Import RPC limiter and debouncing
-          const { withRpcLimit, withDebounce } = await import('../utils/rpcLimiter.js');
+          const { withDebounce, acquireRpcSlots } = await import('../utils/rpcLimiter.js');
           
           // Use account pubkey as debounce key to prevent duplicate rapid subscriptions
           const debounceKey = `pools:accountSubscribe:${accountPk.toBase58()}`;
@@ -3071,33 +3071,37 @@ export function startRaydiumRefreshLoop(): void {
               const id = await withDebounce(
                 debounceKey,
                 async () => {
-                  return await withRpcLimit(
-                    () => conn.onAccountChange(accountPk, (info: any) => { 
-                      try { 
-                        // Log every WebSocket event for diagnostics
-                        try {
-                          logger.debug('pools.ws event.received', {
-                            account: accountPk.toBase58().slice(0,8) + '…',
-                            subscriptionId: id,
-                            dataLength: info?.data?.length || 0,
-                            cat: 'pools'
-                          });
-                        } catch {}
-                        cb(accountPk, info); 
-                      } catch (callbackErr: any) {
-                        // Log callback errors (should never happen but catch just in case)
-                        try {
-                          logger.warn('pools.ws event.callback_error', {
-                            account: accountPk.toBase58().slice(0,8) + '…',
-                            error: String(callbackErr?.message || callbackErr),
-                            cat: 'pools'
-                          });
-                        } catch {}
-                      }
-                    }),
-                    1,
-                    { module: 'pools', method: 'accountSubscribe' }
-                  );
+                  // CRITICAL FIX: Acquire RPC slot first, then call onAccountChange synchronously
+                  // onAccountChange returns synchronously, so we need to acquire the slot before calling it
+                  await acquireRpcSlots(1);
+                  
+                  // Call onAccountChange synchronously after acquiring slot
+                  // Capture subscriptionId in closure for callback logging
+                  const subscriptionId = conn.onAccountChange(accountPk, (info: any) => { 
+                    try { 
+                      // Log every WebSocket event for diagnostics
+                      try {
+                        logger.debug('pools.ws event.received', {
+                          account: accountPk.toBase58().slice(0,8) + '…',
+                          subscriptionId: subscriptionId, // ✅ FIX: Use captured variable
+                          dataLength: info?.data?.length || 0,
+                          cat: 'pools'
+                        });
+                      } catch {}
+                      cb(accountPk, info); 
+                    } catch (callbackErr: any) {
+                      // Log callback errors (should never happen but catch just in case)
+                      try {
+                        logger.warn('pools.ws event.callback_error', {
+                          account: accountPk.toBase58().slice(0,8) + '…',
+                          error: String(callbackErr?.message || callbackErr),
+                          cat: 'pools'
+                        });
+                      } catch {}
+                    }
+                  });
+                  
+                  return subscriptionId;
                 },
                 150 // 150ms debounce for account subscriptions
               );
@@ -3132,7 +3136,7 @@ export function startRaydiumRefreshLoop(): void {
           let attempt = 0;
           
           // Import RPC limiter and debouncing
-          const { withRpcLimit, withDebounce } = await import('../utils/rpcLimiter.js');
+          const { withDebounce, acquireRpcSlots } = await import('../utils/rpcLimiter.js');
           
           // Use program pubkey as debounce key
           const debounceKey = `pools:programSubscribe:${programPk.toBase58()}`;
@@ -3144,11 +3148,16 @@ export function startRaydiumRefreshLoop(): void {
               const id = await withDebounce(
                 debounceKey,
                 async () => {
-                  return await withRpcLimit(
-                    () => conn.onProgramAccountChange(programPk, (ch: any) => { try { cb(ch); } catch {} }),
-                    1,
-                    { module: 'pools', method: 'programSubscribe' }
-                  );
+                  // CRITICAL FIX: Acquire RPC slot first, then call onProgramAccountChange synchronously
+                  // onProgramAccountChange returns synchronously, so we need to acquire the slot before calling it
+                  await acquireRpcSlots(1);
+                  
+                  // Call onProgramAccountChange synchronously after acquiring slot
+                  const subscriptionId = conn.onProgramAccountChange(programPk, (ch: any) => { 
+                    try { cb(ch); } catch {} 
+                  });
+                  
+                  return subscriptionId;
                 },
                 150 // 150ms debounce for program subscriptions
               );
