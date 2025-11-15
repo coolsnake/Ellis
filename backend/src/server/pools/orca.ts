@@ -404,6 +404,28 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
       
       let priceDerived = priceFromSqrt > 0 ? priceFromSqrt : incomingCanonical;
       
+      // DIAGNOSTIC: Log when we have no price at all (will cause pool to be filtered out)
+      if (!(priceDerived > 0)) {
+        try {
+          logger.warn('orca.price.missing', {
+            id,
+            mint_a: cA,
+            mint_b: cB,
+            sqrt_price_x64,
+            decA: cDecA,
+            decB: cDecB,
+            decA_finite: Number.isFinite(cDecA),
+            decB_finite: Number.isFinite(cDecB),
+            priceFromSqrt,
+            incomingPrice,
+            amountA: cAmtA,
+            amountB: cAmtB,
+            hint: 'Pool will be filtered out due to missing price',
+            cat: 'orca'
+          });
+        } catch {}
+      }
+      
       // Magnitude-only calibration (no flips)
       try {
         const { getPriceByMint } = await import('../../server/priceStore.js');
@@ -484,6 +506,8 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
           } catch {}
         }
         
+        // CRITICAL: Always push the pool even if price is missing - the graph builder can derive it from sqrt
+        // This prevents Orca pools from being silently dropped during normalization
         clmm.push({
           id,
           dex: 'Orca',
@@ -537,6 +561,27 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
   
   if (!clmm.length) {
     logger.warn('orca.http normalized 0 clmm', { hint: 'Check inspect log for field presence and pool types' });
+  } else {
+    // DIAGNOSTIC: Log sample of normalized Orca pools to verify price data
+    try {
+      const sample = clmm.slice(0, 3).map((p) => ({
+        id: p.id.slice(0, 8) + '...',
+        mint_a: p.mint_a,
+        mint_b: p.mint_b,
+        sqrt_price_x64: p.sqrt_price_x64,
+        price_a_per_b: p.price_a_per_b,
+        decimals_a: p.decimals_a,
+        decimals_b: p.decimals_b,
+        pool_kind: p.pool_kind,
+      }));
+      logger.info('orca.http normalized sample', { 
+        total: clmm.length, 
+        withPrice: clmm.filter(p => p.price_a_per_b != null && p.price_a_per_b > 0).length,
+        withSqrt: clmm.filter(p => p.sqrt_price_x64 != null && p.sqrt_price_x64 > 0).length,
+        sample,
+        cat: 'orca' 
+      });
+    } catch {}
   }
   
   // OPTIMIZATION: Pre-cache Orca pool states to eliminate RPC calls during transaction building

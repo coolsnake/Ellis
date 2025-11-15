@@ -710,15 +710,33 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const kind = String((p as any)?.pool_kind || '');
           const s64  = Number((p as any)?.sqrt_price_x64 || 0);
           const price = Number((p as any)?.price_a_per_b);
+          const dex = String((p as any)?.dex || '');
           // Allow CLMM pools that can derive price from sqrt even if price_a_per_b is missing
+          // CRITICAL: For Orca, we MUST allow sqrt_price_x64 without price_a_per_b because the
+          // graph builder derives the price later (lines 1361-1394)
           if (!Number.isFinite(price) || price <= 0) {
-            if (!(kind === 'clmm' && s64 > 0)) return 'nonFinitePrice';
+            if (!(kind === 'clmm' && s64 > 0)) {
+              // Log when we filter out a pool for missing price
+              try {
+                logger.debug('graph.sanity.filter.price', {
+                  dex,
+                  kind,
+                  pool_id: (p as any)?.id?.slice(0, 8),
+                  mint_a: (p as any)?.mint_a,
+                  mint_b: (p as any)?.mint_b,
+                  price,
+                  sqrt_price_x64: s64,
+                  reason: 'nonFinitePrice',
+                  cat: 'graph'
+                });
+              } catch {}
+              return 'nonFinitePrice';
+            }
           }
           const aUsd = getUsd(p.mint_a);
           const bUsd = getUsd(p.mint_b);
           // Avoid double-applying price deviation sanity if source already sanitized
           const avoidDouble = (sanityCfg as any).avoidDoubleApply !== false; // default on
-          const dex = String((p as any)?.dex || '');
           const sourceSanitized = (
             // All CLMMs receive orientation/clamp handling in their dedicated blocks; avoid double-dropping here
             (kind === 'clmm') ||
@@ -727,9 +745,12 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const skipDeviation = avoidDouble && sourceSanitized;
           if (!skipDeviation && Number.isFinite(aUsd as any) && Number.isFinite(bUsd as any) && (aUsd as number) > 0 && (bUsd as number) > 0) {
             // price is A per 1 B, USD ref should be USD(B)/USD(A)
-            const ref = (bUsd as number) / (aUsd as number);
-            const dev = Math.max(price / ref, ref / price);
-            if (dev > maxDeviation) return 'priceOutliers';
+            // Skip deviation check if price is invalid (will be caught above)
+            if (Number.isFinite(price) && price > 0) {
+              const ref = (bUsd as number) / (aUsd as number);
+              const dev = Math.max(price / ref, ref / price);
+              if (dev > maxDeviation) return 'priceOutliers';
+            }
           }
           return null;
         };
@@ -1231,6 +1252,21 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         } catch { return {}; }
       };
       const orcValid = validatePoolsForGraph(orc as any);
+      // DIAGNOSTIC: Log Orca pool counts before and after validation
+      try {
+        const orcBefore = (orc.amm?.length || 0) + (orc.clmm?.length || 0);
+        const orcAfter = (orcValid.amm?.length || 0) + (orcValid.clmm?.length || 0);
+        if (orcBefore > 0) {
+          logger.info('graph.orca.validation', {
+            beforeAmm: orc.amm?.length || 0,
+            beforeClmm: orc.clmm?.length || 0,
+            afterAmm: orcValid.amm?.length || 0,
+            afterClmm: orcValid.clmm?.length || 0,
+            filtered: orcBefore - orcAfter,
+            cat: 'graph'
+          });
+        }
+      } catch {}
       let metValid = validatePoolsForGraph(met as any);
       // Fallback: if scoping would drop all and we had some Meteora upstream, keep original Meteora
       try {
@@ -1608,6 +1644,18 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           orca: { count: countDex('Orca'), sample: sample('Orca') },
           meteora: { count: countDex('Meteora'), sample: sample('Meteora') },
         });
+        // DIAGNOSTIC: Alert if Orca count is unexpectedly low
+        const orcaCount = countDex('Orca');
+        if (orcaCount === 0 && (orcValid.amm?.length || 0) + (orcValid.clmm?.length || 0) > 0) {
+          try {
+            logger.warn('graph.orca.missing_edges', {
+              orcaValidPools: (orcValid.amm?.length || 0) + (orcValid.clmm?.length || 0),
+              orcaEdges: orcaCount,
+              hint: 'Orca pools passed validation but no edges were created',
+              cat: 'graph'
+            });
+          } catch {}
+        }
       } catch {}
       try {
         const allEdges = Object.values(edgesMap);
