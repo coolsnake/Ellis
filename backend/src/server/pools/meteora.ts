@@ -9,6 +9,30 @@ import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpL
 import { getTokenMeta } from '../../execution/resolver/tokenMeta.js';
 
 const METEORA_DLMM_PROGRAM_ID = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
+const ATOMIC_INT_REGEX = /^[-+]?\d+$/;
+
+function looksLikeAtomicAmount(value: any): boolean {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && Number.isSafeInteger(value);
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return false;
+    if (/[eE\.]/.test(trimmed)) return false;
+    return ATOMIC_INT_REGEX.test(trimmed);
+  }
+  return false;
+}
+
+function normalizeAmountWithDecimals(raw: any, decimals?: number): number | undefined {
+  if (raw == null) return undefined;
+  const num = Number(raw);
+  if (!Number.isFinite(num)) return undefined;
+  if (Number.isFinite(decimals) && looksLikeAtomicAmount(raw)) {
+    return num / Math.pow(10, decimals as number);
+  }
+  return num;
+}
 
 export async function fetchMeteoraHttp(): Promise<any> {
   const METEORA_RAW_PATH = joinPath(CONFIG.cacheDir, 'meteora-raw-sample.json');
@@ -225,17 +249,27 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     let price_a_per_b = Number((it as any)?.current_price ?? (it as any)?.price ?? (it as any)?.price_a_per_b ?? 0);
     const amtAraw = (it?.reserve_x_amount ?? it?.tokenBalanceA ?? it?.tokenAAmount ?? it?.amountA ?? it?.baseAmount ?? 0);
     const amtBraw = (it?.reserve_y_amount ?? it?.tokenBalanceB ?? it?.tokenBAmount ?? it?.amountB ?? it?.quoteAmount ?? 0);
-    let amount_a = Number(typeof amtAraw === 'string' ? Number(amtAraw) : amtAraw || 0);
-    let amount_b = Number(typeof amtBraw === 'string' ? Number(amtBraw) : amtBraw || 0);
+    const amount_a_norm = normalizeAmountWithDecimals(amtAraw, decA);
+    const amount_b_norm = normalizeAmountWithDecimals(amtBraw, decB);
+    const amount_a_fallback = Number(typeof amtAraw === 'string' ? Number(amtAraw) : amtAraw || 0);
+    const amount_b_fallback = Number(typeof amtBraw === 'string' ? Number(amtBraw) : amtBraw || 0);
+    const amount_a = Number.isFinite(amount_a_norm as number)
+      ? (amount_a_norm as number)
+      : (Number.isFinite(amount_a_fallback) ? amount_a_fallback : undefined);
+    const amount_b = Number.isFinite(amount_b_norm as number)
+      ? (amount_b_norm as number)
+      : (Number.isFinite(amount_b_fallback) ? amount_b_fallback : undefined);
     const tvlUsdcRaw = (it as any)?.tvlUsdc ?? (it as any)?.tvlUsd ?? (it as any)?.liquidity;
     const tvlUsdcNum = typeof tvlUsdcRaw === 'string' ? Number(tvlUsdcRaw) : (typeof tvlUsdcRaw === 'number' ? tvlUsdcRaw : 0);
     const tvl_usd = Number.isFinite(tvlUsdcNum) && tvlUsdcNum > 0 ? tvlUsdcNum : undefined;
     const pool_liquidity_raw = (tvl_usd != null)
       ? tvl_usd
-      : (Number.isFinite(decA) && Number.isFinite(decB)
-          ? Math.min((amount_a/Math.pow(10, decA as number)), (amount_b/Math.pow(10, decB as number)))
+      : (Number.isFinite(amount_a_norm as number) && Number.isFinite(amount_b_norm as number)
+          ? Math.min(amount_a_norm as number, amount_b_norm as number)
           : undefined);
-    const liquidity_display = (tvl_usd != null) ? tvl_usd : undefined;
+    const liquidity_display = (tvl_usd != null)
+      ? tvl_usd
+      : (Number.isFinite(pool_liquidity_raw as number) ? pool_liquidity_raw : undefined);
     // Derive A-per-1-B from active bin; tests expect active bin precedence over current_price
     let usedBin = false;
     let derivedWhole: number | undefined = undefined;
@@ -260,16 +294,18 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
         }
       }
     } catch {}
-    // Fallback: derive from reserves/decimals if active-bin price not set
+    // Prefer reserve-derived orientation when decimals are known
     try {
-      const haveDecs = Number.isFinite(decA) && Number.isFinite(decB);
-      const wholeA = haveDecs && Number.isFinite(amount_a) ? (amount_a / Math.pow(10, decA as number)) : NaN;
-      const wholeB = haveDecs && Number.isFinite(amount_b) ? (amount_b / Math.pow(10, decB as number)) : NaN;
-      if (Number.isFinite(wholeA) && Number.isFinite(wholeB) && (wholeB as number) > 0) {
-        const dv = (wholeA as number) / (wholeB as number);
-        if (dv > 0 && Number.isFinite(dv)) { derivedWhole = dv; }
+      if (Number.isFinite(amount_a_norm as number) && Number.isFinite(amount_b_norm as number) && (amount_b_norm as number) > 0) {
+        const dv = (amount_a_norm as number) / (amount_b_norm as number);
+        if (dv > 0 && Number.isFinite(dv)) {
+          derivedWhole = dv;
+          if (!(price_a_per_b > 0)) {
+            price_a_per_b = dv;
+            usedWhole = true;
+          }
+        }
       }
-      if (!(price_a_per_b > 0) && derivedWhole) { price_a_per_b = derivedWhole; usedWhole = true; }
     } catch {}
     // Prefer candidate closer to USD ref (or reserve-derived ratio) between pool-derived orientations only
     try {
