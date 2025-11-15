@@ -204,10 +204,31 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
     const id = String(it?.address || it?.id || '');
     const tokenA = it?.tokenA || it?.token_a || {};
     const tokenB = it?.tokenB || it?.token_b || {};
-    let mint_a = String(tokenA?.mint || it?.mintA || '');
-    let mint_b = String(tokenB?.mint || it?.mintB || '');
-    let decA = Number((tokenA?.decimals ?? it?.decimalsA));
-    let decB = Number((tokenB?.decimals ?? it?.decimalsB));
+    // FIXED: Orca API returns tokenMintA/tokenMintB (not mintA/mintB)
+    let mint_a = String(tokenA?.mint || it?.tokenMintA || it?.mintA || '');
+    let mint_b = String(tokenB?.mint || it?.tokenMintB || it?.mintB || '');
+    // DIAGNOSTIC: Log when mints are missing from API response
+    if (!mint_a || !mint_b) {
+      try {
+        logger.warn('orca.normalizer.missing_mints', {
+          id: id.slice(0, 8) + '...',
+          has_tokenA: !!it?.tokenA,
+          has_token_a: !!it?.token_a,
+          has_tokenMintA: !!it?.tokenMintA,
+          has_mintA: !!it?.mintA,
+          has_tokenB: !!it?.tokenB,
+          has_token_b: !!it?.token_b,
+          has_tokenMintB: !!it?.tokenMintB,
+          has_mintB: !!it?.mintB,
+          tokenA_keys: tokenA ? Object.keys(tokenA).slice(0, 10) : [],
+          tokenB_keys: tokenB ? Object.keys(tokenB).slice(0, 10) : [],
+          it_keys: Object.keys(it).slice(0, 15),
+          cat: 'orca'
+        });
+      } catch {}
+    }
+    let decA = Number((tokenA?.decimals ?? it?.decimalsA ?? it?.tokenDecimalsA));
+    let decB = Number((tokenB?.decimals ?? it?.decimalsB ?? it?.tokenDecimalsB));
     const enrichedA = enrichedDecimals.get(mint_a);
     const enrichedB = enrichedDecimals.get(mint_b);
     if (typeof enrichedA === 'number' && Number.isFinite(enrichedA)) decA = enrichedA;
