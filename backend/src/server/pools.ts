@@ -3308,27 +3308,27 @@ export function startRaydiumRefreshLoop(): void {
                   // Call onAccountChange synchronously after acquiring slot
                   // Capture subscriptionId in closure for callback logging
                   const subscriptionId = conn.onAccountChange(accountPk, (info: any) => { 
-                    try { 
-                      // Log every WebSocket event for diagnostics
-                      try {
-                        logger.debug('pools.ws event.received', {
-                          account: accountPk.toBase58().slice(0,8) + '…',
+                      try { 
+                        // Log every WebSocket event for diagnostics
+                        try {
+                          logger.debug('pools.ws event.received', {
+                            account: accountPk.toBase58().slice(0,8) + '…',
                           subscriptionId: subscriptionId, // ✅ FIX: Use captured variable
-                          dataLength: info?.data?.length || 0,
-                          cat: 'pools'
-                        });
-                      } catch {}
-                      cb(accountPk, info); 
-                    } catch (callbackErr: any) {
-                      // Log callback errors (should never happen but catch just in case)
-                      try {
-                        logger.warn('pools.ws event.callback_error', {
-                          account: accountPk.toBase58().slice(0,8) + '…',
-                          error: String(callbackErr?.message || callbackErr),
-                          cat: 'pools'
-                        });
-                      } catch {}
-                    }
+                            dataLength: info?.data?.length || 0,
+                            cat: 'pools'
+                          });
+                        } catch {}
+                        cb(accountPk, info); 
+                      } catch (callbackErr: any) {
+                        // Log callback errors (should never happen but catch just in case)
+                        try {
+                          logger.warn('pools.ws event.callback_error', {
+                            account: accountPk.toBase58().slice(0,8) + '…',
+                            error: String(callbackErr?.message || callbackErr),
+                            cat: 'pools'
+                          });
+                        } catch {}
+                      }
                   });
                   
                   return subscriptionId;

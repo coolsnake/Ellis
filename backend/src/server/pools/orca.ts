@@ -538,6 +538,13 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
     const { getConnection } = await import('../../wallet/wallet.js');
     const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
     const { PublicKey } = await import('@solana/web3.js');
+    const sdkAny: any = await import('@orca-so/whirlpools-sdk').catch(() => null);
+    const ParsableWhirlpool = sdkAny?.ParsableWhirlpool;
+    const PriceMath = sdkAny?.PriceMath;
+    let BN = sdkAny?.BN;
+    if (!BN) {
+      try { BN = (await import('bn.js')).default; } catch {}
+    }
     const connection = getConnection();
     
     const startTime = Date.now();
@@ -565,8 +572,6 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
         // Fetch multiple pool accounts in one RPC call
         const accounts = await withRpcLimit(() => connection.getMultipleAccountsInfo(pubkeys));
         
-        // Process each account and extract pool state
-        // Note: accounts.length should equal pubkeys.length, but check for safety
         if (accounts.length !== pubkeys.length) {
           try {
             logger.warn('orca.poolState.batch_length_mismatch', {
@@ -587,7 +592,6 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
           const acc = accounts[j];
           
           if (!acc) {
-            // Account doesn't exist on-chain - might be stale/closed pool from normalizer
             failed++;
             try {
               logger.info('orca.poolState.account_not_found', {
@@ -596,99 +600,14 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
                   pool: pool.id.slice(0, 8) + '...',
                   poolId: pool.id,
                   strippedId: pool.id.replace(/-rev$/, ''),
-                  hint: 'Pool may be closed/deleted or ID incorrect'
+                  hint: 'pool missing on-chain'
                 }
               });
             } catch {}
             continue;
           }
           
-          if (acc?.data) {
-            try {
-              // OPTIMIZATION: Read pool state directly from pool data (offset-based reading)
-              // Whirlpool account structure: https://github.com/orca-so/whirlpools
-              // Key fields we need:
-              // - sqrtPrice (u128 at offset 65)
-              // - tick (i32 at offset 101)
-              // - liquidity (u128 at offset 181)
-              // - feeRate (u16 at offset 205)
-              
-              const SQRT_PRICE_OFFSET = 65;
-              const TICK_OFFSET = 101;
-              const LIQUIDITY_OFFSET = 181;
-              const FEE_RATE_OFFSET = 205;
-              
-              if (acc.data.length < FEE_RATE_OFFSET + 2) {
-                failed++;
-                try {
-                  logger.info('orca.poolState.data_too_short', {
-                    cat: 'orca',
-                    ctx: {
-                      pool: pool.id.slice(0, 8) + '...',
-                      dataLength: acc.data.length,
-                      required: FEE_RATE_OFFSET + 2
-                    }
-                  });
-                } catch {}
-                continue;
-              }
-              
-              // Read fields from raw data
-              const buffer = Buffer.from(acc.data);
-              
-              // sqrtPrice is u128 (16 bytes, little-endian)
-              const sqrtPriceLow = buffer.readBigUInt64LE(SQRT_PRICE_OFFSET);
-              const sqrtPriceHigh = buffer.readBigUInt64LE(SQRT_PRICE_OFFSET + 8);
-              const sqrtPriceX64 = sqrtPriceLow + (sqrtPriceHigh << 64n);
-              
-              // tick is i32 (4 bytes, signed little-endian)
-              const currentTickIndex = buffer.readInt32LE(TICK_OFFSET);
-              
-              // liquidity is u128 (16 bytes, little-endian)
-              const liquidityLow = buffer.readBigUInt64LE(LIQUIDITY_OFFSET);
-              const liquidityHigh = buffer.readBigUInt64LE(LIQUIDITY_OFFSET + 8);
-              const liquidity = liquidityLow + (liquidityHigh << 64n);
-              
-              // feeRate is u16 (2 bytes, little-endian) in hundredths of basis point
-              // Convert to basis points: feeRate / 100
-              const feeRateRaw = buffer.readUInt16LE(FEE_RATE_OFFSET);
-              const feeRate = Math.round(feeRateRaw / 100);
-              
-              // Cache pool state
-              executionCache.setHot(pool.id, {
-                sqrtPriceX64,
-                currentTickIndex,
-                liquidity,
-                feeRate
-              });
-              cached++;
-              
-              try {
-                logger.info('orca.poolState.cached', {
-                  cat: 'orca',
-                  ctx: {
-                    pool: pool.id.slice(0, 8) + '...',
-                    sqrtPriceX64: sqrtPriceX64.toString(),
-                    currentTickIndex,
-                    liquidity: liquidity.toString(),
-                    feeRate
-                  }
-                });
-              } catch {}
-            } catch (readErr) {
-              failed++;
-              try {
-                logger.warn('orca.poolState.read_failed', {
-                  cat: 'orca',
-                  ctx: {
-                    pool: pool.id.slice(0, 8) + '...',
-                    error: String((readErr as any)?.message || readErr)
-                  }
-                });
-              } catch {}
-            }
-          } else {
-            // Account exists but has no data - should not happen for valid Whirlpool accounts
+          if (!acc.data) {
             failed++;
             try {
               logger.info('orca.poolState.account_no_data', {
@@ -696,10 +615,136 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
                 ctx: {
                   pool: pool.id.slice(0, 8) + '...',
                   poolId: pool.id,
-                  accountExists: !!acc,
-                  accountOwner: acc?.owner?.toBase58?.() || 'unknown',
-                  accountLamports: acc?.lamports || 0,
-                  hint: 'Account exists but has no data - may be wrong account type'
+                  accountOwner: acc.owner?.toBase58?.() || 'unknown',
+                  accountLamports: acc.lamports || 0
+                }
+              });
+            } catch {}
+            continue;
+          }
+          
+          try {
+            const poolPk = pubkeys[j];
+            const buffer = Buffer.from(acc.data);
+            const SQRT_PRICE_OFFSET = 65;
+            const TICK_OFFSET = 101;
+            const LIQUIDITY_OFFSET = 181;
+            const FEE_RATE_OFFSET = 205;
+            
+            let sqrtPriceX64: bigint | undefined;
+            let tickIndex: number | undefined;
+            let liquidity: bigint | undefined;
+            let feeRateBps: number | undefined;
+            
+            let parsed: any = null;
+            if (ParsableWhirlpool && typeof ParsableWhirlpool.parse === 'function') {
+              try { parsed = ParsableWhirlpool.parse(poolPk, acc); } catch {}
+            }
+            
+            if (parsed) {
+              sqrtPriceX64 = BigInt(parsed.sqrtPrice?.toString?.() || '0');
+              tickIndex = Number(parsed.tickCurrentIndex);
+              liquidity = BigInt(parsed.liquidity?.toString?.() || '0');
+            } else {
+              const sqrtLow = buffer.readBigUInt64LE(SQRT_PRICE_OFFSET);
+              const sqrtHigh = buffer.readBigUInt64LE(SQRT_PRICE_OFFSET + 8);
+              sqrtPriceX64 = sqrtLow + (sqrtHigh << 64n);
+              tickIndex = buffer.readInt32LE(TICK_OFFSET);
+              const liqLow = buffer.readBigUInt64LE(LIQUIDITY_OFFSET);
+              const liqHigh = buffer.readBigUInt64LE(LIQUIDITY_OFFSET + 8);
+              liquidity = liqLow + (liqHigh << 64n);
+            }
+            
+            const feeRateRaw = buffer.length >= FEE_RATE_OFFSET + 2 ? buffer.readUInt16LE(FEE_RATE_OFFSET) : undefined;
+            if (feeRateRaw != null) {
+              feeRateBps = Math.round(feeRateRaw / 100);
+            }
+            
+            executionCache.setHot(pool.id, {
+              sqrtPriceX64,
+              currentTickIndex: tickIndex,
+              liquidity,
+              feeRate: feeRateBps
+            });
+            cached++;
+            
+            // Enrich normalized pool in-place so downstream graph/builders have prices
+            if (sqrtPriceX64) {
+              (pool as any).sqrt_price_x64_raw = sqrtPriceX64.toString();
+            }
+            if (Number.isFinite(tickIndex)) {
+              (pool as any).tick_current_index = tickIndex;
+            }
+            if (liquidity) {
+              (pool as any).liquidity_raw = liquidity.toString();
+              (pool as any).liquidity = Number(liquidity.toString());
+            }
+            
+            let derivedPrice: number | undefined;
+            const decA = Number((pool as any).decimals_a);
+            const decB = Number((pool as any).decimals_b);
+            if (
+              PriceMath &&
+              BN &&
+              sqrtPriceX64 &&
+              Number.isFinite(decA) &&
+              Number.isFinite(decB)
+            ) {
+              try {
+                const sqrtForSdk =
+                  parsed?.sqrtPrice && BN.isBN(parsed.sqrtPrice)
+                    ? parsed.sqrtPrice
+                    : new BN(sqrtPriceX64.toString());
+                const priceDec = PriceMath.sqrtPriceX64ToPrice(sqrtForSdk, decA, decB);
+                const priceNum =
+                  typeof priceDec?.toNumber === 'function'
+                    ? priceDec.toNumber()
+                    : Number(priceDec?.toString?.() ?? priceDec);
+                if (Number.isFinite(priceNum) && priceNum > 0) {
+                  derivedPrice = priceNum;
+                }
+              } catch {}
+            }
+            
+            if (!derivedPrice && PriceMath && BN && Number.isFinite(decA) && Number.isFinite(decB) && Number.isFinite(tickIndex)) {
+              try {
+                const priceDec = PriceMath.priceFromTick(Number(tickIndex), decA, decB);
+                const priceNum =
+                  typeof priceDec?.toNumber === 'function'
+                    ? priceDec.toNumber()
+                    : Number(priceDec?.toString?.() ?? priceDec);
+                if (Number.isFinite(priceNum) && priceNum > 0) {
+                  derivedPrice = priceNum;
+                }
+              } catch {}
+            }
+            
+            if (derivedPrice && derivedPrice > 0) {
+              (pool as any).price_a_per_b = derivedPrice;
+              (pool as any).price_a_per_b_exact = derivedPrice.toString();
+            }
+            
+            try {
+              logger.info('orca.poolState.cached', {
+                cat: 'orca',
+                ctx: {
+                  pool: pool.id.slice(0, 8) + '...',
+                  sqrtPriceX64: sqrtPriceX64?.toString(),
+                  currentTickIndex: tickIndex,
+                  liquidity: liquidity?.toString(),
+                  feeRate: feeRateBps,
+                  price: derivedPrice
+                }
+              });
+            } catch {}
+          } catch (readErr) {
+            failed++;
+            try {
+              logger.warn('orca.poolState.read_failed', {
+                cat: 'orca',
+                ctx: {
+                  pool: pool.id.slice(0, 8) + '...',
+                  error: String((readErr as any)?.message || readErr)
                 }
               });
             } catch {}
