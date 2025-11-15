@@ -514,11 +514,13 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
   const pools = Array.isArray(raw) ? raw : [];
   
   // Enrich missing token decimals before price calculations
+  let enrichedDecimals: Map<string, number> = new Map();
   try {
     const { enrichPoolTokenDecimals } = await import('../../utils/tokens.js');
-    await enrichPoolTokenDecimals(pools, { logger });
+    enrichedDecimals = await enrichPoolTokenDecimals(pools, { logger, forceOnchain: true });
   } catch (err: any) {
     try { logger.warn('pumpswap.normalizer.enrich.failed', { error: String(err?.message || err), cat: 'pools' }); } catch {}
+    enrichedDecimals = new Map();
   }
   
   // PumpSwap total fee: 20 bps LP fee + 5 bps protocol fee = 25 bps total
@@ -562,6 +564,10 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
       // Try to get decimals from Jupiter map or fallback to common values
       let decA = jupMap[mint_a]?.decimals;
       let decB = jupMap[mint_b]?.decimals;
+      const enrichedA = enrichedDecimals.get(mint_a);
+      const enrichedB = enrichedDecimals.get(mint_b);
+      if (typeof enrichedA === 'number' && Number.isFinite(enrichedA)) decA = enrichedA;
+      if (typeof enrichedB === 'number' && Number.isFinite(enrichedB)) decB = enrichedB;
       
       // Fallback to common token decimals
       if (!Number.isFinite(decA)) {

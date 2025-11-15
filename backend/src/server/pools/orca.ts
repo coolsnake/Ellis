@@ -161,6 +161,7 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
   let resolveMintFn: undefined | ((s: string) => Promise<{ mint: string; decimals: number }>);
   const symbolToMintCache = new Map<string, { mint?: string; decimals?: number; tried: boolean }>();
   let tokenModule: any = null;
+  let enrichedDecimals: Map<string, number> = new Map();
   try {
     tokenModule = await import('../../utils/tokens.js');
     if (typeof (tokenModule as any).resolveMint === 'function') {
@@ -178,13 +179,15 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
   try {
     const enrichFn = tokenModule?.enrichPoolTokenDecimals;
     if (typeof enrichFn === 'function') {
-      await enrichFn(arr, { logger });
+      const maybeMap = await enrichFn(arr, { logger, forceOnchain: true });
+      if (maybeMap instanceof Map) enrichedDecimals = maybeMap;
     } else {
       const { enrichPoolTokenDecimals } = await import('../../utils/tokens.js');
-      await enrichPoolTokenDecimals(arr, { logger });
+      enrichedDecimals = await enrichPoolTokenDecimals(arr, { logger, forceOnchain: true });
     }
   } catch (err: any) {
     try { logger.warn('orca.normalizer.enrich.failed', { error: String(err?.message || err), cat: 'pools' }); } catch {}
+    enrichedDecimals = new Map();
   }
   
   // Reload Jupiter decimals after enrichment so this pass sees new tokens immediately
@@ -205,6 +208,10 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
     let mint_b = String(tokenB?.mint || it?.mintB || '');
     let decA = Number((tokenA?.decimals ?? it?.decimalsA));
     let decB = Number((tokenB?.decimals ?? it?.decimalsB));
+    const enrichedA = enrichedDecimals.get(mint_a);
+    const enrichedB = enrichedDecimals.get(mint_b);
+    if (typeof enrichedA === 'number' && Number.isFinite(enrichedA)) decA = enrichedA;
+    if (typeof enrichedB === 'number' && Number.isFinite(enrichedB)) decB = enrichedB;
     if (!Number.isFinite(decA) && jupMap[mint_a]?.decimals != null) decA = Number(jupMap[mint_a].decimals);
     if (!Number.isFinite(decB) && jupMap[mint_b]?.decimals != null) decB = Number(jupMap[mint_b].decimals);
     if (!mint_a && resolveMintFn && typeof tokenA?.symbol === 'string' && tokenA.symbol.trim()) {

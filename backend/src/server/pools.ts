@@ -325,11 +325,13 @@ export async function defaultNormalizeRaydiumPools(raw: any): Promise<PoolsPaylo
     : (Array.isArray(raw?.data) ? raw.data : (Array.isArray(raw) ? raw : []));
   
   // Enrich missing token decimals before price calculations
+  let enrichedDecimals: Map<string, number> = new Map();
   try {
     const { enrichPoolTokenDecimals } = await import('../utils/tokens.js');
-    await enrichPoolTokenDecimals(arr, { logger });
+    enrichedDecimals = await enrichPoolTokenDecimals(arr, { logger, forceOnchain: true });
   } catch (err: any) {
     try { logger.warn('raydium.normalizer.enrich.failed', { error: String(err?.message || err), cat: 'pools' }); } catch {}
+    enrichedDecimals = new Map();
   }
   const toMint = (v: any): string => {
     if (!v) return '';
@@ -361,6 +363,10 @@ export async function defaultNormalizeRaydiumPools(raw: any): Promise<PoolsPaylo
     const fee_bps = toFeeBps((it as any)?.feeRate ?? (it as any)?.tradeFeeRate ?? (it as any)?.feeBps ?? (it as any)?.tradeFeeBps);
     let decA = Number((it?.mintA as any)?.decimals);
     let decB = Number((it?.mintB as any)?.decimals);
+    const enrichedA = enrichedDecimals.get(mintA);
+    const enrichedB = enrichedDecimals.get(mintB);
+    if (typeof enrichedA === 'number' && Number.isFinite(enrichedA)) decA = enrichedA;
+    if (typeof enrichedB === 'number' && Number.isFinite(enrichedB)) decB = enrichedB;
     const price = Number((it as any)?.price);
     const tvl = Number((it as any)?.tvl);
     const mintAmountA = Number((it as any)?.mintAmountA);

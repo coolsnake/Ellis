@@ -181,22 +181,29 @@ export async function resolveMintViaJupiter(mint: string): Promise<{ symbol: str
 export async function enrichMissingDecimals(
   mints: string[],
   jupiterMap: Record<string, { decimals: number }>,
-  options?: { logger?: any; batchSize?: number }
+  options?: { logger?: any; batchSize?: number; forceOnchain?: boolean }
 ): Promise<Map<string, number>> {
   const logger = options?.logger;
   const batchSize = options?.batchSize ?? 100;
+  const forceOnchain = options?.forceOnchain ?? true;
   const result = new Map<string, number>();
   
-  // Filter to only mints not in Jupiter map and not already in cache
-  const missingMints = mints.filter(m => {
-    if (!m || m.length < 32) return false;
-    if (jupiterMap[m]) return false;
-    if (resolveCache[m]) {
-      result.set(m, resolveCache[m].decimals);
-      return false;
+  const fetchSet: Set<string> = new Set();
+  for (const mint of mints) {
+    if (!mint || mint.length < 32 || mint.length > 64) continue;
+    const cached = resolveCache[mint];
+    const cachedDec = Number(cached?.decimals);
+    const jupDec = Number(jupiterMap[mint]?.decimals);
+    if (Number.isFinite(cachedDec)) {
+      result.set(mint, cachedDec);
+    } else if (Number.isFinite(jupDec)) {
+      result.set(mint, jupDec);
     }
-    return true;
-  });
+    if (forceOnchain || !result.has(mint)) {
+      fetchSet.add(mint);
+    }
+  }
+  const missingMints = Array.from(fetchSet);
   
   if (missingMints.length === 0) return result;
   
@@ -358,8 +365,8 @@ export async function enrichMissingDecimals(
  */
 export async function enrichPoolTokenDecimals(
   pools: any[],
-  options?: { logger?: any }
-): Promise<void> {
+  options?: { logger?: any; forceOnchain?: boolean }
+): Promise<Map<string, number>> {
   const base58Regex = /^[1-9A-HJ-NP-Za-km-z]+$/;
   const directMintFields = [
     'mint_a', 'mint_b', 'base_mint', 'quote_mint',
@@ -456,10 +463,10 @@ export async function enrichPoolTokenDecimals(
     }
   }
   
-  if (mints.size === 0) return;
+  if (mints.size === 0) return new Map<string, number>();
   
   const jupMap = await loadJupiterTokenMap();
-  await enrichMissingDecimals(Array.from(mints), jupMap, options);
+  return enrichMissingDecimals(Array.from(mints), jupMap, options);
 }
 
 

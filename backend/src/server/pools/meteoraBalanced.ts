@@ -120,12 +120,14 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
   if (Array.isArray(raw?.data)) arrCandidates.push(raw.data);
   const arr: any[] = arrCandidates.find(a => Array.isArray(a) && a.length) || (Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : []));
 
+  let enrichedDecimals: Map<string, number> = new Map();
   // Enrich missing token decimals before price calculations
   try {
     const { enrichPoolTokenDecimals } = await import('../../utils/tokens.js');
-    await enrichPoolTokenDecimals(arr, { logger });
+    enrichedDecimals = await enrichPoolTokenDecimals(arr, { logger, forceOnchain: true });
   } catch (err: any) {
     try { logger.warn('meteora.balanced.normalizer.enrich.failed', { error: String(err?.message || err), cat: 'pools' }); } catch {}
+    enrichedDecimals = new Map();
   }
 
   const toMint = (v: any): string => {
@@ -159,8 +161,12 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
       const poolVersion = Number(it?.pool_version ?? 2); // Default to v2 for V2 API
       const dex = poolVersion === 1 ? 'MeteoraBalanced_v1' : 'MeteoraBalanced_v2';
 
-      const decA = toDec(a?.decimals ?? it?.decimalsA);
-      const decB = toDec(b?.decimals ?? it?.decimalsB);
+      let decA = toDec(a?.decimals ?? it?.decimalsA);
+      let decB = toDec(b?.decimals ?? it?.decimalsB);
+      const enrichedA = enrichedDecimals.get(mint_a);
+      const enrichedB = enrichedDecimals.get(mint_b);
+      if (typeof enrichedA === 'number' && Number.isFinite(enrichedA)) decA = enrichedA;
+      if (typeof enrichedB === 'number' && Number.isFinite(enrichedB)) decB = enrichedB;
       
       // CRITICAL: Check if we have pre-converted whole amounts from RPC enrichment
       // If vault_a_whole exists, use it directly (already divided by decimals)
@@ -365,12 +371,14 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
   const amm: AmmPool[] = [];
   const arr: any[] = Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : []);
   
+  let enrichedDecimals: Map<string, number> = new Map();
   // Enrich missing token decimals before price calculations
   try {
     const { enrichPoolTokenDecimals } = await import('../../utils/tokens.js');
-    await enrichPoolTokenDecimals(arr, { logger });
+    enrichedDecimals = await enrichPoolTokenDecimals(arr, { logger, forceOnchain: true });
   } catch (err: any) {
     try { logger.warn('meteora.balanced.v1.normalizer.enrich.failed', { error: String(err?.message || err), cat: 'pools' }); } catch {}
+    enrichedDecimals = new Map();
   }
   
   // Load Jupiter token map for decimals lookup
@@ -402,8 +410,12 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
       
       // Get decimals from Jupiter map or API if available
       const lp_decimal = Number(it?.lp_decimal);
-      const decimalsA = jupMap[mint_a]?.decimals;
-      const decimalsB = jupMap[mint_b]?.decimals;
+      let decimalsA = jupMap[mint_a]?.decimals;
+      let decimalsB = jupMap[mint_b]?.decimals;
+      const enrichedA = enrichedDecimals.get(mint_a);
+      const enrichedB = enrichedDecimals.get(mint_b);
+      if (typeof enrichedA === 'number' && Number.isFinite(enrichedA)) decimalsA = enrichedA;
+      if (typeof enrichedB === 'number' && Number.isFinite(enrichedB)) decimalsB = enrichedB;
       
       // Parse amounts - V1 API provides whole token amounts (already converted from raw)
       const wholeA = toNum(amounts?.[0]);
