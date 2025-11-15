@@ -627,37 +627,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           }
         } catch {}
         // Sanity: for non-anchor pairs, require both sides to have USD reference; otherwise drop
-        try {
-          const dropNoUsdBoth = ((CONFIG as any)?.sanity as any)?.dropEdgesNoUsdBoth;
-          // Default to true unless explicitly disabled
-          const shouldDrop = (dropNoUsdBoth !== false);
-          if (shouldDrop) {
-            // Only enforce when any USD prices are available at all
-            let hasAnyUsd = false;
-            try {
-              const all = (priceStore as any)?.getAllPrices?.();
-              hasAnyUsd = !!all && Object.keys(all || {}).length > 0;
-            } catch { hasAnyUsd = false; }
-            if (!hasAnyUsd) {
-              // Skip dropping edges; without USD refs, calibration and sanity checks will be bypassed elsewhere
-            } else {
-            const pa = getPriceByMintVar(mintA)?.usdc ?? null;
-            const pb = getPriceByMintVar(mintB)?.usdc ?? null;
-          const ANCHORS = new Set<string>([...(((CONFIG as any)?.system as any)?.anchorMints || [])]);
-            const aIsAnchor = ANCHORS.has(mintA);
-            const bIsAnchor = ANCHORS.has(mintB);
-            const anchored = aIsAnchor || bIsAnchor;
-            if (!anchored) {
-              // Neither side anchored: require both USD quotes
-              if (!(pa && pb)) return;
-            } else {
-              // Anchored pair: require the non-anchor side to have USD quote
-              if (aIsAnchor && !pb) return;
-              if (bIsAnchor && !pa) return;
-            }
-            }
-          }
-        } catch {}
+        // Drop requirement for USD quotes on both sides: trust pool-derived pricing
         // Preserve pool-provided orientation for coherency
         const a = String(mintA);
         const b = String(mintB);
