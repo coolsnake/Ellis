@@ -6,6 +6,12 @@ import { getMint } from '@solana/spl-token';
 
 export type TokenMap = Record<string, { mint: string; decimals: number }>;
 export type JupToken = { address: string; name: string; symbol: string; decimals: number; usdPrice?: number };
+type EnrichDecimalsOptions = {
+  logger?: any;
+  batchSize?: number;
+  forceOnchain?: boolean;
+  tokenProgramMemo?: Map<string, 'spl-token'|'token-2022'>;
+};
 
 export async function loadTokenMap(): Promise<TokenMap> {
   return readJson<TokenMap>(CONFIG.tokensPath, {
@@ -181,12 +187,13 @@ export async function resolveMintViaJupiter(mint: string): Promise<{ symbol: str
 export async function enrichMissingDecimals(
   mints: string[],
   jupiterMap: Record<string, { decimals: number }>,
-  options?: { logger?: any; batchSize?: number; forceOnchain?: boolean }
+  options?: EnrichDecimalsOptions
 ): Promise<Map<string, number>> {
   const logger = options?.logger;
   const batchSize = options?.batchSize ?? 100;
   const forceOnchain = options?.forceOnchain ?? true;
   const result = new Map<string, number>();
+  const programMemo = options?.tokenProgramMemo;
   
   const fetchSet: Set<string> = new Set();
   for (const mint of mints) {
@@ -219,6 +226,8 @@ export async function enrichMissingDecimals(
     const conn = new Connection(CONFIG.rpcUrl, { commitment: 'confirmed', disableRetryOnRateLimit: true } as any);
     const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
     const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
+    const TOKEN_PROGRAM_ID_STR = TOKEN_PROGRAM_ID.toBase58();
+    const TOKEN_2022_PROGRAM_ID_STR = TOKEN_2022_PROGRAM_ID.toBase58();
     
     // Process in batches to avoid overwhelming RPC
     for (let i = 0; i < missingMints.length; i += batchSize) {
@@ -244,7 +253,7 @@ export async function enrichMissingDecimals(
           
           try {
             const owner = accountInfo.owner.toBase58();
-            const isTokenProgram = owner === TOKEN_PROGRAM_ID.toBase58() || owner === TOKEN_2022_PROGRAM_ID.toBase58();
+            const isTokenProgram = owner === TOKEN_PROGRAM_ID_STR || owner === TOKEN_2022_PROGRAM_ID_STR;
             
             if (isTokenProgram) {
               // Parse mint account data directly to get decimals
@@ -255,6 +264,10 @@ export async function enrichMissingDecimals(
                 if (decimals <= 18) { // Sanity check
                   result.set(mint, decimals);
                   resolveCache[mint] = { mint, decimals };
+                  if (programMemo) {
+                    const program: 'spl-token'|'token-2022' = owner === TOKEN_2022_PROGRAM_ID_STR ? 'token-2022' : 'spl-token';
+                    programMemo.set(mint, program);
+                  }
                   
                   if (logger) {
                     logger.info('token.enrich.found', {
@@ -365,7 +378,7 @@ export async function enrichMissingDecimals(
  */
 export async function enrichPoolTokenDecimals(
   pools: any[],
-  options?: { logger?: any; forceOnchain?: boolean }
+  options?: EnrichDecimalsOptions
 ): Promise<Map<string, number>> {
   const base58Regex = /^[1-9A-HJ-NP-Za-km-z]+$/;
   const directMintFields = [

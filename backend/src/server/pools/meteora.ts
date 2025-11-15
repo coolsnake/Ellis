@@ -8,6 +8,8 @@ import { verifyCanonicalization } from './validation.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
 import { getTokenMeta } from '../../execution/resolver/tokenMeta.js';
 
+const METEORA_DLMM_PROGRAM_ID = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
+
 export async function fetchMeteoraHttp(): Promise<any> {
   const METEORA_RAW_PATH = joinPath(CONFIG.cacheDir, 'meteora-raw-sample.json');
   try {
@@ -134,16 +136,22 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
   if (Array.isArray(raw)) arrCandidates.push(raw);
   if (Array.isArray(raw?.data)) arrCandidates.push(raw.data);
   const arr: any[] = arrCandidates.find(a => Array.isArray(a) && a.length) || (Array.isArray(raw?.pairs) ? raw.pairs : (Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : [])));
+  const bitmapExtensionMap = await resolveMeteoraBitmapExtensions(
+    arr
+      .map(it => String(it?.address || it?.id || it?.poolAddress || ''))
+      .filter(id => typeof id === 'string' && id.length > 0)
+  );
   
   // Enrich missing token decimals before price calculations
   try {
+    const enrichOptions = { logger, forceOnchain: true, tokenProgramMemo };
     const enrichFn = tokenModule?.enrichPoolTokenDecimals;
     if (typeof enrichFn === 'function') {
-      const maybeMap = await enrichFn(arr, { logger, forceOnchain: true });
+      const maybeMap = await enrichFn(arr, enrichOptions);
       if (maybeMap instanceof Map) enrichedDecimals = maybeMap;
     } else {
       const { enrichPoolTokenDecimals } = await import('../../utils/tokens.js');
-      enrichedDecimals = await enrichPoolTokenDecimals(arr, { logger, forceOnchain: true });
+      enrichedDecimals = await enrichPoolTokenDecimals(arr, enrichOptions);
     }
   } catch (err: any) {
     try { logger.warn('meteora.normalizer.enrich.failed', { error: String(err?.message || err), cat: 'pools' }); } catch {}
@@ -378,70 +386,7 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       }
     } catch {}
     
-    // Derive and check bitmap extension account
-    // Some pools require an actual bitmap extension PDA, others can use program ID
-    let bin_array_bitmap_extension: string | undefined;
-    try {
-      const { Connection, PublicKey } = await import('@solana/web3.js');
-      const { getConnection } = await import('../../wallet/wallet.js');
-      
-      const poolPk = new PublicKey(id);
-      const programId = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
-      
-      // Derive the bitmap extension PDA
-      const [bitmapExtPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('bitmap_extension'), poolPk.toBuffer()],
-        programId
-      );
-      
-      // Check if it exists on-chain (use connection from wallet module)
-      try {
-        const connection = getConnection();
-        const bitmapExtInfo = await connection.getAccountInfo(bitmapExtPda);
-        
-        if (bitmapExtInfo && bitmapExtInfo.owner.equals(programId)) {
-          // Bitmap extension exists - store the PDA
-          bin_array_bitmap_extension = bitmapExtPda.toBase58();
-          try {
-            logger.info('meteora.bitmap_ext.found', {
-              pool: id,
-              bitmapExt: bin_array_bitmap_extension,
-              cat: 'meteora'
-            });
-          } catch {}
-        } else {
-          // Bitmap extension doesn't exist - store program ID as fallback
-          bin_array_bitmap_extension = programId.toBase58();
-          try {
-            logger.debug('meteora.bitmap_ext.not_found_using_programid', {
-              pool: id,
-              programId: bin_array_bitmap_extension,
-              cat: 'meteora'
-            });
-          } catch {}
-        }
-      } catch (rpcErr) {
-        // RPC error - default to program ID (conservative)
-        bin_array_bitmap_extension = programId.toBase58();
-        try {
-          logger.info('meteora.bitmap_ext.check_failed', {
-            pool: id,
-            error: String((rpcErr as any)?.message || rpcErr),
-            fallback: 'program_id',
-            cat: 'meteora'
-          });
-        } catch {}
-      }
-    } catch (err) {
-      // Derivation error - pool will work without bitmap extension in most cases
-      try {
-        logger.info('meteora.bitmap_ext.derive_failed', {
-          pool: id,
-          error: String((err as any)?.message || err),
-          cat: 'meteora'
-        });
-      } catch {}
-    }
+    const bin_array_bitmap_extension = bitmapExtensionMap.get(id);
     const [tokenProgramA, tokenProgramB] = await Promise.all([
       ensureTokenProgram(mint_a),
       ensureTokenProgram(mint_b),
@@ -500,6 +445,97 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
   return { amm: [], clmm: clmmCanon };
 }
 
+async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  const unique = Array.from(new Set(poolIds.filter(id => typeof id === 'string' && id.length > 0)));
+  if (unique.length === 0) return result;
+
+  const fallback = METEORA_DLMM_PROGRAM_ID;
+  try {
+    const { PublicKey } = await import('@solana/web3.js');
+    const { getConnection } = await import('../../wallet/wallet.js');
+    const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+    const connection = getConnection();
+    const programId = new PublicKey(METEORA_DLMM_PROGRAM_ID);
+
+    const derived: { id: string; pda: any }[] = [];
+    for (const id of unique) {
+      try {
+        const poolPk = new PublicKey(id);
+        const [bitmapExtPda] = PublicKey.findProgramAddressSync(
+          [Buffer.from('bitmap_extension'), poolPk.toBuffer()],
+          programId
+        );
+        derived.push({ id, pda: bitmapExtPda });
+      } catch (err) {
+        result.set(id, fallback);
+        try {
+          logger.info('meteora.bitmap_ext.derive_failed', {
+            pool: id,
+            error: String((err as any)?.message || err),
+            cat: 'meteora'
+          });
+        } catch {}
+      }
+    }
+
+    const BATCH_SIZE = 100;
+    for (let i = 0; i < derived.length; i += BATCH_SIZE) {
+      const batch = derived.slice(i, i + BATCH_SIZE);
+      const pubkeys = batch.map(entry => entry.pda);
+      try {
+        const weight = Math.max(1, Math.ceil(batch.length / 100));
+        const infos = await withRpcLimit(
+          () => connection.getMultipleAccountsInfo(pubkeys),
+          weight,
+          { module: 'pools', method: 'meteora.bitmapExtBatch' }
+        );
+
+        for (let j = 0; j < batch.length; j++) {
+          const entry = batch[j];
+          const info = infos?.[j];
+          if (info && typeof info.owner?.equals === 'function' && info.owner.equals(programId)) {
+            result.set(entry.id, entry.pda.toBase58());
+          } else {
+            result.set(entry.id, fallback);
+          }
+        }
+      } catch (batchErr) {
+        for (const entry of batch) {
+          result.set(entry.id, fallback);
+        }
+        try {
+          logger.warn('meteora.bitmap_ext.batch_failed', {
+            error: String((batchErr as any)?.message || batchErr),
+            batchSize: batch.length,
+            cat: 'meteora'
+          });
+        } catch {}
+      }
+    }
+
+    try {
+      logger.info('meteora.bitmap_ext.batch_complete', {
+        total: unique.length,
+        resolved: Array.from(result.values()).filter(v => v !== fallback).length,
+        fallback: Array.from(result.values()).filter(v => v === fallback).length,
+        cat: 'meteora'
+      });
+    } catch {}
+  } catch (err) {
+    try {
+      logger.warn('meteora.bitmap_ext.batch_unavailable', {
+        error: String((err as any)?.message || err),
+        cat: 'meteora'
+      });
+    } catch {}
+    for (const id of unique) {
+      if (!result.has(id)) result.set(id, fallback);
+    }
+  }
+  return result;
+}
+
 /**
  * Pre-populate execution cache with Meteora active bin IDs and bin array addresses
  * This eliminates 100-200ms RPC calls per Meteora swap during transaction building
@@ -523,7 +559,7 @@ async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void> {
     // CRITICAL: Resolve the module structure correctly (same as in instruction builder)
     const DLMM: any = (mod && (mod as any).default) ? (mod as any).default : (((mod as any).DLMM) || mod);
     
-    const programId = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+    const programId = new PublicKey(METEORA_DLMM_PROGRAM_ID);
     
     // Batch fetch pool states (100 at a time to respect RPC limits)
     const BATCH_SIZE = 100;

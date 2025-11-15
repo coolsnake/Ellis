@@ -1394,7 +1394,25 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const pid = safePoolId(p);
         const liqParamOrcaClmm = (p as any)?.liquidity_display ?? p.liquidity;
         // Prefer normalized price from source; fallback to sqrt-derived only when missing
-        let priceClmmOrca: number | undefined = calibratePrice(p.mint_a, p.mint_b, (p as any).price_a_per_b);
+        const incomingPrice = (p as any).price_a_per_b;
+        let priceClmmOrca: number | undefined = calibratePrice(p.mint_a, p.mint_b, incomingPrice);
+        // DIAGNOSTIC: Track price through pipeline for first few pools
+        const trackPrice = ((orcValid.clmm || []).indexOf(p) < 3);
+        if (trackPrice) {
+          try {
+            logger.info('graph.orca.price.pipeline.start', {
+              pool_id: pid?.slice(0, 8),
+              mint_a: p.mint_a,
+              mint_b: p.mint_b,
+              incoming: incomingPrice,
+              afterCalibrate: priceClmmOrca,
+              sqrt_price_x64: (p as any)?.sqrt_price_x64,
+              decimals_a: (p as any)?.decimals_a,
+              decimals_b: (p as any)?.decimals_b,
+              cat: 'graph'
+            });
+          } catch {}
+        }
         if (!(priceClmmOrca && priceClmmOrca > 0)) {
           try {
             const s64 = Number((p as any)?.sqrt_price_x64 || 0);
@@ -1466,9 +1484,23 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           }
         } catch {}
         // Orient as A per 1 B using USD reference when available
+        const beforeOrient = priceClmmOrca;
         priceClmmOrca = orientWithUsdFallbacks(p.mint_a, p.mint_b, priceClmmOrca);
         // Forward + reverse with strict reciprocal rule and consistency guard
         const fwdClmm = clampPrice((priceClmmOrca && priceClmmOrca > 0) ? priceClmmOrca : undefined);
+        // DIAGNOSTIC: Track price transformations for first few pools
+        if (trackPrice) {
+          try {
+            logger.info('graph.orca.price.pipeline.end', {
+              pool_id: pid?.slice(0, 8),
+              beforeOrient,
+              afterOrient: priceClmmOrca,
+              afterClamp: fwdClmm,
+              willCreateEdge: !!fwdClmm,
+              cat: 'graph'
+            });
+          } catch {}
+        }
         const revClmm = (fwdClmm && fwdClmm > 0) ? (1 / fwdClmm) : undefined;
         const rawLiqOrcaClmm = Number((p as any).pool_liquidity_raw || (p as any).liquidity || 0) || undefined;
         // DIAGNOSTIC: Log when we fail to create edge due to missing price
