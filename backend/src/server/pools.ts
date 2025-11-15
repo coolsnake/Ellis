@@ -2558,20 +2558,9 @@ export function startRaydiumRefreshLoop(): void {
                         incrementSkipReason('orca', 'new_pool');
                       }
                     }
-                    if (hasDelta && typeof gmod.applyPoolUpdates === 'function') {
-                      // CRITICAL FIX: Use applyPoolUpdates instead of deprecated scheduleDexApply
-                      // Fire-and-forget: don't await to avoid blocking WebSocket handler
-                      // Use prev (old state) and next (new state) for incremental update
-                      void gmod.applyPoolUpdates(prev, next, { pushToArb: true }).catch((err: any) => {
-                        try { 
-                          logger.warn('graph.update.fire_forget_failed', { 
-                            error: String(err?.message || err), 
-                            source: 'orca',
-                            pool: id.slice(0,8) + '…',
-                            cat: 'graph' 
-                          }); 
-                        } catch {}
-                      });
+                    // Use unified scheduleDexApply for consistency with Raydium/Meteora
+                    if (hasDelta) {
+                      await scheduleDexApply('orca', prev);
                     }
                   } catch {}
                   ok = true;
@@ -3052,22 +3041,9 @@ export function startRaydiumRefreshLoop(): void {
                 if (hasDelta) {
                   wsDeltaStats.pumpswap.applied += 1;
                   
-                  // Apply to graph using proper incremental update
+                  // Use unified scheduleDexApply for consistency with other DEXes
                   try {
-                    const gmod: any = await import('./graph.js');
-                    if (typeof gmod.applyPoolUpdates === 'function') {
-                      // Fire-and-forget: don't await to avoid blocking WebSocket handler
-                      void gmod.applyPoolUpdates(prev, next, { pushToArb: true }).catch((err: any) => {
-                        try { 
-                          logger.warn('graph.update.fire_forget_failed', { 
-                            error: String(err?.message || err), 
-                            source: 'pumpswap', 
-                            pool: pk58.slice(0,8) + '…',
-                            cat: 'graph' 
-                          }); 
-                        } catch {}
-                      });
-                    }
+                    await scheduleDexApply('pumpswap', prev);
                   } catch {}
                 } else {
                   wsDeltaStats.pumpswap.skipped += 1;
@@ -3215,22 +3191,9 @@ export function startRaydiumRefreshLoop(): void {
                 if (hasDelta) {
                   wsDeltaStats.meteora_balanced.applied += 1;
                   
-                  // Apply to graph using proper incremental update
+                  // Use unified scheduleDexApply for consistency with other DEXes
                   try {
-                    const gmod: any = await import('./graph.js');
-                    if (typeof gmod.applyPoolUpdates === 'function') {
-                      // Fire-and-forget: don't await to avoid blocking WebSocket handler
-                      void gmod.applyPoolUpdates(prev, next, { pushToArb: true }).catch((err: any) => {
-                        try { 
-                          logger.warn('graph.update.fire_forget_failed', { 
-                            error: String(err?.message || err), 
-                            source: 'meteora_balanced', 
-                            pool: pk58.slice(0,8) + '…',
-                            cat: 'graph' 
-                          }); 
-                        } catch {}
-                      });
-                    }
+                    await scheduleDexApply('meteora_balanced', prev);
                   } catch {}
                 } else {
                   wsDeltaStats.meteora_balanced.skipped += 1;
@@ -3413,18 +3376,22 @@ export function startRaydiumRefreshLoop(): void {
           }
         };
         // Debounced per-DEX apply: coalesce multiple WS updates into a single apply+push
-        const wsApply: Record<'raydium'|'orca'|'meteora', { timer: NodeJS.Timeout | null; baseline: any | null }> = {
+        const wsApply: Record<'raydium'|'orca'|'meteora'|'pumpswap'|'meteora_balanced', { timer: NodeJS.Timeout | null; baseline: any | null }> = {
           raydium: { timer: null, baseline: null },
           orca: { timer: null, baseline: null },
           meteora: { timer: null, baseline: null },
+          pumpswap: { timer: null, baseline: null },
+          meteora_balanced: { timer: null, baseline: null },
         };
         const WS_APPLY_DEBOUNCE_MS = Math.max(10, Number(((CONFIG.system as any)?.wsApplyDebounceMs) || 100));
-        const getCurrentCache = (dex: 'raydium'|'orca'|'meteora'): any => {
+        const getCurrentCache = (dex: 'raydium'|'orca'|'meteora'|'pumpswap'|'meteora_balanced'): any => {
           if (dex === 'raydium') return raydiumCache.data || { amm: [], clmm: [] };
           if (dex === 'orca') return orcaCache.data || { amm: [], clmm: [] };
-          return meteoraCache.data || { amm: [], clmm: [] };
+          if (dex === 'meteora') return meteoraCache.data || { amm: [], clmm: [] };
+          if (dex === 'pumpswap') return pumpswapCache.data || { amm: [], clmm: [] };
+          return metbalCache.data || { amm: [], clmm: [] };
         };
-        async function scheduleDexApply(dex: 'raydium'|'orca'|'meteora', baseline: any): Promise<void> {
+        async function scheduleDexApply(dex: 'raydium'|'orca'|'meteora'|'pumpswap'|'meteora_balanced', baseline: any): Promise<void> {
           try {
             if (!wsApply[dex].baseline) wsApply[dex].baseline = baseline;
             // Reset timer on new updates - clear existing timer if present

@@ -19,7 +19,8 @@ export function calibrateMagnitude(
     const rawDev = Math.max(price / ref, ref / price);
     // Consider only powers-of-ten magnitude adjustments; DO NOT invert orientation here
     let best = price; let bestDev = rawDev;
-    const MAX_APPLIED_DEV = 10;
+    // Increased from 10 to 100 to handle more extreme decimal mismatches
+    const MAX_APPLIED_DEV = 100;
     for (let k = -8; k <= 8; k++) {
       const cand = price * Math.pow(10, k);
       if (!(cand > 0) || !Number.isFinite(cand)) continue;

@@ -349,6 +349,27 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
           // NOTE: Orca uses decB - decA, while Raydium uses decA - decB (see raydium.ts)
           const scale = Math.pow(10, (cDecB as number) - (cDecA as number));
           const aPerB = scale / (ratio * ratio);
+          
+          // DIAGNOSTIC: Log price calculation details for debugging magnitude issues
+          const shouldLog = (id.includes('JCD6') || id.includes('HrLm') || id.includes('C1Mg'));
+          if (shouldLog || (aPerB > 10000 || aPerB < 0.0001)) {
+            try {
+              logger.info('orca.priceFromSqrt.details', {
+                id: id.slice(0, 8) + '...',
+                mint_a: cA?.slice(0, 8) + '...',
+                mint_b: cB?.slice(0, 8) + '...',
+                decA: cDecA,
+                decB: cDecB,
+                sqrt_price_x64,
+                ratio,
+                scale,
+                aPerB,
+                ratioSquared: ratio * ratio,
+                cat: 'orca'
+              });
+            } catch {}
+          }
+          
           if (Number.isFinite(aPerB) && aPerB > 0) priceFromSqrt = aPerB;
         } catch (e) {
           // If sqrt calculation fails, log for debugging
@@ -452,8 +473,34 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
         const { getPriceByMint } = await import('../../server/priceStore.js');
         const getUsd = (m: string) => { try { return getPriceByMint(m)?.usdc ?? undefined; } catch { return undefined; } };
         const { calibrateMagnitude } = await import('../../server/priceCalib.js');
+        const priceBefore = priceDerived;
         const calibrated = calibrateMagnitude(cA, cB, priceDerived, getUsd);
-        if (calibrated && calibrated > 0) priceDerived = calibrated;
+        
+        // DIAGNOSTIC: Log when calibration makes a significant change or when price is extreme
+        const shouldLog = (id.includes('JCD6') || id.includes('HrLm') || id.includes('C1Mg'));
+        if (calibrated && calibrated > 0) {
+          const changeFactor = Math.abs(calibrated / priceBefore);
+          if (shouldLog || changeFactor > 10 || changeFactor < 0.1 || calibrated > 10000 || calibrated < 0.0001) {
+            try {
+              const usdA = getUsd(cA);
+              const usdB = getUsd(cB);
+              const ref = (usdA && usdB && usdB > 0) ? (usdB / usdA) : undefined;
+              logger.info('orca.calibrateMagnitude.applied', {
+                id: id.slice(0, 8) + '...',
+                mint_a: cA?.slice(0, 8) + '...',
+                mint_b: cB?.slice(0, 8) + '...',
+                before: priceBefore,
+                after: calibrated,
+                changeFactor,
+                usdA,
+                usdB,
+                ref,
+                cat: 'orca'
+              });
+            } catch {}
+          }
+          priceDerived = calibrated;
+        }
       } catch {}
       // No USD-based orientation here; orientation handled centrally in graph
       const wholeA = Number.isFinite(cDecA) ? (cAmtA / Math.pow(10, cDecA as number)) : undefined;
