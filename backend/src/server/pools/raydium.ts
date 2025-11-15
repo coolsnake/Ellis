@@ -9,6 +9,28 @@ import { verifyCanonicalization } from './validation.js';
 
 let rayProbeOffset = 0;
 
+const ATOMIC_AMOUNT_REGEX = /^[-+]?\d+$/;
+
+function looksLikeAtomicAmount(value: any): boolean {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return false;
+    if (trimmed.includes('.') || trimmed.includes('e') || trimmed.includes('E')) return false;
+    return ATOMIC_AMOUNT_REGEX.test(trimmed);
+  }
+  return false;
+}
+
+function normalizeAmount(raw: any, decimals?: number): number | undefined {
+  if (raw == null) return undefined;
+  const num = Number(raw);
+  if (!Number.isFinite(num)) return undefined;
+  if (looksLikeAtomicAmount(raw) && Number.isFinite(decimals)) {
+    return num / Math.pow(10, decimals as number);
+  }
+  return num;
+}
+
 export async function fetchRaydiumPoolsRaw(): Promise<any> {
   const mode = 'http';
   try {
@@ -984,27 +1006,20 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
     } else {
       const tvl_usd = Number.isFinite(tvl) && tvl > 0 ? tvl : undefined;
       // Accept legacy test fields reserveA/reserveB as whole reserves when mintAmountA/B absent
-      const reserveA0 = Number((it as any)?.reserveA ?? NaN);
-      const reserveB0 = Number((it as any)?.reserveB ?? NaN);
-      const amount_a_whole = Number.isFinite(mintAmountA) ? mintAmountA : (Number.isFinite(reserveA0) ? reserveA0 : undefined);
-      const amount_b_whole = Number.isFinite(mintAmountB) ? mintAmountB : (Number.isFinite(reserveB0) ? reserveB0 : undefined);
-      // Treat mintAmountA/B as atomic units by default; prefer decimals-aware price when available
+      const amount_a_whole = normalizeAmount(mintAmountRawA, decA) ?? normalizeAmount((it as any)?.reserveA, decA);
+      const amount_b_whole = normalizeAmount(mintAmountRawB, decB) ?? normalizeAmount((it as any)?.reserveB, decB);
+      // Treat mintAmountA/B as already scaled unless clearly atomic
       const amounts_are_whole = undefined;
       const liquidity_base = Number.isFinite(amount_a_whole as any) && Number.isFinite(amount_b_whole as any)
         ? Math.min(amount_a_whole as number, amount_b_whole as number)
         : 0;
       const liquidity_display = (tvl_usd != null) ? tvl_usd : (liquidity_base > 0 ? liquidity_base : undefined);
-      let price_in = Number.isFinite(price) && price > 0 ? Number(price) : 0;
+      const price_in = (Number.isFinite(price) && price > 0) ? (1 / Number(price)) : 0;
       const price_res = (Number.isFinite(amount_a_whole as any) && Number.isFinite(amount_b_whole as any) && (amount_b_whole as number) > 0)
         ? ((amount_a_whole as number) / (amount_b_whole as number))
-        : ((Number.isFinite(reserveA0) && Number.isFinite(reserveB0) && reserveB0 > 0) ? (reserveA0 / reserveB0) : 0);
-      // Derive from decimals when available (treat raw amounts as atomic)
-      const price_res_decs = (Number.isFinite(decA) && Number.isFinite(decB) && Number.isFinite(mintAmountA) && Number.isFinite(mintAmountB) && (mintAmountB as number) > 0)
-        ? ((mintAmountA as number) / Math.pow(10, decA as number)) / ((mintAmountB as number) / Math.pow(10, decB as number))
         : 0;
       // Prefer reserves-derived price; only fall back to upstream price when reserves are unavailable
-      // Prefer decimals-aware reserves-derived price; fallback to raw ratio, then upstream
-      const price_from_reserves = (price_res_decs > 0 ? price_res_decs : (price_res > 0 ? price_res : 0));
+      const price_from_reserves = (price_res > 0 ? price_res : 0);
       let price_sane = price_from_reserves > 0 ? price_from_reserves : (price_in > 0 ? price_in : 0);
       // Removed stable-aware flip to avoid double-orientation corrections; orientation handled later via canonicalization/graph USD refs
       try {
@@ -1031,7 +1046,6 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
             const candidates: number[] = [];
             if (price_in > 0) candidates.push(price_in);
             if (price_res > 0) candidates.push(price_res);
-            if (price_res_decs > 0) candidates.push(price_res_decs);
             if (candidates.length) {
               let bestVal = candidates[0];
               let bestDev = Math.max(bestVal / ref, ref / bestVal);

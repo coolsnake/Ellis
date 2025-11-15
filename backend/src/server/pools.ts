@@ -2385,7 +2385,22 @@ export function startRaydiumRefreshLoop(): void {
                 if (!sdk) { throw new Error('orca sdk missing'); }
                 const { ParsableWhirlpool } = sdk as any;
                 const parsed = ParsableWhirlpool.parse(pk, info);
-                if (parsed) {
+                if (!parsed) {
+                  // Log when parsing fails silently - this helps diagnose why events aren't being processed
+                  try {
+                    logger.debug('orca.ws.parse.returned_null', {
+                      account: pk58.slice(0, 8) + '…',
+                      dataLength: info?.data?.length || 0,
+                      hasData: !!info?.data,
+                      cat: 'pools'
+                    });
+                  } catch {}
+                  // Still count as attempt even though parsing failed
+                  try { wsDecodeStats.orca.failures += 1; } catch {}
+                  return; // Skip this event
+                }
+                // Parsing succeeded, process the event
+                {
                   maybeDebugAccount('orca');
                   const id = pk58;
                   const mint_a = parsed.tokenMintA.toBase58();
@@ -2445,9 +2460,12 @@ export function startRaydiumRefreshLoop(): void {
                   // OPTIMIZATION: Cache Orca pool state in execution cache to avoid RPC calls during tx building
                   try {
                     const { executionCache } = await import('../execution/cache.js');
+                    const rawBuffer = Buffer.isBuffer(info.data) ? Buffer.from(info.data) : Buffer.from(info.data ?? []);
+                    const existing = executionCache.getStatic(id) || {} as any;
                     
                     // Store static pool data (vaults, oracle, program ID)
                     executionCache.setStatic(id, {
+                      ...existing,
                       programId: parsed.whirlpoolsConfig ? parsed.whirlpoolsConfig.toBase58() : (CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc'),
                       vaults: {
                         a: parsed.tokenVaultA ? parsed.tokenVaultA.toBase58() : undefined,
@@ -2460,7 +2478,7 @@ export function startRaydiumRefreshLoop(): void {
                       decimals_a: precision.decA,
                       decimals_b: precision.decB,
                       // Store raw account data for local parsing during tx building
-                      rawAccountData: info?.data ? Buffer.from(info.data) : undefined,
+                      rawAccountData: rawBuffer,
                       rawAccountDataUpdatedMs: Date.now()
                     });
                     
@@ -2515,7 +2533,6 @@ export function startRaydiumRefreshLoop(): void {
                   // Always use incremental graph updates
                   try {
                     const gmod: any = await import('./graph.js');
-                    const prevSnap = orcaCache.data ? prev : { amm: [], clmm: [] };
                     const hasDelta = (d.clmm.length || d.amm.length || d.addedClmm || d.removedClmm || d.addedAmm || d.removedAmm);
                     if (hasDelta) { 
                       wsDeltaStats.orca.applied += 1; 
@@ -2535,8 +2552,20 @@ export function startRaydiumRefreshLoop(): void {
                         incrementSkipReason('orca', 'new_pool');
                       }
                     }
-                    if (hasDelta) {
-                      await scheduleDexApply('orca', prevSnap as any);
+                    if (hasDelta && typeof gmod.applyPoolUpdates === 'function') {
+                      // CRITICAL FIX: Use applyPoolUpdates instead of deprecated scheduleDexApply
+                      // Fire-and-forget: don't await to avoid blocking WebSocket handler
+                      // Use prev (old state) and next (new state) for incremental update
+                      void gmod.applyPoolUpdates(prev, next, { pushToArb: true }).catch((err: any) => {
+                        try { 
+                          logger.warn('graph.update.fire_forget_failed', { 
+                            error: String(err?.message || err), 
+                            source: 'orca',
+                            pool: id.slice(0,8) + '…',
+                            cat: 'graph' 
+                          }); 
+                        } catch {}
+                      });
                     }
                   } catch {}
                   ok = true;
@@ -3572,14 +3601,14 @@ export function startRaydiumRefreshLoop(): void {
         };
 
         // Helper: attach Raydium AMM vault (token) accounts for a given AMM pool address
-        const attachRaydiumAmmVaults = async (poolAddr: string) => {
+        const attachRaydiumAmmVaults = async (poolAddr: string, opts?: { poolAccount?: any }) => {
           try {
             logger.info('raydium.amm.attach.start', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
             const pk = new web3.PublicKey(poolAddr);
             const { withRpcRetry } = await import('../utils/rpcLimiter.js');
             
-            // Use withRpcRetry which handles rate limiting, timeout, and retries
-            const acc: any = await withRpcRetry(
+            // Prefer caller-provided account data to avoid duplicate RPC fetches
+            const acc: any = opts?.poolAccount ?? await withRpcRetry(
               () => conn.getAccountInfo(pk, CONFIG.system.txCommitment as any),
               { 
                 timeoutMs: 5000,  // 5 second timeout per attempt
@@ -3625,14 +3654,14 @@ export function startRaydiumRefreshLoop(): void {
         };
 
         // Helper: attach Raydium CLMM vault, observation, and tick array accounts for a given CLMM pool address
-        const attachRaydiumClmmAccounts = async (poolAddr: string) => {
+        const attachRaydiumClmmAccounts = async (poolAddr: string, opts?: { poolAccount?: any }) => {
           try {
             logger.info('raydium.clmm.attach.start', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
             const pk = new web3.PublicKey(poolAddr);
             const { withRpcRetry } = await import('../utils/rpcLimiter.js');
             
-            // Use withRpcRetry which handles rate limiting, timeout, and retries
-            const acc: any = await withRpcRetry(
+            // Prefer caller-provided account data to avoid duplicate RPC fetches
+            const acc: any = opts?.poolAccount ?? await withRpcRetry(
               () => conn.getAccountInfo(pk, CONFIG.system.txCommitment as any),
               { 
                 timeoutMs: 5000,  // 5 second timeout per attempt
@@ -4197,17 +4226,17 @@ export function startRaydiumRefreshLoop(): void {
                   
                   if (owner === rayClmmOwner) {
                     // CLMM pool: attach vaults, observation, tick arrays
-                    await attachRaydiumClmmAccounts(addr).catch((err) => {
+                    await attachRaydiumClmmAccounts(addr, { poolAccount: poolAcc }).catch((err) => {
                       try { logger.info('raydium.clmm.attach.fail', { pool: addr.slice(0,8)+'…', error: String(err?.message || err) }); } catch {}
                     });
                   } else if (owner === rayAmmOwner) {
                     // AMM pool: attach vaults
-                    await attachRaydiumAmmVaults(addr).catch((err) => {
+                    await attachRaydiumAmmVaults(addr, { poolAccount: poolAcc }).catch((err) => {
                       try { logger.info('raydium.amm.attach.fail', { pool: addr.slice(0,8)+'…', error: String(err?.message || err) }); } catch {}
                     });
                   } else {
                     // Unknown type, try AMM first (more common)
-                    await attachRaydiumAmmVaults(addr).catch((err) => {
+                    await attachRaydiumAmmVaults(addr, { poolAccount: poolAcc }).catch((err) => {
                       try { logger.info('raydium.unknown.attach.fail', { pool: addr.slice(0,8)+'…', error: String(err?.message || err) }); } catch {}
                     });
                   }

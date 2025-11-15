@@ -566,9 +566,42 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
         const accounts = await withRpcLimit(() => connection.getMultipleAccountsInfo(pubkeys));
         
         // Process each account and extract pool state
-        for (let j = 0; j < accounts.length; j++) {
+        // Note: accounts.length should equal pubkeys.length, but check for safety
+        if (accounts.length !== pubkeys.length) {
+          try {
+            logger.warn('orca.poolState.batch_length_mismatch', {
+              cat: 'orca',
+              ctx: {
+                batchStart: i,
+                batchSize: batch.length,
+                pubkeysLength: pubkeys.length,
+                accountsLength: accounts.length,
+                expected: pubkeys.length
+              }
+            });
+          } catch {}
+        }
+        
+        for (let j = 0; j < Math.min(accounts.length, batch.length); j++) {
           const pool = batch[j];
           const acc = accounts[j];
+          
+          if (!acc) {
+            // Account doesn't exist on-chain - might be stale/closed pool from normalizer
+            failed++;
+            try {
+              logger.info('orca.poolState.account_not_found', {
+                cat: 'orca',
+                ctx: {
+                  pool: pool.id.slice(0, 8) + '...',
+                  poolId: pool.id,
+                  strippedId: pool.id.replace(/-rev$/, ''),
+                  hint: 'Pool may be closed/deleted or ID incorrect'
+                }
+              });
+            } catch {}
+            continue;
+          }
           
           if (acc?.data) {
             try {
@@ -588,7 +621,7 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
               if (acc.data.length < FEE_RATE_OFFSET + 2) {
                 failed++;
                 try {
-                  logger.debug('orca.poolState.data_too_short', {
+                  logger.info('orca.poolState.data_too_short', {
                     cat: 'orca',
                     ctx: {
                       pool: pool.id.slice(0, 8) + '...',
@@ -631,7 +664,7 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
               cached++;
               
               try {
-                logger.debug('orca.poolState.cached', {
+                logger.info('orca.poolState.cached', {
                   cat: 'orca',
                   ctx: {
                     pool: pool.id.slice(0, 8) + '...',
@@ -655,7 +688,21 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
               } catch {}
             }
           } else {
+            // Account exists but has no data - should not happen for valid Whirlpool accounts
             failed++;
+            try {
+              logger.info('orca.poolState.account_no_data', {
+                cat: 'orca',
+                ctx: {
+                  pool: pool.id.slice(0, 8) + '...',
+                  poolId: pool.id,
+                  accountExists: !!acc,
+                  accountOwner: acc?.owner?.toBase58?.() || 'unknown',
+                  accountLamports: acc?.lamports || 0,
+                  hint: 'Account exists but has no data - may be wrong account type'
+                }
+              });
+            } catch {}
           }
         }
       } catch (batchErr) {
