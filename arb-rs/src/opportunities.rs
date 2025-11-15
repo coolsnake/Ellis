@@ -4,32 +4,54 @@ use serde::Serialize;
 pub struct Opportunity {
     pub path: Vec<String>,
     pub profit_bps: i64,
-    #[serde(skip_serializing_if = "Option::is_none")] pub net_bps: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub net_bps: Option<i64>,
     pub est_profit_usd: f64,
     pub dexes: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub hop_dexes: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub hop_rates: Option<Vec<f64>>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub hop_outs: Option<Vec<f64>>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub hop_pool_ids: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub hop_fee_bps: Option<Vec<i64>>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub hop_liquidity_display: Option<Vec<f64>>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub hop_count: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub rate_product: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub link_edges_used: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub link_penalty_bps_total: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub min_edge_liquidity: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub est_capacity: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub bottleneck: Option<BottleneckEdge>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub detected_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub first_seen_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub last_verified_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub detections: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hop_dexes: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hop_rates: Option<Vec<f64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hop_outs: Option<Vec<f64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hop_pool_ids: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hop_fee_bps: Option<Vec<i64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hop_liquidity_display: Option<Vec<f64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hop_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_product: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link_edges_used: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link_penalty_bps_total: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_edge_liquidity: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub est_capacity: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bottleneck: Option<BottleneckEdge>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detected_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_seen_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_verified_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detections: Option<u64>,
     // Optional debug for near-miss
-    #[serde(skip_serializing_if = "Option::is_none")] pub bf_slack_log: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub bf_required_rate: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub bf_rate_delta_bps: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bf_slack_log: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bf_required_rate: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bf_rate_delta_bps: Option<i64>,
     // Marker to distinguish simulated candidates
-    #[serde(skip_serializing_if = "Option::is_none")] pub is_near_miss: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_near_miss: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -45,8 +67,10 @@ pub struct BottleneckEdge {
 #[derive(Debug, Clone, Serialize)]
 pub struct OpportunitiesResponse {
     pub items: Vec<Opportunity>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub near_items: Option<Vec<Opportunity>>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub summary: Option<OpportunitiesSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub near_items: Option<Vec<Opportunity>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<OpportunitiesSummary>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -64,9 +88,24 @@ pub struct OpportunitiesSummary {
     pub diff_to_detect_ms: u64,
     pub graph_nodes: u64,
     pub graph_edges: u64,
-    #[serde(skip_serializing_if = "Option::is_none")] pub near_miss: Option<Opportunity>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub near_miss_shortfall_bps: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub near_misses: Option<Vec<Opportunity>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub near_miss: Option<Opportunity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub near_miss_shortfall_bps: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub near_misses: Option<Vec<Opportunity>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rejected_opportunities: Option<Vec<RejectedOpportunity>>,
 }
 
-
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct RejectedOpportunity {
+    pub reason: String,
+    pub path: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hop_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profit_bps: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub net_bps: Option<i64>,
+}

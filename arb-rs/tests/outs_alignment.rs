@@ -1,4 +1,4 @@
-use arb_rs::utils::{rotate_to_start_num, compute_est_profit_usd};
+use arb_rs::utils::{compute_est_profit_usd, rotate_to_start_num};
 
 #[test]
 fn rotates_numeric_array_with_labels() {
@@ -20,5 +20,3 @@ fn usd_profit_from_last_out_minus_notional() {
     let expected = outs.last().unwrap() - notional;
     assert!((usd - expected).abs() < 1e-9);
 }
-
-

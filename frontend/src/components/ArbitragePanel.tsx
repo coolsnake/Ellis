@@ -31,6 +31,14 @@ type Opportunity = {
   detections?: number;
 };
 
+type RejectedOpportunity = {
+  reason: string;
+  path: string[];
+  hop_count?: number;
+  profit_bps?: number;
+  net_bps?: number;
+};
+
 type OpportunitiesSummary = {
   count: number;
   max_profit_bps: number;
@@ -52,6 +60,7 @@ type OpportunitiesSummary = {
   near_miss?: Opportunity;
   near_miss_shortfall_bps?: number;
   near_misses?: Opportunity[];
+  rejected_opportunities?: RejectedOpportunity[];
 };
 
 export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph: boolean; onToggleGraph: () => void }> = ({ apiBase, socket, showGraph, onToggleGraph }) => {
@@ -98,6 +107,16 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
   };
 
   const sym = (m: string) => tokenMap[m] || (m.length > 6 ? `${m.slice(0,4)}…${m.slice(-4)}` : m);
+  const formatRejectedReason = (reason: string) => {
+    if (!reason) return 'Rejected';
+    return reason.replace(/^rejected_/, '').split('_').map(part => part ? `${part[0].toUpperCase()}${part.slice(1)}` : '').join(' ').trim() || 'Rejected';
+  };
+  const rejectedDebug = useMemo(() => {
+    const allow = new Set(['rejected_too_short', 'rejected_too_long', 'rejected_too_high_profit']);
+    const src = summary?.rejected_opportunities;
+    const list: RejectedOpportunity[] = Array.isArray(src) ? src : [];
+    return list.filter((item) => allow.has(item.reason)).slice(0, 10);
+  }, [summary?.rejected_opportunities]);
 
   const fetchOpps = async () => {
     if (isFetchingRef.current) return;
@@ -178,8 +197,15 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
           summary?.graph_edges ?? '',
           summary?.near_miss_shortfall_bps ?? '',
         ].join(':');
+        const rejected = summary?.rejected_opportunities;
+        const rejectedSig = Array.isArray(rejected)
+          ? rejected.map((rej) => {
+              const path = Array.isArray(rej.path) ? rej.path.join('>') : '';
+              return `${rej.reason}:${path}:${rej.profit_bps ?? ''}:${rej.net_bps ?? ''}:${rej.hop_count ?? ''}`;
+            }).join('|')
+          : '';
 
-        return `${itemsSig}||${nearSig}||${nearListSig}||${summaryMarkers}`;
+        return `${itemsSig}||${nearSig}||${nearListSig}||${summaryMarkers}||${rejectedSig}`;
       } catch {
         return String(Date.now());
       }
@@ -599,6 +625,24 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
               <div key={i} className="font-mono">
                 <div className="mb-0.5">{(nm.path || []).map(m => tokenMap[m] || (m.length > 6 ? `${m.slice(0,4)}…${m.slice(-4)}` : m)).join(' → ')}</div>
                 <div>Profit: {fmtPctFromBps(nm.profit_bps)} · Net: {fmtPctFromBps((nm as any).net_bps || nm.profit_bps)} · Hops: {nm.hop_count ?? nm.path.length}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {rejectedDebug.length > 0 && (
+        <div className="p-2 border rounded bg-red-900/10 text-xs mb-3">
+          <div className="font-semibold mb-1">Rejected Opportunities (debug)</div>
+          <div className="space-y-1">
+            {rejectedDebug.map((rej, i) => (
+              <div key={`${rej.reason}:${(rej.path || []).join('>')}:${i}`} className="font-mono space-y-0.5">
+                <div className="flex items-center gap-2 flex-wrap text-[11px]">
+                  <span className="px-1 py-0.5 rounded bg-red-900/40 text-red-100 uppercase tracking-wide">{formatRejectedReason(rej.reason)}</span>
+                  {typeof rej.hop_count === 'number' && <span>Hops: {rej.hop_count}</span>}
+                  {typeof rej.profit_bps === 'number' && <span>Profit: {fmtPctFromBps(rej.profit_bps)}</span>}
+                  {typeof rej.net_bps === 'number' && rej.net_bps !== rej.profit_bps && <span>Net: {fmtPctFromBps(rej.net_bps)}</span>}
+                </div>
+                <div>{(rej.path || []).map(sym).join(' → ') || '—'}</div>
               </div>
             ))}
           </div>

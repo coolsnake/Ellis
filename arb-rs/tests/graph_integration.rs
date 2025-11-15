@@ -1,10 +1,17 @@
+use arb_rs::algos::{detect_near_miss_cycles, detect_negative_cycles};
 use arb_rs::graph::{ArbGraph, EdgeData};
-use arb_rs::algos::{detect_negative_cycles, detect_near_miss_cycles};
 use arb_rs::opportunities::{OpportunitiesResponse, OpportunitiesSummary, Opportunity};
 use std::collections::HashSet;
 
 fn edge(rate: f64, dex: &str) -> EdgeData {
-    EdgeData { rate_effective: rate, fee_bps: 0, liquidity: 1.0, dex: dex.to_string(), pool_id: String::new(), liquidity_display: 1.0 }
+    EdgeData {
+        rate_effective: rate,
+        fee_bps: 0,
+        liquidity: 1.0,
+        dex: dex.to_string(),
+        pool_id: String::new(),
+        liquidity_display: 1.0,
+    }
 }
 
 #[test]
@@ -58,25 +65,27 @@ fn near_miss_finds_almost_profitable_triangle() {
         bf_rate_delta_bps: None,
         is_near_miss: Some(true),
     };
-    let resp = OpportunitiesResponse { items: vec![], near_items: Some(vec![o.clone()]), summary: Some(OpportunitiesSummary {
-        count: 0,
-        max_profit_bps: 0,
-        avg_profit_bps: 0.0,
-        avg_net_bps: 0.0,
-        avg_hop_count: 0.0,
-        avg_link_edges_used: 0.0,
-        min_edge_liquidity_avg: 0.0,
-        min_edge_liquidity_min: 0.0,
-        last_detection_ms: 0,
-        detection_duration_ms: 0,
-        diff_to_detect_ms: 0,
-        graph_nodes: 0,
-        graph_edges: 0,
-        near_miss: None,
-        near_miss_shortfall_bps: None,
-        near_misses: None,
-    }) };
+    let resp = OpportunitiesResponse {
+        items: vec![],
+        near_items: Some(vec![o.clone()]),
+        summary: Some(OpportunitiesSummary {
+            count: 0,
+            max_profit_bps: 0,
+            avg_profit_bps: 0.0,
+            avg_net_bps: 0.0,
+            avg_hop_count: 0.0,
+            avg_link_edges_used: 0.0,
+            min_edge_liquidity_avg: 0.0,
+            min_edge_liquidity_min: 0.0,
+            last_detection_ms: 0,
+            detection_duration_ms: 0,
+            diff_to_detect_ms: 0,
+            graph_nodes: 0,
+            graph_edges: 0,
+            near_miss: None,
+            near_miss_shortfall_bps: None,
+            near_misses: None,
+        }),
+    };
     assert!(resp.near_items.unwrap()[0].is_near_miss.unwrap());
 }
-
-

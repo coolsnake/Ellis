@@ -57,7 +57,12 @@ export const toLiteDiff = (d: GraphDiff): GraphDiff => ({
 
 let lastSnapshot: GraphSnapshot | null = null;
 let inflight: Promise<GraphSnapshot> | null = null;
-const SNAPSHOT_TTL_MS = Math.max(1000, Number((CONFIG.system as any)?.graphSnapshotTtlMs || 30_000));
+const getSnapshotTtlMs = (): number => {
+  const raw = Number((CONFIG.system as any)?.graphSnapshotTtlMs);
+  const fallback = 30_000;
+  const ttl = Number.isFinite(raw) ? raw : fallback;
+  return Math.max(1000, ttl);
+};
 let lastAt = 0;
 let rebuildTimer: any | null = null;
 let pendingUpdates = 0;
@@ -494,7 +499,7 @@ export function getGraphTimings(): { graph_build_ms?: number; graph_push_latency
 
 export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
   const now = Date.now();
-  if (!force && lastSnapshot && now - lastAt < SNAPSHOT_TTL_MS) return lastSnapshot;
+  if (!force && lastSnapshot && now - lastAt < getSnapshotTtlMs()) return lastSnapshot;
   if (inflight) return inflight;
   inflight = (async () => {
     try {

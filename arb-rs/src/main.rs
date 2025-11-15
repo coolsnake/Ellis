@@ -1,29 +1,37 @@
-use std::{net::SocketAddr, sync::Arc, time::Duration};
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::collections::VecDeque;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use petgraph::prelude::NodeIndex;
 use petgraph::visit::EdgeRef;
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
-use axum::{extract::State, routing::{get, post}, Json, Router};
+use axum::extract::ws::{Message, WebSocketUpgrade};
 use axum::http::HeaderMap;
-use axum::extract::ws::{WebSocketUpgrade, Message};
 use axum::response::IntoResponse;
-use serde::Serialize;
-use serde::Deserialize;
-use serde_json::json;
-use std::collections::{HashMap, HashSet};
-use tokio::sync::{RwLock, Notify};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use axum::{
+    extract::State,
+    routing::{get, post},
+    Json, Router,
+};
 use base64::{engine::general_purpose, Engine as _};
 use once_cell::sync::Lazy;
+use serde::Deserialize;
+use serde::Serialize;
+use serde_json::json;
+use std::collections::{HashMap, HashSet};
+use tokio::sync::{Notify, RwLock};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 mod opportunities;
-use opportunities::{OpportunitiesResponse, Opportunity, OpportunitiesSummary};
+use opportunities::{
+    OpportunitiesResponse, OpportunitiesSummary, Opportunity, RejectedOpportunity,
+};
 mod graph;
-use graph::{ArbGraph, EdgeData, expand_nodes_by_hops};
+use graph::{expand_nodes_by_hops, ArbGraph, EdgeData};
 mod algos;
-use algos::{detect_negative_cycles, detect_near_miss_cycles, detect_negative_cycles_filtered};
+use algos::{detect_near_miss_cycles, detect_negative_cycles, detect_negative_cycles_filtered};
+
+const REJECTED_DEBUG_LIMIT: usize = 15;
 
 #[derive(Default, serde::Serialize, serde::Deserialize, Clone)]
 struct ArbConfig {
@@ -106,20 +114,21 @@ struct EventItem {
 struct AppState {
     config: ArbConfig,
     opportunities: Vec<Opportunity>,
+    rejected_opportunities: Vec<RejectedOpportunity>,
     graph: ArbGraph,
     metrics: Metrics,
     events: Vec<EventItem>,
     near_miss: Option<Opportunity>,
     near_miss_shortfall_bps: Option<i64>,
     near_misses: Vec<Opportunity>,
-    last_graph_version: AtomicU64,  // Changed to AtomicU64 - no lock needed for reads/writes
-    last_graph_ts: AtomicU64,  // Changed to AtomicU64 for consistency
+    last_graph_version: AtomicU64, // Changed to AtomicU64 - no lock needed for reads/writes
+    last_graph_ts: AtomicU64,      // Changed to AtomicU64 for consistency
     // Buffered graph updates to be applied between loop runs
     pending_added_edges: Vec<GraphDiffEdge>,
     pending_updated_edges: Vec<GraphDiffEdge>,
     pending_removed_edge_ids: Vec<String>,
-    pending_graph_version: AtomicU64,  // Changed to AtomicU64, use u64::MAX as "None" sentinel
-    pending_graph_ts: AtomicU64,  // Changed to AtomicU64, use u64::MAX as "None" sentinel
+    pending_graph_version: AtomicU64, // Changed to AtomicU64, use u64::MAX as "None" sentinel
+    pending_graph_ts: AtomicU64,      // Changed to AtomicU64, use u64::MAX as "None" sentinel
     // Event-driven wakeup for detection loop
     wake: Arc<Notify>,
     // Detection bookkeeping and execution markers
@@ -135,13 +144,17 @@ fn keyify_opportunity(path: &Vec<String>, dexes: &Vec<String>) -> String {
 }
 
 #[derive(Serialize)]
-struct HealthResp { status: &'static str }
+struct HealthResp {
+    status: &'static str,
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Optional: prepare a bridge sender for backend logging if env is set
     #[derive(Clone)]
-    struct BridgeWriter { tx: Option<tokio::sync::mpsc::Sender<String>> }
+    struct BridgeWriter {
+        tx: Option<tokio::sync::mpsc::Sender<String>>,
+    }
     impl std::io::Write for BridgeWriter {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
             if let Some(tx) = &self.tx {
@@ -149,7 +162,9 @@ async fn main() -> anyhow::Result<()> {
             }
             Ok(buf.len())
         }
-        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 
     let mut bridge_tx: Option<tokio::sync::mpsc::Sender<String>> = None;
@@ -165,7 +180,10 @@ async fn main() -> anyhow::Result<()> {
             match (user, pass) {
                 (Some(u), Some(p)) if !u.is_empty() => {
                     let creds = format!("{}:{}", u, p);
-                    Some(format!("Basic {}", general_purpose::STANDARD.encode(creds.as_bytes())))
+                    Some(format!(
+                        "Basic {}",
+                        general_purpose::STANDARD.encode(creds.as_bytes())
+                    ))
                 }
                 _ => None,
             }
@@ -173,21 +191,39 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(async move {
             while let Some(line) = rx.recv().await {
                 let msg = line.trim();
-                if msg.is_empty() { continue; }
+                if msg.is_empty() {
+                    continue;
+                }
                 // Infer level from formatted prefix if present
                 let mut level = "info";
-                if msg.starts_with("[ERROR]") { level = "error"; }
-                else if msg.starts_with("[WARN]") { level = "warn"; }
-                else if msg.starts_with("[INFO]") { level = "info"; }
-                else if msg.starts_with("[DEBUG]") { level = "debug"; }
+                if msg.starts_with("[ERROR]") {
+                    level = "error";
+                } else if msg.starts_with("[WARN]") {
+                    level = "warn";
+                } else if msg.starts_with("[INFO]") {
+                    level = "info";
+                } else if msg.starts_with("[DEBUG]") {
+                    level = "debug";
+                }
                 // Try to infer category: map known prefixes to backend categories
-                let cat = if msg.contains("arb.") { Some("arb") }
-                          else if msg.contains("graph:") || msg.contains("graph.") { Some("graph") }
-                          else if msg.contains("pools") { Some("pools") }
-                          else { None };
-                let payload = if let Some(c) = cat { serde_json::json!({ "level": level, "message": msg, "cat": c }) } else { serde_json::json!({ "level": level, "message": msg }) };
+                let cat = if msg.contains("arb.") {
+                    Some("arb")
+                } else if msg.contains("graph:") || msg.contains("graph.") {
+                    Some("graph")
+                } else if msg.contains("pools") {
+                    Some("pools")
+                } else {
+                    None
+                };
+                let payload = if let Some(c) = cat {
+                    serde_json::json!({ "level": level, "message": msg, "cat": c })
+                } else {
+                    serde_json::json!({ "level": level, "message": msg })
+                };
                 let mut req = client.post(&url).json(&payload);
-                if let Some(h) = &auth_header { req = req.header("authorization", h); }
+                if let Some(h) = &auth_header {
+                    req = req.header("authorization", h);
+                }
                 let _ = req.send().await;
             }
         });
@@ -197,7 +233,10 @@ async fn main() -> anyhow::Result<()> {
     let ring: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
 
     #[derive(Clone)]
-    struct RingWriter { ring: Arc<Mutex<VecDeque<String>>>, buf: String }
+    struct RingWriter {
+        ring: Arc<Mutex<VecDeque<String>>>,
+        buf: String,
+    }
     impl std::io::Write for RingWriter {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
             self.buf.push_str(&String::from_utf8_lossy(bytes));
@@ -205,14 +244,18 @@ async fn main() -> anyhow::Result<()> {
                 let line = self.buf[..pos].to_string();
                 if !line.trim().is_empty() {
                     let mut guard = self.ring.lock().unwrap();
-                    if guard.len() >= 2000 { guard.pop_front(); }
+                    if guard.len() >= 2000 {
+                        guard.pop_front();
+                    }
                     guard.push_back(line);
                 }
                 self.buf.drain(..=pos);
             }
             Ok(bytes.len())
         }
-        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 
     tracing_subscriber::registry()
@@ -222,12 +265,50 @@ async fn main() -> anyhow::Result<()> {
         // Plain layer without timestamps to avoid long timestamps in console
         .with(tracing_subscriber::fmt::layer().without_time())
         // Bridge layer (no ANSI, no time) to backend terminal/log endpoint
-        .with(tracing_subscriber::fmt::layer().without_time().with_ansi(false).with_writer(move || BridgeWriter { tx: bridge_tx.clone() }))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .without_time()
+                .with_ansi(false)
+                .with_writer(move || BridgeWriter {
+                    tx: bridge_tx.clone(),
+                }),
+        )
         // Ring capture layer (no ANSI, no time) writing to in-memory buffer
-        .with(tracing_subscriber::fmt::layer().without_time().with_ansi(false).with_writer({ let ring = ring.clone(); move || RingWriter { ring: ring.clone(), buf: String::new() } }))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .without_time()
+                .with_ansi(false)
+                .with_writer({
+                    let ring = ring.clone();
+                    move || RingWriter {
+                        ring: ring.clone(),
+                        buf: String::new(),
+                    }
+                }),
+        )
         .init();
 
-    let state = Arc::new(RwLock::new(AppState { config: default_config(), opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), near_miss: None, near_miss_shortfall_bps: None, near_misses: Vec::new(), last_graph_version: AtomicU64::new(0), last_graph_ts: AtomicU64::new(0), pending_added_edges: Vec::new(), pending_updated_edges: Vec::new(), pending_removed_edge_ids: Vec::new(), pending_graph_version: AtomicU64::new(u64::MAX), pending_graph_ts: AtomicU64::new(u64::MAX), wake: Arc::new(Notify::new()), detection_counts: std::collections::HashMap::new(), executed_keys: std::collections::HashSet::new() }));
+    let state = Arc::new(RwLock::new(AppState {
+        config: default_config(),
+        opportunities: Vec::new(),
+        rejected_opportunities: Vec::new(),
+        graph: ArbGraph::new(),
+        metrics: Metrics::default(),
+        events: Vec::new(),
+        near_miss: None,
+        near_miss_shortfall_bps: None,
+        near_misses: Vec::new(),
+        last_graph_version: AtomicU64::new(0),
+        last_graph_ts: AtomicU64::new(0),
+        pending_added_edges: Vec::new(),
+        pending_updated_edges: Vec::new(),
+        pending_removed_edge_ids: Vec::new(),
+        pending_graph_version: AtomicU64::new(u64::MAX),
+        pending_graph_ts: AtomicU64::new(u64::MAX),
+        wake: Arc::new(Notify::new()),
+        detection_counts: std::collections::HashMap::new(),
+        executed_keys: std::collections::HashSet::new(),
+    }));
 
     // Install shutdown handler to clear in-memory state
     {
@@ -239,6 +320,7 @@ async fn main() -> anyhow::Result<()> {
             let mut s = state_for_shutdown.write().await;
             s.graph = ArbGraph::new();
             s.opportunities.clear();
+            s.rejected_opportunities.clear();
             s.near_miss = None;
             s.near_miss_shortfall_bps = None;
             s.pending_added_edges.clear();
@@ -285,12 +367,14 @@ async fn main() -> anyhow::Result<()> {
                 let mut ts_to_commit: Option<u64> = None;
                 // Best-effort peek at backend graph version with a short timeout.
                 // Do not advance local last_graph_version here to avoid racing with buffered diffs.
-                let api_base = std::env::var("BACKEND_API_BASE").unwrap_or_else(|_| "http://127.0.0.1:3001/api".into());
+                let api_base = std::env::var("BACKEND_API_BASE")
+                    .unwrap_or_else(|_| "http://127.0.0.1:3001/api".into());
                 let gv_url = format!("{}/arb/graph/version", api_base.trim_end_matches('/'));
                 let _ = tokio::time::timeout(
                     std::time::Duration::from_millis(300),
-                    reqwest::Client::new().get(&gv_url).send()
-                ).await;
+                    reqwest::Client::new().get(&gv_url).send(),
+                )
+                .await;
                 let loop_start = Instant::now();
                 let usdc = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
                 // Apply any buffered diffs now (between detection runs)
@@ -305,7 +389,9 @@ async fn main() -> anyhow::Result<()> {
                         let rem_ct = s.pending_removed_edge_ids.len();
                         let add_ct = s.pending_added_edges.len();
                         let upd_ct = s.pending_updated_edges.len();
-                        let has_updates = !s.pending_removed_edge_ids.is_empty() || !s.pending_added_edges.is_empty() || !s.pending_updated_edges.is_empty();
+                        let has_updates = !s.pending_removed_edge_ids.is_empty()
+                            || !s.pending_added_edges.is_empty()
+                            || !s.pending_updated_edges.is_empty();
 
                         if pending_version_val != u64::MAX {
                             version_slot = Some(pending_version_val);
@@ -323,17 +409,28 @@ async fn main() -> anyhow::Result<()> {
                                 s.pending_graph_ts.store(u64::MAX, Ordering::Release);
                             }
                         }
-                        
+
                         if has_updates {
                             let removed = std::mem::take(&mut s.pending_removed_edge_ids);
                             let added = std::mem::take(&mut s.pending_added_edges);
                             let updated = std::mem::take(&mut s.pending_updated_edges);
                             let calibrate_enabled = s.config.calibrate_magnitude_on_ingest;
                             // Clone graph only if calibration is enabled (expensive operation)
-                            let graph_snapshot = if calibrate_enabled { Some(s.graph.clone()) } else { None };
+                            let graph_snapshot = if calibrate_enabled {
+                                Some(s.graph.clone())
+                            } else {
+                                None
+                            };
                             // Apply removals quickly before dropping lock
-                            if !removed.is_empty() { let _ = s.graph.remove_edges_by_ids(&removed); }
-                            (Some((removed, added, updated, calibrate_enabled, graph_snapshot)), rem_ct, add_ct, upd_ct)
+                            if !removed.is_empty() {
+                                let _ = s.graph.remove_edges_by_ids(&removed);
+                            }
+                            (
+                                Some((removed, added, updated, calibrate_enabled, graph_snapshot)),
+                                rem_ct,
+                                add_ct,
+                                upd_ct,
+                            )
                         } else {
                             (None, 0, 0, 0)
                         }
@@ -345,115 +442,272 @@ async fn main() -> anyhow::Result<()> {
                         version_to_commit = version_slot;
                         ts_to_commit = ts_slot;
                     }
-                    
+
                     // Build change sets and do calibration outside write lock
-                    if let Some((removed, added, updated, calibrate_enabled, graph_snapshot)) = updates_data {
+                    if let Some((removed, added, updated, calibrate_enabled, graph_snapshot)) =
+                        updates_data
+                    {
                         // Build change sets BEFORE applying removals to derive scope
-                        for id in removed.iter() { changed_edge_ids.insert(id.clone()); }
-                        let synth_edge_id = |src: &str, dst: &str, dex: &str| -> String { format!("{}->{}-{}", src, dst, dex) };
+                        for id in removed.iter() {
+                            changed_edge_ids.insert(id.clone());
+                        }
+                        let synth_edge_id = |src: &str, dst: &str, dex: &str| -> String {
+                            format!("{}->{}-{}", src, dst, dex)
+                        };
                         for e in added.iter().chain(updated.iter()) {
                             changed_mints.insert(e.source.clone());
                             changed_mints.insert(e.target.clone());
-                            if let Some(pid) = &e.pool_id { if !pid.is_empty() { changed_edge_ids.insert(pid.clone()); } }
-                            if let Some(dex) = &e.dex { if e.pool_id.is_none() { changed_edge_ids.insert(synth_edge_id(&e.source, &e.target, dex)); } }
-                        }
-                        
-                        // Do magnitude calibration outside write lock (expensive operation)
-                        let mut calibrated_edges: Vec<(String, String, String, i64, f64, f64, f64, String)> = Vec::new();
-                        let sol_mint: &str  = "So11111111111111111111111111111111111111112";
-                        let usdc_mint: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-                        
-                        // OPTIMIZATION: Pre-compute SOL/USDC price and cache USD lookups to avoid O(E) scans per edge
-                        let mut usd_cache: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
-                        let sol_usd_cached: Option<f64> = if calibrate_enabled && graph_snapshot.is_some() {
-                            let graph = graph_snapshot.as_ref().unwrap();
-                            // Find SOL/USDC price once
-                            let mut sol_usd: Option<f64> = None;
-                            for edge in graph.g.edge_references() {
-                                let src = graph.g.node_weight(edge.source()).cloned().unwrap_or_default();
-                                let dst = graph.g.node_weight(edge.target()).cloned().unwrap_or_default();
-                                let r = edge.weight().rate_effective;
-                                if r <= 0.0 { continue; }
-                                if src == sol_mint && dst == usdc_mint { sol_usd = Some(r); break; }
-                                if src == usdc_mint && dst == sol_mint { sol_usd = Some(1.0 / r); break; }
+                            if let Some(pid) = &e.pool_id {
+                                if !pid.is_empty() {
+                                    changed_edge_ids.insert(pid.clone());
+                                }
                             }
-                            sol_usd
-                        } else {
-                            None
-                        };
-                        
+                            if let Some(dex) = &e.dex {
+                                if e.pool_id.is_none() {
+                                    changed_edge_ids
+                                        .insert(synth_edge_id(&e.source, &e.target, dex));
+                                }
+                            }
+                        }
+
+                        // Do magnitude calibration outside write lock (expensive operation)
+                        let mut calibrated_edges: Vec<(
+                            String,
+                            String,
+                            String,
+                            i64,
+                            f64,
+                            f64,
+                            f64,
+                            String,
+                        )> = Vec::new();
+                        let sol_mint: &str = "So11111111111111111111111111111111111111112";
+                        let usdc_mint: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+
+                        // OPTIMIZATION: Pre-compute SOL/USDC price and cache USD lookups to avoid O(E) scans per edge
+                        let mut usd_cache: std::collections::HashMap<String, f64> =
+                            std::collections::HashMap::new();
+                        let sol_usd_cached: Option<f64> =
+                            if calibrate_enabled && graph_snapshot.is_some() {
+                                let graph = graph_snapshot.as_ref().unwrap();
+                                // Find SOL/USDC price once
+                                let mut sol_usd: Option<f64> = None;
+                                for edge in graph.g.edge_references() {
+                                    let src = graph
+                                        .g
+                                        .node_weight(edge.source())
+                                        .cloned()
+                                        .unwrap_or_default();
+                                    let dst = graph
+                                        .g
+                                        .node_weight(edge.target())
+                                        .cloned()
+                                        .unwrap_or_default();
+                                    let r = edge.weight().rate_effective;
+                                    if r <= 0.0 {
+                                        continue;
+                                    }
+                                    if src == sol_mint && dst == usdc_mint {
+                                        sol_usd = Some(r);
+                                        break;
+                                    }
+                                    if src == usdc_mint && dst == sol_mint {
+                                        sol_usd = Some(1.0 / r);
+                                        break;
+                                    }
+                                }
+                                sol_usd
+                            } else {
+                                None
+                            };
+
                         for e in added.iter().chain(updated.iter()) {
                             let dex = e.dex.clone().unwrap_or_else(|| "Unknown".to_string());
                             let fee: i64 = e.fee_bps.unwrap_or(0);
                             let liq = e.liquidity.unwrap_or(0.0);
                             let liq_disp = e.liquidity_display.unwrap_or(0.0);
                             let pool_id = e.pool_id.clone().unwrap_or_default();
-                            let px_raw = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
+                            let px_raw = if let Some(px) = e.price_a_per_b {
+                                if px.is_finite() && px > 0.0 {
+                                    px
+                                } else {
+                                    0.0
+                                }
+                            } else {
+                                0.0
+                            };
                             let mut px = px_raw;
-                            
+
                             if px > 0.0 && calibrate_enabled {
                                 if let Some(ref graph) = graph_snapshot {
                                     // Optimized USD lookup with caching
-                                    let get_usd_cached = |mint: &str, graph: &ArbGraph, cache: &mut std::collections::HashMap<String, f64>, sol_usd: Option<f64>| -> Option<f64> {
-                                        if mint == usdc_mint { return Some(1.0); }
-                                        if let Some(&price) = cache.get(mint) { return Some(price); }
-                                        
-                                        if let Some(idx) = graph.map.get(mint) {
-                                            // Prefer direct edges to USDC
-                                            for edge in graph.g.edges(*idx) {
-                                                let u = edge.source(); let v = edge.target();
-                                                let src = graph.g.node_weight(u).cloned().unwrap_or_default();
-                                                let dst = graph.g.node_weight(v).cloned().unwrap_or_default();
-                                                let r = edge.weight().rate_effective;
-                                                if dst == usdc_mint && r > 0.0 { cache.insert(mint.to_string(), r); return Some(r); }
-                                                if src == usdc_mint && r > 0.0 { let price = 1.0 / r; cache.insert(mint.to_string(), price); return Some(price); }
+                                    let get_usd_cached =
+                                        |mint: &str,
+                                         graph: &ArbGraph,
+                                         cache: &mut std::collections::HashMap<String, f64>,
+                                         sol_usd: Option<f64>|
+                                         -> Option<f64> {
+                                            if mint == usdc_mint {
+                                                return Some(1.0);
                                             }
-                                            // Via SOL (use cached price)
-                                            if let Some(su) = sol_usd {
+                                            if let Some(&price) = cache.get(mint) {
+                                                return Some(price);
+                                            }
+
+                                            if let Some(idx) = graph.map.get(mint) {
+                                                // Prefer direct edges to USDC
                                                 for edge in graph.g.edges(*idx) {
-                                                    let u = edge.source(); let v = edge.target();
-                                                    let s = graph.g.node_weight(u).cloned().unwrap_or_default();
-                                                    let t = graph.g.node_weight(v).cloned().unwrap_or_default();
+                                                    let u = edge.source();
+                                                    let v = edge.target();
+                                                    let src = graph
+                                                        .g
+                                                        .node_weight(u)
+                                                        .cloned()
+                                                        .unwrap_or_default();
+                                                    let dst = graph
+                                                        .g
+                                                        .node_weight(v)
+                                                        .cloned()
+                                                        .unwrap_or_default();
                                                     let r = edge.weight().rate_effective;
-                                                    if r <= 0.0 { continue; }
-                                                    if s == mint && t == sol_mint { let price = su / r; cache.insert(mint.to_string(), price); return Some(price); }
-                                                    if s == sol_mint && t == mint { let price = su * r; cache.insert(mint.to_string(), price); return Some(price); }
+                                                    if dst == usdc_mint && r > 0.0 {
+                                                        cache.insert(mint.to_string(), r);
+                                                        return Some(r);
+                                                    }
+                                                    if src == usdc_mint && r > 0.0 {
+                                                        let price = 1.0 / r;
+                                                        cache.insert(mint.to_string(), price);
+                                                        return Some(price);
+                                                    }
+                                                }
+                                                // Via SOL (use cached price)
+                                                if let Some(su) = sol_usd {
+                                                    for edge in graph.g.edges(*idx) {
+                                                        let u = edge.source();
+                                                        let v = edge.target();
+                                                        let s = graph
+                                                            .g
+                                                            .node_weight(u)
+                                                            .cloned()
+                                                            .unwrap_or_default();
+                                                        let t = graph
+                                                            .g
+                                                            .node_weight(v)
+                                                            .cloned()
+                                                            .unwrap_or_default();
+                                                        let r = edge.weight().rate_effective;
+                                                        if r <= 0.0 {
+                                                            continue;
+                                                        }
+                                                        if s == mint && t == sol_mint {
+                                                            let price = su / r;
+                                                            cache.insert(mint.to_string(), price);
+                                                            return Some(price);
+                                                        }
+                                                        if s == sol_mint && t == mint {
+                                                            let price = su * r;
+                                                            cache.insert(mint.to_string(), price);
+                                                            return Some(price);
+                                                        }
+                                                    }
                                                 }
                                             }
-                                        }
-                                        None
-                                    };
-                                    let pa = get_usd_cached(&e.source, graph, &mut usd_cache, sol_usd_cached);
-                                    let pb = get_usd_cached(&e.target, graph, &mut usd_cache, sol_usd_cached);
+                                            None
+                                        };
+                                    let pa = get_usd_cached(
+                                        &e.source,
+                                        graph,
+                                        &mut usd_cache,
+                                        sol_usd_cached,
+                                    );
+                                    let pb = get_usd_cached(
+                                        &e.target,
+                                        graph,
+                                        &mut usd_cache,
+                                        sol_usd_cached,
+                                    );
                                     if let (Some(pa), Some(pb)) = (pa, pb) {
                                         let refv = pb / pa;
-                                        let mut best = px; let mut best_dev = f64::INFINITY; let mut best_k = 0i32;
+                                        let mut best = px;
+                                        let mut best_dev = f64::INFINITY;
+                                        let mut best_k = 0i32;
                                         for k in -8..=8 {
                                             let cand = px * 10f64.powi(k);
-                                            if !(cand.is_finite() && cand > 0.0) { continue; }
+                                            if !(cand.is_finite() && cand > 0.0) {
+                                                continue;
+                                            }
                                             let dev = (cand / refv).max(refv / cand);
-                                            if dev + 1e-12 < best_dev { best_dev = dev; best = cand; best_k = k; }
+                                            if dev + 1e-12 < best_dev {
+                                                best_dev = dev;
+                                                best = cand;
+                                                best_k = k;
+                                            }
                                         }
-                                        if best_k != 0 { tracing::debug!(mint_a = %e.source, mint_b = %e.target, px_in = px_raw, px_out = best, k = best_k, refv, "arb.magnitude.calibrated.diff"); }
+                                        if best_k != 0 {
+                                            tracing::debug!(mint_a = %e.source, mint_b = %e.target, px_in = px_raw, px_out = best, k = best_k, refv, "arb.magnitude.calibrated.diff");
+                                        }
                                         px = best;
                                     }
                                 }
                             }
                             let base = if px > 0.0 { 1.0 / px } else { 0.0 };
-                            let rate_eff = if base > 0.0 { base * (1.0 - (fee as f64)/10_000.0).max(0.0_f64) } else { 0.0 };
-                            calibrated_edges.push((e.source.clone(), e.target.clone(), dex, fee, rate_eff, liq, liq_disp, pool_id));
+                            let rate_eff = if base > 0.0 {
+                                base * (1.0 - (fee as f64) / 10_000.0).max(0.0_f64)
+                            } else {
+                                0.0
+                            };
+                            calibrated_edges.push((
+                                e.source.clone(),
+                                e.target.clone(),
+                                dex,
+                                fee,
+                                rate_eff,
+                                liq,
+                                liq_disp,
+                                pool_id,
+                            ));
                         }
-                        
+
                         // Reacquire write lock briefly to apply calibrated edges
                         {
                             let mut s = loop_state.write().await;
-                            for (source, target, dex, fee, rate_eff, liq, liq_disp, pool_id) in calibrated_edges {
-                                s.graph.upsert_edge(&dex, &source, &target, EdgeData { rate_effective: rate_eff, fee_bps: fee, liquidity: liq, dex: dex.clone(), pool_id, liquidity_display: liq_disp });
+                            for (source, target, dex, fee, rate_eff, liq, liq_disp, pool_id) in
+                                calibrated_edges
+                            {
+                                s.graph.upsert_edge(
+                                    &dex,
+                                    &source,
+                                    &target,
+                                    EdgeData {
+                                        rate_effective: rate_eff,
+                                        fee_bps: fee,
+                                        liquidity: liq,
+                                        dex: dex.clone(),
+                                        pool_id,
+                                        liquidity_display: liq_disp,
+                                    },
+                                );
                             }
-                            s.metrics.graph_updates_applied = s.metrics.graph_updates_applied.saturating_add(1);
-                            s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.graph.diff: applied add={} upd={} rem={}", add_ct, upd_ct, rem_ct) });
-                            tracing::info!(add=add_ct, upd=upd_ct, rem=rem_ct, "arb.graph.diff: applied");
-                            let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
+                            s.metrics.graph_updates_applied =
+                                s.metrics.graph_updates_applied.saturating_add(1);
+                            s.events.push(EventItem {
+                                ts: now_ms(),
+                                level: "info".into(),
+                                message: format!(
+                                    "arb.graph.diff: applied add={} upd={} rem={}",
+                                    add_ct, upd_ct, rem_ct
+                                ),
+                            });
+                            tracing::info!(
+                                add = add_ct,
+                                upd = upd_ct,
+                                rem = rem_ct,
+                                "arb.graph.diff: applied"
+                            );
+                            let len = s.events.len();
+                            if len > 200 {
+                                s.events.drain(0..(len - 200));
+                            }
                             s.metrics.graph_nodes = s.graph.g.node_count() as u64;
                             s.metrics.graph_edges = s.graph.g.edge_count() as u64;
                         }
@@ -463,29 +717,46 @@ async fn main() -> anyhow::Result<()> {
                 }
                 // Detect cycles (MVP -log weights)
                 // Compare with previous to only push WS updates on change
-                let (opps, prev, near_pair, near_list): (Vec<Opportunity>, Vec<Opportunity>, Option<(Opportunity,i64)>, Vec<(Opportunity,i64)>) = {
+                let (opps, prev, near_pair, near_list, rejected_samples): (
+                    Vec<Opportunity>,
+                    Vec<Opportunity>,
+                    Option<(Opportunity, i64)>,
+                    Vec<(Opportunity, i64)>,
+                    Vec<RejectedOpportunity>,
+                ) = {
                     let s = loop_state.read().await;
                     // Build affected node index set from changed mints
-                    let mut changed_node_idxs: std::collections::HashSet<usize> = std::collections::HashSet::new();
+                    let mut changed_node_idxs: std::collections::HashSet<usize> =
+                        std::collections::HashSet::new();
                     for m in changed_mints.iter() {
-                        if let Some(idx) = s.graph.map.get(m) { changed_node_idxs.insert(idx.index()); }
+                        if let Some(idx) = s.graph.map.get(m) {
+                            changed_node_idxs.insert(idx.index());
+                        }
                     }
                     // Expand scope by hops (incoming + outgoing) up to configured bound
                     let expand_hops = s.config.filtered_expand_hops.unwrap_or(s.config.max_hops);
-                    let affected_nodes = expand_nodes_by_hops(&s.graph, &changed_node_idxs, expand_hops);
+                    let affected_nodes =
+                        expand_nodes_by_hops(&s.graph, &changed_node_idxs, expand_hops);
                     // Decide filtered vs full scan
                     let total_nodes = s.graph.g.node_count().max(1) as f64;
                     let ratio = (affected_nodes.len() as f64) / total_nodes;
-                    let use_filtered = s.config.filtered_detect_enable && !affected_nodes.is_empty() && ratio <= s.config.filtered_node_ratio.max(0.0).min(1.0);
+                    let use_filtered = s.config.filtered_detect_enable
+                        && !affected_nodes.is_empty()
+                        && ratio <= s.config.filtered_node_ratio.max(0.0).min(1.0);
                     // Count edges in scope for metrics
                     let scope_edges: u64 = if use_filtered {
                         let mut c: u64 = 0;
                         for e in s.graph.g.edge_references() {
-                            let u = e.source().index(); let v = e.target().index();
-                            if affected_nodes.contains(&u) && affected_nodes.contains(&v) { c += 1; }
+                            let u = e.source().index();
+                            let v = e.target().index();
+                            if affected_nodes.contains(&u) && affected_nodes.contains(&v) {
+                                c += 1;
+                            }
                         }
                         c
-                    } else { s.graph.g.edge_count() as u64 };
+                    } else {
+                        s.graph.g.edge_count() as u64
+                    };
                     // Emit scope decision at INFO
                     tracing::info!(
                         use_filtered,
@@ -496,11 +767,19 @@ async fn main() -> anyhow::Result<()> {
                         "arb.detect.scope"
                     );
                     // Run detection
-                    let cycles = if use_filtered { detect_negative_cycles_filtered(&s.graph, &affected_nodes) } else { detect_negative_cycles(&s.graph) };
+                    let cycles = if use_filtered {
+                        detect_negative_cycles_filtered(&s.graph, &affected_nodes)
+                    } else {
+                        detect_negative_cycles(&s.graph)
+                    };
                     let cycles_count = cycles.len();
                     // Prepare metrics snapshot, then drop read lock before taking write lock to avoid deadlock
                     let used_filtered_flag_for_metrics = if use_filtered { 1 } else { 0 };
-                    let scope_nodes_count_for_metrics = if use_filtered { affected_nodes.len() as u64 } else { s.graph.g.node_count() as u64 };
+                    let scope_nodes_count_for_metrics = if use_filtered {
+                        affected_nodes.len() as u64
+                    } else {
+                        s.graph.g.node_count() as u64
+                    };
                     let scope_edges_count_for_metrics = scope_edges;
                     drop(s);
                     // Update scope metrics under write lock
@@ -519,7 +798,7 @@ async fn main() -> anyhow::Result<()> {
                     let mut best_below_shortfall: i64 = i64::MAX;
                     // Minimum liquidity threshold to consider an edge in rate selection
                     let min_edge_liq_threshold: f64 = 0.0; // filter out zero-liquidity edges
-                    // Track rejection reasons for detailed logging
+                                                           // Track rejection reasons for detailed logging
                     let mut rejected_too_short: usize = 0;
                     let mut rejected_too_long: usize = 0;
                     let mut rejected_not_simple: usize = 0;
@@ -532,45 +811,94 @@ async fn main() -> anyhow::Result<()> {
                     let mut rejected_duplicate: usize = 0;
                     let mut rejected_too_low_profit: usize = 0;
                     let mut rejected_too_high_profit: usize = 0;
+                    let mut rejected_samples: Vec<RejectedOpportunity> = Vec::new();
+                    let mut record_rejected =
+                        |reason: &'static str,
+                         labels: &[String],
+                         profit_bps: Option<i64>,
+                         net_bps: Option<i64>| {
+                            if rejected_samples.len() >= REJECTED_DEBUG_LIMIT {
+                                return;
+                            }
+                            if labels.is_empty() {
+                                return;
+                            }
+                            rejected_samples.push(RejectedOpportunity {
+                                reason: reason.to_string(),
+                                path: labels.to_vec(),
+                                hop_count: Some(labels.len()),
+                                profit_bps,
+                                net_bps,
+                            });
+                        };
                     for c in cycles.into_iter() {
                         // Enforce simple cycles and hop bound
                         // Allow 2-node cycles (e.g., USDC -> SOL -> USDC) for cross-DEX arbitrage
                         let nlen = c.nodes.len();
-                        if nlen < 2 { 
-                            rejected_too_short += 1;
-                            continue; 
+                        let node_count_total = s.graph.g.node_count();
+                        let mut labels: Vec<String> = Vec::with_capacity(nlen);
+                        for &idx in c.nodes.iter() {
+                            if idx < node_count_total {
+                                labels.push(s.graph.g[NodeIndex::new(idx)].clone());
+                            } else {
+                                labels.push(format!("node#{}", idx));
+                            }
                         }
-                        if nlen > max_hops { 
+                        if nlen < 2 {
+                            record_rejected("rejected_too_short", &labels, None, None);
+                            rejected_too_short += 1;
+                            continue;
+                        }
+                        if nlen > max_hops {
+                            record_rejected("rejected_too_long", &labels, None, None);
                             rejected_too_long += 1;
-                            continue; 
+                            continue;
                         }
                         tracing::debug!(len = nlen, "arb.detect.cycle.begin");
                         let mut uniq = std::collections::HashSet::new();
                         let mut simple = true;
-                        for &v in c.nodes.iter() { if !uniq.insert(v) { simple = false; break; } }
-                        if !simple { 
+                        for &v in c.nodes.iter() {
+                            if !uniq.insert(v) {
+                                simple = false;
+                                break;
+                            }
+                        }
+                        if !simple {
                             rejected_not_simple += 1;
-                            continue; 
+                            continue;
                         }
 
                         // Validate node indices are in bounds before processing
-                        let node_count = s.graph.g.node_count();
+                        let node_count = node_count_total;
                         if c.nodes.iter().any(|&i| i >= node_count) {
+                            record_rejected("rejected_too_short", &labels, None, None);
                             rejected_too_short += 1;
                             continue;
                         }
 
-                        // Build labels (mint-only) and compute product of best-of-parallel rates along the closed loop
-                        let labels: Vec<String> = c.nodes.iter().map(|&i| s.graph.g[NodeIndex::new(i)].clone()).collect();
                         let start_is_usdc = labels.first().map(|m| m == usdc).unwrap_or(false);
                         // Prune highly competitive cycles: stable<->stable edges and cap SOL<->stable hops
                         let sol = "So11111111111111111111111111111111111111112";
                         let default_stables: std::collections::HashSet<&str> = [
                             "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC
                             "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", // USDT
-                        ].into_iter().collect();
-                        let cfg_stables: std::collections::HashSet<String> = s.config.stable_mints.clone().unwrap_or_default().into_iter().collect();
-                        let is_stable = |m: &str| if cfg_stables.is_empty() { default_stables.contains(m) } else { cfg_stables.contains(m) };
+                        ]
+                        .into_iter()
+                        .collect();
+                        let cfg_stables: std::collections::HashSet<String> = s
+                            .config
+                            .stable_mints
+                            .clone()
+                            .unwrap_or_default()
+                            .into_iter()
+                            .collect();
+                        let is_stable = |m: &str| {
+                            if cfg_stables.is_empty() {
+                                default_stables.contains(m)
+                            } else {
+                                cfg_stables.contains(m)
+                            }
+                        };
                         let mut has_stable_stable = false;
                         let mut sol_stable_hops: usize = 0;
                         for i in 0..labels.len() {
@@ -578,18 +906,23 @@ async fn main() -> anyhow::Result<()> {
                             let b = &labels[(i + 1) % labels.len()];
                             let a_st = is_stable(a);
                             let b_st = is_stable(b);
-                            if a_st && b_st { has_stable_stable = true; break; }
-                            if (a == sol && b_st) || (b == sol && a_st) { sol_stable_hops += 1; }
+                            if a_st && b_st {
+                                has_stable_stable = true;
+                                break;
+                            }
+                            if (a == sol && b_st) || (b == sol && a_st) {
+                                sol_stable_hops += 1;
+                            }
                         }
-                        if s.config.drop_stable_stable_hops && has_stable_stable { 
+                        if s.config.drop_stable_stable_hops && has_stable_stable {
                             rejected_stable_stable += 1;
-                            continue; 
+                            continue;
                         }
-                        if let Some(limit) = s.config.max_sol_stable_hops { 
-                            if sol_stable_hops > limit { 
+                        if let Some(limit) = s.config.max_sol_stable_hops {
+                            if sol_stable_hops > limit {
                                 rejected_sol_stable_limit += 1;
-                                continue; 
-                            } 
+                                continue;
+                            }
                         }
                         // ensure closed by appending first at end for edge traversal
                         let mut rate_prod: f64 = 1.0;
@@ -597,19 +930,24 @@ async fn main() -> anyhow::Result<()> {
                         let mut link_penalty_bps_total: i64 = 0;
                         let mut min_edge_liquidity: f64 = f64::INFINITY;
                         let mut bottleneck: Option<(usize, usize, String, f64, f64, i64)> = None; // (uIdx,vIdx,dex,rate,liq,fee)
-                        let mut dexes_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+                        let mut dexes_set: std::collections::HashSet<String> =
+                            std::collections::HashSet::new();
                         let mut hop_dexes: Vec<String> = Vec::new();
                         let mut hop_rates: Vec<f64> = Vec::new();
                         let mut hop_pool_ids: Vec<String> = Vec::new();
                         let mut hop_fee_bps: Vec<i64> = Vec::new();
                         let mut hop_liq_disp: Vec<f64> = Vec::new();
                         let mut hop_outs: Vec<f64> = Vec::new();
-                        let mut cur_out: f64 = if start_is_usdc { s.config.quote_size_usd.max(0.0) } else { 1.0 };
+                        let mut cur_out: f64 = if start_is_usdc {
+                            s.config.quote_size_usd.max(0.0)
+                        } else {
+                            1.0
+                        };
                         let cycle_start = std::time::Instant::now();
                         let mut timed_out = false;
                         'cycle: for w in 0..c.nodes.len() {
                             let u_idx = c.nodes[w];
-                            let v_idx = c.nodes[(w+1) % c.nodes.len()];
+                            let v_idx = c.nodes[(w + 1) % c.nodes.len()];
                             // Validate indices are in bounds
                             if u_idx >= node_count || v_idx >= node_count {
                                 rejected_no_edge += 1;
@@ -621,23 +959,54 @@ async fn main() -> anyhow::Result<()> {
                             let mut best_meta: Option<(String, f64, i64, String, f64)> = None; // (dex, liq, fee, pool_id, liq_display)
                             for e in s.graph.g.edges_connecting(u, v) {
                                 let wt = e.weight();
-                                if wt.liquidity <= min_edge_liq_threshold { continue; }
+                                if wt.liquidity <= min_edge_liq_threshold {
+                                    continue;
+                                }
                                 let r = wt.rate_effective.max(1e-12);
-                                if r > best_rate { best_rate = r; best_meta = Some((wt.dex.clone(), wt.liquidity, wt.fee_bps, wt.pool_id.clone(), wt.liquidity_display)); }
+                                if r > best_rate {
+                                    best_rate = r;
+                                    best_meta = Some((
+                                        wt.dex.clone(),
+                                        wt.liquidity,
+                                        wt.fee_bps,
+                                        wt.pool_id.clone(),
+                                        wt.liquidity_display,
+                                    ));
+                                }
                             }
                             if best_rate <= 0.0 {
-                                tracing::info!(u = u.index(), v = v.index(), "arb.detect.cycle.no_edge");
-                                rate_prod = 0.0; 
+                                tracing::info!(
+                                    u = u.index(),
+                                    v = v.index(),
+                                    "arb.detect.cycle.no_edge"
+                                );
+                                rate_prod = 0.0;
                                 rejected_no_edge += 1;
                                 break 'cycle;
                             }
                             if let Some((dex, liq, fee, pid, liqd)) = best_meta.take() {
-                                if dex == "Link" { link_edges_used += 1; link_penalty_bps_total += fee; }
-                                if !dex.is_empty() && dex != "Link" { dexes_set.insert(dex.clone()); }
+                                if dex == "Link" {
+                                    link_edges_used += 1;
+                                    link_penalty_bps_total += fee;
+                                }
+                                if !dex.is_empty() && dex != "Link" {
+                                    dexes_set.insert(dex.clone());
+                                }
                                 min_edge_liquidity = min_edge_liquidity.min(liq);
                                 let edge_rate = best_rate;
-                                if bottleneck.as_ref().map(|(_,_,_,r,_,_)| edge_rate < *r).unwrap_or(true) {
-                                    bottleneck = Some((u.index(), v.index(), dex.clone(), edge_rate, liq, fee));
+                                if bottleneck
+                                    .as_ref()
+                                    .map(|(_, _, _, r, _, _)| edge_rate < *r)
+                                    .unwrap_or(true)
+                                {
+                                    bottleneck = Some((
+                                        u.index(),
+                                        v.index(),
+                                        dex.clone(),
+                                        edge_rate,
+                                        liq,
+                                        fee,
+                                    ));
                                 }
                                 hop_dexes.push(dex);
                                 hop_rates.push(edge_rate);
@@ -645,24 +1014,32 @@ async fn main() -> anyhow::Result<()> {
                                 hop_fee_bps.push(fee);
                                 hop_liq_disp.push(liqd);
                                 // compute hop out
-                                let next_out = if cur_out.is_finite() { cur_out * edge_rate } else { 0.0 };
+                                let next_out = if cur_out.is_finite() {
+                                    cur_out * edge_rate
+                                } else {
+                                    0.0
+                                };
                                 hop_outs.push(next_out);
                                 cur_out = next_out;
                             }
                             rate_prod *= best_rate;
                             if cycle_start.elapsed().as_millis() > 500 {
                                 timed_out = true;
-                                tracing::warn!(len = nlen, elapsed_ms = cycle_start.elapsed().as_millis() as u128, "arb.detect.cycle.timeout");
+                                tracing::warn!(
+                                    len = nlen,
+                                    elapsed_ms = cycle_start.elapsed().as_millis() as u128,
+                                    "arb.detect.cycle.timeout"
+                                );
                                 break 'cycle;
                             }
                         }
-                        if timed_out { 
+                        if timed_out {
                             rejected_timeout += 1;
-                            continue; 
+                            continue;
                         }
                         let profit = rate_prod - 1.0;
                         let profit_bps = (profit * 10_000.0).floor() as i64;
-                        
+
                         // Skip if cycle is unprofitable after picking best edges
                         // (Bellman-Ford detected negative cycle, but best edges don't form profitable cycle)
                         if rate_prod <= 1.0 {
@@ -671,47 +1048,76 @@ async fn main() -> anyhow::Result<()> {
                             rejected_unprofitable += 1;
                             continue;
                         }
-                        
+
                         // Canonicalize cycle labels by rotation only (preserve direction to keep hop arrays aligned)
                         let canon = |v: &Vec<String>| -> Vec<String> {
-                            if v.is_empty() { return v.clone(); }
+                            if v.is_empty() {
+                                return v.clone();
+                            }
                             let n = v.len();
                             let mut best_key: Option<String> = None;
                             let mut best_vec: Option<Vec<String>> = None;
                             for i in 0..n {
                                 let mut r = Vec::with_capacity(n);
-                                for k in 0..n { r.push(v[(i+k)%n].clone()); }
+                                for k in 0..n {
+                                    r.push(v[(i + k) % n].clone());
+                                }
                                 let key = r.join("->");
-                                if best_key.as_ref().map(|s| &key < s).unwrap_or(true) { best_key = Some(key); best_vec = Some(r); }
+                                if best_key.as_ref().map(|s| &key < s).unwrap_or(true) {
+                                    best_key = Some(key);
+                                    best_vec = Some(r);
+                                }
                             }
                             best_vec.unwrap()
                         };
                         // Rotate hop arrays to match canon_labels start (no reversal allowed above)
-                        let rotate_to_start = |labels_orig: &Vec<String>, labels_canon: &Vec<String>, arr: &mut Vec<String>| {
-                            if labels_orig.is_empty() || arr.is_empty() { return; }
-                            let n = labels_orig.len();
-                            if n == 0 { return; }
-                            // find offset i where labels_orig[i] == labels_canon[0]
-                            if let Some(i) = labels_orig.iter().position(|m| m == &labels_canon[0]) {
-                                if i % n != 0 {
-                                    let mut tmp = vec![String::new(); n];
-                                    for k in 0..n { tmp[k] = arr[(k + i) % n].clone(); }
-                                    *arr = tmp;
+                        let rotate_to_start =
+                            |labels_orig: &Vec<String>,
+                             labels_canon: &Vec<String>,
+                             arr: &mut Vec<String>| {
+                                if labels_orig.is_empty() || arr.is_empty() {
+                                    return;
                                 }
-                            }
-                        };
-                        let rotate_to_start_num = |labels_orig: &Vec<String>, labels_canon: &Vec<String>, arr: &mut Vec<f64>| {
-                            if labels_orig.is_empty() || arr.is_empty() { return; }
-                            let n = labels_orig.len();
-                            if n == 0 { return; }
-                            if let Some(i) = labels_orig.iter().position(|m| m == &labels_canon[0]) {
-                                if i % n != 0 {
-                                    let mut tmp = vec![0.0f64; n];
-                                    for k in 0..n { tmp[k] = arr[(k + i) % n]; }
-                                    *arr = tmp;
+                                let n = labels_orig.len();
+                                if n == 0 {
+                                    return;
                                 }
-                            }
-                        };
+                                // find offset i where labels_orig[i] == labels_canon[0]
+                                if let Some(i) =
+                                    labels_orig.iter().position(|m| m == &labels_canon[0])
+                                {
+                                    if i % n != 0 {
+                                        let mut tmp = vec![String::new(); n];
+                                        for k in 0..n {
+                                            tmp[k] = arr[(k + i) % n].clone();
+                                        }
+                                        *arr = tmp;
+                                    }
+                                }
+                            };
+                        let rotate_to_start_num =
+                            |labels_orig: &Vec<String>,
+                             labels_canon: &Vec<String>,
+                             arr: &mut Vec<f64>| {
+                                if labels_orig.is_empty() || arr.is_empty() {
+                                    return;
+                                }
+                                let n = labels_orig.len();
+                                if n == 0 {
+                                    return;
+                                }
+                                if let Some(i) =
+                                    labels_orig.iter().position(|m| m == &labels_canon[0])
+                                {
+                                    if i % n != 0 {
+                                        let mut tmp = vec![0.0f64; n];
+                                        for k in 0..n {
+                                            tmp[k] = arr[(k + i) % n];
+                                        }
+                                        *arr = tmp;
+                                    }
+                                }
+                            };
                         let canon_labels = canon(&labels);
                         tracing::debug!(path = %canon_labels.join("->"), profit_bps, "arb.detect.cycle.end");
                         // Align hop arrays with the rotated labels (no reversal)
@@ -728,46 +1134,84 @@ async fn main() -> anyhow::Result<()> {
                                 let dst = &canon_labels[(i + 1) % n];
                                 let pid = hop_pool_ids.get(i).cloned().unwrap_or_default();
                                 let dex_i = hop_dexes.get(i).cloned().unwrap_or_default();
-                                if pid.is_empty() || dex_i == "Link" { continue; }
-                                if let (Some(&u), Some(&v)) = (s.graph.map.get(src), s.graph.map.get(dst)) {
+                                if pid.is_empty() || dex_i == "Link" {
+                                    continue;
+                                }
+                                if let (Some(&u), Some(&v)) =
+                                    (s.graph.map.get(src), s.graph.map.get(dst))
+                                {
                                     let mut ok = false;
                                     for e in s.graph.g.edges_connecting(u, v) {
-                                        if e.weight().pool_id == pid { ok = true; break; }
+                                        if e.weight().pool_id == pid {
+                                            ok = true;
+                                            break;
+                                        }
                                     }
-                                    if !ok { aligned = false; break; }
-                                } else { aligned = false; break; }
+                                    if !ok {
+                                        aligned = false;
+                                        break;
+                                    }
+                                } else {
+                                    aligned = false;
+                                    break;
+                                }
                             }
                             if !aligned {
-                                tracing::warn!("arb.detect.cycle.misaligned path={} pools=[{}]", canon_labels.join("->"), hop_pool_ids.join(","));
+                                tracing::warn!(
+                                    "arb.detect.cycle.misaligned path={} pools=[{}]",
+                                    canon_labels.join("->"),
+                                    hop_pool_ids.join(",")
+                                );
                                 rejected_misaligned += 1;
                                 continue;
                             }
                         }
                         let key = canon_labels.join("->");
-                        if seen.contains(&key) { 
+                        if seen.contains(&key) {
                             rejected_duplicate += 1;
-                            continue; 
+                            continue;
                         }
                         seen.insert(key);
                         // DEXes derived from edges selected along the cycle
                         let mut dexes: Vec<String> = dexes_set.into_iter().collect();
                         dexes.sort();
                         // Estimate capacity: use min edge liquidity as a rough proxy
-                        let est_capacity = if min_edge_liquidity.is_finite() { Some(min_edge_liquidity.max(0.0)) } else { None };
-                        let now_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+                        let est_capacity = if min_edge_liquidity.is_finite() {
+                            Some(min_edge_liquidity.max(0.0))
+                        } else {
+                            None
+                        };
+                        let now_ts = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
                         // Compute net_bps as profit_bps - link penalties (already included in rate, but expose explicitly)
                         let net_bps = profit_bps - link_penalty_bps_total.max(0);
-                        let bottleneck_edge = bottleneck.as_ref().and_then(|(ui,vi,dex,rate,liq,fee)| {
-                            // Validate indices are in bounds
-                            if *ui >= node_count || *vi >= node_count {
-                                return None;
-                            }
-                            let from = s.graph.g[NodeIndex::new(*ui)].clone();
-                            let to = s.graph.g[NodeIndex::new(*vi)].clone();
-                            Some(opportunities::BottleneckEdge { from, to, dex: dex.clone(), rate: *rate, liquidity: *liq, fee_bps: *fee })
-                        });
+                        let bottleneck_edge =
+                            bottleneck
+                                .as_ref()
+                                .and_then(|(ui, vi, dex, rate, liq, fee)| {
+                                    // Validate indices are in bounds
+                                    if *ui >= node_count || *vi >= node_count {
+                                        return None;
+                                    }
+                                    let from = s.graph.g[NodeIndex::new(*ui)].clone();
+                                    let to = s.graph.g[NodeIndex::new(*vi)].clone();
+                                    Some(opportunities::BottleneckEdge {
+                                        from,
+                                        to,
+                                        dex: dex.clone(),
+                                        rate: *rate,
+                                        liquidity: *liq,
+                                        fee_bps: *fee,
+                                    })
+                                });
                         // Compute estimated USD profit if cycle notionally started at USDC
-                        let est_profit_usd_val: f64 = if start_is_usdc { s.config.quote_size_usd.max(0.0) * (rate_prod - 1.0) } else { 0.0 };
+                        let est_profit_usd_val: f64 = if start_is_usdc {
+                            s.config.quote_size_usd.max(0.0) * (rate_prod - 1.0)
+                        } else {
+                            0.0
+                        };
                         if profit_bps < min_bps {
                             let shortfall = (min_bps - profit_bps).max(0);
                             if shortfall < best_below_shortfall {
@@ -811,9 +1255,21 @@ async fn main() -> anyhow::Result<()> {
                         // Emit arb log for validation
                         {
                             let path_str = canon_labels.join("->");
-                            let rates_str = hop_rates.iter().map(|v| format!("{:.6}", v)).collect::<Vec<_>>().join(",");
-                            let outs_str = hop_outs.iter().map(|v| format!("{:.6}", v)).collect::<Vec<_>>().join(",");
-                            let fees_str = hop_fee_bps.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
+                            let rates_str = hop_rates
+                                .iter()
+                                .map(|v| format!("{:.6}", v))
+                                .collect::<Vec<_>>()
+                                .join(",");
+                            let outs_str = hop_outs
+                                .iter()
+                                .map(|v| format!("{:.6}", v))
+                                .collect::<Vec<_>>()
+                                .join(",");
+                            let fees_str = hop_fee_bps
+                                .iter()
+                                .map(|v| v.to_string())
+                                .collect::<Vec<_>>()
+                                .join(",");
                             let pools_str = hop_pool_ids.join(",");
                             // Include explicit edges with closing hop for sequence validation
                             let edges_str = {
@@ -821,9 +1277,15 @@ async fn main() -> anyhow::Result<()> {
                                 let n = canon_labels.len();
                                 for k in 0..n {
                                     let a = &canon_labels[k];
-                                    let b = &canon_labels[(k+1)%n];
+                                    let b = &canon_labels[(k + 1) % n];
                                     let id = hop_pool_ids.get(k).cloned().unwrap_or_default();
-                                    let short = |m: &String| -> String { if m.len() > 8 { format!("{}…{}", &m[..4], &m[m.len()-4..]) } else { m.clone() } };
+                                    let short = |m: &String| -> String {
+                                        if m.len() > 8 {
+                                            format!("{}…{}", &m[..4], &m[m.len() - 4..])
+                                        } else {
+                                            m.clone()
+                                        }
+                                    };
                                     v.push(format!("{}->{}:{}", short(a), short(b), id));
                                 }
                                 v.join(",")
@@ -831,9 +1293,15 @@ async fn main() -> anyhow::Result<()> {
                             tracing::info!(target = "arb_rs", "arb.opportunity path={} profit_bps={} net_bps={} hops={} rates=[{}] outs=[{}] fees=[{}] pools=[{}] edges=[{}] product={:.8}", path_str, profit_bps, net_bps, nlen, rates_str, outs_str, fees_str, pools_str, edges_str, rate_prod);
                         }
                         // Skip absurdly high raw profits (likely data issues)
-                        if profit_bps > s.config.max_profit_bps { 
+                        if profit_bps > s.config.max_profit_bps {
+                            record_rejected(
+                                "rejected_too_high_profit",
+                                &canon_labels,
+                                Some(profit_bps),
+                                Some(net_bps),
+                            );
                             rejected_too_high_profit += 1;
-                            continue; 
+                            continue;
                         }
                         curr.push(Opportunity {
                             path: canon_labels,
@@ -865,10 +1333,18 @@ async fn main() -> anyhow::Result<()> {
                         });
                     }
                     // Log detailed breakdown of cycles detected vs opportunities created
-                    let total_rejected = rejected_too_short + rejected_too_long + rejected_not_simple 
-                        + rejected_stable_stable + rejected_sol_stable_limit + rejected_no_edge 
-                        + rejected_timeout + rejected_unprofitable + rejected_misaligned 
-                        + rejected_duplicate + rejected_too_low_profit + rejected_too_high_profit;
+                    let total_rejected = rejected_too_short
+                        + rejected_too_long
+                        + rejected_not_simple
+                        + rejected_stable_stable
+                        + rejected_sol_stable_limit
+                        + rejected_no_edge
+                        + rejected_timeout
+                        + rejected_unprofitable
+                        + rejected_misaligned
+                        + rejected_duplicate
+                        + rejected_too_low_profit
+                        + rejected_too_high_profit;
                     tracing::info!(
                         found = cycles_count,
                         opportunities = curr.len(),
@@ -888,30 +1364,56 @@ async fn main() -> anyhow::Result<()> {
                         "arb.detect.cycles"
                     );
                     let mut near_pair = best_below.map(|o| (o, best_below_shortfall));
-                    let mut near_list: Vec<(Opportunity,i64)> = Vec::new();
+                    let mut near_list: Vec<(Opportunity, i64)> = Vec::new();
                     // Near-miss via Bellman-Ford final slack pass
                     if s.config.near_miss_enable {
-                        let epsilon: f64 = if s.config.near_miss_epsilon.is_finite() && s.config.near_miss_epsilon > 0.0 { s.config.near_miss_epsilon } else { 5e-4 }; // log-space slack window
+                        let epsilon: f64 = if s.config.near_miss_epsilon.is_finite()
+                            && s.config.near_miss_epsilon > 0.0
+                        {
+                            s.config.near_miss_epsilon
+                        } else {
+                            5e-4
+                        }; // log-space slack window
                         let top_k: usize = s.config.debug_top_n.max(1).min(20);
                         let nm = detect_near_miss_cycles(&s.graph, epsilon, max_hops, top_k);
                         for nmcy in nm.into_iter() {
                             // Interpret nodes to labels and compute best-of-parallel rates metadata
-                            if nmcy.nodes.len() < 3 || nmcy.nodes.len() > max_hops { continue; }
+                            if nmcy.nodes.len() < 3 || nmcy.nodes.len() > max_hops {
+                                continue;
+                            }
                             // Validate node indices are in bounds
                             let node_count_nm = s.graph.g.node_count();
                             if nmcy.nodes.iter().any(|&i| i >= node_count_nm) {
                                 continue;
                             }
-                            let mut labels: Vec<String> = nmcy.nodes.iter().map(|&i| s.graph.g[NodeIndex::new(i)].clone()).collect();
+                            let mut labels: Vec<String> = nmcy
+                                .nodes
+                                .iter()
+                                .map(|&i| s.graph.g[NodeIndex::new(i)].clone())
+                                .collect();
                             // Apply pruning to near-miss cycles as well (symmetric SOL<->stable and stable<->stable)
                             {
                                 let sol = "So11111111111111111111111111111111111111112";
                                 let default_stables: std::collections::HashSet<&str> = [
                                     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
                                     "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
-                                ].into_iter().collect();
-                                let cfg_stables: std::collections::HashSet<String> = s.config.stable_mints.clone().unwrap_or_default().into_iter().collect();
-                                let is_stable = |m: &str| if cfg_stables.is_empty() { default_stables.contains(m) } else { cfg_stables.contains(m) };
+                                ]
+                                .into_iter()
+                                .collect();
+                                let cfg_stables: std::collections::HashSet<String> = s
+                                    .config
+                                    .stable_mints
+                                    .clone()
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .collect();
+                                let is_stable = |m: &str| {
+                                    if cfg_stables.is_empty() {
+                                        default_stables.contains(m)
+                                    } else {
+                                        cfg_stables.contains(m)
+                                    }
+                                };
                                 let mut has_stable_stable = false;
                                 let mut sol_stable_hops: usize = 0;
                                 for i in 0..labels.len() {
@@ -919,19 +1421,32 @@ async fn main() -> anyhow::Result<()> {
                                     let b = &labels[(i + 1) % labels.len()];
                                     let a_st = is_stable(a);
                                     let b_st = is_stable(b);
-                                    if a_st && b_st { has_stable_stable = true; break; }
-                                    if (a == sol && b_st) || (b == sol && a_st) { sol_stable_hops += 1; }
+                                    if a_st && b_st {
+                                        has_stable_stable = true;
+                                        break;
+                                    }
+                                    if (a == sol && b_st) || (b == sol && a_st) {
+                                        sol_stable_hops += 1;
+                                    }
                                 }
-                                if s.config.drop_stable_stable_hops && has_stable_stable { continue; }
-                                if let Some(limit) = s.config.max_sol_stable_hops { if sol_stable_hops > limit { continue; } }
+                                if s.config.drop_stable_stable_hops && has_stable_stable {
+                                    continue;
+                                }
+                                if let Some(limit) = s.config.max_sol_stable_hops {
+                                    if sol_stable_hops > limit {
+                                        continue;
+                                    }
+                                }
                             }
                             // Compute product and meta
                             let mut rate_prod: f64 = 1.0;
                             let mut link_edges_used: usize = 0;
                             let mut link_penalty_bps_total: i64 = 0;
                             let mut min_edge_liquidity: f64 = f64::INFINITY;
-                            let mut bottleneck: Option<(usize, usize, String, f64, f64, i64)> = None;
-                            let mut dexes_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+                            let mut bottleneck: Option<(usize, usize, String, f64, f64, i64)> =
+                                None;
+                            let mut dexes_set: std::collections::HashSet<String> =
+                                std::collections::HashSet::new();
                             let nlen = nmcy.nodes.len();
                             let mut ok = true;
                             let mut hop_dexes: Vec<String> = Vec::new();
@@ -940,10 +1455,15 @@ async fn main() -> anyhow::Result<()> {
                             let mut hop_fee_bps: Vec<i64> = Vec::new();
                             let mut hop_liq_disp: Vec<f64> = Vec::new();
                             let mut hop_outs: Vec<f64> = Vec::new();
-                            let mut cur_out: f64 = if labels.first().map(|m| m == &usdc).unwrap_or(false) { s.config.quote_size_usd.max(0.0) } else { 1.0 };
+                            let mut cur_out: f64 =
+                                if labels.first().map(|m| m == &usdc).unwrap_or(false) {
+                                    s.config.quote_size_usd.max(0.0)
+                                } else {
+                                    1.0
+                                };
                             for w in 0..nlen {
                                 let u_idx = nmcy.nodes[w];
-                                let v_idx = nmcy.nodes[(w+1)%nlen];
+                                let v_idx = nmcy.nodes[(w + 1) % nlen];
                                 // Validate indices are in bounds
                                 if u_idx >= node_count_nm || v_idx >= node_count_nm {
                                     ok = false;
@@ -955,66 +1475,146 @@ async fn main() -> anyhow::Result<()> {
                                 let mut best_meta: Option<(String, f64, i64, String, f64)> = None;
                                 for e in s.graph.g.edges_connecting(u, v) {
                                     let wt = e.weight();
-                                    if wt.liquidity <= 0.0 { continue; }
+                                    if wt.liquidity <= 0.0 {
+                                        continue;
+                                    }
                                     let r = wt.rate_effective.max(1e-12);
-                                    if r > best_rate { best_rate = r; best_meta = Some((wt.dex.clone(), wt.liquidity, wt.fee_bps, wt.pool_id.clone(), wt.liquidity_display)); }
+                                    if r > best_rate {
+                                        best_rate = r;
+                                        best_meta = Some((
+                                            wt.dex.clone(),
+                                            wt.liquidity,
+                                            wt.fee_bps,
+                                            wt.pool_id.clone(),
+                                            wt.liquidity_display,
+                                        ));
+                                    }
                                 }
-                                if best_rate <= 0.0 { ok = false; break; }
+                                if best_rate <= 0.0 {
+                                    ok = false;
+                                    break;
+                                }
                                 if let Some((dex, liq, fee, pid, liqd)) = best_meta.take() {
-                                    if dex == "Link" { link_edges_used += 1; link_penalty_bps_total += fee; }
-                                    if !dex.is_empty() && dex != "Link" { dexes_set.insert(dex.clone()); }
+                                    if dex == "Link" {
+                                        link_edges_used += 1;
+                                        link_penalty_bps_total += fee;
+                                    }
+                                    if !dex.is_empty() && dex != "Link" {
+                                        dexes_set.insert(dex.clone());
+                                    }
                                     min_edge_liquidity = min_edge_liquidity.min(liq);
-                                    if bottleneck.as_ref().map(|(_,_,_,r,_,_)| best_rate < *r).unwrap_or(true) {
-                                        bottleneck = Some((u.index(), v.index(), dex.clone(), best_rate, liq, fee));
+                                    if bottleneck
+                                        .as_ref()
+                                        .map(|(_, _, _, r, _, _)| best_rate < *r)
+                                        .unwrap_or(true)
+                                    {
+                                        bottleneck = Some((
+                                            u.index(),
+                                            v.index(),
+                                            dex.clone(),
+                                            best_rate,
+                                            liq,
+                                            fee,
+                                        ));
                                     }
                                     hop_dexes.push(dex);
                                     hop_rates.push(best_rate);
                                     hop_pool_ids.push(pid);
                                     hop_fee_bps.push(fee);
                                     hop_liq_disp.push(liqd);
-                                    let next_out = if cur_out.is_finite() { cur_out * best_rate } else { 0.0 };
+                                    let next_out = if cur_out.is_finite() {
+                                        cur_out * best_rate
+                                    } else {
+                                        0.0
+                                    };
                                     hop_outs.push(next_out);
                                     cur_out = next_out;
                                 }
                                 rate_prod *= best_rate;
                             }
-                            if !ok { continue; }
+                            if !ok {
+                                continue;
+                            }
                             let profit_bps_raw = ((rate_prod - 1.0) * 10_000.0).floor();
-                            let mut profit_bps = if profit_bps_raw.is_finite() { profit_bps_raw as i64 } else { 0 };
-                            if profit_bps > 1_000_000 { profit_bps = 1_000_000; }
-                            if profit_bps < -1_000_000 { profit_bps = -1_000_000; }
-                            if profit_bps >= min_bps { continue; } // near-miss only
-                            // Build interpreted near-miss
+                            let mut profit_bps = if profit_bps_raw.is_finite() {
+                                profit_bps_raw as i64
+                            } else {
+                                0
+                            };
+                            if profit_bps > 1_000_000 {
+                                profit_bps = 1_000_000;
+                            }
+                            if profit_bps < -1_000_000 {
+                                profit_bps = -1_000_000;
+                            }
+                            if profit_bps >= min_bps {
+                                continue;
+                            } // near-miss only
+                              // Build interpreted near-miss
                             let mut dexes: Vec<String> = dexes_set.into_iter().collect();
                             dexes.sort();
-                            let est_capacity = if min_edge_liquidity.is_finite() { Some(min_edge_liquidity.max(0.0)) } else { None };
-                            let now_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+                            let est_capacity = if min_edge_liquidity.is_finite() {
+                                Some(min_edge_liquidity.max(0.0))
+                            } else {
+                                None
+                            };
+                            let now_ts = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64;
                             let mut net_bps = profit_bps - link_penalty_bps_total.max(0);
-                            if net_bps > 1_000_000 { net_bps = 1_000_000; }
-                            if net_bps < -1_000_000 { net_bps = -1_000_000; }
+                            if net_bps > 1_000_000 {
+                                net_bps = 1_000_000;
+                            }
+                            if net_bps < -1_000_000 {
+                                net_bps = -1_000_000;
+                            }
                             let net_bps = {
                                 let hops = nlen as i64;
-                                let est_lam = s.config.est_priority_fee_per_hop_lamports.unwrap_or(0) as f64;
+                                let est_lam =
+                                    s.config.est_priority_fee_per_hop_lamports.unwrap_or(0) as f64;
                                 let total_est = (est_lam * hops as f64) / 1_000_000.0 * 10_000.0; // approx: 1 SOL baseline => bps rough
                                 (net_bps as f64 - total_est).round() as i64
                             };
-                            let bottleneck_edge = bottleneck.as_ref().and_then(|(ui,vi,dex,rate,liq,fee)| {
-                                // Validate indices are in bounds
-                                if *ui >= node_count_nm || *vi >= node_count_nm {
-                                    return None;
-                                }
-                                let from = s.graph.g[NodeIndex::new(*ui)].clone();
-                                let to = s.graph.g[NodeIndex::new(*vi)].clone();
-                                Some(opportunities::BottleneckEdge { from, to, dex: dex.clone(), rate: *rate, liquidity: *liq, fee_bps: *fee })
-                            });
+                            let bottleneck_edge =
+                                bottleneck
+                                    .as_ref()
+                                    .and_then(|(ui, vi, dex, rate, liq, fee)| {
+                                        // Validate indices are in bounds
+                                        if *ui >= node_count_nm || *vi >= node_count_nm {
+                                            return None;
+                                        }
+                                        let from = s.graph.g[NodeIndex::new(*ui)].clone();
+                                        let to = s.graph.g[NodeIndex::new(*vi)].clone();
+                                        Some(opportunities::BottleneckEdge {
+                                            from,
+                                            to,
+                                            dex: dex.clone(),
+                                            rate: *rate,
+                                            liquidity: *liq,
+                                            fee_bps: *fee,
+                                        })
+                                    });
                             // Capture last rate before moving hop_rates into the struct
                             let last_rate_opt = hop_rates.last().copied();
                             // Emit arb log for near-miss (BF slack)
                             {
                                 let path_str = labels.join("->");
-                                let rates_str = hop_rates.iter().map(|v| format!("{:.6}", v)).collect::<Vec<_>>().join(",");
-                                let outs_str = hop_outs.iter().map(|v| format!("{:.6}", v)).collect::<Vec<_>>().join(",");
-                                let fees_str = hop_fee_bps.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
+                                let rates_str = hop_rates
+                                    .iter()
+                                    .map(|v| format!("{:.6}", v))
+                                    .collect::<Vec<_>>()
+                                    .join(",");
+                                let outs_str = hop_outs
+                                    .iter()
+                                    .map(|v| format!("{:.6}", v))
+                                    .collect::<Vec<_>>()
+                                    .join(",");
+                                let fees_str = hop_fee_bps
+                                    .iter()
+                                    .map(|v| v.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(",");
                                 let pools_str = hop_pool_ids.join(",");
                                 tracing::info!(target = "arb_rs", "arb.near_miss path={} profit_bps={} net_bps={} hops={} rates=[{}] outs=[{}] fees=[{}] pools=[{}] product={:.8} slack={:.8}", path_str, profit_bps, net_bps, nlen, rates_str, outs_str, fees_str, pools_str, rate_prod, nmcy.slack);
                             }
@@ -1026,17 +1626,34 @@ async fn main() -> anyhow::Result<()> {
                                     let dst = &labels[(i + 1) % nlen];
                                     let pid = hop_pool_ids.get(i).cloned().unwrap_or_default();
                                     let dex_i = hop_dexes.get(i).cloned().unwrap_or_default();
-                                    if pid.is_empty() || dex_i == "Link" { continue; }
-                                    if let (Some(&u), Some(&v)) = (s.graph.map.get(src), s.graph.map.get(dst)) {
+                                    if pid.is_empty() || dex_i == "Link" {
+                                        continue;
+                                    }
+                                    if let (Some(&u), Some(&v)) =
+                                        (s.graph.map.get(src), s.graph.map.get(dst))
+                                    {
                                         let mut ok = false;
                                         for e in s.graph.g.edges_connecting(u, v) {
-                                            if e.weight().pool_id == pid { ok = true; break; }
+                                            if e.weight().pool_id == pid {
+                                                ok = true;
+                                                break;
+                                            }
                                         }
-                                        if !ok { aligned = false; break; }
-                                    } else { aligned = false; break; }
+                                        if !ok {
+                                            aligned = false;
+                                            break;
+                                        }
+                                    } else {
+                                        aligned = false;
+                                        break;
+                                    }
                                 }
                                 if !aligned {
-                                    tracing::warn!("arb.near_miss.misaligned path={} pools=[{}]", labels.join("->"), hop_pool_ids.join(","));
+                                    tracing::warn!(
+                                        "arb.near_miss.misaligned path={} pools=[{}]",
+                                        labels.join("->"),
+                                        hop_pool_ids.join(",")
+                                    );
                                     continue;
                                 }
                             }
@@ -1071,19 +1688,30 @@ async fn main() -> anyhow::Result<()> {
                             // Attach BF slack debug for near-miss
                             near.bf_slack_log = Some(nmcy.slack);
                             // If we can estimate required closing-edge rate to hit threshold
-                            let req = if rate_prod > 0.0 { (1.0 + (min_bps as f64)/10_000.0) / rate_prod } else { 0.0 };
+                            let req = if rate_prod > 0.0 {
+                                (1.0 + (min_bps as f64) / 10_000.0) / rate_prod
+                            } else {
+                                0.0
+                            };
                             near.bf_required_rate = if req.is_finite() { Some(req) } else { None };
                             if let Some(last_rate) = last_rate_opt {
-                                let delta_bps = (((req.max(0.0) / last_rate.max(1e-12)) - 1.0) * 10_000.0).floor() as i64;
+                                let delta_bps = (((req.max(0.0) / last_rate.max(1e-12)) - 1.0)
+                                    * 10_000.0)
+                                    .floor() as i64;
                                 near.bf_rate_delta_bps = Some(delta_bps);
                             }
                             let shortfall = (min_bps - profit_bps).max(0);
                             let near_for_list = near.clone();
                             match &mut near_pair {
                                 Some((ref mut best, ref mut best_shortfall)) => {
-                                    if shortfall < *best_shortfall { *best = near; *best_shortfall = shortfall; }
+                                    if shortfall < *best_shortfall {
+                                        *best = near;
+                                        *best_shortfall = shortfall;
+                                    }
                                 }
-                                None => { near_pair = Some((near, shortfall)); }
+                                None => {
+                                    near_pair = Some((near, shortfall));
+                                }
                             }
                             // Collect for top-K list
                             near_list.push((near_for_list, shortfall));
@@ -1096,42 +1724,71 @@ async fn main() -> anyhow::Result<()> {
                         let mut best_prod: f64 = 0.0;
                         let mut best_nodes: Vec<usize> = Vec::new();
                         for si in 0..max_starts {
-                            let mut visited: std::collections::HashSet<usize> = std::collections::HashSet::new();
+                            let mut visited: std::collections::HashSet<usize> =
+                                std::collections::HashSet::new();
                             let mut stack: Vec<usize> = Vec::new();
                             visited.insert(si);
                             stack.push(si);
                             // Use manual DFS stack to avoid recursion
                             // Each frame: (current_index, next_neighbor_iter_index, current_product, prev_pool_id)
-                            let mut frames: Vec<(usize, usize, f64, Option<String>)> = vec![(si, 0, 1.0, None)];
+                            let mut frames: Vec<(usize, usize, f64, Option<String>)> =
+                                vec![(si, 0, 1.0, None)];
                             // Precompute adjacency as neighbor indices for performance
                             let mut neighbors: Vec<Vec<usize>> = vec![Vec::new(); ncount];
                             for ni in 0..ncount {
                                 let u = NodeIndex::new(ni);
                                 let mut outs: Vec<usize> = Vec::new();
-                                for v in s.graph.g.neighbors_directed(u, petgraph::Direction::Outgoing) { outs.push(v.index()); }
+                                for v in s
+                                    .graph
+                                    .g
+                                    .neighbors_directed(u, petgraph::Direction::Outgoing)
+                                {
+                                    outs.push(v.index());
+                                }
                                 neighbors[ni] = outs;
                             }
                             // Helper to get best edge (rate, pool_id) between two nodes, excluding a previous pool id if provided
-                            let best_edge_between_excluding = |ui: usize, vi: usize, prev_pid: Option<&str>| -> (f64, Option<String>) {
-                                let u = NodeIndex::new(ui); let v = NodeIndex::new(vi);
-                                let mut best_rate = 0.0f64;
-                                let mut best_pid: Option<String> = None;
-                                for e in s.graph.g.edges_connecting(u, v) {
-                                    let wt = e.weight();
-                                    if wt.liquidity <= 0.0 { continue; }
-                                    if let Some(pp) = prev_pid { if !pp.is_empty() && wt.pool_id == pp { continue; } }
-                                    let r = wt.rate_effective.max(1e-12);
-                                    if r > best_rate { best_rate = r; best_pid = Some(wt.pool_id.clone()); }
-                                }
-                                (best_rate, best_pid)
-                            };
+                            let best_edge_between_excluding =
+                                |ui: usize,
+                                 vi: usize,
+                                 prev_pid: Option<&str>|
+                                 -> (f64, Option<String>) {
+                                    let u = NodeIndex::new(ui);
+                                    let v = NodeIndex::new(vi);
+                                    let mut best_rate = 0.0f64;
+                                    let mut best_pid: Option<String> = None;
+                                    for e in s.graph.g.edges_connecting(u, v) {
+                                        let wt = e.weight();
+                                        if wt.liquidity <= 0.0 {
+                                            continue;
+                                        }
+                                        if let Some(pp) = prev_pid {
+                                            if !pp.is_empty() && wt.pool_id == pp {
+                                                continue;
+                                            }
+                                        }
+                                        let r = wt.rate_effective.max(1e-12);
+                                        if r > best_rate {
+                                            best_rate = r;
+                                            best_pid = Some(wt.pool_id.clone());
+                                        }
+                                    }
+                                    (best_rate, best_pid)
+                                };
                             while let Some((cur, ni, prod, prev_pid)) = frames.pop() {
-                                if ni >= neighbors[cur].len() { visited.remove(&cur); let _ = stack.pop(); continue; }
+                                if ni >= neighbors[cur].len() {
+                                    visited.remove(&cur);
+                                    let _ = stack.pop();
+                                    continue;
+                                }
                                 let nxt = neighbors[cur][ni];
                                 // put back frame with advanced neighbor index
-                                frames.push((cur, ni+1, prod, prev_pid.clone()));
-                                let (rate, chosen_pid) = best_edge_between_excluding(cur, nxt, prev_pid.as_deref());
-                                if rate <= 0.0 { continue; }
+                                frames.push((cur, ni + 1, prod, prev_pid.clone()));
+                                let (rate, chosen_pid) =
+                                    best_edge_between_excluding(cur, nxt, prev_pid.as_deref());
+                                if rate <= 0.0 {
+                                    continue;
+                                }
                                 if nxt == si {
                                     // Found a cycle; require at least 3 edges (no 2-hop reverse)
                                     if stack.len() >= 3 {
@@ -1143,8 +1800,12 @@ async fn main() -> anyhow::Result<()> {
                                     }
                                     continue;
                                 }
-                                if visited.contains(&nxt) { continue; }
-                                if stack.len()+1 > max_hops { continue; }
+                                if visited.contains(&nxt) {
+                                    continue;
+                                }
+                                if stack.len() + 1 > max_hops {
+                                    continue;
+                                }
                                 visited.insert(nxt);
                                 stack.push(nxt);
                                 // Carry forward the chosen pool id to prevent immediate reverse via the same pool
@@ -1157,24 +1818,38 @@ async fn main() -> anyhow::Result<()> {
                                 continue;
                             }
                             // Build opportunity-like near miss from best cycle
-                            let labels: Vec<String> = best_nodes.iter().map(|&i| s.graph.g[NodeIndex::new(i)].clone()).collect();
+                            let labels: Vec<String> = best_nodes
+                                .iter()
+                                .map(|&i| s.graph.g[NodeIndex::new(i)].clone())
+                                .collect();
                             // Canonicalize
                             let canon = |v: &Vec<String>| -> Vec<String> {
-                                if v.is_empty() { return v.clone(); }
+                                if v.is_empty() {
+                                    return v.clone();
+                                }
                                 let n = v.len();
                                 let mut best = None;
                                 for i in 0..n {
                                     let mut r = Vec::with_capacity(n);
-                                    for k in 0..n { r.push(v[(i+k)%n].clone()); }
+                                    for k in 0..n {
+                                        r.push(v[(i + k) % n].clone());
+                                    }
                                     let key = r.join("->");
-                                    if best.as_ref().map(|(s,_)| &key < s).unwrap_or(true) { best = Some((key, r)); }
+                                    if best.as_ref().map(|(s, _)| &key < s).unwrap_or(true) {
+                                        best = Some((key, r));
+                                    }
                                 }
-                                let mut vrev = v.clone(); vrev.reverse();
+                                let mut vrev = v.clone();
+                                vrev.reverse();
                                 for i in 0..n {
                                     let mut r = Vec::with_capacity(n);
-                                    for k in 0..n { r.push(vrev[(i+k)%n].clone()); }
+                                    for k in 0..n {
+                                        r.push(vrev[(i + k) % n].clone());
+                                    }
                                     let key = r.join("->");
-                                    if best.as_ref().map(|(s,_)| &key < s).unwrap_or(true) { best = Some((key, r)); }
+                                    if best.as_ref().map(|(s, _)| &key < s).unwrap_or(true) {
+                                        best = Some((key, r));
+                                    }
                                 }
                                 best.unwrap().1
                             };
@@ -1185,9 +1860,23 @@ async fn main() -> anyhow::Result<()> {
                                 let default_stables: std::collections::HashSet<&str> = [
                                     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
                                     "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
-                                ].into_iter().collect();
-                                let cfg_stables: std::collections::HashSet<String> = s.config.stable_mints.clone().unwrap_or_default().into_iter().collect();
-                                let is_stable = |m: &str| if cfg_stables.is_empty() { default_stables.contains(m) } else { cfg_stables.contains(m) };
+                                ]
+                                .into_iter()
+                                .collect();
+                                let cfg_stables: std::collections::HashSet<String> = s
+                                    .config
+                                    .stable_mints
+                                    .clone()
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .collect();
+                                let is_stable = |m: &str| {
+                                    if cfg_stables.is_empty() {
+                                        default_stables.contains(m)
+                                    } else {
+                                        cfg_stables.contains(m)
+                                    }
+                                };
                                 let mut has_stable_stable = false;
                                 let mut sol_stable_hops: usize = 0;
                                 for i in 0..canon_labels.len() {
@@ -1195,19 +1884,32 @@ async fn main() -> anyhow::Result<()> {
                                     let b = &canon_labels[(i + 1) % canon_labels.len()];
                                     let a_st = is_stable(a);
                                     let b_st = is_stable(b);
-                                    if a_st && b_st { has_stable_stable = true; break; }
-                                    if (a == sol && b_st) || (b == sol && a_st) { sol_stable_hops += 1; }
+                                    if a_st && b_st {
+                                        has_stable_stable = true;
+                                        break;
+                                    }
+                                    if (a == sol && b_st) || (b == sol && a_st) {
+                                        sol_stable_hops += 1;
+                                    }
                                 }
-                                if s.config.drop_stable_stable_hops && has_stable_stable { continue; }
-                                if let Some(limit) = s.config.max_sol_stable_hops { if sol_stable_hops > limit { continue; } }
+                                if s.config.drop_stable_stable_hops && has_stable_stable {
+                                    continue;
+                                }
+                                if let Some(limit) = s.config.max_sol_stable_hops {
+                                    if sol_stable_hops > limit {
+                                        continue;
+                                    }
+                                }
                             }
                             // Dexes: recompute from edges along best_nodes
-                            let mut dexes_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+                            let mut dexes_set: std::collections::HashSet<String> =
+                                std::collections::HashSet::new();
                             // Recompute meta along canonical order
                             let mut link_edges_used: usize = 0;
                             let mut link_penalty_bps_total: i64 = 0;
                             let mut min_edge_liquidity: f64 = f64::INFINITY;
-                            let mut bottleneck: Option<(usize, usize, String, f64, f64, i64)> = None;
+                            let mut bottleneck: Option<(usize, usize, String, f64, f64, i64)> =
+                                None;
                             let mut prod2 = 1.0f64;
                             let mut hop_dexes: Vec<String> = Vec::new();
                             let mut hop_rates: Vec<f64> = Vec::new();
@@ -1215,10 +1917,15 @@ async fn main() -> anyhow::Result<()> {
                             let mut hop_fee_bps: Vec<i64> = Vec::new();
                             let mut hop_liq_disp: Vec<f64> = Vec::new();
                             let mut hop_outs: Vec<f64> = Vec::new();
-                            let mut cur_out: f64 = if labels.first().map(|m| m == &usdc).unwrap_or(false) { s.config.quote_size_usd.max(0.0) } else { 1.0 };
+                            let mut cur_out: f64 =
+                                if labels.first().map(|m| m == &usdc).unwrap_or(false) {
+                                    s.config.quote_size_usd.max(0.0)
+                                } else {
+                                    1.0
+                                };
                             for w in 0..best_nodes.len() {
                                 let u_idx = best_nodes[w];
-                                let v_idx = best_nodes[(w+1)%best_nodes.len()];
+                                let v_idx = best_nodes[(w + 1) % best_nodes.len()];
                                 // Validate indices are in bounds
                                 if u_idx >= ncount || v_idx >= ncount {
                                     prod2 = 0.0;
@@ -1226,102 +1933,210 @@ async fn main() -> anyhow::Result<()> {
                                 }
                                 let u = NodeIndex::new(u_idx);
                                 let v = NodeIndex::new(v_idx);
-                            let mut best_rate: f64 = 0.0; let mut best_meta: Option<(String, f64, i64, String, f64)> = None;
-                            for e in s.graph.g.edges_connecting(u, v) {
-                                let wt = e.weight(); if wt.liquidity <= 0.0 { continue; }
-                                let r = wt.rate_effective.max(1e-12);
-                                if r > best_rate { best_rate = r; best_meta = Some((wt.dex.clone(), wt.liquidity, wt.fee_bps, wt.pool_id.clone(), wt.liquidity_display)); }
-                            }
-                                if best_rate <= 0.0 { prod2 = 0.0; break; }
-                                if let Some((dex, liq, fee, pid, liqd)) = best_meta.take() { if dex == "Link" { link_edges_used += 1; link_penalty_bps_total += fee; } else { dexes_set.insert(dex.clone()); } min_edge_liquidity = min_edge_liquidity.min(liq); if bottleneck.as_ref().map(|(_,_,_,r,_,_)| best_rate < *r).unwrap_or(true) { bottleneck = Some((u.index(), v.index(), dex.clone(), best_rate, liq, fee)); } hop_dexes.push(dex); hop_rates.push(best_rate); hop_pool_ids.push(pid); hop_fee_bps.push(fee); hop_liq_disp.push(liqd); let next_out = if cur_out.is_finite() { cur_out * best_rate } else { 0.0 }; hop_outs.push(next_out); cur_out = next_out; }
+                                let mut best_rate: f64 = 0.0;
+                                let mut best_meta: Option<(String, f64, i64, String, f64)> = None;
+                                for e in s.graph.g.edges_connecting(u, v) {
+                                    let wt = e.weight();
+                                    if wt.liquidity <= 0.0 {
+                                        continue;
+                                    }
+                                    let r = wt.rate_effective.max(1e-12);
+                                    if r > best_rate {
+                                        best_rate = r;
+                                        best_meta = Some((
+                                            wt.dex.clone(),
+                                            wt.liquidity,
+                                            wt.fee_bps,
+                                            wt.pool_id.clone(),
+                                            wt.liquidity_display,
+                                        ));
+                                    }
+                                }
+                                if best_rate <= 0.0 {
+                                    prod2 = 0.0;
+                                    break;
+                                }
+                                if let Some((dex, liq, fee, pid, liqd)) = best_meta.take() {
+                                    if dex == "Link" {
+                                        link_edges_used += 1;
+                                        link_penalty_bps_total += fee;
+                                    } else {
+                                        dexes_set.insert(dex.clone());
+                                    }
+                                    min_edge_liquidity = min_edge_liquidity.min(liq);
+                                    if bottleneck
+                                        .as_ref()
+                                        .map(|(_, _, _, r, _, _)| best_rate < *r)
+                                        .unwrap_or(true)
+                                    {
+                                        bottleneck = Some((
+                                            u.index(),
+                                            v.index(),
+                                            dex.clone(),
+                                            best_rate,
+                                            liq,
+                                            fee,
+                                        ));
+                                    }
+                                    hop_dexes.push(dex);
+                                    hop_rates.push(best_rate);
+                                    hop_pool_ids.push(pid);
+                                    hop_fee_bps.push(fee);
+                                    hop_liq_disp.push(liqd);
+                                    let next_out = if cur_out.is_finite() {
+                                        cur_out * best_rate
+                                    } else {
+                                        0.0
+                                    };
+                                    hop_outs.push(next_out);
+                                    cur_out = next_out;
+                                }
                                 prod2 *= best_rate;
                             }
                             let mut dexes: Vec<String> = dexes_set.into_iter().collect();
                             dexes.sort();
                             let profit_bps = ((prod2 - 1.0) * 10_000.0).floor() as i64;
                             let net_bps = profit_bps - link_penalty_bps_total.max(0);
-                            let est_capacity = if min_edge_liquidity.is_finite() { Some(min_edge_liquidity.max(0.0)) } else { None };
-                            let now_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
-                            let bottleneck_edge = bottleneck.as_ref().and_then(|(ui,vi,dex,rate,liq,fee)| {
-                                // Validate indices are in bounds
-                                if *ui >= ncount || *vi >= ncount {
-                                    return None;
-                                }
-                                let from = s.graph.g[NodeIndex::new(*ui)].clone();
-                                let to = s.graph.g[NodeIndex::new(*vi)].clone();
-                                Some(opportunities::BottleneckEdge { from, to, dex: dex.clone(), rate: *rate, liquidity: *liq, fee_bps: *fee })
-                            });
+                            let est_capacity = if min_edge_liquidity.is_finite() {
+                                Some(min_edge_liquidity.max(0.0))
+                            } else {
+                                None
+                            };
+                            let now_ts = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64;
+                            let bottleneck_edge =
+                                bottleneck
+                                    .as_ref()
+                                    .and_then(|(ui, vi, dex, rate, liq, fee)| {
+                                        // Validate indices are in bounds
+                                        if *ui >= ncount || *vi >= ncount {
+                                            return None;
+                                        }
+                                        let from = s.graph.g[NodeIndex::new(*ui)].clone();
+                                        let to = s.graph.g[NodeIndex::new(*vi)].clone();
+                                        Some(opportunities::BottleneckEdge {
+                                            from,
+                                            to,
+                                            dex: dex.clone(),
+                                            rate: *rate,
+                                            liquidity: *liq,
+                                            fee_bps: *fee,
+                                        })
+                                    });
                             // Only consider as near-miss if below threshold, at least 3 hops, and min liquidity > 0
-                            if profit_bps < min_bps && best_nodes.len() >= 3 && est_capacity.unwrap_or(0.0) > 0.0 {
-                              let near = Opportunity {
-                                path: canon_labels,
-                                profit_bps,
-                                net_bps: Some(net_bps),
-                                est_profit_usd: 1.0,
-                                dexes,
-                                hop_dexes: Some(hop_dexes),
-                                hop_rates: Some(hop_rates),
-                                hop_outs: Some(hop_outs),
-                                hop_pool_ids: Some(hop_pool_ids),
-                                hop_fee_bps: Some(hop_fee_bps),
-                                hop_liquidity_display: Some(hop_liq_disp),
-                                hop_count: Some(best_nodes.len()),
-                                rate_product: Some(prod2),
-                                link_edges_used: Some(link_edges_used),
-                                link_penalty_bps_total: Some(link_penalty_bps_total),
-                                min_edge_liquidity: est_capacity,
-                                est_capacity,
-                                bottleneck: bottleneck_edge,
-                                detected_ms: Some(now_ts),
-                                first_seen_ms: None,
-                                last_verified_ms: None,
-                                detections: Some(0),
-                                bf_slack_log: None,
-                                bf_required_rate: None,
-                                bf_rate_delta_bps: None,
-                                is_near_miss: Some(true),
-                              };
-                              let shortfall = (min_bps - profit_bps).max(0);
-                              near_pair = Some((near, shortfall));
+                            if profit_bps < min_bps
+                                && best_nodes.len() >= 3
+                                && est_capacity.unwrap_or(0.0) > 0.0
+                            {
+                                let near = Opportunity {
+                                    path: canon_labels,
+                                    profit_bps,
+                                    net_bps: Some(net_bps),
+                                    est_profit_usd: 1.0,
+                                    dexes,
+                                    hop_dexes: Some(hop_dexes),
+                                    hop_rates: Some(hop_rates),
+                                    hop_outs: Some(hop_outs),
+                                    hop_pool_ids: Some(hop_pool_ids),
+                                    hop_fee_bps: Some(hop_fee_bps),
+                                    hop_liquidity_display: Some(hop_liq_disp),
+                                    hop_count: Some(best_nodes.len()),
+                                    rate_product: Some(prod2),
+                                    link_edges_used: Some(link_edges_used),
+                                    link_penalty_bps_total: Some(link_penalty_bps_total),
+                                    min_edge_liquidity: est_capacity,
+                                    est_capacity,
+                                    bottleneck: bottleneck_edge,
+                                    detected_ms: Some(now_ts),
+                                    first_seen_ms: None,
+                                    last_verified_ms: None,
+                                    detections: Some(0),
+                                    bf_slack_log: None,
+                                    bf_required_rate: None,
+                                    bf_rate_delta_bps: None,
+                                    is_near_miss: Some(true),
+                                };
+                                let shortfall = (min_bps - profit_bps).max(0);
+                                near_pair = Some((near, shortfall));
                             }
                         }
                         // Extra permissive fallback: try find any triangle cycle even if profit <= 0
                         if near_pair.is_none() {
                             let ncount = s.graph.g.node_count();
                             let best_rate_between = |ui: usize, vi: usize| -> f64 {
-                                let u = NodeIndex::new(ui); let v = NodeIndex::new(vi);
+                                let u = NodeIndex::new(ui);
+                                let v = NodeIndex::new(vi);
                                 let mut br = 0.0f64;
                                 for e in s.graph.g.edges_connecting(u, v) {
                                     let wt = e.weight();
-                                    if wt.liquidity <= 0.0 { continue; }
+                                    if wt.liquidity <= 0.0 {
+                                        continue;
+                                    }
                                     br = br.max(wt.rate_effective.max(1e-12));
                                 }
                                 br
                             };
-                            let mut best: Option<(usize,usize,usize,f64)> = None;
-                            for a in 0..ncount { for b in 0..ncount { if b==a {continue;} for c in 0..ncount { if c==a || c==b {continue;} 
-                                let r1 = best_rate_between(a,b); let r2 = best_rate_between(b,c); let r3 = best_rate_between(c,a);
-                                if r1>0.0 && r2>0.0 && r3>0.0 {
-                                    let prod = r1*r2*r3;
-                                    if best.as_ref().map(|(_,_,_,p)| prod > *p).unwrap_or(true) { best = Some((a,b,c,prod)); }
+                            let mut best: Option<(usize, usize, usize, f64)> = None;
+                            for a in 0..ncount {
+                                for b in 0..ncount {
+                                    if b == a {
+                                        continue;
+                                    }
+                                    for c in 0..ncount {
+                                        if c == a || c == b {
+                                            continue;
+                                        }
+                                        let r1 = best_rate_between(a, b);
+                                        let r2 = best_rate_between(b, c);
+                                        let r3 = best_rate_between(c, a);
+                                        if r1 > 0.0 && r2 > 0.0 && r3 > 0.0 {
+                                            let prod = r1 * r2 * r3;
+                                            if best
+                                                .as_ref()
+                                                .map(|(_, _, _, p)| prod > *p)
+                                                .unwrap_or(true)
+                                            {
+                                                best = Some((a, b, c, prod));
+                                            }
+                                        }
+                                    }
                                 }
-                            }}}
-                            if let Some((a,b,c,prod)) = best {
+                            }
+                            if let Some((a, b, c, prod)) = best {
                                 // Validate node indices are in bounds
                                 if a >= ncount || b >= ncount || c >= ncount {
                                     continue;
                                 }
-                                let mut nodes = vec![a,b,c];
-                                let mut labels: Vec<String> = nodes.iter().map(|&i| s.graph.g[NodeIndex::new(i)].clone()).collect();
+                                let mut nodes = vec![a, b, c];
+                                let mut labels: Vec<String> = nodes
+                                    .iter()
+                                    .map(|&i| s.graph.g[NodeIndex::new(i)].clone())
+                                    .collect();
                                 // Prune triangle near-miss by SOL<->stable cap and stable<->stable
                                 {
                                     let sol = "So11111111111111111111111111111111111111112";
                                     let default_stables: std::collections::HashSet<&str> = [
                                         "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
                                         "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
-                                    ].into_iter().collect();
-                                    let cfg_stables: std::collections::HashSet<String> = s.config.stable_mints.clone().unwrap_or_default().into_iter().collect();
-                                    let is_stable = |m: &str| if cfg_stables.is_empty() { default_stables.contains(m) } else { cfg_stables.contains(m) };
+                                    ]
+                                    .into_iter()
+                                    .collect();
+                                    let cfg_stables: std::collections::HashSet<String> = s
+                                        .config
+                                        .stable_mints
+                                        .clone()
+                                        .unwrap_or_default()
+                                        .into_iter()
+                                        .collect();
+                                    let is_stable = |m: &str| {
+                                        if cfg_stables.is_empty() {
+                                            default_stables.contains(m)
+                                        } else {
+                                            cfg_stables.contains(m)
+                                        }
+                                    };
                                     let mut has_stable_stable = false;
                                     let mut sol_stable_hops: usize = 0;
                                     for i in 0..labels.len() {
@@ -1329,55 +2144,154 @@ async fn main() -> anyhow::Result<()> {
                                         let b = &labels[(i + 1) % labels.len()];
                                         let a_st = is_stable(a);
                                         let b_st = is_stable(b);
-                                        if a_st && b_st { has_stable_stable = true; break; }
-                                        if (a == sol && b_st) || (b == sol && a_st) { sol_stable_hops += 1; }
+                                        if a_st && b_st {
+                                            has_stable_stable = true;
+                                            break;
+                                        }
+                                        if (a == sol && b_st) || (b == sol && a_st) {
+                                            sol_stable_hops += 1;
+                                        }
                                     }
-                                    if s.config.drop_stable_stable_hops && has_stable_stable { continue; }
-                                    if let Some(limit) = s.config.max_sol_stable_hops { if sol_stable_hops > limit { continue; } }
+                                    if s.config.drop_stable_stable_hops && has_stable_stable {
+                                        continue;
+                                    }
+                                    if let Some(limit) = s.config.max_sol_stable_hops {
+                                        if sol_stable_hops > limit {
+                                            continue;
+                                        }
+                                    }
                                 }
                                 // Build meta across the triangle
-                                let mut link_edges_used: usize = 0; let mut link_penalty_bps_total: i64 = 0; let mut min_edge_liquidity: f64 = f64::INFINITY; let mut bottleneck: Option<(usize,usize,String,f64,f64,i64)> = None; let mut dexes_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+                                let mut link_edges_used: usize = 0;
+                                let mut link_penalty_bps_total: i64 = 0;
+                                let mut min_edge_liquidity: f64 = f64::INFINITY;
+                                let mut bottleneck: Option<(usize, usize, String, f64, f64, i64)> =
+                                    None;
+                                let mut dexes_set: std::collections::HashSet<String> =
+                                    std::collections::HashSet::new();
                                 let mut hop_dexes: Vec<String> = Vec::new();
                                 let mut hop_rates: Vec<f64> = Vec::new();
                                 for w in 0..3 {
-                                    let u = NodeIndex::new(nodes[w]); let v = NodeIndex::new(nodes[(w+1)%3]);
-                                    let mut best_rate: f64 = 0.0; let mut best_meta: Option<(String,f64,i64)> = None;
-                                    for e in s.graph.g.edges_connecting(u,v) { let wt = e.weight(); if wt.liquidity <= 0.0 { continue; } let r = wt.rate_effective.max(1e-12); if r>best_rate { best_rate = r; best_meta = Some((wt.dex.clone(), wt.liquidity, wt.fee_bps)); } }
-                                    if let Some((dex, liq, fee)) = best_meta.take() { if dex=="Link" { link_edges_used+=1; link_penalty_bps_total+=fee; } if !dex.is_empty() && dex!="Link" { dexes_set.insert(dex.clone()); } min_edge_liquidity = min_edge_liquidity.min(liq); if bottleneck.as_ref().map(|(_,_,_,r,_,_)| best_rate<*r).unwrap_or(true) { bottleneck = Some((u.index(), v.index(), dex.clone(), best_rate, liq, fee)); } hop_dexes.push(dex); hop_rates.push(best_rate); }
+                                    let u = NodeIndex::new(nodes[w]);
+                                    let v = NodeIndex::new(nodes[(w + 1) % 3]);
+                                    let mut best_rate: f64 = 0.0;
+                                    let mut best_meta: Option<(String, f64, i64)> = None;
+                                    for e in s.graph.g.edges_connecting(u, v) {
+                                        let wt = e.weight();
+                                        if wt.liquidity <= 0.0 {
+                                            continue;
+                                        }
+                                        let r = wt.rate_effective.max(1e-12);
+                                        if r > best_rate {
+                                            best_rate = r;
+                                            best_meta =
+                                                Some((wt.dex.clone(), wt.liquidity, wt.fee_bps));
+                                        }
+                                    }
+                                    if let Some((dex, liq, fee)) = best_meta.take() {
+                                        if dex == "Link" {
+                                            link_edges_used += 1;
+                                            link_penalty_bps_total += fee;
+                                        }
+                                        if !dex.is_empty() && dex != "Link" {
+                                            dexes_set.insert(dex.clone());
+                                        }
+                                        min_edge_liquidity = min_edge_liquidity.min(liq);
+                                        if bottleneck
+                                            .as_ref()
+                                            .map(|(_, _, _, r, _, _)| best_rate < *r)
+                                            .unwrap_or(true)
+                                        {
+                                            bottleneck = Some((
+                                                u.index(),
+                                                v.index(),
+                                                dex.clone(),
+                                                best_rate,
+                                                liq,
+                                                fee,
+                                            ));
+                                        }
+                                        hop_dexes.push(dex);
+                                        hop_rates.push(best_rate);
+                                    }
                                 }
-                                let mut dexes: Vec<String> = dexes_set.into_iter().collect(); dexes.sort();
+                                let mut dexes: Vec<String> = dexes_set.into_iter().collect();
+                                dexes.sort();
                                 let profit_bps_raw = ((prod - 1.0) * 10_000.0).floor();
-                                let mut profit_bps = if profit_bps_raw.is_finite() { profit_bps_raw as i64 } else { 0 };
-                                if profit_bps > 1_000_000 { profit_bps = 1_000_000; }
-                                if profit_bps < -1_000_000 { profit_bps = -1_000_000; }
+                                let mut profit_bps = if profit_bps_raw.is_finite() {
+                                    profit_bps_raw as i64
+                                } else {
+                                    0
+                                };
+                                if profit_bps > 1_000_000 {
+                                    profit_bps = 1_000_000;
+                                }
+                                if profit_bps < -1_000_000 {
+                                    profit_bps = -1_000_000;
+                                }
                                 let mut net_bps = profit_bps - link_penalty_bps_total.max(0);
-                                if net_bps > 1_000_000 { net_bps = 1_000_000; }
-                                if net_bps < -1_000_000 { net_bps = -1_000_000; }
+                                if net_bps > 1_000_000 {
+                                    net_bps = 1_000_000;
+                                }
+                                if net_bps < -1_000_000 {
+                                    net_bps = -1_000_000;
+                                }
                                 let net_bps = {
                                     let hops = 3i64;
-                                    let est_lam = s.config.est_priority_fee_per_hop_lamports.unwrap_or(0) as f64;
-                                    let total_est = (est_lam * hops as f64) / 1_000_000.0 * 10_000.0;
+                                    let est_lam =
+                                        s.config.est_priority_fee_per_hop_lamports.unwrap_or(0)
+                                            as f64;
+                                    let total_est =
+                                        (est_lam * hops as f64) / 1_000_000.0 * 10_000.0;
                                     (net_bps as f64 - total_est).round() as i64
                                 };
                                 let shortfall = (min_bps - profit_bps).max(1); // ensure >0 so UI shows
-                                let est_capacity = if min_edge_liquidity.is_finite() { Some(min_edge_liquidity.max(0.0)) } else { None };
-                                let now_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
-                                let bottleneck_edge = bottleneck.as_ref().and_then(|(ui,vi,dex,rate,liq,fee)| {
-                                    // Validate indices are in bounds
-                                    if *ui >= ncount || *vi >= ncount {
-                                        return None;
-                                    }
-                                    let from = s.graph.g[NodeIndex::new(*ui)].clone();
-                                    let to = s.graph.g[NodeIndex::new(*vi)].clone();
-                                    Some(opportunities::BottleneckEdge { from, to, dex: dex.clone(), rate: *rate, liquidity: *liq, fee_bps: *fee })
-                                });
+                                let est_capacity = if min_edge_liquidity.is_finite() {
+                                    Some(min_edge_liquidity.max(0.0))
+                                } else {
+                                    None
+                                };
+                                let now_ts = SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis()
+                                    as u64;
+                                let bottleneck_edge = bottleneck.as_ref().and_then(
+                                    |(ui, vi, dex, rate, liq, fee)| {
+                                        // Validate indices are in bounds
+                                        if *ui >= ncount || *vi >= ncount {
+                                            return None;
+                                        }
+                                        let from = s.graph.g[NodeIndex::new(*ui)].clone();
+                                        let to = s.graph.g[NodeIndex::new(*vi)].clone();
+                                        Some(opportunities::BottleneckEdge {
+                                            from,
+                                            to,
+                                            dex: dex.clone(),
+                                            rate: *rate,
+                                            liquidity: *liq,
+                                            fee_bps: *fee,
+                                        })
+                                    },
+                                );
                                 // Recompute best edges per hop to capture pool ids/fees for logging and output
                                 let mut hop_pool_ids: Vec<String> = Vec::new();
                                 let mut hop_fee_bps_vec: Vec<i64> = Vec::new();
                                 for w in 0..3 {
-                                    let u = NodeIndex::new(nodes[w]); let v = NodeIndex::new(nodes[(w+1)%3]);
-                                    let mut best_rate: f64 = 0.0; let mut best_pid: Option<String> = None; let mut best_fee: i64 = 0;
-                                    for e in s.graph.g.edges_connecting(u, v) { let wt = e.weight(); let r = wt.rate_effective.max(1e-12); if r > best_rate { best_rate = r; best_pid = Some(wt.pool_id.clone()); best_fee = wt.fee_bps; } }
+                                    let u = NodeIndex::new(nodes[w]);
+                                    let v = NodeIndex::new(nodes[(w + 1) % 3]);
+                                    let mut best_rate: f64 = 0.0;
+                                    let mut best_pid: Option<String> = None;
+                                    let mut best_fee: i64 = 0;
+                                    for e in s.graph.g.edges_connecting(u, v) {
+                                        let wt = e.weight();
+                                        let r = wt.rate_effective.max(1e-12);
+                                        if r > best_rate {
+                                            best_rate = r;
+                                            best_pid = Some(wt.pool_id.clone());
+                                            best_fee = wt.fee_bps;
+                                        }
+                                    }
                                     hop_pool_ids.push(best_pid.unwrap_or_default());
                                     hop_fee_bps_vec.push(best_fee);
                                 }
@@ -1386,7 +2300,9 @@ async fn main() -> anyhow::Result<()> {
                                     // This triangle is profitable enough - add as real opportunity
                                     let path_str = labels.join("->");
                                     let key = keyify_opportunity(&labels, &dexes);
-                                    let repeat_limit_hit = if s.config.max_detections_without_exec == 0 {
+                                    let repeat_limit_hit = if s.config.max_detections_without_exec
+                                        == 0
+                                    {
                                         false
                                     } else {
                                         let executed = s.executed_keys.contains(&key);
@@ -1411,39 +2327,107 @@ async fn main() -> anyhow::Result<()> {
                                         continue;
                                     }
                                     let pools_str = hop_pool_ids.join(",");
-                                    let fees_str = hop_fee_bps_vec.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
+                                    let fees_str = hop_fee_bps_vec
+                                        .iter()
+                                        .map(|v| v.to_string())
+                                        .collect::<Vec<_>>()
+                                        .join(",");
                                     // Build unit-annotated rates
                                     let mut hop_units: Vec<String> = Vec::new();
                                     for w in 0..3 {
                                         let a = &labels[w];
-                                        let b = &labels[(w+1)%3];
+                                        let b = &labels[(w + 1) % 3];
                                         let r = hop_rates.get(w).copied().unwrap_or(0.0);
-                                        let inv = if r>0.0 { 1.0/r } else { 0.0 };
-                                        hop_units.push(format!("{}->{}: {:.9} {} per 1 {} | inv {:.9} {} per 1 {}", a, b, r, b, a, inv, a, b));
+                                        let inv = if r > 0.0 { 1.0 / r } else { 0.0 };
+                                        hop_units.push(format!(
+                                            "{}->{}: {:.9} {} per 1 {} | inv {:.9} {} per 1 {}",
+                                            a, b, r, b, a, inv, a, b
+                                        ));
                                     }
                                     let rates_units = hop_units.join("; ");
                                     tracing::info!(target = "arb_rs", "arb.opportunity.triangle path={} profit_bps={} net_bps={} hops=3 rates_units={} pools=[{}] fees=[{}] product={:.8}", path_str, profit_bps, net_bps, rates_units, pools_str, fees_str, prod);
                                     // Skip if absurdly high raw profits (likely data issues)
                                     if profit_bps <= s.config.max_profit_bps {
-                                        curr.push(Opportunity { path: labels, profit_bps, net_bps: Some(net_bps), est_profit_usd: 1.0, dexes, hop_dexes: Some(hop_dexes), hop_rates: Some(hop_rates), hop_outs: None, hop_pool_ids: Some(hop_pool_ids), hop_fee_bps: Some(hop_fee_bps_vec), hop_liquidity_display: None, hop_count: Some(3), rate_product: Some(prod), link_edges_used: Some(link_edges_used), link_penalty_bps_total: Some(link_penalty_bps_total), min_edge_liquidity: est_capacity, est_capacity, bottleneck: bottleneck_edge, detected_ms: Some(now_ts), first_seen_ms: None, last_verified_ms: None, detections: Some(0), bf_slack_log: None, bf_required_rate: None, bf_rate_delta_bps: None, is_near_miss: None });
+                                        curr.push(Opportunity {
+                                            path: labels,
+                                            profit_bps,
+                                            net_bps: Some(net_bps),
+                                            est_profit_usd: 1.0,
+                                            dexes,
+                                            hop_dexes: Some(hop_dexes),
+                                            hop_rates: Some(hop_rates),
+                                            hop_outs: None,
+                                            hop_pool_ids: Some(hop_pool_ids),
+                                            hop_fee_bps: Some(hop_fee_bps_vec),
+                                            hop_liquidity_display: None,
+                                            hop_count: Some(3),
+                                            rate_product: Some(prod),
+                                            link_edges_used: Some(link_edges_used),
+                                            link_penalty_bps_total: Some(link_penalty_bps_total),
+                                            min_edge_liquidity: est_capacity,
+                                            est_capacity,
+                                            bottleneck: bottleneck_edge,
+                                            detected_ms: Some(now_ts),
+                                            first_seen_ms: None,
+                                            last_verified_ms: None,
+                                            detections: Some(0),
+                                            bf_slack_log: None,
+                                            bf_required_rate: None,
+                                            bf_rate_delta_bps: None,
+                                            is_near_miss: None,
+                                        });
                                     }
                                 } else {
                                     // Below threshold - log as near miss
                                     let path_str = labels.join("->");
                                     let pools_str = hop_pool_ids.join(",");
-                                    let fees_str = hop_fee_bps_vec.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
+                                    let fees_str = hop_fee_bps_vec
+                                        .iter()
+                                        .map(|v| v.to_string())
+                                        .collect::<Vec<_>>()
+                                        .join(",");
                                     // Build unit-annotated rates
                                     let mut hop_units: Vec<String> = Vec::new();
                                     for w in 0..3 {
                                         let a = &labels[w];
-                                        let b = &labels[(w+1)%3];
+                                        let b = &labels[(w + 1) % 3];
                                         let r = hop_rates.get(w).copied().unwrap_or(0.0);
-                                        let inv = if r>0.0 { 1.0/r } else { 0.0 };
-                                        hop_units.push(format!("{}->{}: {:.9} {} per 1 {} | inv {:.9} {} per 1 {}", a, b, r, b, a, inv, a, b));
+                                        let inv = if r > 0.0 { 1.0 / r } else { 0.0 };
+                                        hop_units.push(format!(
+                                            "{}->{}: {:.9} {} per 1 {} | inv {:.9} {} per 1 {}",
+                                            a, b, r, b, a, inv, a, b
+                                        ));
                                     }
                                     let rates_units = hop_units.join("; ");
                                     tracing::info!(target = "arb_rs", "arb.near_miss.triangle path={} profit_bps={} net_bps={} hops=3 rates_units={} pools=[{}] fees=[{}] product={:.8}", path_str, profit_bps, net_bps, rates_units, pools_str, fees_str, prod);
-                                    let near = Opportunity { path: labels, profit_bps, net_bps: Some(net_bps), est_profit_usd: 1.0, dexes, hop_dexes: Some(hop_dexes), hop_rates: Some(hop_rates), hop_outs: None, hop_pool_ids: Some(hop_pool_ids), hop_fee_bps: Some(hop_fee_bps_vec), hop_liquidity_display: None, hop_count: Some(3), rate_product: Some(prod), link_edges_used: Some(link_edges_used), link_penalty_bps_total: Some(link_penalty_bps_total), min_edge_liquidity: est_capacity, est_capacity, bottleneck: bottleneck_edge, detected_ms: Some(now_ts), first_seen_ms: None, last_verified_ms: None, detections: Some(0), bf_slack_log: None, bf_required_rate: None, bf_rate_delta_bps: None, is_near_miss: Some(true) };
+                                    let near = Opportunity {
+                                        path: labels,
+                                        profit_bps,
+                                        net_bps: Some(net_bps),
+                                        est_profit_usd: 1.0,
+                                        dexes,
+                                        hop_dexes: Some(hop_dexes),
+                                        hop_rates: Some(hop_rates),
+                                        hop_outs: None,
+                                        hop_pool_ids: Some(hop_pool_ids),
+                                        hop_fee_bps: Some(hop_fee_bps_vec),
+                                        hop_liquidity_display: None,
+                                        hop_count: Some(3),
+                                        rate_product: Some(prod),
+                                        link_edges_used: Some(link_edges_used),
+                                        link_penalty_bps_total: Some(link_penalty_bps_total),
+                                        min_edge_liquidity: est_capacity,
+                                        est_capacity,
+                                        bottleneck: bottleneck_edge,
+                                        detected_ms: Some(now_ts),
+                                        first_seen_ms: None,
+                                        last_verified_ms: None,
+                                        detections: Some(0),
+                                        bf_slack_log: None,
+                                        bf_required_rate: None,
+                                        bf_rate_delta_bps: None,
+                                        is_near_miss: Some(true),
+                                    };
                                     near_pair = Some((near, shortfall));
                                 }
                             }
@@ -1455,10 +2439,20 @@ async fn main() -> anyhow::Result<()> {
                         let mut subs: Vec<(i64, String)> = Vec::new();
                         let dbg_cycles = detect_negative_cycles(&s.graph);
                         for c in dbg_cycles.into_iter() {
-                            if c.nodes.len() < 3 || c.nodes.len() > max_hops { continue; }
+                            if c.nodes.len() < 3 || c.nodes.len() > max_hops {
+                                continue;
+                            }
                             let mut uniq = std::collections::HashSet::new();
-                            let mut simple = true; for &v in c.nodes.iter() { if !uniq.insert(v) { simple = false; break; } }
-                            if !simple { continue; }
+                            let mut simple = true;
+                            for &v in c.nodes.iter() {
+                                if !uniq.insert(v) {
+                                    simple = false;
+                                    break;
+                                }
+                            }
+                            if !simple {
+                                continue;
+                            }
                             let mut prod: f64 = 1.0;
                             // Validate node indices are in bounds
                             let node_count_dbg = s.graph.g.node_count();
@@ -1468,50 +2462,92 @@ async fn main() -> anyhow::Result<()> {
                             let mut ok = true;
                             for w in 0..c.nodes.len() {
                                 let u = NodeIndex::new(c.nodes[w]);
-                                let v = NodeIndex::new(c.nodes[(w+1)%c.nodes.len()]);
+                                let v = NodeIndex::new(c.nodes[(w + 1) % c.nodes.len()]);
                                 let mut br: f64 = 0.0;
-                                for e in s.graph.g.edges_connecting(u, v) { let wt = e.weight(); if wt.liquidity <= 0.0 { continue; } br = br.max(wt.rate_effective.max(1e-12)); }
-                                if br <= 0.0 { ok = false; break; }
+                                for e in s.graph.g.edges_connecting(u, v) {
+                                    let wt = e.weight();
+                                    if wt.liquidity <= 0.0 {
+                                        continue;
+                                    }
+                                    br = br.max(wt.rate_effective.max(1e-12));
+                                }
+                                if br <= 0.0 {
+                                    ok = false;
+                                    break;
+                                }
                                 prod *= br;
                             }
-                            if !ok { continue; }
+                            if !ok {
+                                continue;
+                            }
                             let bps = ((prod - 1.0) * 10_000.0).floor() as i64;
                             if bps < min_bps {
-                                let labels: Vec<String> = c.nodes.iter().map(|&i| s.graph.g[NodeIndex::new(i)].clone()).collect();
+                                let labels: Vec<String> = c
+                                    .nodes
+                                    .iter()
+                                    .map(|&i| s.graph.g[NodeIndex::new(i)].clone())
+                                    .collect();
                                 subs.push((bps, labels.join("->")));
                             }
                         }
-                        subs.sort_by_key(|(bps,_)| *bps);
+                        subs.sort_by_key(|(bps, _)| *bps);
                         let n = s.config.debug_top_n.max(1).min(20);
                         if n > 0 {
                             // Acquire write lock separately to push events
                             let mut sw = loop_state.write().await;
-                            for (i,(bps, path)) in subs.into_iter().rev().take(n).enumerate() {
-                                sw.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.debug.subthreshold#{} bps={} path={}", i+1, bps, path) });
+                            for (i, (bps, path)) in subs.into_iter().rev().take(n).enumerate() {
+                                sw.events.push(EventItem {
+                                    ts: now_ms(),
+                                    level: "info".into(),
+                                    message: format!(
+                                        "arb.debug.subthreshold#{} bps={} path={}",
+                                        i + 1,
+                                        bps,
+                                        path
+                                    ),
+                                });
                             }
-                            let len = sw.events.len(); if len > 200 { sw.events.drain(0..(len-200)); }
+                            let len = sw.events.len();
+                            if len > 200 {
+                                sw.events.drain(0..(len - 200));
+                            }
                         }
                     }
                     // Prune prior opps that touched changed edges/pools
-                    let prev_opps = if changed_edge_ids.is_empty() { s.opportunities.clone() } else {
-                        s.opportunities.clone().into_iter().filter(|o| {
-                            let ids: HashSet<String> = o.hop_pool_ids.as_ref().map(|v| v.iter().cloned().collect()).unwrap_or_default();
-                            ids.is_disjoint(&changed_edge_ids)
-                        }).collect::<Vec<_>>()
+                    let prev_opps = if changed_edge_ids.is_empty() {
+                        s.opportunities.clone()
+                    } else {
+                        s.opportunities
+                            .clone()
+                            .into_iter()
+                            .filter(|o| {
+                                let ids: HashSet<String> = o
+                                    .hop_pool_ids
+                                    .as_ref()
+                                    .map(|v| v.iter().cloned().collect())
+                                    .unwrap_or_default();
+                                ids.is_disjoint(&changed_edge_ids)
+                            })
+                            .collect::<Vec<_>>()
                     };
-                    (curr, prev_opps, near_pair, near_list)
+                    (curr, prev_opps, near_pair, near_list, rejected_samples)
                 };
                 // Adaptive stale handling based on opportunity_base_ttl_ms and detections stability
-                let now_ms_val = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+                let now_ms_val = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
                 // Bump detection counts for current opps and prune old entries
                 {
                     let mut sw = loop_state.write().await;
                     let ttl = sw.config.detection_history_ttl_ms.max(1_000);
-                    sw.detection_counts.retain(|_, &mut (_, ts)| now_ms_val.saturating_sub(ts) <= ttl);
+                    sw.detection_counts
+                        .retain(|_, &mut (_, ts)| now_ms_val.saturating_sub(ts) <= ttl);
                     for m in opps.iter() {
                         let key = keyify_opportunity(&m.path, &m.dexes);
                         let (c, _) = sw.detection_counts.get(&key).copied().unwrap_or((0, 0));
-                        sw.detection_counts.insert(key, (c.saturating_add(1), now_ms_val));
+                        sw.detection_counts
+                            .insert(key, (c.saturating_add(1), now_ms_val));
                     }
                 }
                 let base_ttl = {
@@ -1525,7 +2561,7 @@ async fn main() -> anyhow::Result<()> {
                     let s = loop_state.read().await;
                     let key = keyify_opportunity(&m.path, &m.dexes);
                     let executed = s.executed_keys.contains(&key);
-                    let count = s.detection_counts.get(&key).map(|(c,_)| *c).unwrap_or(0) as usize;
+                    let count = s.detection_counts.get(&key).map(|(c, _)| *c).unwrap_or(0) as usize;
                     if executed || count < s.config.max_detections_without_exec {
                         // Set timestamps for new detections
                         if m.first_seen_ms.is_none() {
@@ -1540,35 +2576,52 @@ async fn main() -> anyhow::Result<()> {
                 }
                 // Retain prior ones if within adaptive TTL and not duplicated
                 for mut o in prev.into_iter() {
-                    let first = o.first_seen_ms.unwrap_or(o.detected_ms.unwrap_or(now_ms_val));
+                    let first = o
+                        .first_seen_ms
+                        .unwrap_or(o.detected_ms.unwrap_or(now_ms_val));
                     // Reuse history to determine detections and cap
                     let det = {
                         let s = loop_state.read().await;
                         let key = keyify_opportunity(&o.path, &o.dexes);
-                        s.detection_counts.get(&key).map(|(c,_)| *c).unwrap_or(o.detections.unwrap_or(1))
+                        s.detection_counts
+                            .get(&key)
+                            .map(|(c, _)| *c)
+                            .unwrap_or(o.detections.unwrap_or(1))
                     };
                     // Hard drop if exceeding cap and not executed
                     let over_cap = {
                         let s = loop_state.read().await;
                         let key = keyify_opportunity(&o.path, &o.dexes);
                         let executed = s.executed_keys.contains(&key);
-                        !executed && (s.detection_counts.get(&key).map(|(c,_)| (*c as usize) >= s.config.max_detections_without_exec).unwrap_or(false))
+                        !executed
+                            && (s
+                                .detection_counts
+                                .get(&key)
+                                .map(|(c, _)| (*c as usize) >= s.config.max_detections_without_exec)
+                                .unwrap_or(false))
                     };
-                    if over_cap { continue; }
+                    if over_cap {
+                        continue;
+                    }
                     // Apply opportunity TTL check
                     let opp_ttl = {
                         let s = loop_state.read().await;
                         s.config.opportunity_ttl_ms
                     };
-                    let last_verified = o.last_verified_ms.unwrap_or(o.detected_ms.unwrap_or(first));
+                    let last_verified =
+                        o.last_verified_ms.unwrap_or(o.detected_ms.unwrap_or(first));
                     if now_ms_val.saturating_sub(last_verified) > opp_ttl {
                         continue; // Expired opportunity
                     }
                     // extend TTL up to 3× (1x base + up to +2x for stability)
                     let ttl = base_ttl.saturating_mul(1 + det.min(2));
-                    let is_dup = merged.iter().any(|x| x.path == o.path && x.dexes == o.dexes);
+                    let is_dup = merged
+                        .iter()
+                        .any(|x| x.path == o.path && x.dexes == o.dexes);
                     if !is_dup && now_ms_val.saturating_sub(first) <= ttl {
-                        if o.first_seen_ms.is_none() { o.first_seen_ms = o.detected_ms; }
+                        if o.first_seen_ms.is_none() {
+                            o.first_seen_ms = o.detected_ms;
+                        }
                         o.detections = Some(det);
                         merged.push(o);
                     }
@@ -1578,21 +2631,29 @@ async fn main() -> anyhow::Result<()> {
                     let an = a.net_bps.unwrap_or(a.profit_bps);
                     let bn = b.net_bps.unwrap_or(b.profit_bps);
                     bn.cmp(&an)
-                      .then_with(|| b.detected_ms.unwrap_or(0).cmp(&a.detected_ms.unwrap_or(0)))
+                        .then_with(|| b.detected_ms.unwrap_or(0).cmp(&a.detected_ms.unwrap_or(0)))
                 });
-                if merged.len() > 50 { merged.truncate(50); }
+                if merged.len() > 50 {
+                    merged.truncate(50);
+                }
                 // Proper change detection: compare opportunities by path/dexes AND profit values
                 let mut s_check = loop_state.read().await;
                 let prev_opps = &s_check.opportunities;
                 let changed = {
                     // Check if count changed
-                    if prev_opps.len() != merged.len() { true } else {
+                    if prev_opps.len() != merged.len() {
+                        true
+                    } else {
                         // Check if any opportunity has changed (path/dexes match but profit differs)
                         let mut found_change = false;
                         for m in merged.iter() {
-                            if let Some(prev_o) = prev_opps.iter().find(|p| p.path == m.path && p.dexes == m.dexes) {
+                            if let Some(prev_o) = prev_opps
+                                .iter()
+                                .find(|p| p.path == m.path && p.dexes == m.dexes)
+                            {
                                 // Check if profit_bps or net_bps changed
-                                if prev_o.profit_bps != m.profit_bps || prev_o.net_bps != m.net_bps {
+                                if prev_o.profit_bps != m.profit_bps || prev_o.net_bps != m.net_bps
+                                {
                                     found_change = true;
                                     break;
                                 }
@@ -1605,7 +2666,10 @@ async fn main() -> anyhow::Result<()> {
                         // Also check if any previous opportunity is missing
                         if !found_change {
                             for prev_o in prev_opps.iter() {
-                                if !merged.iter().any(|m| m.path == prev_o.path && m.dexes == prev_o.dexes) {
+                                if !merged
+                                    .iter()
+                                    .any(|m| m.path == prev_o.path && m.dexes == prev_o.dexes)
+                                {
                                     found_change = true;
                                     break;
                                 }
@@ -1615,15 +2679,20 @@ async fn main() -> anyhow::Result<()> {
                     }
                 };
                 drop(s_check);
-                
+
                 // Always check and update near_misses if they changed (even if opportunities didn't)
                 let mut s = loop_state.write().await;
+                s.rejected_opportunities = rejected_samples;
                 let mut near_misses_changed = false;
                 // Build top-K near-misses list for UI with updated profit values
                 let mut nlist = near_list;
                 nlist.sort_by_key(|(_, sh)| *sh);
                 let k = s.config.debug_top_n.max(1).min(10);
-                let mut new_near_misses = nlist.iter().take(k).map(|(o,_)| o.clone()).collect::<Vec<Opportunity>>();
+                let mut new_near_misses = nlist
+                    .iter()
+                    .take(k)
+                    .map(|(o, _)| o.clone())
+                    .collect::<Vec<Opportunity>>();
                 // Update near_misses timestamps to reflect they were just rebuilt
                 for nm in new_near_misses.iter_mut() {
                     nm.last_verified_ms = Some(now_ms_val);
@@ -1633,20 +2702,31 @@ async fn main() -> anyhow::Result<()> {
                     near_misses_changed = true;
                 } else {
                     for (new, prev) in new_near_misses.iter().zip(s.near_misses.iter()) {
-                        if new.path != prev.path || new.dexes != prev.dexes || new.profit_bps != prev.profit_bps || new.net_bps != prev.net_bps {
+                        if new.path != prev.path
+                            || new.dexes != prev.dexes
+                            || new.profit_bps != prev.profit_bps
+                            || new.net_bps != prev.net_bps
+                        {
                             near_misses_changed = true;
                             break;
                         }
                     }
                 }
-                
+
                 if changed || near_misses_changed {
                     // Update detections for re-detected opps (only if opportunities changed)
                     if changed {
                         for m in merged.iter_mut() {
                             // If this opp also existed previously, bump detections and preserve first_seen_ms
-                            if let Some(prev_o) = s.opportunities.iter().find(|p| p.path == m.path && p.dexes == m.dexes) {
-                                m.first_seen_ms = prev_o.first_seen_ms.or(prev_o.detected_ms).or(m.detected_ms);
+                            if let Some(prev_o) = s
+                                .opportunities
+                                .iter()
+                                .find(|p| p.path == m.path && p.dexes == m.dexes)
+                            {
+                                m.first_seen_ms = prev_o
+                                    .first_seen_ms
+                                    .or(prev_o.detected_ms)
+                                    .or(m.detected_ms);
                                 m.detections = Some(prev_o.detections.unwrap_or(1) + 1);
                                 m.last_verified_ms = Some(now_ms_val); // Update verification timestamp
                             } else {
@@ -1657,32 +2737,50 @@ async fn main() -> anyhow::Result<()> {
                         }
                         s.opportunities = merged;
                     }
-                    
+
                     // Always update near_misses if they changed
                     let prev_near_misses = s.near_misses.clone();
                     s.near_misses = new_near_misses;
                     // Prefer ≥3-DEX paths; prefer recently updated ones, then rotate across cycles
-                    let preferred: Vec<Opportunity> = s.near_misses.iter().cloned().filter(|o| o.dexes.len() >= 3).collect();
-                    let pool: Vec<Opportunity> = if !preferred.is_empty() { preferred } else { s.near_misses.clone() };
+                    let preferred: Vec<Opportunity> = s
+                        .near_misses
+                        .iter()
+                        .cloned()
+                        .filter(|o| o.dexes.len() >= 3)
+                        .collect();
+                    let pool: Vec<Opportunity> = if !preferred.is_empty() {
+                        preferred
+                    } else {
+                        s.near_misses.clone()
+                    };
                     if !pool.is_empty() {
                         // Find opportunities that changed profit_bps compared to previous near_misses
-                        let changed_indices: Vec<usize> = pool.iter().enumerate().filter_map(|(idx, o)| {
-                            let prev = prev_near_misses.iter().find(|p| p.path == o.path && p.dexes == o.dexes);
-                            if let Some(prev_o) = prev {
-                                if prev_o.profit_bps != o.profit_bps || prev_o.net_bps != o.net_bps {
-                                    Some(idx)
+                        let changed_indices: Vec<usize> = pool
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(idx, o)| {
+                                let prev = prev_near_misses
+                                    .iter()
+                                    .find(|p| p.path == o.path && p.dexes == o.dexes);
+                                if let Some(prev_o) = prev {
+                                    if prev_o.profit_bps != o.profit_bps
+                                        || prev_o.net_bps != o.net_bps
+                                    {
+                                        Some(idx)
+                                    } else {
+                                        None
+                                    }
                                 } else {
-                                    None
+                                    // New near miss
+                                    Some(idx)
                                 }
-                            } else {
-                                // New near miss
-                                Some(idx)
-                            }
-                        }).collect();
+                            })
+                            .collect();
                         // Prefer changed entries, then rotate
                         let chosen = if !changed_indices.is_empty() {
                             // Pick from changed entries, rotating through them
-                            let changed_idx = (s.metrics.detection_cycles_total as usize) % changed_indices.len();
+                            let changed_idx =
+                                (s.metrics.detection_cycles_total as usize) % changed_indices.len();
                             pool[changed_indices[changed_idx]].clone()
                         } else {
                             // No changes detected, rotate through all
@@ -1690,7 +2788,8 @@ async fn main() -> anyhow::Result<()> {
                             pool[idx].clone()
                         };
                         s.near_miss = Some(chosen.clone());
-                        s.near_miss_shortfall_bps = Some((s.config.min_profit_bps - chosen.profit_bps).max(0));
+                        s.near_miss_shortfall_bps =
+                            Some((s.config.min_profit_bps - chosen.profit_bps).max(0));
                     } else {
                         s.near_miss = near_pair.as_ref().map(|(o, _)| o.clone());
                         s.near_miss_shortfall_bps = near_pair.as_ref().map(|(_, sh)| *sh);
@@ -1698,19 +2797,39 @@ async fn main() -> anyhow::Result<()> {
                     // Update metrics only when opportunities changed
                     if changed {
                         s.metrics.opportunities_active = s.opportunities.len() as u64;
-                        s.metrics.max_profit_bps = s.opportunities.iter().map(|o| o.profit_bps).max().unwrap_or(0) as i64;
+                        s.metrics.max_profit_bps = s
+                            .opportunities
+                            .iter()
+                            .map(|o| o.profit_bps)
+                            .max()
+                            .unwrap_or(0) as i64;
                         let total: i64 = s.opportunities.iter().map(|o| o.profit_bps).sum();
-                        s.metrics.avg_profit_bps = if s.opportunities.is_empty() { 0.0 } else { total as f64 / s.opportunities.len() as f64 };
+                        s.metrics.avg_profit_bps = if s.opportunities.is_empty() {
+                            0.0
+                        } else {
+                            total as f64 / s.opportunities.len() as f64
+                        };
                     }
                     s.metrics.detection_cycles_total += 1;
                     // Increment detector outcomes and cumulative opportunities
                     if s.opportunities.is_empty() {
-                        s.metrics.detection_misses_total = s.metrics.detection_misses_total.saturating_add(1);
+                        s.metrics.detection_misses_total =
+                            s.metrics.detection_misses_total.saturating_add(1);
                     } else {
-                        s.metrics.detection_hits_total = s.metrics.detection_hits_total.saturating_add(1);
+                        s.metrics.detection_hits_total =
+                            s.metrics.detection_hits_total.saturating_add(1);
                     }
-                    s.metrics.opportunities_detected_total = s.metrics.opportunities_detected_total.saturating_add(s.opportunities.len() as u64);
-                    if s.opportunities.is_empty() { s.metrics.detection_misses_total = s.metrics.detection_misses_total.saturating_add(1); } else { s.metrics.detection_hits_total = s.metrics.detection_hits_total.saturating_add(1); }
+                    s.metrics.opportunities_detected_total = s
+                        .metrics
+                        .opportunities_detected_total
+                        .saturating_add(s.opportunities.len() as u64);
+                    if s.opportunities.is_empty() {
+                        s.metrics.detection_misses_total =
+                            s.metrics.detection_misses_total.saturating_add(1);
+                    } else {
+                        s.metrics.detection_hits_total =
+                            s.metrics.detection_hits_total.saturating_add(1);
+                    }
                     s.metrics.detection_duration_ms = loop_start.elapsed().as_millis() as u64;
                     let det_ms = s.metrics.detection_duration_ms;
                     let active = s.metrics.opportunities_active;
@@ -1719,25 +2838,51 @@ async fn main() -> anyhow::Result<()> {
                         let path = top.path.join("->");
                         // Compute graph age and latency metrics for observability
                         let last_ts = s.last_graph_ts.load(Ordering::Acquire);
-                        let graph_age_ms = if last_ts > 0 { now_ms().saturating_sub(last_ts) } else { 0 };
+                        let graph_age_ms = if last_ts > 0 {
+                            now_ms().saturating_sub(last_ts)
+                        } else {
+                            0
+                        };
                         let dtd = s.metrics.diff_to_detect_ms;
                         s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.detect.done ms={} opps={} top_bps={} path={} graph_age_ms={} diff_to_detect_ms={}", det_ms, active, top_bps, path, graph_age_ms, dtd) });
                         tracing::info!(det_ms, opps = active, top_bps, path = %path, graph_age_ms, diff_to_detect_ms = dtd, "arb.detect.done");
                     } else {
                         let last_ts = s.last_graph_ts.load(Ordering::Acquire);
-                        let graph_age_ms = if last_ts > 0 { now_ms().saturating_sub(last_ts) } else { 0 };
+                        let graph_age_ms = if last_ts > 0 {
+                            now_ms().saturating_sub(last_ts)
+                        } else {
+                            0
+                        };
                         let dtd = s.metrics.diff_to_detect_ms;
-                        s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.detect.done ms={} opps=0 graph_age_ms={} diff_to_detect_ms={}", det_ms, graph_age_ms, dtd) });
-                        tracing::info!(det_ms, opps = 0u64, graph_age_ms, diff_to_detect_ms = dtd, "arb.detect.done");
+                        s.events.push(EventItem {
+                            ts: now_ms(),
+                            level: "info".into(),
+                            message: format!(
+                                "arb.detect.done ms={} opps=0 graph_age_ms={} diff_to_detect_ms={}",
+                                det_ms, graph_age_ms, dtd
+                            ),
+                        });
+                        tracing::info!(
+                            det_ms,
+                            opps = 0u64,
+                            graph_age_ms,
+                            diff_to_detect_ms = dtd,
+                            "arb.detect.done"
+                        );
                         // Also emit a concise near-miss summary if available when no opportunities detected
-                        if let (Some(nm), Some(shortfall)) = (s.near_miss.clone(), s.near_miss_shortfall_bps) {
+                        if let (Some(nm), Some(shortfall)) =
+                            (s.near_miss.clone(), s.near_miss_shortfall_bps)
+                        {
                             let path = nm.path.join("->");
                             let hops = nm.hop_count.unwrap_or(nm.path.len());
                             let net_bps = nm.net_bps.unwrap_or(nm.profit_bps);
                             let dexes = nm.dexes.join(",");
                             tracing::info!(shortfall_bps = shortfall, net_bps, hops, dexes = %dexes, path = %path, "arb.near_miss.summary");
                             s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.near_miss.summary shortfall_bps={} net_bps={} hops={} path={}", shortfall, net_bps, hops, path) });
-                            let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
+                            let len = s.events.len();
+                            if len > 200 {
+                                s.events.drain(0..(len - 200));
+                            }
                         } else if s.config.debug_near_miss_failures {
                             // Emit diagnostics when no near-miss found
                             let hops = s.config.max_hops;
@@ -1745,13 +2890,25 @@ async fn main() -> anyhow::Result<()> {
                             let nodes = s.metrics.graph_nodes;
                             let edges = s.metrics.graph_edges;
                             let min_bps_cfg = s.config.min_profit_bps;
-                            tracing::info!(hops, epsilon, nodes, edges, min_bps = min_bps_cfg, "arb.near_miss.none");
+                            tracing::info!(
+                                hops,
+                                epsilon,
+                                nodes,
+                                edges,
+                                min_bps = min_bps_cfg,
+                                "arb.near_miss.none"
+                            );
                             s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.near_miss.none hops={} eps={} nodes={} edges={} min_bps={}", hops, epsilon, nodes, edges, min_bps_cfg) });
-                            let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
+                            let len = s.events.len();
+                            if len > 200 {
+                                s.events.drain(0..(len - 200));
+                            }
                         }
                     }
                     let len = s.events.len();
-                    if len > 200 { s.events.drain(0..(len-200)); }
+                    if len > 200 {
+                        s.events.drain(0..(len - 200));
+                    }
                 }
                 // Drop the write lock before attempting to acquire another one for version commit
                 drop(s);
@@ -1760,34 +2917,55 @@ async fn main() -> anyhow::Result<()> {
                     let mut s = loop_state.write().await;
                     let current_v = s.last_graph_version.load(Ordering::Acquire);
                     if v_commit > current_v {
-                        tracing::info!(old_version = current_v, new_version = v_commit, "arb.graph.version: committed");
+                        tracing::info!(
+                            old_version = current_v,
+                            new_version = v_commit,
+                            "arb.graph.version: committed"
+                        );
                         s.last_graph_version.store(v_commit, Ordering::Release);
                     } else {
-                        tracing::info!(attempt = v_commit, current_version = current_v, "arb.graph.version: already_current");
+                        tracing::info!(
+                            attempt = v_commit,
+                            current_version = current_v,
+                            "arb.graph.version: already_current"
+                        );
                     }
                     if let Some(ts_commit) = ts_to_commit {
                         s.last_graph_ts.store(ts_commit, Ordering::Release);
                     }
                 } else {
                     // Check if there's a pending version that wasn't captured (shouldn't happen, but defensive check)
-                    let pending_check = loop_state.read().await.pending_graph_version.load(Ordering::Acquire);
+                    let pending_check = loop_state
+                        .read()
+                        .await
+                        .pending_graph_version
+                        .load(Ordering::Acquire);
                     if pending_check != u64::MAX {
-                        tracing::warn!(pending_version = pending_check, "arb.graph.version: pending_version_not_captured");
+                        tracing::warn!(
+                            pending_version = pending_check,
+                            "arb.graph.version: pending_version_not_captured"
+                        );
                     } else {
                         tracing::info!("arb.graph.version: nothing_to_commit");
                     }
                 }
-                
+
                 // Update last_detection_ms metric for monitoring only
                 {
                     let mut s = loop_state.write().await;
-                    s.metrics.last_detection_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+                    s.metrics.last_detection_ms = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
                 }
             }
-            
+
             // Event-driven wait: wake on notify or after fallback timeout
             // max_idle_ms is now a long fallback timeout (default 1 hour)
-            let wake = { let s = loop_state.read().await; s.wake.clone() };
+            let wake = {
+                let s = loop_state.read().await;
+                s.wake.clone()
+            };
             let idle_ms_sleep = {
                 let s = loop_state.read().await;
                 s.config.max_idle_ms
@@ -1803,14 +2981,19 @@ async fn main() -> anyhow::Result<()> {
                 },
             }
             let iter_end = Instant::now();
-            tracing::info!(iter_ms = iter_end.duration_since(iter_start).as_millis() as u128, "arb.loop.end");
+            tracing::info!(
+                iter_ms = iter_end.duration_since(iter_start).as_millis() as u128,
+                "arb.loop.end"
+            );
         }
     });
 
     let app = Router::new()
-        .route("/health", get(|| async { Json(HealthResp { status: "ok" }) }))
+        .route(
+            "/health",
+            get(|| async { Json(HealthResp { status: "ok" }) }),
+        )
         .route("/opportunities", get(get_opportunities))
-        
         .route("/ws/opportunities", get(ws_opportunities))
         .route("/arb/opportunity/executed", post(opportunity_executed))
         .route("/config", post(set_config).get(get_config))
@@ -1826,12 +3009,19 @@ async fn main() -> anyhow::Result<()> {
 
     // Bind host/port configurable via env; default host 127.0.0.1
     let host = std::env::var("ARB_HOST").unwrap_or_else(|_| "127.0.0.1".into());
-    let ip: std::net::IpAddr = host.parse().unwrap_or_else(|_| std::net::IpAddr::V4(std::net::Ipv4Addr::new(127,0,0,1)));
-    let port: u16 = std::env::var("ARB_PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(4010);
+    let ip: std::net::IpAddr = host
+        .parse()
+        .unwrap_or_else(|_| std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)));
+    let port: u16 = std::env::var("ARB_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(4010);
     let addr: SocketAddr = std::net::SocketAddr::new(ip, port);
     tracing::info!(?addr, "starting arb-rs server");
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).with_graceful_shutdown(shutdown_signal(ring.clone())).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal(ring.clone()))
+        .await?;
     Ok(())
 }
 
@@ -1858,19 +3048,26 @@ fn detector_ack_timeout() -> Duration {
 
 // Detection completion notification removed - version-based ACK only
 // This function kept for backward compatibility but is no longer called
-async fn _notify_backend_detect_complete(_api_base: &str, _version: u64, _completed_ms: u64) -> Result<(), reqwest::Error> {
+async fn _notify_backend_detect_complete(
+    _api_base: &str,
+    _version: u64,
+    _completed_ms: u64,
+) -> Result<(), reqwest::Error> {
     // No-op: detection completion notification removed
     Ok(())
 }
 
 async fn shutdown_signal(ring: Arc<Mutex<VecDeque<String>>>) {
     let ctrl_c = async {
-        tokio::signal::ctrl_c().await.expect("failed to install Ctrl+C handler");
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
     };
     #[cfg(unix)]
     let terminate = async {
         use tokio::signal::unix::{signal, SignalKind};
-        let mut sigterm = signal(SignalKind::terminate()).expect("failed to install signal handler");
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("failed to install signal handler");
         sigterm.recv().await;
     };
     #[cfg(not(unix))]
@@ -1879,7 +3076,9 @@ async fn shutdown_signal(ring: Arc<Mutex<VecDeque<String>>>) {
     tokio::select! { _ = ctrl_c => {}, _ = terminate => {}, };
     tracing::info!("shutdown requested");
     // Attempt to write last 2000 log lines to logs/session.json
-    if let Err(e) = write_session_json(&ring).await { let _ = e; }
+    if let Err(e) = write_session_json(&ring).await {
+        let _ = e;
+    }
     tokio::time::sleep(Duration::from_millis(200)).await;
 }
 
@@ -1904,18 +3103,64 @@ async fn get_opportunities(
 ) -> Json<OpportunitiesResponse> {
     let s = state.read().await;
     let items = s.opportunities.clone();
-    let near_items = if s.near_misses.is_empty() { None } else { Some(s.near_misses.clone()) };
+    let near_items = if s.near_misses.is_empty() {
+        None
+    } else {
+        Some(s.near_misses.clone())
+    };
     // Build summary even if empty
     let count = items.len();
     let max_profit_bps = items.iter().map(|o| o.profit_bps).max().unwrap_or(0);
-    let avg_profit_bps = if count == 0 { 0.0 } else { items.iter().map(|o| o.profit_bps as f64).sum::<f64>() / (count as f64) };
-    let avg_net_bps = if count == 0 { 0.0 } else { items.iter().map(|o| o.net_bps.unwrap_or(o.profit_bps) as f64).sum::<f64>() / (count as f64) };
-    let avg_hop_count = if count == 0 { 0.0 } else { items.iter().map(|o| o.hop_count.unwrap_or(o.path.len()) as f64).sum::<f64>() / (count as f64) };
-    let avg_link_edges_used = if count == 0 { 0.0 } else { items.iter().map(|o| o.link_edges_used.unwrap_or(0) as f64).sum::<f64>() / (count as f64) };
-    let min_edge_liquidity_vals: Vec<f64> = items.iter().map(|o| o.min_edge_liquidity.unwrap_or(0.0)).collect();
-    let min_edge_liquidity_avg = if count == 0 { 0.0 } else { min_edge_liquidity_vals.iter().sum::<f64>() / (count as f64) };
-    let min_edge_liquidity_min = min_edge_liquidity_vals.iter().cloned().fold(f64::INFINITY, f64::min);
-    let min_edge_liquidity_min = if min_edge_liquidity_min.is_infinite() { 0.0 } else { min_edge_liquidity_min };
+    let avg_profit_bps = if count == 0 {
+        0.0
+    } else {
+        items.iter().map(|o| o.profit_bps as f64).sum::<f64>() / (count as f64)
+    };
+    let avg_net_bps = if count == 0 {
+        0.0
+    } else {
+        items
+            .iter()
+            .map(|o| o.net_bps.unwrap_or(o.profit_bps) as f64)
+            .sum::<f64>()
+            / (count as f64)
+    };
+    let avg_hop_count = if count == 0 {
+        0.0
+    } else {
+        items
+            .iter()
+            .map(|o| o.hop_count.unwrap_or(o.path.len()) as f64)
+            .sum::<f64>()
+            / (count as f64)
+    };
+    let avg_link_edges_used = if count == 0 {
+        0.0
+    } else {
+        items
+            .iter()
+            .map(|o| o.link_edges_used.unwrap_or(0) as f64)
+            .sum::<f64>()
+            / (count as f64)
+    };
+    let min_edge_liquidity_vals: Vec<f64> = items
+        .iter()
+        .map(|o| o.min_edge_liquidity.unwrap_or(0.0))
+        .collect();
+    let min_edge_liquidity_avg = if count == 0 {
+        0.0
+    } else {
+        min_edge_liquidity_vals.iter().sum::<f64>() / (count as f64)
+    };
+    let min_edge_liquidity_min = min_edge_liquidity_vals
+        .iter()
+        .cloned()
+        .fold(f64::INFINITY, f64::min);
+    let min_edge_liquidity_min = if min_edge_liquidity_min.is_infinite() {
+        0.0
+    } else {
+        min_edge_liquidity_min
+    };
     let summary = OpportunitiesSummary {
         count,
         max_profit_bps,
@@ -1932,14 +3177,29 @@ async fn get_opportunities(
         graph_edges: s.metrics.graph_edges,
         near_miss: s.near_miss.clone(),
         near_miss_shortfall_bps: s.near_miss_shortfall_bps,
-        near_misses: if s.near_misses.is_empty() { None } else { Some(s.near_misses.clone()) },
+        near_misses: if s.near_misses.is_empty() {
+            None
+        } else {
+            Some(s.near_misses.clone())
+        },
+        rejected_opportunities: if s.rejected_opportunities.is_empty() {
+            None
+        } else {
+            Some(s.rejected_opportunities.clone())
+        },
     };
-    Json(OpportunitiesResponse { items, near_items, summary: Some(summary) })
+    Json(OpportunitiesResponse {
+        items,
+        near_items,
+        summary: Some(summary),
+    })
 }
 
 #[derive(Deserialize, Clone)]
 #[allow(dead_code)]
-struct StartReqNode { id: String }
+struct StartReqNode {
+    id: String,
+}
 #[derive(Deserialize, Clone)]
 struct StartReqEdge {
     source: String,
@@ -1952,13 +3212,23 @@ struct StartReqEdge {
     price_a_per_b: Option<f64>,
 }
 #[derive(Deserialize, Clone)]
-struct StartReqGraph { version: Option<u64>, timestamp: Option<u64>, nodes: Vec<StartReqNode>, edges: Vec<StartReqEdge> }
+struct StartReqGraph {
+    version: Option<u64>,
+    timestamp: Option<u64>,
+    nodes: Vec<StartReqNode>,
+    edges: Vec<StartReqEdge>,
+}
 
 #[derive(Deserialize)]
-struct StartReq { graph: Option<StartReqGraph>, enable: Option<bool> }
+struct StartReq {
+    graph: Option<StartReqGraph>,
+    enable: Option<bool>,
+}
 
 #[derive(Deserialize)]
-struct GraphSnapshotReq { graph: StartReqGraph }
+struct GraphSnapshotReq {
+    graph: StartReqGraph,
+}
 
 #[derive(Deserialize)]
 struct GraphDiffEdge {
@@ -1976,13 +3246,19 @@ struct GraphDiffEdge {
 struct GraphDiffReq {
     version: Option<u64>,
     timestamp: Option<u64>,
-    added_edges: Option<Vec<GraphDiffEdge>>,    
-    updated_edges: Option<Vec<GraphDiffEdge>>,  
-    removed_edge_ids: Option<Vec<String>>,      
+    added_edges: Option<Vec<GraphDiffEdge>>,
+    updated_edges: Option<Vec<GraphDiffEdge>>,
+    removed_edge_ids: Option<Vec<String>>,
 }
 
-async fn arb_graph_snapshot(State(state): State<Arc<RwLock<AppState>>>, headers: HeaderMap, Json(req): Json<GraphSnapshotReq>) -> Json<serde_json::Value> {
-    if !auth_ok(Some(&headers)) { return Json(serde_json::json!({"error":"unauthorized"})); }
+async fn arb_graph_snapshot(
+    State(state): State<Arc<RwLock<AppState>>>,
+    headers: HeaderMap,
+    Json(req): Json<GraphSnapshotReq>,
+) -> Json<serde_json::Value> {
+    if !auth_ok(Some(&headers)) {
+        return Json(serde_json::json!({"error":"unauthorized"}));
+    }
     Json(handle_graph_snapshot(state, req).await)
 }
 
@@ -1991,53 +3267,125 @@ async fn arb_graph_snapshot(State(state): State<Arc<RwLock<AppState>>>, headers:
 fn edge_rate_effective_local(px_opt: Option<f64>, fee_bps_opt: Option<i64>) -> (f64, f64) {
     let fee_bps: f64 = (fee_bps_opt.unwrap_or(0)) as f64;
     let px: f64 = px_opt.unwrap_or(0.0);
-    if !(px.is_finite() && px > 0.0) { return (0.0, 0.0); }
+    if !(px.is_finite() && px > 0.0) {
+        return (0.0, 0.0);
+    }
     let base: f64 = 1.0 / px;
-    if !(base.is_finite() && base > 0.0) { return (0.0, 0.0); }
-    let eff: f64 = base * (1.0 - fee_bps/10_000.0).max(0.0);
+    if !(base.is_finite() && base > 0.0) {
+        return (0.0, 0.0);
+    }
+    let eff: f64 = base * (1.0 - fee_bps / 10_000.0).max(0.0);
     (base, eff)
 }
 
-async fn handle_graph_snapshot(state: Arc<RwLock<AppState>>, req: GraphSnapshotReq) -> serde_json::Value {
+async fn handle_graph_snapshot(
+    state: Arc<RwLock<AppState>>,
+    req: GraphSnapshotReq,
+) -> serde_json::Value {
     let mut s = state.write().await;
     let g = req.graph;
     tracing::info!(version = ?g.version, ts = ?g.timestamp, nodes = g.nodes.len(), edges = g.edges.len(), "arb.graph.snapshot: received");
     // Version guard: ignore stale or equal snapshots (atomic read - no lock needed!)
     let current_version = s.last_graph_version.load(Ordering::Acquire);
-    if let Some(v) = g.version { if v <= current_version { s.metrics.graph_updates_skipped = s.metrics.graph_updates_skipped.saturating_add(1); return serde_json::json!({"ok": true, "ignored": true, "reason": "stale_version"}); } }
+    if let Some(v) = g.version {
+        if v <= current_version {
+            s.metrics.graph_updates_skipped = s.metrics.graph_updates_skipped.saturating_add(1);
+            return serde_json::json!({"ok": true, "ignored": true, "reason": "stale_version"});
+        }
+    }
     let mut new_graph = ArbGraph::new();
     // Build a lightweight USD reference from the incoming snapshot edges to correct 10^k magnitude slips
     use std::collections::HashMap;
-    let sol_mint: &str  = "So11111111111111111111111111111111111111112";
+    let sol_mint: &str = "So11111111111111111111111111111111111111112";
     let usdc_mint: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
     let usd1_mint: &str = "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB";
-    let mut px_map: HashMap<(String,String), f64> = HashMap::new();
+    let mut px_map: HashMap<(String, String), f64> = HashMap::new();
     for e in g.edges.iter() {
-        if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px_map.insert((e.source.clone(), e.target.clone()), px); } }
+        if let Some(px) = e.price_a_per_b {
+            if px.is_finite() && px > 0.0 {
+                px_map.insert((e.source.clone(), e.target.clone()), px);
+            }
+        }
     }
     let sol_usd: Option<f64> = {
-        if let Some(px) = px_map.get(&(usdc_mint.to_string(), sol_mint.to_string())) { if *px > 0.0 { Some(*px) } else { None } }
-        else if let Some(px) = px_map.get(&(sol_mint.to_string(), usdc_mint.to_string())) { if *px > 0.0 { Some(1.0 / *px) } else { None } }
-        else { None }
+        if let Some(px) = px_map.get(&(usdc_mint.to_string(), sol_mint.to_string())) {
+            if *px > 0.0 {
+                Some(*px)
+            } else {
+                None
+            }
+        } else if let Some(px) = px_map.get(&(sol_mint.to_string(), usdc_mint.to_string())) {
+            if *px > 0.0 {
+                Some(1.0 / *px)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
     };
     let get_usd_from_snapshot = |mint: &str| -> Option<f64> {
-        if mint == usdc_mint || mint == usd1_mint { return Some(1.0); }
-        if mint == sol_mint { return sol_usd; }
-        if let Some(px) = px_map.get(&(mint.to_string(), usdc_mint.to_string())) { if *px > 0.0 { return Some(1.0 / *px); } }
-        if let Some(px) = px_map.get(&(usdc_mint.to_string(), mint.to_string())) { if *px > 0.0 { return Some(*px); } }
+        if mint == usdc_mint || mint == usd1_mint {
+            return Some(1.0);
+        }
+        if mint == sol_mint {
+            return sol_usd;
+        }
+        if let Some(px) = px_map.get(&(mint.to_string(), usdc_mint.to_string())) {
+            if *px > 0.0 {
+                return Some(1.0 / *px);
+            }
+        }
+        if let Some(px) = px_map.get(&(usdc_mint.to_string(), mint.to_string())) {
+            if *px > 0.0 {
+                return Some(*px);
+            }
+        }
         if let Some(su) = sol_usd {
-            if let Some(px) = px_map.get(&(mint.to_string(), sol_mint.to_string())) { if *px > 0.0 { return Some(su / *px); } }
-            if let Some(px) = px_map.get(&(sol_mint.to_string(), mint.to_string())) { if *px > 0.0 { return Some(su * *px); } }
+            if let Some(px) = px_map.get(&(mint.to_string(), sol_mint.to_string())) {
+                if *px > 0.0 {
+                    return Some(su / *px);
+                }
+            }
+            if let Some(px) = px_map.get(&(sol_mint.to_string(), mint.to_string())) {
+                if *px > 0.0 {
+                    return Some(su * *px);
+                }
+            }
         }
         None
     };
     let adjust_magnitude = |a: &str, b: &str, px_in: f64| -> f64 {
-        let pa = get_usd_from_snapshot(a); let pb = get_usd_from_snapshot(b);
+        let pa = get_usd_from_snapshot(a);
+        let pb = get_usd_from_snapshot(b);
         if let (Some(pa), Some(pb)) = (pa, pb) {
             let refv = pb / pa;
-            let mut best = px_in; let mut best_dev = f64::INFINITY; let mut best_k = 0i32;
-            for k in -8..=8 { let cand = px_in * 10f64.powi(k); if !(cand.is_finite() && cand > 0.0) { continue; } let dev = (cand / refv).max(refv / cand); if dev + 1e-12 < best_dev { best_dev = dev; best = cand; best_k = k; } }
-            if best_k != 0 { tracing::debug!(mint_a = a, mint_b = b, px_in, px_out = best, k = best_k, refv, "arb.magnitude.calibrated.snapshot"); }
+            let mut best = px_in;
+            let mut best_dev = f64::INFINITY;
+            let mut best_k = 0i32;
+            for k in -8..=8 {
+                let cand = px_in * 10f64.powi(k);
+                if !(cand.is_finite() && cand > 0.0) {
+                    continue;
+                }
+                let dev = (cand / refv).max(refv / cand);
+                if dev + 1e-12 < best_dev {
+                    best_dev = dev;
+                    best = cand;
+                    best_k = k;
+                }
+            }
+            if best_k != 0 {
+                tracing::debug!(
+                    mint_a = a,
+                    mint_b = b,
+                    px_in,
+                    px_out = best,
+                    k = best_k,
+                    refv,
+                    "arb.magnitude.calibrated.snapshot"
+                );
+            }
             best
         } else {
             px_in
@@ -2050,42 +3398,96 @@ async fn handle_graph_snapshot(state: Arc<RwLock<AppState>>, req: GraphSnapshotR
         let pool_id = e.pool_id.unwrap_or_else(|| "".to_string());
         let liq_disp = e.liquidity_display.unwrap_or(0.0);
         let mut px = e.price_a_per_b.unwrap_or(0.0);
-        if px.is_finite() && px > 0.0 { px = adjust_magnitude(&e.source, &e.target, px); }
+        if px.is_finite() && px > 0.0 {
+            px = adjust_magnitude(&e.source, &e.target, px);
+        }
         let base = if px > 0.0 { 1.0 / px } else { 0.0 };
-        let rate_eff = if base > 0.0 { base * (1.0 - (fee as f64)/10_000.0).max(0.0) } else { 0.0 };
-        new_graph.upsert_edge(&dex, &e.source, &e.target, EdgeData {
-            rate_effective: rate_eff,
-            fee_bps: fee,
-            liquidity: liq,
-            dex: dex.clone(),
-            pool_id,
-            liquidity_display: liq_disp,
-        });
+        let rate_eff = if base > 0.0 {
+            base * (1.0 - (fee as f64) / 10_000.0).max(0.0)
+        } else {
+            0.0
+        };
+        new_graph.upsert_edge(
+            &dex,
+            &e.source,
+            &e.target,
+            EdgeData {
+                rate_effective: rate_eff,
+                fee_bps: fee,
+                liquidity: liq,
+                dex: dex.clone(),
+                pool_id,
+                liquidity_display: liq_disp,
+            },
+        );
     }
     // Enforce reciprocity between forward/reverse edges when both present
     {
         use std::collections::HashMap;
-        let mut by_core: HashMap<String, (petgraph::graph::NodeIndex, petgraph::graph::NodeIndex, f64, i64, Option<(petgraph::graph::NodeIndex, petgraph::graph::NodeIndex, f64, i64)>)> = HashMap::new();
+        let mut by_core: HashMap<
+            String,
+            (
+                petgraph::graph::NodeIndex,
+                petgraph::graph::NodeIndex,
+                f64,
+                i64,
+                Option<(
+                    petgraph::graph::NodeIndex,
+                    petgraph::graph::NodeIndex,
+                    f64,
+                    i64,
+                )>,
+            ),
+        > = HashMap::new();
         for e in new_graph.g.edge_references() {
             let w = e.weight();
             let pid = w.pool_id.clone();
-            if pid.is_empty() { continue; }
+            if pid.is_empty() {
+                continue;
+            }
             let core = pid.strip_suffix("-rev").unwrap_or(&pid).to_string();
-            let entry = by_core.entry(core).or_insert((e.source(), e.target(), w.rate_effective, w.fee_bps, None));
-            if pid.ends_with("-rev") { entry.4 = Some((e.source(), e.target(), w.rate_effective, w.fee_bps)); }
-            else { entry.0 = e.source(); entry.1 = e.target(); entry.2 = w.rate_effective; entry.3 = w.fee_bps; }
+            let entry = by_core.entry(core).or_insert((
+                e.source(),
+                e.target(),
+                w.rate_effective,
+                w.fee_bps,
+                None,
+            ));
+            if pid.ends_with("-rev") {
+                entry.4 = Some((e.source(), e.target(), w.rate_effective, w.fee_bps));
+            } else {
+                entry.0 = e.source();
+                entry.1 = e.target();
+                entry.2 = w.rate_effective;
+                entry.3 = w.fee_bps;
+            }
         }
-        for (_k,(_u,_v,rf,ff,rev_opt)) in by_core.into_iter() {
-            if let Some((vr,ur,rr,fr)) = rev_opt {
-                let exp = (1.0 - (ff as f64)/10_000.0).max(0.0) * (1.0 - (fr as f64)/10_000.0).max(0.0);
+        for (_k, (_u, _v, rf, ff, rev_opt)) in by_core.into_iter() {
+            if let Some((vr, ur, rr, fr)) = rev_opt {
+                let exp = (1.0 - (ff as f64) / 10_000.0).max(0.0)
+                    * (1.0 - (fr as f64) / 10_000.0).max(0.0);
                 let prod = rf * rr;
-                let ok = prod.is_finite() && exp.is_finite() && exp > 0.0 && (prod/exp) > 0.99 && (prod/exp) < 1.01;
+                let ok = prod.is_finite()
+                    && exp.is_finite()
+                    && exp > 0.0
+                    && (prod / exp) > 0.99
+                    && (prod / exp) < 1.01;
                 if !ok {
                     // Correct reverse to reciprocal of forward base
-                    let base_fwd = if (1.0 - (ff as f64)/10_000.0) > 0.0 { rf / (1.0 - (ff as f64)/10_000.0) } else { 0.0 };
+                    let base_fwd = if (1.0 - (ff as f64) / 10_000.0) > 0.0 {
+                        rf / (1.0 - (ff as f64) / 10_000.0)
+                    } else {
+                        0.0
+                    };
                     if base_fwd.is_finite() && base_fwd > 0.0 {
-                        let rr_new = (1.0 / base_fwd) * (1.0 - (fr as f64)/10_000.0).max(0.0);
-                        if rr_new.is_finite() && rr_new > 0.0 { if let Some(eid) = new_graph.g.find_edge(vr, ur) { if let Some(w) = new_graph.g.edge_weight_mut(eid) { w.rate_effective = rr_new; } } }
+                        let rr_new = (1.0 / base_fwd) * (1.0 - (fr as f64) / 10_000.0).max(0.0);
+                        if rr_new.is_finite() && rr_new > 0.0 {
+                            if let Some(eid) = new_graph.g.find_edge(vr, ur) {
+                                if let Some(w) = new_graph.g.edge_weight_mut(eid) {
+                                    w.rate_effective = rr_new;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -2094,26 +3496,51 @@ async fn handle_graph_snapshot(state: Arc<RwLock<AppState>>, req: GraphSnapshotR
     s.graph = new_graph;
     s.metrics.graph_nodes = s.graph.g.node_count() as u64;
     s.metrics.graph_edges = s.graph.g.edge_count() as u64;
-    if let Some(v) = g.version { s.last_graph_version.store(v, Ordering::Release); }
-    if let Some(ts) = g.timestamp { s.last_graph_ts.store(ts, Ordering::Release); }
+    if let Some(v) = g.version {
+        s.last_graph_version.store(v, Ordering::Release);
+    }
+    if let Some(ts) = g.timestamp {
+        s.last_graph_ts.store(ts, Ordering::Release);
+    }
     // Record time of receipt for diff_to_detect tracking
     s.metrics.last_graph_push_rx_ms = now_ms();
-    
-    let nodes = s.metrics.graph_nodes; let edges = s.metrics.graph_edges;
-    s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.graph.snapshot: accepted nodes={} edges={}", nodes, edges) });
+
+    let nodes = s.metrics.graph_nodes;
+    let edges = s.metrics.graph_edges;
+    s.events.push(EventItem {
+        ts: now_ms(),
+        level: "info".into(),
+        message: format!(
+            "arb.graph.snapshot: accepted nodes={} edges={}",
+            nodes, edges
+        ),
+    });
     tracing::info!(nodes, edges, "arb.graph.snapshot: accepted");
-    let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
+    let len = s.events.len();
+    if len > 200 {
+        s.events.drain(0..(len - 200));
+    }
     // Wake detection loop immediately
     s.wake.notify_one();
     serde_json::json!({"ok": true, "nodes": nodes, "edges": edges})
 }
 
-async fn arb_graph_update(State(state): State<Arc<RwLock<AppState>>>, headers: HeaderMap, Json(req): Json<GraphDiffReq>) -> Json<serde_json::Value> {
-    if !auth_ok(Some(&headers)) { return Json(serde_json::json!({"error":"unauthorized"})); }
+async fn arb_graph_update(
+    State(state): State<Arc<RwLock<AppState>>>,
+    headers: HeaderMap,
+    Json(req): Json<GraphDiffReq>,
+) -> Json<serde_json::Value> {
+    if !auth_ok(Some(&headers)) {
+        return Json(serde_json::json!({"error":"unauthorized"}));
+    }
     // Buffer the diff to apply between loop iterations to avoid contention
     // Check version atomically first (no lock needed for read!)
     if let Some(v) = req.version {
-        let current_version = state.read().await.last_graph_version.load(Ordering::Acquire);
+        let current_version = state
+            .read()
+            .await
+            .last_graph_version
+            .load(Ordering::Acquire);
         if v <= current_version {
             let mut s = state.write().await;
             s.metrics.graph_updates_skipped = s.metrics.graph_updates_skipped.saturating_add(1);
@@ -2121,9 +3548,21 @@ async fn arb_graph_update(State(state): State<Arc<RwLock<AppState>>>, headers: H
         }
     }
     let mut s = state.write().await;
-    if let Some(removed) = req.removed_edge_ids { let n = removed.len(); s.pending_removed_edge_ids.extend(removed); tracing::info!(removed=n, "arb.graph.diff: buffered removed edges"); }
-    if let Some(added) = req.added_edges { let n = added.len(); s.pending_added_edges.extend(added); tracing::info!(added=n, "arb.graph.diff: buffered added edges"); }
-    if let Some(updated) = req.updated_edges { let n = updated.len(); s.pending_updated_edges.extend(updated); tracing::info!(updated=n, "arb.graph.diff: buffered updated edges"); }
+    if let Some(removed) = req.removed_edge_ids {
+        let n = removed.len();
+        s.pending_removed_edge_ids.extend(removed);
+        tracing::info!(removed = n, "arb.graph.diff: buffered removed edges");
+    }
+    if let Some(added) = req.added_edges {
+        let n = added.len();
+        s.pending_added_edges.extend(added);
+        tracing::info!(added = n, "arb.graph.diff: buffered added edges");
+    }
+    if let Some(updated) = req.updated_edges {
+        let n = updated.len();
+        s.pending_updated_edges.extend(updated);
+        tracing::info!(updated = n, "arb.graph.diff: buffered updated edges");
+    }
     // Only update pending_graph_version if the new version is higher (preserve highest version)
     // Use atomic operations for thread-safe version updates
     if let Some(v) = req.version {
@@ -2135,13 +3574,23 @@ async fn arb_graph_update(State(state): State<Arc<RwLock<AppState>>>, headers: H
             let next = old_pending.max(v);
             if next != old_pending {
                 s.pending_graph_version.store(next, Ordering::Release);
-                tracing::info!(old_version = old_pending, new_version = next, "arb.graph.diff: version buffered (raised)");
+                tracing::info!(
+                    old_version = old_pending,
+                    new_version = next,
+                    "arb.graph.diff: version buffered (raised)"
+                );
             } else {
-                tracing::info!(received_version = v, pending_version = old_pending, "arb.graph.diff: version kept (max)");
+                tracing::info!(
+                    received_version = v,
+                    pending_version = old_pending,
+                    "arb.graph.diff: version kept (max)"
+                );
             }
         }
     }
-    if let Some(ts) = req.timestamp { s.pending_graph_ts.store(ts, Ordering::Release); }
+    if let Some(ts) = req.timestamp {
+        s.pending_graph_ts.store(ts, Ordering::Release);
+    }
     // Record time of receipt for diff_to_detect tracking
     s.metrics.last_graph_push_rx_ms = now_ms();
     let wake = s.wake.clone();
@@ -2151,11 +3600,19 @@ async fn arb_graph_update(State(state): State<Arc<RwLock<AppState>>>, headers: H
     Json(response)
 }
 
-async fn arb_start(State(state): State<Arc<RwLock<AppState>>>, headers: HeaderMap, Json(req): Json<StartReq>) -> Json<serde_json::Value> {
+async fn arb_start(
+    State(state): State<Arc<RwLock<AppState>>>,
+    headers: HeaderMap,
+    Json(req): Json<StartReq>,
+) -> Json<serde_json::Value> {
     // Validate secret when configured
-    if !auth_ok(Some(&headers)) { return Json(serde_json::json!({ "error": "unauthorized" })); }
+    if !auth_ok(Some(&headers)) {
+        return Json(serde_json::json!({ "error": "unauthorized" }));
+    }
     // Build graph outside lock
-    let prebuilt: Option<(ArbGraph, Option<u64>, Option<u64>, u64, u64)> = if let Some(g) = req.graph.clone() {
+    let prebuilt: Option<(ArbGraph, Option<u64>, Option<u64>, u64, u64)> = if let Some(g) =
+        req.graph.clone()
+    {
         tracing::info!(version = ?g.version, ts = ?g.timestamp, nodes = g.nodes.len(), edges = g.edges.len(), "arb.start: graph received");
         let mut new_graph = ArbGraph::new();
         for e in g.edges.into_iter() {
@@ -2165,25 +3622,56 @@ async fn arb_start(State(state): State<Arc<RwLock<AppState>>>, headers: HeaderMa
             let pool_id = e.pool_id.unwrap_or_else(|| "".to_string());
             let liq_disp = e.liquidity_display.unwrap_or(0.0);
             let (_base, rate_eff) = edge_rate_effective_local(e.price_a_per_b, e.fee_bps);
-            new_graph.upsert_edge(&dex, &e.source, &e.target, EdgeData { rate_effective: rate_eff, fee_bps: fee, liquidity: liq, dex: dex.clone(), pool_id, liquidity_display: liq_disp });
+            new_graph.upsert_edge(
+                &dex,
+                &e.source,
+                &e.target,
+                EdgeData {
+                    rate_effective: rate_eff,
+                    fee_bps: fee,
+                    liquidity: liq,
+                    dex: dex.clone(),
+                    pool_id,
+                    liquidity_display: liq_disp,
+                },
+            );
         }
         let nodes_cnt = new_graph.g.node_count() as u64;
         let edges_cnt = new_graph.g.edge_count() as u64;
         Some((new_graph, g.version, g.timestamp, nodes_cnt, edges_cnt))
-    } else { None };
+    } else {
+        None
+    };
 
     let mut s = state.write().await;
     if let Some((new_graph, v, ts, nodes_cnt, edges_cnt)) = prebuilt {
         s.graph = new_graph;
         s.metrics.graph_nodes = nodes_cnt;
         s.metrics.graph_edges = edges_cnt;
-        if let Some(vv) = v { s.last_graph_version.store(vv, Ordering::Release); }
-        if let Some(tt) = ts { s.last_graph_ts.store(tt, Ordering::Release); }
-    
-    
-        s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: format!("arb.start: graph accepted nodes={} edges={}", nodes_cnt, edges_cnt) });
-        tracing::info!(nodes = nodes_cnt, edges = edges_cnt, "arb.start: graph accepted");
-        let len = s.events.len(); if len > 200 { s.events.drain(0..(len-200)); }
+        if let Some(vv) = v {
+            s.last_graph_version.store(vv, Ordering::Release);
+        }
+        if let Some(tt) = ts {
+            s.last_graph_ts.store(tt, Ordering::Release);
+        }
+
+        s.events.push(EventItem {
+            ts: now_ms(),
+            level: "info".into(),
+            message: format!(
+                "arb.start: graph accepted nodes={} edges={}",
+                nodes_cnt, edges_cnt
+            ),
+        });
+        tracing::info!(
+            nodes = nodes_cnt,
+            edges = edges_cnt,
+            "arb.start: graph accepted"
+        );
+        let len = s.events.len();
+        if len > 200 {
+            s.events.drain(0..(len - 200));
+        }
     }
     if let Some(want) = req.enable {
         if want && !s.config.enabled {
@@ -2203,17 +3691,27 @@ async fn arb_start(State(state): State<Arc<RwLock<AppState>>>, headers: HeaderMa
             s.pending_removed_edge_ids.clear();
             s.pending_graph_version.store(u64::MAX, Ordering::Release);
             s.pending_graph_ts.store(u64::MAX, Ordering::Release);
-            s.events.push(EventItem { ts: now_ms(), level: "info".into(), message: "arb.stop: graph cleared".into() });
+            s.events.push(EventItem {
+                ts: now_ms(),
+                level: "info".into(),
+                message: "arb.stop: graph cleared".into(),
+            });
         }
     } else {
-        if !s.config.enabled { tracing::info!("arb.start: enabling loop"); }
+        if !s.config.enabled {
+            tracing::info!("arb.start: enabling loop");
+        }
         s.config.enabled = true;
     }
-    Json(serde_json::json!({ "ok": true, "enabled": s.config.enabled, "graph_nodes": s.metrics.graph_nodes, "graph_edges": s.metrics.graph_edges }))
+    Json(
+        serde_json::json!({ "ok": true, "enabled": s.config.enabled, "graph_nodes": s.metrics.graph_nodes, "graph_edges": s.metrics.graph_edges }),
+    )
 }
 
-
-async fn ws_opportunities(ws: WebSocketUpgrade, State(state): State<Arc<RwLock<AppState>>>) -> impl IntoResponse {
+async fn ws_opportunities(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<RwLock<AppState>>>,
+) -> impl IntoResponse {
     ws.on_upgrade(move |mut socket| async move {
         let mut last: Option<String> = None;
         loop {
@@ -2223,17 +3721,63 @@ async fn ws_opportunities(ws: WebSocketUpgrade, State(state): State<Arc<RwLock<A
                 let items = s.opportunities.clone();
                 let count = items.len();
                 let max_profit_bps = items.iter().map(|o| o.profit_bps).max().unwrap_or(0);
-                let avg_profit_bps = if count == 0 { 0.0 } else { items.iter().map(|o| o.profit_bps as f64).sum::<f64>() / (count as f64) };
-                let avg_net_bps = if count == 0 { 0.0 } else { items.iter().map(|o| o.net_bps.unwrap_or(o.profit_bps) as f64).sum::<f64>() / (count as f64) };
-                let avg_hop_count = if count == 0 { 0.0 } else { items.iter().map(|o| o.hop_count.unwrap_or(o.path.len()) as f64).sum::<f64>() / (count as f64) };
-                let avg_link_edges_used = if count == 0 { 0.0 } else { items.iter().map(|o| o.link_edges_used.unwrap_or(0) as f64).sum::<f64>() / (count as f64) };
-                let min_edge_liquidity_vals: Vec<f64> = items.iter().map(|o| o.min_edge_liquidity.unwrap_or(0.0)).collect();
-                let min_edge_liquidity_avg = if count == 0 { 0.0 } else { min_edge_liquidity_vals.iter().sum::<f64>() / (count as f64) };
-                let min_edge_liquidity_min = {
-                    let m = min_edge_liquidity_vals.iter().cloned().fold(f64::INFINITY, f64::min);
-                    if m.is_infinite() { 0.0 } else { m }
+                let avg_profit_bps = if count == 0 {
+                    0.0
+                } else {
+                    items.iter().map(|o| o.profit_bps as f64).sum::<f64>() / (count as f64)
                 };
-                let near_items = if s.near_misses.is_empty() { None } else { Some(s.near_misses.clone()) };
+                let avg_net_bps = if count == 0 {
+                    0.0
+                } else {
+                    items
+                        .iter()
+                        .map(|o| o.net_bps.unwrap_or(o.profit_bps) as f64)
+                        .sum::<f64>()
+                        / (count as f64)
+                };
+                let avg_hop_count = if count == 0 {
+                    0.0
+                } else {
+                    items
+                        .iter()
+                        .map(|o| o.hop_count.unwrap_or(o.path.len()) as f64)
+                        .sum::<f64>()
+                        / (count as f64)
+                };
+                let avg_link_edges_used = if count == 0 {
+                    0.0
+                } else {
+                    items
+                        .iter()
+                        .map(|o| o.link_edges_used.unwrap_or(0) as f64)
+                        .sum::<f64>()
+                        / (count as f64)
+                };
+                let min_edge_liquidity_vals: Vec<f64> = items
+                    .iter()
+                    .map(|o| o.min_edge_liquidity.unwrap_or(0.0))
+                    .collect();
+                let min_edge_liquidity_avg = if count == 0 {
+                    0.0
+                } else {
+                    min_edge_liquidity_vals.iter().sum::<f64>() / (count as f64)
+                };
+                let min_edge_liquidity_min = {
+                    let m = min_edge_liquidity_vals
+                        .iter()
+                        .cloned()
+                        .fold(f64::INFINITY, f64::min);
+                    if m.is_infinite() {
+                        0.0
+                    } else {
+                        m
+                    }
+                };
+                let near_items = if s.near_misses.is_empty() {
+                    None
+                } else {
+                    Some(s.near_misses.clone())
+                };
                 let summary = OpportunitiesSummary {
                     count,
                     max_profit_bps,
@@ -2250,22 +3794,43 @@ async fn ws_opportunities(ws: WebSocketUpgrade, State(state): State<Arc<RwLock<A
                     graph_edges: s.metrics.graph_edges,
                     near_miss: s.near_miss.clone(),
                     near_miss_shortfall_bps: s.near_miss_shortfall_bps,
-                    near_misses: if s.near_misses.is_empty() { None } else { Some(s.near_misses.clone()) },
+                    near_misses: if s.near_misses.is_empty() {
+                        None
+                    } else {
+                        Some(s.near_misses.clone())
+                    },
+                    rejected_opportunities: if s.rejected_opportunities.is_empty() {
+                        None
+                    } else {
+                        Some(s.rejected_opportunities.clone())
+                    },
                 };
                 (items, near_items, summary)
             };
-            let payload = serde_json::json!({ "items": items, "near_items": near_items, "summary": summary });
+            let payload =
+                serde_json::json!({ "items": items, "near_items": near_items, "summary": summary });
             let text = payload.to_string();
             // Build a signature that includes profit values for change detection
             let signature = {
-                let opps_sig: String = items.iter().map(|o| {
-                    format!("{}:{}:{}", 
-                        o.path.join(">"), 
-                        o.profit_bps, 
-                        o.net_bps.unwrap_or(o.profit_bps))
-                }).collect::<Vec<_>>().join("|");
+                let opps_sig: String = items
+                    .iter()
+                    .map(|o| {
+                        format!(
+                            "{}:{}:{}",
+                            o.path.join(">"),
+                            o.profit_bps,
+                            o.net_bps.unwrap_or(o.profit_bps)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("|");
                 let near_sig = if let Some(ref nm) = summary.near_miss {
-                    format!("{}:{}:{}", nm.path.join(">"), nm.profit_bps, nm.net_bps.unwrap_or(nm.profit_bps))
+                    format!(
+                        "{}:{}:{}",
+                        nm.path.join(">"),
+                        nm.profit_bps,
+                        nm.net_bps.unwrap_or(nm.profit_bps)
+                    )
                 } else {
                     String::new()
                 };
@@ -2273,7 +3838,9 @@ async fn ws_opportunities(ws: WebSocketUpgrade, State(state): State<Arc<RwLock<A
             };
             // Compare signature instead of full JSON to detect profit value changes
             if last.as_ref() != Some(&signature) {
-                if socket.send(Message::Text(text.clone())).await.is_err() { break; }
+                if socket.send(Message::Text(text.clone())).await.is_err() {
+                    break;
+                }
                 last = Some(signature);
                 let mut s = state.write().await;
                 s.metrics.ws_push_total += 1;
@@ -2281,7 +3848,7 @@ async fn ws_opportunities(ws: WebSocketUpgrade, State(state): State<Arc<RwLock<A
                 let mut s = state.write().await;
                 s.metrics.ws_skipped_nochange_total += 1;
             }
-            
+
             // Use tokio::select! to handle incoming messages (ping/pong) while sleeping
             // This prevents WebSocket timeouts when no data changes occur
             tokio::select! {
@@ -2322,14 +3889,19 @@ async fn ws_opportunities(ws: WebSocketUpgrade, State(state): State<Arc<RwLock<A
 }
 
 #[derive(serde::Deserialize)]
-struct ExecutedReq { path: Vec<String>, dexes: Option<Vec<String>> }
+struct ExecutedReq {
+    path: Vec<String>,
+    dexes: Option<Vec<String>>,
+}
 
 async fn opportunity_executed(
     State(state): State<Arc<RwLock<AppState>>>,
     headers: HeaderMap,
     Json(req): Json<ExecutedReq>,
 ) -> Json<serde_json::Value> {
-    if !auth_ok(Some(&headers)) { return Json(serde_json::json!({"error":"unauthorized"})); }
+    if !auth_ok(Some(&headers)) {
+        return Json(serde_json::json!({"error":"unauthorized"}));
+    }
     let mut s = state.write().await;
     let key = keyify_opportunity(&req.path, &req.dexes.unwrap_or_default());
     s.executed_keys.insert(key);
@@ -2374,50 +3946,136 @@ async fn set_config(
     // Log receipt of config update and which keys were provided
     {
         let mut keys: Vec<&str> = Vec::new();
-        if cfg.enabled.is_some() { keys.push("enabled"); }
-        if cfg.min_profit_bps.is_some() { keys.push("min_profit_bps"); }
-        if cfg.max_profit_bps.is_some() { keys.push("max_profit_bps"); }
-        if cfg.min_notional_usd.is_some() { keys.push("min_notional_usd"); }
-        if cfg.max_hops.is_some() { keys.push("max_hops"); }
-        if cfg.max_idle_ms.is_some() { keys.push("max_idle_ms"); }
-        if cfg.quote_size_usd.is_some() { keys.push("quote_size_usd"); }
-        if cfg.max_detections_without_exec.is_some() { keys.push("max_detections_without_exec"); }
-        if cfg.detection_history_ttl_ms.is_some() { keys.push("detection_history_ttl_ms"); }
-        if cfg.opportunity_ttl_ms.is_some() { keys.push("opportunity_ttl_ms"); }
-        if cfg.opportunity_base_ttl_ms.is_some() { keys.push("opportunity_base_ttl_ms"); }
-        if cfg.debug_emit_subthreshold.is_some() { keys.push("debug_emit_subthreshold"); }
-        if cfg.debug_top_n.is_some() { keys.push("debug_top_n"); }
-        if cfg.near_miss_enable.is_some() { keys.push("near_miss_enable"); }
-        if cfg.near_miss_epsilon.is_some() { keys.push("near_miss_epsilon"); }
+        if cfg.enabled.is_some() {
+            keys.push("enabled");
+        }
+        if cfg.min_profit_bps.is_some() {
+            keys.push("min_profit_bps");
+        }
+        if cfg.max_profit_bps.is_some() {
+            keys.push("max_profit_bps");
+        }
+        if cfg.min_notional_usd.is_some() {
+            keys.push("min_notional_usd");
+        }
+        if cfg.max_hops.is_some() {
+            keys.push("max_hops");
+        }
+        if cfg.max_idle_ms.is_some() {
+            keys.push("max_idle_ms");
+        }
+        if cfg.quote_size_usd.is_some() {
+            keys.push("quote_size_usd");
+        }
+        if cfg.max_detections_without_exec.is_some() {
+            keys.push("max_detections_without_exec");
+        }
+        if cfg.detection_history_ttl_ms.is_some() {
+            keys.push("detection_history_ttl_ms");
+        }
+        if cfg.opportunity_ttl_ms.is_some() {
+            keys.push("opportunity_ttl_ms");
+        }
+        if cfg.opportunity_base_ttl_ms.is_some() {
+            keys.push("opportunity_base_ttl_ms");
+        }
+        if cfg.debug_emit_subthreshold.is_some() {
+            keys.push("debug_emit_subthreshold");
+        }
+        if cfg.debug_top_n.is_some() {
+            keys.push("debug_top_n");
+        }
+        if cfg.near_miss_enable.is_some() {
+            keys.push("near_miss_enable");
+        }
+        if cfg.near_miss_epsilon.is_some() {
+            keys.push("near_miss_epsilon");
+        }
         let keys_str = keys.join(",");
-        tracing::info!(target = "arb_rs", "arb.config.receive keys=[{}] near_miss_enable={:?} debug_top_n={:?}", keys_str, cfg.near_miss_enable, cfg.debug_top_n);
+        tracing::info!(
+            target = "arb_rs",
+            "arb.config.receive keys=[{}] near_miss_enable={:?} debug_top_n={:?}",
+            keys_str,
+            cfg.near_miss_enable,
+            cfg.debug_top_n
+        );
     }
-    if let Some(v) = cfg.enabled { s.config.enabled = v; }
-    if let Some(v) = cfg.min_profit_bps { s.config.min_profit_bps = v; }
-    if let Some(v) = cfg.max_profit_bps { s.config.max_profit_bps = v; }
-    if let Some(v) = cfg.min_notional_usd { s.config.min_notional_usd = v; }
-    if let Some(v) = cfg.max_hops { s.config.max_hops = v; }
-    if let Some(v) = cfg.max_idle_ms { s.config.max_idle_ms = v; }
-    if let Some(v) = cfg.quote_size_usd { s.config.quote_size_usd = v; }
-    if let Some(v) = cfg.max_detections_without_exec { s.config.max_detections_without_exec = v; }
-    if let Some(v) = cfg.detection_history_ttl_ms { s.config.detection_history_ttl_ms = v; }
-    if let Some(v) = cfg.opportunity_ttl_ms { s.config.opportunity_ttl_ms = v; }
-    if let Some(v) = cfg.opportunity_base_ttl_ms { s.config.opportunity_base_ttl_ms = v; }
-    if let Some(v) = cfg.debug_emit_subthreshold { s.config.debug_emit_subthreshold = v; }
-    if let Some(v) = cfg.debug_top_n { s.config.debug_top_n = v; }
-    if let Some(v) = cfg.near_miss_enable { s.config.near_miss_enable = v; }
-    if let Some(v) = cfg.near_miss_epsilon { s.config.near_miss_epsilon = v; }
-    if let Some(v) = cfg.debug_near_miss_failures { s.config.debug_near_miss_failures = v; }
+    if let Some(v) = cfg.enabled {
+        s.config.enabled = v;
+    }
+    if let Some(v) = cfg.min_profit_bps {
+        s.config.min_profit_bps = v;
+    }
+    if let Some(v) = cfg.max_profit_bps {
+        s.config.max_profit_bps = v;
+    }
+    if let Some(v) = cfg.min_notional_usd {
+        s.config.min_notional_usd = v;
+    }
+    if let Some(v) = cfg.max_hops {
+        s.config.max_hops = v;
+    }
+    if let Some(v) = cfg.max_idle_ms {
+        s.config.max_idle_ms = v;
+    }
+    if let Some(v) = cfg.quote_size_usd {
+        s.config.quote_size_usd = v;
+    }
+    if let Some(v) = cfg.max_detections_without_exec {
+        s.config.max_detections_without_exec = v;
+    }
+    if let Some(v) = cfg.detection_history_ttl_ms {
+        s.config.detection_history_ttl_ms = v;
+    }
+    if let Some(v) = cfg.opportunity_ttl_ms {
+        s.config.opportunity_ttl_ms = v;
+    }
+    if let Some(v) = cfg.opportunity_base_ttl_ms {
+        s.config.opportunity_base_ttl_ms = v;
+    }
+    if let Some(v) = cfg.debug_emit_subthreshold {
+        s.config.debug_emit_subthreshold = v;
+    }
+    if let Some(v) = cfg.debug_top_n {
+        s.config.debug_top_n = v;
+    }
+    if let Some(v) = cfg.near_miss_enable {
+        s.config.near_miss_enable = v;
+    }
+    if let Some(v) = cfg.near_miss_epsilon {
+        s.config.near_miss_epsilon = v;
+    }
+    if let Some(v) = cfg.debug_near_miss_failures {
+        s.config.debug_near_miss_failures = v;
+    }
     // Extended fields
-    if let Some(v) = cfg.est_priority_fee_per_hop_lamports { s.config.est_priority_fee_per_hop_lamports = Some(v); }
-    if let Some(v) = cfg.filtered_detect_enable { s.config.filtered_detect_enable = v; }
-    if let Some(v) = cfg.filtered_node_ratio { s.config.filtered_node_ratio = v; }
-    if let Some(v) = cfg.filtered_expand_hops { s.config.filtered_expand_hops = Some(v); }
-    if let Some(v) = cfg.periodic_full_ms { s.config.periodic_full_ms = Some(v); }
-    if let Some(v) = cfg.max_sol_stable_hops { s.config.max_sol_stable_hops = Some(v); }
-    if let Some(v) = cfg.drop_stable_stable_hops { s.config.drop_stable_stable_hops = v; }
-    if let Some(v) = cfg.stable_mints { s.config.stable_mints = Some(v); }
-    if let Some(v) = cfg.calibrate_magnitude_on_ingest { s.config.calibrate_magnitude_on_ingest = v; }
+    if let Some(v) = cfg.est_priority_fee_per_hop_lamports {
+        s.config.est_priority_fee_per_hop_lamports = Some(v);
+    }
+    if let Some(v) = cfg.filtered_detect_enable {
+        s.config.filtered_detect_enable = v;
+    }
+    if let Some(v) = cfg.filtered_node_ratio {
+        s.config.filtered_node_ratio = v;
+    }
+    if let Some(v) = cfg.filtered_expand_hops {
+        s.config.filtered_expand_hops = Some(v);
+    }
+    if let Some(v) = cfg.periodic_full_ms {
+        s.config.periodic_full_ms = Some(v);
+    }
+    if let Some(v) = cfg.max_sol_stable_hops {
+        s.config.max_sol_stable_hops = Some(v);
+    }
+    if let Some(v) = cfg.drop_stable_stable_hops {
+        s.config.drop_stable_stable_hops = v;
+    }
+    if let Some(v) = cfg.stable_mints {
+        s.config.stable_mints = Some(v);
+    }
+    if let Some(v) = cfg.calibrate_magnitude_on_ingest {
+        s.config.calibrate_magnitude_on_ingest = v;
+    }
     // Optional: extend ConfigReq to accept pruning fields without breaking existing clients
     // We tolerate presence via raw JSON by re-reading from persisted file later if needed.
     let config_snapshot = s.config.clone();
@@ -2441,28 +4099,81 @@ fn default_config() -> ArbConfig {
         min_notional_usd: 0.0,
         max_hops: 4,
         // Event-driven loop - max_idle_ms is now a fallback timeout (effectively infinite)
-        max_idle_ms: std::env::var("ARB_IDLE_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(3_600_000), // 1 hour default
+        max_idle_ms: std::env::var("ARB_IDLE_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3_600_000), // 1 hour default
         quote_size_usd: 100.0,
-        max_detections_without_exec: std::env::var("ARB_MAX_DETECTIONS").ok().and_then(|s| s.parse().ok()).unwrap_or(3),
-        detection_history_ttl_ms: std::env::var("ARB_DETECTION_TTL_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(120_000),
-        opportunity_ttl_ms: std::env::var("ARB_OPPORTUNITY_TTL_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(30_000),
+        max_detections_without_exec: std::env::var("ARB_MAX_DETECTIONS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3),
+        detection_history_ttl_ms: std::env::var("ARB_DETECTION_TTL_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(120_000),
+        opportunity_ttl_ms: std::env::var("ARB_OPPORTUNITY_TTL_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(30_000),
         // Base TTL for opportunity persistence - independent of loop timing
-        opportunity_base_ttl_ms: std::env::var("ARB_OPPORTUNITY_BASE_TTL_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(5_000),
-        debug_emit_subthreshold: std::env::var("ARB_DEBUG_SUBTHRESHOLD").ok().map(|v| v == "true").unwrap_or(false),
-        debug_top_n: std::env::var("ARB_DEBUG_TOP_N").ok().and_then(|s| s.parse().ok()).unwrap_or(5),
-        near_miss_enable: std::env::var("ARB_NEAR_MISS_ENABLE").ok().map(|v| v != "false").unwrap_or(true),
-        near_miss_epsilon: std::env::var("ARB_NEAR_MISS_EPS").ok().and_then(|s| s.parse().ok()).unwrap_or(5e-4),
+        opportunity_base_ttl_ms: std::env::var("ARB_OPPORTUNITY_BASE_TTL_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(5_000),
+        debug_emit_subthreshold: std::env::var("ARB_DEBUG_SUBTHRESHOLD")
+            .ok()
+            .map(|v| v == "true")
+            .unwrap_or(false),
+        debug_top_n: std::env::var("ARB_DEBUG_TOP_N")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(5),
+        near_miss_enable: std::env::var("ARB_NEAR_MISS_ENABLE")
+            .ok()
+            .map(|v| v != "false")
+            .unwrap_or(true),
+        near_miss_epsilon: std::env::var("ARB_NEAR_MISS_EPS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(5e-4),
         est_priority_fee_per_hop_lamports: Some(0),
-        debug_near_miss_failures: std::env::var("ARB_DEBUG_NM_FAIL").ok().map(|v| v == "true").unwrap_or(false),
-        filtered_detect_enable: std::env::var("ARB_FILTERED_DETECT_ENABLE").ok().map(|v| v != "false").unwrap_or(false),
-        filtered_node_ratio: std::env::var("ARB_FILTERED_NODE_RATIO").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0),
-        filtered_expand_hops: std::env::var("ARB_FILTERED_EXPAND_HOPS").ok().and_then(|s| s.parse().ok()).or(None),
-        periodic_full_ms: std::env::var("ARB_PERIODIC_FULL_MS").ok().and_then(|s| s.parse().ok()).or(Some(1000)),
+        debug_near_miss_failures: std::env::var("ARB_DEBUG_NM_FAIL")
+            .ok()
+            .map(|v| v == "true")
+            .unwrap_or(false),
+        filtered_detect_enable: std::env::var("ARB_FILTERED_DETECT_ENABLE")
+            .ok()
+            .map(|v| v != "false")
+            .unwrap_or(false),
+        filtered_node_ratio: std::env::var("ARB_FILTERED_NODE_RATIO")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1.0),
+        filtered_expand_hops: std::env::var("ARB_FILTERED_EXPAND_HOPS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .or(None),
+        periodic_full_ms: std::env::var("ARB_PERIODIC_FULL_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .or(Some(1000)),
         // Pruning defaults
-        max_sol_stable_hops: Some(std::env::var("ARB_MAX_SOL_STABLE_HOPS").ok().and_then(|s| s.parse().ok()).unwrap_or(usize::MAX)),
-        drop_stable_stable_hops: std::env::var("ARB_DROP_STABLE_STABLE_HOPS").ok().map(|v| v != "false").unwrap_or(false),
+        max_sol_stable_hops: Some(
+            std::env::var("ARB_MAX_SOL_STABLE_HOPS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(usize::MAX),
+        ),
+        drop_stable_stable_hops: std::env::var("ARB_DROP_STABLE_STABLE_HOPS")
+            .ok()
+            .map(|v| v != "false")
+            .unwrap_or(false),
         stable_mints: None,
-        calibrate_magnitude_on_ingest: std::env::var("ARB_CALIBRATE_ON_INGEST").ok().map(|v| v == "true").unwrap_or(false),
+        calibrate_magnitude_on_ingest: std::env::var("ARB_CALIBRATE_ON_INGEST")
+            .ok()
+            .map(|v| v == "true")
+            .unwrap_or(false),
     }
 }
 
@@ -2475,16 +4186,43 @@ mod tests {
     #[test]
     fn prune_sol_stable_and_stable_stable_cycles() {
         let mut s = AppState {
-            config: ArbConfig { max_sol_stable_hops: Some(1), drop_stable_stable_hops: true, stable_mints: None, ..default_config() },
-            opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), near_miss: None, near_miss_shortfall_bps: None, near_misses: Vec::new(), last_graph_version: 0, last_graph_ts: 0,
-            pending_added_edges: Vec::new(), pending_updated_edges: Vec::new(), pending_removed_edge_ids: Vec::new(), pending_graph_version: None, pending_graph_ts: None, wake: Arc::new(Notify::new()),
-            detection_counts: HashMap::new(), executed_keys: HashSet::new(),
+            config: ArbConfig {
+                max_sol_stable_hops: Some(1),
+                drop_stable_stable_hops: true,
+                stable_mints: None,
+                ..default_config()
+            },
+            opportunities: Vec::new(),
+            rejected_opportunities: Vec::new(),
+            graph: ArbGraph::new(),
+            metrics: Metrics::default(),
+            events: Vec::new(),
+            near_miss: None,
+            near_miss_shortfall_bps: None,
+            near_misses: Vec::new(),
+            last_graph_version: 0,
+            last_graph_ts: 0,
+            pending_added_edges: Vec::new(),
+            pending_updated_edges: Vec::new(),
+            pending_removed_edge_ids: Vec::new(),
+            pending_graph_version: None,
+            pending_graph_ts: None,
+            wake: Arc::new(Notify::new()),
+            detection_counts: HashMap::new(),
+            executed_keys: HashSet::new(),
         };
         // Build three nodes and edges to form SOL->USDC->USDT->SOL (labels only)
         let sol = "So11111111111111111111111111111111111111112";
         let usdc = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
         let usdt = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
-        let e = |rate| EdgeData { rate_effective: rate, fee_bps: 30, liquidity: 1000.0, dex: "X".into(), pool_id: String::new(), liquidity_display: 1000.0 };
+        let e = |rate| EdgeData {
+            rate_effective: rate,
+            fee_bps: 30,
+            liquidity: 1000.0,
+            dex: "X".into(),
+            pool_id: String::new(),
+            liquidity_display: 1000.0,
+        };
         s.graph.upsert_edge("X", sol, usdc, e(1.0));
         s.graph.upsert_edge("X", usdc, usdt, e(1.0));
         s.graph.upsert_edge("X", usdt, sol, e(1.0));
@@ -2492,14 +4230,34 @@ mod tests {
         let labels = vec![sol.to_string(), usdc.to_string(), usdt.to_string()];
         // Count sol-stable hops and detect stable-stable
         let default_stables: std::collections::HashSet<&str> = [usdc, usdt].into_iter().collect();
-        let cfg_stables: std::collections::HashSet<String> = s.config.stable_mints.clone().unwrap_or_default().into_iter().collect();
-        let is_stable = |m: &str| if cfg_stables.is_empty() { default_stables.contains(m) } else { cfg_stables.contains(m) };
-        let mut has_stable_stable = false; let mut sol_stable_hops: usize = 0;
+        let cfg_stables: std::collections::HashSet<String> = s
+            .config
+            .stable_mints
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let is_stable = |m: &str| {
+            if cfg_stables.is_empty() {
+                default_stables.contains(m)
+            } else {
+                cfg_stables.contains(m)
+            }
+        };
+        let mut has_stable_stable = false;
+        let mut sol_stable_hops: usize = 0;
         for i in 0..labels.len() {
-            let a = &labels[i]; let b = &labels[(i+1)%labels.len()];
-            let a_st = is_stable(a); let b_st = is_stable(b);
-            if a_st && b_st { has_stable_stable = true; break; }
-            if (a == sol && b_st) || (b == sol && a_st) { sol_stable_hops += 1; }
+            let a = &labels[i];
+            let b = &labels[(i + 1) % labels.len()];
+            let a_st = is_stable(a);
+            let b_st = is_stable(b);
+            if a_st && b_st {
+                has_stable_stable = true;
+                break;
+            }
+            if (a == sol && b_st) || (b == sol && a_st) {
+                sol_stable_hops += 1;
+            }
         }
         assert!(has_stable_stable);
         // Under current counting, ensure at least one SOL<->stable hop is present
@@ -2509,7 +4267,14 @@ mod tests {
         assert_eq!(s.config.max_sol_stable_hops, Some(1));
     }
 
-    fn mk_opp(path: &[&str], bps: i64, net: Option<i64>, first: u64, last: u64, det: u64) -> Opportunity {
+    fn mk_opp(
+        path: &[&str],
+        bps: i64,
+        net: Option<i64>,
+        first: u64,
+        last: u64,
+        det: u64,
+    ) -> Opportunity {
         Opportunity {
             path: path.iter().map(|s| s.to_string()).collect(),
             profit_bps: bps,
@@ -2549,9 +4314,16 @@ mod tests {
         // Current detections empty; prev has two items
         let mut prev: Vec<Opportunity> = vec![
             // Stable: first seen long ago but many detections -> extend TTL
-            mk_opp(&["A","B","A"], 40, Some(35), now - 12_000, now - 2_000, 3),
+            mk_opp(&["A", "B", "A"], 40, Some(35), now - 12_000, now - 2_000, 3),
             // Old and few detections -> should drop under base TTL
-            mk_opp(&["C","D","C"], 90, Some(80), now - 12_000, now - 11_000, 1),
+            mk_opp(
+                &["C", "D", "C"],
+                90,
+                Some(80),
+                now - 12_000,
+                now - 11_000,
+                1,
+            ),
         ];
         let opps: Vec<Opportunity> = vec![];
 
@@ -2562,26 +4334,38 @@ mod tests {
             let first = o.first_seen_ms.unwrap_or(o.detected_ms.unwrap_or(now));
             let det = o.detections.unwrap_or(1);
             let ttl = base_ttl.saturating_mul(1 + det.min(2));
-            let is_dup = merged.iter().any(|x| x.path == o.path && x.dexes == o.dexes);
+            let is_dup = merged
+                .iter()
+                .any(|x| x.path == o.path && x.dexes == o.dexes);
             if !is_dup && now.saturating_sub(first) <= ttl {
-                if o.first_seen_ms.is_none() { o.first_seen_ms = o.detected_ms; }
+                if o.first_seen_ms.is_none() {
+                    o.first_seen_ms = o.detected_ms;
+                }
                 o.detections = Some(det);
                 merged.push(o);
             }
         }
         // Expect only the stable one retained
         assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].path, vec!["A","B","A"]);
+        assert_eq!(merged[0].path, vec!["A", "B", "A"]);
 
         // Add a new higher net_bps item and test sorting and cap
         let mut merged2 = merged;
-        merged2.push(mk_opp(&["E","F","E"], 10, Some(120), now - 100, now - 50, 1));
-        merged2.sort_by(|a,b| {
+        merged2.push(mk_opp(
+            &["E", "F", "E"],
+            10,
+            Some(120),
+            now - 100,
+            now - 50,
+            1,
+        ));
+        merged2.sort_by(|a, b| {
             let an = a.net_bps.unwrap_or(a.profit_bps);
             let bn = b.net_bps.unwrap_or(b.profit_bps);
-            bn.cmp(&an).then_with(|| b.detected_ms.unwrap_or(0).cmp(&a.detected_ms.unwrap_or(0)))
+            bn.cmp(&an)
+                .then_with(|| b.detected_ms.unwrap_or(0).cmp(&a.detected_ms.unwrap_or(0)))
         });
-        assert_eq!(merged2[0].path, vec!["E","F","E"]);
+        assert_eq!(merged2[0].path, vec!["E", "F", "E"]);
     }
 
     #[test]
@@ -2589,14 +4373,24 @@ mod tests {
         let now = 2_000_000u64;
         let mut v: Vec<Opportunity> = Vec::new();
         for i in 0..60 {
-            v.push(mk_opp(&["X","Y","X"], i, Some(i), now - i as u64, now - i as u64, 1));
+            v.push(mk_opp(
+                &["X", "Y", "X"],
+                i,
+                Some(i),
+                now - i as u64,
+                now - i as u64,
+                1,
+            ));
         }
-        v.sort_by(|a,b| {
+        v.sort_by(|a, b| {
             let an = a.net_bps.unwrap_or(a.profit_bps);
             let bn = b.net_bps.unwrap_or(b.profit_bps);
-            bn.cmp(&an).then_with(|| b.detected_ms.unwrap_or(0).cmp(&a.detected_ms.unwrap_or(0)))
+            bn.cmp(&an)
+                .then_with(|| b.detected_ms.unwrap_or(0).cmp(&a.detected_ms.unwrap_or(0)))
         });
-        if v.len() > 50 { v.truncate(50); }
+        if v.len() > 50 {
+            v.truncate(50);
+        }
         assert_eq!(v.len(), 50);
         // Highest net_bps at front
         assert!(v[0].net_bps.unwrap_or(0) >= v[49].net_bps.unwrap_or(0));
@@ -2606,20 +4400,28 @@ mod tests {
     fn detections_cap_without_execution() {
         let mut detection_counts: HashMap<String, (u64, u64)> = HashMap::new();
         let executed_keys: HashSet<String> = HashSet::new();
-        let cfg = ArbConfig { max_detections_without_exec: 3, detection_history_ttl_ms: 120_000, ..default_config() };
-        let opp = mk_opp(&["A","B","A"], 100, Some(90), 0, 0, 0);
+        let cfg = ArbConfig {
+            max_detections_without_exec: 3,
+            detection_history_ttl_ms: 120_000,
+            ..default_config()
+        };
+        let opp = mk_opp(&["A", "B", "A"], 100, Some(90), 0, 0, 0);
         let key = keyify_opportunity(&opp.path, &opp.dexes);
         let mut included = Vec::new();
         for i in 0..3u64 {
             let now = 1_000 + i * 500; // within TTL
-            // prune
-            detection_counts.retain(|_, &mut (_, ts)| now.saturating_sub(ts) <= cfg.detection_history_ttl_ms);
+                                       // prune
+            detection_counts
+                .retain(|_, &mut (_, ts)| now.saturating_sub(ts) <= cfg.detection_history_ttl_ms);
             // bump
             let (c, _) = detection_counts.get(&key).copied().unwrap_or((0, 0));
             detection_counts.insert(key.clone(), (c.saturating_add(1), now));
             // include if under cap or executed
             let executed = executed_keys.contains(&key);
-            let count = detection_counts.get(&key).map(|(c,_)| *c as usize).unwrap_or(0);
+            let count = detection_counts
+                .get(&key)
+                .map(|(c, _)| *c as usize)
+                .unwrap_or(0);
             included.push(executed || count < cfg.max_detections_without_exec);
         }
         assert_eq!(included, vec![true, true, false]);
@@ -2629,13 +4431,20 @@ mod tests {
     fn executed_override_allows_after_cap() {
         let mut detection_counts: HashMap<String, (u64, u64)> = HashMap::new();
         let mut executed_keys: HashSet<String> = HashSet::new();
-        let cfg = ArbConfig { max_detections_without_exec: 3, detection_history_ttl_ms: 120_000, ..default_config() };
-        let opp = mk_opp(&["A","B","A"], 100, Some(90), 0, 0, 0);
+        let cfg = ArbConfig {
+            max_detections_without_exec: 3,
+            detection_history_ttl_ms: 120_000,
+            ..default_config()
+        };
+        let opp = mk_opp(&["A", "B", "A"], 100, Some(90), 0, 0, 0);
         let key = keyify_opportunity(&opp.path, &opp.dexes);
         detection_counts.insert(key.clone(), (3, 10_000));
         executed_keys.insert(key.clone());
         let executed = executed_keys.contains(&key);
-        let count = detection_counts.get(&key).map(|(c,_)| *c as usize).unwrap_or(0);
+        let count = detection_counts
+            .get(&key)
+            .map(|(c, _)| *c as usize)
+            .unwrap_or(0);
         assert!(executed && count >= cfg.max_detections_without_exec);
         // should be included due to executed override
         assert!(executed || count < cfg.max_detections_without_exec);
@@ -2644,16 +4453,23 @@ mod tests {
     #[test]
     fn detection_history_ttl_prunes_old_counts() {
         let mut detection_counts: HashMap<String, (u64, u64)> = HashMap::new();
-        let cfg = ArbConfig { detection_history_ttl_ms: 1000, ..default_config() };
-        let opp = mk_opp(&["A","B","A"], 100, Some(90), 0, 0, 0);
+        let cfg = ArbConfig {
+            detection_history_ttl_ms: 1000,
+            ..default_config()
+        };
+        let opp = mk_opp(&["A", "B", "A"], 100, Some(90), 0, 0, 0);
         let key = keyify_opportunity(&opp.path, &opp.dexes);
         detection_counts.insert(key.clone(), (2, 1_000));
         // advance beyond TTL
         let now = 3_500u64;
-        detection_counts.retain(|_, &mut (_, ts)| now.saturating_sub(ts) <= cfg.detection_history_ttl_ms);
+        detection_counts
+            .retain(|_, &mut (_, ts)| now.saturating_sub(ts) <= cfg.detection_history_ttl_ms);
         assert!(detection_counts.get(&key).is_none());
         // With count missing, include under cap
-        let count = detection_counts.get(&key).map(|(c,_)| *c as usize).unwrap_or(0);
+        let count = detection_counts
+            .get(&key)
+            .map(|(c, _)| *c as usize)
+            .unwrap_or(0);
         assert!(count < cfg.max_detections_without_exec);
     }
 }
@@ -2712,19 +4528,29 @@ async fn metrics_prom(State(state): State<Arc<RwLock<AppState>>>) -> String {
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 #[derive(serde::Serialize)]
-struct EventsResponse { events: Vec<EventItem> }
+struct EventsResponse {
+    events: Vec<EventItem>,
+}
 
 async fn events_json(State(state): State<Arc<RwLock<AppState>>>) -> Json<EventsResponse> {
     let s = state.read().await;
-    Json(EventsResponse { events: s.events.clone() })
+    Json(EventsResponse {
+        events: s.events.clone(),
+    })
 }
 
 #[derive(serde::Serialize)]
-struct GraphVersionResponse { version: u64, timestamp: u64 }
+struct GraphVersionResponse {
+    version: u64,
+    timestamp: u64,
+}
 
 #[derive(serde::Deserialize)]
 struct GraphAckReq {
@@ -2740,21 +4566,39 @@ struct GraphAckResponse {
     acked: bool,
 }
 
-async fn arb_graph_version(State(state): State<Arc<RwLock<AppState>>>) -> Json<GraphVersionResponse> {
+async fn arb_graph_version(
+    State(state): State<Arc<RwLock<AppState>>>,
+) -> Json<GraphVersionResponse> {
     let s = state.read().await;
     // Return effective version (max of pending and applied) so backend cache reflects buffered versions
     // Use atomic reads - no lock contention!
     let last_version = s.last_graph_version.load(Ordering::Acquire);
     let pending_raw = s.pending_graph_version.load(Ordering::Acquire);
-    let pending_version = if pending_raw == u64::MAX { 0 } else { pending_raw };
+    let pending_version = if pending_raw == u64::MAX {
+        0
+    } else {
+        pending_raw
+    };
     let effective_version = pending_version.max(last_version);
     let timestamp = s.last_graph_ts.load(Ordering::Acquire);
-    Json(GraphVersionResponse { version: effective_version, timestamp })
+    Json(GraphVersionResponse {
+        version: effective_version,
+        timestamp,
+    })
 }
 
-async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: HeaderMap, Json(req): Json<GraphAckReq>) -> Json<GraphAckResponse> {
-    if !auth_ok(Some(&headers)) { 
-        return Json(GraphAckResponse { ok: false, current_version: 0, current_timestamp: 0, acked: false });
+async fn arb_graph_ack(
+    State(state): State<Arc<RwLock<AppState>>>,
+    headers: HeaderMap,
+    Json(req): Json<GraphAckReq>,
+) -> Json<GraphAckResponse> {
+    if !auth_ok(Some(&headers)) {
+        return Json(GraphAckResponse {
+            ok: false,
+            current_version: 0,
+            current_timestamp: 0,
+            acked: false,
+        });
     }
     let want_version = req.version.unwrap_or(0);
     let timeout_ms = req.timeout_ms.unwrap_or(2500);
@@ -2774,7 +4618,7 @@ async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: Head
         let pending_version = guard.pending_graph_version.load(Ordering::Acquire);
         let current_ts = guard.last_graph_ts.load(Ordering::Acquire);
         drop(guard);
-        
+
         let elapsed = start.elapsed().as_millis() as u64;
 
         // Only ACK based on committed version (last_version), not pending version
@@ -2785,7 +4629,11 @@ async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: Head
             tracing::info!(
                 want_version = want_version,
                 applied_version = last_version,
-                pending_version = if pending_version != u64::MAX { Some(pending_version) } else { None },
+                pending_version = if pending_version != u64::MAX {
+                    Some(pending_version)
+                } else {
+                    None
+                },
                 waited_ms = elapsed,
                 acked = acked,
                 "arb.graph.ack: success"
@@ -2797,12 +4645,16 @@ async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: Head
                 acked,
             });
         }
-        
+
         if elapsed >= timeout_ms {
             tracing::warn!(
                 want_version = want_version,
                 applied_version = last_version,
-                pending_version = if pending_version != u64::MAX { Some(pending_version) } else { None },
+                pending_version = if pending_version != u64::MAX {
+                    Some(pending_version)
+                } else {
+                    None
+                },
                 elapsed_ms = elapsed,
                 timeout_ms = timeout_ms,
                 "arb.graph.ack: timeout"
@@ -2814,7 +4666,11 @@ async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: Head
             tracing::debug!(
                 want_version = want_version,
                 applied_version = last_version,
-                pending_version = if pending_version != u64::MAX { Some(pending_version) } else { None },
+                pending_version = if pending_version != u64::MAX {
+                    Some(pending_version)
+                } else {
+                    None
+                },
                 elapsed_ms = elapsed,
                 timeout_ms = timeout_ms,
                 "arb.graph.ack: waiting"
@@ -2823,16 +4679,16 @@ async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: Head
 
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    
+
     let guard = state.read().await;
     let final_version = guard.last_graph_version.load(Ordering::Acquire);
     let final_ts = guard.last_graph_ts.load(Ordering::Acquire);
     drop(guard);
-    Json(GraphAckResponse { 
-        ok: true, 
-        current_version: final_version, 
-        current_timestamp: final_ts, 
-        acked: false 
+    Json(GraphAckResponse {
+        ok: true,
+        current_version: final_version,
+        current_timestamp: final_ts,
+        acked: false,
     })
 }
 
@@ -2840,7 +4696,9 @@ async fn arb_graph_ack(State(state): State<Arc<RwLock<AppState>>>, headers: Head
 
 fn auth_ok(headers: Option<&HeaderMap>) -> bool {
     let expect = std::env::var("ARB_SHARED_SECRET").ok().unwrap_or_default();
-    if expect.is_empty() { return true; }
+    if expect.is_empty() {
+        return true;
+    }
     if let Some(hm) = headers {
         if let Some(val) = hm.get("authorization") {
             if let Ok(s) = val.to_str() {
@@ -2853,31 +4711,75 @@ fn auth_ok(headers: Option<&HeaderMap>) -> bool {
     false
 }
 
-
 #[cfg(test)]
 mod e2e_tests {
     use super::*;
-    use axum::http::HeaderValue;
     use axum::http::HeaderMap as AxumHeaderMap;
+    use axum::http::HeaderValue;
 
-    fn hv(s: &str) -> HeaderValue { HeaderValue::from_str(s).unwrap() }
+    fn hv(s: &str) -> HeaderValue {
+        HeaderValue::from_str(s).unwrap()
+    }
 
     #[tokio::test]
     async fn diff_ordering_and_version_guards_apply_in_order() {
         std::env::set_var("ARB_SHARED_SECRET", "");
-        let state = Arc::new(RwLock::new(AppState { config: default_config(), opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), near_miss: None, near_miss_shortfall_bps: None, near_misses: Vec::new(), last_graph_version: 1, last_graph_ts: 1, pending_added_edges: Vec::new(), pending_updated_edges: Vec::new(), pending_removed_edge_ids: Vec::new(), pending_graph_version: None, pending_graph_ts: None, wake: Arc::new(Notify::new()), detection_counts: HashMap::new(), executed_keys: HashSet::new() }));
+        let state = Arc::new(RwLock::new(AppState {
+            config: default_config(),
+            opportunities: Vec::new(),
+            rejected_opportunities: Vec::new(),
+            graph: ArbGraph::new(),
+            metrics: Metrics::default(),
+            events: Vec::new(),
+            near_miss: None,
+            near_miss_shortfall_bps: None,
+            near_misses: Vec::new(),
+            last_graph_version: 1,
+            last_graph_ts: 1,
+            pending_added_edges: Vec::new(),
+            pending_updated_edges: Vec::new(),
+            pending_removed_edge_ids: Vec::new(),
+            pending_graph_version: None,
+            pending_graph_ts: None,
+            wake: Arc::new(Notify::new()),
+            detection_counts: HashMap::new(),
+            executed_keys: HashSet::new(),
+        }));
 
         // Buffer a valid diff at v=2 and a stale diff at v=1
         let mut headers = AxumHeaderMap::new();
         headers.insert("authorization", hv(""));
-        let added = vec![GraphDiffEdge { source: "A".into(), target: "B".into(), dex: Some("D".into()), pool_id: None, fee_bps: Some(0), liquidity: Some(1.0), liquidity_display: Some(1.0), price_a_per_b: Some(1.0) }];
-        let req_ok = GraphDiffReq { version: Some(2), timestamp: Some(2), added_edges: Some(added), updated_edges: None, removed_edge_ids: None };
+        let added = vec![GraphDiffEdge {
+            source: "A".into(),
+            target: "B".into(),
+            dex: Some("D".into()),
+            pool_id: None,
+            fee_bps: Some(0),
+            liquidity: Some(1.0),
+            liquidity_display: Some(1.0),
+            price_a_per_b: Some(1.0),
+        }];
+        let req_ok = GraphDiffReq {
+            version: Some(2),
+            timestamp: Some(2),
+            added_edges: Some(added),
+            updated_edges: None,
+            removed_edge_ids: None,
+        };
         let _ = arb_graph_update(State(state.clone()), headers.clone(), Json(req_ok)).await;
         // Stale should be skipped immediately
-        let req_stale = GraphDiffReq { version: Some(1), timestamp: Some(1), added_edges: Some(vec![]), updated_edges: None, removed_edge_ids: None };
+        let req_stale = GraphDiffReq {
+            version: Some(1),
+            timestamp: Some(1),
+            added_edges: Some(vec![]),
+            updated_edges: None,
+            removed_edge_ids: None,
+        };
         let resp = arb_graph_update(State(state.clone()), headers.clone(), Json(req_stale)).await;
         let j = resp.0; // Json<Value>
-        assert!(j.get("skipped").and_then(|v| v.as_bool()).unwrap_or(false) || j.get("ok").is_some());
+        assert!(
+            j.get("skipped").and_then(|v| v.as_bool()).unwrap_or(false) || j.get("ok").is_some()
+        );
 
         // Apply buffered diffs by running the critical section from loop
         {
@@ -2886,17 +4788,35 @@ mod e2e_tests {
             let removed = std::mem::take(&mut s.pending_removed_edge_ids);
             let added = std::mem::take(&mut s.pending_added_edges);
             let updated = std::mem::take(&mut s.pending_updated_edges);
-            if !removed.is_empty() { let _ = s.graph.remove_edges_by_ids(&removed); }
+            if !removed.is_empty() {
+                let _ = s.graph.remove_edges_by_ids(&removed);
+            }
             let mut upsert = |e: &GraphDiffEdge| {
                 let dex = e.dex.clone().unwrap_or_else(|| "Unknown".to_string());
                 let fee = e.fee_bps.unwrap_or(0);
                 let liq = e.liquidity.unwrap_or(0.0);
                 let liq_disp = e.liquidity_display.unwrap_or(0.0);
                 let (_base, rate_eff) = edge_rate_effective_local(e.price_a_per_b, e.fee_bps);
-                s.graph.upsert_edge(&dex, &e.source, &e.target, EdgeData { rate_effective: rate_eff, fee_bps: fee, liquidity: liq, dex: dex.clone(), pool_id: e.pool_id.clone().unwrap_or_default(), liquidity_display: liq_disp });
+                s.graph.upsert_edge(
+                    &dex,
+                    &e.source,
+                    &e.target,
+                    EdgeData {
+                        rate_effective: rate_eff,
+                        fee_bps: fee,
+                        liquidity: liq,
+                        dex: dex.clone(),
+                        pool_id: e.pool_id.clone().unwrap_or_default(),
+                        liquidity_display: liq_disp,
+                    },
+                );
             };
-            for e in added.iter() { upsert(e); }
-            for e in updated.iter() { upsert(e); }
+            for e in added.iter() {
+                upsert(e);
+            }
+            for e in updated.iter() {
+                upsert(e);
+            }
             let pending_v = s.pending_graph_version.load(Ordering::Acquire);
             if pending_v != u64::MAX {
                 s.last_graph_version.store(pending_v, Ordering::Release);
@@ -2918,17 +4838,68 @@ mod e2e_tests {
     #[tokio::test]
     async fn snapshot_then_diffs_detect_cycle() {
         std::env::set_var("ARB_SHARED_SECRET", "");
-        let state = Arc::new(RwLock::new(AppState { config: default_config(), opportunities: Vec::new(), graph: ArbGraph::new(), metrics: Metrics::default(), events: Vec::new(), near_miss: None, near_miss_shortfall_bps: None, near_misses: Vec::new(), last_graph_version: AtomicU64::new(0), last_graph_ts: AtomicU64::new(0), pending_added_edges: Vec::new(), pending_updated_edges: Vec::new(), pending_removed_edge_ids: Vec::new(), pending_graph_version: AtomicU64::new(u64::MAX), pending_graph_ts: AtomicU64::new(u64::MAX), wake: Arc::new(Notify::new()), detection_counts: HashMap::new(), executed_keys: HashSet::new() }));
+        let state = Arc::new(RwLock::new(AppState {
+            config: default_config(),
+            opportunities: Vec::new(),
+            rejected_opportunities: Vec::new(),
+            graph: ArbGraph::new(),
+            metrics: Metrics::default(),
+            events: Vec::new(),
+            near_miss: None,
+            near_miss_shortfall_bps: None,
+            near_misses: Vec::new(),
+            last_graph_version: AtomicU64::new(0),
+            last_graph_ts: AtomicU64::new(0),
+            pending_added_edges: Vec::new(),
+            pending_updated_edges: Vec::new(),
+            pending_removed_edge_ids: Vec::new(),
+            pending_graph_version: AtomicU64::new(u64::MAX),
+            pending_graph_ts: AtomicU64::new(u64::MAX),
+            wake: Arc::new(Notify::new()),
+            detection_counts: HashMap::new(),
+            executed_keys: HashSet::new(),
+        }));
 
         // Start with snapshot of empty graph at v=1
         let h = AxumHeaderMap::new();
-        let snap = GraphSnapshotReq { graph: StartReqGraph { version: Some(1), timestamp: Some(1), edges: Vec::new(), nodes: Vec::new() } };
+        let snap = GraphSnapshotReq {
+            graph: StartReqGraph {
+                version: Some(1),
+                timestamp: Some(1),
+                edges: Vec::new(),
+                nodes: Vec::new(),
+            },
+        };
         let _ = arb_graph_snapshot(State(state.clone()), h.clone(), Json(snap)).await;
 
         // Push diffs building a two-edge arbitrage A<->B: rates 2.0 and 0.6 -> product 1.2
-        let add1 = GraphDiffEdge { source: "A".into(), target: "B".into(), dex: Some("D".into()), pool_id: None, fee_bps: Some(0), liquidity: Some(1.0), liquidity_display: Some(1.0), price_a_per_b: Some(0.5) }; // B per A = 2.0
-        let add2 = GraphDiffEdge { source: "B".into(), target: "A".into(), dex: Some("D".into()), pool_id: None, fee_bps: Some(0), liquidity: Some(1.0), liquidity_display: Some(1.0), price_a_per_b: Some(1.6666666667) }; // A per B = 1.666.. => B per A = 0.6
-        let diff = GraphDiffReq { version: Some(2), timestamp: Some(2), added_edges: Some(vec![add1, add2]), updated_edges: None, removed_edge_ids: None };
+        let add1 = GraphDiffEdge {
+            source: "A".into(),
+            target: "B".into(),
+            dex: Some("D".into()),
+            pool_id: None,
+            fee_bps: Some(0),
+            liquidity: Some(1.0),
+            liquidity_display: Some(1.0),
+            price_a_per_b: Some(0.5),
+        }; // B per A = 2.0
+        let add2 = GraphDiffEdge {
+            source: "B".into(),
+            target: "A".into(),
+            dex: Some("D".into()),
+            pool_id: None,
+            fee_bps: Some(0),
+            liquidity: Some(1.0),
+            liquidity_display: Some(1.0),
+            price_a_per_b: Some(1.6666666667),
+        }; // A per B = 1.666.. => B per A = 0.6
+        let diff = GraphDiffReq {
+            version: Some(2),
+            timestamp: Some(2),
+            added_edges: Some(vec![add1, add2]),
+            updated_edges: None,
+            removed_edge_ids: None,
+        };
         let _ = arb_graph_update(State(state.clone()), h.clone(), Json(diff)).await;
 
         // Apply diffs (simulate loop section)
@@ -2937,19 +4908,49 @@ mod e2e_tests {
             let removed = std::mem::take(&mut s.pending_removed_edge_ids);
             let added = std::mem::take(&mut s.pending_added_edges);
             let updated = std::mem::take(&mut s.pending_updated_edges);
-            if !removed.is_empty() { let _ = s.graph.remove_edges_by_ids(&removed); }
+            if !removed.is_empty() {
+                let _ = s.graph.remove_edges_by_ids(&removed);
+            }
             let mut upsert = |e: &GraphDiffEdge| {
                 let dex = e.dex.clone().unwrap_or_else(|| "Unknown".to_string());
                 let fee = e.fee_bps.unwrap_or(0);
                 let liq = e.liquidity.unwrap_or(0.0);
                 let liq_disp = e.liquidity_display.unwrap_or(0.0);
-                let px = if let Some(px) = e.price_a_per_b { if px.is_finite() && px > 0.0 { px } else { 0.0 } } else { 0.0 };
+                let px = if let Some(px) = e.price_a_per_b {
+                    if px.is_finite() && px > 0.0 {
+                        px
+                    } else {
+                        0.0
+                    }
+                } else {
+                    0.0
+                };
                 let base = if px > 0.0 { 1.0 / px } else { 0.0 };
-                let rate_eff = if base > 0.0 { base * (1.0 - (fee as f64)/10_000.0).max(0.0) } else { 0.0 };
-                s.graph.upsert_edge(&dex, &e.source, &e.target, EdgeData { rate_effective: rate_eff, fee_bps: fee, liquidity: liq, dex: dex.clone(), pool_id: e.pool_id.clone().unwrap_or_default(), liquidity_display: liq_disp });
+                let rate_eff = if base > 0.0 {
+                    base * (1.0 - (fee as f64) / 10_000.0).max(0.0)
+                } else {
+                    0.0
+                };
+                s.graph.upsert_edge(
+                    &dex,
+                    &e.source,
+                    &e.target,
+                    EdgeData {
+                        rate_effective: rate_eff,
+                        fee_bps: fee,
+                        liquidity: liq,
+                        dex: dex.clone(),
+                        pool_id: e.pool_id.clone().unwrap_or_default(),
+                        liquidity_display: liq_disp,
+                    },
+                );
             };
-            for e in added.iter() { upsert(e); }
-            for e in updated.iter() { upsert(e); }
+            for e in added.iter() {
+                upsert(e);
+            }
+            for e in updated.iter() {
+                upsert(e);
+            }
             let pending_v = s.pending_graph_version.load(Ordering::Acquire);
             if pending_v != u64::MAX {
                 s.last_graph_version.store(pending_v, Ordering::Release);

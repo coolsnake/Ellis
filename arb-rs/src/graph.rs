@@ -1,15 +1,20 @@
 use petgraph::graph::{DiGraph, NodeIndex};
-use std::collections::HashMap;
 use petgraph::visit::EdgeRef;
+use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
 pub struct EdgeData {
     pub rate_effective: f64, // after fees/slippage
-    #[allow(dead_code)] pub fee_bps: i64,
-    #[allow(dead_code)] pub liquidity: f64, // in base units
-    #[allow(dead_code)] pub dex: String,
-    #[allow(dead_code)] pub pool_id: String,
-    #[allow(dead_code)] pub liquidity_display: f64,
+    #[allow(dead_code)]
+    pub fee_bps: i64,
+    #[allow(dead_code)]
+    pub liquidity: f64, // in base units
+    #[allow(dead_code)]
+    pub dex: String,
+    #[allow(dead_code)]
+    pub pool_id: String,
+    #[allow(dead_code)]
+    pub liquidity_display: f64,
 }
 
 #[derive(Clone, Default)]
@@ -19,11 +24,15 @@ pub struct ArbGraph {
 }
 
 impl ArbGraph {
-    pub fn new() -> Self { Default::default() }
+    pub fn new() -> Self {
+        Default::default()
+    }
 
     pub fn upsert_node(&mut self, _dex: &str, mint: &str) -> NodeIndex {
         let key = mint.to_string();
-        if let Some(&idx) = self.map.get(&key) { return idx; }
+        if let Some(&idx) = self.map.get(&key) {
+            return idx;
+        }
         // Use mint as node label; DEX is captured on edges
         let idx = self.g.add_node(mint.to_string());
         self.map.insert(key, idx);
@@ -44,12 +53,18 @@ impl ArbGraph {
         for e in self.g.edges_connecting(a, b) {
             let w = e.weight();
             if !new_pool_id.is_empty() {
-                if w.pool_id == new_pool_id { to_remove.push(e.id()); }
+                if w.pool_id == new_pool_id {
+                    to_remove.push(e.id());
+                }
             } else {
-                if w.pool_id.is_empty() && w.dex == new_dex { to_remove.push(e.id()); }
+                if w.pool_id.is_empty() && w.dex == new_dex {
+                    to_remove.push(e.id());
+                }
             }
         }
-        for id in to_remove { let _ = self.g.remove_edge(id); }
+        for id in to_remove {
+            let _ = self.g.remove_edge(id);
+        }
         self.g.add_edge(a, b, data);
     }
 
@@ -58,15 +73,19 @@ impl ArbGraph {
         let a = self.g.node_weight(src).cloned().unwrap_or_default();
         let b = self.g.node_weight(dst).cloned().unwrap_or_default();
         let dex = data.dex.clone();
-        if !data.pool_id.is_empty() { return data.pool_id.clone(); }
+        if !data.pool_id.is_empty() {
+            return data.pool_id.clone();
+        }
         format!("{}->{}-{}", a, b, dex)
     }
 
     pub fn remove_edges_by_ids(&mut self, ids: &[String]) -> usize {
-        if ids.is_empty() { return 0; }
+        if ids.is_empty() {
+            return 0;
+        }
         let set: std::collections::HashSet<&String> = ids.iter().collect();
         let mut to_remove = Vec::new();
-        
+
         // OPTIMIZATION: Avoid string allocations by checking pool_id first
         for e in self.g.edge_references() {
             let w = e.weight();
@@ -83,9 +102,11 @@ impl ArbGraph {
                 }
             }
         }
-        
+
         let n = to_remove.len();
-        for idx in to_remove { let _ = self.g.remove_edge(idx); }
+        for idx in to_remove {
+            let _ = self.g.remove_edge(idx);
+        }
         n
     }
 }
@@ -101,16 +122,28 @@ pub fn expand_nodes_by_hops(
     use petgraph::Direction::{Incoming, Outgoing};
     use std::collections::HashSet;
     let mut out: HashSet<usize> = starts.clone();
-    if max_hops == 0 || starts.is_empty() { return out; }
+    if max_hops == 0 || starts.is_empty() {
+        return out;
+    }
     let mut frontier: HashSet<usize> = starts.clone();
     for _ in 0..max_hops {
         let mut next: HashSet<usize> = HashSet::new();
         for &u in frontier.iter() {
             let ui = NodeIndex::new(u);
-            for v in g.g.neighbors_directed(ui, Outgoing) { if out.insert(v.index()) { next.insert(v.index()); } }
-            for v in g.g.neighbors_directed(ui, Incoming) { if out.insert(v.index()) { next.insert(v.index()); } }
+            for v in g.g.neighbors_directed(ui, Outgoing) {
+                if out.insert(v.index()) {
+                    next.insert(v.index());
+                }
+            }
+            for v in g.g.neighbors_directed(ui, Incoming) {
+                if out.insert(v.index()) {
+                    next.insert(v.index());
+                }
+            }
         }
-        if next.is_empty() { break; }
+        if next.is_empty() {
+            break;
+        }
         frontier = next;
     }
     out
@@ -119,7 +152,7 @@ pub fn expand_nodes_by_hops(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn upsert_nodes_and_edges() {
         let mut g = ArbGraph::new();
@@ -159,7 +192,14 @@ mod tests {
         let mut g = ArbGraph::new();
         // Create a simple line 0->1->2->3 and also a back edge 2->0
         let dex = "D".to_string();
-        let e = |rate| EdgeData { rate_effective: rate, fee_bps: 0, liquidity: 1.0, dex: dex.clone(), pool_id: String::new(), liquidity_display: 1.0 };
+        let e = |rate| EdgeData {
+            rate_effective: rate,
+            fee_bps: 0,
+            liquidity: 1.0,
+            dex: dex.clone(),
+            pool_id: String::new(),
+            liquidity_display: 1.0,
+        };
         g.upsert_edge(&dex, "0", "1", e(1.0));
         g.upsert_edge(&dex, "1", "2", e(1.0));
         g.upsert_edge(&dex, "2", "3", e(1.0));
@@ -183,8 +223,22 @@ mod tests {
         let mut g = ArbGraph::new();
         // Two parallel edges between A->B: one with pool_id, one synthesized for dex
         let dex = "R".to_string();
-        let edge_pool = EdgeData { rate_effective: 1.0, fee_bps: 0, liquidity: 1.0, dex: dex.clone(), pool_id: "POOL123".to_string(), liquidity_display: 1.0 };
-        let edge_synth = EdgeData { rate_effective: 1.0, fee_bps: 0, liquidity: 1.0, dex: dex.clone(), pool_id: String::new(), liquidity_display: 1.0 };
+        let edge_pool = EdgeData {
+            rate_effective: 1.0,
+            fee_bps: 0,
+            liquidity: 1.0,
+            dex: dex.clone(),
+            pool_id: "POOL123".to_string(),
+            liquidity_display: 1.0,
+        };
+        let edge_synth = EdgeData {
+            rate_effective: 1.0,
+            fee_bps: 0,
+            liquidity: 1.0,
+            dex: dex.clone(),
+            pool_id: String::new(),
+            liquidity_display: 1.0,
+        };
         g.upsert_edge(&dex, "A", "B", edge_pool);
         g.upsert_edge(&dex, "A", "B", edge_synth);
         assert_eq!(g.g.edge_count(), 2);
@@ -204,5 +258,3 @@ mod tests {
         let _ = (a.index(), b.index());
     }
 }
-
-

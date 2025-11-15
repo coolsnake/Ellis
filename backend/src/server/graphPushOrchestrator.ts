@@ -98,6 +98,8 @@ class GraphPushOrchestrator {
   private lastAckedVersion: number = 0;
   private inFlightVersion: number | null = null;
   private queuedVersions: Set<number> = new Set();
+  private cancelToken = 0;
+  private lastCancelReason: string | null = null;
 
   constructor() {
     this.diffCoalesceMs = getDiffCoalesceMs();
@@ -109,8 +111,17 @@ class GraphPushOrchestrator {
       logger.info('arb:stream state', { enabled: this.arbStreamEnabled });
     } catch {}
     if (this.arbStreamEnabled) {
+      this.lastCancelReason = null;
       this.scheduleFlush();
+      return;
     }
+    this.requestJobCancel('arb_stream_disabled');
+    if (this.flushHandle) {
+      clearTimeout(this.flushHandle);
+      this.flushHandle = null;
+    }
+    this.clearPending();
+    this.resolveWaiters();
   }
 
   isStreamEnabled(): boolean {
@@ -351,6 +362,7 @@ class GraphPushOrchestrator {
     try {
       while (this.queue.length) {
         const job = this.queue.shift()!;
+        const jobToken = this.cancelToken;
         const wantVersion = Number(job.kind === 'snapshot' ? job.payload?.version : job.payload?.version) || 0;
         
         // Remove from queuedVersions since we're now processing it
@@ -359,15 +371,8 @@ class GraphPushOrchestrator {
           this.inFlightVersion = wantVersion;
         }
         
-        if (!this.arbStreamEnabled) {
-          // Clear in-flight tracking since we're not actually sending
-          if (wantVersion > 0) {
-            this.inFlightVersion = null;
-            // If not sent, we should update lastAckedVersion to prevent re-queuing
-            // But actually, if stream is disabled, we shouldn't track it
-          }
-          job.resolve();
-          this.resolveWaiters();
+        if (!this.arbStreamEnabled || this.hasJobCancellation(jobToken)) {
+          this.handleCancelledJob(job, wantVersion, 'preflight');
           continue;
         }
 
@@ -384,6 +389,9 @@ class GraphPushOrchestrator {
         let sent = false;
         while (!sent && attempt < maxAttempts) {
           try {
+            if (!this.arbStreamEnabled || this.hasJobCancellation(jobToken)) {
+              break;
+            }
             const res = await fetch(url, { method: 'POST', headers, body });
             if (!res || !res.ok) throw new Error(`status ${res && (res as any).status}`);
             sent = true;
@@ -395,6 +403,10 @@ class GraphPushOrchestrator {
           }
         }
         if (!sent) {
+          if (!this.arbStreamEnabled || this.hasJobCancellation(jobToken)) {
+            this.handleCancelledJob(job, wantVersion, 'send');
+            continue;
+          }
           try { logger.error('arb.push giveup', { kind: job.kind, attempts: attempt }); } catch {}
           // Clear in-flight tracking on failure
           if (wantVersion > 0 && this.inFlightVersion === wantVersion) {
@@ -439,6 +451,9 @@ class GraphPushOrchestrator {
         } else {
           while (!acked) {
             try {
+              if (!this.arbStreamEnabled || this.hasJobCancellation(jobToken)) {
+                break;
+              }
               const ac = new AbortController();
               const timer = setTimeout(() => ac.abort('timeout'), timeoutMs + 500);
               const res = await fetch(`${host}/arb/graph/ack`, {
@@ -463,8 +478,16 @@ class GraphPushOrchestrator {
             if (acked || Date.now() >= ackDeadline) {
               break;
             }
+            if (!this.arbStreamEnabled || this.hasJobCancellation(jobToken)) {
+              break;
+            }
             await new Promise((resolve) => setTimeout(resolve, 150));
           }
+        }
+
+        if (!this.arbStreamEnabled || this.hasJobCancellation(jobToken)) {
+          this.handleCancelledJob(job, wantVersion, 'ack');
+          continue;
         }
 
         if (!acked && wantVersion > 0) {
@@ -548,6 +571,27 @@ class GraphPushOrchestrator {
     for (const w of waiters) {
       try { w.reject(err); } catch {}
     }
+  }
+
+  private handleCancelledJob(job: ArbJob, wantVersion: number, phase: string): void {
+    const reason = this.lastCancelReason || (this.arbStreamEnabled ? 'cancelled' : 'arb_stream_disabled');
+    try {
+      logger.info('arb.push job_cancelled', { reason, phase, kind: job.kind, version: wantVersion });
+    } catch {}
+    if (wantVersion > 0 && this.inFlightVersion === wantVersion) {
+      this.inFlightVersion = null;
+    }
+    job.resolve();
+    this.resolveWaiters();
+  }
+
+  private requestJobCancel(reason: string): void {
+    this.cancelToken += 1;
+    this.lastCancelReason = reason || 'cancelled';
+  }
+
+  private hasJobCancellation(jobToken: number): boolean {
+    return this.cancelToken !== jobToken;
   }
 
   hasPendingUpdates(): boolean {
