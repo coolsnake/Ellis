@@ -360,10 +360,100 @@ export async function enrichPoolTokenDecimals(
   pools: any[],
   options?: { logger?: any }
 ): Promise<void> {
+  const base58Regex = /^[1-9A-HJ-NP-Za-km-z]+$/;
+  const directMintFields = [
+    'mint_a', 'mint_b', 'base_mint', 'quote_mint',
+    'baseMint', 'quoteMint', 'mintA', 'mintB',
+    'mint_x', 'mint_y', 'tokenXMint', 'tokenYMint',
+    'token_x_mint', 'token_y_mint', 'tokenAMint', 'tokenBMint',
+    'token_a_mint', 'token_b_mint', 'tokenMintA', 'tokenMintB',
+    'coinMint', 'pcMint', 'coin_mint', 'pc_mint',
+    'mint0', 'mint1', 'tokenMint', 'token_mint',
+    'token_a_mint_address', 'token_b_mint_address',
+    'token_a_vault_mint', 'token_b_vault_mint',
+    'base_token_mint', 'quote_token_mint',
+    'vault_a_mint', 'vault_b_mint',
+    'lp_mint', 'lpMint',
+  ];
+  const tokenObjectFields = [
+    'tokenA', 'tokenB', 'token_a', 'token_b',
+    'tokenX', 'tokenY', 'token_x', 'token_y',
+    'token0', 'token1', 'token',
+    'baseToken', 'quoteToken', 'base', 'quote',
+    'coin', 'pc',
+    'tokenInfoA', 'tokenInfoB',
+    'tokenAInfo', 'tokenBInfo',
+    'token_a_info', 'token_b_info',
+    'tokenDetailsA', 'tokenDetailsB',
+    'token_details_a', 'token_details_b',
+  ];
+  const objectMintFields = [
+    'mint', 'mintAddress', 'mint_address',
+    'tokenMint', 'token_mint',
+    'address', 'pubkey',
+    'mintId', 'mint_id',
+  ];
+  const nestedObjectFields = ['info', 'token', 'data'];
+  const tokenFieldSet = new Set(tokenObjectFields);
+
+  const addMintString = (value: any): boolean => {
+    if (typeof value !== 'string') return false;
+    const mint = value.trim();
+    if (!mint) return false;
+    if (mint.length < 32 || mint.length > 64) return false;
+    if (!base58Regex.test(mint)) return false;
+    mints.add(mint);
+    return true;
+  };
+
+  const addMintCandidate = (value: any, depth = 0): void => {
+    if (value == null || depth > 3) return;
+    if (typeof value === 'string') {
+      addMintString(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const entry of value) addMintCandidate(entry, depth + 1);
+      return;
+    }
+    if (typeof value === 'object') {
+      for (const key of objectMintFields) {
+        if (Object.prototype.hasOwnProperty.call(value, key)) {
+          addMintCandidate((value as any)[key], depth + 1);
+        }
+      }
+      for (const key of nestedObjectFields) {
+        if (Object.prototype.hasOwnProperty.call(value, key)) {
+          addMintCandidate((value as any)[key], depth + 1);
+        }
+      }
+    }
+  };
+
   const mints = new Set<string>();
   for (const pool of pools) {
-    if (pool.mint_a || pool.base_mint) mints.add(pool.mint_a || pool.base_mint);
-    if (pool.mint_b || pool.quote_mint) mints.add(pool.mint_b || pool.quote_mint);
+    if (!pool) continue;
+    if ((pool as any).mint_a || (pool as any).base_mint) mints.add((pool as any).mint_a || (pool as any).base_mint);
+    if ((pool as any).mint_b || (pool as any).quote_mint) mints.add((pool as any).mint_b || (pool as any).quote_mint);
+    if (typeof pool !== 'object') continue;
+    for (const field of directMintFields) {
+      if (Object.prototype.hasOwnProperty.call(pool, field)) {
+        addMintCandidate((pool as any)[field]);
+      }
+    }
+    for (const field of tokenObjectFields) {
+      if (Object.prototype.hasOwnProperty.call(pool, field)) {
+        addMintCandidate((pool as any)[field]);
+      }
+    }
+    for (const [key, value] of Object.entries(pool)) {
+      if (!key) continue;
+      if (key.toLowerCase().includes('mint')) {
+        addMintCandidate(value);
+      } else if (tokenFieldSet.has(key)) {
+        addMintCandidate(value);
+      }
+    }
   }
   
   if (mints.size === 0) return;

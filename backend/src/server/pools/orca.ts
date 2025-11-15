@@ -160,13 +160,11 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
   let jupMap: Record<string, { symbol: string; decimals: number }> = {};
   let resolveMintFn: undefined | ((s: string) => Promise<{ mint: string; decimals: number }>);
   const symbolToMintCache = new Map<string, { mint?: string; decimals?: number; tried: boolean }>();
+  let tokenModule: any = null;
   try {
-    const tok = await import('../../utils/tokens.js');
-    if (typeof (tok as any).loadJupiterTokenMap === 'function') {
-      jupMap = await (tok as any).loadJupiterTokenMap();
-    }
-    if (typeof (tok as any).resolveMint === 'function') {
-      resolveMintFn = (tok as any).resolveMint as any;
+    tokenModule = await import('../../utils/tokens.js');
+    if (typeof (tokenModule as any).resolveMint === 'function') {
+      resolveMintFn = (tokenModule as any).resolveMint as any;
     }
   } catch {}
   const arrCandidates: any[] = [];
@@ -178,11 +176,26 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
   
   // Enrich missing token decimals before price calculations
   try {
-    const { enrichPoolTokenDecimals } = await import('../../utils/tokens.js');
-    await enrichPoolTokenDecimals(arr, { logger });
+    const enrichFn = tokenModule?.enrichPoolTokenDecimals;
+    if (typeof enrichFn === 'function') {
+      await enrichFn(arr, { logger });
+    } else {
+      const { enrichPoolTokenDecimals } = await import('../../utils/tokens.js');
+      await enrichPoolTokenDecimals(arr, { logger });
+    }
   } catch (err: any) {
     try { logger.warn('orca.normalizer.enrich.failed', { error: String(err?.message || err), cat: 'pools' }); } catch {}
   }
+  
+  // Reload Jupiter decimals after enrichment so this pass sees new tokens immediately
+  try {
+    if (typeof tokenModule?.loadJupiterTokenMap === 'function') {
+      jupMap = await tokenModule.loadJupiterTokenMap();
+    } else {
+      const { loadJupiterTokenMap } = await import('../../utils/tokens.js');
+      jupMap = await loadJupiterTokenMap();
+    }
+  } catch {}
   
   for (const it of arr) {
     const id = String(it?.address || it?.id || '');

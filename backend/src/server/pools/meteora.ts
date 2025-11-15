@@ -99,7 +99,12 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
   const now = Date.now();
   const clmm: ClmmPool[] = [];
   let jupMap: Record<string, { symbol: string; decimals: number }> = {};
-  try { const tok = await import('../../utils/tokens.js'); if (typeof (tok as any).loadJupiterTokenMap === 'function') jupMap = await (tok as any).loadJupiterTokenMap(); } catch {}
+  let tokenModule: any = null;
+  try {
+    tokenModule = await import('../../utils/tokens.js');
+  } catch {
+    tokenModule = null;
+  }
   const tokenProgramMemo = new Map<string, 'spl-token'|'token-2022'>();
   const pendingTokenProgram = new Map<string, Promise<'spl-token'|'token-2022'>>();
   const ensureTokenProgram = (mint: string): Promise<'spl-token'|'token-2022'> => {
@@ -131,11 +136,27 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
   
   // Enrich missing token decimals before price calculations
   try {
-    const { enrichPoolTokenDecimals } = await import('../../utils/tokens.js');
-    await enrichPoolTokenDecimals(arr, { logger });
+    const enrichFn = tokenModule?.enrichPoolTokenDecimals;
+    if (typeof enrichFn === 'function') {
+      await enrichFn(arr, { logger });
+    } else {
+      const { enrichPoolTokenDecimals } = await import('../../utils/tokens.js');
+      await enrichPoolTokenDecimals(arr, { logger });
+    }
   } catch (err: any) {
     try { logger.warn('meteora.normalizer.enrich.failed', { error: String(err?.message || err), cat: 'pools' }); } catch {}
   }
+  
+  // Reload Jupiter map after enrichment so new decimals are visible immediately
+  try {
+    const loadFn = tokenModule?.loadJupiterTokenMap;
+    if (typeof loadFn === 'function') {
+      jupMap = await loadFn();
+    } else {
+      const { loadJupiterTokenMap } = await import('../../utils/tokens.js');
+      jupMap = await loadJupiterTokenMap();
+    }
+  } catch {}
   
   for (const it of arr) {
     const id = String(it?.address || it?.id || it?.poolAddress || '');
