@@ -392,14 +392,17 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
           if (!(px > 0)) {
             const amtA = Number((p as any)?.amount_a || 0);
             const amtB = Number((p as any)?.amount_b || 0);
-            const decA = Number((p as any)?.decimals_a ?? hop.inputDecimals ?? 9);
-            const decB = Number((p as any)?.decimals_b ?? hop.outputDecimals ?? 6);
             
-            if (amtA > 0 && amtB > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
-              const wholeA = amtA / Math.pow(10, decA);
-              const wholeB = amtB / Math.pow(10, decB);
+            // Get pool's actual decimals (NOT from hop, as hop may be reversed)
+            const poolDecA = Number((p as any)?.decimals_a ?? 9);
+            const poolDecB = Number((p as any)?.decimals_b ?? 6);
+            
+            if (amtA > 0 && amtB > 0 && Number.isFinite(poolDecA) && Number.isFinite(poolDecB)) {
+              const wholeA = amtA / Math.pow(10, poolDecA);
+              const wholeB = amtB / Math.pow(10, poolDecB);
               if (wholeB > 0) {
-                px = wholeA / wholeB;
+                // price_a_per_b = how many B per 1 A (always from pool's perspective)
+                px = wholeB / wholeA;
                 try {
                   const { logger } = await import('../../utils/logger.js');
                   logger.info('meteora.dlmm.quote.price_from_reserves', {
@@ -408,11 +411,12 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
                       poolId: hop.poolId,
                       amtA,
                       amtB,
-                      decA,
-                      decB,
+                      poolDecA,
+                      poolDecB,
                       wholeA,
                       wholeB,
                       calculatedPrice: px,
+                      isRev,
                     }
                   });
                 } catch {}

@@ -5111,10 +5111,30 @@ export async function getRaydiumPoolsNormalized(force = false, opts?: { skipUniv
           if (pool.market_base_vault) staticData.market_base_vault = pool.market_base_vault;
           if (pool.market_quote_vault) staticData.market_quote_vault = pool.market_quote_vault;
           if (pool.market_authority) staticData.market_authority = pool.market_authority;
+          // CRITICAL: Store AMM authority (owner) - required for transaction building
+          // The field might be under different names depending on the API response
           if (pool.amm_authority) staticData.amm_authority = pool.amm_authority;
+          if (pool.owner) staticData.owner = pool.owner; // Fallback field name
           if (pool.amm_open_orders) staticData.amm_open_orders = pool.amm_open_orders;
           if (pool.amm_target_orders) staticData.amm_target_orders = pool.amm_target_orders;
           if (pool.lp_mint) staticData.lp_mint = pool.lp_mint;
+          
+          // DEBUG: Log authority storage for WSOL-USDC pool
+          if (pool.id === '58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2') {
+            try {
+              logger.info('raydium.amm.cache_authority_debug', {
+                cat: 'pools',
+                ctx: {
+                  poolId: pool.id,
+                  ammAuthority: pool.amm_authority,
+                  owner: pool.owner,
+                  storedAmmAuthority: staticData.amm_authority,
+                  storedOwner: staticData.owner,
+                  allPoolFields: Object.keys(pool).filter(k => k.includes('auth') || k.includes('owner'))
+                }
+              });
+            } catch {}
+          }
           
           executionCache.setStatic(pool.id, staticData);
         }

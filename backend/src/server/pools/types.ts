@@ -36,6 +36,7 @@ export type AmmPool = {
   market_quote_vault?: string;     // Serum quote vault
   market_authority?: string;       // Serum vault signer
   amm_authority?: string;          // Raydium pool authority
+  owner?: string;                  // Alternative field name for amm_authority
   amm_open_orders?: string;        // Raydium open orders account
   amm_target_orders?: string;      // Raydium target orders account
   lp_mint?: string;                // LP token mint
