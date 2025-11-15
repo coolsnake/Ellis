@@ -2103,15 +2103,43 @@ export function startRaydiumRefreshLoop(): void {
                       const sqrtRaw = anyToBigInt((state as any).sqrtPriceX64 ?? (state as any).sqrt_price_x64 ?? (state as any).sqrtPrice ?? 0);
                       const precision = await (async () => {
                         try {
-                          let decA: number | undefined;
-                          let decB: number | undefined;
-                          try {
-                            const tok = await import('../utils/tokens.js');
-                            const a = await (tok as any).resolveMint(mintA);
-                            const b = await (tok as any).resolveMint(mintB);
-                            decA = Number(a?.decimals);
-                            decB = Number(b?.decimals);
-                          } catch {}
+                          // Get decimals from pool cache (fast memory lookup)
+                          const cachedRayPools = raydiumCache.data || { amm: [], clmm: [] };
+                          const existing = cachedRayPools.clmm.find(p => p.id === pk58);
+                          let decA = existing?.decimals_a;
+                          let decB = existing?.decimals_b;
+                          
+                          // Fallback to execution cache if not in pool cache
+                          if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
+                            try {
+                              const { executionCache } = await import('../execution/cache.js');
+                              const cached = executionCache.getStatic(pk58);
+                              if (!decA && cached?.decimals_a) decA = cached.decimals_a;
+                              if (!decB && cached?.decimals_b) decB = cached.decimals_b;
+                            } catch {}
+                          }
+                          
+                          // Only as last resort, resolve via API (rare for known pools)
+                          if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
+                            try {
+                              const tok = await import('../utils/tokens.js');
+                              if (!Number.isFinite(decA)) {
+                                const a = await (tok as any).resolveMint(mintA).catch(() => null);
+                                decA = Number(a?.decimals ?? 9);
+                              }
+                              if (!Number.isFinite(decB)) {
+                                const b = await (tok as any).resolveMint(mintB).catch(() => null);
+                                decB = Number(b?.decimals ?? 6);
+                              }
+                            } catch {
+                              if (!Number.isFinite(decA)) decA = 9;
+                              if (!Number.isFinite(decB)) decB = 6;
+                            }
+                          } else {
+                            decA = Number(decA);
+                            decB = Number(decB);
+                          }
+                          
                           if (!Number.isFinite(decA)) decA = undefined;
                           if (!Number.isFinite(decB)) decB = undefined;
                           let ratio = (sqrtRaw && decA != null && decB != null)
@@ -2415,15 +2443,43 @@ export function startRaydiumRefreshLoop(): void {
                   const sqrt_price_x64 = sqrtRaw ? Number(sqrtRaw) : Number(parsed.sqrtPrice);
                   const precision = await (async () => {
                     try {
-                      let decA: number | undefined;
-                      let decB: number | undefined;
-                      try {
-                        const tok = await import('../utils/tokens.js');
-                        const a = await (tok as any).resolveMint(mint_a);
-                        const b = await (tok as any).resolveMint(mint_b);
-                        decA = Number(a?.decimals);
-                        decB = Number(b?.decimals);
-                      } catch {}
+                      // Get decimals from pool cache (fast memory lookup)
+                      const cachedOrcaPools = orcaCache.data || { amm: [], clmm: [] };
+                      const existing = cachedOrcaPools.clmm.find(p => p.id === id);
+                      let decA = existing?.decimals_a;
+                      let decB = existing?.decimals_b;
+                      
+                      // Fallback to execution cache if not in pool cache
+                      if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
+                        try {
+                          const { executionCache } = await import('../execution/cache.js');
+                          const cached = executionCache.getStatic(id);
+                          if (!decA && cached?.decimals_a) decA = cached.decimals_a;
+                          if (!decB && cached?.decimals_b) decB = cached.decimals_b;
+                        } catch {}
+                      }
+                      
+                      // Only as last resort, resolve via API (rare for known pools)
+                      if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
+                        try {
+                          const tok = await import('../utils/tokens.js');
+                          if (!Number.isFinite(decA)) {
+                            const a = await (tok as any).resolveMint(mint_a).catch(() => null);
+                            decA = Number(a?.decimals ?? 9);
+                          }
+                          if (!Number.isFinite(decB)) {
+                            const b = await (tok as any).resolveMint(mint_b).catch(() => null);
+                            decB = Number(b?.decimals ?? 6);
+                          }
+                        } catch {
+                          if (!Number.isFinite(decA)) decA = 9;
+                          if (!Number.isFinite(decB)) decB = 6;
+                        }
+                      } else {
+                        decA = Number(decA);
+                        decB = Number(decB);
+                      }
+                      
                       if (!Number.isFinite(decA)) decA = undefined;
                       if (!Number.isFinite(decB)) decB = undefined;
                       const ratio = (sqrtRaw && decA != null && decB != null)
@@ -2645,20 +2701,49 @@ export function startRaydiumRefreshLoop(): void {
                   try { binStep = Number(state?.binStep ?? state?.bin_step); } catch {}
                   const accountA = toB58Any((state as any)?.reserveX);
                   const accountB = toB58Any((state as any)?.reserveY);
-                  let decA: number | undefined;
-                  let decB: number | undefined;
-                  let price_a_per_b: number | undefined;
-                  if (tokenX && tokenY) {
+                  
+                  // Get decimals from pool cache (fast memory lookup)
+                  const cachedMetPools = meteoraCache.data || { amm: [], clmm: [] };
+                  const existing = cachedMetPools.clmm.find(p => p.id === poolId);
+                  let decA = existing?.decimals_a;
+                  let decB = existing?.decimals_b;
+                  
+                  // Fallback to execution cache if not in pool cache
+                  if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
+                    try {
+                      const { executionCache } = await import('../execution/cache.js');
+                      const cached = executionCache.getStatic(poolId);
+                      if (!decA && cached?.decimals_a) decA = cached.decimals_a;
+                      if (!decB && cached?.decimals_b) decB = cached.decimals_b;
+                    } catch {}
+                  }
+                  
+                  // Only as last resort, resolve via API (rare for known pools)
+                  if (tokenX && tokenY && (!Number.isFinite(decA) || !Number.isFinite(decB))) {
                     try {
                       const tok = await import('../utils/tokens.js');
-                      const a = await (tok as any).resolveMint(tokenX);
-                      const b = await (tok as any).resolveMint(tokenY);
-                      decA = Number(a?.decimals);
-                      decB = Number(b?.decimals);
-                      if (!Number.isFinite(decA)) decA = undefined;
-                      if (!Number.isFinite(decB)) decB = undefined;
-                    } catch {}
-                    if (Number.isFinite(activeId as any) && Number.isFinite(binStep as any) && decA != null && decB != null) {
+                      if (!Number.isFinite(decA)) {
+                        const a = await (tok as any).resolveMint(tokenX).catch(() => null);
+                        decA = Number(a?.decimals ?? 9);
+                      }
+                      if (!Number.isFinite(decB)) {
+                        const b = await (tok as any).resolveMint(tokenY).catch(() => null);
+                        decB = Number(b?.decimals ?? 6);
+                      }
+                    } catch {
+                      if (!Number.isFinite(decA)) decA = 9;
+                      if (!Number.isFinite(decB)) decB = 6;
+                    }
+                  }
+                  
+                  // Ensure valid numbers
+                  if (Number.isFinite(decA)) decA = Number(decA);
+                  if (Number.isFinite(decB)) decB = Number(decB);
+                  if (!Number.isFinite(decA)) decA = undefined;
+                  if (!Number.isFinite(decB)) decB = undefined;
+                  
+                  let price_a_per_b: number | undefined;
+                  if (Number.isFinite(activeId as any) && Number.isFinite(binStep as any) && decA != null && decB != null) {
                       try {
                         const f = Math.pow(1 + binStep / 10000, 1); // More stable: 1.0001 = 1 + 0.0001
                         
@@ -2722,7 +2807,6 @@ export function startRaydiumRefreshLoop(): void {
                           });
                         } catch {}
                       }
-                    }
                   }
                   if (tokenX && tokenY) {
                     const tickSpacing = Number.isFinite(binStep as any) ? Number(binStep) : 0;
@@ -2962,12 +3046,45 @@ export function startRaydiumRefreshLoop(): void {
                   });
                 } catch {}
                 
-                // Get decimals and calculate price
-                const tok = await import('../utils/tokens.js');
-                const tokenA = await (tok as any).resolveMint(mint_a);
-                const tokenB = await (tok as any).resolveMint(mint_b);
-                const decA = Number(tokenA?.decimals ?? 9);
-                const decB = Number(tokenB?.decimals ?? 6);
+                // Get decimals from pool cache (fast memory lookup)
+                // This eliminates expensive resolveMint() calls (disk/API) and race conditions
+                const cachedPumpPools = pumpswapCache.data || { amm: [], clmm: [] };
+                const existing = cachedPumpPools.amm.find(p => p.id === pk58);
+                let decA = existing?.decimals_a;
+                let decB = existing?.decimals_b;
+                
+                // Fallback to execution cache if not in pool cache
+                if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
+                  try {
+                    const { executionCache } = await import('../execution/cache.js');
+                    const cached = executionCache.getStatic(pk58);
+                    if (!decA && cached?.decimals_a) decA = cached.decimals_a;
+                    if (!decB && cached?.decimals_b) decB = cached.decimals_b;
+                  } catch {}
+                }
+                
+                // Only as last resort, resolve via API (rare for known pools)
+                if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
+                  try {
+                    const tok = await import('../utils/tokens.js');
+                    if (!Number.isFinite(decA)) {
+                      const tokenA = await (tok as any).resolveMint(mint_a).catch(() => null);
+                      decA = Number(tokenA?.decimals ?? 9);
+                    }
+                    if (!Number.isFinite(decB)) {
+                      const tokenB = await (tok as any).resolveMint(mint_b).catch(() => null);
+                      decB = Number(tokenB?.decimals ?? 6);
+                    }
+                  } catch {
+                    // Ultimate fallback to common decimals
+                    if (!Number.isFinite(decA)) decA = 9;
+                    if (!Number.isFinite(decB)) decB = 6;
+                  }
+                } else {
+                  // Ensure we have valid numbers
+                  decA = Number(decA);
+                  decB = Number(decB);
+                }
                 
                 const baseWholeTokens = Number(baseReserve) / Math.pow(10, decA);
                 const quoteWholeTokens = Number(quoteReserve) / Math.pow(10, decB);
