@@ -263,7 +263,7 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       }
       if (!(price_a_per_b > 0) && derivedWhole) { price_a_per_b = derivedWhole; usedWhole = true; }
     } catch {}
-    // Prefer candidate closer to USD ref between pool-derived orientations only (do not substitute USD ref as price)
+    // Prefer candidate closer to USD ref (or reserve-derived ratio) between pool-derived orientations only
     try {
       const { getPriceByMint } = await import('../../server/priceStore.js');
       const pa = getPriceByMint(mint_a)?.usdc ?? null;
@@ -274,16 +274,30 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       // If we computed two possible A/B candidates above, include reciprocal too
       try { if (Number.isFinite(price_a_per_b) && price_a_per_b > 0) { const inv = 1 / (price_a_per_b as number); if (inv > 0 && Number.isFinite(inv)) cand.push(inv); } } catch {}
       // Include reserves-derived magnitude when available
-      if (Number.isFinite(derivedWhole as any) && (derivedWhole as number) > 0) cand.push(derivedWhole as number);
-      if (ref && cand.length > 1) {
+      const derivedCandidate = Number.isFinite(derivedWhole as any) && (derivedWhole as number) > 0 ? (derivedWhole as number) : undefined;
+      if (derivedCandidate) cand.push(derivedCandidate);
+      const pickClosest = (target: number | undefined): number | undefined => {
+        if (!target || !(target > 0) || cand.length === 0) return undefined;
         let best = cand[0];
-        let bestDev = Math.max(best / (ref as number), (ref as number) / best);
+        let bestDev = Math.max(best / target, target / best);
         for (let i = 1; i < cand.length; i++) {
           const v = cand[i];
-          const d = Math.max(v / (ref as number), (ref as number) / v);
-          if (d + 1e-12 < bestDev) { bestDev = d; best = v; }
+          if (!(v > 0)) continue;
+          const dev = Math.max(v / target, target / v);
+          if (dev + 1e-12 < bestDev) { bestDev = dev; best = v; }
         }
-        price_a_per_b = best;
+        return best;
+      };
+      let chosen: number | undefined;
+      if (ref && cand.length > 1) {
+        chosen = pickClosest(ref);
+      } else if (derivedCandidate && cand.length > 1) {
+        chosen = pickClosest(derivedCandidate);
+      }
+      if (chosen && Number.isFinite(chosen) && chosen > 0) {
+        price_a_per_b = chosen;
+      } else if (cand.length > 0 && (!Number.isFinite(price_a_per_b) || !(price_a_per_b > 0))) {
+        price_a_per_b = cand[0];
       }
     } catch {}
     // Stable-stable guard: if active-bin implies exactly 1 and reserves give a different finite value, prefer reserves
