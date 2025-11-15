@@ -2365,10 +2365,13 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     let tokenXMintPk: PublicKey | null = null;
     let tokenYMintPk: PublicKey | null = null;
     
+    let poolTokenProgramLabelA: 'spl-token'|'token-2022' | undefined;
+    let poolTokenProgramLabelB: 'spl-token'|'token-2022' | undefined;
     try {
       const { executionCache } = await import('../cache.js');
       const staticData = executionCache.getStatic(hop.poolId);
-      
+      poolTokenProgramLabelA = staticData?.token_program_a;
+      poolTokenProgramLabelB = staticData?.token_program_b;
       if (staticData?.mint_a && staticData?.mint_b) {
         tokenXMintPk = toPublicKey(staticData.mint_a);
         tokenYMintPk = toPublicKey(staticData.mint_b);
@@ -2892,6 +2895,39 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       // Use the user's own input token account (userTokenIn) as the host fee recipient
       // This satisfies the SDK requirement while keeping any fees in the user's wallet
       const acctBase: any = { ...accounts };
+      const programLabelToPk = (label?: 'spl-token'|'token-2022'): PublicKey | undefined => {
+        if (label === 'token-2022') return TOKEN_2022_PROGRAM_ID;
+        if (label === 'spl-token') return TOKEN_PROGRAM_ID;
+        return undefined;
+      };
+      const assignTokenProgramsFromPool = ({
+        tokenXIsMintA,
+        tokenXIsMintB,
+        tokenYIsMintA,
+        tokenYIsMintB,
+      }: {
+        tokenXIsMintA?: boolean;
+        tokenXIsMintB?: boolean;
+        tokenYIsMintA?: boolean;
+        tokenYIsMintB?: boolean;
+      }) => {
+        if (!acctBase.tokenXProgram) {
+          const prog = tokenXIsMintA
+            ? programLabelToPk(poolTokenProgramLabelA)
+            : tokenXIsMintB
+              ? programLabelToPk(poolTokenProgramLabelB)
+              : undefined;
+          if (prog) acctBase.tokenXProgram = prog;
+        }
+        if (!acctBase.tokenYProgram) {
+          const prog = tokenYIsMintA
+            ? programLabelToPk(poolTokenProgramLabelA)
+            : tokenYIsMintB
+              ? programLabelToPk(poolTokenProgramLabelB)
+              : undefined;
+          if (prog) acctBase.tokenYProgram = prog;
+        }
+      };
       
       // Set hostFeeIn to userTokenIn (user's input token account)
       // This prevents both error 3007 (wrong owner) and "hostFeeIn not provided" errors
@@ -3007,6 +3043,8 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 // Determine if tokenX corresponds to mint_a or mint_b
                 const tokenXIsMintA = tokenXMintPk.toBase58() === poolMintA;
                 const tokenXIsMintB = tokenXMintPk.toBase58() === poolMintB;
+                const tokenYIsMintA = tokenYMintPk.toBase58() === poolMintA;
+                const tokenYIsMintB = tokenYMintPk.toBase58() === poolMintB;
                 
                 if (tokenXIsMintA) {
                   // tokenX=mint_a, tokenY=mint_b => reserveX=vaultA, reserveY=vaultB
@@ -3017,6 +3055,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                   acctBase.reserveX = toPublicKey(hop.vaultB);
                   acctBase.reserveY = toPublicKey(hop.vaultA);
                 }
+                assignTokenProgramsFromPool({ tokenXIsMintA, tokenXIsMintB, tokenYIsMintA, tokenYIsMintB });
               }
             }
           }
@@ -3121,6 +3160,8 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
             // Determine if tokenX corresponds to mint_a or mint_b
             const tokenXIsMintA = tokenXMint === poolMintA;
             const tokenXIsMintB = tokenXMint === poolMintB;
+            const tokenYIsMintA = tokenYMint === poolMintA;
+            const tokenYIsMintB = tokenYMint === poolMintB;
             
             if (tokenXIsMintA) {
               // tokenX=mint_a, tokenY=mint_b => reserveX=vaultA, reserveY=vaultB
@@ -3143,6 +3184,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 });
               } catch {}
             }
+            assignTokenProgramsFromPool({ tokenXIsMintA, tokenXIsMintB, tokenYIsMintA, tokenYIsMintB });
           } else {
             // Fallback: if we can't determine token order, use natural mapping
             if (!acctBase.reserveX) acctBase.reserveX = toPublicKey(hop.vaultA);
@@ -3220,94 +3262,118 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       // Fetch token program IDs AFTER token mints are confirmed
       // Detect correct token program IDs per mint (Token-2022 support)
       try {
-      logger.info('meteora.dlmm.token_programs.fetch_start', { cat: 'tx', ctx: { poolId: hop.poolId } });
-      const getTokenProgramId = (DLMM as any)?.getTokenProgramId;
-      logger.info('meteora.dlmm.token_programs.sdk_function', { cat: 'tx', ctx: { poolId: hop.poolId, exists: !!getTokenProgramId } });
-      
-      const xMint = acctBase.tokenXMint ? (acctBase.tokenXMint.publicKey || acctBase.tokenXMint) : undefined;
-      const yMint = acctBase.tokenYMint ? (acctBase.tokenYMint.publicKey || acctBase.tokenYMint) : undefined;
-      logger.info('meteora.dlmm.token_programs.mints_extracted', { cat: 'tx', ctx: { poolId: hop.poolId, hasXMint: !!xMint, hasYMint: !!yMint } });
-      
-      const fallbackTokenProg = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
-      
-      // Helper to ensure we have a proper PublicKey instance
-      const ensurePublicKey = (value: any, fallback: PublicKey): PublicKey => {
-        if (!value) return fallback;
-        // Already a PublicKey
-        if (value instanceof PublicKey) return value;
-        // Has toBase58 method - extract and create new PublicKey
-        if (typeof value.toBase58 === 'function') {
-          try {
-            return new PublicKey(value.toBase58());
-          } catch {
-            return fallback;
-          }
-        }
-        // String representation
-        if (typeof value === 'string') {
-          try {
-            return new PublicKey(value);
-          } catch {
-            return fallback;
-          }
-        }
-        // Buffer/Uint8Array
-        if (value.length === 32 || (value.buffer && value.buffer.byteLength === 32)) {
-          try {
-            return new PublicKey(value);
-          } catch {
-            return fallback;
-          }
-        }
-        return fallback;
-      };
-      
-      // Handle synchronous or asynchronous return
-      if (getTokenProgramId && xMint) {
+      const needsTokenProgramFetch = !acctBase.tokenXProgram || !acctBase.tokenYProgram;
+      if (needsTokenProgramFetch) {
         try {
-          const resultX = getTokenProgramId(connection, xMint);
-          // Check if it's a Promise
-          if (resultX && typeof resultX.then === 'function') {
-            const resolved = await resultX.catch(() => fallbackTokenProg);
-            acctBase.tokenXProgram = ensurePublicKey(resolved, fallbackTokenProg);
-          } else {
-            // Synchronous return - ensure it's a proper PublicKey
-            acctBase.tokenXProgram = ensurePublicKey(resultX, fallbackTokenProg);
+          logger.warn('meteora.dlmm.token_program.cache_gap', {
+            cat: 'tx',
+            ctx: {
+              poolId: hop.poolId,
+              hasCacheA: !!poolTokenProgramLabelA,
+              hasCacheB: !!poolTokenProgramLabelB,
+            },
+          });
+        } catch {}
+        logger.info('meteora.dlmm.token_programs.fetch_start', { cat: 'tx', ctx: { poolId: hop.poolId } });
+        const getTokenProgramId = (DLMM as any)?.getTokenProgramId;
+        logger.info('meteora.dlmm.token_programs.sdk_function', { cat: 'tx', ctx: { poolId: hop.poolId, exists: !!getTokenProgramId } });
+        
+        const xMint = acctBase.tokenXMint ? (acctBase.tokenXMint.publicKey || acctBase.tokenXMint) : undefined;
+        const yMint = acctBase.tokenYMint ? (acctBase.tokenYMint.publicKey || acctBase.tokenYMint) : undefined;
+        logger.info('meteora.dlmm.token_programs.mints_extracted', { cat: 'tx', ctx: { poolId: hop.poolId, hasXMint: !!xMint, hasYMint: !!yMint } });
+        
+        const fallbackTokenProg = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+        
+        // Helper to ensure we have a proper PublicKey instance
+        const ensurePublicKey = (value: any, fallback: PublicKey): PublicKey => {
+          if (!value) return fallback;
+          // Already a PublicKey
+          if (value instanceof PublicKey) return value;
+          // Has toBase58 method - extract and create new PublicKey
+          if (typeof value.toBase58 === 'function') {
+            try {
+              return new PublicKey(value.toBase58());
+            } catch {
+              return fallback;
+            }
           }
-          logger.info('meteora.dlmm.token_programs.x_set', { cat: 'tx', ctx: { poolId: hop.poolId, tokenXProgram: acctBase.tokenXProgram?.toBase58?.() || String(acctBase.tokenXProgram) } });
-        } catch (e) {
+          // String representation
+          if (typeof value === 'string') {
+            try {
+              return new PublicKey(value);
+            } catch {
+              return fallback;
+            }
+          }
+          // Buffer/Uint8Array
+          if (value.length === 32 || (value.buffer && value.buffer.byteLength === 32)) {
+            try {
+              return new PublicKey(value);
+            } catch {
+              return fallback;
+            }
+          }
+          return fallback;
+        };
+        
+        // Handle synchronous or asynchronous return
+        if (getTokenProgramId && xMint) {
+          try {
+            const resultX = getTokenProgramId(connection, xMint);
+            // Check if it's a Promise
+            if (resultX && typeof resultX.then === 'function') {
+              const resolved = await resultX.catch(() => fallbackTokenProg);
+              acctBase.tokenXProgram = ensurePublicKey(resolved, fallbackTokenProg);
+            } else {
+              // Synchronous return - ensure it's a proper PublicKey
+              acctBase.tokenXProgram = ensurePublicKey(resultX, fallbackTokenProg);
+            }
+            logger.info('meteora.dlmm.token_programs.x_set', { cat: 'tx', ctx: { poolId: hop.poolId, tokenXProgram: acctBase.tokenXProgram?.toBase58?.() || String(acctBase.tokenXProgram) } });
+          } catch (e) {
+            acctBase.tokenXProgram = fallbackTokenProg;
+            logger.warn('meteora.dlmm.token_programs.x_error', { cat: 'tx', ctx: { poolId: hop.poolId, error: String(e) } });
+          }
+        }
+        
+        if (getTokenProgramId && yMint) {
+          try {
+            const resultY = getTokenProgramId(connection, yMint);
+            // Check if it's a Promise
+            if (resultY && typeof resultY.then === 'function') {
+              const resolved = await resultY.catch(() => fallbackTokenProg);
+              acctBase.tokenYProgram = ensurePublicKey(resolved, fallbackTokenProg);
+            } else {
+              // Synchronous return - ensure it's a proper PublicKey
+              acctBase.tokenYProgram = ensurePublicKey(resultY, fallbackTokenProg);
+            }
+            logger.info('meteora.dlmm.token_programs.y_set', { cat: 'tx', ctx: { poolId: hop.poolId, tokenYProgram: acctBase.tokenYProgram?.toBase58?.() || String(acctBase.tokenYProgram) } });
+          } catch (e) {
+            acctBase.tokenYProgram = fallbackTokenProg;
+            logger.warn('meteora.dlmm.token_programs.y_error', { cat: 'tx', ctx: { poolId: hop.poolId, error: String(e) } });
+          }
+        }
+        
+        if (!acctBase.tokenXProgram) {
           acctBase.tokenXProgram = fallbackTokenProg;
-          logger.warn('meteora.dlmm.token_programs.x_error', { cat: 'tx', ctx: { poolId: hop.poolId, error: String(e) } });
+          logger.info('meteora.dlmm.token_programs.x_fallback', { cat: 'tx', ctx: { poolId: hop.poolId } });
         }
-      }
-      
-      if (getTokenProgramId && yMint) {
-        try {
-          const resultY = getTokenProgramId(connection, yMint);
-          // Check if it's a Promise
-          if (resultY && typeof resultY.then === 'function') {
-            const resolved = await resultY.catch(() => fallbackTokenProg);
-            acctBase.tokenYProgram = ensurePublicKey(resolved, fallbackTokenProg);
-          } else {
-            // Synchronous return - ensure it's a proper PublicKey
-            acctBase.tokenYProgram = ensurePublicKey(resultY, fallbackTokenProg);
-          }
-          logger.info('meteora.dlmm.token_programs.y_set', { cat: 'tx', ctx: { poolId: hop.poolId, tokenYProgram: acctBase.tokenYProgram?.toBase58?.() || String(acctBase.tokenYProgram) } });
-        } catch (e) {
+        if (!acctBase.tokenYProgram) {
           acctBase.tokenYProgram = fallbackTokenProg;
-          logger.warn('meteora.dlmm.token_programs.y_error', { cat: 'tx', ctx: { poolId: hop.poolId, error: String(e) } });
+          logger.info('meteora.dlmm.token_programs.y_fallback', { cat: 'tx', ctx: { poolId: hop.poolId } });
         }
+        logger.info('meteora.dlmm.token_programs.fetch_complete', { cat: 'tx', ctx: { poolId: hop.poolId, hasX: !!acctBase.tokenXProgram, hasY: !!acctBase.tokenYProgram } });
+      } else {
+        try {
+          logger.info('meteora.dlmm.token_programs.cache_hit', {
+            cat: 'tx',
+            ctx: {
+              poolId: hop.poolId,
+              tokenXProgram: acctBase.tokenXProgram?.toBase58?.() || String(acctBase.tokenXProgram || ''),
+              tokenYProgram: acctBase.tokenYProgram?.toBase58?.() || String(acctBase.tokenYProgram || ''),
+            },
+          });
+        } catch {}
       }
-      
-      if (!acctBase.tokenXProgram) {
-        acctBase.tokenXProgram = fallbackTokenProg;
-        logger.info('meteora.dlmm.token_programs.x_fallback', { cat: 'tx', ctx: { poolId: hop.poolId } });
-      }
-      if (!acctBase.tokenYProgram) {
-        acctBase.tokenYProgram = fallbackTokenProg;
-        logger.info('meteora.dlmm.token_programs.y_fallback', { cat: 'tx', ctx: { poolId: hop.poolId } });
-      }
-      logger.info('meteora.dlmm.token_programs.fetch_complete', { cat: 'tx', ctx: { poolId: hop.poolId, hasX: !!acctBase.tokenXProgram, hasY: !!acctBase.tokenYProgram } });
       } catch (err) {
       logger.error('meteora.dlmm.token_programs.fetch_error', { cat: 'tx', ctx: { poolId: hop.poolId, error: String(err) } });
       }

@@ -80,6 +80,8 @@ export type ClmmPool = {
   // Execution-critical accounts (cached to avoid RPC calls during instruction building)
   // Meteora DLMM-specific
   bin_array_bitmap_extension?: string;  // PDA for tracking initialized bin arrays
+  token_program_a?: 'spl-token' | 'token-2022';
+  token_program_b?: 'spl-token' | 'token-2022';
   // Raydium CLMM-specific
   observation_state?: string;           // Observation state account (oracle data)
   ex_bitmap?: string;                   // Extended bitmap for tick array tracking

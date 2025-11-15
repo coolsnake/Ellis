@@ -6,6 +6,23 @@ import { peekMeteoraPools } from '../../server/pools.js';
 export async function resolveMeteoraDlmm(hop: DirectHop): Promise<DirectHop> {
   const stat = executionCache.getStatic(hop.poolId);
   if (stat?.programId) hop.programId = stat.programId;
+  const tokenProgramA = stat?.token_program_a;
+  const tokenProgramB = stat?.token_program_b;
+  if (!tokenProgramA || !tokenProgramB) {
+    try {
+      const { logger } = await import('../../utils/logger.js');
+      logger.warn('meteora.resolver.token_program.missing', {
+        cat: 'tx',
+        ctx: {
+          poolId: hop.poolId,
+          hasA: !!tokenProgramA,
+          hasB: !!tokenProgramB,
+        },
+      });
+    } catch {}
+  }
+  (hop as any).tokenProgramA = tokenProgramA;
+  (hop as any).tokenProgramB = tokenProgramB;
   // Fallback to configured DLMM programId if still missing (helps builder)
   try { if (!hop.programId && (CONFIG as any)?.meteora?.programId) hop.programId = String((CONFIG as any)?.meteora?.programId); } catch {}
   try {

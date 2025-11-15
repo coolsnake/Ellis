@@ -19,6 +19,8 @@ type PoolStatic = {
   mint_b?: string;
   decimals_a?: number;
   decimals_b?: number;
+  token_program_a?: 'spl-token' | 'token-2022';
+  token_program_b?: 'spl-token' | 'token-2022';
   // Raydium AMM market accounts (required for swaps)
   market_id?: string;
   market_program_id?: string;

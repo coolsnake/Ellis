@@ -2549,7 +2549,8 @@ export function startRaydiumRefreshLoop(): void {
                     try {
                       const { executionCache } = await import('../execution/cache.js');
                       
-                      // Store static pool data
+                    const existing = executionCache.getStatic(poolId) || {} as any;
+                    // Store static pool data
                       executionCache.setStatic(poolId, {
                         programId: String(program?.programId?.toBase58() || ''),
                         vaults: {
@@ -2561,6 +2562,8 @@ export function startRaydiumRefreshLoop(): void {
                         mint_b: tokenY,
                         decimals_a: decA,
                         decimals_b: decB,
+                        token_program_a: existing.token_program_a,
+                        token_program_b: existing.token_program_b,
                         // Store raw account data for local parsing during tx building
                         rawAccountData: info?.data ? Buffer.from(info.data) : undefined,
                         rawAccountDataUpdatedMs: Date.now()
@@ -2568,7 +2571,9 @@ export function startRaydiumRefreshLoop(): void {
                       
                       // Store hot pool data (frequently changing active bin ID)
                       if (Number.isFinite(activeId as any)) {
+                      const existingHot = executionCache.getHot(poolId);
                         executionCache.setHot(poolId, {
+                        ...existingHot,
                           activeId: Number(activeId),
                           sqrtPriceX64: sqrtPriceRaw,
                           liquidity: liquidityRaw,
@@ -5606,6 +5611,8 @@ export async function getMeteoraPoolsCached(force = false, opts?: { skipUniverse
           if (pool.mint_b) staticData.mint_b = pool.mint_b;
           if (pool.decimals_a != null) staticData.decimals_a = pool.decimals_a;
           if (pool.decimals_b != null) staticData.decimals_b = pool.decimals_b;
+          if (pool.token_program_a) staticData.token_program_a = pool.token_program_a;
+          if (pool.token_program_b) staticData.token_program_b = pool.token_program_b;
           
           // Store execution-critical accounts (bin_array_bitmap_extension)
           if (pool.bin_array_bitmap_extension) {

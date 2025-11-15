@@ -6,6 +6,7 @@ import type { ClmmPool, PoolsPayload } from './types.js';
 import { canonicalizePairs, validateHttpUrl, swapABFields } from './common.js';
 import { verifyCanonicalization } from './validation.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
+import { getTokenMeta } from '../../execution/resolver/tokenMeta.js';
 
 export async function fetchMeteoraHttp(): Promise<any> {
   const METEORA_RAW_PATH = joinPath(CONFIG.cacheDir, 'meteora-raw-sample.json');
@@ -92,6 +93,29 @@ export async function fetchMeteoraHttp(): Promise<any> {
   } catch {
     return [];
   }
+  const tokenProgramMemo = new Map<string, 'spl-token'|'token-2022'>();
+  const pendingTokenProgram = new Map<string, Promise<'spl-token'|'token-2022'>>();
+  const ensureTokenProgram = (mint: string): Promise<'spl-token'|'token-2022'> => {
+    if (!mint) return Promise.resolve('spl-token');
+    const cached = tokenProgramMemo.get(mint);
+    if (cached) return Promise.resolve(cached);
+    const existingPromise = pendingTokenProgram.get(mint);
+    if (existingPromise) return existingPromise;
+    const p = (async () => {
+      try {
+        const meta = await getTokenMeta(mint);
+        tokenProgramMemo.set(mint, meta.program);
+        return meta.program;
+      } catch {
+        tokenProgramMemo.set(mint, 'spl-token');
+        return 'spl-token';
+      } finally {
+        pendingTokenProgram.delete(mint);
+      }
+    })();
+    pendingTokenProgram.set(mint, p);
+    return p;
+  };
 }
 
 export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
@@ -376,8 +400,36 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
         });
       } catch {}
     }
+    const [tokenProgramA, tokenProgramB] = await Promise.all([
+      ensureTokenProgram(mint_a),
+      ensureTokenProgram(mint_b),
+    ]);
     
-    clmm.push({ id, dex: 'Meteora', mint_a, mint_b, fee_bps, sqrt_price_x64: 0, liquidity: 0, tick_spacing: Number((it as any)?.bin_step || (it as any)?.binStep || 0), updated_ms: now, price_a_per_b: (price_a_per_b && price_a_per_b > 0) ? price_a_per_b : undefined, amount_a, amount_b, decimals_a: Number.isFinite(decA) ? decA : undefined, decimals_b: Number.isFinite(decB) ? decB : undefined, account_a, account_b, bin_array_bitmap_extension, pool_kind: 'clmm', pool_liquidity_raw, tvl_usd, liquidity_display } as any);
+    clmm.push({
+      id,
+      dex: 'Meteora',
+      mint_a,
+      mint_b,
+      fee_bps,
+      sqrt_price_x64: 0,
+      liquidity: 0,
+      tick_spacing: Number((it as any)?.bin_step || (it as any)?.binStep || 0),
+      updated_ms: now,
+      price_a_per_b: (price_a_per_b && price_a_per_b > 0) ? price_a_per_b : undefined,
+      amount_a,
+      amount_b,
+      decimals_a: Number.isFinite(decA) ? decA : undefined,
+      decimals_b: Number.isFinite(decB) ? decB : undefined,
+      account_a,
+      account_b,
+      bin_array_bitmap_extension,
+      pool_kind: 'clmm',
+      pool_liquidity_raw,
+      tvl_usd,
+      liquidity_display,
+      token_program_a: tokenProgramA,
+      token_program_b: tokenProgramB,
+    } as any);
   }
   // Canonicalize pairs using unified policy; handles A/B swap and price inversion when needed
   const clmmCanon = canonicalizePairs(clmm);
