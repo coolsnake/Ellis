@@ -93,6 +93,7 @@ export async function fetchMeteoraHttp(): Promise<any> {
   } catch {
     return [];
   }
+
 export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
   const now = Date.now();
   const clmm: ClmmPool[] = [];
