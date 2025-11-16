@@ -5047,42 +5047,46 @@ export function startRaydiumRefreshLoop(): void {
               meteora_balanced: wsCounts.meteora_balanced || 0
             } as any;
             wsCounts.raydium = 0; wsCounts.orca = 0; wsCounts.meteora = 0; wsCounts.pumpswap = 0; wsCounts.meteora_balanced = 0;
-            const metrics = {
-              raydium: { ...wsDeltaStats.raydium, skipReasons: wsDeltaStats.raydium.skipReasons },
-              orca: { ...wsDeltaStats.orca, skipReasons: wsDeltaStats.orca.skipReasons },
-              meteora: { ...wsDeltaStats.meteora, skipReasons: wsDeltaStats.meteora.skipReasons },
-              pumpswap: { ...wsDeltaStats.pumpswap, skipReasons: wsDeltaStats.pumpswap.skipReasons },
-              meteora_balanced: { ...wsDeltaStats.meteora_balanced, skipReasons: wsDeltaStats.meteora_balanced.skipReasons },
-            };
-            const decodeMetrics = {
-              raydium: { ...wsDecodeStats.raydium },
-              orca: { ...wsDecodeStats.orca },
-              meteora: { ...wsDecodeStats.meteora },
-              pumpswap: { ...wsDecodeStats.pumpswap },
-              meteora_balanced: { ...wsDecodeStats.meteora_balanced },
-            };
-            const validationMetrics = {
-              raydium: { ...wsValidationStats.raydium },
-              orca: { ...wsValidationStats.orca },
-              meteora: { ...wsValidationStats.meteora },
-              pumpswap: { ...wsValidationStats.pumpswap },
-              meteora_balanced: { ...wsValidationStats.meteora_balanced },
-            };
-            logger.info('pools.ws aggregate', { 
+            
+            // Only log non-zero metrics to reduce size
+            const activeProtocols = Object.entries(snapshot)
+              .filter(([_, count]) => count > 0)
+              .map(([proto]) => proto);
+            
+            // Simplified log with only essential data
+            const logData: any = { 
               events: snapshot, 
               healthy: wsHealthy, 
               lastEventMs: lastWsEventMs,
-              counts: {
-                raydium: { attached: attachedRaydiumPools, target: (typeof getWsTargets === 'function' ? (getWsTargets as any)._last?.raydium?.target : undefined) },
-                orca: { attached: attachedOrcaPools, target: (typeof getWsTargets === 'function' ? (getWsTargets as any)._last?.orca?.target : undefined) },
-                meteora: { attached: attachedMeteoraPools, target: (typeof getWsTargets === 'function' ? (getWsTargets as any)._last?.meteora?.target : undefined) },
-                pumpswap: { attached: attachedPumpswapPools, target: (typeof getWsTargets === 'function' ? (getWsTargets as any)._last?.pumpswap?.target : undefined) },
-                meteora_balanced: { attached: attachedMeteoraBalancedPools, target: (typeof getWsTargets === 'function' ? (getWsTargets as any)._last?.meteora_balanced?.target : undefined) }
-              },
-              metrics,
-              decodeStats: decodeMetrics,
-              validationStats: validationMetrics,
-            });
+            };
+            
+            // Only include detailed metrics for active protocols
+            if (activeProtocols.length > 0) {
+              logData.metrics = {};
+              logData.attached = {};
+              
+              for (const proto of activeProtocols) {
+                const stats = wsDeltaStats[proto as keyof typeof wsDeltaStats];
+                logData.metrics[proto] = {
+                  decoded: stats.decoded,
+                  applied: stats.applied,
+                  skipped: stats.skipped,
+                  // Only include top skip reason if skipped > 0
+                  ...(stats.skipped > 0 && Object.keys(stats.skipReasons).length > 0 
+                    ? { topSkipReason: Object.entries(stats.skipReasons).sort(([,a], [,b]) => (b as number) - (a as number))[0]?.[0] }
+                    : {})
+                };
+                
+                // Attached count for active protocols only
+                if (proto === 'raydium') logData.attached.raydium = attachedRaydiumPools;
+                else if (proto === 'orca') logData.attached.orca = attachedOrcaPools;
+                else if (proto === 'meteora') logData.attached.meteora = attachedMeteoraPools;
+                else if (proto === 'pumpswap') logData.attached.pumpswap = attachedPumpswapPools;
+                else if (proto === 'meteora_balanced') logData.attached.meteora_balanced = attachedMeteoraBalancedPools;
+              }
+            }
+            
+            logger.info('pools.ws aggregate', logData);
             wsDeltaStats.raydium = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
             wsDeltaStats.orca = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };
             wsDeltaStats.meteora = { decoded: 0, applied: 0, skipped: 0, skipReasons: {} };

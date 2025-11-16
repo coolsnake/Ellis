@@ -416,6 +416,8 @@ export async function enrichMissingDecimals(
 /**
  * Helper function for normalizers: enrich decimals for mints found in pools
  * This should be called at the start of each normalizer before price calculations
+ * 
+ * ALWAYS validates on-chain during normalization (normalizeMode=true)
  */
 export async function enrichPoolTokenDecimals(
   pools: any[],
@@ -519,8 +521,44 @@ export async function enrichPoolTokenDecimals(
   
   if (mints.size === 0) return new Map<string, number>();
   
-  const jupMap = await loadJupiterTokenMap();
-  return enrichMissingDecimals(Array.from(mints), jupMap, options);
+  // CRITICAL: Use normalize mode to force RPC validation
+  try {
+    const { resolveManyDecimals } = await import('../server/pools/decimals.js');
+    
+    const log = options?.logger;
+    if (log) {
+      log.info('tokens.enrich.starting', {
+        mints: mints.size,
+        mode: 'normalize_with_rpc_validation',
+        cat: 'tokens'
+      });
+    }
+    
+    // normalizeMode=true ensures RPC validation happens FIRST
+    const result = await resolveManyDecimals(Array.from(mints), {
+      logger: log,
+      batchSize: options?.batchSize || 100,
+      normalizeMode: true // FORCE RPC VALIDATION
+    });
+    
+    if (log) {
+      log.info('tokens.enrich.complete', {
+        requested: mints.size,
+        resolved: result.size,
+        cat: 'tokens'
+      });
+    }
+    
+    return result;
+  } catch (err: any) {
+    if (options?.logger) {
+      options.logger.error('token.enrich.error', {
+        error: err.message,
+        cat: 'tokens'
+      });
+    }
+    return new Map<string, number>();
+  }
 }
 
 

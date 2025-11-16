@@ -107,16 +107,24 @@ export async function resolveDecimals(mint: string): Promise<number | undefined>
 
 /**
  * Batch resolve decimals for multiple mints efficiently
+ * 
+ * Mode 1 (normalizeMode=false): Anchors → Cache → Jupiter → RPC (performance)
+ * Mode 2 (normalizeMode=true): Anchors → RPC → Jupiter (validation priority)
  */
 export async function resolveManyDecimals(
   mints: string[],
-  options?: { logger?: any; batchSize?: number }
+  options?: { 
+    logger?: any; 
+    batchSize?: number;
+    normalizeMode?: boolean; // NEW: Set true during pool normalization
+  }
 ): Promise<Map<string, number>> {
   const result = new Map<string, number>();
   const log = options?.logger || logger;
   const batchSize = options?.batchSize ?? 100;
+  const normalizeMode = options?.normalizeMode ?? false; // Default: performance mode
   
-  // First pass: Check anchors and cache
+  // PHASE 1: Check anchors (ALWAYS trust these)
   const needsLookup = new Set<string>();
   for (const mint of mints) {
     if (!mint || mint.length < 32) continue;
@@ -127,8 +135,9 @@ export async function resolveManyDecimals(
       continue;
     }
     
-    // Check cache
-    if (resolveCache.has(mint)) {
+    // In normalize mode: Skip cache, go straight to RPC validation
+    // In performance mode: Use cache if available
+    if (!normalizeMode && resolveCache.has(mint)) {
       result.set(mint, resolveCache.get(mint)!);
       continue;
     }
@@ -138,86 +147,207 @@ export async function resolveManyDecimals(
   
   if (needsLookup.size === 0) return result;
   
-  // Second pass: Check Jupiter map
-  const jupMap = await getJupiterMap();
-  const needsRpc = new Set<string>();
+  // PHASE 2: RPC Validation
+  // In normalize mode: Do RPC FIRST (before Jupiter)
+  // In performance mode: Do RPC LAST (after Jupiter)
+  let needsJupiter = needsLookup;
   
-  for (const mint of needsLookup) {
-    const jupDecimals = jupMap[mint]?.decimals;
-    if (jupDecimals != null && Number.isFinite(jupDecimals)) {
-      result.set(mint, jupDecimals);
-      resolveCache.set(mint, jupDecimals);
-    } else {
-      needsRpc.add(mint);
+  if (normalizeMode) {
+    // NORMALIZE MODE: RPC FIRST to establish truth
+    try {
+      log.info('decimals.normalize.rpc_validate.start', {
+        total: mints.length,
+        needsValidation: needsLookup.size,
+        mode: 'validation',
+        cat: 'decimals'
+      });
+    } catch {}
+    
+    const conn = new Connection(CONFIG.rpcUrl, { commitment: 'confirmed', disableRetryOnRateLimit: true } as any);
+    const TOKEN_PROGRAM_ID_STR = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+    const TOKEN_2022_PROGRAM_ID_STR = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
+    
+    const mintsToFetch = Array.from(needsLookup);
+    let rpcValidated = 0;
+    let rpcFailed = 0;
+    
+    for (let i = 0; i < mintsToFetch.length; i += batchSize) {
+      const batch = mintsToFetch.slice(i, i + batchSize);
+      const pubkeys = batch.map(m => {
+        try {
+          return new PublicKey(m);
+        } catch {
+          return null;
+        }
+      }).filter(Boolean) as PublicKey[];
+      
+      if (pubkeys.length === 0) continue;
+      
+      try {
+        const accountInfos = await conn.getMultipleAccountsInfo(pubkeys, 'confirmed');
+        
+        for (let j = 0; j < accountInfos.length; j++) {
+          const accountInfo = accountInfos[j];
+          const mint = batch[j];
+          if (!accountInfo || !mint) {
+            rpcFailed++;
+            continue;
+          }
+          
+          try {
+            const owner = accountInfo.owner.toBase58();
+            const isTokenProgram = owner === TOKEN_PROGRAM_ID_STR || owner === TOKEN_2022_PROGRAM_ID_STR;
+            
+            if (isTokenProgram && accountInfo.data.length >= 45) {
+              // Decimals is u8 at offset 44
+              const decimals = accountInfo.data[44];
+              if (decimals <= 18) {
+                result.set(mint, decimals);
+                resolveCache.set(mint, decimals); // CACHE FOR FUTURE USE
+                rpcValidated++;
+                // Remove from Jupiter lookup queue
+                needsJupiter.delete(mint);
+              } else {
+                rpcFailed++;
+              }
+            } else {
+              rpcFailed++;
+            }
+          } catch {
+            rpcFailed++;
+          }
+        }
+      } catch (e: any) {
+        rpcFailed += batch.length;
+        try {
+          log.warn('decimals.normalize.rpc.batch_error', {
+            batchIndex: i / batchSize,
+            batchSize: batch.length,
+            error: String(e?.message || e),
+            cat: 'decimals'
+          });
+        } catch {}
+      }
+    }
+    
+    try {
+      log.info('decimals.normalize.rpc_validate.complete', {
+        total: mints.length,
+        validated: rpcValidated,
+        failed: rpcFailed,
+        needsJupiterFallback: needsJupiter.size,
+        cat: 'decimals'
+      });
+    } catch {}
+  } else {
+    // PERFORMANCE MODE: Check Jupiter before RPC
+    const jupMap = await getJupiterMap();
+    const needsRpc = new Set<string>();
+    
+    for (const mint of needsLookup) {
+      const jupDecimals = jupMap[mint]?.decimals;
+      if (jupDecimals != null && Number.isFinite(jupDecimals)) {
+        result.set(mint, jupDecimals);
+        resolveCache.set(mint, jupDecimals);
+      } else {
+        needsRpc.add(mint);
+      }
+    }
+    
+    needsJupiter = needsRpc;
+  }
+  
+  // PHASE 3: Jupiter fallback (for normalize mode RPC failures OR performance mode)
+  if (needsJupiter.size > 0) {
+    const jupMap = await getJupiterMap();
+    
+    for (const mint of needsJupiter) {
+      const jupDecimals = jupMap[mint]?.decimals;
+      if (jupDecimals != null && Number.isFinite(jupDecimals)) {
+        result.set(mint, jupDecimals);
+        resolveCache.set(mint, jupDecimals);
+      }
     }
   }
   
-  if (needsRpc.size === 0) return result;
-  
-  try {
-    log.info('decimals.batch.rpc.start', {
-      total: mints.length,
-      needsRpc: needsRpc.size,
-      cat: 'decimals'
-    });
-  } catch {}
-  
-  // Third pass: Batch RPC fetch for remaining
-  const conn = new Connection(CONFIG.rpcUrl, { commitment: 'confirmed', disableRetryOnRateLimit: true } as any);
-  const TOKEN_PROGRAM_ID_STR = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
-  const TOKEN_2022_PROGRAM_ID_STR = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
-  
-  const mintsToFetch = Array.from(needsRpc);
-  
-  for (let i = 0; i < mintsToFetch.length; i += batchSize) {
-    const batch = mintsToFetch.slice(i, i + batchSize);
-    const pubkeys = batch.map(m => {
-      try {
-        return new PublicKey(m);
-      } catch {
-        return null;
-      }
-    }).filter(Boolean) as PublicKey[];
+  // PHASE 4: RPC fallback (performance mode only, for mints not in Jupiter)
+  if (!normalizeMode && needsJupiter.size > 0) {
+    const stillMissing = Array.from(needsJupiter).filter(m => !result.has(m));
     
-    if (pubkeys.length === 0) continue;
-    
-    try {
-      const accountInfos = await conn.getMultipleAccountsInfo(pubkeys, 'confirmed');
-      
-      for (let j = 0; j < accountInfos.length; j++) {
-        const accountInfo = accountInfos[j];
-        const mint = batch[j];
-        if (!accountInfo || !mint) continue;
-        
-        try {
-          const owner = accountInfo.owner.toBase58();
-          const isTokenProgram = owner === TOKEN_PROGRAM_ID_STR || owner === TOKEN_2022_PROGRAM_ID_STR;
-          
-          if (isTokenProgram && accountInfo.data.length >= 45) {
-            // Decimals is u8 at offset 44
-            const decimals = accountInfo.data[44];
-            if (decimals <= 18) {
-              result.set(mint, decimals);
-              resolveCache.set(mint, decimals);
-            }
-          }
-        } catch {}
-      }
-    } catch (e: any) {
+    if (stillMissing.length > 0) {
       try {
-        log.warn('decimals.batch.rpc.error', {
-          batchIndex: i / batchSize,
-          error: String(e?.message || e),
+        log.info('decimals.batch.rpc.start', {
+          total: mints.length,
+          needsRpc: stillMissing.length,
           cat: 'decimals'
         });
       } catch {}
+      
+      // Same RPC logic as above but for remaining mints
+      const conn = new Connection(CONFIG.rpcUrl, { commitment: 'confirmed', disableRetryOnRateLimit: true } as any);
+      const TOKEN_PROGRAM_ID_STR = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+      const TOKEN_2022_PROGRAM_ID_STR = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
+      
+      for (let i = 0; i < stillMissing.length; i += batchSize) {
+        const batch = stillMissing.slice(i, i + batchSize);
+        const pubkeys = batch.map(m => {
+          try {
+            return new PublicKey(m);
+          } catch {
+            return null;
+          }
+        }).filter(Boolean) as PublicKey[];
+        
+        if (pubkeys.length === 0) continue;
+        
+        try {
+          const accountInfos = await conn.getMultipleAccountsInfo(pubkeys, 'confirmed');
+          
+          for (let j = 0; j < accountInfos.length; j++) {
+            const accountInfo = accountInfos[j];
+            const mint = batch[j];
+            if (!accountInfo || !mint) continue;
+            
+            try {
+              const owner = accountInfo.owner.toBase58();
+              const isTokenProgram = owner === TOKEN_PROGRAM_ID_STR || owner === TOKEN_2022_PROGRAM_ID_STR;
+              
+              if (isTokenProgram && accountInfo.data.length >= 45) {
+                const decimals = accountInfo.data[44];
+                if (decimals <= 18) {
+                  result.set(mint, decimals);
+                  resolveCache.set(mint, decimals);
+                }
+              }
+            } catch {}
+          }
+        } catch (e: any) {
+          try {
+            log.warn('decimals.batch.rpc.error', {
+              batchIndex: i / batchSize,
+              error: String(e?.message || e),
+              cat: 'decimals'
+            });
+          } catch {}
+        }
+      }
     }
   }
   
+  // Summary logging
   try {
-    log.info('decimals.batch.rpc.complete', {
+    const fromAnchors = mints.filter(m => ANCHOR_DECIMALS.has(m)).length;
+    const fromCache = mints.filter(m => !ANCHOR_DECIMALS.has(m) && !normalizeMode && resolveCache.has(m)).length;
+    
+    log.info('decimals.resolution.summary', {
       total: mints.length,
       resolved: result.size,
+      mode: normalizeMode ? 'normalize' : 'performance',
+      sources: {
+        anchors: fromAnchors,
+        cache: fromCache,
+        validated: result.size - fromAnchors - fromCache,
+      },
       cat: 'decimals'
     });
   } catch {}
