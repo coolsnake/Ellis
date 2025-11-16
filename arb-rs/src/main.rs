@@ -3034,9 +3034,16 @@ async fn main() -> anyhow::Result<()> {
                     
                     if empty_cycle {
                         let prev_empty = s.consecutive_empty_cycles.fetch_add(1, Ordering::Relaxed);
+                        let empty_count = prev_empty + 1;
                         
-                        // After 5 empty cycles, check if we're out of sync (but not more often than every 30 seconds)
-                        if prev_empty >= 4 && now.saturating_sub(last_resync) > 30_000 {
+                        tracing::info!(
+                            consecutive_empty = empty_count,
+                            "arb.loop.empty_cycle"
+                        );
+                        
+                        // After 2 empty cycles, check if we're out of sync (but not more often than every 5 seconds)
+                        // With 2s heartbeat + 2 cycles = ~4-5s to detect and recover from desync
+                        if prev_empty >= 1 && now.saturating_sub(last_resync) > 5_000 {
                             drop(s);
                             
                             // Query backend for current version
@@ -3052,8 +3059,15 @@ async fn main() -> anyhow::Result<()> {
                                     if let Some(backend_version) = json["version"].as_u64() {
                                         let version_gap = backend_version.saturating_sub(last_version);
                                         
-                                        // If we're 5+ versions behind, request resync
-                                        if version_gap >= 5 {
+                                        tracing::info!(
+                                            last_version,
+                                            backend_version,
+                                            gap = version_gap,
+                                            "arb.resync: version check"
+                                        );
+                                        
+                                        // If we're ANY versions behind, request resync immediately (lowered from 2)
+                                        if version_gap >= 1 {
                                             tracing::warn!(
                                                 last_version,
                                                 backend_version,
@@ -3083,12 +3097,11 @@ async fn main() -> anyhow::Result<()> {
                                             } else {
                                                 tracing::warn!("arb.resync: snapshot request timeout or error");
                                             }
-                                        } else if version_gap > 0 {
+                                        } else {
                                             tracing::info!(
                                                 last_version,
                                                 backend_version,
-                                                gap = version_gap,
-                                                "arb.resync: minor version lag, waiting for push"
+                                                "arb.resync: versions in sync"
                                             );
                                         }
                                     }
@@ -3114,24 +3127,21 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
-            // Event-driven wait: wake on notify or after fallback timeout
-            // max_idle_ms is now a long fallback timeout (default 1 hour)
+            // Event-driven wait: wake on notify or after periodic heartbeat (2 seconds)
+            // Fast heartbeat ensures we detect and recover from desyncs quickly
             let wake = {
                 let s = loop_state.read().await;
                 s.wake.clone()
             };
-            let idle_ms_sleep = {
-                let s = loop_state.read().await;
-                s.config.max_idle_ms
-            };
-            let timeout = std::time::Duration::from_millis(idle_ms_sleep);
+            let heartbeat_ms = 2000; // 2 second heartbeat - aggressive desync detection
+            let timeout = std::time::Duration::from_millis(heartbeat_ms);
             tokio::select! {
                 _ = wake.notified() => {
                     tracing::info!("arb.loop.woken");
                 },
                 _ = tokio::time::sleep(timeout) => {
-                    // This should rarely happen in event-driven mode
-                    tracing::info!("arb.loop.timeout_fallback");
+                    // Periodic wake to check for desync
+                    tracing::info!("arb.loop.heartbeat");
                 },
             }
             let iter_end = Instant::now();
@@ -3699,6 +3709,12 @@ async fn arb_graph_update(
         if v <= current_version {
             let mut s = state.write().await;
             s.metrics.graph_updates_skipped = s.metrics.graph_updates_skipped.saturating_add(1);
+            tracing::warn!(
+                version = v,
+                current_version = current_version,
+                skipped_count = s.metrics.graph_updates_skipped,
+                "arb.graph.diff: skipped stale version"
+            );
             return Json(serde_json::json!({"ok": true, "skipped": true }));
         }
     }
