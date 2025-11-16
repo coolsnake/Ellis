@@ -5600,10 +5600,16 @@ export async function getRaydiumPoolsNormalized(force = false, opts?: { skipUniv
           if (pool.market_base_vault) staticData.market_base_vault = pool.market_base_vault;
           if (pool.market_quote_vault) staticData.market_quote_vault = pool.market_quote_vault;
           if (pool.market_authority) staticData.market_authority = pool.market_authority;
-          // CRITICAL: Store AMM authority (owner) - required for transaction building
-          // The field might be under different names depending on the API response
-          if (pool.amm_authority) staticData.amm_authority = pool.amm_authority;
-          if (pool.owner) staticData.owner = pool.owner; // Fallback field name
+          // CRITICAL: Store AMM authority - required for transaction building
+          // For Raydium AMM v4, the authority is hardcoded and not stored in pool data
+          // Always use the hardcoded v4 authority for Raydium AMM pools
+          if (staticData.programId === '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8') {
+            staticData.amm_authority = (CONFIG as any)?.raydium?.ammV4Authority || '5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1';
+          } else {
+            // For other versions, try to extract from pool data (fallback)
+            if (pool.amm_authority) staticData.amm_authority = pool.amm_authority;
+            if (pool.owner) staticData.owner = pool.owner; // Fallback field name
+          }
           if (pool.amm_open_orders) staticData.amm_open_orders = pool.amm_open_orders;
           if (pool.amm_target_orders) staticData.amm_target_orders = pool.amm_target_orders;
           if (pool.lp_mint) staticData.lp_mint = pool.lp_mint;
@@ -5615,10 +5621,13 @@ export async function getRaydiumPoolsNormalized(force = false, opts?: { skipUniv
                 cat: 'pools',
                 ctx: {
                   poolId: pool.id,
+                  programId: staticData.programId,
+                  isV4: staticData.programId === '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8',
                   ammAuthority: pool.amm_authority,
                   owner: pool.owner,
                   storedAmmAuthority: staticData.amm_authority,
                   storedOwner: staticData.owner,
+                  hardcodedV4Authority: (CONFIG as any)?.raydium?.ammV4Authority || '5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1',
                   allPoolFields: Object.keys(pool).filter(k => k.includes('auth') || k.includes('owner'))
                 }
               });

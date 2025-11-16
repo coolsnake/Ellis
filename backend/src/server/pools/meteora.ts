@@ -248,34 +248,54 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       const activeId = Number((it as any)?.active_id ?? (it as any)?.activeId);
       const binStep = Number((it as any)?.bin_step ?? (it as any)?.binStep);
       if (Number.isFinite(activeId) && Number.isFinite(binStep) && Number.isFinite(decA) && Number.isFinite(decB)) {
-        const f = Math.pow(1.0001, binStep);
-        if (f > 0) {
-          // Meteora DLMM price formula: price = (1 + binStep/10000)^activeId
-          // According to Meteora docs, this gives: priceYperX = (Y per X) in native units
-          // 
-          // CRITICAL: The formula MUST include decimal adjustment to get whole token price!
-          // Formula: priceYperX_whole = (1.0001)^(binStep * activeId) * 10^(decY - decX)
-          //
-          // For our orientation (A per B), we need to figure out if Meteora's X/Y maps to our A/B
-          // Meteora uses: X = tokenA, Y = tokenB (usually)
-          // So: priceYperX = B per A in native units
-          // Therefore: priceAperB_whole = 1 / [f^activeId * 10^(decB - decA)]
-          //                             = f^(-activeId) * 10^(decA - decB)
+        // Meteora DLMM price formula: price = (1 + binStep/10000)^activeId
+        // This gives priceYperX = (Y per X) in native units
+        // Reference: https://docs.meteora.ag/overview/products/dlmm/dlmm-formulas
+        //
+        // CRITICAL: The formula is (1 + binStep/10000)^activeId
+        // NOT: (1.0001)^(binStep * activeId) - that's incorrect!
+        //
+        // IMPORTANT: According to METEORA_DLMM_DECIMAL_BUG.md, we should NOT apply
+        // decimal adjustment here. The formula gives price in native units, and we
+        // should use it directly. Decimal differences are handled elsewhere.
+        //
+        // Determine orientation: Meteora's X/Y vs our A/B
+        const tokenXMint = String((it as any)?.mint_x || (it as any)?.tokenXMint || tokenA?.mint || '');
+        const tokenYMint = String((it as any)?.mint_y || (it as any)?.tokenYMint || tokenB?.mint || '');
+        
+        // Clamp activeId to prevent overflow (log-space calculation)
+        const clampedActiveId = Math.max(-100000, Math.min(100000, activeId));
+        const BASIS_POINT_MAX = 10000;
+        const basePrice = 1 + (binStep / BASIS_POINT_MAX);
+        
+        // Use log-space to prevent overflow for large activeId values
+        const logPrice = clampedActiveId * Math.log(basePrice);
+        
+        if (Math.abs(logPrice) < 700) { // e^700 ≈ 1e304, safe limit
+          const priceYperX = Math.exp(logPrice); // Y per X in native units
           
-          const rawPrice = Math.pow(f, activeId);
-          const scale = Math.pow(10, decB - decA);
-          const priceYperX = rawPrice * scale;  // Y per X in whole units
+          // Determine which token is X and which is Y relative to our A/B
+          let priceAperB: number | undefined;
           
-          // Since we don't know API orientation for sure, try both
-          const aPerB1 = priceYperX; // Assume Y=B, X=A
-          const aPerB2 = priceYperX > 0 ? (1 / priceYperX) : 0; // Or opposite
-          const cand: number[] = [];
-          if (aPerB1 > 0 && Number.isFinite(aPerB1)) cand.push(aPerB1);
-          if (aPerB2 > 0 && Number.isFinite(aPerB2)) cand.push(aPerB2);
-          if (cand.length) {
-            // Defer choosing until USD ref selection below; stash best for now
-            price_a_per_b = cand[0];
+          if (tokenXMint === mint_a && tokenYMint === mint_b) {
+            // X = A, Y = B => priceYperX = B per A => priceAperB = 1 / priceYperX
+            priceAperB = priceYperX > 0 ? (1 / priceYperX) : undefined;
+          } else if (tokenXMint === mint_b && tokenYMint === mint_a) {
+            // X = B, Y = A => priceYperX = A per B => priceAperB = priceYperX
+            priceAperB = priceYperX;
+          } else {
+            // Unknown orientation - use priceYperX as initial candidate
+            // USD ref selection below will try both orientations (price and 1/price)
+            priceAperB = priceYperX;
+          }
+          
+          if (priceAperB && priceAperB > 0 && Number.isFinite(priceAperB)) {
+            // NO decimal adjustment per METEORA_DLMM_DECIMAL_BUG.md
+            // The price is already in the correct units from the formula
+            price_a_per_b = priceAperB;
             usedBin = true;
+            // If orientation is unknown, the USD ref selection logic below will
+            // automatically try both price and 1/price to pick the correct one
           }
         }
       }
