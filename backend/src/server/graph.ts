@@ -1906,6 +1906,27 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         edges: Object.values(edgesMap),
       };
       try { logger.debug('graph.consistency.summary', { ray: consistency.ray, orc: consistency.orc, met: consistency.met, cat: 'graph' }); } catch {}
+      
+      // Validate edges: forward * reverse ≈ 1
+      try {
+        const { validateEdgesComprehensive } = await import('./pools/comprehensiveValidation.js');
+        const edgeValidationResults = validateEdgesComprehensive(snapshot.edges);
+        const invalidCount = edgeValidationResults.filter(r => !r.isValid).length;
+        if (invalidCount > 0) {
+          logger.warn('graph.edges.validation.failed', {
+            totalEdges: edgeValidationResults.length,
+            invalidEdges: invalidCount,
+            invalidPct: ((invalidCount / edgeValidationResults.length) * 100).toFixed(2),
+            cat: 'graph',
+          });
+        }
+      } catch (e: any) {
+        logger.warn('graph.edges.validation.error', {
+          error: String(e?.message || e),
+          cat: 'graph',
+        });
+      }
+      
       lastSnapshot = snapshot;
       lastAt = now;
       try { logger.debug('graph.tvl.stats', { amm: { total: ammTotal, usd: ammUsd }, clmm: { total: clmmTotal, usd: clmmUsd, missingAmounts: clmmMissingAmounts, missingDecimals: clmmMissingDecimals } }); } catch {}

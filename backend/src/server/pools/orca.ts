@@ -442,6 +442,8 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
       let finalDecB = cDecB;
       let finalWholeA = Number.isFinite(cDecA) ? (cAmtA / Math.pow(10, cDecA as number)) : undefined;
       let finalWholeB = Number.isFinite(cDecB) ? (cAmtB / Math.pow(10, cDecB as number)) : undefined;
+      let pipelineSwapped = false;
+      let pipelineProcessedFlag = false;
       
       if (priceDerived > 0) {
         try {
@@ -474,6 +476,8 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
             finalMintB = processed.mintB;
             finalDecA = processed.decimalsA;
             finalDecB = processed.decimalsB;
+            pipelineSwapped = processed.wasSwapped;
+            pipelineProcessedFlag = true;
             
             // If mints were swapped, update all mint-dependent fields
             if (processed.wasSwapped) {
@@ -604,6 +608,11 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
           } catch {}
         }
         
+        const finalAccountA = pipelineSwapped ? account_b : account_a;
+        const finalAccountB = pipelineSwapped ? account_a : account_b;
+        const finalTokenVaultA = pipelineSwapped ? token_vault_b : token_vault_a;
+        const finalTokenVaultB = pipelineSwapped ? token_vault_a : token_vault_b;
+
         // CRITICAL: Always push the pool even if price is missing - the graph builder can derive it from sqrt
         // This prevents Orca pools from being silently dropped during normalization
         clmm.push({
@@ -626,58 +635,63 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
           amount_b: cAmtB,
           decimals_a: Number.isFinite(finalDecA) ? finalDecA : undefined,
           decimals_b: Number.isFinite(finalDecB) ? finalDecB : undefined,
-          account_a,
-          account_b,
+          account_a: finalAccountA,
+          account_b: finalAccountB,
           pool_kind: 'clmm',
           pool_liquidity_raw,
           tvl_usd,
           liquidity_display,
           oracle,
-          token_vault_a,
-          token_vault_b,
-        });
+          token_vault_a: finalTokenVaultA,
+          token_vault_b: finalTokenVaultB,
+          // Mark that this pool went through the pipeline (for edge creation to skip re-processing)
+          _pipelineProcessed: finalPrice > 0 && pipelineProcessedFlag,
+        } as any);
       } else {
         try { logger.warn('orca.clmm drop by sanity', { id, mint_a: finalMintA, mint_b: finalMintB, price_a_per_b: finalPrice, cat: 'orca' }); } catch {}
       }
     }
   }
-  // Canonicalize pairs using unified policy; handles A/B swap and price inversion when needed
-  // DIAGNOSTIC: Log specific pools BEFORE canonicalization
+  // CRITICAL FIX: Skip canonicalization since pipeline already canonicalized
+  // The processPriceThroughPipeline() function (line 448-469) already canonicalizes orientation
+  // and returns canonical mints in finalMintA/finalMintB which are used in the pool object.
+  // Calling canonicalizePools() again would double-canonicalize, potentially swapping mints back
+  // and inverting prices again, causing magnitude errors.
+  //
+  // Verify pools are already canonicalized by checking first pool
+  let clmmCanon: typeof clmm;
   try {
-    const trackedPools = ['21gTfxAnhUDjJGZJDkTXctGFKT8TeiXx6pN1CEg9K1uW', 'FpCMFDFGYotvufJ7HrFHsWEiiQCGbkLCtwHiDnh7o28Q'];
-    for (const pool of clmm) {
-      if (trackedPools.some(tid => pool.id.includes(tid))) {
-        logger.info('orca.pre-canonicalization.tracked', {
-          id: pool.id,
-          mint_a: pool.mint_a,
-          mint_b: pool.mint_b,
-          price_a_per_b: pool.price_a_per_b,
-          decimals_a: (pool as any).decimals_a,
-          decimals_b: (pool as any).decimals_b,
-          sqrt_price_x64: pool.sqrt_price_x64,
+    if (clmm.length > 0) {
+      const { canonicalOrientation } = await import('./canonical.js');
+      const samplePool = clmm[0];
+      const orientation = canonicalOrientation(samplePool.mint_a, samplePool.mint_b);
+      
+      if (orientation === 'swap') {
+        // Pools are NOT canonicalized - pipeline didn't canonicalize (shouldn't happen)
+        logger.warn('orca.canonicalization.pipeline_missed', {
+          samplePoolId: samplePool.id.slice(0, 12) + '...',
+          mint_a: samplePool.mint_a.slice(0, 8) + '...',
+          mint_b: samplePool.mint_b.slice(0, 8) + '...',
+          hint: 'Pipeline should have canonicalized but pools are not canonical. Applying canonicalization now.',
           cat: 'orca'
         });
+        clmmCanon = canonicalizePools(clmm);
+      } else {
+        // Pools are already canonicalized (expected)
+        clmmCanon = clmm;
       }
+    } else {
+      clmmCanon = clmm;
     }
-  } catch {}
-  
-  // DIAGNOSTIC: Log sample BEFORE canonicalization
-  try {
-    const usdcSol = clmm.find(p => p.id === 'Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE');
-    if (usdcSol) {
-      logger.info('orca.before_canon.usdc_sol', {
-        id: usdcSol.id,
-        mint_a: usdcSol.mint_a,
-        mint_b: usdcSol.mint_b,
-        decimals_a: usdcSol.decimals_a,
-        decimals_b: usdcSol.decimals_b,
-        price_a_per_b: usdcSol.price_a_per_b,
-        cat: 'orca'
-      });
-    }
-  } catch {}
-  
-  const clmmCanon = canonicalizePools(clmm);
+  } catch (e) {
+    // Fallback to canonicalize if check fails
+    logger.warn('orca.canonicalization.check_failed', {
+      error: String(e),
+      hint: 'Falling back to canonicalizePools',
+      cat: 'orca'
+    });
+    clmmCanon = canonicalizePools(clmm);
+  }
   
   // DIAGNOSTIC: Verify decimals are swapped correctly after canonicalization
   try {

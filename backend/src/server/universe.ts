@@ -1,12 +1,21 @@
 import { readJson } from '../utils/fs.js';
 import { CONFIG } from '../utils/config.js';
+import { jupiterLimiter } from '../jupiter/rateLimiter.js';
 
 export type PoolsPayload = { amm: Array<{ mint_a: string; mint_b: string }>; clmm: Array<{ mint_a: string; mint_b: string }> };
 
-export type UniverseMode = 'intersection' | 'union' | 'jupiter' | 'watchlist' | 'minpools';
+export type UniverseMode = 'intersection' | 'union' | 'jupiter' | 'jupiterTop' | 'watchlist' | 'minpools';
 
 const SOL = 'So11111111111111111111111111111111111111112';
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const JUPITER_CATEGORY_BASE = 'https://lite-api.jup.ag/tokens/v2';
+
+type JupiterCategory = 'toporganicscore' | 'toptraded' | 'toptrending';
+type JupiterInterval = '5m' | '1h' | '6h' | '24h';
+type JupiterTopTokenOptions = { category: JupiterCategory; interval: JupiterInterval; limit: number; cacheTtlMs: number };
+type JupiterTopCache = { key: string; ts: number; data: Set<string> };
+
+let jupiterTopCache: JupiterTopCache | null = null;
 
 export function normalizeMints(arr: Array<string | undefined | null>): string[] {
   const out: string[] = [];
@@ -20,6 +29,54 @@ export async function getJupiterTokenSet(): Promise<Set<string>> {
     const map = await loadJupiterTokenMap();
     return new Set(Object.keys(map || {}));
   } catch {
+    return new Set();
+  }
+}
+
+function resolveJupiterTopOptions(): JupiterTopTokenOptions {
+  const raw = ((CONFIG.system as any)?.jupiterTopTokens || {}) as Partial<JupiterTopTokenOptions & { category: string; interval: string }>;
+  const categories: JupiterCategory[] = ['toporganicscore', 'toptraded', 'toptrending'];
+  const intervals: JupiterInterval[] = ['5m', '1h', '6h', '24h'];
+  const rawCategory = String(raw.category || 'toptraded').toLowerCase();
+  const category = (categories as readonly string[]).includes(rawCategory) ? (rawCategory as JupiterCategory) : 'toptraded';
+  const rawInterval = String(raw.interval || '24h').toLowerCase();
+  const interval = (intervals as readonly string[]).includes(rawInterval) ? (rawInterval as JupiterInterval) : '24h';
+  let limit = Number.isFinite(raw.limit) ? Number(raw.limit) : 100;
+  limit = Math.max(1, Math.min(100, Math.floor(limit)));
+  const cacheTtlMs = Math.max(30_000, Number(raw.cacheTtlMs ?? 300_000));
+  return { category, interval, limit, cacheTtlMs };
+}
+
+export async function getJupiterTopTokenSet(): Promise<Set<string>> {
+  const opts = resolveJupiterTopOptions();
+  const key = `${opts.category}:${opts.interval}:${opts.limit}`;
+  const now = Date.now();
+  if (jupiterTopCache && jupiterTopCache.key === key && now - jupiterTopCache.ts < opts.cacheTtlMs) {
+    return new Set(jupiterTopCache.data);
+  }
+  try {
+    const url = `${JUPITER_CATEGORY_BASE}/${opts.category}/${opts.interval}?limit=${opts.limit}`;
+    await jupiterLimiter.acquire(false);
+    const res = await fetch(url, { headers: { accept: 'application/json' } as any } as any);
+    if (!res.ok) throw new Error(`jupiter category http ${res.status}`);
+    const payload: any = await res.json();
+    const arr: any[] = Array.isArray(payload)
+      ? payload
+      : (Array.isArray(payload?.value) ? payload.value : (Array.isArray(payload?.data) ? payload.data : []));
+    const set = new Set<string>();
+    for (const token of arr) {
+      const id = typeof token?.id === 'string' ? token.id : (typeof token?.mint === 'string' ? token.mint : '');
+      if (id) set.add(id);
+    }
+    if (set.size === 0) throw new Error('empty top token response');
+    jupiterTopCache = { key, ts: now, data: set };
+    return new Set(set);
+  } catch (err: any) {
+    try {
+      const { logger } = await import('../utils/logger.js');
+      logger.warn('universe.jupiter_top.fetch_failed', { error: String(err?.message || err), cat: 'universe' });
+    } catch {}
+    if (jupiterTopCache && jupiterTopCache.key === key) return new Set(jupiterTopCache.data);
     return new Set();
   }
 }
@@ -195,6 +252,20 @@ export async function computeTokenUniverse(mode?: UniverseMode): Promise<Set<str
   
   if (selected === 'jupiter') {
     const s = await getJupiterTokenSet(); if (includeAnchors) { for (const m of anchors) s.add(m); } return s;
+  }
+  if (selected === 'jupiterTop') {
+    const s = await getJupiterTopTokenSet();
+    if (s.size === 0) {
+      try {
+        const { logger } = await import('../utils/logger.js');
+        logger.warn('universe.jupiter_top.empty_fallback_to_jupiter', { category: (CONFIG.system as any)?.jupiterTopTokens?.category, interval: (CONFIG.system as any)?.jupiterTopTokens?.interval, cat: 'universe' });
+      } catch {}
+      const fallback = await getJupiterTokenSet();
+      if (includeAnchors) { for (const m of anchors) fallback.add(m); }
+      return fallback;
+    }
+    if (includeAnchors) { for (const m of anchors) s.add(m); }
+    return s;
   }
   if (selected === 'watchlist') {
     const s = await getWatchlistTokenSet(); if (includeAnchors) { for (const m of anchors) s.add(m); } return s;

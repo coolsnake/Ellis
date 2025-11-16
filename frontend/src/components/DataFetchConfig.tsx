@@ -20,6 +20,10 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     poolsRefreshMs: 60000,
     poolRefreshMinGapMs: 3000,
     tokenUniverseMode: 'union',
+    jupiterTopTokens_category: 'toptraded',
+    jupiterTopTokens_interval: '24h',
+    jupiterTopTokens_limit: 100,
+    jupiterTopTokens_cacheTtlMs: 300000,
     scopePoolsMode: 'none',
     anchorMints: 'So11111111111111111111111111111111111111112,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
     includeAnchorsInUniverse: false,
@@ -141,6 +145,10 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             poolsRefreshMs: Number(j?.system?.poolsRefreshMs ?? prev.poolsRefreshMs),
             poolRefreshMinGapMs: Number(j?.system?.poolRefreshMinGapMs ?? prev.poolRefreshMinGapMs),
             tokenUniverseMode: j?.system?.tokenUniverseMode || prev.tokenUniverseMode,
+            jupiterTopTokens_category: j?.system?.jupiterTopTokens?.category || prev.jupiterTopTokens_category || 'toptraded',
+            jupiterTopTokens_interval: j?.system?.jupiterTopTokens?.interval || prev.jupiterTopTokens_interval || '24h',
+            jupiterTopTokens_limit: Number(j?.system?.jupiterTopTokens?.limit ?? prev.jupiterTopTokens_limit ?? 100),
+            jupiterTopTokens_cacheTtlMs: Number(j?.system?.jupiterTopTokens?.cacheTtlMs ?? prev.jupiterTopTokens_cacheTtlMs ?? 300000),
             scopePoolsMode: j?.system?.scopePoolsMode || prev.scopePoolsMode,
             anchorMints: Array.isArray(j?.system?.anchorMints) ? j.system.anchorMints.join(',') : (prev.anchorMints || ''),
             includeAnchorsInUniverse: (j?.system?.includeAnchorsInUniverse ?? true) !== false,
@@ -295,6 +303,12 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         poolRefreshMinGapMs: Number(cfg.poolRefreshMinGapMs),
         wsAttachPerSec: Number(cfg.wsAttachPerSec),
         tokenUniverseMode: cfg.tokenUniverseMode,
+        jupiterTopTokens: {
+          category: String(cfg.jupiterTopTokens_category || 'toptraded'),
+          interval: String(cfg.jupiterTopTokens_interval || '24h'),
+          limit: Math.max(1, Math.min(100, Number(cfg.jupiterTopTokens_limit) || 1)),
+          cacheTtlMs: Math.max(30000, Number(cfg.jupiterTopTokens_cacheTtlMs) || 300000),
+        },
         scopePoolsMode: cfg.scopePoolsMode,
         anchorMints: String(cfg.anchorMints || '').split(',').map(s => s.trim()).filter(Boolean),
         includeAnchorsInUniverse: !!cfg.includeAnchorsInUniverse,
@@ -606,6 +620,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                   <option value="intersection">intersection</option>
                   <option value="union">union</option>
                   <option value="minpools">minpools</option>
+                  <option value="jupiterTop">jupiterTop</option>
                 </select>
               </div>
               <div>
@@ -616,6 +631,7 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                   <option value="jupiter">jupiter</option>
                   <option value="intersection">intersection</option>
                   <option value="union">union</option>
+                  <option value="jupiterTop">jupiterTop</option>
                 </select>
               </div>
               <div className="md:col-span-1">
@@ -625,6 +641,34 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
               <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.includeAnchorsInUniverse} onChange={(e)=>set('includeAnchorsInUniverse', e.target.checked)} />Include anchors in token universe</label>
               <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.enableAnchorBridging} onChange={(e)=>set('enableAnchorBridging', e.target.checked)} />Enable anchor bridging during scoping</label>
               <label className="flex items-center gap-2"><input type="checkbox" checked={!!cfg.routeLevelScoping} onChange={(e)=>set('routeLevelScoping', e.target.checked)} />Apply scoping again in API routes</label>
+              <div className="md:col-span-3 grid grid-cols-1 md:grid-cols-4 gap-4 bg-gray-800/40 border border-gray-600 rounded p-3">
+                <div>
+                  <label className="block text-sm mb-1">Jupiter Top Category</label>
+                  <select className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.jupiterTopTokens_category} onChange={(e)=>set('jupiterTopTokens_category', e.target.value)}>
+                    <option value="toptraded">toptraded</option>
+                    <option value="toporganicscore">toporganicscore</option>
+                    <option value="toptrending">toptrending</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm mb-1">Interval</label>
+                  <select className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.jupiterTopTokens_interval} onChange={(e)=>set('jupiterTopTokens_interval', e.target.value)}>
+                    <option value="5m">5m</option>
+                    <option value="1h">1h</option>
+                    <option value="6h">6h</option>
+                    <option value="24h">24h</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm mb-1">Limit (1-100)</label>
+                  <input type="number" min={1} max={100} className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.jupiterTopTokens_limit} onChange={(e)=>set('jupiterTopTokens_limit', Number(e.target.value)||1)} />
+                </div>
+                <div>
+                  <label className="block text-sm mb-1">Cache TTL (ms)</label>
+                  <input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.jupiterTopTokens_cacheTtlMs} onChange={(e)=>set('jupiterTopTokens_cacheTtlMs', Number(e.target.value)||0)} />
+                  <p className="text-xs text-gray-400 mt-1">Used when token universe/scoping = jupiterTop</p>
+                </div>
+              </div>
               <div>
                 <label className="block text-sm mb-1">Canonicalize Pairs</label>
                 <select className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={cfg.canonicalizePairs} onChange={(e)=>set('canonicalizePairs', e.target.value)}>

@@ -744,8 +744,8 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
       const tvl_usd = Number.isFinite(tvl) && tvl > 0 ? tvl : undefined;
       const reserveA = Number((it as any)?.reserveA ?? NaN);
       const reserveB = Number((it as any)?.reserveB ?? NaN);
-      const amount_a_whole = Number.isFinite(mintAmountA) ? mintAmountA : (Number.isFinite(reserveA) ? reserveA : undefined);
-      const amount_b_whole = Number.isFinite(mintAmountB) ? mintAmountB : (Number.isFinite(reserveB) ? reserveB : undefined);
+      let amount_a_whole = Number.isFinite(mintAmountA) ? mintAmountA : (Number.isFinite(reserveA) ? reserveA : undefined);
+      let amount_b_whole = Number.isFinite(mintAmountB) ? mintAmountB : (Number.isFinite(reserveB) ? reserveB : undefined);
       let price_from_sqrt = 0;
       // CRITICAL: Verify decimals match mints before calculating price
       // Ensure decA corresponds to mintA and decB corresponds to mintB
@@ -825,6 +825,8 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
       let finalMintB = mintB;
       let finalDecA = decA;
       let finalDecB = decB;
+      let pipelineSwapped = false;
+      let pipelineProcessedFlag = false;
       
       if (rawPrice > 0) {
         try {
@@ -864,9 +866,8 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
             finalMintB = processed.mintB;
             finalDecA = processed.decimalsA;
             finalDecB = processed.decimalsB;
-            
-            // If mints were swapped, note it but don't swap amount_a_whole/amount_b_whole
-            // since they're const. The graph builder will handle mint ordering.
+            pipelineSwapped = processed.wasSwapped;
+            pipelineProcessedFlag = true;
           } else {
             px = rawPrice;
           }
@@ -881,6 +882,10 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
           } catch {}
         }
       }
+      if (pipelineSwapped) {
+        [amount_a_whole, amount_b_whole] = [amount_b_whole, amount_a_whole];
+      }
+
       let ok = true;
       try {
         const sanityCfg = (CONFIG as any)?.sanity || {};
@@ -978,6 +983,10 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
           } catch {}
         }
         
+        if (pipelineSwapped) {
+          [account_a, account_b] = [account_b, account_a];
+        }
+
         clmm.push({
           id,
           dex: 'Raydium',
@@ -1006,7 +1015,9 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
           account_b,
           observation_state,
           ex_bitmap,
-        });
+          // Mark that this pool went through the pipeline (for edge creation to skip re-processing)
+          _pipelineProcessed: px > 0 && pipelineProcessedFlag,
+        } as any);
       }
     } else {
       const tvl_usd = Number.isFinite(tvl) && tvl > 0 ? tvl : undefined;
@@ -1225,8 +1236,38 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
     } catch {}
   }
 
+  // CRITICAL FIX: Check if pools are already canonicalized before canonicalizing
+  // CLMM pools go through processPriceThroughPipeline() which already canonicalizes
+  // AMM pools may or may not go through pipeline depending on code path
+  let clmmCanon: typeof clmm;
+  try {
+    if (clmm.length > 0) {
+      const { canonicalOrientation } = await import('./canonical.js');
+      const samplePool = clmm[0];
+      const orientation = canonicalOrientation(samplePool.mint_a, samplePool.mint_b);
+      
+      if (orientation === 'swap') {
+        // Pools are NOT canonicalized - apply canonicalization
+        clmmCanon = canonicalizePools(clmm);
+      } else {
+        // Pools are already canonicalized (expected for pipeline-processed pools)
+        clmmCanon = clmm;
+      }
+    } else {
+      clmmCanon = clmm;
+    }
+  } catch (e) {
+    // Fallback to canonicalize if check fails
+    logger.warn('raydium.clmm.canonicalization.check_failed', {
+      error: String(e),
+      hint: 'Falling back to canonicalizePools',
+      cat: 'raydium'
+    });
+    clmmCanon = canonicalizePools(clmm);
+  }
+  
+  // AMM pools: canonicalize (they may not go through pipeline)
   const ammCanon = canonicalizePools(amm);
-  const clmmCanon = canonicalizePools(clmm);
   
   // DEBUG: Log same pool after canonicalization
   if (ammCanon.length > 0) {

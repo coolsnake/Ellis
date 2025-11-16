@@ -163,8 +163,24 @@ export const CONFIG = {
     scopePools: (process.env.SCOPE_POOLS || 'false') === 'true',
     // New: scoping mode for /arb/pools endpoints: 'none' | 'watchlist' | 'jupiter' | 'intersection' | 'union'
     scopePoolsMode: (process.env.SCOPE_POOLS_MODE as any) || 'none',
-    // New: token-universe mode used to filter pools at source: 'jupiter' | 'watchlist' | 'intersection' | 'union'
+    // New: token-universe mode used to filter pools at source: 'jupiter' | 'watchlist' | 'intersection' | 'union' | 'jupiterTop'
     tokenUniverseMode: (process.env.TOKEN_UNIVERSE_MODE as any) || 'union',
+    jupiterTopTokens: {
+      category: (() => {
+        const value = String(process.env.JUPITER_TOP_TOKENS_CATEGORY || 'toptraded').toLowerCase();
+        return ['toporganicscore', 'toptraded', 'toptrending'].includes(value) ? value : 'toptraded';
+      })(),
+      interval: (() => {
+        const value = String(process.env.JUPITER_TOP_TOKENS_INTERVAL || '24h').toLowerCase();
+        return ['5m', '1h', '6h', '24h'].includes(value) ? value : '24h';
+      })(),
+      limit: (() => {
+        const raw = Number(process.env.JUPITER_TOP_TOKENS_LIMIT || 100);
+        if (!Number.isFinite(raw)) return 100;
+        return Math.max(1, Math.min(100, Math.floor(raw)));
+      })(),
+      cacheTtlMs: Math.max(30_000, Number(process.env.JUPITER_TOP_TOKENS_CACHE_TTL_MS || 300_000)),
+    },
     // Control whether anchors are injected into the universe set (default: true)
     includeAnchorsInUniverse: (process.env.INCLUDE_ANCHORS_IN_UNIVERSE || 'true') !== 'false',
     // Route-level scoping (disable to avoid double-scoping if sources already scoped)

@@ -33,6 +33,26 @@ Related runtime config keys (exposed via /system/config and UI):
 - meteora.apiUrl, meteora.cacheTtlMs, meteora.maxHttpRetries, meteora.httpBackoffMs, meteora.pageSize, meteora.maxPages, meteora.minClmmLiquidity, meteora.universePrefilter
 - meteoraBalanced.apiUrl, meteoraBalanced.cacheTtlMs, meteoraBalanced.maxHttpRetries, meteoraBalanced.httpBackoffMs, meteoraBalanced.pageSize, meteoraBalanced.maxPages
 
+## Jupiter top-token universe
+
+When `system.tokenUniverseMode` or `system.scopePoolsMode` is set to `jupiterTop`, the backend fetches Jupiter’s category feed (`https://lite-api.jup.ag/tokens/v2/{category}/{interval}?limit=...`) to build the mint list.
+
+Environment variables:
+
+- `JUPITER_TOP_TOKENS_CATEGORY` — one of `toptraded`, `toporganicscore`, `toptrending` (default `toptraded`)
+- `JUPITER_TOP_TOKENS_INTERVAL` — `5m`, `1h`, `6h`, or `24h` (default `24h`)
+- `JUPITER_TOP_TOKENS_LIMIT` — maximum 1–100 tokens returned (default `100`)
+- `JUPITER_TOP_TOKENS_CACHE_TTL_MS` — cache duration before refetch (default `300000`)
+
+Runtime config keys (via `/system/config` and UI):
+
+- `system.tokenUniverseMode`
+- `system.scopePoolsMode`
+- `system.jupiterTopTokens.category`
+- `system.jupiterTopTokens.interval`
+- `system.jupiterTopTokens.limit`
+- `system.jupiterTopTokens.cacheTtlMs`
+
 
 ## backend/config/tokens.json
 

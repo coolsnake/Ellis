@@ -318,6 +318,8 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     let finalDecB = decB;
     let finalAmountA = amount_a_norm;
     let finalAmountB = amount_b_norm;
+    let pipelineProcessedFlag = false;
+    let pipelineSwapped = false;
     
     // Choose best raw price candidate
     let rawPrice = price_a_per_b;
@@ -356,6 +358,8 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
           finalMintB = processed.mintB;
           finalDecA = processed.decimalsA;
           finalDecB = processed.decimalsB;
+          pipelineProcessedFlag = true;
+          pipelineSwapped = processed.wasSwapped;
           
           // If mints were swapped, update all mint-dependent fields
           if (processed.wasSwapped) {
@@ -431,11 +435,15 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
         }
       }
     } catch {}
+
+    if (pipelineSwapped) {
+      [account_a, account_b] = [account_b, account_a];
+    }
     
     const bin_array_bitmap_extension = bitmapExtensionMap.get(id);
     const [tokenProgramA, tokenProgramB] = await Promise.all([
-      ensureTokenProgram(mint_a),
-      ensureTokenProgram(mint_b),
+      ensureTokenProgram(finalMintA),
+      ensureTokenProgram(finalMintB),
     ]);
     
     clmm.push({
@@ -449,8 +457,8 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       tick_spacing: Number((it as any)?.bin_step || (it as any)?.binStep || 0),
       updated_ms: now,
       price_a_per_b: (price_a_per_b && price_a_per_b > 0) ? price_a_per_b : undefined,
-      amount_a,
-      amount_b,
+      amount_a: finalAmountA,
+      amount_b: finalAmountB,
       decimals_a: Number.isFinite(finalDecA) ? finalDecA : undefined,
       decimals_b: Number.isFinite(finalDecB) ? finalDecB : undefined,
       account_a,
@@ -462,10 +470,48 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       liquidity_display,
       token_program_a: tokenProgramA,
       token_program_b: tokenProgramB,
+      // Mark that this pool went through the pipeline (for edge creation to skip re-processing)
+      _pipelineProcessed: finalPrice > 0 && pipelineProcessedFlag,
     } as any);
   }
-  // Canonicalize pairs using unified policy; handles A/B swap and price inversion when needed
-  const clmmCanon = canonicalizePools(clmm);
+  // CRITICAL FIX: Skip canonicalization since pipeline already canonicalized
+  // The processPriceThroughPipeline() function already canonicalizes orientation
+  // and returns canonical mints in finalMintA/finalMintB which are used in the pool object.
+  // Calling canonicalizePools() again would double-canonicalize, potentially swapping mints back
+  // and inverting prices again, causing magnitude errors.
+  let clmmCanon: typeof clmm;
+  try {
+    if (clmm.length > 0) {
+      const { canonicalOrientation } = await import('./canonical.js');
+      const samplePool = clmm[0];
+      const orientation = canonicalOrientation(samplePool.mint_a, samplePool.mint_b);
+      
+      if (orientation === 'swap') {
+        // Pools are NOT canonicalized - pipeline didn't canonicalize (shouldn't happen)
+        logger.warn('meteora.canonicalization.pipeline_missed', {
+          samplePoolId: samplePool.id.slice(0, 12) + '...',
+          mint_a: samplePool.mint_a.slice(0, 8) + '...',
+          mint_b: samplePool.mint_b.slice(0, 8) + '...',
+          hint: 'Pipeline should have canonicalized but pools are not canonical. Applying canonicalization now.',
+          cat: 'meteora'
+        });
+        clmmCanon = canonicalizePools(clmm);
+      } else {
+        // Pools are already canonicalized (expected)
+        clmmCanon = clmm;
+      }
+    } else {
+      clmmCanon = clmm;
+    }
+  } catch (e) {
+    // Fallback to canonicalize if check fails
+    logger.warn('meteora.canonicalization.check_failed', {
+      error: String(e),
+      hint: 'Falling back to canonicalizePools',
+      cat: 'meteora'
+    });
+    clmmCanon = canonicalizePools(clmm);
+  }
   
   // DIAGNOSTIC: Log the problematic oreoU2/SOL pool
   try {
