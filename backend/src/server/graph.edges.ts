@@ -57,6 +57,7 @@ export function edgesFromPoolIncremental(
   const clampMin = Number.isFinite(options?.priceClampMin) ? Number(options?.priceClampMin) : 1e-12;
   const clampMax = Number.isFinite(options?.priceClampMax) ? Number(options?.priceClampMax) : 1e12;
   const fRaw = clampPriceInc(fwdRaw, clampMin, clampMax);
+  
   // computePriceForward assumes price is already canonicalized - only applies magnitude calibration
   const fwd = computePriceForward(
     a,
@@ -82,6 +83,29 @@ export function edgesFromPoolIncremental(
     undefined,
     getUsd,
   );
+  
+  // DIAGNOSTIC: Log suspicious reverse edge prices
+  if (rev && fwd && (rev > 100000 || (rev * fwd > 2) || (rev * fwd < 0.5))) {
+    try {
+      const { logger } = await import('../../utils/logger.js');
+      logger.warn('graph.edge.suspicious_reverse', {
+        dex,
+        pool_id: id.slice(0, 12),
+        mint_a: a.slice(0, 8),
+        mint_b: b.slice(0, 8),
+        fwdRaw,
+        fwd,
+        rev,
+        product: fwd && rev ? (fwd * rev).toFixed(6) : 'N/A',
+        decimals_a: (p as any)?.decimals_a,
+        decimals_b: (p as any)?.decimals_b,
+        usd_a: getUsd(a),
+        usd_b: getUsd(b),
+        cat: 'graph'
+      });
+    } catch {}
+  }
+  
   const kind = (p as any)?.pool_kind || ((p as any)?.sqrt_price_x64_raw != null || typeof (p as any)?.sqrt_price_x64 === 'number' ? 'clmm' : 'amm');
 
   const forward: GraphEdge = {

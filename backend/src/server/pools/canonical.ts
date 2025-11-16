@@ -139,7 +139,44 @@ export function canonicalizePools<T extends { mint_a: string; mint_b: string }>(
 ): T[] {
   return pools.map(pool => {
     const orientation = canonicalOrientation(pool.mint_a, pool.mint_b);
-    return orientation === 'keep' ? pool : swapPoolFields(pool);
+    if (orientation === 'keep') return pool;
+    
+    const swapped = swapPoolFields(pool);
+    
+    // DIAGNOSTIC: Log price inversions for debugging magnitude issues
+    const origPrice = (pool as any).price_a_per_b;
+    const newPrice = (swapped as any).price_a_per_b;
+    
+    if (typeof origPrice === 'number' && typeof newPrice === 'number' && 
+        origPrice > 0 && newPrice > 0) {
+      const expectedInverse = 1 / origPrice;
+      const priceDeviation = Math.abs(newPrice - expectedInverse) / expectedInverse;
+      
+      // Log if deviation is significant or if price magnitude is suspiciously large
+      if (priceDeviation > 0.01 || newPrice > 100000 || origPrice > 100000) {
+        try {
+          logger.info('canonical.swap.price_check', {
+            dex: (pool as any).dex,
+            pool_id: ((pool as any).id || '').slice(0, 12),
+            orig_mint_a: (pool as any).mint_a?.slice(0, 8),
+            orig_mint_b: (pool as any).mint_b?.slice(0, 8),
+            new_mint_a: (swapped as any).mint_a?.slice(0, 8),
+            new_mint_b: (swapped as any).mint_b?.slice(0, 8),
+            orig_price: origPrice,
+            new_price: newPrice,
+            expected_inverse: expectedInverse,
+            deviation_pct: (priceDeviation * 100).toFixed(4),
+            orig_decimals_a: (pool as any).decimals_a,
+            orig_decimals_b: (pool as any).decimals_b,
+            new_decimals_a: (swapped as any).decimals_a,
+            new_decimals_b: (swapped as any).decimals_b,
+            cat: 'canonical'
+          });
+        } catch {}
+      }
+    }
+    
+    return swapped;
   });
 }
 
