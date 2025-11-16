@@ -63,7 +63,10 @@ export function computePriceForward(
 
   // Magnitude calibration: fix power-of-10 errors using USD reference
   // This does NOT flip orientation - it only adjusts magnitude
-  if (typeof getUsd === 'function' && price && price > 0) {
+  // CRITICAL FIX: Skip for reverse edges - they're derived from already-calibrated forward edges
+  // Running magnitude calibration on reverse edges causes the algorithm to compare inverted prices,
+  // leading to incorrect power-of-10 adjustments (e.g., 1000x errors)
+  if (typeof getUsd === 'function' && price && price > 0 && !isReverseEdge) {
     try {
       const pa = getUsd(mintA);
       const pb = getUsd(mintB);
@@ -75,10 +78,7 @@ export function computePriceForward(
         let best = price;
         let bestDev = rawDev;
         
-        // CRITICAL FIX: Use much stricter bounds for reverse edges to prevent magnitude explosions
-        // Reverse edges are derived from forward edges that have already been calibrated,
-        // so they should only need minor adjustments at most
-        const MAX_APPLIED_DEV = isReverseEdge ? 3 : 100;
+        const MAX_APPLIED_DEV = 100;
         
         for (let k = -8; k <= 8; k++) {
           const cand = price * Math.pow(10, k);
