@@ -723,9 +723,52 @@ async fn main() -> anyhow::Result<()> {
                             }
                             s.metrics.graph_nodes = s.graph.g.node_count() as u64;
                             s.metrics.graph_edges = s.graph.g.edge_count() as u64;
+                            
+                            // CRITICAL FIX: Commit version immediately after applying diffs,
+                            // before detection starts. This ensures ACK requests can succeed
+                            // quickly even if detection takes a long time.
+                            if let Some(v_commit) = version_to_commit {
+                                let current_v = s.last_graph_version.load(Ordering::Acquire);
+                                if v_commit > current_v {
+                                    tracing::info!(
+                                        old_version = current_v,
+                                        new_version = v_commit,
+                                        "arb.graph.version: committed"
+                                    );
+                                    s.last_graph_version.store(v_commit, Ordering::Release);
+                                    // Notify any waiting ACK handlers immediately
+                                    s.version_changed.notify_waiters();
+                                }
+                                if let Some(ts_commit) = ts_to_commit {
+                                    s.last_graph_ts.store(ts_commit, Ordering::Release);
+                                }
+                                // Clear version_to_commit so we don't commit again after detection
+                                version_to_commit = None;
+                                ts_to_commit = None;
+                            }
                         }
                     } else {
                         tracing::info!("arb.graph.diff: none pending");
+                        // Even if no diffs, commit version if we have one (version-only updates)
+                        if let Some(v_commit) = version_to_commit {
+                            let mut s = loop_state.write().await;
+                            let current_v = s.last_graph_version.load(Ordering::Acquire);
+                            if v_commit > current_v {
+                                tracing::info!(
+                                    old_version = current_v,
+                                    new_version = v_commit,
+                                    "arb.graph.version: committed"
+                                );
+                                s.last_graph_version.store(v_commit, Ordering::Release);
+                                s.version_changed.notify_waiters();
+                            }
+                            if let Some(ts_commit) = ts_to_commit {
+                                s.last_graph_ts.store(ts_commit, Ordering::Release);
+                            }
+                            drop(s);
+                            version_to_commit = None;
+                            ts_to_commit = None;
+                        }
                     }
                 }
                 let diff_apply_ms = diff_apply_start.elapsed().as_millis() as u128;
@@ -2982,20 +3025,22 @@ async fn main() -> anyhow::Result<()> {
                 // Drop the write lock before attempting to acquire another one for version commit
                 drop(s);
 
+                // Version should already be committed before detection, but check defensively
+                // This handles edge cases where version_to_commit wasn't cleared properly
                 if let Some(v_commit) = version_to_commit {
                     let mut s = loop_state.write().await;
                     let current_v = s.last_graph_version.load(Ordering::Acquire);
                     if v_commit > current_v {
-                        tracing::info!(
+                        tracing::warn!(
                             old_version = current_v,
                             new_version = v_commit,
-                            "arb.graph.version: committed"
+                            "arb.graph.version: late_commit (should have been committed earlier)"
                         );
                         s.last_graph_version.store(v_commit, Ordering::Release);
                         // Notify any waiting ACK handlers
                         s.version_changed.notify_waiters();
                     } else {
-                        tracing::info!(
+                        tracing::debug!(
                             attempt = v_commit,
                             current_version = current_v,
                             "arb.graph.version: already_current"
@@ -3004,6 +3049,8 @@ async fn main() -> anyhow::Result<()> {
                     if let Some(ts_commit) = ts_to_commit {
                         s.last_graph_ts.store(ts_commit, Ordering::Release);
                     }
+                    version_to_commit = None;
+                    ts_to_commit = None;
                 } else {
                     // Check if there's a pending version that wasn't captured (shouldn't happen, but defensive check)
                     let pending_check = loop_state
@@ -3016,8 +3063,6 @@ async fn main() -> anyhow::Result<()> {
                             pending_version = pending_check,
                             "arb.graph.version: pending_version_not_captured"
                         );
-                    } else {
-                        tracing::info!("arb.graph.version: nothing_to_commit");
                     }
                 }
 
