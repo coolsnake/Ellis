@@ -1,6 +1,7 @@
 import { computePriceForward, computePriceReverse } from './graph.pricing.js';
 import type { GraphEdge } from './graph.types.js';
 import type { AmmPool, ClmmPool } from './pools/types.js';
+import { logger } from '../utils/logger.js';
 
 export type EdgeAllow = {
   raydium?: { amm?: boolean; clmm?: boolean };
@@ -87,7 +88,6 @@ export function edgesFromPoolIncremental(
   // DIAGNOSTIC: Log suspicious reverse edge prices
   if (rev && fwd && (rev > 100000 || (rev * fwd > 2) || (rev * fwd < 0.5))) {
     try {
-      const { logger } = await import('../../utils/logger.js');
       logger.warn('graph.edge.suspicious_reverse', {
         dex,
         pool_id: id.slice(0, 12),
