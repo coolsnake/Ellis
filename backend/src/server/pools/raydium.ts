@@ -865,10 +865,8 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
             finalDecA = processed.decimalsA;
             finalDecB = processed.decimalsB;
             
-            // If mints were swapped, update all mint-dependent fields
-            if (processed.wasSwapped) {
-              [amount_a_whole, amount_b_whole] = [amount_b_whole, amount_a_whole];
-            }
+            // If mints were swapped, note it but don't swap amount_a_whole/amount_b_whole
+            // since they're const. The graph builder will handle mint ordering.
           } else {
             px = rawPrice;
           }

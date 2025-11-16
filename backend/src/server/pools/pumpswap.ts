@@ -626,6 +626,13 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
           const rawPrice = priceFromReserves(baseReserveRaw, quoteReserveRaw, decA, decB);
           
           // Process through centralized pipeline (canonicalization + calibration + rescaling)
+          let finalMintA = mint_a;
+          let finalMintB = mint_b;
+          let finalDecA = decA;
+          let finalDecB = decB;
+          let finalBaseReserve = baseReserve;
+          let finalQuoteReserve = quoteReserve;
+          
           if (rawPrice && rawPrice > 0 && Number.isFinite(rawPrice)) {
             try {
               const { processPriceThroughPipeline } = await import('./pricePipeline.js');
@@ -652,18 +659,17 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
               });
               
               if (processed) {
-                // Update mints to canonical order
-                mint_a = processed.mintA;
-                mint_b = processed.mintB;
-                decimals_a = processed.decimalsA;
-                decimals_b = processed.decimalsB;
+                // Update to canonical order
+                finalMintA = processed.mintA;
+                finalMintB = processed.mintB;
+                finalDecA = processed.decimalsA;
+                finalDecB = processed.decimalsB;
                 price_a_per_b = processed.priceForward;
                 
-                // If mints were swapped, also swap reserves and accounts
+                // If mints were swapped, also swap reserves
                 if (processed.wasSwapped) {
-                  [baseReserve, quoteReserve] = [quoteReserve, baseReserve];
-                  [baseReserveRaw, quoteReserveRaw] = [quoteReserveRaw, baseReserveRaw];
-                  [decA, decB] = [decB, decA];
+                  finalBaseReserve = quoteReserve;
+                  finalQuoteReserve = baseReserve;
                 }
               } else {
                 price_a_per_b = rawPrice;
@@ -750,8 +756,8 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
       amm.push({
         id,
         dex: 'Pumpswap',
-        mint_a,
-        mint_b,
+        mint_a: finalMintA,
+        mint_b: finalMintB,
         fee_bps: feeBps, // Use extracted fee or default
         price_a_per_b,
         liquidity_base,
@@ -762,11 +768,11 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
         lp_mint: pool.lp_mint,
         lp_supply: pool.lp_supply || undefined, // Store LP supply for reference
         // Decimals for proper unit conversion (now canonical after pipeline)
-        decimals_a: decimals_a,
-        decimals_b: decimals_b,
+        decimals_a: finalDecA,
+        decimals_b: finalDecB,
         // Whole unit amounts (human-readable) - matches other DEX implementations
-        amount_a_whole: baseReserve,
-        amount_b_whole: quoteReserve,
+        amount_a_whole: finalBaseReserve,
+        amount_b_whole: finalQuoteReserve,
         amounts_are_whole: true,
         // Raw reserves in smallest units (for exact calculations)
         reserve_a_raw: pool.base_reserve || undefined,
