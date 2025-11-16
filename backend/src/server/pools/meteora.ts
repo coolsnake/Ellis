@@ -172,10 +172,11 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     if (mint_b) allMints.add(mint_b);
   }
   
-  // Batch resolve decimals using centralized resolver with token program memo
+  // Batch resolve decimals using centralized resolver with RPC-first validation
   const decimalsMap = await resolveManyDecimals(Array.from(allMints), { 
     logger, 
-    batchSize: 100 
+    batchSize: 100,
+    normalizeMode: true // RPC validation priority during normalization
   });
   
   const bitmapExtensionMap = await resolveMeteoraBitmapExtensions(

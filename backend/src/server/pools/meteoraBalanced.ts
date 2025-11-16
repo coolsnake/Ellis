@@ -141,8 +141,11 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
     if (mint_b) allMints.add(mint_b);
   }
   
-  // Batch resolve decimals using centralized resolver
-  const decimalsMap = await resolveManyDecimals(Array.from(allMints), { logger });
+  // Batch resolve decimals using centralized resolver with RPC-first validation
+  const decimalsMap = await resolveManyDecimals(Array.from(allMints), { 
+    logger, 
+    normalizeMode: true // RPC validation priority during normalization
+  });
   const toDec = (v: any): number | undefined => {
     const n = Number(v);
     return Number.isFinite(n) ? n : undefined;
@@ -382,8 +385,11 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
     if (mints[1]) allMints.add(String(mints[1]));
   }
   
-  // Batch resolve decimals using centralized resolver
-  const decimalsMap = await resolveManyDecimals(Array.from(allMints), { logger });
+  // Batch resolve decimals using centralized resolver with RPC-first validation
+  const decimalsMap = await resolveManyDecimals(Array.from(allMints), { 
+    logger, 
+    normalizeMode: true // RPC validation priority during normalization
+  });
   
   const toNum = (v: any): number => {
     const n = Number(v);

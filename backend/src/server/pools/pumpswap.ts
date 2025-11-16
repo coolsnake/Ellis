@@ -526,8 +526,11 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
     if (pool.quote_mint) allMints.add(pool.quote_mint);
   }
   
-  // Batch resolve decimals using centralized resolver
-  const decimalsMap = await resolveManyDecimals(Array.from(allMints), { logger });
+  // Batch resolve decimals using centralized resolver with RPC-first validation
+  const decimalsMap = await resolveManyDecimals(Array.from(allMints), { 
+    logger, 
+    normalizeMode: true // RPC validation priority during normalization
+  });
   
   for (const pool of pools) {
     try {

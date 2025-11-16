@@ -186,8 +186,11 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
     if (mint_b) allMints.add(mint_b);
   }
   
-  // Batch resolve decimals using centralized resolver
-  const decimalsMap = await resolveManyDecimals(Array.from(allMints), { logger });
+  // Batch resolve decimals using centralized resolver with RPC-first validation
+  const decimalsMap = await resolveManyDecimals(Array.from(allMints), { 
+    logger, 
+    normalizeMode: true // RPC validation priority during normalization
+  });
   
   for (const it of arr) {
     const id = String(it?.address || it?.id || '');

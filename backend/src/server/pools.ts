@@ -5050,7 +5050,7 @@ export function startRaydiumRefreshLoop(): void {
             
             // Only log non-zero metrics to reduce size
             const activeProtocols = Object.entries(snapshot)
-              .filter(([_, count]) => count > 0)
+              .filter(([_, count]) => (count as number) > 0)
               .map(([proto]) => proto);
             
             // Simplified log with only essential data

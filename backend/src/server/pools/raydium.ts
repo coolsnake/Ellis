@@ -686,8 +686,11 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
     if (mintB) allMints.add(mintB);
   }
   
-  // Batch resolve decimals using centralized resolver
-  const decimalsMap = await resolveManyDecimals(Array.from(allMints), { logger });
+  // Batch resolve decimals using centralized resolver with RPC-first validation
+  const decimalsMap = await resolveManyDecimals(Array.from(allMints), { 
+    logger, 
+    normalizeMode: true // RPC validation priority during normalization
+  });
   const toFeeBps = (v: any): number => {
     const n = Number(v);
     if (!Number.isFinite(n)) return 30;
