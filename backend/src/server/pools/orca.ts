@@ -670,6 +670,34 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
   
   const clmmCanon = canonicalizePools(clmm);
   
+  // DIAGNOSTIC: Verify decimals are swapped correctly after canonicalization
+  try {
+    const problematicMints = [
+      'oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp', // OREO (11 decimals)
+      'oobQ3oX6ubRYMNMahG7VSCe8Z73uaQbAWFn6f22XTgo',  // OOB (6 decimals)
+    ];
+    
+    for (const pool of clmmCanon) {
+      const hasProblematicMint = problematicMints.some(m => 
+        pool.mint_a.includes(m) || pool.mint_b.includes(m)
+      );
+      
+      if (hasProblematicMint && pool.mint_a === 'So11111111111111111111111111111111111111112') {
+        // SOL is mint_a after canonicalization
+        logger.info('orca.post_canon.sol_exotic', {
+          id: pool.id,
+          mint_a: pool.mint_a.slice(0, 8) + '...',
+          mint_b: pool.mint_b.slice(0, 8) + '...',
+          decimals_a: pool.decimals_a,
+          decimals_b: pool.decimals_b,
+          expected_decimals_a: 9, // SOL always 9
+          price_a_per_b: pool.price_a_per_b,
+          cat: 'orca.diagnostic'
+        });
+      }
+    }
+  } catch {}
+  
   // DIAGNOSTIC: Log sample AFTER canonicalization
   try {
     const usdcSol = clmmCanon.find(p => p.id === 'Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE');
