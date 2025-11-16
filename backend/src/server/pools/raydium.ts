@@ -780,7 +780,11 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
       
       // Calculate price using centralized CLMM formula
       // This ensures consistent sqrt price calculation across all CLMM pools
+      // Also compute high-precision ratio for exact price fields
       const { calculateClmmPrice } = await import('./priceFormulas.js');
+      let priceRatio = sqrtBig && Number.isFinite(decA) && Number.isFinite(decB)
+        ? sqrtPriceX64ToPriceRatio(sqrtBig, decA as number, decB as number)
+        : null;
       
       try {
         if (sqrtBig && Number.isFinite(decA) && Number.isFinite(decB)) {
