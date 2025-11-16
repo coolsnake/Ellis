@@ -1209,7 +1209,7 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
         const lpSupply = lpMint ? lpMintData.get(lpMint) : undefined;
         const minVault = Math.min(wholeA, wholeB);
         
-        // RUGPULL DETECTION: Check if LP supply is zero or suspiciously low
+        // RUGPULL/IMBALANCE DETECTION: Check if LP supply is zero or vaults are extremely imbalanced
         const isRugpulled = (() => {
           if (!lpSupply || lpSupply === 0n) {
             // No LP tokens in circulation = rugpulled or empty pool
@@ -1226,6 +1226,16 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
             return true;
           }
           
+          // CRITICAL: Check for extreme vault imbalance (e.g., 1M tokens vs 0.001 SOL)
+          // This indicates a drained/rugpulled pool even if LP supply exists
+          if (wholeA > 0 && wholeB > 0) {
+            const ratio = wholeA > wholeB ? wholeA / wholeB : wholeB / wholeA;
+            // If ratio > 100,000, one vault is essentially empty
+            if (ratio > 100_000) {
+              return true;
+            }
+          }
+          
           return false;
         })();
         
@@ -1238,11 +1248,15 @@ export async function enrichMeteoraBalancedWithRpc(pools: any[]): Promise<{ pool
           const poolId = pool.pool_address || pool.id;
           if (poolId && !rugpullDetected.has(poolId)) {
             rugpullDetected.add(poolId);
+            const ratio = wholeA > 0 && wholeB > 0 
+              ? (wholeA > wholeB ? wholeA / wholeB : wholeB / wholeA).toFixed(2)
+              : 'N/A';
             try {
               logger.warn('meteora.balanced.rpc.rugpull_detected', {
                 pool: poolId,
                 vaultA: wholeA.toFixed(6),
                 vaultB: wholeB.toFixed(6),
+                ratio,
                 lpSupply: lpSupply ? lpSupply.toString() : 'null',
                 mintA: vaults.mintA,
                 mintB: vaults.mintB,
