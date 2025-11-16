@@ -708,9 +708,6 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         if (!nodesMap[a]) nodesMap[a] = { id: a, label: labelByMint[a] };
         if (!nodesMap[b]) nodesMap[b] = { id: b, label: labelByMint[b] };
       };
-      // DEPRECATED: Prices should already be canonicalized - no orientation needed
-      // Keeping as no-op for backwards compatibility
-      const orientWithUsdFallbacks = (mintA: string, mintB: string, px: number | undefined): number | undefined => px;
 
       // Pre-graph validator: fee bounds and price deviation vs USD references
       const sanityCfg = (CONFIG as any)?.sanity || {};
@@ -1395,7 +1392,22 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const dexName = (p as any)?.dex || 'MeteoraBalanced';  // Use pool's dex field (v1 vs v2)
         if (!price || !(price > 0)) { try { logger.debug('graph.skip.edge.no_price', { dex: dexName, kind: 'amm', pool_id: pid, mint_a: p.mint_a, mint_b: p.mint_b, reason: 'no_pool_price' }); } catch {}; continue; }
         const fwd = clampPrice(price);
-        const rev = fwd && fwd > 0 ? (1 / fwd) : undefined;
+        
+        // Calculate reverse with proper decimal rescaling
+        const ga_mbal = Number(isFinite(Number(decimalsByMint[p.mint_a])) ? decimalsByMint[p.mint_a] : decA);
+        const gb_mbal = Number(isFinite(Number(decimalsByMint[p.mint_b])) ? decimalsByMint[p.mint_b] : decB);
+        const rev = computePriceReverse(
+          p.mint_a,
+          p.mint_b,
+          fwd,
+          price,
+          decA,
+          decB,
+          ga_mbal,
+          gb_mbal,
+          (m) => { try { return getPriceByMintVar(m)?.usdc ?? undefined; } catch { return undefined; } },
+        );
+        
         const rawLiqMbal = Number((p as any).pool_liquidity_raw || (p as any).liquidity_base || 0) || undefined;
         addEdge(p.mint_a, p.mint_b, dexName, p.fee_bps, liqDisplay, fwd, usd, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward', rawLiqMbal);
         const pidRev = pid ? `${pid}-rev` : undefined;
@@ -1416,7 +1428,24 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           continue;
         }
         const fwd = clampPrice(price);
-        const rev = fwd && fwd > 0 ? (1 / fwd) : undefined;
+        
+        // Calculate reverse with proper decimal rescaling
+        const decA_pump = Number((p as any)?.decimals_a ?? decimalsByMint[p.mint_a] ?? NaN);
+        const decB_pump = Number((p as any)?.decimals_b ?? decimalsByMint[p.mint_b] ?? NaN);
+        const ga_pump = Number(isFinite(Number(decimalsByMint[p.mint_a])) ? decimalsByMint[p.mint_a] : decA_pump);
+        const gb_pump = Number(isFinite(Number(decimalsByMint[p.mint_b])) ? decimalsByMint[p.mint_b] : decB_pump);
+        const rev = computePriceReverse(
+          p.mint_a,
+          p.mint_b,
+          fwd,
+          price,
+          decA_pump,
+          decB_pump,
+          ga_pump,
+          gb_pump,
+          (m) => { try { return getPriceByMintVar(m)?.usdc ?? undefined; } catch { return undefined; } },
+        );
+        
         const rawLiqPump = Number((p as any).pool_liquidity_raw || (p as any).liquidity_base || 0) || undefined;
         addEdge(p.mint_a, p.mint_b, 'Pumpswap', p.fee_bps, liqDisplay, fwd, usd, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward', rawLiqPump);
         const pidRev = pid ? `${pid}-rev` : undefined;
