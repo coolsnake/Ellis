@@ -14,7 +14,7 @@ import { fetchPumpswapGraphQL as fetchPumpswapGraphQLImpl, normalizePumpswapPool
 import { validateCrossDexPrices, verifyCanonicalization } from './pools/validation.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './pools/httpLog.js';
 import { fetchMeteoraBalancedHttp as fetchMeteoraBalancedHttpImpl, normalizeMeteoraBalancedHttp as normalizeMeteoraBalancedHttpImpl, fetchMeteoraBalancedAll as fetchMeteoraBalancedAllImpl } from './pools/meteoraBalanced.js';
-import { canonicalizePairs } from './pools/common.js';
+import { canonicalizePools } from './pools/canonical.js';
 import { createProgram } from '@meteora-ag/dlmm';
 import { PoolInfoLayout as RaydiumClmmLayout } from '@raydium-io/raydium-sdk-v2/lib/raydium/clmm/layout.js';
 import { getTickArrayStartIndexByTick, deriveTickArrayPda } from '../execution/raydiumTickArrays.js';
@@ -3006,7 +3006,7 @@ export function startRaydiumRefreshLoop(): void {
                       } catch {}
                     }
                     
-                    const [canonicalItem] = canonicalizePairs([{ ...item }]);
+                    const [canonicalItem] = canonicalizePools([{ ...item }]);
                     const finalItem = canonicalItem || item;
                     
                     // Validate decoded pool before applying

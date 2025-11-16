@@ -3,7 +3,9 @@ import { emit } from '../realtime.js';
 import { CONFIG } from '../../utils/config.js';
 import { readJson, writeJson, joinPath } from '../../utils/fs.js';
 import type { AmmPool, ClmmPool, PoolsPayload } from './types.js';
-import { canonicalizePairs, validateHttpUrl, swapABFields } from './common.js';
+import { validateHttpUrl, swapABFields } from './common.js';
+import { canonicalizePools } from './canonical.js';
+import { resolveManyDecimals } from './decimals.js';
 import { anyToBigInt, ratioToDecimalString, sqrtPriceX64ToPriceRatio } from './precision.js';
 import { verifyCanonicalization } from './validation.js';
 
@@ -666,14 +668,19 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
   const arr: any[] = Array.isArray(raw?.data?.data)
     ? raw.data.data
     : (Array.isArray(raw?.data) ? raw.data : (Array.isArray(raw) ? raw : []));
-  // Load Jupiter token decimals to enforce authoritative values for both AMM and CLMM
-  let jupMap: Record<string, { symbol?: string; decimals?: number }> = {};
-  try {
-    const tok = await import('../../utils/tokens.js');
-    if (typeof (tok as any).loadJupiterTokenMap === 'function') {
-      jupMap = await (tok as any).loadJupiterTokenMap();
-    }
-  } catch {}
+  
+  // Extract all unique mints for batch decimal resolution
+  const allMints = new Set<string>();
+  for (const it of arr) {
+    if (!it) continue;
+    const mintA = toMint(it?.mintA);
+    const mintB = toMint(it?.mintB);
+    if (mintA) allMints.add(mintA);
+    if (mintB) allMints.add(mintB);
+  }
+  
+  // Batch resolve decimals using centralized resolver
+  const decimalsMap = await resolveManyDecimals(Array.from(allMints), { logger });
 
   const toMint = (v: any): string => {
     if (!v) return '';
@@ -700,35 +707,22 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
     const hasTick = typeof tickSpacing === 'number' && tickSpacing > 0; // Only consider valid tick spacing
     const isClmm = typeStr.includes('concentrated') || pooltype.map((s: any) => String(s).toLowerCase()).includes('clmm') || hasSqrt || hasTick;
     const fee_bps = toFeeBps((it as any)?.feeRate ?? (it as any)?.tradeFeeRate ?? (it as any)?.feeBps ?? (it as any)?.tradeFeeBps);
+    
+    // Get decimals from centralized resolver with API fallback
     let decA = Number((it?.mintA as any)?.decimals);
     let decB = Number((it?.mintB as any)?.decimals);
-    // Fallback to token resolver if Raydium payload omits decimals
-    try {
-      if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
-        const tok = await import('../../utils/tokens.js');
-        if (!Number.isFinite(decA)) { const r = await (tok as any).resolveMint(mintA); decA = Number(r?.decimals); }
-        if (!Number.isFinite(decB)) { const r = await (tok as any).resolveMint(mintB); decB = Number(r?.decimals); }
-      }
-    } catch {}
-    // Enforce authoritative decimals from Jupiter list for both AMM and CLMM, then anchors, then clamp
-    // This ensures consistent decimal handling across all pool types
-    try {
-      const jDecA = Number(jupMap[mintA]?.decimals);
-      const jDecB = Number(jupMap[mintB]?.decimals);
-      if (Number.isFinite(jDecA)) decA = jDecA;
-      if (Number.isFinite(jDecB)) decB = jDecB;
-      // Anchors: SOL 9, USDC/USDT/USD1 6
-      if (mintA === 'So11111111111111111111111111111111111111112') decA = 9;
-      if (mintB === 'So11111111111111111111111111111111111111112') decB = 9;
-      if (mintA === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') decA = 6;
-      if (mintB === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') decB = 6;
-      if (mintA === 'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN') decA = 6;
-      if (mintB === 'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN') decB = 6;
-      if (mintA === 'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB') decA = 6;
-      if (mintB === 'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB') decB = 6;
-      decA = Math.min(12, Math.max(0, Math.round(Number(decA))));
-      decB = Math.min(12, Math.max(0, Math.round(Number(decB))));
-    } catch {}
+    
+    if (!Number.isFinite(decA)) {
+      decA = decimalsMap.get(mintA) ?? 6;
+    }
+    if (!Number.isFinite(decB)) {
+      decB = decimalsMap.get(mintB) ?? 6;
+    }
+    
+    // Clamp to reasonable integer bounds
+    decA = Math.min(12, Math.max(0, Math.round(Number(decA))));
+    decB = Math.min(12, Math.max(0, Math.round(Number(decB))));
+    
     const price = Number((it as any)?.price);
     const tvl = Number((it as any)?.tvl);
     const mintAmountRawA = (it as any)?.mintAmountA;
@@ -1220,8 +1214,8 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
     } catch {}
   }
 
-  const ammCanon = canonicalizePairs(amm);
-  const clmmCanon = canonicalizePairs(clmm);
+  const ammCanon = canonicalizePools(amm);
+  const clmmCanon = canonicalizePools(clmm);
   
   // DEBUG: Log same pool after canonicalization
   if (ammCanon.length > 0) {

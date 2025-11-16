@@ -4149,54 +4149,64 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       poolMintB = poolMintB || hop.outputMint;
     }
 
-    // Use pool's ACTUAL mintA/mintB orientation (not swapped based on swap direction)
-    const mintAAddress = toPublicKey(poolMintA).toBase58();
-    const mintBAddress = toPublicKey(poolMintB).toBase58();
+    // Use typed orientation helper for safer mint orientation handling
+    const { determineSwapOrientation } = await import('../../server/pools/orientation.js');
+    const orientation = determineSwapOrientation(
+      {
+        mint_a: poolMintA,
+        mint_b: poolMintB,
+        decimals_a: poolDecA,
+        decimals_b: poolDecB,
+      },
+      {
+        inputMint: hop.inputMint,
+        outputMint: hop.outputMint,
+        userSourceAta: hop.userSourceAta,
+        userDestAta: hop.userDestAta,
+        inputDecimals: hop.inputDecimals,
+        outputDecimals: hop.outputDecimals,
+      }
+    );
     
-    // Determine which mint is input/output for token program IDs
-    const isSwappingAtoB = hop.inputMint === poolMintA && hop.outputMint === poolMintB;
-    
-    // Log mint orientation for debugging constraint violations
+    // Log orientation for debugging
     try {
-      logger.info('raydium.clmm.mint_orientation', {
+      logger.info('raydium.clmm.orientation', {
         cat: 'tx',
         ctx: {
           pool: hop.poolId,
-          poolMintA,
-          poolMintB,
-          hopInputMint: hop.inputMint,
-          hopOutputMint: hop.outputMint,
-          isSwappingAtoB,
-          note: 'Using pool\'s actual mint orientation to prevent constraint violations'
+          direction: orientation.direction,
+          inputIsA: orientation.inputIsA,
+          outputIsB: orientation.outputIsB,
         } as any
       });
     } catch {}
     
+    // Use pool's ACTUAL mintA/mintB orientation (not swapped based on swap direction)
+    const mintAAddress = toPublicKey(poolMintA).toBase58();
+    const mintBAddress = toPublicKey(poolMintB).toBase58();
+    
     // CRITICAL: ownerInfo.tokenAccountA/B must match pool's mintA/mintB orientation
-    // Not the swap direction (source/dest)
-    // When swapping A→B: tokenAccountA = source (mintA), tokenAccountB = dest (mintB)
-    // When swapping B→A: tokenAccountA = dest (mintA), tokenAccountB = source (mintB)
     const ownerInfo = {
       wallet: kp.publicKey,
-      tokenAccountA: isSwappingAtoB ? toPublicKey(hop.userSourceAta) : toPublicKey(hop.userDestAta),
-      tokenAccountB: isSwappingAtoB ? toPublicKey(hop.userDestAta) : toPublicKey(hop.userSourceAta),
+      tokenAccountA: toPublicKey(orientation.userAccountInput === hop.userSourceAta && orientation.inputIsA ? hop.userSourceAta : hop.userDestAta),
+      tokenAccountB: toPublicKey(orientation.userAccountOutput === hop.userDestAta && orientation.outputIsB ? hop.userDestAta : hop.userSourceAta),
     };
     
-    const mintATokenProgram = isSwappingAtoB 
+    const mintATokenProgram = orientation.inputIsA
       ? (hop.inputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID.toBase58() : TOKEN_PROGRAM_ID.toBase58())
       : (hop.outputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID.toBase58() : TOKEN_PROGRAM_ID.toBase58());
-    const mintBTokenProgram = isSwappingAtoB
+    const mintBTokenProgram = orientation.outputIsB
       ? (hop.outputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID.toBase58() : TOKEN_PROGRAM_ID.toBase58())
       : (hop.inputTokenProgram === 'token-2022' ? TOKEN_2022_PROGRAM_ID.toBase58() : TOKEN_PROGRAM_ID.toBase58());
     
     const mintAInfo = {
       address: mintAAddress,
-      decimals: poolDecA ?? Number(hop.inputDecimals ?? 0),
+      decimals: orientation.decimalsInput,
       programId: mintATokenProgram,
     } as any;
     const mintBInfo = {
       address: mintBAddress,
-      decimals: poolDecB ?? Number(hop.outputDecimals ?? 0),
+      decimals: orientation.decimalsOutput,
       programId: mintBTokenProgram,
     } as any;
 

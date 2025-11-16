@@ -3,7 +3,9 @@ import { emit } from '../realtime.js';
 import { CONFIG } from '../../utils/config.js';
 import { writeJson, joinPath } from '../../utils/fs.js';
 import type { AmmPool, PoolsPayload } from './types.js';
-import { canonicalizePairs, validateHttpUrl } from './common.js';
+import { validateHttpUrl } from './common.js';
+import { canonicalizePools } from './canonical.js';
+import { resolveManyDecimals } from './decimals.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
 import { PublicKey } from '@solana/web3.js';
 
@@ -120,15 +122,19 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
   if (Array.isArray(raw?.data)) arrCandidates.push(raw.data);
   const arr: any[] = arrCandidates.find(a => Array.isArray(a) && a.length) || (Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : []));
 
-  let enrichedDecimals: Map<string, number> = new Map();
-  // Enrich missing token decimals before price calculations
-  try {
-    const { enrichPoolTokenDecimals } = await import('../../utils/tokens.js');
-    enrichedDecimals = await enrichPoolTokenDecimals(arr, { logger, forceOnchain: true });
-  } catch (err: any) {
-    try { logger.warn('meteora.balanced.normalizer.enrich.failed', { error: String(err?.message || err), cat: 'pools' }); } catch {}
-    enrichedDecimals = new Map();
+  // Extract all unique mints for batch decimal resolution
+  const allMints = new Set<string>();
+  for (const it of arr) {
+    const a = it?.tokenA || it?.mintA || it?.base || {};
+    const b = it?.tokenB || it?.mintB || it?.quote || {};
+    const mint_a = String(it?.token_a_mint || toMint(a) || toMint(a?.info) || it?.mintA || '');
+    const mint_b = String(it?.token_b_mint || toMint(b) || toMint(b?.info) || it?.mintB || '');
+    if (mint_a) allMints.add(mint_a);
+    if (mint_b) allMints.add(mint_b);
   }
+  
+  // Batch resolve decimals using centralized resolver
+  const decimalsMap = await resolveManyDecimals(Array.from(allMints), { logger });
 
   const toMint = (v: any): string => {
     if (!v) return '';
@@ -161,12 +167,9 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
       const poolVersion = Number(it?.pool_version ?? 2); // Default to v2 for V2 API
       const dex = poolVersion === 1 ? 'MeteoraBalanced_v1' : 'MeteoraBalanced_v2';
 
-      let decA = toDec(a?.decimals ?? it?.decimalsA);
-      let decB = toDec(b?.decimals ?? it?.decimalsB);
-      const enrichedA = enrichedDecimals.get(mint_a);
-      const enrichedB = enrichedDecimals.get(mint_b);
-      if (typeof enrichedA === 'number' && Number.isFinite(enrichedA)) decA = enrichedA;
-      if (typeof enrichedB === 'number' && Number.isFinite(enrichedB)) decB = enrichedB;
+      // Get decimals from centralized resolver with API fallback
+      let decA = toDec(a?.decimals ?? it?.decimalsA) ?? decimalsMap.get(mint_a) ?? 6;
+      let decB = toDec(b?.decimals ?? it?.decimalsB) ?? decimalsMap.get(mint_b) ?? 6;
       
       // CRITICAL: Check if we have pre-converted whole amounts from RPC enrichment
       // If vault_a_whole exists, use it directly (already divided by decimals)
@@ -298,7 +301,7 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
     } catch {}
   }
 
-  const ammCanon = canonicalizePairs(amm);
+  const ammCanon = canonicalizePools(amm);
   
   // Count pools with and without prices for diagnostics
   try {
@@ -371,22 +374,16 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
   const amm: AmmPool[] = [];
   const arr: any[] = Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : []);
   
-  let enrichedDecimals: Map<string, number> = new Map();
-  // Enrich missing token decimals before price calculations
-  try {
-    const { enrichPoolTokenDecimals } = await import('../../utils/tokens.js');
-    enrichedDecimals = await enrichPoolTokenDecimals(arr, { logger, forceOnchain: true });
-  } catch (err: any) {
-    try { logger.warn('meteora.balanced.v1.normalizer.enrich.failed', { error: String(err?.message || err), cat: 'pools' }); } catch {}
-    enrichedDecimals = new Map();
+  // Extract all unique mints for batch decimal resolution
+  const allMints = new Set<string>();
+  for (const it of arr) {
+    const mints: string[] = Array.isArray((it as any)?.pool_token_mints) ? (it as any).pool_token_mints : [];
+    if (mints[0]) allMints.add(String(mints[0]));
+    if (mints[1]) allMints.add(String(mints[1]));
   }
   
-  // Load Jupiter token map for decimals lookup
-  let jupMap: Record<string, { decimals: number }> = {};
-  try {
-    const { loadJupiterTokenMap } = await import('../../utils/tokens.js');
-    jupMap = await loadJupiterTokenMap().catch(() => ({}));
-  } catch {}
+  // Batch resolve decimals using centralized resolver
+  const decimalsMap = await resolveManyDecimals(Array.from(allMints), { logger });
   
   const toNum = (v: any): number => {
     const n = Number(v);
@@ -408,14 +405,9 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
       const poolVersion = Number(it?.pool_version ?? 1); // Default to v1 for V1 API
       const dex = poolVersion === 1 ? 'MeteoraBalanced_v1' : 'MeteoraBalanced_v2';
       
-      // Get decimals from Jupiter map or API if available
-      const lp_decimal = Number(it?.lp_decimal);
-      let decimalsA = jupMap[mint_a]?.decimals;
-      let decimalsB = jupMap[mint_b]?.decimals;
-      const enrichedA = enrichedDecimals.get(mint_a);
-      const enrichedB = enrichedDecimals.get(mint_b);
-      if (typeof enrichedA === 'number' && Number.isFinite(enrichedA)) decimalsA = enrichedA;
-      if (typeof enrichedB === 'number' && Number.isFinite(enrichedB)) decimalsB = enrichedB;
+      // Get decimals from centralized resolver
+      const decimalsA = decimalsMap.get(mint_a) ?? 6;
+      const decimalsB = decimalsMap.get(mint_b) ?? 6;
       
       // Parse amounts - V1 API provides whole token amounts (already converted from raw)
       const wholeA = toNum(amounts?.[0]);
@@ -508,7 +500,7 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
       } as any);
     } catch {}
   }
-  const ammCanon = canonicalizePairs(amm);
+  const ammCanon = canonicalizePools(amm);
   
   // Count pools with and without prices for diagnostics
   try {

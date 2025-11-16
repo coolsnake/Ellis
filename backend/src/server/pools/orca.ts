@@ -3,7 +3,9 @@ import { emit } from '../realtime.js';
 import { CONFIG } from '../../utils/config.js';
 import { writeJson, joinPath } from '../../utils/fs.js';
 import type { ClmmPool, PoolsPayload } from './types.js';
-import { canonicalizePairs, validateHttpUrl, swapABFields } from './common.js';
+import { validateHttpUrl, swapABFields } from './common.js';
+import { canonicalizePools } from './canonical.js';
+import { resolveManyDecimals } from './decimals.js';
 import { verifyCanonicalization } from './validation.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
 import { anyToBigInt, ratioToDecimalString, sqrtPriceX64ToPriceRatio } from './precision.js';
@@ -157,11 +159,9 @@ export async function fetchOrcaHttp(): Promise<any> {
 export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
   const now = Date.now();
   const clmm: ClmmPool[] = [];
-  let jupMap: Record<string, { symbol: string; decimals: number }> = {};
   let resolveMintFn: undefined | ((s: string) => Promise<{ mint: string; decimals: number }>);
   const symbolToMintCache = new Map<string, { mint?: string; decimals?: number; tried: boolean }>();
   let tokenModule: any = null;
-  let enrichedDecimals: Map<string, number> = new Map();
   try {
     tokenModule = await import('../../utils/tokens.js');
     if (typeof (tokenModule as any).resolveMint === 'function') {
@@ -175,30 +175,19 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
   if (Array.isArray(raw?.whirlpools)) arrCandidates.push(raw.whirlpools);
   const arr: any[] = arrCandidates.find(a => Array.isArray(a) && a.length) || (Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : []));
   
-  // Enrich missing token decimals before price calculations
-  try {
-    const enrichFn = tokenModule?.enrichPoolTokenDecimals;
-    if (typeof enrichFn === 'function') {
-      const maybeMap = await enrichFn(arr, { logger, forceOnchain: true });
-      if (maybeMap instanceof Map) enrichedDecimals = maybeMap;
-    } else {
-      const { enrichPoolTokenDecimals } = await import('../../utils/tokens.js');
-      enrichedDecimals = await enrichPoolTokenDecimals(arr, { logger, forceOnchain: true });
-    }
-  } catch (err: any) {
-    try { logger.warn('orca.normalizer.enrich.failed', { error: String(err?.message || err), cat: 'pools' }); } catch {}
-    enrichedDecimals = new Map();
+  // Extract all unique mints for batch decimal resolution
+  const allMints = new Set<string>();
+  for (const it of arr) {
+    const tokenA = it?.tokenA || it?.token_a || {};
+    const tokenB = it?.tokenB || it?.token_b || {};
+    const mint_a = String(tokenA?.mint || it?.tokenMintA || it?.mintA || '');
+    const mint_b = String(tokenB?.mint || it?.tokenMintB || it?.mintB || '');
+    if (mint_a) allMints.add(mint_a);
+    if (mint_b) allMints.add(mint_b);
   }
   
-  // Reload Jupiter decimals after enrichment so this pass sees new tokens immediately
-  try {
-    if (typeof tokenModule?.loadJupiterTokenMap === 'function') {
-      jupMap = await tokenModule.loadJupiterTokenMap();
-    } else {
-      const { loadJupiterTokenMap } = await import('../../utils/tokens.js');
-      jupMap = await loadJupiterTokenMap();
-    }
-  } catch {}
+  // Batch resolve decimals using centralized resolver
+  const decimalsMap = await resolveManyDecimals(Array.from(allMints), { logger });
   
   for (const it of arr) {
     const id = String(it?.address || it?.id || '');
@@ -227,14 +216,8 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
         });
       } catch {}
     }
-    let decA = Number((tokenA?.decimals ?? it?.decimalsA ?? it?.tokenDecimalsA));
-    let decB = Number((tokenB?.decimals ?? it?.decimalsB ?? it?.tokenDecimalsB));
-    const enrichedA = enrichedDecimals.get(mint_a);
-    const enrichedB = enrichedDecimals.get(mint_b);
-    if (typeof enrichedA === 'number' && Number.isFinite(enrichedA)) decA = enrichedA;
-    if (typeof enrichedB === 'number' && Number.isFinite(enrichedB)) decB = enrichedB;
-    if (!Number.isFinite(decA) && jupMap[mint_a]?.decimals != null) decA = Number(jupMap[mint_a].decimals);
-    if (!Number.isFinite(decB) && jupMap[mint_b]?.decimals != null) decB = Number(jupMap[mint_b].decimals);
+    
+    // Try to resolve mints from symbols if needed
     if (!mint_a && resolveMintFn && typeof tokenA?.symbol === 'string' && tokenA.symbol.trim()) {
       const sym = tokenA.symbol.trim();
       const cached = symbolToMintCache.get(sym);
@@ -248,7 +231,6 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
       }
       const got = symbolToMintCache.get(sym);
       if (got?.mint) mint_a = got.mint;
-      if (!Number.isFinite(Number(decA)) && Number.isFinite(Number(got?.decimals))) decA = Number(got?.decimals);
     }
     if (!mint_b && resolveMintFn && typeof tokenB?.symbol === 'string' && tokenB.symbol.trim()) {
       const sym = tokenB.symbol.trim();
@@ -263,38 +245,23 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
       }
       const got = symbolToMintCache.get(sym);
       if (got?.mint) mint_b = got.mint;
-      if (!Number.isFinite(Number(decB)) && Number.isFinite(Number(got?.decimals))) decB = Number(got?.decimals);
     }
-    // Enforce authoritative decimals: prefer Jupiter list when present, then hard-override anchors
-    try {
-      const jDecA = Number(jupMap[mint_a]?.decimals);
-      const jDecB = Number(jupMap[mint_b]?.decimals);
-      if (Number.isFinite(jDecA)) decA = jDecA;
-      if (Number.isFinite(jDecB)) decB = jDecB;
-      // Anchors: SOL 9, USDC 6, USDT 6
-      if (mint_a === 'So11111111111111111111111111111111111111112') decA = 9;
-      if (mint_b === 'So11111111111111111111111111111111111111112') decB = 9;
-      if (mint_a === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') decA = 6;
-      if (mint_b === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') decB = 6;
-      if (mint_a === 'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN') decA = 6;
-      if (mint_b === 'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN') decB = 6;
-      // Fallback: fetch decimals on-chain if still unknown
-      try {
-        if (!Number.isFinite(decA)) {
-          const tok = await import('../../utils/tokens.js');
-          const r = await (tok as any).resolveMint(mint_a);
-          if (Number.isFinite(Number(r?.decimals))) decA = Number(r.decimals);
-        }
-        if (!Number.isFinite(decB)) {
-          const tok = await import('../../utils/tokens.js');
-          const r = await (tok as any).resolveMint(mint_b);
-          if (Number.isFinite(Number(r?.decimals))) decB = Number(r.decimals);
-        }
-      } catch {}
-      // Clamp to reasonable integer bounds
-      decA = Math.min(12, Math.max(0, Math.round(Number(decA))));
-      decB = Math.min(12, Math.max(0, Math.round(Number(decB))));
-    } catch {}
+    
+    // Get decimals from centralized resolver
+    // Priority: API decimals → centralized resolver → symbol cache → fallback
+    let decA = Number((tokenA?.decimals ?? it?.decimalsA ?? it?.tokenDecimalsA));
+    let decB = Number((tokenB?.decimals ?? it?.decimalsB ?? it?.tokenDecimalsB));
+    
+    if (!Number.isFinite(decA)) {
+      decA = decimalsMap.get(mint_a) ?? symbolToMintCache.get(tokenA?.symbol?.trim())?.decimals ?? 6;
+    }
+    if (!Number.isFinite(decB)) {
+      decB = decimalsMap.get(mint_b) ?? symbolToMintCache.get(tokenB?.symbol?.trim())?.decimals ?? 6;
+    }
+    
+    // Clamp to reasonable integer bounds
+    decA = Math.min(12, Math.max(0, Math.round(Number(decA))));
+    decB = Math.min(12, Math.max(0, Math.round(Number(decB))));
     const fee_bps = deriveOrcaFeeBps(it);
     const poolType = String(it?.type || it?.poolType || '').toLowerCase();
     const isWhirlpool = poolType.includes('whirlpool') || poolType.includes('concentrated') || typeof it?.tickSpacing === 'number' || typeof it?.state?.tickSpacing === 'number';
@@ -681,7 +648,7 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
     }
   } catch {}
   
-  const clmmCanon = canonicalizePairs(clmm);
+  const clmmCanon = canonicalizePools(clmm);
   
   // DIAGNOSTIC: Log specific pools after canonicalization to track price changes
   try {

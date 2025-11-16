@@ -3,7 +3,9 @@ import { emit } from '../realtime.js';
 import { CONFIG } from '../../utils/config.js';
 import { writeJson, joinPath } from '../../utils/fs.js';
 import type { AmmPool, PoolsPayload } from './types.js';
-import { canonicalizePairs, validateHttpUrl, swapABFields } from './common.js';
+import { validateHttpUrl, swapABFields } from './common.js';
+import { canonicalizePools } from './canonical.js';
+import { resolveManyDecimals } from './decimals.js';
 import { verifyCanonicalization } from './validation.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
 import { PublicKey } from '@solana/web3.js';
@@ -513,26 +515,19 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
   const amm: AmmPool[] = [];
   const pools = Array.isArray(raw) ? raw : [];
   
-  // Enrich missing token decimals before price calculations
-  let enrichedDecimals: Map<string, number> = new Map();
-  try {
-    const { enrichPoolTokenDecimals } = await import('../../utils/tokens.js');
-    enrichedDecimals = await enrichPoolTokenDecimals(pools, { logger, forceOnchain: true });
-  } catch (err: any) {
-    try { logger.warn('pumpswap.normalizer.enrich.failed', { error: String(err?.message || err), cat: 'pools' }); } catch {}
-    enrichedDecimals = new Map();
-  }
-  
   // PumpSwap total fee: 20 bps LP fee + 5 bps protocol fee = 25 bps total
   const defaultFeeBps = Number((CONFIG as any)?.pumpswap?.defaultFeeBps || 25);
   const minLiqBase = Number((CONFIG as any)?.pumpswap?.minLiqBase || 0);
   
-  // Load Jupiter token map for decimals lookup
-  let jupMap: Record<string, { decimals: number }> = {};
-  try {
-    const { loadJupiterTokenMap } = await import('../../utils/tokens.js');
-    jupMap = await loadJupiterTokenMap().catch(() => ({} as any));
-  } catch {}
+  // Extract all unique mints for batch decimal resolution
+  const allMints = new Set<string>();
+  for (const pool of pools) {
+    if (pool.base_mint) allMints.add(pool.base_mint);
+    if (pool.quote_mint) allMints.add(pool.quote_mint);
+  }
+  
+  // Batch resolve decimals using centralized resolver
+  const decimalsMap = await resolveManyDecimals(Array.from(allMints), { logger });
   
   for (const pool of pools) {
     try {
@@ -561,24 +556,9 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
         } catch {}
       }
       
-      // Try to get decimals from Jupiter map or fallback to common values
-      let decA = jupMap[mint_a]?.decimals;
-      let decB = jupMap[mint_b]?.decimals;
-      const enrichedA = enrichedDecimals.get(mint_a);
-      const enrichedB = enrichedDecimals.get(mint_b);
-      if (typeof enrichedA === 'number' && Number.isFinite(enrichedA)) decA = enrichedA;
-      if (typeof enrichedB === 'number' && Number.isFinite(enrichedB)) decB = enrichedB;
-      
-      // Fallback to common token decimals
-      if (!Number.isFinite(decA)) {
-        if (mint_a === SOL_MINT) decA = 9;
-        else decA = 6; // Most tokens use 6 decimals
-      }
-      if (!Number.isFinite(decB)) {
-        if (mint_b === SOL_MINT) decB = 9;
-        else if (mint_b === USDC_MINT) decB = 6;
-        else decB = 6;
-      }
+      // Get decimals from centralized resolver with fallback to 6
+      const decA = decimalsMap.get(mint_a) ?? 6;
+      const decB = decimalsMap.get(mint_b) ?? 6;
       
       // Calculate price and liquidity from RPC-enriched reserves
       let price_a_per_b = 0;
@@ -756,7 +736,7 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
   }
   
   // Apply canonicalization like other DEXes
-  const ammCanon = canonicalizePairs(amm);
+  const ammCanon = canonicalizePools(amm);
   
   // Verify canonicalization: ensure price inversion happens correctly when mints are swapped
   try {

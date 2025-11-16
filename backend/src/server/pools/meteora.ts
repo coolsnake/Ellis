@@ -3,7 +3,9 @@ import { emit } from '../realtime.js';
 import { CONFIG } from '../../utils/config.js';
 import { writeJson, joinPath } from '../../utils/fs.js';
 import type { ClmmPool, PoolsPayload } from './types.js';
-import { canonicalizePairs, validateHttpUrl, swapABFields } from './common.js';
+import { validateHttpUrl, swapABFields } from './common.js';
+import { canonicalizePools } from './canonical.js';
+import { resolveManyDecimals } from './decimals.js';
 import { verifyCanonicalization } from './validation.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
 import { getTokenMeta } from '../../execution/resolver/tokenMeta.js';
@@ -124,9 +126,7 @@ export async function fetchMeteoraHttp(): Promise<any> {
 export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
   const now = Date.now();
   const clmm: ClmmPool[] = [];
-  let jupMap: Record<string, { symbol: string; decimals: number }> = {};
   let tokenModule: any = null;
-  let enrichedDecimals: Map<string, number> = new Map();
   try {
     tokenModule = await import('../../utils/tokens.js');
   } catch {
@@ -160,55 +160,29 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
   if (Array.isArray(raw)) arrCandidates.push(raw);
   if (Array.isArray(raw?.data)) arrCandidates.push(raw.data);
   const arr: any[] = arrCandidates.find(a => Array.isArray(a) && a.length) || (Array.isArray(raw?.pairs) ? raw.pairs : (Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : [])));
+  
+  // Extract all unique mints for batch decimal resolution
+  const allMints = new Set<string>();
+  for (const it of arr) {
+    const tokenA = it?.tokenA || it?.tokenX || {};
+    const tokenB = it?.tokenB || it?.tokenY || {};
+    const mint_a = String(it?.mint_x || tokenA?.mint || it?.mintA || it?.tokenXMint || '');
+    const mint_b = String(it?.mint_y || tokenB?.mint || it?.mintB || it?.tokenYMint || '');
+    if (mint_a) allMints.add(mint_a);
+    if (mint_b) allMints.add(mint_b);
+  }
+  
+  // Batch resolve decimals using centralized resolver with token program memo
+  const decimalsMap = await resolveManyDecimals(Array.from(allMints), { 
+    logger, 
+    batchSize: 100 
+  });
+  
   const bitmapExtensionMap = await resolveMeteoraBitmapExtensions(
     arr
       .map(it => String(it?.address || it?.id || it?.poolAddress || ''))
       .filter(id => typeof id === 'string' && id.length > 0)
   );
-  const anchorDecimals = new Map<string, number>([
-    ['So11111111111111111111111111111111111111112', 9],
-    ['EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', 6],
-    ['Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', 6],
-    ['USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB', 6],
-  ]);
-  const resolveAuthoritativeDecimals = (mint: string, fallback?: number): number | undefined => {
-    if (!mint) return Number.isFinite(fallback as number) ? Number(fallback) : undefined;
-    const anchor = anchorDecimals.get(mint);
-    if (Number.isFinite(anchor)) return anchor as number;
-    const enriched = enrichedDecimals.get(mint);
-    if (Number.isFinite(enriched)) return enriched;
-    const jup = jupMap?.[mint];
-    if (Number.isFinite(jup?.decimals)) return Number(jup.decimals);
-    if (Number.isFinite(fallback as number)) return Number(fallback);
-    return undefined;
-  };
-  
-  // Enrich missing token decimals before price calculations
-  try {
-    const enrichOptions = { logger, forceOnchain: true, tokenProgramMemo };
-    const enrichFn = tokenModule?.enrichPoolTokenDecimals;
-    if (typeof enrichFn === 'function') {
-      const maybeMap = await enrichFn(arr, enrichOptions);
-      if (maybeMap instanceof Map) enrichedDecimals = maybeMap;
-    } else {
-      const { enrichPoolTokenDecimals } = await import('../../utils/tokens.js');
-      enrichedDecimals = await enrichPoolTokenDecimals(arr, enrichOptions);
-    }
-  } catch (err: any) {
-    try { logger.warn('meteora.normalizer.enrich.failed', { error: String(err?.message || err), cat: 'pools' }); } catch {}
-    enrichedDecimals = new Map();
-  }
-  
-  // Reload Jupiter map after enrichment so new decimals are visible immediately
-  try {
-    const loadFn = tokenModule?.loadJupiterTokenMap;
-    if (typeof loadFn === 'function') {
-      jupMap = await loadFn();
-    } else {
-      const { loadJupiterTokenMap } = await import('../../utils/tokens.js');
-      jupMap = await loadJupiterTokenMap();
-    }
-  } catch {}
   
   for (const it of arr) {
     const id = String(it?.address || it?.id || it?.poolAddress || '');
@@ -217,44 +191,23 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     let mint_a = String(it?.mint_x || tokenA?.mint || it?.mintA || it?.tokenXMint || '');
     let mint_b = String(it?.mint_y || tokenB?.mint || it?.mintB || it?.tokenYMint || '');
     if (!id || !mint_a || !mint_b) continue;
+    
+    // Get decimals from centralized resolver with API fallback
     let decA = Number((tokenA?.decimals ?? it?.decimalsA));
     let decB = Number((tokenB?.decimals ?? it?.decimalsB));
-    const enrichedA = enrichedDecimals.get(mint_a);
-    const enrichedB = enrichedDecimals.get(mint_b);
-    if (typeof enrichedA === 'number' && Number.isFinite(enrichedA)) decA = enrichedA;
-    if (typeof enrichedB === 'number' && Number.isFinite(enrichedB)) decB = enrichedB;
-    if (!Number.isFinite(decA) && jupMap[mint_a]?.decimals != null) decA = Number(jupMap[mint_a].decimals);
-    if (!Number.isFinite(decB) && jupMap[mint_b]?.decimals != null) decB = Number(jupMap[mint_b].decimals);
-    // Fallback: fetch decimals on-chain if still unknown
-    let usedWhole = false;
-    try {
-      if (!Number.isFinite(decA)) {
-        const tok = await import('../../utils/tokens.js');
-        const r = await (tok as any).resolveMint(mint_a);
-        if (Number.isFinite(Number(r?.decimals))) decA = Number(r.decimals);
-      }
-      if (!Number.isFinite(decB)) {
-        const tok = await import('../../utils/tokens.js');
-        const r = await (tok as any).resolveMint(mint_b);
-        if (Number.isFinite(Number(r?.decimals))) decB = Number(r.decimals);
-      }
-    } catch {}
-    // Enforce authoritative decimals from Jupiter list, then anchors, then clamp
-    try {
-      const jDecA = Number(jupMap[mint_a]?.decimals);
-      const jDecB = Number(jupMap[mint_b]?.decimals);
-      if (Number.isFinite(jDecA)) decA = jDecA;
-      if (Number.isFinite(jDecB)) decB = jDecB;
-      if (mint_a === 'So11111111111111111111111111111111111111112') decA = 9;
-      if (mint_b === 'So11111111111111111111111111111111111111112') decB = 9;
-      if (mint_a === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') decA = 6;
-      if (mint_b === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') decB = 6;
-      if (mint_a === 'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN') decA = 6;
-      if (mint_b === 'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN') decB = 6;
-      decA = Math.min(12, Math.max(0, Math.round(Number(decA))));
-      decB = Math.min(12, Math.max(0, Math.round(Number(decB))));
-    } catch {}
-    const feeBasePctRaw: any = (it as any)?.base_fee_percentage;
+    
+    if (!Number.isFinite(decA)) {
+      decA = decimalsMap.get(mint_a) ?? 6;
+    }
+    if (!Number.isFinite(decB)) {
+      decB = decimalsMap.get(mint_b) ?? 6;
+    }
+    
+    // Clamp to reasonable integer bounds
+    decA = Math.min(12, Math.max(0, Math.round(Number(decA))));
+    decB = Math.min(12, Math.max(0, Math.round(Number(decB))));
+    
+    let usedWhole = false;const feeBasePctRaw: any = (it as any)?.base_fee_percentage;
     let fee_bps = 0;
     if (feeBasePctRaw != null) {
       const val = Number(feeBasePctRaw);
@@ -472,13 +425,8 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     } as any);
   }
   // Canonicalize pairs using unified policy; handles A/B swap and price inversion when needed
-  const clmmCanon = canonicalizePairs(clmm);
-  for (const pool of clmmCanon) {
-    const da = resolveAuthoritativeDecimals(pool.mint_a, (pool as any)?.decimals_a);
-    const db = resolveAuthoritativeDecimals(pool.mint_b, (pool as any)?.decimals_b);
-    if (Number.isFinite(da)) (pool as any).decimals_a = da;
-    if (Number.isFinite(db)) (pool as any).decimals_b = db;
-  }
+  const clmmCanon = canonicalizePools(clmm);
+  // Decimals are already correctly set from centralized resolver
   
   // Verify canonicalization: ensure price inversion happens correctly when mints are swapped
   try {
