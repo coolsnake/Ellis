@@ -23,6 +23,7 @@ type Opportunity = {
   bottleneck?: BottleneckEdge;
   detected_ms?: number;
   first_seen_ms?: number;
+  last_verified_ms?: number;
   detections?: number;
 };
 
@@ -286,7 +287,24 @@ export function OpportunityList(
                 </div>
               );
             })()}
-            <div className="text-[11px] opacity-60">First {ago(op.first_seen_ms)} · Last {ago(op.detected_ms)} · Hits {op.detections ?? 1}</div>
+            <div className="text-[11px] opacity-60 flex items-center gap-2">
+              <span>First {ago(op.first_seen_ms)} · Last {ago(op.detected_ms)} · Hits {op.detections ?? 1}</span>
+              {(() => {
+                const lastDetected = op.detected_ms || op.last_verified_ms || op.first_seen_ms || 0;
+                const now = Date.now();
+                const ageMs = now - lastDetected;
+                // Show stale indicator if opportunity hasn't been detected in the last 60 seconds
+                const isStale = ageMs > 60000;
+                if (isStale && lastDetected > 0) {
+                  return (
+                    <span className="px-1.5 py-0.5 rounded bg-yellow-900/40 text-yellow-300 text-[10px]">
+                      Stale ({Math.floor(ageMs / 1000)}s ago)
+                    </span>
+                  );
+                }
+                return null;
+              })()}
+            </div>
           </div>
           );
         })}

@@ -121,7 +121,23 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
     const allow = new Set(['rejected_too_short', 'rejected_too_long', 'rejected_too_high_profit']);
     const src = summary?.rejected_opportunities;
     const list: RejectedOpportunity[] = Array.isArray(src) ? src : [];
-    return list.filter((item) => allow.has(item.reason)).slice(0, 10);
+    const filtered = list.filter((item) => allow.has(item.reason));
+    
+    // Deduplicate by path + reason to avoid showing the same rejection multiple times
+    const seen = new Set<string>();
+    const deduplicated: RejectedOpportunity[] = [];
+    for (const item of filtered) {
+      const pathKey = (item.path || []).join('>');
+      const dexesKey = Array.isArray(item.dexes) ? item.dexes.sort().join(',') : '';
+      const key = `${item.reason}:${pathKey}:${dexesKey}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduplicated.push(item);
+      }
+    }
+    
+    // Limit to 5 unique rejected opportunities
+    return deduplicated.slice(0, 5);
   }, [summary?.rejected_opportunities]);
 
   const fetchOpps = async () => {

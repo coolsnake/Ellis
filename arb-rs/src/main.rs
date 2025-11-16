@@ -2704,13 +2704,16 @@ async fn main() -> anyhow::Result<()> {
                         continue;
                     }
                     // Apply opportunity TTL check
+                    // Use first_seen_ms instead of last_verified_ms so opportunities persist
+                    // even when they're not detected in subsequent cycles
                     let opp_ttl = {
                         let s = loop_state.read().await;
                         s.config.opportunity_ttl_ms
                     };
-                    let last_verified =
-                        o.last_verified_ms.unwrap_or(o.detected_ms.unwrap_or(first));
-                    if now_ms_val.saturating_sub(last_verified) > opp_ttl {
+                    // Keep opportunities based on when they were first seen, not last verified
+                    // This allows opportunities to persist even when not re-detected
+                    let first_seen = o.first_seen_ms.unwrap_or(o.detected_ms.unwrap_or(first));
+                    if now_ms_val.saturating_sub(first_seen) > opp_ttl {
                         continue; // Expired opportunity
                     }
                     // extend TTL up to 3× (1x base + up to +2x for stability)
@@ -2718,7 +2721,7 @@ async fn main() -> anyhow::Result<()> {
                     let is_dup = merged
                         .iter()
                         .any(|x| x.path == o.path && x.dexes == o.dexes);
-                    if !is_dup && now_ms_val.saturating_sub(first) <= ttl {
+                    if !is_dup && now_ms_val.saturating_sub(first_seen) <= ttl {
                         if o.first_seen_ms.is_none() {
                             o.first_seen_ms = o.detected_ms;
                         }
@@ -3486,23 +3489,22 @@ async fn arb_graph_snapshot(
 }
 
 // Centralized price conversion: A-per-1-B (backend) -> B-per-1-A (detector), apply fee once
-// For forward edges: price_a_per_b is A-per-1-B, so we invert to get B-per-1-A (rate_effective)
-// For reverse edges: price_a_per_b is already B-per-1-A (from computePriceReverse), so we use it directly
+// 
+// IMPORTANT: price_a_per_b always represents "source-per-1-target" regardless of direction
+// - Forward edge A->B: price_a_per_b = A-per-1-B, rate_effective = B-per-1-A (invert)
+// - Reverse edge B->A: price_a_per_b = B-per-1-A, rate_effective = A-per-1-B (invert)
+//
+// So we ALWAYS invert price_a_per_b to get rate_effective, regardless of direction
 #[inline]
-fn edge_rate_effective_local(px_opt: Option<f64>, fee_bps_opt: Option<i64>, direction: Option<&str>) -> (f64, f64) {
+fn edge_rate_effective_local(px_opt: Option<f64>, fee_bps_opt: Option<i64>, _direction: Option<&str>) -> (f64, f64) {
     let fee_bps: f64 = (fee_bps_opt.unwrap_or(0)) as f64;
     let px: f64 = px_opt.unwrap_or(0.0);
     if !(px.is_finite() && px > 0.0) {
         return (0.0, 0.0);
     }
-    // For reverse edges, price_a_per_b is already B-per-1-A, so don't invert
-    // For forward edges (or if direction is None/unknown), price_a_per_b is A-per-1-B, so invert
-    let is_reverse = direction.map(|d| d == "reverse").unwrap_or(false);
-    let base: f64 = if is_reverse {
-        px  // Already B-per-1-A
-    } else {
-        1.0 / px  // Convert A-per-1-B to B-per-1-A
-    };
+    // price_a_per_b is always "source-per-1-target", so we always invert to get rate_effective
+    // rate_effective = "target-per-1-source" (what we get when traversing the edge)
+    let base: f64 = 1.0 / px;
     if !(base.is_finite() && base > 0.0) {
         return (0.0, 0.0);
     }
@@ -4352,7 +4354,7 @@ fn default_config() -> ArbConfig {
         opportunity_ttl_ms: std::env::var("ARB_OPPORTUNITY_TTL_MS")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(30_000),
+            .unwrap_or(300_000), // Default 5 minutes (was 30 seconds) - opportunities persist longer
         // Base TTL for opportunity persistence - independent of loop timing
         opportunity_base_ttl_ms: std::env::var("ARB_OPPORTUNITY_BASE_TTL_MS")
             .ok()

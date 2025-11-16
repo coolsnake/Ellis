@@ -3474,8 +3474,22 @@ export function startRaydiumRefreshLoop(): void {
                 const mint_a = pool.mint_a;
                 const mint_b = pool.mint_b;
                 
+                // Skip pools without vault addresses - this can happen during cache refresh
+                // when API doesn't return vault addresses or cache is being updated
                 if (!account_a || !account_b) {
-                  throw new Error('pool missing vault addresses');
+                  try { wsDecodeStats.meteora_balanced.failures += 1; } catch {}
+                  try { 
+                    logger.debug('meteora_balanced.ws.decode skipped', { 
+                      id: pk58, 
+                      reason: 'missing_vault_addresses',
+                      hasAccountA: !!account_a,
+                      hasAccountB: !!account_b,
+                      cacheRefreshInProgress: !!(refreshAllSources as any).__inProgress,
+                      cat: 'pools' 
+                    }); 
+                  } catch {}
+                  // Don't throw - gracefully skip this pool
+                  return;
                 }
                 
                 // CRITICAL: Use cached vault balances from WebSocket subscriptions

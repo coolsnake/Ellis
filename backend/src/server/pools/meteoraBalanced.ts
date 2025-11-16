@@ -278,6 +278,24 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
         return undefined;
       })();
 
+      // Extract vault addresses - these are required for WebSocket decoding
+      const account_a = String(it?.token_a_vault || '');
+      const account_b = String(it?.token_b_vault || '');
+      
+      // Log warning if vault addresses are missing (this will cause WebSocket decode skips)
+      if (!account_a || !account_b) {
+        try {
+          logger.debug('meteora.balanced.missing_vault_addresses', {
+            id,
+            mint_a,
+            mint_b,
+            hasTokenAVault: !!it?.token_a_vault,
+            hasTokenBVault: !!it?.token_b_vault,
+            cat: 'meteora'
+          });
+        } catch {}
+      }
+      
       amm.push({
         id,
         dex,  // 'MeteoraBalanced_v1' or 'MeteoraBalanced_v2' based on pool_version
@@ -289,8 +307,8 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
         updated_ms: now,
         pool_kind: 'amm',
         // Vault addresses for swap instructions
-        account_a: String(it?.token_a_vault || ''),
-        account_b: String(it?.token_b_vault || ''),
+        account_a,
+        account_b,
         lp_mint: String(it?.lp_mint || ''),
         amount_a_whole: Number.isFinite(wholeA) ? wholeA as number : undefined,
         amount_b_whole: Number.isFinite(wholeB) ? wholeB as number : undefined,
@@ -480,6 +498,24 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
         reserve_b_raw = BigInt(Math.floor(wholeB * Math.pow(10, decimalsB))).toString();
       }
       
+      // Extract vault addresses - these are required for WebSocket decoding
+      const account_a = String((it as any)?.pool_token_vaults?.[0] || '');
+      const account_b = String((it as any)?.pool_token_vaults?.[1] || '');
+      
+      // Log warning if vault addresses are missing (this will cause WebSocket decode skips)
+      if (!account_a || !account_b) {
+        try {
+          logger.debug('meteora.balanced.v1.missing_vault_addresses', {
+            id,
+            mint_a,
+            mint_b,
+            hasVaultsArray: !!((it as any)?.pool_token_vaults),
+            vaultsLength: Array.isArray((it as any)?.pool_token_vaults) ? (it as any).pool_token_vaults.length : 0,
+            cat: 'meteora'
+          });
+        } catch {}
+      }
+      
       amm.push({
         id,
         dex,  // 'MeteoraBalanced_v1' or 'MeteoraBalanced_v2' based on pool_version
@@ -491,8 +527,8 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
         updated_ms: now,
         pool_kind: 'amm',
         // Vault addresses for swap instructions (V1 API structure)
-        account_a: String((it as any)?.pool_token_vaults?.[0] || ''),
-        account_b: String((it as any)?.pool_token_vaults?.[1] || ''),
+        account_a,
+        account_b,
         lp_mint: String((it as any)?.lp_mint || ''),
         amount_a_whole: wholeA > 0 ? wholeA : undefined,
         amount_b_whole: wholeB > 0 ? wholeB : undefined,
