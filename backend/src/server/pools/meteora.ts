@@ -250,14 +250,24 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
         const f = Math.pow(1.0001, binStep);
         if (f > 0) {
           // Meteora DLMM price formula: price = (1 + binStep/10000)^activeId
-          // This gives the price in NATIVE token units (Y per X)
-          // CRITICAL: DO NOT apply decimal adjustment here - it will be wrong after canonicalization!
-          // The decimals will be handled by the graph rescaling logic
-          const priceYperX = Math.pow(f, activeId);
+          // According to Meteora docs, this gives: priceYperX = (Y per X) in native units
+          // 
+          // CRITICAL: The formula MUST include decimal adjustment to get whole token price!
+          // Formula: priceYperX_whole = (1.0001)^(binStep * activeId) * 10^(decY - decX)
+          //
+          // For our orientation (A per B), we need to figure out if Meteora's X/Y maps to our A/B
+          // Meteora uses: X = tokenA, Y = tokenB (usually)
+          // So: priceYperX = B per A in native units
+          // Therefore: priceAperB_whole = 1 / [f^activeId * 10^(decB - decA)]
+          //                             = f^(-activeId) * 10^(decA - decB)
           
-          // Since we don't know if API uses X->Y or Y->X orientation, try both
-          const aPerB1 = priceYperX; // Assume priceYperX is A per B
-          const aPerB2 = priceYperX > 0 ? (1 / priceYperX) : 0; // Or reciprocal
+          const rawPrice = Math.pow(f, activeId);
+          const scale = Math.pow(10, decB - decA);
+          const priceYperX = rawPrice * scale;  // Y per X in whole units
+          
+          // Since we don't know API orientation for sure, try both
+          const aPerB1 = priceYperX; // Assume Y=B, X=A
+          const aPerB2 = priceYperX > 0 ? (1 / priceYperX) : 0; // Or opposite
           const cand: number[] = [];
           if (aPerB1 > 0 && Number.isFinite(aPerB1)) cand.push(aPerB1);
           if (aPerB2 > 0 && Number.isFinite(aPerB2)) cand.push(aPerB2);
@@ -431,6 +441,23 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
   }
   // Canonicalize pairs using unified policy; handles A/B swap and price inversion when needed
   const clmmCanon = canonicalizePools(clmm);
+  
+  // DIAGNOSTIC: Log the problematic oreoU2/SOL pool
+  try {
+    const ore = clmmCanon.find(p => p.id === 'FMhuUk4EDLBykp5S6gw14fMbvKsFoFVg5YuuSvMn3fWh');
+    if (ore) {
+      logger.info('meteora.after_canon.ore_sol', {
+        id: ore.id,
+        mint_a: ore.mint_a,
+        mint_b: ore.mint_b,
+        decimals_a: ore.decimals_a,
+        decimals_b: ore.decimals_b,
+        price_a_per_b: ore.price_a_per_b,
+        cat: 'meteora'
+      });
+    }
+  } catch {}
+  
   // Decimals are already correctly set from centralized resolver
   
   // Verify canonicalization: ensure price inversion happens correctly when mints are swapped

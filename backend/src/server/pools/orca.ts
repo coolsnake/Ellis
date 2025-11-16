@@ -335,7 +335,8 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
           // Then B/A = R^2, so A/B = 1 / R^2.
           // Adjust for decimals: amounts are in smallest units, so scale = 10^(decB-decA).
           // Therefore A-per-1-B (in whole-token units) = (scale) / (R^2).
-          // NOTE: Orca uses decB - decA, while Raydium uses decA - decB (see raydium.ts)
+          // NOTE: This initial price might be wrong if decimals are later swapped by canonicalization,
+          // but populateOrcaPoolStates() will re-derive the correct price with correct decimals.
           const scale = Math.pow(10, (cDecB as number) - (cDecA as number));
           const aPerB = scale / (ratio * ratio);
           
@@ -648,7 +649,39 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
     }
   } catch {}
   
+  // DIAGNOSTIC: Log sample BEFORE canonicalization
+  try {
+    const usdcSol = clmm.find(p => p.id === 'Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE');
+    if (usdcSol) {
+      logger.info('orca.before_canon.usdc_sol', {
+        id: usdcSol.id,
+        mint_a: usdcSol.mint_a,
+        mint_b: usdcSol.mint_b,
+        decimals_a: usdcSol.decimals_a,
+        decimals_b: usdcSol.decimals_b,
+        price_a_per_b: usdcSol.price_a_per_b,
+        cat: 'orca'
+      });
+    }
+  } catch {}
+  
   const clmmCanon = canonicalizePools(clmm);
+  
+  // DIAGNOSTIC: Log sample AFTER canonicalization
+  try {
+    const usdcSol = clmmCanon.find(p => p.id === 'Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE');
+    if (usdcSol) {
+      logger.info('orca.after_canon.usdc_sol', {
+        id: usdcSol.id,
+        mint_a: usdcSol.mint_a,
+        mint_b: usdcSol.mint_b,
+        decimals_a: usdcSol.decimals_a,
+        decimals_b: usdcSol.decimals_b,
+        price_a_per_b: usdcSol.price_a_per_b,
+        cat: 'orca'
+      });
+    }
+  } catch {}
   
   // DIAGNOSTIC: Log specific pools after canonicalization to track price changes
   try {
