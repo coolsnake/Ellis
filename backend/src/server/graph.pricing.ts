@@ -99,4 +99,54 @@ export function computePriceForward(
   return clamp(price);
 }
 
+/**
+ * Calculate reverse edge price with proper decimal rescaling
+ * 
+ * When calculating reverse edges, we need to:
+ * 1. Invert the canonical price (B-per-1-A = 1 / A-per-1-B)
+ * 2. Apply decimal rescaling with swapped decimals (since mints are swapped)
+ * 
+ * This ensures that if forward price was rescaled by 10^k, reverse is rescaled by 10^(-k)
+ * 
+ * @param mintA - Original mint A (forward direction source)
+ * @param mintB - Original mint B (forward direction target)
+ * @param forwardPrice - Forward price (A-per-1-B, already processed)
+ * @param rawPrice - Raw canonical price before processing (A-per-1-B)
+ * @param poolDecA - Pool decimals for A
+ * @param poolDecB - Pool decimals for B
+ * @param globalDecA - Global decimals for A
+ * @param globalDecB - Global decimals for B
+ * @param getUsd - Optional USD price lookup
+ */
+export function computePriceReverse(
+  mintA: string,
+  mintB: string,
+  forwardPrice: number | undefined,
+  rawPrice: number | undefined,
+  poolDecA?: number,
+  poolDecB?: number,
+  globalDecA?: number,
+  globalDecB?: number,
+  getUsd?: GetUsd,
+): number | undefined {
+  // If we don't have raw price, fall back to simple inversion (less accurate but better than nothing)
+  if (!rawPrice || rawPrice <= 0) {
+    return forwardPrice && forwardPrice > 0 ? clamp(1 / forwardPrice) : undefined;
+  }
+  
+  // Calculate reverse with swapped mints and decimals
+  const revRaw = 1 / rawPrice;
+  return computePriceForward(
+    mintB, // Swapped: B is now source
+    mintA, // Swapped: A is now target
+    revRaw,
+    poolDecB, // Swapped decimals
+    poolDecA, // Swapped decimals
+    globalDecB, // Swapped global decimals
+    globalDecA, // Swapped global decimals
+    getUsd,
+    undefined,
+  );
+}
+
 

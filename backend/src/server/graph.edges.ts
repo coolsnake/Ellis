@@ -1,4 +1,4 @@
-import { computePriceForward } from './graph.pricing.js';
+import { computePriceForward, computePriceReverse } from './graph.pricing.js';
 import type { GraphEdge } from './graph.types.js';
 import type { AmmPool, ClmmPool } from './pools/types.js';
 
@@ -69,7 +69,19 @@ export function edgesFromPoolIncremental(
     getUsd,
     undefined,
   );
-  const rev = fwd && fwd > 0 ? 1 / fwd : undefined;
+  
+  // Calculate reverse edge with proper decimal rescaling
+  const rev = computePriceReverse(
+    a,
+    b,
+    fwd,
+    fRaw,
+    (p as any)?.decimals_a,
+    (p as any)?.decimals_b,
+    undefined,
+    undefined,
+    getUsd,
+  );
   const kind = (p as any)?.pool_kind || ((p as any)?.sqrt_price_x64_raw != null || typeof (p as any)?.sqrt_price_x64 === 'number' ? 'clmm' : 'amm');
 
   const forward: GraphEdge = {

@@ -5,7 +5,7 @@ import { readJson } from '../utils/fs.js';
 import { emit } from './realtime.js';
 import { pushArbGraphSnapshot, pushArbGraphDiff } from './graphPushOrchestrator.js';
 import { shouldPushGraphUpdate, logPushDecision } from './graph.push.coordinator.js';
-import { computePriceForward } from './graph.pricing.js';
+import { computePriceForward, computePriceReverse } from './graph.pricing.js';
 import { CONFIG } from '../utils/config.js';
 import { getRaydiumPoolsNormalized, getOrcaPoolsCached, enablePoolWebsocketRefreshes, peekMeteoraPools, getMeteoraPoolsCached, peekMeteoraBalancedPools } from './pools.js';
 import { loadTokenMap } from '../utils/tokens.js';
@@ -973,7 +973,18 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             return Number.isFinite(v) && v > 0 ? v : undefined;
           }
         );
-        const revAmmRay = (fwdAmmRay && fwdAmmRay > 0) ? (1 / fwdAmmRay) : undefined;
+        // Calculate reverse edge with proper decimal rescaling
+        const revAmmRay = computePriceReverse(
+          p.mint_a,
+          p.mint_b,
+          fwdAmmRay,
+          oriented && oriented > 0 ? oriented : undefined,
+          poolDecA,
+          poolDecB,
+          ga,
+          gb,
+          (m) => { try { return getPriceByMintVar(m)?.usdc ?? undefined; } catch { return undefined; } },
+        );
         const rawLiqAmm = Number((p as any).pool_liquidity_raw || (p as any).liquidity_base || 0) || undefined;
         addEdge(p.mint_a, p.mint_b, 'Raydium', p.fee_bps, liqParamAmm, fwdAmmRay, usd, pidAmm, (p as any).account_a, (p as any).account_b, 'amm', 'forward', rawLiqAmm);
         // Use a distinct id for reverse edge when poolId exists to avoid overwriting forward
@@ -1167,7 +1178,22 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         // If still no price, skip and log
         if (!price || !(price > 0)) { try { logger.debug('graph.skip.edge.no_price', { dex: 'Raydium', kind: 'clmm', pool_id: safePoolId(p), mint_a: p.mint_a, mint_b: p.mint_b, reason: 'no_pool_price' }); } catch {}; continue; }
         let fwdR = clampPrice(price);
-        let revR = (fwdR && fwdR > 0) ? (1 / fwdR) : undefined;
+        // Calculate reverse with proper decimal rescaling
+        const ga_clmm = Number(isFinite(Number(decimalsByMint[p.mint_a])) ? decimalsByMint[p.mint_a] : (p as any)?.decimals_a);
+        const gb_clmm = Number(isFinite(Number(decimalsByMint[p.mint_b])) ? decimalsByMint[p.mint_b] : (p as any)?.decimals_b);
+        const poolDecA_clmm = Number((p as any)?.decimals_a);
+        const poolDecB_clmm = Number((p as any)?.decimals_b);
+        let revR = computePriceReverse(
+          p.mint_a,
+          p.mint_b,
+          fwdR,
+          price && price > 0 ? price : undefined,
+          poolDecA_clmm,
+          poolDecB_clmm,
+          ga_clmm,
+          gb_clmm,
+          (m) => { try { return getPriceByMintVar(m)?.usdc ?? undefined; } catch { return undefined; } },
+        );
         // Final reciprocity product clamp: drop if far from 1
         try {
           if (fwdR && revR) {
@@ -1296,7 +1322,22 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         } catch {}
         // Forward + reverse with strict reciprocal rule and consistency guard
         const fwdAmm = (priceAmmOrca && priceAmmOrca > 0) ? priceAmmOrca : undefined;
-        const revAmm = (fwdAmm && fwdAmm > 0) ? (1 / fwdAmm) : undefined;
+        // Calculate reverse with proper decimal rescaling
+        const decA_orca_amm = Number((p as any)?.decimals_a ?? decimalsByMint[p.mint_a] ?? NaN);
+        const decB_orca_amm = Number((p as any)?.decimals_b ?? decimalsByMint[p.mint_b] ?? NaN);
+        const ga_orca_amm = Number(isFinite(Number(decimalsByMint[p.mint_a])) ? decimalsByMint[p.mint_a] : decA_orca_amm);
+        const gb_orca_amm = Number(isFinite(Number(decimalsByMint[p.mint_b])) ? decimalsByMint[p.mint_b] : decB_orca_amm);
+        const revAmm = computePriceReverse(
+          p.mint_a,
+          p.mint_b,
+          fwdAmm,
+          priceAmmOrca && priceAmmOrca > 0 ? priceAmmOrca : undefined,
+          decA_orca_amm,
+          decB_orca_amm,
+          ga_orca_amm,
+          gb_orca_amm,
+          (m) => { try { return getPriceByMintVar(m)?.usdc ?? undefined; } catch { return undefined; } },
+        );
         const rawLiqOrcaAmm = Number((p as any).pool_liquidity_raw || (p as any).liquidity_base || 0) || undefined;
         addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaAmm, fwdAmm, undefined, pid, (p as any).account_a, (p as any).account_b, 'amm', 'forward', rawLiqOrcaAmm);
         const pidAmmOrcaRev = pid ? `${pid}-rev` : undefined;
@@ -1481,7 +1522,22 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             });
           } catch {}
         }
-        const revClmm = (fwdClmm && fwdClmm > 0) ? (1 / fwdClmm) : undefined;
+        // Calculate reverse with proper decimal rescaling
+        const decA_orca_clmm = Number((p as any)?.decimals_a ?? NaN);
+        const decB_orca_clmm = Number((p as any)?.decimals_b ?? NaN);
+        const ga_orca_clmm = Number(isFinite(Number(decimalsByMint[p.mint_a])) ? decimalsByMint[p.mint_a] : decA_orca_clmm);
+        const gb_orca_clmm = Number(isFinite(Number(decimalsByMint[p.mint_b])) ? decimalsByMint[p.mint_b] : decB_orca_clmm);
+        const revClmm = computePriceReverse(
+          p.mint_a,
+          p.mint_b,
+          fwdClmm,
+          priceClmmOrca && priceClmmOrca > 0 ? priceClmmOrca : undefined,
+          decA_orca_clmm,
+          decB_orca_clmm,
+          ga_orca_clmm,
+          gb_orca_clmm,
+          (m) => { try { return getPriceByMintVar(m)?.usdc ?? undefined; } catch { return undefined; } },
+        );
         const rawLiqOrcaClmm = Number((p as any).pool_liquidity_raw || (p as any).liquidity || 0) || undefined;
         // DIAGNOSTIC: Log when we fail to create edge due to missing price
         if (!fwdClmm) {
@@ -1627,7 +1683,22 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         } catch {}
         if (!(chosenMet && chosenMet > 0)) { try { logger.debug('graph.skip.edge.no_price', { dex: 'Meteora', kind: 'clmm', pool_id: pid, mint_a: p.mint_a, mint_b: p.mint_b, reason: 'no_pool_price' }); } catch {}; continue; }
         let fwdMet = clampPrice(chosenMet);
-        let revMet = (fwdMet && fwdMet > 0) ? (1 / fwdMet) : undefined;
+        // Calculate reverse with proper decimal rescaling
+        const decA_met = Number((p as any)?.decimals_a ?? decimalsByMint[p.mint_a] ?? NaN);
+        const decB_met = Number((p as any)?.decimals_b ?? decimalsByMint[p.mint_b] ?? NaN);
+        const ga_met = Number(isFinite(Number(decimalsByMint[p.mint_a])) ? decimalsByMint[p.mint_a] : decA_met);
+        const gb_met = Number(isFinite(Number(decimalsByMint[p.mint_b])) ? decimalsByMint[p.mint_b] : decB_met);
+        let revMet = computePriceReverse(
+          p.mint_a,
+          p.mint_b,
+          fwdMet,
+          chosenMet && chosenMet > 0 ? chosenMet : undefined,
+          decA_met,
+          decB_met,
+          ga_met,
+          gb_met,
+          (m) => { try { return getPriceByMintVar(m)?.usdc ?? undefined; } catch { return undefined; } },
+        );
         try {
           if (fwdMet && revMet) {
             const prod = fwdMet * revMet;
