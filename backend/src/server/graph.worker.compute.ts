@@ -51,6 +51,7 @@ export function computeIncrementalGraphUpdate(request: GraphIncrementalRequest):
     droppedPoolIds,
     edgeAllow,
     priceMap,
+    decimalsMap,
     priceClampMin,
     priceClampMax,
     timestampMs,
@@ -105,7 +106,11 @@ export function computeIncrementalGraphUpdate(request: GraphIncrementalRequest):
 
   const getUsd = buildPriceAccessor(priceMap || {});
   const considered: Pool[] = [...(nextPools?.amm || []), ...(nextPools?.clmm || [])] as Pool[];
-  const edgeOptions: EdgeBuildOptions = { priceClampMin, priceClampMax };
+  const edgeOptions: EdgeBuildOptions = { 
+    priceClampMin, 
+    priceClampMax,
+    decimalsMap: decimalsMap || {},
+  };
 
   for (const pool of considered) {
     const id = String((pool as any)?.id || '');

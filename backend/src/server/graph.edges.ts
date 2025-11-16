@@ -18,6 +18,7 @@ const clampPriceInc = (px: number | undefined, min: number, max: number): number
 export interface EdgeBuildOptions {
   priceClampMin?: number;
   priceClampMax?: number;
+  decimalsMap?: Record<string, number>;
 }
 
 function liqDisplayFromPool(pool: any): number | undefined {
@@ -59,15 +60,24 @@ export function edgesFromPoolIncremental(
   const clampMax = Number.isFinite(options?.priceClampMax) ? Number(options?.priceClampMax) : 1e12;
   const fRaw = clampPriceInc(fwdRaw, clampMin, clampMax);
   
+  // Get pool decimals
+  const poolDecA = (p as any)?.decimals_a;
+  const poolDecB = (p as any)?.decimals_b;
+  
+  // Get global decimals from map (fallback to pool decimals if not in map)
+  const decimalsMap = options?.decimalsMap || {};
+  const globalDecA = Number.isFinite(decimalsMap[a]) ? decimalsMap[a] : poolDecA;
+  const globalDecB = Number.isFinite(decimalsMap[b]) ? decimalsMap[b] : poolDecB;
+  
   // computePriceForward assumes price is already canonicalized - only applies magnitude calibration
   const fwd = computePriceForward(
     a,
     b,
     fRaw,
-    (p as any)?.decimals_a,
-    (p as any)?.decimals_b,
-    undefined,
-    undefined,
+    poolDecA,
+    poolDecB,
+    globalDecA,
+    globalDecB,
     getUsd,
     undefined,
   );
@@ -78,10 +88,10 @@ export function edgesFromPoolIncremental(
     b,
     fwd,
     fRaw,
-    (p as any)?.decimals_a,
-    (p as any)?.decimals_b,
-    undefined,
-    undefined,
+    poolDecA,
+    poolDecB,
+    globalDecA,
+    globalDecB,
     getUsd,
   );
   

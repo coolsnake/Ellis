@@ -288,6 +288,27 @@ export async function applyPoolUpdates(prev: PoolsPayload, next: PoolsPayload, o
       const edgeAllow = await loadEdgeAllow();
       const priceMap = buildPriceMap(priceStore, lastSnapshot, prev, next);
       const timestampMs = Date.now();
+      
+      // Build decimals map from token metadata
+      const decimalsByMint: Record<string, number> = {};
+      try {
+        const tokenMap = await loadTokenMap().catch(() => ({} as Record<string, { mint: string; decimals: number }>));
+        for (const [, info] of Object.entries(tokenMap || {})) {
+          if (info?.mint && Number.isFinite((info as any)?.decimals)) {
+            decimalsByMint[info.mint] = Number((info as any).decimals);
+          }
+        }
+        // Add Jupiter tokens as fallback
+        const { loadJupiterTokenMap } = await import('../utils/tokens.js');
+        const jupiterMap = await loadJupiterTokenMap();
+        for (const [mint, meta] of Object.entries(jupiterMap)) {
+          if (Number.isFinite((meta as any)?.decimals) && decimalsByMint[mint] == null) {
+            decimalsByMint[mint] = Number((meta as any).decimals);
+          }
+        }
+      } catch (err) {
+        try { logger.warn('graph.incremental.decimals_load_failed', { error: String(err), cat: 'graph' }); } catch {}
+      }
 
       const payload: GraphIncrementalRequest = {
         previousSnapshot: lastSnapshot,
@@ -296,6 +317,7 @@ export async function applyPoolUpdates(prev: PoolsPayload, next: PoolsPayload, o
         droppedPoolIds: Array.from(droppedPoolIds),
         edgeAllow,
         priceMap,
+        decimalsMap: decimalsByMint,
         priceClampMin: priceClampMinInc,
         priceClampMax: priceClampMaxInc,
         timestampMs,
