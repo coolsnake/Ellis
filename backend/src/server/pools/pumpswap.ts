@@ -575,6 +575,14 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
       let pool_liquidity_raw = 0;
       let price_a_per_b_exact: string | undefined;
       
+      // Variables to store processed/canonical values from pipeline
+      let finalMintA = mint_a;
+      let finalMintB = mint_b;
+      let finalDecA = decA;
+      let finalDecB = decB;
+      let finalBaseReserve = baseReserve;
+      let finalQuoteReserve = quoteReserve;
+      
       if (pool.base_reserve && pool.quote_reserve) {
         try {
           // Parse reserves as BigInt from string
@@ -621,18 +629,15 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
           baseReserve = Number(baseReserveRaw) / Math.pow(10, decA);
           quoteReserve = Number(quoteReserveRaw) / Math.pow(10, decB);
           
+          // Update final reserves with actual values
+          finalBaseReserve = baseReserve;
+          finalQuoteReserve = quoteReserve;
+          
           // Calculate raw price using centralized formula helper
           const { priceFromReserves } = await import('./priceFormulas.js');
           const rawPrice = priceFromReserves(baseReserveRaw, quoteReserveRaw, decA, decB);
           
           // Process through centralized pipeline (canonicalization + calibration + rescaling)
-          let finalMintA = mint_a;
-          let finalMintB = mint_b;
-          let finalDecA = decA;
-          let finalDecB = decB;
-          let finalBaseReserve = baseReserve;
-          let finalQuoteReserve = quoteReserve;
-          
           if (rawPrice && rawPrice > 0 && Number.isFinite(rawPrice)) {
             try {
               const { processPriceThroughPipeline } = await import('./pricePipeline.js');
