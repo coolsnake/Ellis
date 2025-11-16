@@ -904,53 +904,66 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
             // Calculate derived price from sqrt using CURRENT mint decimals (post-canonicalization)
             // CRITICAL: Use resolveDecimals based on current mints, not pool.decimals_a/b
             // The pool might have been canonicalized, swapping mints but the decimals in cache might be stale
+            
+            // BUGFIX: Don't recalculate price if it was already set during normalization + canonicalization
+            // The on-chain sqrtPriceX64 is orientation-specific and doesn't automatically adjust
+            // when mints are swapped by canonicalization. Recalculating with swapped mints but
+            // original sqrt produces wrong prices (magnitude errors of 10^(2*decimal_diff))
+            const hasExistingPrice = (pool as any).price_a_per_b && (pool as any).price_a_per_b > 0;
+            
             let derivedPrice: number | undefined;
-            const mintA = String((pool as any).mint_a);
-            const mintB = String((pool as any).mint_b);
-            
-            // Fetch decimals for CURRENT mints (respects canonicalization)
-            const { resolveDecimals } = await import('./decimals.js');
-            const decA = await resolveDecimals(mintA) ?? Number((pool as any).decimals_a);
-            const decB = await resolveDecimals(mintB) ?? Number((pool as any).decimals_b);
-            if (
-              PriceMath &&
-              BN &&
-              sqrtPriceX64 &&
-              Number.isFinite(decA) &&
-              Number.isFinite(decB)
-            ) {
-              try {
-                const sqrtForSdk =
-                  parsed?.sqrtPrice && BN.isBN(parsed.sqrtPrice)
-                    ? parsed.sqrtPrice
-                    : new BN(sqrtPriceX64.toString());
-                const priceDec = PriceMath.sqrtPriceX64ToPrice(sqrtForSdk, decA, decB);
-                const priceNum =
-                  typeof priceDec?.toNumber === 'function'
-                    ? priceDec.toNumber()
-                    : Number(priceDec?.toString?.() ?? priceDec);
-                if (Number.isFinite(priceNum) && priceNum > 0) {
-                  derivedPrice = priceNum;
-                }
-              } catch {}
-            }
-            
-            if (!derivedPrice && PriceMath && BN && Number.isFinite(decA) && Number.isFinite(decB) && Number.isFinite(tickIndex)) {
-              try {
-                const priceDec = PriceMath.priceFromTick(Number(tickIndex), decA, decB);
-                const priceNum =
-                  typeof priceDec?.toNumber === 'function'
-                    ? priceDec.toNumber()
-                    : Number(priceDec?.toString?.() ?? priceDec);
-                if (Number.isFinite(priceNum) && priceNum > 0) {
-                  derivedPrice = priceNum;
-                }
-              } catch {}
-            }
-            
-            if (derivedPrice && derivedPrice > 0) {
-              (pool as any).price_a_per_b = derivedPrice;
-              (pool as any).price_a_per_b_exact = derivedPrice.toString();
+            if (!hasExistingPrice) {
+              // Only calculate price if not already set (shouldn't happen in normal flow)
+              const mintA = String((pool as any).mint_a);
+              const mintB = String((pool as any).mint_b);
+              
+              // Fetch decimals for CURRENT mints (respects canonicalization)
+              const { resolveDecimals } = await import('./decimals.js');
+              const decA = await resolveDecimals(mintA) ?? Number((pool as any).decimals_a);
+              const decB = await resolveDecimals(mintB) ?? Number((pool as any).decimals_b);
+              if (
+                PriceMath &&
+                BN &&
+                sqrtPriceX64 &&
+                Number.isFinite(decA) &&
+                Number.isFinite(decB)
+              ) {
+                try {
+                  const sqrtForSdk =
+                    parsed?.sqrtPrice && BN.isBN(parsed.sqrtPrice)
+                      ? parsed.sqrtPrice
+                      : new BN(sqrtPriceX64.toString());
+                  const priceDec = PriceMath.sqrtPriceX64ToPrice(sqrtForSdk, decA, decB);
+                  const priceNum =
+                    typeof priceDec?.toNumber === 'function'
+                      ? priceDec.toNumber()
+                      : Number(priceDec?.toString?.() ?? priceDec);
+                  if (Number.isFinite(priceNum) && priceNum > 0) {
+                    derivedPrice = priceNum;
+                  }
+                } catch {}
+              }
+              
+              if (!derivedPrice && PriceMath && BN && Number.isFinite(decA) && Number.isFinite(decB) && Number.isFinite(tickIndex)) {
+                try {
+                  const priceDec = PriceMath.priceFromTick(Number(tickIndex), decA, decB);
+                  const priceNum =
+                    typeof priceDec?.toNumber === 'function'
+                      ? priceDec.toNumber()
+                      : Number(priceDec?.toString?.() ?? priceDec);
+                  if (Number.isFinite(priceNum) && priceNum > 0) {
+                    derivedPrice = priceNum;
+                  }
+                } catch {}
+              }
+              
+              if (derivedPrice && derivedPrice > 0) {
+                (pool as any).price_a_per_b = derivedPrice;
+                (pool as any).price_a_per_b_exact = derivedPrice.toString();
+              }
+            } else {
+              // Preserve existing price from canonicalization
+              derivedPrice = (pool as any).price_a_per_b;
             }
             
             try {
@@ -962,7 +975,8 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
                   currentTickIndex: tickIndex,
                   liquidity: liquidity?.toString(),
                   feeRate: feeRateBps,
-                  price: derivedPrice
+                  price: derivedPrice,
+                  price_source: hasExistingPrice ? 'preserved_from_normalization' : 'recalculated_from_onchain'
                 }
               });
             } catch {}
