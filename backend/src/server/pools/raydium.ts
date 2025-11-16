@@ -778,39 +778,31 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
       decA = verifiedDecA;
       decB = verifiedDecB;
       
-      let priceRatio = sqrtBig && Number.isFinite(decA) && Number.isFinite(decB)
-        ? sqrtPriceX64ToPriceRatio(sqrtBig, decA as number, decB as number)
-        : null;
+      // Calculate price using centralized CLMM formula
+      // This ensures consistent sqrt price calculation across all CLMM pools
+      const { calculateClmmPrice } = await import('./priceFormulas.js');
+      
       try {
-        if (sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
+        if (sqrtBig && Number.isFinite(decA) && Number.isFinite(decB)) {
+          const priceFromCentralized = calculateClmmPrice(sqrtBig, decA as number, decB as number);
+          if (priceFromCentralized && priceFromCentralized > 0 && Number.isFinite(priceFromCentralized)) {
+            price_from_sqrt = priceFromCentralized;
+          }
+        }
+        
+        // Fallback: Try Raydium SDK as secondary source
+        if (price_from_sqrt === 0 && sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
           try {
             const rmod: any = await import('@raydium-io/raydium-sdk-v2');
             const SqrtPriceMath = rmod?.SqrtPriceMath || rmod?.Clmm?.SqrtPriceMath;
             if (SqrtPriceMath?.sqrtPriceX64ToPrice) {
               const sqrtBigInt = sqrtBig ?? BigInt(Math.floor(sqrt));
-              // CRITICAL: Use verified decimals that match mintA and mintB
               const priceFromSdk = SqrtPriceMath.sqrtPriceX64ToPrice(sqrtBigInt, decA, decB);
               if (priceFromSdk != null && Number(priceFromSdk) > 0 && Number.isFinite(Number(priceFromSdk))) {
                 price_from_sqrt = Number(priceFromSdk);
               }
             }
           } catch {}
-          if (price_from_sqrt === 0) {
-            if (!priceRatio && sqrtBig) {
-              priceRatio = sqrtPriceX64ToPriceRatio(sqrtBig, decA as number, decB as number);
-            }
-            if (priceRatio?.float && Number.isFinite(priceRatio.float) && priceRatio.float > 0) {
-              price_from_sqrt = priceRatio.float;
-            } else {
-              const two64 = Math.pow(2, 64);
-              const ratio = sqrt / two64;
-              // CRITICAL: Use verified decimals - decA for mintA, decB for mintB
-              // Scale converts from native units to whole units: 10^(decB - decA)
-              const scale = Math.pow(10, (decB as number) - (decA as number));
-              const aPerB = scale / (ratio * ratio);
-              if (Number.isFinite(aPerB) && aPerB > 0) price_from_sqrt = aPerB;
-            }
-          }
         }
       } catch {}
       // Choose best price from sqrt-derived, upstream, and reserves-derived candidates

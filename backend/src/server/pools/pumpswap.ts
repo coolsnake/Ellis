@@ -621,10 +621,13 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
           baseReserve = Number(baseReserveRaw) / Math.pow(10, decA);
           quoteReserve = Number(quoteReserveRaw) / Math.pow(10, decB);
           
-          // Spot price = reserve ratio (pure pool price without fees)
-          // Fees are applied during swap execution, not in the spot price
-          if (quoteReserve > 0) {
-            price_a_per_b = baseReserve / quoteReserve;
+          // Calculate price using centralized formula helper
+          // This gives us the raw price in whole token units (not yet canonicalized)
+          const { priceFromReserves } = await import('./priceFormulas.js');
+          const rawPrice = priceFromReserves(baseReserveRaw, quoteReserveRaw, decA, decB);
+          
+          if (rawPrice && rawPrice > 0 && Number.isFinite(rawPrice)) {
+            price_a_per_b = rawPrice;
           }
           
           // Calculate high-precision price for exact calculations with proper decimal adjustment

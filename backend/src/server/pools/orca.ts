@@ -308,9 +308,13 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
       }
       
       // CRITICAL: Calculate priceRatio AFTER decimals are finalized to ensure consistency
-      let priceRatio = sqrtRaw && Number.isFinite(cDecA) && Number.isFinite(cDecB)
-        ? sqrtPriceX64ToPriceRatio(sqrtRaw, cDecA as number, cDecB as number)
-        : null;
+      // Use centralized CLMM price calculation for consistency across all DEXes
+      const { calculateClmmPrice } = await import('./priceFormulas.js');
+      let priceRatio = null;
+      
+      if (sqrtRaw && Number.isFinite(cDecA) && Number.isFinite(cDecB)) {
+        priceRatio = sqrtPriceX64ToPriceRatio(sqrtRaw, cDecA as number, cDecB as number);
+      }
       
       // DIAGNOSTIC: Log if decimals changed (which would invalidate any earlier price calculation)
       if ((Number.isFinite(origDecA) && Number.isFinite(cDecA) && origDecA !== cDecA) ||
@@ -332,95 +336,58 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
       let priceFromSqrt = 0;
       if (sqrt_price_x64 > 0 && Number.isFinite(cDecA) && Number.isFinite(cDecB)) {
         try {
-          const two64 = Math.pow(2, 64);
-          const ratio = sqrt_price_x64 / two64;
-          // Orca sqrt encodes sqrt(B/A) in smallest units. Let R = ratio.
-          // Then B/A = R^2, so A/B = 1 / R^2.
-          // Adjust for decimals: amounts are in smallest units, so scale = 10^(decB-decA).
-          // Therefore A-per-1-B (in whole-token units) = (scale) / (R^2).
-          // NOTE: This initial price might be wrong if decimals are later swapped by canonicalization,
-          // but populateOrcaPoolStates() will re-derive the correct price with correct decimals.
-          const scale = Math.pow(10, (cDecB as number) - (cDecA as number));
-          const aPerB = scale / (ratio * ratio);
-          
-          // DIAGNOSTIC: Log price calculation details for debugging magnitude issues
-          const shouldLog = (id.includes('JCD6') || id.includes('HrLm') || id.includes('C1Mg') || 
-                           id.includes('21gTfx') || id.includes('FpCMFD'));
-          if (shouldLog || (aPerB > 10000 || aPerB < 0.0001)) {
-            try {
-              logger.info('orca.priceFromSqrt.details', {
-                id: id.slice(0, 8) + '...',
-                mint_a: cA?.slice(0, 8) + '...',
-                mint_b: cB?.slice(0, 8) + '...',
-                decA: cDecA,
-                decB: cDecB,
-                sqrt_price_x64,
-                ratio,
-                scale,
-                aPerB,
-                ratioSquared: ratio * ratio,
-                cat: 'orca'
-              });
-            } catch {}
-          }
-          
-          if (Number.isFinite(aPerB) && aPerB > 0) priceFromSqrt = aPerB;
-          
-          // CONSISTENCY CHECK: Compare manual calculation with priceRatio.float
-          if (priceRatio?.float && Number.isFinite(priceRatio.float) && priceRatio.float > 0) {
-            const priceFromRatio = priceRatio.float;
-            const priceDiff = Math.abs(priceFromSqrt - priceFromRatio);
-            const priceRatio_pct = priceFromRatio > 0 ? (priceDiff / priceFromRatio) * 100 : 0;
+          // Use centralized CLMM price formula for consistency
+          const priceFromCentralized = calculateClmmPrice(sqrtRaw ?? BigInt(Math.floor(sqrt_price_x64)), cDecA as number, cDecB as number);
+          if (priceFromCentralized && priceFromCentralized > 0 && Number.isFinite(priceFromCentralized)) {
+            priceFromSqrt = priceFromCentralized;
             
-            // If there's a significant difference, log it and prefer the precise ratio calculation
-            if (priceRatio_pct > 1) {  // More than 1% difference
+            // DIAGNOSTIC: Log price calculation details for debugging magnitude issues
+            const shouldLog = (id.includes('JCD6') || id.includes('HrLm') || id.includes('C1Mg') || 
+                             id.includes('21gTfx') || id.includes('FpCMFD'));
+            if (shouldLog || (priceFromCentralized > 10000 || priceFromCentralized < 0.0001)) {
               try {
-                logger.warn('orca.price.calculation.mismatch', {
+                logger.info('orca.priceFromSqrt.centralized', {
                   id: id.slice(0, 8) + '...',
                   mint_a: cA?.slice(0, 8) + '...',
                   mint_b: cB?.slice(0, 8) + '...',
-                  priceFromManual: priceFromSqrt,
-                  priceFromRatio: priceFromRatio,
-                  diff_pct: priceRatio_pct,
                   decA: cDecA,
                   decB: cDecB,
-                  hint: 'Using priceRatio.float as it is more precise',
+                  sqrt_price_x64,
+                  priceFromCentralized,
                   cat: 'orca'
                 });
               } catch {}
-              // Prefer the precise bigint-based calculation
-              priceFromSqrt = priceFromRatio;
+            }
+            
+            // CONSISTENCY CHECK: Compare centralized calculation with priceRatio.float
+            if (priceRatio?.float && Number.isFinite(priceRatio.float) && priceRatio.float > 0) {
+              const priceFromRatio = priceRatio.float;
+              const priceDiff = Math.abs(priceFromSqrt - priceFromRatio);
+              const priceRatio_pct = priceFromRatio > 0 ? (priceDiff / priceFromRatio) * 100 : 0;
+              
+              // If there's a significant difference, log it
+              if (priceRatio_pct > 1) {  // More than 1% difference
+                try {
+                  logger.warn('orca.price.calculation.mismatch', {
+                    id: id.slice(0, 8) + '...',
+                    mint_a: cA?.slice(0, 8) + '...',
+                    mint_b: cB?.slice(0, 8) + '...',
+                    priceFromCentralized: priceFromSqrt,
+                    priceFromRatio: priceFromRatio,
+                    diff_pct: priceRatio_pct,
+                    cat: 'orca'
+                  });
+                } catch {}
+              }
             }
           }
         } catch (e) {
-          // If sqrt calculation fails, log for debugging
           try {
-            logger.debug('orca.priceFromSqrt.calc.failed', { 
-              id, 
-              mint_a: cA, 
-              mint_b: cB, 
+            logger.warn('orca.price.centralized_calc_failed', {
+              error: String(e),
+              id: id.slice(0, 8) + '...',
               sqrt_price_x64,
-              decA: cDecA, 
-              decB: cDecB,
-              error: String(e?.message || e),
-              cat: 'orca' 
-            });
-          } catch {}
-        }
-      } else {
-        // Log when we can't compute priceFromSqrt due to missing data
-        if (sqrt_price_x64 > 0) {
-          try {
-            logger.debug('orca.priceFromSqrt.missing.decimals', { 
-              id, 
-              mint_a: cA, 
-              mint_b: cB, 
-              sqrt_price_x64,
-              decA: cDecA, 
-              decB: cDecB,
-              decA_finite: Number.isFinite(cDecA),
-              decB_finite: Number.isFinite(cDecB),
-              cat: 'orca' 
+              cat: 'orca'
             });
           } catch {}
         }
