@@ -255,11 +255,8 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
         // CRITICAL: The formula is (1 + binStep/10000)^activeId
         // NOT: (1.0001)^(binStep * activeId) - that's incorrect!
         //
-        // IMPORTANT: According to METEORA_DLMM_DECIMAL_BUG.md, we should NOT apply
-        // decimal adjustment here. The formula gives price in native units, and we
-        // should use it directly. Decimal differences are handled elsewhere.
-        //
         // Determine orientation: Meteora's X/Y vs our A/B
+        // IMPORTANT: We use mint_a/mint_b which come from mint_x/mint_y, so they should match
         const tokenXMint = String((it as any)?.mint_x || (it as any)?.tokenXMint || tokenA?.mint || '');
         const tokenYMint = String((it as any)?.mint_y || (it as any)?.tokenYMint || tokenB?.mint || '');
         
@@ -272,30 +269,35 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
         const logPrice = clampedActiveId * Math.log(basePrice);
         
         if (Math.abs(logPrice) < 700) { // e^700 ≈ 1e304, safe limit
-          const priceYperX = Math.exp(logPrice); // Y per X in native units
+          const priceYperX_native = Math.exp(logPrice); // Y per X in native units
           
           // Determine which token is X and which is Y relative to our A/B
-          let priceAperB: number | undefined;
+          // CRITICAL: We need to compute priceAperB in native units first, then convert to whole units
+          let priceAperB_native: number | undefined;
           
           if (tokenXMint === mint_a && tokenYMint === mint_b) {
-            // X = A, Y = B => priceYperX = B per A => priceAperB = 1 / priceYperX
-            priceAperB = priceYperX > 0 ? (1 / priceYperX) : undefined;
+            // X = A, Y = B => priceYperX = B per A (native) => priceAperB = 1 / priceYperX (native)
+            priceAperB_native = priceYperX_native > 0 ? (1 / priceYperX_native) : undefined;
           } else if (tokenXMint === mint_b && tokenYMint === mint_a) {
-            // X = B, Y = A => priceYperX = A per B => priceAperB = priceYperX
-            priceAperB = priceYperX;
+            // X = B, Y = A => priceYperX = A per B (native) => priceAperB = priceYperX (native)
+            priceAperB_native = priceYperX_native;
           } else {
-            // Unknown orientation - use priceYperX as initial candidate
-            // USD ref selection below will try both orientations (price and 1/price)
-            priceAperB = priceYperX;
+            // Unknown orientation - compute both candidates and let USD ref selection pick
+            // For now, use priceYperX as initial candidate
+            priceAperB_native = priceYperX_native;
           }
           
-          if (priceAperB && priceAperB > 0 && Number.isFinite(priceAperB)) {
-            // NO decimal adjustment per METEORA_DLMM_DECIMAL_BUG.md
-            // The price is already in the correct units from the formula
-            price_a_per_b = priceAperB;
-            usedBin = true;
-            // If orientation is unknown, the USD ref selection logic below will
-            // automatically try both price and 1/price to pick the correct one
+          if (priceAperB_native && priceAperB_native > 0 && Number.isFinite(priceAperB_native)) {
+            // Convert from native units to whole token units
+            // priceAperB_whole = priceAperB_native * 10^(decA - decB)
+            // This gives: (A native units per B native units) * (10^decA / 10^decB) = A whole units per B whole units
+            const decimalScale = Math.pow(10, decA - decB);
+            const priceAperB_whole = priceAperB_native * decimalScale;
+            
+            if (priceAperB_whole > 0 && Number.isFinite(priceAperB_whole)) {
+              price_a_per_b = priceAperB_whole;
+              usedBin = true;
+            }
           }
         }
       }

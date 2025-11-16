@@ -747,6 +747,37 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
       const amount_a_whole = Number.isFinite(mintAmountA) ? mintAmountA : (Number.isFinite(reserveA) ? reserveA : undefined);
       const amount_b_whole = Number.isFinite(mintAmountB) ? mintAmountB : (Number.isFinite(reserveB) ? reserveB : undefined);
       let price_from_sqrt = 0;
+      // CRITICAL: Verify decimals match mints before calculating price
+      // Ensure decA corresponds to mintA and decB corresponds to mintB
+      // Re-fetch decimals from resolver if there's any doubt to ensure correctness
+      let verifiedDecA = decA;
+      let verifiedDecB = decB;
+      try {
+        // Double-check decimals match the mints (defensive check)
+        const decAFromMap = decimalsMap.get(mintA);
+        const decBFromMap = decimalsMap.get(mintB);
+        if (Number.isFinite(decAFromMap) && decAFromMap !== decA) {
+          verifiedDecA = decAFromMap;
+        }
+        if (Number.isFinite(decBFromMap) && decBFromMap !== decB) {
+          verifiedDecB = decBFromMap;
+        }
+      } catch {}
+      
+      // Ensure decimals are finite and reasonable
+      if (!Number.isFinite(verifiedDecA) || verifiedDecA < 0 || verifiedDecA > 12) {
+        verifiedDecA = decimalsMap.get(mintA) ?? 6;
+      }
+      if (!Number.isFinite(verifiedDecB) || verifiedDecB < 0 || verifiedDecB > 12) {
+        verifiedDecB = decimalsMap.get(mintB) ?? 6;
+      }
+      verifiedDecA = Math.min(12, Math.max(0, Math.round(verifiedDecA)));
+      verifiedDecB = Math.min(12, Math.max(0, Math.round(verifiedDecB)));
+      
+      // Update decA/decB to verified values for consistency
+      decA = verifiedDecA;
+      decB = verifiedDecB;
+      
       let priceRatio = sqrtBig && Number.isFinite(decA) && Number.isFinite(decB)
         ? sqrtPriceX64ToPriceRatio(sqrtBig, decA as number, decB as number)
         : null;
@@ -757,6 +788,7 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
             const SqrtPriceMath = rmod?.SqrtPriceMath || rmod?.Clmm?.SqrtPriceMath;
             if (SqrtPriceMath?.sqrtPriceX64ToPrice) {
               const sqrtBigInt = sqrtBig ?? BigInt(Math.floor(sqrt));
+              // CRITICAL: Use verified decimals that match mintA and mintB
               const priceFromSdk = SqrtPriceMath.sqrtPriceX64ToPrice(sqrtBigInt, decA, decB);
               if (priceFromSdk != null && Number(priceFromSdk) > 0 && Number.isFinite(Number(priceFromSdk))) {
                 price_from_sqrt = Number(priceFromSdk);
@@ -772,6 +804,8 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
             } else {
               const two64 = Math.pow(2, 64);
               const ratio = sqrt / two64;
+              // CRITICAL: Use verified decimals - decA for mintA, decB for mintB
+              // Scale converts from native units to whole units: 10^(decB - decA)
               const scale = Math.pow(10, (decB as number) - (decA as number));
               const aPerB = scale / (ratio * ratio);
               if (Number.isFinite(aPerB) && aPerB > 0) price_from_sqrt = aPerB;

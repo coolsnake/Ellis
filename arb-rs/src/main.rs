@@ -361,6 +361,7 @@ async fn main() -> anyhow::Result<()> {
                 )
             };
             if enabled {
+                let diff_apply_start = Instant::now();
                 // Capture diff_to_detect latency if we have a recent graph push timestamp
                 {
                     let mut s = loop_state.write().await;
@@ -727,6 +728,8 @@ async fn main() -> anyhow::Result<()> {
                         tracing::info!("arb.graph.diff: none pending");
                     }
                 }
+                let diff_apply_ms = diff_apply_start.elapsed().as_millis() as u128;
+                let detect_start = Instant::now();
                 // Detect cycles (MVP -log weights)
                 // Compare with previous to only push WS updates on change
                 let (opps, prev, near_pair, near_list, rejected_samples): (
@@ -3125,15 +3128,24 @@ async fn main() -> anyhow::Result<()> {
                         .unwrap_or_default()
                         .as_millis() as u64;
                 }
+                let detect_ms = detect_start.elapsed().as_millis() as u128;
+                let work_ms = iter_start.elapsed().as_millis() as u128;
+                tracing::debug!(
+                    diff_apply_ms,
+                    detect_ms,
+                    work_ms,
+                    "arb.loop.work.timing"
+                );
             }
 
-            // Event-driven wait: wake on notify or after periodic heartbeat (2 seconds)
-            // Fast heartbeat ensures we detect and recover from desyncs quickly
+            // Event-driven wait: wake on notify or after periodic heartbeat
+            // Reduced heartbeat timeout to improve responsiveness
             let wake = {
                 let s = loop_state.read().await;
                 s.wake.clone()
             };
-            let heartbeat_ms = 2000; // 2 second heartbeat - aggressive desync detection
+            let heartbeat_ms = 500; // 500ms heartbeat - faster response to updates
+            let wait_start = Instant::now();
             let timeout = std::time::Duration::from_millis(heartbeat_ms);
             tokio::select! {
                 _ = wake.notified() => {
@@ -3144,9 +3156,12 @@ async fn main() -> anyhow::Result<()> {
                     tracing::info!("arb.loop.heartbeat");
                 },
             }
+            let wait_ms = wait_start.elapsed().as_millis() as u128;
             let iter_end = Instant::now();
+            let total_ms = iter_end.duration_since(iter_start).as_millis() as u128;
             tracing::info!(
-                iter_ms = iter_end.duration_since(iter_start).as_millis() as u128,
+                iter_ms = total_ms,
+                wait_ms,
                 "arb.loop.end"
             );
         }
