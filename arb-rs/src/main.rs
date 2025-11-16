@@ -136,6 +136,8 @@ struct AppState {
     last_resync_attempt_ms: AtomicU64,
     // Event-driven wakeup for detection loop
     wake: Arc<Notify>,
+    // Notify for version changes (for ACK handlers)
+    version_changed: Arc<Notify>,
     // Detection bookkeeping and execution markers
     detection_counts: HashMap<String, (u64, u64)>, // key -> (count, last_seen_ms)
     executed_keys: HashSet<String>,
@@ -314,6 +316,7 @@ async fn main() -> anyhow::Result<()> {
         consecutive_empty_cycles: AtomicU64::new(0),
         last_resync_attempt_ms: AtomicU64::new(0),
         wake: Arc::new(Notify::new()),
+        version_changed: Arc::new(Notify::new()),
         detection_counts: std::collections::HashMap::new(),
         executed_keys: std::collections::HashSet::new(),
     }));
@@ -2986,6 +2989,8 @@ async fn main() -> anyhow::Result<()> {
                             "arb.graph.version: committed"
                         );
                         s.last_graph_version.store(v_commit, Ordering::Release);
+                        // Notify any waiting ACK handlers
+                        s.version_changed.notify_waiters();
                     } else {
                         tracing::info!(
                             attempt = v_commit,
@@ -3647,6 +3652,7 @@ async fn handle_graph_snapshot(
     s.metrics.graph_edges = s.graph.g.edge_count() as u64;
     if let Some(v) = g.version {
         s.last_graph_version.store(v, Ordering::Release);
+        s.version_changed.notify_waiters();
     }
     if let Some(ts) = g.timestamp {
         s.last_graph_ts.store(ts, Ordering::Release);
@@ -3799,6 +3805,7 @@ async fn arb_start(
         s.metrics.graph_edges = edges_cnt;
         if let Some(vv) = v {
             s.last_graph_version.store(vv, Ordering::Release);
+            s.version_changed.notify_waiters();
         }
         if let Some(tt) = ts {
             s.last_graph_ts.store(tt, Ordering::Release);
@@ -4762,6 +4769,12 @@ async fn arb_graph_ack(
         guard.wake.notify_one();
     }
 
+    // Get the version_changed notifier
+    let version_notifier = {
+        let guard = state.read().await;
+        guard.version_changed.clone()
+    };
+
     loop {
         let guard = state.read().await;
         let last_version = guard.last_graph_version.load(Ordering::Acquire);
@@ -4773,7 +4786,6 @@ async fn arb_graph_ack(
 
         // Only ACK based on committed version (last_version), not pending version
         // This ensures the graph is actually updated before we acknowledge
-        // The wake notification ensures the detection loop processes pending diffs promptly
         if want_version == 0 || last_version >= want_version {
             let acked = last_version >= want_version;
             tracing::info!(
@@ -4827,7 +4839,15 @@ async fn arb_graph_ack(
             );
         }
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Wait for version change notification or timeout
+        // Use remaining timeout
+        let remaining_ms = timeout_ms.saturating_sub(elapsed);
+        if remaining_ms == 0 {
+            break;
+        }
+        
+        let timeout_duration = Duration::from_millis(remaining_ms.min(500)); // Check at most every 500ms
+        let _ = tokio::time::timeout(timeout_duration, version_notifier.notified()).await;
     }
 
     let guard = state.read().await;
@@ -4885,14 +4905,17 @@ mod e2e_tests {
             near_miss: None,
             near_miss_shortfall_bps: None,
             near_misses: Vec::new(),
-            last_graph_version: 1,
-            last_graph_ts: 1,
+            last_graph_version: AtomicU64::new(1),
+            last_graph_ts: AtomicU64::new(1),
             pending_added_edges: Vec::new(),
             pending_updated_edges: Vec::new(),
             pending_removed_edge_ids: Vec::new(),
-            pending_graph_version: None,
-            pending_graph_ts: None,
+            pending_graph_version: AtomicU64::new(u64::MAX),
+            pending_graph_ts: AtomicU64::new(u64::MAX),
+            consecutive_empty_cycles: AtomicU64::new(0),
+            last_resync_attempt_ms: AtomicU64::new(0),
             wake: Arc::new(Notify::new()),
+            version_changed: Arc::new(Notify::new()),
             detection_counts: HashMap::new(),
             executed_keys: HashSet::new(),
         }));
@@ -4972,6 +4995,7 @@ mod e2e_tests {
             if pending_v != u64::MAX {
                 s.last_graph_version.store(pending_v, Ordering::Release);
                 s.pending_graph_version.store(u64::MAX, Ordering::Release);
+                s.version_changed.notify_waiters();
             }
             let pending_ts = s.pending_graph_ts.load(Ordering::Acquire);
             if pending_ts != u64::MAX {
@@ -5010,6 +5034,7 @@ mod e2e_tests {
             consecutive_empty_cycles: AtomicU64::new(0),
             last_resync_attempt_ms: AtomicU64::new(0),
             wake: Arc::new(Notify::new()),
+            version_changed: Arc::new(Notify::new()),
             detection_counts: HashMap::new(),
             executed_keys: HashSet::new(),
         }));
@@ -5109,6 +5134,7 @@ mod e2e_tests {
             if pending_v != u64::MAX {
                 s.last_graph_version.store(pending_v, Ordering::Release);
                 s.pending_graph_version.store(u64::MAX, Ordering::Release);
+                s.version_changed.notify_waiters();
             }
             let pending_ts = s.pending_graph_ts.load(Ordering::Acquire);
             if pending_ts != u64::MAX {

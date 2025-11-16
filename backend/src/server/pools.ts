@@ -1599,10 +1599,11 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
     cat: 'pools'
   });
   
-  // === PHASE 8: CROSS-DEX VALIDATION ===
-  // Validate prices across DEXes after all filtering is complete
+  // === PHASE 8: CROSS-DEX VALIDATION & FILTERING ===
+  // Validate and filter prices across DEXes after all filtering is complete
+  logger.info('pools.refresh.phase.crossdex_validation', { cat: 'pools' });
   try {
-    const { validateCrossDexPrices } = await import('./pools/validation.js');
+    const { validateCrossDexPrices, filterAnomalousPrices } = await import('./pools/validation.js');
     const allPools = {
       raydium: r,
       orca: o,
@@ -1610,7 +1611,21 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
       meteora_balanced: mb,
       pumpswap: pump
     };
-    validateCrossDexPrices(allPools);
+    
+    // First, log all mismatches (with lower threshold for visibility)
+    const loggingThreshold = Number((CONFIG.system as any)?.crossDexLoggingThreshold || 0.05); // 5%
+    validateCrossDexPrices(allPools, loggingThreshold);
+    
+    // Then, filter out severe anomalies (with higher threshold for safety)
+    const filteringThreshold = Number((CONFIG.system as any)?.crossDexFilteringThreshold || 0.10); // 10%
+    const filtered = filterAnomalousPrices(allPools, filteringThreshold);
+    
+    // Apply filtered results
+    r = filtered.raydium;
+    o = filtered.orca;
+    m = filtered.meteora;
+    mb = filtered.meteora_balanced;
+    pump = filtered.pumpswap;
   } catch (e: any) {
     logger.warn('pools.refresh.phase.validation.failed', { error: String(e?.message || e), cat: 'pools' });
   }
