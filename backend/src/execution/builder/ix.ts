@@ -4121,8 +4121,12 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       if (cached) {
         poolMintA = cached.mint_a;
         poolMintB = cached.mint_b;
-        poolDecA = cached.decimals_a;
-        poolDecB = cached.decimals_b;
+        
+        // CRITICAL: Fetch decimals based on CURRENT mints (post-canonicalization)
+        // The cache might have stale decimals from before canonicalization
+        const { resolveDecimals } = await import('../../server/pools/decimals.js');
+        if (poolMintA) poolDecA = await resolveDecimals(poolMintA) ?? cached.decimals_a;
+        if (poolMintB) poolDecB = await resolveDecimals(poolMintB) ?? cached.decimals_b;
       }
     } catch {}
     
@@ -5332,8 +5336,12 @@ export async function buildRaydiumAmmSwapIxReal(hop: DirectHop): Promise<any[]> 
       if (cached) {
         poolMintA = cached.mint_a;
         poolMintB = cached.mint_b;
-        poolDecA = cached.decimals_a;
-        poolDecB = cached.decimals_b;
+        
+        // CRITICAL: Fetch decimals based on CURRENT mints (post-canonicalization)
+        // The cache might have stale decimals from before canonicalization
+        const { resolveDecimals } = await import('../../server/pools/decimals.js');
+        if (poolMintA) poolDecA = await resolveDecimals(poolMintA) ?? cached.decimals_a;
+        if (poolMintB) poolDecB = await resolveDecimals(poolMintB) ?? cached.decimals_b;
       }
     } catch {}
     

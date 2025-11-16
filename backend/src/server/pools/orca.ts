@@ -868,9 +868,17 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
               (pool as any).liquidity = Number(liquidity.toString());
             }
             
+            // Calculate derived price from sqrt using CURRENT mint decimals (post-canonicalization)
+            // CRITICAL: Use resolveDecimals based on current mints, not pool.decimals_a/b
+            // The pool might have been canonicalized, swapping mints but the decimals in cache might be stale
             let derivedPrice: number | undefined;
-            const decA = Number((pool as any).decimals_a);
-            const decB = Number((pool as any).decimals_b);
+            const mintA = String((pool as any).mint_a);
+            const mintB = String((pool as any).mint_b);
+            
+            // Fetch decimals for CURRENT mints (respects canonicalization)
+            const { resolveDecimals } = await import('./decimals.js');
+            const decA = await resolveDecimals(mintA) ?? Number((pool as any).decimals_a);
+            const decB = await resolveDecimals(mintB) ?? Number((pool as any).decimals_b);
             if (
               PriceMath &&
               BN &&

@@ -2135,17 +2135,15 @@ export function startRaydiumRefreshLoop(): void {
                             } catch {}
                           }
                           
-                          // Only as last resort, resolve via API (rare for known pools)
+                          // Only as last resort, resolve via centralized resolver (rare for known pools)
                           if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
                             try {
-                              const tok = await import('../utils/tokens.js');
-                              if (!Number.isFinite(decA)) {
-                                const a = await (tok as any).resolveMint(mintA).catch(() => null);
-                                decA = Number(a?.decimals ?? 9);
+                              const { resolveDecimals } = await import('./pools/decimals.js');
+                              if (!Number.isFinite(decA) && mintA) {
+                                decA = await resolveDecimals(mintA);
                               }
-                              if (!Number.isFinite(decB)) {
-                                const b = await (tok as any).resolveMint(mintB).catch(() => null);
-                                decB = Number(b?.decimals ?? 6);
+                              if (!Number.isFinite(decB) && mintB) {
+                                decB = await resolveDecimals(mintB);
                               }
                             } catch {
                               if (!Number.isFinite(decA)) decA = 9;
@@ -2527,17 +2525,15 @@ export function startRaydiumRefreshLoop(): void {
                         } catch {}
                       }
                       
-                      // Only as last resort, resolve via API (rare for known pools)
+                      // Only as last resort, resolve via centralized resolver (rare for known pools)
                       if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
                         try {
-                          const tok = await import('../utils/tokens.js');
-                          if (!Number.isFinite(decA)) {
-                            const a = await (tok as any).resolveMint(mint_a).catch(() => null);
-                            decA = Number(a?.decimals ?? 9);
+                          const { resolveDecimals } = await import('./pools/decimals.js');
+                          if (!Number.isFinite(decA) && mint_a) {
+                            decA = await resolveDecimals(mint_a);
                           }
-                          if (!Number.isFinite(decB)) {
-                            const b = await (tok as any).resolveMint(mint_b).catch(() => null);
-                            decB = Number(b?.decimals ?? 6);
+                          if (!Number.isFinite(decB) && mint_b) {
+                            decB = await resolveDecimals(mint_b);
                           }
                         } catch {
                           if (!Number.isFinite(decA)) decA = 9;
@@ -2717,6 +2713,9 @@ export function startRaydiumRefreshLoop(): void {
               const pk58 = toB58Any(pk);
               const parentPoolId = meteoraBinAccountToPool.get(pk58);
               if (parentPoolId) {
+                // OPTION 1: Disable bin array hash tracking - we're not subscribing to bins anymore
+                // We rely solely on pool + reserve account updates for pricing
+                /*
                 const tracker = meteoraBinTrackers.get(parentPoolId);
                 if (tracker) {
                   const accountMeta = tracker.accounts.get(pk58);
@@ -2733,6 +2732,12 @@ export function startRaydiumRefreshLoop(): void {
                   }
                   await applyMeteoraBinHash(parentPoolId);
                 }
+                */
+                logger.debug('meteora.bin_update.ignored', { 
+                  pool: parentPoolId.slice(0,8)+'…', 
+                  reason: 'option1_reserves_only',
+                  cat: 'pools' 
+                });
                 return;
               }
               // Try on-chain decode via Meteora DLMM SDK; fallback to HTTP refresh if unavailable
@@ -2774,7 +2779,13 @@ export function startRaydiumRefreshLoop(): void {
                   logger.warn('meteora.ws state.missing', { id: poolId, cat: 'pools' });
                 }
                 if (state) {
-                  await ensureMeteoraBinSubscriptionsForState(pk, poolId, state);
+                  // OPTION 1: Disable dynamic bin array subscriptions - rely on reserves only
+                  // await ensureMeteoraBinSubscriptionsForState(pk, poolId, state);
+                  logger.debug('meteora.ws.skip_bin_subscription', {
+                    pool: poolId.slice(0,8)+'…',
+                    reason: 'option1_reserves_only',
+                    cat: 'pools'
+                  });
                   // Fallback: try reading minimal fields via generic accessors
                   let tokenX: string | undefined;
                   let tokenY: string | undefined;
@@ -2803,17 +2814,15 @@ export function startRaydiumRefreshLoop(): void {
                     } catch {}
                   }
                   
-                  // Only as last resort, resolve via API (rare for known pools)
+                  // Only as last resort, resolve via centralized resolver (rare for known pools)
                   if (tokenX && tokenY && (!Number.isFinite(decA) || !Number.isFinite(decB))) {
                     try {
-                      const tok = await import('../utils/tokens.js');
+                      const { resolveDecimals } = await import('./pools/decimals.js');
                       if (!Number.isFinite(decA)) {
-                        const a = await (tok as any).resolveMint(tokenX).catch(() => null);
-                        decA = Number(a?.decimals ?? 9);
+                        decA = await resolveDecimals(tokenX);
                       }
                       if (!Number.isFinite(decB)) {
-                        const b = await (tok as any).resolveMint(tokenY).catch(() => null);
-                        decB = Number(b?.decimals ?? 6);
+                        decB = await resolveDecimals(tokenY);
                       }
                     } catch {
                       if (!Number.isFinite(decA)) decA = 9;
@@ -3165,17 +3174,15 @@ export function startRaydiumRefreshLoop(): void {
                   } catch {}
                 }
                 
-                // Only as last resort, resolve via API (rare for known pools)
+                // Only as last resort, resolve via centralized resolver (rare for known pools)
                 if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
                   try {
-                    const tok = await import('../utils/tokens.js');
+                    const { resolveDecimals } = await import('./pools/decimals.js');
                     if (!Number.isFinite(decA)) {
-                      const tokenA = await (tok as any).resolveMint(mint_a).catch(() => null);
-                      decA = Number(tokenA?.decimals ?? 9);
+                      decA = await resolveDecimals(mint_a);
                     }
                     if (!Number.isFinite(decB)) {
-                      const tokenB = await (tok as any).resolveMint(mint_b).catch(() => null);
-                      decB = Number(tokenB?.decimals ?? 6);
+                      decB = await resolveDecimals(mint_b);
                     }
                   } catch {
                     // Ultimate fallback to common decimals
@@ -4124,7 +4131,11 @@ export function startRaydiumRefreshLoop(): void {
         // OPTIMIZED: Use SDK derivation without RPC fetch!
         const attachMeteoraReserves = async (poolAddr: string) => {
           try {
-            logger.info('meteora.attach.start', { pool: poolAddr.slice(0,8)+'…', cat: 'pools' });
+            logger.info('meteora.attach.start.reserves_only', { 
+              pool: poolAddr.slice(0,8)+'…', 
+              strategy: 'option1_no_bin_arrays',
+              cat: 'pools' 
+            });
             const pk = new web3.PublicKey(poolAddr);
             const program = ensureMeteoraProgram();
             if (!program) {
