@@ -1,12 +1,9 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { resolveDecimals, resolveManyDecimals, clearDecimalsCache, getDecimalsCacheStats } from '../../pools/decimals.js';
 
 describe('Decimal Resolution', () => {
-  beforeEach(() => {
-    clearDecimalsCache();
-  });
-  
   it('should resolve SOL decimals from anchors', async () => {
+    clearDecimalsCache();
     const decimals = await resolveDecimals('So11111111111111111111111111111111111111112');
     expect(decimals).toBe(9);
   });

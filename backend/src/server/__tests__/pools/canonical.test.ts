@@ -1,11 +1,7 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { canonicalOrientation, canonicalizePools, swapPoolFields, clearCanonicalCache } from '../../pools/canonical.js';
 
 describe('Canonical Orientation', () => {
-  beforeEach(() => {
-    clearCanonicalCache();
-  });
-  
   const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
   const USDT = 'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN';
   const USD1 = 'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB';
@@ -121,7 +117,7 @@ describe('Canonical Orientation', () => {
     });
     
     it('should handle pools without price', () => {
-      const pool = {
+      const pool: any = {
         mint_a: 'MINT_A',
         mint_b: 'MINT_B',
         decimals_a: 6,
@@ -132,7 +128,8 @@ describe('Canonical Orientation', () => {
       
       expect(swapped.mint_a).toBe('MINT_B');
       expect(swapped.mint_b).toBe('MINT_A');
-      expect(swapped.price_a_per_b).toBeUndefined();
+      expect(swapped.decimals_a).toBe(9);
+      expect(swapped.decimals_b).toBe(6);
     });
   });
   

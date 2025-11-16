@@ -122,6 +122,14 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
   if (Array.isArray(raw?.data)) arrCandidates.push(raw.data);
   const arr: any[] = arrCandidates.find(a => Array.isArray(a) && a.length) || (Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : []));
 
+  const toMint = (v: any): string => {
+    if (!v) return '';
+    if (typeof v === 'string') return v;
+    if (v?.mint) return String(v.mint);
+    if (v?.address) return String(v.address);
+    return '';
+  };
+
   // Extract all unique mints for batch decimal resolution
   const allMints = new Set<string>();
   for (const it of arr) {
@@ -135,14 +143,6 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
   
   // Batch resolve decimals using centralized resolver
   const decimalsMap = await resolveManyDecimals(Array.from(allMints), { logger });
-
-  const toMint = (v: any): string => {
-    if (!v) return '';
-    if (typeof v === 'string') return v;
-    if (v?.mint) return String(v.mint);
-    if (v?.address) return String(v.address);
-    return '';
-  };
   const toDec = (v: any): number | undefined => {
     const n = Number(v);
     return Number.isFinite(n) ? n : undefined;
@@ -1330,7 +1330,7 @@ export async function fetchMeteoraBalancedAll(): Promise<PoolsPayload> {
   // IMPORTANT: Do NOT merge - v1 and v2 are different pool types (different programs)
   // Keep them separate since they have distinct DEX labels and require different swap logic
   const combinedAmm = [...normV2.amm, ...normV1.amm];
-  const ammCanon = canonicalizePairs(combinedAmm);
+  const ammCanon = canonicalizePools(combinedAmm);
   
   try {
     logger.info('meteora.balanced.all.normalized', {

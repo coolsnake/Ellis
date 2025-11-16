@@ -669,6 +669,13 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
     ? raw.data.data
     : (Array.isArray(raw?.data) ? raw.data : (Array.isArray(raw) ? raw : []));
   
+  const toMint = (v: any): string => {
+    if (!v) return '';
+    if (typeof v === 'string') return v;
+    if ((v as any)?.address) return String((v as any).address);
+    return '';
+  };
+
   // Extract all unique mints for batch decimal resolution
   const allMints = new Set<string>();
   for (const it of arr) {
@@ -681,13 +688,6 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
   
   // Batch resolve decimals using centralized resolver
   const decimalsMap = await resolveManyDecimals(Array.from(allMints), { logger });
-
-  const toMint = (v: any): string => {
-    if (!v) return '';
-    if (typeof v === 'string') return v;
-    if ((v as any)?.address) return String((v as any).address);
-    return '';
-  };
   const toFeeBps = (v: any): number => {
     const n = Number(v);
     if (!Number.isFinite(n)) return 30;
