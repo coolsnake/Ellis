@@ -6,6 +6,7 @@ import { emit } from './realtime.js';
 import { pushArbGraphSnapshot, pushArbGraphDiff } from './graphPushOrchestrator.js';
 import { shouldPushGraphUpdate, logPushDecision } from './graph.push.coordinator.js';
 import { computePriceForward, computePriceReverse } from './graph.pricing.js';
+import { calculateMeteoraPrice } from './pools/meteoraPrice.js';
 import { CONFIG } from '../utils/config.js';
 import { getRaydiumPoolsNormalized, getOrcaPoolsCached, enablePoolWebsocketRefreshes, peekMeteoraPools, getMeteoraPoolsCached, peekMeteoraBalancedPools } from './pools.js';
 import { loadTokenMap } from '../utils/tokens.js';
@@ -1618,43 +1619,13 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const wholeB = amtB / Math.pow(10, decB);
           usd = tvlUsd(p.mint_a, p.mint_b, wholeA, wholeB);
         }
+        // CRITICAL: Store original pool price BEFORE any processing for reverse calculation
+        const originalPoolPrice = (p as any).price_a_per_b;
+        
         // Calibrate price; for DLMM we only have price_a_per_b, no sqrt
-        let priceMet: number | undefined = calibratePrice(p.mint_a, p.mint_b, (p as any).price_a_per_b);
+        let priceMet: number | undefined = calibratePrice(p.mint_a, p.mint_b, originalPoolPrice);
         // No CLMM rescale here; rely on normalizer decode units
-        // Orient using combined USD (direct or implied via edges); allow stable=1 fallback; else triangulate
-        try {
-          const directA = getPriceByMintVar(p.mint_a)?.usdc ?? null;
-          const directB = getPriceByMintVar(p.mint_b)?.usdc ?? null;
-          let pa = (typeof directA === 'number' && directA > 0) ? directA : undefined;
-          let pb = (typeof directB === 'number' && directB > 0) ? directB : undefined;
-          if (!pa) { const imp = impliedUsdViaEdges(p.mint_a); if (typeof imp.usd === 'number' && imp.usd > 0) { pa = imp.usd; try { logger.debug('graph.implied.usd', { mint: p.mint_a, implied: imp.usd, via: imp.via, weight: imp.weight }); } catch {} } }
-          if (!pb) { const imp = impliedUsdViaEdges(p.mint_b); if (typeof imp.usd === 'number' && imp.usd > 0) { pb = imp.usd; try { logger.debug('graph.implied.usd', { mint: p.mint_b, implied: imp.usd, via: imp.via, weight: imp.weight }); } catch {} } }
-          // Prefer a USD reference whenever we can. If missing, use stable=1 fallback via priceFromUsd.
-          let ref: number | undefined = undefined;
-          if (pa && pb) ref = (pb as number) / (pa as number);
-          if (priceMet && ref && ref > 0) {
-            const inv = 1 / (priceMet as number);
-            const dev = Math.max((priceMet as number) / ref, ref / (priceMet as number));
-            const devI = Math.max(inv / ref, ref / inv);
-            let out = (devI + 1e-12 < dev) ? inv : (priceMet as number);
-            priceMet = out;
-          } else {
-            // No reliable USD reference: triangulate using pivot edges (SOL/USDC/WBTC) if available
-            try {
-              const tri = triangulateAPerB(p.mint_a, p.mint_b);
-              if (typeof tri === 'number' && tri > 0) {
-                if (priceMet && priceMet > 0) {
-                  const dev = Math.max(priceMet / tri, tri / priceMet);
-                  const inv = 1 / priceMet;
-                  const devI = Math.max(inv / tri, tri / inv);
-                  if (devI + 1e-12 < dev) priceMet = inv;
-                } else {
-                  priceMet = tri;
-                }
-              }
-            } catch {}
-          }
-        } catch {}
+        // REMOVED: Orientation checks - prices should already be canonicalized
         // Rescale Meteora CLMM to global decimals prior to clamp/edge emission
         try {
           const ga = Number(decimalsByMint[p.mint_a] ?? (p as any)?.decimals_a);
@@ -1669,36 +1640,75 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const liqParam = (p as any)?.liquidity_display ?? (usd && usd > 0 ? usd : (p as any)?.pool_liquidity_raw);
         // Do not substitute with USD fallback; require a pool-derived price
         let chosenMet: number | undefined = (priceMet && priceMet > 0) ? priceMet : undefined;
-        // Orientation guard for Meteora: ensure USD-oriented before emission
-        try {
-          const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
-          const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
-          if (pa && pb && chosenMet && (chosenMet as number) > 0) {
-            const ref = (pb as number) / (pa as number);
-            const inv = 1 / (chosenMet as number);
-            const dev  = Math.max((chosenMet as number) / ref,  ref / (chosenMet as number));
-            const devI = Math.max(inv / ref, ref / inv);
-            if (devI + 1e-12 < dev) chosenMet = inv;
-          }
-        } catch {}
         if (!(chosenMet && chosenMet > 0)) { try { logger.debug('graph.skip.edge.no_price', { dex: 'Meteora', kind: 'clmm', pool_id: pid, mint_a: p.mint_a, mint_b: p.mint_b, reason: 'no_pool_price' }); } catch {}; continue; }
         let fwdMet = clampPrice(chosenMet);
-        // Calculate reverse with proper decimal rescaling
+        
+        // Calculate reverse edge price
+        // CRITICAL: For Meteora, we need to recalculate using the Meteora formula with swapped mints
+        // OR use computePriceReverse with the original pool price (before rescaling)
+        // The issue is that originalPoolPrice has decimal scaling baked in, so we need to account for that
         const decA_met = Number((p as any)?.decimals_a ?? decimalsByMint[p.mint_a] ?? NaN);
         const decB_met = Number((p as any)?.decimals_b ?? decimalsByMint[p.mint_b] ?? NaN);
         const ga_met = Number(isFinite(Number(decimalsByMint[p.mint_a])) ? decimalsByMint[p.mint_a] : decA_met);
         const gb_met = Number(isFinite(Number(decimalsByMint[p.mint_b])) ? decimalsByMint[p.mint_b] : decB_met);
-        let revMet = computePriceReverse(
-          p.mint_a,
-          p.mint_b,
-          fwdMet,
-          chosenMet && chosenMet > 0 ? chosenMet : undefined,
-          decA_met,
-          decB_met,
-          ga_met,
-          gb_met,
-          (m) => { try { return getPriceByMintVar(m)?.usdc ?? undefined; } catch { return undefined; } },
-        );
+        
+        let revMet: number | undefined = undefined;
+        
+        // Try to recalculate using Meteora formula if we have activeId and binStep
+        const activeId = Number((p as any)?.active_id);
+        const binStep = Number((p as any)?.bin_step ?? (p as any)?.tick_spacing);
+        const tokenXMint = String((p as any)?.mint_x || (p as any)?.tokenXMint || '');
+        const tokenYMint = String((p as any)?.mint_y || (p as any)?.tokenYMint || '');
+        
+        if (Number.isFinite(activeId) && Number.isFinite(binStep) && tokenXMint && tokenYMint && Number.isFinite(decA_met) && Number.isFinite(decB_met)) {
+          try {
+            // Calculate reverse price using Meteora formula with swapped mints
+            // This recalculates from scratch, ensuring correct decimal handling
+            const revPriceRaw = calculateMeteoraPrice(
+              activeId,
+              binStep,
+              tokenXMint,
+              tokenYMint,
+              p.mint_b, // Swapped: B is now source (A in the function)
+              p.mint_a, // Swapped: A is now target (B in the function)
+              decB_met, // Swapped decimals
+              decA_met, // Swapped decimals
+            );
+            
+            if (revPriceRaw && revPriceRaw > 0 && Number.isFinite(revPriceRaw)) {
+              // Apply magnitude calibration and decimal rescaling
+              revMet = computePriceForward(
+                p.mint_b, // Swapped: B is now source
+                p.mint_a, // Swapped: A is now target
+                revPriceRaw,
+                decB_met, // Swapped decimals
+                decA_met, // Swapped decimals
+                gb_met, // Swapped global decimals
+                ga_met, // Swapped global decimals
+                (m) => { try { return getPriceByMintVar(m)?.usdc ?? undefined; } catch { return undefined; } },
+                undefined,
+              );
+            }
+          } catch (err) {
+            // Fall through to computePriceReverse fallback
+            try { logger.debug('graph.meteora.reverse.recalc.failed', { pool: pid, error: String(err) }); } catch {}
+          }
+        }
+        
+        // Fallback: use computePriceReverse with original pool price
+        if (!revMet || revMet <= 0) {
+          revMet = computePriceReverse(
+            p.mint_a,
+            p.mint_b,
+            fwdMet,
+            originalPoolPrice && originalPoolPrice > 0 ? originalPoolPrice : undefined,
+            decA_met,
+            decB_met,
+            ga_met,
+            gb_met,
+            (m) => { try { return getPriceByMintVar(m)?.usdc ?? undefined; } catch { return undefined; } },
+          );
+        }
         try {
           if (fwdMet && revMet) {
             const prod = fwdMet * revMet;

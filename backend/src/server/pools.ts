@@ -2386,15 +2386,47 @@ export function startRaydiumRefreshLoop(): void {
                         const rA = Number((state.baseReserve || state.reserveA || state.vaultA || 0).toString ? (state.baseReserve.toString()) : (state.baseReserve || 0));
                         const rB = Number((state.quoteReserve || state.reserveB || state.vaultB || 0).toString ? (state.quoteReserve.toString()) : (state.quoteReserve || 0));
                         let price_a_per_b: number | undefined;
+                        let decA: number | undefined;
+                        let decB: number | undefined;
                         try {
-                          let decA: number | undefined; let decB: number | undefined;
-                          try {
-                            const tok = await import('../utils/tokens.js');
-                            const a = await (tok as any).resolveMint(mintA);
-                            const b = await (tok as any).resolveMint(mintB);
-                            decA = Number(a?.decimals);
-                            decB = Number(b?.decimals);
-                          } catch {}
+                          // Get decimals from pool cache (fast memory lookup)
+                          const cachedRayPools = raydiumCache.data || { amm: [], clmm: [] };
+                          const existing = cachedRayPools.amm.find(p => p.id === pk58);
+                          decA = existing?.decimals_a;
+                          decB = existing?.decimals_b;
+                          
+                          // Fallback to execution cache if not in pool cache
+                          if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
+                            try {
+                              const { executionCache } = await import('../execution/cache.js');
+                              const cached = executionCache.getStatic(pk58);
+                              if (!decA && cached?.decimals_a) decA = cached.decimals_a;
+                              if (!decB && cached?.decimals_b) decB = cached.decimals_b;
+                            } catch {}
+                          }
+                          
+                          // Only as last resort, resolve via centralized resolver (rare for known pools)
+                          if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
+                            try {
+                              const { resolveDecimals } = await import('./pools/decimals.js');
+                              if (!Number.isFinite(decA) && mintA) {
+                                decA = await resolveDecimals(mintA);
+                              }
+                              if (!Number.isFinite(decB) && mintB) {
+                                decB = await resolveDecimals(mintB);
+                              }
+                            } catch {
+                              if (!Number.isFinite(decA)) decA = 9;
+                              if (!Number.isFinite(decB)) decB = 6;
+                            }
+                          } else {
+                            decA = Number(decA);
+                            decB = Number(decB);
+                          }
+                          
+                          if (!Number.isFinite(decA)) decA = undefined;
+                          if (!Number.isFinite(decB)) decB = undefined;
+                          
                           const wholeA = Number.isFinite(decA as any) ? (rA / Math.pow(10, decA as number)) : rA;
                           const wholeB = Number.isFinite(decB as any) ? (rB / Math.pow(10, decB as number)) : rB;
                           if (wholeA > 0 && wholeB > 0) price_a_per_b = wholeA / wholeB;
@@ -2417,7 +2449,7 @@ export function startRaydiumRefreshLoop(): void {
                           throw new Error('vault account cannot be decoded as pool');
                         }
                         
-                        const item: AmmPool = { id: pk58, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps: Number((state as any).tradeFeeRate || (state as any).feeRate || 0), price_a_per_b, liquidity_base: liqBase, updated_ms: Date.now(), pool_kind: 'amm', liquidity_display: liqBase } as any;
+                        const item: AmmPool = { id: pk58, dex: 'Raydium', mint_a: mintA, mint_b: mintB, fee_bps: Number((state as any).tradeFeeRate || (state as any).feeRate || 0), price_a_per_b, liquidity_base: liqBase, updated_ms: Date.now(), pool_kind: 'amm', liquidity_display: liqBase, decimals_a: decA, decimals_b: decB } as any;
                         
                         // Validate decoded pool before applying
                         const validation = validateDecodedPool('raydium', item, pk58);
