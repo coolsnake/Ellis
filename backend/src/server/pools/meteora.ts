@@ -249,10 +249,15 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       if (Number.isFinite(activeId) && Number.isFinite(binStep) && Number.isFinite(decA) && Number.isFinite(decB)) {
         const f = Math.pow(1.0001, binStep);
         if (f > 0) {
-          // Two candidates depending on vendor orientation; pick by USD ref later
-          const bPerA = Math.pow(f, activeId) * Math.pow(10, (decA as number) - (decB as number));
-          const aPerB1 = bPerA > 0 ? (1 / bPerA) : 0; // A per 1 B via reciprocal
-          const aPerB2 = bPerA; // treat directly as A per 1 B (alt)
+          // Meteora DLMM price formula: price = (1 + binStep/10000)^activeId
+          // This gives the price in NATIVE token units (Y per X)
+          // CRITICAL: DO NOT apply decimal adjustment here - it will be wrong after canonicalization!
+          // The decimals will be handled by the graph rescaling logic
+          const priceYperX = Math.pow(f, activeId);
+          
+          // Since we don't know if API uses X->Y or Y->X orientation, try both
+          const aPerB1 = priceYperX; // Assume priceYperX is A per B
+          const aPerB2 = priceYperX > 0 ? (1 / priceYperX) : 0; // Or reciprocal
           const cand: number[] = [];
           if (aPerB1 > 0 && Number.isFinite(aPerB1)) cand.push(aPerB1);
           if (aPerB2 > 0 && Number.isFinite(aPerB2)) cand.push(aPerB2);
