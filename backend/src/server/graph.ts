@@ -1687,6 +1687,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
                 ga_met, // Swapped global decimals
                 (m) => { try { return getPriceByMintVar(m)?.usdc ?? undefined; } catch { return undefined; } },
                 undefined,
+                true, // CRITICAL FIX: Mark as reverse edge to prevent magnitude explosions
               );
             }
           } catch (err) {

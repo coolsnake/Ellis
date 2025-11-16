@@ -44,6 +44,7 @@ function rescaleByDecimals(px: number | undefined, poolDecA?: number, poolDecB?:
  * @param globalDecB - Global decimals for B (for rescaling)
  * @param getUsd - Optional USD price lookup for magnitude calibration
  * @param getEdgeRate - Optional edge rate lookup (unused, kept for compatibility)
+ * @param isReverseEdge - If true, applies stricter magnitude calibration bounds
  */
 export function computePriceForward(
   mintA: string,
@@ -55,6 +56,7 @@ export function computePriceForward(
   globalDecB?: number,
   getUsd?: GetUsd,
   getEdgeRate?: GetEdgeRate,
+  isReverseEdge?: boolean,
 ): number | undefined {
   const raw = Number(rawPrice);
   let price: number | undefined = (Number.isFinite(raw) && raw > 0) ? raw : undefined;
@@ -72,7 +74,11 @@ export function computePriceForward(
         // Try power-of-10 adjustments (magnitude only, no orientation flip)
         let best = price;
         let bestDev = rawDev;
-        const MAX_APPLIED_DEV = 100;
+        
+        // CRITICAL FIX: Use much stricter bounds for reverse edges to prevent magnitude explosions
+        // Reverse edges are derived from forward edges that have already been calibrated,
+        // so they should only need minor adjustments at most
+        const MAX_APPLIED_DEV = isReverseEdge ? 3 : 100;
         
         for (let k = -8; k <= 8; k++) {
           const cand = price * Math.pow(10, k);
@@ -146,6 +152,7 @@ export function computePriceReverse(
     globalDecA, // Swapped global decimals
     getUsd,
     undefined,
+    true, // CRITICAL: Mark as reverse edge for stricter magnitude calibration
   );
 }
 
