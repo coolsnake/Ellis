@@ -289,10 +289,44 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
           
           if (priceAperB_native && priceAperB_native > 0 && Number.isFinite(priceAperB_native)) {
             // Convert from native units to whole token units
-            // priceAperB_whole = priceAperB_native * 10^(decA - decB)
-            // This gives: (A native units per B native units) * (10^decA / 10^decB) = A whole units per B whole units
+            // CRITICAL FIX: The decimal conversion should DIVIDE by the scaling factor
+            // 
+            // Native price: A_native per B_native (both in smallest units)
+            // Whole price: A_whole per B_whole (both in whole tokens)
+            // 
+            // A_whole = A_native / 10^decA
+            // B_whole = B_native / 10^decB
+            // 
+            // Therefore:
+            // price_whole = A_whole / B_whole 
+            //             = (A_native / 10^decA) / (B_native / 10^decB)
+            //             = (A_native / B_native) * (10^decB / 10^decA)
+            //             = price_native * 10^(decB - decA)
+            //             = price_native / 10^(decA - decB)
+            //
             const decimalScale = Math.pow(10, decA - decB);
-            const priceAperB_whole = priceAperB_native * decimalScale;
+            const priceAperB_whole = priceAperB_native / decimalScale;  // FIXED: Divide instead of multiply
+            
+            // DIAGNOSTIC: Log when decimal scaling has large effect
+            if (Math.abs(decA - decB) >= 3 && (priceAperB_whole > 100000 || priceAperB_whole < 0.00001)) {
+              try {
+                logger.warn('meteora.dlmm.price_extreme', {
+                  pool_id: id.slice(0, 12),
+                  mint_a: mint_a.slice(0, 8),
+                  mint_b: mint_b.slice(0, 8),
+                  activeId,
+                  binStep,
+                  decA,
+                  decB,
+                  decimalDiff: decA - decB,
+                  decimalScale,
+                  priceAperB_native,
+                  priceAperB_whole,
+                  old_formula_would_give: priceAperB_native * decimalScale,
+                  cat: 'meteora.diagnostic'
+                });
+              } catch {}
+            }
             
             if (priceAperB_whole > 0 && Number.isFinite(priceAperB_whole)) {
               price_a_per_b = priceAperB_whole;

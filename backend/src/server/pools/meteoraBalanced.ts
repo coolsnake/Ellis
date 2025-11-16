@@ -239,6 +239,30 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
       let price_a_per_b = 0;
       if (Number.isFinite(wholeA) && Number.isFinite(wholeB) && (wholeB as number) > 0) {
         price_a_per_b = (wholeA as number) / (wholeB as number);
+        
+        // DIAGNOSTIC: Log price calculation details for problematic prices
+        if (price_a_per_b > 100000 || price_a_per_b < 0.00001) {
+          try {
+            const amtAraw = Number(it?.reserveA ?? it?.amountA ?? it?.tokenAmountA ?? 0);
+            const amtBraw = Number(it?.reserveB ?? it?.amountB ?? it?.tokenAmountB ?? 0);
+            logger.info('meteora.balanced.price_extreme', {
+              pool_id: id.slice(0, 12),
+              mint_a: mint_a.slice(0, 8),
+              mint_b: mint_b.slice(0, 8),
+              amtAraw,
+              amtBraw,
+              decA,
+              decB,
+              wholeA,
+              wholeB,
+              price_a_per_b,
+              has_vault_whole: it?.vault_a_whole !== undefined,
+              source_a: it?.vault_a_whole !== undefined ? 'vault_whole' : (it?.reserveA ? 'reserveA' : (it?.amountA ? 'amountA' : 'other')),
+              source_b: it?.vault_b_whole !== undefined ? 'vault_whole' : (it?.reserveB ? 'reserveB' : (it?.amountB ? 'amountB' : 'other')),
+              cat: 'meteora.diagnostic'
+            });
+          } catch {}
+        }
       } else {
         const p = Number(it?.price ?? it?.price_a_per_b ?? it?.priceAperB);
         if (Number.isFinite(p) && p > 0) price_a_per_b = p;
