@@ -809,100 +809,80 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
           } catch {}
         }
       } catch {}
-      // Choose best price from sqrt-derived, upstream, and reserves-derived candidates
-      let px = 0;
-      try {
-        const safeRatio = (num: any, den: any): number | undefined => {
-          const a = Number(num);
-          const b = Number(den);
-          if (!Number.isFinite(a) || !Number.isFinite(b) || !(b > 0)) return undefined;
-          const r = a / b;
-          return Number.isFinite(r) && r > 0 ? r : undefined;
-        };
-        const looksLikeAtomic = (value: any): boolean => {
-          if (value == null) return false;
-          if (typeof value === 'number') return Number.isSafeInteger(value);
-          if (typeof value === 'string') {
-            const trimmed = value.trim();
-            if (!trimmed) return false;
-            if (/[eE\.]/.test(trimmed)) return false;
-            return /^[-+]?\d+$/.test(trimmed);
-          }
-          return false;
-        };
-        const candidates: number[] = [];
-        const pushCandidate = (val: number | undefined) => {
-          if (!Number.isFinite(val) || !(val as number > 0)) return;
-          const v = val as number;
-          const dup = candidates.find((existing) => Math.abs(existing - v) <= Math.abs(existing) * 1e-12);
-          if (dup == null) candidates.push(v);
-        };
-
-        // Highest-confidence candidates first
-        pushCandidate(price_from_sqrt > 0 ? price_from_sqrt : undefined);
-
-        const upstreamPrice = Number(price);
-        if (upstreamPrice > 0) {
-          pushCandidate(1 / upstreamPrice);
-        }
-
-        const hasDecs = Number.isFinite(decA) && Number.isFinite(decB);
-        if (hasDecs && looksLikeAtomic(mintAmountRawA) && looksLikeAtomic(mintAmountRawB)) {
-          const scaledA = mintAmountA / Math.pow(10, decA as number);
-          const scaledB = mintAmountB / Math.pow(10, decB as number);
-          pushCandidate(safeRatio(scaledA, scaledB));
-        }
-
-        pushCandidate(safeRatio(amount_a_whole, amount_b_whole));
-
-        // Use USD reference to select best candidate when multiple available
-        const { getPriceByMint } = await import('../priceStore.js');
-        let pa = getPriceByMint(mintA)?.usdc ?? null;
-        let pb = getPriceByMint(mintB)?.usdc ?? null;
-        try {
-          const STABLES = new Set<string>([
-            ...((((CONFIG as any)?.system as any)?.stableMints || []) as string[]),
-            'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-            'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN',
-          ]);
-          if (!(typeof pa === 'number' && pa > 0) && STABLES.has(mintA)) pa = 1;
-          if (!(typeof pb === 'number' && pb > 0) && STABLES.has(mintB)) pb = 1;
-        } catch {}
-        const directRef = (pa && pb && (pa as number) > 0 && (pb as number) > 0) ? ((pb as number) / (pa as number)) : undefined;
-        if (directRef && candidates.length > 1) {
-          let best = candidates[0];
-          let bestDev = Math.max(best / (directRef as number), (directRef as number) / best);
-          for (let i = 1; i < candidates.length; i++) {
-            const v = candidates[i];
-            const dev = Math.max(v / (directRef as number), (directRef as number) / v);
-            if (dev + 1e-12 < bestDev) { bestDev = dev; best = v; }
-          }
-          px = best;
-        } else {
-          px = candidates.length > 0 ? candidates[0] : (upstreamPrice > 0 ? (1 / upstreamPrice) : 0);
-        }
-      } catch {
-        px = price_from_sqrt > 0 ? price_from_sqrt : (Number(price) > 0 ? (1 / Number(price)) : 0);
+      // Choose best raw price candidate (highest confidence first)
+      let rawPrice = 0;
+      if (price_from_sqrt > 0) {
+        rawPrice = price_from_sqrt;
+      } else if (amount_a_whole && amount_b_whole && amount_b_whole > 0) {
+        rawPrice = amount_a_whole / amount_b_whole;
+      } else if (Number(price) > 0) {
+        rawPrice = 1 / Number(price);
       }
-      // Magnitude-only calibration to align with USD reference without flipping orientation
-      try {
-        const { getPriceByMint } = await import('../priceStore.js');
-        const getUsd = (m: string) => {
+      
+      // Process through centralized pipeline (canonicalization + calibration + rescaling)
+      let px = 0;
+      let finalMintA = mintA;
+      let finalMintB = mintB;
+      let finalDecA = decA;
+      let finalDecB = decB;
+      
+      if (rawPrice > 0) {
+        try {
+          const { processPriceThroughPipeline } = await import('./pricePipeline.js');
+          const { getPriceByMint } = await import('../priceStore.js');
+          
+          const processed = processPriceThroughPipeline({
+            mintA,
+            mintB,
+            rawPrice,
+            decimalsA: decA as number,
+            decimalsB: decB as number,
+            poolId: id,
+            dex: 'Raydium',
+            poolType: 'clmm'
+          }, {
+            getUsd: (m) => {
+              try {
+                const v = getPriceByMint(m)?.usdc ?? undefined;
+                if (typeof v === 'number' && v > 0) return v;
+                const STABLES = new Set<string>([
+                  ...((((CONFIG as any)?.system as any)?.stableMints || []) as string[]),
+                  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+                  'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN',
+                ]);
+                return STABLES.has(m) ? 1 : undefined;
+              } catch {
+                return undefined;
+              }
+            },
+            diagnostics: false
+          });
+          
+          if (processed) {
+            px = processed.priceForward;
+            finalMintA = processed.mintA;
+            finalMintB = processed.mintB;
+            finalDecA = processed.decimalsA;
+            finalDecB = processed.decimalsB;
+            
+            // If mints were swapped, update all mint-dependent fields
+            if (processed.wasSwapped) {
+              [amount_a_whole, amount_b_whole] = [amount_b_whole, amount_a_whole];
+            }
+          } else {
+            px = rawPrice;
+          }
+        } catch (err) {
+          px = rawPrice;
           try {
-            const v = getPriceByMint(m)?.usdc ?? undefined;
-            if (typeof v === 'number' && v > 0) return v;
-            const STABLES = new Set<string>([
-              ...((((CONFIG as any)?.system as any)?.stableMints || []) as string[]),
-              'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-              'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN',
-            ]);
-            return STABLES.has(m) ? 1 : undefined;
-          } catch { return undefined; }
-        };
-        const { calibrateMagnitude } = await import('../priceCalib.js');
-        const calibrated = calibrateMagnitude(mintA, mintB, px, getUsd);
-        if (calibrated && calibrated > 0) px = calibrated;
-      } catch {}
+            logger.warn('raydium.clmm.pipeline.failed', {
+              pool: id,
+              error: String(err),
+              cat: 'raydium'
+            });
+          } catch {}
+        }
+      }
       let ok = true;
       try {
         const sanityCfg = (CONFIG as any)?.sanity || {};
@@ -1003,8 +983,8 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         clmm.push({
           id,
           dex: 'Raydium',
-          mint_a: mintA,
-          mint_b: mintB,
+          mint_a: finalMintA,
+          mint_b: finalMintB,
           fee_bps,
           sqrt_price_x64: Number.isFinite(sqrt) ? sqrt : 0,
           sqrt_price_x64_raw: sqrtBig ? sqrtBig.toString() : undefined,
@@ -1016,8 +996,8 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
           price_a_per_b_num: priceRatio ? priceRatio.numerator.toString() : undefined,
           price_a_per_b_den: priceRatio ? priceRatio.denominator.toString() : undefined,
           price_a_per_b_exact: ratioToDecimalString(priceRatio) ?? undefined,
-          decimals_a: Number.isFinite(decA) ? decA : undefined,
-          decimals_b: Number.isFinite(decB) ? decB : undefined,
+          decimals_a: Number.isFinite(finalDecA) ? finalDecA : undefined,
+          decimals_b: Number.isFinite(finalDecB) ? finalDecB : undefined,
           pool_kind: 'clmm',
           tvl_usd,
           amount_a_whole,

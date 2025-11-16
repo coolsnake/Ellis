@@ -310,67 +310,74 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
         }
       }
     } catch {}
-    // Prefer candidate closer to USD ref (or reserve-derived ratio) between pool-derived orientations only
-    try {
-      const { getPriceByMint } = await import('../../server/priceStore.js');
-      const pa = getPriceByMint(mint_a)?.usdc ?? null;
-      const pb = getPriceByMint(mint_b)?.usdc ?? null;
-      const ref = (pa && pb && (pa as number) > 0 && (pb as number) > 0) ? ((pb as number) / (pa as number)) : undefined;
-      const cand: number[] = [];
-      if (Number.isFinite(price_a_per_b) && price_a_per_b > 0) cand.push(price_a_per_b);
-      // If we computed two possible A/B candidates above, include reciprocal too
-      try { if (Number.isFinite(price_a_per_b) && price_a_per_b > 0) { const inv = 1 / (price_a_per_b as number); if (inv > 0 && Number.isFinite(inv)) cand.push(inv); } } catch {}
-      // Include reserves-derived magnitude when available
-      const derivedCandidate = Number.isFinite(derivedWhole as any) && (derivedWhole as number) > 0 ? (derivedWhole as number) : undefined;
-      if (derivedCandidate) cand.push(derivedCandidate);
-      const pickClosest = (target: number | undefined): number | undefined => {
-        if (!target || !(target > 0) || cand.length === 0) return undefined;
-        let best = cand[0];
-        let bestDev = Math.max(best / target, target / best);
-        for (let i = 1; i < cand.length; i++) {
-          const v = cand[i];
-          if (!(v > 0)) continue;
-          const dev = Math.max(v / target, target / v);
-          if (dev + 1e-12 < bestDev) { bestDev = dev; best = v; }
+    // Process through centralized pipeline (canonicalization + calibration + rescaling)
+    let finalPrice = 0;
+    let finalMintA = mint_a;
+    let finalMintB = mint_b;
+    let finalDecA = decA;
+    let finalDecB = decB;
+    let finalAmountA = amount_a_norm;
+    let finalAmountB = amount_b_norm;
+    
+    // Choose best raw price candidate
+    let rawPrice = price_a_per_b;
+    if (!(rawPrice > 0) && derivedWhole && derivedWhole > 0) {
+      rawPrice = derivedWhole;
+    }
+    
+    if (rawPrice > 0) {
+      try {
+        const { processPriceThroughPipeline } = await import('./pricePipeline.js');
+        const { getPriceByMint } = await import('../../server/priceStore.js');
+        
+        const processed = processPriceThroughPipeline({
+          mintA: mint_a,
+          mintB: mint_b,
+          rawPrice,
+          decimalsA: decA,
+          decimalsB: decB,
+          poolId: id,
+          dex: 'Meteora',
+          poolType: 'clmm'
+        }, {
+          getUsd: (m) => {
+            try {
+              return getPriceByMint(m)?.usdc;
+            } catch {
+              return undefined;
+            }
+          },
+          diagnostics: false
+        });
+        
+        if (processed) {
+          finalPrice = processed.priceForward;
+          finalMintA = processed.mintA;
+          finalMintB = processed.mintB;
+          finalDecA = processed.decimalsA;
+          finalDecB = processed.decimalsB;
+          
+          // If mints were swapped, update all mint-dependent fields
+          if (processed.wasSwapped) {
+            [finalAmountA, finalAmountB] = [finalAmountB, finalAmountA];
+          }
+        } else {
+          finalPrice = rawPrice;
         }
-        return best;
-      };
-      let chosen: number | undefined;
-      if (ref && cand.length > 1) {
-        chosen = pickClosest(ref);
-      } else if (derivedCandidate && cand.length > 1) {
-        chosen = pickClosest(derivedCandidate);
+      } catch (err) {
+        finalPrice = rawPrice;
+        try {
+          logger.warn('meteora.pipeline.failed', {
+            pool: id,
+            error: String(err),
+            cat: 'meteora'
+          });
+        } catch {}
       }
-      if (chosen && Number.isFinite(chosen) && chosen > 0) {
-        price_a_per_b = chosen;
-      } else if (cand.length > 0 && (!Number.isFinite(price_a_per_b) || !(price_a_per_b > 0))) {
-        price_a_per_b = cand[0];
-      }
-    } catch {}
-    // Stable-stable guard: if active-bin implies exactly 1 and reserves give a different finite value, prefer reserves
-    try {
-      const STABLES = new Set<string>([
-        ...((((CONFIG as any)?.system as any)?.stableMints || []) as string[]),
-        'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-        'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN',
-      ]);
-      const aStable = STABLES.has(mint_a);
-      const bStable = STABLES.has(mint_b);
-      if (aStable && bStable) {
-        const px = Number(price_a_per_b);
-        if (usedBin && Number.isFinite(px) && Math.abs(px - 1) < 1e-12 && Number.isFinite(derivedWhole as any) && (derivedWhole as number) > 0 && Math.abs((derivedWhole as number) - 1) > 0) {
-          price_a_per_b = derivedWhole as number;
-        }
-      }
-    } catch {}
-    // Stable-aware orientation flip here is redundant with canonicalizePairs; avoid double flipping
-    try {
-      const { getPriceByMint } = await import('../../server/priceStore.js');
-      const getUsd = (m: string) => { try { return getPriceByMint(m)?.usdc ?? undefined; } catch { return undefined; } };
-      const { calibrateMagnitude } = await import('../../server/priceCalib.js');
-      const calibrated = calibrateMagnitude(mint_a, mint_b, price_a_per_b, getUsd);
-      if (calibrated && calibrated > 0) price_a_per_b = calibrated;
-    } catch {}
+    }
+    
+    // Update price_a_per_b for downstream code
+    price_a_per_b = finalPrice;
     let price_ok = true;
     try {
       const sanityCfg = (CONFIG as any)?.sanity || {};
@@ -379,13 +386,13 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
         const baseMaxDev = Number.isFinite(Number((sanityCfg as any).maxPriceDeviationClmm)) ? Number((sanityCfg as any).maxPriceDeviationClmm)
           : (Number.isFinite(Number(sanityCfg.maxPriceDeviation)) ? Number(sanityCfg.maxPriceDeviation) : 5);
         const { getPriceByMint } = await import('../../server/priceStore.js');
-        const pa = getPriceByMint(mint_a)?.usdc ?? null;
-        const pb = getPriceByMint(mint_b)?.usdc ?? null;
+        const pa = getPriceByMint(finalMintA)?.usdc ?? null;
+        const pb = getPriceByMint(finalMintB)?.usdc ?? null;
         const px = (price_a_per_b && price_a_per_b > 0) ? price_a_per_b : undefined;
         if (pa && pb && px && (px as number) > 0) {
           const SOL = 'So11111111111111111111111111111111111111112';
           const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-          const isAnchor = (mint_a === SOL && mint_b === USDC) || (mint_a === USDC && mint_b === SOL);
+          const isAnchor = (finalMintA === SOL && finalMintB === USDC) || (finalMintA === USDC && finalMintB === SOL);
           const maxDeviation = isAnchor ? Math.max(baseMaxDev, 100) : baseMaxDev;
           const ref = (pb as number) / (pa as number);
           const dev = Math.max((px as number) / ref, ref / (px as number));
@@ -434,8 +441,8 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     clmm.push({
       id,
       dex: 'Meteora',
-      mint_a,
-      mint_b,
+      mint_a: finalMintA,
+      mint_b: finalMintB,
       fee_bps,
       sqrt_price_x64: 0,
       liquidity: 0,
@@ -444,8 +451,8 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       price_a_per_b: (price_a_per_b && price_a_per_b > 0) ? price_a_per_b : undefined,
       amount_a,
       amount_b,
-      decimals_a: Number.isFinite(decA) ? decA : undefined,
-      decimals_b: Number.isFinite(decB) ? decB : undefined,
+      decimals_a: Number.isFinite(finalDecA) ? finalDecA : undefined,
+      decimals_b: Number.isFinite(finalDecB) ? finalDecB : undefined,
       account_a,
       account_b,
       bin_array_bitmap_extension,

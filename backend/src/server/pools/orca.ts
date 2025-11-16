@@ -434,65 +434,107 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
       
       let priceDerived = priceFromSqrt > 0 ? priceFromSqrt : incomingCanonical;
       
+      // Process through centralized pipeline (canonicalization + calibration + rescaling)
+      let finalPrice = 0;
+      let finalMintA = cA;
+      let finalMintB = cB;
+      let finalDecA = cDecA;
+      let finalDecB = cDecB;
+      let finalWholeA = Number.isFinite(cDecA) ? (cAmtA / Math.pow(10, cDecA as number)) : undefined;
+      let finalWholeB = Number.isFinite(cDecB) ? (cAmtB / Math.pow(10, cDecB as number)) : undefined;
+      
+      if (priceDerived > 0) {
+        try {
+          const { processPriceThroughPipeline } = await import('./pricePipeline.js');
+          const { getPriceByMint } = await import('../../server/priceStore.js');
+          
+          const processed = processPriceThroughPipeline({
+            mintA: cA,
+            mintB: cB,
+            rawPrice: priceDerived,
+            decimalsA: cDecA as number,
+            decimalsB: cDecB as number,
+            poolId: id,
+            dex: 'Orca',
+            poolType: 'clmm'
+          }, {
+            getUsd: (m) => {
+              try {
+                return getPriceByMint(m)?.usdc;
+              } catch {
+                return undefined;
+              }
+            },
+            diagnostics: false
+          });
+          
+          if (processed) {
+            finalPrice = processed.priceForward;
+            finalMintA = processed.mintA;
+            finalMintB = processed.mintB;
+            finalDecA = processed.decimalsA;
+            finalDecB = processed.decimalsB;
+            
+            // If mints were swapped, update all mint-dependent fields
+            if (processed.wasSwapped) {
+              [cAmtA, cAmtB] = [cAmtB, cAmtA];
+              finalWholeA = Number.isFinite(finalDecA) ? (cAmtA / Math.pow(10, finalDecA as number)) : undefined;
+              finalWholeB = Number.isFinite(finalDecB) ? (cAmtB / Math.pow(10, finalDecB as number)) : undefined;
+            }
+            
+            // DIAGNOSTIC: Log significant changes
+            const shouldLog = (id.includes('JCD6') || id.includes('HrLm') || id.includes('C1Mg'));
+            const changeFactor = Math.abs(finalPrice / priceDerived);
+            if (shouldLog || changeFactor > 10 || changeFactor < 0.1 || finalPrice > 10000 || finalPrice < 0.0001) {
+              try {
+                logger.info('orca.pipeline.applied', {
+                  id: id.slice(0, 8) + '...',
+                  mint_a: finalMintA?.slice(0, 8) + '...',
+                  mint_b: finalMintB?.slice(0, 8) + '...',
+                  before: priceDerived,
+                  after: finalPrice,
+                  changeFactor,
+                  wasSwapped: processed.wasSwapped,
+                  cat: 'orca'
+                });
+              } catch {}
+            }
+          } else {
+            finalPrice = priceDerived;
+          }
+        } catch (err) {
+          finalPrice = priceDerived;
+          try {
+            logger.warn('orca.pipeline.failed', {
+              pool: id,
+              error: String(err),
+              cat: 'orca'
+            });
+          } catch {}
+        }
+      }
+      
       // DIAGNOSTIC: Log when we have no price at all (will cause pool to be filtered out)
-      if (!(priceDerived > 0)) {
+      if (!(finalPrice > 0)) {
         try {
           logger.warn('orca.price.missing', {
             id,
-            mint_a: cA,
-            mint_b: cB,
+            mint_a: finalMintA,
+            mint_b: finalMintB,
             sqrt_price_x64,
-            decA: cDecA,
-            decB: cDecB,
-            decA_finite: Number.isFinite(cDecA),
-            decB_finite: Number.isFinite(cDecB),
+            decA: finalDecA,
+            decB: finalDecB,
             priceFromSqrt,
             incomingPrice,
-            amountA: cAmtA,
-            amountB: cAmtB,
             hint: 'Pool will be filtered out due to missing price',
             cat: 'orca'
           });
         } catch {}
       }
       
-      // Magnitude-only calibration (no flips)
-      try {
-        const { getPriceByMint } = await import('../../server/priceStore.js');
-        const getUsd = (m: string) => { try { return getPriceByMint(m)?.usdc ?? undefined; } catch { return undefined; } };
-        const { calibrateMagnitude } = await import('../../server/priceCalib.js');
-        const priceBefore = priceDerived;
-        const calibrated = calibrateMagnitude(cA, cB, priceDerived, getUsd);
-        
-        // DIAGNOSTIC: Log when calibration makes a significant change or when price is extreme
-        const shouldLog = (id.includes('JCD6') || id.includes('HrLm') || id.includes('C1Mg'));
-        if (calibrated && calibrated > 0) {
-          const changeFactor = Math.abs(calibrated / priceBefore);
-          if (shouldLog || changeFactor > 10 || changeFactor < 0.1 || calibrated > 10000 || calibrated < 0.0001) {
-            try {
-              const usdA = getUsd(cA);
-              const usdB = getUsd(cB);
-              const ref = (usdA && usdB && usdB > 0) ? (usdB / usdA) : undefined;
-              logger.info('orca.calibrateMagnitude.applied', {
-                id: id.slice(0, 8) + '...',
-                mint_a: cA?.slice(0, 8) + '...',
-                mint_b: cB?.slice(0, 8) + '...',
-                before: priceBefore,
-                after: calibrated,
-                changeFactor,
-                usdA,
-                usdB,
-                ref,
-                cat: 'orca'
-              });
-            } catch {}
-          }
-          priceDerived = calibrated;
-        }
-      } catch {}
-      // No USD-based orientation here; orientation handled centrally in graph
-      const wholeA = Number.isFinite(cDecA) ? (cAmtA / Math.pow(10, cDecA as number)) : undefined;
-      const wholeB = Number.isFinite(cDecB) ? (cAmtB / Math.pow(10, cDecB as number)) : undefined;
+      // Calculate TVL and liquidity metrics
+      const wholeA = finalWholeA;
+      const wholeB = finalWholeB;
       const tvlUsdcRaw = (it as any)?.tvlUsdc;
       const tvlUsdcNum = typeof tvlUsdcRaw === 'string' ? Number(tvlUsdcRaw) : (typeof tvlUsdcRaw === 'number' ? tvlUsdcRaw : 0);
       const tvl_usd = Number.isFinite(tvlUsdcNum) && tvlUsdcNum > 0 ? tvlUsdcNum : undefined;
@@ -507,11 +549,11 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
         if (apply !== false) {
           const maxDeviation = Number.isFinite(Number(sanityCfg.maxPriceDeviation)) ? Number(sanityCfg.maxPriceDeviation) : 50;
           const { getPriceByMint } = await import('../../server/priceStore.js');
-          const pa = getPriceByMint(cA)?.usdc ?? null;
-          const pb = getPriceByMint(cB)?.usdc ?? null;
-          if (pa && pb && priceDerived && (priceDerived as number) > 0) {
+          const pa = getPriceByMint(finalMintA)?.usdc ?? null;
+          const pb = getPriceByMint(finalMintB)?.usdc ?? null;
+          if (pa && pb && finalPrice && (finalPrice as number) > 0) {
             const ref = (pb as number) / (pa as number);
-            const dev = Math.max((priceDerived as number) / ref, ref / (priceDerived as number));
+            const dev = Math.max((finalPrice as number) / ref, ref / (finalPrice as number));
             if (dev > maxDeviation) { usdDevOkOrca = false; }
           }
         }
@@ -567,8 +609,8 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
         clmm.push({
           id,
           dex: 'Orca',
-          mint_a: cA,
-          mint_b: cB,
+          mint_a: finalMintA,
+          mint_b: finalMintB,
           fee_bps,
           sqrt_price_x64,
           sqrt_price_x64_raw: sqrtRaw ? sqrtRaw.toString() : undefined,
@@ -576,14 +618,14 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
           liquidity_raw: liquidityRaw ? liquidityRaw.toString() : undefined,
           tick_spacing,
           updated_ms: now,
-          price_a_per_b: priceDerived > 0 ? priceDerived : undefined,
+          price_a_per_b: finalPrice > 0 ? finalPrice : undefined,
           price_a_per_b_num: priceRatio ? priceRatio.numerator.toString() : undefined,
           price_a_per_b_den: priceRatio ? priceRatio.denominator.toString() : undefined,
           price_a_per_b_exact: ratioToDecimalString(priceRatio) ?? undefined,
           amount_a: cAmtA,
           amount_b: cAmtB,
-          decimals_a: Number.isFinite(cDecA) ? cDecA : undefined,
-          decimals_b: Number.isFinite(cDecB) ? cDecB : undefined,
+          decimals_a: Number.isFinite(finalDecA) ? finalDecA : undefined,
+          decimals_b: Number.isFinite(finalDecB) ? finalDecB : undefined,
           account_a,
           account_b,
           pool_kind: 'clmm',
@@ -595,7 +637,7 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
           token_vault_b,
         });
       } else {
-        try { logger.warn('orca.clmm drop by sanity', { id, mint_a: cA, mint_b: cB, price_a_per_b: priceDerived, cat: 'orca' }); } catch {}
+        try { logger.warn('orca.clmm drop by sanity', { id, mint_a: finalMintA, mint_b: finalMintB, price_a_per_b: finalPrice, cat: 'orca' }); } catch {}
       }
     }
   }
