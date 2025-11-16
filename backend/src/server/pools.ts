@@ -2294,7 +2294,29 @@ export function startRaydiumRefreshLoop(): void {
                         const prev = raydiumCache.data || { amm: [], clmm: [] };
                         const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
                         const idx = next.clmm.findIndex(p => p.id === finalItem.id);
-                        if (idx >= 0) next.clmm[idx] = { ...next.clmm[idx], ...finalItem }; else next.clmm.push(finalItem);
+                        
+                        // CRITICAL FIX: Handle orientation changes correctly
+                        // When canonicalization changes orientation, preserve orientation-independent fields
+                        if (idx >= 0) {
+                          const prevPool = next.clmm[idx];
+                          const orientationChanged = prevPool.mint_a !== finalItem.mint_a || prevPool.mint_b !== finalItem.mint_b;
+                          if (orientationChanged) {
+                            // Orientation changed - start with canonicalized item (all A/B fields correctly swapped)
+                            // Then preserve orientation-independent fields from previous pool
+                            const orientationIndependentFields = {
+                              tvl_usd: prevPool.tvl_usd,
+                              liquidity_display: prevPool.liquidity_display,
+                              pool_liquidity_raw: prevPool.pool_liquidity_raw,
+                              // Preserve any other fields that don't depend on orientation
+                            };
+                            next.clmm[idx] = { ...finalItem, ...orientationIndependentFields };
+                          } else {
+                            // Same orientation - safe to merge (preserves fields not in finalItem)
+                            next.clmm[idx] = { ...next.clmm[idx], ...finalItem };
+                          }
+                        } else {
+                          next.clmm.push(finalItem);
+                        }
                         
                         // OPTIMIZATION: Store raw account data + derived tick arrays in execution cache for builders
                         try {
@@ -2468,7 +2490,29 @@ export function startRaydiumRefreshLoop(): void {
                         const prev = raydiumCache.data || { amm: [], clmm: [] };
                         const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
                         const idx = next.amm.findIndex(p => p.id === finalItem.id);
-                        if (idx >= 0) next.amm[idx] = { ...next.amm[idx], ...finalItem }; else next.amm.push(finalItem);
+                        
+                        // CRITICAL FIX: Handle orientation changes correctly
+                        // When canonicalization changes orientation, preserve orientation-independent fields
+                        if (idx >= 0) {
+                          const prevPool = next.amm[idx];
+                          const orientationChanged = prevPool.mint_a !== finalItem.mint_a || prevPool.mint_b !== finalItem.mint_b;
+                          if (orientationChanged) {
+                            // Orientation changed - start with canonicalized item (all A/B fields correctly swapped)
+                            // Then preserve orientation-independent fields from previous pool
+                            const orientationIndependentFields = {
+                              tvl_usd: prevPool.tvl_usd,
+                              liquidity_display: prevPool.liquidity_display,
+                              pool_liquidity_raw: prevPool.pool_liquidity_raw,
+                              // Preserve any other fields that don't depend on orientation
+                            };
+                            next.amm[idx] = { ...finalItem, ...orientationIndependentFields };
+                          } else {
+                            // Same orientation - safe to merge (preserves fields not in finalItem)
+                            next.amm[idx] = { ...next.amm[idx], ...finalItem };
+                          }
+                        } else {
+                          next.amm.push(finalItem);
+                        }
                         
                         // OPTIMIZATION: Store raw account data in execution cache for builders
                         try {
@@ -3086,7 +3130,34 @@ export function startRaydiumRefreshLoop(): void {
                     const prev = meteoraCache.data || { amm: [], clmm: [] };
                     const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
                     const idx = next.clmm.findIndex(p => p.id === finalItem.id);
-                    if (idx >= 0) next.clmm[idx] = { ...next.clmm[idx], ...finalItem }; else next.clmm.push(finalItem);
+                    
+                    // CRITICAL FIX: Handle orientation changes correctly
+                    // When canonicalization changes orientation (e.g., after token swaps), we need to:
+                    // 1. Use the canonicalized item (which has all A/B fields correctly swapped)
+                    // 2. Preserve orientation-independent fields from previous pool (tvl_usd, liquidity_display, etc.)
+                    // 3. Ensure diff logic recognizes this as an update (same id), not removal+addition
+                    if (idx >= 0) {
+                      const prevPool = next.clmm[idx];
+                      // Check if canonicalization orientation changed (mints swapped)
+                      const orientationChanged = prevPool.mint_a !== finalItem.mint_a || prevPool.mint_b !== finalItem.mint_b;
+                      if (orientationChanged) {
+                        // Orientation changed - start with canonicalized item (all A/B fields correctly swapped)
+                        // Then preserve orientation-independent fields from previous pool
+                        const orientationIndependentFields = {
+                          tvl_usd: prevPool.tvl_usd,
+                          liquidity_display: prevPool.liquidity_display,
+                          pool_liquidity_raw: prevPool.pool_liquidity_raw,
+                          // Preserve any other fields that don't depend on orientation
+                        };
+                        next.clmm[idx] = { ...finalItem, ...orientationIndependentFields };
+                      } else {
+                        // Same orientation - safe to merge (preserves fields not in finalItem)
+                        next.clmm[idx] = { ...next.clmm[idx], ...finalItem };
+                      }
+                    } else {
+                      next.clmm.push(finalItem);
+                    }
+                    
                     try { wsDecodeStats.meteora.successes += 1; } catch {}
                     wsDeltaStats.meteora.decoded += 1;
                     const d = diffNormalizedPools(prev, next);
@@ -3114,12 +3185,11 @@ export function startRaydiumRefreshLoop(): void {
                       const sample = { amm: [], clmm: d.clmm.slice(0, 20) };
                       emit('pool-updates', { source: 'meteora', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, addedAmm: d.addedAmm, removedAmm: d.removedAmm, addedClmm: d.addedClmm, removedClmm: d.removedClmm, sample, ts: Date.now(), canon: (CONFIG.system as any)?.canonicalizePairs || 'none' });
                     } catch {}
-                    try {
-                      const gmod: any = await import('./graph.js');
-                      if (hasDelta) {
-                        await scheduleDexApply('meteora', prev as any);
-                      }
-                    } catch {}
+                    // Use unified scheduleDexApply for consistency with other DEXes
+                    // The orientation-aware cache update above ensures the cache is correct before scheduleDexApply reads it
+                    if (hasDelta) {
+                      await scheduleDexApply('meteora', prev as any);
+                    }
                     try { logger.debug('meteora.ws clmm.fields', { id: poolId, priceCandidate: price_a_per_b, binStep: tickSpacing, activeId, decimals: { a: decA, b: decB }, cat: 'pools' }); } catch {}
                     updated = true;
                   } else {

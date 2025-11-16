@@ -723,29 +723,30 @@ async fn main() -> anyhow::Result<()> {
                             }
                             s.metrics.graph_nodes = s.graph.g.node_count() as u64;
                             s.metrics.graph_edges = s.graph.g.edge_count() as u64;
-                            
-                            // CRITICAL FIX: Commit version immediately after applying diffs,
-                            // before detection starts. This ensures ACK requests can succeed
-                            // quickly even if detection takes a long time.
-                            if let Some(v_commit) = version_to_commit {
-                                let current_v = s.last_graph_version.load(Ordering::Acquire);
-                                if v_commit > current_v {
-                                    tracing::info!(
-                                        old_version = current_v,
-                                        new_version = v_commit,
-                                        "arb.graph.version: committed"
-                                    );
-                                    s.last_graph_version.store(v_commit, Ordering::Release);
-                                    // Notify any waiting ACK handlers immediately
-                                    s.version_changed.notify_waiters();
-                                }
-                                if let Some(ts_commit) = ts_to_commit {
-                                    s.last_graph_ts.store(ts_commit, Ordering::Release);
-                                }
-                                // Clear version_to_commit so we don't commit again after detection
-                                version_to_commit = None;
-                                ts_to_commit = None;
+                        }
+                        // CRITICAL FIX: Commit version immediately after applying diffs,
+                        // but AFTER releasing the write lock to avoid blocking.
+                        // This ensures ACK requests can succeed quickly even if detection takes a long time.
+                        if let Some(v_commit) = version_to_commit {
+                            let mut s = loop_state.write().await;
+                            let current_v = s.last_graph_version.load(Ordering::Acquire);
+                            if v_commit > current_v {
+                                tracing::info!(
+                                    old_version = current_v,
+                                    new_version = v_commit,
+                                    "arb.graph.version: committed"
+                                );
+                                s.last_graph_version.store(v_commit, Ordering::Release);
+                                // Notify any waiting ACK handlers immediately
+                                s.version_changed.notify_waiters();
                             }
+                            if let Some(ts_commit) = ts_to_commit {
+                                s.last_graph_ts.store(ts_commit, Ordering::Release);
+                            }
+                            drop(s);
+                            // Clear version_to_commit so we don't commit again after detection
+                            version_to_commit = None;
+                            ts_to_commit = None;
                         }
                     } else {
                         tracing::info!("arb.graph.diff: none pending");
