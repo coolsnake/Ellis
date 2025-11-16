@@ -3130,7 +3130,7 @@ async fn main() -> anyhow::Result<()> {
                 }
                 let detect_ms = detect_start.elapsed().as_millis() as u128;
                 let work_ms = iter_start.elapsed().as_millis() as u128;
-                tracing::debug!(
+                tracing::info!(
                     diff_apply_ms,
                     detect_ms,
                     work_ms,

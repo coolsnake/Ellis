@@ -23,6 +23,28 @@ function rescaleByDecimals(px: number | undefined, poolDecA?: number, poolDecB?:
   return (Number.isFinite(scaled) && scaled > 0) ? scaled : px;
 }
 
+/**
+ * Compute final price with magnitude calibration and decimal rescaling
+ * 
+ * IMPORTANT: This function assumes the input price is already canonicalized
+ * (i.e., mints are in canonical order and price is A-per-1-B for that order).
+ * Orientation correction should be handled by canonicalization, not here.
+ * 
+ * This function handles:
+ * - Magnitude calibration (power-of-10 adjustments to fix decimal mismatches)
+ * - Decimal rescaling (pool decimals vs global decimals)
+ * - Clamping to valid ranges
+ * 
+ * @param mintA - Mint A (should be canonical)
+ * @param mintB - Mint B (should be canonical)
+ * @param rawPrice - Price (should already be canonicalized: A-per-1-B)
+ * @param poolDecA - Pool's decimals for A
+ * @param poolDecB - Pool's decimals for B
+ * @param globalDecA - Global decimals for A (for rescaling)
+ * @param globalDecB - Global decimals for B (for rescaling)
+ * @param getUsd - Optional USD price lookup for magnitude calibration
+ * @param getEdgeRate - Optional edge rate lookup (unused, kept for compatibility)
+ */
 export function computePriceForward(
   mintA: string,
   mintB: string,
@@ -35,60 +57,46 @@ export function computePriceForward(
   getEdgeRate?: GetEdgeRate,
 ): number | undefined {
   const raw = Number(rawPrice);
-  let oriented: number | undefined = (Number.isFinite(raw) && raw > 0) ? raw : undefined;
+  let price: number | undefined = (Number.isFinite(raw) && raw > 0) ? raw : undefined;
 
-  // Direct USD reference orientation
-  let directRef: number | undefined;
-  if (typeof getUsd === 'function') {
+  // Magnitude calibration: fix power-of-10 errors using USD reference
+  // This does NOT flip orientation - it only adjusts magnitude
+  if (typeof getUsd === 'function' && price && price > 0) {
     try {
       const pa = getUsd(mintA);
       const pb = getUsd(mintB);
       if (pa && pb && (pa as number) > 0 && (pb as number) > 0) {
-        directRef = (pb as number) / (pa as number);
+        const ref = (pb as number) / (pa as number);
+        const rawDev = Math.max(price / ref, ref / price);
+        
+        // Try power-of-10 adjustments (magnitude only, no orientation flip)
+        let best = price;
+        let bestDev = rawDev;
+        const MAX_APPLIED_DEV = 100;
+        
+        for (let k = -8; k <= 8; k++) {
+          const cand = price * Math.pow(10, k);
+          if (!(cand > 0) || !Number.isFinite(cand)) continue;
+          const dev = Math.max(cand / ref, ref / cand);
+          if (dev + 1e-12 < bestDev) {
+            bestDev = dev;
+            best = cand;
+          }
+        }
+        
+        // Only apply if significantly better and within reasonable bounds
+        if (bestDev + 1e-12 < rawDev && bestDev <= MAX_APPLIED_DEV) {
+          price = best;
+        }
       }
     } catch {}
   }
 
-  // Triangulation via edges (optional)
-  let medianTri: number | undefined;
-  if (typeof getEdgeRate === 'function') {
-    try {
-      const pivots: string[] = Array.from(new Set<string>([
-        ...((((CONFIG as any)?.system as any)?.anchorMints || []) as string[]),
-        ...((((CONFIG as any)?.system as any)?.stableMints || []) as string[]),
-      ]));
-      const getAPerB = (A: string, B: string): number | undefined => {
-        const d = getEdgeRate(A, B); if (typeof d === 'number' && d > 0) return d;
-        const r = getEdgeRate(B, A); if (typeof r === 'number' && r > 0) return 1 / r;
-        return undefined;
-      };
-      const refs: number[] = [];
-      for (const C of pivots) {
-        if (C === mintA || C === mintB) continue;
-        const aPerC = getAPerB(mintA, C);
-        const bPerC = getAPerB(mintB, C);
-        if (aPerC && bPerC && aPerC > 0 && bPerC > 0) refs.push(aPerC / bPerC);
-      }
-      const sorted = refs.filter(v => Number.isFinite(v) && v > 0).sort((a,b) => a-b);
-      if (sorted.length) medianTri = sorted[Math.floor(sorted.length/2)];
-    } catch {}
-  }
-
-  // Choose orientation: prefer raw or inverted closer to ref (direct first, then triangulation median)
-  const tryRef = (ref?: number) => {
-    if (!(ref && ref > 0) || !(oriented && oriented > 0)) return;
-    const inv = 1 / oriented!;
-    const dev  = Math.max((oriented as number) / ref,  ref / (oriented as number));
-    const devI = Math.max(inv / ref, ref / inv);
-    if (devI + 1e-12 < dev) oriented = inv;
-  };
-  tryRef(directRef);
-  if (!directRef) tryRef(medianTri);
-
-  // Rescale by decimals when available
-  oriented = rescaleByDecimals(oriented, poolDecA, poolDecB, globalDecA, globalDecB);
-  // Clamp
-  return clamp(oriented);
+  // Rescale by decimals when available (pool decimals vs global decimals)
+  price = rescaleByDecimals(price, poolDecA, poolDecB, globalDecA, globalDecB);
+  
+  // Clamp to valid range
+  return clamp(price);
 }
 
 

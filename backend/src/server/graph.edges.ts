@@ -35,6 +35,12 @@ function weightFrom(liq?: number, fee_bps?: number): number {
   return Math.max(1, liqv) / Math.max(1, fee);
 }
 
+/**
+ * Create graph edges from a pool
+ * 
+ * IMPORTANT: The pool's price should already be canonicalized (A-per-1-B for canonical mint order).
+ * This function only applies magnitude calibration and decimal rescaling, not orientation changes.
+ */
 export function edgesFromPoolIncremental(
   p: AmmPool | ClmmPool,
   getUsd: (mint: string) => number | undefined,
@@ -51,6 +57,7 @@ export function edgesFromPoolIncremental(
   const clampMin = Number.isFinite(options?.priceClampMin) ? Number(options?.priceClampMin) : 1e-12;
   const clampMax = Number.isFinite(options?.priceClampMax) ? Number(options?.priceClampMax) : 1e12;
   const fRaw = clampPriceInc(fwdRaw, clampMin, clampMax);
+  // computePriceForward assumes price is already canonicalized - only applies magnitude calibration
   const fwd = computePriceForward(
     a,
     b,

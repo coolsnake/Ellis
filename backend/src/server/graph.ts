@@ -685,8 +685,9 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         if (!nodesMap[a]) nodesMap[a] = { id: a, label: labelByMint[a] };
         if (!nodesMap[b]) nodesMap[b] = { id: b, label: labelByMint[b] };
       };
-      // Backwards-compatible alias per plan
-      const orientWithUsdFallbacks = (mintA: string, mintB: string, px: number | undefined): number | undefined => orientAPerB(mintA, mintB, px);
+      // DEPRECATED: Prices should already be canonicalized - no orientation needed
+      // Keeping as no-op for backwards compatibility
+      const orientWithUsdFallbacks = (mintA: string, mintB: string, px: number | undefined): number | undefined => px;
 
       // Pre-graph validator: fee bounds and price deviation vs USD references
       const sanityCfg = (CONFIG as any)?.sanity || {};
@@ -948,22 +949,11 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           // Fallback: prefer reserves then incoming
           chosen = (price && price > 0) ? price : ((incomingFwd && incomingFwd > 0) ? incomingFwd : undefined);
         }
-        // Ensure oriented as A per 1 B. Prefer USD-based orientation when available; otherwise triangulate.
-        let oriented = chosen;
-        try {
-          const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
-          const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
-          if (pa && pb && oriented && (oriented as number) > 0) {
-            const ref = (pb as number) / (pa as number);
-            const inv = 1 / (oriented as number);
-            const dev  = Math.max((oriented as number) / ref,  ref / (oriented as number));
-            const devI = Math.max(inv / ref, ref / inv);
-            oriented = (devI + 1e-12 < dev) ? inv : (oriented as number);
-          } else {
-            // No USD reference: keep chosen price as-is; reciprocity tests will guard egregious cases
-          }
-        } catch {}
-        // Unified orientation+rescale+clamp
+        // Price should already be canonicalized (A-per-1-B for canonical mint order)
+        // Trust canonicalization - don't flip orientation here
+        // Only apply magnitude calibration and decimal rescaling
+        const oriented = chosen;
+        // Unified rescale+clamp (orientation already handled by canonicalization)
         const ga = Number(decimalsByMint[p.mint_a] ?? decA);
         const gb = Number(decimalsByMint[p.mint_b] ?? decB);
         const poolDecA = Number((p as any)?.decimals_a ?? decA);
@@ -1147,9 +1137,9 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         if (Number.isFinite(usd as any) && (usd as number) > 0) clmmUsd++;
         const pidClmm = safePoolId(p);
         const liqDisplay = (p as any)?.liquidity_display ?? ((usd && usd > 0) ? usd : liqRaw);
-        // CLMM: calibrate then reciprocal-only orientation via USD refs; add USD deviation clamp for robustness
+        // CLMM: Price should already be canonicalized - trust canonicalization
+        // Only apply magnitude calibration and decimal rescaling
         price = calibratePrice(p.mint_a, p.mint_b, price);
-        price = orientWithUsdFallbacks(p.mint_a, p.mint_b, price);
         // Rescale CLMM price from pool decimals to global decimals (align across DEXes)
         try {
           const ga = Number(isFinite(Number(decimalsByMint[p.mint_a])) ? decimalsByMint[p.mint_a] : (p as any)?.decimals_a);
@@ -1158,18 +1148,6 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const poolDecB = Number((p as any)?.decimals_b);
           diagDecimals(p.mint_a, p.mint_b, poolDecA, poolDecB);
           price = rescalePriceByDecimals(price, poolDecA, poolDecB, ga, gb);
-        } catch {}
-        // Orientation guard: if USD ref exists and reciprocal is closer, invert once
-        try {
-          const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
-          const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
-          if (pa && pb && price && (price as number) > 0) {
-            const ref = (pb as number) / (pa as number);
-            const inv = 1 / (price as number);
-            const dev  = Math.max((price as number) / ref,  ref / (price as number));
-            const devI = Math.max(inv / ref, ref / inv);
-            if (devI + 1e-12 < dev) price = inv;
-          }
         } catch {}
         try {
           const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
@@ -1296,7 +1274,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         // Orca AMM: incoming price is A per 1 B. Calibrate then apply orientation rule.
         let priceAmmOrca = calibratePrice(p.mint_a, p.mint_b, (p as any).price_a_per_b);
         // Ensure oriented as A per 1 B using USD reference when available
-        priceAmmOrca = orientAPerB(p.mint_a, p.mint_b, priceAmmOrca);
+        // Price already canonicalized - trust canonicalization
+        // priceAmmOrca = orientAPerB(p.mint_a, p.mint_b, priceAmmOrca);
         try {
           const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
           const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
@@ -1485,7 +1464,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         } catch {}
         // Orient as A per 1 B using USD reference when available
         const beforeOrient = priceClmmOrca;
-        priceClmmOrca = orientWithUsdFallbacks(p.mint_a, p.mint_b, priceClmmOrca);
+        // Price already canonicalized - trust canonicalization
+        // priceClmmOrca = orientWithUsdFallbacks(p.mint_a, p.mint_b, priceClmmOrca);
         // Forward + reverse with strict reciprocal rule and consistency guard
         const fwdClmm = clampPrice((priceClmmOrca && priceClmmOrca > 0) ? priceClmmOrca : undefined);
         // DIAGNOSTIC: Track price transformations for first few pools

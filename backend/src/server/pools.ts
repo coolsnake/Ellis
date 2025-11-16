@@ -2287,10 +2287,14 @@ export function startRaydiumRefreshLoop(): void {
                           throw new Error(`validation failed: ${validation.reasons.join(',')}`); // Skip this update
                         }
                         
+                        // Canonicalize pool to ensure consistent mint orientation and price
+                        const [canonicalItem] = canonicalizePools([{ ...item }]);
+                        const finalItem = canonicalItem || item;
+                        
                         const prev = raydiumCache.data || { amm: [], clmm: [] };
                         const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
-                        const idx = next.clmm.findIndex(p => p.id === item.id);
-                        if (idx >= 0) next.clmm[idx] = { ...next.clmm[idx], ...item }; else next.clmm.push(item);
+                        const idx = next.clmm.findIndex(p => p.id === finalItem.id);
+                        if (idx >= 0) next.clmm[idx] = { ...next.clmm[idx], ...finalItem }; else next.clmm.push(finalItem);
                         
                         // OPTIMIZATION: Store raw account data + derived tick arrays in execution cache for builders
                         try {
@@ -2425,10 +2429,14 @@ export function startRaydiumRefreshLoop(): void {
                           throw new Error(`validation failed: ${validation.reasons.join(',')}`);
                         }
                         
+                        // Canonicalize pool to ensure consistent mint orientation and price
+                        const [canonicalItem] = canonicalizePools([{ ...item }]);
+                        const finalItem = canonicalItem || item;
+                        
                         const prev = raydiumCache.data || { amm: [], clmm: [] };
                         const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
-                        const idx = next.amm.findIndex(p => p.id === item.id);
-                        if (idx >= 0) next.amm[idx] = { ...next.amm[idx], ...item }; else next.amm.push(item);
+                        const idx = next.amm.findIndex(p => p.id === finalItem.id);
+                        if (idx >= 0) next.amm[idx] = { ...next.amm[idx], ...finalItem }; else next.amm.push(finalItem);
                         
                         // OPTIMIZATION: Store raw account data in execution cache for builders
                         try {
