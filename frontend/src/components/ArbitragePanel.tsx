@@ -90,6 +90,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
   const [nmSimErr, setNmSimErr] = useState<string | null>(null);
   const [execStats, setExecStats] = useState<any>(null);
   const [arbMetrics, setArbMetrics] = useState<any>(null);
+  const [walletBalances, setWalletBalances] = useState<{ sol?: number; tokens?: Record<string, number> } | null>(null);
   // Show-all toggle moved into OpportunityList
 
   // Deprecated polling/log-triggered refresh removed; rely on socket push with initial fallback
@@ -150,11 +151,29 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
     } catch {}
   };
 
+  // Fetch wallet balances for balance checking (display only)
+  const fetchWalletBalances = React.useCallback(async () => {
+    try {
+      const r = await fetch(`${apiBase}/wallet`);
+      const j = await r.json();
+      if (j?.balances) {
+        setWalletBalances({
+          sol: j.balances.sol || 0,
+          tokens: j.balances.tokens || {},
+        });
+      }
+    } catch (e) {
+      // Wallet might not be set up, that's okay - we'll just show all opportunities
+      setWalletBalances(null);
+    }
+  }, [apiBase]);
+
   // Initial fallback fetch only
   const [lastDetectionTs, setLastDetectionTs] = useState<number>(0);
   useEffect(() => {
     fetchOpps();
     fetchTokenMap();
+    fetchWalletBalances();
     // Load quote size from arb config for display consistency
     (async () => {
       try { const r = await fetch(`${apiBase}${ROUTES.arb.config}`); const j = await r.json(); if (typeof j?.quote_size_usd === 'number') setQuoteSize(Number(j.quote_size_usd)||50); } catch {}
@@ -163,6 +182,21 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
       try { const r = await fetch(`${apiBase}${ROUTES.arb.txHistory}?limit=50`); const j = await r.json(); const allItems = Array.isArray(j?.items) ? j.items : []; setTxRows(allItems.slice(0, 10)); } catch {}
     })();
   }, []);
+
+  // Refresh wallet balances periodically and on wallet updates
+  useEffect(() => {
+    if (!effectiveSocket) return;
+    const onWalletUpdate = () => {
+      fetchWalletBalances();
+    };
+    try { effectiveSocket.on('wallet-update', onWalletUpdate); } catch {}
+    // Also refresh periodically (every 30 seconds)
+    const interval = setInterval(fetchWalletBalances, 30000);
+    return () => {
+      try { effectiveSocket.off('wallet-update', onWalletUpdate); } catch {}
+      clearInterval(interval);
+    };
+  }, [effectiveSocket, fetchWalletBalances]);
 
   // Subscribe to backend-bridged opportunities stream
   // Throttle opportunities updates with reduced latency for critical updates (200ms for summary, 100ms for critical signals)
@@ -693,6 +727,7 @@ export const ArbitragePanel: React.FC<{ apiBase: string; socket?: any; showGraph
         sendAmount={sendAmount}
         apiBase={apiBase}
         socket={effectiveSocket}
+        walletBalances={walletBalances}
       />
       <div className="mt-4 p-2 border rounded bg-black/10">
         <div className="flex items-center justify-between mb-2">

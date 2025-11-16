@@ -663,12 +663,8 @@ async fn main() -> anyhow::Result<()> {
                                     }
                                 }
                             }
-                            let base = if px > 0.0 { 1.0 / px } else { 0.0 };
-                            let rate_eff = if base > 0.0 {
-                                base * (1.0 - (fee as f64) / 10_000.0).max(0.0_f64)
-                            } else {
-                                0.0
-                            };
+                            let direction = e.direction.as_deref();
+                            let (_base, rate_eff) = edge_rate_effective_local(Some(px), Some(fee), direction);
                             calibrated_edges.push((
                                 e.source.clone(),
                                 e.target.clone(),
@@ -3435,6 +3431,7 @@ struct StartReqEdge {
     pool_id: Option<String>,
     liquidity_display: Option<f64>,
     price_a_per_b: Option<f64>,
+    direction: Option<String>, // "forward" or "reverse"
 }
 #[derive(Deserialize, Clone)]
 struct StartReqGraph {
@@ -3465,6 +3462,7 @@ struct GraphDiffEdge {
     liquidity: Option<f64>,
     liquidity_display: Option<f64>,
     price_a_per_b: Option<f64>,
+    direction: Option<String>, // "forward" or "reverse"
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -3488,14 +3486,23 @@ async fn arb_graph_snapshot(
 }
 
 // Centralized price conversion: A-per-1-B (backend) -> B-per-1-A (detector), apply fee once
+// For forward edges: price_a_per_b is A-per-1-B, so we invert to get B-per-1-A (rate_effective)
+// For reverse edges: price_a_per_b is already B-per-1-A (from computePriceReverse), so we use it directly
 #[inline]
-fn edge_rate_effective_local(px_opt: Option<f64>, fee_bps_opt: Option<i64>) -> (f64, f64) {
+fn edge_rate_effective_local(px_opt: Option<f64>, fee_bps_opt: Option<i64>, direction: Option<&str>) -> (f64, f64) {
     let fee_bps: f64 = (fee_bps_opt.unwrap_or(0)) as f64;
     let px: f64 = px_opt.unwrap_or(0.0);
     if !(px.is_finite() && px > 0.0) {
         return (0.0, 0.0);
     }
-    let base: f64 = 1.0 / px;
+    // For reverse edges, price_a_per_b is already B-per-1-A, so don't invert
+    // For forward edges (or if direction is None/unknown), price_a_per_b is A-per-1-B, so invert
+    let is_reverse = direction.map(|d| d == "reverse").unwrap_or(false);
+    let base: f64 = if is_reverse {
+        px  // Already B-per-1-A
+    } else {
+        1.0 / px  // Convert A-per-1-B to B-per-1-A
+    };
     if !(base.is_finite() && base > 0.0) {
         return (0.0, 0.0);
     }
@@ -3626,12 +3633,8 @@ async fn handle_graph_snapshot(
         if px.is_finite() && px > 0.0 {
             px = adjust_magnitude(&e.source, &e.target, px);
         }
-        let base = if px > 0.0 { 1.0 / px } else { 0.0 };
-        let rate_eff = if base > 0.0 {
-            base * (1.0 - (fee as f64) / 10_000.0).max(0.0)
-        } else {
-            0.0
-        };
+        let direction = e.direction.as_deref();
+        let (_base, rate_eff) = edge_rate_effective_local(Some(px), Some(fee), direction);
         new_graph.upsert_edge(
             &dex,
             &e.source,
@@ -3853,7 +3856,8 @@ async fn arb_start(
             let liq = e.liquidity.unwrap_or(0.0);
             let pool_id = e.pool_id.unwrap_or_else(|| "".to_string());
             let liq_disp = e.liquidity_display.unwrap_or(0.0);
-            let (_base, rate_eff) = edge_rate_effective_local(e.price_a_per_b, e.fee_bps);
+            let direction = e.direction.as_deref();
+            let (_base, rate_eff) = edge_rate_effective_local(e.price_a_per_b, e.fee_bps, direction);
             new_graph.upsert_edge(
                 &dex,
                 &e.source,
@@ -5047,7 +5051,8 @@ mod e2e_tests {
                 let fee = e.fee_bps.unwrap_or(0);
                 let liq = e.liquidity.unwrap_or(0.0);
                 let liq_disp = e.liquidity_display.unwrap_or(0.0);
-                let (_base, rate_eff) = edge_rate_effective_local(e.price_a_per_b, e.fee_bps);
+                let direction = e.direction.as_deref();
+                let (_base, rate_eff) = edge_rate_effective_local(e.price_a_per_b, e.fee_bps, direction);
                 s.graph.upsert_edge(
                     &dex,
                     &e.source,
@@ -5172,21 +5177,8 @@ mod e2e_tests {
                 let fee = e.fee_bps.unwrap_or(0);
                 let liq = e.liquidity.unwrap_or(0.0);
                 let liq_disp = e.liquidity_display.unwrap_or(0.0);
-                let px = if let Some(px) = e.price_a_per_b {
-                    if px.is_finite() && px > 0.0 {
-                        px
-                    } else {
-                        0.0
-                    }
-                } else {
-                    0.0
-                };
-                let base = if px > 0.0 { 1.0 / px } else { 0.0 };
-                let rate_eff = if base > 0.0 {
-                    base * (1.0 - (fee as f64) / 10_000.0).max(0.0)
-                } else {
-                    0.0
-                };
+                let direction = e.direction.as_deref();
+                let (_base, rate_eff) = edge_rate_effective_local(e.price_a_per_b, e.fee_bps, direction);
                 s.graph.upsert_edge(
                     &dex,
                     &e.source,

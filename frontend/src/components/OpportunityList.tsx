@@ -26,6 +26,11 @@ type Opportunity = {
   detections?: number;
 };
 
+type WalletBalances = {
+  sol?: number;
+  tokens?: Record<string, number>;
+};
+
 export function OpportunityList(
   {
     items,
@@ -36,6 +41,7 @@ export function OpportunityList(
     sendAmount,
     apiBase,
     socket,
+    walletBalances,
   }: {
     items: Opportunity[];
     tokenMap: Record<string, string>;
@@ -45,6 +51,7 @@ export function OpportunityList(
     sendAmount: number;
     apiBase: string;
     socket?: any;
+    walletBalances?: WalletBalances | null;
   }
 ): React.ReactElement {
   const [showAll, setShowAll] = React.useState(false);
@@ -71,6 +78,19 @@ export function OpportunityList(
 
   const visible = React.useMemo(() => (showAll ? items : items.slice(0, 10)), [showAll, items]);
 
+  // Check if opportunity can be executed based on balance
+  const checkBalance = React.useCallback((op: Opportunity): { hasBalance: boolean; balance: number; startToken: string } => {
+    if (!walletBalances || !op.path || op.path.length === 0) {
+      return { hasBalance: true, balance: 0, startToken: '' };
+    }
+    const SOL_MINT = 'So11111111111111111111111111111111111111112';
+    const startToken = op.path[0];
+    const balance = startToken === SOL_MINT
+      ? (walletBalances.sol || 0)
+      : (walletBalances.tokens?.[startToken] || 0);
+    return { hasBalance: balance > 0, balance, startToken };
+  }, [walletBalances]);
+
   return (
     <div>
       <div className="flex items-center gap-2 mb-2">
@@ -81,8 +101,9 @@ export function OpportunityList(
         <div className="space-y-2">
         {visible.map((op) => {
           const key = `${(op.path||[]).join('>')}|${(op.dexes||[]).join('>')}`;
+          const balanceInfo = checkBalance(op);
           return (
-          <div key={key} className="p-2 border rounded bg-black/20">
+          <div key={key} className={`p-2 border rounded ${balanceInfo.hasBalance ? 'bg-black/20' : 'bg-black/20 border-yellow-600/50'}`}>
             <div className="text-sm">
               <span className="font-mono">
                 {(() => {
@@ -144,6 +165,13 @@ export function OpportunityList(
             </div>
             <div className="text-xs opacity-80">DEXes: {op.dexes.join(', ')}</div>
             <div className="text-xs">Profit: {fmtPctFromBps(op.profit_bps)} · Net: {fmtPctFromBps(op.net_bps)} · ${fmt(op.est_profit_usd, 2)}{Number.isFinite(op.est_capacity as any) ? ` · Cap: ${fmt(op.est_capacity, 2)}` : ''}</div>
+            {!balanceInfo.hasBalance && walletBalances && (
+              <div className="text-xs text-yellow-400 mt-1 flex items-center gap-2">
+                <span>⚠️ Insufficient balance</span>
+                <span className="opacity-70">({tokenMap[balanceInfo.startToken] || balanceInfo.startToken.slice(0, 8) + '...'}: {fmt(balanceInfo.balance, 6)})</span>
+                <span className="opacity-60 text-[10px]">Balance check only applies during execution</span>
+              </div>
+            )}
             <div className="text-[11px] opacity-80 flex items-center gap-2">Hops: {op.hop_count ?? op.path.length} · Links: {op.link_edges_used ?? 0} · Min Edge Liq: {fmt(op.min_edge_liquidity, 2)}
               <button className="px-1 py-0.5 border rounded" onClick={()=>{
                 try {
