@@ -5,9 +5,10 @@ export const poolsMetrics: {
         filteredAmm: number; filteredClmm: number; universe: string; zeroOverlapSkips: number;
         scannedPoolAccs: number; updatedFromPoolAccs: number; scannedVaults: number; updatedFromVaults: number;
         ownerClmmCount: number; ownerAmmCount: number; http429: number; backoffMs: number; apiBatches: number; apiBatchSizeAvg: number;
+        detailBatches: number; detailFailures: number;
     };
-    orca: { fetches: number; lastMs: number; lastAmm: number; lastClmm: number };
-    meteora: { fetches: number; lastMs: number; lastClmm: number };
+    orca: { fetches: number; lastMs: number; lastAmm: number; lastClmm: number; detailBatches: number; detailFailures: number };
+    meteora: { fetches: number; lastMs: number; lastClmm: number; detailBatches: number; detailFailures: number };
     meteora_balanced: { fetches: number; lastMs: number; lastAmm: number };
     pumpswap: { fetches: number; lastMs: number; lastAmm: number; enrichmentSuccess: number; enrichmentFail: number; enrichmentMs: number };
 } = {
@@ -16,9 +17,10 @@ export const poolsMetrics: {
         filteredAmm: 0, filteredClmm: 0, universe: '', zeroOverlapSkips: 0,
         scannedPoolAccs: 0, updatedFromPoolAccs: 0, scannedVaults: 0, updatedFromVaults: 0,
         ownerClmmCount: 0, ownerAmmCount: 0, http429: 0, backoffMs: 0, apiBatches: 0, apiBatchSizeAvg: 0,
+        detailBatches: 0, detailFailures: 0,
     },
-    orca: { fetches: 0, lastMs: 0, lastAmm: 0, lastClmm: 0 },
-    meteora: { fetches: 0, lastMs: 0, lastClmm: 0 },
+    orca: { fetches: 0, lastMs: 0, lastAmm: 0, lastClmm: 0, detailBatches: 0, detailFailures: 0 },
+    meteora: { fetches: 0, lastMs: 0, lastClmm: 0, detailBatches: 0, detailFailures: 0 },
     meteora_balanced: { fetches: 0, lastMs: 0, lastAmm: 0 },
     pumpswap: { fetches: 0, lastMs: 0, lastAmm: 0, enrichmentSuccess: 0, enrichmentFail: 0, enrichmentMs: 0 },
 };
