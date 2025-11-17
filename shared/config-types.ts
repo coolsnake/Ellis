@@ -106,4 +106,28 @@ export type ExecConfigResponse = ExecEngineConfigPublic;
 export type ArbConfigRequest = Partial<ArbDetectorConfigPublic>;
 export type ArbConfigResponse = ArbDetectorConfigPublic;
 
+// Shyft GraphQL Configuration (for Raydium, Orca, Meteora)
+export interface ShyftConfig {
+  apiKey?: string;
+  endpoint?: string;
+  network?: 'mainnet-beta' | 'devnet';
+}
+
+export interface RaydiumGraphQLConfig {
+  useGraphQL?: boolean;
+  shyftApiKey?: string;
+  pageDelayMs?: number;
+}
+
+export interface OrcaGraphQLConfig {
+  useGraphQL?: boolean;
+  shyftApiKey?: string;
+  pageDelayMs?: number;
+}
+
+export interface MeteoraGraphQLConfig {
+  useGraphQL?: boolean;
+  shyftApiKey?: string;
+  pageDelayMs?: number;
+}
 

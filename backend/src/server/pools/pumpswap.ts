@@ -32,24 +32,55 @@ export async function fetchPumpswapGraphQL(): Promise<any> {
   const maxPages = Number((CONFIG as any)?.pumpswap?.maxPages || 10);
   const pageDelayMs = Number((CONFIG as any)?.pumpswap?.pageDelayMs || 200);
   
+  // NEW: Get token universe instead of hardcoded SOL/USDC
+  let mints: string[] = [];
+  try {
+    const { computeTokenUniverse } = await import('../universe.js');
+    const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
+    mints = Array.from(universe);
+    logger.info('pumpswap.graphql.universe', { mintCount: mints.length, cat: 'pumpswap' });
+  } catch (e: any) {
+    logger.warn('pumpswap.graphql.universe.failed', { error: String(e?.message || e), cat: 'pumpswap' });
+    // Fallback to SOL/USDC if universe fetch fails
+    mints = [SOL_MINT, USDC_MINT];
+  }
+  
   const pools = new Map<string, any>(); // Dedupe by pubkey
   
-  // Fetch pools involving SOL
-  const solPools = await fetchPoolsForToken(SOL_MINT, apiKey, retries, backoffMs, pageSize, maxPages, pageDelayMs);
-  for (const p of solPools) pools.set(p.pubkey, p);
-  
-  // Small delay between token queries to avoid rate limiting
-  if (pageDelayMs > 0) await new Promise(r => setTimeout(r, pageDelayMs));
-  
-  // Fetch pools involving USDC
-  const usdcPools = await fetchPoolsForToken(USDC_MINT, apiKey, retries, backoffMs, pageSize, maxPages, pageDelayMs);
-  for (const p of usdcPools) pools.set(p.pubkey, p);
+  // Fetch pools for each mint in the universe
+  for (const mint of mints) {
+    try {
+      const mintPools = await fetchPoolsForToken(mint, apiKey, retries, backoffMs, pageSize, maxPages, pageDelayMs);
+      for (const p of mintPools) {
+        pools.set(p.pubkey, p);
+      }
+      
+      logger.debug('pumpswap.graphql.mint.fetched', { 
+        mint: mint.slice(0, 8), 
+        count: mintPools.length, 
+        total: pools.size,
+        cat: 'pumpswap' 
+      });
+      
+      // Delay between mints to avoid rate limiting
+      if (pageDelayMs > 0 && mints.indexOf(mint) < mints.length - 1) {
+        await new Promise(r => setTimeout(r, pageDelayMs));
+      }
+    } catch (e: any) {
+      logger.warn('pumpswap.graphql.mint.failed', { 
+        mint: mint.slice(0, 8), 
+        error: String(e?.message || e), 
+        cat: 'pumpswap' 
+      });
+      // Continue to next mint on failure
+    }
+  }
   
   const allPools = Array.from(pools.values());
   try { await writeJson(CACHE_PATH, allPools); } catch (e: any) {
     try { logger.warn('pumpswap.cache write failed', { file: CACHE_PATH, error: String(e?.message || e), cat: 'pumpswap' }); } catch {}
   }
-  try { logger.info('pumpswap.graphql raw', { count: allPools.length, cat: 'pumpswap' }); } catch {}
+  try { logger.info('pumpswap.graphql raw', { count: allPools.length, mints: mints.length, cat: 'pumpswap' }); } catch {}
   return allPools;
 }
 

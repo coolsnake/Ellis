@@ -362,7 +362,10 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
   
   if (shouldFetch.raydium) {
     try {
-      r = await getRaydiumPoolsNormalized(!!options.force, { skipUniverseFilter: true });
+      // Route to GraphQL if enabled, otherwise use HTTP
+      r = (CONFIG as any)?.raydium?.useGraphQL 
+        ? await getRaydiumPoolsGraphQL(!!options.force) 
+        : await getRaydiumPoolsNormalized(!!options.force, { skipUniverseFilter: true });
       // Apply pool type filtering if specified
       if (typeof options.sources?.raydium === 'object') {
         const poolTypes = options.sources.raydium;
@@ -379,7 +382,10 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
   
   if (shouldFetch.orca) {
     try {
-      o = await getOrcaPoolsCached(!!options.force, { skipUniverseFilter: true });
+      // Route to GraphQL if enabled, otherwise use HTTP
+      o = (CONFIG as any)?.orca?.useGraphQL 
+        ? await getOrcaPoolsGraphQL(!!options.force) 
+        : await getOrcaPoolsCached(!!options.force, { skipUniverseFilter: true });
       // Apply pool type filtering if specified
       if (typeof options.sources?.orca === 'object') {
         const poolTypes = options.sources.orca;
@@ -396,7 +402,10 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
   
   if (shouldFetch.meteora) {
     try {
-      m = await getMeteoraPoolsCached(!!options.force, { skipUniverseFilter: true });
+      // Route to GraphQL if enabled, otherwise use HTTP
+      m = (CONFIG as any)?.meteora?.useGraphQL 
+        ? await getMeteoraPoolsGraphQL(!!options.force) 
+        : await getMeteoraPoolsCached(!!options.force, { skipUniverseFilter: true });
     } catch (err) {
       logger.warn('pools.refresh.phase.fetch.meteora.failed', { error: String((err as any)?.message || err), cat: 'pools' });
       m = { amm: [], clmm: [] };
@@ -1541,6 +1550,47 @@ export async function getRaydiumPoolsNormalized(force = false, opts?: { skipUniv
   return raydiumCache.inflight;
 }
 
+export async function getRaydiumPoolsGraphQL(force = false): Promise<PoolsPayload> {
+  try {
+    const { computeTokenUniverse } = await import('./universe.js');
+    const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
+    const mints = Array.from(universe);
+    
+    logger.info('raydium.graphql.fetch.start', { mintCount: mints.length, cat: 'raydium' });
+    
+    const { fetchRaydiumGraphQL, normalizeRaydiumGraphQL } = await import('./pools/raydiumGraphQL.js');
+    const raw = await fetchRaydiumGraphQL(mints);
+    const normalized = await normalizeRaydiumGraphQL(raw);
+    
+    // Update in-memory cache
+    raydiumPools = normalized;
+    
+    // Write to disk cache
+    const CACHE_PATH = joinPath(CONFIG.cacheDir, 'raydium-pools-graphql.json');
+    try { await writeJson(CACHE_PATH, normalized); } catch {}
+    
+    // Emit to websocket
+    try { emit('pools:raydium', normalized); } catch {}
+    
+    logger.info('raydium.graphql.complete', { 
+      amm: normalized.amm.length, 
+      clmm: normalized.clmm.length, 
+      cat: 'raydium' 
+    });
+    
+    return normalized;
+  } catch (error: any) {
+    logger.error('raydium.graphql.failed', { 
+      error: String(error?.message || error), 
+      cat: 'raydium' 
+    });
+    
+    // FALLBACK to HTTP
+    logger.warn('raydium.graphql.fallback_to_http', { cat: 'raydium' });
+    return getRaydiumPoolsNormalized(force);
+  }
+}
+
 export async function getOrcaPoolsCached(force = false, opts?: { skipUniverseFilter?: boolean }): Promise<PoolsPayload> {
   const ttlMs = CONFIG.orca?.cacheTtlMs ?? 300_000; // 5 minutes default
   const minForceGap = Math.max(1000, Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000));
@@ -1723,6 +1773,46 @@ export async function getOrcaPoolsNormalized(opts?: { skipUniverseFilter?: boole
   }
 }
 
+export async function getOrcaPoolsGraphQL(force = false): Promise<PoolsPayload> {
+  try {
+    const { computeTokenUniverse } = await import('./universe.js');
+    const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
+    const mints = Array.from(universe);
+    
+    logger.info('orca.graphql.fetch.start', { mintCount: mints.length, cat: 'orca' });
+    
+    const { fetchOrcaGraphQL, normalizeOrcaGraphQL } = await import('./pools/orcaGraphQL.js');
+    const raw = await fetchOrcaGraphQL(mints);
+    const normalized = await normalizeOrcaGraphQL(raw);
+    
+    // Update in-memory cache
+    orcaPools = normalized;
+    
+    // Write to disk cache
+    const CACHE_PATH = joinPath(CONFIG.cacheDir, 'orca-pools-graphql.json');
+    try { await writeJson(CACHE_PATH, normalized); } catch {}
+    
+    // Emit to websocket
+    try { emit('pools:orca', normalized); } catch {}
+    
+    logger.info('orca.graphql.complete', { 
+      clmm: normalized.clmm.length, 
+      cat: 'orca' 
+    });
+    
+    return normalized;
+  } catch (error: any) {
+    logger.error('orca.graphql.failed', { 
+      error: String(error?.message || error), 
+      cat: 'orca' 
+    });
+    
+    // FALLBACK to HTTP
+    logger.warn('orca.graphql.fallback_to_http', { cat: 'orca' });
+    return getOrcaPoolsNormalized();
+  }
+}
+
 export async function getMeteoraPoolsCached(force = false, opts?: { skipUniverseFilter?: boolean }): Promise<PoolsPayload> {
   const ttlMs = Number(((CONFIG as any)?.meteora?.cacheTtlMs) || 300_000);
   const minForceGap = Math.max(1000, Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000));
@@ -1870,6 +1960,46 @@ export async function getMeteoraPoolsCached(force = false, opts?: { skipUniverse
     }
   })();
   return meteoraCache.inflight;
+}
+
+export async function getMeteoraPoolsGraphQL(force = false): Promise<PoolsPayload> {
+  try {
+    const { computeTokenUniverse } = await import('./universe.js');
+    const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
+    const mints = Array.from(universe);
+    
+    logger.info('meteora.graphql.fetch.start', { mintCount: mints.length, cat: 'meteora' });
+    
+    const { fetchMeteoraGraphQL, normalizeMeteoraGraphQL } = await import('./pools/meteoraGraphQL.js');
+    const raw = await fetchMeteoraGraphQL(mints);
+    const normalized = await normalizeMeteoraGraphQL(raw);
+    
+    // Update in-memory cache
+    meteoraPools = normalized;
+    
+    // Write to disk cache
+    const CACHE_PATH = joinPath(CONFIG.cacheDir, 'meteora-pools-graphql.json');
+    try { await writeJson(CACHE_PATH, normalized); } catch {}
+    
+    // Emit to websocket
+    try { emit('pools:meteora', normalized); } catch {}
+    
+    logger.info('meteora.graphql.complete', { 
+      clmm: normalized.clmm.length, 
+      cat: 'meteora' 
+    });
+    
+    return normalized;
+  } catch (error: any) {
+    logger.error('meteora.graphql.failed', { 
+      error: String(error?.message || error), 
+      cat: 'meteora' 
+    });
+    
+    // FALLBACK to HTTP
+    logger.warn('meteora.graphql.fallback_to_http', { cat: 'meteora' });
+    return getMeteoraPoolsCached(force);
+  }
 }
 
 setPoolRefreshHandler(refreshAllSources);
