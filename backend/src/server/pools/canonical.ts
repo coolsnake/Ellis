@@ -80,6 +80,12 @@ export function swapPoolFields<T extends Record<string, any>>(obj: T): T {
   const bMint = out.mint_b;
   out.mint_a = bMint;
   out.mint_b = aMint;
+
+  // Manually swap decimals to ensure it always happens correctly
+  const decA = out.decimals_a;
+  const decB = out.decimals_b;
+  out.decimals_a = decB;
+  out.decimals_b = decA;
   
   // Invert price (A per B becomes B per A, so invert)
   if (typeof out.price_a_per_b === 'number' && out.price_a_per_b > 0) {
