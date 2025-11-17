@@ -304,3 +304,26 @@ export function priceFromReserves(
   }
 }
 
+
+      // Divide: price = resA / (resB * scale)
+      const denominator = resB * scale;
+      price = Number(resA) / Number(denominator);
+    }
+    
+    if (!Number.isFinite(price) || price <= 0) {
+      return undefined;
+    }
+    
+    return price;
+  } catch (error) {
+    // Fallback to number calculation
+    return calculateAmmPrice(
+      Number(reserveA),
+      Number(reserveB),
+      decimalsA,
+      decimalsB,
+      true
+    );
+  }
+}
+
