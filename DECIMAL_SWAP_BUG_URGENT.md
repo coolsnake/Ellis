@@ -22,7 +22,7 @@ swapped=true
 - mint_a = `oreoU2...`, decimals_a = 11
 - mint_b = `SOL`, decimals_b = 9
 
-**After Canon (SOL to B side per quote hierarchy):**
+**After Canon (SOL forced to A side, stables to B):**
 - mint_a = `SOL`, decimals_a = 9 ← swapped
 - mint_b = `oreoU2...`, decimals_b = 11 ← swapped
 

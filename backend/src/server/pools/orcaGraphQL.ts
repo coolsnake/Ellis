@@ -279,45 +279,62 @@ export async function normalizeOrcaGraphQL(raw: any[]): Promise<PoolsPayload> {
         fee_bps = Math.round(feeRate / 100); // Convert from hundredths
       } catch {}
       
-      // Calculate price from sqrtPrice
+      // Process price through pipeline with raw sqrtPriceX64 data
       let price_a_per_b = 0;
+      let finalMintA = mint_a;
+      let finalMintB = mint_b;
+      let finalDecA = decA;
+      let finalDecB = decB;
+      let wasSwapped = false;
+      
       try {
         const sqrtPriceStr = pool.sqrtPrice;
         if (sqrtPriceStr) {
-          const { calculateClmmPrice } = await import('./priceFormulas.js');
-          const rawPrice = calculateClmmPrice(sqrtPriceStr, decA, decB);
+          const { anyToBigInt } = await import('./precision.js');
+          const sqrtPriceX64 = anyToBigInt(sqrtPriceStr);
           
-          if (rawPrice && rawPrice > 0) {
+          if (sqrtPriceX64) {
             const processed = processPriceThroughPipeline({
               mintA: mint_a,
               mintB: mint_b,
-              rawPrice,
               decimalsA: decA,
               decimalsB: decB,
               poolId: id,
               dex: 'Orca',
-              poolType: 'clmm'
+              poolType: 'clmm',
+              sqrtPriceX64,
             });
             
             if (processed) {
               price_a_per_b = processed.priceForward;
+              finalMintA = processed.mintA;
+              finalMintB = processed.mintB;
+              finalDecA = processed.decimalsA;
+              finalDecB = processed.decimalsB;
+              wasSwapped = processed.wasSwapped;
             }
           }
         }
       } catch {}
       
+      // Swap account/vault fields if pipeline swapped mints
+      const finalTokenVaultA = wasSwapped ? pool.tokenVaultB : pool.tokenVaultA;
+      const finalTokenVaultB = wasSwapped ? pool.tokenVaultA : pool.tokenVaultB;
+      const finalNativeAccountA = wasSwapped ? pool.tokenVaultB : pool.tokenVaultA;
+      const finalNativeAccountB = wasSwapped ? pool.tokenVaultA : pool.tokenVaultB;
+      
       clmm.push({
         id,
         dex: 'Orca',
-        mint_a,
-        mint_b,
+        mint_a: finalMintA,
+        mint_b: finalMintB,
         fee_bps,
         price_a_per_b,
         updated_ms: now,
-        decimals_a: decA,
-        decimals_b: decB,
-        token_vault_a: pool.tokenVaultA,
-        token_vault_b: pool.tokenVaultB,
+        decimals_a: finalDecA,
+        decimals_b: finalDecB,
+        token_vault_a: finalTokenVaultA,
+        token_vault_b: finalTokenVaultB,
         pool_kind: 'clmm',
         sqrt_price_x64: pool.sqrtPrice,
         liquidity: pool.liquidity,
@@ -325,13 +342,14 @@ export async function normalizeOrcaGraphQL(raw: any[]): Promise<PoolsPayload> {
         tick_spacing: pool.tickSpacing,
         whirlpools_config: pool.whirlpoolsConfig,
         _updatedAt: pool._updatedAt,
+        was_swapped: wasSwapped,
         _pipelineProcessed: true, // Mark as processed by price pipeline
         native_mint_a: mint_a,
         native_mint_b: mint_b,
         native_decimals_a: decA,
         native_decimals_b: decB,
-        native_account_a: pool.tokenVaultA,
-        native_account_b: pool.tokenVaultB,
+        native_account_a: finalNativeAccountA,
+        native_account_b: finalNativeAccountB,
         native_oracle: pool.oracle,
         native_reward_infos: pool.rewardInfos,
       } as any);

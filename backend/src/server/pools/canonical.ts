@@ -109,8 +109,8 @@ export function canonicalOrientation(mintA: string, mintB: string): 'keep' | 'sw
   const aSol = solMints.has(mintA);
   const bSol = solMints.has(mintB);
   if (aSol !== bSol) {
-    // Keep SOL (or wSOL) on the B/quote side
-    return aSol ? 'swap' : 'keep';
+    // Keep SOL (or wSOL) on the A/base side
+    return aSol ? 'keep' : 'swap';
   }
 
   const quotePriority = getQuotePriorityMap();

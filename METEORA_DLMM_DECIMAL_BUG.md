@@ -26,7 +26,7 @@ price_a_per_b = 0.672;  // oreoU2 per 1 SOL
 **Step 2: Canonicalization (SWAPS mints and decimals)**
 ```typescript
 // canonical.ts swapPoolFields()
-// SOL is higher priority than oreoU2, so swap to put SOL on B side
+// SOL is higher priority than oreoU2, so swap to put SOL on the A side
 mint_a: oreoU2  →  mint_a: SOL
 mint_b: SOL     →  mint_b: oreoU2
 decimals_a: 11  →  decimals_a: 9

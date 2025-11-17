@@ -24,7 +24,7 @@ swapped=true
    - mint_b = `SOL` (decimals: 9)
    - price_a_per_b = some value
 
-2. **After Canonicalization (SOL moved to B side per quote hierarchy):**
+2. **After Canonicalization (SOL forced to A side per quote hierarchy):**
    - mint_a = `SOL` ← swapped
    - mint_b = `oreoU2...` ← swapped
    - decimals_a = 9 ← swapped  

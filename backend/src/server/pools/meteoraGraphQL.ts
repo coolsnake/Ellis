@@ -277,33 +277,42 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
         }
       } catch {}
       
-      // Calculate price from activeId and binStep
+      // Process price through pipeline with raw Meteora DLMM data
       let price_a_per_b = 0;
+      let finalMintA = mint_a;
+      let finalMintB = mint_b;
+      let finalDecA = decA;
+      let finalDecB = decB;
+      let wasSwapped = false;
+      
       try {
         const activeId = Number(pool.activeId || 0);
         const binStep = Number(pool.binStep || 0);
+        const tokenXMint = String(pool.tokenXMint || mint_a);
+        const tokenYMint = String(pool.tokenYMint || mint_b);
         
-        if (activeId && binStep) {
-          // Meteora DLMM price formula: price = (1 + binStep/10000)^activeId
-          const binStepDecimal = binStep / 10000;
-          const rawPrice = Math.pow(1 + binStepDecimal, activeId);
-          
-          // Adjust for decimal differences
-          const decimalAdjustedPrice = rawPrice * Math.pow(10, decB - decA);
-          
+        if (activeId != null && binStep != null && tokenXMint && tokenYMint) {
           const processed = processPriceThroughPipeline({
             mintA: mint_a,
             mintB: mint_b,
-            rawPrice: decimalAdjustedPrice,
             decimalsA: decA,
             decimalsB: decB,
             poolId: id,
             dex: 'Meteora',
-            poolType: 'clmm'
+            poolType: 'clmm',
+            activeId,
+            binStep,
+            tokenXMint,
+            tokenYMint,
           });
           
           if (processed) {
             price_a_per_b = processed.priceForward;
+            finalMintA = processed.mintA;
+            finalMintB = processed.mintB;
+            finalDecA = processed.decimalsA;
+            finalDecB = processed.decimalsB;
+            wasSwapped = processed.wasSwapped;
           }
         }
       } catch {}
@@ -311,13 +320,13 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
       clmm.push({
         id,
         dex: 'Meteora',
-        mint_a,
-        mint_b,
+        mint_a: finalMintA,
+        mint_b: finalMintB,
         fee_bps,
         price_a_per_b,
         updated_ms: now,
-        decimals_a: decA,
-        decimals_b: decB,
+        decimals_a: finalDecA,
+        decimals_b: finalDecB,
         pool_kind: 'clmm',
         bin_step: pool.binStep,
         active_id: pool.activeId,
@@ -325,6 +334,7 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
         reserve_x: pool.reserveX,
         reserve_y: pool.reserveY,
         _updatedAt: pool._updatedAt,
+        was_swapped: wasSwapped,
         _pipelineProcessed: true, // Mark as processed by price pipeline
         native_mint_a: mint_a,
         native_mint_b: mint_b,

@@ -31,7 +31,7 @@ decimals_b: 9
 price_a_per_b: 0.0001 // oreoU2 per SOL
 ```
 
-### After Canonicalization (SOL to B side)
+### After Canonicalization (SOL to A side)
 ```typescript
 mint_a: 'SOL'        ← swapped
 mint_b: 'oreoU2...'  ← swapped

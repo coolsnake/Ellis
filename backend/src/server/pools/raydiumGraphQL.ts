@@ -5,7 +5,6 @@ import type { AmmPool, ClmmPool, PoolsPayload } from './types.js';
 import { canonicalizePools } from './canonical.js';
 import { resolveManyDecimals } from './decimals.js';
 import { processPriceThroughPipeline } from './pricePipeline.js';
-import { priceFromReserves } from './priceFormulas.js';
 import { executeShyftGraphQL } from './shyftHelpers.js';
 import { poolsMetrics } from '../pools.metrics.js';
 
@@ -346,49 +345,65 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
         continue;
       } else {
         // AMM V4 pool
-        // Try to derive price from swap volume ratios
+        // Process price through pipeline with reserves or swap volumes as fallback
         let price_a_per_b = 0;
+        let finalMintA = mint_a;
+        let finalMintB = mint_b;
+        let finalDecA = decA;
+        let finalDecB = decB;
+        let wasSwapped = false;
         
         try {
-          // Method 1: Use swap volumes if available
-          const swapBaseIn = BigInt(pool.swapBaseInAmount || 0);
-          const swapQuoteIn = BigInt(pool.swapQuoteInAmount || 0);
+          // Try to use actual reserves first, then fall back to swap volumes
+          const reserveA = pool.baseAmount ? BigInt(pool.baseAmount) : null;
+          const reserveB = pool.quoteAmount ? BigInt(pool.quoteAmount) : null;
           
-          if (swapBaseIn > 0n && swapQuoteIn > 0n) {
-            // Price ≈ quoteIn / baseIn (adjusted for decimals)
-            const rawPrice = priceFromReserves(swapQuoteIn, swapBaseIn, decB, decA);
+          // Fallback to swap volumes if reserves not available
+          const reserveA_fallback = reserveA ?? (pool.swapBaseInAmount ? BigInt(pool.swapBaseInAmount) : null);
+          const reserveB_fallback = reserveB ?? (pool.swapQuoteInAmount ? BigInt(pool.swapQuoteInAmount) : null);
+          
+          if (reserveA_fallback && reserveB_fallback && reserveA_fallback > 0n && reserveB_fallback > 0n) {
+            const processed = processPriceThroughPipeline({
+              mintA: mint_a,
+              mintB: mint_b,
+              decimalsA: decA,
+              decimalsB: decB,
+              poolId: id,
+              dex: 'Raydium',
+              poolType: 'amm',
+              reserveA: reserveA_fallback,
+              reserveB: reserveB_fallback,
+            });
             
-            if (rawPrice && rawPrice > 0) {
-              const processed = processPriceThroughPipeline({
-                mintA: mint_a,
-                mintB: mint_b,
-                rawPrice: 1 / rawPrice, // Invert since we calculated quote/base
-                decimalsA: decA,
-                decimalsB: decB,
-                poolId: id,
-                dex: 'Raydium',
-                poolType: 'amm'
-              });
-              
-              if (processed) {
-                price_a_per_b = processed.priceForward;
-              }
+            if (processed) {
+              price_a_per_b = processed.priceForward;
+              finalMintA = processed.mintA;
+              finalMintB = processed.mintB;
+              finalDecA = processed.decimalsA;
+              finalDecB = processed.decimalsB;
+              wasSwapped = processed.wasSwapped;
             }
           }
         } catch {}
         
+        // Swap account fields if pipeline swapped mints
+        const finalAccountA = wasSwapped ? pool.quoteVault : pool.baseVault;
+        const finalAccountB = wasSwapped ? pool.baseVault : pool.quoteVault;
+        const finalNativeAccountA = wasSwapped ? pool.quoteVault : pool.baseVault;
+        const finalNativeAccountB = wasSwapped ? pool.baseVault : pool.quoteVault;
+        
         amm.push({
           id,
           dex: 'Raydium',
-          mint_a,
-          mint_b,
+          mint_a: finalMintA,
+          mint_b: finalMintB,
           fee_bps,
           price_a_per_b,
           updated_ms: now,
-          decimals_a: decA,
-          decimals_b: decB,
-          account_a: pool.baseVault,
-          account_b: pool.quoteVault,
+          decimals_a: finalDecA,
+          decimals_b: finalDecB,
+          account_a: finalAccountA,
+          account_b: finalAccountB,
           pool_kind: 'amm',
           lp_mint: pool.lpMint,
           market_id: pool.marketId,
@@ -399,13 +414,14 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
           pool_open_time: pool.poolOpenTime,
           status: pool.status,
           _updatedAt: pool._updatedAt,
+          was_swapped: wasSwapped,
           _pipelineProcessed: true, // Mark as processed by price pipeline
         native_mint_a: mint_a,
         native_mint_b: mint_b,
         native_decimals_a: decA,
         native_decimals_b: decB,
-        native_account_a: pool.baseVault,
-        native_account_b: pool.quoteVault,
+        native_account_a: finalNativeAccountA,
+        native_account_b: finalNativeAccountB,
         native_open_orders: pool.openOrders,
         native_target_orders: pool.targetOrders,
         native_base_need_take_pnl: pool.baseNeedTakePnl,

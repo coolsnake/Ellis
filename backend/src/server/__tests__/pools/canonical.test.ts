@@ -35,9 +35,9 @@ describe('Canonical Orientation', () => {
     });
     
     it('should handle SOL correctly', () => {
-      // SOL with unknown token → SOL should be on B
-      expect(canonicalOrientation(SOME_TOKEN, SOL)).toBe('keep');
-      expect(canonicalOrientation(SOL, SOME_TOKEN)).toBe('swap');
+      // SOL with unknown token → SOL should be on A
+      expect(canonicalOrientation(SOME_TOKEN, SOL)).toBe('swap');
+      expect(canonicalOrientation(SOL, SOME_TOKEN)).toBe('keep');
     });
     
     it('should use lexicographic ordering for unknown pairs', () => {
@@ -172,13 +172,14 @@ describe('Canonical Orientation', () => {
       expect(canonical[1].mint_a).toBe(SOL);
       expect(canonical[1].mint_b).toBe(USDC);
       
-      // SOME_TOKEN/SOL → keep (SOL as quote)
-      expect(canonical[2].mint_a).toBe(SOME_TOKEN);
-      expect(canonical[2].mint_b).toBe(SOL);
+      // SOME_TOKEN/SOL → swap (SOL as base)
+      expect(canonical[2].mint_a).toBe(SOL);
+      expect(canonical[2].mint_b).toBe(SOME_TOKEN);
+      expect(canonical[2].price_a_per_b).toBeCloseTo(2.0);
       
-      // SOL/SOME_TOKEN → swap (SOL as quote)
-      expect(canonical[3].mint_a).toBe(SOME_TOKEN);
-      expect(canonical[3].mint_b).toBe(SOL);
+      // SOL/SOME_TOKEN → keep (SOL as base)
+      expect(canonical[3].mint_a).toBe(SOL);
+      expect(canonical[3].mint_b).toBe(SOME_TOKEN);
     });
     
     it('should preserve all pool fields during canonicalization', () => {
