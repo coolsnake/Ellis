@@ -20,7 +20,8 @@ export async function fetchMeteoraGraphQL(mints: string[]): Promise<any[]> {
   
   const poolsMap = new Map<string, any>();
   
-  for (const mint of mints) {
+  for (let idx = 0; idx < mints.length; idx++) {
+    const mint = mints[idx];
     try {
       const pools = await fetchMeteoraPoolsForToken({
         mint,
@@ -48,6 +49,9 @@ export async function fetchMeteoraGraphQL(mints: string[]): Promise<any[]> {
         error: String(e?.message || e), 
         cat: 'meteora' 
       });
+    }
+    if (pageDelayMs > 0 && idx < mints.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, pageDelayMs));
     }
   }
 
@@ -164,9 +168,9 @@ async function fetchMeteoraPoolsByAddress(
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i];
     try {
-      const data = await executeShyftGraphQL<{ meteora_dlmm_LbPair: any[] }>({
-        dex: 'meteora',
-        query: `
+        const data = await executeShyftGraphQL<{ meteora_dlmm_LbPair: any[] }>({
+          dex: 'meteora',
+          query: `
           query MeteoraPoolsByAddress($ids: [String!]) {
             meteora_dlmm_LbPair(
               where: {_or: [
@@ -183,18 +187,19 @@ async function fetchMeteoraPoolsByAddress(
               binStep
               protocolFee
               activeId
-              tokenXProgram
-              tokenYProgram
-              bumpSeed
+              oracle
+              feeOwner
+              pairType
+              status
               _updatedAt
             }
           }
         `,
-        variables: { ids: chunk },
-        retries: opts.retries,
-        backoffMs: opts.backoffMs,
-        extraLogContext: { phase: 'detail', chunkIndex: i, chunkSize: chunk.length },
-      });
+          variables: { ids: chunk },
+          retries: opts.retries,
+          backoffMs: opts.backoffMs,
+          extraLogContext: { phase: 'detail', chunkIndex: i, chunkSize: chunk.length },
+        });
 
       const pools = data?.meteora_dlmm_LbPair || [];
       for (const pool of pools) {

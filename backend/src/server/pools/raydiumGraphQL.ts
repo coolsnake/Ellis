@@ -21,7 +21,8 @@ export async function fetchRaydiumGraphQL(mints: string[]): Promise<any[]> {
 
   const poolsMap = new Map<string, any>();
 
-  for (const mint of mints) {
+  for (let idx = 0; idx < mints.length; idx++) {
+    const mint = mints[idx];
     try {
       const pools = await fetchRaydiumPoolsForToken({
         mint,
@@ -47,6 +48,9 @@ export async function fetchRaydiumGraphQL(mints: string[]): Promise<any[]> {
         error: String(e?.message || e),
         cat: 'raydium',
       });
+    }
+    if (pageDelayMs > 0 && idx < mints.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, pageDelayMs));
     }
   }
 
