@@ -263,7 +263,8 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
         
         // Use centralized Meteora price calculation
         const { calculateMeteoraPrice } = await import('./meteoraPrice.js');
-        const priceFromCentralized = calculateMeteoraPrice(
+        // Ensure we calculate price in the pool's declared mint order.
+        let priceFromCentralized = calculateMeteoraPrice(
           activeId,
           binStep,
           tokenXMint,
@@ -273,6 +274,23 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
           decA,
           decB
         );
+
+        // If mint_a/mint_b are inverted relative to tokenX/tokenY, recompute and invert.
+        if ((!priceFromCentralized || !(priceFromCentralized > 0)) && tokenXMint === mint_b && tokenYMint === mint_a) {
+          const swapped = calculateMeteoraPrice(
+            activeId,
+            binStep,
+            tokenXMint,
+            tokenYMint,
+            mint_b,
+            mint_a,
+            decB,
+            decA
+          );
+          if (swapped && swapped > 0 && Number.isFinite(swapped)) {
+            priceFromCentralized = 1 / swapped;
+          }
+        }
         
         if (priceFromCentralized && priceFromCentralized > 0 && Number.isFinite(priceFromCentralized)) {
           price_a_per_b = priceFromCentralized;

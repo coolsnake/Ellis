@@ -413,19 +413,19 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
       if (priceFromSqrt === 0 && incomingPrice > 0 && Number.isFinite(cDecA) && Number.isFinite(cDecB)) {
         const decimalScale = Math.pow(10, (cDecB as number) - (cDecA as number));
         incomingCanonical = incomingPrice * decimalScale;
-        try {
+          try {
           logger.debug('orca.incomingPrice.fallback.normalized', {
-            id,
-            mint_a: cA,
-            mint_b: cB,
+              id, 
+              mint_a: cA, 
+              mint_b: cB, 
             incomingPriceRaw: incomingPrice,
             normalizedPrice: incomingCanonical,
-            decA: cDecA,
-            decB: cDecB,
-            sqrt_price_x64,
-            cat: 'orca'
-          });
-        } catch {}
+              decA: cDecA, 
+              decB: cDecB,
+              sqrt_price_x64,
+              cat: 'orca' 
+            });
+          } catch {}
       }
       
       let priceDerived = priceFromSqrt > 0 ? priceFromSqrt : incomingCanonical;
@@ -608,7 +608,7 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
         const finalAccountB = pipelineSwapped ? account_a : account_b;
         const finalTokenVaultA = pipelineSwapped ? token_vault_b : token_vault_a;
         const finalTokenVaultB = pipelineSwapped ? token_vault_a : token_vault_b;
-
+        
         // CRITICAL: Always push the pool even if price is missing - the graph builder can derive it from sqrt
         // This prevents Orca pools from being silently dropped during normalization
         clmm.push({
