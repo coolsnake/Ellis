@@ -12,6 +12,14 @@ export type GraphEdge = {
   pool_id?: string;      // underlying pool address when available
   source_account?: string; // token account/vault corresponding to source
   target_account?: string; // token account/vault corresponding to target
+  native_mint_a?: string;
+  native_mint_b?: string;
+  native_decimals_a?: number;
+  native_decimals_b?: number;
+  native_account_a?: string;
+  native_account_b?: string;
+  native_reserve_a_raw?: string;
+  native_reserve_b_raw?: string;
   fee_bps?: number;
   liquidity?: number;    // normalized liquidity signal (used for layout/weight)
   liquidity_display?: number; // display: prefer USD TVL, else raw pool liquidity

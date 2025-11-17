@@ -636,6 +636,14 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         poolKind?: 'amm' | 'clmm',
         direction?: 'canonical',
         pool_liquidity_raw?: number,
+        nativeMintA?: string,
+        nativeMintB?: string,
+        nativeDecimalsA?: number,
+        nativeDecimalsB?: number,
+        nativeAccountA?: string,
+        nativeAccountB?: string,
+        nativeReserveA?: string,
+        nativeReserveB?: string,
       ) => {
         // Honor DEX/pool-kind allowlist
         try { if (!isDexKindAllowed(dex, (poolKind as any) || 'amm', edgeAllow)) return; } catch {}
@@ -708,6 +716,14 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           pool_kind: poolKind,
           direction,
           pool_liquidity_raw: poolLiqRaw,
+          native_mint_a: nativeMintA ?? mintA,
+          native_mint_b: nativeMintB ?? mintB,
+          native_decimals_a: nativeDecimalsA,
+          native_decimals_b: nativeDecimalsB,
+          native_account_a: nativeAccountA ?? accountA,
+          native_account_b: nativeAccountB ?? accountB,
+          native_reserve_a_raw: nativeReserveA,
+          native_reserve_b_raw: nativeReserveB,
         };
         if (!nodesMap[a]) nodesMap[a] = { id: a, label: labelByMint[a] };
         if (!nodesMap[b]) nodesMap[b] = { id: b, label: labelByMint[b] };
@@ -910,7 +926,29 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const rawLiq = Number((p as any).pool_liquidity_raw || (p as any).liquidity_base || (p as any).liquidity || 0) || undefined;
           
       const forwardPrice = clampPrice(price);
-      addEdge(p.mint_a, p.mint_b, (p as any).dex || dex, p.fee_bps, liqParam, forwardPrice, usd, pid, (p as any).account_a, (p as any).account_b, (p as any).pool_kind, 'canonical', rawLiq);
+      addEdge(
+        p.mint_a,
+        p.mint_b,
+        (p as any).dex || dex,
+        p.fee_bps,
+        liqParam,
+        forwardPrice,
+        usd,
+        pid,
+        (p as any).account_a,
+        (p as any).account_b,
+        (p as any).pool_kind,
+        'canonical',
+        rawLiq,
+        (p as any).native_mint_a,
+        (p as any).native_mint_b,
+        (p as any).native_decimals_a,
+        (p as any).native_decimals_b,
+        (p as any).native_account_a,
+        (p as any).native_account_b,
+        (p as any).native_reserve_a_raw ?? (p as any).reserve_a_raw,
+        (p as any).native_reserve_b_raw ?? (p as any).reserve_b_raw,
+      );
         }
       };
 

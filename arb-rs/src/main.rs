@@ -493,6 +493,14 @@ async fn main() -> anyhow::Result<()> {
                             f64,
                             String,
                             f64,
+                            Option<String>,
+                            Option<String>,
+                            Option<i64>,
+                            Option<i64>,
+                            Option<String>,
+                            Option<String>,
+                            Option<String>,
+                            Option<String>,
                         )> = Vec::new();
                         let sol_mint: &str = "So11111111111111111111111111111111111111112";
                         let usdc_mint: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
@@ -674,14 +682,38 @@ async fn main() -> anyhow::Result<()> {
                                 liq_disp,
                                 pool_id,
                                 px,
+                                e.native_mint_a.clone(),
+                                e.native_mint_b.clone(),
+                                e.native_decimals_a,
+                                e.native_decimals_b,
+                                e.native_account_a.clone(),
+                                e.native_account_b.clone(),
+                                e.native_reserve_a_raw.clone(),
+                                e.native_reserve_b_raw.clone(),
                             ));
                         }
 
                         // Reacquire write lock briefly to apply calibrated edges
                         {
                             let mut s = loop_state.write().await;
-                            for (source, target, dex, fee, liq, liq_disp, pool_id, price) in
-                                calibrated_edges
+                            for (
+                                source,
+                                target,
+                                dex,
+                                fee,
+                                liq,
+                                liq_disp,
+                                pool_id,
+                                price,
+                                native_mint_a,
+                                native_mint_b,
+                                native_decimals_a,
+                                native_decimals_b,
+                                native_account_a,
+                                native_account_b,
+                                native_reserve_a_raw,
+                                native_reserve_b_raw,
+                            ) in calibrated_edges
                             {
                                 insert_bidirectional_edges(
                                     &mut s.graph,
@@ -693,6 +725,14 @@ async fn main() -> anyhow::Result<()> {
                                     liq,
                                     liq_disp,
                                     price,
+                                    native_mint_a,
+                                    native_mint_b,
+                                    native_decimals_a,
+                                    native_decimals_b,
+                                    native_account_a,
+                                    native_account_b,
+                                    native_reserve_a_raw,
+                                    native_reserve_b_raw,
                                 );
                             }
                             s.metrics.graph_updates_applied =
@@ -3071,47 +3111,48 @@ async fn main() -> anyhow::Result<()> {
                     let pending_version = s.pending_graph_version.load(Ordering::Acquire);
                     let last_resync = s.last_resync_attempt_ms.load(Ordering::Acquire);
                     let now = now_ms();
-                    
+
                     // Track empty cycles (no pending updates)
-                    let empty_cycle = pending_version == u64::MAX && 
-                                      s.pending_added_edges.is_empty() && 
-                                      s.pending_updated_edges.is_empty() && 
-                                      s.pending_removed_edge_ids.is_empty();
-                    
+                    let empty_cycle = pending_version == u64::MAX
+                        && s.pending_added_edges.is_empty()
+                        && s.pending_updated_edges.is_empty()
+                        && s.pending_removed_edge_ids.is_empty();
+
                     if empty_cycle {
                         let prev_empty = s.consecutive_empty_cycles.fetch_add(1, Ordering::Relaxed);
                         let empty_count = prev_empty + 1;
-                        
-                        tracing::info!(
-                            consecutive_empty = empty_count,
-                            "arb.loop.empty_cycle"
-                        );
-                        
+
+                        tracing::info!(consecutive_empty = empty_count, "arb.loop.empty_cycle");
+
                         // After 2 empty cycles, check if we're out of sync (but not more often than every 5 seconds)
                         // With 2s heartbeat + 2 cycles = ~4-5s to detect and recover from desync
                         if prev_empty >= 1 && now.saturating_sub(last_resync) > 5_000 {
                             drop(s);
-                            
+
                             // Query backend for current version
                             let api_base = std::env::var("BACKEND_API_BASE")
                                 .unwrap_or_else(|_| "http://127.0.0.1:3001/api".into());
-                            let version_url = format!("{}/arb/graph/version", api_base.trim_end_matches('/'));
-                            
+                            let version_url =
+                                format!("{}/arb/graph/version", api_base.trim_end_matches('/'));
+
                             if let Ok(Ok(resp)) = tokio::time::timeout(
                                 std::time::Duration::from_millis(500),
                                 reqwest::Client::new().get(&version_url).send(),
-                            ).await {
+                            )
+                            .await
+                            {
                                 if let Ok(json) = resp.json::<serde_json::Value>().await {
                                     if let Some(backend_version) = json["version"].as_u64() {
-                                        let version_gap = backend_version.saturating_sub(last_version);
-                                        
+                                        let version_gap =
+                                            backend_version.saturating_sub(last_version);
+
                                         tracing::info!(
                                             last_version,
                                             backend_version,
                                             gap = version_gap,
                                             "arb.resync: version check"
                                         );
-                                        
+
                                         // If we're ANY versions behind, request resync immediately (lowered from 2)
                                         if version_gap >= 1 {
                                             tracing::warn!(
@@ -3120,28 +3161,49 @@ async fn main() -> anyhow::Result<()> {
                                                 gap = version_gap,
                                                 "arb.resync: detected version lag, requesting snapshot"
                                             );
-                                            
+
                                             // Update last resync attempt time
-                                            loop_state.read().await.last_resync_attempt_ms.store(now, Ordering::Release);
-                                            
+                                            loop_state
+                                                .read()
+                                                .await
+                                                .last_resync_attempt_ms
+                                                .store(now, Ordering::Release);
+
                                             // Request snapshot from backend
-                                            let snapshot_url = format!("{}/arb/graph/current", api_base.trim_end_matches('/'));
+                                            let snapshot_url = format!(
+                                                "{}/arb/graph/current",
+                                                api_base.trim_end_matches('/')
+                                            );
                                             if let Ok(Ok(snap_resp)) = tokio::time::timeout(
                                                 std::time::Duration::from_millis(5000),
-                                                reqwest::Client::new().get(&snapshot_url).send()
-                                            ).await {
-                                                if let Ok(snap_json) = snap_resp.json::<GraphSnapshotReq>().await {
+                                                reqwest::Client::new().get(&snapshot_url).send(),
+                                            )
+                                            .await
+                                            {
+                                                if let Ok(snap_json) =
+                                                    snap_resp.json::<GraphSnapshotReq>().await
+                                                {
                                                     // Process snapshot
-                                                    let result = handle_graph_snapshot(loop_state.clone(), snap_json).await;
+                                                    let result = handle_graph_snapshot(
+                                                        loop_state.clone(),
+                                                        snap_json,
+                                                    )
+                                                    .await;
                                                     tracing::info!(result = ?result, "arb.resync: snapshot applied");
-                                                    
+
                                                     // Reset empty cycle counter after successful resync
-                                                    loop_state.read().await.consecutive_empty_cycles.store(0, Ordering::Relaxed);
+                                                    loop_state
+                                                        .read()
+                                                        .await
+                                                        .consecutive_empty_cycles
+                                                        .store(0, Ordering::Relaxed);
                                                 } else {
                                                     tracing::warn!("arb.resync: failed to parse snapshot response");
                                                 }
                                             } else {
-                                                tracing::warn!("arb.resync: snapshot request timeout or error");
+                                                tracing::warn!(
+                                                    "arb.resync: snapshot request timeout or error"
+                                                );
                                             }
                                         } else {
                                             tracing::info!(
@@ -3153,9 +3215,13 @@ async fn main() -> anyhow::Result<()> {
                                     }
                                 }
                             }
-                            
+
                             // Reset counter after check
-                            loop_state.read().await.consecutive_empty_cycles.store(0, Ordering::Relaxed);
+                            loop_state
+                                .read()
+                                .await
+                                .consecutive_empty_cycles
+                                .store(0, Ordering::Relaxed);
                         }
                     } else {
                         // Reset counter when we get updates
@@ -3173,12 +3239,7 @@ async fn main() -> anyhow::Result<()> {
                 }
                 let detect_ms = detect_start.elapsed().as_millis() as u128;
                 let work_ms = iter_start.elapsed().as_millis() as u128;
-                tracing::info!(
-                    diff_apply_ms,
-                    detect_ms,
-                    work_ms,
-                    "arb.loop.work.timing"
-                );
+                tracing::info!(diff_apply_ms, detect_ms, work_ms, "arb.loop.work.timing");
             }
 
             // Event-driven wait: wake on notify or after periodic heartbeat
@@ -3202,11 +3263,7 @@ async fn main() -> anyhow::Result<()> {
             let wait_ms = wait_start.elapsed().as_millis() as u128;
             let iter_end = Instant::now();
             let total_ms = iter_end.duration_since(iter_start).as_millis() as u128;
-            tracing::info!(
-                iter_ms = total_ms,
-                wait_ms,
-                "arb.loop.end"
-            );
+            tracing::info!(iter_ms = total_ms, wait_ms, "arb.loop.end");
         }
     });
 
@@ -3432,6 +3489,14 @@ struct StartReqEdge {
     pool_id: Option<String>,
     liquidity_display: Option<f64>,
     price_a_per_b: Option<f64>,
+    native_mint_a: Option<String>,
+    native_mint_b: Option<String>,
+    native_decimals_a: Option<i64>,
+    native_decimals_b: Option<i64>,
+    native_account_a: Option<String>,
+    native_account_b: Option<String>,
+    native_reserve_a_raw: Option<String>,
+    native_reserve_b_raw: Option<String>,
 }
 #[derive(Deserialize, Clone)]
 struct StartReqGraph {
@@ -3462,6 +3527,14 @@ struct GraphDiffEdge {
     liquidity: Option<f64>,
     liquidity_display: Option<f64>,
     price_a_per_b: Option<f64>,
+    native_mint_a: Option<String>,
+    native_mint_b: Option<String>,
+    native_decimals_a: Option<i64>,
+    native_decimals_b: Option<i64>,
+    native_account_a: Option<String>,
+    native_account_b: Option<String>,
+    native_reserve_a_raw: Option<String>,
+    native_reserve_b_raw: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -3522,10 +3595,26 @@ fn insert_bidirectional_edges(
     liquidity: f64,
     liquidity_display: f64,
     price_a_per_b: f64,
+    native_mint_a: Option<String>,
+    native_mint_b: Option<String>,
+    native_decimals_a: Option<i64>,
+    native_decimals_b: Option<i64>,
+    native_account_a: Option<String>,
+    native_account_b: Option<String>,
+    native_reserve_a_raw: Option<String>,
+    native_reserve_b_raw: Option<String>,
 ) {
     if !(price_a_per_b.is_finite() && price_a_per_b > 0.0) {
         return;
     }
+    let native_mint_a_rev = native_mint_a.clone();
+    let native_mint_b_rev = native_mint_b.clone();
+    let native_decimals_a_rev = native_decimals_a.clone();
+    let native_decimals_b_rev = native_decimals_b.clone();
+    let native_account_a_rev = native_account_a.clone();
+    let native_account_b_rev = native_account_b.clone();
+    let native_reserve_a_rev = native_reserve_a_raw.clone();
+    let native_reserve_b_rev = native_reserve_b_raw.clone();
     let (_, rate_forward) = edge_rate_effective_local(Some(price_a_per_b), Some(fee_bps));
     graph.upsert_edge(
         dex,
@@ -3538,6 +3627,14 @@ fn insert_bidirectional_edges(
             dex: dex.to_string(),
             pool_id: pool_id.to_string(),
             liquidity_display,
+            native_mint_a,
+            native_mint_b,
+            native_decimals_a,
+            native_decimals_b,
+            native_account_a,
+            native_account_b,
+            native_reserve_a_raw,
+            native_reserve_b_raw,
         },
     );
 
@@ -3562,6 +3659,14 @@ fn insert_bidirectional_edges(
             dex: dex.to_string(),
             pool_id: rev_pool_id,
             liquidity_display,
+            native_mint_a: native_mint_a_rev,
+            native_mint_b: native_mint_b_rev,
+            native_decimals_a: native_decimals_a_rev,
+            native_decimals_b: native_decimals_b_rev,
+            native_account_a: native_account_a_rev,
+            native_account_b: native_account_b_rev,
+            native_reserve_a_raw: native_reserve_a_rev,
+            native_reserve_b_raw: native_reserve_b_rev,
         },
     );
 }
@@ -3699,6 +3804,14 @@ async fn handle_graph_snapshot(
             liq,
             liq_disp,
             px,
+            e.native_mint_a.clone(),
+            e.native_mint_b.clone(),
+            e.native_decimals_a,
+            e.native_decimals_b,
+            e.native_account_a.clone(),
+            e.native_account_b.clone(),
+            e.native_reserve_a_raw.clone(),
+            e.native_reserve_b_raw.clone(),
         );
     }
     s.graph = new_graph;
@@ -3847,6 +3960,14 @@ async fn arb_start(
                 liq,
                 liq_disp,
                 px,
+                e.native_mint_a.clone(),
+                e.native_mint_b.clone(),
+                e.native_decimals_a,
+                e.native_decimals_b,
+                e.native_account_a.clone(),
+                e.native_account_b.clone(),
+                e.native_reserve_a_raw.clone(),
+                e.native_reserve_b_raw.clone(),
             );
         }
         let nodes_cnt = new_graph.g.node_count() as u64;
@@ -4903,7 +5024,7 @@ async fn arb_graph_ack(
         if remaining_ms == 0 {
             break;
         }
-        
+
         let timeout_duration = Duration::from_millis(remaining_ms.min(500)); // Check at most every 500ms
         let _ = tokio::time::timeout(timeout_duration, version_notifier.notified()).await;
     }
@@ -4990,6 +5111,14 @@ mod e2e_tests {
             liquidity: Some(1.0),
             liquidity_display: Some(1.0),
             price_a_per_b: Some(1.0),
+            native_mint_a: None,
+            native_mint_b: None,
+            native_decimals_a: None,
+            native_decimals_b: None,
+            native_account_a: None,
+            native_account_b: None,
+            native_reserve_a_raw: None,
+            native_reserve_b_raw: None,
         }];
         let req_ok = GraphDiffReq {
             version: Some(2),
@@ -5029,8 +5158,7 @@ mod e2e_tests {
                 let liq = e.liquidity.unwrap_or(0.0);
                 let liq_disp = e.liquidity_display.unwrap_or(0.0);
                 let px = e.price_a_per_b.unwrap_or(0.0);
-                let pool_id =
-                    canonical_edge_id(e.pool_id.as_deref(), &e.source, &e.target, &dex);
+                let pool_id = canonical_edge_id(e.pool_id.as_deref(), &e.source, &e.target, &dex);
                 insert_bidirectional_edges(
                     &mut s.graph,
                     &dex,
@@ -5041,6 +5169,14 @@ mod e2e_tests {
                     liq,
                     liq_disp,
                     px,
+                    e.native_mint_a.clone(),
+                    e.native_mint_b.clone(),
+                    e.native_decimals_a,
+                    e.native_decimals_b,
+                    e.native_account_a.clone(),
+                    e.native_account_b.clone(),
+                    e.native_reserve_a_raw.clone(),
+                    e.native_reserve_b_raw.clone(),
                 );
             };
             for e in added.iter() {
@@ -5119,6 +5255,14 @@ mod e2e_tests {
             liquidity: Some(1.0),
             liquidity_display: Some(1.0),
             price_a_per_b: Some(0.5),
+            native_mint_a: None,
+            native_mint_b: None,
+            native_decimals_a: None,
+            native_decimals_b: None,
+            native_account_a: None,
+            native_account_b: None,
+            native_reserve_a_raw: None,
+            native_reserve_b_raw: None,
         }; // B per A = 2.0
         let add2 = GraphDiffEdge {
             source: "B".into(),
@@ -5129,6 +5273,14 @@ mod e2e_tests {
             liquidity: Some(1.0),
             liquidity_display: Some(1.0),
             price_a_per_b: Some(1.6666666667),
+            native_mint_a: None,
+            native_mint_b: None,
+            native_decimals_a: None,
+            native_decimals_b: None,
+            native_account_a: None,
+            native_account_b: None,
+            native_reserve_a_raw: None,
+            native_reserve_b_raw: None,
         }; // A per B = 1.666.. => B per A = 0.6
         let diff = GraphDiffReq {
             version: Some(2),
@@ -5154,8 +5306,7 @@ mod e2e_tests {
                 let liq = e.liquidity.unwrap_or(0.0);
                 let liq_disp = e.liquidity_display.unwrap_or(0.0);
                 let px = e.price_a_per_b.unwrap_or(0.0);
-                let pool_id =
-                    canonical_edge_id(e.pool_id.as_deref(), &e.source, &e.target, &dex);
+                let pool_id = canonical_edge_id(e.pool_id.as_deref(), &e.source, &e.target, &dex);
                 insert_bidirectional_edges(
                     &mut s.graph,
                     &dex,
@@ -5166,6 +5317,14 @@ mod e2e_tests {
                     liq,
                     liq_disp,
                     px,
+                    e.native_mint_a.clone(),
+                    e.native_mint_b.clone(),
+                    e.native_decimals_a,
+                    e.native_decimals_b,
+                    e.native_account_a.clone(),
+                    e.native_account_b.clone(),
+                    e.native_reserve_a_raw.clone(),
+                    e.native_reserve_b_raw.clone(),
                 );
             };
             for e in added.iter() {

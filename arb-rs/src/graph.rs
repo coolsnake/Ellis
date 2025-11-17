@@ -15,6 +15,22 @@ pub struct EdgeData {
     pub pool_id: String,
     #[allow(dead_code)]
     pub liquidity_display: f64,
+    #[allow(dead_code)]
+    pub native_mint_a: Option<String>,
+    #[allow(dead_code)]
+    pub native_mint_b: Option<String>,
+    #[allow(dead_code)]
+    pub native_decimals_a: Option<i64>,
+    #[allow(dead_code)]
+    pub native_decimals_b: Option<i64>,
+    #[allow(dead_code)]
+    pub native_account_a: Option<String>,
+    #[allow(dead_code)]
+    pub native_account_b: Option<String>,
+    #[allow(dead_code)]
+    pub native_reserve_a_raw: Option<String>,
+    #[allow(dead_code)]
+    pub native_reserve_b_raw: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -179,6 +195,14 @@ mod tests {
                 dex: "Raydium".into(),
                 pool_id: String::new(),
                 liquidity_display: 1000.0,
+                native_mint_a: None,
+                native_mint_b: None,
+                native_decimals_a: None,
+                native_decimals_b: None,
+                native_account_a: None,
+                native_account_b: None,
+                native_reserve_a_raw: None,
+                native_reserve_b_raw: None,
             },
         );
         g.upsert_edge(
@@ -192,6 +216,14 @@ mod tests {
                 dex: "Raydium".into(),
                 pool_id: String::new(),
                 liquidity_display: 1000.0,
+                native_mint_a: None,
+                native_mint_b: None,
+                native_decimals_a: None,
+                native_decimals_b: None,
+                native_account_a: None,
+                native_account_b: None,
+                native_reserve_a_raw: None,
+                native_reserve_b_raw: None,
             },
         );
         assert!(g.g.node_count() >= 2);
