@@ -297,6 +297,7 @@ export async function normalizeOrcaGraphQL(raw: any[]): Promise<PoolsPayload> {
         tick_spacing: pool.tickSpacing,
         whirlpools_config: pool.whirlpoolsConfig,
         _updatedAt: pool._updatedAt,
+        _pipelineProcessed: true, // Mark as processed by price pipeline
       } as any);
     } catch (error: any) {
       logger.warn('orca.graphql.normalize.pool.failed', { 

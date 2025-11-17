@@ -103,7 +103,6 @@ async function fetchMeteoraPoolsForToken(
           reserveX
           reserveY
           binStep
-          baseFeeRate
           protocolFee
           liquidity
           activeId
@@ -237,10 +236,14 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
       const decA = decimalsMap.get(mint_a) ?? 9;
       const decB = decimalsMap.get(mint_b) ?? 9;
       
-      // Parse fee from baseFeeRate (usually in bps)
-      let fee_bps = 25;
+      // Default fee: Meteora DLMM typically uses binStep as fee indicator
+      // binStep of 10 = 0.1% = 10 bps, binStep of 25 = 0.25% = 25 bps
+      let fee_bps = 25; // Default
       try {
-        fee_bps = Number(pool.baseFeeRate || 25);
+        const binStep = Number(pool.binStep || 0);
+        if (binStep > 0 && binStep <= 1000) {
+          fee_bps = binStep; // binStep is already in bps
+        }
       } catch {}
       
       // Calculate price from activeId and binStep
@@ -291,6 +294,7 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
         reserve_x: pool.reserveX,
         reserve_y: pool.reserveY,
         _updatedAt: pool._updatedAt,
+        _pipelineProcessed: true, // Mark as processed by price pipeline
       } as any);
     } catch (error: any) {
       logger.warn('meteora.graphql.normalize.pool.failed', { 
