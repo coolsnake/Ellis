@@ -1452,7 +1452,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         addEdge(p.mint_b, p.mint_a, 'Pumpswap', p.fee_bps, liqDisplay, rev, usd, pidRev, (p as any).account_b, (p as any).account_a, 'amm', 'reverse', rawLiqPump);
       }
       for (const p of (orcValid.clmm || [])) {
-        // amounts from HTTP (raw token units) need decimals to convert to whole tokens for USD TVL
+        const pid = safePoolId(p);
+        const pipelineProcessed = (p as any)?._pipelineProcessed === true;
         const decA = Number((p as any)?.decimals_a ?? NaN);
         const decB = Number((p as any)?.decimals_b ?? NaN);
         const amtA = Number((p as any)?.amount_a ?? NaN);
@@ -1463,160 +1464,30 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const wholeB = amtB / Math.pow(10, decB);
           usd = tvlUsd(p.mint_a, p.mint_b, wholeA, wholeB);
         }
-        const pid = safePoolId(p);
         const liqParamOrcaClmm = (p as any)?.liquidity_display ?? p.liquidity;
-        // Prefer normalized price from source; fallback to sqrt-derived only when missing
-        const incomingPrice = (p as any).price_a_per_b;
-        let priceClmmOrca: number | undefined = calibratePrice(p.mint_a, p.mint_b, incomingPrice);
-        // DIAGNOSTIC: Track price through pipeline for first few pools
-        const trackPrice = ((orcValid.clmm || []).indexOf(p) < 3);
-        if (trackPrice) {
-          try {
-            logger.info('graph.orca.price.pipeline.start', {
-              pool_id: pid?.slice(0, 8),
-              mint_a: p.mint_a,
-              mint_b: p.mint_b,
-              incoming: incomingPrice,
-              afterCalibrate: priceClmmOrca,
-              sqrt_price_x64: (p as any)?.sqrt_price_x64,
-              decimals_a: (p as any)?.decimals_a,
-              decimals_b: (p as any)?.decimals_b,
-              cat: 'graph'
-            });
-          } catch {}
-        }
-        if (!(priceClmmOrca && priceClmmOrca > 0)) {
-          try {
-            const s64 = Number((p as any)?.sqrt_price_x64 || 0);
-            const decA = Number((p as any)?.decimals_a ?? decimalsByMint[p.mint_a] ?? NaN);
-            const decB = Number((p as any)?.decimals_b ?? decimalsByMint[p.mint_b] ?? NaN);
-            // DIAGNOSTIC: Log why price derivation fails
-            if (s64 <= 0) {
-              try {
-                logger.debug('graph.orca.price.no_sqrt', {
-                  pool_id: pid?.slice(0, 8),
-                  mint_a: p.mint_a,
-                  mint_b: p.mint_b,
-                  sqrt_price_x64: s64,
-                  cat: 'graph'
-                });
-              } catch {}
-            } else if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
-              try {
-                logger.warn('graph.orca.price.no_decimals', {
-                  pool_id: pid?.slice(0, 8),
-                  mint_a: p.mint_a,
-                  mint_b: p.mint_b,
-                  decimals_a: decA,
-                  decimals_b: decB,
-                  decimals_a_finite: Number.isFinite(decA),
-                  decimals_b_finite: Number.isFinite(decB),
-                  cat: 'graph'
-                });
-              } catch {}
-            }
-            if (s64 > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
-              const ratio = s64 / Math.pow(2, 64);
-              const scale = Math.pow(10, decB - decA);
-              const derived = scale / (ratio * ratio); // A per 1 B
-              if (Number.isFinite(derived) && derived > 0) priceClmmOrca = derived;
-              else {
-                try {
-                  logger.warn('graph.orca.price.invalid_derived', {
-                    pool_id: pid?.slice(0, 8),
-                    mint_a: p.mint_a,
-                    mint_b: p.mint_b,
-                    sqrt_price_x64: s64,
-                    ratio,
-                    scale,
-                    derived,
-                    cat: 'graph'
-                  });
-                } catch {}
-              }
-            }
-          } catch {}
-        }
-        try {
-          const pa = getPriceByMintVar(p.mint_a)?.usdc ?? null;
-          const pb = getPriceByMintVar(p.mint_b)?.usdc ?? null;
-          const ref = (pa && pb && pb > 0) ? ((pb as number) / (pa as number)) : undefined;
-          if (priceClmmOrca) {
-            const fwd = 1 / priceClmmOrca, rev = priceClmmOrca;
-            if (ref) {
-              const dev = Math.max(priceClmmOrca / ref, ref / priceClmmOrca);
-              if (dev > 5 || fwd > 1e4 || rev > 1e4 || fwd < 1e-6 || rev < 1e-12) {
-                logger.debug('graph.calibrate.orca.clmm outlier', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, raw: (p as any)?.price_a_per_b, calibrated: priceClmmOrca, ref, dev, fwd, rev, decA: (p as any)?.decimals_a, decB: (p as any)?.decimals_b, sqrt_price_x64: (p as any)?.sqrt_price_x64 });
-              }
-            } else {
-              if (fwd > 1e4 || rev > 1e4 || fwd < 1e-6 || rev < 1e-12) {
-                logger.debug('graph.calibrate.orca.clmm magnitude', { pool: (p as any)?.id, mintA: p.mint_a, mintB: p.mint_b, raw: (p as any)?.price_a_per_b, calibrated: priceClmmOrca, fwd, rev, decA: (p as any)?.decimals_a, decB: (p as any)?.decimals_b, sqrt_price_x64: (p as any)?.sqrt_price_x64 });
-              }
-            }
-          }
-        } catch {}
-        // Orient as A per 1 B using USD reference when available
-        const beforeOrient = priceClmmOrca;
-        // Price already canonicalized - trust canonicalization
-        // priceClmmOrca = orientWithUsdFallbacks(p.mint_a, p.mint_b, priceClmmOrca);
-        // Rescale to global decimals before clamping so forward/reverse stay reciprocal
-        try {
-          const poolDecA = Number((p as any)?.decimals_a);
-          const poolDecB = Number((p as any)?.decimals_b);
-          const ga = Number(isFinite(Number(decimalsByMint[p.mint_a])) ? decimalsByMint[p.mint_a] : poolDecA);
-          const gb = Number(isFinite(Number(decimalsByMint[p.mint_b])) ? decimalsByMint[p.mint_b] : poolDecB);
-          priceClmmOrca = rescalePriceByDecimals(priceClmmOrca, poolDecA, poolDecB, ga, gb);
-        } catch {}
+        let forwardPrice = Number((p as any)?.price_a_per_b);
 
-        // Forward + reverse with strict reciprocal rule and consistency guard
-        const fwdClmm = clampPrice((priceClmmOrca && priceClmmOrca > 0) ? priceClmmOrca : undefined);
-        // DIAGNOSTIC: Track price transformations for first few pools
-        if (trackPrice) {
-          try {
-            logger.info('graph.orca.price.pipeline.end', {
-              pool_id: pid?.slice(0, 8),
-              beforeOrient,
-              afterOrient: priceClmmOrca,
-              afterClamp: fwdClmm,
-              willCreateEdge: !!fwdClmm,
-              cat: 'graph'
-            });
-          } catch {}
+        if (!pipelineProcessed) {
+          const incomingPrice = forwardPrice;
+          let priceClmmOrca: number | undefined = calibratePrice(p.mint_a, p.mint_b, incomingPrice);
+          if (!(priceClmmOrca && priceClmmOrca > 0)) {
+            try {
+              const s64 = Number((p as any)?.sqrt_price_x64 || 0);
+              if (s64 > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
+                const ratio = s64 / Math.pow(2, 64);
+                const scale = Math.pow(10, decB - decA);
+                const derived = scale / (ratio * ratio);
+                if (Number.isFinite(derived) && derived > 0) priceClmmOrca = derived;
+              }
+            } catch {}
+          }
+          forwardPrice = priceClmmOrca || incomingPrice;
         }
-        // Calculate reverse with proper decimal rescaling
-        const decA_orca_clmm = Number((p as any)?.decimals_a ?? NaN);
-        const decB_orca_clmm = Number((p as any)?.decimals_b ?? NaN);
-        const ga_orca_clmm = Number(isFinite(Number(decimalsByMint[p.mint_a])) ? decimalsByMint[p.mint_a] : decA_orca_clmm);
-        const gb_orca_clmm = Number(isFinite(Number(decimalsByMint[p.mint_b])) ? decimalsByMint[p.mint_b] : decB_orca_clmm);
-        const revClmm = computePriceReverse(
-          p.mint_a,
-          p.mint_b,
-          fwdClmm,
-          priceClmmOrca && priceClmmOrca > 0 ? priceClmmOrca : undefined,
-          decA_orca_clmm,
-          decB_orca_clmm,
-          ga_orca_clmm,
-          gb_orca_clmm,
-          (m) => { try { return getPriceByMintVar(m)?.usdc ?? undefined; } catch { return undefined; } },
-        );
+
+        const fwdClmm = clampPrice(forwardPrice && forwardPrice > 0 ? forwardPrice : undefined);
+        const revClmm = fwdClmm && fwdClmm > 0 ? 1 / fwdClmm : undefined;
         const rawLiqOrcaClmm = Number((p as any).pool_liquidity_raw || (p as any).liquidity || 0) || undefined;
-        // DIAGNOSTIC: Log when we fail to create edge due to missing price
-        if (!fwdClmm) {
-          try {
-            logger.warn('graph.orca.edge.skipped', {
-              pool_id: pid?.slice(0, 8),
-              mint_a: p.mint_a,
-              mint_b: p.mint_b,
-              priceClmmOrca,
-              fwdClmm,
-              sqrt_price_x64: (p as any)?.sqrt_price_x64,
-              decimals_a: (p as any)?.decimals_a,
-              decimals_b: (p as any)?.decimals_b,
-              reason: 'no_valid_forward_price',
-              cat: 'graph'
-            });
-          } catch {}
-        }
+
         addEdge(p.mint_a, p.mint_b, 'Orca', p.fee_bps, liqParamOrcaClmm, fwdClmm, usd, pid, (p as any).account_a, (p as any).account_b, 'clmm', 'forward', rawLiqOrcaClmm);
         const pidClmmOrcaRev = pid ? `${pid}-rev` : undefined;
         addEdge(p.mint_b, p.mint_a, 'Orca', p.fee_bps, liqParamOrcaClmm, revClmm, usd, pidClmmOrcaRev, (p as any).account_b, (p as any).account_a, 'clmm', 'reverse', rawLiqOrcaClmm);
