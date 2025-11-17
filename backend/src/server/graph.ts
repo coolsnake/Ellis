@@ -644,6 +644,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         nativeAccountB?: string,
         nativeReserveA?: string,
         nativeReserveB?: string,
+        wasSwapped?: boolean,
       ) => {
         // Honor DEX/pool-kind allowlist
         try { if (!isDexKindAllowed(dex, (poolKind as any) || 'amm', edgeAllow)) return; } catch {}
@@ -724,6 +725,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           native_account_b: nativeAccountB ?? accountB,
           native_reserve_a_raw: nativeReserveA,
           native_reserve_b_raw: nativeReserveB,
+          was_swapped: wasSwapped,
         };
         if (!nodesMap[a]) nodesMap[a] = { id: a, label: labelByMint[a] };
         if (!nodesMap[b]) nodesMap[b] = { id: b, label: labelByMint[b] };
@@ -924,6 +926,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const usd = (p as any)?.tvl_usd;
           const liqParam = (p as any)?.liquidity_display ?? (p as any).liquidity_base ?? (p as any).liquidity;
           const rawLiq = Number((p as any).pool_liquidity_raw || (p as any).liquidity_base || (p as any).liquidity || 0) || undefined;
+          const wasSwapped = (p as any)?.was_swapped;
           
       const forwardPrice = clampPrice(price);
       addEdge(
@@ -948,6 +951,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         (p as any).native_account_b,
         (p as any).native_reserve_a_raw ?? (p as any).reserve_a_raw,
         (p as any).native_reserve_b_raw ?? (p as any).reserve_b_raw,
+        wasSwapped,
       );
         }
       };
@@ -1090,7 +1094,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       
       // Validate edges: forward * reverse ≈ 1
       try {
-        const { validateEdgesComprehensive } = await import('./pools/comprehensiveValidation.js');
+        const { validateEdgesComprehensive, validateEdgePriceDiscrepancies } = await import('./pools/comprehensiveValidation.js');
         const edgeValidationResults = validateEdgesComprehensive(snapshot.edges);
         const invalidCount = edgeValidationResults.filter(r => !r.isValid).length;
         if (invalidCount > 0) {
@@ -1101,6 +1105,11 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             cat: 'graph',
           });
         }
+        
+        // Validate price discrepancies between swapped/non-swapped edges
+        validateEdgePriceDiscrepancies(snapshot.edges, {
+          maxDeviation: 0.10, // 10% threshold
+        });
       } catch (e: any) {
         logger.warn('graph.edges.validation.error', {
           error: String(e?.message || e),

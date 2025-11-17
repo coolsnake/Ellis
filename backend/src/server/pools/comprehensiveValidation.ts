@@ -503,3 +503,107 @@ export function validateEdgesComprehensive(
   return results;
 }
 
+/**
+ * Validate edges for price discrepancies between swapped and non-swapped pools
+ * Logs warnings when edges with the same source->target have significantly different prices
+ * based on swap state, which could indicate canonicalization issues.
+ */
+export function validateEdgePriceDiscrepancies(
+  edges: Array<{ 
+    source: string; 
+    target: string; 
+    price_a_per_b?: number; 
+    pool_id?: string; 
+    dex?: string;
+    was_swapped?: boolean;
+  }>,
+  options: {
+    maxDeviation?: number; // Default 0.10 (10%)
+  } = {}
+): void {
+  const { maxDeviation = 0.10 } = options;
+  
+  // Group edges by source->target pair
+  const edgesByPair = new Map<string, Array<{
+    poolId: string;
+    dex: string;
+    price: number;
+    wasSwapped: boolean;
+  }>>();
+  
+  for (const edge of edges) {
+    if (!edge.price_a_per_b || edge.price_a_per_b <= 0) continue;
+    
+    const pairKey = `${edge.source}:${edge.target}`;
+    if (!edgesByPair.has(pairKey)) {
+      edgesByPair.set(pairKey, []);
+    }
+    
+    edgesByPair.get(pairKey)!.push({
+      poolId: edge.pool_id || 'unknown',
+      dex: edge.dex || 'unknown',
+      price: edge.price_a_per_b,
+      wasSwapped: edge.was_swapped === true,
+    });
+  }
+  
+  // Check for discrepancies between swapped and non-swapped edges
+  for (const [pairKey, edgeList] of edgesByPair.entries()) {
+    if (edgeList.length < 2) continue; // Need at least 2 edges to compare
+    
+    const swappedEdges = edgeList.filter(e => e.wasSwapped);
+    const nonSwappedEdges = edgeList.filter(e => !e.wasSwapped);
+    
+    // Only check if we have both swapped and non-swapped edges
+    if (swappedEdges.length === 0 || nonSwappedEdges.length === 0) continue;
+    
+    // Calculate median prices for each group
+    const swappedPrices = swappedEdges.map(e => e.price).sort((a, b) => a - b);
+    const nonSwappedPrices = nonSwappedEdges.map(e => e.price).sort((a, b) => a - b);
+    
+    const swappedMedian = swappedPrices.length % 2 === 0
+      ? (swappedPrices[swappedPrices.length / 2 - 1] + swappedPrices[swappedPrices.length / 2]) / 2
+      : swappedPrices[Math.floor(swappedPrices.length / 2)];
+    
+    const nonSwappedMedian = nonSwappedPrices.length % 2 === 0
+      ? (nonSwappedPrices[nonSwappedPrices.length / 2 - 1] + nonSwappedPrices[nonSwappedPrices.length / 2]) / 2
+      : nonSwappedPrices[Math.floor(nonSwappedPrices.length / 2)];
+    
+    // Check deviation between medians
+    const deviation = Math.max(swappedMedian / nonSwappedMedian, nonSwappedMedian / swappedMedian) - 1;
+    
+    if (deviation > maxDeviation) {
+      // Check if prices are inverted (one median ≈ 1 / other median)
+      const product = swappedMedian * nonSwappedMedian;
+      const isInverted = Math.abs(product - 1) < 0.05; // Within 5% of 1.0
+      
+      logger.warn('graph.edges.price_discrepancy.swap_state', {
+        pair: pairKey,
+        source: pairKey.split(':')[0].slice(0, 8) + '...',
+        target: pairKey.split(':')[1].slice(0, 8) + '...',
+        swappedMedian,
+        nonSwappedMedian,
+        deviationPct: (deviation * 100).toFixed(2),
+        product,
+        isInverted,
+        swappedCount: swappedEdges.length,
+        nonSwappedCount: nonSwappedEdges.length,
+        swappedEdges: swappedEdges.map(e => ({
+          poolId: e.poolId.slice(0, 12) + '...',
+          dex: e.dex,
+          price: e.price,
+        })),
+        nonSwappedEdges: nonSwappedEdges.map(e => ({
+          poolId: e.poolId.slice(0, 12) + '...',
+          dex: e.dex,
+          price: e.price,
+        })),
+        hint: isInverted 
+          ? 'Prices appear inverted - canonicalization may have inconsistent swap handling'
+          : 'Prices differ significantly - check canonicalization logic',
+        cat: 'graph.validation',
+      });
+    }
+  }
+}
+

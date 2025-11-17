@@ -102,6 +102,7 @@ export function edgesFromPoolIncremental(
     pool_kind: kind as any,
     direction: 'canonical',
     pool_liquidity_raw: (p as any)?.pool_liquidity_raw,
+    was_swapped: (p as any)?.was_swapped, // Preserve swap state
   };
   return [forward];
 }

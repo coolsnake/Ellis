@@ -29,6 +29,7 @@ export type GraphEdge = {
   pool_kind?: 'amm' | 'clmm'; // explicit pool kind
   direction?: 'canonical'; // edges are stored in canonical orientation only
   pool_liquidity_raw?: number; // raw pool liquidity metric when provided by the source (e.g., CLMM liquidity)
+  was_swapped?: boolean; // Track if pool was swapped during canonicalization
 };
 
 export type GraphSnapshot = {
