@@ -22,7 +22,7 @@ import { promises as fsp } from 'fs';
 import { resolve } from 'path';
 import { recordSessionLog, writeSessionLogAndClear, writeConsolidatedSessionLog } from '../utils/sessionLogs.js';
 import { readJson } from '../utils/fs.js';
-import { startRaydiumRefreshLoop } from './pools.js';
+import { startPoolWebsocketsOnlyOnce } from './pools.js';
 import util from 'util';
 import { ensureDir, writeJson } from '../utils/fs.js';
 import { setupRustLogForwarding, shutdownRustProcess } from './arbProcess.js';
@@ -649,7 +649,7 @@ server.listen(CONFIG.port, () => {
 
   // Background: start periodic pool refresh (includes immediate warmup) if enabled
   // DEPRECATED: avoid auto-starting loops; use /arb/pools/refresh to coordinate fetch+subscribe
-  // try { if ((CONFIG as any)?.system?.autoStartPools) { startRaydiumRefreshLoop(); } } catch {}
+  // try { if ((CONFIG as any)?.system?.autoStartPools) { startPoolWebsocketsOnlyOnce(); } } catch {}
 
   // Removed background verified fetch; use manual endpoint
 

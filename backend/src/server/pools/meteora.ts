@@ -9,6 +9,8 @@ import { resolveManyDecimals } from './decimals.js';
 import { verifyCanonicalization } from './validation.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
 import { getTokenMeta } from '../../execution/resolver/tokenMeta.js';
+import { processPriceThroughPipeline } from './pricePipeline.js';
+import { getPriceByMint } from '../../server/priceStore.js';
 
 const METEORA_DLMM_PROGRAM_ID = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
 const ATOMIC_INT_REGEX = /^[-+]?\d+$/;
@@ -24,16 +26,6 @@ function looksLikeAtomicAmount(value: any): boolean {
     return ATOMIC_INT_REGEX.test(trimmed);
   }
   return false;
-}
-
-function normalizeAmountWithDecimals(raw: any, decimals?: number): number | undefined {
-  if (raw == null) return undefined;
-  const num = Number(raw);
-  if (!Number.isFinite(num)) return undefined;
-  if (Number.isFinite(decimals) && looksLikeAtomicAmount(raw)) {
-    return num / Math.pow(10, decimals as number);
-  }
-  return num;
 }
 
 export async function fetchMeteoraHttp(): Promise<any> {
@@ -126,35 +118,10 @@ export async function fetchMeteoraHttp(): Promise<any> {
 export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
   const now = Date.now();
   const clmm: ClmmPool[] = [];
-  let tokenModule: any = null;
   try {
-    tokenModule = await import('../../utils/tokens.js');
-  } catch {
-    tokenModule = null;
-  }
-  const tokenProgramMemo = new Map<string, 'spl-token'|'token-2022'>();
-  const pendingTokenProgram = new Map<string, Promise<'spl-token'|'token-2022'>>();
-  const ensureTokenProgram = (mint: string): Promise<'spl-token'|'token-2022'> => {
-    if (!mint) return Promise.resolve('spl-token');
-    const cached = tokenProgramMemo.get(mint);
-    if (cached) return Promise.resolve(cached);
-    const existingPromise = pendingTokenProgram.get(mint);
-    if (existingPromise) return existingPromise;
-    const p = (async () => {
-      try {
-        const meta = await getTokenMeta(mint);
-        tokenProgramMemo.set(mint, meta.program);
-        return meta.program;
-      } catch {
-        tokenProgramMemo.set(mint, 'spl-token');
-        return 'spl-token';
-      } finally {
-        pendingTokenProgram.delete(mint);
-      }
-    })();
-    pendingTokenProgram.set(mint, p);
-    return p;
-  };
+    const { getTokenMeta } = await import('../../execution/resolver/tokenMeta.js');
+  } catch {}
+  
   const arrCandidates: any[] = [];
   if (Array.isArray(raw?.pairs)) arrCandidates.push(raw.pairs);
   if (Array.isArray(raw)) arrCandidates.push(raw);
@@ -203,424 +170,119 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     if (!Number.isFinite(decA)) decA = 6;
     if (!Number.isFinite(decB)) decB = 6;
 
-    // DIAGNOSTIC: Log when API decimals differ from our map
-    if ((Number.isFinite(apiDecA) && apiDecA !== decA) || (Number.isFinite(apiDecB) && apiDecB !== decB)) {
-      try {
-        logger.warn('meteora.decimals.mismatch', {
-          pool_id: id.slice(0, 12),
-          mint_a: mint_a.slice(0, 8),
-          mint_b: mint_b.slice(0, 8),
-          api_dec_a: apiDecA,
-          api_dec_b: apiDecB,
-          map_dec_a: decimalsMap.get(mint_a),
-          final_dec_a: decA,
-          final_dec_b: decB,
-          cat: 'meteora.diagnostic'
-        });
-      } catch {}
-    }
-    
     // Clamp to reasonable integer bounds
     decA = Math.min(12, Math.max(0, Math.round(Number(decA))));
     decB = Math.min(12, Math.max(0, Math.round(Number(decB))));
     
-    let usedWhole = false;const feeBasePctRaw: any = (it as any)?.base_fee_percentage;
-    let fee_bps = 0;
-    if (feeBasePctRaw != null) {
-      const val = Number(feeBasePctRaw);
-      if (Number.isFinite(val)) fee_bps = val <= 1 ? Math.round(val * 100) : Math.round(val);
-    } else {
-      const feeRaw = (it as any)?.feeRate ?? (it as any)?.fee_bps;
-      if (typeof feeRaw === 'number') fee_bps = feeRaw <= 1 ? Math.round(feeRaw * 100) : Math.round(feeRaw);
-    }
-    let price_a_per_b = Number((it as any)?.current_price ?? (it as any)?.price ?? (it as any)?.price_a_per_b ?? 0);
-    let apiPriceFallback = price_a_per_b;
     const amtAraw = (it?.reserve_x_amount ?? it?.tokenBalanceA ?? it?.tokenAAmount ?? it?.amountA ?? it?.baseAmount ?? 0);
     const amtBraw = (it?.reserve_y_amount ?? it?.tokenBalanceB ?? it?.tokenBAmount ?? it?.amountB ?? it?.quoteAmount ?? 0);
-    const amount_a_norm = normalizeAmountWithDecimals(amtAraw, decA);
-    const amount_b_norm = normalizeAmountWithDecimals(amtBraw, decB);
-    const amount_a_atomic = looksLikeAtomicAmount(amtAraw) ? Number(amtAraw) : undefined;
-    const amount_b_atomic = looksLikeAtomicAmount(amtBraw) ? Number(amtBraw) : undefined;
-    const amount_a = Number.isFinite(amount_a_norm as number)
-      ? (amount_a_norm as number)
-      : (Number.isFinite(amount_a_atomic) ? amount_a_atomic : undefined);
-    const amount_b = Number.isFinite(amount_b_norm as number)
-      ? (amount_b_norm as number)
-      : (Number.isFinite(amount_b_atomic) ? amount_b_atomic : undefined);
+    const amount_a_atomic = looksLikeAtomicAmount(amtAraw) ? BigInt(String(amtAraw)) : undefined;
+    const amount_b_atomic = looksLikeAtomicAmount(amtBraw) ? BigInt(String(amtBraw)) : undefined;
+
     const tvlUsdcRaw = (it as any)?.tvlUsdc ?? (it as any)?.tvlUsd ?? (it as any)?.liquidity;
-    const tvlUsdcNum = typeof tvlUsdcRaw === 'string' ? Number(tvlUsdcRaw) : (typeof tvlUsdcRaw === 'number' ? tvlUsdcRaw : 0);
-    const tvl_usd = Number.isFinite(tvlUsdcNum) && tvlUsdcNum > 0 ? tvlUsdcNum : undefined;
-    let pool_liquidity_raw = (tvl_usd != null)
-      ? tvl_usd
-      : (Number.isFinite(amount_a_norm as number) && Number.isFinite(amount_b_norm as number)
-          ? Math.min(amount_a_norm as number, amount_b_norm as number)
-          : undefined);
-    const liquidity_display = (tvl_usd != null)
-      ? tvl_usd
-      : (Number.isFinite(pool_liquidity_raw as number) ? pool_liquidity_raw : undefined);
-    // Derive A-per-1-B from active bin; tests expect active bin precedence over current_price
-    let usedBin = false;
-    let derivedWhole: number | undefined = undefined;
-    try {
-      const activeId = Number((it as any)?.active_id ?? (it as any)?.activeId);
-      const binStep = Number((it as any)?.bin_step ?? (it as any)?.binStep);
-      if (Number.isFinite(activeId) && Number.isFinite(binStep) && Number.isFinite(decA) && Number.isFinite(decB)) {
-        // Meteora DLMM price formula: price = (1 + binStep/10000)^activeId
-        // This gives priceYperX = (Y per X) in native units
-        // Reference: https://docs.meteora.ag/overview/products/dlmm/dlmm-formulas
-        //
-        // CRITICAL: The formula is (1 + binStep/10000)^activeId
-        // NOT: (1.0001)^(binStep * activeId) - that's incorrect!
-        //
-        // Determine orientation: Meteora's X/Y vs our A/B
-        // IMPORTANT: We use mint_a/mint_b which come from mint_x/mint_y, so they should match
-        const tokenXMint = String((it as any)?.mint_x || (it as any)?.tokenXMint || tokenA?.mint || '');
-        const tokenYMint = String((it as any)?.mint_y || (it as any)?.tokenYMint || tokenB?.mint || '');
-        
-        // Use centralized Meteora price calculation
-        const { calculateMeteoraPrice } = await import('./meteoraPrice.js');
-        // Ensure we calculate price in the pool's declared mint order.
-        let priceFromCentralized = calculateMeteoraPrice(
-          activeId,
-          binStep,
-          tokenXMint,
-          tokenYMint,
-          mint_a,
-          mint_b,
-          decA,
-          decB
-        );
+    const tvl_usd = Number.isFinite(Number(tvlUsdcRaw)) && Number(tvlUsdcRaw) > 0 ? Number(tvlUsdcRaw) : undefined;
 
-        // If mint_a/mint_b are inverted relative to tokenX/tokenY, recompute and invert.
-        if ((!priceFromCentralized || !(priceFromCentralized > 0)) && tokenXMint === mint_b && tokenYMint === mint_a) {
-          const swapped = calculateMeteoraPrice(
-            activeId,
-            binStep,
-            tokenXMint,
-            tokenYMint,
-            mint_b,
-            mint_a,
-            decB,
-            decA
-          );
-          if (swapped && swapped > 0 && Number.isFinite(swapped)) {
-            priceFromCentralized = 1 / swapped;
-          }
-        }
-        
-        if (priceFromCentralized && priceFromCentralized > 0 && Number.isFinite(priceFromCentralized)) {
-          price_a_per_b = priceFromCentralized;
-          usedBin = true;
-          
-          // DIAGNOSTIC: Log when decimal scaling has large effect
-          if (Math.abs(decA - decB) >= 3 && (priceFromCentralized > 100000 || priceFromCentralized < 0.00001)) {
-            try {
-              logger.warn('meteora.dlmm.price_extreme', {
-                pool_id: id.slice(0, 12),
-                mint_a: mint_a.slice(0, 8),
-                mint_b: mint_b.slice(0, 8),
-                activeId,
-                binStep,
-                decA,
-                decB,
-                decimalDiff: decA - decB,
-                priceFromCentralized,
-                cat: 'meteora.diagnostic'
-              });
-            } catch {}
-          }
-        }
-      }
-    } catch {}
-    // Prefer reserve-derived orientation when decimals are known
-    try {
-      if (Number.isFinite(amount_a_norm as number) && Number.isFinite(amount_b_norm as number) && (amount_b_norm as number) > 0) {
-        const dv = (amount_a_norm as number) / (amount_b_norm as number);
-        if (dv > 0 && Number.isFinite(dv)) {
-          derivedWhole = dv;
-          if (!(price_a_per_b > 0)) {
-            price_a_per_b = dv;
-            usedWhole = true;
-          }
-        }
-      }
-    } catch {}
+    const processedPrice = processPriceThroughPipeline({
+      mintA: mint_a,
+      mintB: mint_b,
+      decimalsA: decA,
+      decimalsB: decB,
+      poolId: id,
+      dex: 'Meteora',
+      poolType: 'clmm',
+      activeId: Number((it as any)?.active_id ?? (it as any)?.activeId),
+      binStep: Number((it as any)?.bin_step ?? (it as any)?.binStep),
+      tokenXMint: String((it as any)?.mint_x || (it as any)?.tokenXMint || tokenA?.mint || ''),
+      tokenYMint: String((it as any)?.mint_y || (it as any)?.tokenYMint || tokenB?.mint || ''),
+    }, {
+      getUsd: getPriceByMint,
+    });
 
-    // If we never derived a price (no bin or reserves) but API gave us something, normalize it now.
-    if (!(price_a_per_b > 0) && apiPriceFallback > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
-      // Meteora API price represents tokenY per tokenX in atomic units.
-      // Convert to mint_a per mint_b in whole tokens.
-      const decimalScale = Math.pow(10, (decB as number) - (decA as number));
-      const normalized = decimalScale / apiPriceFallback;
-      if (Number.isFinite(normalized) && normalized > 0) {
-        price_a_per_b = normalized;
-        try {
-          logger.debug('meteora.price.api_fallback.normalized', {
-            pool: id.slice(0, 12),
-            mint_a: mint_a.slice(0, 8),
-            mint_b: mint_b.slice(0, 8),
-            raw_api_price: apiPriceFallback,
-            decimals_a: decA,
-            decimals_b: decB,
-            normalized_price: normalized,
-            cat: 'meteora'
-          });
-        } catch {}
-      }
+    if (!processedPrice) {
+      continue; // Skip pool if price can't be determined
     }
-    // Process through centralized pipeline (canonicalization + calibration + rescaling)
-    let finalPrice = 0;
-    let finalMintA = mint_a;
-    let finalMintB = mint_b;
-    let finalDecA = decA;
-    let finalDecB = decB;
-    let finalAmountWholeA = amount_a_norm;
-    let finalAmountWholeB = amount_b_norm;
-    let finalAmountAtomicA = amount_a_atomic;
-    let finalAmountAtomicB = amount_b_atomic;
-    let pipelineProcessedFlag = false;
-    let pipelineSwapped = false;
+
+    const { 
+      mintA: finalMintA, 
+      mintB: finalMintB, 
+      priceForward, 
+      wasSwapped,
+      decimalsA: finalDecA,
+      decimalsB: finalDecB,
+    } = processedPrice;
+
+    const [finalAmountAtomicA, finalAmountAtomicB] = wasSwapped
+      ? [amount_b_atomic, amount_a_atomic]
+      : [amount_a_atomic, amount_b_atomic];
     
-    // Choose best raw price candidate
-    let rawPrice = price_a_per_b;
-    if (!(rawPrice > 0) && derivedWhole && derivedWhole > 0) {
-      rawPrice = derivedWhole;
-    }
-    
-    if (rawPrice > 0) {
-      try {
-        const { processPriceThroughPipeline } = await import('./pricePipeline.js');
-        const { getPriceByMint } = await import('../../server/priceStore.js');
-        
-        const processed = processPriceThroughPipeline({
-          mintA: mint_a,
-          mintB: mint_b,
-          rawPrice,
-          decimalsA: decA,
-          decimalsB: decB,
-          poolId: id,
-          dex: 'Meteora',
-          poolType: 'clmm'
-        }, {
-          getUsd: (m) => {
-            try {
-              return getPriceByMint(m)?.usdc;
-            } catch {
-              return undefined;
-            }
-          },
-          diagnostics: false
-        });
-        
-        if (processed) {
-          finalPrice = processed.priceForward;
-          finalMintA = processed.mintA;
-          finalMintB = processed.mintB;
-          finalDecA = processed.decimalsA;
-          finalDecB = processed.decimalsB;
-          pipelineProcessedFlag = true;
-          pipelineSwapped = processed.wasSwapped;
-          
-          // If mints were swapped, update all mint-dependent fields
-          if (processed.wasSwapped) {
-            [finalAmountWholeA, finalAmountWholeB] = [finalAmountWholeB, finalAmountWholeA];
-            [finalAmountAtomicA, finalAmountAtomicB] = [finalAmountAtomicB, finalAmountAtomicA];
-          }
-        } else {
-          finalPrice = rawPrice;
-        }
-      } catch (err) {
-        finalPrice = rawPrice;
-        try {
-          logger.warn('meteora.pipeline.failed', {
-            pool: id,
-            error: String(err),
-            cat: 'meteora'
-          });
-        } catch {}
-      }
-    }
-    
-    // Update price_a_per_b for downstream code
-    price_a_per_b = finalPrice;
-    let price_ok = true;
-    try {
-      const sanityCfg = (CONFIG as any)?.sanity || {};
-      const apply = (sanityCfg as any).sanity_applyMeteoraClmm ?? true;
-      if (apply !== false) {
-        const baseMaxDev = Number.isFinite(Number((sanityCfg as any).maxPriceDeviationClmm)) ? Number((sanityCfg as any).maxPriceDeviationClmm)
-          : (Number.isFinite(Number(sanityCfg.maxPriceDeviation)) ? Number(sanityCfg.maxPriceDeviation) : 5);
-        const { getPriceByMint } = await import('../../server/priceStore.js');
-        const pa = getPriceByMint(finalMintA)?.usdc ?? null;
-        const pb = getPriceByMint(finalMintB)?.usdc ?? null;
-        const px = (price_a_per_b && price_a_per_b > 0) ? price_a_per_b : undefined;
-        if (pa && pb && px && (px as number) > 0) {
-          const SOL = 'So11111111111111111111111111111111111111112';
-          const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-          const isAnchor = (finalMintA === SOL && finalMintB === USDC) || (finalMintA === USDC && finalMintB === SOL);
-          const maxDeviation = isAnchor ? Math.max(baseMaxDev, 100) : baseMaxDev;
-          const ref = (pb as number) / (pa as number);
-          const dev = Math.max((px as number) / ref, ref / (px as number));
-          if (dev > maxDeviation) price_ok = false;
-        }
-      }
-    } catch {}
-    if (!price_ok) { try { logger.warn('meteora.clmm drop by sanity', { id, mint_a, mint_b, price_a_per_b, cat: 'meteora' }); } catch {}; continue; }
-    
-    // Recompute liquidity fallback using final (possibly swapped) whole values when TVL missing
-    if (tvl_usd == null && Number.isFinite(finalAmountWholeA as number) && Number.isFinite(finalAmountWholeB as number)) {
-      pool_liquidity_raw = Math.min(finalAmountWholeA as number, finalAmountWholeB as number);
-    }
-    
-    // Extract vault/reserve accounts (reserveX and reserveY correspond to tokenX and tokenY)
+    const wholeA = finalAmountAtomicA != null && finalDecA != null ? Number(finalAmountAtomicA) / Math.pow(10, finalDecA) : undefined;
+    const wholeB = finalAmountAtomicB != null && finalDecB != null ? Number(finalAmountAtomicB) / Math.pow(10, finalDecB) : undefined;
+
+    const pool_liquidity_raw = tvl_usd ?? (wholeA != null && wholeB != null ? Math.min(wholeA, wholeB) : undefined);
+
     let account_a: string | undefined;
     let account_b: string | undefined;
     try {
       const reserveX = String((it as any)?.reserve_x || (it as any)?.reserveX || '');
       const reserveY = String((it as any)?.reserve_y || (it as any)?.reserveY || '');
-      // For Meteora, account_a/account_b should match mint_a/mint_b orientation
-      // reserveX/reserveY match tokenX/tokenY orientation in the pool state
-      // We need to check if tokenX corresponds to mint_a or mint_b
       const tokenXMint = String((it as any)?.mint_x || (it as any)?.tokenXMint || tokenA?.mint || '');
-      const tokenYMint = String((it as any)?.mint_y || (it as any)?.tokenYMint || tokenB?.mint || '');
       
       if (reserveX && reserveY) {
-        // Determine mapping based on which tokenX/tokenY match mint_a/mint_b
-        if (tokenXMint === mint_a && tokenYMint === mint_b) {
-          // Natural: tokenX=mint_a, tokenY=mint_b => reserveX=account_a, reserveY=account_b
+        if (tokenXMint === mint_a) {
           account_a = reserveX;
           account_b = reserveY;
-        } else if (tokenXMint === mint_b && tokenYMint === mint_a) {
-          // Swapped: tokenX=mint_b, tokenY=mint_a => reserveX=account_b, reserveY=account_a
+        } else {
           account_a = reserveY;
           account_b = reserveX;
-        } else {
-          // Fallback: assume natural mapping
-          account_a = reserveX;
-          account_b = reserveY;
         }
       }
     } catch {}
 
-    if (pipelineSwapped) {
+    if (wasSwapped) {
       [account_a, account_b] = [account_b, account_a];
     }
     
     const bin_array_bitmap_extension = bitmapExtensionMap.get(id);
-    const [tokenProgramA, tokenProgramB] = await Promise.all([
-      ensureTokenProgram(finalMintA),
-      ensureTokenProgram(finalMintB),
-    ]);
     
     clmm.push({
       id,
       dex: 'Meteora',
       mint_a: finalMintA,
       mint_b: finalMintB,
-      fee_bps,
-      sqrt_price_x64: 0,
+      fee_bps: Math.round(Number(it.feeRate || 0) * 100),
+      sqrt_price_x64: 0, // Let graph builder derive if needed
       liquidity: 0,
       tick_spacing: Number((it as any)?.bin_step || (it as any)?.binStep || 0),
       updated_ms: now,
-      price_a_per_b: (price_a_per_b && price_a_per_b > 0) ? price_a_per_b : undefined,
-      amount_a: finalAmountAtomicA,
-      amount_b: finalAmountAtomicB,
-      amount_a_whole: Number.isFinite(finalAmountWholeA as number) ? (finalAmountWholeA as number) : undefined,
-      amount_b_whole: Number.isFinite(finalAmountWholeB as number) ? (finalAmountWholeB as number) : undefined,
-      decimals_a: Number.isFinite(finalDecA) ? finalDecA : undefined,
-      decimals_b: Number.isFinite(finalDecB) ? finalDecB : undefined,
+      price_a_per_b: priceForward,
+      amount_a: finalAmountAtomicA?.toString(),
+      amount_b: finalAmountAtomicB?.toString(),
+      amount_a_whole: wholeA,
+      amount_b_whole: wholeB,
+      decimals_a: finalDecA,
+      decimals_b: finalDecB,
       account_a,
       account_b,
       bin_array_bitmap_extension,
       pool_kind: 'clmm',
       pool_liquidity_raw,
       tvl_usd,
-      liquidity_display,
-      token_program_a: tokenProgramA,
-      token_program_b: tokenProgramB,
-      // Mark that this pool went through the pipeline (for edge creation to skip re-processing)
-      _pipelineProcessed: finalPrice > 0 && pipelineProcessedFlag,
+      liquidity_display: tvl_usd ?? pool_liquidity_raw,
+      _pipelineProcessed: true,
     } as any);
   }
-  // CRITICAL FIX: Skip canonicalization since pipeline already canonicalized
-  // The processPriceThroughPipeline() function already canonicalizes orientation
-  // and returns canonical mints in finalMintA/finalMintB which are used in the pool object.
-  // Calling canonicalizePools() again would double-canonicalize, potentially swapping mints back
-  // and inverting prices again, causing magnitude errors.
-  let clmmCanon: typeof clmm;
-  try {
-    if (clmm.length > 0) {
-      const { canonicalOrientation } = await import('./canonical.js');
-      const samplePool = clmm[0];
-      const orientation = canonicalOrientation(samplePool.mint_a, samplePool.mint_b);
-      
-      if (orientation === 'swap') {
-        // Pools are NOT canonicalized - pipeline didn't canonicalize (shouldn't happen)
-        logger.warn('meteora.canonicalization.pipeline_missed', {
-          samplePoolId: samplePool.id.slice(0, 12) + '...',
-          mint_a: samplePool.mint_a.slice(0, 8) + '...',
-          mint_b: samplePool.mint_b.slice(0, 8) + '...',
-          hint: 'Pipeline should have canonicalized but pools are not canonical. Applying canonicalization now.',
-          cat: 'meteora'
-        });
-        clmmCanon = canonicalizePools(clmm);
-      } else {
-        // Pools are already canonicalized (expected)
-        clmmCanon = clmm;
-      }
-    } else {
-      clmmCanon = clmm;
-    }
-  } catch (e) {
-    // Fallback to canonicalize if check fails
-    logger.warn('meteora.canonicalization.check_failed', {
-      error: String(e),
-      hint: 'Falling back to canonicalizePools',
-      cat: 'meteora'
-    });
-    clmmCanon = canonicalizePools(clmm);
-  }
   
-  // DIAGNOSTIC: Log the problematic oreoU2/SOL pool
-  try {
-    const ore = clmmCanon.find(p => p.id === 'FMhuUk4EDLBykp5S6gw14fMbvKsFoFVg5YuuSvMn3fWh');
-    if (ore) {
-      logger.info('meteora.after_canon.ore_sol', {
-        id: ore.id,
-        mint_a: ore.mint_a,
-        mint_b: ore.mint_b,
-        decimals_a: ore.decimals_a,
-        decimals_b: ore.decimals_b,
-        price_a_per_b: ore.price_a_per_b,
-        cat: 'meteora'
-      });
-    }
-  } catch {}
-  
-  // Decimals are already correctly set from centralized resolver
-  
-  // Verify canonicalization: ensure price inversion happens correctly when mints are swapped
-  try {
-    const clmmVerification = verifyCanonicalization(clmmCanon, swapABFields);
-    if (!clmmVerification.valid) {
-      try {
-        logger.warn('meteora.canonicalization.verification.failed', {
-          clmmErrors: clmmVerification.errors.length,
-          cat: 'meteora'
-        });
-      } catch {}
-    }
-  } catch {}
-  
+  // No need for manual canonicalization or verification, pipeline handles it.
+
   try {
     const canon = String(((CONFIG as any)?.system?.canonicalizePairs) || 'lex');
-    logger.info('meteora.http normalized', { clmm: clmmCanon.length, cat: 'meteora', canon });
+    logger.info('meteora.http normalized', { clmm: clmm.length, cat: 'meteora', canon });
   } catch {}
   
   // OPTIMIZATION: Pre-cache active bin IDs to eliminate RPC calls during transaction building
-  await populateMeteoraActiveIds(clmmCanon);
+  await populateMeteoraActiveIds(clmm);
   
-  return { amm: [], clmm: clmmCanon };
+  return { amm: [], clmm: clmm };
 }
 
 async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise<Map<string, string>> {

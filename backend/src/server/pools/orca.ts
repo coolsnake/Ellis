@@ -9,6 +9,8 @@ import { resolveManyDecimals } from './decimals.js';
 import { verifyCanonicalization } from './validation.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
 import { anyToBigInt, ratioToDecimalString, sqrtPriceX64ToPriceRatio } from './precision.js';
+import { getPriceByMint } from '../../server/priceStore.js';
+import { processPriceThroughPipeline } from './pricePipeline.js';
 
 const FEERATE_FIELDS = ['tradingFeeRate', 'tradeFeeRate', 'feeRate', 'tradeFee', 'fee', 'makerFee', 'takerFee'];
 const FEEBPS_FIELDS = ['fee_bps', 'feeBps', 'fee_in_bps'];
@@ -199,26 +201,6 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
     // FIXED: Orca API returns tokenMintA/tokenMintB (not mintA/mintB)
     let mint_a = String(tokenA?.mint || it?.tokenMintA || it?.mintA || '');
     let mint_b = String(tokenB?.mint || it?.tokenMintB || it?.mintB || '');
-    // DIAGNOSTIC: Log when mints are missing from API response
-    if (!mint_a || !mint_b) {
-      try {
-        logger.warn('orca.normalizer.missing_mints', {
-          id: id.slice(0, 8) + '...',
-          has_tokenA: !!it?.tokenA,
-          has_token_a: !!it?.token_a,
-          has_tokenMintA: !!it?.tokenMintA,
-          has_mintA: !!it?.mintA,
-          has_tokenB: !!it?.tokenB,
-          has_token_b: !!it?.token_b,
-          has_tokenMintB: !!it?.tokenMintB,
-          has_mintB: !!it?.mintB,
-          tokenA_keys: tokenA ? Object.keys(tokenA).slice(0, 10) : [],
-          tokenB_keys: tokenB ? Object.keys(tokenB).slice(0, 10) : [],
-          it_keys: Object.keys(it).slice(0, 15),
-          cat: 'orca'
-        });
-      } catch {}
-    }
     
     // Try to resolve mints from symbols if needed
     if (!mint_a && resolveMintFn && typeof tokenA?.symbol === 'string' && tokenA.symbol.trim()) {
@@ -251,7 +233,6 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
     }
     
     // Get decimals from centralized resolver
-    // Priority: API decimals → centralized resolver → symbol cache → fallback
     const apiDecA = Number((tokenA?.decimals ?? it?.decimalsA ?? it?.tokenDecimalsA));
     const apiDecB = Number((tokenB?.decimals ?? it?.decimalsB ?? it?.tokenDecimalsB));
     
@@ -265,23 +246,6 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
       decB = symbolToMintCache.get(tokenB?.symbol?.trim())?.decimals ?? 6;
     }
 
-    // DIAGNOSTIC: Log when API decimals differ from our map
-    if ((Number.isFinite(apiDecA) && apiDecA !== decA) || (Number.isFinite(apiDecB) && apiDecB !== decB)) {
-      try {
-        logger.warn('orca.decimals.mismatch', {
-          pool_id: id.slice(0, 12),
-          mint_a: mint_a.slice(0, 8),
-          mint_b: mint_b.slice(0, 8),
-          api_dec_a: apiDecA,
-          api_dec_b: apiDecB,
-          map_dec_a: decimalsMap.get(mint_a),
-          final_dec_a: decA,
-          final_dec_b: decB,
-          cat: 'orca.diagnostic'
-        });
-      } catch {}
-    }
-    
     // Clamp to reasonable integer bounds
     decA = Math.min(12, Math.max(0, Math.round(Number(decA))));
     decB = Math.min(12, Math.max(0, Math.round(Number(decB))));
@@ -298,277 +262,42 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
     const amtBraw = (it?.tokenBalanceB ?? it?.tokenBAmount ?? it?.token_b_amount ?? it?.amountB ?? it?.quoteAmount ?? 0);
     let amount_a = Number(typeof amtAraw === 'string' ? Number(amtAraw) : amtAraw || 0);
     let amount_b = Number(typeof amtBraw === 'string' ? Number(amtBraw) : amtBraw || 0);
-    const incomingPrice = Number(it?.price ?? it?.price_a_per_b ?? it?.priceAperB ?? 0);
-    if (isWhirlpool && id && sqrt_price_x64 > 0) {
-      const sqrtRaw = anyToBigInt(sqrtPriceStr);
-      // Store original decimals for comparison
-      const origDecA = decA;
-      const origDecB = decB;
-      let cA = mint_a; let cB = mint_b; let cDecA = decA; let cDecB = decB; let cAmtA = amount_a; let cAmtB = amount_b;
-      
-      // Ensure decimals are definitely set before computing price
-      // Double-check decimals are finite after all the setup above
-      if (!Number.isFinite(cDecA) || !Number.isFinite(cDecB)) {
-        // Try one more time to get decimals if missing
-        try {
-          if (!Number.isFinite(cDecA)) {
-            const tok = await import('../../utils/tokens.js');
-            const r = await (tok as any).resolveMint(cA);
-            if (Number.isFinite(Number(r?.decimals))) cDecA = Number(r.decimals);
-          }
-          if (!Number.isFinite(cDecB)) {
-            const tok = await import('../../utils/tokens.js');
-            const r = await (tok as any).resolveMint(cB);
-            if (Number.isFinite(Number(r?.decimals))) cDecB = Number(r.decimals);
-          }
-          // Clamp again after potential fix
-          cDecA = Math.min(12, Math.max(0, Math.round(Number(cDecA))));
-          cDecB = Math.min(12, Math.max(0, Math.round(Number(cDecB))));
-        } catch {}
+    
+    if (isWhirlpool && id) {
+      const processedPrice = processPriceThroughPipeline({
+        mintA: mint_a,
+        mintB: mint_b,
+        decimalsA: decA,
+        decimalsB: decB,
+        poolId: id,
+        dex: 'Orca',
+        poolType: 'clmm',
+        sqrtPriceX64: anyToBigInt(sqrtPriceStr),
+        reserveA: amount_a > 0 ? amount_a : undefined,
+        reserveB: amount_b > 0 ? amount_b : undefined,
+      }, {
+        getUsd: getPriceByMint,
+      });
+
+      if (!processedPrice) {
+        continue;
+      }
+
+      const {
+        mintA: finalMintA,
+        mintB: finalMintB,
+        priceForward,
+        wasSwapped,
+        decimalsA: finalDecA,
+        decimalsB: finalDecB,
+      } = processedPrice;
+
+      if (wasSwapped) {
+        [amount_a, amount_b] = [amount_b, amount_a];
       }
       
-      // CRITICAL: Calculate priceRatio AFTER decimals are finalized to ensure consistency
-      // Use centralized CLMM price calculation for consistency across all DEXes
-      const { calculateClmmPrice } = await import('./priceFormulas.js');
-      let priceRatio = null;
-      
-      if (sqrtRaw && Number.isFinite(cDecA) && Number.isFinite(cDecB)) {
-        priceRatio = sqrtPriceX64ToPriceRatio(sqrtRaw, cDecA as number, cDecB as number);
-      }
-      
-      // DIAGNOSTIC: Log if decimals changed (which would invalidate any earlier price calculation)
-      if ((Number.isFinite(origDecA) && Number.isFinite(cDecA) && origDecA !== cDecA) ||
-          (Number.isFinite(origDecB) && Number.isFinite(cDecB) && origDecB !== cDecB)) {
-        try {
-          logger.info('orca.decimals.updated', {
-            id: id.slice(0, 8) + '...',
-            mint_a: cA?.slice(0, 8) + '...',
-            mint_b: cB?.slice(0, 8) + '...',
-            origDecA,
-            origDecB,
-            finalDecA: cDecA,
-            finalDecB: cDecB,
-            cat: 'orca'
-          });
-        } catch {}
-      }
-      
-      let priceFromSqrt = 0;
-      if (sqrt_price_x64 > 0 && Number.isFinite(cDecA) && Number.isFinite(cDecB)) {
-        try {
-          // Use centralized CLMM price formula for consistency
-          const priceFromCentralized = calculateClmmPrice(
-            sqrtRaw ?? BigInt(Math.floor(sqrt_price_x64)), 
-            cDecA as number, 
-            cDecB as number,
-            cA,
-            cB,
-            (m) => {
-              try {
-                const { getPriceByMint } = require('../priceStore.js');
-                return getPriceByMint(m)?.usdc;
-              } catch {
-                return undefined;
-              }
-            }
-          );
-          if (priceFromCentralized && priceFromCentralized > 0 && Number.isFinite(priceFromCentralized)) {
-            priceFromSqrt = priceFromCentralized;
-            
-            // DIAGNOSTIC: Log price calculation details for debugging magnitude issues
-            const shouldLog = (id.includes('JCD6') || id.includes('HrLm') || id.includes('C1Mg') || 
-                             id.includes('21gTfx') || id.includes('FpCMFD'));
-            if (shouldLog || (priceFromCentralized > 10000 || priceFromCentralized < 0.0001)) {
-              try {
-                logger.info('orca.priceFromSqrt.centralized', {
-                  id: id.slice(0, 8) + '...',
-                  mint_a: cA?.slice(0, 8) + '...',
-                  mint_b: cB?.slice(0, 8) + '...',
-                  decA: cDecA,
-                  decB: cDecB,
-                  sqrt_price_x64,
-                  priceFromCentralized,
-                  cat: 'orca'
-                });
-              } catch {}
-            }
-            
-            // CONSISTENCY CHECK: Compare centralized calculation with priceRatio.float
-            if (priceRatio?.float && Number.isFinite(priceRatio.float) && priceRatio.float > 0) {
-              const priceFromRatio = priceRatio.float;
-              const priceDiff = Math.abs(priceFromSqrt - priceFromRatio);
-              const priceRatio_pct = priceFromRatio > 0 ? (priceDiff / priceFromRatio) * 100 : 0;
-              
-              // If there's a significant difference, log it
-              if (priceRatio_pct > 1) {  // More than 1% difference
-                try {
-                  logger.warn('orca.price.calculation.mismatch', {
-                    id: id.slice(0, 8) + '...',
-                    mint_a: cA?.slice(0, 8) + '...',
-                    mint_b: cB?.slice(0, 8) + '...',
-                    priceFromCentralized: priceFromSqrt,
-                    priceFromRatio: priceFromRatio,
-                    diff_pct: priceRatio_pct,
-                    cat: 'orca'
-                  });
-                } catch {}
-              }
-            }
-          }
-        } catch (e) {
-          try {
-            logger.warn('orca.price.centralized_calc_failed', {
-              error: String(e),
-              id: id.slice(0, 8) + '...',
-              sqrt_price_x64,
-              cat: 'orca'
-            });
-          } catch {}
-        }
-      }
-      
-      // Fallback: try to derive price from token amounts if sqrt calculation failed
-      if (priceFromSqrt === 0 && cAmtA > 0 && cAmtB > 0 && Number.isFinite(cDecA) && Number.isFinite(cDecB)) {
-        try {
-          const wholeA = cAmtA / Math.pow(10, cDecA as number);
-          const wholeB = cAmtB / Math.pow(10, cDecB as number);
-          if (wholeA > 0 && wholeB > 0 && Number.isFinite(wholeA) && Number.isFinite(wholeB)) {
-            // A per 1 B = (amountA / amountB) adjusted for decimals already handled above
-            const derivedFromAmounts = wholeA / wholeB;
-            if (Number.isFinite(derivedFromAmounts) && derivedFromAmounts > 0) {
-              priceFromSqrt = derivedFromAmounts;
-            }
-          }
-        } catch {}
-      }
-      
-      // Handle fallback to incomingPrice: convert to whole-token A-per-B units
-      let incomingCanonical = 0;
-      if (priceFromSqrt === 0 && incomingPrice > 0 && Number.isFinite(cDecA) && Number.isFinite(cDecB)) {
-        const decimalScale = Math.pow(10, (cDecB as number) - (cDecA as number));
-        incomingCanonical = incomingPrice * decimalScale;
-          try {
-          logger.debug('orca.incomingPrice.fallback.normalized', {
-              id, 
-              mint_a: cA, 
-              mint_b: cB, 
-            incomingPriceRaw: incomingPrice,
-            normalizedPrice: incomingCanonical,
-              decA: cDecA, 
-              decB: cDecB,
-              sqrt_price_x64,
-              cat: 'orca' 
-            });
-          } catch {}
-      }
-      
-      let priceDerived = priceFromSqrt > 0 ? priceFromSqrt : incomingCanonical;
-      
-      // Process through centralized pipeline (canonicalization + calibration + rescaling)
-      let finalPrice = 0;
-      let finalMintA = cA;
-      let finalMintB = cB;
-      let finalDecA = cDecA;
-      let finalDecB = cDecB;
-      let finalWholeA = Number.isFinite(cDecA) ? (cAmtA / Math.pow(10, cDecA as number)) : undefined;
-      let finalWholeB = Number.isFinite(cDecB) ? (cAmtB / Math.pow(10, cDecB as number)) : undefined;
-      let pipelineSwapped = false;
-      let pipelineProcessedFlag = false;
-      
-      if (priceDerived > 0) {
-        try {
-          const { processPriceThroughPipeline } = await import('./pricePipeline.js');
-          const { getPriceByMint } = await import('../../server/priceStore.js');
-          
-          const processed = processPriceThroughPipeline({
-            mintA: cA,
-            mintB: cB,
-            rawPrice: priceDerived,
-            decimalsA: cDecA as number,
-            decimalsB: cDecB as number,
-            poolId: id,
-            dex: 'Orca',
-            poolType: 'clmm'
-          }, {
-            getUsd: (m) => {
-              try {
-                return getPriceByMint(m)?.usdc;
-              } catch {
-                return undefined;
-              }
-            },
-            diagnostics: false
-          });
-          
-          if (processed) {
-            finalPrice = processed.priceForward;
-            finalMintA = processed.mintA;
-            finalMintB = processed.mintB;
-            finalDecA = processed.decimalsA;
-            finalDecB = processed.decimalsB;
-            pipelineSwapped = processed.wasSwapped;
-            pipelineProcessedFlag = true;
-            
-            // If mints were swapped, update all mint-dependent fields
-            if (processed.wasSwapped) {
-              [cAmtA, cAmtB] = [cAmtB, cAmtA];
-              finalWholeA = Number.isFinite(finalDecA) ? (cAmtA / Math.pow(10, finalDecA as number)) : undefined;
-              finalWholeB = Number.isFinite(finalDecB) ? (cAmtB / Math.pow(10, finalDecB as number)) : undefined;
-            }
-            
-            // DIAGNOSTIC: Log significant changes
-            const shouldLog = (id.includes('JCD6') || id.includes('HrLm') || id.includes('C1Mg'));
-            const changeFactor = Math.abs(finalPrice / priceDerived);
-            if (shouldLog || changeFactor > 10 || changeFactor < 0.1 || finalPrice > 10000 || finalPrice < 0.0001) {
-              try {
-                logger.info('orca.pipeline.applied', {
-                  id: id.slice(0, 8) + '...',
-                  mint_a: finalMintA?.slice(0, 8) + '...',
-                  mint_b: finalMintB?.slice(0, 8) + '...',
-                  before: priceDerived,
-                  after: finalPrice,
-                  changeFactor,
-                  wasSwapped: processed.wasSwapped,
-                  cat: 'orca'
-                });
-              } catch {}
-            }
-          } else {
-            finalPrice = priceDerived;
-          }
-        } catch (err) {
-          finalPrice = priceDerived;
-          try {
-            logger.warn('orca.pipeline.failed', {
-              pool: id,
-              error: String(err),
-              cat: 'orca'
-            });
-          } catch {}
-        }
-      }
-      
-      // DIAGNOSTIC: Log when we have no price at all (will cause pool to be filtered out)
-      if (!(finalPrice > 0)) {
-        try {
-          logger.warn('orca.price.missing', {
-            id,
-            mint_a: finalMintA,
-            mint_b: finalMintB,
-            sqrt_price_x64,
-            decA: finalDecA,
-            decB: finalDecB,
-            priceFromSqrt,
-            incomingPrice,
-            hint: 'Pool will be filtered out due to missing price',
-            cat: 'orca'
-          });
-        } catch {}
-      }
-      
-      // Calculate TVL and liquidity metrics
-      const wholeA = finalWholeA;
-      const wholeB = finalWholeB;
+      const wholeA = Number.isFinite(finalDecA) ? (amount_a / Math.pow(10, finalDecA as number)) : undefined;
+      const wholeB = Number.isFinite(finalDecB) ? (amount_b / Math.pow(10, finalDecB as number)) : undefined;
       const tvlUsdcRaw = (it as any)?.tvlUsdc;
       const tvlUsdcNum = typeof tvlUsdcRaw === 'string' ? Number(tvlUsdcRaw) : (typeof tvlUsdcRaw === 'number' ? tvlUsdcRaw : 0);
       const tvl_usd = Number.isFinite(tvlUsdcNum) && tvlUsdcNum > 0 ? tvlUsdcNum : undefined;
@@ -576,258 +305,98 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
         ? tvl_usd
         : (Number.isFinite(wholeA as any) && Number.isFinite(wholeB as any)) ? Math.min(wholeA as number, wholeB as number) : undefined;
       const liquidity_display = (tvl_usd != null) ? tvl_usd : undefined;
-      let usdDevOkOrca = true;
+      
+      let oracle: string | undefined;
+      let token_vault_a: string | undefined;
+      let token_vault_b: string | undefined;
+      let account_a: string | undefined;
+      let account_b: string | undefined;
       try {
-        const sanityCfg = (CONFIG as any)?.sanity || {};
-        const apply = (sanityCfg as any).sanity_applyOrcaClmm ?? true;
-        if (apply !== false) {
-          const maxDeviation = Number.isFinite(Number(sanityCfg.maxPriceDeviation)) ? Number(sanityCfg.maxPriceDeviation) : 50;
-          const { getPriceByMint } = await import('../../server/priceStore.js');
-          const pa = getPriceByMint(finalMintA)?.usdc ?? null;
-          const pb = getPriceByMint(finalMintB)?.usdc ?? null;
-          if (pa && pb && finalPrice && (finalPrice as number) > 0) {
-            const ref = (pb as number) / (pa as number);
-            const dev = Math.max((finalPrice as number) / ref, ref / (finalPrice as number));
-            if (dev > maxDeviation) { usdDevOkOrca = false; }
-          }
-        }
-      } catch {}
-      if (usdDevOkOrca) {
-        // Derive/extract execution-critical accounts for Orca Whirlpool
-        let oracle: string | undefined;
-        let token_vault_a: string | undefined;
-        let token_vault_b: string | undefined;
-        let account_a: string | undefined;
-        let account_b: string | undefined;
-        try {
-          // Extract oracle if present in API response
-          const oracleFromApi = String((it as any)?.oracle ?? '');
-          if (oracleFromApi && oracleFromApi !== '11111111111111111111111111111111') {
-            oracle = oracleFromApi;
-          } else {
-            // Derive oracle PDA: [b"oracle", whirlpool.key()]
-            try {
-              const { PublicKey } = await import('@solana/web3.js');
-              const poolPk = new PublicKey(id);
-              const programId = new PublicKey('whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
-              const [oraclePda] = PublicKey.findProgramAddressSync(
-                [Buffer.from('oracle'), poolPk.toBuffer()],
-                programId
-              );
-              oracle = oraclePda.toBase58();
-            } catch {}
-          }
-          
-          // Extract vault accounts from API response
-          const vaultA = String((it as any)?.tokenVaultA ?? (it as any)?.token_vault_a ?? (it as any)?.vaultA ?? '');
-          const vaultB = String((it as any)?.tokenVaultB ?? (it as any)?.token_vault_b ?? (it as any)?.vaultB ?? '');
-          if (vaultA && vaultA !== '11111111111111111111111111111111') {
-            token_vault_a = vaultA;
-            account_a = vaultA;  // Use vault as account_a
-          }
-          if (vaultB && vaultB !== '11111111111111111111111111111111') {
-            token_vault_b = vaultB;
-            account_b = vaultB;  // Use vault as account_b
-          }
-        } catch (e: any) {
+        // Extract oracle if present in API response
+        const oracleFromApi = String((it as any)?.oracle ?? '');
+        if (oracleFromApi && oracleFromApi !== '11111111111111111111111111111111') {
+          oracle = oracleFromApi;
+        } else {
+          // Derive oracle PDA: [b"oracle", whirlpool.key()]
           try {
-            logger.debug('orca.exec_accounts.extraction.failed', {
-              cat: 'orca',
-              ctx: { pool: id, error: String(e?.message || e) }
-            });
+            const { PublicKey } = await import('@solana/web3.js');
+            const poolPk = new PublicKey(id);
+            const programId = new PublicKey('whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
+            const [oraclePda] = PublicKey.findProgramAddressSync(
+              [Buffer.from('oracle'), poolPk.toBuffer()],
+              programId
+            );
+            oracle = oraclePda.toBase58();
           } catch {}
         }
         
-        const finalAccountA = pipelineSwapped ? account_b : account_a;
-        const finalAccountB = pipelineSwapped ? account_a : account_b;
-        const finalTokenVaultA = pipelineSwapped ? token_vault_b : token_vault_a;
-        const finalTokenVaultB = pipelineSwapped ? token_vault_a : token_vault_b;
-        
-        // CRITICAL: Always push the pool even if price is missing - the graph builder can derive it from sqrt
-        // This prevents Orca pools from being silently dropped during normalization
-        clmm.push({
-          id,
-          dex: 'Orca',
-          mint_a: finalMintA,
-          mint_b: finalMintB,
-          fee_bps,
-          sqrt_price_x64,
-          sqrt_price_x64_raw: sqrtRaw ? sqrtRaw.toString() : undefined,
-          liquidity,
-          liquidity_raw: liquidityRaw ? liquidityRaw.toString() : undefined,
-          tick_spacing,
-          updated_ms: now,
-          price_a_per_b: finalPrice > 0 ? finalPrice : undefined,
-          price_a_per_b_num: priceRatio ? priceRatio.numerator.toString() : undefined,
-          price_a_per_b_den: priceRatio ? priceRatio.denominator.toString() : undefined,
-          price_a_per_b_exact: ratioToDecimalString(priceRatio) ?? undefined,
-          amount_a: cAmtA,
-          amount_b: cAmtB,
-          decimals_a: Number.isFinite(finalDecA) ? finalDecA : undefined,
-          decimals_b: Number.isFinite(finalDecB) ? finalDecB : undefined,
-          account_a: finalAccountA,
-          account_b: finalAccountB,
-          pool_kind: 'clmm',
-          pool_liquidity_raw,
-          tvl_usd,
-          liquidity_display,
-          oracle,
-          token_vault_a: finalTokenVaultA,
-          token_vault_b: finalTokenVaultB,
-          // Mark that this pool went through the pipeline (for edge creation to skip re-processing)
-          _pipelineProcessed: finalPrice > 0 && pipelineProcessedFlag,
-        } as any);
-      } else {
-        try { logger.warn('orca.clmm drop by sanity', { id, mint_a: finalMintA, mint_b: finalMintB, price_a_per_b: finalPrice, cat: 'orca' }); } catch {}
+        // Extract vault accounts from API response
+        const vaultA = String((it as any)?.tokenVaultA ?? (it as any)?.token_vault_a ?? (it as any)?.vaultA ?? '');
+        const vaultB = String((it as any)?.tokenVaultB ?? (it as any)?.token_vault_b ?? (it as any)?.vaultB ?? '');
+        if (vaultA && vaultA !== '11111111111111111111111111111111') {
+          token_vault_a = vaultA;
+          account_a = vaultA;  // Use vault as account_a
+        }
+        if (vaultB && vaultB !== '11111111111111111111111111111111') {
+          token_vault_b = vaultB;
+          account_b = vaultB;  // Use vault as account_b
+        }
+      } catch (e: any) {
+        try {
+          logger.debug('orca.exec_accounts.extraction.failed', {
+            cat: 'orca',
+            ctx: { pool: id, error: String(e?.message || e) }
+          });
+        } catch {}
       }
+
+      const finalAccountA = wasSwapped ? account_b : account_a;
+      const finalAccountB = wasSwapped ? account_a : account_b;
+      const finalTokenVaultA = wasSwapped ? token_vault_b : token_vault_a;
+      const finalTokenVaultB = wasSwapped ? token_vault_a : token_vault_b;
+
+      clmm.push({
+        id,
+        dex: 'Orca',
+        mint_a: finalMintA,
+        mint_b: finalMintB,
+        fee_bps,
+        sqrt_price_x64,
+        sqrt_price_x64_raw: anyToBigInt(sqrtPriceStr)?.toString(),
+        liquidity,
+        liquidity_raw: liquidityRaw ? liquidityRaw.toString() : undefined,
+        tick_spacing,
+        updated_ms: now,
+        price_a_per_b: priceForward,
+        amount_a,
+        amount_b,
+        decimals_a: finalDecA,
+        decimals_b: finalDecB,
+        account_a: finalAccountA,
+        account_b: finalAccountB,
+        pool_kind: 'clmm',
+        pool_liquidity_raw,
+        tvl_usd,
+        liquidity_display,
+        oracle,
+        token_vault_a: finalTokenVaultA,
+        token_vault_b: finalTokenVaultB,
+        _pipelineProcessed: true,
+      } as any);
     }
   }
-  // CRITICAL FIX: Skip canonicalization since pipeline already canonicalized
-  // The processPriceThroughPipeline() function (line 448-469) already canonicalizes orientation
-  // and returns canonical mints in finalMintA/finalMintB which are used in the pool object.
-  // Calling canonicalizePools() again would double-canonicalize, potentially swapping mints back
-  // and inverting prices again, causing magnitude errors.
-  //
-  // Verify pools are already canonicalized by checking first pool
-  let clmmCanon: typeof clmm;
-  try {
-    if (clmm.length > 0) {
-      const { canonicalOrientation } = await import('./canonical.js');
-      const samplePool = clmm[0];
-      const orientation = canonicalOrientation(samplePool.mint_a, samplePool.mint_b);
-      
-      if (orientation === 'swap') {
-        // Pools are NOT canonicalized - pipeline didn't canonicalize (shouldn't happen)
-        logger.warn('orca.canonicalization.pipeline_missed', {
-          samplePoolId: samplePool.id.slice(0, 12) + '...',
-          mint_a: samplePool.mint_a.slice(0, 8) + '...',
-          mint_b: samplePool.mint_b.slice(0, 8) + '...',
-          hint: 'Pipeline should have canonicalized but pools are not canonical. Applying canonicalization now.',
-          cat: 'orca'
-        });
-        clmmCanon = canonicalizePools(clmm);
-      } else {
-        // Pools are already canonicalized (expected)
-        clmmCanon = clmm;
-      }
-    } else {
-      clmmCanon = clmm;
-    }
-  } catch (e) {
-    // Fallback to canonicalize if check fails
-    logger.warn('orca.canonicalization.check_failed', {
-      error: String(e),
-      hint: 'Falling back to canonicalizePools',
-      cat: 'orca'
-    });
-    clmmCanon = canonicalizePools(clmm);
-  }
+
+  // No need for manual canonicalization or verification, pipeline handles it.
   
-  // DIAGNOSTIC: Verify decimals are swapped correctly after canonicalization
   try {
-    const problematicMints = [
-      'oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp', // OREO (11 decimals)
-      'oobQ3oX6ubRYMNMahG7VSCe8Z73uaQbAWFn6f22XTgo',  // OOB (6 decimals)
-    ];
-    
-    for (const pool of clmmCanon) {
-      const hasProblematicMint = problematicMints.some(m => 
-        pool.mint_a.includes(m) || pool.mint_b.includes(m)
-      );
-      
-      if (hasProblematicMint && pool.mint_a === 'So11111111111111111111111111111111111111112') {
-        // SOL is mint_a after canonicalization
-        logger.info('orca.post_canon.sol_exotic', {
-          id: pool.id,
-          mint_a: pool.mint_a.slice(0, 8) + '...',
-          mint_b: pool.mint_b.slice(0, 8) + '...',
-          decimals_a: pool.decimals_a,
-          decimals_b: pool.decimals_b,
-          expected_decimals_a: 9, // SOL always 9
-          price_a_per_b: pool.price_a_per_b,
-          cat: 'orca.diagnostic'
-        });
-      }
-    }
+    const canon = String(((CONFIG as any)?.system?.canonicalizePairs) || 'lex');
+    logger.info('orca.http normalized', { clmm: clmm.length, cat: 'orca', canon });
   } catch {}
-  
-  // DIAGNOSTIC: Log sample AFTER canonicalization
-  try {
-    const usdcSol = clmmCanon.find(p => p.id === 'Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE');
-    if (usdcSol) {
-      logger.info('orca.after_canon.usdc_sol', {
-        id: usdcSol.id,
-        mint_a: usdcSol.mint_a,
-        mint_b: usdcSol.mint_b,
-        decimals_a: usdcSol.decimals_a,
-        decimals_b: usdcSol.decimals_b,
-        price_a_per_b: usdcSol.price_a_per_b,
-        cat: 'orca'
-      });
-    }
-  } catch {}
-  
-  // DIAGNOSTIC: Log specific pools after canonicalization to track price changes
-  try {
-    const trackedPools = ['21gTfxAnhUDjJGZJDkTXctGFKT8TeiXx6pN1CEg9K1uW', 'FpCMFDFGYotvufJ7HrFHsWEiiQCGbkLCtwHiDnh7o28Q'];
-    for (const pool of clmmCanon) {
-      if (trackedPools.some(tid => pool.id.includes(tid))) {
-        logger.info('orca.canonicalized.tracked', {
-          id: pool.id,
-          mint_a: pool.mint_a,
-          mint_b: pool.mint_b,
-          price_a_per_b: pool.price_a_per_b,
-          decimals_a: (pool as any).decimals_a,
-          decimals_b: (pool as any).decimals_b,
-          sqrt_price_x64: pool.sqrt_price_x64,
-          cat: 'orca'
-        });
-      }
-    }
-  } catch {}
-  
-  // Verify canonicalization: ensure price inversion happens correctly when mints are swapped
-  try {
-    const clmmVerification = verifyCanonicalization(clmmCanon, swapABFields);
-    if (!clmmVerification.valid) {
-      try {
-        logger.warn('orca.canonicalization.verification.failed', {
-          clmmErrors: clmmVerification.errors.length,
-          cat: 'orca'
-        });
-      } catch {}
-    }
-  } catch {}
-  
-  if (!clmm.length) {
-    logger.warn('orca.http normalized 0 clmm', { hint: 'Check inspect log for field presence and pool types' });
-  } else {
-    // DIAGNOSTIC: Log sample of normalized Orca pools to verify price data
-    try {
-      const sample = clmm.slice(0, 3).map((p) => ({
-        id: p.id.slice(0, 8) + '...',
-        mint_a: p.mint_a,
-        mint_b: p.mint_b,
-        sqrt_price_x64: p.sqrt_price_x64,
-        price_a_per_b: p.price_a_per_b,
-        decimals_a: p.decimals_a,
-        decimals_b: p.decimals_b,
-        pool_kind: p.pool_kind,
-      }));
-      logger.info('orca.http normalized sample', { 
-        total: clmm.length, 
-        withPrice: clmm.filter(p => p.price_a_per_b != null && p.price_a_per_b > 0).length,
-        withSqrt: clmm.filter(p => p.sqrt_price_x64 != null && p.sqrt_price_x64 > 0).length,
-        sample,
-        cat: 'orca' 
-      });
-    } catch {}
-  }
   
   // OPTIMIZATION: Pre-cache Orca pool states to eliminate RPC calls during transaction building
-  await populateOrcaPoolStates(clmmCanon);
+  await populateOrcaPoolStates(clmm);
   
-  return { amm: [], clmm: clmmCanon };
+  return { amm: [], clmm: clmm };
 }
 
 /**

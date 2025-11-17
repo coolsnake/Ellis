@@ -18,7 +18,7 @@ import { enablePriceFeed, setPriceFeedInterval, pollPriceFeedNow } from './feedR
 import { addWalletHistory, getWalletHistory } from './walletHistory.js';
 import { apiStart, apiStop, apiReset, setTargetTickTimeMs } from '../jupiter/rateLimiter.js';
 // priceFeed is started in index.ts and broadcasts via websocket
-import { getRaydiumPoolsNormalized, getOrcaPoolsCached, startRaydiumRefreshLoop, getPoolsMetrics, getMeteoraPoolsCached } from './pools.js';
+import { getRaydiumPoolsNormalized, getOrcaPoolsCached, getPoolsMetrics, getMeteoraPoolsCached } from './pools.js';
 import { writeSessionLogAndClear } from '../utils/sessionLogs.js';
 import { ResolveDirectSchema } from './routes/schemas.js';
 import { createSystemRouter } from './routes/system.js';

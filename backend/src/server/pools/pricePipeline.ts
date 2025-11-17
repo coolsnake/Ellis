@@ -14,8 +14,8 @@
  */
 
 import { canonicalOrientation, swapPoolFields } from './canonical.js';
-import { computePriceForward, computePriceReverse } from '../graph.pricing.js';
 import { logger } from '../../utils/logger.js';
+import { calculateAmmPrice, calculateClmmPrice, calculateMeteoraPrice } from './priceFormulas.js';
 
 /**
  * Raw price input from DEX-specific calculation
@@ -24,12 +24,21 @@ import { logger } from '../../utils/logger.js';
 export interface RawPriceInput {
   mintA: string;           // Mint A (in DEX's native order, pre-canonical)
   mintB: string;           // Mint B (in DEX's native order, pre-canonical)
-  rawPrice: number;        // Price A-per-B in whole token units, DEX's native orientation
+  rawPrice?: number;       // Optional: Price A-per-B in whole token units, DEX's native orientation
   decimalsA: number;       // Decimals for mint A
   decimalsB: number;       // Decimals for mint B
   poolId?: string;         // Pool ID for diagnostics
   dex?: string;            // DEX name for diagnostics
   poolType?: 'amm' | 'clmm';
+
+  // Add raw data fields for direct calculation inside pipeline
+  sqrtPriceX64?: bigint | number;
+  activeId?: number;
+  binStep?: number;
+  tokenXMint?: string; // For Meteora
+  tokenYMint?: string; // For Meteora
+  reserveA?: bigint | number;
+  reserveB?: bigint | number;
 }
 
 /**
@@ -66,17 +75,17 @@ export interface PriceProcessingOptions {
 function canonicalizeOrientation(input: RawPriceInput): {
   mintA: string;
   mintB: string;
-  price: number;
   decimalsA: number;
   decimalsB: number;
   wasSwapped: boolean;
+  price: number;
 } {
   const orientation = canonicalOrientation(input.mintA, input.mintB);
   const needsSwap = orientation === 'swap';
 
   if (needsSwap) {
     // Swap mints and invert price
-    const invertedPrice = input.rawPrice > 0 ? 1 / input.rawPrice : 0;
+    const invertedPrice = input.rawPrice! > 0 ? 1 / input.rawPrice! : 0;
     
     return {
       mintA: input.mintB,
@@ -91,7 +100,7 @@ function canonicalizeOrientation(input: RawPriceInput): {
   return {
     mintA: input.mintA,
     mintB: input.mintB,
-    price: input.rawPrice,
+    price: input.rawPrice!,
     decimalsA: input.decimalsA,
     decimalsB: input.decimalsB,
     wasSwapped: false,
@@ -99,67 +108,49 @@ function canonicalizeOrientation(input: RawPriceInput): {
 }
 
 /**
- * STEP 2: Apply magnitude calibration and decimal rescaling
- * 
- * Uses USD reference prices to fix power-of-10 errors.
- * Rescales from pool decimals to global decimals if provided.
+ * STEP 2: Apply magnitude calibration
+ * (Moved from graph.pricing.ts)
  */
-function calibrateAndRescale(
-  canonical: ReturnType<typeof canonicalizeOrientation>,
-  options: PriceProcessingOptions
-): number | undefined {
-  const { getUsd, globalDecimals } = options;
-  
-  // Get global decimals (fallback to pool decimals)
-  const globalDecA = globalDecimals?.[canonical.mintA] ?? canonical.decimalsA;
-  const globalDecB = globalDecimals?.[canonical.mintB] ?? canonical.decimalsB;
+function calibrateMagnitude(
+  mintA: string,
+  mintB: string,
+  price: number,
+  getUsd?: (mint: string) => number | undefined
+): number {
+  if (typeof getUsd !== 'function' || !price || price <= 0) {
+    return price;
+  }
 
-  // Apply magnitude calibration and decimal rescaling
-  const calibrated = computePriceForward(
-    canonical.mintA,
-    canonical.mintB,
-    canonical.price,
-    canonical.decimalsA,
-    canonical.decimalsB,
-    globalDecA,
-    globalDecB,
-    getUsd,
-    undefined,
-    false  // Not a reverse edge
-  );
+  try {
+    const pa = getUsd(mintA);
+    const pb = getUsd(mintB);
+    if (pa && pb && pa > 0 && pb > 0) {
+      const ref = pb / pa;
+      const rawDev = Math.max(price / ref, ref / price);
 
-  return calibrated;
+      let best = price;
+      let bestDev = rawDev;
+
+      const MAX_APPLIED_DEV = 100;
+
+      for (let k = -8; k <= 8; k++) {
+        const cand = price * Math.pow(10, k);
+        if (!(cand > 0) || !Number.isFinite(cand)) continue;
+        const dev = Math.max(cand / ref, ref / cand);
+        if (dev + 1e-12 < bestDev) {
+          bestDev = dev;
+          best = cand;
+        }
+      }
+
+      if (bestDev + 1e-12 < rawDev && bestDev <= MAX_APPLIED_DEV) {
+        return best;
+      }
+    }
+  } catch {}
+  return price;
 }
 
-/**
- * STEP 3: Calculate reverse edge price
- * 
- * Properly inverts the forward price with correct decimal handling.
- */
-function calculateReverse(
-  canonical: ReturnType<typeof canonicalizeOrientation>,
-  forwardPrice: number,
-  options: PriceProcessingOptions
-): number | undefined {
-  const { getUsd, globalDecimals } = options;
-  
-  const globalDecA = globalDecimals?.[canonical.mintA] ?? canonical.decimalsA;
-  const globalDecB = globalDecimals?.[canonical.mintB] ?? canonical.decimalsB;
-
-  const reverse = computePriceReverse(
-    canonical.mintA,
-    canonical.mintB,
-    forwardPrice,
-    canonical.price,  // Raw canonical price before calibration
-    canonical.decimalsA,
-    canonical.decimalsB,
-    globalDecA,
-    globalDecB,
-    getUsd
-  );
-
-  return reverse;
-}
 
 /**
  * CENTRALIZED PRICE PIPELINE
@@ -178,6 +169,17 @@ export function processPriceThroughPipeline(
   input: RawPriceInput,
   options: PriceProcessingOptions = {}
 ): ProcessedPrice | undefined {
+  // STEP 0: Calculate raw price from formula if not provided
+  if (input.rawPrice == null || !Number.isFinite(input.rawPrice)) {
+    if (input.dex === 'Meteora' && input.poolType === 'clmm' && input.activeId != null && input.binStep != null && input.tokenXMint && input.tokenYMint) {
+      input.rawPrice = calculateMeteoraPrice(input.activeId, input.binStep, input.tokenXMint, input.tokenYMint, input.mintA, input.mintB, input.decimalsA, input.decimalsB);
+    } else if (input.poolType === 'clmm' && input.sqrtPriceX64) {
+      input.rawPrice = calculateClmmPrice(input.sqrtPriceX64, input.decimalsA, input.decimalsB, input.mintA, input.mintB, options.getUsd);
+    } else if (input.poolType === 'amm' && input.reserveA != null && input.reserveB != null) {
+      input.rawPrice = calculateAmmPrice(input.reserveA, input.reserveB, input.decimalsA, input.decimalsB);
+    }
+  }
+
   // Validate input
   if (!input.mintA || !input.mintB || input.mintA === input.mintB) {
     return undefined;
@@ -196,29 +198,17 @@ export function processPriceThroughPipeline(
     const canonical = canonicalizeOrientation(input);
     
     // STEP 2: Calibrate and rescale forward price
-    const forward = calibrateAndRescale(canonical, options);
+    const calibrated = calibrateMagnitude(canonical.mintA, canonical.mintB, canonical.price, options.getUsd);
     
-    if (!forward || forward <= 0 || !Number.isFinite(forward)) {
+    if (!calibrated || calibrated <= 0 || !Number.isFinite(calibrated)) {
       return undefined;
     }
 
-    // STEP 3: Calculate reverse price
-    const reverse = calculateReverse(canonical, forward, options);
-    
-    if (!reverse || reverse <= 0 || !Number.isFinite(reverse)) {
-      // Fallback to simple inversion if reverse calculation fails
-      const fallbackReverse = 1 / forward;
-      return {
-        mintA: canonical.mintA,
-        mintB: canonical.mintB,
-        priceForward: forward,
-        priceReverse: fallbackReverse,
-        wasSwapped: canonical.wasSwapped,
-        decimalsA: canonical.decimalsA,
-        decimalsB: canonical.decimalsB,
-      };
-    }
+    const forward = calibrated; // For clarity
 
+    // STEP 3: Calculate reverse price
+    const reverse = 1 / forward;
+    
     // Diagnostic: Check if forward * reverse ≈ 1
     if (options.diagnostics) {
       const product = forward * reverse;

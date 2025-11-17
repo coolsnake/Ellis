@@ -676,7 +676,6 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
     return '';
   };
 
-  // Extract all unique mints for batch decimal resolution
   const allMints = new Set<string>();
   for (const it of arr) {
     if (!it) continue;
@@ -686,16 +685,19 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
     if (mintB) allMints.add(mintB);
   }
   
-  // Batch resolve decimals using centralized resolver with RPC-first validation
   const decimalsMap = await resolveManyDecimals(Array.from(allMints), { 
     logger, 
-    normalizeMode: true // RPC validation priority during normalization
+    normalizeMode: true
   });
+  
   const toFeeBps = (v: any): number => {
     const n = Number(v);
     if (!Number.isFinite(n)) return 30;
     return n <= 1 ? Math.round(n * 10_000) : Math.round(n);
   };
+  
+  const { processPriceThroughPipeline } = await import('./pricePipeline.js');
+  const { getPriceByMint } = await import('../priceStore.js');
 
   for (const it of arr) {
     if (!it) continue;
@@ -703,654 +705,92 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
     const mintA = toMint(it?.mintA);
     const mintB = toMint(it?.mintB);
     if (!id || !mintA || !mintB) continue;
-    const typeStr = String(it?.type || it?.poolType || '').toLowerCase();
-    const pooltype = Array.isArray((it as any)?.pooltype) ? (it as any).pooltype : [];
-    const hasSqrt = (it as any)?.sqrtPriceX64 != null || (it as any)?.sqrtPrice != null;
-    const tickSpacing = (it as any)?.tickSpacing ?? (it as any)?.config?.tickSpacing;
-    const hasTick = typeof tickSpacing === 'number' && tickSpacing > 0; // Only consider valid tick spacing
-    const isClmm = typeStr.includes('concentrated') || pooltype.map((s: any) => String(s).toLowerCase()).includes('clmm') || hasSqrt || hasTick;
+
+    const isClmm = (it as any)?.poolType === 'CLMM' || (it as any)?.type?.toLowerCase().includes('concentrated') || (it as any)?.sqrtPriceX64 != null;
+
     const fee_bps = toFeeBps((it as any)?.feeRate ?? (it as any)?.tradeFeeRate ?? (it as any)?.feeBps ?? (it as any)?.tradeFeeBps);
+    const decA = decimalsMap.get(mintA) ?? Number((it?.mintA as any)?.decimals);
+    const decB = decimalsMap.get(mintB) ?? Number((it?.mintB as any)?.decimals);
     
-    // Get decimals from centralized resolver with API fallback
-    const apiDecA = Number((it?.mintA as any)?.decimals);
-    const apiDecB = Number((it?.mintB as any)?.decimals);
-    
-    let decA = decimalsMap.get(mintA) ?? apiDecA;
-    let decB = decimalsMap.get(mintB) ?? apiDecB;
-
-    if (!Number.isFinite(decA)) decA = 6;
-    if (!Number.isFinite(decB)) decB = 6;
-
-    // DIAGNOSTIC: Log when API decimals differ from our map
-    if ((Number.isFinite(apiDecA) && apiDecA !== decA) || (Number.isFinite(apiDecB) && apiDecB !== decB)) {
-      try {
-        logger.warn('raydium.decimals.mismatch', {
-          pool_id: id.slice(0, 12),
-          mint_a: mintA.slice(0, 8),
-          mint_b: mintB.slice(0, 8),
-          api_dec_a: apiDecA,
-          api_dec_b: apiDecB,
-          map_dec_a: decimalsMap.get(mintA),
-          final_dec_a: decA,
-          final_dec_b: decB,
-          cat: 'raydium.diagnostic'
-        });
-      } catch {}
+    if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
+      continue;
     }
-    
-    // Clamp to reasonable integer bounds
-    decA = Math.min(12, Math.max(0, Math.round(Number(decA))));
-    decB = Math.min(12, Math.max(0, Math.round(Number(decB))));
-    
-    const price = Number((it as any)?.price);
-    const tvl = Number((it as any)?.tvl);
-    const mintAmountRawA = (it as any)?.mintAmountA;
-    const mintAmountRawB = (it as any)?.mintAmountB;
-    const mintAmountA = Number(mintAmountRawA);
-    const mintAmountB = Number(mintAmountRawB);
 
     if (isClmm) {
-      const tick = Number((it as any)?.tickSpacing ?? (it as any)?.config?.tickSpacing ?? 0);
-      const sqrtCandidate = (it as any)?.sqrtPriceX64 ?? (it as any)?.sqrtPrice ?? 0;
-      const sqrtBig = anyToBigInt(sqrtCandidate);
-      const sqrt = typeof sqrtCandidate === 'number' ? sqrtCandidate : Number(sqrtBig ?? 0n);
-      const liquidityCandidate = (it as any)?.liquidity ?? 0;
-      const liquidity = Number(liquidityCandidate);
-      const liquidityRaw = anyToBigInt(liquidityCandidate);
-      const tvl_usd = Number.isFinite(tvl) && tvl > 0 ? tvl : undefined;
-      const reserveA = Number((it as any)?.reserveA ?? NaN);
-      const reserveB = Number((it as any)?.reserveB ?? NaN);
-      let amount_a_whole = Number.isFinite(mintAmountA) ? mintAmountA : (Number.isFinite(reserveA) ? reserveA : undefined);
-      let amount_b_whole = Number.isFinite(mintAmountB) ? mintAmountB : (Number.isFinite(reserveB) ? reserveB : undefined);
-      let price_from_sqrt = 0;
-      let priceSource: 'sqrt' | 'reserves' | 'api' | undefined;
-      // CRITICAL: Verify decimals match mints before calculating price
-      // Ensure decA corresponds to mintA and decB corresponds to mintB
-      // Re-fetch decimals from resolver if there's any doubt to ensure correctness
-      let verifiedDecA = decA;
-      let verifiedDecB = decB;
-      try {
-        // Double-check decimals match the mints (defensive check)
-        const decAFromMap = decimalsMap.get(mintA);
-        const decBFromMap = decimalsMap.get(mintB);
-        if (Number.isFinite(decAFromMap) && decAFromMap !== decA) {
-          verifiedDecA = decAFromMap;
-        }
-        if (Number.isFinite(decBFromMap) && decBFromMap !== decB) {
-          verifiedDecB = decBFromMap;
-        }
-      } catch {}
-      
-      // Ensure decimals are finite and reasonable
-      if (!Number.isFinite(verifiedDecA) || verifiedDecA < 0 || verifiedDecA > 12) {
-        verifiedDecA = decimalsMap.get(mintA) ?? 6;
-      }
-      if (!Number.isFinite(verifiedDecB) || verifiedDecB < 0 || verifiedDecB > 12) {
-        verifiedDecB = decimalsMap.get(mintB) ?? 6;
-      }
-      verifiedDecA = Math.min(12, Math.max(0, Math.round(verifiedDecA)));
-      verifiedDecB = Math.min(12, Math.max(0, Math.round(verifiedDecB)));
-      
-      // Update decA/decB to verified values for consistency
-      decA = verifiedDecA;
-      decB = verifiedDecB;
-      
-      // Calculate price using centralized CLMM formula
-      // This ensures consistent sqrt price calculation across all CLMM pools
-      // Also compute high-precision ratio for exact price fields
-      const { calculateClmmPrice } = await import('./priceFormulas.js');
-      let priceRatio = sqrtBig && Number.isFinite(decA) && Number.isFinite(decB)
-        ? sqrtPriceX64ToPriceRatio(sqrtBig, decA as number, decB as number)
-        : null;
-      
-      try {
-        if (sqrtBig && Number.isFinite(decA) && Number.isFinite(decB)) {
-          const priceFromCentralized = calculateClmmPrice(
-            sqrtBig, 
-            decA as number, 
-            decB as number,
-            mintA,
-            mintB,
-            (m) => {
-              try {
-                const { getPriceByMint } = require('../priceStore.js');
-                return getPriceByMint(m)?.usdc;
-              } catch {
-                return undefined;
-              }
-            }
-          );
-          if (priceFromCentralized && priceFromCentralized > 0 && Number.isFinite(priceFromCentralized)) {
-            price_from_sqrt = priceFromCentralized;
-          }
-        
-          // Fallback: Try Raydium SDK as secondary source
-          if (price_from_sqrt === 0 && sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
-            try {
-              const rmod: any = await import('@raydium-io/raydium-sdk-v2');
-              const SqrtPriceMath = rmod?.SqrtPriceMath || rmod?.Clmm?.SqrtPriceMath;
-              if (SqrtPriceMath?.sqrtPriceX64ToPrice) {
-                const sqrtBigInt = sqrtBig ?? BigInt(Math.floor(sqrt));
-                const priceFromSdk = SqrtPriceMath.sqrtPriceX64ToPrice(sqrtBigInt, decA, decB);
-                if (priceFromSdk != null && Number(priceFromSdk) > 0 && Number.isFinite(Number(priceFromSdk))) {
-                  price_from_sqrt = Number(priceFromSdk);
-                }
-              }
-            } catch {}
-          }
-        }
-      } catch {}
-      // Choose best raw price candidate (highest confidence first)
-      let rawPrice = 0;
-      if (price_from_sqrt > 0) {
-        rawPrice = price_from_sqrt;
-        priceSource = 'sqrt';
-      } else if (amount_a_whole && amount_b_whole && amount_b_whole > 0) {
-        rawPrice = amount_a_whole / amount_b_whole;
-        priceSource = 'reserves';
-      } else if (Number(price) > 0) {
-        rawPrice = 1 / Number(price);
-        priceSource = 'api';
-        try {
-          logger.debug('raydium.clmm.price.api_fallback', {
-            pool: id.slice(0, 8),
-            mint_a: mintA.slice(0, 8),
-            mint_b: mintB.slice(0, 8),
-            price_raw: price,
-            note: 'Using inverted API price because sqrt/reserves unavailable',
-            cat: 'raydium'
-          });
-        } catch {}
-      }
-      
-      // Process through centralized pipeline (canonicalization + calibration + rescaling)
-      let px = 0;
-      let finalMintA = mintA;
-      let finalMintB = mintB;
-      let finalDecA = decA;
-      let finalDecB = decB;
-      let pipelineSwapped = false;
-      let pipelineProcessedFlag = false;
-      
-      if (rawPrice > 0) {
-        try {
-          const { processPriceThroughPipeline } = await import('./pricePipeline.js');
-          const { getPriceByMint } = await import('../priceStore.js');
-          
-          const processed = processPriceThroughPipeline({
-            mintA,
-            mintB,
-            rawPrice,
-            decimalsA: decA as number,
-            decimalsB: decB as number,
-            poolId: id,
-            dex: 'Raydium',
-            poolType: 'clmm'
-          }, {
-            getUsd: (m) => {
-              try {
-                const v = getPriceByMint(m)?.usdc ?? undefined;
-                if (typeof v === 'number' && v > 0) return v;
-                const STABLES = new Set<string>([
-                  ...((((CONFIG as any)?.system as any)?.stableMints || []) as string[]),
-                  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-                  'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN',
-                ]);
-                return STABLES.has(m) ? 1 : undefined;
-              } catch {
-                return undefined;
-              }
-            },
-            diagnostics: false
-          });
-          
-          if (processed) {
-            px = processed.priceForward;
-            finalMintA = processed.mintA;
-            finalMintB = processed.mintB;
-            finalDecA = processed.decimalsA;
-            finalDecB = processed.decimalsB;
-            pipelineSwapped = processed.wasSwapped;
-            pipelineProcessedFlag = true;
-          } else {
-            px = rawPrice;
-          }
-        } catch (err) {
-          px = rawPrice;
-          try {
-            logger.warn('raydium.clmm.pipeline.failed', {
-              pool: id,
-              error: String(err),
-              cat: 'raydium'
-            });
-          } catch {}
-        }
-      }
-      if (pipelineSwapped) {
-        [amount_a_whole, amount_b_whole] = [amount_b_whole, amount_a_whole];
-      }
+      const sqrtPriceX64 = anyToBigInt((it as any)?.sqrtPriceX64 ?? (it as any)?.sqrtPrice);
+      const processed = processPriceThroughPipeline({
+        mintA,
+        mintB,
+        decimalsA: decA,
+        decimalsB: decB,
+        poolId: id,
+        dex: 'Raydium',
+        poolType: 'clmm',
+        sqrtPriceX64,
+      }, {
+        getUsd: (m) => getPriceByMint(m)?.usdc,
+      });
 
-      let ok = true;
-      try {
-        const sanityCfg = (CONFIG as any)?.sanity || {};
-        const apply = (sanityCfg as any).sanity_applyRaydiumClmm ?? true;
-        if (apply !== false && px > 0) {
-          const maxDeviation = Number.isFinite(Number((sanityCfg as any).maxPriceDeviationClmm))
-            ? Number((sanityCfg as any).maxPriceDeviationClmm)
-            : (Number.isFinite(Number((sanityCfg as any).maxPriceDeviation)) ? Number((sanityCfg as any).maxPriceDeviation) : 5);
-          const { getPriceByMint } = await import('../priceStore.js');
-          const pa = getPriceByMint(mintA)?.usdc ?? null;
-          const pb = getPriceByMint(mintB)?.usdc ?? null;
-          if (pa && pb && (pa as number) > 0 && (pb as number) > 0) {
-            const ref = (pb as number) / (pa as number);
-            const dev = Math.max(px / ref, ref / px);
-            if (dev > maxDeviation) ok = false;
-          }
-        }
-      } catch {}
-      if (!ok) { try { logger.warn('raydium.clmm drop by sanity', { id, mint_a: mintA, mint_b: mintB, price_in: price, price_from_sqrt }); } catch {} } else {
-        // Populate pool_liquidity_raw as min(wholeA, wholeB) using decimals-aware amounts when available
-        let pool_liquidity_raw: number | undefined = undefined;
-        try {
-          const aAtomic = Number((it as any)?.mintAmountA ?? NaN);
-          const bAtomic = Number((it as any)?.mintAmountB ?? NaN);
-          if (Number.isFinite(decA) && Number.isFinite(decB) && Number.isFinite(aAtomic) && Number.isFinite(bAtomic)) {
-            const wa = aAtomic / Math.pow(10, decA as number);
-            const wb = bAtomic / Math.pow(10, decB as number);
-            const min = Math.min(wa, wb);
-            if (Number.isFinite(min) && min > 0) pool_liquidity_raw = min;
-          }
-        } catch {}
-        
-        // Derive execution-critical accounts for Raydium CLMM
-        let observation_state: string | undefined;
-        let ex_bitmap: string | undefined;
-        let account_a: string | undefined;
-        let account_b: string | undefined;
-        try {
-          const { PublicKey } = await import('@solana/web3.js');
-          const poolPk = new PublicKey(id);
-          const programId = new PublicKey('CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK');
-          
-          // Derive observation state PDA: [b"observation", pool.key()]
-          try {
-            const [observationPda] = PublicKey.findProgramAddressSync(
-              [Buffer.from('observation'), poolPk.toBuffer()],
-              programId
-            );
-            observation_state = observationPda.toBase58();
-          } catch {}
-          
-          // Derive exBitmap (tick array bitmap extension) PDA: [b"exaccount", pool.key()]
-          try {
-            const [exBitmapPda] = PublicKey.findProgramAddressSync(
-              [Buffer.from('exaccount'), poolPk.toBuffer()],
-              programId
-            );
-            ex_bitmap = exBitmapPda.toBase58();
-          } catch {}
-          
-          // Extract vault accounts from CLMM cache (these are obtained from on-chain decoding)
-          try {
-            const { getClmmStatic } = await import('../../execution/clmmCache.js');
-            const cached = typeof getClmmStatic === 'function' ? getClmmStatic(id) : null;
-            if (cached?.vaultA) account_a = cached.vaultA;
-            if (cached?.vaultB) account_b = cached.vaultB;
-            
-            // Log vault extraction for debugging
-            try {
-              logger.debug('raydium.clmm.vaults.extracted', {
-                cat: 'raydium',
-                ctx: { 
-                  pool: id, 
-                  hasVaultA: !!account_a, 
-                  hasVaultB: !!account_b,
-                  vaultA: account_a?.slice(0, 8) + '...',
-                  vaultB: account_b?.slice(0, 8) + '...'
-                }
-              });
-            } catch {}
-          } catch (e: any) {
-            try {
-              logger.debug('raydium.clmm.vaults.cache_miss', {
-                cat: 'raydium',
-                ctx: { pool: id, error: String(e?.message || e) }
-              });
-            } catch {}
-          }
-        } catch (e: any) {
-          try {
-            logger.debug('raydium.clmm.exec_accounts.derivation.failed', {
-              cat: 'raydium',
-              ctx: { pool: id, error: String(e?.message || e) }
-            });
-          } catch {}
-        }
-        
-        if (pipelineSwapped) {
-          [account_a, account_b] = [account_b, account_a];
-        }
-
+      if (processed) {
         clmm.push({
           id,
           dex: 'Raydium',
-          mint_a: finalMintA,
-          mint_b: finalMintB,
+          mint_a: processed.mintA,
+          mint_b: processed.mintB,
           fee_bps,
-          sqrt_price_x64: Number.isFinite(sqrt) ? sqrt : 0,
-          sqrt_price_x64_raw: sqrtBig ? sqrtBig.toString() : undefined,
-          liquidity: Number.isFinite(liquidity) ? liquidity : 0,
-          liquidity_raw: liquidityRaw ? liquidityRaw.toString() : undefined,
-          tick_spacing: Number.isFinite(tick) ? tick : 0,
+          sqrt_price_x64_raw: sqrtPriceX64?.toString(),
+          liquidity_raw: anyToBigInt((it as any)?.liquidity)?.toString(),
+          tick_spacing: Number((it as any)?.tickSpacing),
           updated_ms: now,
-          price_a_per_b: px > 0 ? px : undefined,
-          price_a_per_b_num: priceRatio ? priceRatio.numerator.toString() : undefined,
-          price_a_per_b_den: priceRatio ? priceRatio.denominator.toString() : undefined,
-          price_a_per_b_exact: ratioToDecimalString(priceRatio) ?? undefined,
-          decimals_a: Number.isFinite(finalDecA) ? finalDecA : undefined,
-          decimals_b: Number.isFinite(finalDecB) ? finalDecB : undefined,
+          price_a_per_b: processed.priceForward,
+          decimals_a: processed.decimalsA,
+          decimals_b: processed.decimalsB,
           pool_kind: 'clmm',
-          tvl_usd,
-          amount_a_whole,
-          amount_b_whole,
-          pool_liquidity_raw,
-          liquidity_display: tvl_usd,
-          account_a,
-          account_b,
-          observation_state,
-          ex_bitmap,
-          // Mark that this pool went through the pipeline (for edge creation to skip re-processing)
-          _pipelineProcessed: px > 0 && pipelineProcessedFlag,
-        } as any);
+          tvl_usd: (it as any)?.tvl,
+          _pipelineProcessed: true,
+        } as ClmmPool);
       }
-    } else {
-      const tvl_usd = Number.isFinite(tvl) && tvl > 0 ? tvl : undefined;
-      // Accept legacy test fields reserveA/reserveB as whole reserves when mintAmountA/B absent
-      const amount_a_whole = normalizeAmount(mintAmountRawA, decA) ?? normalizeAmount((it as any)?.reserveA, decA);
-      const amount_b_whole = normalizeAmount(mintAmountRawB, decB) ?? normalizeAmount((it as any)?.reserveB, decB);
-      // Treat mintAmountA/B as already scaled unless clearly atomic
-      const amounts_are_whole = undefined;
-      const liquidity_base = Number.isFinite(amount_a_whole as any) && Number.isFinite(amount_b_whole as any)
-        ? Math.min(amount_a_whole as number, amount_b_whole as number)
-        : 0;
-      const liquidity_display = (tvl_usd != null) ? tvl_usd : (liquidity_base > 0 ? liquidity_base : undefined);
-      const price_in = (Number.isFinite(price) && price > 0) ? (1 / Number(price)) : 0;
-      const price_res = (Number.isFinite(amount_a_whole as any) && Number.isFinite(amount_b_whole as any) && (amount_b_whole as number) > 0)
-        ? ((amount_a_whole as number) / (amount_b_whole as number))
-        : 0;
-      // Prefer reserves-derived price; only fall back to upstream price when reserves are unavailable
-      const price_from_reserves = (price_res > 0 ? price_res : 0);
-      let price_sane = price_from_reserves > 0 ? price_from_reserves : (price_in > 0 ? price_in : 0);
-      // Removed stable-aware flip to avoid double-orientation corrections; orientation handled later via canonicalization/graph USD refs
-      try {
-        const sanityCfg = (CONFIG as any)?.sanity || {};
-        const apply = (sanityCfg as any).sanity_applyRaydiumAmm ?? true;
-        if (apply !== false) {
-          const maxDeviation = Number.isFinite(Number(sanityCfg.maxPriceDeviation)) ? Number(sanityCfg.maxPriceDeviation) : 50;
-          const { getPriceByMint } = await import('../priceStore.js');
-          let pa = getPriceByMint(mintA)?.usdc ?? null;
-          let pb = getPriceByMint(mintB)?.usdc ?? null;
-          // Stable fallback: assume 1.0 when missing
-          try {
-            const STABLES = new Set<string>([
-              ...((((CONFIG as any)?.system as any)?.stableMints || []) as string[]),
-              'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-              'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN',
-            ]);
-            if (!(typeof pa === 'number' && pa > 0) && STABLES.has(mintA)) pa = 1;
-            if (!(typeof pb === 'number' && pb > 0) && STABLES.has(mintB)) pb = 1;
-          } catch {}
-          if (pa && pb && (pa as number) > 0 && (pb as number) > 0) {
-            const ref = (pb as number) / (pa as number);
-            // Magnitude-only calibration: do not include reciprocals; keep orientation A per 1 B
-            const candidates: number[] = [];
-            if (price_in > 0) candidates.push(price_in);
-            if (price_res > 0) candidates.push(price_res);
-            if (candidates.length) {
-              let bestVal = candidates[0];
-              let bestDev = Math.max(bestVal / ref, ref / bestVal);
-              for (let k = 1; k < candidates.length; k++) {
-                const cur = candidates[k];
-                const dev = Math.max(cur / ref, ref / cur);
-                if (dev + 1e-12 < bestDev) { bestDev = dev; bestVal = cur; }
-              }
-              price_sane = bestVal;
-              if (bestDev > maxDeviation) {
-                try { logger.warn('raydium.amm drop by sanity', { id, mint_a: mintA, mint_b: mintB, price_in, price_res, ref, dev: bestDev, maxDeviation }); } catch {}
-                continue;
-              }
-            }
-          }
-        }
-      } catch {}
-      const reserveARaw = anyToBigInt((it as any)?.reserveA ?? mintAmountA);
-      const reserveBRaw = anyToBigInt((it as any)?.reserveB ?? mintAmountB);
-      amm.push({
-        id,
+    } else { // AMM
+      const reserveA = anyToBigInt((it as any)?.reserveA ?? (it as any)?.mintAmountA);
+      const reserveB = anyToBigInt((it as any)?.reserveB ?? (it as any)?.mintAmountB);
+
+      const processed = processPriceThroughPipeline({
+        mintA,
+        mintB,
+        decimalsA: decA,
+        decimalsB: decB,
+        poolId: id,
         dex: 'Raydium',
-        mint_a: mintA,
-        mint_b: mintB,
-        fee_bps,
-        price_a_per_b: price_sane,
-        liquidity_base,
-        updated_ms: now,
-        pool_kind: 'amm',
-        tvl_usd,
-        amount_a_whole,
-        amount_b_whole,
-        amounts_are_whole,
-        decimals_a: Number.isFinite(decA) ? decA : undefined,
-        decimals_b: Number.isFinite(decB) ? decB : undefined,
-        pool_liquidity_raw: liquidity_base > 0 ? liquidity_base : undefined,
-        liquidity_display,
-        reserve_a_raw: reserveARaw ? reserveARaw.toString() : undefined,
-        reserve_b_raw: reserveBRaw ? reserveBRaw.toString() : undefined,
+        poolType: 'amm',
+        reserveA,
+        reserveB,
+      }, {
+        getUsd: (m) => getPriceByMint(m)?.usdc,
       });
-    }
-  }
 
-  // Batch fetch market accounts for AMM pools (Raydium only)
-  // This enriches pools with Serum market sub-accounts required for swaps
-  // Uses batched getMultipleAccountsInfo instead of individual fetches (10-15x faster)
-  const enableMarketFetch = (CONFIG as any)?.raydium?.fetchMarketAccounts !== false;
-  if (enableMarketFetch && amm.length > 0) {
-    try {
-      logger.info('raydium.amm.market_accounts.fetch.start', { count: amm.length, cat: 'pools' });
-      const fetchStart = Date.now();
-      
-      // PHASE 1: Batch fetch all pool accounts
-      const poolIds = amm.map(p => p.id);
-      const poolAccountsMap = await batchFetchRaydiumPoolAccounts(poolIds);
-      
-      // PHASE 2: Collect unique market IDs and their program IDs
-      const marketIds = new Set<string>();
-      const marketProgramIds = new Map<string, string>();
-      for (const [poolId, poolData] of poolAccountsMap.entries()) {
-        if (poolData.marketId && poolData.marketProgramId) {
-          marketIds.add(poolData.marketId);
-          marketProgramIds.set(poolData.marketId, poolData.marketProgramId);
-        }
+      if (processed) {
+        amm.push({
+          id,
+          dex: 'Raydium',
+          mint_a: processed.mintA,
+          mint_b: processed.mintB,
+          fee_bps,
+          price_a_per_b: processed.priceForward,
+          updated_ms: now,
+          pool_kind: 'amm',
+          tvl_usd: (it as any)?.tvl,
+          decimals_a: processed.decimalsA,
+          decimals_b: processed.decimalsB,
+          reserve_a_raw: reserveA?.toString(),
+          reserve_b_raw: reserveB?.toString(),
+          _pipelineProcessed: true,
+        } as AmmPool);
       }
-      
-      // PHASE 3: Batch fetch all market accounts
-      const marketAccountsMap = await batchFetchSerumMarketAccounts(
-        Array.from(marketIds),
-        marketProgramIds
-      );
-      
-      // PHASE 4: Enrich pools with fetched data
-      let successCount = 0;
-      let skipCount = 0;
-      
-      for (let i = 0; i < amm.length; i++) {
-        const pool = amm[i];
-        const poolData = poolAccountsMap.get(pool.id);
-        
-        if (!poolData?.marketId) {
-          skipCount++;
-          continue;
-        }
-        
-        const marketData = marketAccountsMap.get(poolData.marketId);
-        
-        // Update pool with all accounts
-        amm[i].market_id = poolData.marketId;
-        amm[i].market_program_id = poolData.marketProgramId;
-        amm[i].amm_authority = poolData.ammAuthority;
-        amm[i].amm_open_orders = poolData.ammOpenOrders;
-        amm[i].amm_target_orders = poolData.ammTargetOrders;
-        amm[i].lp_mint = poolData.lpMint;
-        amm[i].account_a = poolData.baseVault || amm[i].account_a;
-        amm[i].account_b = poolData.quoteVault || amm[i].account_b;
-        
-        if (marketData) {
-          amm[i].market_bids = marketData.bids;
-          amm[i].market_asks = marketData.asks;
-          amm[i].market_event_queue = marketData.eventQueue;
-          amm[i].market_base_vault = marketData.baseVault;
-          amm[i].market_quote_vault = marketData.quoteVault;
-          amm[i].market_authority = marketData.authority;
-          successCount++;
-        } else {
-          try {
-            logger.debug('raydium.amm.market_accounts.no_market_data', {
-              cat: 'pools',
-              ctx: { poolId: pool.id, marketId: poolData.marketId }
-            });
-          } catch {}
-        }
-        
-        // DEBUG: Log successful fetch for specific pool
-        if (pool.id === '58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2') {
-          try {
-            logger.info('raydium.amm.market_accounts.target_pool_enriched', {
-              cat: 'pools',
-              ctx: {
-                poolId: pool.id,
-                hasMarketId: !!amm[i].market_id,
-                hasMarketBids: !!amm[i].market_bids,
-                hasMarketAsks: !!amm[i].market_asks,
-                hasAmmAuthority: !!amm[i].amm_authority,
-                market_id: amm[i].market_id,
-                market_bids: amm[i].market_bids
-              }
-            });
-          } catch {}
-        }
-      }
-      
-      const fetchMs = Date.now() - fetchStart;
-      logger.info('raydium.amm.market_accounts.fetch.complete', {
-        total: amm.length,
-        success: successCount,
-        skipped: skipCount,
-        uniqueMarkets: marketIds.size,
-        ms: fetchMs,
-        avgMsPerPool: Math.round(fetchMs / amm.length),
-        cat: 'pools'
-      });
-    } catch (err) {
-      try {
-        logger.error('raydium.amm.market_accounts.fetch.failed', {
-          error: String((err as any)?.message || err),
-          cat: 'pools'
-        });
-      } catch {}
     }
   }
-
-  // DEBUG: Log a sample pool before canonicalization to verify market accounts are present
-  if (amm.length > 0) {
-    const samplePool = amm.find(p => p.id === '58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2') || amm[0];
-    try {
-      logger.info('raydium.amm.before_canon.sample', {
-        cat: 'pools',
-        ctx: {
-          id: samplePool.id,
-          hasMarketId: !!samplePool.market_id,
-          hasMarketBids: !!samplePool.market_bids,
-          hasMarketAsks: !!samplePool.market_asks,
-          hasMarketEventQueue: !!samplePool.market_event_queue,
-          hasAmmAuthority: !!samplePool.amm_authority,
-          hasAmmOpenOrders: !!samplePool.amm_open_orders,
-          market_id: samplePool.market_id?.slice(0, 8) + '...',
-          market_bids: samplePool.market_bids?.slice(0, 8) + '...'
-        }
-      });
-    } catch {}
-  }
-
-  // CRITICAL FIX: Check if pools are already canonicalized before canonicalizing
-  // CLMM pools go through processPriceThroughPipeline() which already canonicalizes
-  // AMM pools may or may not go through pipeline depending on code path
-  let clmmCanon: typeof clmm;
-  try {
-    if (clmm.length > 0) {
-      const { canonicalOrientation } = await import('./canonical.js');
-      const samplePool = clmm[0];
-      const orientation = canonicalOrientation(samplePool.mint_a, samplePool.mint_b);
-      
-      if (orientation === 'swap') {
-        // Pools are NOT canonicalized - apply canonicalization
-        clmmCanon = canonicalizePools(clmm);
-      } else {
-        // Pools are already canonicalized (expected for pipeline-processed pools)
-        clmmCanon = clmm;
-      }
-    } else {
-      clmmCanon = clmm;
-    }
-  } catch (e) {
-    // Fallback to canonicalize if check fails
-    logger.warn('raydium.clmm.canonicalization.check_failed', {
-      error: String(e),
-      hint: 'Falling back to canonicalizePools',
-      cat: 'raydium'
-    });
-    clmmCanon = canonicalizePools(clmm);
-  }
   
-  // AMM pools: canonicalize (they may not go through pipeline)
-  const ammCanon = canonicalizePools(amm);
-  
-  // DEBUG: Log same pool after canonicalization
-  if (ammCanon.length > 0) {
-    const samplePool = ammCanon.find(p => p.id === '58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2') || ammCanon[0];
-    try {
-      logger.info('raydium.amm.after_canon.sample', {
-        cat: 'pools',
-        ctx: {
-          id: samplePool.id,
-          hasMarketId: !!samplePool.market_id,
-          hasMarketBids: !!samplePool.market_bids,
-          hasMarketAsks: !!samplePool.market_asks,
-          hasMarketEventQueue: !!samplePool.market_event_queue,
-          hasAmmAuthority: !!samplePool.amm_authority,
-          hasAmmOpenOrders: !!samplePool.amm_open_orders,
-          market_id: samplePool.market_id?.slice(0, 8) + '...',
-          market_bids: samplePool.market_bids?.slice(0, 8) + '...'
-        }
-      });
-    } catch {}
-  }
-  
-  // Verify canonicalization: ensure price inversion happens correctly when mints are swapped
-  try {
-    const ammVerification = verifyCanonicalization(ammCanon, swapABFields);
-    const clmmVerification = verifyCanonicalization(clmmCanon, swapABFields);
-    if (!ammVerification.valid || !clmmVerification.valid) {
-      try {
-        logger.warn('raydium.canonicalization.verification.failed', {
-          ammErrors: ammVerification.errors.length,
-          clmmErrors: clmmVerification.errors.length,
-          cat: 'raydium'
-        });
-      } catch {}
-    }
-  } catch {}
-  
-  logger.info('raydium.pools normalized', { amm: ammCanon.length, clmm: clmmCanon.length, cat: 'raydium' });
-  return { amm: ammCanon, clmm: clmmCanon };
+  logger.info('raydium.pools normalized', { amm: amm.length, clmm: clmm.length, cat: 'raydium' });
+  return { amm, clmm };
 }
 
 

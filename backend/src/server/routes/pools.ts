@@ -256,9 +256,9 @@ export function createPoolsRouter(_io: SocketIOServer): Router {
 
   api.post('/arb/pools/subscribe', async (_req, res) => {
     try {
-      const { enablePoolWebsocketRefreshes, startRaydiumRefreshLoop } = await import('../pools.js');
+      const { enablePoolWebsocketRefreshes, startPoolWebsocketsOnlyOnce } = await import('../pools.js');
       enablePoolWebsocketRefreshes();
-      startRaydiumRefreshLoop();
+      startPoolWebsocketsOnlyOnce();
       res.json({ ok: true });
     } catch (e: any) {
       res.status(500).json({ ok: false, error: String(e?.message || e) });
