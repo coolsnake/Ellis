@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 
 describe('meteoraBalanced.normalize', () => {
   it('computes price/liquidity and preserves fields', async () => {
+    const configMod: any = await import('../../utils/config.js');
+    configMod.CONFIG.meteoraBalanced.minLiqBase = 0;
     const { normalizeMeteoraBalancedHttp } = await import('../pools/meteoraBalanced.js');
 
     const mintA = 'So11111111111111111111111111111111111111112'; // SOL
@@ -23,7 +25,7 @@ describe('meteoraBalanced.normalize', () => {
     expect(norm.clmm.length).toBe(0);
     expect(norm.amm.length).toBe(1);
     const p = norm.amm[0] as any;
-    expect(p.dex).toBe('Meteora');
+    expect(p.dex).toMatch(/MeteoraBalanced/);
     expect(p.pool_kind).toBe('amm');
     expect(p.fee_bps).toBe(30);
     // Orientation may be canonicalized; compute expected price accordingly

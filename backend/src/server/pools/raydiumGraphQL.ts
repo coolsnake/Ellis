@@ -329,6 +329,12 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
           status: pool.status,
           _updatedAt: pool._updatedAt,
           _pipelineProcessed: true, // Mark as processed by price pipeline
+        native_mint_a: mint_a,
+        native_mint_b: mint_b,
+        native_decimals_a: decA,
+        native_decimals_b: decB,
+        native_account_a: pool.baseVault,
+        native_account_b: pool.quoteVault,
         } as any);
       }
     } catch (error: any) {

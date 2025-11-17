@@ -8,6 +8,7 @@ import { canonicalizePools } from './canonical.js';
 import { resolveManyDecimals } from './decimals.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
 import { PublicKey } from '@solana/web3.js';
+import { anyToBigInt } from './precision.js';
 
 export async function fetchMeteoraBalancedHttp(): Promise<any> {
   const RAW_PATH = joinPath(CONFIG.cacheDir, 'meteora-balanced-raw-sample.json');
@@ -151,9 +152,26 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
     return Number.isFinite(n) ? n : undefined;
   };
   const toFeeBps = (v: any): number => {
-    const n = Number(v?.feeRate ?? v?.tradeFeeBps ?? v?.feeBps);
-    if (!Number.isFinite(n)) return 30;
-    return n <= 1 ? Math.round(n * 100) : Math.round(n);
+    const n = Number(v?.feeRate ?? v?.tradeFeeRate ?? v?.tradeFeeBps ?? v?.feeBps ?? 0);
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    if (n > 100) return Math.round(n);
+    if (n >= 1) return Math.round(n * 100);
+    return Math.round(n * 10_000);
+  };
+
+  const deriveAtomic = (raw: any, fallbackWhole?: number, decimals?: number): bigint | null => {
+    const val = anyToBigInt(raw);
+    if (val && val > 0n) return val;
+    if (fallbackWhole != null && Number.isFinite(fallbackWhole) && decimals != null && Number.isFinite(decimals)) {
+      const scale = Math.pow(10, decimals as number);
+      if (Number.isFinite(scale)) {
+        const scaled = Math.round((fallbackWhole as number) * scale);
+        if (Number.isFinite(scaled)) {
+          try { return BigInt(scaled); } catch {}
+        }
+      }
+    }
+    return null;
   };
 
   for (const it of arr) {
@@ -177,8 +195,8 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
       // CRITICAL: Check if we have pre-converted whole amounts from RPC enrichment
       // If vault_a_whole exists, use it directly (already divided by decimals)
       // Otherwise, try to parse from API's raw amounts
-      let wholeA: number;
-      let wholeB: number;
+      let wholeA = Number.NaN;
+      let wholeB = Number.NaN;
       
       if (it?.vault_a_whole !== undefined && it?.vault_b_whole !== undefined) {
         // Use enriched whole amounts (already converted)
@@ -302,6 +320,19 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
         return undefined;
       })();
 
+      const reserveAAtomic = deriveAtomic(
+        (it?.reserveA ?? it?.amountA ?? it?.tokenAmountA ?? it?.token_a_amount ?? it?.vault_a_amount ?? 0),
+        Number.isFinite(wholeA) ? wholeA : undefined,
+        decA,
+      );
+      const reserveBAtomic = deriveAtomic(
+        (it?.reserveB ?? it?.amountB ?? it?.tokenAmountB ?? it?.token_b_amount ?? it?.vault_b_amount ?? 0),
+        Number.isFinite(wholeB) ? wholeB : undefined,
+        decB,
+      );
+      const reserve_a_raw = reserveAAtomic ? reserveAAtomic.toString() : undefined;
+      const reserve_b_raw = reserveBAtomic ? reserveBAtomic.toString() : undefined;
+
       // Extract vault addresses - these are required for WebSocket decoding
       const account_a = String(it?.token_a_vault || '');
       const account_b = String(it?.token_b_vault || '');
@@ -339,11 +370,29 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
         amounts_are_whole: Number.isFinite(wholeA) || Number.isFinite(wholeB) ? true : undefined,
         decimals_a: Number.isFinite(decA as any) ? (decA as number) : undefined,
         decimals_b: Number.isFinite(decB as any) ? (decB as number) : undefined,
+        reserve_a_raw,
+        reserve_b_raw,
         tvl_usd: tvl_usd != null && tvl_usd > 0 ? tvl_usd : undefined,
         pool_liquidity_raw,
         liquidity_display: tvl_usd != null && tvl_usd > 0 ? tvl_usd : (liquidity_base > 0 ? liquidity_base : undefined),
+        native_mint_a: mint_a,
+        native_mint_b: mint_b,
+        native_decimals_a: decA,
+        native_decimals_b: decB,
+        native_account_a: account_a,
+        native_account_b: account_b,
+        native_reserve_a_raw: reserve_a_raw,
+        native_reserve_b_raw: reserve_b_raw,
       });
-    } catch {}
+    } catch (err: any) {
+      try {
+        logger.warn('meteora.balanced.normalize.failed', {
+          error: String(err?.message || err),
+          pool: String((it as any)?.address || (it as any)?.pool_address || ''),
+          cat: 'meteora',
+        });
+      } catch {}
+    }
   }
 
   const ammCanon = canonicalizePools(amm);
@@ -502,6 +551,12 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
         if (Number.isFinite(n)) return Math.round(n * 100);
         return 0;
       })();
+      if (!(fee_bps > 0)) {
+        fee_bps = toFeeBps(it);
+      }
+      if (!(fee_bps > 0)) {
+        fee_bps = toFeeBps(it);
+      }
       
       const liquidity_base = (wholeA > 0 && wholeB > 0) ? Math.min(wholeA, wholeB) : 0;
       
@@ -511,16 +566,19 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
         if (liquidity_base > 0) return liquidity_base;
         return undefined;
       })();
-      
-      // Calculate reserve_a_raw and reserve_b_raw (convert back to raw if we have decimals)
-      let reserve_a_raw: string | undefined;
-      let reserve_b_raw: string | undefined;
-      if (decimalsA != null && wholeA > 0) {
-        reserve_a_raw = BigInt(Math.floor(wholeA * Math.pow(10, decimalsA))).toString();
-      }
-      if (decimalsB != null && wholeB > 0) {
-        reserve_b_raw = BigInt(Math.floor(wholeB * Math.pow(10, decimalsB))).toString();
-      }
+
+      const reserveAAtomicV1 = deriveAtomic(
+        (it?.reserveA ?? it?.amountA ?? it?.tokenAmountA ?? amounts?.[0] ?? 0),
+        Number.isFinite(wholeA) ? wholeA : undefined,
+        decimalsA,
+      );
+      const reserveBAtomicV1 = deriveAtomic(
+        (it?.reserveB ?? it?.amountB ?? it?.tokenAmountB ?? amounts?.[1] ?? 0),
+        Number.isFinite(wholeB) ? wholeB : undefined,
+        decimalsB,
+      );
+      const reserve_a_raw = reserveAAtomicV1 ? reserveAAtomicV1.toString() : undefined;
+      const reserve_b_raw = reserveBAtomicV1 ? reserveBAtomicV1.toString() : undefined;
       
       // Extract vault addresses - these are required for WebSocket decoding
       const account_a = String((it as any)?.pool_token_vaults?.[0] || '');
@@ -563,8 +621,24 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
         tvl_usd: tvl_usd > 0 ? tvl_usd : undefined,
         pool_liquidity_raw,
         liquidity_display: (tvl_usd > 0) ? tvl_usd : (liquidity_base > 0 ? liquidity_base : undefined),
+        native_mint_a: mint_a,
+        native_mint_b: mint_b,
+        native_decimals_a: decimalsA,
+        native_decimals_b: decimalsB,
+        native_account_a: account_a,
+        native_account_b: account_b,
+        native_reserve_a_raw: reserve_a_raw,
+        native_reserve_b_raw: reserve_b_raw,
       } as any);
-    } catch {}
+    } catch (err: any) {
+      try {
+        logger.warn('meteora.balanced.v1.normalize.failed', {
+          error: String(err?.message || err),
+          pool: String((it as any)?.address || (it as any)?.pool_address || ''),
+          cat: 'meteora',
+        });
+      } catch {}
+    }
   }
   const ammCanon = canonicalizePools(amm);
   

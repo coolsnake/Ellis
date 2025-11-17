@@ -9,7 +9,13 @@ export function toFeeBpsSafe(value: any, defaultBps = 30): number {
 }
 
 // Generic swapper to keep A/B-side fields consistent whenever a pair is swapped.
+const NATIVE_PREFIX = 'native_';
+
 export function swapABFields<T extends Record<string, any>>(obj: T): T {
+  const shouldSkip = (key: string | null | undefined): boolean => {
+    if (!key) return false;
+    return key.startsWith(NATIVE_PREFIX);
+  };
   const out: any = { ...obj };
   // Swap mints
   const aMint = out.mint_a; const bMint = out.mint_b;
@@ -24,6 +30,7 @@ export function swapABFields<T extends Record<string, any>>(obj: T): T {
   for (const k of keys) {
     if (touched.has(k)) continue;
     if (k === 'mint_a' || k === 'mint_b') continue;
+    if (shouldSkip(k)) continue;
     let kb: string | null = null;
     if (k.includes('_a_')) {
       kb = k.replace('_a_', '_b_');
@@ -31,6 +38,7 @@ export function swapABFields<T extends Record<string, any>>(obj: T): T {
       kb = k.slice(0, -2) + '_b';
     }
     if (kb && (kb in out) && kb !== 'mint_b' && !touched.has(kb)) {
+      if (shouldSkip(kb)) continue;
       const tmp = out[k]; out[k] = out[kb]; out[kb] = tmp;
       touched.add(k); touched.add(kb);
     }

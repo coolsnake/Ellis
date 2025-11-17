@@ -295,6 +295,12 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
         reserve_y: pool.reserveY,
         _updatedAt: pool._updatedAt,
         _pipelineProcessed: true, // Mark as processed by price pipeline
+        native_mint_a: mint_a,
+        native_mint_b: mint_b,
+        native_decimals_a: decA,
+        native_decimals_b: decB,
+        native_reserve_a_raw: pool.reserveX ? String(pool.reserveX) : undefined,
+        native_reserve_b_raw: pool.reserveY ? String(pool.reserveY) : undefined,
       } as any);
     } catch (error: any) {
       logger.warn('meteora.graphql.normalize.pool.failed', { 

@@ -298,6 +298,12 @@ export async function normalizeOrcaGraphQL(raw: any[]): Promise<PoolsPayload> {
         whirlpools_config: pool.whirlpoolsConfig,
         _updatedAt: pool._updatedAt,
         _pipelineProcessed: true, // Mark as processed by price pipeline
+        native_mint_a: mint_a,
+        native_mint_b: mint_b,
+        native_decimals_a: decA,
+        native_decimals_b: decB,
+        native_account_a: pool.tokenVaultA,
+        native_account_b: pool.tokenVaultB,
       } as any);
     } catch (error: any) {
       logger.warn('orca.graphql.normalize.pool.failed', { 
