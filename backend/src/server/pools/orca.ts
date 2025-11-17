@@ -252,14 +252,34 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
     
     // Get decimals from centralized resolver
     // Priority: API decimals → centralized resolver → symbol cache → fallback
-    let decA = Number((tokenA?.decimals ?? it?.decimalsA ?? it?.tokenDecimalsA));
-    let decB = Number((tokenB?.decimals ?? it?.decimalsB ?? it?.tokenDecimalsB));
+    const apiDecA = Number((tokenA?.decimals ?? it?.decimalsA ?? it?.tokenDecimalsA));
+    const apiDecB = Number((tokenB?.decimals ?? it?.decimalsB ?? it?.tokenDecimalsB));
+    
+    let decA = decimalsMap.get(mint_a) ?? apiDecA;
+    let decB = decimalsMap.get(mint_b) ?? apiDecB;
     
     if (!Number.isFinite(decA)) {
-      decA = decimalsMap.get(mint_a) ?? symbolToMintCache.get(tokenA?.symbol?.trim())?.decimals ?? 6;
+      decA = symbolToMintCache.get(tokenA?.symbol?.trim())?.decimals ?? 6;
     }
     if (!Number.isFinite(decB)) {
-      decB = decimalsMap.get(mint_b) ?? symbolToMintCache.get(tokenB?.symbol?.trim())?.decimals ?? 6;
+      decB = symbolToMintCache.get(tokenB?.symbol?.trim())?.decimals ?? 6;
+    }
+
+    // DIAGNOSTIC: Log when API decimals differ from our map
+    if ((Number.isFinite(apiDecA) && apiDecA !== decA) || (Number.isFinite(apiDecB) && apiDecB !== decB)) {
+      try {
+        logger.warn('orca.decimals.mismatch', {
+          pool_id: id.slice(0, 12),
+          mint_a: mint_a.slice(0, 8),
+          mint_b: mint_b.slice(0, 8),
+          api_dec_a: apiDecA,
+          api_dec_b: apiDecB,
+          map_dec_a: decimalsMap.get(mint_a),
+          final_dec_a: decA,
+          final_dec_b: decB,
+          cat: 'orca.diagnostic'
+        });
+      } catch {}
     }
     
     // Clamp to reasonable integer bounds

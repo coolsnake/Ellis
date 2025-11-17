@@ -712,14 +712,30 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
     const fee_bps = toFeeBps((it as any)?.feeRate ?? (it as any)?.tradeFeeRate ?? (it as any)?.feeBps ?? (it as any)?.tradeFeeBps);
     
     // Get decimals from centralized resolver with API fallback
-    let decA = Number((it?.mintA as any)?.decimals);
-    let decB = Number((it?.mintB as any)?.decimals);
+    const apiDecA = Number((it?.mintA as any)?.decimals);
+    const apiDecB = Number((it?.mintB as any)?.decimals);
     
-    if (!Number.isFinite(decA)) {
-      decA = decimalsMap.get(mintA) ?? 6;
-    }
-    if (!Number.isFinite(decB)) {
-      decB = decimalsMap.get(mintB) ?? 6;
+    let decA = decimalsMap.get(mintA) ?? apiDecA;
+    let decB = decimalsMap.get(mintB) ?? apiDecB;
+
+    if (!Number.isFinite(decA)) decA = 6;
+    if (!Number.isFinite(decB)) decB = 6;
+
+    // DIAGNOSTIC: Log when API decimals differ from our map
+    if ((Number.isFinite(apiDecA) && apiDecA !== decA) || (Number.isFinite(apiDecB) && apiDecB !== decB)) {
+      try {
+        logger.warn('raydium.decimals.mismatch', {
+          pool_id: id.slice(0, 12),
+          mint_a: mintA.slice(0, 8),
+          mint_b: mintB.slice(0, 8),
+          api_dec_a: apiDecA,
+          api_dec_b: apiDecB,
+          map_dec_a: decimalsMap.get(mintA),
+          final_dec_a: decA,
+          final_dec_b: decB,
+          cat: 'raydium.diagnostic'
+        });
+      } catch {}
     }
     
     // Clamp to reasonable integer bounds

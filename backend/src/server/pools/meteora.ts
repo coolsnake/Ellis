@@ -194,14 +194,30 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     if (!id || !mint_a || !mint_b) continue;
     
     // Get decimals from centralized resolver with API fallback
-    let decA = Number((tokenA?.decimals ?? it?.decimalsA));
-    let decB = Number((tokenB?.decimals ?? it?.decimalsB));
+    const apiDecA = Number((tokenA?.decimals ?? it?.decimalsA));
+    const apiDecB = Number((tokenB?.decimals ?? it?.decimalsB));
     
-    if (!Number.isFinite(decA)) {
-      decA = decimalsMap.get(mint_a) ?? 6;
-    }
-    if (!Number.isFinite(decB)) {
-      decB = decimalsMap.get(mint_b) ?? 6;
+    let decA = decimalsMap.get(mint_a) ?? apiDecA;
+    let decB = decimalsMap.get(mint_b) ?? apiDecB;
+
+    if (!Number.isFinite(decA)) decA = 6;
+    if (!Number.isFinite(decB)) decB = 6;
+
+    // DIAGNOSTIC: Log when API decimals differ from our map
+    if ((Number.isFinite(apiDecA) && apiDecA !== decA) || (Number.isFinite(apiDecB) && apiDecB !== decB)) {
+      try {
+        logger.warn('meteora.decimals.mismatch', {
+          pool_id: id.slice(0, 12),
+          mint_a: mint_a.slice(0, 8),
+          mint_b: mint_b.slice(0, 8),
+          api_dec_a: apiDecA,
+          api_dec_b: apiDecB,
+          map_dec_a: decimalsMap.get(mint_a),
+          final_dec_a: decA,
+          final_dec_b: decB,
+          cat: 'meteora.diagnostic'
+        });
+      } catch {}
     }
     
     // Clamp to reasonable integer bounds
