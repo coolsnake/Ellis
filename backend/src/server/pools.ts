@@ -1,7 +1,7 @@
 import { logger } from '../utils/logger.js';
 import { emit } from './realtime.js';
 import { CONFIG } from '../utils/config.js';
-import { readJson } from '../utils/fs.js';
+import { readJson, writeJson, joinPath } from '../utils/fs.js';
 import { enablePriceFeed, isPriceFeedEnabled } from './feedRegistry.js';
 // Defer web3 imports to runtime to prevent type issues in environments without types
 // import { PublicKey } from '@solana/web3.js';
@@ -1562,8 +1562,9 @@ export async function getRaydiumPoolsGraphQL(force = false): Promise<PoolsPayloa
     const raw = await fetchRaydiumGraphQL(mints);
     const normalized = await normalizeRaydiumGraphQL(raw);
     
-    // Update in-memory cache
-    raydiumPools = normalized;
+    // Update cache
+    raydiumCache.data = normalized;
+    raydiumCache.ts = Date.now();
     
     // Write to disk cache
     const CACHE_PATH = joinPath(CONFIG.cacheDir, 'raydium-pools-graphql.json');
@@ -1785,8 +1786,9 @@ export async function getOrcaPoolsGraphQL(force = false): Promise<PoolsPayload> 
     const raw = await fetchOrcaGraphQL(mints);
     const normalized = await normalizeOrcaGraphQL(raw);
     
-    // Update in-memory cache
-    orcaPools = normalized;
+    // Update cache
+    orcaCache.data = normalized;
+    orcaCache.ts = Date.now();
     
     // Write to disk cache
     const CACHE_PATH = joinPath(CONFIG.cacheDir, 'orca-pools-graphql.json');
@@ -1974,8 +1976,9 @@ export async function getMeteoraPoolsGraphQL(force = false): Promise<PoolsPayloa
     const raw = await fetchMeteoraGraphQL(mints);
     const normalized = await normalizeMeteoraGraphQL(raw);
     
-    // Update in-memory cache
-    meteoraPools = normalized;
+    // Update cache
+    meteoraCache.data = normalized;
+    meteoraCache.ts = Date.now();
     
     // Write to disk cache
     const CACHE_PATH = joinPath(CONFIG.cacheDir, 'meteora-pools-graphql.json');

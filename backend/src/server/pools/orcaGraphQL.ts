@@ -308,17 +308,6 @@ export async function normalizeOrcaGraphQL(raw: any[]): Promise<PoolsPayload> {
   
   const clmmCanon = canonicalizePools(clmm);
   
-  // Pre-populate Orca pool states cache (keep existing pattern)
-  try {
-    const { populateOrcaPoolStates } = await import('./orca.js');
-    await populateOrcaPoolStates(clmmCanon);
-  } catch (e: any) {
-    logger.warn('orca.graphql.populate_states.failed', {
-      error: String(e?.message || e),
-      cat: 'orca'
-    });
-  }
-  
   logger.info('orca.graphql.normalized', { clmm: clmmCanon.length, cat: 'orca' });
   
   return { amm: [], clmm: clmmCanon };

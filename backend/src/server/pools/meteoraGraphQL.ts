@@ -309,18 +309,6 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
   
   const clmmCanon = canonicalizePools(clmm);
   
-  // Resolve bitmap extensions (keep existing pattern)
-  try {
-    const poolIds = clmmCanon.map(p => p.id);
-    const { resolveMeteoraBitmapExtensions } = await import('./meteora.js');
-    await resolveMeteoraBitmapExtensions(poolIds);
-  } catch (e: any) {
-    logger.warn('meteora.graphql.bitmap_extensions.failed', {
-      error: String(e?.message || e),
-      cat: 'meteora'
-    });
-  }
-  
   logger.info('meteora.graphql.normalized', { clmm: clmmCanon.length, cat: 'meteora' });
   
   return { amm: [], clmm: clmmCanon };
