@@ -275,8 +275,6 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
         sqrtPriceX64: anyToBigInt(sqrtPriceStr),
         reserveA: amount_a > 0 ? amount_a : undefined,
         reserveB: amount_b > 0 ? amount_b : undefined,
-      }, {
-        getUsd: (m) => getPriceByMint(m)?.usdc,
       });
 
       if (!processedPrice) {

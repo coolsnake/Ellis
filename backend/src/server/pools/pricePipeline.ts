@@ -1,19 +1,21 @@
 /**
- * Centralized Pricing Pipeline - Single Source of Truth
+ * Centralized Pricing Pipeline - Simplified
  * 
- * All pool prices flow through this pipeline to ensure consistency.
+ * All pool prices flow through this pipeline.
  * 
  * ARCHITECTURE:
  * 1. DEX-specific normalizers extract raw data (handling varied field names)
  * 2. DEX-specific formulas calculate prices (sqrt, bin, reserves)
- * 3. Centralized pipeline processes prices (canonicalization, calibration)
+ * 3. Centralized pipeline processes prices (canonicalization only)
  * 4. Graph builder uses processed prices for edges
  * 
  * FLOW:
  * Raw DEX Data → Field Mapping → Price Formula → Pipeline → Canonical Pool → Graph Edges
+ * 
+ * NO calibration, NO rescaling - trust the mathematical formulas
  */
 
-import { canonicalOrientation, swapPoolFields } from './canonical.js';
+import { canonicalOrientation } from './canonical.js';
 import { logger } from '../../utils/logger.js';
 import { calculateAmmPrice, calculateClmmPrice, calculateMeteoraPrice } from './priceFormulas.js';
 
@@ -47,8 +49,8 @@ export interface RawPriceInput {
 export interface ProcessedPrice {
   mintA: string;           // Mint A (canonical order)
   mintB: string;           // Mint B (canonical order)
-  priceForward: number;    // Canonical A-per-B (calibrated & rescaled)
-  priceReverse: number;    // Canonical B-per-A (inverted & rescaled)
+  priceForward: number;    // Canonical A-per-B
+  priceReverse: number;    // Canonical B-per-A (inverted)
   wasSwapped: boolean;     // True if orientation was changed
   decimalsA: number;       // Decimals for canonical mint A
   decimalsB: number;       // Decimals for canonical mint B
@@ -58,19 +60,14 @@ export interface ProcessedPrice {
  * Options for price processing
  */
 export interface PriceProcessingOptions {
-  getUsd?: (mint: string) => number | undefined;  // USD price lookup for calibration
-  globalDecimals?: Record<string, number>;         // Global decimal map for rescaling
-  skipMagnitudeCalibration?: boolean;              // Skip magnitude calibration (for testing)
   diagnostics?: boolean;                           // Enable diagnostic logging
 }
 
 /**
- * STEP 1: Canonicalize price orientation
+ * Canonicalize price orientation
  * 
  * Checks if mints need to be swapped according to quote hierarchy.
  * If swap is needed, inverts the price.
- * 
- * CRITICAL: This should happen BEFORE magnitude calibration
  */
 function canonicalizeOrientation(input: RawPriceInput): {
   mintA: string;
@@ -107,62 +104,19 @@ function canonicalizeOrientation(input: RawPriceInput): {
   };
 }
 
-/**
- * STEP 2: Apply magnitude calibration
- * (Moved from graph.pricing.ts)
- */
-function calibrateMagnitude(
-  mintA: string,
-  mintB: string,
-  price: number,
-  getUsd?: (mint: string) => number | undefined
-): number {
-  if (typeof getUsd !== 'function' || !price || price <= 0) {
-    return price;
-  }
-
-  try {
-    const pa = getUsd(mintA);
-    const pb = getUsd(mintB);
-    if (pa && pb && pa > 0 && pb > 0) {
-      const ref = pb / pa;
-      const rawDev = Math.max(price / ref, ref / price);
-
-      let best = price;
-      let bestDev = rawDev;
-
-      const MAX_APPLIED_DEV = 100;
-
-      for (let k = -8; k <= 8; k++) {
-        const cand = price * Math.pow(10, k);
-        if (!(cand > 0) || !Number.isFinite(cand)) continue;
-        const dev = Math.max(cand / ref, ref / cand);
-        if (dev + 1e-12 < bestDev) {
-          bestDev = dev;
-          best = cand;
-        }
-      }
-
-      if (bestDev + 1e-12 < rawDev && bestDev <= MAX_APPLIED_DEV) {
-        return best;
-      }
-    }
-  } catch {}
-  return price;
-}
-
 
 /**
- * CENTRALIZED PRICE PIPELINE
+ * SIMPLIFIED PRICE PIPELINE
  * 
- * Processes a raw price through the complete pipeline:
- * 1. Canonicalize orientation (swap if needed)
- * 2. Apply magnitude calibration (fix power-of-10 errors)
- * 3. Rescale decimals (pool → global)
- * 4. Calculate reverse edge
+ * Processes a raw price through the pipeline:
+ * 1. Calculate raw price from formula (if not provided)
+ * 2. Canonicalize orientation (swap if needed)
+ * 3. Calculate reverse edge
+ * 
+ * NO calibration, NO rescaling - trust the mathematical formulas
  * 
  * @param input Raw price from DEX-specific calculation
- * @param options Processing options (USD lookup, global decimals)
+ * @param options Processing options
  * @returns Processed price ready for graph edge creation
  */
 export function processPriceThroughPipeline(
@@ -174,7 +128,7 @@ export function processPriceThroughPipeline(
     if (input.dex === 'Meteora' && input.poolType === 'clmm' && input.activeId != null && input.binStep != null && input.tokenXMint && input.tokenYMint) {
       input.rawPrice = calculateMeteoraPrice(input.activeId, input.binStep, input.tokenXMint, input.tokenYMint, input.mintA, input.mintB, input.decimalsA, input.decimalsB);
     } else if (input.poolType === 'clmm' && input.sqrtPriceX64) {
-      input.rawPrice = calculateClmmPrice(input.sqrtPriceX64, input.decimalsA, input.decimalsB, input.mintA, input.mintB, options.getUsd);
+      input.rawPrice = calculateClmmPrice(input.sqrtPriceX64, input.decimalsA, input.decimalsB, input.mintA, input.mintB);
     } else if (input.poolType === 'amm' && input.reserveA != null && input.reserveB != null) {
       input.rawPrice = calculateAmmPrice(input.reserveA, input.reserveB, input.decimalsA, input.decimalsB);
     }
@@ -197,14 +151,12 @@ export function processPriceThroughPipeline(
     // STEP 1: Canonicalize orientation
     const canonical = canonicalizeOrientation(input);
     
-    // STEP 2: Calibrate and rescale forward price
-    const calibrated = calibrateMagnitude(canonical.mintA, canonical.mintB, canonical.price, options.getUsd);
-    
-    if (!calibrated || calibrated <= 0 || !Number.isFinite(calibrated)) {
+    // STEP 2: Use the price directly - NO calibration, NO rescaling
+    const forward = canonical.price;
+
+    if (!forward || forward <= 0 || !Number.isFinite(forward)) {
       return undefined;
     }
-
-    const forward = calibrated; // For clarity
 
     // STEP 3: Calculate reverse price
     const reverse = 1 / forward;
@@ -212,7 +164,7 @@ export function processPriceThroughPipeline(
     // Diagnostic: Check if forward * reverse ≈ 1
     if (options.diagnostics) {
       const product = forward * reverse;
-      if (Math.abs(product - 1) > 0.05) {
+      if (Math.abs(product - 1) > 0.001) {
         try {
           logger.warn('price.pipeline.product_check', {
             dex: input.dex,
@@ -222,9 +174,7 @@ export function processPriceThroughPipeline(
             forward,
             reverse,
             product,
-            expected: 1,
-            deviation_pct: ((product - 1) * 100).toFixed(2),
-            was_swapped: canonical.wasSwapped,
+            deviation: Math.abs(product - 1),
             cat: 'price.pipeline'
           });
         } catch {}
@@ -273,35 +223,4 @@ export function processPricesBatch(
   return results;
 }
 
-/**
- * Validate processed price against USD reference
- * Returns deviation multiplier (1.0 = perfect match)
- */
-export function validatePriceAgainstUSD(
-  processed: ProcessedPrice,
-  getUsd: (mint: string) => number | undefined
-): { valid: boolean; deviation: number; details?: string } {
-  const usdA = getUsd(processed.mintA);
-  const usdB = getUsd(processed.mintB);
-  
-  if (!usdA || !usdB || usdA <= 0 || usdB <= 0) {
-    return { valid: true, deviation: 1, details: 'No USD reference available' };
-  }
-
-  const expectedRatio = usdB / usdA;
-  const deviation = Math.max(
-    processed.priceForward / expectedRatio,
-    expectedRatio / processed.priceForward
-  );
-
-  const valid = deviation <= 100; // Allow up to 100x deviation (might be stale USD prices)
-
-  return {
-    valid,
-    deviation,
-    details: valid 
-      ? undefined 
-      : `Price deviates ${deviation.toFixed(2)}x from USD reference`
-  };
-}
 

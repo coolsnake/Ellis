@@ -697,7 +697,6 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
   };
   
   const { processPriceThroughPipeline } = await import('./pricePipeline.js');
-  const { getPriceByMint } = await import('../priceStore.js');
 
   for (const it of arr) {
     if (!it) continue;
@@ -727,8 +726,6 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         dex: 'Raydium',
         poolType: 'clmm',
         sqrtPriceX64,
-      }, {
-        getUsd: (m) => getPriceByMint(m)?.usdc,
       });
 
       if (processed) {
@@ -766,8 +763,6 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
         poolType: 'amm',
         reserveA,
         reserveB,
-      }, {
-        getUsd: (m) => getPriceByMint(m)?.usdc,
       });
 
       if (processed) {

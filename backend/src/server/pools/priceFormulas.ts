@@ -78,9 +78,8 @@ export function calculateAmmPrice(
  * @param sqrtPriceX64 The sqrt price value (as bigint or number)
  * @param decimalsA Decimals for token A
  * @param decimalsB Decimals for token B
- * @param mintA Optional mint A for orientation check
- * @param mintB Optional mint B for orientation check
- * @param getUsd Optional USD price lookup for orientation check
+ * @param mintA Optional mint A (unused in simplified version)
+ * @param mintB Optional mint B (unused in simplified version)
  * @returns Price A-per-B in whole token units
  */
 export function calculateClmmPrice(
@@ -88,8 +87,7 @@ export function calculateClmmPrice(
   decimalsA: number,
   decimalsB: number,
   mintA?: string,
-  mintB?: string,
-  getUsd?: (mint: string) => number | undefined
+  mintB?: string
 ): number | undefined {
   try {
     // Convert to bigint if needed
@@ -116,26 +114,8 @@ export function calculateClmmPrice(
       return undefined;
     }
 
-    let price = ratio.float;
-    
-    // CRITICAL FIX: Auto-correct for inverted sqrtPriceX64 convention
-    // Some pools encode sqrt(A/B) instead of sqrt(B/A). Use USD reference to detect and fix.
-    if (getUsd && mintA && mintB) {
-      const usdA = getUsd(mintA);
-      const usdB = getUsd(mintB);
-      if (usdA && usdB && usdA > 0 && usdB > 0) {
-        const expectedPrice = usdB / usdA;
-        const deviation = Math.max(price / expectedPrice, expectedPrice / price);
-        
-        // If deviation is large, it's likely an inversion. Flip it.
-        // A high threshold (e.g., >100x) prevents flipping due to stale USD prices.
-        if (deviation > 100) {
-          price = 1 / price;
-        }
-      }
-    }
-
-    return price;
+    // Return the price directly - NO USD-based corrections
+    return ratio.float;
   } catch (error) {
     try {
       logger.warn('price.formula.clmm.error', {

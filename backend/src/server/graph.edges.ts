@@ -14,27 +14,9 @@ const clampPriceInc = (px: number | undefined, min: number, max: number): number
   return Math.min(max, Math.max(min, v));
 };
 
-const rescalePriceByDecimals = (
-  priceAPerB: number | undefined,
-  poolDecA?: number,
-  poolDecB?: number,
-  globalDecA?: number,
-  globalDecB?: number,
-): number | undefined => {
-  const p = Number(priceAPerB);
-  if (!Number.isFinite(p) || !(p > 0)) return priceAPerB;
-  const da = Number(poolDecA); const db = Number(poolDecB);
-  const ga = Number(globalDecA); const gb = Number(globalDecB);
-  if (![da, db, ga, gb].every((x) => Number.isFinite(x))) return priceAPerB;
-  const scalePow = (ga - da) - (gb - db);
-  const scaled = p * Math.pow(10, scalePow);
-  return (Number.isFinite(scaled) && scaled > 0) ? scaled : priceAPerB;
-};
-
 export interface EdgeBuildOptions {
   priceClampMin?: number;
   priceClampMax?: number;
-  decimalsMap?: Record<string, number>;
 }
 
 function liqDisplayFromPool(pool: any): number | undefined {
@@ -56,8 +38,8 @@ function weightFrom(liq?: number, fee_bps?: number): number {
 /**
  * Create graph edges from a pool
  * 
- * IMPORTANT: The pool's price should already be canonicalized (A-per-1-B for canonical mint order).
- * This function only applies magnitude calibration and decimal rescaling, not orientation changes.
+ * SIMPLIFIED: Trust the pipeline price completely - NO rescaling, NO calibration
+ * The pool's price should already be processed through the pipeline.
  */
 export function edgesFromPoolIncremental(
   p: AmmPool | ClmmPool,
@@ -74,64 +56,20 @@ export function edgesFromPoolIncremental(
   const fwdRaw = Number((p as any)?.price_a_per_b);
   const clampMin = Number.isFinite(options?.priceClampMin) ? Number(options?.priceClampMin) : 1e-12;
   const clampMax = Number.isFinite(options?.priceClampMax) ? Number(options?.priceClampMax) : 1e12;
-  const fRaw = clampPriceInc(fwdRaw, clampMin, clampMax);
   
-  // CRITICAL FIX: If pool went through pipeline, trust its price and skip re-processing
-  // The pipeline already canonicalized, calibrated magnitude, and rescaled decimals.
-  // Re-processing here would double-apply transformations, causing errors.
+  // Trust the pipeline price directly - only clamp for safety
+  const fwd = clampPriceInc(fwdRaw, clampMin, clampMax);
+  const rev = fwd && fwd > 0 ? 1 / fwd : undefined;
+  
+  // Validate pool went through pipeline
   const pipelineProcessed = (p as any)?._pipelineProcessed === true;
-  
-  let fwd: number | undefined;
-  let rev: number | undefined;
-  const poolDecA = (p as any)?.decimals_a;
-  const poolDecB = (p as any)?.decimals_b;
-  const decimalsMap = options?.decimalsMap || {};
-  const globalDecA = Number.isFinite(decimalsMap[a]) ? decimalsMap[a] : poolDecA;
-  const globalDecB = Number.isFinite(decimalsMap[b]) ? decimalsMap[b] : poolDecB;
-  
-  if (pipelineProcessed) {
-    // Trust pipeline output - only apply decimal rescaling if global decimals differ
-    const poolDecA = (p as any)?.decimals_a;
-    const poolDecB = (p as any)?.decimals_b;
-    const decimalsMap = options?.decimalsMap || {};
-    const globalDecA = Number.isFinite(decimalsMap[a]) ? decimalsMap[a] : poolDecA;
-    const globalDecB = Number.isFinite(decimalsMap[b]) ? decimalsMap[b] : poolDecB;
-    
-    // Only rescale if global decimals differ from pool decimals
-    if (globalDecA !== poolDecA || globalDecB !== poolDecB) {
-      // Apply decimal rescaling only (no magnitude calibration)
-      const scalePow = (globalDecA - poolDecA) - (globalDecB - poolDecB);
-      const scaled = fRaw * Math.pow(10, scalePow);
-      fwd = (Number.isFinite(scaled) && scaled > 0) ? scaled : fRaw;
-    } else {
-      fwd = fRaw;
-    }
-    
-    // Simple inversion for reverse (pipeline already handled calibration)
-    rev = fwd && fwd > 0 ? 1 / fwd : undefined;
-  } else {
-    // Pool didn't go through pipeline - fall back to decimal rescaling only
-    const rescaled = rescalePriceByDecimals(fRaw, poolDecA, poolDecB, globalDecA, globalDecB);
-    fwd = (Number.isFinite(rescaled) && (rescaled as number) > 0) ? rescaled : fRaw;
-    rev = (fwd && fwd > 0) ? 1 / fwd : undefined;
-  }
-  
-  // DIAGNOSTIC: Log suspicious reverse edge prices
-  if (rev && fwd && (rev > 100000 || (rev * fwd > 2) || (rev * fwd < 0.5))) {
+  if (!pipelineProcessed) {
     try {
-      logger.warn('graph.edge.suspicious_reverse', {
+      logger.warn('graph.edge.not_processed', {
         dex,
         pool_id: id.slice(0, 12),
         mint_a: a.slice(0, 8),
         mint_b: b.slice(0, 8),
-        fwdRaw,
-        fwd,
-        rev,
-        product: fwd && rev ? (fwd * rev).toFixed(6) : 'N/A',
-        decimals_a: (p as any)?.decimals_a,
-        decimals_b: (p as any)?.decimals_b,
-        usd_a: getUsd(a),
-        usd_b: getUsd(b),
         cat: 'graph'
       });
     } catch {}

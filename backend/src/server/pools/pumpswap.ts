@@ -637,11 +637,10 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
           const { priceFromReserves } = await import('./priceFormulas.js');
           const rawPrice = priceFromReserves(baseReserveRaw, quoteReserveRaw, decA, decB);
           
-          // Process through centralized pipeline (canonicalization + calibration + rescaling)
+          // Process through centralized pipeline (canonicalization only - no calibration)
           if (rawPrice && rawPrice > 0 && Number.isFinite(rawPrice)) {
             try {
               const { processPriceThroughPipeline } = await import('./pricePipeline.js');
-              const { getPriceByMint } = await import('../priceStore.js');
               
               const processed = processPriceThroughPipeline({
                 mintA: mint_a,
@@ -652,15 +651,6 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
                 poolId: id,
                 dex: 'Pumpswap',
                 poolType: 'amm'
-              }, {
-                getUsd: (m) => {
-                  try {
-                    return getPriceByMint(m)?.usdc;
-                  } catch {
-                    return undefined;
-                  }
-                },
-                diagnostics: false
               });
               
               if (processed) {
