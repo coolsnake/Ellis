@@ -784,7 +784,7 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
   logger.info('pools.refresh.phase.crossdex_validation', { cat: 'pools' });
   try {
     const { validateCrossDexPrices, filterAnomalousPrices } = await import('./pools/validation.js');
-    const { validateAllPairsComprehensive } = await import('./pools/comprehensiveValidation.js');
+    const { validateCrossDexPricesSimple } = await import('./pools/comprehensiveValidation.js');
     const allPools = {
       raydium: r,
       orca: o,
@@ -793,34 +793,14 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
       pumpswap: pump
     };
     
-    // First, log all mismatches (with lower threshold for visibility)
+    // Simple validation for logging only
     const loggingThreshold = Number((CONFIG.system as any)?.crossDexLoggingThreshold || 0.05); // 5%
     validateCrossDexPrices(allPools, loggingThreshold);
     
-    // Comprehensive validation for all pairs with detailed diagnostics
-    try {
-      const comprehensiveResults = validateAllPairsComprehensive(allPools, {
-        maxDeviation: 0.10, // 10%
-        checkClmmOrientation: true,
-        logAllPairs: false, // Only log mismatches
-      });
-      
-      logger.info('pools.validation.comprehensive.complete', {
-        totalPairs: comprehensiveResults.summary.totalPairs,
-        pairsWithMismatches: comprehensiveResults.summary.pairsWithMismatches,
-        poolsWithIssues: comprehensiveResults.summary.poolsWithIssues,
-        issuesByDex: comprehensiveResults.summary.issuesByDex,
-        issuesByCause: comprehensiveResults.summary.issuesByCause,
-        cat: 'pools',
-      });
-    } catch (e: any) {
-      logger.warn('pools.validation.comprehensive.failed', {
-        error: String(e?.message || e),
-        cat: 'pools',
-      });
-    }
+    // Simplified validation (no comprehensive checks)
+    validateCrossDexPricesSimple(allPools, 0.10);
     
-    // Then, filter out severe anomalies (with higher threshold for safety)
+    // Filter out severe anomalies
     const filteringThreshold = Number((CONFIG.system as any)?.crossDexFilteringThreshold || 0.10); // 10%
     const filtered = filterAnomalousPrices(allPools, filteringThreshold);
     

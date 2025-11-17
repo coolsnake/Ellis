@@ -2,7 +2,6 @@ import { logger } from '../../utils/logger.js';
 import { CONFIG } from '../../utils/config.js';
 import { writeJson, joinPath } from '../../utils/fs.js';
 import type { ClmmPool, PoolsPayload } from './types.js';
-import { canonicalizePools } from './canonical.js';
 import { resolveManyDecimals } from './decimals.js';
 import { processPriceThroughPipeline } from './pricePipeline.js';
 import { executeShyftGraphQL } from './shyftHelpers.js';
@@ -361,10 +360,8 @@ export async function normalizeOrcaGraphQL(raw: any[]): Promise<PoolsPayload> {
     }
   }
   
-  const clmmCanon = canonicalizePools(clmm);
+  logger.info('orca.graphql.normalized', { clmm: clmm.length, cat: 'orca' });
   
-  logger.info('orca.graphql.normalized', { clmm: clmmCanon.length, cat: 'orca' });
-  
-  return { amm: [], clmm: clmmCanon };
+  return { amm: [], clmm: clmm };
 }
 

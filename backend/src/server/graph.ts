@@ -1094,22 +1094,16 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       
       // Validate edges: forward * reverse ≈ 1
       try {
-        const { validateEdgesComprehensive, validateEdgePriceDiscrepancies } = await import('./pools/comprehensiveValidation.js');
-        const edgeValidationResults = validateEdgesComprehensive(snapshot.edges);
-        const invalidCount = edgeValidationResults.filter(r => !r.isValid).length;
+        const { validateEdgesSimple } = await import('./pools/comprehensiveValidation.js');
+        const invalidCount = validateEdgesSimple(snapshot.edges);
+        
         if (invalidCount > 0) {
           logger.warn('graph.edges.validation.failed', {
-            totalEdges: edgeValidationResults.length,
+            totalEdges: snapshot.edges.length,
             invalidEdges: invalidCount,
-            invalidPct: ((invalidCount / edgeValidationResults.length) * 100).toFixed(2),
             cat: 'graph',
           });
         }
-        
-        // Validate price discrepancies between swapped/non-swapped edges
-        validateEdgePriceDiscrepancies(snapshot.edges, {
-          maxDeviation: 0.10, // 10% threshold
-        });
       } catch (e: any) {
         logger.warn('graph.edges.validation.error', {
           error: String(e?.message || e),

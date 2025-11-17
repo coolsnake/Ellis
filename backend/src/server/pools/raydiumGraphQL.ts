@@ -2,7 +2,6 @@ import { logger } from '../../utils/logger.js';
 import { CONFIG } from '../../utils/config.js';
 import { writeJson, joinPath } from '../../utils/fs.js';
 import type { AmmPool, ClmmPool, PoolsPayload } from './types.js';
-import { canonicalizePools } from './canonical.js';
 import { resolveManyDecimals } from './decimals.js';
 import { processPriceThroughPipeline } from './pricePipeline.js';
 import { executeShyftGraphQL } from './shyftHelpers.js';
@@ -438,16 +437,12 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
     }
   }
   
-  // Apply canonicalization
-  const ammCanon = canonicalizePools(amm);
-  const clmmCanon = canonicalizePools(clmm);
-  
   logger.info('raydium.graphql.normalized', { 
-    amm: ammCanon.length, 
-    clmm: clmmCanon.length, 
+    amm: amm.length, 
+    clmm: clmm.length, 
     cat: 'raydium' 
   });
   
-  return { amm: ammCanon, clmm: clmmCanon };
+  return { amm: amm, clmm: clmm };
 }
 

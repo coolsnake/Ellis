@@ -2,7 +2,6 @@ import { logger } from '../../utils/logger.js';
 import { CONFIG } from '../../utils/config.js';
 import { writeJson, joinPath } from '../../utils/fs.js';
 import type { ClmmPool, PoolsPayload } from './types.js';
-import { canonicalizePools } from './canonical.js';
 import { resolveManyDecimals } from './decimals.js';
 import { processPriceThroughPipeline } from './pricePipeline.js';
 import { executeShyftGraphQL } from './shyftHelpers.js';
@@ -351,10 +350,8 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
     }
   }
   
-  const clmmCanon = canonicalizePools(clmm);
+  logger.info('meteora.graphql.normalized', { clmm: clmm.length, cat: 'meteora' });
   
-  logger.info('meteora.graphql.normalized', { clmm: clmmCanon.length, cat: 'meteora' });
-  
-  return { amm: [], clmm: clmmCanon };
+  return { amm: [], clmm: clmm };
 }
 

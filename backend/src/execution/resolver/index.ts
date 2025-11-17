@@ -23,7 +23,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
       dexv.includes('raydium') ? 'raydium' : 
       dexv.includes('orca') ? 'orca' : 
       dexv.includes('pumpswap') ? 'pumpswap' :
-      dexv.includes('meteorabalanced') ? 'meteora_balanced' :  // MeteoraBalanced_v1 or MeteoraBalanced_v2
+      (dexv.includes('meteora') && dexv.includes('balanced')) ? 'meteora_balanced' :  // MeteoraBalanced_v1 or MeteoraBalanced_v2
       'meteora'  // Default to Meteora DLMM
     ) as DirectHop['dex'];
     const poolId = String(hopPoolIds[i]);
