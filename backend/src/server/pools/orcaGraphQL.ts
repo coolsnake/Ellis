@@ -16,7 +16,7 @@ export async function fetchOrcaGraphQL(mints: string[]): Promise<any[]> {
   const maxPages = Number((CONFIG as any)?.orca?.maxPages || 10);
   const pageDelayMs = Number((CONFIG as any)?.orca?.pageDelayMs || 200);
   const detailBatchSize = Number((CONFIG as any)?.orca?.detailBatchSize || 50);
-  const detailDelayMs = Number((CONFIG as any)?.orca?.detailBatchDelayMs || 0);
+  const detailDelayMs = Number((CONFIG as any)?.orca?.detailBatchDelayMs ?? pageDelayMs);
 
   const poolsMap = new Map<string, any>();
 
@@ -197,7 +197,6 @@ async function fetchOrcaPoolsByAddress(
               whirlpoolsConfig
               whirlpoolBump
               rewardInfos
-              oracle
               _updatedAt
             }
           }

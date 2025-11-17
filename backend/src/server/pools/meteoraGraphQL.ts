@@ -16,7 +16,7 @@ export async function fetchMeteoraGraphQL(mints: string[]): Promise<any[]> {
   const maxPages = Number((CONFIG as any)?.meteora?.maxPages || 10);
   const pageDelayMs = Number((CONFIG as any)?.meteora?.pageDelayMs || 200);
   const detailBatchSize = Number((CONFIG as any)?.meteora?.detailBatchSize || 50);
-  const detailDelayMs = Number((CONFIG as any)?.meteora?.detailBatchDelayMs || 0);
+  const detailDelayMs = Number((CONFIG as any)?.meteora?.detailBatchDelayMs ?? pageDelayMs);
   
   const poolsMap = new Map<string, any>();
   
@@ -113,7 +113,6 @@ async function fetchMeteoraPoolsForToken(opts: {
             reserveY
             binStep
             protocolFee
-            liquidity
             activeId
             _updatedAt
           }
@@ -183,7 +182,6 @@ async function fetchMeteoraPoolsByAddress(
               reserveY
               binStep
               protocolFee
-              liquidity
               activeId
               binArrayBitmapExtension
               tokenXProgram

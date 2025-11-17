@@ -17,7 +17,7 @@ export async function fetchRaydiumGraphQL(mints: string[]): Promise<any[]> {
   const maxPages = Number((CONFIG as any)?.raydium?.maxPages || 10);
   const pageDelayMs = Number((CONFIG as any)?.raydium?.pageDelayMs || 200);
   const detailBatchSize = Number((CONFIG as any)?.raydium?.detailBatchSize || 50);
-  const detailDelayMs = Number((CONFIG as any)?.raydium?.detailBatchDelayMs || 0);
+  const detailDelayMs = Number((CONFIG as any)?.raydium?.detailBatchDelayMs ?? pageDelayMs);
 
   const poolsMap = new Map<string, any>();
 
