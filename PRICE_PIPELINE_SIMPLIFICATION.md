@@ -122,6 +122,23 @@ const processed = processPriceThroughPipeline({
 
 ---
 
+### **5. Removed Decimal Rescaling from Graph System**
+
+**Files Modified**:
+- `backend/src/server/graph.ts`
+- `backend/src/server/graph.worker.compute.ts`
+- `backend/src/workers/graphDiff.types.ts`
+- `backend/src/server/__tests__/graph.worker.compute.test.ts`
+
+**Changes**:
+- ❌ Removed `decimalsMap` from `GraphIncrementalRequest` interface
+- ❌ Removed building of global decimals map (~20 lines)
+- ❌ Removed passing `decimalsMap` to worker
+- ❌ Removed `decimalsMap` from `EdgeBuildOptions`
+- ❌ Updated test files to remove `decimalsMap`
+
+---
+
 ## **What We Gained**
 
 ### ✅ **Simplicity**
@@ -192,23 +209,29 @@ All changes compile with no linter errors:
 - ✅ `backend/src/server/pools/orca.ts`
 - ✅ `backend/src/server/pools/meteora.ts`
 - ✅ `backend/src/server/pools/pumpswap.ts`
+- ✅ `backend/src/server/graph.worker.compute.ts`
+- ✅ `backend/src/server/graph.ts`
+- ✅ `backend/src/workers/graphDiff.types.ts`
+- ✅ `backend/src/server/__tests__/graph.worker.compute.test.ts`
 
 ---
 
 ## **Code Size Reduction**
 
-**Lines Removed**: ~150+ lines of complex correction logic
+**Lines Removed**: ~200+ lines of complex correction logic
 **Lines Added**: ~20 lines of simplified logic
-**Net Reduction**: ~130 lines
+**Net Reduction**: ~180 lines
 
-**Functions Removed**: 2
+**Functions Removed**: 3
 - `calibrateMagnitude()`
 - `validatePriceAgainstUSD()`
+- `rescalePriceByDecimals()`
 
-**Parameters Removed**: 3
+**Parameters Removed**: 4
 - `getUsd` from pipeline options
 - `globalDecimals` from pipeline options
 - `decimalsMap` from edge build options
+- `decimalsMap` from graph incremental request
 
 ---
 
@@ -223,4 +246,6 @@ We've successfully stripped the price system down to its pure mathematical core.
 No calibration. No rescaling. No USD corrections. Just pure math.
 
 If prices are wrong, we fix the formula or the input data - not the output.
+
+**Build Status**: ✅ All TypeScript compilation errors resolved
 
