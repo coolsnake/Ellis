@@ -747,6 +747,7 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
       let amount_a_whole = Number.isFinite(mintAmountA) ? mintAmountA : (Number.isFinite(reserveA) ? reserveA : undefined);
       let amount_b_whole = Number.isFinite(mintAmountB) ? mintAmountB : (Number.isFinite(reserveB) ? reserveB : undefined);
       let price_from_sqrt = 0;
+      let priceSource: 'sqrt' | 'reserves' | 'api' | undefined;
       // CRITICAL: Verify decimals match mints before calculating price
       // Ensure decA corresponds to mintA and decB corresponds to mintB
       // Re-fetch decimals from resolver if there's any doubt to ensure correctness
@@ -813,10 +814,23 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
       let rawPrice = 0;
       if (price_from_sqrt > 0) {
         rawPrice = price_from_sqrt;
+        priceSource = 'sqrt';
       } else if (amount_a_whole && amount_b_whole && amount_b_whole > 0) {
         rawPrice = amount_a_whole / amount_b_whole;
+        priceSource = 'reserves';
       } else if (Number(price) > 0) {
         rawPrice = 1 / Number(price);
+        priceSource = 'api';
+        try {
+          logger.debug('raydium.clmm.price.api_fallback', {
+            pool: id.slice(0, 8),
+            mint_a: mintA.slice(0, 8),
+            mint_b: mintB.slice(0, 8),
+            price_raw: price,
+            note: 'Using inverted API price because sqrt/reserves unavailable',
+            cat: 'raydium'
+          });
+        } catch {}
       }
       
       // Process through centralized pipeline (canonicalization + calibration + rescaling)

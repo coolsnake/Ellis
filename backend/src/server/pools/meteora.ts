@@ -222,18 +222,18 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     const amtBraw = (it?.reserve_y_amount ?? it?.tokenBalanceB ?? it?.tokenBAmount ?? it?.amountB ?? it?.quoteAmount ?? 0);
     const amount_a_norm = normalizeAmountWithDecimals(amtAraw, decA);
     const amount_b_norm = normalizeAmountWithDecimals(amtBraw, decB);
-    const amount_a_fallback = Number(typeof amtAraw === 'string' ? Number(amtAraw) : amtAraw || 0);
-    const amount_b_fallback = Number(typeof amtBraw === 'string' ? Number(amtBraw) : amtBraw || 0);
+    const amount_a_atomic = looksLikeAtomicAmount(amtAraw) ? Number(amtAraw) : undefined;
+    const amount_b_atomic = looksLikeAtomicAmount(amtBraw) ? Number(amtBraw) : undefined;
     const amount_a = Number.isFinite(amount_a_norm as number)
       ? (amount_a_norm as number)
-      : (Number.isFinite(amount_a_fallback) ? amount_a_fallback : undefined);
+      : (Number.isFinite(amount_a_atomic) ? amount_a_atomic : undefined);
     const amount_b = Number.isFinite(amount_b_norm as number)
       ? (amount_b_norm as number)
-      : (Number.isFinite(amount_b_fallback) ? amount_b_fallback : undefined);
+      : (Number.isFinite(amount_b_atomic) ? amount_b_atomic : undefined);
     const tvlUsdcRaw = (it as any)?.tvlUsdc ?? (it as any)?.tvlUsd ?? (it as any)?.liquidity;
     const tvlUsdcNum = typeof tvlUsdcRaw === 'string' ? Number(tvlUsdcRaw) : (typeof tvlUsdcRaw === 'number' ? tvlUsdcRaw : 0);
     const tvl_usd = Number.isFinite(tvlUsdcNum) && tvlUsdcNum > 0 ? tvlUsdcNum : undefined;
-    const pool_liquidity_raw = (tvl_usd != null)
+    let pool_liquidity_raw = (tvl_usd != null)
       ? tvl_usd
       : (Number.isFinite(amount_a_norm as number) && Number.isFinite(amount_b_norm as number)
           ? Math.min(amount_a_norm as number, amount_b_norm as number)
@@ -316,8 +316,10 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     let finalMintB = mint_b;
     let finalDecA = decA;
     let finalDecB = decB;
-    let finalAmountA = amount_a_norm;
-    let finalAmountB = amount_b_norm;
+    let finalAmountWholeA = amount_a_norm;
+    let finalAmountWholeB = amount_b_norm;
+    let finalAmountAtomicA = amount_a_atomic;
+    let finalAmountAtomicB = amount_b_atomic;
     let pipelineProcessedFlag = false;
     let pipelineSwapped = false;
     
@@ -363,7 +365,8 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
           
           // If mints were swapped, update all mint-dependent fields
           if (processed.wasSwapped) {
-            [finalAmountA, finalAmountB] = [finalAmountB, finalAmountA];
+            [finalAmountWholeA, finalAmountWholeB] = [finalAmountWholeB, finalAmountWholeA];
+            [finalAmountAtomicA, finalAmountAtomicB] = [finalAmountAtomicB, finalAmountAtomicA];
           }
         } else {
           finalPrice = rawPrice;
@@ -405,6 +408,11 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       }
     } catch {}
     if (!price_ok) { try { logger.warn('meteora.clmm drop by sanity', { id, mint_a, mint_b, price_a_per_b, cat: 'meteora' }); } catch {}; continue; }
+    
+    // Recompute liquidity fallback using final (possibly swapped) whole values when TVL missing
+    if (tvl_usd == null && Number.isFinite(finalAmountWholeA as number) && Number.isFinite(finalAmountWholeB as number)) {
+      pool_liquidity_raw = Math.min(finalAmountWholeA as number, finalAmountWholeB as number);
+    }
     
     // Extract vault/reserve accounts (reserveX and reserveY correspond to tokenX and tokenY)
     let account_a: string | undefined;
@@ -457,8 +465,10 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       tick_spacing: Number((it as any)?.bin_step || (it as any)?.binStep || 0),
       updated_ms: now,
       price_a_per_b: (price_a_per_b && price_a_per_b > 0) ? price_a_per_b : undefined,
-      amount_a: finalAmountA,
-      amount_b: finalAmountB,
+      amount_a: finalAmountAtomicA,
+      amount_b: finalAmountAtomicB,
+      amount_a_whole: Number.isFinite(finalAmountWholeA as number) ? (finalAmountWholeA as number) : undefined,
+      amount_b_whole: Number.isFinite(finalAmountWholeB as number) ? (finalAmountWholeB as number) : undefined,
       decimals_a: Number.isFinite(finalDecA) ? finalDecA : undefined,
       decimals_b: Number.isFinite(finalDecB) ? finalDecB : undefined,
       account_a,
