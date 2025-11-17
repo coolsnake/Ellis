@@ -218,6 +218,7 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       if (typeof feeRaw === 'number') fee_bps = feeRaw <= 1 ? Math.round(feeRaw * 100) : Math.round(feeRaw);
     }
     let price_a_per_b = Number((it as any)?.current_price ?? (it as any)?.price ?? (it as any)?.price_a_per_b ?? 0);
+    let apiPriceFallback = price_a_per_b;
     const amtAraw = (it?.reserve_x_amount ?? it?.tokenBalanceA ?? it?.tokenAAmount ?? it?.amountA ?? it?.baseAmount ?? 0);
     const amtBraw = (it?.reserve_y_amount ?? it?.tokenBalanceB ?? it?.tokenBAmount ?? it?.amountB ?? it?.quoteAmount ?? 0);
     const amount_a_norm = normalizeAmountWithDecimals(amtAraw, decA);
@@ -310,6 +311,29 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
         }
       }
     } catch {}
+
+    // If we never derived a price (no bin or reserves) but API gave us something, normalize it now.
+    if (!(price_a_per_b > 0) && apiPriceFallback > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
+      // Meteora API price represents tokenY per tokenX in atomic units.
+      // Convert to mint_a per mint_b in whole tokens.
+      const decimalScale = Math.pow(10, (decB as number) - (decA as number));
+      const normalized = decimalScale / apiPriceFallback;
+      if (Number.isFinite(normalized) && normalized > 0) {
+        price_a_per_b = normalized;
+        try {
+          logger.debug('meteora.price.api_fallback.normalized', {
+            pool: id.slice(0, 12),
+            mint_a: mint_a.slice(0, 8),
+            mint_b: mint_b.slice(0, 8),
+            raw_api_price: apiPriceFallback,
+            decimals_a: decA,
+            decimals_b: decB,
+            normalized_price: normalized,
+            cat: 'meteora'
+          });
+        } catch {}
+      }
+    }
     // Process through centralized pipeline (canonicalization + calibration + rescaling)
     let finalPrice = 0;
     let finalMintA = mint_a;

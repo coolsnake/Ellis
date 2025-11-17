@@ -411,7 +411,7 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
       // Handle fallback to incomingPrice: convert to whole-token A-per-B units
       let incomingCanonical = 0;
       if (priceFromSqrt === 0 && incomingPrice > 0 && Number.isFinite(cDecA) && Number.isFinite(cDecB)) {
-        const decimalScale = Math.pow(10, (cDecA as number) - (cDecB as number));
+        const decimalScale = Math.pow(10, (cDecB as number) - (cDecA as number));
         incomingCanonical = incomingPrice * decimalScale;
         try {
           logger.debug('orca.incomingPrice.fallback.normalized', {
