@@ -10,6 +10,48 @@ import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpL
 import { PublicKey } from '@solana/web3.js';
 import { anyToBigInt } from './precision.js';
 
+function meteoraBalancedFeeToBps(value: any): number {
+  const n = Number(
+    value?.base_fee ??
+      value?.dynamic_fee ??
+      value?.feeRate ??
+      value?.tradeFeeRate ??
+      value?.tradeFeeBps ??
+      value?.feeBps ??
+      0,
+  );
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  if (n > 100) return Math.round(n);
+  if (n >= 1) return Math.round(n * 100);
+  return Math.round(n * 10_000);
+}
+
+function meteoraBalancedDeriveAtomic(
+  raw: any,
+  fallbackWhole?: number,
+  decimals?: number,
+): bigint | null {
+  const val = anyToBigInt(raw);
+  if (val && val > 0n) return val;
+  if (
+    fallbackWhole != null &&
+    Number.isFinite(fallbackWhole) &&
+    decimals != null &&
+    Number.isFinite(decimals)
+  ) {
+    const scale = Math.pow(10, decimals as number);
+    if (Number.isFinite(scale)) {
+      const scaled = Math.round((fallbackWhole as number) * scale);
+      if (Number.isFinite(scaled)) {
+        try {
+          return BigInt(scaled);
+        } catch {}
+      }
+    }
+  }
+  return null;
+}
+
 export async function fetchMeteoraBalancedHttp(): Promise<any> {
   const RAW_PATH = joinPath(CONFIG.cacheDir, 'meteora-balanced-raw-sample.json');
   try {
@@ -151,29 +193,6 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
     const n = Number(v);
     return Number.isFinite(n) ? n : undefined;
   };
-  const toFeeBps = (v: any): number => {
-    const n = Number(v?.feeRate ?? v?.tradeFeeRate ?? v?.tradeFeeBps ?? v?.feeBps ?? 0);
-    if (!Number.isFinite(n) || n <= 0) return 0;
-    if (n > 100) return Math.round(n);
-    if (n >= 1) return Math.round(n * 100);
-    return Math.round(n * 10_000);
-  };
-
-  const deriveAtomic = (raw: any, fallbackWhole?: number, decimals?: number): bigint | null => {
-    const val = anyToBigInt(raw);
-    if (val && val > 0n) return val;
-    if (fallbackWhole != null && Number.isFinite(fallbackWhole) && decimals != null && Number.isFinite(decimals)) {
-      const scale = Math.pow(10, decimals as number);
-      if (Number.isFinite(scale)) {
-        const scaled = Math.round((fallbackWhole as number) * scale);
-        if (Number.isFinite(scaled)) {
-          try { return BigInt(scaled); } catch {}
-        }
-      }
-    }
-    return null;
-  };
-
   for (const it of arr) {
     try {
       const id = String(it?.pool_address || it?.address || it?.id || '');
@@ -251,7 +270,7 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
             if (Number.isFinite(pct)) return Math.round(pct * 100);
           }
         } catch {}
-        return toFeeBps(it);
+        return meteoraBalancedFeeToBps(it);
       })();
 
       let price_a_per_b = 0;
@@ -320,12 +339,12 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
         return undefined;
       })();
 
-      const reserveAAtomic = deriveAtomic(
+      const reserveAAtomic = meteoraBalancedDeriveAtomic(
         (it?.reserveA ?? it?.amountA ?? it?.tokenAmountA ?? it?.token_a_amount ?? it?.vault_a_amount ?? 0),
         Number.isFinite(wholeA) ? wholeA : undefined,
         decA,
       );
-      const reserveBAtomic = deriveAtomic(
+      const reserveBAtomic = meteoraBalancedDeriveAtomic(
         (it?.reserveB ?? it?.amountB ?? it?.tokenAmountB ?? it?.token_b_amount ?? it?.vault_b_amount ?? 0),
         Number.isFinite(wholeB) ? wholeB : undefined,
         decB,
@@ -552,10 +571,7 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
         return 0;
       })();
       if (!(fee_bps > 0)) {
-        fee_bps = toFeeBps(it);
-      }
-      if (!(fee_bps > 0)) {
-        fee_bps = toFeeBps(it);
+        fee_bps = meteoraBalancedFeeToBps(it);
       }
       
       const liquidity_base = (wholeA > 0 && wholeB > 0) ? Math.min(wholeA, wholeB) : 0;
@@ -567,12 +583,12 @@ export async function normalizeMeteoraBalancedV1(raw: any): Promise<PoolsPayload
         return undefined;
       })();
 
-      const reserveAAtomicV1 = deriveAtomic(
+      const reserveAAtomicV1 = meteoraBalancedDeriveAtomic(
         (it?.reserveA ?? it?.amountA ?? it?.tokenAmountA ?? amounts?.[0] ?? 0),
         Number.isFinite(wholeA) ? wholeA : undefined,
         decimalsA,
       );
-      const reserveBAtomicV1 = deriveAtomic(
+      const reserveBAtomicV1 = meteoraBalancedDeriveAtomic(
         (it?.reserveB ?? it?.amountB ?? it?.tokenAmountB ?? amounts?.[1] ?? 0),
         Number.isFinite(wholeB) ? wholeB : undefined,
         decimalsB,
