@@ -5,12 +5,10 @@ import { readJson } from '../utils/fs.js';
 import { emit } from './realtime.js';
 import { pushArbGraphSnapshot, pushArbGraphDiff } from './graphPushOrchestrator.js';
 import { shouldPushGraphUpdate, logPushDecision } from './graph.push.coordinator.js';
-import { calculateMeteoraPrice } from './pools/meteoraPrice.js';
 import { CONFIG } from '../utils/config.js';
 import { getRaydiumPoolsNormalized, getOrcaPoolsCached, enablePoolWebsocketRefreshes, peekMeteoraPools, getMeteoraPoolsCached, peekMeteoraBalancedPools } from './pools.js';
 import { loadTokenMap } from '../utils/tokens.js';
 import { fetch } from 'undici';
-import { calibrateMagnitude } from './priceCalib.js';
 import type { GraphNode, GraphEdge, GraphSnapshot, GraphDiff } from './graph.types.js';
 import { createWorkerClient, WorkerClient } from '../workers/client.js';
 import type { GraphWorkerRequest, GraphWorkerResponse, GraphIncrementalRequest } from '../workers/graphDiff.types.js';
@@ -79,6 +77,38 @@ const env = (typeof globalThis !== 'undefined' && (globalThis as any)?.process?.
 const GRAPH_WORKER_DISABLED = String(env.GRAPH_WORKER_DISABLED ?? env.ARB_GRAPH_WORKER_DISABLED ?? '').toLowerCase() === 'true';
 const GRAPH_WORKER_MAX_QUEUE = Math.max(1, Number(env.GRAPH_WORKER_MAX_QUEUE ?? env.ARB_GRAPH_WORKER_MAX_QUEUE ?? 4));
 const GRAPH_WORKER_TIMEOUT_MS = Math.max(2000, Number(env.GRAPH_WORKER_TIMEOUT_MS ?? env.ARB_GRAPH_WORKER_TIMEOUT_MS ?? 8000));
+
+function calibrateMagnitude(
+  mintA: string,
+  mintB: string,
+  price: number | undefined,
+  getUsd?: (mint: string) => number | undefined,
+): number | undefined {
+  if (!price || price <= 0 || !Number.isFinite(price)) return price;
+  if (typeof getUsd !== 'function') return price;
+  try {
+    const pa = getUsd(mintA);
+    const pb = getUsd(mintB);
+    if (pa && pb && pa > 0 && pb > 0) {
+      const ref = pb / pa;
+      const rawDev = Math.max(price / ref, ref / price);
+      let best = price;
+      let bestDev = rawDev;
+      const MAX_APPLIED_DEV = 100;
+      for (let k = -8; k <= 8; k++) {
+        const cand = price * Math.pow(10, k);
+        if (!(cand > 0) || !Number.isFinite(cand)) continue;
+        const dev = Math.max(cand / ref, ref / cand);
+        if (dev + 1e-12 < bestDev) {
+          bestDev = dev;
+          best = cand;
+        }
+      }
+      if (bestDev + 1e-12 < rawDev && bestDev <= MAX_APPLIED_DEV) return best;
+    }
+  } catch {}
+  return price;
+}
 const GRAPH_WORKER_IDLE_MS = Math.max(0, Number(env.GRAPH_WORKER_IDLE_MS ?? env.ARB_GRAPH_WORKER_IDLE_MS ?? 60_000));
 const GRAPH_WORKER_CONCURRENCY = Math.max(1, Number(env.GRAPH_WORKER_CONCURRENCY ?? env.ARB_GRAPH_WORKER_CONCURRENCY ?? 1));
 

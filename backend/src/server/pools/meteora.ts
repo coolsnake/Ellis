@@ -195,7 +195,7 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       tokenXMint: String((it as any)?.mint_x || (it as any)?.tokenXMint || tokenA?.mint || ''),
       tokenYMint: String((it as any)?.mint_y || (it as any)?.tokenYMint || tokenB?.mint || ''),
     }, {
-      getUsd: getPriceByMint,
+      getUsd: (m) => getPriceByMint(m)?.usdc,
     });
 
     if (!processedPrice) {

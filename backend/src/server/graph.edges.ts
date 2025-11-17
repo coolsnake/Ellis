@@ -1,4 +1,3 @@
-import { computePriceForward, computePriceReverse } from './graph.pricing.js';
 import type { GraphEdge } from './graph.types.js';
 import type { AmmPool, ClmmPool } from './pools/types.js';
 import { logger } from '../utils/logger.js';
@@ -13,6 +12,23 @@ const clampPriceInc = (px: number | undefined, min: number, max: number): number
   const v = Number(px);
   if (!Number.isFinite(v) || !(v > 0)) return undefined;
   return Math.min(max, Math.max(min, v));
+};
+
+const rescalePriceByDecimals = (
+  priceAPerB: number | undefined,
+  poolDecA?: number,
+  poolDecB?: number,
+  globalDecA?: number,
+  globalDecB?: number,
+): number | undefined => {
+  const p = Number(priceAPerB);
+  if (!Number.isFinite(p) || !(p > 0)) return priceAPerB;
+  const da = Number(poolDecA); const db = Number(poolDecB);
+  const ga = Number(globalDecA); const gb = Number(globalDecB);
+  if (![da, db, ga, gb].every((x) => Number.isFinite(x))) return priceAPerB;
+  const scalePow = (ga - da) - (gb - db);
+  const scaled = p * Math.pow(10, scalePow);
+  return (Number.isFinite(scaled) && scaled > 0) ? scaled : priceAPerB;
 };
 
 export interface EdgeBuildOptions {
@@ -67,6 +83,11 @@ export function edgesFromPoolIncremental(
   
   let fwd: number | undefined;
   let rev: number | undefined;
+  const poolDecA = (p as any)?.decimals_a;
+  const poolDecB = (p as any)?.decimals_b;
+  const decimalsMap = options?.decimalsMap || {};
+  const globalDecA = Number.isFinite(decimalsMap[a]) ? decimalsMap[a] : poolDecA;
+  const globalDecB = Number.isFinite(decimalsMap[b]) ? decimalsMap[b] : poolDecB;
   
   if (pipelineProcessed) {
     // Trust pipeline output - only apply decimal rescaling if global decimals differ
@@ -89,38 +110,10 @@ export function edgesFromPoolIncremental(
     // Simple inversion for reverse (pipeline already handled calibration)
     rev = fwd && fwd > 0 ? 1 / fwd : undefined;
   } else {
-    // Pool didn't go through pipeline - apply full processing
-    const poolDecA = (p as any)?.decimals_a;
-    const poolDecB = (p as any)?.decimals_b;
-    const decimalsMap = options?.decimalsMap || {};
-    const globalDecA = Number.isFinite(decimalsMap[a]) ? decimalsMap[a] : poolDecA;
-    const globalDecB = Number.isFinite(decimalsMap[b]) ? decimalsMap[b] : poolDecB;
-    
-    // computePriceForward assumes price is already canonicalized - only applies magnitude calibration
-    fwd = computePriceForward(
-      a,
-      b,
-      fRaw,
-      poolDecA,
-      poolDecB,
-      globalDecA,
-      globalDecB,
-      getUsd,
-      undefined,
-    );
-    
-    // Calculate reverse edge with proper decimal rescaling
-    rev = computePriceReverse(
-      a,
-      b,
-      fwd,
-      fRaw,
-      poolDecA,
-      poolDecB,
-      globalDecA,
-      globalDecB,
-      getUsd,
-    );
+    // Pool didn't go through pipeline - fall back to decimal rescaling only
+    const rescaled = rescalePriceByDecimals(fRaw, poolDecA, poolDecB, globalDecA, globalDecB);
+    fwd = (Number.isFinite(rescaled) && (rescaled as number) > 0) ? rescaled : fRaw;
+    rev = (fwd && fwd > 0) ? 1 / fwd : undefined;
   }
   
   // DIAGNOSTIC: Log suspicious reverse edge prices
