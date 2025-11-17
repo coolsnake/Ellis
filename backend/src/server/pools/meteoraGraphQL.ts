@@ -102,18 +102,11 @@ async function fetchMeteoraPoolsForToken(
           tokenYMint
           reserveX
           reserveY
-          reserveXAmount
-          reserveYAmount
           binStep
           baseFeeRate
-          maxFeeRate
           protocolFee
           liquidity
-          rewardsLastUpdatedAt
           activeId
-          binStepNumerator
-          oracleId
-          pairType
           _updatedAt
         }
       }

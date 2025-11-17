@@ -119,10 +119,6 @@ async function fetchRaydiumPoolsForToken(
           swapQuoteOutAmount
           swapFeeNumerator
           swapFeeDenominator
-          tradeFeeNumerator
-          tradeFeeDenominator
-          lpReserve
-          lpSupply
           status
           state
           _updatedAt
