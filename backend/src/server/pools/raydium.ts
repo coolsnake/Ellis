@@ -805,27 +805,40 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
       
       try {
         if (sqrtBig && Number.isFinite(decA) && Number.isFinite(decB)) {
-          const priceFromCentralized = calculateClmmPrice(sqrtBig, decA as number, decB as number);
+          const priceFromCentralized = calculateClmmPrice(
+            sqrtBig, 
+            decA as number, 
+            decB as number,
+            mintA,
+            mintB,
+            (m) => {
+              try {
+                const { getPriceByMint } = require('../priceStore.js');
+                return getPriceByMint(m)?.usdc;
+              } catch {
+                return undefined;
+              }
+            }
+          );
           if (priceFromCentralized && priceFromCentralized > 0 && Number.isFinite(priceFromCentralized)) {
             price_from_sqrt = priceFromCentralized;
           }
-        }
         
-        // Fallback: Try Raydium SDK as secondary source
-        if (price_from_sqrt === 0 && sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
-          try {
-            const rmod: any = await import('@raydium-io/raydium-sdk-v2');
-            const SqrtPriceMath = rmod?.SqrtPriceMath || rmod?.Clmm?.SqrtPriceMath;
-            if (SqrtPriceMath?.sqrtPriceX64ToPrice) {
-              const sqrtBigInt = sqrtBig ?? BigInt(Math.floor(sqrt));
-              const priceFromSdk = SqrtPriceMath.sqrtPriceX64ToPrice(sqrtBigInt, decA, decB);
-              if (priceFromSdk != null && Number(priceFromSdk) > 0 && Number.isFinite(Number(priceFromSdk))) {
-                price_from_sqrt = Number(priceFromSdk);
+          // Fallback: Try Raydium SDK as secondary source
+          if (price_from_sqrt === 0 && sqrt > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
+            try {
+              const rmod: any = await import('@raydium-io/raydium-sdk-v2');
+              const SqrtPriceMath = rmod?.SqrtPriceMath || rmod?.Clmm?.SqrtPriceMath;
+              if (SqrtPriceMath?.sqrtPriceX64ToPrice) {
+                const sqrtBigInt = sqrtBig ?? BigInt(Math.floor(sqrt));
+                const priceFromSdk = SqrtPriceMath.sqrtPriceX64ToPrice(sqrtBigInt, decA, decB);
+                if (priceFromSdk != null && Number(priceFromSdk) > 0 && Number.isFinite(Number(priceFromSdk))) {
+                  price_from_sqrt = Number(priceFromSdk);
+                }
               }
-            }
-          } catch {}
-        }
-      } catch {}
+            } catch {}
+          }
+        } catch {}
       // Choose best raw price candidate (highest confidence first)
       let rawPrice = 0;
       if (price_from_sqrt > 0) {

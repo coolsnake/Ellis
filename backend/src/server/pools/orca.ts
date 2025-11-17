@@ -357,7 +357,21 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
       if (sqrt_price_x64 > 0 && Number.isFinite(cDecA) && Number.isFinite(cDecB)) {
         try {
           // Use centralized CLMM price formula for consistency
-          const priceFromCentralized = calculateClmmPrice(sqrtRaw ?? BigInt(Math.floor(sqrt_price_x64)), cDecA as number, cDecB as number);
+          const priceFromCentralized = calculateClmmPrice(
+            sqrtRaw ?? BigInt(Math.floor(sqrt_price_x64)), 
+            cDecA as number, 
+            cDecB as number,
+            cA,
+            cB,
+            (m) => {
+              try {
+                const { getPriceByMint } = require('../priceStore.js');
+                return getPriceByMint(m)?.usdc;
+              } catch {
+                return undefined;
+              }
+            }
+          );
           if (priceFromCentralized && priceFromCentralized > 0 && Number.isFinite(priceFromCentralized)) {
             priceFromSqrt = priceFromCentralized;
             

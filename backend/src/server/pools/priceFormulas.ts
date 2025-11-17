@@ -78,12 +78,18 @@ export function calculateAmmPrice(
  * @param sqrtPriceX64 The sqrt price value (as bigint or number)
  * @param decimalsA Decimals for token A
  * @param decimalsB Decimals for token B
+ * @param mintA Optional mint A for orientation check
+ * @param mintB Optional mint B for orientation check
+ * @param getUsd Optional USD price lookup for orientation check
  * @returns Price A-per-B in whole token units
  */
 export function calculateClmmPrice(
   sqrtPriceX64: bigint | number,
   decimalsA: number,
-  decimalsB: number
+  decimalsB: number,
+  mintA?: string,
+  mintB?: string,
+  getUsd?: (mint: string) => number | undefined
 ): number | undefined {
   try {
     // Convert to bigint if needed
@@ -110,7 +116,26 @@ export function calculateClmmPrice(
       return undefined;
     }
 
-    return ratio.float;
+    let price = ratio.float;
+    
+    // CRITICAL FIX: Auto-correct for inverted sqrtPriceX64 convention
+    // Some pools encode sqrt(A/B) instead of sqrt(B/A). Use USD reference to detect and fix.
+    if (getUsd && mintA && mintB) {
+      const usdA = getUsd(mintA);
+      const usdB = getUsd(mintB);
+      if (usdA && usdB && usdA > 0 && usdB > 0) {
+        const expectedPrice = usdB / usdA;
+        const deviation = Math.max(price / expectedPrice, expectedPrice / price);
+        
+        // If deviation is large, it's likely an inversion. Flip it.
+        // A high threshold (e.g., >100x) prevents flipping due to stale USD prices.
+        if (deviation > 100) {
+          price = 1 / price;
+        }
+      }
+    }
+
+    return price;
   } catch (error) {
     try {
       logger.warn('price.formula.clmm.error', {
@@ -282,29 +307,6 @@ export function priceFromReserves(
       const numerator = resA * scale;
       price = Number(numerator) / Number(resB);
     } else {
-      // Divide: price = resA / (resB * scale)
-      const denominator = resB * scale;
-      price = Number(resA) / Number(denominator);
-    }
-    
-    if (!Number.isFinite(price) || price <= 0) {
-      return undefined;
-    }
-    
-    return price;
-  } catch (error) {
-    // Fallback to number calculation
-    return calculateAmmPrice(
-      Number(reserveA),
-      Number(reserveB),
-      decimalsA,
-      decimalsB,
-      true
-    );
-  }
-}
-
-
       // Divide: price = resA / (resB * scale)
       const denominator = resB * scale;
       price = Number(resA) / Number(denominator);
