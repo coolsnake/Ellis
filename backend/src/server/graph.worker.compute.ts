@@ -51,7 +51,6 @@ export function computeIncrementalGraphUpdate(request: GraphIncrementalRequest):
     droppedPoolIds,
     edgeAllow,
     priceMap,
-    decimalsMap,
     priceClampMin,
     priceClampMax,
     timestampMs,
@@ -109,7 +108,6 @@ export function computeIncrementalGraphUpdate(request: GraphIncrementalRequest):
   const edgeOptions: EdgeBuildOptions = { 
     priceClampMin, 
     priceClampMax,
-    decimalsMap: decimalsMap || {},
   };
 
   for (const pool of considered) {

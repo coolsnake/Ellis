@@ -28,8 +28,8 @@ export async function preloadPumpswapVaultCache(): Promise<void> {
 
     const vaultAddresses = new Set<string>();
     for (const pool of pools) {
-      if (pool.vault_a) vaultAddresses.add(pool.vault_a);
-      if (pool.vault_b) vaultAddresses.add(pool.vault_b);
+      if (pool.account_a) vaultAddresses.add(pool.account_a);
+      if (pool.account_b) vaultAddresses.add(pool.account_b);
     }
 
     if (vaultAddresses.size === 0) {
@@ -38,7 +38,7 @@ export async function preloadPumpswapVaultCache(): Promise<void> {
 
     const { withRpcLimit } = await import('../../../utils/rpcLimiter.js');
     const web3 = await import('@solana/web3.js');
-    const conn = new web3.Connection(CONFIG.rpc.mainnetUrl, CONFIG.system.txCommitment as any);
+    const conn = new web3.Connection(CONFIG.rpcUrl, CONFIG.system.txCommitment as any);
     const pks = Array.from(vaultAddresses).map(addr => new web3.PublicKey(addr));
 
     const weight = Math.max(1, Math.ceil(pks.length / 100));
@@ -92,8 +92,8 @@ export async function preloadMeteoraBalancedVaultCache(): Promise<void> {
 
     const vaultAddresses = new Set<string>();
     for (const pool of pools) {
-      if (pool.vault_a) vaultAddresses.add(pool.vault_a);
-      if (pool.vault_b) vaultAddresses.add(pool.vault_b);
+      if (pool.account_a) vaultAddresses.add(pool.account_a);
+      if (pool.account_b) vaultAddresses.add(pool.account_b);
     }
 
     if (vaultAddresses.size === 0) {
@@ -102,7 +102,7 @@ export async function preloadMeteoraBalancedVaultCache(): Promise<void> {
 
     const { withRpcLimit } = await import('../../../utils/rpcLimiter.js');
     const web3 = await import('@solana/web3.js');
-    const conn = new web3.Connection(CONFIG.rpc.mainnetUrl, CONFIG.system.txCommitment as any);
+    const conn = new web3.Connection(CONFIG.rpcUrl, CONFIG.system.txCommitment as any);
     const pks = Array.from(vaultAddresses).map(addr => new web3.PublicKey(addr));
 
     const weight = Math.max(1, Math.ceil(pks.length / 100));

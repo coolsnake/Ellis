@@ -9,7 +9,6 @@ export interface GraphIncrementalRequest {
   droppedPoolIds: string[];
   edgeAllow: EdgeAllow;
   priceMap: Record<string, number>;
-  decimalsMap: Record<string, number>;
   priceClampMin?: number;
   priceClampMax?: number;
   timestampMs: number;
