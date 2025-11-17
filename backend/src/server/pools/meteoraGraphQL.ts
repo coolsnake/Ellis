@@ -188,8 +188,6 @@ async function fetchMeteoraPoolsByAddress(
               protocolFee
               activeId
               oracle
-              feeOwner
-              pairType
               status
               _updatedAt
             }
