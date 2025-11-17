@@ -28,12 +28,25 @@ function normalizeMintList(value: unknown, fallback: string[]): string[] {
   return fallback;
 }
 
+function mergeMintLists(preferred: string[], defaults: string[]): string[] {
+  const seen = new Set<string>(preferred);
+  const out = [...preferred];
+  for (const mint of defaults) {
+    if (!seen.has(mint)) {
+      out.push(mint);
+      seen.add(mint);
+    }
+  }
+  return out;
+}
+
 export function getSolMintSet(): Set<string> {
   if (solMintSetCache) return solMintSetCache;
   try {
     const sys = (CONFIG as any)?.system || {};
     const configured = normalizeMintList(sys.solMints, DEFAULT_SOL_MINTS);
-    solMintSetCache = new Set(configured);
+    const merged = mergeMintLists(configured, DEFAULT_SOL_MINTS);
+    solMintSetCache = new Set(merged);
     return solMintSetCache;
   } catch {
     solMintSetCache = new Set(DEFAULT_SOL_MINTS);
@@ -46,7 +59,8 @@ export function getStableMintSet(): Set<string> {
   try {
     const sys = (CONFIG as any)?.system || {};
     const configured = normalizeMintList(sys.stableMints, DEFAULT_STABLE_MINTS);
-    stableMintSetCache = new Set(configured);
+    const merged = mergeMintLists(configured, DEFAULT_STABLE_MINTS);
+    stableMintSetCache = new Set(merged);
     return stableMintSetCache;
   } catch {
     stableMintSetCache = new Set(DEFAULT_STABLE_MINTS);
@@ -62,12 +76,10 @@ function getQuotePriorityMap(): Map<string, number> {
   
   try {
     const sys = (CONFIG as any)?.system || {};
-    const configured: string[] = Array.isArray(sys.quoteHierarchy) 
-      ? sys.quoteHierarchy 
-      : DEFAULT_QUOTE_PRIORITY;
-    
+    const configured = normalizeMintList(sys.quoteHierarchy, DEFAULT_QUOTE_PRIORITY);
+    const prioritized = mergeMintLists(configured, DEFAULT_QUOTE_PRIORITY);
     quotePriorityCache = new Map(
-      configured.map((mint, index) => [String(mint), index])
+      prioritized.map((mint, index) => [String(mint), index])
     );
     
     return quotePriorityCache;
@@ -87,18 +99,18 @@ export function canonicalOrientation(mintA: string, mintB: string): 'keep' | 'sw
   const solMints = getSolMintSet();
   const stableMints = getStableMintSet();
 
-  const aSol = solMints.has(mintA);
-  const bSol = solMints.has(mintB);
-  if (aSol !== bSol) {
-    // Keep SOL (or wSOL) on the A/base side
-    return aSol ? 'keep' : 'swap';
-  }
-
   const aStable = stableMints.has(mintA);
   const bStable = stableMints.has(mintB);
   if (aStable !== bStable) {
     // Put stablecoins on B/quote side
     return aStable ? 'swap' : 'keep';
+  }
+
+  const aSol = solMints.has(mintA);
+  const bSol = solMints.has(mintB);
+  if (aSol !== bSol) {
+    // Keep SOL (or wSOL) on the B/quote side
+    return aSol ? 'swap' : 'keep';
   }
 
   const quotePriority = getQuotePriorityMap();
@@ -129,12 +141,6 @@ export function swapPoolFields<T extends Record<string, any>>(obj: T): T {
   out.mint_a = bMint;
   out.mint_b = aMint;
 
-  // Manually swap decimals to ensure it always happens correctly
-  const decA = out.decimals_a;
-  const decB = out.decimals_b;
-  out.decimals_a = decB;
-  out.decimals_b = decA;
-  
   // Invert price (A per B becomes B per A, so invert)
   if (typeof out.price_a_per_b === 'number' && out.price_a_per_b > 0) {
     out.price_a_per_b = 1 / out.price_a_per_b;

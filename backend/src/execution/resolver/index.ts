@@ -182,19 +182,30 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
   try {
     const slippage = typeof input.slippageBps === 'number' ? input.slippageBps : cfg.slippageBpsDefault;
     // Determine initial input size:
-    // - interpret input.size as tokens (UI units) of the start mint
+    // - interpret input.size as raw atoms (already in mint decimals)
     // - otherwise compute from sizeUsd using priceStore (USD → tokens)
     let curIn = 0n;
     if (hops.length > 0) {
       const decimals = Number(hops[0].inputDecimals ?? 0);
-      const sizeTokens = Number.isFinite(input.size as any) ? Number(input.size) : 0;
-      if (sizeTokens > 0) {
-        // Convert tokens → raw atoms with micro precision to avoid float rounding
-        const sizeMicro = BigInt(Math.round(sizeTokens * 1_000_000));
-        const mul = (decimals >= 6) ? (10n ** BigInt(decimals - 6)) : 1n;
-        const div = (decimals < 6) ? (10n ** BigInt(6 - decimals)) : 1n;
-        curIn = (sizeMicro * mul) / div;
-      } else if (Number.isFinite(input.sizeUsd as any) && Number(input.sizeUsd) > 0) {
+      const rawSize = (input as any).size;
+      if (rawSize !== undefined && rawSize !== null) {
+        if (typeof rawSize === 'bigint') {
+          if (rawSize > 0n) curIn = rawSize;
+        } else if (typeof rawSize === 'number') {
+          if (Number.isFinite(rawSize) && rawSize > 0) {
+            curIn = BigInt(Math.trunc(rawSize));
+          }
+        } else if (typeof rawSize === 'string') {
+          const trimmed = rawSize.trim();
+          if (trimmed.length > 0) {
+            try {
+              const parsed = BigInt(trimmed);
+              if (parsed > 0n) curIn = parsed;
+            } catch {}
+          }
+        }
+      }
+      if (curIn === 0n && Number.isFinite(input.sizeUsd as any) && Number(input.sizeUsd) > 0) {
         try {
           const startMint = hops[0].inputMint;
           const { getPriceByMint } = await import('../../server/priceStore.js');
