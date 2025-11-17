@@ -116,6 +116,20 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     pumpswap_rpcBatchSize: 100,
     pumpswap_validatePrices: true,
     pumpswap_validationSamples: 10,
+    // Shyft GraphQL (Global)
+    shyft_apiKey: '',
+    // Raydium GraphQL
+    raydium_useGraphQL: false,
+    raydium_shyftApiKey: '',
+    raydium_pageDelayMs: 200,
+    // Orca GraphQL
+    orca_useGraphQL: false,
+    orca_shyftApiKey: '',
+    orca_pageDelayMs: 200,
+    // Meteora GraphQL
+    meteora_useGraphQL: false,
+    meteora_shyftApiKey: '',
+    meteora_pageDelayMs: 200,
     // Jupiter
     jupiterApiUrl: '',
     jupiterPauseApi: false,
@@ -129,6 +143,10 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     const sanitized = {
       ...cfg,
       pumpswap_shyftApiKey: '', // Don't persist API keys
+      shyft_apiKey: '',
+      raydium_shyftApiKey: '',
+      orca_shyftApiKey: '',
+      meteora_shyftApiKey: '',
     };
     updateUiPrefs({ lastValues: sanitized });
   }, [cfg]);
@@ -231,6 +249,20 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             pumpswap_rpcBatchSize: Number(j?.pumpswap?.rpcBatchSize ?? prev.pumpswap_rpcBatchSize ?? 100),
             pumpswap_validatePrices: (j?.pumpswap?.validatePrices !== false),
             pumpswap_validationSamples: Number(j?.pumpswap?.validationSamples ?? prev.pumpswap_validationSamples ?? 10),
+            // Shyft GraphQL
+            shyft_apiKey: j?.shyft?.apiKey || prev.shyft_apiKey || '',
+            // Raydium GraphQL
+            raydium_useGraphQL: !!j?.raydium?.useGraphQL,
+            raydium_shyftApiKey: j?.raydium?.shyftApiKey || prev.raydium_shyftApiKey || '',
+            raydium_pageDelayMs: Number(j?.raydium?.pageDelayMs ?? prev.raydium_pageDelayMs ?? 200),
+            // Orca GraphQL
+            orca_useGraphQL: !!j?.orca?.useGraphQL,
+            orca_shyftApiKey: j?.orca?.shyftApiKey || prev.orca_shyftApiKey || '',
+            orca_pageDelayMs: Number(j?.orca?.pageDelayMs ?? prev.orca_pageDelayMs ?? 200),
+            // Meteora GraphQL
+            meteora_useGraphQL: !!j?.meteora?.useGraphQL,
+            meteora_shyftApiKey: j?.meteora?.shyftApiKey || prev.meteora_shyftApiKey || '',
+            meteora_pageDelayMs: Number(j?.meteora?.pageDelayMs ?? prev.meteora_pageDelayMs ?? 200),
             // Sanity
             sanity_enabled: (j?.sanity?.enabled ?? true) !== false,
             sanity_maxPriceDeviation: Number(j?.sanity?.maxPriceDeviation ?? prev.sanity_maxPriceDeviation),
@@ -344,6 +376,9 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
 			httpBackoffMs: Number(cfg.ray_httpBackoffMs ?? 300),
 			minAmmLiqBase: Number(cfg.ray_minAmmLiqBase),
 			minClmmLiquidity: Number(cfg.ray_minClmmLiquidity),
+      useGraphQL: !!cfg.raydium_useGraphQL,
+      shyftApiKey: String(cfg.raydium_shyftApiKey || ''),
+      pageDelayMs: Number(cfg.raydium_pageDelayMs || 200),
 		},
       orca: {
         cacheTtlMs: Number(cfg.orca_cacheTtlMs),
@@ -353,6 +388,9 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         maxPages: Number(cfg.orca_maxPages),
         minAmmLiqBase: Number(cfg.orca_minAmmLiqBase),
         minClmmLiquidity: Number(cfg.orca_minClmmLiquidity),
+        useGraphQL: !!cfg.orca_useGraphQL,
+        shyftApiKey: String(cfg.orca_shyftApiKey || ''),
+        pageDelayMs: Number(cfg.orca_pageDelayMs || 200),
       },
       meteora: {
         apiUrl: cfg.meteora_apiUrl,
@@ -363,6 +401,9 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         maxPages: Number(cfg.meteora_maxPages),
         minClmmLiquidity: Number(cfg.meteora_minClmmLiquidity),
         universePrefilter: !!cfg.meteora_universePrefilter,
+        useGraphQL: !!cfg.meteora_useGraphQL,
+        shyftApiKey: String(cfg.meteora_shyftApiKey || ''),
+        pageDelayMs: Number(cfg.meteora_pageDelayMs || 200),
       },
       meteoraBalanced: {
         apiUrl: cfg.meteoraBalanced_apiUrl,
@@ -394,6 +435,9 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         rpcBatchSize: Number(cfg.pumpswap_rpcBatchSize || 100),
         validatePrices: !!cfg.pumpswap_validatePrices,
         validationSamples: Number(cfg.pumpswap_validationSamples || 10),
+      },
+      shyft: {
+        apiKey: String(cfg.shyft_apiKey || ''),
       },
       sanity: {
         enabled: !!cfg.sanity_enabled,
@@ -693,6 +737,122 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                 </select>
               </div>
               <label className="flex items-center gap-2 md:col-span-3"><input type="checkbox" checked={!!cfg.universePrefilterOrca} onChange={(e)=>set('universePrefilterOrca', e.target.checked)} />Prefilter Orca HTTP by universe (conservative)</label>
+            </div>
+          </div>
+
+          <div className="bg-gray-700 rounded p-4 border-2 border-blue-500">
+            <h3 className="text-lg font-semibold mb-3">🚀 Shyft GraphQL (Token-Centric Fetching)</h3>
+            <div className="mb-4 text-sm text-gray-300 bg-blue-900/30 border border-blue-500/50 rounded p-3">
+              <strong>📊 New:</strong> Enable GraphQL fetching per DEX. Queries pools by token universe instead of pagination. HTTP fetching is used as automatic fallback on errors.
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+              <div className="md:col-span-2">
+                <label className="block text-sm mb-1">Global Shyft API Key (Optional Fallback)</label>
+                <input 
+                  type="password" 
+                  className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1 font-mono text-sm" 
+                  value={cfg.shyft_apiKey} 
+                  onChange={(e)=>set('shyft_apiKey', e.target.value)} 
+                  placeholder="Uses Pumpswap key if empty" 
+                />
+                <p className="text-xs text-gray-400 mt-1">Shared across all DEXs. DEX-specific keys override this.</p>
+              </div>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="bg-gray-800/50 rounded p-3 border border-gray-600">
+                <label className="flex items-center gap-2 mb-3">
+                  <input type="checkbox" checked={!!cfg.raydium_useGraphQL} onChange={(e)=>set('raydium_useGraphQL', e.target.checked)} />
+                  <span className="font-semibold">Enable Raydium GraphQL</span>
+                </label>
+                <div className="space-y-2">
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">API Key (optional)</label>
+                    <input 
+                      type="password" 
+                      className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm font-mono" 
+                      value={cfg.raydium_shyftApiKey} 
+                      onChange={(e)=>set('raydium_shyftApiKey', e.target.value)}
+                      disabled={!cfg.raydium_useGraphQL}
+                      placeholder="Uses global/Pumpswap" 
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Page Delay (ms)</label>
+                    <input 
+                      type="number" 
+                      className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm" 
+                      value={cfg.raydium_pageDelayMs} 
+                      onChange={(e)=>set('raydium_pageDelayMs', Number(e.target.value)||0)}
+                      disabled={!cfg.raydium_useGraphQL}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-gray-800/50 rounded p-3 border border-gray-600">
+                <label className="flex items-center gap-2 mb-3">
+                  <input type="checkbox" checked={!!cfg.orca_useGraphQL} onChange={(e)=>set('orca_useGraphQL', e.target.checked)} />
+                  <span className="font-semibold">Enable Orca GraphQL</span>
+                </label>
+                <div className="space-y-2">
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">API Key (optional)</label>
+                    <input 
+                      type="password" 
+                      className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm font-mono" 
+                      value={cfg.orca_shyftApiKey} 
+                      onChange={(e)=>set('orca_shyftApiKey', e.target.value)}
+                      disabled={!cfg.orca_useGraphQL}
+                      placeholder="Uses global/Pumpswap" 
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Page Delay (ms)</label>
+                    <input 
+                      type="number" 
+                      className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm" 
+                      value={cfg.orca_pageDelayMs} 
+                      onChange={(e)=>set('orca_pageDelayMs', Number(e.target.value)||0)}
+                      disabled={!cfg.orca_useGraphQL}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-gray-800/50 rounded p-3 border border-gray-600">
+                <label className="flex items-center gap-2 mb-3">
+                  <input type="checkbox" checked={!!cfg.meteora_useGraphQL} onChange={(e)=>set('meteora_useGraphQL', e.target.checked)} />
+                  <span className="font-semibold">Enable Meteora GraphQL</span>
+                </label>
+                <div className="space-y-2">
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">API Key (optional)</label>
+                    <input 
+                      type="password" 
+                      className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm font-mono" 
+                      value={cfg.meteora_shyftApiKey} 
+                      onChange={(e)=>set('meteora_shyftApiKey', e.target.value)}
+                      disabled={!cfg.meteora_useGraphQL}
+                      placeholder="Uses global/Pumpswap" 
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Page Delay (ms)</label>
+                    <input 
+                      type="number" 
+                      className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm" 
+                      value={cfg.meteora_pageDelayMs} 
+                      onChange={(e)=>set('meteora_pageDelayMs', Number(e.target.value)||0)}
+                      disabled={!cfg.meteora_useGraphQL}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-3 text-xs text-gray-300 bg-gray-600 rounded p-2">
+              <strong>💡 How it works:</strong> When enabled, fetches pools for each token in your universe via GraphQL. Falls back to HTTP if GraphQL fails. Pumpswap already uses GraphQL by default.
             </div>
           </div>
 
