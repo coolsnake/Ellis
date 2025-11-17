@@ -408,28 +408,24 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
         } catch {}
       }
       
-      // Handle fallback to incomingPrice: normalize if it appears to be in wrong units
-      let incomingCanonical = (incomingPrice > 0) ? incomingPrice : 0;
-      if (priceFromSqrt === 0 && incomingCanonical > 0 && Number.isFinite(cDecA) && Number.isFinite(cDecB)) {
-        // The Orca API price field might be in smallest units rather than whole-token units
-        // If the price is suspiciously large (> 1e6), it might need decimal normalization
-        // However, we'll let calibrateMagnitude handle the fine-tuning with its power-of-10 search
-        // Just add debug logging to help diagnose
-        if (incomingCanonical > 1e6) {
-          try {
-            logger.debug('orca.incomingPrice.fallback', { 
-              id, 
-              mint_a: cA, 
-              mint_b: cB, 
-              incomingPrice: incomingCanonical,
-              decA: cDecA, 
-              decB: cDecB,
-              sqrt_price_x64,
-              hint: 'priceFromSqrt failed, using incomingPrice which may need normalization',
-              cat: 'orca' 
-            });
-          } catch {}
-        }
+      // Handle fallback to incomingPrice: convert to whole-token A-per-B units
+      let incomingCanonical = 0;
+      if (priceFromSqrt === 0 && incomingPrice > 0 && Number.isFinite(cDecA) && Number.isFinite(cDecB)) {
+        const decimalScale = Math.pow(10, (cDecA as number) - (cDecB as number));
+        incomingCanonical = incomingPrice * decimalScale;
+        try {
+          logger.debug('orca.incomingPrice.fallback.normalized', {
+            id,
+            mint_a: cA,
+            mint_b: cB,
+            incomingPriceRaw: incomingPrice,
+            normalizedPrice: incomingCanonical,
+            decA: cDecA,
+            decB: cDecB,
+            sqrt_price_x64,
+            cat: 'orca'
+          });
+        } catch {}
       }
       
       let priceDerived = priceFromSqrt > 0 ? priceFromSqrt : incomingCanonical;
