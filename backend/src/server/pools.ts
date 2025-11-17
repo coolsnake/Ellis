@@ -1176,6 +1176,30 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
     }
   } catch {}
   
+  // Pre-warm token universes that will be required so expensive fetches (e.g. Jupiter Top list)
+  // are completed before DEX fetches begin. This ensures we can scope pools immediately after fetch.
+  try {
+    const warmModes = new Set<string>();
+    const tokenUniMode = String((CONFIG.system as any)?.tokenUniverseMode || 'union');
+    if (tokenUniMode === 'jupiterTop') warmModes.add('jupiterTop');
+    const scopeMode = String((CONFIG.system as any)?.scopePoolsMode || 'none');
+    const scopingEnabled = (CONFIG.system as any)?.scopePools !== false && scopeMode !== 'none';
+    if (scopingEnabled && scopeMode === 'jupiterTop') warmModes.add('jupiterTop');
+    if (warmModes.size > 0) {
+      const { computeTokenUniverse } = await import('./universe.js');
+      for (const mode of warmModes) {
+        try {
+          await computeTokenUniverse(mode as any);
+        } catch (err: any) {
+          logger.warn('pools.refresh.universe_prewarm_failed', { mode, error: String(err?.message || err), cat: 'pools' });
+        }
+      }
+      logger.info('pools.refresh.universe_prewarm.complete', { modes: Array.from(warmModes), cat: 'pools' });
+    }
+  } catch (err: any) {
+    logger.warn('pools.refresh.universe_prewarm.error', { error: String(err?.message || err), cat: 'pools' });
+  }
+  
   // === PHASE 1: FETCH RAW DATA FROM ALL DEXES ===
   logger.info('pools.refresh.phase.fetch', { enabled: shouldFetch, cat: 'pools' });
   
