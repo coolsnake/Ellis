@@ -92,29 +92,10 @@ export function edgesFromPoolIncremental(
     price_a_per_b: fwd,
     tvl_usd: (p as any)?.tvl_usd,
     pool_kind: kind as any,
-    direction: 'forward',
+    direction: 'canonical',
     pool_liquidity_raw: (p as any)?.pool_liquidity_raw,
   };
-  const rid = id ? `${id}-rev` : '';
-  const reverse: GraphEdge = {
-    id: rid || `${b}->${a}-${dex}`,
-    source: b,
-    target: a,
-    dex,
-    pool_id: rid || undefined,
-    source_account: (p as any)?.account_b,
-    target_account: (p as any)?.account_a,
-    fee_bps: fee,
-    liquidity: liq,
-    liquidity_display: liq,
-    weight: w,
-    price_a_per_b: rev,
-    tvl_usd: (p as any)?.tvl_usd,
-    pool_kind: kind as any,
-    direction: 'reverse',
-    pool_liquidity_raw: (p as any)?.pool_liquidity_raw,
-  };
-  return [forward, reverse];
+  return [forward];
 }
 
 export function edgeChangedSimple(a: GraphEdge, b: GraphEdge): boolean {

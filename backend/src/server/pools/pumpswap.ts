@@ -611,6 +611,7 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
       let finalMintB = mint_b;
       let finalDecA = decA;
       let finalDecB = decB;
+      let wasSwapped = false;
       let finalBaseReserve = baseReserve;
       let finalQuoteReserve = quoteReserve;
       
@@ -685,6 +686,7 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
               });
               
               if (processed) {
+                wasSwapped = processed.wasSwapped === true;
                 // Update to canonical order
                 finalMintA = processed.mintA;
                 finalMintB = processed.mintB;
@@ -693,7 +695,7 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
                 price_a_per_b = processed.priceForward;
                 
                 // If mints were swapped, also swap reserves
-                if (processed.wasSwapped) {
+                if (wasSwapped) {
                   finalBaseReserve = quoteReserve;
                   finalQuoteReserve = baseReserve;
                 }
@@ -803,6 +805,15 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
         // Raw reserves in smallest units (for exact calculations)
         reserve_a_raw: pool.base_reserve || undefined,
         reserve_b_raw: pool.quote_reserve || undefined,
+        was_swapped: wasSwapped,
+        native_mint_a: mint_a,
+        native_mint_b: mint_b,
+        native_decimals_a: decA,
+        native_decimals_b: decB,
+        native_account_a: pool.pool_base_token_account,
+        native_account_b: pool.pool_quote_token_account,
+        native_reserve_a_raw: pool.base_reserve || undefined,
+        native_reserve_b_raw: pool.quote_reserve || undefined,
         // Liquidity metrics for routing and filtering
         pool_liquidity_raw,
         liquidity_display: liquidity_base || pool_liquidity_raw,

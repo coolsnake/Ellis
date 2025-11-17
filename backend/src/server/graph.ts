@@ -634,7 +634,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         accountA?: string,
         accountB?: string,
         poolKind?: 'amm' | 'clmm',
-        direction?: 'forward' | 'reverse',
+        direction?: 'canonical',
         pool_liquidity_raw?: number,
       ) => {
         // Honor DEX/pool-kind allowlist
@@ -642,10 +642,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         // Honor runtime pool drops: skip any edges belonging to dropped pool ids (forward or reverse)
         try {
           const pid = String(poolId || '');
-          if (pid) {
-            const base = pid.endsWith('-rev') ? pid.slice(0, -4) : pid;
-            if (droppedPoolIds.has(base)) return;
-          }
+          if (pid && droppedPoolIds.has(pid)) return;
         } catch {}
         if (!mintA || !mintB || mintA === mintB) return;
         // Require a valid positive price; skip edge entirely if not present
@@ -912,12 +909,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           const liqParam = (p as any)?.liquidity_display ?? (p as any).liquidity_base ?? (p as any).liquidity;
           const rawLiq = Number((p as any).pool_liquidity_raw || (p as any).liquidity_base || (p as any).liquidity || 0) || undefined;
           
-          const forwardPrice = clampPrice(price);
-          const reversePrice = forwardPrice && forwardPrice > 0 ? 1 / forwardPrice : undefined;
-
-          addEdge(p.mint_a, p.mint_b, (p as any).dex || dex, p.fee_bps, liqParam, forwardPrice, usd, pid, (p as any).account_a, (p as any).account_b, (p as any).pool_kind, 'forward', rawLiq);
-        const pidRev = pid ? `${pid}-rev` : undefined;
-          addEdge(p.mint_b, p.mint_a, (p as any).dex || dex, p.fee_bps, liqParam, reversePrice, usd, pidRev, (p as any).account_b, (p as any).account_a, (p as any).pool_kind, 'reverse', rawLiq);
+      const forwardPrice = clampPrice(price);
+      addEdge(p.mint_a, p.mint_b, (p as any).dex || dex, p.fee_bps, liqParam, forwardPrice, usd, pid, (p as any).account_a, (p as any).account_b, (p as any).pool_kind, 'canonical', rawLiq);
         }
       };
 

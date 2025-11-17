@@ -10,6 +10,14 @@ export type AmmPool = {
   // Optional vault accounts corresponding to mint_a and mint_b
   account_a?: string;
   account_b?: string;
+  native_account_a?: string;
+  native_account_b?: string;
+  native_mint_a?: string;
+  native_mint_b?: string;
+  native_decimals_a?: number;
+  native_decimals_b?: number;
+  native_reserve_a_raw?: string;
+  native_reserve_b_raw?: string;
   pool_kind?: 'amm';
   amount_a_whole?: number;
   amount_b_whole?: number;
@@ -23,6 +31,7 @@ export type AmmPool = {
   liquidity_base_raw?: string;
   reserve_a_raw?: string;
   reserve_b_raw?: string;
+  was_swapped?: boolean;
   price_a_per_b_num?: string;
   price_a_per_b_den?: string;
   price_a_per_b_exact?: string;
@@ -63,6 +72,15 @@ export type ClmmPool = {
   amount_b?: number;
   decimals_a?: number;
   decimals_b?: number;
+  native_account_a?: string;
+  native_account_b?: string;
+  native_mint_a?: string;
+  native_mint_b?: string;
+  native_decimals_a?: number;
+  native_decimals_b?: number;
+  native_reserve_a_raw?: string;
+  native_reserve_b_raw?: string;
+  was_swapped?: boolean;
   active_id?: number;
   bin_step?: number;
   // Optional token vault accounts for CLMM pool

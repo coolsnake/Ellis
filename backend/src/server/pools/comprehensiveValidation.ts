@@ -439,38 +439,27 @@ export function validateAllPairsComprehensive(
  * Checks that forward * reverse ≈ 1
  */
 export function validateEdgesComprehensive(
-  edges: Array<{ source: string; target: string; price_a_per_b?: number; pool_id?: string; dex?: string; direction?: string }>
+  edges: Array<{ source: string; target: string; price_a_per_b?: number; pool_id?: string; dex?: string }>
 ): EdgeValidationResult[] {
   const results: EdgeValidationResult[] = [];
-  const edgeMap = new Map<string, { forward?: any; reverse?: any }>();
+  const edgeMap = new Map<string, any>();
 
-  // Group edges by pool_id (forward and reverse)
+  // Group edges by pool_id (canonical direction only)
   for (const edge of edges) {
     if (!edge.price_a_per_b || edge.price_a_per_b <= 0) continue;
     
-    const poolId = edge.pool_id?.replace(/-rev$/, '') || `${edge.source}:${edge.target}:${edge.dex}`;
-    if (!edgeMap.has(poolId)) {
-      edgeMap.set(poolId, {});
-    }
-
-    const entry = edgeMap.get(poolId)!;
-    if (edge.direction === 'forward' || !edge.direction) {
-      entry.forward = edge;
-    } else if (edge.direction === 'reverse') {
-      entry.reverse = edge;
-    }
+    const poolId = edge.pool_id || `${edge.source}:${edge.target}:${edge.dex}`;
+    edgeMap.set(poolId, edge);
   }
 
-  // Validate forward * reverse ≈ 1
-  for (const [poolId, { forward, reverse }] of edgeMap.entries()) {
-    if (!forward || !reverse) continue;
-
+  // Validate canonical edges by ensuring inversion stays finite
+  for (const [poolId, forward] of edgeMap.entries()) {
     const forwardPrice = forward.price_a_per_b!;
-    const reversePrice = reverse.price_a_per_b!;
+    const reversePrice = 1 / forwardPrice;
     const product = forwardPrice * reversePrice;
     const deviation = Math.abs(product - 1);
 
-    const isValid = deviation < 0.05; // 5% tolerance
+    const isValid = Number.isFinite(reversePrice);
 
     if (!isValid) {
       logger.warn('pools.validation.edge_product_mismatch', {
@@ -483,7 +472,7 @@ export function validateEdgesComprehensive(
         product,
         deviation: deviation * 100,
         expectedProduct: 1,
-        hint: 'Forward and reverse edges should multiply to ~1.0',
+        hint: 'Canonical edge should invert cleanly',
         cat: 'pools.validation',
       });
     }

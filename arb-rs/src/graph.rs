@@ -83,7 +83,19 @@ impl ArbGraph {
         if ids.is_empty() {
             return 0;
         }
-        let set: std::collections::HashSet<&String> = ids.iter().collect();
+        let mut expanded: Vec<String> = Vec::with_capacity(ids.len() * 2);
+        for id in ids {
+            if id.is_empty() {
+                continue;
+            }
+            expanded.push(id.clone());
+            if let Some(base) = id.strip_suffix("#rev") {
+                expanded.push(base.to_string());
+            } else {
+                expanded.push(format!("{id}#rev"));
+            }
+        }
+        let set: std::collections::HashSet<String> = expanded.into_iter().collect();
         let mut to_remove = Vec::new();
 
         // OPTIMIZATION: Avoid string allocations by checking pool_id first

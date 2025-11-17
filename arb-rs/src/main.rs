@@ -491,8 +491,8 @@ async fn main() -> anyhow::Result<()> {
                             i64,
                             f64,
                             f64,
-                            f64,
                             String,
+                            f64,
                         )> = Vec::new();
                         let sol_mint: &str = "So11111111111111111111111111111111111111112";
                         let usdc_mint: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
@@ -663,38 +663,36 @@ async fn main() -> anyhow::Result<()> {
                                     }
                                 }
                             }
-                            let direction = e.direction.as_deref();
-                            let (_base, rate_eff) = edge_rate_effective_local(Some(px), Some(fee), direction);
+                            let pool_id =
+                                canonical_edge_id(e.pool_id.as_deref(), &e.source, &e.target, &dex);
                             calibrated_edges.push((
                                 e.source.clone(),
                                 e.target.clone(),
                                 dex,
                                 fee,
-                                rate_eff,
                                 liq,
                                 liq_disp,
                                 pool_id,
+                                px,
                             ));
                         }
 
                         // Reacquire write lock briefly to apply calibrated edges
                         {
                             let mut s = loop_state.write().await;
-                            for (source, target, dex, fee, rate_eff, liq, liq_disp, pool_id) in
+                            for (source, target, dex, fee, liq, liq_disp, pool_id, price) in
                                 calibrated_edges
                             {
-                                s.graph.upsert_edge(
+                                insert_bidirectional_edges(
+                                    &mut s.graph,
                                     &dex,
                                     &source,
                                     &target,
-                                    EdgeData {
-                                        rate_effective: rate_eff,
-                                        fee_bps: fee,
-                                        liquidity: liq,
-                                        dex: dex.clone(),
-                                        pool_id,
-                                        liquidity_display: liq_disp,
-                                    },
+                                    &pool_id,
+                                    fee,
+                                    liq,
+                                    liq_disp,
+                                    price,
                                 );
                             }
                             s.metrics.graph_updates_applied =
@@ -3434,7 +3432,6 @@ struct StartReqEdge {
     pool_id: Option<String>,
     liquidity_display: Option<f64>,
     price_a_per_b: Option<f64>,
-    direction: Option<String>, // "forward" or "reverse"
 }
 #[derive(Deserialize, Clone)]
 struct StartReqGraph {
@@ -3465,7 +3462,6 @@ struct GraphDiffEdge {
     liquidity: Option<f64>,
     liquidity_display: Option<f64>,
     price_a_per_b: Option<f64>,
-    direction: Option<String>, // "forward" or "reverse"
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -3488,15 +3484,10 @@ async fn arb_graph_snapshot(
     Json(handle_graph_snapshot(state, req).await)
 }
 
-// Centralized price conversion: A-per-1-B (backend) -> B-per-1-A (detector), apply fee once
-// 
-// IMPORTANT: price_a_per_b always represents "source-per-1-target" regardless of direction
-// - Forward edge A->B: price_a_per_b = A-per-1-B, rate_effective = B-per-1-A (invert)
-// - Reverse edge B->A: price_a_per_b = B-per-1-A, rate_effective = A-per-1-B (invert)
-//
-// So we ALWAYS invert price_a_per_b to get rate_effective, regardless of direction
+// Centralized price conversion: A-per-1-B (backend) -> B-per-1-A (detector), apply fee once.
+// price_a_per_b always represents "source-per-1-target". To express target-per-1-source we invert.
 #[inline]
-fn edge_rate_effective_local(px_opt: Option<f64>, fee_bps_opt: Option<i64>, _direction: Option<&str>) -> (f64, f64) {
+fn edge_rate_effective_local(px_opt: Option<f64>, fee_bps_opt: Option<i64>) -> (f64, f64) {
     let fee_bps: f64 = (fee_bps_opt.unwrap_or(0)) as f64;
     let px: f64 = px_opt.unwrap_or(0.0);
     if !(px.is_finite() && px > 0.0) {
@@ -3510,6 +3501,69 @@ fn edge_rate_effective_local(px_opt: Option<f64>, fee_bps_opt: Option<i64>, _dir
     }
     let eff: f64 = base * (1.0 - fee_bps / 10_000.0).max(0.0);
     (base, eff)
+}
+
+fn canonical_edge_id(raw: Option<&str>, source: &str, target: &str, dex: &str) -> String {
+    if let Some(pid) = raw {
+        if !pid.is_empty() {
+            return pid.to_string();
+        }
+    }
+    format!("{}->{}-{}", source, target, dex)
+}
+
+fn insert_bidirectional_edges(
+    graph: &mut ArbGraph,
+    dex: &str,
+    source: &str,
+    target: &str,
+    pool_id: &str,
+    fee_bps: i64,
+    liquidity: f64,
+    liquidity_display: f64,
+    price_a_per_b: f64,
+) {
+    if !(price_a_per_b.is_finite() && price_a_per_b > 0.0) {
+        return;
+    }
+    let (_, rate_forward) = edge_rate_effective_local(Some(price_a_per_b), Some(fee_bps));
+    graph.upsert_edge(
+        dex,
+        source,
+        target,
+        EdgeData {
+            rate_effective: rate_forward,
+            fee_bps,
+            liquidity,
+            dex: dex.to_string(),
+            pool_id: pool_id.to_string(),
+            liquidity_display,
+        },
+    );
+
+    let px_rev = 1.0 / price_a_per_b;
+    if !(px_rev.is_finite() && px_rev > 0.0) {
+        return;
+    }
+    let (_, rate_reverse) = edge_rate_effective_local(Some(px_rev), Some(fee_bps));
+    let rev_pool_id = if pool_id.is_empty() {
+        format!("{target}->{source}-{dex}#rev")
+    } else {
+        format!("{pool_id}#rev")
+    };
+    graph.upsert_edge(
+        dex,
+        target,
+        source,
+        EdgeData {
+            rate_effective: rate_reverse,
+            fee_bps,
+            liquidity,
+            dex: dex.to_string(),
+            pool_id: rev_pool_id,
+            liquidity_display,
+        },
+    );
 }
 
 async fn handle_graph_snapshot(
@@ -3629,99 +3683,23 @@ async fn handle_graph_snapshot(
         let dex = e.dex.unwrap_or_else(|| "Unknown".to_string());
         let fee = e.fee_bps.unwrap_or(0);
         let liq = e.liquidity.unwrap_or(0.0);
-        let pool_id = e.pool_id.unwrap_or_else(|| "".to_string());
         let liq_disp = e.liquidity_display.unwrap_or(0.0);
         let mut px = e.price_a_per_b.unwrap_or(0.0);
         if px.is_finite() && px > 0.0 {
             px = adjust_magnitude(&e.source, &e.target, px);
         }
-        let direction = e.direction.as_deref();
-        let (_base, rate_eff) = edge_rate_effective_local(Some(px), Some(fee), direction);
-        new_graph.upsert_edge(
+        let pool_id = canonical_edge_id(e.pool_id.as_deref(), &e.source, &e.target, &dex);
+        insert_bidirectional_edges(
+            &mut new_graph,
             &dex,
             &e.source,
             &e.target,
-            EdgeData {
-                rate_effective: rate_eff,
-                fee_bps: fee,
-                liquidity: liq,
-                dex: dex.clone(),
-                pool_id,
-                liquidity_display: liq_disp,
-            },
+            &pool_id,
+            fee,
+            liq,
+            liq_disp,
+            px,
         );
-    }
-    // Enforce reciprocity between forward/reverse edges when both present
-    {
-        use std::collections::HashMap;
-        let mut by_core: HashMap<
-            String,
-            (
-                petgraph::graph::NodeIndex,
-                petgraph::graph::NodeIndex,
-                f64,
-                i64,
-                Option<(
-                    petgraph::graph::NodeIndex,
-                    petgraph::graph::NodeIndex,
-                    f64,
-                    i64,
-                )>,
-            ),
-        > = HashMap::new();
-        for e in new_graph.g.edge_references() {
-            let w = e.weight();
-            let pid = w.pool_id.clone();
-            if pid.is_empty() {
-                continue;
-            }
-            let core = pid.strip_suffix("-rev").unwrap_or(&pid).to_string();
-            let entry = by_core.entry(core).or_insert((
-                e.source(),
-                e.target(),
-                w.rate_effective,
-                w.fee_bps,
-                None,
-            ));
-            if pid.ends_with("-rev") {
-                entry.4 = Some((e.source(), e.target(), w.rate_effective, w.fee_bps));
-            } else {
-                entry.0 = e.source();
-                entry.1 = e.target();
-                entry.2 = w.rate_effective;
-                entry.3 = w.fee_bps;
-            }
-        }
-        for (_k, (_u, _v, rf, ff, rev_opt)) in by_core.into_iter() {
-            if let Some((vr, ur, rr, fr)) = rev_opt {
-                let exp = (1.0 - (ff as f64) / 10_000.0).max(0.0)
-                    * (1.0 - (fr as f64) / 10_000.0).max(0.0);
-                let prod = rf * rr;
-                let ok = prod.is_finite()
-                    && exp.is_finite()
-                    && exp > 0.0
-                    && (prod / exp) > 0.99
-                    && (prod / exp) < 1.01;
-                if !ok {
-                    // Correct reverse to reciprocal of forward base
-                    let base_fwd = if (1.0 - (ff as f64) / 10_000.0) > 0.0 {
-                        rf / (1.0 - (ff as f64) / 10_000.0)
-                    } else {
-                        0.0
-                    };
-                    if base_fwd.is_finite() && base_fwd > 0.0 {
-                        let rr_new = (1.0 / base_fwd) * (1.0 - (fr as f64) / 10_000.0).max(0.0);
-                        if rr_new.is_finite() && rr_new > 0.0 {
-                            if let Some(eid) = new_graph.g.find_edge(vr, ur) {
-                                if let Some(w) = new_graph.g.edge_weight_mut(eid) {
-                                    w.rate_effective = rr_new;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
     }
     s.graph = new_graph;
     s.metrics.graph_nodes = s.graph.g.node_count() as u64;
@@ -3856,22 +3834,19 @@ async fn arb_start(
             let dex = e.dex.unwrap_or_else(|| "Unknown".to_string());
             let fee = e.fee_bps.unwrap_or(0);
             let liq = e.liquidity.unwrap_or(0.0);
-            let pool_id = e.pool_id.unwrap_or_else(|| "".to_string());
             let liq_disp = e.liquidity_display.unwrap_or(0.0);
-            let direction = e.direction.as_deref();
-            let (_base, rate_eff) = edge_rate_effective_local(e.price_a_per_b, e.fee_bps, direction);
-            new_graph.upsert_edge(
+            let px = e.price_a_per_b.unwrap_or(0.0);
+            let pool_id = canonical_edge_id(e.pool_id.as_deref(), &e.source, &e.target, &dex);
+            insert_bidirectional_edges(
+                &mut new_graph,
                 &dex,
                 &e.source,
                 &e.target,
-                EdgeData {
-                    rate_effective: rate_eff,
-                    fee_bps: fee,
-                    liquidity: liq,
-                    dex: dex.clone(),
-                    pool_id,
-                    liquidity_display: liq_disp,
-                },
+                &pool_id,
+                fee,
+                liq,
+                liq_disp,
+                px,
             );
         }
         let nodes_cnt = new_graph.g.node_count() as u64;
@@ -5053,20 +5028,19 @@ mod e2e_tests {
                 let fee = e.fee_bps.unwrap_or(0);
                 let liq = e.liquidity.unwrap_or(0.0);
                 let liq_disp = e.liquidity_display.unwrap_or(0.0);
-                let direction = e.direction.as_deref();
-                let (_base, rate_eff) = edge_rate_effective_local(e.price_a_per_b, e.fee_bps, direction);
-                s.graph.upsert_edge(
+                let px = e.price_a_per_b.unwrap_or(0.0);
+                let pool_id =
+                    canonical_edge_id(e.pool_id.as_deref(), &e.source, &e.target, &dex);
+                insert_bidirectional_edges(
+                    &mut s.graph,
                     &dex,
                     &e.source,
                     &e.target,
-                    EdgeData {
-                        rate_effective: rate_eff,
-                        fee_bps: fee,
-                        liquidity: liq,
-                        dex: dex.clone(),
-                        pool_id: e.pool_id.clone().unwrap_or_default(),
-                        liquidity_display: liq_disp,
-                    },
+                    &pool_id,
+                    fee,
+                    liq,
+                    liq_disp,
+                    px,
                 );
             };
             for e in added.iter() {
@@ -5179,20 +5153,19 @@ mod e2e_tests {
                 let fee = e.fee_bps.unwrap_or(0);
                 let liq = e.liquidity.unwrap_or(0.0);
                 let liq_disp = e.liquidity_display.unwrap_or(0.0);
-                let direction = e.direction.as_deref();
-                let (_base, rate_eff) = edge_rate_effective_local(e.price_a_per_b, e.fee_bps, direction);
-                s.graph.upsert_edge(
+                let px = e.price_a_per_b.unwrap_or(0.0);
+                let pool_id =
+                    canonical_edge_id(e.pool_id.as_deref(), &e.source, &e.target, &dex);
+                insert_bidirectional_edges(
+                    &mut s.graph,
                     &dex,
                     &e.source,
                     &e.target,
-                    EdgeData {
-                        rate_effective: rate_eff,
-                        fee_bps: fee,
-                        liquidity: liq,
-                        dex: dex.clone(),
-                        pool_id: e.pool_id.clone().unwrap_or_default(),
-                        liquidity_display: liq_disp,
-                    },
+                    &pool_id,
+                    fee,
+                    liq,
+                    liq_disp,
+                    px,
                 );
             };
             for e in added.iter() {

@@ -5,14 +5,54 @@ import { logger } from '../../utils/logger.js';
  * Quote hierarchy: determines which token should be on the B (quote) side
  * Higher priority = should be quote (on B side)
  */
-const DEFAULT_QUOTE_PRIORITY = [
-  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC (most common quote)
-  'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
-  'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB',  // USD1
-  'So11111111111111111111111111111111111111112',  // SOL
+const DEFAULT_SOL_MINTS = [
+  'So11111111111111111111111111111111111111112', // Native SOL / wrapped SOL
 ];
 
+const DEFAULT_STABLE_MINTS = [
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+  'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
+  'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB',  // USD1
+];
+
+const DEFAULT_QUOTE_PRIORITY = DEFAULT_STABLE_MINTS;
+
 let quotePriorityCache: Map<string, number> | null = null;
+let solMintSetCache: Set<string> | null = null;
+let stableMintSetCache: Set<string> | null = null;
+
+function normalizeMintList(value: unknown, fallback: string[]): string[] {
+  if (Array.isArray(value)) {
+    return value.map((m) => String(m));
+  }
+  return fallback;
+}
+
+export function getSolMintSet(): Set<string> {
+  if (solMintSetCache) return solMintSetCache;
+  try {
+    const sys = (CONFIG as any)?.system || {};
+    const configured = normalizeMintList(sys.solMints, DEFAULT_SOL_MINTS);
+    solMintSetCache = new Set(configured);
+    return solMintSetCache;
+  } catch {
+    solMintSetCache = new Set(DEFAULT_SOL_MINTS);
+    return solMintSetCache;
+  }
+}
+
+export function getStableMintSet(): Set<string> {
+  if (stableMintSetCache) return stableMintSetCache;
+  try {
+    const sys = (CONFIG as any)?.system || {};
+    const configured = normalizeMintList(sys.stableMints, DEFAULT_STABLE_MINTS);
+    stableMintSetCache = new Set(configured);
+    return stableMintSetCache;
+  } catch {
+    stableMintSetCache = new Set(DEFAULT_STABLE_MINTS);
+    return stableMintSetCache;
+  }
+}
 
 /**
  * Get quote priority map from config or defaults
@@ -44,28 +84,36 @@ function getQuotePriorityMap(): Map<string, number> {
  * Returns 'keep' if current orientation is canonical, 'swap' if should be swapped
  */
 export function canonicalOrientation(mintA: string, mintB: string): 'keep' | 'swap' {
+  const solMints = getSolMintSet();
+  const stableMints = getStableMintSet();
+
+  const aSol = solMints.has(mintA);
+  const bSol = solMints.has(mintB);
+  if (aSol !== bSol) {
+    // Keep SOL (or wSOL) on the A/base side
+    return aSol ? 'keep' : 'swap';
+  }
+
+  const aStable = stableMints.has(mintA);
+  const bStable = stableMints.has(mintB);
+  if (aStable !== bStable) {
+    // Put stablecoins on B/quote side
+    return aStable ? 'swap' : 'keep';
+  }
+
   const quotePriority = getQuotePriorityMap();
-  
   const rankA = quotePriority.get(mintA) ?? Number.POSITIVE_INFINITY;
   const rankB = quotePriority.get(mintB) ?? Number.POSITIVE_INFINITY;
   
-  // Both in priority list → lower rank (higher priority) goes to B side
-  // When rankA < rankB, A has higher priority, so swap to move A to B
   if (Number.isFinite(rankA) && Number.isFinite(rankB)) {
     return rankA < rankB ? 'swap' : 'keep';
   }
-  
-  // Only A in list → A should be quote (on B side)
   if (Number.isFinite(rankA)) {
     return 'swap';
   }
-  
-  // Only B in list → B should be quote (keep as is)
   if (Number.isFinite(rankB)) {
     return 'keep';
   }
-  
-  // Neither in list → lexicographic ordering for determinism
   return mintA <= mintB ? 'keep' : 'swap';
 }
 
@@ -191,5 +239,7 @@ export function canonicalizePools<T extends { mint_a: string; mint_b: string }>(
  */
 export function clearCanonicalCache(): void {
   quotePriorityCache = null;
+  solMintSetCache = null;
+  stableMintSetCache = null;
 }
 

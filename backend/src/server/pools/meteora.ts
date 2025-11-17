@@ -236,6 +236,9 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       }
     } catch {}
 
+    const nativeAccountA = account_a;
+    const nativeAccountB = account_b;
+
     if (wasSwapped) {
       [account_a, account_b] = [account_b, account_a];
     }
@@ -266,6 +269,15 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
       pool_liquidity_raw,
       tvl_usd,
       liquidity_display: tvl_usd ?? pool_liquidity_raw,
+      was_swapped: wasSwapped,
+      native_mint_a: mint_a,
+      native_mint_b: mint_b,
+      native_decimals_a: decA,
+      native_decimals_b: decB,
+      native_account_a: nativeAccountA,
+      native_account_b: nativeAccountB,
+      native_reserve_a_raw: amount_a_atomic?.toString(),
+      native_reserve_b_raw: amount_b_atomic?.toString(),
       _pipelineProcessed: true,
     } as any);
   }

@@ -729,6 +729,7 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
       });
 
       if (processed) {
+        const wasSwapped = processed.wasSwapped === true;
         clmm.push({
           id,
           dex: 'Raydium',
@@ -744,6 +745,11 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
           price_a_per_b: processed.priceForward,
           decimals_a: processed.decimalsA,
           decimals_b: processed.decimalsB,
+          was_swapped: wasSwapped,
+          native_mint_a: mintA,
+          native_mint_b: mintB,
+          native_decimals_a: decA,
+          native_decimals_b: decB,
           pool_kind: 'clmm',
           tvl_usd: (it as any)?.tvl,
           _pipelineProcessed: true,
@@ -766,6 +772,7 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
       });
 
       if (processed) {
+        const wasSwapped = processed.wasSwapped === true;
         amm.push({
           id,
           dex: 'Raydium',
@@ -781,6 +788,13 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
           decimals_b: processed.decimalsB,
           reserve_a_raw: reserveA?.toString(),
           reserve_b_raw: reserveB?.toString(),
+          was_swapped: wasSwapped,
+          native_mint_a: mintA,
+          native_mint_b: mintB,
+          native_decimals_a: decA,
+          native_decimals_b: decB,
+          native_reserve_a_raw: reserveA?.toString(),
+          native_reserve_b_raw: reserveB?.toString(),
           _pipelineProcessed: true,
         } as AmmPool);
       }

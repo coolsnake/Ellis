@@ -262,6 +262,8 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
     const amtBraw = (it?.tokenBalanceB ?? it?.tokenBAmount ?? it?.token_b_amount ?? it?.amountB ?? it?.quoteAmount ?? 0);
     let amount_a = Number(typeof amtAraw === 'string' ? Number(amtAraw) : amtAraw || 0);
     let amount_b = Number(typeof amtBraw === 'string' ? Number(amtBraw) : amtBraw || 0);
+    let amount_a_atomic = anyToBigInt(amtAraw);
+    let amount_b_atomic = anyToBigInt(amtBraw);
     
     if (isWhirlpool && id) {
       const processedPrice = processPriceThroughPipeline({
@@ -292,6 +294,7 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
 
       if (wasSwapped) {
         [amount_a, amount_b] = [amount_b, amount_a];
+        [amount_a_atomic, amount_b_atomic] = [amount_b_atomic, amount_a_atomic];
       }
       
       const wholeA = Number.isFinite(finalDecA) ? (amount_a / Math.pow(10, finalDecA as number)) : undefined;
@@ -379,6 +382,15 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
         oracle,
         token_vault_a: finalTokenVaultA,
         token_vault_b: finalTokenVaultB,
+        was_swapped: wasSwapped,
+        native_mint_a: mint_a,
+        native_mint_b: mint_b,
+        native_decimals_a: decA,
+        native_decimals_b: decB,
+        native_account_a: account_a,
+        native_account_b: account_b,
+        native_reserve_a_raw: amount_a_atomic?.toString(),
+        native_reserve_b_raw: amount_b_atomic?.toString(),
         _pipelineProcessed: true,
       } as any);
     }

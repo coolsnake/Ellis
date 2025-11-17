@@ -72,22 +72,16 @@ export function computeIncrementalGraphUpdate(request: GraphIncrementalRequest):
   for (const id of prevA) {
     if (!nextA.has(id)) {
       if (edgesMap.delete(id)) removedEdgeIds.push(id);
-      const rid = `${id}-rev`;
-      if (edgesMap.delete(rid)) removedEdgeIds.push(rid);
     }
   }
   for (const id of prevC) {
     if (!nextC.has(id)) {
       if (edgesMap.delete(id)) removedEdgeIds.push(id);
-      const rid = `${id}-rev`;
-      if (edgesMap.delete(rid)) removedEdgeIds.push(rid);
     }
   }
 
   for (const pid of droppedSet) {
     if (edgesMap.delete(pid)) removedEdgeIds.push(pid);
-    const rid = `${pid}-rev`;
-    if (edgesMap.delete(rid)) removedEdgeIds.push(rid);
   }
 
   const prevPoolsById: Map<string, Pool> = new Map(
@@ -121,8 +115,8 @@ export function computeIncrementalGraphUpdate(request: GraphIncrementalRequest):
     if (!isDexKindAllowed(dex, kind, edgeAllow || {})) continue;
     if (!changed) continue;
 
-    const [forward, reverse] = edgesFromPoolIncremental(pool, getUsd, edgeOptions);
-    for (const edge of [forward, reverse]) {
+    const newEdges = edgesFromPoolIncremental(pool, getUsd, edgeOptions);
+    for (const edge of newEdges) {
       const current = edgesMap.get(edge.id);
       if (!current) {
         edgesMap.set(edge.id, edge);

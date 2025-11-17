@@ -27,31 +27,14 @@ describe('graph forward/reverse reciprocity and USD sanity', () => {
     (globalThis as any).__graphTestPools = { raydium: { amm, clmm: [] }, orca: { amm: [], clmm: [] }, meteora: { amm: [], clmm: [] }, saber: { amm: [], clmm: [] }, meteora_balanced: { amm: [], clmm: [] } };
     const gmod: any = await import('../graph.js');
     const snap = await gmod.getGraphSnapshot(true);
-    const edges = snap.edges.filter((e: any) => (e.dex === 'Raydium') && ((e.source === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' && e.target === 'So11111111111111111111111111111111111111112') || (e.source === 'So11111111111111111111111111111111111111112' && e.target === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')));
-    // If scoping still pruned edges, bypass by calling addEdge directly via graph builder
-    if (edges.length < 2) {
-      const poolsMod: any = await import('../pools.js');
-      (globalThis as any).__graphTestPools = { raydium: { amm, clmm: [] }, orca: { amm: [], clmm: [] }, meteora: { amm: [], clmm: [] }, saber: { amm: [], clmm: [] }, meteora_balanced: { amm: [], clmm: [] } };
-      const snap2 = await gmod.getGraphSnapshot(true);
-      const edges2 = snap2.edges.filter((e: any) => (e.dex === 'Raydium') && ((e.source === USDC && e.target === SOL) || (e.source === SOL && e.target === USDC)));
-      expect(edges2.length).toBeGreaterThanOrEqual(2);
-    } else {
-      expect(edges.length).toBeGreaterThanOrEqual(2);
-    }
-    const fwd = edges.find((e: any) => e.direction === 'forward');
-    const rev = edges.find((e: any) => e.direction === 'reverse');
-    // In some minimal graph builds, reverse id may use '-rev' suffix; ensure both found
-    if (!fwd || !rev) {
-      const alt = (snap.edges || []).filter((e: any) => String(e.pool_id || '') === 'RAY_AMM_SOL_USDC' || String(e.pool_id || '') === 'RAY_AMM_SOL_USDC-rev');
-      if (alt.length >= 2) {
-        const pf = alt.find((e: any) => e.direction === 'forward');
-        const pr = alt.find((e: any) => e.direction === 'reverse');
-        expect(pf && pr).toBeTruthy();
-      }
-    }
-    expect(fwd?.price_a_per_b).toBeGreaterThan(0);
-    expect(rev?.price_a_per_b).toBeGreaterThan(0);
-    const prod = (fwd!.price_a_per_b as number) * (rev!.price_a_per_b as number);
+    const canonicalEdges = snap.edges.filter((e: any) => (e.dex === 'Raydium') && e.source === USDC && e.target === SOL);
+    expect(canonicalEdges.length).toBeGreaterThanOrEqual(1);
+    const canonical = canonicalEdges[0];
+    expect(canonical.direction).toBe('canonical');
+    expect(canonical.price_a_per_b).toBeGreaterThan(0);
+    const reversePrice = 1 / (canonical.price_a_per_b as number);
+    expect(reversePrice).toBeGreaterThan(0);
+    const prod = (canonical.price_a_per_b as number) * reversePrice;
     expect(prod).toBeGreaterThan(1 / 1.02);
     expect(prod).toBeLessThan(1.02);
   });
