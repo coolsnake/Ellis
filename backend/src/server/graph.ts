@@ -1559,6 +1559,15 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         const beforeOrient = priceClmmOrca;
         // Price already canonicalized - trust canonicalization
         // priceClmmOrca = orientWithUsdFallbacks(p.mint_a, p.mint_b, priceClmmOrca);
+        // Rescale to global decimals before clamping so forward/reverse stay reciprocal
+        try {
+          const poolDecA = Number((p as any)?.decimals_a);
+          const poolDecB = Number((p as any)?.decimals_b);
+          const ga = Number(isFinite(Number(decimalsByMint[p.mint_a])) ? decimalsByMint[p.mint_a] : poolDecA);
+          const gb = Number(isFinite(Number(decimalsByMint[p.mint_b])) ? decimalsByMint[p.mint_b] : poolDecB);
+          priceClmmOrca = rescalePriceByDecimals(priceClmmOrca, poolDecA, poolDecB, ga, gb);
+        } catch {}
+
         // Forward + reverse with strict reciprocal rule and consistency guard
         const fwdClmm = clampPrice((priceClmmOrca && priceClmmOrca > 0) ? priceClmmOrca : undefined);
         // DIAGNOSTIC: Track price transformations for first few pools
