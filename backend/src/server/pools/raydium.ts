@@ -838,7 +838,8 @@ export async function normalizeRaydiumPools(raw: any): Promise<PoolsPayload> {
               }
             } catch {}
           }
-        } catch {}
+        }
+      } catch {}
       // Choose best raw price candidate (highest confidence first)
       let rawPrice = 0;
       if (price_from_sqrt > 0) {
