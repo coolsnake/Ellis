@@ -183,7 +183,6 @@ async function fetchMeteoraPoolsByAddress(
               binStep
               protocolFee
               activeId
-              binArrayBitmapExtension
               tokenXProgram
               tokenYProgram
               bumpSeed
