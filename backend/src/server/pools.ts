@@ -1532,11 +1532,13 @@ export async function getRaydiumPoolsNormalized(force = false, opts?: { skipUniv
 
 export async function getRaydiumPoolsGraphQL(force = false): Promise<PoolsPayload> {
   try {
-    const { computeTokenUniverse } = await import('./universe.js');
+    const { computeTokenUniverse, getAnchorSet } = await import('./universe.js');
     const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
-    const mints = Array.from(universe);
+    const anchors = getAnchorSet();
+    // Filter out anchors from GraphQL queries - only include top Jupiter tokens
+    const mints = Array.from(universe).filter(mint => !anchors.has(mint));
     
-    logger.info('raydium.graphql.fetch.start', { mintCount: mints.length, cat: 'raydium' });
+    logger.info('raydium.graphql.fetch.start', { mintCount: mints.length, originalCount: universe.size, cat: 'raydium' });
     
     const { fetchRaydiumGraphQL, normalizeRaydiumGraphQL } = await import('./pools/raydiumGraphQL.js');
     const raw = await fetchRaydiumGraphQL(mints);
@@ -1756,11 +1758,13 @@ export async function getOrcaPoolsNormalized(opts?: { skipUniverseFilter?: boole
 
 export async function getOrcaPoolsGraphQL(force = false): Promise<PoolsPayload> {
   try {
-    const { computeTokenUniverse } = await import('./universe.js');
+    const { computeTokenUniverse, getAnchorSet } = await import('./universe.js');
     const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
-    const mints = Array.from(universe);
+    const anchors = getAnchorSet();
+    // Filter out anchors from GraphQL queries - only include top Jupiter tokens
+    const mints = Array.from(universe).filter(mint => !anchors.has(mint));
     
-    logger.info('orca.graphql.fetch.start', { mintCount: mints.length, cat: 'orca' });
+    logger.info('orca.graphql.fetch.start', { mintCount: mints.length, originalCount: universe.size, cat: 'orca' });
     
     const { fetchOrcaGraphQL, normalizeOrcaGraphQL } = await import('./pools/orcaGraphQL.js');
     const raw = await fetchOrcaGraphQL(mints);
@@ -1946,11 +1950,13 @@ export async function getMeteoraPoolsCached(force = false, opts?: { skipUniverse
 
 export async function getMeteoraPoolsGraphQL(force = false): Promise<PoolsPayload> {
   try {
-    const { computeTokenUniverse } = await import('./universe.js');
+    const { computeTokenUniverse, getAnchorSet } = await import('./universe.js');
     const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
-    const mints = Array.from(universe);
+    const anchors = getAnchorSet();
+    // Filter out anchors from GraphQL queries - only include top Jupiter tokens
+    const mints = Array.from(universe).filter(mint => !anchors.has(mint));
     
-    logger.info('meteora.graphql.fetch.start', { mintCount: mints.length, cat: 'meteora' });
+    logger.info('meteora.graphql.fetch.start', { mintCount: mints.length, originalCount: universe.size, cat: 'meteora' });
     
     const { fetchMeteoraGraphQL, normalizeMeteoraGraphQL } = await import('./pools/meteoraGraphQL.js');
     const raw = await fetchMeteoraGraphQL(mints);

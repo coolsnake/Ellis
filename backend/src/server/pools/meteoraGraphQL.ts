@@ -31,7 +31,7 @@ export async function fetchMeteoraGraphQL(mints: string[]): Promise<any[]> {
         pageDelayMs,
       });
       for (const pool of pools) {
-        const key = pool.baseKey || pool.pubkey;
+        const key = pool.pubkey || pool.baseKey;
         if (!key) continue;
         poolsMap.set(key, pool);
       }
@@ -200,7 +200,7 @@ async function fetchMeteoraPoolsByAddress(
 
       const pools = data?.meteora_dlmm_LbPair || [];
       for (const pool of pools) {
-        const key = pool?.baseKey || pool?.pubkey;
+        const key = pool?.pubkey || pool?.baseKey;
         if (!key) continue;
         result.set(key, pool);
       }
@@ -255,7 +255,7 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
   
   for (const pool of raw) {
     try {
-      const id = pool.baseKey || pool.pubkey;
+      const id = pool.pubkey || pool.baseKey;
       if (!id) continue;
       
       const mint_a = pool.tokenXMint;
