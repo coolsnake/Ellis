@@ -403,6 +403,30 @@ export async function shutdown() {
       (pools as any).clearAllPoolCaches?.(); 
     } catch {}
     
+    // Clear graph snapshot cache
+    try {
+      const graph = await import('./graph.js');
+      (graph as any).clearGraphCache?.();
+    } catch {}
+    
+    // Clear execution cache (pool static/hot data, token metadata)
+    try {
+      const { executionCache } = await import('../execution/cache.js');
+      executionCache?.clear?.();
+    } catch {}
+    
+    // Clear vault balance cache (if not already cleared by websockets)
+    try {
+      const { vaultBalanceCache } = await import('./pools.cache.js');
+      vaultBalanceCache?.clear();
+    } catch {}
+    
+    // Clear account cache
+    try {
+      const { accountCache } = await import('../execution/utils/accountCache.js');
+      accountCache?.clear?.();
+    } catch {}
+    
     // Delete persistent cache files to force fresh data on next boot
     try {
       const { deleteFile, joinPath } = await import('../utils/fs.js');

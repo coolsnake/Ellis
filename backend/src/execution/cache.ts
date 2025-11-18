@@ -156,6 +156,12 @@ export class ExecutionCache {
       }
     } catch {}
   }
+
+  clear(): void {
+    this.staticByPool.clear();
+    this.hotByPool.clear();
+    this.tokenMeta.clear();
+  }
 }
 
 export const executionCache = new ExecutionCache();

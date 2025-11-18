@@ -149,6 +149,21 @@ export function getGraphVersion(): { version: number; timestamp: number } {
   return { version, timestamp };
 }
 
+export function clearGraphCache(): void {
+  lastSnapshot = null;
+  inflight = null;
+  droppedPoolIds.clear();
+  if (rebuildTimer) {
+    clearTimeout(rebuildTimer);
+    rebuildTimer = null;
+  }
+  pendingUpdates = 0;
+  diffSinceRebase = 0;
+  lastRebaseMs = 0;
+  lastRebuildMs = 0;
+  lastRebuildHadChanges = false;
+}
+
 // ADD: Update queue for synchronization
 let updateQueue: Array<() => Promise<void>> = [];
 let updateInProgress = false;
