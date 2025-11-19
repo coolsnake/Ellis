@@ -289,10 +289,6 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
       let wasSwapped = false;
       
       try {
-        const binStep = Number(pool.binStep || 0);
-        const tokenXMint = String(pool.tokenXMint || mint_a);
-        const tokenYMint = String(pool.tokenYMint || mint_b);
-        
         // Calculate TVL
         let tvl_usd: number | undefined;
         try {
