@@ -288,9 +288,10 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
       let finalDecB = decB;
       let wasSwapped = false;
       
+      let tvl_usd: number | undefined;
+      
       try {
         // Calculate TVL
-        let tvl_usd: number | undefined;
         try {
           // Meteora returns reserveX/reserveY
           const rawResX = pool.reserveX;
