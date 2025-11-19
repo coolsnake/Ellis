@@ -7,6 +7,8 @@ import { processPriceThroughPipeline } from './pricePipeline.js';
 import { executeShyftGraphQL } from './shyftHelpers.js';
 import { poolsMetrics } from '../pools.metrics.js';
 import { loadJupiterTokenMap } from '../../utils/tokens.js';
+import { Connection, PublicKey } from '@solana/web3.js';
+import { withRpcLimit } from '../../utils/rpcLimiter.js';
 
 export async function fetchRaydiumGraphQL(mints: string[]): Promise<any[]> {
   const CACHE_PATH = joinPath(CONFIG.cacheDir, 'raydium-graphql-raw.json');
@@ -121,8 +123,8 @@ async function fetchRaydiumPoolsForToken(opts: {
             quoteMint
             baseDecimal
             quoteDecimal
-            baseReserve
-            quoteReserve
+            baseVault
+            quoteVault
             lpMint
             poolOpenTime
             swapBaseInAmount
@@ -195,10 +197,7 @@ async function fetchRaydiumPoolsByAddress(
               quoteMint
               baseDecimal
               quoteDecimal
-              baseReserve
-              quoteReserve
               lpMint
-              lpReserve
               lpVault
               baseVault
               quoteVault
@@ -298,6 +297,47 @@ function chunkArray<T>(arr: T[], size: number): T[][] {
   return chunks;
 }
 
+// Helper to batch fetch vault balances via RPC
+async function fetchVaultBalances(addresses: string[]): Promise<Map<string, bigint>> {
+  const results = new Map<string, bigint>();
+  if (addresses.length === 0) return results;
+
+  const connection = new Connection(CONFIG.rpcUrl || 'https://api.mainnet-beta.solana.com');
+  const BATCH_SIZE = 100;
+  
+  for (let i = 0; i < addresses.length; i += BATCH_SIZE) {
+    const batch = addresses.slice(i, i + BATCH_SIZE);
+    const pubkeys = batch.map(a => new PublicKey(a));
+    
+    try {
+      // Fetch with RPC limit protection
+      const accounts = await withRpcLimit(
+        () => connection.getMultipleAccountsInfo(pubkeys),
+        Math.max(1, Math.ceil(batch.length / 10)),
+        { module: 'raydium', method: 'getMultipleAccountsInfo' }
+      );
+      
+      accounts.forEach((acc, idx) => {
+        if (acc && acc.data.length >= 64) { // SPL Token Account min length
+          // Amount is u64 at offset 64
+          try {
+            const buf = Buffer.from(acc.data);
+            const amount = buf.readBigUInt64LE(64);
+            results.set(batch[idx], amount);
+          } catch {}
+        }
+      });
+    } catch (e) {
+      logger.warn('raydium.graphql.vaults.fetch_failed', { 
+        error: String(e), 
+        batchIndex: i 
+      });
+    }
+  }
+  
+  return results;
+}
+
 export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload> {
   const now = Date.now();
   const amm: AmmPool[] = [];
@@ -306,6 +346,17 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
   // Load Jupiter token prices for TVL calculation
   const jupPriceMap = await loadJupiterTokenMap();
 
+  // Collect all vault addresses for batch RPC fetching
+  const vaultAddresses = new Set<string>();
+  for (const pool of raw) {
+    if (pool.baseVault) vaultAddresses.add(pool.baseVault);
+    if (pool.quoteVault) vaultAddresses.add(pool.quoteVault);
+  }
+
+  // Batch fetch vault balances
+  // This runs in parallel with decimal resolution to save time
+  const vaultBalancesPromise = fetchVaultBalances(Array.from(vaultAddresses));
+
   // Extract all mints for batch decimal resolution
   const allMints = new Set<string>();
   for (const pool of raw) {
@@ -313,10 +364,15 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
     if (pool.quoteMint) allMints.add(pool.quoteMint);
   }
   
-  const decimalsMap = await resolveManyDecimals(Array.from(allMints), { 
+  const decimalsMapPromise = resolveManyDecimals(Array.from(allMints), { 
     logger, 
     normalizeMode: true 
   });
+
+  const [vaultBalances, decimalsMap] = await Promise.all([
+    vaultBalancesPromise, 
+    decimalsMapPromise
+  ]);
   
   for (const pool of raw) {
     try {
@@ -352,6 +408,40 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
         continue;
       } else {
         // AMM V4 pool
+        // Calculate amounts and TVL from vault balances
+        let amount_a_whole: number | undefined;
+        let amount_b_whole: number | undefined;
+        let tvl_usd: number | undefined;
+        let reserveA: bigint | undefined;
+        let reserveB: bigint | undefined;
+        
+        try {
+          const balA = pool.baseVault ? vaultBalances.get(pool.baseVault) : undefined;
+          const balB = pool.quoteVault ? vaultBalances.get(pool.quoteVault) : undefined;
+          
+          if (balA !== undefined && balB !== undefined) {
+            reserveA = balA;
+            reserveB = balB;
+            
+            const wholeA = Number(balA) / Math.pow(10, decA);
+            const wholeB = Number(balB) / Math.pow(10, decB);
+            
+            amount_a_whole = wholeA;
+            amount_b_whole = wholeB;
+            
+            const priceA = jupPriceMap[mint_a]?.usdPrice;
+            const priceB = jupPriceMap[mint_b]?.usdPrice;
+            
+            if (priceA && priceB) {
+              tvl_usd = (wholeA * priceA) + (wholeB * priceB);
+            } else if (priceA) {
+              tvl_usd = wholeA * priceA * 2; // Assume balanced
+            } else if (priceB) {
+              tvl_usd = wholeB * priceB * 2; // Assume balanced
+            }
+          }
+        } catch {}
+
         // Process price through pipeline with reserves or swap volumes as fallback
         let price_a_per_b = 0;
         let finalMintA = mint_a;
@@ -361,13 +451,9 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
         let wasSwapped = false;
         
         try {
-          // Try to use actual reserves first, then fall back to swap volumes
-          const reserveA = pool.baseAmount ? BigInt(pool.baseAmount) : null;
-          const reserveB = pool.quoteAmount ? BigInt(pool.quoteAmount) : null;
-          
-          // Fallback to swap volumes if reserves not available
-          const reserveA_fallback = reserveA ?? (pool.swapBaseInAmount ? BigInt(pool.swapBaseInAmount) : null);
-          const reserveB_fallback = reserveB ?? (pool.swapQuoteInAmount ? BigInt(pool.swapQuoteInAmount) : null);
+          // Fallback to swap volumes if reserves not available (and vault fetch failed)
+          const reserveA_fallback = reserveA ?? (pool.baseReserve ? BigInt(pool.baseReserve) : null) ?? (pool.swapBaseInAmount ? BigInt(pool.swapBaseInAmount) : null);
+          const reserveB_fallback = reserveB ?? (pool.quoteReserve ? BigInt(pool.quoteReserve) : null) ?? (pool.swapQuoteInAmount ? BigInt(pool.swapQuoteInAmount) : null);
           
           if (reserveA_fallback && reserveB_fallback && reserveA_fallback > 0n && reserveB_fallback > 0n) {
             const processed = processPriceThroughPipeline({
@@ -399,33 +485,9 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
         const finalNativeAccountA = wasSwapped ? pool.quoteVault : pool.baseVault;
         const finalNativeAccountB = wasSwapped ? pool.baseVault : pool.quoteVault;
         
-        // Calculate TVL
-        let tvl_usd: number | undefined;
-        try {
-          // Use reserves from GraphQL if available, falling back to swap amounts for rough approximation
-          const rawResA = pool.baseReserve ?? pool.baseAmount ?? pool.swapBaseInAmount;
-          const rawResB = pool.quoteReserve ?? pool.quoteAmount ?? pool.swapQuoteInAmount;
-          
-          if (rawResA && rawResB) {
-            const priceA = jupPriceMap[mint_a]?.usdPrice;
-            const priceB = jupPriceMap[mint_b]?.usdPrice;
-            
-            const amountA = Number(rawResA) / Math.pow(10, decA);
-            const amountB = Number(rawResB) / Math.pow(10, decB);
-            
-            if (priceA && priceB) {
-              // Best case: both prices known
-              tvl_usd = (amountA * priceA) + (amountB * priceB);
-            } else if (priceA) {
-              // Only A known, approximate as balanced pool (2x side A)
-              tvl_usd = amountA * priceA * 2;
-            } else if (priceB) {
-              // Only B known, approximate as balanced pool (2x side B)
-              tvl_usd = amountB * priceB * 2;
-            }
-          }
-        } catch {}
-
+        const finalAmountA = wasSwapped ? amount_b_whole : amount_a_whole;
+        const finalAmountB = wasSwapped ? amount_a_whole : amount_b_whole;
+        
         amm.push({
           id,
           dex: 'Raydium',
@@ -451,18 +513,23 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
           _updatedAt: pool._updatedAt,
           was_swapped: wasSwapped,
           _pipelineProcessed: true, // Mark as processed by price pipeline
-        native_mint_a: mint_a,
-        native_mint_b: mint_b,
-        native_decimals_a: decA,
-        native_decimals_b: decB,
-        native_account_a: finalNativeAccountA,
-        native_account_b: finalNativeAccountB,
-        native_open_orders: pool.openOrders,
-        native_target_orders: pool.targetOrders,
-        native_base_need_take_pnl: pool.baseNeedTakePnl,
-        native_quote_need_take_pnl: pool.quoteNeedTakePnl,
-        native_lp_vault: pool.lpVault,
-        native_withdraw_queue: pool.withdrawQueue,
+          native_mint_a: mint_a,
+          native_mint_b: mint_b,
+          native_decimals_a: decA,
+          native_decimals_b: decB,
+          native_account_a: finalNativeAccountA,
+          native_account_b: finalNativeAccountB,
+          native_open_orders: pool.openOrders,
+          native_target_orders: pool.targetOrders,
+          native_base_need_take_pnl: pool.baseNeedTakePnl,
+          native_quote_need_take_pnl: pool.quoteNeedTakePnl,
+          native_lp_vault: pool.lpVault,
+          native_withdraw_queue: pool.withdrawQueue,
+          amount_a_whole: finalAmountA,
+          amount_b_whole: finalAmountB,
+          amount_a: finalAmountA,
+          amount_b: finalAmountB,
+          liquidity_display: tvl_usd,
         } as any);
       }
     } catch (error: any) {
@@ -481,4 +548,3 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
   
   return { amm: amm, clmm: clmm };
 }
-

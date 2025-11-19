@@ -289,6 +289,12 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
       let wasSwapped = false;
       
       let tvl_usd: number | undefined;
+
+      // Extract variables outside try block to ensure they are available in scope
+      const activeId = Number(pool.activeId || 0);
+      const binStep = Number(pool.binStep || 0);
+      const tokenXMint = String(pool.tokenXMint || mint_a);
+      const tokenYMint = String(pool.tokenYMint || mint_b);
       
       try {
         // Calculate TVL
@@ -313,11 +319,6 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
             }
           }
         } catch {}
-        
-        const activeId = Number(pool.activeId || 0);
-        const binStep = Number(pool.binStep || 0);
-        const tokenXMint = String(pool.tokenXMint || mint_a);
-        const tokenYMint = String(pool.tokenYMint || mint_b);
         
         if (activeId != null && binStep != null && tokenXMint && tokenYMint) {
           const processed = processPriceThroughPipeline({

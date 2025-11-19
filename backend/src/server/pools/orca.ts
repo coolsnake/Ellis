@@ -584,6 +584,12 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
               const { resolveDecimals } = await import('./decimals.js');
               const decA = await resolveDecimals(mintA) ?? Number((pool as any).decimals_a);
               const decB = await resolveDecimals(mintB) ?? Number((pool as any).decimals_b);
+
+              // FIX: If pool was swapped during canonicalization, decA is actually Token1's decimals
+              // and decB is Token0's decimals. PriceMath expects (sqrt, dec0, dec1).
+              // We must swap them back to match the raw sqrtPriceX64 orientation.
+              const [dec0, dec1] = (pool as any).was_swapped ? [decB, decA] : [decA, decB];
+
               if (
                 PriceMath &&
                 BN &&
@@ -596,7 +602,7 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
                     parsed?.sqrtPrice && BN.isBN(parsed.sqrtPrice)
                       ? parsed.sqrtPrice
                       : new BN(sqrtPriceX64.toString());
-                  const priceDec = PriceMath.sqrtPriceX64ToPrice(sqrtForSdk, decA, decB);
+                  const priceDec = PriceMath.sqrtPriceX64ToPrice(sqrtForSdk, dec0, dec1);
                   const priceNum =
                     typeof priceDec?.toNumber === 'function'
                       ? priceDec.toNumber()
@@ -609,7 +615,7 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
               
               if (!derivedPrice && PriceMath && BN && Number.isFinite(decA) && Number.isFinite(decB) && Number.isFinite(tickIndex)) {
                 try {
-                  const priceDec = PriceMath.priceFromTick(Number(tickIndex), decA, decB);
+                  const priceDec = PriceMath.priceFromTick(Number(tickIndex), dec0, dec1);
                   const priceNum =
                     typeof priceDec?.toNumber === 'function'
                       ? priceDec.toNumber()
