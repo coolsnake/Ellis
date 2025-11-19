@@ -1,4 +1,4 @@
-import { edgesFromPoolIncremental, edgeChangedSimple, isDexKindAllowed, type EdgeBuildOptions } from './graph.edges.js';
+import { edgesFromPoolIncremental, edgeChangedSimple, isDexKindAllowed, isPoolValidForGraph, type EdgeBuildOptions } from './graph.edges.js';
 import type { GraphDiff, GraphEdge, GraphNode, GraphSnapshot } from './graph.types.js';
 import type { PoolsPayload, AmmPool, ClmmPool } from './pools/types.js';
 import type { GraphIncrementalRequest, GraphIncrementalResult } from '../workers/graphDiff.types.js';
@@ -103,6 +103,10 @@ export function computeIncrementalGraphUpdate(request: GraphIncrementalRequest):
     priceClampMin, 
     priceClampMax,
   };
+  // Use defaults for incremental updates as we don't have access to CONFIG
+  const validationConfig = {
+    sanityEnabled: true // Default safe
+  };
 
   for (const pool of considered) {
     const id = String((pool as any)?.id || '');
@@ -112,7 +116,12 @@ export function computeIncrementalGraphUpdate(request: GraphIncrementalRequest):
     const changed = poolChanged(prevPool, pool);
     const dex = String((pool as any)?.dex || '');
     const kind = ((pool as any)?.pool_kind || (typeof (pool as any)?.sqrt_price_x64 === 'number' ? 'clmm' : 'amm')) as 'amm' | 'clmm';
+    
     if (!isDexKindAllowed(dex, kind, edgeAllow || {})) continue;
+    
+    // Protect incremental updates with same validity checks as snapshot
+    if (!isPoolValidForGraph(pool, getUsd, validationConfig)) continue;
+
     if (!changed) continue;
 
     const newEdges = edgesFromPoolIncremental(pool, getUsd, edgeOptions);

@@ -13,7 +13,7 @@ import type { GraphNode, GraphEdge, GraphSnapshot, GraphDiff } from './graph.typ
 import { createWorkerClient, WorkerClient } from '../workers/client.js';
 import type { GraphWorkerRequest, GraphWorkerResponse, GraphIncrementalRequest } from '../workers/graphDiff.types.js';
 import { computeIncrementalGraphUpdate } from './graph.worker.compute.js';
-import { isDexKindAllowed, type EdgeAllow } from './graph.edges.js';
+import { isDexKindAllowed, edgesFromPoolIncremental, isPoolValidForGraph, type EdgeAllow } from './graph.edges.js';
 export type { GraphNode, GraphEdge, GraphSnapshot, GraphDiff } from './graph.types.js';
 import { diffSnapshots } from './graph.diff.js';
 import { findPathInSnapshot } from './graph.path.js';
@@ -78,37 +78,6 @@ const GRAPH_WORKER_DISABLED = String(env.GRAPH_WORKER_DISABLED ?? env.ARB_GRAPH_
 const GRAPH_WORKER_MAX_QUEUE = Math.max(1, Number(env.GRAPH_WORKER_MAX_QUEUE ?? env.ARB_GRAPH_WORKER_MAX_QUEUE ?? 4));
 const GRAPH_WORKER_TIMEOUT_MS = Math.max(2000, Number(env.GRAPH_WORKER_TIMEOUT_MS ?? env.ARB_GRAPH_WORKER_TIMEOUT_MS ?? 8000));
 
-function calibrateMagnitude(
-  mintA: string,
-  mintB: string,
-  price: number | undefined,
-  getUsd?: (mint: string) => number | undefined,
-): number | undefined {
-  if (!price || price <= 0 || !Number.isFinite(price)) return price;
-  if (typeof getUsd !== 'function') return price;
-  try {
-    const pa = getUsd(mintA);
-    const pb = getUsd(mintB);
-    if (pa && pb && pa > 0 && pb > 0) {
-      const ref = pb / pa;
-      const rawDev = Math.max(price / ref, ref / price);
-      let best = price;
-      let bestDev = rawDev;
-      const MAX_APPLIED_DEV = 100;
-      for (let k = -8; k <= 8; k++) {
-        const cand = price * Math.pow(10, k);
-        if (!(cand > 0) || !Number.isFinite(cand)) continue;
-        const dev = Math.max(cand / ref, ref / cand);
-        if (dev + 1e-12 < bestDev) {
-          bestDev = dev;
-          best = cand;
-        }
-      }
-      if (bestDev + 1e-12 < rawDev && bestDev <= MAX_APPLIED_DEV) return best;
-    }
-  } catch {}
-  return price;
-}
 const GRAPH_WORKER_IDLE_MS = Math.max(0, Number(env.GRAPH_WORKER_IDLE_MS ?? env.ARB_GRAPH_WORKER_IDLE_MS ?? 60_000));
 const GRAPH_WORKER_CONCURRENCY = Math.max(1, Number(env.GRAPH_WORKER_CONCURRENCY ?? env.ARB_GRAPH_WORKER_CONCURRENCY ?? 1));
 
@@ -637,186 +606,20 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       // Load edge allowlist once per snapshot build
       const edgeAllow = await loadEdgeAllow();
 
-      const addEdge = (
-        mintA: string,
-        mintB: string,
-        dex: string,
-        fee_bps?: number,
-        liquidity?: number,
-        price_a_per_b?: number,
-        tvl_usd?: number,
-        poolId?: string,
-        accountA?: string,
-        accountB?: string,
-        poolKind?: 'amm' | 'clmm',
-        direction?: 'canonical',
-        pool_liquidity_raw?: number,
-        nativeMintA?: string,
-        nativeMintB?: string,
-        nativeDecimalsA?: number,
-        nativeDecimalsB?: number,
-        nativeAccountA?: string,
-        nativeAccountB?: string,
-        nativeReserveA?: string,
-        nativeReserveB?: string,
-        wasSwapped?: boolean,
-      ) => {
-        // Honor DEX/pool-kind allowlist
-        try { if (!isDexKindAllowed(dex, (poolKind as any) || 'amm', edgeAllow)) return; } catch {}
-        // Honor runtime pool drops: skip any edges belonging to dropped pool ids (forward or reverse)
-        try {
-          const pid = String(poolId || '');
-          if (pid && droppedPoolIds.has(pid)) return;
-        } catch {}
-        if (!mintA || !mintB || mintA === mintB) return;
-        // Require a valid positive price; skip edge entirely if not present
-        const priceNum = Number(price_a_per_b);
-			if (!Number.isFinite(priceNum) || priceNum <= 0) return;
-        // Optional pruning: drop stable<->stable edges entirely
-        try {
-          const dropSS = (CONFIG.system as any)?.dropStableStableEdges;
-          if (dropSS) {
-            const stables = new Set<string>(((CONFIG.system as any)?.stableMints || []) as string[]);
-            const aStable = stables.has(mintA);
-            const bStable = stables.has(mintB);
-            if (aStable && bStable) return;
-          }
-        } catch {}
-        // Sanity: for non-anchor pairs, require both sides to have USD reference; otherwise drop
-        // Drop requirement for USD quotes on both sides: trust pool-derived pricing
-        // Preserve pool-provided orientation for coherency
-        const a = String(mintA);
-        const b = String(mintB);
-        // Prefer pool address for edge id when available; otherwise include orientation
-        const id = poolId || `${a}->${b}-${dex}`;
-        // Normalize liquidity: prefer USD TVL when available, otherwise use log10(raw)
-        const liqRawNum = Number(liquidity);
-        const liqRaw = Number.isFinite(liqRawNum) && liqRawNum > 0 ? liqRawNum : 0;
-        const tvlNum = Number(tvl_usd);
-        const useUsd = Number.isFinite(tvlNum) && tvlNum > 0 ? tvlNum : undefined;
-        const liq = useUsd !== undefined ? useUsd : Math.log10(Math.max(10, liqRaw));
-        const weight = Math.max(1, liq) / Math.max(1, Number(fee_bps || 1));
-        const feeRounded = Number.isFinite(Number(fee_bps)) ? Math.round(Number(fee_bps)) : undefined;
-        
-        // Determine pool_liquidity_raw value
-        const poolLiqRaw = (() => {
-          // Priority 1: Use explicitly provided pool_liquidity_raw
-          if (pool_liquidity_raw != null && Number.isFinite(pool_liquidity_raw) && pool_liquidity_raw > 0) {
-            return pool_liquidity_raw;
-          }
-          // Priority 2: Use TVL USD if available
-          if (useUsd != null) {
-            return useUsd;
-          }
-          // Priority 3: Use raw liquidity if available
-          if (liqRaw > 0) {
-            return liqRaw;
-          }
-          return undefined;
-        })();
-        
-        edgesMap[id] = {
-          id,
-          source: a,
-          target: b,
-          dex,
-          pool_id: poolId,
-          source_account: accountA,
-          target_account: accountB,
-          fee_bps: feeRounded,
-          liquidity: liq,
-          liquidity_display: (useUsd ?? liqRaw) || undefined,
-          weight,
-          price_a_per_b: priceNum,
-          tvl_usd,
-          pool_kind: poolKind,
-          direction,
-          pool_liquidity_raw: poolLiqRaw,
-          native_mint_a: nativeMintA ?? mintA,
-          native_mint_b: nativeMintB ?? mintB,
-          native_decimals_a: nativeDecimalsA,
-          native_decimals_b: nativeDecimalsB,
-          native_account_a: nativeAccountA ?? accountA,
-          native_account_b: nativeAccountB ?? accountB,
-          native_reserve_a_raw: nativeReserveA,
-          native_reserve_b_raw: nativeReserveB,
-          was_swapped: wasSwapped,
-        };
-        if (!nodesMap[a]) nodesMap[a] = { id: a, label: labelByMint[a] };
-        if (!nodesMap[b]) nodesMap[b] = { id: b, label: labelByMint[b] };
-      };
-
+      // Removed inline addEdge function in favor of edgesFromPoolIncremental
+      
       // Pre-graph validator: fee bounds and price deviation vs USD references
       const sanityCfg = (CONFIG as any)?.sanity || {};
       const feeMin = Number.isFinite(Number(sanityCfg.feeMin)) ? Number(sanityCfg.feeMin) : 0;
       const feeMax = Number.isFinite(Number(sanityCfg.feeMax)) ? Number(sanityCfg.feeMax) : 10000;
       const maxDeviation = Number.isFinite(Number(sanityCfg.maxPriceDeviation)) ? Number(sanityCfg.maxPriceDeviation) : 10;
       const sanityEnabled = sanityCfg.enabled !== false;
-
-      type NormPools = { amm: any[]; clmm: any[] };
-      const validatePoolsForGraph = (norm: NormPools): NormPools => {
-        const applyAtGraph = (sanityCfg as any).applyAtGraph !== false; // default on
-        if (!sanityEnabled || !applyAtGraph) return norm;
-        const out: NormPools = { amm: [], clmm: [] };
-        const drop = { badFees: 0, priceOutliers: 0, nonFinitePrice: 0 } as any;
-        const getUsd = (mint: string): number | undefined => {
-          try { return priceStore.getPriceByMint(mint)?.usdc ?? undefined; } catch { return undefined; }
-        };
-        const isOk = (p: any): string | null => {
-          const fb = Number(p?.fee_bps);
-          if (Number.isFinite(fb) && (fb < feeMin || fb > feeMax)) return 'badFees';
-          const kind = String((p as any)?.pool_kind || '');
-          const s64  = Number((p as any)?.sqrt_price_x64 || 0);
-          const price = Number((p as any)?.price_a_per_b);
-          const dex = String((p as any)?.dex || '');
-          // Allow CLMM pools that can derive price from sqrt even if price_a_per_b is missing
-          // CRITICAL: For Orca, we MUST allow sqrt_price_x64 without price_a_per_b because the
-          // graph builder derives the price later (lines 1361-1394)
-          if (!Number.isFinite(price) || price <= 0) {
-            if (!(kind === 'clmm' && s64 > 0)) {
-              // Log when we filter out a pool for missing price
-              try {
-                logger.debug('graph.sanity.filter.price', {
-                  dex,
-                  kind,
-                  pool_id: (p as any)?.id?.slice(0, 8),
-                  mint_a: (p as any)?.mint_a,
-                  mint_b: (p as any)?.mint_b,
-                  price,
-                  sqrt_price_x64: s64,
-                  reason: 'nonFinitePrice',
-                  cat: 'graph'
-                });
-              } catch {}
-              return 'nonFinitePrice';
-            }
-          }
-          const aUsd = getUsd(p.mint_a);
-          const bUsd = getUsd(p.mint_b);
-          // Avoid double-applying price deviation sanity if source already sanitized
-          const avoidDouble = (sanityCfg as any).avoidDoubleApply !== false; // default on
-          const sourceSanitized = (
-            // All CLMMs receive orientation/clamp handling in their dedicated blocks; avoid double-dropping here
-            (kind === 'clmm') ||
-            (dex === 'Raydium' && kind === 'amm' && ((CONFIG as any)?.sanity?.sanity_applyRaydiumAmm ?? true) === true)
-          );
-          const skipDeviation = avoidDouble && sourceSanitized;
-          if (!skipDeviation && Number.isFinite(aUsd as any) && Number.isFinite(bUsd as any) && (aUsd as number) > 0 && (bUsd as number) > 0) {
-            // price is A per 1 B, USD ref should be USD(B)/USD(A)
-            // Skip deviation check if price is invalid (will be caught above)
-            if (Number.isFinite(price) && price > 0) {
-              const ref = (bUsd as number) / (aUsd as number);
-              const dev = Math.max(price / ref, ref / price);
-              if (dev > maxDeviation) return 'priceOutliers';
-            }
-          }
-          return null;
-        };
-        for (const p of (norm.amm || [])) { const r = isOk(p); if (r) drop[r] = (drop[r] || 0) + 1; else out.amm.push(p); }
-        for (const p of (norm.clmm || [])) { const r = isOk(p); if (r) drop[r] = (drop[r] || 0) + 1; else out.clmm.push(p); }
-        try { logger.debug('graph.sanity.filter', { feeMin, feeMax, maxDeviation, dropped: drop }); } catch {}
-        try { emit('sanity-update', { ts: Date.now(), scope: 'graph', feeMin, feeMax, maxDeviation, dropped: drop }); } catch {}
-        return out;
+      
+      const validationConfig = {
+        feeMin,
+        feeMax,
+        maxPriceDeviation,
+        sanityEnabled: sanityEnabled && ((sanityCfg as any).applyAtGraph !== false),
       };
 
       // Helper for TVL using USD prices if available
@@ -824,150 +627,75 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       const getPriceByMintVar = (m: string) => {
         try { return priceStore.getPriceByMint(m); } catch { return undefined as any; }
       };
-      const calibratePrice = (mintA: string, mintB: string, raw: number | undefined): number | undefined => {
-        const getUsd = (m: string) => {
-          try { return getPriceByMintVar(m)?.usdc ?? undefined; } catch { return undefined; }
-        };
-        return calibrateMagnitude(mintA, mintB, raw, getUsd);
-      };
-      const tvlUsd = (mintA: string, mintB: string, amountA?: number, amountB?: number): number | undefined => {
-        try {
-          const pa = getPriceByMintVar(mintA)?.usdc ?? null;
-          const pb = getPriceByMintVar(mintB)?.usdc ?? null;
-          const aUsd = (pa && amountA != null) ? pa * amountA : 0;
-          const bUsd = (pb && amountB != null) ? pb * amountB : 0;
-          const sum = aUsd + bUsd;
-          return sum > 0 ? sum : undefined;
-        } catch {
-          return undefined;
-        }
+      const getUsd = (m: string): number | undefined => {
+        try { return getPriceByMintVar(m)?.usdc ?? undefined; } catch { return undefined; }
       };
 
-      // Helper: fallback price using USD quotes if pool price missing
-      // Dynamic stable set from config + common majors
-      const STABLES = new Set<string>([
-        ...(((CONFIG.system as any)?.stableMints || []) as string[]),
-        'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-        'Es9vMFrzaCERfCkS7fGXx9bK6A7bP4J1yDrJZGB48JpN', // USDT
-      ]);
-      const priceFromUsd = (mintA: string, mintB: string): number | undefined => {
-        try {
-          let pa = getPriceByMintVar(mintA)?.usdc ?? null;
-          let pb = getPriceByMintVar(mintB)?.usdc ?? null;
-          // If missing and token is configured stable, assume 1.0
-          if (!(typeof pa === 'number' && pa > 0) && STABLES.has(mintA)) pa = 1;
-          if (!(typeof pb === 'number' && pb > 0) && STABLES.has(mintB)) pb = 1;
-          if (pa && pb && (pa as number) > 0) return (pb as number) / (pa as number);
-        } catch {}
-        return undefined;
+      type NormPools = { amm: any[]; clmm: any[] };
+      const validatePoolsForGraph = (norm: NormPools): NormPools => {
+        if (!validationConfig.sanityEnabled) return norm;
+        const out: NormPools = { amm: [], clmm: [] };
+        const drop = { badFees: 0, priceOutliers: 0, nonFinitePrice: 0 } as any;
+        
+        const checkPool = (p: any) => {
+          if (isPoolValidForGraph(p, getUsd, validationConfig)) {
+            return true;
+          }
+          // Simple logging for stats
+          // Note: Detailed reasons are inside isPoolValidForGraph but not returned
+          // For stats compatibility we can infer or just count as dropped
+          drop['invalid'] = (drop['invalid'] || 0) + 1;
+          return false;
+        };
+
+        for (const p of (norm.amm || [])) { if (checkPool(p)) out.amm.push(p); }
+        for (const p of (norm.clmm || [])) { if (checkPool(p)) out.clmm.push(p); }
+        
+        try { logger.debug('graph.sanity.filter', { feeMin, feeMax, maxDeviation, dropped: drop }); } catch {}
+        try { emit('sanity-update', { ts: Date.now(), scope: 'graph', feeMin, feeMax, maxDeviation, dropped: drop }); } catch {}
+        return out;
       };
-      const clampPrice = (px: number | undefined): number | undefined => {
-        const min = Number.isFinite(Number(((CONFIG as any)?.sanity as any)?.priceClampMin)) ? Number(((CONFIG as any)?.sanity as any)?.priceClampMin) : 1e-12;
-        const max = Number.isFinite(Number(((CONFIG as any)?.sanity as any)?.priceClampMax)) ? Number(((CONFIG as any)?.sanity as any)?.priceClampMax) : 1e12;
-        const v = Number(px);
-        if (!Number.isFinite(v) || !(v > 0)) return undefined;
-        if (v < min || v > max) return undefined;
-        return v;
-      };
-      // Rescale a price from pool-reported decimals to global decimals per mint
-      const rescalePriceByDecimals = (
-        priceAPerB: number | undefined,
-        poolDecA?: number,
-        poolDecB?: number,
-        globalDecA?: number,
-        globalDecB?: number,
-      ): number | undefined => {
-        const p = Number(priceAPerB);
-        if (!Number.isFinite(p) || !(p > 0)) return priceAPerB;
-        const da = Number(poolDecA); const db = Number(poolDecB);
-        const ga = Number(globalDecA); const gb = Number(globalDecB);
-        if (![da, db, ga, gb].every((x) => Number.isFinite(x))) return priceAPerB;
-        const scalePow = (ga - da) - (gb - db);
-        const scaled = p * Math.pow(10, scalePow);
-        return (Number.isFinite(scaled) && scaled > 0) ? scaled : priceAPerB;
-      };
-      // Add reverse visualization edges so graph reflects tradable paths in both directions
-      const rayValid = validatePoolsForGraph(ray as any);
-      const safePoolId = (p: any): string | undefined => {
-        try {
-          const pid = String(p?.id || '');
-          const ma = String((p as any)?.mint_a || '');
-          const mb = String((p as any)?.mint_b || '');
-          const aa = String((p as any)?.account_a || '');
-          const ab = String((p as any)?.account_b || '');
-          if (!pid) return undefined;
-          if (pid === ma || pid === mb || pid === aa || pid === ab) return undefined;
-          return pid;
-        } catch { return undefined; }
-      };
+
+      
       // Simple counters for runtime monitoring of price consistency
       let consistency: any = { ray: { amm: 0, clmm: 0 }, orc: { amm: 0, clmm: 0 }, met: { clmm: 0 } };
 
       // Create graph edges from a unified list of pools that have been processed by the pipeline
       const createEdgesFromPools = (pools: any[], dex: string) => {
+        const edgeOptions = {
+          priceClampMin: Number(((CONFIG as any)?.sanity as any)?.priceClampMin) || 1e-12,
+          priceClampMax: Number(((CONFIG as any)?.sanity as any)?.priceClampMax) || 1e12,
+        };
+
         for (const p of pools) {
-          if ((p as any)?._pipelineProcessed !== true) {
-            try {
-              logger.warn('graph.skip.edge.not_processed', {
-                dex: (p as any)?.dex || dex,
-                pool_id: (p as any)?.id,
-                mint_a: (p as any)?.mint_a,
-                mint_b: (p as any)?.mint_b,
-                reason: 'Missing _pipelineProcessed flag',
-                cat: 'graph',
-              });
-            } catch {}
-          continue;
-        }
-
-          const price = Number((p as any)?.price_a_per_b);
-          if (!Number.isFinite(price) || price <= 0) {
-            try {
-              logger.debug('graph.skip.edge.no_price', {
-                dex: (p as any)?.dex || dex,
-                kind: (p as any)?.pool_kind,
-                pool_id: safePoolId(p),
-                mint_a: p.mint_a,
-                mint_b: p.mint_b,
-                reason: 'invalid_price_from_pipeline',
-                price: (p as any)?.price_a_per_b,
-            cat: 'graph'
-          });
-      } catch {}
-            continue;
-          }
-
-        const pid = safePoolId(p);
-          const usd = (p as any)?.tvl_usd;
-          const liqParam = (p as any)?.liquidity_display ?? (p as any).liquidity_base ?? (p as any).liquidity;
-          const rawLiq = Number((p as any).pool_liquidity_raw || (p as any).liquidity_base || (p as any).liquidity || 0) || undefined;
-          const wasSwapped = (p as any)?.was_swapped;
+          // Unified edge creation using shared logic
+          // This ensures incremental updates and full rebuilds use IDENTICAL logic
+          if (!isDexKindAllowed((p as any).dex || dex, (p as any).pool_kind || 'amm', edgeAllow)) continue;
           
-      const forwardPrice = clampPrice(price);
-      addEdge(
-        p.mint_a,
-        p.mint_b,
-        (p as any).dex || dex,
-        p.fee_bps,
-        liqParam,
-        forwardPrice,
-        usd,
-        pid,
-        (p as any).account_a,
-        (p as any).account_b,
-        (p as any).pool_kind,
-        'canonical',
-        rawLiq,
-        (p as any).native_mint_a,
-        (p as any).native_mint_b,
-        (p as any).native_decimals_a,
-        (p as any).native_decimals_b,
-        (p as any).native_account_a,
-        (p as any).native_account_b,
-        (p as any).native_reserve_a_raw ?? (p as any).reserve_a_raw,
-        (p as any).native_reserve_b_raw ?? (p as any).reserve_b_raw,
-        wasSwapped,
-      );
+          // Honor runtime pool drops
+          try {
+            const pid = String(p?.id || '');
+            if (pid && droppedPoolIds.has(pid)) continue;
+          } catch {}
+          
+          // Optional pruning: drop stable<->stable edges entirely
+          try {
+            const dropSS = (CONFIG.system as any)?.dropStableStableEdges;
+            if (dropSS) {
+              const stables = new Set<string>(((CONFIG.system as any)?.stableMints || []) as string[]);
+              const aStable = stables.has(p?.mint_a);
+              const bStable = stables.has(p?.mint_b);
+              if (aStable && bStable) continue;
+            }
+          } catch {}
+
+          const newEdges = edgesFromPoolIncremental(p as any, getUsd, edgeOptions);
+          
+          for (const e of newEdges) {
+            edgesMap[e.id] = e;
+            if (!nodesMap[e.source]) nodesMap[e.source] = { id: e.source, label: labelByMint[e.source] };
+            if (!nodesMap[e.target]) nodesMap[e.target] = { id: e.target, label: labelByMint[e.target] };
+          }
         }
       };
 

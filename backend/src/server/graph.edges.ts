@@ -35,6 +35,74 @@ function weightFrom(liq?: number, fee_bps?: number): number {
   return Math.max(1, liqv) / Math.max(1, fee);
 }
 
+export interface PoolValidationConfig {
+  feeMin?: number;
+  feeMax?: number;
+  maxPriceDeviation?: number;
+  sanityEnabled?: boolean;
+}
+
+export function isPoolValidForGraph(
+  p: any,
+  getUsd: (mint: string) => number | undefined,
+  config: PoolValidationConfig
+): boolean {
+  const { feeMin = 0, feeMax = 10000, maxPriceDeviation = 10, sanityEnabled = true } = config;
+
+  if (!sanityEnabled) return true;
+
+  const fb = Number(p?.fee_bps);
+  if (Number.isFinite(fb) && (fb < feeMin || fb > feeMax)) return false; // 'badFees'
+
+  const kind = String((p as any)?.pool_kind || '');
+  const s64 = Number((p as any)?.sqrt_price_x64 || 0);
+  const price = Number((p as any)?.price_a_per_b);
+  const dex = String((p as any)?.dex || '');
+
+  // Allow CLMM pools that can derive price from sqrt even if price_a_per_b is missing
+  if (!Number.isFinite(price) || price <= 0) {
+    if (!(kind === 'clmm' && s64 > 0)) {
+      // Log when we filter out a pool for missing price
+      try {
+        logger.debug('graph.sanity.filter.price', {
+          dex,
+          kind,
+          pool_id: (p as any)?.id?.slice(0, 8),
+          mint_a: (p as any)?.mint_a,
+          mint_b: (p as any)?.mint_b,
+          price,
+          sqrt_price_x64: s64,
+          reason: 'nonFinitePrice',
+          cat: 'graph'
+        });
+      } catch {}
+      return false; // 'nonFinitePrice'
+    }
+  }
+
+  const aUsd = getUsd(p.mint_a);
+  const bUsd = getUsd(p.mint_b);
+  
+  // Avoid double-applying price deviation sanity if source already sanitized
+  // Note: Configuration for avoidDoubleApply is assumed true here or handled by caller config
+  const sourceSanitized = (
+    // All CLMMs receive orientation/clamp handling in their dedicated blocks
+    (kind === 'clmm') ||
+    (dex === 'Raydium' && kind === 'amm') // Assuming sanity_applyRaydiumAmm is true
+  );
+  
+  if (!sourceSanitized && Number.isFinite(aUsd as any) && Number.isFinite(bUsd as any) && (aUsd as number) > 0 && (bUsd as number) > 0) {
+    // price is A per 1 B, USD ref should be USD(B)/USD(A)
+    if (Number.isFinite(price) && price > 0) {
+      const ref = (bUsd as number) / (aUsd as number);
+      const dev = Math.max(price / ref, ref / price);
+      if (dev > maxDeviation) return false; // 'priceOutliers'
+    }
+  }
+
+  return true;
+}
+
 /**
  * Create graph edges from a pool
  * 

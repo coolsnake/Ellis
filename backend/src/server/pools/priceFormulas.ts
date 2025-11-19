@@ -217,8 +217,8 @@ export function calculateMeteoraPrice(
     }
     
     // Convert from native (atomic) units to whole token units
-    // priceAperB_whole = priceAperB_native * 10^(decimalsA - decimalsB)
-    const decimalScale = Math.pow(10, decimalsA - decimalsB);
+    // priceAperB_whole = priceAperB_native * 10^(decimalsB - decimalsA)
+    const decimalScale = Math.pow(10, decimalsB - decimalsA);
     const priceAperB_whole = priceAperB_native * decimalScale;
     
     if (!Number.isFinite(priceAperB_whole) || priceAperB_whole <= 0) {

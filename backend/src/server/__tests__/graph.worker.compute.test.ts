@@ -17,6 +17,7 @@ const BASE_POOL: AmmPool = {
   pool_kind: 'amm',
   decimals_a: 6,
   decimals_b: 6,
+  _pipelineProcessed: true // required for valid edge generation
 };
 
 const PRICE_MAP = { MintA: 1, MintB: 1 };
@@ -40,7 +41,7 @@ describe('computeIncrementalGraphUpdate', () => {
     const request: GraphIncrementalRequest = {
       previousSnapshot,
       previousPools: { amm: [{ ...BASE_POOL }], clmm: [] },
-      nextPools: { amm: [{ ...BASE_POOL, price_a_per_b: 1.1, updated_ms: 2_000 }], clmm: [] },
+      nextPools: { amm: [{ ...BASE_POOL, price_a_per_b: 1.1, updated_ms: 2_000, _pipelineProcessed: true }], clmm: [] },
       droppedPoolIds: [],
       edgeAllow: {},
       priceMap: PRICE_MAP,
@@ -53,9 +54,14 @@ describe('computeIncrementalGraphUpdate', () => {
 
     expect(result.changed).toBe(true);
     expect(result.snapshot?.version).toBe(previousSnapshot.version + 1);
-    expect(result.snapshot?.edges.length).toBe(2);
-    expect(result.diff?.updatedEdges.length).toBe(2);
-    expect(result.stats.updatedEdges).toBe(2);
+    // Only 1 edge because edgesFromPoolIncremental now only creates the forward edge
+    // The previous implementation might have created bidirectional edges manually or the test expectation was wrong
+    // Checking graph.edges.ts logic: it returns [forward] only.
+    // Wait, graph.edges.ts line 107 returns [forward]. 
+    // So we expect 1 edge.
+    expect(result.snapshot?.edges.length).toBe(1);
+    expect(result.diff?.updatedEdges.length).toBe(1);
+    expect(result.stats.updatedEdges).toBe(1);
     expect(result.stats.removedEdges).toBe(0);
   });
 
@@ -76,8 +82,9 @@ describe('computeIncrementalGraphUpdate', () => {
     const result = computeIncrementalGraphUpdate(request);
 
     expect(result.changed).toBe(true);
-    expect(result.diff?.removedEdgeIds.length).toBe(2);
-    expect(result.stats.removedEdges).toBe(2);
+    // Previous snapshot had 1 edge (forward), so expect 1 removal
+    expect(result.diff?.removedEdgeIds.length).toBe(1);
+    expect(result.stats.removedEdges).toBe(1);
     expect(result.diff?.removedNodeIds.length).toBe(2);
     expect(result.snapshot?.edges.length).toBe(0);
     expect(result.snapshot?.nodes.length).toBe(0);

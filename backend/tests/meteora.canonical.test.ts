@@ -20,6 +20,7 @@ describe('meteora canonicalization - quoteHierarchy keeps stable on B', () => {
           tokenB: { mint: USDC, decimals: 6 },
           current_price: 0.0002, // upstream orientation not trusted; final orientation enforced by canonicalizePairs
           bin_step: 16,
+          active_id: -1007,
           liquidity: 10000,
           tvlUsdc: 20000,
         },

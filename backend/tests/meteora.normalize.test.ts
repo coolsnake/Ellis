@@ -44,6 +44,7 @@ describe('meteora clmm orientation normalization', () => {
           tokenB: { mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', decimals: 6 }, // USDC
           current_price: 0.0002, // SOL per 1 USDC (inverted for A/B expected)
           bin_step: 16,
+          active_id: -1007, // Derived from price 0.0002 with binStep 16 (1.0016^-1007 ~= 0.2)
           liquidity: 10000,
           tvlUsdc: 20000,
         },
@@ -77,6 +78,7 @@ describe('meteora normalize http', () => {
         tokenBAmount: '1000000000', // 1 SOL in base units
         feeRate: 0.003,
         binStep: 16,
+        activeId: 1440, // Derived from price 100 with binStep 16 (1.0016^1440 ~= 10)
         tvlUsdc: '2000'
       }
     ];

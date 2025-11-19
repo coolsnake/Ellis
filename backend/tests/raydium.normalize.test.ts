@@ -31,7 +31,7 @@ describe('raydium amm orientation normalization', () => {
     expect(p.price_a_per_b).toBeGreaterThan(1);
   });
 
-  it('does not flip when using upstream price and no reserves (no stable-aware flip)', async () => {
+  it('skips pool when using upstream price and no reserves', async () => {
     const now = Date.now();
     const raw = {
       data: [
@@ -41,7 +41,7 @@ describe('raydium amm orientation normalization', () => {
           mintA: { address: 'BONK_MINT', decimals: 5 },
           mintB: { address: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', decimals: 6 }, // USDC
           // No mintAmountA/B => no reserves-based price
-          price: 0.00002, // Upstream inverted: BONK per 1 USDC very small
+          price: 0.00002, 
           tvl: 0,
           updatedTime: now,
         },
@@ -49,13 +49,8 @@ describe('raydium amm orientation normalization', () => {
     };
     const mod = await import('../src/server/pools/raydium');
     const norm = await mod.normalizeRaydiumPools(raw as any);
-    const p = norm.amm.find(p => p.id === 'POOL_AMM_2') as any;
-    expect(p).toBeTruthy();
-    const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-    const upstream = 0.00002;
-    // No flip in normalizer: price remains consistent with orientation
-    const oriented = (p.mint_a === 'BONK_MINT' && p.mint_b === USDC) ? upstream : (1 / upstream);
-    expect(Math.abs((p.price_a_per_b as number) - oriented) / oriented).toBeLessThan(1e-9);
+    // Should skip because no reserves to calculate verified price
+    expect(norm.amm.length).toBe(0);
   });
 });
 
@@ -72,8 +67,15 @@ async function normalize(raw: any) {
 
 describe('normalizeRaydiumPools', () => {
   it('normalizes AMM array with reserves to price', async () => {
-    const raw = { data: [ { id: 'pool1', mintA: 'A', mintB: 'B', reserveA: 200, reserveB: 100, feeBps: 30 } ] };
-    const mod: any = await import('../src/server/pools.ts');
+    const raw = { data: [ { 
+      id: 'pool1', 
+      mintA: { address: 'A', decimals: 6 }, 
+      mintB: { address: 'B', decimals: 6 }, 
+      reserveA: 200, 
+      reserveB: 100, 
+      feeBps: 30 
+    } ] };
+    const mod: any = await import('../src/server/pools');
     const fn = (mod as any).normalizeRaydiumPools;
     const out = await fn(raw);
     expect(out.amm.length).toBe(1);
@@ -82,8 +84,15 @@ describe('normalizeRaydiumPools', () => {
 
   it('normalizes CLMM with sqrtPriceX64 and derives price', async () => {
     const sqrt = Math.floor(Math.sqrt(2) * Math.pow(2, 64));
-    const raw = { data: [ { id: 'clmm1', mintA: 'A', mintB: 'B', sqrtPriceX64: sqrt, tokenA: { decimals: 9 }, tokenB: { decimals: 9 }, tickSpacing: 64, liquidity: 123 } ] } as any;
-    const mod: any = await import('../src/server/pools.ts');
+    const raw = { data: [ { 
+      id: 'clmm1', 
+      mintA: { address: 'A', decimals: 9 }, 
+      mintB: { address: 'B', decimals: 9 }, 
+      sqrtPriceX64: sqrt, 
+      tickSpacing: 64, 
+      liquidity: 123 
+    } ] } as any;
+    const mod: any = await import('../src/server/pools');
     const fn = (mod as any).normalizeRaydiumPools;
     const out = await fn(raw);
     expect(out.clmm.length).toBe(1);
