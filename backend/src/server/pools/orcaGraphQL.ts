@@ -6,6 +6,9 @@ import { resolveManyDecimals } from './decimals.js';
 import { processPriceThroughPipeline } from './pricePipeline.js';
 import { executeShyftGraphQL } from './shyftHelpers.js';
 import { poolsMetrics } from '../pools.metrics.js';
+import { loadJupiterTokenMap } from '../../utils/tokens.js';
+import { Connection, PublicKey } from '@solana/web3.js';
+import { withRpcLimit } from '../../utils/rpcLimiter.js';
 
 export async function fetchOrcaGraphQL(mints: string[]): Promise<any[]> {
   const CACHE_PATH = joinPath(CONFIG.cacheDir, 'orca-graphql-raw.json');
@@ -243,20 +246,79 @@ function chunkArray<T>(arr: T[], size: number): T[][] {
   return chunks;
 }
 
+// Helper to batch fetch vault balances via RPC
+async function fetchVaultBalances(addresses: string[]): Promise<Map<string, bigint>> {
+  const results = new Map<string, bigint>();
+  if (addresses.length === 0) return results;
+
+  const connection = new Connection(CONFIG.rpcUrl || 'https://api.mainnet-beta.solana.com');
+  const BATCH_SIZE = 100;
+  
+  for (let i = 0; i < addresses.length; i += BATCH_SIZE) {
+    const batch = addresses.slice(i, i + BATCH_SIZE);
+    const pubkeys = batch.map(a => new PublicKey(a));
+    
+    try {
+      // Fetch with RPC limit protection
+      const accounts = await withRpcLimit(
+        () => connection.getMultipleAccountsInfo(pubkeys),
+        Math.max(1, Math.ceil(batch.length / 10)),
+        { module: 'orca', method: 'getMultipleAccountsInfo' }
+      );
+      
+      accounts.forEach((acc, idx) => {
+        if (acc && acc.data.length >= 64) { // SPL Token Account min length
+          // Amount is u64 at offset 64
+          try {
+            const amount = acc.data.readBigUInt64LE(64);
+            results.set(batch[idx], amount);
+          } catch {}
+        }
+      });
+    } catch (e) {
+      logger.warn('orca.graphql.vaults.fetch_failed', { 
+        error: String(e), 
+        batchIndex: i 
+      });
+    }
+  }
+  
+  return results;
+}
+
 export async function normalizeOrcaGraphQL(raw: any[]): Promise<PoolsPayload> {
   const now = Date.now();
   const clmm: ClmmPool[] = [];
   
+  // Load Jupiter token prices for TVL calculation
+  const jupPriceMap = await loadJupiterTokenMap();
+
+  // Collect all vault addresses for batch RPC fetching
+  const vaultAddresses = new Set<string>();
+  for (const pool of raw) {
+    if (pool.tokenVaultA) vaultAddresses.add(pool.tokenVaultA);
+    if (pool.tokenVaultB) vaultAddresses.add(pool.tokenVaultB);
+  }
+
+  // Batch fetch vault balances
+  // This runs in parallel with decimal resolution to save time
+  const vaultBalancesPromise = fetchVaultBalances(Array.from(vaultAddresses));
+
   const allMints = new Set<string>();
   for (const pool of raw) {
     if (pool.tokenMintA) allMints.add(pool.tokenMintA);
     if (pool.tokenMintB) allMints.add(pool.tokenMintB);
   }
   
-  const decimalsMap = await resolveManyDecimals(Array.from(allMints), { 
+  const decimalsMapPromise = resolveManyDecimals(Array.from(allMints), { 
     logger, 
     normalizeMode: true 
   });
+
+  const [vaultBalances, decimalsMap] = await Promise.all([
+    vaultBalancesPromise, 
+    decimalsMapPromise
+  ]);
   
   for (const pool of raw) {
     try {
@@ -276,6 +338,35 @@ export async function normalizeOrcaGraphQL(raw: any[]): Promise<PoolsPayload> {
       try {
         const feeRate = Number(pool.feeRate || 0);
         fee_bps = Math.round(feeRate / 100); // Convert from hundredths
+      } catch {}
+      
+      // Calculate amounts and TVL from vault balances
+      let amount_a_whole: number | undefined;
+      let amount_b_whole: number | undefined;
+      let tvl_usd: number | undefined;
+      
+      try {
+        const balA = pool.tokenVaultA ? vaultBalances.get(pool.tokenVaultA) : undefined;
+        const balB = pool.tokenVaultB ? vaultBalances.get(pool.tokenVaultB) : undefined;
+        
+        if (balA !== undefined && balB !== undefined) {
+          const wholeA = Number(balA) / Math.pow(10, decA);
+          const wholeB = Number(balB) / Math.pow(10, decB);
+          
+          amount_a_whole = wholeA;
+          amount_b_whole = wholeB;
+          
+          const priceA = jupPriceMap[mint_a]?.usdPrice;
+          const priceB = jupPriceMap[mint_b]?.usdPrice;
+          
+          if (priceA && priceB) {
+            tvl_usd = (wholeA * priceA) + (wholeB * priceB);
+          } else if (priceA) {
+            tvl_usd = wholeA * priceA * 2; // Assume balanced
+          } else if (priceB) {
+            tvl_usd = wholeB * priceB * 2; // Assume balanced
+          }
+        }
       } catch {}
       
       // Process price through pipeline with raw sqrtPriceX64 data
@@ -302,6 +393,9 @@ export async function normalizeOrcaGraphQL(raw: any[]): Promise<PoolsPayload> {
               dex: 'Orca',
               poolType: 'clmm',
               sqrtPriceX64,
+              // Use actual vault balances if available
+              reserveA: amount_a_whole ? BigInt(Math.floor(amount_a_whole * Math.pow(10, decA))) : undefined,
+              reserveB: amount_b_whole ? BigInt(Math.floor(amount_b_whole * Math.pow(10, decB))) : undefined,
             });
             
             if (processed) {
@@ -321,6 +415,9 @@ export async function normalizeOrcaGraphQL(raw: any[]): Promise<PoolsPayload> {
       const finalTokenVaultB = wasSwapped ? pool.tokenVaultA : pool.tokenVaultB;
       const finalNativeAccountA = wasSwapped ? pool.tokenVaultB : pool.tokenVaultA;
       const finalNativeAccountB = wasSwapped ? pool.tokenVaultA : pool.tokenVaultB;
+      
+      const finalAmountA = wasSwapped ? amount_b_whole : amount_a_whole;
+      const finalAmountB = wasSwapped ? amount_a_whole : amount_b_whole;
       
       clmm.push({
         id,
@@ -351,6 +448,12 @@ export async function normalizeOrcaGraphQL(raw: any[]): Promise<PoolsPayload> {
         native_account_b: finalNativeAccountB,
         native_oracle: pool.oracle,
         native_reward_infos: pool.rewardInfos,
+        amount_a: finalAmountA,
+        amount_b: finalAmountB,
+        amount_a_whole: finalAmountA,
+        amount_b_whole: finalAmountB,
+        tvl_usd,
+        liquidity_display: tvl_usd,
       } as any);
     } catch (error: any) {
       logger.warn('orca.graphql.normalize.pool.failed', { 

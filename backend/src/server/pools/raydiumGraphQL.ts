@@ -6,6 +6,7 @@ import { resolveManyDecimals } from './decimals.js';
 import { processPriceThroughPipeline } from './pricePipeline.js';
 import { executeShyftGraphQL } from './shyftHelpers.js';
 import { poolsMetrics } from '../pools.metrics.js';
+import { loadJupiterTokenMap } from '../../utils/tokens.js';
 
 export async function fetchRaydiumGraphQL(mints: string[]): Promise<any[]> {
   const CACHE_PATH = joinPath(CONFIG.cacheDir, 'raydium-graphql-raw.json');
@@ -120,6 +121,8 @@ async function fetchRaydiumPoolsForToken(opts: {
             quoteMint
             baseDecimal
             quoteDecimal
+            baseReserve
+            quoteReserve
             lpMint
             poolOpenTime
             swapBaseInAmount
@@ -192,6 +195,8 @@ async function fetchRaydiumPoolsByAddress(
               quoteMint
               baseDecimal
               quoteDecimal
+              baseReserve
+              quoteReserve
               lpMint
               lpReserve
               lpVault
@@ -298,6 +303,9 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
   const amm: AmmPool[] = [];
   const clmm: ClmmPool[] = [];
   
+  // Load Jupiter token prices for TVL calculation
+  const jupPriceMap = await loadJupiterTokenMap();
+
   // Extract all mints for batch decimal resolution
   const allMints = new Set<string>();
   for (const pool of raw) {
@@ -391,6 +399,33 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
         const finalNativeAccountA = wasSwapped ? pool.quoteVault : pool.baseVault;
         const finalNativeAccountB = wasSwapped ? pool.baseVault : pool.quoteVault;
         
+        // Calculate TVL
+        let tvl_usd: number | undefined;
+        try {
+          // Use reserves from GraphQL if available, falling back to swap amounts for rough approximation
+          const rawResA = pool.baseReserve ?? pool.baseAmount ?? pool.swapBaseInAmount;
+          const rawResB = pool.quoteReserve ?? pool.quoteAmount ?? pool.swapQuoteInAmount;
+          
+          if (rawResA && rawResB) {
+            const priceA = jupPriceMap[mint_a]?.usdPrice;
+            const priceB = jupPriceMap[mint_b]?.usdPrice;
+            
+            const amountA = Number(rawResA) / Math.pow(10, decA);
+            const amountB = Number(rawResB) / Math.pow(10, decB);
+            
+            if (priceA && priceB) {
+              // Best case: both prices known
+              tvl_usd = (amountA * priceA) + (amountB * priceB);
+            } else if (priceA) {
+              // Only A known, approximate as balanced pool (2x side A)
+              tvl_usd = amountA * priceA * 2;
+            } else if (priceB) {
+              // Only B known, approximate as balanced pool (2x side B)
+              tvl_usd = amountB * priceB * 2;
+            }
+          }
+        } catch {}
+
         amm.push({
           id,
           dex: 'Raydium',
@@ -398,6 +433,7 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
           mint_b: finalMintB,
           fee_bps,
           price_a_per_b,
+          tvl_usd,
           updated_ms: now,
           decimals_a: finalDecA,
           decimals_b: finalDecB,

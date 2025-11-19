@@ -6,6 +6,7 @@ import { resolveManyDecimals } from './decimals.js';
 import { processPriceThroughPipeline } from './pricePipeline.js';
 import { executeShyftGraphQL } from './shyftHelpers.js';
 import { poolsMetrics } from '../pools.metrics.js';
+import { loadJupiterTokenMap } from '../../utils/tokens.js';
 
 export async function fetchMeteoraGraphQL(mints: string[]): Promise<any[]> {
   const CACHE_PATH = joinPath(CONFIG.cacheDir, 'meteora-graphql-raw.json');
@@ -242,6 +243,9 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
   const now = Date.now();
   const clmm: ClmmPool[] = [];
   
+  // Load Jupiter token prices for TVL calculation
+  const jupPriceMap = await loadJupiterTokenMap();
+  
   const allMints = new Set<string>();
   for (const pool of raw) {
     if (pool.tokenXMint) allMints.add(pool.tokenXMint);
@@ -285,10 +289,33 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
       let wasSwapped = false;
       
       try {
-        const activeId = Number(pool.activeId || 0);
         const binStep = Number(pool.binStep || 0);
         const tokenXMint = String(pool.tokenXMint || mint_a);
         const tokenYMint = String(pool.tokenYMint || mint_b);
+        
+        // Calculate TVL
+        let tvl_usd: number | undefined;
+        try {
+          // Meteora returns reserveX/reserveY
+          const rawResX = pool.reserveX;
+          const rawResY = pool.reserveY;
+          
+          if (rawResX && rawResY) {
+            const priceA = jupPriceMap[mint_a]?.usdPrice;
+            const priceB = jupPriceMap[mint_b]?.usdPrice;
+            
+            const amountA = Number(rawResX) / Math.pow(10, decA);
+            const amountB = Number(rawResY) / Math.pow(10, decB);
+            
+            if (priceA && priceB) {
+              tvl_usd = (amountA * priceA) + (amountB * priceB);
+            } else if (priceA) {
+              tvl_usd = amountA * priceA * 2;
+            } else if (priceB) {
+              tvl_usd = amountB * priceB * 2;
+            }
+          }
+        } catch {}
         
         if (activeId != null && binStep != null && tokenXMint && tokenYMint) {
           const processed = processPriceThroughPipeline({
@@ -323,6 +350,7 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
         mint_b: finalMintB,
         fee_bps,
         price_a_per_b,
+        tvl_usd,
         updated_ms: now,
         decimals_a: finalDecA,
         decimals_b: finalDecB,
