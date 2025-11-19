@@ -17,8 +17,8 @@ const BASE_POOL: AmmPool = {
   pool_kind: 'amm',
   decimals_a: 6,
   decimals_b: 6,
-  _pipelineProcessed: true // required for valid edge generation
-};
+} as unknown as AmmPool;
+(BASE_POOL as any)._pipelineProcessed = true; // required for valid edge generation
 
 const PRICE_MAP = { MintA: 1, MintB: 1 };
 const CLAMP_MIN = 1e-12;
@@ -41,7 +41,7 @@ describe('computeIncrementalGraphUpdate', () => {
     const request: GraphIncrementalRequest = {
       previousSnapshot,
       previousPools: { amm: [{ ...BASE_POOL }], clmm: [] },
-      nextPools: { amm: [{ ...BASE_POOL, price_a_per_b: 1.1, updated_ms: 2_000, _pipelineProcessed: true }], clmm: [] },
+      nextPools: { amm: [{ ...BASE_POOL, price_a_per_b: 1.1, updated_ms: 2_000, _pipelineProcessed: true } as any], clmm: [] },
       droppedPoolIds: [],
       edgeAllow: {},
       priceMap: PRICE_MAP,

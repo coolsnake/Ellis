@@ -96,7 +96,7 @@ export function isPoolValidForGraph(
     if (Number.isFinite(price) && price > 0) {
       const ref = (bUsd as number) / (aUsd as number);
       const dev = Math.max(price / ref, ref / price);
-      if (dev > maxDeviation) return false; // 'priceOutliers'
+      if (dev > maxPriceDeviation) return false; // 'priceOutliers'
     }
   }
 

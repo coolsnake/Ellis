@@ -612,7 +612,7 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       const sanityCfg = (CONFIG as any)?.sanity || {};
       const feeMin = Number.isFinite(Number(sanityCfg.feeMin)) ? Number(sanityCfg.feeMin) : 0;
       const feeMax = Number.isFinite(Number(sanityCfg.feeMax)) ? Number(sanityCfg.feeMax) : 10000;
-      const maxDeviation = Number.isFinite(Number(sanityCfg.maxPriceDeviation)) ? Number(sanityCfg.maxPriceDeviation) : 10;
+      const maxPriceDeviation = Number.isFinite(Number(sanityCfg.maxPriceDeviation)) ? Number(sanityCfg.maxPriceDeviation) : 10;
       const sanityEnabled = sanityCfg.enabled !== false;
       
       const validationConfig = {
@@ -651,8 +651,8 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         for (const p of (norm.amm || [])) { if (checkPool(p)) out.amm.push(p); }
         for (const p of (norm.clmm || [])) { if (checkPool(p)) out.clmm.push(p); }
         
-        try { logger.debug('graph.sanity.filter', { feeMin, feeMax, maxDeviation, dropped: drop }); } catch {}
-        try { emit('sanity-update', { ts: Date.now(), scope: 'graph', feeMin, feeMax, maxDeviation, dropped: drop }); } catch {}
+        try { logger.debug('graph.sanity.filter', { feeMin, feeMax, maxPriceDeviation, dropped: drop }); } catch {}
+        try { emit('sanity-update', { ts: Date.now(), scope: 'graph', feeMin, feeMax, maxPriceDeviation, dropped: drop }); } catch {}
         return out;
       };
 
@@ -700,6 +700,12 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       };
 
       // Combine all pools into a single list and process them
+      const rayValid = validatePoolsForGraph(ray);
+      const orcValid = validatePoolsForGraph(orc);
+      const metValid = validatePoolsForGraph(met);
+      const mblValid = validatePoolsForGraph(mbl);
+      const pumpValid = validatePoolsForGraph(pump);
+
       const allPools = [
         ...(rayValid.amm || []),
         ...(rayValid.clmm || []),
