@@ -270,7 +270,8 @@ async function fetchVaultBalances(addresses: string[]): Promise<Map<string, bigi
         if (acc && acc.data.length >= 64) { // SPL Token Account min length
           // Amount is u64 at offset 64
           try {
-            const amount = acc.data.readBigUInt64LE(64);
+            const buf = Buffer.from(acc.data);
+            const amount = buf.readBigUInt64LE(64);
             results.set(batch[idx], amount);
           } catch {}
         }

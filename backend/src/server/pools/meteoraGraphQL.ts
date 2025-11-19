@@ -317,6 +317,11 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
           }
         } catch {}
         
+        const activeId = Number(pool.activeId || 0);
+        const binStep = Number(pool.binStep || 0);
+        const tokenXMint = String(pool.tokenXMint || mint_a);
+        const tokenYMint = String(pool.tokenYMint || mint_b);
+        
         if (activeId != null && binStep != null && tokenXMint && tokenYMint) {
           const processed = processPriceThroughPipeline({
             mintA: mint_a,
