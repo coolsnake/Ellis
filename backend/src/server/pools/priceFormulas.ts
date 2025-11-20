@@ -192,14 +192,15 @@ export function calculateMeteoraPrice(
     if (tokenXMint === mintA && tokenYMint === mintB) {
       // X = A, Y = B
       // priceYperX = B/A (native)
-      // We want A/B (native) = 1 / (B/A) = 1 / priceYperX
-      priceAperB_native = priceYperX_native > 0 ? (1 / priceYperX_native) : undefined;
+      // FIX: Graph builder expects B/A (Target per Source) for A->B edge
+      // Previously inverted to A/B which caused price explosion (using 48000 instead of 0.00002)
+      priceAperB_native = priceYperX_native;
       orientationBranch = 'X=A,Y=B';
     } else if (tokenXMint === mintB && tokenYMint === mintA) {
       // X = B, Y = A
       // priceYperX = A/B (native)
-      // We want A/B (native) = priceYperX
-      priceAperB_native = priceYperX_native;
+      // We want B/A (native) = 1 / (A/B) = 1 / priceYperX
+      priceAperB_native = priceYperX_native > 0 ? (1 / priceYperX_native) : undefined;
       orientationBranch = 'X=B,Y=A';
     } else {
       // Mints don't match - this shouldn't happen
@@ -220,8 +221,9 @@ export function calculateMeteoraPrice(
     }
     
     // Convert from native (atomic) units to whole token units
-    // priceAperB_whole = priceAperB_native * 10^(decimalsB - decimalsA)
-    const decimalScale = Math.pow(10, decimalsB - decimalsA);
+    // We want B/A (whole) = (atomicB / atomicA) * 10^(decimalsA - decimalsB)
+    // priceAperB_native is now B/A (atomic)
+    const decimalScale = Math.pow(10, decimalsA - decimalsB);
     const priceAperB_whole = priceAperB_native * decimalScale;
     
     if (!Number.isFinite(priceAperB_whole) || priceAperB_whole <= 0) {
