@@ -414,7 +414,6 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
     const programId = new PublicKey(METEORA_DLMM_PROGRAM_ID);
     
     // Process pools one by one using SDK (SDK handles RPC internally)
-    // Note: We can't batch this easily since SDK.create makes its own RPC calls
     for (const pool of pools) {
       try {
         const poolPk = new PublicKey(pool.id);
@@ -422,10 +421,57 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
         // Use SDK to create DLMM instance which fetches and deserializes pool state
         const dlmmPool = await DLMM.create(connection, poolPk);
         
-        // Extract activeId from the properly deserialized pool
-        const activeId = dlmmPool.activeId ?? dlmmPool.lbPair?.activeId ?? dlmmPool.lbPair?.vParameters?.indexReference;
+        // Try multiple methods to extract activeId
+        let activeId: number | undefined;
         
+        // Method 1: Use getActiveBin() method (recommended by SDK docs)
+        if (typeof dlmmPool.getActiveBin === 'function') {
+          try {
+            const activeBin = await dlmmPool.getActiveBin();
+            activeId = activeBin?.binId ?? activeBin?.id;
+          } catch (err) {
+            // getActiveBin might fail, try other methods
+            try {
+              logger.debug('meteora.activeId.getActiveBin_failed', {
+                pool: pool.id.slice(0, 8),
+                error: String(err),
+                cat: 'meteora'
+              });
+            } catch {}
+          }
+        }
+        
+        // Method 2: Direct property access (fallback)
+        if (activeId === undefined) {
+          activeId = dlmmPool.activeId ?? dlmmPool.lbPair?.activeId;
+        }
+        
+        // Method 3: From vParameters.indexReference (alternative field name)
+        if (activeId === undefined) {
+          activeId = dlmmPool.lbPair?.vParameters?.indexReference;
+        }
+        
+        // Method 4: From poolState if accessible
+        if (activeId === undefined && dlmmPool.poolState) {
+          activeId = dlmmPool.poolState.activeId ?? dlmmPool.poolState.vParameters?.indexReference;
+        }
+        
+        // Validate activeId
         if (activeId !== undefined && activeId !== null && Number.isFinite(activeId)) {
+          // Sanity check: activeId should be within reasonable bounds
+          // Based on IDL constants: MIN_BIN_ID = -443636, MAX_BIN_ID = 443636
+          if (activeId < -443636 || activeId > 443636) {
+            try {
+              logger.warn('meteora.activeId.out_of_bounds', {
+                pool: pool.id.slice(0, 8),
+                activeId,
+                cat: 'meteora'
+              });
+            } catch {}
+            failed++;
+            continue;
+          }
+          
           // Also derive bin array addresses deterministically
           const binArrayAddresses = deriveBinArrays(
             poolPk,
@@ -447,6 +493,7 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
               ctx: {
                 pool: pool.id.slice(0, 8) + '...',
                 activeId: activeId,
+                method: dlmmPool.getActiveBin ? 'getActiveBin' : 'direct',
                 binArrayCount: binArrayAddresses ? Object.keys(binArrayAddresses).filter(k => binArrayAddresses[k as keyof typeof binArrayAddresses]).length : 0
               }
             });
@@ -454,12 +501,13 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
         } else {
           failed++;
           try {
-            logger.debug('meteora.activeId.invalid', {
+            logger.warn('meteora.activeId.not_found', {
               cat: 'meteora',
               ctx: {
                 pool: pool.id.slice(0, 8) + '...',
                 activeId: activeId,
-                reason: 'not_finite_or_null'
+                reason: 'not_finite_or_null',
+                availableProps: Object.keys(dlmmPool || {}).slice(0, 10)
               }
             });
           } catch {}
