@@ -187,17 +187,20 @@ export function calculateMeteoraPrice(
     
     // Now map X/Y to our A/B orientation
     let priceAperB_native: number | undefined;
+    let orientationBranch: string = 'unknown';
     
     if (tokenXMint === mintA && tokenYMint === mintB) {
       // X = A, Y = B
       // priceYperX = B/A (native)
       // We want A/B (native) = 1 / (B/A) = 1 / priceYperX
       priceAperB_native = priceYperX_native > 0 ? (1 / priceYperX_native) : undefined;
+      orientationBranch = 'X=A,Y=B';
     } else if (tokenXMint === mintB && tokenYMint === mintA) {
       // X = B, Y = A
       // priceYperX = A/B (native)
       // We want A/B (native) = priceYperX
       priceAperB_native = priceYperX_native;
+      orientationBranch = 'X=B,Y=A';
     } else {
       // Mints don't match - this shouldn't happen
       try {
@@ -224,6 +227,26 @@ export function calculateMeteoraPrice(
     if (!Number.isFinite(priceAperB_whole) || priceAperB_whole <= 0) {
       return undefined;
     }
+
+    // Diagnostic logging for price calculation
+    try {
+      logger.debug('price.formula.meteora.calculated', {
+        tokenX: tokenXMint.slice(0, 8),
+        tokenY: tokenYMint.slice(0, 8),
+        mintA: mintA.slice(0, 8),
+        mintB: mintB.slice(0, 8),
+        decimalsA,
+        decimalsB,
+        activeId: clampedActiveId,
+        binStep,
+        priceYperX_native,
+        priceAperB_native,
+        decimalScale,
+        priceAperB_whole,
+        orientationBranch,
+        cat: 'price.formula'
+      });
+    } catch {}
 
     return priceAperB_whole;
   } catch (error) {
