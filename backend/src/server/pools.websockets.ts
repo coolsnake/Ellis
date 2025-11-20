@@ -1869,14 +1869,17 @@ function runWebsocketRefreshLoop(): void {
                       price_a_per_b: processedPrice.priceForward,
                       decimals_a: processedPrice.decimalsA,
                       decimals_b: processedPrice.decimalsB,
-                      account_a: accountA,
-                      account_b: accountB,
+                      // CRITICAL FIX: Store vault accounts in canonical order (matching mint_a/mint_b)
+                      account_a: processedPrice.wasSwapped ? accountB : accountA,
+                      account_b: processedPrice.wasSwapped ? accountA : accountB,
                       price_a_per_b_exact: processedPrice.priceForward?.toString(),
                       was_swapped: processedPrice.wasSwapped,
                       native_mint_a: tokenX,
                       native_mint_b: tokenY,
                       native_decimals_a: decA,
                       native_decimals_b: decB,
+                      native_account_a: accountA,
+                      native_account_b: accountB,
                       _pipelineProcessed: true,
                     } as any;
                     const tracker = meteoraBinTrackers.get(poolId);
