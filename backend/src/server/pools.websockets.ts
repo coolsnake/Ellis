@@ -1011,18 +1011,11 @@ function runWebsocketRefreshLoop(): void {
                       }
                       
                       if (processedPrice) {
-                          liquidityPresent: (state as any)?.liquidity != null,
-                          mintA,
-                          mintB,
-                          cat: 'pools'
-                        });
-                      } catch {}
-                      const price_a_per_b = precision.price;
-                      const liqRaw = anyToBigInt((state as any).liquidity ?? 0);
-                      const liq = Number((state as any).liquidity ?? 0);
-                      const tick = Number((state as any).tickSpacing ?? (state as any).tick_spacing ?? 0);
-                      // Skip adding to CLMM list if tickSpacing is invalid (must be > 0 for valid CLMM pools)
-                      if (tick > 0) {
+                        const liqRaw = anyToBigInt((state as any).liquidity ?? 0);
+                        const liq = Number((state as any).liquidity ?? 0);
+                        const tick = Number((state as any).tickSpacing ?? (state as any).tick_spacing ?? 0);
+                        // Skip adding to CLMM list if tickSpacing is invalid (must be > 0 for valid CLMM pools)
+                        if (tick > 0) {
                         const fee = Number((state as any).tradeFeeRate ?? (state as any).feeRate ?? (state as any).fee_rate ?? 0);
                         
                         // CRITICAL VALIDATION: Ensure this is actually a pool account, not a vault
@@ -1186,15 +1179,19 @@ function runWebsocketRefreshLoop(): void {
                           }
                         }
                         try { emit('pool-updates', { source: 'raydium', updatedAmm: d.amm.length, updatedClmm: d.clmm.length, sample: { amm: d.amm.slice(0, 20), clmm: [] }, ts: Date.now() }); } catch {}
-                    // Always use incremental graph updates
-                    try {
-                      const gmod: any = await import('./graph.js');
-                      const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
-                      if (hasDelta) {
-                        await scheduleDexApply('raydium', prev as any);
-                      }
-                    } catch {}
-                      }
+                        // Always use incremental graph updates
+                        try {
+                          const gmod: any = await import('./graph.js');
+                          const hasDelta = (d.amm.length || d.clmm.length || d.addedAmm || d.removedAmm || d.addedClmm || d.removedClmm);
+                          if (hasDelta) {
+                            await scheduleDexApply('raydium', prev as any);
+                          }
+                        } catch {}
+                        } else {
+                          // tick <= 0, invalid pool
+                          try { logger.debug('raydium.ws clmm.skip.invalid_tick', { id: pk58, tick, cat: 'pools' }); } catch {}
+                          updated = true;
+                        }
                       } else {
                         // Price calculation failed, skip this update
                         wsDeltaStats.raydium.skipped += 1;
@@ -1202,11 +1199,6 @@ function runWebsocketRefreshLoop(): void {
                         try { logger.debug('raydium.ws clmm.skip.no_price', { id: pk58, cat: 'pools' }); } catch {}
                         updated = true;
                       }
-                    } else {
-                        try { logger.debug('raydium.ws clmm.skip.invalid_tick', { id: pk58, tick, cat: 'pools' }); } catch {}
-                        updated = true; // Mark as processed to avoid further handling
-                      }
-                      updated = true;
                     }
                   }
                   // Try AMM V4 decode
