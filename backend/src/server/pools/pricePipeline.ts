@@ -151,6 +151,22 @@ export function processPriceThroughPipeline(
     // STEP 1: Canonicalize orientation
     const canonical = canonicalizeOrientation(input);
     
+    // Diagnostic logging to trace canonicalization
+    try {
+      logger.info('price.pipeline.canonicalization', {
+        dex: input.dex,
+        pool: input.poolId?.slice(0, 8),
+        input_mintA: input.mintA.slice(0, 8),
+        input_mintB: input.mintB.slice(0, 8),
+        input_price: input.rawPrice,
+        canonical_mintA: canonical.mintA.slice(0, 8),
+        canonical_mintB: canonical.mintB.slice(0, 8),
+        canonical_price: canonical.price,
+        wasSwapped: canonical.wasSwapped,
+        cat: 'price.pipeline'
+      });
+    } catch {}
+    
     // STEP 2: Use the price directly - NO calibration, NO rescaling
     const forward = canonical.price;
 
