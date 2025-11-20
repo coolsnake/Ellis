@@ -436,9 +436,10 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
           if (acc?.data) {
             try {
               // OPTIMIZATION: Read activeId directly from pool data (much more reliable than SDK decode)
-              // Meteora DLMM pool structure has activeId at offset 240 as i32 (4 bytes, signed little-endian)
-              // Reference: backend/scripts/analyze-meteora-pool.ts line 75
-              const ACTIVE_ID_OFFSET = 240;
+              // Meteora DLMM pool structure has activeId at offset 180 as i32 (4 bytes, signed little-endian)
+              // binStep is at offset 176 as u16 (2 bytes, unsigned little-endian)
+              // Reference: backend/scripts/analyze-meteora-pool.ts lines 114-120
+              const ACTIVE_ID_OFFSET = 180;
               
               if (acc.data.length < ACTIVE_ID_OFFSET + 4) {
                 failed++;
@@ -456,7 +457,9 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
               }
               
               // Read activeId as signed 32-bit little-endian integer
-              const activeId = Buffer.from(acc.data).readInt32LE(ACTIVE_ID_OFFSET);
+              // Ensure we handle Uint8Array properly
+              const buffer = Buffer.isBuffer(acc.data) ? acc.data : Buffer.from(acc.data);
+              const activeId = buffer.readInt32LE(ACTIVE_ID_OFFSET);
               
               if (activeId !== undefined && activeId !== null) {
                 // ENHANCEMENT: Also derive bin array addresses deterministically
