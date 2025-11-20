@@ -80,7 +80,7 @@ export const ExecutorControl: React.FC<ExecutorControlProps> = ({ apiBase, socke
           enabled: true,
           minProfitBps: status?.config?.minProfitBps || 50,
           maxConcurrentExecutions: status?.config?.maxConcurrentExecutions || 1,
-          sizeUsd: status?.config?.sizeUsd || 100,
+          sizeUsd: status?.config?.sizeUsd || 1,
           slippageBps: status?.config?.slippageBps || 50,
           cooldownMs: status?.config?.cooldownMs || 5000,
         }),

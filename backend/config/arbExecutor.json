@@ -4,7 +4,7 @@
   "maxConcurrentExecutions": 1,
   "executionTimeoutMs": 30000,
   "cooldownMs": 5000,
-  "sizeUsd": 100,
+  "sizeUsd": 1,
   "slippageBps": 50,
   "maxHops": 3,
   "minReservesUsd": 10000,
