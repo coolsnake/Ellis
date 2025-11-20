@@ -390,7 +390,7 @@ async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise<Map<st
  * Pre-populate execution cache with Meteora active bin IDs and bin array addresses
  * This eliminates 100-200ms RPC calls per Meteora swap during transaction building
  */
-async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void> {
+export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void> {
   if (pools.length === 0) return;
   
   try {
