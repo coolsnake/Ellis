@@ -230,7 +230,7 @@ export function calculateMeteoraPrice(
 
     // Diagnostic logging for price calculation
     try {
-      logger.debug('price.formula.meteora.calculated', {
+      logger.info('price.formula.meteora.calculated', {
         tokenX: tokenXMint.slice(0, 8),
         tokenY: tokenYMint.slice(0, 8),
         mintA: mintA.slice(0, 8),

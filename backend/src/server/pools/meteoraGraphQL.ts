@@ -9,6 +9,7 @@ import { poolsMetrics } from '../pools.metrics.js';
 import { loadJupiterTokenMap } from '../../utils/tokens.js';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { withRpcLimit } from '../../utils/rpcLimiter.js';
+import { executionCache } from '../../execution/cache.js';
 
 export async function fetchMeteoraGraphQL(mints: string[]): Promise<any[]> {
   const CACHE_PATH = joinPath(CONFIG.cacheDir, 'meteora-graphql-raw.json');
@@ -475,6 +476,83 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
   }
   
   logger.info('meteora.graphql.normalized', { clmm: clmm.length, cat: 'meteora' });
+  
+  // OPTIMIZATION: Fetch fresh activeIds from on-chain data
+  // This ensures we have the most up-to-date activeId for accurate price calculations
+  // The GraphQL indexer data may be stale
+  try {
+    const { populateMeteoraActiveIds } = await import('./meteora.js');
+    await populateMeteoraActiveIds(clmm);
+    
+    // Update pool objects with fresh activeIds from cache and recalculate prices
+    let priceUpdates = 0;
+    for (const pool of clmm) {
+      try {
+        const cached = executionCache.getHot(pool.id);
+        if (cached?.activeId !== undefined && cached.activeId !== null) {
+          const oldActiveId = (pool as any).active_id;
+          (pool as any).active_id = cached.activeId;
+          
+          // Only recalculate if activeId changed
+          if (oldActiveId !== cached.activeId) {
+            // Recalculate price with fresh activeId
+            if (pool.bin_step && pool.mint_a && pool.mint_b && pool.decimals_a !== undefined && pool.decimals_b !== undefined) {
+              const tokenXMint = (pool as any).native_mint_a;
+              const tokenYMint = (pool as any).native_mint_b;
+              
+              if (tokenXMint && tokenYMint) {
+                const processed = processPriceThroughPipeline({
+                  mintA: pool.mint_a,
+                  mintB: pool.mint_b,
+                  decimalsA: pool.decimals_a,
+                  decimalsB: pool.decimals_b,
+                  poolId: pool.id,
+                  dex: 'Meteora',
+                  poolType: 'clmm',
+                  activeId: cached.activeId,
+                  binStep: pool.bin_step,
+                  tokenXMint,
+                  tokenYMint,
+                });
+                
+                if (processed) {
+                  (pool as any).price_a_per_b = processed.priceForward;
+                  priceUpdates++;
+                  
+                  logger.info('meteora.graphql.price_updated_from_onchain', {
+                    pool: pool.id.slice(0, 8),
+                    oldActiveId,
+                    newActiveId: cached.activeId,
+                    newPrice: processed.priceForward,
+                    cat: 'meteora'
+                  });
+                }
+              }
+            }
+          }
+        }
+      } catch (err) {
+        logger.debug('meteora.graphql.activeId_update_failed', {
+          pool: pool.id.slice(0, 8),
+          error: String(err),
+          cat: 'meteora'
+        });
+      }
+    }
+    
+    if (priceUpdates > 0) {
+      logger.info('meteora.graphql.onchain_enrichment_complete', {
+        poolCount: clmm.length,
+        priceUpdates,
+        cat: 'meteora'
+      });
+    }
+  } catch (err) {
+    logger.warn('meteora.graphql.onchain_enrichment_failed', {
+      error: String(err),
+      cat: 'meteora'
+    });
+  }
   
   return { amm: [], clmm: clmm };
 }
