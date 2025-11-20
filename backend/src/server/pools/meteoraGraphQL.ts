@@ -307,9 +307,13 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
     if (pool.tokenYMint) allMints.add(pool.tokenYMint);
   }
   
+  // Create map to collect token program IDs during decimal resolution
+  const tokenPrograms = new Map<string, 'spl-token' | 'token-2022'>();
+  
   const decimalsMapPromise = resolveManyDecimals(Array.from(allMints), { 
     logger, 
-    normalizeMode: true 
+    normalizeMode: true,
+    tokenPrograms // Pass the map to collect token program info
   });
 
   const [vaultBalances, decimalsMap] = await Promise.all([
@@ -437,6 +441,10 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
       const finalAmountA = wasSwapped ? amount_b_whole : amount_a_whole;
       const finalAmountB = wasSwapped ? amount_a_whole : amount_b_whole;
 
+      // Determine token programs (use native mints for lookup since that's what we fetched)
+      const tokenProgramA = tokenPrograms.get(mint_a) || 'spl-token';
+      const tokenProgramB = tokenPrograms.get(mint_b) || 'spl-token';
+
       clmm.push({
         id,
         dex: 'Meteora',
@@ -463,6 +471,8 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
         native_decimals_b: decB,
         native_reserve_a_raw: pool.reserveX ? String(pool.reserveX) : undefined,
         native_reserve_b_raw: pool.reserveY ? String(pool.reserveY) : undefined,
+        token_program_a: wasSwapped ? tokenProgramB : tokenProgramA,
+        token_program_b: wasSwapped ? tokenProgramA : tokenProgramB,
         amount_a_whole: finalAmountA,
         amount_b_whole: finalAmountB,
         liquidity_display: tvl_usd,
@@ -475,7 +485,12 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
     }
   }
   
-  logger.info('meteora.graphql.normalized', { clmm: clmm.length, cat: 'meteora' });
+  logger.info('meteora.graphql.normalized', { 
+    clmm: clmm.length,
+    tokenProgramsDetected: tokenPrograms.size,
+    token2022Count: Array.from(tokenPrograms.values()).filter(p => p === 'token-2022').length,
+    cat: 'meteora' 
+  });
   
   // OPTIMIZATION: Fetch fresh activeIds from on-chain data
   // This ensures we have the most up-to-date activeId for accurate price calculations

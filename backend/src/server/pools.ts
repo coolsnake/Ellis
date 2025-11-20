@@ -1555,6 +1555,85 @@ export async function getRaydiumPoolsGraphQL(force = false): Promise<PoolsPayloa
     // Emit to websocket
     try { emit('pools:raydium', normalized); } catch {}
     
+    // Populate execution cache with Raydium pool data (GraphQL path)
+    try {
+      const { executionCache } = await import('../execution/cache.js');
+      
+      // Populate AMM pools
+      for (const pool of normalized.amm || []) {
+        const existing = executionCache.getStatic(pool.id) || {} as any;
+        const staticData: any = {
+          ...existing,
+          programId: '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8',
+        };
+        
+        // Store pool mints and decimals
+        if (pool.mint_a) staticData.mint_a = pool.mint_a;
+        if (pool.mint_b) staticData.mint_b = pool.mint_b;
+        if (pool.decimals_a != null) staticData.decimals_a = pool.decimals_a;
+        if (pool.decimals_b != null) staticData.decimals_b = pool.decimals_b;
+        
+        // Store market accounts for Raydium AMM
+        if (pool.market_id) staticData.market_id = pool.market_id;
+        if (pool.market_program_id) staticData.market_program_id = pool.market_program_id;
+        if (pool.market_bids) staticData.market_bids = pool.market_bids;
+        if (pool.market_asks) staticData.market_asks = pool.market_asks;
+        if (pool.market_event_queue) staticData.market_event_queue = pool.market_event_queue;
+        if (pool.market_base_vault) staticData.market_base_vault = pool.market_base_vault;
+        if (pool.market_quote_vault) staticData.market_quote_vault = pool.market_quote_vault;
+        if (pool.market_authority) staticData.market_authority = pool.market_authority;
+        
+        // Store AMM authority (use hardcoded v4 authority)
+        staticData.amm_authority = (CONFIG as any)?.raydium?.ammV4Authority || '5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1';
+        if ((pool as any).amm_open_orders || (pool as any).open_orders) {
+          staticData.amm_open_orders = (pool as any).amm_open_orders || (pool as any).open_orders;
+        }
+        if ((pool as any).amm_target_orders || (pool as any).target_orders) {
+          staticData.amm_target_orders = (pool as any).amm_target_orders || (pool as any).target_orders;
+        }
+        if (pool.lp_mint) staticData.lp_mint = pool.lp_mint;
+        
+        // Store vault/account references
+        if (pool.account_a) staticData.account_a = pool.account_a;
+        if (pool.account_b) staticData.account_b = pool.account_b;
+        
+        executionCache.setStatic(pool.id, staticData);
+      }
+      
+      // Populate CLMM pools
+      for (const pool of normalized.clmm || []) {
+        const existing = executionCache.getStatic(pool.id) || {} as any;
+        const staticData: any = {
+          ...existing,
+          programId: 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK',
+          dex: 'Raydium',
+        };
+        
+        if (pool.mint_a) staticData.mint_a = pool.mint_a;
+        if (pool.mint_b) staticData.mint_b = pool.mint_b;
+        if (pool.decimals_a != null) staticData.decimals_a = pool.decimals_a;
+        if (pool.decimals_b != null) staticData.decimals_b = pool.decimals_b;
+        if ((pool as any).observation_state) staticData.observation_state = (pool as any).observation_state;
+        if ((pool as any).ex_bitmap) staticData.ex_bitmap = (pool as any).ex_bitmap;
+        if (pool.account_a) staticData.account_a = pool.account_a;
+        if (pool.account_b) staticData.account_b = pool.account_b;
+        if (pool.tick_spacing) staticData.tick_spacing = pool.tick_spacing;
+        
+        executionCache.setStatic(pool.id, staticData);
+      }
+      
+      logger.info('raydium.graphql.execution_cache.populated', {
+        amm: normalized.amm.length,
+        clmm: normalized.clmm.length,
+        cat: 'raydium'
+      });
+    } catch (e: any) {
+      logger.warn('raydium.graphql.execution_cache.failed', {
+        error: String(e?.message || e),
+        cat: 'raydium'
+      });
+    }
+    
     logger.info('raydium.graphql.complete', { 
       amm: normalized.amm.length, 
       clmm: normalized.clmm.length, 
@@ -1781,6 +1860,44 @@ export async function getOrcaPoolsGraphQL(force = false): Promise<PoolsPayload> 
     // Emit to websocket
     try { emit('pools:orca', normalized); } catch {}
     
+    // Populate execution cache with Orca Whirlpool pool data (GraphQL path)
+    try {
+      const { executionCache } = await import('../execution/cache.js');
+      for (const pool of normalized.clmm || []) {
+        const existing = executionCache.getStatic(pool.id) || {} as any;
+        const staticData: any = {
+          ...existing,
+          programId: 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc',
+          dex: 'Orca',
+        };
+        
+        if (pool.mint_a) staticData.mint_a = pool.mint_a;
+        if (pool.mint_b) staticData.mint_b = pool.mint_b;
+        if (pool.decimals_a != null) staticData.decimals_a = pool.decimals_a;
+        if (pool.decimals_b != null) staticData.decimals_b = pool.decimals_b;
+        if ((pool as any).oracle) staticData.oracle = (pool as any).oracle;
+        if ((pool as any).token_vault_a) staticData.token_vault_a = (pool as any).token_vault_a;
+        if ((pool as any).token_vault_b) staticData.token_vault_b = (pool as any).token_vault_b;
+        if (pool.account_a) staticData.account_a = pool.account_a;
+        if (pool.account_b) staticData.account_b = pool.account_b;
+        if (pool.tick_spacing) staticData.tick_spacing = pool.tick_spacing;
+        
+        executionCache.setStatic(pool.id, staticData);
+      }
+      
+      logger.info('orca.graphql.execution_cache.populated', {
+        clmm: normalized.clmm.length,
+        withOracle: (normalized.clmm || []).filter((p: any) => p.oracle).length,
+        withVaults: (normalized.clmm || []).filter((p: any) => p.token_vault_a && p.token_vault_b).length,
+        cat: 'orca'
+      });
+    } catch (e: any) {
+      logger.warn('orca.graphql.execution_cache.failed', {
+        error: String(e?.message || e),
+        cat: 'orca'
+      });
+    }
+    
     logger.info('orca.graphql.complete', { 
       clmm: normalized.clmm.length, 
       cat: 'orca' 
@@ -1972,6 +2089,49 @@ export async function getMeteoraPoolsGraphQL(force = false): Promise<PoolsPayloa
     
     // Emit to websocket
     try { emit('pools:meteora', normalized); } catch {}
+    
+    // Populate execution cache with Meteora DLMM pool data (GraphQL path)
+    try {
+      const { executionCache } = await import('../execution/cache.js');
+      for (const pool of normalized.clmm || []) {
+        const existing = executionCache.getStatic(pool.id) || {} as any;
+        const staticData: any = {
+          ...existing,
+          programId: 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo',
+          dex: 'Meteora',
+        };
+        
+        if (pool.mint_a) staticData.mint_a = pool.mint_a;
+        if (pool.mint_b) staticData.mint_b = pool.mint_b;
+        if (pool.decimals_a != null) staticData.decimals_a = pool.decimals_a;
+        if (pool.decimals_b != null) staticData.decimals_b = pool.decimals_b;
+        if ((pool as any).token_program_a) staticData.token_program_a = (pool as any).token_program_a;
+        if ((pool as any).token_program_b) staticData.token_program_b = (pool as any).token_program_b;
+        if ((pool as any).bin_array_bitmap_extension) {
+          staticData.bin_array_bitmap_extension = (pool as any).bin_array_bitmap_extension;
+        }
+        if ((pool as any).bin_array_lower) staticData.bin_array_lower = (pool as any).bin_array_lower;
+        if ((pool as any).bin_array_upper) staticData.bin_array_upper = (pool as any).bin_array_upper;
+        if (pool.account_a) staticData.account_a = pool.account_a;
+        if (pool.account_b) staticData.account_b = pool.account_b;
+        if (pool.tick_spacing) staticData.tick_spacing = pool.tick_spacing;
+        if ((pool as any).bin_step) staticData.binStep = (pool as any).bin_step;
+        
+        executionCache.setStatic(pool.id, staticData);
+      }
+      
+      logger.info('meteora.graphql.execution_cache.populated', {
+        clmm: normalized.clmm.length,
+        withBitmapExt: (normalized.clmm || []).filter((p: any) => p.bin_array_bitmap_extension).length,
+        withTokenPrograms: (normalized.clmm || []).filter((p: any) => p.token_program_a && p.token_program_b).length,
+        cat: 'meteora'
+      });
+    } catch (e: any) {
+      logger.warn('meteora.graphql.execution_cache.failed', {
+        error: String(e?.message || e),
+        cat: 'meteora'
+      });
+    }
     
     logger.info('meteora.graphql.complete', { 
       clmm: normalized.clmm.length, 

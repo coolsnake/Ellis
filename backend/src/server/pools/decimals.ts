@@ -117,12 +117,14 @@ export async function resolveManyDecimals(
     logger?: any; 
     batchSize?: number;
     normalizeMode?: boolean; // NEW: Set true during pool normalization
+    tokenPrograms?: Map<string, 'spl-token' | 'token-2022'>; // Optional: collect token program IDs
   }
 ): Promise<Map<string, number>> {
   const result = new Map<string, number>();
   const log = options?.logger || logger;
   const batchSize = options?.batchSize ?? 100;
   const normalizeMode = options?.normalizeMode ?? false; // Default: performance mode
+  const tokenPrograms = options?.tokenPrograms; // Optional token program collection
   
   // PHASE 1: Check anchors (ALWAYS trust these)
   const needsLookup = new Set<string>();
@@ -207,6 +209,12 @@ export async function resolveManyDecimals(
                 rpcValidated++;
                 // Remove from Jupiter lookup queue
                 needsJupiter.delete(mint);
+                
+                // Store token program type if map provided
+                if (tokenPrograms) {
+                  const program = owner === TOKEN_2022_PROGRAM_ID_STR ? 'token-2022' : 'spl-token';
+                  tokenPrograms.set(mint, program);
+                }
               } else {
                 rpcFailed++;
               }
@@ -317,6 +325,12 @@ export async function resolveManyDecimals(
                 if (decimals <= 18) {
                   result.set(mint, decimals);
                   resolveCache.set(mint, decimals);
+                  
+                  // Store token program type if map provided
+                  if (tokenPrograms) {
+                    const program = owner === TOKEN_2022_PROGRAM_ID_STR ? 'token-2022' : 'spl-token';
+                    tokenPrograms.set(mint, program);
+                  }
                 }
               }
             } catch {}

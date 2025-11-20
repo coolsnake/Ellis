@@ -311,9 +311,13 @@ export async function normalizeOrcaGraphQL(raw: any[]): Promise<PoolsPayload> {
     if (pool.tokenMintB) allMints.add(pool.tokenMintB);
   }
   
+  // Create map to collect token program IDs during decimal resolution
+  const tokenPrograms = new Map<string, 'spl-token' | 'token-2022'>();
+  
   const decimalsMapPromise = resolveManyDecimals(Array.from(allMints), { 
     logger, 
-    normalizeMode: true 
+    normalizeMode: true,
+    tokenPrograms // Pass the map to collect token program info
   });
 
   const [vaultBalances, decimalsMap] = await Promise.all([
