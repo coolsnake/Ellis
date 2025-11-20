@@ -3557,11 +3557,8 @@ async fn arb_graph_snapshot(
     Json(handle_graph_snapshot(state, req).await)
 }
 
-// Centralized price conversion: Apply fees to price.
-// CRITICAL: price_a_per_b from backend represents "A per 1 B" where A/B are canonicalized mints.
-// For forward edges: source=A, target=B, price_a_per_b = A/B
-// For reverse edges: insert_bidirectional_edges already inverts to get B/A before calling this.
-// So price here is ALREADY "target per 1 source" - NO NEED TO INVERT AGAIN!
+// Centralized price conversion: A-per-1-B (backend) -> B-per-1-A (detector), apply fee once.
+// price_a_per_b always represents "source-per-1-target". To express target-per-1-source we invert.
 #[inline]
 fn edge_rate_effective_local(px_opt: Option<f64>, fee_bps_opt: Option<i64>) -> (f64, f64) {
     let fee_bps: f64 = (fee_bps_opt.unwrap_or(0)) as f64;
@@ -3569,9 +3566,9 @@ fn edge_rate_effective_local(px_opt: Option<f64>, fee_bps_opt: Option<i64>) -> (
     if !(px.is_finite() && px > 0.0) {
         return (0.0, 0.0);
     }
-    // FIX: Don't invert - price is already oriented correctly as "target per source"
-    // The backend sends mint_a/mint_b prices, and insert_bidirectional_edges handles inversion
-    let base: f64 = px;
+    // price_a_per_b is always "source-per-1-target", so we always invert to get rate_effective
+    // rate_effective = "target-per-1-source" (what we get when traversing the edge)
+    let base: f64 = 1.0 / px;
     if !(base.is_finite() && base > 0.0) {
         return (0.0, 0.0);
     }

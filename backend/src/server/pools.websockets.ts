@@ -957,81 +957,60 @@ function runWebsocketRefreshLoop(): void {
                       const mintA = ((state as any).mintA || (state as any).tokenMintA)?.toBase58?.() || '';
                       const mintB = ((state as any).mintB || (state as any).tokenMintB)?.toBase58?.() || '';
                       const sqrtRaw = anyToBigInt((state as any).sqrtPriceX64 ?? (state as any).sqrt_price_x64 ?? (state as any).sqrtPrice ?? 0);
-                      const precision = await (async () => {
-                        try {
-                          // Get decimals from pool cache (fast memory lookup)
-                          const cachedRayPools = raydiumCache.data || { amm: [], clmm: [] };
-                          const existing = cachedRayPools.clmm.find(p => p.id === pk58);
-                          let decA = existing?.decimals_a;
-                          let decB = existing?.decimals_b;
-                          
-                          // Fallback to execution cache if not in pool cache
-                          if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
-                            try {
-                              const { executionCache } = await import('../execution/cache.js');
-                              const cached = executionCache.getStatic(pk58);
-                              if (!decA && cached?.decimals_a) decA = cached.decimals_a;
-                              if (!decB && cached?.decimals_b) decB = cached.decimals_b;
-                            } catch {}
-                          }
-                          
-                          // Only as last resort, resolve via centralized resolver (rare for known pools)
-                          if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
-                            try {
-                              const { resolveDecimals } = await import('./pools/decimals.js');
-                              if (!Number.isFinite(decA) && mintA) {
-                                decA = await resolveDecimals(mintA);
-                              }
-                              if (!Number.isFinite(decB) && mintB) {
-                                decB = await resolveDecimals(mintB);
-                              }
-                            } catch {
-                              if (!Number.isFinite(decA)) decA = 9;
-                              if (!Number.isFinite(decB)) decB = 6;
-                            }
-                          } else {
-                            decA = Number(decA);
-                            decB = Number(decB);
-                          }
-                          
-                          if (!Number.isFinite(decA)) decA = undefined;
-                          if (!Number.isFinite(decB)) decB = undefined;
-                          let ratio = (sqrtRaw && decA != null && decB != null)
-                            ? sqrtPriceX64ToPriceRatio(sqrtRaw, decA, decB)
-                            : null;
-                          let price: number | undefined;
-                          if (ratio?.float && Number.isFinite(ratio.float) && ratio.float > 0) {
-                            price = ratio.float;
-                          }
-                          if ((!price || price <= 0) && sqrtRaw && decA != null && decB != null) {
-                          try {
-                            const SqrtPriceMath = rmod?.SqrtPriceMath || rmod?.Clmm?.SqrtPriceMath;
-                            if (SqrtPriceMath?.sqrtPriceX64ToPrice) {
-                                const priceFromSdk = SqrtPriceMath.sqrtPriceX64ToPrice(sqrtRaw, decA, decB);
-                              if (priceFromSdk != null && Number(priceFromSdk) > 0 && Number.isFinite(Number(priceFromSdk))) {
-                                  price = Number(priceFromSdk);
-                              }
-                            }
-                          } catch {}
-                          }
-                          if ((!price || price <= 0) && sqrtRaw && decA != null && decB != null) {
-                            try {
-                              const ratioApprox = Number(sqrtRaw) / Math.pow(2, 64);
-                              const scale = Math.pow(10, decB - decA);
-                              const cand = scale / (ratioApprox * ratioApprox);
-                              if (Number.isFinite(cand) && cand > 0) price = cand;
-                            } catch {}
-                          }
-                          return { price, decA, decB, ratio };
-                        } catch {
-                          return { price: undefined, decA: undefined, decB: undefined, ratio: null };
-                        }
-                      })();
+                      
+                      // FIX: Use price pipeline for consistent orientation handling (same as Meteora fix)
+                      // Get decimals for the NATIVE mint order (not canonicalized cached order)
+                      let processedPrice: any = undefined;
                       try {
-                        logger.debug('raydium.ws clmm.fields', {
-                          id: pk58,
-                          priceCandidate: precision.price,
-                          ratio: precision.ratio ? { num: precision.ratio.numerator.toString(), den: precision.ratio.denominator.toString() } : null,
+                        let decA: number | undefined;
+                        let decB: number | undefined;
+                        
+                        // Get decimals for native mints (mintA/mintB from on-chain state)
+                        try {
+                          const { resolveDecimals } = await import('./pools/decimals.js');
+                          if (mintA) decA = await resolveDecimals(mintA);
+                          if (mintB) decB = await resolveDecimals(mintB);
+                        } catch {
+                          // Fallback to defaults
+                          if (!Number.isFinite(decA)) decA = 9;
+                          if (!Number.isFinite(decB)) decB = 6;
+                        }
+                        
+                        if (Number.isFinite(decA) && Number.isFinite(decB) && sqrtRaw) {
+                          const { processPriceThroughPipeline } = await import('./pools/pricePipeline.js');
+                          processedPrice = processPriceThroughPipeline({
+                            mintA,
+                            mintB,
+                            decimalsA: decA!,
+                            decimalsB: decB!,
+                            poolId: pk58,
+                            dex: 'Raydium',
+                            poolType: 'clmm',
+                            sqrtPriceX64: sqrtRaw,
+                          });
+                          
+                          if (!processedPrice) {
+                            try {
+                              logger.warn('raydium.ws.clmm.price.pipeline_failed', {
+                                id: pk58,
+                                mintA: mintA?.slice(0, 8),
+                                mintB: mintB?.slice(0, 8),
+                                cat: 'pools'
+                              });
+                            } catch {}
+                          }
+                        }
+                      } catch (err: any) {
+                        try {
+                          logger.warn('raydium.ws.clmm.price.calc_failed', {
+                            id: pk58,
+                            error: String(err?.message || err),
+                            cat: 'pools'
+                          });
+                        } catch {}
+                      }
+                      
+                      if (processedPrice) {
                           liquidityPresent: (state as any)?.liquidity != null,
                           mintA,
                           mintB,
@@ -1080,11 +1059,12 @@ function runWebsocketRefreshLoop(): void {
                           // Don't throw here, as some SDK versions might use different field names
                         }
                         
+                        // Use pipeline-processed result (already canonicalized)
                         const item: ClmmPool = {
                           id: pk58,
                           dex: 'Raydium',
-                          mint_a: mintA,
-                          mint_b: mintB,
+                          mint_a: processedPrice.mintA,
+                          mint_b: processedPrice.mintB,
                           fee_bps: fee,
                           sqrt_price_x64: Number.isFinite(Number(sqrtRaw)) ? Number(sqrtRaw) : Number((state as any).sqrtPriceX64 ?? (state as any).sqrt_price_x64 ?? (state as any).sqrtPrice ?? 0),
                           sqrt_price_x64_raw: sqrtRaw ? sqrtRaw.toString() : undefined,
@@ -1094,12 +1074,13 @@ function runWebsocketRefreshLoop(): void {
                           updated_ms: Date.now(),
                           pool_kind: 'clmm',
                           liquidity_display: liq,
-                          price_a_per_b,
-                          price_a_per_b_num: precision.ratio ? precision.ratio.numerator.toString() : undefined,
-                          price_a_per_b_den: precision.ratio ? precision.ratio.denominator.toString() : undefined,
-                          price_a_per_b_exact: ratioToDecimalString(precision.ratio) ?? undefined,
-                          decimals_a: precision.decA,
-                          decimals_b: precision.decB,
+                          price_a_per_b: processedPrice.priceForward,
+                          decimals_a: processedPrice.decimalsA,
+                          decimals_b: processedPrice.decimalsB,
+                          was_swapped: processedPrice.wasSwapped,
+                          native_mint_a: mintA,
+                          native_mint_b: mintB,
+                          _pipelineProcessed: true,
                         } as any;
                         
                         // Validate decoded pool before applying
@@ -1112,9 +1093,8 @@ function runWebsocketRefreshLoop(): void {
                           throw new Error(`validation failed: ${validation.reasons.join(',')}`); // Skip this update
                         }
                         
-                        // Canonicalize pool to ensure consistent mint orientation and price
-                        const [canonicalItem] = canonicalizePools([{ ...item }]);
-                        const finalItem = canonicalItem || item;
+                        // Pipeline already canonicalized, use item directly
+                        const finalItem = item;
                         
                         const prev = raydiumCache.data || { amm: [], clmm: [] };
                         const next: PoolsPayload = { amm: prev.amm.slice(), clmm: prev.clmm.slice() };
@@ -1214,7 +1194,15 @@ function runWebsocketRefreshLoop(): void {
                         await scheduleDexApply('raydium', prev as any);
                       }
                     } catch {}
+                      }
                       } else {
+                        // Price calculation failed, skip this update
+                        wsDeltaStats.raydium.skipped += 1;
+                        incrementSkipReason('raydium', 'price_calc_failed');
+                        try { logger.debug('raydium.ws clmm.skip.no_price', { id: pk58, cat: 'pools' }); } catch {}
+                        updated = true;
+                      }
+                    } else {
                         try { logger.debug('raydium.ws clmm.skip.invalid_tick', { id: pk58, tick, cat: 'pools' }); } catch {}
                         updated = true; // Mark as processed to avoid further handling
                       }
@@ -1760,54 +1748,34 @@ function runWebsocketRefreshLoop(): void {
                   if (!Number.isFinite(decA)) decA = undefined;
                   if (!Number.isFinite(decB)) decB = undefined;
                   
-                  let price_a_per_b: number | undefined;
-                  if (Number.isFinite(activeId as any) && Number.isFinite(binStep as any) && decA != null && decB != null) {
+                  // FIX: Use the price pipeline for consistent orientation handling
+                  // This ensures WebSocket updates respect canonicalization the same way HTTP does
+                  let processedPrice: any = undefined;
+                  if (Number.isFinite(activeId as any) && Number.isFinite(binStep as any) && decA != null && decB != null && tokenX && tokenY) {
                       try {
-                        const f = Math.pow(1 + binStep / 10000, 1); // More stable: 1.0001 = 1 + 0.0001
+                        const { processPriceThroughPipeline } = await import('./pools/pricePipeline.js');
+                        processedPrice = processPriceThroughPipeline({
+                          mintA: tokenX,
+                          mintB: tokenY,
+                          decimalsA: decA,
+                          decimalsB: decB,
+                          poolId,
+                          dex: 'Meteora',
+                          poolType: 'clmm',
+                          activeId: Number(activeId),
+                          binStep: Number(binStep),
+                          tokenXMint: tokenX,
+                          tokenYMint: tokenY,
+                        });
                         
-                        // CRITICAL: Guard against overflow by clamping activeId
-                        const clampedActiveId = Math.max(-100000, Math.min(100000, Number(activeId)));
-                        
-                        // Use log-space calculation to avoid overflow
-                        // log(price) = activeId * log(f) + (decA - decB) * log(10)
-                        const logPrice = clampedActiveId * Math.log(f) + ((decA as number) - (decB as number)) * Math.log(10);
-                        
-                        // Convert back from log space with overflow guard
-                        if (Math.abs(logPrice) < 700) { // e^700 ≈ 1e304, safe limit
-                          const bPerA = Math.exp(logPrice);
-                          
-                          if (Number.isFinite(bPerA) && bPerA > 0) {
-                            // bPerA is already B per 1 A (which is 1/A per B)
-                            // We want A per B, so take reciprocal
-                            price_a_per_b = 1 / bPerA;
-                            
-                            // Sanity check: price should be in reasonable range
-                            if (!Number.isFinite(price_a_per_b) || price_a_per_b <= 0 || price_a_per_b > 1e15) {
-                              price_a_per_b = undefined;
-                              try {
-                                logger.warn('meteora.ws.price.overflow', {
-                                  id: poolId,
-                                  activeId: Number(activeId),
-                                  clampedActiveId,
-                                  binStep,
-                                  logPrice,
-                                  bPerA,
-                                  computed: price_a_per_b,
-                                  cat: 'pools'
-                                });
-                              } catch {}
-                            }
-                          }
-                        } else {
-                          // Price is too extreme, log and skip
+                        if (!processedPrice) {
                           try {
-                            logger.warn('meteora.ws.price.extreme', {
+                            logger.warn('meteora.ws.price.pipeline_failed', {
                               id: poolId,
                               activeId: Number(activeId),
-                              clampedActiveId,
-                              binStep,
-                              logPrice,
-                              wouldOverflow: true,
+                              binStep: Number(binStep),
+                              tokenX: tokenX?.slice(0, 8),
+                              tokenY: tokenY?.slice(0, 8),
                               cat: 'pools'
                             });
                           } catch {}
@@ -1826,7 +1794,7 @@ function runWebsocketRefreshLoop(): void {
                         } catch {}
                       }
                   }
-                  if (tokenX && tokenY) {
+                  if (tokenX && tokenY && processedPrice) {
                     const tickSpacing = Number.isFinite(binStep as any) ? Number(binStep) : 0;
                     const liquidityRaw = anyToBigInt((state as any)?.liquidity ?? 0);
                     const liquidity = liquidityRaw ? Number(liquidityRaw) : Number((state as any)?.liquidity ?? 0);
@@ -1849,11 +1817,12 @@ function runWebsocketRefreshLoop(): void {
                       throw new Error('derived account cannot be decoded as pool');
                     }
                     
+                    // Use pipeline-processed price and mints (already canonicalized)
                     const item: ClmmPool = {
                       id: poolId,
                       dex: 'Meteora',
-                      mint_a: tokenX,
-                      mint_b: tokenY,
+                      mint_a: processedPrice.mintA,
+                      mint_b: processedPrice.mintB,
                       fee_bps: Number.isFinite(feeBps) ? feeBps : 0,
                       sqrt_price_x64: sqrtPriceRaw ? Number(sqrtPriceRaw) : Number((state as any)?.sqrtPriceX64 ?? (state as any)?.sqrt_price_x64 ?? 0),
                       sqrt_price_x64_raw: sqrtPriceRaw ? sqrtPriceRaw.toString() : undefined,
@@ -1862,12 +1831,18 @@ function runWebsocketRefreshLoop(): void {
                       'tick_spacing': tickSpacing,
                       updated_ms: Date.now(),
                       pool_kind: 'clmm',
-                      price_a_per_b: price_a_per_b && price_a_per_b > 0 ? price_a_per_b : undefined,
-                      decimals_a: Number.isFinite(decA as any) ? Number(decA) : undefined,
-                      decimals_b: Number.isFinite(decB as any) ? Number(decB) : undefined,
+                      price_a_per_b: processedPrice.priceForward,
+                      decimals_a: processedPrice.decimalsA,
+                      decimals_b: processedPrice.decimalsB,
                       account_a: accountA,
                       account_b: accountB,
-                      price_a_per_b_exact: price_a_per_b && price_a_per_b > 0 ? price_a_per_b.toString() : undefined,
+                      price_a_per_b_exact: processedPrice.priceForward?.toString(),
+                      was_swapped: processedPrice.wasSwapped,
+                      native_mint_a: tokenX,
+                      native_mint_b: tokenY,
+                      native_decimals_a: decA,
+                      native_decimals_b: decB,
+                      _pipelineProcessed: true,
                     } as any;
                     const tracker = meteoraBinTrackers.get(poolId);
                     if (tracker?.aggregate) (item as any).meteora_bin_hash = tracker.aggregate;
@@ -1939,8 +1914,8 @@ function runWebsocketRefreshLoop(): void {
                       } catch {}
                     }
                     
-                    const [canonicalItem] = canonicalizePools([{ ...item }]);
-                    const finalItem = canonicalItem || item;
+                    // Pipeline already canonicalized, so use item directly as finalItem
+                    const finalItem = item;
                     
                     // Validate decoded pool before applying
                     const validation = validateDecodedPool('meteora', finalItem, poolId);
@@ -2015,13 +1990,13 @@ function runWebsocketRefreshLoop(): void {
                     if (hasDelta) {
                       await scheduleDexApply('meteora', prev as any);
                     }
-                    try { logger.debug('meteora.ws clmm.fields', { id: poolId, priceCandidate: price_a_per_b, binStep: tickSpacing, activeId, decimals: { a: decA, b: decB }, cat: 'pools' }); } catch {}
+                    try { logger.debug('meteora.ws clmm.fields', { id: poolId, priceForward: processedPrice.priceForward, binStep: tickSpacing, activeId, decimals: { a: processedPrice.decimalsA, b: processedPrice.decimalsB }, wasSwapped: processedPrice.wasSwapped, cat: 'pools' }); } catch {}
                     updated = true;
                   } else {
                     wsDeltaStats.meteora.skipped += 1;
-                    const tokenReason = `missing_tokens_${!tokenX ? 'x' : ''}${!tokenY ? 'y' : ''}`;
+                    const tokenReason = `missing_${!tokenX ? 'tokenX' : ''}${!tokenY ? 'tokenY' : ''}${!processedPrice ? '_priceCalc' : ''}`;
                     incrementSkipReason('meteora', tokenReason);
-                    try { logger.debug('meteora.ws state.skip', { id: poolId, hasTokenX: !!tokenX, hasTokenY: !!tokenY, activeId, binStep, cat: 'pools' }); } catch {}
+                    try { logger.debug('meteora.ws state.skip', { id: poolId, hasTokenX: !!tokenX, hasTokenY: !!tokenY, hasProcessedPrice: !!processedPrice, activeId, binStep, cat: 'pools' }); } catch {}
                   }
                 }
               } catch {}
