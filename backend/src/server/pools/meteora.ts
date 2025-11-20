@@ -396,7 +396,6 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
   try {
     const { executionCache } = await import('../../execution/cache.js');
     const { getConnection } = await import('../../wallet/wallet.js');
-    const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
     const { PublicKey } = await import('@solana/web3.js');
     const connection = getConnection();
     
@@ -404,117 +403,75 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
     let cached = 0;
     let failed = 0;
     
-    // Import Meteora SDK once for all pools (for bin array derivation only)
+    // Import Meteora SDK
     const mod = await import('@meteora-ag/dlmm');
-    // CRITICAL: Resolve the module structure correctly (same as in instruction builder)
     const DLMM: any = (mod && (mod as any).default) ? (mod as any).default : (((mod as any).DLMM) || mod);
+    
+    if (!DLMM || typeof DLMM.create !== 'function') {
+      throw new Error('DLMM.create not available in SDK');
+    }
     
     const programId = new PublicKey(METEORA_DLMM_PROGRAM_ID);
     
-    // Batch fetch pool states (100 at a time to respect RPC limits)
-    const BATCH_SIZE = 100;
-    for (let i = 0; i < pools.length; i += BATCH_SIZE) {
-      const batch = pools.slice(i, i + BATCH_SIZE);
-      
+    // Process pools one by one using SDK (SDK handles RPC internally)
+    // Note: We can't batch this easily since SDK.create makes its own RPC calls
+    for (const pool of pools) {
       try {
-        const pks = batch.map(p => new PublicKey(p.id));
+        const poolPk = new PublicKey(pool.id);
         
-        // Use getMultipleAccountsInfo for efficient batch fetching
-        // Weight = number of accounts / 100 (RPC limiter convention)
-        const weight = Math.max(1, Math.ceil(batch.length / 100));
-        const accounts = await withRpcLimit(
-          () => connection.getMultipleAccountsInfo(pks),
-          weight,
-          { module: 'pools', method: 'getMultipleAccountsInfo' }
-        );
+        // Use SDK to create DLMM instance which fetches and deserializes pool state
+        const dlmmPool = await DLMM.create(connection, poolPk);
         
-        // Process each account and extract active bin ID
-        for (let j = 0; j < accounts.length; j++) {
-          const pool = batch[j];
-          const acc = accounts[j];
+        // Extract activeId from the properly deserialized pool
+        const activeId = dlmmPool.activeId ?? dlmmPool.lbPair?.activeId ?? dlmmPool.lbPair?.vParameters?.indexReference;
+        
+        if (activeId !== undefined && activeId !== null && Number.isFinite(activeId)) {
+          // Also derive bin array addresses deterministically
+          const binArrayAddresses = deriveBinArrays(
+            poolPk,
+            activeId,
+            programId,
+            DLMM
+          );
           
-          if (acc?.data) {
-            try {
-              // OPTIMIZATION: Read activeId directly from pool data (much more reliable than SDK decode)
-              // Meteora DLMM pool structure has activeId at offset 180 as i32 (4 bytes, signed little-endian)
-              // binStep is at offset 176 as u16 (2 bytes, unsigned little-endian)
-              // Reference: backend/scripts/analyze-meteora-pool.ts lines 114-120
-              const ACTIVE_ID_OFFSET = 180;
-              
-              if (acc.data.length < ACTIVE_ID_OFFSET + 4) {
-                failed++;
-                try {
-                  logger.debug('meteora.activeId.data_too_short', {
-                    cat: 'meteora',
-                    ctx: {
-                      pool: pool.id.slice(0, 8) + '...',
-                      dataLength: acc.data.length,
-                      required: ACTIVE_ID_OFFSET + 4
-                    }
-                  });
-                } catch {}
-                continue;
+          // Cache active bin ID AND bin array addresses
+          executionCache.setHot(pool.id, {
+            activeId: activeId,
+            binArrays: binArrayAddresses,
+          });
+          cached++;
+          
+          try {
+            logger.debug('meteora.activeId.cached', {
+              cat: 'meteora',
+              ctx: {
+                pool: pool.id.slice(0, 8) + '...',
+                activeId: activeId,
+                binArrayCount: binArrayAddresses ? Object.keys(binArrayAddresses).filter(k => binArrayAddresses[k as keyof typeof binArrayAddresses]).length : 0
               }
-              
-              // Read activeId as signed 32-bit little-endian integer
-              // Ensure we handle Uint8Array properly
-              const buffer = Buffer.isBuffer(acc.data) ? acc.data : Buffer.from(acc.data);
-              const activeId = buffer.readInt32LE(ACTIVE_ID_OFFSET);
-              
-              if (activeId !== undefined && activeId !== null) {
-                // ENHANCEMENT: Also derive bin array addresses deterministically
-                const binArrayAddresses = deriveBinArrays(
-                  new PublicKey(pool.id),
-                  activeId,
-                  programId,
-                  DLMM
-                );
-                
-                // Cache active bin ID AND bin array addresses
-                executionCache.setHot(pool.id, {
-                  activeId: activeId,
-                  binArrays: binArrayAddresses,
-                });
-                cached++;
-                
-                try {
-                  logger.debug('meteora.activeId.cached', {
-                    cat: 'meteora',
-                    ctx: {
-                      pool: pool.id.slice(0, 8) + '...',
-                      activeId: activeId,
-                      binArrayCount: binArrayAddresses ? Object.keys(binArrayAddresses).filter(k => binArrayAddresses[k as keyof typeof binArrayAddresses]).length : 0
-                    }
-                  });
-                } catch {}
-              } else {
-                failed++;
+            });
+          } catch {}
+        } else {
+          failed++;
+          try {
+            logger.debug('meteora.activeId.invalid', {
+              cat: 'meteora',
+              ctx: {
+                pool: pool.id.slice(0, 8) + '...',
+                activeId: activeId,
+                reason: 'not_finite_or_null'
               }
-            } catch (decodeErr) {
-              failed++;
-              try {
-                logger.warn('meteora.activeId.decode_failed', {
-                  cat: 'meteora',
-                  ctx: {
-                    pool: pool.id.slice(0, 8) + '...',
-                    error: String((decodeErr as any)?.message || decodeErr)
-                  }
-                });
-              } catch {}
-            }
-          } else {
-            failed++;
-          }
+            });
+          } catch {}
         }
-      } catch (batchErr) {
-        failed += batch.length;
+      } catch (err) {
+        failed++;
         try {
-          logger.warn('meteora.activeId.batch_failed', {
+          logger.warn('meteora.activeId.sdk_failed', {
             cat: 'meteora',
             ctx: {
-              batchIndex: Math.floor(i / BATCH_SIZE),
-              batchSize: batch.length,
-              error: String((batchErr as any)?.message || batchErr)
+              pool: pool.id.slice(0, 8) + '...',
+              error: String((err as any)?.message || err)
             }
           });
         } catch {}
@@ -530,7 +487,8 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
           cached,
           failed,
           durationMs,
-          avgMs: pools.length > 0 ? Math.round(durationMs / pools.length) : 0
+          avgMs: pools.length > 0 ? Math.round(durationMs / pools.length) : 0,
+          method: 'sdk'
         }
       });
     } catch {}

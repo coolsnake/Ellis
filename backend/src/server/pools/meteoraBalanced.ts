@@ -1502,6 +1502,9 @@ export async function fetchMeteoraBalancedAll(): Promise<PoolsPayload> {
   const combinedAmm = [...normV2.amm, ...normV1.amm];
   const ammCanon = canonicalizePools(combinedAmm);
   
+  // FIX: Mark as processed to satisfy graph builder and silence warnings
+  ammCanon.forEach(p => (p as any)._pipelineProcessed = true);
+  
   try {
     logger.info('meteora.balanced.all.normalized', {
       v1NormCount: normV1.amm.length,

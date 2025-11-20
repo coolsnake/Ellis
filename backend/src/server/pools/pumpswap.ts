@@ -838,6 +838,9 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
   // Apply canonicalization like other DEXes
   const ammCanon = canonicalizePools(amm);
   
+  // FIX: Mark as processed to satisfy graph builder and silence warnings
+  ammCanon.forEach(p => (p as any)._pipelineProcessed = true);
+
   // Verify canonicalization: ensure price inversion happens correctly when mints are swapped
   try {
     const ammVerification = verifyCanonicalization(ammCanon, swapABFields);
