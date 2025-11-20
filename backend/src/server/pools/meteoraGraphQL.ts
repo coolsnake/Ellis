@@ -326,8 +326,27 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
       
       if (!mint_a || !mint_b) continue;
       
-      const decA = decimalsMap.get(mint_a) ?? 9;
-      const decB = decimalsMap.get(mint_b) ?? 9;
+      // Use Jupiter token map as fallback before defaulting to 9
+      const decA = decimalsMap.get(mint_a) ?? jupPriceMap[mint_a]?.decimals ?? 9;
+      const decB = decimalsMap.get(mint_b) ?? jupPriceMap[mint_b]?.decimals ?? 9;
+      
+      // Log when using Jupiter fallback to track decimal resolution sources
+      if (!decimalsMap.has(mint_a) && jupPriceMap[mint_a]?.decimals) {
+        logger.debug('meteora.decimals.jupiter_fallback', {
+          mint: mint_a.slice(0, 8),
+          decimals: decA,
+          pool: id,
+          cat: 'meteora'
+        });
+      }
+      if (!decimalsMap.has(mint_b) && jupPriceMap[mint_b]?.decimals) {
+        logger.debug('meteora.decimals.jupiter_fallback', {
+          mint: mint_b.slice(0, 8),
+          decimals: decB,
+          pool: id,
+          cat: 'meteora'
+        });
+      }
       
       // Default fee: Meteora DLMM typically uses binStep as fee indicator
       // binStep of 10 = 0.1% = 10 bps, binStep of 25 = 0.25% = 25 bps
