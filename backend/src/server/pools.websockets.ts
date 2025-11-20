@@ -1126,14 +1126,32 @@ function runWebsocketRefreshLoop(): void {
                             ...existing,
                             rawAccountData: rawBuffer,
                             rawAccountDataUpdatedMs: Date.now(),
+                            // CRITICAL FIX: Store CANONICALIZED mint/decimal order (from processedPrice)
+                            // This ensures execution cache matches pool cache orientation
+                            mint_a: processedPrice.mintA,
+                            mint_b: processedPrice.mintB,
+                            decimals_a: processedPrice.decimalsA,
+                            decimals_b: processedPrice.decimalsB,
                           };
                           if (derived) {
                             if (derived.programId) nextStatic.programId = derived.programId;
                             if (derived.oracle) nextStatic.oracle = derived.oracle;
                             if (derived.observationState) nextStatic.observation_state = derived.observationState;
                             if (derived.ammConfig) (nextStatic as any).amm_config = derived.ammConfig;
-                            if (derived.vaultA) nextStatic.account_a = derived.vaultA;
-                            if (derived.vaultB) nextStatic.account_b = derived.vaultB;
+                            // Store vault accounts in CANONICAL order (matching mint_a/mint_b)
+                            // If pool was swapped, these need to be swapped too
+                            if (derived.vaultA && derived.vaultB) {
+                              if (processedPrice.wasSwapped) {
+                                nextStatic.account_a = derived.vaultB;
+                                nextStatic.account_b = derived.vaultA;
+                              } else {
+                                nextStatic.account_a = derived.vaultA;
+                                nextStatic.account_b = derived.vaultB;
+                              }
+                              // Preserve native orientation for reference
+                              nextStatic.native_account_a = derived.vaultA;
+                              nextStatic.native_account_b = derived.vaultB;
+                            }
                             if (derived.tickSpacing) nextStatic.tick_spacing = derived.tickSpacing;
                             if (derived.tickArrays?.lower) nextStatic.tickArrayLower = derived.tickArrays.lower;
                             if (derived.tickArrays?.center) nextStatic.tickArrayCenter = derived.tickArrays.center;
@@ -1407,60 +1425,65 @@ function runWebsocketRefreshLoop(): void {
                 {
                   maybeDebugAccount('orca');
                   const id = pk58;
-                  const mint_a = parsed.tokenMintA.toBase58();
-                  const mint_b = parsed.tokenMintB.toBase58();
+                  const mintA = parsed.tokenMintA.toBase58();
+                  const mintB = parsed.tokenMintB.toBase58();
                   const sqrtRaw = anyToBigInt(parsed.sqrtPrice);
                   const sqrt_price_x64 = sqrtRaw ? Number(sqrtRaw) : Number(parsed.sqrtPrice);
-                  const precision = await (async () => {
+                  
+                  // FIX: Use price pipeline for consistent orientation handling (same as Meteora/Raydium)
+                  // Get decimals for the NATIVE mint order (not canonicalized cached order)
+                  let processedPrice: any = undefined;
+                  try {
+                    let decA: number | undefined;
+                    let decB: number | undefined;
+                    
+                    // Get decimals for native mints (mintA/mintB from on-chain state)
                     try {
-                      // Get decimals from pool cache (fast memory lookup)
-                      const cachedOrcaPools = orcaCache.data || { amm: [], clmm: [] };
-                      const existing = cachedOrcaPools.clmm.find(p => p.id === id);
-                      let decA = existing?.decimals_a;
-                      let decB = existing?.decimals_b;
+                      const { resolveDecimals } = await import('./pools/decimals.js');
+                      if (mintA) decA = await resolveDecimals(mintA);
+                      if (mintB) decB = await resolveDecimals(mintB);
+                    } catch {
+                      // Fallback to defaults
+                      if (!Number.isFinite(decA)) decA = 9;
+                      if (!Number.isFinite(decB)) decB = 6;
+                    }
+                    
+                    if (Number.isFinite(decA) && Number.isFinite(decB) && sqrtRaw) {
+                      const { processPriceThroughPipeline } = await import('./pools/pricePipeline.js');
+                      processedPrice = processPriceThroughPipeline({
+                        mintA,
+                        mintB,
+                        decimalsA: decA!,
+                        decimalsB: decB!,
+                        poolId: id,
+                        dex: 'Orca',
+                        poolType: 'clmm',
+                        sqrtPriceX64: sqrtRaw,
+                      });
                       
-                      // Fallback to execution cache if not in pool cache
-                      if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
+                      if (!processedPrice) {
                         try {
-                          const { executionCache } = await import('../execution/cache.js');
-                          const cached = executionCache.getStatic(id);
-                          if (!decA && cached?.decimals_a) decA = cached.decimals_a;
-                          if (!decB && cached?.decimals_b) decB = cached.decimals_b;
+                          logger.warn('orca.ws.clmm.price.pipeline_failed', {
+                            id: id,
+                            mintA: mintA?.slice(0, 8),
+                            mintB: mintB?.slice(0, 8),
+                            cat: 'pools'
+                          });
                         } catch {}
                       }
-                      
-                      // Only as last resort, resolve via centralized resolver (rare for known pools)
-                      if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
-                        try {
-                          const { resolveDecimals } = await import('./pools/decimals.js');
-                          if (!Number.isFinite(decA) && mint_a) {
-                            decA = await resolveDecimals(mint_a);
-                          }
-                          if (!Number.isFinite(decB) && mint_b) {
-                            decB = await resolveDecimals(mint_b);
-                          }
-                        } catch {
-                          if (!Number.isFinite(decA)) decA = 9;
-                          if (!Number.isFinite(decB)) decB = 6;
-                        }
-                      } else {
-                        decA = Number(decA);
-                        decB = Number(decB);
-                      }
-                      
-                      if (!Number.isFinite(decA)) decA = undefined;
-                      if (!Number.isFinite(decB)) decB = undefined;
-                      const ratio = (sqrtRaw && decA != null && decB != null)
-                        ? sqrtPriceX64ToPriceRatio(sqrtRaw, decA, decB)
-                        : null;
-                      const price = ratio?.float && Number.isFinite(ratio.float) && ratio.float > 0
-                        ? ratio.float
-                        : 0;
-                      return { price, ratio, decA, decB };
-                    } catch {
-                      return { price: 0, ratio: null, decA: undefined, decB: undefined };
                     }
-                  })();
+                  } catch (err: any) {
+                    try {
+                      logger.warn('orca.ws.clmm.price.calc_failed', {
+                        id: id,
+                        error: String(err?.message || err),
+                        cat: 'pools'
+                      });
+                    } catch {}
+                  }
+                  
+                  if (processedPrice) {
+                  if (processedPrice) {
                   const liquidityRaw = anyToBigInt(parsed.liquidity);
                   const liquidity = Number(parsed.liquidity);
                   const tick_spacing = Number(parsed.tickSpacing);
@@ -1482,11 +1505,12 @@ function runWebsocketRefreshLoop(): void {
                     throw new Error('vault account cannot be decoded as pool');
                   }
                   
+                  // Use pipeline-processed result (already canonicalized)
                   const clmmItem: ClmmPool = {
                     id,
                     dex: 'Orca',
-                    mint_a,
-                    mint_b,
+                    mint_a: processedPrice.mintA,
+                    mint_b: processedPrice.mintB,
                     fee_bps,
                     sqrt_price_x64,
                     sqrt_price_x64_raw: sqrtRaw ? sqrtRaw.toString() : undefined,
@@ -1496,12 +1520,13 @@ function runWebsocketRefreshLoop(): void {
                     updated_ms: Date.now(),
                     pool_kind: 'clmm',
                     liquidity_display: liquidity,
-                    price_a_per_b: precision.price > 0 ? precision.price : undefined,
-                    price_a_per_b_num: precision.ratio ? precision.ratio.numerator.toString() : undefined,
-                    price_a_per_b_den: precision.ratio ? precision.ratio.denominator.toString() : undefined,
-                    price_a_per_b_exact: ratioToDecimalString(precision.ratio) ?? undefined,
-                    decimals_a: precision.decA,
-                    decimals_b: precision.decB,
+                    price_a_per_b: processedPrice.priceForward,
+                    decimals_a: processedPrice.decimalsA,
+                    decimals_b: processedPrice.decimalsB,
+                    was_swapped: processedPrice.wasSwapped,
+                    native_mint_a: mintA,
+                    native_mint_b: mintB,
+                    _pipelineProcessed: true,
                   } as any;
                   
                   // OPTIMIZATION: Cache Orca pool state in execution cache to avoid RPC calls during tx building
@@ -1510,20 +1535,31 @@ function runWebsocketRefreshLoop(): void {
                     const rawBuffer = Buffer.isBuffer(info.data) ? Buffer.from(info.data) : Buffer.from(info.data ?? []);
                     const existing = executionCache.getStatic(id) || {} as any;
                     
-                    // Store static pool data (vaults, oracle, program ID)
+                    // Get native vault addresses
+                    const nativeVaultA = parsed.tokenVaultA ? parsed.tokenVaultA.toBase58() : undefined;
+                    const nativeVaultB = parsed.tokenVaultB ? parsed.tokenVaultB.toBase58() : undefined;
+                    
+                    // Store static pool data with CANONICAL orientation
                     executionCache.setStatic(id, {
                       ...existing,
                       programId: parsed.whirlpoolsConfig ? parsed.whirlpoolsConfig.toBase58() : (CONFIG.orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc'),
+                      // Store vaults in CANONICAL order (matching mint_a/mint_b)
                       vaults: {
-                        a: parsed.tokenVaultA ? parsed.tokenVaultA.toBase58() : undefined,
-                        b: parsed.tokenVaultB ? parsed.tokenVaultB.toBase58() : undefined
+                        a: processedPrice.wasSwapped ? nativeVaultB : nativeVaultA,
+                        b: processedPrice.wasSwapped ? nativeVaultA : nativeVaultB
                       },
                       oracle: parsed.oracle ? parsed.oracle.toBase58() : undefined,
                       tickSpacing: tick_spacing,
-                      mint_a,
-                      mint_b,
-                      decimals_a: precision.decA,
-                      decimals_b: precision.decB,
+                      // CRITICAL FIX: Store CANONICALIZED mint/decimal order
+                      mint_a: processedPrice.mintA,
+                      mint_b: processedPrice.mintB,
+                      decimals_a: processedPrice.decimalsA,
+                      decimals_b: processedPrice.decimalsB,
+                      // Preserve native orientation for reference
+                      native_mint_a: mintA,
+                      native_mint_b: mintB,
+                      native_vault_a: nativeVaultA,
+                      native_vault_b: nativeVaultB,
                       // Store raw account data for local parsing during tx building
                       rawAccountData: rawBuffer,
                       rawAccountDataUpdatedMs: Date.now()
@@ -1605,6 +1641,13 @@ function runWebsocketRefreshLoop(): void {
                     }
                   } catch {}
                   ok = true;
+                  }
+                  } else {
+                    // Price calculation failed, skip this update
+                    wsDeltaStats.orca.skipped += 1;
+                    incrementSkipReason('orca', 'price_calc_failed');
+                    try { logger.debug('orca.ws clmm.skip.no_price', { id: id, cat: 'pools' }); } catch {}
+                  }
                 }
               } catch (e:any) {
                 try { wsDecodeStats.orca.failures += 1; } catch {}
@@ -1854,15 +1897,25 @@ function runWebsocketRefreshLoop(): void {
                         programId: String(program?.programId?.toBase58() || ''),
                         vaults: { a: accountA, b: accountB },
                         binStep: tickSpacing,
-                        mint_a: tokenX,
-                        mint_b: tokenY,
-                        decimals_a: decA,
-                        decimals_b: decB,
+                        // CRITICAL FIX: Store CANONICALIZED mint order (not native)
+                        // This must match the pool item's mint_a/mint_b to ensure consistency
+                        mint_a: processedPrice.mintA,
+                        mint_b: processedPrice.mintB,
+                        decimals_a: processedPrice.decimalsA,
+                        decimals_b: processedPrice.decimalsB,
                         token_program_a: existing.token_program_a,
                         token_program_b: existing.token_program_b,
-                        account_a: accountA,
-                        account_b: accountB,
+                        // Store vault accounts in canonical order (matching mint_a/mint_b)
+                        account_a: processedPrice.wasSwapped ? accountB : accountA,
+                        account_b: processedPrice.wasSwapped ? accountA : accountB,
                         bin_array_bitmap_extension: existing.bin_array_bitmap_extension,
+                        // Also preserve native orientation for reference
+                        native_mint_a: tokenX,
+                        native_mint_b: tokenY,
+                        native_decimals_a: decA,
+                        native_decimals_b: decB,
+                        native_account_a: accountA,
+                        native_account_b: accountB,
                         // Store raw account data for local parsing during tx building
                         rawAccountData: rawBuffer,
                         rawAccountDataUpdatedMs: Date.now()
