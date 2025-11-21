@@ -89,7 +89,8 @@ export async function fetchAmmConfigFeeRates(
       }
       
       try {
-        const buffer = accountInfo.data;
+        // Convert to Node.js Buffer to access readUInt32LE
+        const buffer = Buffer.from(accountInfo.data);
         
         // Read trade_fee_rate as u32 little-endian at offset 39
         const tradeFeeRatePPM = buffer.readUInt32LE(TRADE_FEE_RATE_OFFSET);
