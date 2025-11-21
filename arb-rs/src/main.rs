@@ -1319,7 +1319,9 @@ async fn main() -> anyhow::Result<()> {
                                 continue;
                             }
                         }
-                        let key = canon_labels.join("->");
+                        // Include both path and pool IDs in deduplication key to distinguish cycles
+                        // that use the same tokens but different pools (different opportunities)
+                        let key = format!("{}|{}", canon_labels.join("->"), hop_pool_ids.join(","));
                         if seen.contains(&key) {
                             rejected_duplicate += 1;
                             continue;
