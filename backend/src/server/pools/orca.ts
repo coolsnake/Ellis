@@ -575,7 +575,11 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
               (pool as any).sqrt_price_x64_raw = sqrtPriceX64.toString();
             }
             if (Number.isFinite(tickIndex)) {
-              (pool as any).tick_current_index = tickIndex;
+              // CRITICAL FIX: Negate tick index if pool was swapped during canonicalization
+              // The on-chain tick index is always in native orientation (tokenMintA/tokenMintB)
+              // When mints are swapped, the tick index must be negated to match the canonical orientation
+              const wasSwapped = (pool as any).was_swapped === true;
+              (pool as any).tick_current_index = wasSwapped ? -tickIndex : tickIndex;
             }
             if (liquidity) {
               (pool as any).liquidity_raw = liquidity.toString();
