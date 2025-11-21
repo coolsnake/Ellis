@@ -2,7 +2,7 @@ import { CONFIG } from '../../utils/config.js';
 import { logger } from '../../utils/logger.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './httpLog.js';
 
-type SupportedDex = 'raydium' | 'orca' | 'meteora' | 'pumpswap';
+type SupportedDex = 'raydium' | 'raydium-clmm' | 'orca' | 'meteora' | 'pumpswap';
 
 /**
  * Get Shyft API key for a specific DEX with fallback chain
