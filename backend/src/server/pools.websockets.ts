@@ -2240,7 +2240,8 @@ function runWebsocketRefreshLoop(): void {
                 const gmod: any = await import('./graph.js');
                 const cur = getCurrentCache(dex);
                 if (typeof gmod.applyPoolUpdates === 'function') {
-                  await gmod.applyPoolUpdates(base, cur, { pushToArb: true });
+                  // pushToArb: false - updates accumulate and flush when arb-rs calls /arb/detect/complete
+                  await gmod.applyPoolUpdates(base, cur, { pushToArb: false });
                 }
               } catch {}
             }, WS_APPLY_DEBOUNCE_MS);

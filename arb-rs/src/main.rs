@@ -3374,14 +3374,29 @@ fn detector_ack_timeout() -> Duration {
     *TIMEOUT
 }
 
-// Detection completion notification removed - version-based ACK only
-// This function kept for backward compatibility but is no longer called
-async fn _notify_backend_detect_complete(
-    _api_base: &str,
-    _version: u64,
-    _completed_ms: u64,
+// Detection completion notification - triggers backend to flush pending graph updates
+// This implements detect-driven push: updates accumulate during detection, then flush when ready
+async fn notify_backend_detect_complete(
+    api_base: &str,
+    version: u64,
+    completed_ms: u64,
 ) -> Result<(), reqwest::Error> {
-    // No-op: detection completion notification removed
+    let url = format!("{}/arb/detect/complete", api_base.trim_end_matches('/'));
+    let client = reqwest::Client::new();
+    let timeout = detector_ack_timeout();
+    
+    let body = serde_json::json!({
+        "graphVersion": version,
+        "completedMs": completed_ms,
+    });
+    
+    client
+        .post(&url)
+        .timeout(timeout)
+        .json(&body)
+        .send()
+        .await?;
+    
     Ok(())
 }
 

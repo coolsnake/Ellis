@@ -1009,7 +1009,8 @@ export async function getMeteoraBalancedPoolsCached(force = false, opts?: { skip
             const gmod: any = await import('./graph.js');
             if (inc && hasDelta && typeof gmod.applyPoolUpdates === 'function') {
               // Fire-and-forget: don't await to avoid blocking HTTP fetchers
-              void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: true }).catch((err: any) => {
+              // pushToArb: false - updates accumulate and flush when arb-rs calls /arb/detect/complete
+              void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: false }).catch((err: any) => {
                 try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'meteora_balanced', cat: 'graph' }); } catch {}
               });
             } else if (!inc && hasDelta) {
@@ -1209,7 +1210,8 @@ export async function getPumpswapPoolsCached(force = false): Promise<PoolsPayloa
             const gmod: any = await import('./graph.js');
             if (hasDelta && typeof gmod.applyPoolUpdates === 'function') {
               // Fire-and-forget: don't await to avoid blocking HTTP fetchers
-              void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: true }).catch((err: any) => {
+              // pushToArb: false - updates accumulate and flush when arb-rs calls /arb/detect/complete
+              void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: false }).catch((err: any) => {
                 try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'pumpswap', cat: 'graph' }); } catch {}
               });
             }
@@ -1473,7 +1475,8 @@ export async function getRaydiumPoolsNormalized(force = false, opts?: { skipUniv
             const gmod: any = await import('./graph.js');
             if (hasDelta && typeof gmod.applyPoolUpdates === 'function') {
               // Fire-and-forget: don't await to avoid blocking HTTP fetchers
-              void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: true }).catch((err: any) => {
+              // pushToArb: false - updates accumulate and flush when arb-rs calls /arb/detect/complete
+              void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: false }).catch((err: any) => {
                 try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'raydium', cat: 'graph' }); } catch {}
               });
             }
@@ -1707,7 +1710,8 @@ export async function getOrcaPoolsCached(force = false, opts?: { skipUniverseFil
             const gmod: any = await import('./graph.js');
             if (hasDelta && typeof gmod.applyPoolUpdates === 'function') {
               // Fire-and-forget: don't await to avoid blocking HTTP fetchers
-              void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, data, { pushToArb: true }).catch((err: any) => {
+              // pushToArb: false - updates accumulate and flush when arb-rs calls /arb/detect/complete
+              void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, data, { pushToArb: false }).catch((err: any) => {
                 try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'orca', cat: 'graph' }); } catch {}
               });
             }
@@ -2047,7 +2051,8 @@ export async function getMeteoraPoolsCached(force = false, opts?: { skipUniverse
             const gmod: any = await import('./graph.js');
             if (hasDelta && typeof gmod.applyPoolUpdates === 'function') {
               // Fire-and-forget: don't await to avoid blocking HTTP fetchers
-              void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: true }).catch((err: any) => {
+              // pushToArb: false - updates accumulate and flush when arb-rs calls /arb/detect/complete
+              void gmod.applyPoolUpdates(prev || { amm: [], clmm: [] }, norm, { pushToArb: false }).catch((err: any) => {
                 try { logger.warn('graph.update.fire_forget_failed', { error: String(err?.message || err), source: 'meteora', cat: 'graph' }); } catch {}
               });
             }

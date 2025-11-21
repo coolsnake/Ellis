@@ -64,7 +64,8 @@ export async function scheduleDexApply(dex: DexSource, baseline: any): Promise<v
         const cur = getCurrentCacheFn ? getCurrentCacheFn(dex) : null;
         
         if (typeof gmod.applyPoolUpdates === 'function' && cur) {
-          await gmod.applyPoolUpdates(base, cur, { pushToArb: true });
+          // pushToArb: false - updates accumulate and flush when arb-rs calls /arb/detect/complete
+          await gmod.applyPoolUpdates(base, cur, { pushToArb: false });
         }
       } catch (err) {
         logger.error('apply.graph_update.failed', {
