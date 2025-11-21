@@ -1237,15 +1237,21 @@ function runWebsocketRefreshLoop(): void {
                           // Get decimals from pool cache (fast memory lookup)
                           const cachedRayPools = raydiumCache.data || { amm: [], clmm: [] };
                           const existing = cachedRayPools.amm.find(p => p.id === pk58);
-                          decA = existing?.decimals_a;
-                          decB = existing?.decimals_b;
+                          // CRITICAL FIX: Use native decimals, not canonical decimals
+                          // The cache stores canonical (potentially swapped) decimals, but we need native decimals
+                          // When a pool is swapped during canonicalization, decimals_a/b refer to the canonical mints,
+                          // but mintA/mintB from chain state (baseMint/quoteMint) are always in native order
+                          decA = existing?.native_decimals_a ?? existing?.decimals_a;
+                          decB = existing?.native_decimals_b ?? existing?.decimals_b;
                           
                           // Fallback to execution cache if not in pool cache
                           if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
                             try {
                               const { executionCache } = await import('../execution/cache.js');
                               const cached = executionCache.getStatic(pk58);
+                              if (!decA && cached?.native_decimals_a) decA = cached.native_decimals_a;
                               if (!decA && cached?.decimals_a) decA = cached.decimals_a;
+                              if (!decB && cached?.native_decimals_b) decB = cached.native_decimals_b;
                               if (!decB && cached?.decimals_b) decB = cached.decimals_b;
                             } catch {}
                           }
@@ -1748,15 +1754,21 @@ function runWebsocketRefreshLoop(): void {
                   // Get decimals from pool cache (fast memory lookup)
                   const cachedMetPools = meteoraCache.data || { amm: [], clmm: [] };
                   const existing = cachedMetPools.clmm.find(p => p.id === poolId);
-                  let decA = existing?.decimals_a;
-                  let decB = existing?.decimals_b;
+                  // CRITICAL FIX: Use native decimals, not canonical decimals
+                  // The cache stores canonical (potentially swapped) decimals, but we need native decimals for tokenX/tokenY
+                  // When a pool is swapped during canonicalization, decimals_a/b refer to the canonical mints,
+                  // but tokenX/tokenY from chain state are always in native order, so we must use native_decimals_a/b
+                  let decA = existing?.native_decimals_a ?? existing?.decimals_a;
+                  let decB = existing?.native_decimals_b ?? existing?.decimals_b;
                   
                   // Fallback to execution cache if not in pool cache
                   if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
                     try {
                       const { executionCache } = await import('../execution/cache.js');
                       const cached = executionCache.getStatic(poolId);
+                      if (!decA && cached?.native_decimals_a) decA = cached.native_decimals_a;
                       if (!decA && cached?.decimals_a) decA = cached.decimals_a;
+                      if (!decB && cached?.native_decimals_b) decB = cached.native_decimals_b;
                       if (!decB && cached?.decimals_b) decB = cached.decimals_b;
                     } catch {}
                   }
