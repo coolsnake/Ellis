@@ -939,7 +939,7 @@ async function buildOrcaSwapViaSdk(hop: DirectHop, kp: { publicKey: PublicKey; s
   const rpc = getOrcaRpc();
   const signer = await getOrcaSdkSigner(kp);
   // Strip -rev suffix before creating address (similar to Raydium/Meteora)
-  const poolIdStripped = String(hop.poolId).replace(/-rev$/, '');
+  const poolIdStripped = String(hop.poolId).replace(/[#-]rev$/, '');
   const poolAddr = address(poolIdStripped);
   const inputMintAddr = address(String(hop.inputMint));
   const amountIn = BigInt(hop.amountInRaw ?? 0n);
@@ -1119,7 +1119,7 @@ export async function buildOrcaSwapIx(hop: DirectHop): Promise<any[]> {
   try {
     const kp = await ensureWallet(CONFIG.walletPath);
     // Strip -rev suffix before using poolId (similar to Raydium/Meteora)
-    const poolIdStripped = String(hop.poolId).replace(/-rev$/, '');
+    const poolIdStripped = String(hop.poolId).replace(/[#-]rev$/, '');
     const poolAddr = poolIdStripped;
     const inputMint = String(hop.inputMint);
     
@@ -1550,7 +1550,7 @@ export async function buildPumpswapSwapIxReal(hop: DirectHop): Promise<any[]> {
     // Fetch the original on-chain mint and vault order from cache (stored before canonicalization)
     const { peekPumpswapPools } = await import('../../server/pools.js');
     const pools = peekPumpswapPools();
-    const poolData = (pools.amm || []).find((p: any) => String(p?.id || '') === hop.poolId.replace(/-rev$/, ''));
+    const poolData = (pools.amm || []).find((p: any) => String(p?.id || '') === hop.poolId.replace(/[#-]rev$/, ''));
     
     if (!poolData) {
       throw createBuilderError('PUMPSWAP', 'Pool data not found in cache', hop);
@@ -2162,7 +2162,7 @@ export async function buildMeteoraDammSwapIxReal(hop: DirectHop): Promise<any[]>
     );
     const kp = await ensureWallet(CONFIG.walletPath);
     const programId = toPublicKey(hop.programId);
-    const poolAddress = toPublicKey((hop as any).poolAddress || hop.poolId.replace(/-rev$/, ''));
+    const poolAddress = toPublicKey((hop as any).poolAddress || hop.poolId.replace(/[#-]rev$/, ''));
     
     const BN = (await import('bn.js')).default as any;
     const amountIn = new BN(String(hop.amountInRaw ?? 0n));
@@ -3032,7 +3032,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
             // Fetch pool's mint_a and mint_b to determine mapping
             const { peekMeteoraPools } = await import('../../server/pools.js');
             const pools = peekMeteoraPools();
-            const poolId = hop.poolId.replace(/-rev$/, '');
+            const poolId = hop.poolId.replace(/[#-]rev$/, '');
             const poolData = (pools.clmm || []).find((p: any) => String(p?.id || '') === poolId);
             
             if (poolData) {
@@ -3121,7 +3121,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         // Fetch pool data to get mint_a/mint_b
         const { peekMeteoraPools } = await import('../../server/pools.js');
         const pools = peekMeteoraPools();
-        const poolId = hop.poolId.replace(/-rev$/, '');
+        const poolId = hop.poolId.replace(/[#-]rev$/, '');
         const poolData = (pools.clmm || []).find((p: any) => String(p?.id || '') === poolId);
         
         if (poolData) {
@@ -3976,7 +3976,7 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       // One-shot refresh: attempt to hydrate CLMM statics (oracle/tick arrays) from chain
       try {
         try { logger.warn('raydium.clmm.refresh.attempt', { cat: 'tx', ctx: { pool: hop.poolId, missingRequired: missingRequired.join('/'), missingOptional: missingOptional.join('/') } as any }); } catch {}
-        const poolBase = String(hop.poolId || '').replace(/-rev$/, '');
+        const poolBase = String(hop.poolId || '').replace(/[#-]rev$/, '');
         try {
           const mod = await import('../../server/tasks/refreshClmm.js');
           if (typeof (mod as any)?.refreshRaydiumClmm === 'function') {

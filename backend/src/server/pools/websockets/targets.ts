@@ -30,7 +30,7 @@ export async function getWsTargets(): Promise<{
     for (const e of (snap?.edges || [])) {
       const pid = String((e as any)?.pool_id || '');
       if (!pid) continue;
-      const base = pid.replace(/-rev$/, '');
+      const base = pid.replace(/[#-]rev$/, '');
       const dex = String((e as any)?.dex || '');
       if (dex === 'Raydium') ray.add(base);
       else if (dex === 'Orca') orc.add(base);

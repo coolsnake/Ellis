@@ -20,7 +20,7 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
   if (stat?.ex_bitmap && !(hop as any).exBitmap) (hop as any).exBitmap = stat.ex_bitmap;
 
   // Load from CLMM static cache (authoritative for arrays/oracle).
-  const cached = getClmmStatic(hop.poolId.replace(/-rev$/, ''));
+  const cached = getClmmStatic(hop.poolId.replace(/[#-]rev$/, ''));
   if (cached) {
     // CRITICAL: Always prefer cached programId (from on-chain account owner) over any existing value
     // The cache contains the actual program ID that owns the pool account, which is authoritative
@@ -37,7 +37,7 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
   } else {
     // Fallback: minimal hints from pools snapshot (non-authoritative)
     try {
-      const id = hop.poolId.replace(/-rev$/, '');
+      const id = hop.poolId.replace(/[#-]rev$/, '');
       const pools = peekRaydiumPools();
       const p = (pools.clmm || []).find((x: any) => String(x?.id || '') === id);
       if (p) {

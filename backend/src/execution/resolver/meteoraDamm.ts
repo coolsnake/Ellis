@@ -13,7 +13,7 @@ export async function resolveMeteoraDamm(hop: DirectHop): Promise<DirectHop> {
     // Import Meteora Balanced pools from server cache
     const { peekMeteoraBalancedPools } = await import('../../server/pools.js');
     const pools = peekMeteoraBalancedPools();
-    const id = hop.poolId.replace(/-rev$/, '');
+    const id = hop.poolId.replace(/[#-]rev$/, '');
     const p = (pools.amm || []).find((x: any) => String(x?.id || '') === id);
     
     if (p) {

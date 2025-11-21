@@ -27,7 +27,7 @@ export async function resolveMeteoraDlmm(hop: DirectHop): Promise<DirectHop> {
   try { if (!hop.programId && (CONFIG as any)?.meteora?.programId) hop.programId = String((CONFIG as any)?.meteora?.programId); } catch {}
   try {
     const pools = peekMeteoraPools();
-    const id = hop.poolId.replace(/-rev$/, '');
+    const id = hop.poolId.replace(/[#-]rev$/, '');
     const p = (pools.clmm || []).find((x: any) => String(x?.id || '') === id);
     
     // Debug logging for pool lookup

@@ -461,7 +461,7 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
       const batch = pools.slice(i, i + BATCH_SIZE);
       const pubkeys = batch.map(p => {
         try {
-          const id = p.id.replace(/-rev$/, ''); // Strip -rev suffix
+          const id = p.id.replace(/[#-]rev$/, ''); // Strip -rev or #rev suffix
           return new PublicKey(id);
         } catch {
           return null;
@@ -501,7 +501,7 @@ async function populateOrcaPoolStates(pools: ClmmPool[]): Promise<void> {
                 ctx: {
                   pool: pool.id.slice(0, 8) + '...',
                   poolId: pool.id,
-                  strippedId: pool.id.replace(/-rev$/, ''),
+                  strippedId: pool.id.replace(/[#-]rev$/, ''),
                   hint: 'pool missing on-chain'
                 }
               });

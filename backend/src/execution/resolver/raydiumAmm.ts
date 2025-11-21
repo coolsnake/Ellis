@@ -7,7 +7,7 @@ export async function resolveRaydiumAmm(hop: DirectHop): Promise<DirectHop> {
   if (stat?.programId) hop.programId = stat.programId;
   try {
     const pools = peekRaydiumPools();
-    const id = hop.poolId.replace(/-rev$/, '');
+    const id = hop.poolId.replace(/[#-]rev$/, '');
     const p = (pools.amm || []).find((x: any) => String(x?.id || '') === id);
     if (p) {
       hop.vaultA = String((p as any)?.account_a || '');

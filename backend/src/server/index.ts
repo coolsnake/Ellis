@@ -634,7 +634,7 @@ server.listen(CONFIG.port, () => {
               const ray = peekRaydiumPools();
               const all = [...(ray.amm||[]), ...(ray.clmm||[]), ...(orc.amm||[]), ...(orc.clmm||[])];
               for (const id of ids) {
-                const base = String(id).replace(/-rev$/,'');
+                const base = String(id).replace(/[#-]rev$/,'');
                 const p = all.find((x: any) => String(x?.id||'') === base);
                 if (!p) continue;
                 const mintA = String(p.mint_a); const mintB = String(p.mint_b);

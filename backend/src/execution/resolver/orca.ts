@@ -29,7 +29,7 @@ export async function resolveOrca(hop: DirectHop): Promise<DirectHop> {
   
   try {
     const pools = peekOrcaPools();
-    const id = hop.poolId.replace(/-rev$/, '');
+    const id = hop.poolId.replace(/[#-]rev$/, '');
     const p = (pools.clmm || []).find((x: any) => String(x?.id || '') === id);
     if (p) {
       hop.tickSpacing = Number((p as any)?.tick_spacing || (p as any)?.tickSpacing || hop.tickSpacing || 0);

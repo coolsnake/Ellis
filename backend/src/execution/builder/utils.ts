@@ -5,7 +5,7 @@ import { PublicKey } from '@solana/web3.js';
  */
 export function sanitizeKeyString(v: any): string {
   try {
-    return String(v || '').trim().replace(/-rev$/, '');
+    return String(v || '').trim().replace(/[#-]rev$/, '');
   } catch {
     return '';
   }

@@ -33,8 +33,10 @@ function analyze(edges: Edge[]): { prodOff: any[] } {
   const map = new Map<string, Edge>();
   for (const e of edges) map.set(e.id, e);
   for (const e of edges) {
-    const idRev = e.id.endsWith('-rev') ? e.id.slice(0, -4) : `${e.id}-rev`;
-    const r = map.get(idRev);
+    // Handle both -rev and #rev suffixes
+    const hasRevSuffix = /[#-]rev$/.test(e.id);
+    const idRev = hasRevSuffix ? e.id.replace(/[#-]rev$/, '') : `${e.id}#rev`;
+    const r = map.get(idRev) || map.get(`${e.id}-rev`); // Try both formats
     if (!r) continue;
     const f = Number(e.price_a_per_b || 0);
     const v = Number(r.price_a_per_b || 0);

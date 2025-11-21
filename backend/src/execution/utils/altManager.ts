@@ -1060,9 +1060,9 @@ export class DexAltManager {
       // This allows us to maximize unique pools in the ALT
       const forwardEdgesOnly = filtered.filter(edge => {
         const poolId = String(edge.pool_id || '');
-        // Keep edges that don't have -rev suffix (includes -fwd and base pools)
-        // Skip edges marked as -rev to avoid duplicates
-        return !poolId.endsWith('-rev');
+        // Keep edges that don't have -rev or #rev suffix (includes -fwd and base pools)
+        // Skip edges marked as -rev or #rev to avoid duplicates
+        return !/[#-]rev$/.test(poolId);
       });
 
       try {
@@ -1191,8 +1191,8 @@ export class DexAltManager {
     const connection = getConnection();
     
     try {
-      // Strip directional suffixes (-rev, -fwd) from pool_id
-      const cleanPoolId = poolId.replace(/-(rev|fwd)$/, '');
+      // Strip directional suffixes (-rev, -fwd, #rev, #fwd) from pool_id
+      const cleanPoolId = poolId.replace(/[#-](rev|fwd)$/, '');
       const poolPk = new PublicKey(cleanPoolId);
       accounts.push(poolPk);
 

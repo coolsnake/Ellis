@@ -9,7 +9,7 @@ export async function resolvePumpswap(hop: DirectHop): Promise<DirectHop> {
     // Import Pumpswap pools from server cache
     const { peekPumpswapPools } = await import('../../server/pools.js');
     const pools = peekPumpswapPools();
-    const id = hop.poolId.replace(/-rev$/, '');
+    const id = hop.poolId.replace(/[#-]rev$/, '');
     const p = (pools.amm || []).find((x: any) => String(x?.id || '') === id);
     
     if (p) {

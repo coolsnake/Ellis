@@ -59,7 +59,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
       
       const client = (buildWhirlpoolClient as any)(ctx);
       // Strip -rev suffix before creating PublicKey (similar to Raydium/Meteora)
-      const poolIdStripped = hop.poolId.replace(/-rev$/, '');
+      const poolIdStripped = hop.poolId.replace(/[#-]rev$/, '');
       const pool = await client.getPool(new PublicKey(poolIdStripped));
       
       try {
@@ -156,8 +156,8 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
       if (minimalMathAllowed && ray && hop.variant === 'clmm') {
         try {
           const { logger } = await import('../../utils/logger.js');
-          const isRev = /-rev$/.test(hop.poolId || '');
-          const baseId = hop.poolId.replace(/-rev$/, '');
+          const isRev = /[#-]rev$/.test(hop.poolId || '');
+          const baseId = hop.poolId.replace(/[#-]rev$/, '');
           const pool = (ray.clmm || []).find((x: any) => String(x?.id || '') === baseId);
           
           // Log ALL fields from the found pool to see what we actually have
@@ -205,8 +205,8 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
       }
 
       if (minimalMathAllowed && ray) {
-        const isRev = /-rev$/.test(hop.poolId || '');
-        const id = hop.poolId.replace(/-rev$/, '');
+        const isRev = /[#-]rev$/.test(hop.poolId || '');
+        const id = hop.poolId.replace(/[#-]rev$/, '');
         const p = (ray.amm || []).find((x: any) => String(x?.id || '') === id);
         if (p) {
           const feeBps = Number((p as any)?.fee_bps || (hop as any)?.fee_bps || 0);
@@ -252,8 +252,8 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
       // PumpSwap constant product AMM quoting
       const sys: any = (CONFIG as any)?.system || {};
       if (sys.quotes?.enableMinimalMath !== false) {
-        const isRev = /-rev$/.test(hop.poolId || '');
-        const id = hop.poolId.replace(/-rev$/, '');
+        const isRev = /[#-]rev$/.test(hop.poolId || '');
+        const id = hop.poolId.replace(/[#-]rev$/, '');
         
         // Import PumpSwap pools
         const { peekPumpswapPools } = await import('../../server/pools.js');
@@ -299,8 +299,8 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
       // Meteora Balanced (DAMM) constant product AMM quoting
       const sys: any = (CONFIG as any)?.system || {};
       if (sys.quotes?.enableMinimalMath !== false) {
-        const isRev = /-rev$/.test(hop.poolId || '');
-        const id = hop.poolId.replace(/-rev$/, '');
+        const isRev = /[#-]rev$/.test(hop.poolId || '');
+        const id = hop.poolId.replace(/[#-]rev$/, '');
         
         // Import Meteora Balanced pools
         const { peekMeteoraBalancedPools } = await import('../../server/pools.js');
@@ -345,8 +345,8 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
     } else if (hop.dex === 'meteora') {
       const sys: any = (CONFIG as any)?.system || {};
       if (sys.quotes?.enableMinimalMath !== false) {
-        const isRev = /-rev$/.test(hop.poolId || '');
-        const id = hop.poolId.replace(/-rev$/, '');
+        const isRev = /[#-]rev$/.test(hop.poolId || '');
+        const id = hop.poolId.replace(/[#-]rev$/, '');
         const met = peekMeteoraPools();
         const p = (met.clmm || []).find((x: any) => String(x?.id || '') === id);
         
@@ -571,7 +571,7 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint): Promise<
     const { executionCache } = await import('../cache.js');
     
     // Get cached pool state
-    const poolId = hop.poolId?.replace(/-rev$/, '') || '';
+    const poolId = hop.poolId?.replace(/[#-]rev$/, '') || '';
     if (!poolId) return 0n;
     
     const cached = executionCache.getHot(poolId);
@@ -595,7 +595,7 @@ async function quoteOrcaClmmLocal(hop: DirectHop, amountInRaw: bigint): Promise<
     const { sqrtPriceX64, liquidity, feeRate } = cached;
     
     // Determine swap direction
-    const isRev = /-rev$/.test(hop.poolId || '');
+    const isRev = /[#-]rev$/.test(hop.poolId || '');
     
     // Get decimals (should be available from hop or fetch from cache)
     const decIn = hop.inputDecimals;
@@ -722,8 +722,8 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
 
   const rawPoolId = String(hop.poolId || '');
   if (!rawPoolId) return 0n;
-  const isRev = rawPoolId.endsWith('-rev');
-  const baseId = rawPoolId.replace(/-rev$/, '');
+  const isRev = /[#-]rev$/.test(rawPoolId);
+  const baseId = rawPoolId.replace(/[#-]rev$/, '');
   const pool = (pools.clmm || []).find((x: any) => String(x?.id || '') === baseId);
   
   if (!pool) {

@@ -35,7 +35,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
         // Infer from poolId presence in Raydium CLMM list when variant not hinted
         try {
           const { peekRaydiumPools } = await import('../../server/pools.js');
-          const id = poolId.replace(/-rev$/, '');
+          const id = poolId.replace(/[#-]rev$/, '');
           const ray = peekRaydiumPools();
           // Validate that pool has valid tickSpacing > 0 before considering it CLMM
           const isClmm = Array.isArray(ray?.clmm) && (ray!.clmm as any[]).some((p: any) => {
@@ -164,7 +164,7 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
     const byId = new Map<string, any>((orca.clmm || []).map((p: any) => [String(p.id), p]));
     for (const h of hops) {
       if (h.dex !== 'orca') continue;
-      const id = String(h.poolId || '').replace(/-rev$/, '');
+      const id = String(h.poolId || '').replace(/[#-]rev$/, '');
       if (!id) continue;
       const p = byId.get(id);
       if (!p) continue;

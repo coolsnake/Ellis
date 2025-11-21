@@ -442,7 +442,7 @@ export async function getWsTargets(): Promise<{ orca: { target: number }; raydiu
     for (const e of (snap?.edges || [])) {
       const pid = String((e as any)?.pool_id || '');
       if (!pid) continue;
-      const base = pid.replace(/-rev$/, '');
+      const base = pid.replace(/[#-]rev$/, '');
       const dex = String((e as any)?.dex || '');
       if (dex === 'Raydium') ray.add(base);
       else if (dex === 'Orca') orc.add(base);
@@ -737,7 +737,7 @@ function runWebsocketRefreshLoop(): void {
           for (const e of (snap?.edges || [])) {
             const pid = String((e as any)?.pool_id || '');
             if (!pid) continue;
-            const base = pid.replace(/-rev$/, '');
+            const base = pid.replace(/[#-]rev$/, '');
             if ((e as any)?.dex === 'Meteora') mset.add(base);
           }
           meteoraTargets = mset;
@@ -2852,7 +2852,7 @@ function runWebsocketRefreshLoop(): void {
               const dex = String((e as any)?.dex || '');
               if (dex !== 'Orca') continue;
               const pid = String((e as any)?.pool_id || '');
-              if (pid) edgePoolIds.add(pid.replace(/-rev$/,''));
+              if (pid) edgePoolIds.add(pid.replace(/[#-]rev$/,''));
             }
           } catch {}
           const SOL = 'So11111111111111111111111111111111111111112';
@@ -2981,7 +2981,7 @@ function runWebsocketRefreshLoop(): void {
               const dex = String((e as any)?.dex || '');
               if (dex !== 'Raydium') continue;
               const pid = String((e as any)?.pool_id || '');
-              if (pid) edgePoolIds.add(pid.replace(/-rev$/,''));
+              if (pid) edgePoolIds.add(pid.replace(/[#-]rev$/,''));
             }
             try { logger.info('pools.ws targets.raydium from graph', { size: edgePoolIds.size }); } catch {}
           } catch {}
@@ -3186,7 +3186,7 @@ function runWebsocketRefreshLoop(): void {
                 for (const e of (snap?.edges || [])) {
                   const pid = String((e as any)?.pool_id || '');
                   if (!pid) continue;
-                  const base = pid.replace(/-rev$/, '');
+                  const base = pid.replace(/[#-]rev$/, '');
                   if ((e as any)?.dex === 'Meteora') mset.add(base);
                 }
                 // Merge new targets into existing Set (don't replace, to preserve any already subscribed)
@@ -3259,7 +3259,7 @@ function runWebsocketRefreshLoop(): void {
               const dex = String((e as any)?.dex || '');
               if (dex !== 'Pumpswap') continue;
               const pid = String((e as any)?.pool_id || '');
-              if (pid) edgePoolIds.add(pid.replace(/-rev$/,''));
+              if (pid) edgePoolIds.add(pid.replace(/[#-]rev$/,''));
             }
             try { logger.info('pools.ws targets.pumpswap from graph', { size: edgePoolIds.size }); } catch {}
           } catch {}
@@ -3393,7 +3393,7 @@ function runWebsocketRefreshLoop(): void {
               // Match MeteoraBalanced, MeteoraBalanced_v1, MeteoraBalanced_v2
               if (!dex.startsWith('MeteoraBalanced')) continue;
               const pid = String((e as any)?.pool_id || '');
-              if (pid) edgePoolIds.add(pid.replace(/-rev$/,''));
+              if (pid) edgePoolIds.add(pid.replace(/[#-]rev$/,''));
             }
             try { logger.info('pools.ws targets.meteora_balanced from graph', { size: edgePoolIds.size }); } catch {}
           } catch {}

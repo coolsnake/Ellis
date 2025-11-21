@@ -218,7 +218,7 @@ export function createArbRouter(io: SocketIOServer): Router {
             const pools = new Set<string>();
             (snap?.edges || []).forEach((e: any) => {
               if (e.dex === dex && e.pool_id) {
-                const base = String(e.pool_id).replace(/-rev$/, '');
+                const base = String(e.pool_id).replace(/[#-]rev$/, '');
                 pools.add(base);
               }
             });
@@ -385,7 +385,7 @@ export function createArbRouter(io: SocketIOServer): Router {
       // Filter out reverse edges to avoid showing duplicates in preview
       const forwardEdgesOnly = filtered.filter(edge => {
         const poolId = String(edge.pool_id || '');
-        return !poolId.endsWith('-rev');
+        return !/[#-]rev$/.test(poolId);
       });
 
       // Sort by liquidity metrics
