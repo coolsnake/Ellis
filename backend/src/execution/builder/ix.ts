@@ -60,15 +60,52 @@ function requireRpcFallbackAllowed(
   );
 }
 
+/**
+ * HYBRID APPROACH: Always return connection object - it's needed for SDK APIs
+ * The actual RPC call restrictions are enforced at the point of use via requireRpcOrThrow
+ * This allows builders to check cache first and only use RPC as fallback
+ */
 function getBuilderConnectionOrFail(
   dex: string,
   hop: DirectHop | undefined,
   reason: string,
 ): ReturnType<typeof getConnection> {
-  if (!allowBuilderRpcFallback) {
-    requireRpcFallbackAllowed(dex, hop, reason);
-  }
+  // Always return connection - the RPC limit is enforced at call time
   return getConnection();
+}
+
+/**
+ * Call this when you're about to make an actual RPC call
+ * This enforces the allowBuilderRpcFallback policy at the point of use
+ */
+function requireRpcOrThrow(
+  dex: string,
+  hop: DirectHop | undefined,
+  reason: string,
+  context?: Record<string, unknown>,
+): void {
+  if (!allowBuilderRpcFallback) {
+    try {
+      logger.error('builder.rpc.disabled', {
+        cat: 'tx',
+        code: LogCode.TX_BUILD_ERR,
+        ctx: {
+          dex,
+          reason,
+          pool: hop?.poolId,
+          inputMint: hop?.inputMint,
+          outputMint: hop?.outputMint,
+          ...context,
+        },
+      });
+    } catch {}
+    throw createBuilderError(
+      dex,
+      `RPC_FALLBACK_DISABLED: ${reason}`,
+      hop,
+      context,
+    );
+  }
 }
 
 // Utility function to inject bin array account metas into an instruction
@@ -2346,11 +2383,8 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     // Pre-build validation: amounts
     validateHopAmounts(hop, { dex: 'meteora', variant: 'dlmm', poolId: hop.poolId });
     
-    const connection = getBuilderConnectionOrFail(
-      'METEORA_DLMM',
-      hop,
-      'dlmm_builder_connection',
-    );
+    // HYBRID: Get connection object (doesn't make RPC calls yet)
+    const connection = getConnection();
     const kp = await ensureWallet(CONFIG.walletPath);
     const poolPk = toPublicKey(hop.poolId);
     const programId = toPublicKey(hop.programId as string, (CONFIG as any)?.meteora?.programId);
@@ -2361,7 +2395,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     const outputMintPk = toPublicKey(hop.outputMint);
     let swapForY = true;  // Default: X->Y
     
-    // Try to get mints from execution cache first (NO RPC!)
+    // STEP 1: Try execution cache first (NO RPC!)
     let tokenXMintPk: PublicKey | null = null;
     let tokenYMintPk: PublicKey | null = null;
     
@@ -2383,25 +2417,47 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
               pool: hop.poolId.slice(0, 8) + '…',
               mintX: staticData.mint_a,
               mintY: staticData.mint_b,
-              source: 'execution_cache'
+              source: 'execution_cache',
+              rpcCallAvoided: true
             }
           });
         } catch {}
       }
     } catch {}
     
-    // Fallback: Get pool mints via SDK RPC call if not in cache
+    // STEP 2: Only fallback to RPC if cache is missing critical data
     if (!tokenXMintPk || !tokenYMintPk) {
+      // Check if RPC fallback is allowed before attempting RPC call
+      if (!allowBuilderRpcFallback) {
+        const errorMsg = `Pool mints not in cache and RPC fallback disabled. Pool: ${hop.poolId}`;
+        try {
+          logger.error('meteora.dlmm.cache_miss_no_fallback', {
+            cat: 'tx',
+            code: LogCode.TX_BUILD_ERR,
+            ctx: {
+              pool: hop.poolId,
+              reason: 'Mints not in execution cache',
+              hint: 'Ensure GraphQL pool fetch completed successfully',
+              hasMintA: !!tokenXMintPk,
+              hasMintB: !!tokenYMintPk
+            }
+          });
+        } catch {}
+        throw createBuilderError('METEORA_DLMM', errorMsg, hop);
+      }
+      
+      // RPC fallback is allowed - proceed with RPC call
       try {
         const DLMM: any = await import('@meteora-ag/dlmm').catch(() => null);
         if (DLMM && typeof DLMM.DLMM?.getTokensMintFromPoolAddress === 'function') {
           try {
-            logger.info('meteora.dlmm.mints_from_rpc', {
+            logger.warn('meteora.dlmm.mints_from_rpc', {
               cat: 'tx',
               ctx: {
                 pool: hop.poolId.slice(0, 8) + '…',
                 reason: 'Mints not in cache, making RPC call',
-                warning: 'This will slow down transaction building'
+                warning: 'This will slow down transaction building (200-400ms)',
+                hint: 'Check if pool was fetched in GraphQL or WebSocket feeds'
               }
             });
           } catch {}
@@ -2412,14 +2468,16 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
         }
       } catch (e: any) {
         try {
-          logger.warn('meteora.dlmm.mints_fetch_failed', {
+          logger.error('meteora.dlmm.mints_fetch_failed', {
             cat: 'tx',
+            code: LogCode.TX_BUILD_ERR,
             ctx: {
               pool: hop.poolId.slice(0, 8) + '…',
               error: String(e?.message || e)
             }
           });
         } catch {}
+        throw createBuilderError('METEORA_DLMM', `Failed to fetch pool mints: ${String(e?.message || e)}`, hop);
       }
     }
     

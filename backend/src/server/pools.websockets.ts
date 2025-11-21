@@ -1495,6 +1495,22 @@ function runWebsocketRefreshLoop(): void {
                   const tick_spacing = Number(parsed.tickSpacing);
                   const fee_bps = deriveOrcaFeeBps(parsed as any);
                   
+                  // Debug logging for fee validation issues
+                  if (!Number.isFinite(fee_bps) || fee_bps < 0 || fee_bps > 10000) {
+                    try {
+                      logger.warn('orca.ws.invalid_fee_debug', {
+                        id: id.slice(0, 8) + '…',
+                        fee_bps,
+                        parsed_feeRate: parsed?.feeRate,
+                        parsed_fee: parsed?.fee,
+                        parsed_tradeFeeRate: parsed?.tradeFeeRate,
+                        parsed_tradingFeeRate: parsed?.tradingFeeRate,
+                        parsed_protocolFeeRate: parsed?.protocolFeeRate,
+                        cat: 'pools'
+                      });
+                    } catch {}
+                  }
+                  
                   // CRITICAL VALIDATION: Ensure this is actually a pool account, not a vault
                   const isKnownDerivedAccount = derivedAccountToPool.has(id);
                   if (isKnownDerivedAccount) {

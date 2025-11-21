@@ -51,7 +51,7 @@ export function validateCrossDexPrices(
         const deviation = Math.max(price / median, median / price) - 1;
         if (deviation > maxDeviation) {
           try {
-            logger.warn('pools.crossdex.price.mismatch', {
+            logger.debug('pools.crossdex.price.mismatch', {
               pair: pairKey,
               dex,
               pool_id: (pool as any).id,
