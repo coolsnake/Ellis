@@ -330,6 +330,20 @@ export async function normalizeOrcaGraphQL(raw: any[]): Promise<PoolsPayload> {
       const id = pool.pubkey;
       if (!id) continue;
       
+      // VALIDATION: Ensure pool ID is not a vault address
+      if (id === pool.tokenVaultA || id === pool.tokenVaultB) {
+        // Log and skip this pool - the pubkey field contains a vault address, not a pool address
+        try {
+          logger.warn('orca.graphql.pool_id_is_vault', {
+            id: id.slice(0, 8) + '…',
+            tokenVaultA: pool.tokenVaultA?.slice(0, 8) + '…',
+            tokenVaultB: pool.tokenVaultB?.slice(0, 8) + '…',
+            cat: 'orca'
+          });
+        } catch {}
+        continue; // Skip this pool
+      }
+      
       const mint_a = pool.tokenMintA;
       const mint_b = pool.tokenMintB;
       

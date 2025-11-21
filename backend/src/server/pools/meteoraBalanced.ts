@@ -198,6 +198,24 @@ export async function normalizeMeteoraBalancedHttp(raw: any): Promise<PoolsPaylo
       const id = String(it?.pool_address || it?.address || it?.id || '');
       const a = it?.tokenA || it?.mintA || it?.base || {};
       const b = it?.tokenB || it?.mintB || it?.quote || {};
+      
+      // Extract vault addresses early for validation
+      const vaultA = String(it?.token_a_vault || '');
+      const vaultB = String(it?.token_b_vault || '');
+      
+      // VALIDATION: Ensure pool ID is not a vault address
+      if (id === vaultA || id === vaultB) {
+        try {
+          logger.warn('meteora.balanced.pool_id_is_vault', {
+            id: id.slice(0, 8) + '…',
+            vaultA: vaultA.slice(0, 8) + '…',
+            vaultB: vaultB.slice(0, 8) + '…',
+            cat: 'meteora'
+          });
+        } catch {}
+        continue; // Skip this pool
+      }
+      
       const mint_a = String(it?.token_a_mint || toMint(a) || toMint(a?.info) || it?.mintA || '');
       const mint_b = String(it?.token_b_mint || toMint(b) || toMint(b?.info) || it?.mintB || '');
       if (!id || !mint_a || !mint_b) continue;

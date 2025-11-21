@@ -326,6 +326,19 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
       const id = pool.pubkey || pool.baseKey;
       if (!id) continue;
       
+      // VALIDATION: Ensure pool ID is not a vault address
+      if (id === pool.reserveX || id === pool.reserveY) {
+        try {
+          logger.warn('meteora.graphql.pool_id_is_vault', {
+            id: id.slice(0, 8) + '…',
+            reserveX: pool.reserveX?.slice(0, 8) + '…',
+            reserveY: pool.reserveY?.slice(0, 8) + '…',
+            cat: 'meteora'
+          });
+        } catch {}
+        continue; // Skip this pool
+      }
+      
       const mint_a = pool.tokenXMint;
       const mint_b = pool.tokenYMint;
       

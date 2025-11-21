@@ -571,6 +571,19 @@ export async function normalizePumpswapPools(raw: any): Promise<PoolsPayload> {
       
       if (!id || !mint_a || !mint_b) continue;
       
+      // VALIDATION: Ensure pool ID is not a vault address
+      if (id === pool.pool_base_token_account || id === pool.pool_quote_token_account) {
+        try {
+          logger.warn('pumpswap.pool_id_is_vault', {
+            id: id.slice(0, 8) + '…',
+            baseVault: pool.pool_base_token_account?.slice(0, 8) + '…',
+            quoteVault: pool.pool_quote_token_account?.slice(0, 8) + '…',
+            cat: 'pumpswap'
+          });
+        } catch {}
+        continue; // Skip this pool
+      }
+      
       // Use extracted fee if available, otherwise fall back to default
       // PumpSwap total fee: 20 bps LP fee + 5 bps protocol fee = 25 bps total
       const defaultFeeBps = Number((CONFIG as any)?.pumpswap?.defaultFeeBps || 25);

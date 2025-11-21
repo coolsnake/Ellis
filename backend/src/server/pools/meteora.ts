@@ -156,6 +156,24 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     const id = String(it?.address || it?.id || it?.poolAddress || '');
     const tokenA = it?.tokenA || it?.tokenX || {};
     const tokenB = it?.tokenB || it?.tokenY || {};
+    
+    // Extract vault addresses early for validation
+    const reserveX = String((it as any)?.reserve_x || (it as any)?.reserveX || '');
+    const reserveY = String((it as any)?.reserve_y || (it as any)?.reserveY || '');
+    
+    // VALIDATION: Ensure pool ID is not a vault address
+    if (id === reserveX || id === reserveY) {
+      try {
+        logger.warn('meteora.pool_id_is_vault', {
+          id: id.slice(0, 8) + '…',
+          reserveX: reserveX.slice(0, 8) + '…',
+          reserveY: reserveY.slice(0, 8) + '…',
+          cat: 'meteora'
+        });
+      } catch {}
+      continue; // Skip this pool
+    }
+    
     let mint_a = String(it?.mint_x || tokenA?.mint || it?.mintA || it?.tokenXMint || '');
     let mint_b = String(it?.mint_y || tokenB?.mint || it?.mintB || it?.tokenYMint || '');
     if (!id || !mint_a || !mint_b) continue;
@@ -221,8 +239,7 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
     let account_a: string | undefined;
     let account_b: string | undefined;
     try {
-      const reserveX = String((it as any)?.reserve_x || (it as any)?.reserveX || '');
-      const reserveY = String((it as any)?.reserve_y || (it as any)?.reserveY || '');
+      // reserveX and reserveY are already extracted earlier for validation
       const tokenXMint = String((it as any)?.mint_x || (it as any)?.tokenXMint || tokenA?.mint || '');
       
       if (reserveX && reserveY) {

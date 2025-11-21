@@ -383,6 +383,19 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
       const id = pool.pubkey;
       if (!id) continue;
       
+      // VALIDATION: Ensure pool ID is not a vault address
+      if (id === pool.baseVault || id === pool.quoteVault) {
+        try {
+          logger.warn('raydium.graphql.pool_id_is_vault', {
+            id: id.slice(0, 8) + '…',
+            baseVault: pool.baseVault?.slice(0, 8) + '…',
+            quoteVault: pool.quoteVault?.slice(0, 8) + '…',
+            cat: 'raydium'
+          });
+        } catch {}
+        continue; // Skip this pool
+      }
+      
       const mint_a = pool.baseMint;
       const mint_b = pool.quoteMint;
       

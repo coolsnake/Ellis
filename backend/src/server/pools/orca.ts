@@ -198,6 +198,24 @@ export async function normalizeOrcaHttp(raw: any): Promise<PoolsPayload> {
     const id = String(it?.address || it?.id || '');
     const tokenA = it?.tokenA || it?.token_a || {};
     const tokenB = it?.tokenB || it?.token_b || {};
+    
+    // Extract vault addresses early for validation
+    const vaultA = String((it as any)?.tokenVaultA ?? (it as any)?.token_vault_a ?? (it as any)?.vaultA ?? '');
+    const vaultB = String((it as any)?.tokenVaultB ?? (it as any)?.token_vault_b ?? (it as any)?.vaultB ?? '');
+    
+    // VALIDATION: Ensure pool ID is not a vault address
+    if (id === vaultA || id === vaultB) {
+      try {
+        logger.warn('orca.http.pool_id_is_vault', {
+          id: id.slice(0, 8) + '…',
+          vaultA: vaultA.slice(0, 8) + '…',
+          vaultB: vaultB.slice(0, 8) + '…',
+          cat: 'orca'
+        });
+      } catch {}
+      continue; // Skip this pool
+    }
+    
     // FIXED: Orca API returns tokenMintA/tokenMintB (not mintA/mintB)
     let mint_a = String(tokenA?.mint || it?.tokenMintA || it?.mintA || '');
     let mint_b = String(tokenB?.mint || it?.tokenMintB || it?.mintB || '');
