@@ -362,10 +362,48 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
   
   if (shouldFetch.raydium) {
     try {
+      const useGraphQL = (CONFIG as any)?.raydium?.useGraphQL;
+      
       // Route to GraphQL if enabled, otherwise use HTTP
-      r = (CONFIG as any)?.raydium?.useGraphQL 
+      r = useGraphQL
         ? await getRaydiumPoolsGraphQL(!!options.force) 
         : await getRaydiumPoolsNormalized(!!options.force, { skipUniverseFilter: true });
+      
+      // Check if CLMM is enabled in source control
+      const isClmmEnabled = (() => {
+        if (typeof options.sources?.raydium === 'object') {
+          return options.sources.raydium.clmm !== false; // Default to true if not specified
+        }
+        if (options.sources?.raydium === false) return false;
+        // Check config
+        const configRaydium = configSources.raydium;
+        if (typeof configRaydium === 'object') {
+          return configRaydium.clmm !== false;
+        }
+        return configRaydium !== false; // Default to true
+      })();
+      
+      // If GraphQL is enabled and CLMM is enabled, fetch CLMM pools separately and merge
+      if (useGraphQL && isClmmEnabled) {
+        try {
+          logger.info('pools.refresh.phase.fetch.raydium.clmm.start', { cat: 'pools' });
+          const clmmResult = await getRaydiumClmmPoolsGraphQL(!!options.force);
+          // Merge CLMM pools into the result
+          r.clmm = [...(r.clmm || []), ...(clmmResult.clmm || [])];
+          logger.info('pools.refresh.phase.fetch.raydium.clmm.complete', { 
+            clmmCount: clmmResult.clmm?.length || 0,
+            totalClmm: r.clmm.length,
+            cat: 'pools' 
+          });
+        } catch (err) {
+          logger.warn('pools.refresh.phase.fetch.raydium.clmm.failed', { 
+            error: String((err as any)?.message || err), 
+            cat: 'pools' 
+          });
+          // Don't fail the entire fetch if CLMM fails, just log the warning
+        }
+      }
+      
       // Apply pool type filtering if specified
       if (typeof options.sources?.raydium === 'object') {
         const poolTypes = options.sources.raydium;
