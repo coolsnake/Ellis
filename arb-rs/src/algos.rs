@@ -8,12 +8,15 @@ pub struct DetectedCycle {
     pub log_sum: f64,
 }
 
-pub fn detect_negative_cycles(g: &ArbGraph) -> Vec<DetectedCycle> {
+pub fn detect_negative_cycles(g: &ArbGraph, max_hops: usize) -> Vec<DetectedCycle> {
     // Bellman-Ford on -log(rate_effective) weights
     let n = g.g.node_count();
     if n == 0 {
         return vec![];
     }
+    // Ensure max_hops is at least 2 and not larger than graph
+    let max_hops = max_hops.max(2).min(n);
+    
     let mut dist = vec![0.0f64; n];
     let mut pred: Vec<Option<usize>> = vec![None; n];
     // Relax edges V-1 times
@@ -42,7 +45,9 @@ pub fn detect_negative_cycles(g: &ArbGraph) -> Vec<DetectedCycle> {
         if dist[u] + w < dist[v] - 1e-12 {
             // Found a cycle, backtrack
             let mut x = v;
-            for _ in 0..n {
+            // Limit backtracking to max_hops to find the cycle start
+            let max_backtrack = max_hops.min(n);
+            for _ in 0..max_backtrack {
                 if let Some(p) = pred[x] {
                     x = p;
                 } else {
@@ -54,17 +59,22 @@ pub fn detect_negative_cycles(g: &ArbGraph) -> Vec<DetectedCycle> {
             let mut cur = x;
             loop {
                 cycle.push(cur);
+                // Early exit if cycle exceeds max_hops
+                if cycle.len() > max_hops {
+                    break;
+                }
                 if let Some(p) = pred[cur] {
                     cur = p;
                 } else {
                     // No predecessor means we can't continue the cycle
                     break;
                 }
-                if cur == x || cycle.len() > n + 5 {
+                if cur == x || cycle.len() > max_hops {
                     break;
                 }
             }
-            if cycle.len() >= 2 {
+            // Only add cycles that respect max_hops (and are at least 2 nodes)
+            if cycle.len() >= 2 && cycle.len() <= max_hops {
                 cycle.reverse();
                 cycles.push(DetectedCycle {
                     nodes: cycle,
@@ -79,11 +89,17 @@ pub fn detect_negative_cycles(g: &ArbGraph) -> Vec<DetectedCycle> {
 /// Variant of negative cycle detection limited to an induced subgraph defined by `nodes`.
 /// Only edges whose endpoints are both in `nodes` are considered. This is useful to scope
 /// detection work to areas impacted by recent graph diffs.
-pub fn detect_negative_cycles_filtered(g: &ArbGraph, nodes: &HashSet<usize>) -> Vec<DetectedCycle> {
+pub fn detect_negative_cycles_filtered(
+    g: &ArbGraph, 
+    nodes: &HashSet<usize>,
+    max_hops: usize
+) -> Vec<DetectedCycle> {
     let n = g.g.node_count();
     if n == 0 || nodes.is_empty() {
         return vec![];
     }
+    // Ensure max_hops is at least 2 and not larger than graph
+    let max_hops = max_hops.max(2).min(n);
 
     // OPTIMIZATION: Pre-filter edges once instead of checking membership in every iteration
     // This changes complexity from O(V * E) to O(V * filtered_E), typically 10-100x faster
@@ -126,7 +142,9 @@ pub fn detect_negative_cycles_filtered(g: &ArbGraph, nodes: &HashSet<usize>) -> 
         if dist[u] + w < dist[v] - 1e-12 {
             // Found a cycle, backtrack
             let mut x = v;
-            for _ in 0..n {
+            // Limit backtracking to max_hops
+            let max_backtrack = max_hops.min(n);
+            for _ in 0..max_backtrack {
                 if let Some(p) = pred[x] {
                     x = p;
                 } else {
@@ -138,17 +156,21 @@ pub fn detect_negative_cycles_filtered(g: &ArbGraph, nodes: &HashSet<usize>) -> 
             let mut cur = x;
             loop {
                 cycle.push(cur);
+                // Early exit if cycle exceeds max_hops
+                if cycle.len() > max_hops {
+                    break;
+                }
                 if let Some(p) = pred[cur] {
                     cur = p;
                 } else {
-                    // No predecessor means we can't continue the cycle
                     break;
                 }
-                if cur == x || cycle.len() > n + 5 {
+                if cur == x || cycle.len() > max_hops {
                     break;
                 }
             }
-            if cycle.len() >= 2 {
+            // Only add cycles that respect max_hops
+            if cycle.len() >= 2 && cycle.len() <= max_hops {
                 cycle.reverse();
                 cycles.push(DetectedCycle {
                     nodes: cycle,
@@ -474,7 +496,7 @@ mod tests {
         // A <-> B with product > 1.0 (2.0 * 0.6 = 1.2)
         g.upsert_edge("D", "A", "B", mk_edge("D", 2.0));
         g.upsert_edge("D", "B", "A", mk_edge("D", 0.6));
-        let cycles = detect_negative_cycles(&g);
+        let cycles = detect_negative_cycles(&g, 4);
         assert!(!cycles.is_empty());
     }
 
@@ -496,9 +518,9 @@ mod tests {
         let mut ac: HashSet<usize> = HashSet::new();
         ac.insert(ia);
         ac.insert(ic);
-        let c_ab = detect_negative_cycles_filtered(&g, &ab);
+        let c_ab = detect_negative_cycles_filtered(&g, &ab, 4);
         assert!(!c_ab.is_empty());
-        let c_ac = detect_negative_cycles_filtered(&g, &ac);
+        let c_ac = detect_negative_cycles_filtered(&g, &ac, 4);
         assert!(c_ac.is_empty());
     }
 
@@ -514,7 +536,7 @@ mod tests {
             g.upsert_edge(dex, &a, &b, mk_edge(dex, 1.0));
             g.upsert_edge(dex, &b, &a, mk_edge(dex, 1.0));
         }
-        let full = detect_negative_cycles(&g);
+        let full = detect_negative_cycles(&g, 4);
         assert!(full.is_empty());
         // Filtered to a small subset should also terminate and be empty
         use std::collections::HashSet;
@@ -523,7 +545,7 @@ mod tests {
         let mut scope: HashSet<usize> = HashSet::new();
         scope.insert(ia);
         scope.insert(ib);
-        let part = detect_negative_cycles_filtered(&g, &scope);
+        let part = detect_negative_cycles_filtered(&g, &scope, 4);
         assert!(part.is_empty());
     }
 }

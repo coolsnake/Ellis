@@ -861,9 +861,9 @@ async fn main() -> anyhow::Result<()> {
                     );
                     // Run detection
                     let cycles = if use_filtered {
-                        detect_negative_cycles_filtered(&s.graph, &affected_nodes)
+                        detect_negative_cycles_filtered(&s.graph, &affected_nodes, max_hops)
                     } else {
-                        detect_negative_cycles(&s.graph)
+                        detect_negative_cycles(&s.graph, max_hops)
                     };
                     let cycles_count = cycles.len();
                     // Prepare metrics snapshot, then drop read lock before taking write lock to avoid deadlock
@@ -2575,7 +2575,7 @@ async fn main() -> anyhow::Result<()> {
                     if s.config.debug_emit_subthreshold {
                         // Re-run a light pass over cycles to collect subthreshold candidates
                         let mut subs: Vec<(i64, String)> = Vec::new();
-                        let dbg_cycles = detect_negative_cycles(&s.graph);
+                        let dbg_cycles = detect_negative_cycles(&s.graph, max_hops);
                         for c in dbg_cycles.into_iter() {
                             if c.nodes.len() < 3 || c.nodes.len() > max_hops {
                                 continue;
@@ -4348,7 +4348,8 @@ async fn set_config(
         s.config.min_notional_usd = v;
     }
     if let Some(v) = cfg.max_hops {
-        s.config.max_hops = v;
+        // Ensure max_hops is at least 2 (minimum for a cycle)
+        s.config.max_hops = v.max(2);
     }
     if let Some(v) = cfg.max_idle_ms {
         s.config.max_idle_ms = v;
@@ -5348,7 +5349,7 @@ mod e2e_tests {
 
         // Run detection and assert we find a cycle
         let s = state.read().await;
-        let cycles = detect_negative_cycles(&s.graph);
+        let cycles = detect_negative_cycles(&s.graph, 4);
         assert!(!cycles.is_empty());
     }
 }

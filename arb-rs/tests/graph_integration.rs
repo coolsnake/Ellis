@@ -19,7 +19,7 @@ fn detects_simple_two_edge_arbitrage() {
     let mut g = ArbGraph::new();
     g.upsert_edge("D", "A", "B", edge(2.0, "D"));
     g.upsert_edge("D", "B", "A", edge(0.6, "D"));
-    let cycles = detect_negative_cycles(&g);
+    let cycles = detect_negative_cycles(&g, 4);
     assert!(!cycles.is_empty());
 }
 

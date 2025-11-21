@@ -66,7 +66,11 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
       min_profit_bps: toNum(det.min_profit_bps),
       max_profit_bps: toOptNum(det.max_profit_bps),
       min_notional_usd: toNum(det.min_notional_usd),
-      max_hops: toNum(det.max_hops),
+      max_hops: (() => {
+        const val = toNum(det.max_hops);
+        // If 0 or invalid, default to 4 (current default)
+        return val > 0 ? val : 4;
+      })(),
       quote_size_usd: toNum(det.quote_size_usd),
       max_idle_ms: toOptNum(det.max_idle_ms),
       // near-miss & debug
