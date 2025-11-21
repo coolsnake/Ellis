@@ -557,11 +557,18 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       try {
         const { loadJupiterTokenMap } = await import('../utils/tokens.js');
         jupiterMap = await loadJupiterTokenMap();
+        let jupiterLabelsAdded = 0;
         for (const [mint, meta] of Object.entries(jupiterMap)) {
-          if (!labelByMint[mint] && meta?.symbol) labelByMint[mint] = meta.symbol;
+          if (!labelByMint[mint] && meta?.symbol) {
+            labelByMint[mint] = meta.symbol;
+            jupiterLabelsAdded++;
+          }
           if (Number.isFinite((meta as any)?.decimals) && decimalsByMint[mint] == null) decimalsByMint[mint] = Number((meta as any).decimals);
         }
-      } catch {}
+        try { logger.debug('graph.labels.jupiter', { loaded: Object.keys(jupiterMap).length, labelsAdded: jupiterLabelsAdded, cat: 'graph' }); } catch {}
+      } catch (e: any) {
+        try { logger.warn('graph.labels.jupiter.failed', { error: String(e?.message || e), cat: 'graph' }); } catch {}
+      }
       // Note: Token decimals enrichment now happens during refreshAllSources (Phase 0)
       // before normalizers run, ensuring accurate price calculations
       // Diagnostics: verify pool-reported decimals match authoritative decimals
@@ -594,6 +601,13 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           if (mint && sym && !labelByMint[mint]) labelByMint[mint] = sym;
         }
       } catch {}
+      
+      // Helper function to create a fallback label from mint address
+      const getLabelForMint = (mint: string): string => {
+        if (labelByMint[mint]) return labelByMint[mint];
+        // Fallback: show shortened mint address if no label found
+        return mint.length > 8 ? `${mint.slice(0, 4)}...${mint.slice(-4)}` : mint;
+      };
 
       const nodesMap: Record<string, GraphNode> = {};
       const edgesMap: Record<string, GraphEdge> = {};
@@ -693,8 +707,12 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           
           for (const e of newEdges) {
             edgesMap[e.id] = e;
-            if (!nodesMap[e.source]) nodesMap[e.source] = { id: e.source, label: labelByMint[e.source] };
-            if (!nodesMap[e.target]) nodesMap[e.target] = { id: e.target, label: labelByMint[e.target] };
+            if (!nodesMap[e.source]) {
+              nodesMap[e.source] = { id: e.source, label: getLabelForMint(e.source) };
+            }
+            if (!nodesMap[e.target]) {
+              nodesMap[e.target] = { id: e.target, label: getLabelForMint(e.target) };
+            }
           }
         }
       };
@@ -715,6 +733,27 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
         ...(mbl.amm || []),
         ...(pump.amm || []),
       ];
+      
+      // Diagnostic: log label resolution stats
+      try {
+        const totalMints = new Set<string>();
+        for (const p of allPools) {
+          if (p?.mint_a) totalMints.add(String(p.mint_a));
+          if (p?.mint_b) totalMints.add(String(p.mint_b));
+        }
+        const labeledCount = Array.from(totalMints).filter(m => labelByMint[m]).length;
+        logger.debug('graph.labels.resolution', {
+          totalMints: totalMints.size,
+          labeled: labeledCount,
+          unlabeled: totalMints.size - labeledCount,
+          sources: {
+            tokenMap: Object.keys(tokenMap).length,
+            jupiterMap: Object.keys(jupiterMap).length,
+          },
+          cat: 'graph'
+        });
+      } catch {}
+      
       createEdgesFromPools(allPools, 'Unknown');
 
       // Compute degree (optional)

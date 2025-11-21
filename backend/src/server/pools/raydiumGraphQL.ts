@@ -9,6 +9,130 @@ import { poolsMetrics } from '../pools.metrics.js';
 import { loadJupiterTokenMap } from '../../utils/tokens.js';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { withRpcLimit } from '../../utils/rpcLimiter.js';
+import { getConnection } from '../../wallet/wallet.js';
+
+// Constants for ammConfig account structure
+const TRADE_FEE_RATE_OFFSET = 39; // u32 at byte offset 39 in ammConfig account
+
+// Cache ammConfig fee rates to avoid redundant RPC calls
+const ammConfigFeeCache = new Map<string, { feeBps: number; ts: number }>();
+const AMM_CONFIG_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours (configs are immutable)
+
+/**
+ * Fetch and decode fee rates from Raydium CLMM ammConfig accounts
+ * AmmConfig account structure:
+ *   - bump (u8): 1 byte at offset 0
+ *   - index (u16): 2 bytes at offset 1
+ *   - owner (pubkey): 32 bytes at offset 3
+ *   - protocol_fee_rate (u32): 4 bytes at offset 35
+ *   - trade_fee_rate (u32): 4 bytes at offset 39 ← WE READ THIS
+ *   - ... rest of struct
+ * 
+ * trade_fee_rate is in parts per million (PPM)
+ * Convert to basis points: fee_bps = trade_fee_rate / 100
+ * Example: trade_fee_rate = 2500 → 25 bps → 0.25%
+ */
+export async function fetchAmmConfigFeeRates(
+  ammConfigAddresses: Set<string>
+): Promise<Map<string, number>> {
+  const result = new Map<string, number>();
+  if (!ammConfigAddresses.size) return result;
+  
+  const now = Date.now();
+  const addressesToFetch: string[] = [];
+  
+  // Check cache first
+  for (const addr of ammConfigAddresses) {
+    const cached = ammConfigFeeCache.get(addr);
+    if (cached && now - cached.ts < AMM_CONFIG_CACHE_TTL) {
+      result.set(addr, cached.feeBps);
+    } else {
+      addressesToFetch.push(addr);
+    }
+  }
+  
+  if (!addressesToFetch.length) {
+    logger.debug('raydium.clmm.ammConfig.all_cached', {
+      total: ammConfigAddresses.size,
+      cat: 'raydium-clmm',
+    });
+    return result;
+  }
+  
+  try {
+    const connection = getConnection();
+    const publicKeys = addressesToFetch.map(addr => new PublicKey(addr));
+    
+    logger.debug('raydium.clmm.ammConfig.fetch.start', {
+      total: addressesToFetch.length,
+      cached: result.size,
+      cat: 'raydium-clmm',
+    });
+    
+    const accountInfos = await withRpcLimit(
+      () => connection.getMultipleAccountsInfo(publicKeys),
+      Math.max(1, Math.ceil(addressesToFetch.length / 10)),
+      { module: 'raydium-clmm', method: 'getMultipleAccountsInfo' }
+    );
+    
+    for (let i = 0; i < addressesToFetch.length; i++) {
+      const configAddr = addressesToFetch[i];
+      const accountInfo = accountInfos[i];
+      
+      if (!accountInfo?.data || accountInfo.data.length < TRADE_FEE_RATE_OFFSET + 4) {
+        logger.warn('raydium.clmm.ammConfig.invalid', {
+          config: configAddr.slice(0, 8),
+          dataLen: accountInfo?.data?.length || 0,
+          cat: 'raydium-clmm',
+        });
+        continue;
+      }
+      
+      try {
+        const buffer = accountInfo.data;
+        
+        // Read trade_fee_rate as u32 little-endian at offset 39
+        const tradeFeeRatePPM = buffer.readUInt32LE(TRADE_FEE_RATE_OFFSET);
+        
+        // Convert from parts per million to basis points
+        // PPM to bps: divide by 100 (since 1 bps = 10,000 PPM / 100)
+        const feeBps = tradeFeeRatePPM / 100;
+        
+        result.set(configAddr, feeBps);
+        
+        // Cache the result
+        ammConfigFeeCache.set(configAddr, { feeBps, ts: now });
+        
+        logger.debug('raydium.clmm.ammConfig.decoded', {
+          config: configAddr.slice(0, 8),
+          tradeFeeRatePPM,
+          feeBps,
+          cat: 'raydium-clmm',
+        });
+      } catch (err) {
+        logger.warn('raydium.clmm.ammConfig.decode.failed', {
+          config: configAddr.slice(0, 8),
+          error: String(err),
+          cat: 'raydium-clmm',
+        });
+      }
+    }
+    
+    logger.info('raydium.clmm.ammConfig.batch.complete', {
+      total: addressesToFetch.length,
+      decoded: result.size - (ammConfigAddresses.size - addressesToFetch.length),
+      cached: ammConfigAddresses.size - addressesToFetch.length,
+      cat: 'raydium-clmm',
+    });
+  } catch (err) {
+    logger.error('raydium.clmm.ammConfig.batch.failed', {
+      error: String(err),
+      cat: 'raydium-clmm',
+    });
+  }
+  
+  return result;
+}
 
 export async function fetchRaydiumGraphQL(mints: string[]): Promise<any[]> {
   const CACHE_PATH = joinPath(CONFIG.cacheDir, 'raydium-graphql-raw.json');
@@ -213,8 +337,7 @@ async function fetchRaydiumClmmPoolsForToken(opts: {
             tokenVault0
             tokenVault1
             sqrtPriceX64
-            feeRate
-            protocolFeeRate
+            ammConfig
             _updatedAt
           }
         }
@@ -286,8 +409,7 @@ async function fetchRaydiumClmmPoolsByAddress(
               tokenVault0
               tokenVault1
               sqrtPriceX64
-              feeRate
-              protocolFeeRate
+              ammConfig
               _updatedAt
             }
           }
@@ -584,6 +706,25 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
   // Load Jupiter token prices for TVL calculation
   const jupPriceMap = await loadJupiterTokenMap();
 
+  // Collect unique ammConfig addresses from CLMM pools
+  const ammConfigAddrs = new Set<string>();
+  for (const pool of raw) {
+    // Identify CLMM pools (they have tokenMint0, AMM pools have baseMint/quoteMint)
+    const isClmm = pool.tokenMint0 !== undefined || pool.tokenVault0 !== undefined || pool.tickSpacing !== undefined;
+    if (isClmm && pool.ammConfig) {
+      ammConfigAddrs.add(pool.ammConfig);
+    }
+  }
+  
+  // Fetch fee rates for all unique ammConfig accounts
+  logger.info('raydium.graphql.ammConfig.fetch', {
+    uniqueConfigs: ammConfigAddrs.size,
+    totalPools: raw.length,
+    cat: 'raydium',
+  });
+  
+  const configFeeRates = await fetchAmmConfigFeeRates(ammConfigAddrs);
+
   // Collect all vault addresses for batch RPC fetching
   const vaultAddresses = new Set<string>();
   for (const pool of raw) {
@@ -661,10 +802,21 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
       let fee_bps = 25; // Default
       try {
         if (isClmm) {
-          // Raydium CLMM feeRate is typically stored as parts per million
-          // Convert to basis points: (feeRate / 1000000) * 10000
-          if (pool.feeRate !== undefined) {
-            fee_bps = Math.round((Number(pool.feeRate) / 1000000) * 10000);
+          // Get fee rate from ammConfig account
+          if (pool.ammConfig && configFeeRates.has(pool.ammConfig)) {
+            fee_bps = configFeeRates.get(pool.ammConfig)!;
+            logger.debug('raydium.clmm.fee.from_config', {
+              pool: id.slice(0, 8),
+              ammConfig: pool.ammConfig.slice(0, 8),
+              feeBps: fee_bps,
+              cat: 'raydium-clmm',
+            });
+          } else {
+            logger.debug('raydium.clmm.fee.default', {
+              pool: id.slice(0, 8),
+              ammConfig: pool.ammConfig || 'missing',
+              cat: 'raydium-clmm',
+            });
           }
         } else {
           const feeNum = Number(pool.swapFeeNumerator || pool.tradeFeeNumerator || 0);
@@ -917,7 +1069,8 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
   
   logger.info('raydium.graphql.normalized', { 
     amm: amm.length, 
-    clmm: clmm.length, 
+    clmm: clmm.length,
+    ammConfigs: configFeeRates.size,
     cat: 'raydium' 
   });
   

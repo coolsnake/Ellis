@@ -161,7 +161,7 @@ export const GraphView: React.FC<{ apiBase: string; socket?: any; square?: boole
 	const isVisibleRef = useRef<boolean>(true);
 
 	const styles: any[] = useMemo(() => ([
-		{ selector: 'node', style: { 'background-color': '#3b82f6', 'label': '', 'font-size': 8, 'color': '#e5e7eb', 'text-outline-width': 1, 'text-outline-color': '#111827' } },
+		{ selector: 'node', style: { 'background-color': '#3b82f6', 'label': 'data(label)', 'font-size': 8, 'color': '#e5e7eb', 'text-outline-width': 1, 'text-outline-color': '#111827' } },
 		{
 			selector: 'edge',
 			style: {
@@ -239,7 +239,7 @@ useEffect(() => {
 		const hideKind = new Set<string>();
 		if (!filterKind.AMM) hideKind.add('amm');
 		if (!filterKind.CLMM) hideKind.add('clmm');
-		const nodes: ElementDefinition[] = snap.nodes.map((n) => ({ data: { id: n.id, label: '' } }));
+		const nodes: ElementDefinition[] = snap.nodes.map((n) => ({ data: { id: n.id, label: n.label || n.id } }));
 		// Build raw edge definitions (without DEX visibility filter yet for grouping)
 		let rawEdges: ElementDefinition[] = snap.edges
 			.filter((e) => {
