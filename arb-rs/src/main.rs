@@ -29,7 +29,7 @@ use opportunities::{
 mod graph;
 use graph::{expand_nodes_by_hops, ArbGraph, EdgeData};
 mod algos;
-use algos::{detect_near_miss_cycles, detect_negative_cycles, detect_negative_cycles_filtered};
+use algos::{detect_near_miss_cycles, detect_negative_cycles, detect_negative_cycles_filtered, detect_negative_cycles_from_anchors};
 
 const REJECTED_DEBUG_LIMIT: usize = 15;
 const REJECTED_DEBUG_TTL_MS: u64 = 30_000;
@@ -74,6 +74,10 @@ struct ArbConfig {
     stable_mints: Option<Vec<String>>,
     // When true, apply 10^k magnitude calibration on ingest (backend already calibrates)
     calibrate_magnitude_on_ingest: bool,
+    // When true, only detect cycles that start from anchor tokens (SOL, USDC, etc.)
+    anchor_start_mode: bool,
+    // List of anchor mints to use as cycle starting points
+    anchor_mints: Option<Vec<String>>,
 }
 
 #[derive(Default, serde::Serialize, Clone)]
@@ -860,7 +864,23 @@ async fn main() -> anyhow::Result<()> {
                         "arb.detect.scope"
                     );
                     // Run detection
-                    let cycles = if use_filtered {
+                    let cycles = if s.config.anchor_start_mode {
+                        use std::collections::HashSet;
+                        let anchor_set: HashSet<String> = s.config.anchor_mints
+                            .clone()
+                            .unwrap_or_default()
+                            .into_iter()
+                            .collect();
+                        if anchor_set.is_empty() {
+                            // Fallback to default anchors if none configured
+                            let mut defaults = HashSet::new();
+                            defaults.insert("So11111111111111111111111111111111111111112".to_string()); // SOL
+                            defaults.insert("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string()); // USDC
+                            detect_negative_cycles_from_anchors(&s.graph, &defaults, max_hops)
+                        } else {
+                            detect_negative_cycles_from_anchors(&s.graph, &anchor_set, max_hops)
+                        }
+                    } else if use_filtered {
                         detect_negative_cycles_filtered(&s.graph, &affected_nodes, max_hops)
                     } else {
                         detect_negative_cycles(&s.graph, max_hops)
@@ -4271,6 +4291,8 @@ struct ConfigReq {
     drop_stable_stable_hops: Option<bool>,
     stable_mints: Option<Vec<String>>,
     calibrate_magnitude_on_ingest: Option<bool>,
+    anchor_start_mode: Option<bool>,
+    anchor_mints: Option<Vec<String>>,
 }
 
 async fn set_config(
@@ -4412,6 +4434,12 @@ async fn set_config(
     if let Some(v) = cfg.calibrate_magnitude_on_ingest {
         s.config.calibrate_magnitude_on_ingest = v;
     }
+    if let Some(v) = cfg.anchor_start_mode {
+        s.config.anchor_start_mode = v;
+    }
+    if let Some(v) = cfg.anchor_mints {
+        s.config.anchor_mints = Some(v);
+    }
     // Optional: extend ConfigReq to accept pruning fields without breaking existing clients
     // We tolerate presence via raw JSON by re-reading from persisted file later if needed.
     let config_snapshot = s.config.clone();
@@ -4510,6 +4538,14 @@ fn default_config() -> ArbConfig {
             .ok()
             .map(|v| v == "true")
             .unwrap_or(false),
+        anchor_start_mode: std::env::var("ARB_ANCHOR_START_MODE")
+            .ok()
+            .map(|v| v == "true")
+            .unwrap_or(false),
+        anchor_mints: Some(vec![
+            "So11111111111111111111111111111111111111112".to_string(), // SOL
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string(), // USDC
+        ]),
     }
 }
 

@@ -182,6 +182,115 @@ pub fn detect_negative_cycles_filtered(
     cycles
 }
 
+/// Detect negative cycles starting only from anchor nodes.
+/// This restricts the search space to cycles that begin with high-liquidity anchor tokens.
+pub fn detect_negative_cycles_from_anchors(
+    g: &ArbGraph,
+    anchor_mints: &HashSet<String>,
+    max_hops: usize
+) -> Vec<DetectedCycle> {
+    let n = g.g.node_count();
+    if n == 0 || anchor_mints.is_empty() {
+        return vec![];
+    }
+    
+    // Convert anchor mints to node indices
+    let anchor_indices: HashSet<usize> = anchor_mints
+        .iter()
+        .filter_map(|mint| g.map.get(mint).map(|idx| idx.index()))
+        .collect();
+    
+    if anchor_indices.is_empty() {
+        return vec![];
+    }
+    
+    let max_hops = max_hops.max(2).min(n);
+    let mut all_cycles = Vec::new();
+    let mut seen_cycles: HashSet<String> = HashSet::new();
+    
+    // Run Bellman-Ford starting from each anchor
+    for &anchor_idx in &anchor_indices {
+        let mut dist = vec![f64::INFINITY; n];
+        let mut pred: Vec<Option<usize>> = vec![None; n];
+        dist[anchor_idx] = 0.0;
+        
+        // Relax edges V-1 times
+        for _ in 0..(n - 1) {
+            let mut updated = false;
+            for e in g.g.edge_references() {
+                let u = e.source().index();
+                let v = e.target().index();
+                let w = -(e.weight().rate_effective.max(1e-12)).ln();
+                if dist[u] != f64::INFINITY && dist[u] + w < dist[v] - 1e-12 {
+                    dist[v] = dist[u] + w;
+                    pred[v] = Some(u);
+                    updated = true;
+                }
+            }
+            if !updated {
+                break;
+            }
+        }
+        
+        // Find cycles that start from this anchor
+        for e in g.g.edge_references() {
+            let u = e.source().index();
+            let v = e.target().index();
+            let w = -(e.weight().rate_effective.max(1e-12)).ln();
+            
+            if dist[u] != f64::INFINITY && dist[u] + w < dist[v] - 1e-12 {
+                // Found a cycle, backtrack
+                let mut x = v;
+                let max_backtrack = max_hops.min(n);
+                for _ in 0..max_backtrack {
+                    if let Some(p) = pred[x] {
+                        x = p;
+                    } else {
+                        break;
+                    }
+                }
+                
+                // Collect cycle starting from anchor
+                let mut cycle = Vec::new();
+                let mut cur = x;
+                loop {
+                    cycle.push(cur);
+                    if cycle.len() > max_hops {
+                        break;
+                    }
+                    if let Some(p) = pred[cur] {
+                        cur = p;
+                    } else {
+                        break;
+                    }
+                    if cur == x || cycle.len() > max_hops {
+                        break;
+                    }
+                }
+                
+                // Only add cycles that respect max_hops and start from anchor
+                if cycle.len() >= 2 && cycle.len() <= max_hops {
+                    cycle.reverse();
+                    // Ensure cycle starts from the anchor (first node should be anchor)
+                    if cycle.first().copied() == Some(anchor_idx) {
+                        // Deduplicate by canonical string representation
+                        let cycle_key = cycle.iter().map(|i| i.to_string()).collect::<Vec<_>>().join("->");
+                        if !seen_cycles.contains(&cycle_key) {
+                            seen_cycles.insert(cycle_key);
+                            all_cycles.push(DetectedCycle {
+                                nodes: cycle,
+                                log_sum: 0.0,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    all_cycles
+}
+
 #[derive(Clone, Debug)]
 pub struct NearMissCycle {
     pub nodes: Vec<usize>,

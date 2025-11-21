@@ -83,6 +83,7 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
       est_priority_fee_per_hop_lamports: toOptNum(det.est_priority_fee_per_hop_lamports),
       // cadence/perf
       filtered_detect_enable: !!det.filtered_detect_enable,
+      anchor_start_mode: !!det.anchor_start_mode,
       filtered_node_ratio: toOptNum(det.filtered_node_ratio),
       filtered_expand_hops: toOptNum(det.filtered_expand_hops),
       periodic_full_ms: toOptNum(det.periodic_full_ms),
@@ -168,6 +169,7 @@ export const OpportunityConfig: React.FC<Props> = ({ apiBase, onClose }) => {
             <h3 className="text-lg font-semibold text-white mb-3">Cadence & Performance</h3>
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
               <label className="flex items-center gap-2"><input type="checkbox" checked={!!det.filtered_detect_enable} onChange={e=>set('filtered_detect_enable', e.target.checked)} />Enable filtered detection</label>
+              <label className="flex items-center gap-2"><input type="checkbox" checked={!!det.anchor_start_mode} onChange={e=>set('anchor_start_mode', e.target.checked)} />Start cycles from anchors only</label>
               <div><label className="block mb-1 text-gray-300">Node ratio</label><input type="number" step={0.01} className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={det.filtered_node_ratio ?? ''} onChange={e=>set('filtered_node_ratio', Number(e.target.value)||0)} /></div>
               <div><label className="block mb-1 text-gray-300">Expand hops</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={det.filtered_expand_hops ?? ''} onChange={e=>set('filtered_expand_hops', Number(e.target.value)||0)} /></div>
               <div><label className="block mb-1 text-gray-300">Periodic full (ms)</label><input type="number" className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" value={det.periodic_full_ms ?? ''} onChange={e=>set('periodic_full_ms', Number(e.target.value)||0)} /></div>
