@@ -458,6 +458,29 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
       const tokenProgramA = tokenPrograms.get(mint_a) || 'spl-token';
       const tokenProgramB = tokenPrograms.get(mint_b) || 'spl-token';
 
+      // Map reserveX/reserveY to account_a/account_b for resolver compatibility
+      // Follow the same pattern as HTTP normalization: map based on native mint order, then swap if needed
+      let account_a: string | undefined;
+      let account_b: string | undefined;
+      
+      if (pool.reserveX && pool.reserveY) {
+        // First, map based on native mint order (before pipeline processing)
+        // mint_a and mint_b here are the native mints from pool.tokenXMint/tokenYMint
+        const tokenXMint = String(pool.tokenXMint || mint_a);
+        if (tokenXMint === mint_a) {
+          account_a = pool.reserveX;
+          account_b = pool.reserveY;
+        } else {
+          account_a = pool.reserveY;
+          account_b = pool.reserveX;
+        }
+        
+        // Then swap if pipeline swapped the mints (to match finalMintA/finalMintB order)
+        if (wasSwapped) {
+          [account_a, account_b] = [account_b, account_a];
+        }
+      }
+
       clmm.push({
         id,
         dex: 'Meteora',
@@ -489,6 +512,8 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
         amount_a_whole: finalAmountA,
         amount_b_whole: finalAmountB,
         liquidity_display: tvl_usd,
+        account_a,
+        account_b,
       } as any);
     } catch (error: any) {
       logger.warn('meteora.graphql.normalize.pool.failed', { 
