@@ -10,6 +10,7 @@ import { loadJupiterTokenMap } from '../../utils/tokens.js';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { withRpcLimit } from '../../utils/rpcLimiter.js';
 import { executionCache } from '../../execution/cache.js';
+import { isValidPublicKey } from '../../execution/builder/utils.js';
 
 export async function fetchMeteoraGraphQL(mints: string[]): Promise<any[]> {
   const CACHE_PATH = joinPath(CONFIG.cacheDir, 'meteora-graphql-raw.json');
@@ -18,7 +19,12 @@ export async function fetchMeteoraGraphQL(mints: string[]): Promise<any[]> {
   const pageSize = Number((CONFIG as any)?.meteora?.pageSize || 1000);
   const maxPages = Number((CONFIG as any)?.meteora?.maxPages || 10);
   const pageDelayMs = Number((CONFIG as any)?.meteora?.pageDelayMs || 200);
-  const detailBatchSize = Number((CONFIG as any)?.meteora?.detailBatchSize || 50);
+  // Reduced default batch size and add max limit to prevent query overload
+  const maxDetailBatchSize = Number((CONFIG as any)?.meteora?.maxDetailBatchSize || 40);
+  const detailBatchSize = Math.min(
+    Number((CONFIG as any)?.meteora?.detailBatchSize || 30),
+    maxDetailBatchSize
+  );
   const detailDelayMs = Number((CONFIG as any)?.meteora?.detailBatchDelayMs ?? pageDelayMs);
   
   const poolsMap = new Map<string, any>();
@@ -95,11 +101,40 @@ async function fetchMeteoraPoolsForToken(opts: {
   maxPages: number;
   pageDelayMs: number;
 }): Promise<any[]> {
+  // Validate mint address
+  if (!opts.mint || !isValidPublicKey(opts.mint)) {
+    logger.warn('meteora.graphql.summary.invalid_mint', {
+      mint: String(opts.mint).slice(0, 8) + '…',
+      cat: 'meteora'
+    });
+    return [];
+  }
+  
+  // Validate pagination params
+  const safePageSize = Math.min(Math.max(1, opts.pageSize), 1000);
+  const safeMaxPages = Math.min(Math.max(1, opts.maxPages), 20);
+  
   const allPools: any[] = [];
   let offset = 0;
   let page = 0;
   
-  while (page < opts.maxPages) {
+  while (page < safeMaxPages) {
+    const variables = {
+      mint: opts.mint,
+      limit: safePageSize,
+      offset,
+    };
+    
+    // Validate variables before querying
+    if (!validateGraphQLVariables(variables, 'summary')) {
+      logger.warn('meteora.graphql.summary.skipping_invalid_variables', {
+        mint: opts.mint.slice(0, 8) + '…',
+        page,
+        cat: 'meteora'
+      });
+      break;
+    }
+    
     const data = await executeShyftGraphQL<{ meteora_dlmm_LbPair: any[] }>({
       dex: 'meteora',
       query: `
@@ -125,11 +160,7 @@ async function fetchMeteoraPoolsForToken(opts: {
           }
         }
       `,
-      variables: {
-        mint: opts.mint,
-        limit: opts.pageSize,
-        offset,
-      },
+      variables,
       retries: opts.retries,
       backoffMs: opts.backoffMs,
       extraLogContext: { phase: 'summary', mint: opts.mint, page },
@@ -147,12 +178,12 @@ async function fetchMeteoraPoolsForToken(opts: {
       cat: 'meteora' 
     });
 
-    if (pagePools.length < opts.pageSize) break;
+    if (pagePools.length < safePageSize) break;
 
-    offset += opts.pageSize;
+    offset += safePageSize;
     page++;
     
-    if (page < opts.maxPages && opts.pageDelayMs > 0) {
+    if (page < safeMaxPages && opts.pageDelayMs > 0) {
       await new Promise(r => setTimeout(r, opts.pageDelayMs));
     }
   }
@@ -160,16 +191,133 @@ async function fetchMeteoraPoolsForToken(opts: {
   return allPools;
 }
 
+/**
+ * Validates and filters pool IDs to ensure they are valid Solana addresses
+ */
+function validatePoolIds(ids: string[]): string[] {
+  return ids.filter(id => {
+    if (!id || typeof id !== 'string') return false;
+    const trimmed = id.trim();
+    if (!trimmed || trimmed.length < 32) return false; // Solana addresses are 32-44 chars
+    return isValidPublicKey(trimmed);
+  });
+}
+
+/**
+ * Validates GraphQL variables before sending query
+ */
+function validateGraphQLVariables(variables: Record<string, any>, queryType: 'summary' | 'detail'): boolean {
+  if (queryType === 'detail') {
+    const ids = variables.ids;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      logger.warn('meteora.graphql.variables.invalid', {
+        queryType,
+        reason: 'ids array is empty or invalid',
+        idsType: typeof ids,
+        idsLength: Array.isArray(ids) ? ids.length : 'N/A',
+        cat: 'meteora'
+      });
+      return false;
+    }
+    
+    // Validate each ID in the array
+    const invalidIds = ids.filter(id => !isValidPublicKey(id));
+    if (invalidIds.length > 0) {
+      logger.warn('meteora.graphql.variables.invalid_ids', {
+        queryType,
+        invalidCount: invalidIds.length,
+        totalCount: ids.length,
+        sampleInvalid: invalidIds.slice(0, 2).map(id => String(id).slice(0, 8) + '…'),
+        cat: 'meteora'
+      });
+      return false;
+    }
+  } else if (queryType === 'summary') {
+    const { mint, limit, offset } = variables;
+    if (!mint || typeof mint !== 'string' || !isValidPublicKey(mint)) {
+      logger.warn('meteora.graphql.variables.invalid', {
+        queryType,
+        reason: 'mint is invalid',
+        mint: String(mint).slice(0, 8) + '…',
+        cat: 'meteora'
+      });
+      return false;
+    }
+    if (typeof limit !== 'number' || limit <= 0 || limit > 1000) {
+      logger.warn('meteora.graphql.variables.invalid', {
+        queryType,
+        reason: 'limit is out of range',
+        limit,
+        cat: 'meteora'
+      });
+      return false;
+    }
+    if (typeof offset !== 'number' || offset < 0) {
+      logger.warn('meteora.graphql.variables.invalid', {
+        queryType,
+        reason: 'offset is invalid',
+        offset,
+        cat: 'meteora'
+      });
+      return false;
+    }
+  }
+  return true;
+}
+
 async function fetchMeteoraPoolsByAddress(
   poolIds: string[],
   opts: { retries: number; backoffMs: number; batchSize: number; delayMs: number }
 ): Promise<Map<string, any>> {
   const result = new Map<string, any>();
-  if (!poolIds.length) return result;
+  
+  // Validate and filter pool IDs first
+  const validIds = validatePoolIds(poolIds);
+  if (!validIds.length) {
+    logger.debug('meteora.graphql.detail.no_valid_ids', {
+      originalCount: poolIds.length,
+      cat: 'meteora'
+    });
+    return result;
+  }
+  
+  // Log if we filtered out invalid IDs
+  if (validIds.length < poolIds.length) {
+    logger.warn('meteora.graphql.detail.filtered_invalid_ids', {
+      originalCount: poolIds.length,
+      validCount: validIds.length,
+      filteredCount: poolIds.length - validIds.length,
+      cat: 'meteora'
+    });
+  }
 
-  const chunks = chunkArray(poolIds, Math.max(1, opts.batchSize));
+  // Apply batch size limits to prevent query overload
+  const MAX_BATCH_SIZE = 40; // Hard limit
+  const safeBatchSize = Math.min(Math.max(1, opts.batchSize), MAX_BATCH_SIZE);
+  const chunks = chunkArray(validIds, safeBatchSize);
+  
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i];
+    
+    // Double-check chunk is not empty (defensive)
+    if (!chunk || chunk.length === 0) {
+      logger.debug('meteora.graphql.detail.skipping_empty_chunk', {
+        chunkIndex: i,
+        cat: 'meteora'
+      });
+      continue;
+    }
+    
+    // Validate variables before querying
+    if (!validateGraphQLVariables({ ids: chunk }, 'detail')) {
+      logger.warn('meteora.graphql.detail.skipping_invalid_chunk', {
+        chunkIndex: i,
+        chunkSize: chunk.length,
+        cat: 'meteora'
+      });
+      continue; // Skip this chunk
+    }
+    
     try {
         const data = await executeShyftGraphQL<{ meteora_dlmm_LbPair: any[] }>({
           dex: 'meteora',
@@ -218,9 +366,13 @@ async function fetchMeteoraPoolsByAddress(
         cat: 'meteora',
       });
     } catch (err) {
+      const sampleIds = chunk.slice(0, 3).map(id => id.slice(0, 8) + '…');
       logger.warn('meteora.graphql.detail.failed', {
-        chunk: i,
+        chunkIndex: i,
+        chunkSize: chunk.length,
+        sampleIds,
         error: String((err as any)?.message || err),
+        errorType: (err as any)?.constructor?.name,
         cat: 'meteora',
       });
       try { poolsMetrics.meteora.detailFailures += 1; } catch {}

@@ -116,13 +116,72 @@ export async function executeShyftGraphQL<T = any>(req: ShyftGraphQLRequest): Pr
 
       const json = await res.json();
       if (json?.errors) {
-        lastErr = new Error(`GraphQL errors: ${JSON.stringify(json.errors)}`);
+        const errors = json.errors || [];
+        const isDatabaseError = errors.some((e: any) => 
+          e?.extensions?.code === 'unexpected' || 
+          e?.message?.toLowerCase().includes('database')
+        );
+        const isValidationError = errors.some((e: any) => 
+          e?.extensions?.code === 'validation-error' ||
+          (res.status >= 400 && res.status < 500 && !isDatabaseError)
+        );
+        
+        lastErr = new Error(`GraphQL errors: ${JSON.stringify(errors)}`);
+        
+        // Enhanced error logging with context
         try {
-          logger.warn('shyft.graphql.errors', {
+          const errorDetails: any = {
             dex: req.dex,
-            errors: JSON.stringify(json.errors).slice(0, 300),
-          });
+            errors: errors,
+            errorCount: errors.length,
+            isDatabaseError,
+            isValidationError,
+            extraLogContext: req.extraLogContext,
+          };
+          
+          // Include variable info if available (sanitized)
+          if (req.variables) {
+            errorDetails.variableInfo = {
+              keys: Object.keys(req.variables),
+              arrayLengths: Object.entries(req.variables).reduce((acc, [k, v]) => {
+                if (Array.isArray(v)) acc[k] = v.length;
+                return acc;
+              }, {} as Record<string, number>)
+            };
+          }
+          
+          if (isDatabaseError) {
+            logger.warn('shyft.graphql.errors.database', errorDetails);
+          } else if (isValidationError) {
+            logger.warn('shyft.graphql.errors.validation', errorDetails);
+          } else {
+            logger.warn('shyft.graphql.errors', {
+              ...errorDetails,
+              errors: JSON.stringify(errors).slice(0, 300), // Truncate for general errors
+            });
+          }
         } catch {}
+        
+        // Don't retry validation errors - they won't succeed
+        if (isValidationError && !isDatabaseError) {
+          logger.warn('shyft.graphql.errors.non_retryable', {
+            dex: req.dex,
+            errors: JSON.stringify(errors).slice(0, 300),
+            extraLogContext: req.extraLogContext,
+          });
+          throw lastErr; // Fail immediately
+        }
+        
+        // Database errors might be transient - retry with backoff
+        if (isDatabaseError) {
+          logger.warn('shyft.graphql.errors.database.retrying', {
+            dex: req.dex,
+            attempt,
+            willRetry: attempt < retries,
+            extraLogContext: req.extraLogContext,
+          });
+        }
+        
         if (attempt < retries) {
           await new Promise(r => setTimeout(r, backoffMs * (attempt + 1)));
           continue;
