@@ -233,13 +233,15 @@ pub fn detect_negative_cycles_from_anchors(
         }
         
         // Find cycles that start from this anchor
+        // Only consider edges where source is reachable from anchor
         for e in g.g.edge_references() {
             let u = e.source().index();
             let v = e.target().index();
             let w = -(e.weight().rate_effective.max(1e-12)).ln();
             
+            // Only process if u is reachable from anchor and forms a negative cycle
             if dist[u] != f64::INFINITY && dist[u] + w < dist[v] - 1e-12 {
-                // Found a cycle, backtrack
+                // Found a negative cycle, backtrack to find the cycle
                 let mut x = v;
                 let max_backtrack = max_hops.min(n);
                 for _ in 0..max_backtrack {
@@ -250,7 +252,7 @@ pub fn detect_negative_cycles_from_anchors(
                     }
                 }
                 
-                // Collect cycle starting from anchor
+                // Collect the cycle starting from x
                 let mut cycle = Vec::new();
                 let mut cur = x;
                 loop {
@@ -268,17 +270,22 @@ pub fn detect_negative_cycles_from_anchors(
                     }
                 }
                 
-                // Only add cycles that respect max_hops and start from anchor
                 if cycle.len() >= 2 && cycle.len() <= max_hops {
                     cycle.reverse();
-                    // Ensure cycle starts from the anchor (first node should be anchor)
-                    if cycle.first().copied() == Some(anchor_idx) {
+                    
+                    // Check if cycle contains the anchor
+                    if let Some(anchor_pos) = cycle.iter().position(|&node| node == anchor_idx) {
+                        // Rotate cycle to start from anchor
+                        let mut rotated_cycle = Vec::new();
+                        rotated_cycle.extend_from_slice(&cycle[anchor_pos..]);
+                        rotated_cycle.extend_from_slice(&cycle[..anchor_pos]);
+                        
                         // Deduplicate by canonical string representation
-                        let cycle_key = cycle.iter().map(|i| i.to_string()).collect::<Vec<_>>().join("->");
+                        let cycle_key = rotated_cycle.iter().map(|i| i.to_string()).collect::<Vec<_>>().join("->");
                         if !seen_cycles.contains(&cycle_key) {
                             seen_cycles.insert(cycle_key);
                             all_cycles.push(DetectedCycle {
-                                nodes: cycle,
+                                nodes: rotated_cycle,
                                 log_sum: 0.0,
                             });
                         }
