@@ -172,7 +172,7 @@ export async function executeShyftGraphQL<T = any>(req: ShyftGraphQLRequest): Pr
           throw lastErr; // Fail immediately
         }
         
-        // Database errors might be transient - retry with backoff
+        // Database errors might be transient - retry with exponential backoff
         if (isDatabaseError) {
           logger.warn('shyft.graphql.errors.database.retrying', {
             dex: req.dex,
@@ -180,6 +180,13 @@ export async function executeShyftGraphQL<T = any>(req: ShyftGraphQLRequest): Pr
             willRetry: attempt < retries,
             extraLogContext: req.extraLogContext,
           });
+          
+          // Use longer backoff for database errors (2x multiplier)
+          if (attempt < retries) {
+            const dbBackoffMs = backoffMs * 2;
+            await new Promise(r => setTimeout(r, dbBackoffMs * (attempt + 1)));
+            continue;
+          }
         }
         
         if (attempt < retries) {

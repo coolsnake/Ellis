@@ -9,6 +9,7 @@ import { poolsMetrics } from '../pools.metrics.js';
 import { loadJupiterTokenMap } from '../../utils/tokens.js';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { withRpcLimit } from '../../utils/rpcLimiter.js';
+import { isValidPublicKey } from '../../execution/builder/utils.js';
 
 export async function fetchOrcaGraphQL(mints: string[]): Promise<any[]> {
   const CACHE_PATH = joinPath(CONFIG.cacheDir, 'orca-graphql-raw.json');
@@ -17,7 +18,12 @@ export async function fetchOrcaGraphQL(mints: string[]): Promise<any[]> {
   const pageSize = Number((CONFIG as any)?.orca?.pageSize || 1000);
   const maxPages = Number((CONFIG as any)?.orca?.maxPages || 10);
   const pageDelayMs = Number((CONFIG as any)?.orca?.pageDelayMs || 200);
-  const detailBatchSize = Number((CONFIG as any)?.orca?.detailBatchSize || 50);
+  // Reduced default batch size and add max limit to prevent query overload
+  const maxDetailBatchSize = Number((CONFIG as any)?.orca?.maxDetailBatchSize || 40);
+  const detailBatchSize = Math.min(
+    Number((CONFIG as any)?.orca?.detailBatchSize || 20),
+    maxDetailBatchSize
+  );
   const detailDelayMs = Number((CONFIG as any)?.orca?.detailBatchDelayMs ?? pageDelayMs);
 
   const poolsMap = new Map<string, any>();
@@ -92,11 +98,40 @@ async function fetchOrcaPoolsForToken(opts: {
   maxPages: number;
   pageDelayMs: number;
 }): Promise<any[]> {
+  // Validate mint address
+  if (!opts.mint || !isValidPublicKey(opts.mint)) {
+    logger.warn('orca.graphql.summary.invalid_mint', {
+      mint: String(opts.mint).slice(0, 8) + '…',
+      cat: 'orca'
+    });
+    return [];
+  }
+  
+  // Validate pagination params
+  const safePageSize = Math.min(Math.max(1, opts.pageSize), 1000);
+  const safeMaxPages = Math.min(Math.max(1, opts.maxPages), 20);
+  
   const allPools: any[] = [];
   let offset = 0;
   let page = 0;
   
-  while (page < opts.maxPages) {
+  while (page < safeMaxPages) {
+    const variables = {
+      mint: opts.mint,
+      limit: safePageSize,
+      offset,
+    };
+    
+    // Validate variables before querying
+    if (!validateGraphQLVariables(variables, 'summary')) {
+      logger.warn('orca.graphql.summary.skipping_invalid_variables', {
+        mint: opts.mint.slice(0, 8) + '…',
+        page,
+        cat: 'orca'
+      });
+      break;
+    }
+    
     const data = await executeShyftGraphQL<{ ORCA_WHIRLPOOLS_whirlpool: any[] }>({
       dex: 'orca',
       query: `
@@ -131,11 +166,7 @@ async function fetchOrcaPoolsForToken(opts: {
           }
         }
       `,
-      variables: {
-        mint: opts.mint,
-        limit: opts.pageSize,
-        offset,
-      },
+      variables,
       retries: opts.retries,
       backoffMs: opts.backoffMs,
       extraLogContext: { phase: 'summary', mint: opts.mint, page },
@@ -153,12 +184,12 @@ async function fetchOrcaPoolsForToken(opts: {
       cat: 'orca' 
     });
 
-    if (pagePools.length < opts.pageSize) break;
+    if (pagePools.length < safePageSize) break;
 
-    offset += opts.pageSize;
+    offset += safePageSize;
     page++;
     
-    if (page < opts.maxPages && opts.pageDelayMs > 0) {
+    if (page < safeMaxPages && opts.pageDelayMs > 0) {
       await new Promise(r => setTimeout(r, opts.pageDelayMs));
     }
   }
@@ -166,16 +197,93 @@ async function fetchOrcaPoolsForToken(opts: {
   return allPools;
 }
 
-async function fetchOrcaPoolsByAddress(
-  poolIds: string[],
-  opts: { retries: number; backoffMs: number; batchSize: number; delayMs: number }
-): Promise<Map<string, any>> {
-  const result = new Map<string, any>();
-  if (!poolIds.length) return result;
+/**
+ * Validates and filters pool IDs to ensure they are valid Solana addresses
+ */
+function validatePoolIds(ids: string[]): string[] {
+  return ids.filter(id => {
+    if (!id || typeof id !== 'string') return false;
+    const trimmed = id.trim();
+    if (!trimmed || trimmed.length < 32) return false; // Solana addresses are 32-44 chars
+    return isValidPublicKey(trimmed);
+  });
+}
 
-  const chunks = chunkArray(poolIds, Math.max(1, opts.batchSize));
-  for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i];
+/**
+ * Validates GraphQL variables before sending query
+ */
+function validateGraphQLVariables(variables: Record<string, any>, queryType: 'summary' | 'detail'): boolean {
+  if (queryType === 'detail') {
+    const ids = variables.ids;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      logger.warn('orca.graphql.variables.invalid', {
+        queryType,
+        reason: 'ids array is empty or invalid',
+        idsType: typeof ids,
+        idsLength: Array.isArray(ids) ? ids.length : 'N/A',
+        cat: 'orca'
+      });
+      return false;
+    }
+    
+    // Validate each ID in the array
+    const invalidIds = ids.filter(id => !isValidPublicKey(id));
+    if (invalidIds.length > 0) {
+      logger.warn('orca.graphql.variables.invalid_ids', {
+        queryType,
+        invalidCount: invalidIds.length,
+        totalCount: ids.length,
+        sampleInvalid: invalidIds.slice(0, 2).map(id => String(id).slice(0, 8) + '…'),
+        cat: 'orca'
+      });
+      return false;
+    }
+  } else if (queryType === 'summary') {
+    const { mint, limit, offset } = variables;
+    if (!mint || typeof mint !== 'string' || !isValidPublicKey(mint)) {
+      logger.warn('orca.graphql.variables.invalid', {
+        queryType,
+        reason: 'mint is invalid',
+        mint: String(mint).slice(0, 8) + '…',
+        cat: 'orca'
+      });
+      return false;
+    }
+    if (typeof limit !== 'number' || limit <= 0 || limit > 1000) {
+      logger.warn('orca.graphql.variables.invalid', {
+        queryType,
+        reason: 'limit is out of range',
+        limit,
+        cat: 'orca'
+      });
+      return false;
+    }
+    if (typeof offset !== 'number' || offset < 0) {
+      logger.warn('orca.graphql.variables.invalid', {
+        queryType,
+        reason: 'offset is invalid',
+        offset,
+        cat: 'orca'
+      });
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Helper function to fetch a single Orca chunk with retry and chunk splitting on failure
+ */
+async function fetchOrcaChunkWithRetry(
+  chunk: string[],
+  chunkIndex: number,
+  opts: { retries: number; backoffMs: number; delayMs: number },
+  result: Map<string, any>
+): Promise<void> {
+  const maxRetries = opts.retries;
+  let lastErr: any;
+  
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const data = await executeShyftGraphQL<{ ORCA_WHIRLPOOLS_whirlpool: any[] }>({
         dex: 'orca',
@@ -208,9 +316,9 @@ async function fetchOrcaPoolsByAddress(
           }
         `,
         variables: { ids: chunk },
-        retries: opts.retries,
+        retries: 0, // We handle retries here
         backoffMs: opts.backoffMs,
-        extraLogContext: { phase: 'detail', chunkIndex: i, chunkSize: chunk.length },
+        extraLogContext: { phase: 'detail', chunkIndex, chunkSize: chunk.length, attempt },
       });
 
       const pools = data?.ORCA_WHIRLPOOLS_whirlpool || [];
@@ -218,23 +326,148 @@ async function fetchOrcaPoolsByAddress(
         if (!pool?.pubkey) continue;
         result.set(pool.pubkey, pool);
       }
+      
       try {
         poolsMetrics.orca.detailBatches += 1;
       } catch {}
-      logger.debug('orca.graphql.detail.chunk', { idx: i, fetched: pools.length, total: result.size, cat: 'orca' });
-    } catch (err) {
-      logger.warn('orca.graphql.detail.failed', {
-        chunk: i,
-        error: String((err as any)?.message || err),
+      
+      logger.debug('orca.graphql.detail.chunk', {
+        idx: chunkIndex,
+        fetched: pools.length,
+        total: result.size,
         cat: 'orca',
       });
-      try { poolsMetrics.orca.detailFailures += 1; } catch {}
+      
+      return; // Success
+    } catch (err) {
+      lastErr = err;
+      const errMsg = String((err as any)?.message || err);
+      const isDatabaseError = errMsg.includes('database') || errMsg.includes('unexpected');
+      
+      // If it's a database error and chunk can be split, try splitting
+      if (isDatabaseError && chunk.length > 1 && attempt === maxRetries) {
+        const mid = Math.floor(chunk.length / 2);
+        const chunk1 = chunk.slice(0, mid);
+        const chunk2 = chunk.slice(mid);
+        
+        logger.warn('orca.graphql.detail.splitting_chunk', {
+          chunkIndex,
+          originalSize: chunk.length,
+          newSizes: [chunk1.length, chunk2.length],
+          cat: 'orca'
+        });
+        
+        // Recursively retry with smaller chunks
+        await fetchOrcaChunkWithRetry(chunk1, chunkIndex, opts, result);
+        await fetchOrcaChunkWithRetry(chunk2, chunkIndex, opts, result);
+        return;
+      }
+      
+      // Log error but continue retrying if attempts remain
+      if (attempt < maxRetries) {
+        const sampleIds = chunk.slice(0, 3).map(id => {
+          const trimmed = String(id).trim();
+          return trimmed.length > 8 ? trimmed.slice(0, 8) + '…' : trimmed;
+        });
+        
+        logger.warn('orca.graphql.detail.failed.retrying', {
+          chunkIndex,
+          chunkSize: chunk.length,
+          sampleIds,
+          attempt,
+          error: errMsg,
+          cat: 'orca',
+        });
+        
+        // Exponential backoff for database errors
+        const backoff = isDatabaseError ? opts.backoffMs * 2 : opts.backoffMs;
+        await new Promise(r => setTimeout(r, backoff * (attempt + 1)));
+        continue;
+      }
     }
+  }
+  
+  // Final failure - log and track
+  const sampleIds = chunk.slice(0, 5).map(id => {
+    const trimmed = String(id).trim();
+    return trimmed.length > 8 ? trimmed.slice(0, 8) + '…' : trimmed;
+  });
+  
+  logger.warn('orca.graphql.detail.failed', {
+    chunkIndex,
+    chunkSize: chunk.length,
+    sampleIds,
+    error: String((lastErr as any)?.message || lastErr),
+    errorType: (lastErr as any)?.constructor?.name,
+    cat: 'orca',
+  });
+  
+  try {
+    poolsMetrics.orca.detailFailures += 1;
+  } catch {}
+}
+
+async function fetchOrcaPoolsByAddress(
+  poolIds: string[],
+  opts: { retries: number; backoffMs: number; batchSize: number; delayMs: number }
+): Promise<Map<string, any>> {
+  const result = new Map<string, any>();
+  
+  // Validate and filter pool IDs first
+  const validIds = validatePoolIds(poolIds);
+  if (!validIds.length) {
+    logger.debug('orca.graphql.detail.no_valid_ids', {
+      originalCount: poolIds.length,
+      cat: 'orca'
+    });
+    return result;
+  }
+  
+  // Log if we filtered out invalid IDs
+  if (validIds.length < poolIds.length) {
+    logger.warn('orca.graphql.detail.filtered_invalid_ids', {
+      originalCount: poolIds.length,
+      validCount: validIds.length,
+      filteredCount: poolIds.length - validIds.length,
+      cat: 'orca'
+    });
+  }
+
+  // Apply batch size limits to prevent query overload
+  const MAX_BATCH_SIZE = 40; // Hard limit
+  const safeBatchSize = Math.min(Math.max(1, opts.batchSize), MAX_BATCH_SIZE);
+  const chunks = chunkArray(validIds, safeBatchSize);
+  
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    
+    // Double-check chunk is not empty (defensive)
+    if (!chunk || chunk.length === 0) {
+      logger.debug('orca.graphql.detail.skipping_empty_chunk', {
+        chunkIndex: i,
+        cat: 'orca'
+      });
+      continue;
+    }
+    
+    // Validate variables before querying
+    if (!validateGraphQLVariables({ ids: chunk }, 'detail')) {
+      logger.warn('orca.graphql.detail.skipping_invalid_chunk', {
+        chunkIndex: i,
+        chunkSize: chunk.length,
+        cat: 'orca'
+      });
+      continue; // Skip this chunk
+    }
+    
+    // Use helper function with retry and chunk splitting
+    await fetchOrcaChunkWithRetry(chunk, i, opts, result);
 
     if (opts.delayMs > 0 && i < chunks.length - 1) {
       await new Promise(r => setTimeout(r, opts.delayMs));
     }
   }
+  
   return result;
 }
 

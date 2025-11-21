@@ -22,7 +22,7 @@ export async function fetchMeteoraGraphQL(mints: string[]): Promise<any[]> {
   // Reduced default batch size and add max limit to prevent query overload
   const maxDetailBatchSize = Number((CONFIG as any)?.meteora?.maxDetailBatchSize || 40);
   const detailBatchSize = Math.min(
-    Number((CONFIG as any)?.meteora?.detailBatchSize || 30),
+    Number((CONFIG as any)?.meteora?.detailBatchSize || 20),
     maxDetailBatchSize
   );
   const detailDelayMs = Number((CONFIG as any)?.meteora?.detailBatchDelayMs ?? pageDelayMs);
@@ -265,6 +265,138 @@ function validateGraphQLVariables(variables: Record<string, any>, queryType: 'su
   return true;
 }
 
+/**
+ * Helper function to fetch a single Meteora chunk with retry and chunk splitting on failure
+ */
+async function fetchMeteoraChunkWithRetry(
+  chunk: string[],
+  chunkIndex: number,
+  opts: { retries: number; backoffMs: number; delayMs: number },
+  result: Map<string, any>
+): Promise<void> {
+  const maxRetries = opts.retries;
+  let lastErr: any;
+  
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const data = await executeShyftGraphQL<{ meteora_dlmm_LbPair: any[] }>({
+        dex: 'meteora',
+        query: `
+          query MeteoraPoolsByAddress($ids: [String!]) {
+            meteora_dlmm_LbPair(
+              where: {_or: [
+                {baseKey: {_in: $ids}},
+                {pubkey: {_in: $ids}}
+              ]}
+            ) {
+              baseKey
+              pubkey
+              tokenXMint
+              tokenYMint
+              reserveX
+              reserveY
+              binStep
+              protocolFee
+              activeId
+              oracle
+              status
+              _updatedAt
+            }
+          }
+        `,
+        variables: { ids: chunk },
+        retries: 0, // We handle retries here
+        backoffMs: opts.backoffMs,
+        extraLogContext: { phase: 'detail', chunkIndex, chunkSize: chunk.length, attempt },
+      });
+
+      const pools = data?.meteora_dlmm_LbPair || [];
+      for (const pool of pools) {
+        const key = pool?.pubkey || pool?.baseKey;
+        if (!key) continue;
+        result.set(key, pool);
+      }
+      
+      try {
+        poolsMetrics.meteora.detailBatches += 1;
+      } catch {}
+      
+      logger.debug('meteora.graphql.detail.chunk', {
+        idx: chunkIndex,
+        fetched: pools.length,
+        total: result.size,
+        cat: 'meteora',
+      });
+      
+      return; // Success
+    } catch (err) {
+      lastErr = err;
+      const errMsg = String((err as any)?.message || err);
+      const isDatabaseError = errMsg.includes('database') || errMsg.includes('unexpected');
+      
+      // If it's a database error and chunk can be split, try splitting
+      if (isDatabaseError && chunk.length > 1 && attempt === maxRetries) {
+        const mid = Math.floor(chunk.length / 2);
+        const chunk1 = chunk.slice(0, mid);
+        const chunk2 = chunk.slice(mid);
+        
+        logger.warn('meteora.graphql.detail.splitting_chunk', {
+          chunkIndex,
+          originalSize: chunk.length,
+          newSizes: [chunk1.length, chunk2.length],
+          cat: 'meteora'
+        });
+        
+        // Recursively retry with smaller chunks
+        await fetchMeteoraChunkWithRetry(chunk1, chunkIndex, opts, result);
+        await fetchMeteoraChunkWithRetry(chunk2, chunkIndex, opts, result);
+        return;
+      }
+      
+      // Log error but continue retrying if attempts remain
+      if (attempt < maxRetries) {
+        const sampleIds = chunk.slice(0, 3).map(id => {
+          const trimmed = String(id).trim();
+          return trimmed.length > 8 ? trimmed.slice(0, 8) + '…' : trimmed;
+        });
+        
+        logger.warn('meteora.graphql.detail.failed.retrying', {
+          chunkIndex,
+          chunkSize: chunk.length,
+          sampleIds,
+          attempt,
+          error: errMsg,
+          cat: 'meteora',
+        });
+        
+        // Exponential backoff for database errors
+        const backoff = isDatabaseError ? opts.backoffMs * 2 : opts.backoffMs;
+        await new Promise(r => setTimeout(r, backoff * (attempt + 1)));
+        continue;
+      }
+    }
+  }
+  
+  // Final failure - log and track
+  const sampleIds = chunk.slice(0, 5).map(id => {
+    const trimmed = String(id).trim();
+    return trimmed.length > 8 ? trimmed.slice(0, 8) + '…' : trimmed;
+  });
+  
+  logger.warn('meteora.graphql.detail.failed', {
+    chunkIndex,
+    chunkSize: chunk.length,
+    sampleIds,
+    error: String((lastErr as any)?.message || lastErr),
+    errorType: (lastErr as any)?.constructor?.name,
+    cat: 'meteora',
+  });
+  
+  try {
+    poolsMetrics.meteora.detailFailures += 1;
+  } catch {}
+}
+
 async function fetchMeteoraPoolsByAddress(
   poolIds: string[],
   opts: { retries: number; backoffMs: number; batchSize: number; delayMs: number }
@@ -318,65 +450,8 @@ async function fetchMeteoraPoolsByAddress(
       continue; // Skip this chunk
     }
     
-    try {
-        const data = await executeShyftGraphQL<{ meteora_dlmm_LbPair: any[] }>({
-          dex: 'meteora',
-          query: `
-          query MeteoraPoolsByAddress($ids: [String!]) {
-            meteora_dlmm_LbPair(
-              where: {_or: [
-                {baseKey: {_in: $ids}},
-                {pubkey: {_in: $ids}}
-              ]}
-            ) {
-              baseKey
-              pubkey
-              tokenXMint
-              tokenYMint
-              reserveX
-              reserveY
-              binStep
-              protocolFee
-              activeId
-              oracle
-              status
-              _updatedAt
-            }
-          }
-        `,
-          variables: { ids: chunk },
-          retries: opts.retries,
-          backoffMs: opts.backoffMs,
-          extraLogContext: { phase: 'detail', chunkIndex: i, chunkSize: chunk.length },
-        });
-
-      const pools = data?.meteora_dlmm_LbPair || [];
-      for (const pool of pools) {
-        const key = pool?.pubkey || pool?.baseKey;
-        if (!key) continue;
-        result.set(key, pool);
-      }
-      try {
-        poolsMetrics.meteora.detailBatches += 1;
-      } catch {}
-      logger.debug('meteora.graphql.detail.chunk', {
-        idx: i,
-        fetched: pools.length,
-        total: result.size,
-        cat: 'meteora',
-      });
-    } catch (err) {
-      const sampleIds = chunk.slice(0, 3).map(id => id.slice(0, 8) + '…');
-      logger.warn('meteora.graphql.detail.failed', {
-        chunkIndex: i,
-        chunkSize: chunk.length,
-        sampleIds,
-        error: String((err as any)?.message || err),
-        errorType: (err as any)?.constructor?.name,
-        cat: 'meteora',
-      });
-      try { poolsMetrics.meteora.detailFailures += 1; } catch {}
-    }
+    // Use helper function with retry and chunk splitting
+    await fetchMeteoraChunkWithRetry(chunk, i, opts, result);
 
     if (opts.delayMs > 0 && i < chunks.length - 1) {
       await new Promise(r => setTimeout(r, opts.delayMs));
