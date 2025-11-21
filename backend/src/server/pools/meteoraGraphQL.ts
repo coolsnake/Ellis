@@ -11,6 +11,7 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import { withRpcLimit } from '../../utils/rpcLimiter.js';
 import { executionCache } from '../../execution/cache.js';
 import { isValidPublicKey } from '../../execution/builder/utils.js';
+import { resolveMeteoraBitmapExtensions } from './meteora.js';
 
 export async function fetchMeteoraGraphQL(mints: string[]): Promise<any[]> {
   const CACHE_PATH = joinPath(CONFIG.cacheDir, 'meteora-graphql-raw.json');
@@ -543,9 +544,16 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
     tokenPrograms // Pass the map to collect token program info
   });
 
-  const [vaultBalances, decimalsMap] = await Promise.all([
+  // Resolve bitmap extensions for all pool IDs (parallel with other async operations)
+  const poolIds = raw
+    .map(pool => pool.pubkey || pool.baseKey)
+    .filter((id): id is string => typeof id === 'string' && id.length > 0);
+  const bitmapExtensionMapPromise = resolveMeteoraBitmapExtensions(poolIds);
+
+  const [vaultBalances, decimalsMap, bitmapExtensionMap] = await Promise.all([
     vaultBalancesPromise, 
-    decimalsMapPromise
+    decimalsMapPromise,
+    bitmapExtensionMapPromise
   ]);
   
   for (const pool of raw) {
@@ -708,6 +716,9 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
         }
       }
 
+      // Get bitmap extension from map (checked during pool normalization)
+      const bin_array_bitmap_extension = bitmapExtensionMap.get(id);
+
       clmm.push({
         id,
         dex: 'Meteora',
@@ -741,6 +752,7 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
         liquidity_display: tvl_usd,
         account_a,
         account_b,
+        bin_array_bitmap_extension,
       } as any);
     } catch (error: any) {
       logger.warn('meteora.graphql.normalize.pool.failed', { 

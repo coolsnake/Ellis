@@ -312,7 +312,7 @@ export async function normalizeMeteoraHttp(raw: any): Promise<PoolsPayload> {
   return { amm: [], clmm: clmm };
 }
 
-async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise<Map<string, string>> {
+export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise<Map<string, string>> {
   const result = new Map<string, string>();
   const unique = Array.from(new Set(poolIds.filter(id => typeof id === 'string' && id.length > 0)));
   if (unique.length === 0) return result;
