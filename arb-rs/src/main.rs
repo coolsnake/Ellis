@@ -3260,6 +3260,35 @@ async fn main() -> anyhow::Result<()> {
                 let detect_ms = detect_start.elapsed().as_millis() as u128;
                 let work_ms = iter_start.elapsed().as_millis() as u128;
                 tracing::info!(diff_apply_ms, detect_ms, work_ms, "arb.loop.work.timing");
+
+                // Notify backend that detection is complete - this triggers flush of pending updates
+                if detector_ack_enabled() {
+                    let api_base = std::env::var("BACKEND_API_BASE")
+                        .unwrap_or_else(|_| "http://127.0.0.1:3001/api".into());
+                    let current_version = {
+                        let s = loop_state.read().await;
+                        s.last_graph_version.load(Ordering::Acquire)
+                    };
+                    let completed_ms = work_ms as u64;
+                    
+                    // Fire and forget - don't block the loop on backend notification
+                    let api_base_clone = api_base.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = notify_backend_detect_complete(&api_base_clone, current_version, completed_ms).await {
+                            tracing::debug!(
+                                error = %e,
+                                version = current_version,
+                                "arb.detect.complete: notification failed"
+                            );
+                        } else {
+                            tracing::debug!(
+                                version = current_version,
+                                completed_ms,
+                                "arb.detect.complete: notified backend"
+                            );
+                        }
+                    });
+                }
             }
 
             // Event-driven wait: wake on notify or after periodic heartbeat

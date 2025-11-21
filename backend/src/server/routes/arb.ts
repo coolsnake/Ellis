@@ -145,11 +145,32 @@ export function createArbRouter(io: SocketIOServer): Router {
     }
   });
 
-  api.post('/arb/detect/complete', (req, res) => {
-    // No-op endpoint for backward compatibility - detection completion no longer needed
+  api.post('/arb/detect/complete', async (req, res) => {
     try {
-      res.json({ ok: true });
+      const { graphVersion, completedMs } = req.body || {};
+      
+      // Flush pending graph updates now that detection is complete
+      // This pushes the freshest consolidated update when arb-rs is ready
+      const { flushPendingFromDetector } = await import('../realtime.js');
+      const flushed = await flushPendingFromDetector();
+      
+      try {
+        logger.debug('arb.detect.complete', {
+          graphVersion,
+          completedMs,
+          flushed,
+          cat: 'arb',
+        });
+      } catch {}
+      
+      res.json({ ok: true, flushed });
     } catch (err: any) {
+      try {
+        logger.warn('arb.detect.complete.error', {
+          error: String(err?.message || err),
+          cat: 'arb',
+        });
+      } catch {}
       res.status(400).json({ ok: false, error: String(err?.message || err) });
     }
   });
