@@ -153,7 +153,7 @@ export function processPriceThroughPipeline(
     
     // Diagnostic logging to trace canonicalization
     try {
-      logger.info('price.pipeline.canonicalization', {
+      logger.debug('price.pipeline.canonicalization', {
         dex: input.dex,
         pool: input.poolId?.slice(0, 8),
         input_mintA: input.mintA.slice(0, 8),
