@@ -21,6 +21,11 @@ type PoolStatic = {
   mint_b?: string;
   decimals_a?: number;
   decimals_b?: number;
+  // Native mint orientation (original tokenX/tokenY order before canonicalization)
+  native_mint_a?: string;
+  native_mint_b?: string;
+  native_decimals_a?: number;
+  native_decimals_b?: number;
   token_program_a?: 'spl-token' | 'token-2022';
   token_program_b?: 'spl-token' | 'token-2022';
   // Raydium AMM market accounts (required for swaps)

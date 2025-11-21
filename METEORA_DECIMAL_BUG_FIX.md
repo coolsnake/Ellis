@@ -149,6 +149,14 @@ After this fix, websocket updates for Meteora DLMM pools will:
 - `backend/src/server/pools.websockets.ts`
   - Lines 1748-1768: Meteora DLMM websocket handler
   - Lines 1237-1251: Raydium AMM websocket handler
+  
+- `backend/src/execution/cache.ts`
+  - Lines 24-28: Added `native_mint_a`, `native_mint_b`, `native_decimals_a`, `native_decimals_b` to `PoolStatic` type
+
+## Build Status
+
+✅ TypeScript compilation successful
+✅ No linter errors
 
 ## Related Documentation
 
