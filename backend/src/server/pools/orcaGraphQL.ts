@@ -453,7 +453,11 @@ export async function normalizeOrcaGraphQL(raw: any[]): Promise<PoolsPayload> {
         pool_kind: 'clmm',
         sqrt_price_x64: pool.sqrtPrice,
         liquidity: pool.liquidity,
-        tick_current_index: pool.tickCurrentIndex,
+        // CRITICAL FIX: Negate tick index when mints are swapped
+        // When price orientation changes (mints swapped), tick index must be negated
+        tick_current_index: wasSwapped && typeof pool.tickCurrentIndex === 'number' 
+          ? -pool.tickCurrentIndex 
+          : pool.tickCurrentIndex,
         tick_spacing: pool.tickSpacing,
         whirlpools_config: pool.whirlpoolsConfig,
         _updatedAt: pool._updatedAt,
