@@ -1656,6 +1656,90 @@ export async function getRaydiumPoolsGraphQL(force = false): Promise<PoolsPayloa
   }
 }
 
+export async function getRaydiumClmmPoolsGraphQL(force = false): Promise<PoolsPayload> {
+  try {
+    const { computeTokenUniverse, getAnchorSet } = await import('./universe.js');
+    const universe = await computeTokenUniverse((CONFIG.system as any)?.tokenUniverseMode);
+    const anchors = getAnchorSet();
+    // Filter out anchors from GraphQL queries - only include top Jupiter tokens
+    const mints = Array.from(universe).filter(mint => !anchors.has(mint));
+    
+    logger.info('raydium.clmm.graphql.fetch.start', { mintCount: mints.length, originalCount: universe.size, cat: 'raydium-clmm' });
+    
+    const { fetchRaydiumClmmGraphQL, normalizeRaydiumGraphQL } = await import('./pools/raydiumGraphQL.js');
+    const raw = await fetchRaydiumClmmGraphQL(mints);
+    
+    // Normalize the CLMM pools
+    const normalized = await normalizeRaydiumGraphQL(raw);
+    
+    // Write to disk cache
+    const CACHE_PATH = joinPath(CONFIG.cacheDir, 'raydium-clmm-pools-graphql.json');
+    try { await writeJson(CACHE_PATH, normalized); } catch {}
+    
+    // Emit to websocket
+    try { emit('pools:raydium-clmm', normalized); } catch {}
+    
+    // Populate execution cache with Raydium CLMM pool data
+    try {
+      const { executionCache } = await import('../execution/cache.js');
+      
+      // Populate CLMM pools
+      for (const pool of normalized.clmm || []) {
+        const existing = executionCache.getStatic(pool.id) || {} as any;
+        const staticData: any = {
+          ...existing,
+          programId: 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK',
+          dex: 'Raydium',
+        };
+        
+        // Store pool mints and decimals
+        if (pool.mint_a) staticData.mint_a = pool.mint_a;
+        if (pool.mint_b) staticData.mint_b = pool.mint_b;
+        if (pool.decimals_a != null) staticData.decimals_a = pool.decimals_a;
+        if (pool.decimals_b != null) staticData.decimals_b = pool.decimals_b;
+        
+        // Store CLMM-specific fields
+        if ((pool as any).observation_state) staticData.observation_state = (pool as any).observation_state;
+        if ((pool as any).ex_bitmap) staticData.ex_bitmap = (pool as any).ex_bitmap;
+        if (pool.account_a) staticData.account_a = pool.account_a;
+        if (pool.account_b) staticData.account_b = pool.account_b;
+        if (pool.tick_spacing) staticData.tick_spacing = pool.tick_spacing;
+        if ((pool as any).sqrt_price_x64) staticData.sqrt_price_x64 = (pool as any).sqrt_price_x64;
+        if ((pool as any).tick_current) staticData.tick_current = (pool as any).tick_current;
+        if ((pool as any).liquidity) staticData.liquidity = (pool as any).liquidity;
+        
+        // Store native (pre-canonical) fields for execution
+        if ((pool as any).native_mint_a) staticData.native_mint_a = (pool as any).native_mint_a;
+        if ((pool as any).native_mint_b) staticData.native_mint_b = (pool as any).native_mint_b;
+        if ((pool as any).native_account_a) staticData.native_account_a = (pool as any).native_account_a;
+        if ((pool as any).native_account_b) staticData.native_account_b = (pool as any).native_account_b;
+        
+        executionCache.setStatic(pool.id, staticData);
+      }
+      
+      logger.info('raydium.clmm.graphql.execution_cache.populated', {
+        clmm: normalized.clmm.length,
+        cat: 'raydium-clmm'
+      });
+    } catch (e: any) {
+      logger.warn('raydium.clmm.graphql.execution_cache.failed', {
+        error: String(e?.message || e),
+        cat: 'raydium-clmm'
+      });
+    }
+    
+    logger.info('raydium.clmm.graphql.complete', { 
+      clmm: normalized.clmm.length, 
+      cat: 'raydium-clmm' 
+    });
+    
+    return normalized;
+  } catch (err) {
+    logger.error('raydium.clmm.graphql.fetch.error', { error: String(err), cat: 'raydium-clmm' });
+    return { amm: [], clmm: [] };
+  }
+}
+
 export async function getOrcaPoolsCached(force = false, opts?: { skipUniverseFilter?: boolean }): Promise<PoolsPayload> {
   const ttlMs = CONFIG.orca?.cacheTtlMs ?? 300_000; // 5 minutes default
   const minForceGap = Math.max(1000, Number((CONFIG.system as any)?.poolRefreshMinGapMs || 3000));

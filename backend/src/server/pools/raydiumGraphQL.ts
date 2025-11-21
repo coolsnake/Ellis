@@ -174,6 +174,244 @@ async function fetchRaydiumPoolsForToken(opts: {
   return allPools;
 }
 
+async function fetchRaydiumClmmPoolsForToken(opts: {
+  mint: string;
+  retries: number;
+  backoffMs: number;
+  pageSize: number;
+  maxPages: number;
+  pageDelayMs: number;
+}): Promise<any[]> {
+  const allPools: any[] = [];
+  let offset = 0;
+  let page = 0;
+
+  while (page < opts.maxPages) {
+    const data = await executeShyftGraphQL<{ RAYDIUM_CLMM_PoolState: any[] }>({
+      dex: 'raydium-clmm',
+      query: `
+        query RaydiumClmmPoolsByMint($mint: String!, $limit: Int!, $offset: Int!) {
+          RAYDIUM_CLMM_PoolState(
+            where: {_or: [
+              {tokenMint0: {_eq: $mint}},
+              {tokenMint1: {_eq: $mint}}
+            ]},
+            limit: $limit,
+            offset: $offset
+          ) {
+            pubkey
+            mintDecimals0
+            mintDecimals1
+            owner
+            bump
+            liquidity
+            tickArrayBitmap
+            tickCurrent
+            tickSpacing
+            tokenMint0
+            tokenMint1
+            tokenVault0
+            tokenVault1
+            sqrtPriceX64
+            feeRate
+            protocolFeeRate
+            _updatedAt
+          }
+        }
+      `,
+      variables: {
+        mint: opts.mint,
+        limit: opts.pageSize,
+        offset,
+      },
+      extraLogContext: { phase: 'clmm-summary', mint: opts.mint, page },
+      retries: opts.retries,
+      backoffMs: opts.backoffMs,
+    });
+
+    const pagePools = data?.RAYDIUM_CLMM_PoolState || [];
+    if (pagePools.length === 0) break;
+
+    allPools.push(...pagePools);
+    logger.debug('raydium.clmm.graphql.page', { 
+      mint: opts.mint, 
+      page, 
+      count: pagePools.length, 
+      total: allPools.length, 
+      cat: 'raydium-clmm' 
+    });
+
+    if (pagePools.length < opts.pageSize) break;
+
+    offset += opts.pageSize;
+    page++;
+    
+    if (page < opts.maxPages && opts.pageDelayMs > 0) {
+      await new Promise(r => setTimeout(r, opts.pageDelayMs));
+    }
+  }
+  
+  return allPools;
+}
+
+async function fetchRaydiumClmmPoolsByAddress(
+  poolIds: string[],
+  opts: { retries: number; backoffMs: number; batchSize: number; delayMs: number }
+): Promise<Map<string, any>> {
+  const result = new Map<string, any>();
+  if (!poolIds.length) return result;
+
+  const chunks = chunkArray(poolIds, Math.max(1, opts.batchSize));
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    try {
+      const data = await executeShyftGraphQL<{ RAYDIUM_CLMM_PoolState: any[] }>({
+        dex: 'raydium-clmm',
+        query: `
+          query RaydiumClmmPoolsByAddress($ids: [String!]) {
+            RAYDIUM_CLMM_PoolState(
+              where: {pubkey: {_in: $ids}}
+            ) {
+              pubkey
+              mintDecimals0
+              mintDecimals1
+              owner
+              bump
+              liquidity
+              tickArrayBitmap
+              tickCurrent
+              tickSpacing
+              tokenMint0
+              tokenMint1
+              tokenVault0
+              tokenVault1
+              sqrtPriceX64
+              feeRate
+              protocolFeeRate
+              _updatedAt
+            }
+          }
+        `,
+        variables: { ids: chunk },
+        retries: opts.retries,
+        backoffMs: opts.backoffMs,
+        extraLogContext: { phase: 'clmm-detail', chunkIndex: i, chunkSize: chunk.length },
+      });
+
+      const pools = data?.RAYDIUM_CLMM_PoolState || [];
+      for (const pool of pools) {
+        if (!pool?.pubkey) continue;
+        result.set(pool.pubkey, pool);
+      }
+      try {
+        poolsMetrics.raydium.detailBatches += 1;
+        poolsMetrics.raydium.apiBatches += 1;
+      } catch {}
+      logger.debug('raydium.clmm.graphql.detail.chunk', {
+        idx: i,
+        chunk: chunk.length,
+        total: result.size,
+        cat: 'raydium-clmm',
+      });
+    } catch (err) {
+      logger.warn('raydium.clmm.graphql.detail.failed', {
+        chunk: i,
+        error: String((err as any)?.message || err),
+        cat: 'raydium-clmm',
+      });
+    }
+
+    if (opts.delayMs > 0 && i < chunks.length - 1) {
+      await new Promise(r => setTimeout(r, opts.delayMs));
+    }
+  }
+
+  return result;
+}
+
+export async function fetchRaydiumClmmGraphQL(mints: string[]): Promise<any[]> {
+  const CACHE_PATH = joinPath(CONFIG.cacheDir, 'raydium-clmm-graphql-raw.json');
+  const retries = Number((CONFIG as any)?.raydiumClmm?.maxHttpRetries || 2);
+  const backoffMs = Number((CONFIG as any)?.raydiumClmm?.httpBackoffMs || 500);
+  const pageSize = Number((CONFIG as any)?.raydiumClmm?.pageSize || 1000);
+  const maxPages = Number((CONFIG as any)?.raydiumClmm?.maxPages || 10);
+  const pageDelayMs = Number((CONFIG as any)?.raydiumClmm?.pageDelayMs || 200);
+  const detailBatchSize = Number((CONFIG as any)?.raydiumClmm?.detailBatchSize || 50);
+  const detailDelayMs = Number((CONFIG as any)?.raydiumClmm?.detailBatchDelayMs ?? pageDelayMs);
+
+  const poolsMap = new Map<string, any>();
+
+  for (let idx = 0; idx < mints.length; idx++) {
+    const mint = mints[idx];
+    try {
+      const pools = await fetchRaydiumClmmPoolsForToken({
+        mint,
+        retries,
+        backoffMs,
+        pageSize,
+        maxPages,
+        pageDelayMs,
+      });
+      for (const pool of pools) {
+        poolsMap.set(pool.pubkey, pool);
+      }
+
+      logger.debug('raydium.clmm.graphql.mint.summary', {
+        mint: mint.slice(0, 8),
+        count: pools.length,
+        total: poolsMap.size,
+        cat: 'raydium-clmm',
+      });
+    } catch (e: any) {
+      logger.warn('raydium.clmm.graphql.mint.failed', {
+        mint: mint.slice(0, 8),
+        error: String(e?.message || e),
+        cat: 'raydium-clmm',
+      });
+    }
+    if (pageDelayMs > 0 && idx < mints.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+    }
+  }
+
+  const uniquePoolIds = Array.from(poolsMap.keys());
+  const detailedPools = await fetchRaydiumClmmPoolsByAddress(uniquePoolIds, {
+    retries,
+    backoffMs,
+    batchSize: detailBatchSize,
+    delayMs: detailDelayMs,
+  });
+
+  const merged: any[] = [];
+  for (const [id, summary] of poolsMap.entries()) {
+    const detail = detailedPools.get(id);
+    merged.push(detail ? { ...summary, ...detail } : summary);
+  }
+
+  // Include any pools that we fetched by address but did not see during mint scans
+  for (const [id, detail] of detailedPools.entries()) {
+    if (!poolsMap.has(id)) merged.push(detail);
+  }
+
+  try {
+    await writeJson(CACHE_PATH, merged);
+  } catch (e: any) {
+    logger.warn('raydium.clmm.graphql.cache.write.failed', {
+      file: CACHE_PATH,
+      error: String(e?.message || e),
+      cat: 'raydium-clmm',
+    });
+  }
+
+  logger.info('raydium.clmm.graphql.complete', {
+    count: merged.length,
+    mints: mints.length,
+    detail: detailedPools.size,
+    cat: 'raydium-clmm',
+  });
+  return merged;
+}
+
 async function fetchRaydiumPoolsByAddress(
   poolIds: string[],
   opts: { retries: number; backoffMs: number; batchSize: number; delayMs: number }
@@ -349,8 +587,12 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
   // Collect all vault addresses for batch RPC fetching
   const vaultAddresses = new Set<string>();
   for (const pool of raw) {
+    // AMM vaults
     if (pool.baseVault) vaultAddresses.add(pool.baseVault);
     if (pool.quoteVault) vaultAddresses.add(pool.quoteVault);
+    // CLMM vaults
+    if (pool.tokenVault0) vaultAddresses.add(pool.tokenVault0);
+    if (pool.tokenVault1) vaultAddresses.add(pool.tokenVault1);
   }
 
   // Batch fetch vault balances
@@ -360,8 +602,12 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
   // Extract all mints for batch decimal resolution
   const allMints = new Set<string>();
   for (const pool of raw) {
+    // AMM mints
     if (pool.baseMint) allMints.add(pool.baseMint);
     if (pool.quoteMint) allMints.add(pool.quoteMint);
+    // CLMM mints
+    if (pool.tokenMint0) allMints.add(pool.tokenMint0);
+    if (pool.tokenMint1) allMints.add(pool.tokenMint1);
   }
   
   // Create map to collect token program IDs during decimal resolution
@@ -384,45 +630,157 @@ export async function normalizeRaydiumGraphQL(raw: any[]): Promise<PoolsPayload>
       if (!id) continue;
       
       // VALIDATION: Ensure pool ID is not a vault address
-      if (id === pool.baseVault || id === pool.quoteVault) {
+      if (id === pool.baseVault || id === pool.quoteVault || id === pool.tokenVault0 || id === pool.tokenVault1) {
         try {
           logger.warn('raydium.graphql.pool_id_is_vault', {
             id: id.slice(0, 8) + '…',
-            baseVault: pool.baseVault?.slice(0, 8) + '…',
-            quoteVault: pool.quoteVault?.slice(0, 8) + '…',
             cat: 'raydium'
           });
         } catch {}
         continue; // Skip this pool
       }
       
-      const mint_a = pool.baseMint;
-      const mint_b = pool.quoteMint;
+      // Determine if this is AMM or CLMM based on available fields
+      const isClmm = pool.tokenMint0 !== undefined || pool.tokenVault0 !== undefined || pool.tickSpacing !== undefined;
+      
+      // Set mint variables based on pool type
+      const mint_a = isClmm ? pool.tokenMint0 : pool.baseMint;
+      const mint_b = isClmm ? pool.tokenMint1 : pool.quoteMint;
       
       if (!mint_a || !mint_b) continue;
       
       // Get decimals with fallback
-      const decA = pool.baseDecimal ?? decimalsMap.get(mint_a) ?? 9;
-      const decB = pool.quoteDecimal ?? decimalsMap.get(mint_b) ?? 9;
+      const decA = isClmm 
+        ? (pool.mintDecimals0 ?? decimalsMap.get(mint_a) ?? 9)
+        : (pool.baseDecimal ?? decimalsMap.get(mint_a) ?? 9);
+      const decB = isClmm
+        ? (pool.mintDecimals1 ?? decimalsMap.get(mint_b) ?? 9)
+        : (pool.quoteDecimal ?? decimalsMap.get(mint_b) ?? 9);
       
-      // Parse fee: swapFeeNumerator / swapFeeDenominator * 10000 = bps
+      // Parse fee based on pool type
       let fee_bps = 25; // Default
       try {
-        const feeNum = Number(pool.swapFeeNumerator || pool.tradeFeeNumerator || 0);
-        const feeDenom = Number(pool.swapFeeDenominator || pool.tradeFeeDenominator || 10000);
-        if (feeDenom > 0) {
-          fee_bps = Math.round((feeNum / feeDenom) * 10000);
+        if (isClmm) {
+          // Raydium CLMM feeRate is typically stored as parts per million
+          // Convert to basis points: (feeRate / 1000000) * 10000
+          if (pool.feeRate !== undefined) {
+            fee_bps = Math.round((Number(pool.feeRate) / 1000000) * 10000);
+          }
+        } else {
+          const feeNum = Number(pool.swapFeeNumerator || pool.tradeFeeNumerator || 0);
+          const feeDenom = Number(pool.swapFeeDenominator || pool.tradeFeeDenominator || 10000);
+          if (feeDenom > 0) {
+            fee_bps = Math.round((feeNum / feeDenom) * 10000);
+          }
         }
       } catch {}
       
-      // Determine if this is AMM or CLMM
-      // Raydium CLMM pools have different structure - check for CLMM-specific fields
-      const isClmm = pool.tickSpacing !== undefined || pool.sqrtPrice !== undefined;
-      
       if (isClmm) {
-        // Handle CLMM pool (future enhancement)
-        // For now, skip CLMM from GraphQL since we don't have full support
-        continue;
+        // Handle CLMM pool - Concentrated Liquidity Market Maker
+        // Calculate amounts and TVL from vault balances
+        let amount_a_whole: number | undefined;
+        let amount_b_whole: number | undefined;
+        let tvl_usd: number | undefined;
+        
+        try {
+          const balA = pool.tokenVault0 ? vaultBalances.get(pool.tokenVault0) : undefined;
+          const balB = pool.tokenVault1 ? vaultBalances.get(pool.tokenVault1) : undefined;
+          
+          if (balA !== undefined && balB !== undefined) {
+            const wholeA = Number(balA) / Math.pow(10, decA);
+            const wholeB = Number(balB) / Math.pow(10, decB);
+            
+            amount_a_whole = wholeA;
+            amount_b_whole = wholeB;
+            
+            const priceA = jupPriceMap[mint_a]?.usdPrice;
+            const priceB = jupPriceMap[mint_b]?.usdPrice;
+            
+            if (priceA && priceB) {
+              tvl_usd = (wholeA * priceA) + (wholeB * priceB);
+            } else if (priceA) {
+              tvl_usd = wholeA * priceA * 2;
+            } else if (priceB) {
+              tvl_usd = wholeB * priceB * 2;
+            }
+          }
+        } catch {}
+
+        // Process price through pipeline with sqrtPriceX64
+        let price_a_per_b = 0;
+        let finalMintA = mint_a;
+        let finalMintB = mint_b;
+        let finalDecA = decA;
+        let finalDecB = decB;
+        let wasSwapped = false;
+        
+        try {
+          if (pool.sqrtPriceX64) {
+            const processed = processPriceThroughPipeline({
+              mintA: mint_a,
+              mintB: mint_b,
+              decimalsA: decA,
+              decimalsB: decB,
+              poolId: id,
+              dex: 'Raydium',
+              poolType: 'clmm',
+              sqrtPriceX64: BigInt(pool.sqrtPriceX64),
+            });
+            
+            if (processed) {
+              price_a_per_b = processed.priceForward;
+              finalMintA = processed.mintA;
+              finalMintB = processed.mintB;
+              finalDecA = processed.decimalsA;
+              finalDecB = processed.decimalsB;
+              wasSwapped = processed.wasSwapped;
+            }
+          }
+        } catch {}
+        
+        // Swap account fields if pipeline swapped mints
+        const finalAccountA = wasSwapped ? pool.tokenVault1 : pool.tokenVault0;
+        const finalAccountB = wasSwapped ? pool.tokenVault0 : pool.tokenVault1;
+        const finalNativeAccountA = wasSwapped ? pool.tokenVault1 : pool.tokenVault0;
+        const finalNativeAccountB = wasSwapped ? pool.tokenVault0 : pool.tokenVault1;
+        
+        const finalAmountA = wasSwapped ? amount_b_whole : amount_a_whole;
+        const finalAmountB = wasSwapped ? amount_a_whole : amount_b_whole;
+        
+        clmm.push({
+          id,
+          dex: 'Raydium',
+          mint_a: finalMintA,
+          mint_b: finalMintB,
+          fee_bps,
+          price_a_per_b,
+          tvl_usd,
+          updated_ms: now,
+          decimals_a: finalDecA,
+          decimals_b: finalDecB,
+          account_a: finalAccountA,
+          account_b: finalAccountB,
+          pool_kind: 'clmm',
+          authority: pool.owner,
+          tick_spacing: pool.tickSpacing,
+          tick_current: pool.tickCurrent,
+          liquidity: pool.liquidity,
+          sqrt_price_x64: pool.sqrtPriceX64,
+          _updatedAt: pool._updatedAt,
+          was_swapped: wasSwapped,
+          _pipelineProcessed: true,
+          native_mint_a: mint_a,
+          native_mint_b: mint_b,
+          native_decimals_a: decA,
+          native_decimals_b: decB,
+          native_account_a: finalNativeAccountA,
+          native_account_b: finalNativeAccountB,
+          amount_a_whole: finalAmountA,
+          amount_b_whole: finalAmountB,
+          amount_a: finalAmountA,
+          amount_b: finalAmountB,
+          liquidity_display: tvl_usd,
+        } as any);
       } else {
         // AMM V4 pool
         // Calculate amounts and TVL from vault balances
