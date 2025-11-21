@@ -1278,9 +1278,14 @@ function runWebsocketRefreshLoop(): void {
                           if (!Number.isFinite(decA)) decA = undefined;
                           if (!Number.isFinite(decB)) decB = undefined;
                           
-                          const wholeA = Number.isFinite(decA as any) ? (rA / Math.pow(10, decA as number)) : rA;
-                          const wholeB = Number.isFinite(decB as any) ? (rB / Math.pow(10, decB as number)) : rB;
-                          if (wholeA > 0 && wholeB > 0) price_a_per_b = wholeA / wholeB;
+                          // CRITICAL FIX: Use correct AMM price formula with decimal adjustment
+                          // Price = (reserveA / reserveB) * 10^(decimalsB - decimalsA)
+                          // This accounts for different decimal places between tokens
+                          if (rA > 0 && rB > 0 && Number.isFinite(decA) && Number.isFinite(decB)) {
+                            const atomicRatio = rA / rB;
+                            const decimalAdjustment = Math.pow(10, (decB as number) - (decA as number));
+                            price_a_per_b = atomicRatio * decimalAdjustment;
+                          }
                         } catch {}
                         const liqBase = (rA > 0 && rB > 0) ? Math.min(rA, rB) : 0;
                         

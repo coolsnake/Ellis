@@ -55,7 +55,7 @@ export function isPoolValidForGraph(
   if (Number.isFinite(fb) && (fb < feeMin || fb > feeMax)) return false; // 'badFees'
 
   const kind = String((p as any)?.pool_kind || '');
-  const s64 = Number((p as any)?.sqrt_price_x64 || 0);
+  const s64 = Number((p as any)?.sqrt_price_x64 || (p as any)?.sqrt_price_x64_raw || 0);
   const price = Number((p as any)?.price_a_per_b);
   const dex = String((p as any)?.dex || '');
 
@@ -71,7 +71,8 @@ export function isPoolValidForGraph(
           mint_a: (p as any)?.mint_a,
           mint_b: (p as any)?.mint_b,
           price,
-          sqrt_price_x64: s64,
+          sqrt_price_x64: (p as any)?.sqrt_price_x64,
+          sqrt_price_x64_raw: (p as any)?.sqrt_price_x64_raw,
           reason: 'nonFinitePrice',
           cat: 'graph'
         });

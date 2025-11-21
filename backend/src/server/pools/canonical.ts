@@ -154,6 +154,11 @@ export function swapPoolFields<T extends Record<string, any>>(obj: T): T {
     if (touched.has(k)) continue;
     if (k === 'mint_a' || k === 'mint_b') continue;
     
+    // CRITICAL FIX: Don't swap native_ fields - they preserve original on-chain orientation
+    // native_mint_a/b, native_decimals_a/b, native_account_a/b must stay in native order
+    // so websocket updates can correctly match native reserves with native decimals
+    if (k.startsWith('native_')) continue;
+    
     let kb: string | null = null;
     if (k.includes('_a_')) {
       kb = k.replace('_a_', '_b_');
