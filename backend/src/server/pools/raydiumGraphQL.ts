@@ -61,61 +61,90 @@ export async function fetchAmmConfigFeeRates(
   
   try {
     const connection = getConnection();
-    const publicKeys = addressesToFetch.map(addr => new PublicKey(addr));
+    const batchSize = Number((CONFIG as any)?.raydiumClmm?.ammConfigBatchSize || 50);
+    const delayMs = Number((CONFIG as any)?.raydiumClmm?.pageDelayMs || 200);
     
     logger.debug('raydium.clmm.ammConfig.fetch.start', {
       total: addressesToFetch.length,
       cached: result.size,
+      batchSize,
+      delayMs,
       cat: 'raydium-clmm',
     });
     
-    const accountInfos = await withRpcLimit(
-      () => connection.getMultipleAccountsInfo(publicKeys),
-      Math.max(1, Math.ceil(addressesToFetch.length / 10)),
-      { module: 'raydium-clmm', method: 'getMultipleAccountsInfo' }
-    );
-    
-    for (let i = 0; i < addressesToFetch.length; i++) {
-      const configAddr = addressesToFetch[i];
-      const accountInfo = accountInfos[i];
-      
-      if (!accountInfo?.data || accountInfo.data.length < TRADE_FEE_RATE_OFFSET + 4) {
-        logger.warn('raydium.clmm.ammConfig.invalid', {
-          config: configAddr.slice(0, 8),
-          dataLen: accountInfo?.data?.length || 0,
-          cat: 'raydium-clmm',
-        });
-        continue;
-      }
+    // Process in batches to respect rate limits
+    for (let i = 0; i < addressesToFetch.length; i += batchSize) {
+      const batch = addressesToFetch.slice(i, i + batchSize);
+      const publicKeys = batch.map(addr => new PublicKey(addr));
       
       try {
-        // Convert to Node.js Buffer to access readUInt32LE
-        const buffer = Buffer.from(accountInfo.data);
+        const accountInfos = await withRpcLimit(
+          () => connection.getMultipleAccountsInfo(publicKeys),
+          Math.max(1, Math.ceil(batch.length / 10)),
+          { module: 'raydium-clmm', method: 'getMultipleAccountsInfo' }
+        );
         
-        // Read trade_fee_rate as u32 little-endian at offset 39
-        const tradeFeeRatePPM = buffer.readUInt32LE(TRADE_FEE_RATE_OFFSET);
+        for (let j = 0; j < batch.length; j++) {
+          const configAddr = batch[j];
+          const accountInfo = accountInfos[j];
+          
+          if (!accountInfo?.data || accountInfo.data.length < TRADE_FEE_RATE_OFFSET + 4) {
+            logger.warn('raydium.clmm.ammConfig.invalid', {
+              config: configAddr.slice(0, 8),
+              dataLen: accountInfo?.data?.length || 0,
+              cat: 'raydium-clmm',
+            });
+            continue;
+          }
+          
+          try {
+            // Convert to Node.js Buffer to access readUInt32LE
+            const buffer = Buffer.from(accountInfo.data);
+            
+            // Read trade_fee_rate as u32 little-endian at offset 39
+            const tradeFeeRatePPM = buffer.readUInt32LE(TRADE_FEE_RATE_OFFSET);
+            
+            // Convert from parts per million to basis points
+            // PPM to bps: divide by 100 (since 1 bps = 10,000 PPM / 100)
+            const feeBps = tradeFeeRatePPM / 100;
+            
+            result.set(configAddr, feeBps);
+            
+            // Cache the result
+            ammConfigFeeCache.set(configAddr, { feeBps, ts: now });
+            
+            logger.debug('raydium.clmm.ammConfig.decoded', {
+              config: configAddr.slice(0, 8),
+              tradeFeeRatePPM,
+              feeBps,
+              cat: 'raydium-clmm',
+            });
+          } catch (err) {
+            logger.warn('raydium.clmm.ammConfig.decode.failed', {
+              config: configAddr.slice(0, 8),
+              error: String(err),
+              cat: 'raydium-clmm',
+            });
+          }
+        }
         
-        // Convert from parts per million to basis points
-        // PPM to bps: divide by 100 (since 1 bps = 10,000 PPM / 100)
-        const feeBps = tradeFeeRatePPM / 100;
-        
-        result.set(configAddr, feeBps);
-        
-        // Cache the result
-        ammConfigFeeCache.set(configAddr, { feeBps, ts: now });
-        
-        logger.debug('raydium.clmm.ammConfig.decoded', {
-          config: configAddr.slice(0, 8),
-          tradeFeeRatePPM,
-          feeBps,
+        logger.debug('raydium.clmm.ammConfig.batch', {
+          batchIndex: Math.floor(i / batchSize),
+          batchSize: batch.length,
+          decoded: result.size,
           cat: 'raydium-clmm',
         });
       } catch (err) {
-        logger.warn('raydium.clmm.ammConfig.decode.failed', {
-          config: configAddr.slice(0, 8),
+        logger.warn('raydium.clmm.ammConfig.batch.failed', {
+          batchIndex: Math.floor(i / batchSize),
           error: String(err),
           cat: 'raydium-clmm',
         });
+      }
+      
+      // Add delay between batches (except after the last batch)
+      if (delayMs > 0 && i + batchSize < addressesToFetch.length) {
+        await new Promise(resolve => setTimeout(resolve, delayMs));
       }
     }
     
@@ -123,6 +152,7 @@ export async function fetchAmmConfigFeeRates(
       total: addressesToFetch.length,
       decoded: result.size - (ammConfigAddresses.size - addressesToFetch.length),
       cached: ammConfigAddresses.size - addressesToFetch.length,
+      batches: Math.ceil(addressesToFetch.length / batchSize),
       cat: 'raydium-clmm',
     });
   } catch (err) {
