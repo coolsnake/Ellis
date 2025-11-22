@@ -26,6 +26,7 @@ import { fetchPumpswapGraphQL as fetchPumpswapGraphQLImpl, normalizePumpswapPool
 import { validateCrossDexPrices } from './pools/validation.js';
 import { httpLogStart, httpLogResponse, httpLog429, httpLogNonOk } from './pools/httpLog.js';
 import { fetchMeteoraBalancedHttp as fetchMeteoraBalancedHttpImpl, normalizeMeteoraBalancedHttp as normalizeMeteoraBalancedHttpImpl, fetchMeteoraBalancedAll as fetchMeteoraBalancedAllImpl } from './pools/meteoraBalanced.js';
+import { checkPoolsActivityBatch } from './pools/activityCheck.js';
 import { poolsMetrics } from './pools.metrics.js';
 export { getPoolsMetrics } from './pools.metrics.js';
 import {
@@ -690,7 +691,144 @@ export async function refreshAllSources(force = true, subscribe = true, opts?: R
     logger.warn('pools.refresh.phase.tvl_filter.failed', { error: String(e?.message || e), cat: 'pools' });
   }
   
-  // === PHASE 6: FILTER BY MINIMUM POOLS PER PAIR (second pass after TVL filtering) ===
+  // === PHASE 6: FILTER BY ON-CHAIN ACTIVITY ===
+  logger.info('pools.refresh.phase.activity_filter', { cat: 'pools' });
+  try {
+    const maxInactiveMs = Number(((CONFIG.system as any)?.maxInactivePoolMs) ?? (12 * 60 * 60 * 1000)); // Default 12 hours
+    const enableActivityFilter = maxInactiveMs > 0 && ((CONFIG.system as any)?.enableActivityFilter !== false);
+    
+    if (enableActivityFilter) {
+      // Collect all pool IDs from all sources
+      const allPoolIds: string[] = [];
+      const poolSourceMap = new Map<string, { source: string; type: 'amm' | 'clmm' }>();
+      
+      const collectPools = (pools: any[], source: string, type: 'amm' | 'clmm') => {
+        for (const p of pools || []) {
+          if (p?.id) {
+            allPoolIds.push(p.id);
+            poolSourceMap.set(p.id, { source, type });
+          }
+        }
+      };
+      
+      collectPools(r.amm, 'raydium', 'amm');
+      collectPools(r.clmm, 'raydium', 'clmm');
+      collectPools(o.amm, 'orca', 'amm');
+      collectPools(o.clmm, 'orca', 'clmm');
+      collectPools(m.amm, 'meteora', 'amm');
+      collectPools(m.clmm, 'meteora', 'clmm');
+      collectPools(mb.amm, 'meteora_balanced', 'amm');
+      collectPools(pump.amm, 'pumpswap', 'amm');
+      
+      if (allPoolIds.length > 0) {
+        const beforeCounts = {
+          raydium: { a: r.amm?.length || 0, c: r.clmm?.length || 0 },
+          orca: { a: o.amm?.length || 0, c: o.clmm?.length || 0 },
+          meteora: { a: m.amm?.length || 0, c: m.clmm?.length || 0 },
+          meteora_balanced: { a: mb.amm?.length || 0, c: mb.clmm?.length || 0 },
+          pumpswap: { a: pump.amm?.length || 0, c: pump.clmm?.length || 0 },
+        };
+        
+        // Batch check activity
+        const activityResults = await checkPoolsActivityBatch(
+          allPoolIds,
+          maxInactiveMs,
+          10, // batchSize
+          100 // delayBetweenBatches
+        );
+        
+        // Filter pools based on activity
+        const filterByActivity = (pools: any[]) => {
+          return (pools || []).filter((p: any) => {
+            const result = activityResults.get(p.id);
+            return result?.active === true;
+          });
+        };
+        
+        r = {
+          amm: filterByActivity(r.amm),
+          clmm: filterByActivity(r.clmm),
+        } as any;
+        
+        o = {
+          amm: filterByActivity(o.amm),
+          clmm: filterByActivity(o.clmm),
+        } as any;
+        
+        m = {
+          amm: filterByActivity(m.amm),
+          clmm: filterByActivity(m.clmm),
+        } as any;
+        
+        mb = {
+          amm: filterByActivity(mb.amm),
+          clmm: filterByActivity(mb.clmm),
+        } as any;
+        
+        pump = {
+          amm: filterByActivity(pump.amm),
+          clmm: filterByActivity(pump.clmm),
+        } as any;
+        
+        const afterCounts = {
+          raydium: { a: r.amm?.length || 0, c: r.clmm?.length || 0 },
+          orca: { a: o.amm?.length || 0, c: o.clmm?.length || 0 },
+          meteora: { a: m.amm?.length || 0, c: m.clmm?.length || 0 },
+          meteora_balanced: { a: mb.amm?.length || 0, c: mb.clmm?.length || 0 },
+          pumpswap: { a: pump.amm?.length || 0, c: pump.clmm?.length || 0 },
+        };
+        
+        logger.info('pools.refresh.phase.activity_filter.complete', {
+          maxInactiveMs,
+          maxInactiveHours: Math.round(maxInactiveMs / (60 * 60 * 1000)),
+          totalChecked: allPoolIds.length,
+          before: beforeCounts,
+          after: afterCounts,
+          removed: {
+            raydium: {
+              a: beforeCounts.raydium.a - afterCounts.raydium.a,
+              c: beforeCounts.raydium.c - afterCounts.raydium.c,
+            },
+            orca: {
+              a: beforeCounts.orca.a - afterCounts.orca.a,
+              c: beforeCounts.orca.c - afterCounts.orca.c,
+            },
+            meteora: {
+              a: beforeCounts.meteora.a - afterCounts.meteora.a,
+              c: beforeCounts.meteora.c - afterCounts.meteora.c,
+            },
+            meteora_balanced: {
+              a: beforeCounts.meteora_balanced.a - afterCounts.meteora_balanced.a,
+              c: beforeCounts.meteora_balanced.c - afterCounts.meteora_balanced.c,
+            },
+            pumpswap: {
+              a: beforeCounts.pumpswap.a - afterCounts.pumpswap.a,
+              c: beforeCounts.pumpswap.c - afterCounts.pumpswap.c,
+            },
+          },
+          cat: 'pools',
+        });
+      } else {
+        logger.info('pools.refresh.phase.activity_filter.skipped', {
+          reason: 'no_pools_to_check',
+          cat: 'pools',
+        });
+      }
+    } else {
+      logger.info('pools.refresh.phase.activity_filter.skipped', {
+        reason: 'disabled_or_zero_threshold',
+        maxInactiveMs,
+        cat: 'pools',
+      });
+    }
+  } catch (e: any) {
+    logger.warn('pools.refresh.phase.activity_filter.failed', {
+      error: String(e?.message || e),
+      cat: 'pools',
+    });
+  }
+  
+  // === PHASE 7: FILTER BY MINIMUM POOLS PER PAIR (second pass after TVL filtering) ===
   logger.info('pools.refresh.phase.min_pools_filter_2nd', { cat: 'pools' });
   try {
     const minPools = Math.max(1, Number(((CONFIG.system as any)?.minPoolsPerPair) || 1));

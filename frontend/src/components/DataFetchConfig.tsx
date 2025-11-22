@@ -33,6 +33,8 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
     minAmmLiqBase: 100000,
     minClmmLiquidity: 100000,
     minPoolsPerPair: 2,
+    enableActivityFilter: false,
+    maxInactivePoolMs: 12 * 60 * 60 * 1000, // 12 hours default
     universePrefilterOrca: false,
     // WS Attach rate (pools per second)
     wsAttachPerSec: 10,
@@ -176,6 +178,8 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
             minAmmLiqBase: Number(j?.system?.minAmmLiqBase ?? prev.minAmmLiqBase),
             minClmmLiquidity: Number(j?.system?.minClmmLiquidity ?? prev.minClmmLiquidity),
             minPoolsPerPair: Number(j?.system?.minPoolsPerPair ?? prev.minPoolsPerPair),
+            enableActivityFilter: j?.system?.enableActivityFilter !== false,
+            maxInactivePoolMs: Number(j?.system?.maxInactivePoolMs ?? prev.maxInactivePoolMs ?? (12 * 60 * 60 * 1000)),
             universePrefilterOrca: !!j?.system?.universePrefilterOrca,
             jupiterApiUrl: j?.system?.jupiterApiUrl || prev.jupiterApiUrl,
             // WS attach rate
@@ -350,6 +354,8 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
         minAmmLiqBase: Number(cfg.minAmmLiqBase),
         minClmmLiquidity: Number(cfg.minClmmLiquidity),
         minPoolsPerPair: Number(cfg.minPoolsPerPair),
+        enableActivityFilter: !!cfg.enableActivityFilter,
+        maxInactivePoolMs: Number(cfg.maxInactivePoolMs),
         universePrefilterOrca: !!cfg.universePrefilterOrca,
         jupiterApiUrl: cfg.jupiterApiUrl,
         rpcMaxRps: Number(cfg.rpcMaxRps),
@@ -735,6 +741,43 @@ export const DataFetchConfig: React.FC<Props> = ({ apiBase, initial, onClose }) 
                   <option value={2}>2</option>
                   <option value={3}>3</option>
                 </select>
+              </div>
+              <div className="md:col-span-3 bg-gray-800/40 border border-gray-600 rounded p-3">
+                <h4 className="text-sm font-semibold mb-2">Pool Activity Filter</h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <label className="flex items-center gap-2">
+                    <input 
+                      type="checkbox" 
+                      checked={!!cfg.enableActivityFilter} 
+                      onChange={(e)=>set('enableActivityFilter', e.target.checked)} 
+                    />
+                    <span>Enable Activity Filter</span>
+                  </label>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">
+                      Max Inactive Time (hours)
+                    </label>
+                    <input 
+                      type="number" 
+                      min={0.1}
+                      max={168}
+                      step={0.5}
+                      className="w-full bg-gray-600 border border-gray-500 rounded px-2 py-1" 
+                      value={cfg.maxInactivePoolMs ? (cfg.maxInactivePoolMs / (60 * 60 * 1000)).toFixed(1) : 12} 
+                      onChange={(e)=>set('maxInactivePoolMs', Math.max(0, Number(e.target.value) || 0) * 60 * 60 * 1000)}
+                      disabled={!cfg.enableActivityFilter}
+                    />
+                    <p className="text-xs text-gray-400 mt-1">
+                      Filters pools with no on-chain activity in this time window
+                    </p>
+                  </div>
+                </div>
+                {cfg.enableActivityFilter && (
+                  <div className="mt-2 text-xs text-gray-300 bg-blue-900/30 border border-blue-500/50 rounded p-2">
+                    <strong>ℹ️ Note:</strong> This checks the most recent transaction for each pool via RPC. 
+                    May take 1-3 minutes for large pool sets. Pools without recent activity will be filtered out.
+                  </div>
+                )}
               </div>
               <label className="flex items-center gap-2 md:col-span-3"><input type="checkbox" checked={!!cfg.universePrefilterOrca} onChange={(e)=>set('universePrefilterOrca', e.target.checked)} />Prefilter Orca HTTP by universe (conservative)</label>
             </div>
