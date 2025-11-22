@@ -98,31 +98,117 @@ export async function fetchAmmConfigFeeRates(
           }
           
           try {
-            // Convert to Node.js Buffer to access readUInt32LE
-            const buffer = Buffer.from(accountInfo.data);
+            // Step 1: Try using Raydium SDK to decode AmmConfig account
+            let feeBps: number | undefined;
             
-            // Read trade_fee_rate as u32 little-endian at offset 39
-            const tradeFeeRatePPM = buffer.readUInt32LE(TRADE_FEE_RATE_OFFSET);
+            try {
+              const sdk: any = await import('@raydium-io/raydium-sdk-v2');
+              
+              // Try various SDK layout paths for AmmConfig
+              const ammConfigLayout = 
+                (sdk as any)?.AmmConfigLayout ||
+                (sdk as any)?.AmmConfigStateLayout ||
+                (sdk as any)?.Clmm?.AmmConfigLayout ||
+                (sdk as any)?.Clmm?.AmmConfigStateLayout ||
+                (sdk as any)?.raydium?.clmm?.layout?.AmmConfigLayout ||
+                (sdk as any)?.raydium?.clmm?.layout?.AmmConfigStateLayout;
+              
+              if (ammConfigLayout?.decode) {
+                try {
+                  const decoded = ammConfigLayout.decode(accountInfo.data);
+                  const tradeFeeRate = decoded.tradeFeeRate || decoded.trade_fee_rate || decoded.tradeFeeRatePPM;
+                  
+                  if (tradeFeeRate != null) {
+                    // Convert from parts per million to basis points
+                    // tradeFeeRate is in PPM (parts per million), so fee_bps = tradeFeeRate / 100
+                    feeBps = Number(tradeFeeRate) / 100;
+                    
+                    logger.debug('raydium.clmm.ammConfig.sdk_decoded', {
+                      config: configAddr.slice(0, 8),
+                      tradeFeeRate: Number(tradeFeeRate),
+                      feeBps,
+                      cat: 'raydium-clmm',
+                    });
+                  }
+                } catch (decodeErr: any) {
+                  logger.debug('raydium.clmm.ammConfig.sdk_decode.failed', {
+                    config: configAddr.slice(0, 8),
+                    error: String(decodeErr?.message || decodeErr),
+                    cat: 'raydium-clmm',
+                  });
+                }
+              }
+            } catch (sdkErr: any) {
+              logger.debug('raydium.clmm.ammConfig.sdk_import.failed', {
+                config: configAddr.slice(0, 8),
+                error: String(sdkErr?.message || sdkErr),
+                cat: 'raydium-clmm',
+              });
+            }
             
-            // Convert from parts per million to basis points
-            // PPM to bps: divide by 100 (since 1 bps = 10,000 PPM / 100)
-            const feeBps = tradeFeeRatePPM / 100;
+            // Step 2: Fallback to manual byte reading if SDK decoding failed
+            if (feeBps == null || !Number.isFinite(feeBps) || feeBps <= 0 || feeBps > 10000) {
+              const buffer = Buffer.from(accountInfo.data);
+              
+              // Read trade_fee_rate as u32 little-endian at offset 39
+              const tradeFeeRatePPM = buffer.readUInt32LE(TRADE_FEE_RATE_OFFSET);
+              
+              // Step 3: Sanity check - if value is unreasonably high, try alternative offset
+              if (tradeFeeRatePPM > 1000000) {
+                // Try reading at offset 43 (in case protocol_fee_rate is u64)
+                const altOffset = TRADE_FEE_RATE_OFFSET + 4;
+                if (buffer.length >= altOffset + 4) {
+                  const altValue = buffer.readUInt32LE(altOffset);
+                  if (altValue > 0 && altValue <= 1000000) {
+                    feeBps = altValue / 100;
+                    logger.debug('raydium.clmm.ammConfig.alt_offset', {
+                      config: configAddr.slice(0, 8),
+                      original: tradeFeeRatePPM,
+                      altValue,
+                      feeBps,
+                      cat: 'raydium-clmm',
+                    });
+                  }
+                }
+                
+                // If still invalid, log and skip (no default)
+                if (!feeBps || feeBps > 10000) {
+                  logger.warn('raydium.clmm.ammConfig.invalid_fee', {
+                    config: configAddr.slice(0, 8),
+                    tradeFeeRatePPM,
+                    altOffsetValue: buffer.length >= altOffset + 4 ? buffer.readUInt32LE(altOffset) : null,
+                    cat: 'raydium-clmm',
+                  });
+                  continue; // Skip this config
+                }
+              } else {
+                // Convert from parts per million to basis points
+                feeBps = tradeFeeRatePPM / 100;
+              }
+            }
             
-            result.set(configAddr, feeBps);
-            
-            // Cache the result
-            ammConfigFeeCache.set(configAddr, { feeBps, ts: now });
-            
-            logger.debug('raydium.clmm.ammConfig.decoded', {
-              config: configAddr.slice(0, 8),
-              tradeFeeRatePPM,
-              feeBps,
-              cat: 'raydium-clmm',
-            });
-          } catch (err) {
+            // Only set result if we have a valid fee
+            if (feeBps && feeBps > 0 && feeBps <= 10000) {
+              result.set(configAddr, feeBps);
+              ammConfigFeeCache.set(configAddr, { feeBps, ts: now });
+              
+              logger.debug('raydium.clmm.ammConfig.decoded', {
+                config: configAddr.slice(0, 8),
+                feeBps,
+                method: feeBps ? 'sdk_or_manual' : 'manual',
+                cat: 'raydium-clmm',
+              });
+            } else {
+              logger.warn('raydium.clmm.ammConfig.invalid_fee_skipped', {
+                config: configAddr.slice(0, 8),
+                feeBps,
+                cat: 'raydium-clmm',
+              });
+            }
+          } catch (err: any) {
             logger.warn('raydium.clmm.ammConfig.decode.failed', {
               config: configAddr.slice(0, 8),
-              error: String(err),
+              error: String(err?.message || err),
               cat: 'raydium-clmm',
             });
           }
