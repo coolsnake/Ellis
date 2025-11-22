@@ -151,18 +151,47 @@ export async function fetchAmmConfigFeeRates(
             if (feeBps == null || !Number.isFinite(feeBps) || feeBps <= 0 || feeBps > 10000) {
               const buffer = Buffer.from(accountInfo.data);
               
-              // Read trade_fee_rate as u32 little-endian at offset 39
+              // Diagnostic: Read values at multiple offsets to see what we're getting
+              const valueAt35 = buffer.length >= 39 ? buffer.readUInt32LE(35) : null;
+              const valueAt39 = buffer.length >= 43 ? buffer.readUInt32LE(39) : null;
+              const valueAt43 = buffer.length >= 47 ? buffer.readUInt32LE(43) : null;
+              const valueAt47 = buffer.length >= 51 ? buffer.readUInt32LE(47) : null;
+              
+              logger.info('raydium.clmm.ammConfig.diagnostic', {
+                config: configAddr.slice(0, 8),
+                bufferLength: buffer.length,
+                TRADE_FEE_RATE_OFFSET,
+                valueAt35,
+                valueAt39,
+                valueAt43,
+                valueAt47,
+                valueAt35_bps: valueAt35 ? valueAt35 / 100 : null,
+                valueAt39_bps: valueAt39 ? valueAt39 / 100 : null,
+                valueAt43_bps: valueAt43 ? valueAt43 / 100 : null,
+                valueAt47_bps: valueAt47 ? valueAt47 / 100 : null,
+                cat: 'raydium-clmm',
+              });
+              
+              // Read trade_fee_rate as u32 little-endian at offset 43
               const tradeFeeRatePPM = buffer.readUInt32LE(TRADE_FEE_RATE_OFFSET);
+              
+              logger.info('raydium.clmm.ammConfig.reading', {
+                config: configAddr.slice(0, 8),
+                offset: TRADE_FEE_RATE_OFFSET,
+                tradeFeeRatePPM,
+                feeBps_before_check: tradeFeeRatePPM / 100,
+                cat: 'raydium-clmm',
+              });
               
               // Step 3: Sanity check - if value is unreasonably high, try alternative offset
               if (tradeFeeRatePPM > 1000000) {
-                // Try reading at offset 43 (in case protocol_fee_rate is u64)
+                // Try reading at offset 47 (in case there's more padding)
                 const altOffset = TRADE_FEE_RATE_OFFSET + 4;
                 if (buffer.length >= altOffset + 4) {
                   const altValue = buffer.readUInt32LE(altOffset);
                   if (altValue > 0 && altValue <= 1000000) {
                     feeBps = altValue / 100;
-                    logger.debug('raydium.clmm.ammConfig.alt_offset', {
+                    logger.info('raydium.clmm.ammConfig.alt_offset_used', {
                       config: configAddr.slice(0, 8),
                       original: tradeFeeRatePPM,
                       altValue,

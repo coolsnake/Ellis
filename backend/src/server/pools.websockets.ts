@@ -965,11 +965,38 @@ function runWebsocketRefreshLoop(): void {
                         let decA: number | undefined;
                         let decB: number | undefined;
                         
-                        // Get decimals for native mints (mintA/mintB from on-chain state)
+                        // CRITICAL FIX: Use native decimals from cache first (same pattern as AMM pools)
+                        // The cache stores canonical (potentially swapped) decimals, but we need native decimals
+                        // When a pool is swapped during canonicalization, decimals_a/b refer to the canonical mints,
+                        // but mintA/mintB from chain state are always in native order
                         try {
-                          const { resolveDecimals } = await import('./pools/decimals.js');
-                          if (mintA) decA = await resolveDecimals(mintA);
-                          if (mintB) decB = await resolveDecimals(mintB);
+                          const cachedRayPools = raydiumCache.data || { amm: [], clmm: [] };
+                          const existing = cachedRayPools.clmm.find(p => p.id === pk58);
+                          decA = existing?.native_decimals_a ?? existing?.decimals_a;
+                          decB = existing?.native_decimals_b ?? existing?.decimals_b;
+                          
+                          // Fallback to execution cache if not in pool cache
+                          if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
+                            try {
+                              const { executionCache } = await import('../execution/cache.js');
+                              const cached = executionCache.getStatic(pk58);
+                              if (!decA && cached?.native_decimals_a) decA = cached.native_decimals_a;
+                              if (!decA && cached?.decimals_a) decA = cached.decimals_a;
+                              if (!decB && cached?.native_decimals_b) decB = cached.native_decimals_b;
+                              if (!decB && cached?.decimals_b) decB = cached.decimals_b;
+                            } catch {}
+                          }
+                          
+                          // Only as last resort, resolve via centralized resolver
+                          if (!Number.isFinite(decA) || !Number.isFinite(decB)) {
+                            const { resolveDecimals } = await import('./pools/decimals.js');
+                            if (!Number.isFinite(decA) && mintA) {
+                              decA = await resolveDecimals(mintA);
+                            }
+                            if (!Number.isFinite(decB) && mintB) {
+                              decB = await resolveDecimals(mintB);
+                            }
+                          }
                         } catch {
                           // Fallback to defaults
                           if (!Number.isFinite(decA)) decA = 9;
@@ -1213,7 +1240,7 @@ function runWebsocketRefreshLoop(): void {
                       } else {
                         // Price calculation failed, skip this update
                         wsDeltaStats.raydium.skipped += 1;
-                        incrementSkipReason('raydium', 'price_calc_failed');
+                        incrementSkipReason('raydium', 'price_calc_failed:clmm');
                         try { logger.debug('raydium.ws clmm.skip.no_price', { id: pk58, cat: 'pools' }); } catch {}
                         updated = true;
                       }
