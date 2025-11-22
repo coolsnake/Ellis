@@ -319,38 +319,37 @@ export const CONFIG = {
   },
   // Optional: CORS allowlist (comma-separated origins), '*' to allow all
   corsOrigin: process.env.CORS_ORIGIN,
-    // Enforce HTTPS by redirecting non-secure requests (behind reverse proxy)
-    requireHttps: process.env.REQUIRE_HTTPS === 'true',
-    // Optional: frontend-only default categories; UI may override locally
-    frontendEnabledLogCategories: (
-      process.env.FRONTEND_ENABLED_LOG_CATEGORIES
-        ? String(process.env.FRONTEND_ENABLED_LOG_CATEGORIES)
-            .split(',')
-            .map((s) => s.trim().toLowerCase())
-            .filter(Boolean)
-        : ['system','server','opportunity','tx','arb','graph']
-    ) as any,
-    // DEPRECATED: pool refresh loops are coordinated via /arb/pools/refresh (kept for compatibility)
-    autoStartPools: (process.env.AUTO_START_POOLS || 'false') === 'true',
-    // Pause watchlist price feed and Jupiter API during deep price bootstrap
-    pausePriceFeedDuringBootstrap: (process.env.PAUSE_FEED_DURING_BOOTSTRAP || 'true') !== 'false',
-    // Max requests for deep Jupiter price bootstrap
-    deepJupiterBootstrapMaxRequests: Number(process.env.DEEP_JUPITER_BOOTSTRAP_MAX_REQUESTS || 6),
-    // Token mint blocklist: comma-separated list of mint addresses to exclude from pools
-    tokenBlocklistMints: (process.env.TOKEN_BLOCKLIST_MINTS || 'pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn,USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB')
-      .split(',')
-      .map(s => s.trim())
-      .filter(Boolean),
-    // Token-2022 routing mode: 'block' | 'allow' | 'auto'
-    token2022Mode: (process.env.TOKEN2022_MODE as any) || 'auto',
-    // Additional slippage (bps) applied only to Token-2022 hops
-    token2022ExtraSlippageBps: Number(process.env.TOKEN2022_EXTRA_SLIPPAGE_BPS || 20),
-    // Token-2022 allowlist per-DEX (default: blocked everywhere)
-    token2022Allow: {
-      raydium: (process.env.TOKEN2022_ALLOW_RAYDIUM || 'false') === 'true',
-      orca: (process.env.TOKEN2022_ALLOW_ORCA || 'false') === 'true',
-      meteora: (process.env.TOKEN2022_ALLOW_METEORA || 'false') === 'true',
-    },
+  // Enforce HTTPS by redirecting non-secure requests (behind reverse proxy)
+  requireHttps: process.env.REQUIRE_HTTPS === 'true',
+  // Optional: frontend-only default categories; UI may override locally
+  frontendEnabledLogCategories: (
+    process.env.FRONTEND_ENABLED_LOG_CATEGORIES
+      ? String(process.env.FRONTEND_ENABLED_LOG_CATEGORIES)
+          .split(',')
+          .map((s) => s.trim().toLowerCase())
+          .filter(Boolean)
+      : ['system','server','opportunity','tx','arb','graph']
+  ) as any,
+  // DEPRECATED: pool refresh loops are coordinated via /arb/pools/refresh (kept for compatibility)
+  autoStartPools: (process.env.AUTO_START_POOLS || 'false') === 'true',
+  // Pause watchlist price feed and Jupiter API during deep price bootstrap
+  pausePriceFeedDuringBootstrap: (process.env.PAUSE_FEED_DURING_BOOTSTRAP || 'true') !== 'false',
+  // Max requests for deep Jupiter price bootstrap
+  deepJupiterBootstrapMaxRequests: Number(process.env.DEEP_JUPITER_BOOTSTRAP_MAX_REQUESTS || 6),
+  // Token mint blocklist: comma-separated list of mint addresses to exclude from pools
+  tokenBlocklistMints: (process.env.TOKEN_BLOCKLIST_MINTS || 'pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn,USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean),
+  // Token-2022 routing mode: 'block' | 'allow' | 'auto'
+  token2022Mode: (process.env.TOKEN2022_MODE as any) || 'auto',
+  // Additional slippage (bps) applied only to Token-2022 hops
+  token2022ExtraSlippageBps: Number(process.env.TOKEN2022_EXTRA_SLIPPAGE_BPS || 20),
+  // Token-2022 allowlist per-DEX (default: blocked everywhere)
+  token2022Allow: {
+    raydium: (process.env.TOKEN2022_ALLOW_RAYDIUM || 'false') === 'true',
+    orca: (process.env.TOKEN2022_ALLOW_ORCA || 'false') === 'true',
+    meteora: (process.env.TOKEN2022_ALLOW_METEORA || 'false') === 'true',
   },
   // Optional simple Basic Auth for API/WS (prefer Nginx for static site)
   auth: {
