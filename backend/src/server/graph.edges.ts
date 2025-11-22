@@ -200,7 +200,7 @@ export function edgesFromPoolIncremental(
     source: a,
     target: b,
     dex,
-    pool_id: id || undefined,
+    pool_id: id || `${a}->${b}-${dex}`,
     source_account: (p as any)?.account_a,
     target_account: (p as any)?.account_b,
     native_mint_a: (p as any)?.native_mint_a ?? a,
