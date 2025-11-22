@@ -14,6 +14,7 @@ import { deriveOrcaFeeBps } from './pools/orca.js';
 import { deriveRaydiumClmmCacheFields, deriveMeteoraBinArrayAddresses } from './pools.derivation.js';
 import { anyToBigInt, ratioToDecimalString, sqrtPriceX64ToPriceRatio } from './pools/precision.js';
 import { poolsMetrics, wsDecodeStats, wsDeltaStats, incrementSkipReason, wsDebugCounters, wsTargetDebugCounters } from './pools.metrics.js';
+import { isValidPublicKey } from '../../execution/builder/utils.js';
 
 const METEORA_DEFAULT_PROGRAM_ID = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
 const METEORA_BIN_BITMAP_SIZE = 512;
@@ -738,7 +739,10 @@ function runWebsocketRefreshLoop(): void {
             const pid = String((e as any)?.pool_id || '');
             if (!pid) continue;
             const base = pid.replace(/[#-]rev$/, '');
-            if ((e as any)?.dex === 'Meteora') mset.add(base);
+            // Only add valid PublicKey addresses (filter out synthetic IDs like "mintA->mintB-Dex")
+            if ((e as any)?.dex === 'Meteora' && isValidPublicKey(base)) {
+              mset.add(base);
+            }
           }
           meteoraTargets = mset;
           if (meteoraTargets.size > 0) {
@@ -2901,7 +2905,13 @@ function runWebsocketRefreshLoop(): void {
               const dex = String((e as any)?.dex || '');
               if (dex !== 'Orca') continue;
               const pid = String((e as any)?.pool_id || '');
-              if (pid) edgePoolIds.add(pid.replace(/[#-]rev$/,''));
+              if (pid) {
+                const base = pid.replace(/[#-]rev$/,'');
+                // Only add valid PublicKey addresses (filter out synthetic IDs like "mintA->mintB-Dex")
+                if (isValidPublicKey(base)) {
+                  edgePoolIds.add(base);
+                }
+              }
             }
           } catch {}
           const SOL = 'So11111111111111111111111111111111111111112';
@@ -3030,7 +3040,13 @@ function runWebsocketRefreshLoop(): void {
               const dex = String((e as any)?.dex || '');
               if (dex !== 'Raydium') continue;
               const pid = String((e as any)?.pool_id || '');
-              if (pid) edgePoolIds.add(pid.replace(/[#-]rev$/,''));
+              if (pid) {
+                const base = pid.replace(/[#-]rev$/,'');
+                // Only add valid PublicKey addresses (filter out synthetic IDs like "mintA->mintB-Dex")
+                if (isValidPublicKey(base)) {
+                  edgePoolIds.add(base);
+                }
+              }
             }
             try { logger.info('pools.ws targets.raydium from graph', { size: edgePoolIds.size }); } catch {}
           } catch {}
@@ -3308,7 +3324,13 @@ function runWebsocketRefreshLoop(): void {
               const dex = String((e as any)?.dex || '');
               if (dex !== 'Pumpswap') continue;
               const pid = String((e as any)?.pool_id || '');
-              if (pid) edgePoolIds.add(pid.replace(/[#-]rev$/,''));
+              if (pid) {
+                const base = pid.replace(/[#-]rev$/,'');
+                // Only add valid PublicKey addresses (filter out synthetic IDs like "mintA->mintB-Dex")
+                if (isValidPublicKey(base)) {
+                  edgePoolIds.add(base);
+                }
+              }
             }
             try { logger.info('pools.ws targets.pumpswap from graph', { size: edgePoolIds.size }); } catch {}
           } catch {}
@@ -3442,7 +3464,13 @@ function runWebsocketRefreshLoop(): void {
               // Match MeteoraBalanced, MeteoraBalanced_v1, MeteoraBalanced_v2
               if (!dex.startsWith('MeteoraBalanced')) continue;
               const pid = String((e as any)?.pool_id || '');
-              if (pid) edgePoolIds.add(pid.replace(/[#-]rev$/,''));
+              if (pid) {
+                const base = pid.replace(/[#-]rev$/,'');
+                // Only add valid PublicKey addresses (filter out synthetic IDs like "mintA->mintB-Dex")
+                if (isValidPublicKey(base)) {
+                  edgePoolIds.add(base);
+                }
+              }
             }
             try { logger.info('pools.ws targets.meteora_balanced from graph', { size: edgePoolIds.size }); } catch {}
           } catch {}
