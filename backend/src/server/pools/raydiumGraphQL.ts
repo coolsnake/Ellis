@@ -12,7 +12,7 @@ import { withRpcLimit } from '../../utils/rpcLimiter.js';
 import { getConnection } from '../../wallet/wallet.js';
 
 // Constants for ammConfig account structure
-const TRADE_FEE_RATE_OFFSET = 43; // u32 at byte offset 43 in ammConfig account
+const TRADE_FEE_RATE_OFFSET = 47; // u32 at byte offset 47 in ammConfig account
 
 // Cache ammConfig fee rates to avoid redundant RPC calls
 const ammConfigFeeCache = new Map<string, { feeBps: number; ts: number }>();
@@ -26,7 +26,8 @@ const AMM_CONFIG_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours (configs are immut
  *   - owner (pubkey): 32 bytes at offset 3
  *   - protocol_fee_rate (u32): 4 bytes at offset 35
  *   - (padding/alignment or other field): 4 bytes at offset 39
- *   - trade_fee_rate (u32): 4 bytes at offset 43 ← WE READ THIS
+ *   - (another field): 4 bytes at offset 43
+ *   - trade_fee_rate (u32): 4 bytes at offset 47 ← WE READ THIS
  *   - ... rest of struct
  * 
  * trade_fee_rate is in parts per million (PPM)
