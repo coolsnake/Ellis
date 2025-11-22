@@ -378,7 +378,9 @@ async function injectBinArrayMetas(
     if (poolId) {
       try {
         const { executionCache } = await import('../cache.js');
-        const hot = executionCache.getHot(poolId);
+        // Strip #rev or -rev suffix for cache lookup (pools are stored with base ID)
+        const cacheKey = poolId.replace(/[#-]rev$/, '');
+        const hot = executionCache.getHot(cacheKey);
         
         if (hot?.binArrays) {
           // Use cached bin array addresses!
@@ -452,7 +454,9 @@ async function injectBinArrayMetas(
                 if (poolId) {
                   try {
                     const { executionCache } = await import('../cache.js');
-                    const hot = executionCache.getHot(poolId);
+                    // Strip #rev or -rev suffix for cache lookup (pools are stored with base ID)
+                    const cacheKey = poolId.replace(/[#-]rev$/, '');
+                    const hot = executionCache.getHot(cacheKey);
                     if (hot?.activeId !== undefined) {
                       activeId = hot.activeId;
                       try {
@@ -2403,7 +2407,9 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
     let poolTokenProgramLabelB: 'spl-token'|'token-2022' | undefined;
     try {
       const { executionCache } = await import('../cache.js');
-      const staticData = executionCache.getStatic(hop.poolId);
+      // Strip #rev or -rev suffix for cache lookup (pools are stored with base ID)
+      const cacheKey = hop.poolId.replace(/[#-]rev$/, '');
+      const staticData = executionCache.getStatic(cacheKey);
       poolTokenProgramLabelA = staticData?.token_program_a;
       poolTokenProgramLabelB = staticData?.token_program_b;
       if (staticData?.mint_a && staticData?.mint_b) {

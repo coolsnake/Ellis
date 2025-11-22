@@ -42,7 +42,8 @@ export function deriveOrcaFeeBps(raw: any): number {
   const toBps = (rate: number | undefined): number => {
     if (!Number.isFinite(rate) || (rate as number) <= 0) return 0;
     const n = rate as number;
-    if (Number.isInteger(n) && n > 1 && n <= 10_000) {
+    // Whirlpool accounts encode feeRate as u16 in hundredths of bps (max 65535 = 655.35 bps)
+    if (Number.isInteger(n) && n > 1 && n <= 65535) {
       // On-chain Whirlpool accounts encode feeRate in hundredths of a basis point
       return Math.round(n / 100);
     }
