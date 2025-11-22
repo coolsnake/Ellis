@@ -597,24 +597,91 @@ export class ArbExecutor {
       // hop_dexes = ["Meteora", "Meteora"] (per-hop, matches hop_pool_ids length)
       const executionDexes = opp.hop_dexes || opp.dexes || [];
 
-      // Resolve execution plan
-      const plan = await resolveDirectPlan(
-        {
-          path: executionPath,
-          hopPoolIds: opp.hop_pool_ids || [],
-          dexes: executionDexes,
-          sizeUsd: this.config.sizeUsd,
-          slippageBps: this.config.slippageBps,
-        } as any,
-        {} as any
-      );
+      // Resolve execution plan and build transaction - wrap in try-catch to log failures
+      let plan: any;
+      let built: ArbBuildResult;
+      let execCfg: any;
+      
+      try {
+        // Resolve execution plan
+        plan = await resolveDirectPlan(
+          {
+            path: executionPath,
+            hopPoolIds: opp.hop_pool_ids || [],
+            dexes: executionDexes,
+            sizeUsd: this.config.sizeUsd,
+            slippageBps: this.config.slippageBps,
+          } as any,
+          {} as any
+        );
 
-      // Build transaction using the same method as arb routes
-      const { buildTransactionSummary } = await import('../server/arb.build.worker.compute.js');
-      const built: ArbBuildResult = await buildTransactionSummary(plan, undefined, undefined);
+        // Build transaction using the same method as arb routes
+        const { buildTransactionSummary } = await import('../server/arb.build.worker.compute.js');
+        built = await buildTransactionSummary(plan, undefined, undefined);
 
-      // Load execution config
-      const execCfg = await loadExecConfig();
+        // Load execution config
+        execCfg = await loadExecConfig();
+      } catch (buildError: any) {
+        // Log build/resolution failure to execute-attempts
+        try {
+          const { writeTxFullDump } = await import('../utils/txTrace.js');
+          const { getTxRelatedLogs } = await import('../utils/sessionLogs.js');
+          const dexes = Array.from(new Set((executionDexes || []).filter(Boolean)));
+          const txLogs = getTxRelatedLogs(oppKey, Date.now() - 30000, Date.now(), 200);
+          
+          await writeTxFullDump('preflight', {
+            id: oppKey,
+            txId: oppKey,
+            opportunity: {
+              ...opp,
+              path: opp.path,
+              profit_bps: opp.profit_bps,
+              net_bps: opp.net_bps,
+              est_profit_usd: opp.est_profit_usd,
+              dexes: opp.dexes,
+              hop_dexes: opp.hop_dexes,
+              hop_rates: opp.hop_rates,
+              hop_outs: opp.hop_outs,
+              hop_pool_ids: opp.hop_pool_ids,
+              hop_fee_bps: opp.hop_fee_bps,
+              hop_liquidity_display: opp.hop_liquidity_display,
+              hop_count: opp.hop_count,
+              rate_product: opp.rate_product,
+              link_edges_used: opp.link_edges_used,
+              link_penalty_bps_total: opp.link_penalty_bps_total,
+              min_edge_liquidity: opp.min_edge_liquidity,
+              est_capacity: opp.est_capacity,
+              bottleneck: opp.bottleneck,
+              detected_ms: opp.detected_ms,
+              first_seen_ms: opp.first_seen_ms,
+              last_verified_ms: opp.last_verified_ms,
+              detections: opp.detections,
+            },
+            plan: null, // Plan resolution or build failed
+            dexes,
+            execConfig: null,
+            built: null,
+            err: {
+              type: 'build_failed',
+              message: String(buildError?.message || buildError),
+              stack: buildError?.stack,
+            },
+            executorLogs: txLogs,
+          });
+        } catch (logErr) {
+          try { 
+            logger.error('arb.executor.build.log_failed', { 
+              cat: 'arb', 
+              ctx: { 
+                oppKey,
+                buildError: String(buildError?.message || buildError),
+                logError: String(logErr?.message || logErr)
+              } 
+            }); 
+          } catch {}
+        }
+        throw buildError; // Re-throw to maintain existing error handling
+      }
 
       // Execute based on mode
       const mode = execCfg.mode || 'simulate';
@@ -688,7 +755,18 @@ export class ArbExecutor {
               finalOutput: opp.hop_outs && opp.hop_outs.length > 0 ? opp.hop_outs[opp.hop_outs.length - 1] : null,
             } : null,
           });
-        } catch {}
+        } catch (logErr) {
+          try { 
+            logger.error('tx.log.write_failed', { 
+              cat: 'tx', 
+              ctx: { 
+                id: oppKey,
+                phase: 'preflight',
+                error: String(logErr?.message || logErr)
+              } as any 
+            }); 
+          } catch {}
+        }
         
         logger.info('arb.executor.simulated', {
           cat: 'arb',
@@ -789,7 +867,18 @@ export class ArbExecutor {
               finalOutput: opp.hop_outs && opp.hop_outs.length > 0 ? opp.hop_outs[opp.hop_outs.length - 1] : null,
             } : null,
           });
-        } catch {}
+        } catch (logErr) {
+          try { 
+            logger.error('tx.log.write_failed', { 
+              cat: 'tx', 
+              ctx: { 
+                id: oppKey,
+                phase: 'execute',
+                error: String(logErr?.message || logErr)
+              } as any 
+            }); 
+          } catch {}
+        }
 
         if (signature) {
           logger.info('arb.executor.success', {
@@ -866,6 +955,70 @@ export class ArbExecutor {
       
       // Better error serialization
       const errorMsg = e?.message || (e instanceof Error ? e.toString() : JSON.stringify(e));
+      
+      // Log to execute-attempts even on failure
+      try {
+        const { writeTxFullDump } = await import('../utils/txTrace.js');
+        const { getTxRelatedLogs } = await import('../utils/sessionLogs.js');
+        const txLogs = getTxRelatedLogs(oppKey, Date.now() - 60000, Date.now(), 300);
+        
+        // Try to get plan and built if they exist (might be undefined if error occurred early)
+        const plan = (e as any)?.plan || null;
+        const built = (e as any)?.built || null;
+        const execCfg = (e as any)?.execCfg || null;
+        const executionDexes = opp.hop_dexes || opp.dexes || [];
+        
+        await writeTxFullDump('execute', {
+          id: oppKey,
+          txId: oppKey,
+          opportunity: {
+            ...opp,
+            path: opp.path,
+            profit_bps: opp.profit_bps,
+            net_bps: opp.net_bps,
+            est_profit_usd: opp.est_profit_usd,
+            dexes: opp.dexes,
+            hop_dexes: opp.hop_dexes,
+            hop_rates: opp.hop_rates,
+            hop_outs: opp.hop_outs,
+            hop_pool_ids: opp.hop_pool_ids,
+            hop_fee_bps: opp.hop_fee_bps,
+            hop_liquidity_display: opp.hop_liquidity_display,
+            hop_count: opp.hop_count,
+            rate_product: opp.rate_product,
+            link_edges_used: opp.link_edges_used,
+            link_penalty_bps_total: opp.link_penalty_bps_total,
+            min_edge_liquidity: opp.min_edge_liquidity,
+            est_capacity: opp.est_capacity,
+            bottleneck: opp.bottleneck,
+            detected_ms: opp.detected_ms,
+            first_seen_ms: opp.first_seen_ms,
+            last_verified_ms: opp.last_verified_ms,
+            detections: opp.detections,
+          },
+          plan,
+          dexes: plan ? Array.from(new Set(plan.hops.map((h: any) => h.dex))) : Array.from(new Set(executionDexes || [])),
+          execConfig: execCfg,
+          built,
+          err: {
+            type: 'execution_failed',
+            message: errorMsg,
+            stack: e?.stack,
+          },
+          executorLogs: txLogs,
+        });
+      } catch (logErr) {
+        try { 
+          logger.error('arb.executor.log_failed', { 
+            cat: 'arb', 
+            ctx: { 
+              oppKey,
+              executionError: errorMsg,
+              logError: String(logErr?.message || logErr)
+            } 
+          }); 
+        } catch {}
+      }
       
       logger.error('arb.executor.failed', {
         cat: 'arb',

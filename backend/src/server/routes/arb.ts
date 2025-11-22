@@ -1022,7 +1022,18 @@ export function createArbRouter(io: SocketIOServer): Router {
             dexes: Array.from(new Set(plan.hops?.map((h: any) => h.dex))),
           },
         });
-      } catch {}
+      } catch (logErr) {
+        try { 
+          logger.error('tx.log.write_failed', { 
+            cat: 'tx', 
+            ctx: { 
+              id,
+              phase: 'preflight',
+              error: String(logErr?.message || logErr)
+            } as any 
+          }); 
+        } catch {}
+      }
       try { pushBounded(execStats.preflightMs, Date.now() - tPre0); } catch {}
 
       // reuse early id
@@ -1158,6 +1169,8 @@ export function createArbRouter(io: SocketIOServer): Router {
   });
 
   api.post('/arb/execute', async (req, res) => {
+    // Generate id early so it's available in all catch blocks
+    const id = Math.random().toString(36).slice(2,10);
     try {
       try { emit('log', { level: 'info', message: 'pretrade:arb execute start', timestamp: new Date().toISOString(), context: { cat: 'arb', code: 'PRETRADE.EXEC.START' } }); } catch {}
       try { logger.info('pretrade:arb execute start', { cat: 'arb', code: LogCode.API_REQUEST }); } catch {}
@@ -1243,11 +1256,61 @@ export function createArbRouter(io: SocketIOServer): Router {
           return { poolId: h.poolId, programId: h.programId, static: st, hot };
         }),
       } as any;
-      const id = Math.random().toString(36).slice(2,10);
       try { logger.info('tx.intents', { cat: 'tx', ctx: { id, intent } as any }); } catch {}
       try { emit('log', { level: 'info', message: 'tx.intents', context: { cat: 'tx', id, intent } }); } catch {}
-      const built = await buildArbTransaction(plan);
-      const execCfg = await loadExecConfig();
+      
+      let built: ArbBuildResult;
+      let execCfg: any;
+      
+      try {
+        built = await buildArbTransaction(plan);
+        execCfg = await loadExecConfig();
+      } catch (buildError: any) {
+        // Log build failure to execute-attempts
+        try {
+          const { writeTxFullDump } = await import('../../utils/txTrace.js');
+          const { getTxRelatedLogs } = await import('../../utils/sessionLogs.js');
+          const dexes = Array.from(new Set((plan.hops || []).map((h: any) => h.dex)));
+          const txLogs = getTxRelatedLogs(id, Date.now() - 30000, Date.now(), 200);
+          
+          await writeTxFullDump('preflight', {
+            id,
+            txId: id,
+            path: plan.path,
+            hops: plan.hops,
+            plan,
+            dexes,
+            exec: null,
+            execConfig: null,
+            built: null, // Build failed
+            err: {
+              type: 'build_failed',
+              message: String(buildError?.message || buildError),
+              stack: buildError?.stack,
+            },
+            executorLogs: txLogs,
+            opportunity: (req.body as any)?.opportunity || {
+              path: plan.path,
+              hop_pool_ids: plan.hops?.map((h: any) => h.poolId),
+              hop_dexes: plan.hops?.map((h: any) => h.dex),
+              dexes: Array.from(new Set(plan.hops?.map((h: any) => h.dex))),
+            },
+          });
+        } catch (logErr) {
+          // Log the logging error but don't fail
+          try { 
+            logger.error('tx.build.log_failed', { 
+              cat: 'tx', 
+              ctx: { 
+                id, 
+                buildError: String(buildError?.message || buildError),
+                logError: String(logErr?.message || logErr)
+              } as any 
+            }); 
+          } catch {}
+        }
+        throw buildError; // Re-throw to maintain existing error handling
+      }
 
       const ixs = built.instructions.map((ix) => {
         try {
@@ -1414,7 +1477,18 @@ export function createArbRouter(io: SocketIOServer): Router {
                 dexes: Array.from(new Set(plan.hops?.map((h: any) => h.dex))),
               },
             });
-          } catch {}
+          } catch (logErr) {
+            try { 
+              logger.error('tx.log.write_failed', { 
+                cat: 'tx', 
+                ctx: { 
+                  id,
+                  phase: 'preflight',
+                  error: String(logErr?.message || logErr)
+                } as any 
+              }); 
+            } catch {}
+          }
         } catch (e: any) {
           try { logger.info('tx.preflight.err', { cat: 'tx', code: LogCode.TX_PREFLIGHT_ERR, ctx: { id, ixCount: built.ixCount, txSizeBytes: built.sizeBytes, mode: forceDirect ? 'direct(force)' : mode, error: String(e?.message || e) } as any }); } catch {}
           return res.status(400).json({ id, mode, error: 'preflight_throw' });
@@ -1523,7 +1597,18 @@ export function createArbRouter(io: SocketIOServer): Router {
               dexes: Array.from(new Set(plan.hops?.map((h: any) => h.dex))),
             },
           });
-        } catch {}
+        } catch (logErr) {
+          try { 
+            logger.error('tx.log.write_failed', { 
+              cat: 'tx', 
+              ctx: { 
+                id,
+                phase: 'execute',
+                error: String(logErr?.message || logErr)
+              } as any 
+            }); 
+          } catch {}
+        }
         try { pushBounded(execStats.sendMs, Date.now() - tSend0); execStats.sendOk += 1; } catch {}
         const signatures: string[] = [sendRes.signature];
         const signature = signatures[signatures.length - 1] || null;
@@ -1570,6 +1655,53 @@ export function createArbRouter(io: SocketIOServer): Router {
         return res.status(400).json({ id, mode, error: 'send_failed' });
       }
     } catch (e: any) {
+      // Log to execute-attempts even on failure
+      try {
+        const { writeTxFullDump } = await import('../../utils/txTrace.js');
+        const { getTxRelatedLogs } = await import('../../utils/sessionLogs.js');
+        const txLogs = getTxRelatedLogs(id, Date.now() - 60000, Date.now(), 300);
+        
+        // Try to get plan and built if they exist
+        const plan = (e as any)?.plan || (req.body as any)?.plan || null;
+        const built = (e as any)?.built || null;
+        const execCfg = (e as any)?.execCfg || null;
+        
+        await writeTxFullDump('execute', {
+          id,
+          txId: id,
+          path: plan?.path || (req.body as any)?.path || [],
+          hops: plan?.hops || [],
+          plan,
+          dexes: plan ? Array.from(new Set(plan.hops.map((h: any) => h.dex))) : [],
+          exec: execCfg,
+          execConfig: execCfg,
+          built,
+          err: {
+            type: 'execution_failed',
+            message: String(e?.message || e),
+            stack: e?.stack,
+          },
+          executorLogs: txLogs,
+          opportunity: (req.body as any)?.opportunity || {
+            path: plan?.path || (req.body as any)?.path || [],
+            hop_pool_ids: plan?.hops?.map((h: any) => h.poolId) || [],
+            hop_dexes: plan?.hops?.map((h: any) => h.dex) || [],
+            dexes: plan ? Array.from(new Set(plan.hops?.map((h: any) => h.dex))) : [],
+          },
+        });
+      } catch (logErr) {
+        try { 
+          logger.error('arb.route.log_failed', { 
+            cat: 'arb', 
+            ctx: { 
+              id,
+              executionError: String(e?.message || e),
+              logError: String(logErr?.message || logErr)
+            } as any 
+          }); 
+        } catch {}
+      }
+      
       res.status(400).json({ error: String(e?.message || e) });
     }
   });

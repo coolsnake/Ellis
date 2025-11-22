@@ -800,7 +800,18 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
       executorLogs: txLogs, // Include executor logs
       // Note: opportunity data not available here, but can be passed from caller
     });
-  } catch {}
+  } catch (logErr) {
+    try { 
+      logger.error('tx.log.write_failed', { 
+        cat: 'tx', 
+        ctx: { 
+          txId,
+          phase: 'preflight',
+          error: String(logErr?.message || logErr)
+        } as any 
+      }); 
+    } catch {}
+  }
   return { logs: sim.value?.logs, err: sim.value?.err, wireBase64 };
 }
 
@@ -1162,7 +1173,18 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
       signature: sig,
       executorLogs: txLogs, // Include executor logs
     });
-  } catch {}
+  } catch (logErr) {
+    try { 
+      logger.error('tx.log.write_failed', { 
+        cat: 'tx', 
+        ctx: { 
+          txId,
+          phase: 'execute',
+          error: String(logErr?.message || logErr)
+        } as any 
+      }); 
+    } catch {}
+  }
   return { signature: sig, wireBase64 };
 }
 
