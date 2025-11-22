@@ -14,7 +14,7 @@ import { deriveOrcaFeeBps } from './pools/orca.js';
 import { deriveRaydiumClmmCacheFields, deriveMeteoraBinArrayAddresses } from './pools.derivation.js';
 import { anyToBigInt, ratioToDecimalString, sqrtPriceX64ToPriceRatio } from './pools/precision.js';
 import { poolsMetrics, wsDecodeStats, wsDeltaStats, incrementSkipReason, wsDebugCounters, wsTargetDebugCounters } from './pools.metrics.js';
-import { isValidPublicKey } from '../../execution/builder/utils.js';
+import { isValidPublicKey } from '../execution/builder/utils.js';
 
 const METEORA_DEFAULT_PROGRAM_ID = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
 const METEORA_BIN_BITMAP_SIZE = 512;
