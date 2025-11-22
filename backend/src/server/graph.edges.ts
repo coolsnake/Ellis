@@ -52,7 +52,24 @@ export function isPoolValidForGraph(
   if (!sanityEnabled) return true;
 
   const fb = Number(p?.fee_bps);
-  if (Number.isFinite(fb) && (fb < feeMin || fb > feeMax)) return false; // 'badFees'
+  if (Number.isFinite(fb) && (fb < feeMin || fb > feeMax)) {
+    try {
+      const kind = String((p as any)?.pool_kind || '');
+      if (kind === 'clmm') {
+        logger.info('graph.sanity.filter.badFees', {
+          dex: String((p as any)?.dex || ''),
+          kind,
+          pool_id: (p as any)?.id?.slice(0, 12),
+          fee_bps: fb,
+          feeMin,
+          feeMax,
+          reason: 'badFees',
+          cat: 'graph'
+        });
+      }
+    } catch {}
+    return false; // 'badFees'
+  }
 
   const kind = String((p as any)?.pool_kind || '');
   const s64 = Number((p as any)?.sqrt_price_x64 || (p as any)?.sqrt_price_x64_raw || 0);
@@ -62,22 +79,37 @@ export function isPoolValidForGraph(
   // Allow CLMM pools that can derive price from sqrt even if price_a_per_b is missing
   if (!Number.isFinite(price) || price <= 0) {
     if (!(kind === 'clmm' && s64 > 0)) {
-      // Log when we filter out a pool for missing price
+      // Log when we filter out a pool for missing price (use info for CLMM to debug)
       try {
-        logger.debug('graph.sanity.filter.price', {
+        const logLevel = kind === 'clmm' ? 'info' : 'debug';
+        logger[logLevel]('graph.sanity.filter.price', {
           dex,
           kind,
-          pool_id: (p as any)?.id?.slice(0, 8),
-          mint_a: (p as any)?.mint_a,
-          mint_b: (p as any)?.mint_b,
+          pool_id: (p as any)?.id?.slice(0, 12),
+          mint_a: (p as any)?.mint_a?.slice(0, 8),
+          mint_b: (p as any)?.mint_b?.slice(0, 8),
           price,
           sqrt_price_x64: (p as any)?.sqrt_price_x64,
           sqrt_price_x64_raw: (p as any)?.sqrt_price_x64_raw,
+          s64_converted: s64,
           reason: 'nonFinitePrice',
           cat: 'graph'
         });
       } catch {}
       return false; // 'nonFinitePrice'
+    } else if (kind === 'clmm' && s64 > 0) {
+      // Log successful CLMM validation with sqrt fallback
+      try {
+        logger.debug('graph.sanity.filter.clmm.sqrt_fallback', {
+          dex,
+          pool_id: (p as any)?.id?.slice(0, 12),
+          price,
+          sqrt_price_x64: (p as any)?.sqrt_price_x64,
+          sqrt_price_x64_raw: (p as any)?.sqrt_price_x64_raw,
+          s64_converted: s64,
+          cat: 'graph'
+        });
+      } catch {}
     }
   }
 
@@ -97,7 +129,24 @@ export function isPoolValidForGraph(
     if (Number.isFinite(price) && price > 0) {
       const ref = (bUsd as number) / (aUsd as number);
       const dev = Math.max(price / ref, ref / price);
-      if (dev > maxPriceDeviation) return false; // 'priceOutliers'
+      if (dev > maxPriceDeviation) {
+        try {
+          if (kind === 'clmm') {
+            logger.info('graph.sanity.filter.priceOutlier', {
+              dex,
+              kind,
+              pool_id: (p as any)?.id?.slice(0, 12),
+              price,
+              ref,
+              deviation: dev,
+              maxDeviation: maxPriceDeviation,
+              reason: 'priceOutliers',
+              cat: 'graph'
+            });
+          }
+        } catch {}
+        return false; // 'priceOutliers'
+      }
     }
   }
 

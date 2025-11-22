@@ -649,9 +649,10 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       const validatePoolsForGraph = (norm: NormPools): NormPools => {
         if (!validationConfig.sanityEnabled) return norm;
         const out: NormPools = { amm: [], clmm: [] };
-        const drop = { badFees: 0, priceOutliers: 0, nonFinitePrice: 0 } as any;
+        const drop = { badFees: 0, priceOutliers: 0, nonFinitePrice: 0, amm: { total: 0, dropped: 0 }, clmm: { total: 0, dropped: 0 } } as any;
         
-        const checkPool = (p: any) => {
+        const checkPool = (p: any, kind: 'amm' | 'clmm') => {
+          drop[kind].total += 1;
           if (isPoolValidForGraph(p, getUsd, validationConfig)) {
             return true;
           }
@@ -659,13 +660,24 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           // Note: Detailed reasons are inside isPoolValidForGraph but not returned
           // For stats compatibility we can infer or just count as dropped
           drop['invalid'] = (drop['invalid'] || 0) + 1;
+          drop[kind].dropped += 1;
           return false;
         };
 
-        for (const p of (norm.amm || [])) { if (checkPool(p)) out.amm.push(p); }
-        for (const p of (norm.clmm || [])) { if (checkPool(p)) out.clmm.push(p); }
+        for (const p of (norm.amm || [])) { if (checkPool(p, 'amm')) out.amm.push(p); }
+        for (const p of (norm.clmm || [])) { if (checkPool(p, 'clmm')) out.clmm.push(p); }
         
-        try { logger.debug('graph.sanity.filter', { feeMin, feeMax, maxPriceDeviation, dropped: drop }); } catch {}
+        try { 
+          logger.info('graph.sanity.filter', { 
+            feeMin, 
+            feeMax, 
+            maxPriceDeviation, 
+            dropped: drop,
+            before: { amm: norm.amm?.length || 0, clmm: norm.clmm?.length || 0 },
+            after: { amm: out.amm.length, clmm: out.clmm.length },
+            cat: 'graph'
+          }); 
+        } catch {}
         try { emit('sanity-update', { ts: Date.now(), scope: 'graph', feeMin, feeMax, maxPriceDeviation, dropped: drop }); } catch {}
         return out;
       };
@@ -681,15 +693,27 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
           priceClampMax: Number(((CONFIG as any)?.sanity as any)?.priceClampMax) || 1e12,
         };
 
+        let skippedDexKind = 0;
+        let skippedDropped = 0;
+        let skippedStableStable = 0;
+        let edgesCreated = 0;
+        const poolKind = pools.length > 0 ? (pools[0] as any)?.pool_kind : 'unknown';
+
         for (const p of pools) {
           // Unified edge creation using shared logic
           // This ensures incremental updates and full rebuilds use IDENTICAL logic
-          if (!isDexKindAllowed((p as any).dex || dex, (p as any).pool_kind || 'amm', edgeAllow)) continue;
+          if (!isDexKindAllowed((p as any).dex || dex, (p as any).pool_kind || 'amm', edgeAllow)) {
+            skippedDexKind++;
+            continue;
+          }
           
           // Honor runtime pool drops
           try {
             const pid = String(p?.id || '');
-            if (pid && droppedPoolIds.has(pid)) continue;
+            if (pid && droppedPoolIds.has(pid)) {
+              skippedDropped++;
+              continue;
+            }
           } catch {}
           
           // Optional pruning: drop stable<->stable edges entirely
@@ -699,12 +723,30 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
               const stables = new Set<string>(((CONFIG.system as any)?.stableMints || []) as string[]);
               const aStable = stables.has(p?.mint_a);
               const bStable = stables.has(p?.mint_b);
-              if (aStable && bStable) continue;
+              if (aStable && bStable) {
+                skippedStableStable++;
+                continue;
+              }
             }
           } catch {}
 
           const newEdges = edgesFromPoolIncremental(p as any, getUsd, edgeOptions);
           
+          if (newEdges.length === 0) {
+            try {
+              if (poolKind === 'clmm') {
+                logger.debug('graph.edge.creation.empty', {
+                  dex: (p as any).dex || dex,
+                  kind: poolKind,
+                  pool_id: (p as any)?.id?.slice(0, 12),
+                  cat: 'graph'
+                });
+              }
+            } catch {}
+            continue;
+          }
+          
+          edgesCreated += newEdges.length;
           for (const e of newEdges) {
             edgesMap[e.id] = e;
             if (!nodesMap[e.source]) {
@@ -715,6 +757,24 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
             }
           }
         }
+        
+        if (pools.length > 0) {
+          try {
+            logger.info('graph.edge.creation.summary', {
+              dex: dex || pools[0]?.dex || 'unknown',
+              kind: poolKind,
+              poolsProcessed: pools.length,
+              edgesCreated,
+              skipped: {
+                dexKind: skippedDexKind,
+                dropped: skippedDropped,
+                stableStable: skippedStableStable,
+                noEdges: pools.length - edgesCreated - skippedDexKind - skippedDropped - skippedStableStable
+              },
+              cat: 'graph'
+            });
+          } catch {}
+        }
       };
 
       // Combine all pools into a single list and process them
@@ -723,6 +783,17 @@ export async function getGraphSnapshot(force = false): Promise<GraphSnapshot> {
       const metValid = validatePoolsForGraph(met);
       const mblValid = validatePoolsForGraph(mbl);
       const pumpValid = validatePoolsForGraph(pump);
+
+      try {
+        logger.info('graph.pools.after_validation', {
+          raydium: { amm: rayValid.amm?.length || 0, clmm: rayValid.clmm?.length || 0 },
+          orca: { amm: orcValid.amm?.length || 0, clmm: orcValid.clmm?.length || 0 },
+          meteora: { clmm: metValid.clmm?.length || 0 },
+          meteora_balanced: { amm: mblValid.amm?.length || 0 },
+          pumpswap: { amm: pumpValid.amm?.length || 0 },
+          cat: 'graph'
+        });
+      } catch {}
 
       const allPools = [
         ...(rayValid.amm || []),
