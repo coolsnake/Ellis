@@ -153,7 +153,7 @@ export const CONFIG = {
     connectionTimeoutMs: Number(process.env.CONNECTION_TIMEOUT_MS || 30000),
     enableLogging: process.env.ENABLE_LOGGING !== 'false',
     logLevel: process.env.LOG_LEVEL || 'info',
-    txCommitment: (process.env.TX_COMMITMENT as any) || 'confirmed',
+    txCommitment: (process.env.TX_COMMITMENT as any) || 'processed',
     wrapAndUnwrapSol: process.env.WRAP_AND_UNWRAP_SOL !== 'false',
     // Account management: delayed closing for token accounts
     accountKeepOpenMs: Number(process.env.ACCOUNT_KEEP_OPEN_MS || 30 * 60 * 1000), // 30 minutes default
@@ -314,8 +314,11 @@ export const CONFIG = {
         }
       } as Record<string, any>,
     },
-    // Optional: CORS allowlist (comma-separated origins), '*' to allow all
-    corsOrigin: process.env.CORS_ORIGIN,
+    // Default USD quote size used when neither size nor sizeUsd is provided
+    defaultQuoteSizeUsd: Number(process.env.DEFAULT_QUOTE_SIZE_USD || 0),
+  },
+  // Optional: CORS allowlist (comma-separated origins), '*' to allow all
+  corsOrigin: process.env.CORS_ORIGIN,
     // Enforce HTTPS by redirecting non-secure requests (behind reverse proxy)
     requireHttps: process.env.REQUIRE_HTTPS === 'true',
     // Optional: frontend-only default categories; UI may override locally
@@ -342,8 +345,6 @@ export const CONFIG = {
     token2022Mode: (process.env.TOKEN2022_MODE as any) || 'auto',
     // Additional slippage (bps) applied only to Token-2022 hops
     token2022ExtraSlippageBps: Number(process.env.TOKEN2022_EXTRA_SLIPPAGE_BPS || 20),
-    // Default USD quote size used when neither size nor sizeUsd is provided
-    defaultQuoteSizeUsd: Number(process.env.DEFAULT_QUOTE_SIZE_USD || 0),
     // Token-2022 allowlist per-DEX (default: blocked everywhere)
     token2022Allow: {
       raydium: (process.env.TOKEN2022_ALLOW_RAYDIUM || 'false') === 'true',
