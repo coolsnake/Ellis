@@ -621,7 +621,6 @@ async function deriveBinArrays(
     for (let i = startIdx; i <= endIdx; i++) {
       try {
         const binArrayPda = deriveBinArray(poolPk, new BN(i), programId);
-        let binArrayPk: any;
         
         // Handle different return types from deriveBinArray
         let binArrayPk: any;
