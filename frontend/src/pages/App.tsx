@@ -960,6 +960,9 @@ export const App: React.FC = () => {
             });
             path.push(String(firstEdge.source), String(firstEdge.target));
             
+            // Track starting token for cycle completion
+            const startToken = String(firstEdge.source);
+            
             // For each subsequent hop, find an edge that starts where the previous one ended
             let currentTarget = String(firstEdge.target);
             for (let i = 1; i < numHops; i++) {
@@ -967,18 +970,58 @@ export const App: React.FC = () => {
               const nextEdges = edges.filter((e: any) => String(e?.source) === currentTarget);
               
               if (nextEdges.length === 0) {
-                // If no direct connection, pick any random edge (path might not be valid, but backend will validate)
-                const randomIndex = Math.floor(Math.random() * edges.length);
-                const randomEdge = edges[randomIndex];
-                pools.push({
-                  poolId: String(randomEdge.pool_id),
-                  source: String(randomEdge.source),
-                  target: String(randomEdge.target),
-                  dex: String(randomEdge.dex),
-                  poolKind: randomEdge.pool_kind,
-                });
-                path.push(String(randomEdge.target));
-                currentTarget = String(randomEdge.target);
+                // If no direct connection, try to find a valid edge
+                const isLastHop = i === numHops - 1;
+                
+                // First, try to complete cycle back to start if this is the last hop
+                if (isLastHop) {
+                  const cycleEdges = edges.filter((e: any) => 
+                    String(e?.source) === currentTarget && String(e?.target) === startToken
+                  );
+                  if (cycleEdges.length > 0) {
+                    const cycleEdge = cycleEdges[Math.floor(Math.random() * cycleEdges.length)];
+                    pools.push({
+                      poolId: String(cycleEdge.pool_id),
+                      source: String(cycleEdge.source),
+                      target: String(cycleEdge.target),
+                      dex: String(cycleEdge.dex),
+                      poolKind: cycleEdge.pool_kind,
+                    });
+                    path.push(String(cycleEdge.target));
+                    break; // Path complete
+                  }
+                }
+                
+                // Try to find any edge that doesn't create duplicate consecutive tokens
+                const validEdges = edges.filter((e: any) => 
+                  String(e?.source) === currentTarget && String(e?.target) !== currentTarget
+                );
+                
+                if (validEdges.length > 0) {
+                  const validEdge = validEdges[Math.floor(Math.random() * validEdges.length)];
+                  pools.push({
+                    poolId: String(validEdge.pool_id),
+                    source: String(validEdge.source),
+                    target: String(validEdge.target),
+                    dex: String(validEdge.dex),
+                    poolKind: validEdge.pool_kind,
+                  });
+                  path.push(String(validEdge.target));
+                  currentTarget = String(validEdge.target);
+                } else {
+                  // Fallback: pick any random edge (but this may create invalid paths)
+                  const randomIndex = Math.floor(Math.random() * edges.length);
+                  const randomEdge = edges[randomIndex];
+                  pools.push({
+                    poolId: String(randomEdge.pool_id),
+                    source: String(randomEdge.source),
+                    target: String(randomEdge.target),
+                    dex: String(randomEdge.dex),
+                    poolKind: randomEdge.pool_kind,
+                  });
+                  path.push(String(randomEdge.target));
+                  currentTarget = String(randomEdge.target);
+                }
               } else {
                 // Pick a random edge from the connected ones
                 const nextIndex = Math.floor(Math.random() * nextEdges.length);
@@ -992,6 +1035,25 @@ export const App: React.FC = () => {
                 });
                 path.push(String(nextEdge.target));
                 currentTarget = String(nextEdge.target);
+              }
+            }
+            
+            // Ensure path forms a cycle: if last token != first token, try to add edge back to start
+            if (path.length > 0 && path[path.length - 1] !== startToken) {
+              const lastToken = path[path.length - 1];
+              const backToStart = edges.filter((e: any) => 
+                String(e?.source) === lastToken && String(e?.target) === startToken
+              );
+              if (backToStart.length > 0) {
+                const finalEdge = backToStart[Math.floor(Math.random() * backToStart.length)];
+                pools.push({
+                  poolId: String(finalEdge.pool_id),
+                  source: String(finalEdge.source),
+                  target: String(finalEdge.target),
+                  dex: String(finalEdge.dex),
+                  poolKind: finalEdge.pool_kind,
+                });
+                path.push(String(finalEdge.target));
               }
             }
             
