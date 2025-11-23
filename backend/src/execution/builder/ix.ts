@@ -3758,11 +3758,10 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
 
       // Supply remaining accounts for bin arrays using documented helpers (applies to swap and swap2)
       try {
-      const getBinArrayLowerUpperBinId = (DLMM as any)?.getBinArrayLowerUpperBinId || (mod as any)?.getBinArrayLowerUpperBinId;
-      const getBinArrayAccountMetasCoverage = (DLMM as any)?.getBinArrayAccountMetasCoverage || (mod as any)?.getBinArrayAccountMetasCoverage;
       const binIdToBinArrayIndex = (DLMM as any)?.binIdToBinArrayIndex || (mod as any)?.binIdToBinArrayIndex;
+      const deriveBinArray = (DLMM as any)?.deriveBinArray || (mod as any)?.deriveBinArray;
       
-      if (getBinArrayLowerUpperBinId && getBinArrayAccountMetasCoverage && binIdToBinArrayIndex && typeof (builder as any).remainingAccounts === 'function') {
+      if (binIdToBinArrayIndex && deriveBinArray && typeof (builder as any).remainingAccounts === 'function') {
         try {
           const bnjs = await import('bn.js').catch(() => null as any);
           const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
@@ -3776,10 +3775,10 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
             
             if (activeBinId) {
               try {
-                // ZERO-RPC PATH: Use deterministic calculation instead of fetching pool state
-                // We already have activeBinId from cache, so we can calculate bin range directly
+                // ZERO-RPC PATH: Use deterministic calculation with bin array indexes
+                // Convert active bin ID to bin array index
                 const activeBinIdx = binIdToBinArrayIndex(activeBinId);
-                const [currentLower, currentUpper] = getBinArrayLowerUpperBinId(activeBinIdx);
+                const arrIdx = activeBinIdx instanceof BN ? activeBinIdx : new BN(String(activeBinIdx));
                 
                 // Determine swap direction from hop data (no RPC needed)
                 const inputMintPk = toPublicKey(hop.inputMint);
@@ -3789,31 +3788,31 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 const isXToY = inputMintPk.equals(tokenXMintPk) && outputMintPk.equals(tokenYMintPk);
                 const isYToX = inputMintPk.equals(tokenYMintPk) && outputMintPk.equals(tokenXMintPk);
                 
+                // Calculate bin array index range (not bin ID range)
                 // Use fixed expansion factor (conservative, no RPC needed)
-                const binArraySize = (DLMM as any)?.MAX_BIN_ARRAY_SIZE ?? new BN(70);
-                const fixedExpansion = new BN(3); // Conservative default
+                const fixedExpansion = 3; // Conservative default - 3 bin arrays on each side
                 
-                let rangeLower: any;
-                let rangeUpper: any;
+                let lowerArrayIdx: any;
+                let upperArrayIdx: any;
                 let binArrayCount: number;
                 let direction: 'up' | 'down' | 'both';
                 
                 if (isXToY) {
                   // X->Y: Price moves DOWN, expand LOWER range
-                  rangeLower = currentLower.sub(binArraySize.mul(fixedExpansion));
-                  rangeUpper = currentUpper.add(binArraySize);
-                  binArrayCount = fixedExpansion.toNumber() + 1;
+                  lowerArrayIdx = arrIdx.sub(new BN(fixedExpansion));
+                  upperArrayIdx = arrIdx.add(new BN(1)); // Include active + 1 above
+                  binArrayCount = fixedExpansion + 2;
                   direction = 'down';
                 } else if (isYToX) {
                   // Y->X: Price moves UP, expand UPPER range
-                  rangeLower = currentLower.sub(binArraySize);
-                  rangeUpper = currentUpper.add(binArraySize.mul(fixedExpansion));
-                  binArrayCount = fixedExpansion.toNumber() + 1;
+                  lowerArrayIdx = arrIdx.sub(new BN(1)); // Include active + 1 below
+                  upperArrayIdx = arrIdx.add(new BN(fixedExpansion));
+                  binArrayCount = fixedExpansion + 2;
                   direction = 'up';
                 } else {
                   // Unknown direction: expand both (conservative)
-                  rangeLower = currentLower.sub(binArraySize.mul(new BN(2)));
-                  rangeUpper = currentUpper.add(binArraySize.mul(new BN(2)));
+                  lowerArrayIdx = arrIdx.sub(new BN(2));
+                  upperArrayIdx = arrIdx.add(new BN(2));
                   binArrayCount = 5;
                   direction = 'both';
                 }
@@ -3823,16 +3822,51 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                     cat: 'tx',
                     ctx: {
                       poolId: hop.poolId,
-                      binsTraversed: binArrayCount * 70, // Approximate (70 bins per array)
+                      activeBinId: activeBinId.toString(),
+                      activeBinArrayIdx: arrIdx.toString(),
                       binArrayCount,
                       direction,
                       swapAmount: hop.amountInRaw.toString(),
-                      range: `${rangeLower.toString()}..${rangeUpper.toString()}`
+                      arrayRange: `${lowerArrayIdx.toString()}..${upperArrayIdx.toString()}`
                     }
                   });
                 } catch {}
                 
-                const metas = getBinArrayAccountMetasCoverage(rangeLower, rangeUpper, poolPk, programId) || [];
+                // Derive bin arrays using bin array indexes directly (matching working code in meteora.ts)
+                // Use SDK's deriveBinArray function directly - this is the proven method
+                // deriveBinArray is already available from outer scope
+                const metas: any[] = [];
+                
+                if (deriveBinArray) {
+                  // Generate all bin array indexes in range
+                  const startIdx = lowerArrayIdx.toNumber();
+                  const endIdx = upperArrayIdx.toNumber();
+                  
+                  for (let i = startIdx; i <= endIdx; i++) {
+                    try {
+                      const binArrayPda = deriveBinArray(poolPk, new BN(i), programId);
+                      let binArrayPk: PublicKey;
+                      
+                      if (binArrayPda instanceof PublicKey) {
+                        binArrayPk = binArrayPda;
+                      } else if (Array.isArray(binArrayPda)) {
+                        binArrayPk = binArrayPda[0];
+                      } else {
+                        binArrayPk = new PublicKey(binArrayPda);
+                      }
+                      
+                      metas.push({
+                        pubkey: binArrayPk,
+                        isWritable: true,
+                        isSigner: false
+                      });
+                    } catch (e: any) {
+                      // Skip invalid derivations
+                      try { logger.debug('meteora.dlmm.derive_bin_array.failed', { cat: 'tx', ctx: { index: i, error: String(e?.message || e) } }); } catch {}
+                    }
+                  }
+                }
+                
                 // Validate bin arrays using local cache (zero RPC calls)
                 const validatedMetas: any[] = [];
                 if (Array.isArray(metas) && metas.length > 0) {
@@ -3870,8 +3904,6 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 }
                 
                 // Use the calculated bin array count as our limit
-                // We calculated exactly how many we need, so only include that many
-                // Add a small buffer (+2) for edge cases where price moves slightly
                 const calculatedLimit = Math.min(binArrayCount + 2, validatedMetas.length);
                 const limitedMetas = validatedMetas.slice(0, calculatedLimit);
                 
@@ -3886,7 +3918,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                         validated: validatedMetas.length,
                         calculatedNeeded: binArrayCount,
                         usedLimit: calculatedLimit,
-                        range: `${rangeLower.toString()}..${rangeUpper.toString()}` 
+                        arrayRange: `${lowerArrayIdx.toString()}..${upperArrayIdx.toString()}`
                       } 
                     }); 
                   } catch {}
