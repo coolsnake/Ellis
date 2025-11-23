@@ -12,6 +12,7 @@ import { CONFIG } from '../../utils/config.js';
 import { normalizePublicKey, isValidPublicKey, coerceToPublicKey, sanitizeKeyString } from './utils.js';
 import { validateHopAmounts, validatePublicKey, validatePoolAccounts } from './validation.js';
 import { createBuilderError, wrapBuilderError, logAndThrow } from './errors.js';
+import crypto from 'crypto';
 
 // Legacy helper for backward compatibility - use coerceToPublicKey from utils.js instead
 function toPublicKey(value: any, fallback?: any): PublicKey {
@@ -832,7 +833,6 @@ async function getOrcaSdkSigner(kp: { publicKey: PublicKey; secretKey: Uint8Arra
  * Discriminator is first 8 bytes of sha256("global:<instruction_name>")
  */
 function computeAnchorDiscriminator(instructionName: string): Buffer {
-  const crypto = require('crypto');
   const preimage = `global:${instructionName}`;
   const hash = crypto.createHash('sha256').update(preimage).digest();
   return Buffer.from(hash.subarray(0, 8));

@@ -25,7 +25,13 @@ async function appendJsonl(path: string, entry: Record<string, any>): Promise<vo
       } catch {}
     }
   } catch {}
-  const line = JSON.stringify(entry) + '\n';
+  const line = JSON.stringify(entry, (key, value) => {
+    // Handle BigInt serialization
+    if (typeof value === 'bigint') {
+      return value.toString();
+    }
+    return value;
+  }) + '\n';
   const dir = dirname(path);
   if (!existsSync(dir)) {
     await mkdir(dir, { recursive: true });
@@ -139,7 +145,13 @@ export async function writeTxFullDump(
     sendResult: payload.send || payload.sendResult || null,
   };
   
-  const data = JSON.stringify(enrichedPayload, null, 2);
+  const data = JSON.stringify(enrichedPayload, (key, value) => {
+    // Handle BigInt serialization
+    if (typeof value === 'bigint') {
+      return value.toString();
+    }
+    return value;
+  }, 2);
   await writeFile(file, data, { encoding: 'utf8' });
 }
 
