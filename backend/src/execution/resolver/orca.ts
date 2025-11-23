@@ -10,9 +10,10 @@ export async function resolveOrca(hop: DirectHop): Promise<DirectHop> {
   // Load from hot cache for tick arrays (like Raydium CLMM)
   const hot = executionCache.getHot(hop.poolId);
   if (hot?.tickArrays) {
-    hop.tickArrayLower = hot.tickArrays.lower || hop.tickArrayLower;
+    // Handle arrays for lower/upper (take first element), string for center
+    hop.tickArrayLower = (Array.isArray(hot.tickArrays.lower) ? hot.tickArrays.lower[0] : hot.tickArrays.lower) || hop.tickArrayLower;
     hop.tickArrayCenter = hot.tickArrays.center || hop.tickArrayCenter;
-    hop.tickArrayUpper = hot.tickArrays.upper || hop.tickArrayUpper;
+    hop.tickArrayUpper = (Array.isArray(hot.tickArrays.upper) ? hot.tickArrays.upper[0] : hot.tickArrays.upper) || hop.tickArrayUpper;
     
     try {
       logger.info('orca.resolver.tick_arrays_from_cache', {
@@ -34,8 +35,25 @@ export async function resolveOrca(hop: DirectHop): Promise<DirectHop> {
     if (p) {
       hop.tickSpacing = Number((p as any)?.tick_spacing || (p as any)?.tickSpacing || hop.tickSpacing || 0);
       hop.oracle = hop.oracle || String((p as any)?.oracle || '');
-      hop.vaultA = hop.vaultA || String((p as any)?.account_a || '');
-      hop.vaultB = hop.vaultB || String((p as any)?.account_b || '');
+      
+      // Get vault addresses from pool data (prefer token_vault_a/token_vault_b, fallback to account_a/account_b)
+      const vaultA = (p as any)?.token_vault_a || (p as any)?.account_a;
+      const vaultB = (p as any)?.token_vault_b || (p as any)?.account_b;
+      
+      if (vaultA) hop.vaultA = hop.vaultA || String(vaultA);
+      if (vaultB) hop.vaultB = hop.vaultB || String(vaultB);
+      
+      // CRITICAL: Cache vault addresses in execution cache if we found them
+      if (vaultA && vaultB) {
+        const existing = executionCache.getStatic(hop.poolId) || {} as any;
+        executionCache.setStatic(hop.poolId, {
+          ...existing,
+          vaults: {
+            a: vaultA,
+            b: vaultB
+          }
+        });
+      }
     }
   } catch {}
   return hop;

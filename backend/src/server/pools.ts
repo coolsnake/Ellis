@@ -2065,6 +2065,17 @@ export async function getOrcaPoolsNormalized(opts?: { skipUniverseFilter?: boole
       if (pool.account_a) staticData.account_a = pool.account_a;
       if (pool.account_b) staticData.account_b = pool.account_b;
       
+      // CRITICAL: Store vault addresses in the format expected by the builder (vaults.a and vaults.b)
+      // Prefer token_vault_a/token_vault_b, fallback to account_a/account_b
+      const vaultA = pool.token_vault_a || pool.account_a;
+      const vaultB = pool.token_vault_b || pool.account_b;
+      if (vaultA && vaultB) {
+        staticData.vaults = {
+          a: vaultA,
+          b: vaultB
+        };
+      }
+      
       // Store tick spacing
       if (pool.tick_spacing) staticData.tick_spacing = pool.tick_spacing;
       
@@ -2144,6 +2155,18 @@ export async function getOrcaPoolsGraphQL(force = false): Promise<PoolsPayload> 
         if ((pool as any).token_vault_b) staticData.token_vault_b = (pool as any).token_vault_b;
         if (pool.account_a) staticData.account_a = pool.account_a;
         if (pool.account_b) staticData.account_b = pool.account_b;
+        
+        // CRITICAL: Store vault addresses in the format expected by the builder (vaults.a and vaults.b)
+        // Prefer token_vault_a/token_vault_b, fallback to account_a/account_b
+        const vaultA = (pool as any).token_vault_a || pool.account_a;
+        const vaultB = (pool as any).token_vault_b || pool.account_b;
+        if (vaultA && vaultB) {
+          staticData.vaults = {
+            a: vaultA,
+            b: vaultB
+          };
+        }
+        
         if (pool.tick_spacing) staticData.tick_spacing = pool.tick_spacing;
         
         executionCache.setStatic(pool.id, staticData);

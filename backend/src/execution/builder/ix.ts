@@ -4500,17 +4500,22 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     // Note: We only verify account existence with data - don't check owner (chain/SDK will validate)
     // Some tick arrays might be PDAs owned by related programs or the validation might fail due to RPC timing
     const tickArrayKeys: PublicKey[] = [];
-    const tickArrayCandidates = [
-      hop.tickArrayCenter,  // Start with center (current tick)
-      hop.tickArrayLower,
-      hop.tickArrayUpper,
-    ].filter(Boolean);
     
-    // OPTIMIZATION: Trust tick arrays from cache without RPC verification
-    // The cached tick arrays come from WebSocket subscriptions that monitor these accounts
-    // If they're in our cache, they exist and are valid - let the chain reject if not
-    if (tickArrayCandidates.length > 0) {
-      for (const addr of tickArrayCandidates) {
+    // Always include center tick array (contains current tick)
+    if (hop.tickArrayCenter) {
+      try {
+        const pk = toPublicKey(hop.tickArrayCenter);
+        tickArrayKeys.push(pk);
+      } catch (e: any) {
+        // Log but continue
+      }
+    }
+    
+    // Add direction-specific tick arrays
+    if (orientation.direction === 'AtoB') {
+      // A→B: price increases, need upper tick arrays
+      const upperArrays = (hop as any).tickArrayUpperList || (hop.tickArrayUpper ? [hop.tickArrayUpper] : []);
+      for (const addr of upperArrays) {
         try {
           const pk = toPublicKey(addr);
           tickArrayKeys.push(pk);
@@ -4520,6 +4525,39 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
               ctx: { 
                 pool: hop.poolId, 
                 tickArray: pk.toBase58(),
+                direction: 'AtoB',
+                type: 'upper'
+              } as any 
+            }); 
+          } catch {}
+        } catch (e: any) {
+          try { 
+            logger.debug('raydium.clmm.tickarray.invalid_address', { 
+              cat: 'tx', 
+              ctx: { 
+                pool: hop.poolId, 
+                tickArray: String(addr),
+                error: String(e?.message || e) 
+              } as any 
+            }); 
+          } catch {}
+        }
+      }
+    } else if (orientation.direction === 'BtoA') {
+      // B→A: price decreases, need lower tick arrays
+      const lowerArrays = (hop as any).tickArrayLowerList || (hop.tickArrayLower ? [hop.tickArrayLower] : []);
+      for (const addr of lowerArrays) {
+        try {
+          const pk = toPublicKey(addr);
+          tickArrayKeys.push(pk);
+          try { 
+            logger.debug('raydium.clmm.tickarray.from_cache', { 
+              cat: 'tx', 
+              ctx: { 
+                pool: hop.poolId, 
+                tickArray: pk.toBase58(),
+                direction: 'BtoA',
+                type: 'lower'
               } as any 
             }); 
           } catch {}
@@ -4548,15 +4586,17 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
         code: LogCode.TX_BUILD_HOP,
         ctx: {
           pool: hop.poolId,
+          direction: orientation.direction,
           count: tickArrayKeys.length,
           center: hop.tickArrayCenter?.slice(0, 8) + '…',
-          lower: hop.tickArrayLower?.slice(0, 8) + '…',
-          upper: hop.tickArrayUpper?.slice(0, 8) + '…'
+          directionArrays: orientation.direction === 'AtoB' 
+            ? ((hop as any).tickArrayUpperList?.length || 0)
+            : ((hop as any).tickArrayLowerList?.length || 0),
         } as any
       });
     } catch {}
     
-    // Sort tick arrays: center first (most likely needed), then others
+    // Sort tick arrays: center first, then direction-specific arrays in order
     const centerPk = hop.tickArrayCenter ? toPublicKey(hop.tickArrayCenter) : null;
     if (centerPk && tickArrayKeys.find(pk => pk.equals(centerPk))) {
       const centerIdx = tickArrayKeys.findIndex(pk => pk.equals(centerPk));

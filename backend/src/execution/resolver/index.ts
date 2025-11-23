@@ -209,7 +209,38 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
         try {
           const startMint = hops[0].inputMint;
           const { getPriceByMint } = await import('../../server/priceStore.js');
-          const usdPx = Number((getPriceByMint(startMint)?.usdc) ?? 0); // USD per 1 token
+          let usdPx = Number((getPriceByMint(startMint)?.usdc) ?? 0); // USD per 1 token
+          
+          // Fallback to Jupiter token list if priceStore doesn't have it
+          if (usdPx === 0) {
+            try {
+              const { loadJupiterTokenMap } = await import('../../utils/tokens.js');
+              const jupiterMap = await loadJupiterTokenMap();
+              const jupiterToken = jupiterMap[startMint];
+              if (jupiterToken && typeof jupiterToken.usdPrice === 'number' && jupiterToken.usdPrice > 0) {
+                usdPx = jupiterToken.usdPrice;
+                try {
+                  const { logger } = await import('../../utils/logger.js');
+                  logger.debug('resolver.jupiter_price_fallback', {
+                    cat: 'tx',
+                    startMint,
+                    usdPx,
+                    source: 'jupiter_token_list',
+                  });
+                } catch {}
+              }
+            } catch (e: any) {
+              // Log Jupiter fallback failure but continue
+              try {
+                const { logger } = await import('../../utils/logger.js');
+                logger.debug('resolver.jupiter_fallback_failed', {
+                  cat: 'tx',
+                  error: String(e?.message || e),
+                });
+              } catch {}
+            }
+          }
+          
           if (usdPx > 0) {
             // atoms = (usdAmt * 10^decimals) / usdPx, with micro precision for stability
             const usdAmtMicro = BigInt(Math.round(Number(input.sizeUsd) * 1_000_000));
@@ -296,7 +327,39 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
           const startMint = hops[0].inputMint;
           const decimals = Number(hops[0].inputDecimals ?? 0);
           const { getPriceByMint } = await import('../../server/priceStore.js');
-          const usdPx = Number((getPriceByMint(startMint)?.usdc) ?? 0); // USD per 1 token
+          let usdPx = Number((getPriceByMint(startMint)?.usdc) ?? 0); // USD per 1 token
+          
+          // Fallback to Jupiter token list if priceStore doesn't have it
+          if (usdPx === 0) {
+            try {
+              const { loadJupiterTokenMap } = await import('../../utils/tokens.js');
+              const jupiterMap = await loadJupiterTokenMap();
+              const jupiterToken = jupiterMap[startMint];
+              if (jupiterToken && typeof jupiterToken.usdPrice === 'number' && jupiterToken.usdPrice > 0) {
+                usdPx = jupiterToken.usdPrice;
+                try {
+                  const { logger } = await import('../../utils/logger.js');
+                  logger.debug('resolver.fallback_jupiter_price', {
+                    cat: 'tx',
+                    startMint,
+                    defUsd,
+                    usdPx,
+                    source: 'jupiter_token_list',
+                  });
+                } catch {}
+              }
+            } catch (e: any) {
+              // Log Jupiter fallback failure but continue
+              try {
+                const { logger } = await import('../../utils/logger.js');
+                logger.debug('resolver.fallback_jupiter_failed', {
+                  cat: 'tx',
+                  error: String(e?.message || e),
+                });
+              } catch {}
+            }
+          }
+          
           if (usdPx > 0) {
             const usdAmtMicro = BigInt(Math.round(defUsd * 1_000_000));
             const usdPxMicro  = BigInt(Math.round(usdPx * 1_000_000));

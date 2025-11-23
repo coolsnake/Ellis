@@ -154,10 +154,11 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
         const tickArray2Str = tickArray2?.toBase58?.() || tickArray2;
         
         // Map to lower/center/upper structure expected by builder
-        const tickArrays: { lower?: string; center?: string; upper?: string } = {};
-        if (tickArray0Str) tickArrays.lower = String(tickArray0Str);
+        // Note: lower and upper are arrays per type definition, center is a string
+        const tickArrays: { lower?: string[]; center?: string; upper?: string[] } = {};
+        if (tickArray0Str) tickArrays.lower = [String(tickArray0Str)];
         if (tickArray1Str) tickArrays.center = String(tickArray1Str);
-        if (tickArray2Str) tickArrays.upper = String(tickArray2Str);
+        if (tickArray2Str) tickArrays.upper = [String(tickArray2Str)];
         
         // Only update cache if we have at least one tick array
         if (tickArrays.lower || tickArrays.center || tickArrays.upper) {
@@ -174,9 +175,9 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
               cat: 'tx',
               ctx: {
                 poolId: hop.poolId,
-                lower: tickArrays.lower?.slice(0, 8) + '…' || 'none',
+                lower: tickArrays.lower?.[0]?.slice(0, 8) + '…' || 'none',
                 center: tickArrays.center?.slice(0, 8) + '…' || 'none',
-                upper: tickArrays.upper?.slice(0, 8) + '…' || 'none',
+                upper: tickArrays.upper?.[0]?.slice(0, 8) + '…' || 'none',
               }
             });
           } catch {}
@@ -927,6 +928,87 @@ function quoteRaydiumClmmFromSnapshot(hop: DirectHop, amountInRaw: bigint, pools
   }
 
   const out = numerator / denominator;
+  
+  // Derive and cache tick arrays if quote succeeded and we have pool data
+  // This ensures tick arrays are available in execution cache for the builder
+  if (out > 0n) {
+    // Derive tick arrays asynchronously (don't block quote return)
+    (async () => {
+      try {
+        const tickCurrent = Number((pool as any)?.tick_current ?? (pool as any)?.tickCurrent);
+        const tickSpacing = Number((pool as any)?.tick_spacing ?? (pool as any)?.tickSpacing);
+        const programId = hop.programId || String((CONFIG as any)?.raydium?.clmmProgram || 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK');
+        
+        if (Number.isFinite(tickCurrent) && Number.isFinite(tickSpacing) && tickSpacing > 0) {
+          const { executionCache } = await import('../cache.js');
+          const { getTickArrayStartIndexByTick, deriveTickArrayPda } = await import('../../execution/raydiumTickArrays.js');
+          const { PublicKey } = await import('@solana/web3.js');
+          
+          const poolIdStripped = baseId;
+          const existing = executionCache.getHot(poolIdStripped);
+          
+          // Only derive if not already cached
+          if (!existing?.tickArrays?.lower || !existing?.tickArrays?.upper) {
+            try {
+              const programPk = new PublicKey(programId);
+              const poolPk = new PublicKey(poolIdStripped);
+              const centerStart = getTickArrayStartIndexByTick(tickCurrent, tickSpacing);
+              const delta = 60 * Math.max(1, tickSpacing);
+              
+              const [lowerPk, centerPk, upperPk] = await Promise.all([
+                deriveTickArrayPda(programPk, poolPk, centerStart - delta),
+                deriveTickArrayPda(programPk, poolPk, centerStart),
+                deriveTickArrayPda(programPk, poolPk, centerStart + delta),
+              ]);
+              
+              // Note: lower and upper are arrays per type definition, center is a string
+              const tickArrays: { lower?: string[]; center?: string; upper?: string[] } = {};
+              if (lowerPk) tickArrays.lower = [lowerPk.toBase58()];
+              if (centerPk) tickArrays.center = centerPk.toBase58();
+              if (upperPk) tickArrays.upper = [upperPk.toBase58()];
+              
+              if (tickArrays.lower || tickArrays.center || tickArrays.upper) {
+                executionCache.setHot(poolIdStripped, {
+                  ...existing,
+                  tickArrays: {
+                    ...existing?.tickArrays,
+                    ...tickArrays
+                  }
+                });
+                
+                try {
+                  const { logger } = await import('../../utils/logger.js');
+                  logger.info('raydium.clmm.quote.tickarrays.cached', {
+                    cat: 'tx',
+                    ctx: {
+                      poolId: hop.poolId,
+                      lower: tickArrays.lower?.[0]?.slice(0, 8) + '…' || 'none',
+                      center: tickArrays.center?.slice(0, 8) + '…' || 'none',
+                      upper: tickArrays.upper?.[0]?.slice(0, 8) + '…' || 'none',
+                    }
+                  });
+                } catch {}
+              }
+            } catch (err) {
+              // Log but don't fail if derivation fails
+              try {
+                const { logger } = await import('../../utils/logger.js');
+                logger.debug('raydium.clmm.quote.tickarrays.derive.failed', {
+                  cat: 'tx',
+                  ctx: {
+                    poolId: hop.poolId,
+                    error: String((err as any)?.message || err)
+                  }
+                });
+              } catch {}
+            }
+          }
+        }
+      } catch (err) {
+        // Silently fail - don't block quote
+      }
+    })();
+  }
   
   try {
     import('../../utils/logger.js').then(({ logger }) => {

@@ -67,10 +67,11 @@ type PoolHot = {
   liquidity?: bigint;
   feeRate?: number;  // Fee rate in basis points
   tickArrays?: { 
-    lower?: string; 
-    center?: string; 
-    upper?: string;
-    // OPTIMIZATION: Store actual tick array account data for direct use
+    center?: string;
+    // Arrays of tick arrays in each direction (for larger swaps)
+    lower?: string[];  // For B→A swaps (price going down)
+    upper?: string[];  // For A→B swaps (price going up)
+    // Legacy single values for backward compatibility
     lowerData?: Buffer;
     centerData?: Buffer;
     upperData?: Buffer;
