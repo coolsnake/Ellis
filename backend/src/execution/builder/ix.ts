@@ -953,7 +953,7 @@ async function buildOrcaSwapIxLocal(hop: DirectHop, kp: { publicKey: PublicKey; 
   
   // Discriminator (8 bytes) - computed dynamically from instruction name
   const swapDiscriminator = computeAnchorDiscriminator('swap');
-  swapDiscriminator.copy(dataBuffer, offset);
+  dataBuffer.set(swapDiscriminator, offset);
   offset += 8;
   
   // amount (u64) - input amount
