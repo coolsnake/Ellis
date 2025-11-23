@@ -2653,21 +2653,23 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
             activeBinId = new BN(String(hop.activeId));
           }
           
-          // Fetch pool state to get active bin if not in hop
-          if (!activeBinId) {
-            try {
-              const poolState = await program.account.lbPair.fetch(poolPk);
-              const stateActive = poolState?.activeId;
-              if (stateActive) {
-                if (stateActive instanceof BN) activeBinId = stateActive;
-                else if (typeof stateActive === 'object' && typeof stateActive.toString === 'function') {
-                  activeBinId = new BN(stateActive.toString());
-                } else if (typeof stateActive === 'number') {
-                  activeBinId = new BN(String(stateActive));
-                }
-              }
-            } catch {}
-          }
+          // ZERO-RPC: Do not fetch pool state - activeId must be in hop.activeId from cache
+          // If activeId is missing, we cannot proceed without RPC, so skip bin array derivation
+          // The remainingAccounts method will handle bin arrays automatically
+          // if (!activeBinId) {
+          //   try {
+          //     const poolState = await program.account.lbPair.fetch(poolPk);
+          //     const stateActive = poolState?.activeId;
+          //     if (stateActive) {
+          //       if (stateActive instanceof BN) activeBinId = stateActive;
+          //       else if (typeof stateActive === 'object' && typeof stateActive.toString === 'function') {
+          //         activeBinId = new BN(stateActive.toString());
+          //       } else if (typeof stateActive === 'number') {
+          //         activeBinId = new BN(String(stateActive));
+          //       }
+          //     }
+          //   } catch {}
+          // }
           
           if (activeBinId) {
             try {
@@ -2682,23 +2684,25 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                     const pk = Array.isArray(derived) ? derived[0] : derived;
                     const finalPk = pk instanceof PublicKey ? pk : new PublicKey(String(pk));
         
-                    // Verify account exists on-chain before including it
-          try {
-                      const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
-                      const accInfo = await withRpcLimit(
-                        () => connection.getAccountInfo(finalPk),
-                        1,
-                        { module: 'execution', method: 'getAccountInfo' }
-                      );
-                      if (accInfo && accInfo.data && accInfo.data.length > 0) {
-                        // Account exists, safe to include
-                        if (!binArrayLower) binArrayLower = finalPk;
-                        if (!binArrayUpper && !finalPk.equals(binArrayLower)) binArrayUpper = finalPk;
-                        if (binArrayLower && binArrayUpper) break;
-                      }
-                    } catch {
-                      // Account doesn't exist or error fetching - skip it
-            }
+                    // ZERO-RPC: Do not validate via RPC - use cache validation instead
+                    // The remainingAccounts method will validate bin arrays via isMeteoraBinArraySubscribed()
+                    // which checks the local cache (zero RPC calls)
+                    // try {
+                    //   const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
+                    //   const accInfo = await withRpcLimit(
+                    //     () => connection.getAccountInfo(finalPk),
+                    //     1,
+                    //     { module: 'execution', method: 'getAccountInfo' }
+                    //   );
+                    //   if (accInfo && accInfo.data && accInfo.data.length > 0) {
+                    //     // Account exists, safe to include
+                    //     if (!binArrayLower) binArrayLower = finalPk;
+                    //     if (!binArrayUpper && !finalPk.equals(binArrayLower)) binArrayUpper = finalPk;
+                    //     if (binArrayLower && binArrayUpper) break;
+                    //   }
+                    // } catch {
+                    //   // Account doesn't exist or error fetching - skip it
+                    // }
           } catch {}
                 }
               }
@@ -2932,8 +2936,12 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       } catch {}
       }
       
-      if (binArrayLower) accounts.binArrayLower = binArrayLower;
-      if (binArrayUpper) accounts.binArrayUpper = binArrayUpper;
+      // NOTE: Do NOT set binArrayLower/binArrayUpper in accounts object
+      // These may be stale from cache and cause error 3007 (AccountOwnedByWrongProgram)
+      // The SDK's remainingAccounts method (called later) will automatically determine
+      // the correct bin arrays based on the swap path and validate them via cache
+      // if (binArrayLower) accounts.binArrayLower = binArrayLower;
+      // if (binArrayUpper) accounts.binArrayUpper = binArrayUpper;
       
       // Use cached bitmap extension from pool data (checked during pool normalization)
       // Some pools require an actual bitmap extension PDA, others can use program ID
@@ -3759,52 +3767,65 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
           const bnjs = await import('bn.js').catch(() => null as any);
           const BN = (bnjs && (bnjs as any).default) ? (bnjs as any).default : (bnjs as any);
           if (BN) {
-            // Get active bin ID and convert to bin array index
+            // Get active bin ID from cache (zero RPC - must be in hop.activeId)
+            // If activeId is missing, we cannot proceed without RPC, so skip bin array calculation
             let activeBinId: any = null;
             if (typeof hop.activeId === 'number') {
               activeBinId = new BN(String(hop.activeId));
-            } else {
-              try {
-                const poolState = await program.account.lbPair.fetch(poolPk);
-                const stateActive = poolState?.activeId;
-                if (stateActive) {
-                  if (stateActive instanceof BN) activeBinId = stateActive;
-                  else if (typeof stateActive === 'object' && typeof stateActive.toString === 'function') {
-                    activeBinId = new BN(stateActive.toString());
-                  } else if (typeof stateActive === 'number') {
-                    activeBinId = new BN(String(stateActive));
-                  }
-                }
-              } catch {}
             }
             
             if (activeBinId) {
               try {
-                // ENHANCED: Calculate required bin arrays dynamically based on swap size and direction
-                // This replaces the old fixed expansion factor approach with intelligent estimation
-                const binRangeCalc = await calculateRequiredBinArrays(
-                  DLMM,
-                  program,
-                  poolPk,
-                  programId,
-                  activeBinId,
-                  hop,
-                  acctBase,
-                  binIdToBinArrayIndex,
-                  getBinArrayLowerUpperBinId
-                );
+                // ZERO-RPC PATH: Use deterministic calculation instead of fetching pool state
+                // We already have activeBinId from cache, so we can calculate bin range directly
+                const activeBinIdx = binIdToBinArrayIndex(activeBinId);
+                const [currentLower, currentUpper] = getBinArrayLowerUpperBinId(activeBinIdx);
                 
-                const rangeLower = binRangeCalc.lowerBinId;
-                const rangeUpper = binRangeCalc.upperBinId;
+                // Determine swap direction from hop data (no RPC needed)
+                const inputMintPk = toPublicKey(hop.inputMint);
+                const outputMintPk = toPublicKey(hop.outputMint);
+                const tokenXMintPk = acctBase.tokenXMint instanceof PublicKey ? acctBase.tokenXMint : toPublicKey(acctBase.tokenXMint);
+                const tokenYMintPk = acctBase.tokenYMint instanceof PublicKey ? acctBase.tokenYMint : toPublicKey(acctBase.tokenYMint);
+                const isXToY = inputMintPk.equals(tokenXMintPk) && outputMintPk.equals(tokenYMintPk);
+                const isYToX = inputMintPk.equals(tokenYMintPk) && outputMintPk.equals(tokenXMintPk);
+                
+                // Use fixed expansion factor (conservative, no RPC needed)
+                const binArraySize = (DLMM as any)?.MAX_BIN_ARRAY_SIZE ?? new BN(70);
+                const fixedExpansion = new BN(3); // Conservative default
+                
+                let rangeLower: any;
+                let rangeUpper: any;
+                let binArrayCount: number;
+                let direction: 'up' | 'down' | 'both';
+                
+                if (isXToY) {
+                  // X->Y: Price moves DOWN, expand LOWER range
+                  rangeLower = currentLower.sub(binArraySize.mul(fixedExpansion));
+                  rangeUpper = currentUpper.add(binArraySize);
+                  binArrayCount = fixedExpansion.toNumber() + 1;
+                  direction = 'down';
+                } else if (isYToX) {
+                  // Y->X: Price moves UP, expand UPPER range
+                  rangeLower = currentLower.sub(binArraySize);
+                  rangeUpper = currentUpper.add(binArraySize.mul(fixedExpansion));
+                  binArrayCount = fixedExpansion.toNumber() + 1;
+                  direction = 'up';
+                } else {
+                  // Unknown direction: expand both (conservative)
+                  rangeLower = currentLower.sub(binArraySize.mul(new BN(2)));
+                  rangeUpper = currentUpper.add(binArraySize.mul(new BN(2)));
+                  binArrayCount = 5;
+                  direction = 'both';
+                }
                 
                 try {
                   logger.info('meteora.dlmm.bin_range.calculated', {
                     cat: 'tx',
                     ctx: {
                       poolId: hop.poolId,
-                      binsTraversed: binRangeCalc.binsTraversed,
-                      binArrayCount: binRangeCalc.count,
-                      direction: binRangeCalc.direction,
+                      binsTraversed: binArrayCount * 70, // Approximate (70 bins per array)
+                      binArrayCount,
+                      direction,
                       swapAmount: hop.amountInRaw.toString(),
                       range: `${rangeLower.toString()}..${rangeUpper.toString()}`
                     }
@@ -3851,7 +3872,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 // Use the calculated bin array count as our limit
                 // We calculated exactly how many we need, so only include that many
                 // Add a small buffer (+2) for edge cases where price moves slightly
-                const calculatedLimit = Math.min(binRangeCalc.count + 2, validatedMetas.length);
+                const calculatedLimit = Math.min(binArrayCount + 2, validatedMetas.length);
                 const limitedMetas = validatedMetas.slice(0, calculatedLimit);
                 
                 if (limitedMetas.length) {
@@ -3863,7 +3884,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                         count: limitedMetas.length, 
                         total: metas.length, 
                         validated: validatedMetas.length,
-                        calculatedNeeded: binRangeCalc.count,
+                        calculatedNeeded: binArrayCount,
                         usedLimit: calculatedLimit,
                         range: `${rangeLower.toString()}..${rangeUpper.toString()}` 
                       } 
@@ -3877,7 +3898,7 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                         poolId: hop.poolId,
                         totalMetas: metas.length,
                         validatedMetas: validatedMetas.length,
-                        calculatedNeeded: binRangeCalc.count
+                        calculatedNeeded: binArrayCount
                       }
                     });
                   } catch {}
