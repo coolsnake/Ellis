@@ -1,6 +1,7 @@
 import type { DirectHop } from '../../execution/types.js';
 import { executionCache } from '../cache.js';
 import { peekRaydiumPools } from '../../server/pools.js';
+import { determineSwapOrientation } from '../../server/pools/orientation.js';
 
 export async function resolveRaydiumAmm(hop: DirectHop): Promise<DirectHop> {
   const stat = executionCache.getStatic(hop.poolId);
@@ -10,8 +11,30 @@ export async function resolveRaydiumAmm(hop: DirectHop): Promise<DirectHop> {
     const id = hop.poolId.replace(/[#-]rev$/, '');
     const p = (pools.amm || []).find((x: any) => String(x?.id || '') === id);
     if (p) {
-      hop.vaultA = String((p as any)?.account_a || '');
-      hop.vaultB = String((p as any)?.account_b || '');
+      // Determine swap orientation to correctly map decimals
+      const orientation = determineSwapOrientation(
+        {
+          mint_a: (p as any).mint_a,
+          mint_b: (p as any).mint_b,
+          account_a: (p as any).account_a,
+          account_b: (p as any).account_b,
+          decimals_a: (p as any).decimals_a,
+          decimals_b: (p as any).decimals_b,
+        },
+        {
+          inputMint: hop.inputMint,
+          outputMint: hop.outputMint,
+          userSourceAta: hop.userSourceAta,
+          userDestAta: hop.userDestAta,
+          inputDecimals: hop.inputDecimals,
+          outputDecimals: hop.outputDecimals,
+        }
+      );
+      
+      // Populate vault addresses based on swap direction
+      hop.vaultA = orientation.poolVaultInput || String((p as any)?.account_a || '');
+      hop.vaultB = orientation.poolVaultOutput || String((p as any)?.account_b || '');
+      
       // For Raydium AMM v4, use hardcoded authority (not stored in pool data)
       const programId = hop.programId || stat?.programId || '';
       if (programId === '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8') {
@@ -23,9 +46,14 @@ export async function resolveRaydiumAmm(hop: DirectHop): Promise<DirectHop> {
       // Populate market / serum program if available from normalized payload
       hop.market = String((p as any)?.market || (p as any)?.market_id || '');
       hop.serumProgramId = String((p as any)?.market_program_id || (p as any)?.marketProgramId || '');
-      // Decimals (prefer token meta, but keep as fallback if provided)
-      if (!Number.isFinite(Number(hop.inputDecimals)) && Number.isFinite((p as any)?.decimals_a)) hop.inputDecimals = Number((p as any)?.decimals_a);
-      if (!Number.isFinite(Number(hop.outputDecimals)) && Number.isFinite((p as any)?.decimals_b)) hop.outputDecimals = Number((p as any)?.decimals_b);
+      
+      // Decimals (prefer token meta, but use orientation-aware mapping if needed)
+      if (!Number.isFinite(Number(hop.inputDecimals))) {
+        hop.inputDecimals = orientation.decimalsInput;
+      }
+      if (!Number.isFinite(Number(hop.outputDecimals))) {
+        hop.outputDecimals = orientation.decimalsOutput;
+      }
     }
   } catch {}
   return hop;
