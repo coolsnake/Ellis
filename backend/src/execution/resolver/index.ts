@@ -223,7 +223,20 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
     // If still zero and a defaultQuoteSizeUsd is configured, convert USD→atoms using start mint
     if (curIn === 0n && hops.length > 0) {
       try {
-        const defUsd = Number(((CONFIG.system as any)?.defaultQuoteSizeUsd) || 0);
+        // First check CONFIG.system.defaultQuoteSizeUsd (from env var)
+        let defUsd = Number(((CONFIG.system as any)?.defaultQuoteSizeUsd) || 0);
+        
+        // If not set, try to load from executor config file as fallback
+        if (defUsd === 0) {
+          try {
+            const { readJson } = await import('../../utils/fs.js');
+            const executorConfig = await readJson('backend/config/arbExecutor.json', {}) as any;
+            if (typeof executorConfig?.sizeUsd === 'number' && executorConfig.sizeUsd > 0) {
+              defUsd = executorConfig.sizeUsd;
+            }
+          } catch {}
+        }
+        
         if (defUsd > 0) {
           const startMint = hops[0].inputMint;
           const decimals = Number(hops[0].inputDecimals ?? 0);
