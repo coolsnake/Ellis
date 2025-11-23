@@ -459,6 +459,11 @@ async function fetchRaydiumClmmPoolsForToken(opts: {
   let page = 0;
 
   while (page < opts.maxPages) {
+    // Add delay BEFORE each request (except the first page)
+    if (opts.pageDelayMs > 0 && page > 0) {
+      await new Promise(r => setTimeout(r, opts.pageDelayMs));
+    }
+    
     const data = await executeShyftGraphQL<{ RAYDIUM_CLMM_PoolState: any[] }>({
       dex: 'raydium-clmm',
       query: `
@@ -516,10 +521,6 @@ async function fetchRaydiumClmmPoolsForToken(opts: {
 
     offset += opts.pageSize;
     page++;
-    
-    if (page < opts.maxPages && opts.pageDelayMs > 0) {
-      await new Promise(r => setTimeout(r, opts.pageDelayMs));
-    }
   }
   
   return allPools;
@@ -534,6 +535,11 @@ async function fetchRaydiumClmmPoolsByAddress(
 
   const chunks = chunkArray(poolIds, Math.max(1, opts.batchSize));
   for (let i = 0; i < chunks.length; i++) {
+    // Add delay BEFORE each request (except the first batch)
+    if (opts.delayMs > 0 && i > 0) {
+      await new Promise(r => setTimeout(r, opts.delayMs));
+    }
+    
     const chunk = chunks[i];
     try {
       const data = await executeShyftGraphQL<{ RAYDIUM_CLMM_PoolState: any[] }>({
@@ -590,10 +596,6 @@ async function fetchRaydiumClmmPoolsByAddress(
         cat: 'raydium-clmm',
       });
     }
-
-    if (opts.delayMs > 0 && i < chunks.length - 1) {
-      await new Promise(r => setTimeout(r, opts.delayMs));
-    }
   }
 
   return result;
@@ -612,6 +614,11 @@ export async function fetchRaydiumClmmGraphQL(mints: string[]): Promise<any[]> {
   const poolsMap = new Map<string, any>();
 
   for (let idx = 0; idx < mints.length; idx++) {
+    // Add delay BEFORE processing each mint (except the first one)
+    if (pageDelayMs > 0 && idx > 0) {
+      await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+    }
+    
     const mint = mints[idx];
     try {
       const pools = await fetchRaydiumClmmPoolsForToken({
@@ -638,9 +645,6 @@ export async function fetchRaydiumClmmGraphQL(mints: string[]): Promise<any[]> {
         error: String(e?.message || e),
         cat: 'raydium-clmm',
       });
-    }
-    if (pageDelayMs > 0 && idx < mints.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, pageDelayMs));
     }
   }
 

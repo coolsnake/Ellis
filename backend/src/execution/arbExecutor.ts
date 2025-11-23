@@ -603,6 +603,17 @@ export class ArbExecutor {
       let execCfg: any;
       
       try {
+        // Log what we're passing to the resolver
+        logger.debug('arb.executor.resolving_plan', {
+          cat: 'arb',
+          path: executionPath.join('->'),
+          sizeUsd: this.config.sizeUsd,
+          slippageBps: this.config.slippageBps,
+          configSizeUsd: this.config.sizeUsd,
+          configSizeUsdType: typeof this.config.sizeUsd,
+          configSizeUsdFinite: Number.isFinite(this.config.sizeUsd),
+        });
+        
         // Resolve execution plan
         plan = await resolveDirectPlan(
           {

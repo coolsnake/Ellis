@@ -134,6 +134,66 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
       
       const out = BigInt((quote as any)?.otherAmount ?? (quote as any)?.estimatedAmountOut ?? 0);
       
+      // Extract and cache tick arrays from quote result
+      // This ensures tick arrays are available in execution cache for the builder
+      try {
+        const { executionCache } = await import('../cache.js');
+        const poolIdStripped = hop.poolId.replace(/[#-]rev$/, '');
+        const existing = executionCache.getHot(poolIdStripped);
+        
+        // Extract tick array addresses from quote
+        // The Orca SDK quote provides tickArray0, tickArray1, tickArray2
+        // These correspond to lower, center, and upper tick arrays
+        const tickArray0 = (quote as any)?.tickArray0;
+        const tickArray1 = (quote as any)?.tickArray1;
+        const tickArray2 = (quote as any)?.tickArray2;
+        
+        // Convert PublicKey objects to base58 strings if needed
+        const tickArray0Str = tickArray0?.toBase58?.() || tickArray0;
+        const tickArray1Str = tickArray1?.toBase58?.() || tickArray1;
+        const tickArray2Str = tickArray2?.toBase58?.() || tickArray2;
+        
+        // Map to lower/center/upper structure expected by builder
+        const tickArrays: { lower?: string; center?: string; upper?: string } = {};
+        if (tickArray0Str) tickArrays.lower = String(tickArray0Str);
+        if (tickArray1Str) tickArrays.center = String(tickArray1Str);
+        if (tickArray2Str) tickArrays.upper = String(tickArray2Str);
+        
+        // Only update cache if we have at least one tick array
+        if (tickArrays.lower || tickArrays.center || tickArrays.upper) {
+          executionCache.setHot(poolIdStripped, {
+            ...existing,
+            tickArrays: {
+              ...existing?.tickArrays,
+              ...tickArrays
+            }
+          });
+          
+          try {
+            logger.info('tx.resolve.quote.orca.tickarrays.cached', {
+              cat: 'tx',
+              ctx: {
+                poolId: hop.poolId,
+                lower: tickArrays.lower?.slice(0, 8) + '…' || 'none',
+                center: tickArrays.center?.slice(0, 8) + '…' || 'none',
+                upper: tickArrays.upper?.slice(0, 8) + '…' || 'none',
+              }
+            });
+          } catch {}
+        }
+      } catch (err) {
+        // Log but don't fail if caching fails - builder will fallback to RPC if needed
+        try {
+          logger.debug('tx.resolve.quote.orca.tickarrays.cache.failed', {
+            cat: 'tx',
+            ctx: {
+              poolId: hop.poolId,
+              error: String((err as any)?.message || err)
+            }
+          });
+        } catch {}
+      }
+      
       try {
         logger.info('tx.resolve.quote.orca.final', {
           cat: 'tx',

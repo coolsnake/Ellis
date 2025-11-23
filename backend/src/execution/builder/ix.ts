@@ -3833,16 +3833,76 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 } catch {}
                 
                 // Derive bin arrays using bin array indexes directly (matching working code in meteora.ts)
-                // Use SDK's deriveBinArray function directly - this is the proven method
-                // deriveBinArray is already available from outer scope
+                // First check cache for pre-computed bin arrays, then derive if needed
                 const metas: any[] = [];
+                const activeBinArrayIdxNum = arrIdx.toNumber();
+                const startIdx = lowerArrayIdx.toNumber();
+                const endIdx = upperArrayIdx.toNumber();
                 
-                if (deriveBinArray) {
+                // Check cache for pre-computed bin arrays (from populateMeteoraActiveIds)
+                let cacheHit = false;
+                if (hop.poolId) {
+                  try {
+                    const { executionCache } = await import('../cache.js');
+                    const cacheKey = hop.poolId.replace(/[#-]rev$/, '');
+                    const hot = executionCache.getHot(cacheKey);
+                    
+                    const binArrays = hot?.binArrays as any;
+                    if (binArrays?.arrays && Array.isArray(binArrays.arrays)) {
+                      // Filter cached arrays to the range we need
+                      const cachedArrays = binArrays.arrays.filter((arr: any) => {
+                        const idx = arr?.index ?? arr?.binArrayIndex;
+                        return idx >= startIdx && idx <= endIdx && idx >= 0; // Skip negative
+                      });
+                      
+                      if (cachedArrays.length > 0) {
+                        // Convert cached arrays to metas
+                        for (const arr of cachedArrays) {
+                          try {
+                            const address = arr?.address || arr?.pubkey;
+                            if (address) {
+                              const pk = address instanceof PublicKey ? address : new PublicKey(address);
+                              metas.push({
+                                pubkey: pk,
+                                isWritable: true,
+                                isSigner: false,
+                                binArrayIndex: arr?.index
+                              });
+                            }
+                          } catch (e: any) {
+                            try { logger.debug('meteora.dlmm.cached_array.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
+                          }
+                        }
+                        
+                        cacheHit = true;
+                        try {
+                          logger.info('meteora.dlmm.bin_arrays.from_cache', {
+                            cat: 'tx',
+                            ctx: {
+                              poolId: hop.poolId,
+                              cachedCount: cachedArrays.length,
+                              neededCount: binArrayCount,
+                              range: `${startIdx}..${endIdx}`
+                            }
+                          });
+                        } catch {}
+                      }
+                    }
+                  } catch (cacheErr) {
+                    try { logger.debug('meteora.dlmm.cache_lookup.failed', { cat: 'tx', ctx: { error: String((cacheErr as any)?.message || cacheErr) } }); } catch {}
+                  }
+                }
+                
+                // If cache miss or insufficient, derive bin arrays
+                if (!cacheHit && deriveBinArray) {
                   // Generate all bin array indexes in range
-                  const startIdx = lowerArrayIdx.toNumber();
-                  const endIdx = upperArrayIdx.toNumber();
-                  
                   for (let i = startIdx; i <= endIdx; i++) {
+                    // Skip negative indexes - they don't exist
+                    if (i < 0) continue;
+                    
+                    // Skip if already in metas from cache
+                    if (metas.some(m => m?.binArrayIndex === i)) continue;
+                    
                     try {
                       const binArrayPda = deriveBinArray(poolPk, new BN(i), programId);
                       let binArrayPk: PublicKey;
@@ -3858,7 +3918,8 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                       metas.push({
                         pubkey: binArrayPk,
                         isWritable: true,
-                        isSigner: false
+                        isSigner: false,
+                        binArrayIndex: i // Store index for prioritization
                       });
                     } catch (e: any) {
                       // Skip invalid derivations
@@ -3868,7 +3929,10 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 }
                 
                 // Validate bin arrays using local cache (zero RPC calls)
+                // Always include the active bin array even if not cached (it's required for swaps)
                 const validatedMetas: any[] = [];
+                const uncachedMetas: any[] = [];
+                
                 if (Array.isArray(metas) && metas.length > 0) {
                   try {
                     // Import the validation function
@@ -3879,27 +3943,86 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                         const pk = meta?.pubkey || meta?.publicKey || meta?.address;
                         const accountAddress = pk instanceof PublicKey ? pk.toBase58() : 
                                              (typeof pk?.toBase58 === 'function' ? pk.toBase58() : String(pk));
+                        const binArrayIndex = meta?.binArrayIndex;
+                        const isActiveBinArray = binArrayIndex === activeBinArrayIdxNum;
                         
-                        // Check if this bin array is in our local cache (means it exists and we're subscribed)
-                        if (accountAddress && isMeteoraBinArraySubscribed(accountAddress)) {
-                          validatedMetas.push(meta);
-                        } else {
-                          // Not in cache - might not exist, skip it to avoid error 3007
-                          try { 
-                            logger.debug('meteora.dlmm.bin_array.not_in_cache', { 
-                              cat: 'tx', 
-                              ctx: { account: accountAddress?.slice(0, 8) + '...' } 
-                            }); 
-                          } catch {}
+                        if (accountAddress) {
+                          // Check if this bin array is in our local cache (means it exists and we're subscribed)
+                          if (isMeteoraBinArraySubscribed(accountAddress)) {
+                            validatedMetas.push(meta);
+                          } else {
+                            // Not in cache - but always include active bin array (required for swap)
+                            if (isActiveBinArray) {
+                              validatedMetas.push(meta);
+                              try { 
+                                logger.debug('meteora.dlmm.bin_array.active_included', { 
+                                  cat: 'tx', 
+                                  ctx: { account: accountAddress?.slice(0, 8) + '...', index: binArrayIndex } 
+                                }); 
+                              } catch {}
+                            } else {
+                              // Store uncached metas for fallback
+                              uncachedMetas.push(meta);
+                              try { 
+                                logger.debug('meteora.dlmm.bin_array.not_in_cache', { 
+                                  cat: 'tx', 
+                                  ctx: { account: accountAddress?.slice(0, 8) + '...', index: binArrayIndex } 
+                                }); 
+                              } catch {}
+                            }
+                          }
                         }
                       } catch (e: any) {
                         // Skip invalid meta entries
                         try { logger.debug('meteora.dlmm.validate_meta.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
                       }
                     }
+                    
+                    // If we have validated metas (cached or active), add some uncached ones if needed
+                    // This ensures we have enough bin arrays for the swap
+                    if (validatedMetas.length > 0 && uncachedMetas.length > 0) {
+                      // Add uncached metas up to the calculated limit
+                      const remainingNeeded = Math.max(0, binArrayCount - validatedMetas.length);
+                      const uncachedToAdd = uncachedMetas.slice(0, remainingNeeded);
+                      validatedMetas.push(...uncachedToAdd);
+                      try {
+                        logger.debug('meteora.dlmm.bin_array.uncached_added', {
+                          cat: 'tx',
+                          ctx: {
+                            cached: validatedMetas.length - uncachedToAdd.length,
+                            uncached: uncachedToAdd.length,
+                            total: validatedMetas.length
+                          }
+                        });
+                      } catch {}
+                    } else if (validatedMetas.length === 0) {
+                      // No validated metas at all - add active bin array and adjacent ones as fallback
+                      // This ensures the transaction has at least the required bin arrays
+                      const activeMeta = metas.find((m: any) => m?.binArrayIndex === activeBinArrayIdxNum);
+                      if (activeMeta) {
+                        validatedMetas.push(activeMeta);
+                        // Also add adjacent bin arrays if available
+                        const adjacentToAdd = uncachedMetas.slice(0, Math.min(2, uncachedMetas.length));
+                        validatedMetas.push(...adjacentToAdd);
+                        try {
+                          logger.warn('meteora.dlmm.bin_array.no_cache_fallback', {
+                            cat: 'tx',
+                            ctx: {
+                              activeIndex: activeBinArrayIdxNum,
+                              totalAdded: validatedMetas.length,
+                              note: 'No cached bin arrays found, using active + adjacent as fallback'
+                            }
+                          });
+                        } catch {}
+                      }
+                    }
                   } catch (e: any) {
                     try { logger.debug('meteora.dlmm.validate_metas.failed', { cat: 'tx', ctx: { error: String(e?.message || e) } }); } catch {}
-                    // If validation fails, don't use any metas to be safe
+                    // If validation fails, still include active bin array as fallback
+                    const activeMeta = metas.find((m: any) => m?.binArrayIndex === activeBinArrayIdxNum);
+                    if (activeMeta) {
+                      validatedMetas.push(activeMeta);
+                    }
                   }
                 }
                 
@@ -4081,7 +4204,10 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
     if (!hop.tickArrayLower) missingRequired.push('tickArrayLower');
     if (!hop.tickArrayUpper) missingRequired.push('tickArrayUpper');
     if (!hop.oracle) missingOptional.push('oracle');
-    if (missingRequired.length || missingOptional.length) {
+    
+    // Only fail if required fields are missing
+    // Optional fields (like oracle) are handled gracefully later
+    if (missingRequired.length) {
       if (!allowBuilderRpcFallback) {
         requireRpcFallbackAllowed(
           'RAYDIUM_CLMM',
@@ -4124,9 +4250,11 @@ export async function buildRaydiumClmmSwapIxReal(hop: DirectHop): Promise<any[]>
       if (!hop.tickArrayLower) stillMissingRequired.push('tickArrayLower');
       if (!hop.tickArrayUpper) stillMissingRequired.push('tickArrayUpper');
       if (stillMissingRequired.length) throw new Error(`RAYDIUM_CLMM_BUILD_FAILED: CACHE_MISS_AFTER_REFRESH: missing ${stillMissingRequired.join(',')}`);
-      if (!hop.oracle) {
-        try { logger.warn('raydium.clmm.oracle.missing', { cat: 'tx', ctx: { pool: hop.poolId } as any }); } catch {}
-      }
+    }
+    
+    // Log warning for missing optional fields, but don't fail
+    if (missingOptional.length && !hop.oracle) {
+      try { logger.warn('raydium.clmm.oracle.missing', { cat: 'tx', ctx: { pool: hop.poolId } as any }); } catch {}
     }
     try {
       logger.info('raydium.clmm.accounts', { cat: 'tx', ctx: {

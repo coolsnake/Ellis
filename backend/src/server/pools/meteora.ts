@@ -471,7 +471,7 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
                 }
                 
                 // Derive bin array addresses
-                const binArrayAddresses = deriveBinArrays(
+                const binArrayAddresses = await deriveBinArrays(
                   new PublicKey(pool.id),
                   activeId,
                   programId,
@@ -486,13 +486,16 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
                 cached++;
                 
                 try {
+                  const arrayCount = binArrayAddresses?.arrays?.length || 
+                                   (binArrayAddresses ? Object.keys(binArrayAddresses).filter(k => binArrayAddresses[k as keyof typeof binArrayAddresses] && k !== 'arrays' && k !== 'range').length : 0);
                   logger.debug('meteora.activeId.cached', {
                     cat: 'meteora',
                     ctx: {
                       pool: pool.id.slice(0, 8) + '...',
                       activeId: activeId,
                       method: 'anchor_decode',
-                      binArrayCount: binArrayAddresses ? Object.keys(binArrayAddresses).filter(k => binArrayAddresses[k as keyof typeof binArrayAddresses]).length : 0
+                      binArrayCount: arrayCount,
+                      cachedRange: binArrayAddresses?.range ? `${binArrayAddresses.range.lower}..${binArrayAddresses.range.upper}` : 'legacy'
                     }
                   });
                 } catch {}
@@ -557,13 +560,20 @@ export async function populateMeteoraActiveIds(pools: ClmmPool[]): Promise<void>
 /**
  * Derive bin array addresses from active bin ID
  * This is deterministic and requires no RPC calls
+ * Returns a range of bin arrays around the active bin for better cache coverage
  */
-function deriveBinArrays(
+async function deriveBinArrays(
   poolPk: any,
   activeId: number,
   programId: any,
   DLMM: any
-): { lower?: string; upper?: string } | undefined {
+): Promise<{ 
+  lower?: string;
+  upper?: string;
+  active?: string;
+  arrays?: Array<{ index: number; address: string }>;
+  range?: { lower: number; upper: number };
+} | undefined> {
   try {
     // Get BN from DLMM SDK or globalThis (ES modules don't support require())
     const BN: any = (DLMM as any).BN || (globalThis as any).BN;
@@ -594,34 +604,77 @@ function deriveBinArrays(
     const activeBn = new BN(activeId);
     const idx = binIdToBinArrayIndex(activeBn);
     const arrIdx = idx instanceof BN ? idx : new BN(String(idx));
+    const activeBinArrayIdx = arrIdx.toNumber();
     
-    // Get current and adjacent bin array indexes
-    // Most swaps need the active bin array and potentially one on either side
-    const currentIdx = arrIdx;
-    const lowerIdx = arrIdx.sub(new BN(1));
-    const upperIdx = arrIdx.add(new BN(1));
+    // Derive a range of bin arrays around the active bin
+    // This ensures we have enough cached for most swaps (conservative range: ±5)
+    const CACHE_RANGE = 5; // Cache 5 bin arrays on each side of active (11 total)
+    const arrays: Array<{ index: number; address: string }> = [];
     
-    // Derive PDA addresses for bin arrays
-    const result: { lower?: string; upper?: string } = {};
+    const startIdx = Math.max(0, activeBinArrayIdx - CACHE_RANGE); // Don't go negative
+    const endIdx = activeBinArrayIdx + CACHE_RANGE;
     
-    try {
-      const lowerArray = deriveBinArray(poolPk, lowerIdx, programId);
-      const lowerPk = Array.isArray(lowerArray) ? lowerArray[0] : lowerArray;
-      result.lower = typeof lowerPk?.toBase58 === 'function' ? lowerPk.toBase58() : String(lowerPk);
-    } catch {}
+    let activeAddress: string | undefined;
+    let lowerAddress: string | undefined;
+    let upperAddress: string | undefined;
     
-    try {
-      const upperArray = deriveBinArray(poolPk, upperIdx, programId);
-      const upperPk = Array.isArray(upperArray) ? upperArray[0] : upperArray;
-      result.upper = typeof upperPk?.toBase58 === 'function' ? upperPk.toBase58() : String(upperPk);
-    } catch {}
+    for (let i = startIdx; i <= endIdx; i++) {
+      try {
+        const binArrayPda = deriveBinArray(poolPk, new BN(i), programId);
+        let binArrayPk: any;
+        
+        // Handle different return types from deriveBinArray
+        let binArrayPk: any;
+        if (Array.isArray(binArrayPda)) {
+          binArrayPk = binArrayPda[0];
+        } else {
+          binArrayPk = binArrayPda;
+        }
+        
+        // Ensure we have a PublicKey-like object with toBase58 method
+        // deriveBinArray should return PublicKey, but handle edge cases
+        if (!binArrayPk || typeof binArrayPk?.toBase58 !== 'function') {
+          // If it's a string, convert to PublicKey
+          const { PublicKey } = await import('@solana/web3.js');
+          binArrayPk = new PublicKey(String(binArrayPk));
+        }
+        
+        const address = typeof binArrayPk?.toBase58 === 'function' ? binArrayPk.toBase58() : String(binArrayPk);
+        arrays.push({ index: i, address });
+        
+        // Track active, lower, and upper for backward compatibility
+        if (i === activeBinArrayIdx) {
+          activeAddress = address;
+        }
+        if (i === activeBinArrayIdx - 1) {
+          lowerAddress = address;
+        }
+        if (i === activeBinArrayIdx + 1) {
+          upperAddress = address;
+        }
+      } catch (e: any) {
+        // Skip invalid derivations
+        try { 
+          logger.debug('meteora.deriveBinArrays.skip_index', { 
+            cat: 'meteora', 
+            ctx: { index: i, error: String(e?.message || e) } 
+          }); 
+        } catch {}
+      }
+    }
     
-    // Return undefined if we couldn't derive any addresses
-    if (!result.lower && !result.upper) {
+    if (arrays.length === 0) {
       return undefined;
     }
     
-    return result;
+    // Return both new format (arrays) and backward-compatible format (lower/upper)
+    return {
+      lower: lowerAddress,
+      upper: upperAddress,
+      active: activeAddress,
+      arrays,
+      range: { lower: startIdx, upper: endIdx }
+    };
   } catch (err) {
     try {
       const poolStr = typeof poolPk?.toBase58 === 'function' ? poolPk.toBase58().slice(0, 8) + '...' : String(poolPk).slice(0, 8) + '...';

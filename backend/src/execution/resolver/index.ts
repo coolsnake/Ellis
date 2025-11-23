@@ -216,8 +216,29 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
             const usdPxMicro  = BigInt(Math.round(usdPx * 1_000_000));
             const scale       = (10n ** BigInt(Math.max(0, Math.min(12, decimals))));
             curIn = (usdAmtMicro * scale) / usdPxMicro;
+          } else {
+            // Price lookup failed - log for debugging
+            try {
+              const { logger } = await import('../../utils/logger.js');
+              logger.debug('resolver.price_lookup_failed', {
+                cat: 'tx',
+                startMint,
+                sizeUsd: input.sizeUsd,
+                usdPx,
+              });
+            } catch {}
           }
-        } catch {}
+        } catch (e: any) {
+          // Log the error instead of silently catching
+          try {
+            const { logger } = await import('../../utils/logger.js');
+            logger.debug('resolver.sizeUsd_conversion_failed', {
+              cat: 'tx',
+              error: String(e?.message || e),
+              sizeUsd: input.sizeUsd,
+            });
+          } catch {}
+        }
       }
     }
     // If still zero and a defaultQuoteSizeUsd is configured, convert USD→atoms using start mint
@@ -230,11 +251,45 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
         if (defUsd === 0) {
           try {
             const { readJson } = await import('../../utils/fs.js');
-            const executorConfig = await readJson('backend/config/arbExecutor.json', {}) as any;
-            if (typeof executorConfig?.sizeUsd === 'number' && executorConfig.sizeUsd > 0) {
+            const { resolve } = await import('path');
+            // Use path.resolve to properly resolve the config file path
+            const configPath = resolve('backend/config/arbExecutor.json');
+            const executorConfig = await readJson(configPath, {}) as any;
+            
+            if (executorConfig && typeof executorConfig.sizeUsd === 'number' && executorConfig.sizeUsd > 0) {
               defUsd = executorConfig.sizeUsd;
+              // Log that we found it
+              try {
+                const { logger } = await import('../../utils/logger.js');
+                logger.debug('resolver.executor_config_loaded', {
+                  cat: 'tx',
+                  sizeUsd: defUsd,
+                  configPath,
+                });
+              } catch {}
+            } else {
+              // Log that we didn't find it
+              try {
+                const { logger } = await import('../../utils/logger.js');
+                logger.debug('resolver.executor_config_not_found', {
+                  cat: 'tx',
+                  configPath,
+                  executorConfig: executorConfig ? Object.keys(executorConfig) : 'null',
+                });
+              } catch {}
             }
-          } catch {}
+          } catch (e: any) {
+            // Log the error for debugging instead of silently catching
+            try {
+              const { logger } = await import('../../utils/logger.js');
+              logger.debug('resolver.executor_config_read_failed', {
+                cat: 'tx',
+                error: String(e?.message || e),
+                code: e?.code,
+                stack: e?.stack,
+              });
+            } catch {}
+          }
         }
         
         if (defUsd > 0) {
@@ -247,9 +302,30 @@ export async function resolveDirectPlan(input: ResolveDirectInput, cfg: ExecConf
             const usdPxMicro  = BigInt(Math.round(usdPx * 1_000_000));
             const scale       = (10n ** BigInt(Math.max(0, Math.min(12, decimals))));
             curIn = (usdAmtMicro * scale) / usdPxMicro;
+          } else {
+            // Log price lookup failure in fallback too
+            try {
+              const { logger } = await import('../../utils/logger.js');
+              logger.warn('resolver.fallback_price_lookup_failed', {
+                cat: 'tx',
+                startMint,
+                defUsd,
+                usdPx,
+              });
+            } catch {}
           }
         }
-      } catch {}
+      } catch (e: any) {
+        // Log the error
+        try {
+          const { logger } = await import('../../utils/logger.js');
+          logger.error('resolver.default_size_fallback_failed', {
+            cat: 'tx',
+            error: String(e?.message || e),
+            stack: e?.stack,
+          });
+        } catch {}
+      }
     }
     if (curIn === 0n && hops.length > 0) {
       throw new Error('QUOTE_SIZE_REQUIRED: provide size/sizeUsd or configure defaultQuoteSizeUsd');
