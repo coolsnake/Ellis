@@ -9,7 +9,11 @@ export type ClmmPoolStatic = {
   oracle: string;
   vaultA: string;
   vaultB: string;
-  tickArrays: { lower: string; center: string; upper: string };
+  tickArrays: { 
+    center: string;
+    lower: string | string[];  // Support both single value and arrays
+    upper: string | string[];  // Support both single value and arrays
+  };
   observationId?: string;
   lastUpdateMs: number;
 };
