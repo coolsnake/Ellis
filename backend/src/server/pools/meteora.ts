@@ -611,7 +611,8 @@ async function deriveBinArrays(
     const CACHE_RANGE = 5; // Cache 5 bin arrays on each side of active (11 total)
     const arrays: Array<{ index: number; address: string }> = [];
     
-    const startIdx = Math.max(0, activeBinArrayIdx - CACHE_RANGE); // Don't go negative
+    // Allow negative indexes - they are valid in Meteora DLMM
+    const startIdx = activeBinArrayIdx - CACHE_RANGE;
     const endIdx = activeBinArrayIdx + CACHE_RANGE;
     
     let activeAddress: string | undefined;

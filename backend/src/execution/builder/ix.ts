@@ -828,6 +828,17 @@ async function getOrcaSdkSigner(kp: { publicKey: PublicKey; secretKey: Uint8Arra
 }
 
 /**
+ * Compute Anchor instruction discriminator from instruction name
+ * Discriminator is first 8 bytes of sha256("global:<instruction_name>")
+ */
+function computeAnchorDiscriminator(instructionName: string): Buffer {
+  const crypto = require('crypto');
+  const preimage = `global:${instructionName}`;
+  const hash = crypto.createHash('sha256').update(preimage).digest();
+  return hash.subarray(0, 8);
+}
+
+/**
  * Build Orca swap instruction locally without RPC calls
  * Uses cached pool state from executionCache
  */
@@ -877,7 +888,7 @@ async function buildOrcaSwapIxLocal(hop: DirectHop, kp: { publicKey: PublicKey; 
   // Get vault addresses
   const vaultA = staticData.vaults?.a;
   const vaultB = staticData.vaults?.b;
-  const oracle = staticData.oracle;
+  let oracle = staticData.oracle;
   
   if (!vaultA || !vaultB) {
     throw createBuilderError('ORCA', 'Vault addresses not in cache', hop);
@@ -885,6 +896,26 @@ async function buildOrcaSwapIxLocal(hop: DirectHop, kp: { publicKey: PublicKey; 
   
   // Build instruction accounts (based on Orca Whirlpool swap account layout)
   const programId = toPublicKey(staticData.programId || (CONFIG as any).orca?.programId || 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc');
+  
+  // Derive oracle PDA if not in cache: [b"oracle", whirlpool.key()]
+  if (!oracle) {
+    try {
+      const poolPk = toPublicKey(hop.poolId);
+      const [oraclePda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('oracle'), poolPk.toBuffer()],
+        programId
+      );
+      oracle = oraclePda.toBase58();
+    } catch (e: any) {
+      try {
+        logger.warn('orca.oracle.derivation.failed', {
+          cat: 'tx',
+          ctx: { pool: hop.poolId, error: String(e?.message || e) } as any
+        });
+      } catch {}
+      // Continue without oracle if derivation fails - but this should rarely happen
+    }
+  }
   
   const keys = [
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, // #0 tokenProgram
@@ -899,21 +930,30 @@ async function buildOrcaSwapIxLocal(hop: DirectHop, kp: { publicKey: PublicKey; 
     { pubkey: toPublicKey(hop.userDestAta), isSigner: false, isWritable: true }, // #9 tokenOwnerAccountB or tokenOwnerAccountA (output)
   ];
   
-  // Add oracle if available
+  // Always include oracle account (required for Whirlpools swap)
   if (oracle) {
-    keys.push({ pubkey: toPublicKey(oracle), isSigner: false, isWritable: false }); // #10 oracle (optional)
+    keys.push({ pubkey: toPublicKey(oracle), isSigner: false, isWritable: false }); // #10 oracle
+  } else {
+    // If oracle derivation failed, log error but don't fail the build
+    // Some pools might not have oracle, but most do
+    try {
+      logger.warn('orca.oracle.missing', {
+        cat: 'tx',
+        ctx: { pool: hop.poolId, warning: 'Oracle not found in cache and derivation failed' } as any
+      });
+    } catch {}
   }
   
   // Encode swap instruction data
   // Orca uses Anchor discriminator: sha256("global:swap")[0..8]
-  // For Whirlpool swap, the discriminator is: 0xf8c69e91e17587c8
   // Followed by: amount (u64), otherAmountThreshold (u64), sqrtPriceLimit (u128), amountSpecifiedIsInput (bool), aToB (bool)
   
   const dataBuffer = Buffer.alloc(42); // 8 + 8 + 8 + 16 + 1 + 1
   let offset = 0;
   
-  // Discriminator (8 bytes)
-  dataBuffer.writeBigUInt64LE(0xf8c69e91e17587c8n, offset);
+  // Discriminator (8 bytes) - computed dynamically from instruction name
+  const swapDiscriminator = computeAnchorDiscriminator('swap');
+  swapDiscriminator.copy(dataBuffer, offset);
   offset += 8;
   
   // amount (u64) - input amount
@@ -3852,7 +3892,8 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                       // Filter cached arrays to the range we need
                       const cachedArrays = binArrays.arrays.filter((arr: any) => {
                         const idx = arr?.index ?? arr?.binArrayIndex;
-                        return idx >= startIdx && idx <= endIdx && idx >= 0; // Skip negative
+                        // Negative indexes are valid in Meteora DLMM
+                        return idx >= startIdx && idx <= endIdx;
                       });
                       
                       if (cachedArrays.length > 0) {
@@ -3894,11 +3935,11 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 }
                 
                 // If cache miss or insufficient, derive bin arrays
-                if (!cacheHit && deriveBinArray) {
+                // Derive when we don't have enough bin arrays (even if cache had partial hits)
+                if (metas.length < binArrayCount && deriveBinArray) {
                   // Generate all bin array indexes in range
                   for (let i = startIdx; i <= endIdx; i++) {
-                    // Skip negative indexes - they don't exist
-                    if (i < 0) continue;
+                    // Negative indexes are valid in Meteora DLMM - don't skip them
                     
                     // Skip if already in metas from cache
                     if (metas.some(m => m?.binArrayIndex === i)) continue;

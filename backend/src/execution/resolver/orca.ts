@@ -34,7 +34,10 @@ export async function resolveOrca(hop: DirectHop): Promise<DirectHop> {
     const p = (pools.clmm || []).find((x: any) => String(x?.id || '') === id);
     if (p) {
       hop.tickSpacing = Number((p as any)?.tick_spacing || (p as any)?.tickSpacing || hop.tickSpacing || 0);
-      hop.oracle = hop.oracle || String((p as any)?.oracle || '');
+      const oracleFromPool = String((p as any)?.oracle || '');
+      if (oracleFromPool) {
+        hop.oracle = hop.oracle || oracleFromPool;
+      }
       
       // Get vault addresses from pool data (prefer token_vault_a/token_vault_b, fallback to account_a/account_b)
       const vaultA = (p as any)?.token_vault_a || (p as any)?.account_a;
@@ -43,15 +46,25 @@ export async function resolveOrca(hop: DirectHop): Promise<DirectHop> {
       if (vaultA) hop.vaultA = hop.vaultA || String(vaultA);
       if (vaultB) hop.vaultB = hop.vaultB || String(vaultB);
       
-      // CRITICAL: Cache vault addresses in execution cache if we found them
+      // CRITICAL: Cache vault addresses and oracle in execution cache if we found them
+      const existing = executionCache.getStatic(hop.poolId) || {} as any;
+      const updates: any = {};
+      
       if (vaultA && vaultB) {
-        const existing = executionCache.getStatic(hop.poolId) || {} as any;
+        updates.vaults = {
+          a: vaultA,
+          b: vaultB
+        };
+      }
+      
+      if (oracleFromPool && oracleFromPool !== '11111111111111111111111111111111') {
+        updates.oracle = oracleFromPool;
+      }
+      
+      if (Object.keys(updates).length > 0) {
         executionCache.setStatic(hop.poolId, {
           ...existing,
-          vaults: {
-            a: vaultA,
-            b: vaultB
-          }
+          ...updates
         });
       }
     }
