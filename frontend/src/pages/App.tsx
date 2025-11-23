@@ -890,6 +890,203 @@ export const App: React.FC = () => {
           }
         };
 
+        // Pick random pools from graph that form a valid path
+        const pickRandomPoolsFromGraph = async (
+          numHops: number,
+          filterDex?: string,
+          filterPoolKind?: 'amm' | 'clmm',
+        ): Promise<{ pools: Array<{ poolId: string; source: string; target: string; dex: string; poolKind?: 'amm' | 'clmm' }>; path: string[] } | null> => {
+          try {
+            const url = `${apiBase}/arb/graph/current`;
+            const resp = await fetch(url, { cache: 'no-store' });
+            if (!resp.ok) {
+              throw new Error(`http ${resp.status}`);
+            }
+            const json = await resp.json();
+            const graph = json?.graph;
+            if (!graph || !Array.isArray(graph?.edges) || graph.edges.length === 0) {
+              throw new Error('no graph edges available');
+            }
+            
+            // Filter edges by DEX if specified
+            let edges = graph.edges;
+            if (filterDex) {
+              const dexMap: Record<string, string[]> = {
+                'raydium': ['raydium'],
+                'ray-amm': ['raydium'],
+                'ray-clmm': ['raydium'],
+                'orca': ['orca'],
+                'meteora': ['meteora'],
+                'damm-v1': ['meteora-balanced', 'MeteoraBalanced_v1'],
+                'damm-v2': ['meteora-balanced', 'MeteoraBalanced_v2'],
+                'meteora-balanced': ['meteora-balanced', 'MeteoraBalanced_v1', 'MeteoraBalanced_v2'],
+                'pumpswap': ['pumpswap', 'Pumpswap'],
+              };
+              const targetDexes = dexMap[filterDex.toLowerCase()] || [filterDex.toLowerCase()];
+              edges = edges.filter((e: any) => {
+                const edgeDex = String(e?.dex || '').toLowerCase();
+                return targetDexes.some(td => edgeDex.includes(td.toLowerCase()));
+              });
+            }
+            
+            // Filter by pool kind if specified
+            if (filterPoolKind) {
+              edges = edges.filter((e: any) => e?.pool_kind === filterPoolKind);
+            }
+            
+            // Filter out reverse edges and edges without pool_id
+            edges = edges.filter((e: any) => {
+              const poolId = String(e?.pool_id || '');
+              return poolId && !poolId.includes('-rev') && !poolId.endsWith('#rev');
+            });
+            
+            if (edges.length === 0) {
+              throw new Error('no matching pools in graph');
+            }
+            
+            // Try to form a valid path by picking a starting edge and finding connected edges
+            const pools: Array<{ poolId: string; source: string; target: string; dex: string; poolKind?: 'amm' | 'clmm' }> = [];
+            const path: string[] = [];
+            
+            // Pick first random edge
+            const firstIndex = Math.floor(Math.random() * edges.length);
+            const firstEdge = edges[firstIndex];
+            pools.push({
+              poolId: String(firstEdge.pool_id),
+              source: String(firstEdge.source),
+              target: String(firstEdge.target),
+              dex: String(firstEdge.dex),
+              poolKind: firstEdge.pool_kind,
+            });
+            path.push(String(firstEdge.source), String(firstEdge.target));
+            
+            // For each subsequent hop, find an edge that starts where the previous one ended
+            let currentTarget = String(firstEdge.target);
+            for (let i = 1; i < numHops; i++) {
+              // Find edges that start with currentTarget
+              const nextEdges = edges.filter((e: any) => String(e?.source) === currentTarget);
+              
+              if (nextEdges.length === 0) {
+                // If no direct connection, pick any random edge (path might not be valid, but backend will validate)
+                const randomIndex = Math.floor(Math.random() * edges.length);
+                const randomEdge = edges[randomIndex];
+                pools.push({
+                  poolId: String(randomEdge.pool_id),
+                  source: String(randomEdge.source),
+                  target: String(randomEdge.target),
+                  dex: String(randomEdge.dex),
+                  poolKind: randomEdge.pool_kind,
+                });
+                path.push(String(randomEdge.target));
+                currentTarget = String(randomEdge.target);
+              } else {
+                // Pick a random edge from the connected ones
+                const nextIndex = Math.floor(Math.random() * nextEdges.length);
+                const nextEdge = nextEdges[nextIndex];
+                pools.push({
+                  poolId: String(nextEdge.pool_id),
+                  source: String(nextEdge.source),
+                  target: String(nextEdge.target),
+                  dex: String(nextEdge.dex),
+                  poolKind: nextEdge.pool_kind,
+                });
+                path.push(String(nextEdge.target));
+                currentTarget = String(nextEdge.target);
+              }
+            }
+            
+            return { pools, path };
+          } catch (err: any) {
+            try {
+              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ level: 'error', message: `terminal: failed to pick random pools from graph (${String(err?.message || err)})` }),
+              });
+            } catch {}
+            return null;
+          }
+        };
+
+        // Pick a random pool from the graph
+        const pickRandomPoolFromGraph = async (
+          filterDex?: string,
+          filterPoolKind?: 'amm' | 'clmm',
+        ): Promise<{ poolId: string; source: string; target: string; dex: string; poolKind?: 'amm' | 'clmm' } | null> => {
+          try {
+            const url = `${apiBase}/arb/graph/current`;
+            const resp = await fetch(url, { cache: 'no-store' });
+            if (!resp.ok) {
+              throw new Error(`http ${resp.status}`);
+            }
+            const json = await resp.json();
+            const graph = json?.graph;
+            if (!graph || !Array.isArray(graph?.edges) || graph.edges.length === 0) {
+              throw new Error('no graph edges available');
+            }
+            
+            // Filter edges by DEX if specified
+            let edges = graph.edges;
+            if (filterDex) {
+              const dexMap: Record<string, string[]> = {
+                'raydium': ['raydium'],
+                'ray-amm': ['raydium'],
+                'ray-clmm': ['raydium'],
+                'orca': ['orca'],
+                'meteora': ['meteora'],
+                'damm-v1': ['meteora-balanced', 'MeteoraBalanced_v1'],
+                'damm-v2': ['meteora-balanced', 'MeteoraBalanced_v2'],
+                'meteora-balanced': ['meteora-balanced', 'MeteoraBalanced_v1', 'MeteoraBalanced_v2'],
+                'pumpswap': ['pumpswap', 'Pumpswap'],
+              };
+              const targetDexes = dexMap[filterDex.toLowerCase()] || [filterDex.toLowerCase()];
+              edges = edges.filter((e: any) => {
+                const edgeDex = String(e?.dex || '').toLowerCase();
+                return targetDexes.some(td => edgeDex.includes(td.toLowerCase()));
+              });
+            }
+            
+            // Filter by pool kind if specified
+            if (filterPoolKind) {
+              edges = edges.filter((e: any) => e?.pool_kind === filterPoolKind);
+            }
+            
+            // Filter out reverse edges (those with -rev suffix in pool_id)
+            edges = edges.filter((e: any) => {
+              const poolId = String(e?.pool_id || '');
+              return poolId && !poolId.includes('-rev') && !poolId.endsWith('#rev');
+            });
+            
+            // Filter out edges without pool_id
+            edges = edges.filter((e: any) => e?.pool_id);
+            
+            if (edges.length === 0) {
+              throw new Error('no matching pools in graph');
+            }
+            
+            // Pick a random edge
+            const randomIndex = Math.floor(Math.random() * edges.length);
+            const edge = edges[randomIndex];
+            
+            return {
+              poolId: String(edge.pool_id),
+              source: String(edge.source),
+              target: String(edge.target),
+              dex: String(edge.dex),
+              poolKind: edge.pool_kind,
+            };
+          } catch (err: any) {
+            try {
+              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ level: 'error', message: `terminal: failed to pick random pool from graph (${String(err?.message || err)})` }),
+              });
+            } catch {}
+            return null;
+          }
+        };
+
         const buildTwoHopBody = async (dex: 'raydium'|'orca'|'meteora', variant?: 'amm'|'clmm', poolId?: string) => {
           const preferVariant = dex === 'raydium' ? variant : undefined;
           const path = [USDC, USDT, USDC];
@@ -1003,55 +1200,99 @@ export const App: React.FC = () => {
           // New: single-hop helpers for UI terminal
           if (action === 'singlehop') {
             const mode = (parts[2] || '').toLowerCase(); // sim|exec
-            const target = (parts[3] || '').toLowerCase(); // ray-amm|ray-clmm|orca|meteora|damm-v1|damm-v2|pumpswap
+            const target = (parts[3] || '').toLowerCase(); // ray-amm|ray-clmm|orca|meteora|damm-v1|damm-v2|pumpswap|random|random-{dex}
             const sizeSol = Number(parts[4] || 0.01);
             const slippageBps = Number(parts[5] || 50);
             const poolId = parts[6];
-            const validTargets = ['ray-amm','ray-clmm','orca','meteora','damm-v1','damm-v2','pumpswap'];
-            if (!['sim','exec'].includes(mode) || !validTargets.includes(target)) {
-              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: arb singlehop sim|exec ray-amm|ray-clmm|orca|meteora|damm-v1|damm-v2|pumpswap [SIZE_SOL] [SLIPPAGE_BPS] [POOL_ID]' }) });
+            const validTargets = ['ray-amm','ray-clmm','orca','meteora','damm-v1','damm-v2','pumpswap','random'];
+            const isRandom = target === 'random' || target.startsWith('random-');
+            
+            if (!['sim','exec'].includes(mode) || (!isRandom && !validTargets.includes(target))) {
+              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: arb singlehop sim|exec ray-amm|ray-clmm|orca|meteora|damm-v1|damm-v2|pumpswap|random|random-{dex} [SIZE_SOL] [SLIPPAGE_BPS] [POOL_ID]' }) });
               return;
             }
-            // Pick pool if not provided
-            const dexForPick = target.startsWith('ray') ? 'raydium' : 
-                               target.startsWith('damm') ? 'meteora-balanced' :
-                               (target as any);
-            const preferForPick = target === 'ray-amm' ? 'amm' : (target === 'ray-clmm' ? 'clmm' : undefined);
-            const pid = poolId || await pickPoolId(
-              dexForPick as any,
-              preferForPick ? { prefer: preferForPick } : undefined,
-            );
-            if (!pid) {
-              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: no pool found for ${target}` }) });
-              return;
+            
+            let pid: string | null = null;
+            let path: string[] = [SOL, USDC];
+            let actualTarget = target;
+            let route: string;
+            
+            if (isRandom) {
+              // Extract DEX filter if specified (e.g., random-ray-amm, random-orca)
+              const randomDex = target.startsWith('random-') ? target.substring(7) : undefined;
+              const randomPoolKind = randomDex === 'ray-amm' ? 'amm' : (randomDex === 'ray-clmm' ? 'clmm' : undefined);
+              
+              // Pick random pool from graph
+              const randomPool = await pickRandomPoolFromGraph(randomDex, randomPoolKind);
+              if (!randomPool) {
+                await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: failed to pick random pool from graph${randomDex ? ` for ${randomDex}` : ''}` }) });
+                return;
+              }
+              
+              pid = randomPool.poolId;
+              path = [randomPool.source, randomPool.target];
+              
+              // Determine route based on DEX from graph
+              const graphDex = randomPool.dex.toLowerCase();
+              if (graphDex.includes('raydium')) {
+                actualTarget = randomPool.poolKind === 'clmm' ? 'ray-clmm' : 'ray-amm';
+              } else if (graphDex.includes('orca')) {
+                actualTarget = 'orca';
+              } else if (graphDex.includes('meteora-balanced') || graphDex.includes('meteorabalanced')) {
+                // Try to determine v1 vs v2 from pool_id or use v1 as default
+                actualTarget = pid.includes('v2') || graphDex.includes('v2') ? 'damm-v2' : 'damm-v1';
+              } else if (graphDex.includes('pumpswap')) {
+                actualTarget = 'pumpswap';
+              } else if (graphDex.includes('meteora')) {
+                actualTarget = 'meteora';
+              } else {
+                actualTarget = 'meteora'; // fallback
+              }
+            } else {
+              // Original logic: pick pool if not provided
+              const dexForPick = target.startsWith('ray') ? 'raydium' : 
+                                 target.startsWith('damm') ? 'meteora-balanced' :
+                                 (target as any);
+              const preferForPick = target === 'ray-amm' ? 'amm' : (target === 'ray-clmm' ? 'clmm' : undefined);
+              pid = poolId || await pickPoolId(
+                dexForPick as any,
+                preferForPick ? { prefer: preferForPick } : undefined,
+              );
+              if (!pid) {
+                await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: no pool found for ${target}` }) });
+                return;
+              }
             }
-            const route = ((): string => {
+            
+            route = ((): string => {
               if (mode === 'sim') {
-                if (target === 'ray-amm') return ROUTES.arb.simulateSendRaydiumAmm;
-                if (target === 'ray-clmm') return ROUTES.arb.simulateSendRaydiumClmm;
-                if (target === 'orca') return ROUTES.arb.simulateSendOrca;
-                if (target === 'meteora') return ROUTES.arb.simulateSendMeteora;
-                if (target === 'damm-v1') return ROUTES.arb.simulateSendMeteoraBalancedV1;
-                if (target === 'damm-v2') return ROUTES.arb.simulateSendMeteoraBalancedV2;
-                if (target === 'pumpswap') return ROUTES.arb.simulateSendPumpswap;
+                if (actualTarget === 'ray-amm') return ROUTES.arb.simulateSendRaydiumAmm;
+                if (actualTarget === 'ray-clmm') return ROUTES.arb.simulateSendRaydiumClmm;
+                if (actualTarget === 'orca') return ROUTES.arb.simulateSendOrca;
+                if (actualTarget === 'meteora') return ROUTES.arb.simulateSendMeteora;
+                if (actualTarget === 'damm-v1') return ROUTES.arb.simulateSendMeteoraBalancedV1;
+                if (actualTarget === 'damm-v2') return ROUTES.arb.simulateSendMeteoraBalancedV2;
+                if (actualTarget === 'pumpswap') return ROUTES.arb.simulateSendPumpswap;
                 return ROUTES.arb.simulateSendMeteora;
               }
-              if (target === 'ray-amm') return ROUTES.arb.executeRaydiumAmm;
-              if (target === 'ray-clmm') return ROUTES.arb.executeRaydiumClmm;
-              if (target === 'orca') return ROUTES.arb.executeOrca;
-              if (target === 'meteora') return ROUTES.arb.executeMeteora;
-              if (target === 'damm-v1') return ROUTES.arb.executeMeteoraBalancedV1;
-              if (target === 'damm-v2') return ROUTES.arb.executeMeteoraBalancedV2;
-              if (target === 'pumpswap') return ROUTES.arb.executePumpswap;
+              if (actualTarget === 'ray-amm') return ROUTES.arb.executeRaydiumAmm;
+              if (actualTarget === 'ray-clmm') return ROUTES.arb.executeRaydiumClmm;
+              if (actualTarget === 'orca') return ROUTES.arb.executeOrca;
+              if (actualTarget === 'meteora') return ROUTES.arb.executeMeteora;
+              if (actualTarget === 'damm-v1') return ROUTES.arb.executeMeteoraBalancedV1;
+              if (actualTarget === 'damm-v2') return ROUTES.arb.executeMeteoraBalancedV2;
+              if (actualTarget === 'pumpswap') return ROUTES.arb.executePumpswap;
               return ROUTES.arb.executeMeteora;
             })();
-            const payload: any = { path: [SOL, USDC], poolId: pid, size: sizeSol, slippageBps };
+            
+            const payload: any = { path, poolId: pid, size: sizeSol, slippageBps };
             if (mode === 'exec') payload.forceDirect = true;
             try {
               const resp = await fetch(`${apiBase}${route}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
               const json = await resp.json();
               if (!resp.ok) throw new Error(json?.error || 'request failed');
-              const msg = mode === 'sim' ? `singlehop ${target} sim OK pool=${pid}` : `singlehop ${target} exec signature=${json?.signature || '(n/a)'} pool=${pid}`;
+              const pathStr = path.join('->');
+              const msg = mode === 'sim' ? `singlehop ${actualTarget} sim OK pool=${pid} path=${pathStr}` : `singlehop ${actualTarget} exec signature=${json?.signature || '(n/a)'} pool=${pid} path=${pathStr}`;
               await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: ${msg}` }) });
             } catch (e: any) {
               await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: arb singlehop failed ${String(e?.message || e)}` }) });
@@ -1062,16 +1303,79 @@ export const App: React.FC = () => {
           // New: multihop helpers for UI terminal
           if (action === 'multihop') {
             const mode = (parts[2] || '').toLowerCase(); // sim|exec
-            const target = (parts[3] || '').toLowerCase(); // ray-amm|ray-clmm|orca|meteora|damm-v1|damm-v2|pumpswap OR ray+orca, damm-v1+pumpswap, etc.
+            const target = (parts[3] || '').toLowerCase(); // ray-amm|ray-clmm|orca|meteora|damm-v1|damm-v2|pumpswap|random|random-{dex} OR ray+orca, damm-v1+pumpswap, random+random, etc.
             const sizeSol = Number(parts[4] || 0.01);
             const slippageBps = Number(parts[5] || 50);
             const poolIds = parts.slice(6).filter(Boolean); // All remaining args are pool IDs
             
             // Check if target contains '+' for 2-dex multihop
             const isTwoDex = target.includes('+');
+            const isRandom = target === 'random' || target.startsWith('random-') || (isTwoDex && target.split('+').some(p => p.trim() === 'random' || p.trim().startsWith('random-')));
             
             if (!['sim','exec'].includes(mode)) {
-              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: arb multihop sim|exec ray-amm|ray-clmm|orca|meteora|damm-v1|damm-v2|pumpswap|ray+orca|damm-v1+pumpswap|... [SIZE_SOL] [SLIPPAGE_BPS] [POOL_ID_1] [POOL_ID_2] ...' }) });
+              await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warn', message: 'terminal: arb multihop sim|exec ray-amm|ray-clmm|orca|meteora|damm-v1|damm-v2|pumpswap|random|random-{dex}|ray+orca|damm-v1+pumpswap|random+random|... [SIZE_SOL] [SLIPPAGE_BPS] [POOL_ID_1] [POOL_ID_2] ...' }) });
+              return;
+            }
+            
+            // Handle random pool selection
+            if (isRandom && !isTwoDex) {
+              // Single-DEX multihop with random pools
+              const randomDex = target.startsWith('random-') ? target.substring(7) : undefined;
+              const randomPoolKind = randomDex === 'ray-amm' ? 'amm' : (randomDex === 'ray-clmm' ? 'clmm' : undefined);
+              const numHops = Math.max(2, poolIds.length || 2);
+              
+              const randomPools = await pickRandomPoolsFromGraph(numHops, randomDex, randomPoolKind);
+              if (!randomPools || randomPools.pools.length !== numHops) {
+                await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: failed to pick ${numHops} random pools from graph${randomDex ? ` for ${randomDex}` : ''}` }) });
+                return;
+              }
+              
+              // Determine DEX keys from the picked pools
+              const dexKeys: string[] = [];
+              for (const pool of randomPools.pools) {
+                const graphDex = pool.dex.toLowerCase();
+                if (graphDex.includes('raydium')) {
+                  dexKeys.push(pool.poolKind === 'clmm' ? 'raydium.clmm' : 'raydium.amm');
+                } else if (graphDex.includes('orca')) {
+                  dexKeys.push('orca.clmm');
+                } else if (graphDex.includes('meteora-balanced') || graphDex.includes('meteorabalanced')) {
+                  dexKeys.push(pool.poolId.includes('v2') || graphDex.includes('v2') ? 'MeteoraBalanced_v2' : 'MeteoraBalanced_v1');
+                } else if (graphDex.includes('pumpswap')) {
+                  dexKeys.push('Pumpswap');
+                } else if (graphDex.includes('meteora')) {
+                  dexKeys.push('meteora');
+                } else {
+                  dexKeys.push('meteora'); // fallback
+                }
+              }
+              
+              const pickedPoolIds = randomPools.pools.map(p => p.poolId);
+              const path = randomPools.path;
+              
+              // Build payload
+              const endpoint = mode === 'sim' ? '/arb/simulate-send' : '/arb/execute';
+              const payload: any = {
+                path,
+                hopPoolIds: pickedPoolIds,
+                dexes: dexKeys,
+                size: sizeSol,
+                slippageBps,
+              };
+              if (mode === 'exec') payload.forceDirect = true;
+              
+              try {
+                const resp = await fetch(`${apiBase}${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                const json = await resp.json();
+                if (!resp.ok) throw new Error(json?.error || 'request failed');
+                const poolStr = pickedPoolIds.join(',');
+                const pathStr = path.join('->');
+                const msg = mode === 'sim' 
+                  ? `multihop random (${numHops}hops) sim OK pools=[${poolStr}] path=[${pathStr}]`
+                  : `multihop random (${numHops}hops) exec signature=${json?.signature || '(n/a)'} pools=[${poolStr}] path=[${pathStr}]`;
+                await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'info', message: `terminal: ${msg}` }) });
+              } catch (e: any) {
+                await fetch(`${apiBase}${ROUTES.legacy.terminalLog}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'error', message: `terminal: arb multihop failed ${String(e?.message || e)}` }) });
+              }
               return;
             }
             
