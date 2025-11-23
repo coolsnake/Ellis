@@ -19,26 +19,6 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
   if ((stat as any)?.amm_config && !hop.ammConfig) hop.ammConfig = (stat as any).amm_config;
   if (stat?.ex_bitmap && !(hop as any).exBitmap) (hop as any).exBitmap = stat.ex_bitmap;
 
-  // Load from hot cache for tick arrays (derived from pool state)
-  const hot = executionCache.getHot(hop.poolId);
-  if (hot?.tickArrays) {
-    if (hot.tickArrays.center) {
-      hop.tickArrayCenter = hot.tickArrays.center;
-    }
-    
-    // For backward compatibility, also set single lower/upper if arrays exist
-    if (Array.isArray(hot.tickArrays.lower) && hot.tickArrays.lower.length > 0) {
-      hop.tickArrayLower = hot.tickArrays.lower[0]; // First (closest to center)
-    }
-    if (Array.isArray(hot.tickArrays.upper) && hot.tickArrays.upper.length > 0) {
-      hop.tickArrayUpper = hot.tickArrays.upper[0]; // First (closest to center)
-    }
-    
-    // Store full arrays for builder to use
-    (hop as any).tickArrayLowerList = hot.tickArrays.lower;
-    (hop as any).tickArrayUpperList = hot.tickArrays.upper;
-  }
-
   // Load from CLMM static cache (authoritative for arrays/oracle).
   const cached = getClmmStatic(hop.poolId.replace(/[#-]rev$/, ''));
   if (cached) {
@@ -49,22 +29,29 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
     hop.oracle = hop.oracle || cached.oracle;
     hop.vaultA = hop.vaultA || cached.vaultA;
     hop.vaultB = hop.vaultB || cached.vaultB;
+    hop.tickArrayCenter = hop.tickArrayCenter || cached.tickArrays.center;
+    
     // Handle both single values and arrays from clmmCache
-    if (cached.tickArrays) {
-      if (cached.tickArrays.center) hop.tickArrayCenter = hop.tickArrayCenter || cached.tickArrays.center;
+    if (cached.tickArrays.lower) {
       if (typeof cached.tickArrays.lower === 'string') {
         hop.tickArrayLower = hop.tickArrayLower || cached.tickArrays.lower;
       } else if (Array.isArray(cached.tickArrays.lower) && cached.tickArrays.lower.length > 0) {
         hop.tickArrayLower = hop.tickArrayLower || cached.tickArrays.lower[0];
+        // Store full array for builder
         (hop as any).tickArrayLowerList = cached.tickArrays.lower;
       }
+    }
+    
+    if (cached.tickArrays.upper) {
       if (typeof cached.tickArrays.upper === 'string') {
         hop.tickArrayUpper = hop.tickArrayUpper || cached.tickArrays.upper;
       } else if (Array.isArray(cached.tickArrays.upper) && cached.tickArrays.upper.length > 0) {
         hop.tickArrayUpper = hop.tickArrayUpper || cached.tickArrays.upper[0];
+        // Store full array for builder
         (hop as any).tickArrayUpperList = cached.tickArrays.upper;
       }
     }
+    
     if (!hop.observationId && cached.observationId) hop.observationId = cached.observationId;
     if (!hop.ammConfig && cached.ammConfig) hop.ammConfig = cached.ammConfig;
   } else {

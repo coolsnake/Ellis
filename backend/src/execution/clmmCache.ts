@@ -11,8 +11,9 @@ export type ClmmPoolStatic = {
   vaultB: string;
   tickArrays: { 
     center: string;
-    lower: string | string[];  // Support both single value and arrays
-    upper: string | string[];  // Support both single value and arrays
+    // Support both single value (backward compat) and arrays
+    lower: string | string[];
+    upper: string | string[];
   };
   observationId?: string;
   lastUpdateMs: number;

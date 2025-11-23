@@ -88,31 +88,57 @@ export async function refreshRaydiumClmm(poolIdStr: string): Promise<void> {
 
   const centerStart = getTickArrayStartIndexByTick(tickCurrent, tickSpacing);
   const delta = 60 * Math.max(1, tickSpacing);
-  const lowerStart = centerStart - delta;
-  const upperStart = centerStart + delta;
-
-  let lowerPk: PublicKey | null = null;
+  
+  // Derive center tick array
   let centerPk: PublicKey | null = null;
-  let upperPk: PublicKey | null = null;
-  try { lowerPk = await deriveTickArrayPda(programId, poolPk, lowerStart); } catch {}
   try { centerPk = await deriveTickArrayPda(programId, poolPk, centerStart); } catch {}
-  try { upperPk = await deriveTickArrayPda(programId, poolPk, upperStart); } catch {}
-  try { logger.info('clmm.refresh.bounds', { pool: poolIdStr, centerStart, lowerStart, upperStart, owner: programId.toBase58?.() }); } catch {}
-
-  // Validate existence; step outward once if missing
-  if (!(await accountExists(connection, programId, lowerPk))) {
+  
+  // Derive multiple lower tick arrays (for B→A swaps)
+  // Generate 3-5 arrays below center to support larger swaps
+  const lowerArrays: string[] = [];
+  for (let i = 1; i <= 5; i++) {
     try {
-      const alt = await deriveTickArrayPda(programId, poolPk, lowerStart - delta);
-      if (await accountExists(connection, programId, alt)) lowerPk = alt;
-    } catch {}
+      const lowerStart = centerStart - (delta * i);
+      const lowerPk = await deriveTickArrayPda(programId, poolPk, lowerStart);
+      if (lowerPk && await accountExists(connection, programId, lowerPk)) {
+        lowerArrays.push(lowerPk.toBase58());
+      }
+    } catch {
+      // Stop if we can't derive more
+      break;
+    }
   }
-  if (!(await accountExists(connection, programId, upperPk))) {
+  
+  // Derive multiple upper tick arrays (for A→B swaps)
+  // Generate 3-5 arrays above center to support larger swaps
+  const upperArrays: string[] = [];
+  for (let i = 1; i <= 5; i++) {
     try {
-      const alt = await deriveTickArrayPda(programId, poolPk, upperStart + delta);
-      if (await accountExists(connection, programId, alt)) upperPk = alt;
-    } catch {}
+      const upperStart = centerStart + (delta * i);
+      const upperPk = await deriveTickArrayPda(programId, poolPk, upperStart);
+      if (upperPk && await accountExists(connection, programId, upperPk)) {
+        upperArrays.push(upperPk.toBase58());
+      }
+    } catch {
+      // Stop if we can't derive more
+      break;
+    }
   }
-  try { logger.info('clmm.refresh.arrays', { pool: poolIdStr, lower: lowerPk?.toBase58?.(), center: centerPk?.toBase58?.(), upper: upperPk?.toBase58?.() }); } catch {}
+  
+  // For backward compatibility, also store first array as single value
+  const lowerFirst = lowerArrays.length > 0 ? lowerArrays[0] : '';
+  const upperFirst = upperArrays.length > 0 ? upperArrays[0] : '';
+  
+  try { 
+    logger.info('clmm.refresh.arrays', { 
+      pool: poolIdStr, 
+      center: centerPk?.toBase58?.(), 
+      lowerCount: lowerArrays.length,
+      upperCount: upperArrays.length,
+      lower: lowerFirst,
+      upper: upperFirst
+    }); 
+  } catch {}
 
   const staticInfo = {
     programId: programId.toBase58(),
@@ -123,9 +149,10 @@ export async function refreshRaydiumClmm(poolIdStr: string): Promise<void> {
     vaultA: vaultA ? vaultA.toBase58() : '',
     vaultB: vaultB ? vaultB.toBase58() : '',
     tickArrays: {
-      lower: lowerPk ? lowerPk.toBase58() : '',
       center: centerPk ? centerPk.toBase58() : '',
-      upper: upperPk ? upperPk.toBase58() : '',
+      // Store arrays if we have multiple, otherwise single value for backward compat
+      lower: lowerArrays.length > 1 ? lowerArrays : lowerFirst,
+      upper: upperArrays.length > 1 ? upperArrays : upperFirst,
     },
     lastUpdateMs: Date.now(),
   };

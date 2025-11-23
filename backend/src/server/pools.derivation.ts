@@ -15,7 +15,11 @@ type RaydiumClmmDerivedFields = {
     vaultB?: string;
     tickSpacing?: number;
     tickCurrent?: number;
-    tickArrays?: { center?: string; lower?: string[]; upper?: string[] };
+    tickArrays?: { 
+        center?: string; 
+        lower?: string | string[]; 
+        upper?: string | string[] 
+    };
 };
 
 export async function deriveRaydiumClmmCacheFields(
@@ -37,7 +41,12 @@ export async function deriveRaydiumClmmCacheFields(
         const programIdStr = opts?.programId
             || toB58Any(state?.owner)
             || String((CONFIG as any)?.raydium?.clmmProgram || 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK');
-        let tickArrays: { center?: string; lower?: string[]; upper?: string[] } | undefined;
+        let tickArrays: { 
+            center?: string; 
+            lower?: string | string[]; 
+            upper?: string | string[] 
+        } | undefined;
+        
         if (Number.isFinite(tickSpacing) && tickSpacing > 0 && Number.isFinite(tickCurrent)) {
             try {
                 const { PublicKey } = await import('@solana/web3.js');
@@ -50,35 +59,32 @@ export async function deriveRaydiumClmmCacheFields(
                 const centerPk = await deriveTickArrayPda(programPk, poolPk, centerStart);
                 
                 // Derive multiple lower tick arrays (for B→A swaps)
-                // Generate 3-5 arrays below center to support larger swaps
                 const lowerArrays: string[] = [];
                 for (let i = 1; i <= 5; i++) {
                     try {
                         const lowerPk = await deriveTickArrayPda(programPk, poolPk, centerStart - (delta * i));
                         if (lowerPk) lowerArrays.push(lowerPk.toBase58());
                     } catch (err) {
-                        // Stop if we can't derive more
                         break;
                     }
                 }
                 
                 // Derive multiple upper tick arrays (for A→B swaps)
-                // Generate 3-5 arrays above center to support larger swaps
                 const upperArrays: string[] = [];
                 for (let i = 1; i <= 5; i++) {
                     try {
                         const upperPk = await deriveTickArrayPda(programPk, poolPk, centerStart + (delta * i));
                         if (upperPk) upperArrays.push(upperPk.toBase58());
                     } catch (err) {
-                        // Stop if we can't derive more
                         break;
                     }
                 }
                 
                 tickArrays = {
                     center: centerPk?.toBase58(),
-                    lower: lowerArrays.length > 0 ? lowerArrays : undefined,
-                    upper: upperArrays.length > 0 ? upperArrays : undefined,
+                    // Store arrays if we have multiple, otherwise single value
+                    lower: lowerArrays.length > 1 ? lowerArrays : (lowerArrays[0] || undefined),
+                    upper: upperArrays.length > 1 ? upperArrays : (upperArrays[0] || undefined),
                 };
             } catch (err: any) {
                 try { logger.debug('raydium.clmm.tickarray.derive_failed', { pool: poolId.slice(0, 8) + '…', error: String(err?.message || err) }); } catch { }

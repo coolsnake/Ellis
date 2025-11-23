@@ -1184,33 +1184,32 @@ function runWebsocketRefreshLoop(): void {
                               nextStatic.native_account_b = derived.vaultB;
                             }
                             if (derived.tickSpacing) nextStatic.tick_spacing = derived.tickSpacing;
-                            // Handle new array format - set first values for backward compatibility
-                            if (derived.tickArrays?.center) nextStatic.tickArrayCenter = derived.tickArrays.center;
-                            if (Array.isArray(derived.tickArrays?.lower) && derived.tickArrays.lower.length > 0) {
-                              nextStatic.tickArrayLower = derived.tickArrays.lower[0]; // First (closest to center)
+                            // Handle both single values and arrays for backward compatibility
+                            if (derived.tickArrays?.lower) {
+                              nextStatic.tickArrayLower = typeof derived.tickArrays.lower === 'string' 
+                                ? derived.tickArrays.lower 
+                                : (Array.isArray(derived.tickArrays.lower) && derived.tickArrays.lower.length > 0 
+                                  ? derived.tickArrays.lower[0] 
+                                  : undefined);
                             }
-                            if (Array.isArray(derived.tickArrays?.upper) && derived.tickArrays.upper.length > 0) {
-                              nextStatic.tickArrayUpper = derived.tickArrays.upper[0]; // First (closest to center)
+                            if (derived.tickArrays?.center) nextStatic.tickArrayCenter = derived.tickArrays.center;
+                            if (derived.tickArrays?.upper) {
+                              nextStatic.tickArrayUpper = typeof derived.tickArrays.upper === 'string' 
+                                ? derived.tickArrays.upper 
+                                : (Array.isArray(derived.tickArrays.upper) && derived.tickArrays.upper.length > 0 
+                                  ? derived.tickArrays.upper[0] 
+                                  : undefined);
                             }
                           }
                           executionCache.setStatic(pk58, nextStatic);
                           if (derived?.tickArrays || derived?.tickCurrent !== undefined) {
                             const hotExisting = executionCache.getHot(pk58) || {};
-                            // Normalize existing tick arrays to array format
-                            const normalizeToArray = (val: string | string[] | undefined): string[] | undefined => {
-                              if (!val) return undefined;
-                              if (Array.isArray(val)) return val;
-                              return [val];
-                            };
                             executionCache.setHot(pk58, {
                               ...hotExisting,
                               currentTickIndex: derived?.tickCurrent ?? hotExisting.currentTickIndex,
                               tickArrays: {
                                 ...(hotExisting?.tickArrays || {}),
-                                // Preserve existing single values if arrays not provided
-                                center: derived?.tickArrays?.center ?? hotExisting.tickArrays?.center,
-                                lower: Array.isArray(derived?.tickArrays?.lower) ? derived.tickArrays.lower : normalizeToArray(hotExisting.tickArrays?.lower as any),
-                                upper: Array.isArray(derived?.tickArrays?.upper) ? derived.tickArrays.upper : normalizeToArray(hotExisting.tickArrays?.upper as any),
+                                ...(derived?.tickArrays || {}),
                               },
                             });
                           }
@@ -2765,17 +2764,12 @@ function runWebsocketRefreshLoop(): void {
                   }
                   
                   // Cache tick array addresses in execution cache
-                  // Convert Orca's single-string format to array format for consistency
                   try {
                     const { executionCache } = await import('../execution/cache.js');
                     const existing = executionCache.getHot(poolAddr);
                     executionCache.setHot(poolAddr, {
                       ...existing,
-                      tickArrays: {
-                        center: tickArrayAddresses.center,
-                        lower: tickArrayAddresses.lower ? [tickArrayAddresses.lower] : undefined,
-                        upper: tickArrayAddresses.upper ? [tickArrayAddresses.upper] : undefined,
-                      }
+                      tickArrays: tickArrayAddresses
                     });
                     
                     logger.info('orca.tickarrays.cached', { 
