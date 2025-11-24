@@ -347,6 +347,11 @@ export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise
     }
 
     const BATCH_SIZE = 100;
+    let totalChecked = 0;
+    let totalExist = 0;
+    let totalMissing = 0;
+    let totalOwnerMismatch = 0;
+    
     for (let i = 0; i < derived.length; i += BATCH_SIZE) {
       const batch = derived.slice(i, i + BATCH_SIZE);
       const pubkeys = batch.map(entry => entry.pda);
@@ -361,14 +366,20 @@ export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise
         for (let j = 0; j < batch.length; j++) {
           const entry = batch[j];
           const info = infos?.[j];
+          totalChecked++;
           
           if (!info) {
             // Account doesn't exist - use fallback
+            totalMissing++;
             result.set(entry.id, fallback);
             continue;
           }
           
+          totalExist++;
+          
           // Check if owner matches program ID
+          // Note: If account exists at this PDA, it should be owned by the program
+          // But we verify to be safe
           let ownerMatches = false;
           try {
             if (info.owner) {
@@ -387,7 +398,7 @@ export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise
           } catch (ownerErr) {
             // Log owner check failure for debugging
             try {
-              logger.debug('meteora.bitmap_ext.owner_check_failed', {
+              logger.info('meteora.bitmap_ext.owner_check_failed', {
                 pool: entry.id,
                 pda: entry.pda.toBase58(),
                 ownerType: typeof info.owner,
@@ -407,10 +418,11 @@ export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise
               });
             } catch {}
           } else {
+            totalOwnerMismatch++;
             result.set(entry.id, fallback);
-            // Log why we're using fallback
+            // Log owner mismatch at INFO level so we can see it
             try {
-              logger.debug('meteora.bitmap_ext.fallback', {
+              logger.info('meteora.bitmap_ext.owner_mismatch', {
                 pool: entry.id,
                 pda: entry.pda.toBase58(),
                 owner: info.owner ? (info.owner instanceof PublicKey ? info.owner.toBase58() : String(info.owner)) : 'null',
@@ -437,6 +449,10 @@ export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise
     try {
       logger.info('meteora.bitmap_ext.batch_complete', {
         total: unique.length,
+        checked: totalChecked,
+        exist: totalExist,
+        missing: totalMissing,
+        ownerMismatch: totalOwnerMismatch,
         resolved: Array.from(result.values()).filter(v => v !== fallback).length,
         fallback: Array.from(result.values()).filter(v => v === fallback).length,
         cat: 'meteora'
