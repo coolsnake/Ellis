@@ -72,6 +72,20 @@ export async function fetchMeteoraGraphQL(mints: string[]): Promise<any[]> {
     batchSize: detailBatchSize,
     delayMs: detailDelayMs,
   });
+  
+  // Count how many pools have bitmap extension PDAs from GraphQL
+  let bitmapExtCount = 0;
+  for (const pool of detailedPools.values()) {
+    if (pool.bitmapExtensionPDA) bitmapExtCount++;
+  }
+  
+  try {
+    logger.info('meteora.graphql.bitmap_ext.from_graphql', {
+      total: ids.length,
+      found: bitmapExtCount,
+      cat: 'meteora'
+    });
+  } catch {}
 
   const merged: any[] = [];
   for (const [id, summary] of poolsMap.entries()) {
@@ -136,7 +150,10 @@ async function fetchMeteoraPoolsForToken(opts: {
       break;
     }
     
-    const data = await executeShyftGraphQL<{ meteora_dlmm_LbPair: any[] }>({
+    const data = await executeShyftGraphQL<{ 
+      meteora_dlmm_LbPair: any[];
+      meteora_dlmm_BinArrayBitmapExtension: any[];
+    }>({
       dex: 'meteora',
       query: `
         query MeteoraPoolsByMint($mint: String!, $limit: Int!, $offset: Int!) {
@@ -160,6 +177,16 @@ async function fetchMeteoraPoolsForToken(opts: {
             binArrayBitmap
             _updatedAt
           }
+          meteora_dlmm_BinArrayBitmapExtension(
+            where: {_or: [
+              {tokenXMint: {_eq: $mint}},
+              {tokenYMint: {_eq: $mint}}
+            ]}
+          ) {
+            pubkey
+            lbPair
+            lbPairBaseKey
+          }
         }
       `,
       variables,
@@ -169,6 +196,28 @@ async function fetchMeteoraPoolsForToken(opts: {
     });
 
     const pagePools = data?.meteora_dlmm_LbPair || [];
+    const bitmapExtensions = data?.meteora_dlmm_BinArrayBitmapExtension || [];
+    
+    // Map bitmap extensions to pools by pool ID
+    const bitmapExtMap = new Map<string, string>();
+    for (const ext of bitmapExtensions) {
+      const poolId = ext.lbPair || ext.lbPairBaseKey;
+      const bitmapPda = ext.pubkey;
+      if (poolId && bitmapPda) {
+        bitmapExtMap.set(poolId, bitmapPda);
+      }
+    }
+    
+    // Attach bitmap extension PDAs to pools
+    for (const pool of pagePools) {
+      const key = pool.pubkey || pool.baseKey;
+      if (key) {
+        const bitmapExt = bitmapExtMap.get(key);
+        if (bitmapExt) {
+          pool.bitmapExtensionPDA = bitmapExt;
+        }
+      }
+    }
     if (pagePools.length === 0) break;
 
     allPools.push(...pagePools);
@@ -281,7 +330,10 @@ async function fetchMeteoraChunkWithRetry(
   
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const data = await executeShyftGraphQL<{ meteora_dlmm_LbPair: any[] }>({
+      const data = await executeShyftGraphQL<{ 
+        meteora_dlmm_LbPair: any[];
+        meteora_dlmm_BinArrayBitmapExtension: any[];
+      }>({
         dex: 'meteora',
         query: `
           query MeteoraPoolsByAddress($ids: [String!]) {
@@ -305,6 +357,16 @@ async function fetchMeteoraChunkWithRetry(
               binArrayBitmap
               _updatedAt
             }
+            meteora_dlmm_BinArrayBitmapExtension(
+              where: {_or: [
+                {lbPair: {_in: $ids}},
+                {lbPairBaseKey: {_in: $ids}}
+              ]}
+            ) {
+              pubkey
+              lbPair
+              lbPairBaseKey
+            }
           }
         `,
         variables: { ids: chunk },
@@ -314,9 +376,28 @@ async function fetchMeteoraChunkWithRetry(
       });
 
       const pools = data?.meteora_dlmm_LbPair || [];
+      const bitmapExtensions = data?.meteora_dlmm_BinArrayBitmapExtension || [];
+      
+      // Create a map of pool ID -> bitmap extension PDA
+      const bitmapExtMap = new Map<string, string>();
+      for (const ext of bitmapExtensions) {
+        const poolId = ext.lbPair || ext.lbPairBaseKey;
+        const bitmapPda = ext.pubkey;
+        if (poolId && bitmapPda) {
+          bitmapExtMap.set(poolId, bitmapPda);
+        }
+      }
+      
       for (const pool of pools) {
         const key = pool?.pubkey || pool?.baseKey;
         if (!key) continue;
+        
+        // Attach bitmap extension PDA if found
+        const bitmapExt = bitmapExtMap.get(key);
+        if (bitmapExt) {
+          pool.bitmapExtensionPDA = bitmapExt;
+        }
+        
         result.set(key, pool);
       }
       
@@ -769,14 +850,17 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
         }
       }
 
-      // Get bitmap extension from map (checked during pool normalization)
-      // If binArrayBitmap was present in GraphQL, we already checked and derived the PDA
-      // Otherwise, use fallback (program ID)
-      let bin_array_bitmap_extension: string | undefined;
+      // Get bitmap extension from GraphQL query (most reliable)
+      // First try to get from GraphQL query result (direct PDA from BinArrayBitmapExtension table)
+      let bin_array_bitmap_extension: string | undefined = pool.bitmapExtensionPDA;
+      
+      // Fallback: If not in GraphQL, check if binArrayBitmap indicates it exists and derive it
       const hasBitmapInGraphQL = poolsWithBitmap.has(id);
-      if (hasBitmapInGraphQL) {
+      if (!bin_array_bitmap_extension && hasBitmapInGraphQL) {
+        // Try RPC check as fallback
         bin_array_bitmap_extension = bitmapExtensionMap.get(id);
-        // If not in map (shouldn't happen), derive it now
+        
+        // Last resort: derive it (shouldn't be needed if GraphQL query works)
         if (!bin_array_bitmap_extension) {
           try {
             const programId = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
@@ -790,8 +874,10 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
             bin_array_bitmap_extension = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
           }
         }
-      } else {
-        // No bitmap extension according to GraphQL - use fallback
+      }
+      
+      // If no bitmap extension found, use program ID fallback
+      if (!bin_array_bitmap_extension) {
         bin_array_bitmap_extension = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
       }
 
