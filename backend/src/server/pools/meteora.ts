@@ -317,6 +317,15 @@ export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise
   const unique = Array.from(new Set(poolIds.filter(id => typeof id === 'string' && id.length > 0)));
   if (unique.length === 0) return result;
 
+  // Log sample of pool IDs being checked (first 3) for debugging
+  try {
+    logger.info('meteora.bitmap_ext.checking', {
+      total: unique.length,
+      sample: unique.slice(0, 3).map(id => id.slice(0, 8) + '…'),
+      cat: 'meteora'
+    });
+  } catch {}
+
   const fallback = METEORA_DLMM_PROGRAM_ID;
   try {
     const { PublicKey } = await import('@solana/web3.js');

@@ -546,7 +546,22 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
 
   // Resolve bitmap extensions for all pool IDs (parallel with other async operations)
   const poolIds = raw
-    .map(pool => pool.pubkey || pool.baseKey)
+    .map(pool => {
+      // Prioritize pubkey as it's the actual pool account address
+      const id = pool.pubkey || pool.baseKey;
+      if (pool.baseKey && !pool.pubkey) {
+        // Log when we're using baseKey instead of pubkey (might indicate an issue)
+        try {
+          logger.warn('meteora.graphql.bitmap_ext.using_basekey', {
+            pool: pool.baseKey?.slice(0, 8) + '…',
+            hasPubkey: !!pool.pubkey,
+            hasBaseKey: !!pool.baseKey,
+            cat: 'meteora'
+          });
+        } catch {}
+      }
+      return id;
+    })
     .filter((id): id is string => typeof id === 'string' && id.length > 0);
   const bitmapExtensionMapPromise = resolveMeteoraBitmapExtensions(poolIds);
 
