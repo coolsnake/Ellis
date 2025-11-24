@@ -921,13 +921,13 @@ async function buildOrcaSwapIxLocal(hop: DirectHop, kp: { publicKey: PublicKey; 
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, // #0 tokenProgram
     { pubkey: kp.publicKey, isSigner: true, isWritable: false }, // #1 tokenAuthority (signer)
     { pubkey: toPublicKey(hop.poolId), isSigner: false, isWritable: true }, // #2 whirlpool
-    { pubkey: toPublicKey(hop.userSourceAta), isSigner: false, isWritable: true }, // #3 tokenOwnerAccountA or tokenOwnerAccountB (input)
+    { pubkey: toPublicKey(hop.userSourceAta), isSigner: false, isWritable: true }, // #3 tokenOwnerAccountA (input)
     { pubkey: toPublicKey(vaultA), isSigner: false, isWritable: true }, // #4 tokenVaultA
-    { pubkey: toPublicKey(vaultB), isSigner: false, isWritable: true }, // #5 tokenVaultB
-    { pubkey: toPublicKey(tickArrayLower), isSigner: false, isWritable: true }, // #6 tickArray0
-    { pubkey: toPublicKey(tickArrayCenter), isSigner: false, isWritable: true }, // #7 tickArray1
-    { pubkey: toPublicKey(tickArrayUpper), isSigner: false, isWritable: true }, // #8 tickArray2
-    { pubkey: toPublicKey(hop.userDestAta), isSigner: false, isWritable: true }, // #9 tokenOwnerAccountB or tokenOwnerAccountA (output)
+    { pubkey: toPublicKey(hop.userDestAta), isSigner: false, isWritable: true }, // #5 tokenOwnerAccountB (output)
+    { pubkey: toPublicKey(vaultB), isSigner: false, isWritable: true }, // #6 tokenVaultB
+    { pubkey: toPublicKey(tickArrayLower), isSigner: false, isWritable: true }, // #7 tickArray0
+    { pubkey: toPublicKey(tickArrayCenter), isSigner: false, isWritable: true }, // #8 tickArray1
+    { pubkey: toPublicKey(tickArrayUpper), isSigner: false, isWritable: true }, // #9 tickArray2
   ];
   
   // Always include oracle account (required for Whirlpools swap)
