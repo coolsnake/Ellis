@@ -355,6 +355,19 @@ export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise
       }
     }
 
+    // Log sample of derived PDAs for debugging
+    try {
+      logger.info('meteora.bitmap_ext.derived_sample', {
+        total: derived.length,
+        sample: derived.slice(0, 3).map(entry => ({
+          poolId: entry.id.slice(0, 8) + '…',
+          pda: entry.pda.toBase58().slice(0, 8) + '…',
+          fullPda: entry.pda.toBase58()
+        })),
+        cat: 'meteora'
+      });
+    } catch {}
+
     const BATCH_SIZE = 100;
     let totalChecked = 0;
     let totalExist = 0;
@@ -364,6 +377,17 @@ export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise
     for (let i = 0; i < derived.length; i += BATCH_SIZE) {
       const batch = derived.slice(i, i + BATCH_SIZE);
       const pubkeys = batch.map(entry => entry.pda);
+      
+      // Log what we're checking in this batch
+      try {
+        logger.debug('meteora.bitmap_ext.batch_checking', {
+          batchIndex: Math.floor(i / BATCH_SIZE),
+          batchSize: batch.length,
+          samplePda: pubkeys[0]?.toBase58().slice(0, 8) + '…',
+          cat: 'meteora'
+        });
+      } catch {}
+      
       try {
         const weight = Math.max(1, Math.ceil(batch.length / 100));
         const infos = await withRpcLimit(
@@ -371,6 +395,18 @@ export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise
           weight,
           { module: 'pools', method: 'meteora.bitmapExtBatch' }
         );
+
+        // Log RPC response details
+        try {
+          const nonNullCount = infos?.filter(i => i !== null).length || 0;
+          logger.debug('meteora.bitmap_ext.rpc_response', {
+            batchIndex: Math.floor(i / BATCH_SIZE),
+            requested: batch.length,
+            returned: infos?.length || 0,
+            nonNull: nonNullCount,
+            cat: 'meteora'
+          });
+        } catch {}
 
         for (let j = 0; j < batch.length; j++) {
           const entry = batch[j];
