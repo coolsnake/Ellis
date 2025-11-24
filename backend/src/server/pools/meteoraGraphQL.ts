@@ -150,10 +150,7 @@ async function fetchMeteoraPoolsForToken(opts: {
       break;
     }
     
-    const data = await executeShyftGraphQL<{ 
-      meteora_dlmm_LbPair: any[];
-      meteora_dlmm_BinArrayBitmapExtension: any[];
-    }>({
+    const data = await executeShyftGraphQL<{ meteora_dlmm_LbPair: any[] }>({
       dex: 'meteora',
       query: `
         query MeteoraPoolsByMint($mint: String!, $limit: Int!, $offset: Int!) {
@@ -177,16 +174,6 @@ async function fetchMeteoraPoolsForToken(opts: {
             binArrayBitmap
             _updatedAt
           }
-          meteora_dlmm_BinArrayBitmapExtension(
-            where: {_or: [
-              {tokenXMint: {_eq: $mint}},
-              {tokenYMint: {_eq: $mint}}
-            ]}
-          ) {
-            pubkey
-            lbPair
-            lbPairBaseKey
-          }
         }
       `,
       variables,
@@ -196,28 +183,6 @@ async function fetchMeteoraPoolsForToken(opts: {
     });
 
     const pagePools = data?.meteora_dlmm_LbPair || [];
-    const bitmapExtensions = data?.meteora_dlmm_BinArrayBitmapExtension || [];
-    
-    // Map bitmap extensions to pools by pool ID
-    const bitmapExtMap = new Map<string, string>();
-    for (const ext of bitmapExtensions) {
-      const poolId = ext.lbPair || ext.lbPairBaseKey;
-      const bitmapPda = ext.pubkey;
-      if (poolId && bitmapPda) {
-        bitmapExtMap.set(poolId, bitmapPda);
-      }
-    }
-    
-    // Attach bitmap extension PDAs to pools
-    for (const pool of pagePools) {
-      const key = pool.pubkey || pool.baseKey;
-      if (key) {
-        const bitmapExt = bitmapExtMap.get(key);
-        if (bitmapExt) {
-          pool.bitmapExtensionPDA = bitmapExt;
-        }
-      }
-    }
     if (pagePools.length === 0) break;
 
     allPools.push(...pagePools);
