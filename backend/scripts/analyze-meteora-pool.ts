@@ -212,7 +212,7 @@ async function analyzeMeteoraPool() {
   
   try {
     const [bitmapExt] = PublicKey.findProgramAddressSync(
-      [Buffer.from('bitmap_extension'), poolPk.toBuffer()],
+      [Buffer.from('BitmapExtension'), poolPk.toBuffer()],
       programId
     );
     const bitmapAddr = bitmapExt.toBase58();

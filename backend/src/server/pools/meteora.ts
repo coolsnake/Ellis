@@ -339,7 +339,7 @@ export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise
       try {
         const poolPk = new PublicKey(id);
         const [bitmapExtPda] = PublicKey.findProgramAddressSync(
-          [Buffer.from('bitmap_extension'), poolPk.toBuffer()],
+          [Buffer.from('BitmapExtension'), poolPk.toBuffer()],
           programId
         );
         derived.push({ id, pda: bitmapExtPda });

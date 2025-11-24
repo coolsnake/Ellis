@@ -782,7 +782,7 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
             const programId = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
             const poolPk = new PublicKey(id);
             const [bitmapExtPda] = PublicKey.findProgramAddressSync(
-              [Buffer.from('bitmap_extension'), poolPk.toBuffer()],
+              [Buffer.from('BitmapExtension'), poolPk.toBuffer()],
               programId
             );
             bin_array_bitmap_extension = bitmapExtPda.toBase58();
