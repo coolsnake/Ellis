@@ -372,13 +372,16 @@ export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise
           let ownerMatches = false;
           try {
             if (info.owner) {
-              // Handle both PublicKey and string owner formats
+              // info.owner from getMultipleAccountsInfo is always a PublicKey
+              // Handle both PublicKey instance and any object with equals method
               if (info.owner instanceof PublicKey) {
                 ownerMatches = info.owner.equals(programId);
-              } else if (typeof info.owner === 'string') {
-                ownerMatches = info.owner === programId.toBase58();
-              } else if (typeof info.owner?.equals === 'function') {
-                ownerMatches = info.owner.equals(programId);
+              } else {
+                // Fallback for other owner types (shouldn't happen, but handle gracefully)
+                const ownerStr = typeof info.owner === 'string' 
+                  ? info.owner 
+                  : (info.owner as any)?.toBase58?.() || String(info.owner);
+                ownerMatches = ownerStr === programId.toBase58();
               }
             }
           } catch (ownerErr) {
