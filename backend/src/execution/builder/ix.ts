@@ -919,7 +919,7 @@ async function buildOrcaSwapIxLocal(hop: DirectHop, kp: { publicKey: PublicKey; 
   
   const keys = [
     { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, // #0 tokenProgram
-    { pubkey: kp.publicKey, isSigner: true, isWritable: false }, // #1 tokenAuthority (signer)
+    { pubkey: kp.publicKey, isSigner: true, isWritable: true }, // #1 tokenAuthority (signer, writable)
     { pubkey: toPublicKey(hop.poolId), isSigner: false, isWritable: true }, // #2 whirlpool
     { pubkey: toPublicKey(hop.userSourceAta), isSigner: false, isWritable: true }, // #3 tokenOwnerAccountA (input)
     { pubkey: toPublicKey(vaultA), isSigner: false, isWritable: true }, // #4 tokenVaultA

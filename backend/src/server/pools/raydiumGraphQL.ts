@@ -294,6 +294,11 @@ export async function fetchRaydiumGraphQL(mints: string[]): Promise<any[]> {
 
   const poolsMap = new Map<string, any>();
 
+  // Add initial delay before first request to respect rate limits
+  if (pageDelayMs > 0 && mints.length > 0) {
+    await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+  }
+
   for (let idx = 0; idx < mints.length; idx++) {
     const mint = mints[idx];
     try {
@@ -618,6 +623,11 @@ export async function fetchRaydiumClmmGraphQL(mints: string[]): Promise<any[]> {
   const detailDelayMs = Number((CONFIG as any)?.raydiumClmm?.detailBatchDelayMs ?? pageDelayMs);
 
   const poolsMap = new Map<string, any>();
+
+  // Add initial delay before first request to respect rate limits
+  if (pageDelayMs > 0 && mints.length > 0) {
+    await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+  }
 
   for (let idx = 0; idx < mints.length; idx++) {
     // Add delay BEFORE processing each mint (except the first one)
