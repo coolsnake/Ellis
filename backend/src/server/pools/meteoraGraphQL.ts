@@ -157,6 +157,7 @@ async function fetchMeteoraPoolsForToken(opts: {
             binStep
             protocolFee
             activeId
+            binArrayBitmap
             _updatedAt
           }
         }
@@ -301,6 +302,7 @@ async function fetchMeteoraChunkWithRetry(
               activeId
               oracle
               status
+              binArrayBitmap
               _updatedAt
             }
           }
@@ -545,6 +547,8 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
   });
 
   // Resolve bitmap extensions for all pool IDs (parallel with other async operations)
+  // OPTIMIZATION: Use binArrayBitmap from GraphQL to determine which pools have bitmap extensions
+  // If binArrayBitmap is present and non-empty, the bitmap extension account exists
   const poolIds = raw
     .map(pool => {
       // Prioritize pubkey as it's the actual pool account address
@@ -563,7 +567,41 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
       return id;
     })
     .filter((id): id is string => typeof id === 'string' && id.length > 0);
-  const bitmapExtensionMapPromise = resolveMeteoraBitmapExtensions(poolIds);
+  
+  // Check which pools have bitmap extensions based on GraphQL binArrayBitmap field
+  const poolsWithBitmap = new Set<string>();
+  for (const pool of raw) {
+    const id = pool.pubkey || pool.baseKey;
+    if (!id) continue;
+    
+    // Check if binArrayBitmap exists and is non-empty
+    const binArrayBitmap = pool.binArrayBitmap;
+    if (Array.isArray(binArrayBitmap) && binArrayBitmap.length > 0) {
+      // Check if array has any non-zero values
+      const hasData = binArrayBitmap.some((val: any) => {
+        const num = typeof val === 'number' ? val : Number(val);
+        return !isNaN(num) && num !== 0;
+      });
+      if (hasData) {
+        poolsWithBitmap.add(id);
+      }
+    }
+  }
+  
+  // Only resolve bitmap extensions for pools that have them according to GraphQL
+  const poolsToCheck = poolIds.filter(id => poolsWithBitmap.has(id));
+  const bitmapExtensionMapPromise = poolsToCheck.length > 0
+    ? resolveMeteoraBitmapExtensions(poolsToCheck)
+    : Promise.resolve(new Map<string, string>());
+  
+  try {
+    logger.info('meteora.graphql.bitmap_ext.filtered', {
+      total: poolIds.length,
+      withBitmap: poolsWithBitmap.size,
+      toCheck: poolsToCheck.length,
+      cat: 'meteora'
+    });
+  } catch {}
 
   const [vaultBalances, decimalsMap, bitmapExtensionMap] = await Promise.all([
     vaultBalancesPromise, 
@@ -732,7 +770,30 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
       }
 
       // Get bitmap extension from map (checked during pool normalization)
-      const bin_array_bitmap_extension = bitmapExtensionMap.get(id);
+      // If binArrayBitmap was present in GraphQL, we already checked and derived the PDA
+      // Otherwise, use fallback (program ID)
+      let bin_array_bitmap_extension: string | undefined;
+      const hasBitmapInGraphQL = poolsWithBitmap.has(id);
+      if (hasBitmapInGraphQL) {
+        bin_array_bitmap_extension = bitmapExtensionMap.get(id);
+        // If not in map (shouldn't happen), derive it now
+        if (!bin_array_bitmap_extension) {
+          try {
+            const programId = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+            const poolPk = new PublicKey(id);
+            const [bitmapExtPda] = PublicKey.findProgramAddressSync(
+              [Buffer.from('bitmap_extension'), poolPk.toBuffer()],
+              programId
+            );
+            bin_array_bitmap_extension = bitmapExtPda.toBase58();
+          } catch {
+            bin_array_bitmap_extension = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
+          }
+        }
+      } else {
+        // No bitmap extension according to GraphQL - use fallback
+        bin_array_bitmap_extension = 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo';
+      }
 
       clmm.push({
         id,
