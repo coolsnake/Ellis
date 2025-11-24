@@ -98,15 +98,82 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
         });
       } catch {}
       
-      const quote = await (swapQuoteByInputToken as any)(
-        pool,
-        inputMintPk,
-        amountInBn,  // Use BN instead of bigint
-        slippageTolerance,
-        ctx.program.programId,
-        ctx.fetcher,
-        true,
-      );
+      // Wrap quote call to handle adaptiveFeeInfo errors
+      // The SDK checks if adaptiveFeeInfo matches the pool's fee tier configuration
+      let quote: any = null;
+      try {
+        quote = await (swapQuoteByInputToken as any)(
+          pool,
+          inputMintPk,
+          amountInBn,  // Use BN instead of bigint
+          slippageTolerance,
+          ctx.program.programId,
+          ctx.fetcher,
+          true,
+        );
+      } catch (quoteErr: any) {
+        const errMsg = String(quoteErr?.message || quoteErr);
+        
+        // Handle adaptiveFeeInfo invariant error
+        // This happens when the pool's fee tier configuration doesn't match the adaptiveFeeInfo
+        // We can try to work around this by ensuring the pool data is properly structured
+        if (errMsg.includes('adaptiveFeeInfo') || errMsg.includes('adaptive fee tier')) {
+          try {
+            logger.warn('tx.resolve.quote.orca.adaptive_fee_error', {
+              cat: 'tx',
+              ctx: {
+                poolId: hop.poolId,
+                error: errMsg,
+                hint: 'Pool may have adaptive fee tier mismatch - falling back to local quote'
+              }
+            });
+          } catch {}
+          
+          // Try to get pool data and ensure adaptiveFeeInfo is set correctly
+          try {
+            const poolData = pool.getData ? pool.getData() : null;
+            if (poolData) {
+              // Check if pool has adaptive fee tier by examining fee tier configuration
+              // Most pools don't use adaptive fees, so we can set adaptiveFeeInfo to null
+              // The SDK expects adaptiveFeeInfo to be null for non-adaptive pools
+              const hasAdaptiveFee = (poolData as any).feeTier?.adaptiveFeeInfo != null;
+              
+              // If the pool doesn't have adaptive fee but SDK expects it (or vice versa),
+              // we need to reconstruct the pool object with correct structure
+              // For now, we'll log and return 0 to trigger fallback to local quote
+              try {
+                logger.warn('tx.resolve.quote.orca.adaptive_fee_mismatch', {
+                  cat: 'tx',
+                  ctx: {
+                    poolId: hop.poolId,
+                    hasAdaptiveFee,
+                    poolDataKeys: poolData ? Object.keys(poolData) : [],
+                    suggestion: 'Falling back to local quote or SDK may need pool data refresh'
+                  }
+                });
+              } catch {}
+              
+              // Return 0 to trigger fallback to local quote (which doesn't use SDK)
+              return 0n;
+            }
+          } catch (fixErr) {
+            // If we can't fix it, return 0 to trigger fallback
+            try {
+              logger.warn('tx.resolve.quote.orca.adaptive_fee_fix_failed', {
+                cat: 'tx',
+                ctx: {
+                  poolId: hop.poolId,
+                  error: String((fixErr as any)?.message || fixErr)
+                }
+              });
+            } catch {}
+            return 0n;
+          }
+        } else {
+          // Re-throw other errors
+          throw quoteErr;
+        }
+      }
       
       try {
         const quoteKeys = quote ? Object.keys(quote) : [];

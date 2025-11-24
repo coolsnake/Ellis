@@ -2185,6 +2185,71 @@ export async function getOrcaPoolsGraphQL(force = false): Promise<PoolsPayload> 
       });
     }
     
+    // Populate hot cache with pool state data from GraphQL (similar to populateOrcaPoolStates)
+    // This ensures local quotes and builders have access to sqrtPrice, liquidity, etc.
+    try {
+      const { executionCache } = await import('../execution/cache.js');
+      let hotCached = 0;
+      
+      for (const pool of normalized.clmm || []) {
+        try {
+          // Extract hot data from normalized pool
+          // GraphQL provides: sqrtPrice, liquidity, tickCurrentIndex, feeRate
+          const sqrtPriceX64 = (pool as any).sqrt_price_x64_raw 
+            ? BigInt((pool as any).sqrt_price_x64_raw) 
+            : undefined;
+          
+          const liquidity = (pool as any).liquidity_raw 
+            ? BigInt((pool as any).liquidity_raw) 
+            : undefined;
+          
+          // tickCurrentIndex from GraphQL (may need adjustment if pool was swapped)
+          let tickIndex: number | undefined;
+          if ((pool as any).tick_current_index != null) {
+            tickIndex = Number((pool as any).tick_current_index);
+          } else if ((pool as any).tickCurrentIndex != null) {
+            tickIndex = Number((pool as any).tickCurrentIndex);
+          }
+          
+          // feeRate from GraphQL (already converted to bps in normalization)
+          const feeRateBps = pool.fee_bps;
+          
+          // Only cache if we have at least sqrtPrice and liquidity
+          if (sqrtPriceX64 && liquidity !== undefined) {
+            const existing = executionCache.getHot(pool.id) || {};
+            executionCache.setHot(pool.id, {
+              ...existing,
+              sqrtPriceX64,
+              currentTickIndex: tickIndex,
+              liquidity,
+              feeRate: feeRateBps
+            });
+            hotCached++;
+          }
+        } catch (poolErr) {
+          // Log but continue - individual pool failures shouldn't stop the process
+          try {
+            logger.debug('orca.graphql.hot_cache.pool_failed', {
+              pool: pool.id?.slice(0, 8) + '…',
+              error: String((poolErr as any)?.message || poolErr),
+              cat: 'orca'
+            });
+          } catch {}
+        }
+      }
+      
+      logger.info('orca.graphql.hot_cache.populated', {
+        clmm: normalized.clmm.length,
+        hotCached,
+        cat: 'orca'
+      });
+    } catch (e: any) {
+      logger.warn('orca.graphql.hot_cache.failed', {
+        error: String(e?.message || e),
+        cat: 'orca'
+      });
+    }
+    
     logger.info('orca.graphql.complete', { 
       clmm: normalized.clmm.length, 
       cat: 'orca' 

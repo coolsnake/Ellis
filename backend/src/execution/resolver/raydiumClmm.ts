@@ -19,6 +19,28 @@ export async function resolveRaydiumClmm(hop: DirectHop): Promise<DirectHop> {
   if ((stat as any)?.amm_config && !hop.ammConfig) hop.ammConfig = (stat as any).amm_config;
   if (stat?.ex_bitmap && !(hop as any).exBitmap) (hop as any).exBitmap = stat.ex_bitmap;
 
+  // Load from hot cache for tick arrays (like Orca resolver)
+  // This is critical because tick arrays are cached here during quote phase
+  const hot = executionCache.getHot(hop.poolId.replace(/[#-]rev$/, ''));
+  if (hot?.tickArrays) {
+    // Handle arrays for lower/upper (take first element), string for center
+    hop.tickArrayLower = (Array.isArray(hot.tickArrays.lower) ? hot.tickArrays.lower[0] : hot.tickArrays.lower) || hop.tickArrayLower;
+    hop.tickArrayCenter = hot.tickArrays.center || hop.tickArrayCenter;
+    hop.tickArrayUpper = (Array.isArray(hot.tickArrays.upper) ? hot.tickArrays.upper[0] : hot.tickArrays.upper) || hop.tickArrayUpper;
+    
+    try {
+      logger.info('raydium.clmm.resolver.tick_arrays_from_hot_cache', {
+        cat: 'tx',
+        ctx: {
+          pool: hop.poolId,
+          lower: hop.tickArrayLower?.slice(0, 8) + '…' || 'none',
+          center: hop.tickArrayCenter?.slice(0, 8) + '…' || 'none',
+          upper: hop.tickArrayUpper?.slice(0, 8) + '…' || 'none'
+        }
+      });
+    } catch {}
+  }
+
   // Load from CLMM static cache (authoritative for arrays/oracle).
   const cached = getClmmStatic(hop.poolId.replace(/[#-]rev$/, ''));
   if (cached) {
