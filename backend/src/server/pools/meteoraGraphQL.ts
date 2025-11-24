@@ -323,14 +323,10 @@ async function fetchMeteoraChunkWithRetry(
               _updatedAt
             }
             meteora_dlmm_BinArrayBitmapExtension(
-              where: {_or: [
-                {lbPair: {_in: $ids}},
-                {lbPairBaseKey: {_in: $ids}}
-              ]}
+              where: {lbPair: {_in: $ids}}
             ) {
               pubkey
               lbPair
-              lbPairBaseKey
             }
           }
         `,
@@ -343,11 +339,11 @@ async function fetchMeteoraChunkWithRetry(
       const pools = data?.meteora_dlmm_LbPair || [];
       const bitmapExtensions = data?.meteora_dlmm_BinArrayBitmapExtension || [];
       
-      // Create a map of pool ID -> bitmap extension PDA
+      // Create a map of pool ID (lbPair) -> bitmap extension PDA (pubkey)
       const bitmapExtMap = new Map<string, string>();
       for (const ext of bitmapExtensions) {
-        const poolId = ext.lbPair || ext.lbPairBaseKey;
-        const bitmapPda = ext.pubkey;
+        const poolId = ext.lbPair; // lbPair is the pool's pubkey
+        const bitmapPda = ext.pubkey; // pubkey is the bitmap extension PDA
         if (poolId && bitmapPda) {
           bitmapExtMap.set(poolId, bitmapPda);
         }
@@ -358,7 +354,8 @@ async function fetchMeteoraChunkWithRetry(
         if (!key) continue;
         
         // Attach bitmap extension PDA if found
-        const bitmapExt = bitmapExtMap.get(key);
+        // Use pool.pubkey to match against lbPair from bitmap extension
+        const bitmapExt = pool.pubkey ? bitmapExtMap.get(pool.pubkey) : undefined;
         if (bitmapExt) {
           pool.bitmapExtensionPDA = bitmapExt;
         }
