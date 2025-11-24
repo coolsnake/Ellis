@@ -361,10 +361,60 @@ export async function resolveMeteoraBitmapExtensions(poolIds: string[]): Promise
         for (let j = 0; j < batch.length; j++) {
           const entry = batch[j];
           const info = infos?.[j];
-          if (info && typeof info.owner?.equals === 'function' && info.owner.equals(programId)) {
+          
+          if (!info) {
+            // Account doesn't exist - use fallback
+            result.set(entry.id, fallback);
+            continue;
+          }
+          
+          // Check if owner matches program ID
+          let ownerMatches = false;
+          try {
+            if (info.owner) {
+              // Handle both PublicKey and string owner formats
+              if (info.owner instanceof PublicKey) {
+                ownerMatches = info.owner.equals(programId);
+              } else if (typeof info.owner === 'string') {
+                ownerMatches = info.owner === programId.toBase58();
+              } else if (typeof info.owner?.equals === 'function') {
+                ownerMatches = info.owner.equals(programId);
+              }
+            }
+          } catch (ownerErr) {
+            // Log owner check failure for debugging
+            try {
+              logger.debug('meteora.bitmap_ext.owner_check_failed', {
+                pool: entry.id,
+                pda: entry.pda.toBase58(),
+                ownerType: typeof info.owner,
+                error: String((ownerErr as any)?.message || ownerErr),
+                cat: 'meteora'
+              });
+            } catch {}
+          }
+          
+          if (ownerMatches) {
             result.set(entry.id, entry.pda.toBase58());
+            try {
+              logger.debug('meteora.bitmap_ext.resolved', {
+                pool: entry.id,
+                pda: entry.pda.toBase58(),
+                cat: 'meteora'
+              });
+            } catch {}
           } else {
             result.set(entry.id, fallback);
+            // Log why we're using fallback
+            try {
+              logger.debug('meteora.bitmap_ext.fallback', {
+                pool: entry.id,
+                pda: entry.pda.toBase58(),
+                owner: info.owner ? (info.owner instanceof PublicKey ? info.owner.toBase58() : String(info.owner)) : 'null',
+                expectedOwner: programId.toBase58(),
+                cat: 'meteora'
+              });
+            } catch {}
           }
         }
       } catch (batchErr) {
