@@ -23,7 +23,7 @@ export async function fetchMeteoraGraphQL(mints: string[]): Promise<any[]> {
   // Reduced default batch size and add max limit to prevent query overload
   const maxDetailBatchSize = Number((CONFIG as any)?.meteora?.maxDetailBatchSize || 40);
   const detailBatchSize = Math.min(
-    Number((CONFIG as any)?.meteora?.detailBatchSize || 20),
+    Number((CONFIG as any)?.meteora?.detailBatchSize || 10),
     maxDetailBatchSize
   );
   const detailDelayMs = Number((CONFIG as any)?.meteora?.detailBatchDelayMs ?? pageDelayMs);
@@ -631,8 +631,22 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
     }
   }
   
-  // Only resolve bitmap extensions for pools that have them according to GraphQL
-  const poolsToCheck = poolIds.filter(id => poolsWithBitmap.has(id));
+  // Build map of pools that already have bitmap extension PDAs from GraphQL
+  const poolsWithGraphQLPDA = new Set<string>();
+  for (const pool of raw) {
+    const id = pool.pubkey || pool.baseKey;
+    if (id && pool.bitmapExtensionPDA) {
+      poolsWithGraphQLPDA.add(id);
+    }
+  }
+  
+  // Only resolve bitmap extensions via RPC for pools that have bitmap but no GraphQL PDA
+  const poolsToCheck = poolIds.filter(id => {
+    const hasBitmap = poolsWithBitmap.has(id);
+    const hasFromGraphQL = poolsWithGraphQLPDA.has(id);
+    return hasBitmap && !hasFromGraphQL; // Only check RPC if we have bitmap but no GraphQL PDA
+  });
+  
   const bitmapExtensionMapPromise = poolsToCheck.length > 0
     ? resolveMeteoraBitmapExtensions(poolsToCheck)
     : Promise.resolve(new Map<string, string>());
@@ -641,7 +655,8 @@ export async function normalizeMeteoraGraphQL(raw: any[]): Promise<PoolsPayload>
     logger.info('meteora.graphql.bitmap_ext.filtered', {
       total: poolIds.length,
       withBitmap: poolsWithBitmap.size,
-      toCheck: poolsToCheck.length,
+      fromGraphQL: poolsWithGraphQLPDA.size,
+      toCheckRPC: poolsToCheck.length,
       cat: 'meteora'
     });
   } catch {}
