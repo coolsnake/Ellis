@@ -510,9 +510,40 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
         } catch {}
         
         if (p) {
+          const poolMintA = String((p as any)?.mint_a || '');
+          const poolMintB = String((p as any)?.mint_b || '');
+          
+          // Determine actual swap direction by comparing hop mints with pool mints
+          // This is more reliable than relying solely on pool ID suffix
+          const swappingAtoB = hop.inputMint === poolMintA && hop.outputMint === poolMintB;
+          const swappingBtoA = hop.inputMint === poolMintB && hop.outputMint === poolMintA;
+          
+          // Validate that hop mints match pool mints
+          if (!swappingAtoB && !swappingBtoA) {
+            try {
+              const { logger } = await import('../../utils/logger.js');
+              logger.warn('meteora.dlmm.quote.mint_mismatch', {
+                cat: 'tx',
+                ctx: {
+                  poolId: hop.poolId,
+                  hopInputMint: hop.inputMint,
+                  hopOutputMint: hop.outputMint,
+                  poolMintA,
+                  poolMintB,
+                  isRevFromSuffix: /[#-]rev$/.test(hop.poolId || ''),
+                }
+              });
+            } catch {}
+            return 0n; // Return 0 if mints don't match
+          }
+          
+          // Use actual swap direction determined from mint matching
+          // The pool ID suffix (#rev) is just a hint, but mint matching is authoritative
+          const actualIsRev = swappingBtoA;
+          
           const feeBps = Number((p as any)?.fee_bps || 0);
-          const decIn = Number(hop.inputDecimals ?? (isRev ? (p as any)?.decimals_b : (p as any)?.decimals_a) ?? 0);
-          const decOut = Number(hop.outputDecimals ?? (isRev ? (p as any)?.decimals_a : (p as any)?.decimals_b) ?? 0);
+          const decIn = Number(hop.inputDecimals ?? (actualIsRev ? (p as any)?.decimals_b : (p as any)?.decimals_a) ?? 0);
+          const decOut = Number(hop.outputDecimals ?? (actualIsRev ? (p as any)?.decimals_a : (p as any)?.decimals_b) ?? 0);
           const fee = Math.max(0, 1 - (Math.min(9900, Math.max(0, feeBps)) / 10_000));
           let px = Number((p as any)?.price_a_per_b || 0);
           
@@ -544,7 +575,7 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
                       wholeA,
                       wholeB,
                       calculatedPrice: px,
-                      isRev,
+                      actualIsRev,
                     }
                   });
                 } catch {}
@@ -581,7 +612,8 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
             if (px > 0) {
               const amtIn = Number(amountInRaw) / Math.pow(10, decIn);
               if (Number.isFinite(amtIn)) {
-                const outWhole = (isRev ? amtIn * px : amtIn / px) * fee;
+                // Use actual swap direction for price calculation
+                const outWhole = (actualIsRev ? amtIn * px : amtIn / px) * fee;
                 const outRaw = BigInt(Math.floor(outWhole * Math.pow(10, decOut)));
                 
                 try {
@@ -595,7 +627,11 @@ export async function quoteHopOut(hop: DirectHop, amountInRaw: bigint): Promise<
                       outWhole,
                       outRaw: outRaw.toString(),
                       success: outRaw > 0n,
-                      formula: isRev ? 'amtIn * px * fee' : '(amtIn / px) * fee',
+                      formula: actualIsRev ? 'amtIn * px * fee' : '(amtIn / px) * fee',
+                      swappingAtoB,
+                      swappingBtoA,
+                      actualIsRev,
+                      isRevFromSuffix: /[#-]rev$/.test(hop.poolId || ''),
                     }
                   });
                 } catch {}

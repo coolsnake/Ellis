@@ -945,14 +945,15 @@ async function buildOrcaSwapIxLocal(hop: DirectHop, kp: { publicKey: PublicKey; 
   }
   
   // Encode swap instruction data
-  // Orca uses Anchor discriminator: sha256("global:swap")[0..8]
+  // Orca Whirlpools swap instruction discriminator (hardcoded)
   // Followed by: amount (u64), otherAmountThreshold (u64), sqrtPriceLimit (u128), amountSpecifiedIsInput (bool), aToB (bool)
   
   const dataBuffer = Buffer.alloc(42); // 8 + 8 + 8 + 16 + 1 + 1
   let offset = 0;
   
-  // Discriminator (8 bytes) - computed dynamically from instruction name
-  const swapDiscriminator = computeAnchorDiscriminator('swap');
+  // Discriminator (8 bytes) - hardcoded for Orca Whirlpools swap
+  // Correct discriminator: f8c69e91e17587c8
+  const swapDiscriminator = Buffer.from([0xf8, 0xc6, 0x9e, 0x91, 0xe1, 0x75, 0x87, 0xc8]);
   dataBuffer.set(swapDiscriminator, offset);
   offset += 8;
   

@@ -328,6 +328,12 @@ export async function fetchRaydiumGraphQL(mints: string[]): Promise<any[]> {
   }
 
   const uniquePoolIds = Array.from(poolsMap.keys());
+  
+  // Add delay BEFORE starting detail phase to respect rate limits
+  if (pageDelayMs > 0 && uniquePoolIds.length > 0) {
+    await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+  }
+  
   const detailedPools = await fetchRaydiumPoolsByAddress(uniquePoolIds, {
     retries,
     backoffMs,
@@ -649,6 +655,12 @@ export async function fetchRaydiumClmmGraphQL(mints: string[]): Promise<any[]> {
   }
 
   const uniquePoolIds = Array.from(poolsMap.keys());
+  
+  // Add delay BEFORE starting detail phase to respect rate limits
+  if (pageDelayMs > 0 && uniquePoolIds.length > 0) {
+    await new Promise(resolve => setTimeout(resolve, pageDelayMs));
+  }
+  
   const detailedPools = await fetchRaydiumClmmPoolsByAddress(uniquePoolIds, {
     retries,
     backoffMs,
