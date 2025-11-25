@@ -827,9 +827,10 @@ export class ArbExecutor {
         this.state.successfulExecutions++;
       } else {
         // Calculate Jito tip based on expected profit
+        // Note: calculateProfitBasedTip checks stored jito config internally and returns null if disabled
         let tipResult: TipResult | null = null;
         const firstHop = plan.hops[0];
-        if (firstHop && opp.profit_bps > 0 && (CONFIG as any)?.jito?.enabled) {
+        if (firstHop && opp.profit_bps > 0) {
           try {
             const kp = await ensureWallet(CONFIG.walletPath);
             tipResult = await calculateProfitBasedTip(kp.publicKey, {
@@ -851,32 +852,30 @@ export class ArbExecutor {
           ? [tipResult.tipIx, ...built.instructions] 
           : built.instructions;
 
-        // Execute on-chain
+        // Use Jito parallel sending if we have a valid tip (tip calculation checks if Jito is enabled)
+        const useJitoParallel = !!tipResult;
+
+        // Execute on-chain - with Jito parallel sending if tip is present
         const sendResult = await assembleAndSend(instructionsWithTip, {
           computeUnitLimit: execCfg.computeUnitLimit,
           computeUnitPriceMicroLamports: execCfg.computeUnitPriceMicroLamports,
           lookupTableAddresses: altAddresses,
+          // Send to Jito in parallel with RPC when we have a tip
+          jito: useJitoParallel ? {
+            enabled: true,
+            sendToBlockEngine: async (wireBase64: string) => {
+              const sig = await sendToBlockEngine(wireBase64);
+              logger.info('arb.jito.parallel_sent', { 
+                cat: 'tx', 
+                signature: sig.slice(0, 16),
+                tipLamports: tipResult?.tipLamports,
+                expectedProfitLamports: tipResult?.expectedProfitLamports,
+              });
+              return sig;
+            },
+          } : undefined,
         });
         signature = sendResult?.signature || null;
-
-        // If Jito is enabled and we have a tip, also send to block engine
-        if (tipResult && signature && (CONFIG as any)?.jito?.enabled) {
-          try {
-            await sendToBlockEngine(sendResult.wireBase64);
-            logger.info('arb.jito.sent', { 
-              cat: 'tx', 
-              signature: signature.slice(0, 16),
-              tipLamports: tipResult.tipLamports,
-              expectedProfitLamports: tipResult.expectedProfitLamports,
-            });
-          } catch (jitoErr: any) {
-            // Log but don't fail - RPC send already happened
-            logger.warn('arb.jito.fallback', { 
-              cat: 'tx', 
-              error: String(jitoErr?.message || jitoErr) 
-            });
-          }
-        }
 
         // Log full dump with opportunity data
         try {

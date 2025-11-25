@@ -2108,6 +2108,119 @@ export class DexAltManager {
   }
 
   /**
+   * Pre-load all registered ALTs into memory cache
+   * Called at startup to avoid RPC calls during transaction building
+   */
+  async preloadAllAltAccounts(): Promise<{ loaded: number; failed: number }> {
+    const connection = getConnection();
+    const addresses = this.getAllAltAddresses();
+    let loaded = 0;
+    let failed = 0;
+
+    if (addresses.length === 0) {
+      return { loaded: 0, failed: 0 };
+    }
+
+    // Load all ALTs in parallel for faster startup
+    const results = await Promise.allSettled(
+      addresses.map(async (addr) => {
+        try {
+          const pk = new PublicKey(addr);
+          const result = await connection.getAddressLookupTable(pk);
+          if (result.value) {
+            this.altAccounts.set(addr, result.value);
+            return { addr, success: true, accountCount: result.value.state.addresses.length };
+          }
+          return { addr, success: false };
+        } catch (e) {
+          return { addr, success: false, error: e };
+        }
+      })
+    );
+
+    for (const result of results) {
+      if (result.status === 'fulfilled' && result.value.success) {
+        loaded++;
+      } else {
+        failed++;
+      }
+    }
+
+    try {
+      logger.info('alt.manager.preload.complete', {
+        cat: 'tx',
+        ctx: {
+          loaded,
+          failed,
+          totalAddresses: addresses.length,
+          cachedAccountCount: Array.from(this.altAccounts.values())
+            .reduce((sum, alt) => sum + alt.state.addresses.length, 0),
+        },
+      });
+    } catch {}
+
+    return { loaded, failed };
+  }
+
+  /**
+   * Get cached ALT accounts directly - NO RPC calls
+   * Returns empty array if cache is cold (should never happen after startup)
+   */
+  getCachedAltAccounts(): AddressLookupTableAccount[] {
+    return Array.from(this.altAccounts.values());
+  }
+
+  /**
+   * Check if ALT cache is warm (has accounts loaded)
+   */
+  isCacheWarm(): boolean {
+    return this.altAccounts.size > 0;
+  }
+
+  private backgroundRefreshInterval: ReturnType<typeof setInterval> | null = null;
+
+  /**
+   * Start background refresh of ALT cache
+   * @param intervalMs - Refresh interval in milliseconds (default: 60 seconds)
+   */
+  startBackgroundRefresh(intervalMs: number = 60000): void {
+    // Clear any existing interval
+    if (this.backgroundRefreshInterval) {
+      clearInterval(this.backgroundRefreshInterval);
+    }
+
+    this.backgroundRefreshInterval = setInterval(async () => {
+      try {
+        await this.preloadAllAltAccounts();
+      } catch (e) {
+        try {
+          logger.warn('alt.manager.background.refresh.error', {
+            cat: 'tx',
+            ctx: { error: String((e as any)?.message || e) },
+          });
+        } catch {}
+      }
+    }, intervalMs);
+
+    try {
+      logger.info('alt.manager.background.refresh.started', {
+        cat: 'tx',
+        ctx: { intervalMs },
+      });
+    } catch {}
+  }
+
+  /**
+   * Stop background refresh
+   */
+  stopBackgroundRefresh(): void {
+    if (this.backgroundRefreshInterval) {
+      clearInterval(this.backgroundRefreshInterval);
+      this.backgroundRefreshInterval = null;
+    }
+  }
+
+  /**
    * Extend an existing ALT with additional accounts
    * @param category Category/key of the ALT (e.g., 'common', 'pools', 'tokens')
    * @param accounts Array of account addresses (strings or PublicKeys) to add
@@ -2528,6 +2641,26 @@ export class DexAltManager {
           errors.push(`Failed to create ALTs: ${String(e)}`);
         }
       }
+
+      // Pre-load all ALT accounts into cache for instant access during tx building
+      // This eliminates RPC calls during transaction building
+      try {
+        const preloadResult = await this.preloadAllAltAccounts();
+        try {
+          logger.info('alt.startup.preload.complete', {
+            cat: 'tx',
+            ctx: {
+              ...preloadResult,
+              note: 'ALT accounts cached - no RPC calls needed during tx building',
+            },
+          });
+        } catch {}
+      } catch (e) {
+        errors.push(`Failed to preload ALT accounts: ${String(e)}`);
+      }
+
+      // Start background refresh to keep cache fresh (every 60 seconds)
+      this.startBackgroundRefresh(60000);
 
       this.initialized = true;
       this.startupStatus = {

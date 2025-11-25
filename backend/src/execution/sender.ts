@@ -6,18 +6,26 @@ import { logger } from '../utils/logger.js';
 import { LogCode } from '../utils/logging.js';
 import { getTxRelatedLogs } from '../utils/sessionLogs.js';
 import { optimizeAccountOrder } from '../execution/utils/accountOrdering.js';
+import { dexAltManager } from './utils/altManager.js';
+
 const TX_DEBUG_COERCION = !!((CONFIG as any)?.tx?.debugIxCoercion);
 
 // Blockhash caching to avoid RPC calls on every transaction
-// Blockhashes are valid for ~150 seconds, we cache for 30 seconds to be safe
+// Blockhashes are valid for ~150 slots (~60-90 seconds), we cache for 10 seconds
+// to maximize remaining validity window for transaction landing
 let cachedBlockhash: { blockhash: string; lastValidBlockHeight: number; fetchedAt: number } | null = null;
-const BLOCKHASH_CACHE_MS = 30000; // 30 seconds
+const BLOCKHASH_CACHE_MS = 10000; // 10 seconds - more aggressive refresh for faster landing
 
 export type SendOptions = {
   computeUnitLimit?: number;
   computeUnitPriceMicroLamports?: number;
   lookupTableAddresses?: string[];
   skipPreflight?: boolean; // Default: true for speed. Set to false for debugging.
+  // Jito parallel sending options
+  jito?: {
+    enabled: boolean;
+    sendToBlockEngine?: (wireBase64: string) => Promise<string>;
+  };
 };
 function detectDexesFromPrograms(programIds: string[]): Array<'raydium' | 'orca' | 'meteora'> {
   const set = new Set<'raydium' | 'orca' | 'meteora'>();
@@ -276,107 +284,90 @@ async function loadLookupTables(connection: Connection, addrs: string[]): Promis
     });
   } catch {}
   
-  // Load all ALTs in parallel for faster transaction building
-  const results = await Promise.allSettled(
-    addrs.map(async (a) => {
-      try {
-        const pk = new PublicKey(a);
-        const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-        const result = await withRpcLimit(
-          () => connection.getAddressLookupTable(pk),
-          1,
-          { module: 'execution', method: 'getAddressLookupTable' }
-        );
-        return { address: a, account: result.value };
-      } catch (err) {
-        return { address: a, account: null, error: err };
-      }
-    })
-  );
+  // Try to get from ALT manager cache first (no RPC calls)
+  const cachedAccounts = dexAltManager.getCachedAltAccounts();
+  const cachedByAddress = new Map<string, AddressLookupTableAccount>();
+  for (const alt of cachedAccounts) {
+    cachedByAddress.set(alt.key.toBase58(), alt);
+  }
   
   const out: AddressLookupTableAccount[] = [];
-  for (let i = 0; i < results.length; i++) {
-    const result = results[i];
-    if (result.status === 'fulfilled') {
-      const { address, account, error } = result.value;
-      if (account) {
-        out.push(account);
-        try {
-          logger.debug('tx.lookup_table.loaded_individual', {
-            cat: 'tx',
-            ctx: {
-              address,
-              accountCount: account.state.addresses.length,
-            },
-          });
-        } catch {}
-      } else {
-        try {
-          logger.warn('tx.lookup_table.load_failed', {
-            cat: 'tx',
-            ctx: {
-              address,
-              error: error ? String((error as any)?.message || error) : 'Failed to load ALT account',
-            },
-          });
-        } catch {}
-      }
+  const uncached: string[] = [];
+  
+  // Use cache for known addresses
+  for (const addr of addrs) {
+    const cached = cachedByAddress.get(addr);
+    if (cached) {
+      out.push(cached);
     } else {
-      try {
-        logger.warn('tx.lookup_table.load_error', {
-          cat: 'tx',
-          ctx: {
-            address: addrs[i],
-            error: String(result.reason?.message || result.reason),
-          },
-        });
-      } catch {}
+      uncached.push(addr);
+    }
+  }
+  
+  // Only fetch uncached addresses from RPC (should be rare after startup)
+  if (uncached.length > 0) {
+    try {
+      logger.warn('tx.lookup_table.cache_miss', {
+        cat: 'tx',
+        ctx: { uncachedCount: uncached.length, uncached },
+      });
+    } catch {}
+    
+    const results = await Promise.allSettled(
+      uncached.map(async (a) => {
+        const pk = new PublicKey(a);
+        const result = await connection.getAddressLookupTable(pk);
+        return { address: a, account: result.value };
+      })
+    );
+    
+    for (const result of results) {
+      if (result.status === 'fulfilled' && result.value.account) {
+        out.push(result.value.account);
+      }
     }
   }
   
   try {
     logger.debug('tx.lookup_table.load_complete', {
       cat: 'tx',
-      ctx: { requested: addrs.length, loaded: out.length },
+      ctx: { requested: addrs.length, fromCache: addrs.length - uncached.length, loaded: out.length },
     });
   } catch {}
   
   return out;
 }
 
-// Get common lookup table addresses from ALT manager
-async function getCommonLookupTables(connection: Connection): Promise<AddressLookupTableAccount[]> {
+// Get common lookup table accounts from ALT manager cache - NO RPC CALLS
+async function getCommonLookupTables(_connection: Connection): Promise<AddressLookupTableAccount[]> {
   try {
-    const { dexAltManager } = await import('./utils/altManager.js');
-    const altAddresses = dexAltManager.getAllAltAddresses();
+    // Use cached accounts directly - no RPC needed
+    const cachedAccounts = dexAltManager.getCachedAltAccounts();
     
-    if (altAddresses.length === 0) {
-      return [];
+    if (cachedAccounts.length > 0) {
+      try {
+        logger.debug('tx.lookup_table.from_cache', {
+          cat: 'tx',
+          ctx: {
+            count: cachedAccounts.length,
+            totalAccounts: cachedAccounts.reduce((sum, alt) => sum + alt.state.addresses.length, 0),
+          },
+        });
+      } catch {}
+      return cachedAccounts;
     }
     
-    const accounts: AddressLookupTableAccount[] = [];
-    for (const addr of altAddresses) {
+    // Cache is cold (should not happen after startup)
+    if (!dexAltManager.isCacheWarm()) {
       try {
-        const pk = new PublicKey(addr);
-        const { withRpcLimit } = await import('../utils/rpcLimiter.js');
-        const acc = await withRpcLimit(
-          () => connection.getAddressLookupTable(pk),
-          1,
-          { module: 'execution', method: 'getAddressLookupTable' }
-        ).then(r => r.value).catch(() => null);
-        if (acc) {
-          accounts.push(acc);
-          try { 
-            logger.debug('tx.lookup_table.loaded', { 
-              cat: 'tx', 
-              ctx: { address: addr, accountCount: acc.state.addresses.length } 
-            }); 
-          } catch {}
-        }
+        logger.warn('tx.lookup_table.cache_cold', {
+          cat: 'tx',
+          ctx: { note: 'ALT cache is cold - this should not happen after startup' },
+        });
       } catch {}
     }
     
-    return accounts;
+    return [];
   } catch (error) {
     try {
       logger.warn('tx.lookup_table.manager.load.failed', {
@@ -439,7 +430,7 @@ function summarizeSimError(logs?: string[], err?: any): { ix?: number; custom?: 
 
 export async function assembleAndSimulate(instructions: any[], opts?: SendOptions): Promise<{ logs?: string[]; err?: any; wireBase64?: string }> {
   const connection = getConnection();
-  const kp = await ensureWallet((await import('../utils/config.js')).CONFIG.walletPath);
+  const kp = await ensureWallet(CONFIG.walletPath);
   const realIxs: TransactionInstruction[] = [];
   
   // Check if compute budget instructions already exist in the incoming instructions
@@ -817,7 +808,7 @@ export async function assembleAndSimulate(instructions: any[], opts?: SendOption
 
 export async function assembleAndSend(instructions: any[], opts?: SendOptions): Promise<{ signature: string; wireBase64: string }> {
   const connection = getConnection();
-  const kp = await ensureWallet((await import('../utils/config.js')).CONFIG.walletPath);
+  const kp = await ensureWallet(CONFIG.walletPath);
   const realIxs: TransactionInstruction[] = [];
   
   // Check if compute budget instructions already exist in the incoming instructions
@@ -1120,11 +1111,39 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
     });
   } catch {}
   
-  const sig = await connection.sendTransaction(tx, { 
+  // Send to RPC and optionally Jito in parallel
+  const rpcSendPromise = connection.sendTransaction(tx, { 
     skipPreflight, 
     preflightCommitment: skipPreflight ? 'confirmed' : 'processed',
     maxRetries: 0 // We handle retries ourselves
   });
+  
+  // If Jito is enabled, send to block engine in parallel
+  let jitoSendPromise: Promise<string> | null = null;
+  if (opts?.jito?.enabled && opts.jito.sendToBlockEngine) {
+    jitoSendPromise = opts.jito.sendToBlockEngine(wireBase64).catch((jitoErr: any) => {
+      try {
+        logger.warn('tx.jito.parallel_send_failed', {
+          cat: 'tx',
+          ctx: {
+            txId,
+            error: String(jitoErr?.message || jitoErr),
+          } as any,
+        });
+      } catch {}
+      return ''; // Return empty string on failure, don't block RPC
+    });
+    
+    try {
+      logger.info('tx.jito.parallel_send_started', {
+        cat: 'tx',
+        ctx: { txId, wireSize: wireBase64.length } as any,
+      });
+    } catch {}
+  }
+  
+  // Wait for RPC send
+  const sig = await rpcSendPromise;
   
   // Log after successful RPC send
   try {
@@ -1133,9 +1152,24 @@ export async function assembleAndSend(instructions: any[], opts?: SendOptions): 
       ctx: {
         txId,
         signature: sig,
+        jitoParallel: !!jitoSendPromise,
       } as any,
     });
   } catch {}
+  
+  // If Jito was sent, log result (don't await, fire-and-forget)
+  if (jitoSendPromise) {
+    jitoSendPromise.then((jitoSig) => {
+      if (jitoSig) {
+        try {
+          logger.info('tx.jito.parallel_send_success', {
+            cat: 'tx',
+            ctx: { txId, jitoSignature: jitoSig.slice(0, 16) } as any,
+          });
+        } catch {}
+      }
+    }).catch(() => {}); // Already logged above
+  }
   
   // Try to confirm, but don't fail if confirmation times out or errors
   // The transaction was successfully sent, so we return the signature regardless
