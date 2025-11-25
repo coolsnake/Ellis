@@ -2195,12 +2195,13 @@ export async function getOrcaPoolsGraphQL(force = false): Promise<PoolsPayload> 
         try {
           // Extract hot data from normalized pool
           // GraphQL provides: sqrtPrice, liquidity, tickCurrentIndex, feeRate
-          const sqrtPriceX64 = (pool as any).sqrt_price_x64_raw 
-            ? BigInt((pool as any).sqrt_price_x64_raw) 
+          // Field names from orcaGraphQL.ts normalization: sqrt_price_x64, liquidity (not _raw suffix)
+          const sqrtPriceX64 = (pool as any).sqrt_price_x64 
+            ? BigInt((pool as any).sqrt_price_x64) 
             : undefined;
           
-          const liquidity = (pool as any).liquidity_raw 
-            ? BigInt((pool as any).liquidity_raw) 
+          const liquidity = (pool as any).liquidity 
+            ? BigInt((pool as any).liquidity) 
             : undefined;
           
           // tickCurrentIndex from GraphQL (may need adjustment if pool was swapped)

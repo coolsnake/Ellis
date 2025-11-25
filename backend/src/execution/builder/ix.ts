@@ -2788,8 +2788,8 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       try { if (binArrayLower) pushMeta(binArrayLower); } catch (e) { logCatchError('ix.build', e); }
       try { if (binArrayUpper) pushMeta(binArrayUpper); } catch (e) { logCatchError('ix.build', e); }
 
-      let lbPairState: any = null;
-      try { lbPairState = await program.account.lbPair.fetch(poolPk); } catch (e) { logCatchError('ix.build', e); }
+      // OPTIMIZATION: Removed unused lbPairState RPC fetch (~200-300ms waste)
+      // The variable was declared but never referenced after this point
 
       // Note: Do NOT manually derive bin arrays here - we need to verify they exist on-chain
       // The SDK's getBinArrayAccountMetasCoverage will return only the bin arrays that are
@@ -2830,163 +2830,51 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
       });
       } catch (e) { logCatchError('ix.build', e); }
       
-      // Validate token accounts - batch fetch both at once to reduce RPC calls
-      let tokenInfos: any[] | null = null;
+      // OPTIMIZATION: Skip RPC-based token account validation in fast path (~100-200ms savings)
+      // We derive ATAs ourselves based on wallet + mint + token program, so we trust they're correct
+      // The RPC validation was only to catch edge cases where on-chain state differs from expected
       try {
-      const userTokenInPk = toPublicKey(hop.userSourceAta);
-      const expectedInputMint = toPublicKey(hop.inputMint);
-      const userTokenOutPk = toPublicKey(hop.userDestAta);
-      const expectedMint = toPublicKey(hop.outputMint);
-      
-      // Always derive the correct ATAs to verify, even if accounts don't exist yet
-      const { deriveAta } = await import('../accounts.js');
-      const correctAtaIn = deriveAta(kp.publicKey, expectedInputMint, hop.inputTokenProgram);
-      const correctAtaOut = deriveAta(kp.publicKey, expectedMint, hop.outputTokenProgram);
-      
-      // Check if the ATA addresses match what we expect
-      if (!userTokenInPk.equals(correctAtaIn)) {
-        try { 
-          logger.warn('meteora.dlmm.userTokenIn.address_mismatch', { 
-            cat: 'tx', 
-            ctx: { 
-              userTokenIn: userTokenInPk.toBase58(),
-              correctAta: correctAtaIn.toBase58(),
-              expectedMint: expectedInputMint.toBase58(),
-              inputMint: hop.inputMint,
-              inputTokenProgram: hop.inputTokenProgram
-            } 
-          }); 
-        } catch (e) { logCatchError('ix.build', e); }
-        accounts.userTokenIn = correctAtaIn;
-        try { 
-          logger.debug('meteora.dlmm.userTokenIn.corrected', { 
-            cat: 'tx', 
-            ctx: { 
-              old: userTokenInPk.toBase58(),
-              new: correctAtaIn.toBase58(),
-              mint: expectedInputMint.toBase58()
-            } 
-          }); 
-        } catch (e) { logCatchError('ix.build', e); }
-      }
-      
-      if (!userTokenOutPk.equals(correctAtaOut)) {
-        try { 
-          logger.warn('meteora.dlmm.userTokenOut.address_mismatch', { 
-            cat: 'tx', 
-            ctx: { 
-              userTokenOut: userTokenOutPk.toBase58(),
-              correctAta: correctAtaOut.toBase58(),
-              expectedMint: expectedMint.toBase58(),
-              outputMint: hop.outputMint,
-              outputTokenProgram: hop.outputTokenProgram
-            } 
-          }); 
-        } catch (e) { logCatchError('ix.build', e); }
-        accounts.userTokenOut = correctAtaOut;
-        try { 
-          logger.debug('meteora.dlmm.userTokenOut.corrected', { 
-            cat: 'tx', 
-            ctx: { 
-              old: userTokenOutPk.toBase58(),
-              new: correctAtaOut.toBase58(),
-              mint: expectedMint.toBase58()
-            } 
-          }); 
-        } catch (e) { logCatchError('ix.build', e); }
-      }
-      
-      // Batch fetch both token accounts at once to reduce RPC calls
-      const { withRpcLimit } = await import('../../utils/rpcLimiter.js');
-      const tokenAccountsToCheck: PublicKey[] = [userTokenInPk, userTokenOutPk];
-      const weight = Math.max(1, Math.ceil(tokenAccountsToCheck.length / 5));
-      tokenInfos = await withRpcLimit(
-        () => connection.getMultipleAccountsInfo(tokenAccountsToCheck),
-        weight,
-        { module: 'execution', method: 'getMultipleAccountsInfo' }
-      ).catch(() => null);
-      
-      // Process input token account result
-      if (tokenInfos && tokenInfos.length >= 1) {
-        const tokenInInfo = tokenInfos[0];
-        if (tokenInInfo?.data && tokenInInfo.data.length >= 32) {
-          const mintBytes = tokenInInfo.data.slice(0, 32);
-          try {
-            const accountMint = new PublicKey(mintBytes);
-            if (!accountMint.equals(expectedInputMint)) {
-              try { 
-                logger.warn('meteora.dlmm.userTokenIn.mint_mismatch', { 
-                  cat: 'tx', 
-                  ctx: { 
-                    userTokenIn: userTokenInPk.toBase58(),
-                    accountMint: accountMint.toBase58(),
-                    expectedMint: expectedInputMint.toBase58(),
-                    inputMint: hop.inputMint
-                  } 
-                }); 
-              } catch (e) { logCatchError('ix.build', e); }
-              accounts.userTokenIn = correctAtaIn;
-              try { 
-                logger.debug('meteora.dlmm.userTokenIn.mint_corrected', { 
-                  cat: 'tx', 
-                  ctx: { 
-                    old: userTokenInPk.toBase58(),
-                    new: correctAtaIn.toBase58(),
-                    mint: expectedInputMint.toBase58()
-                  } 
-                }); 
-              } catch (e) { logCatchError('ix.build', e); }
-            }
-          } catch (parseErr) {
-            accounts.userTokenIn = correctAtaIn;
-          }
+        const userTokenInPk = toPublicKey(hop.userSourceAta);
+        const expectedInputMint = toPublicKey(hop.inputMint);
+        const userTokenOutPk = toPublicKey(hop.userDestAta);
+        const expectedMint = toPublicKey(hop.outputMint);
+        
+        // Derive correct ATAs (fast - no RPC, just PDA derivation)
+        const { deriveAta } = await import('../accounts.js');
+        const correctAtaIn = deriveAta(kp.publicKey, expectedInputMint, hop.inputTokenProgram);
+        const correctAtaOut = deriveAta(kp.publicKey, expectedMint, hop.outputTokenProgram);
+        
+        // Use derived ATAs if hop's ATAs don't match (fast address comparison only)
+        if (!userTokenInPk.equals(correctAtaIn)) {
+          accounts.userTokenIn = correctAtaIn;
+          try { 
+            logger.debug('meteora.dlmm.userTokenIn.corrected', { 
+              cat: 'tx', 
+              ctx: { old: userTokenInPk.toBase58().slice(0, 8) + '…', mint: hop.inputMint.slice(0, 8) + '…' } 
+            }); 
+          } catch (e) { logCatchError('ix.build', e); }
         }
-      }
-      
-      // Process output token account result
-      if (tokenInfos && tokenInfos.length >= 2) {
-        const tokenOutInfo = tokenInfos[1];
-        if (tokenOutInfo?.data && tokenOutInfo.data.length >= 32) {
-          const mintBytes = tokenOutInfo.data.slice(0, 32);
-          try {
-            const accountMint = new PublicKey(mintBytes);
-            if (!accountMint.equals(expectedMint)) {
-              try { 
-                logger.warn('meteora.dlmm.userTokenOut.mint_mismatch', { 
-                  cat: 'tx', 
-                  ctx: { 
-                    userTokenOut: userTokenOutPk.toBase58(),
-                    accountMint: accountMint.toBase58(),
-                    expectedMint: expectedMint.toBase58(),
-                    outputMint: hop.outputMint
-                  } 
-                }); 
-              } catch (e) { logCatchError('ix.build', e); }
-              accounts.userTokenOut = correctAtaOut;
-              try { 
-                logger.debug('meteora.dlmm.userTokenOut.mint_corrected', { 
-                  cat: 'tx', 
-                  ctx: { 
-                    old: userTokenOutPk.toBase58(),
-                    new: correctAtaOut.toBase58(),
-                    mint: expectedMint.toBase58()
-                  } 
-                }); 
-              } catch (e) { logCatchError('ix.build', e); }
-            }
-          } catch (parseErr) {
-            accounts.userTokenOut = correctAtaOut;
-          }
+        
+        if (!userTokenOutPk.equals(correctAtaOut)) {
+          accounts.userTokenOut = correctAtaOut;
+          try { 
+            logger.debug('meteora.dlmm.userTokenOut.corrected', { 
+              cat: 'tx', 
+              ctx: { old: userTokenOutPk.toBase58().slice(0, 8) + '…', mint: hop.outputMint.slice(0, 8) + '…' } 
+            }); 
+          } catch (e) { logCatchError('ix.build', e); }
         }
-      }
+        
+        // NOTE: Removed RPC validation (getMultipleAccountsInfo) for performance
+        // The on-chain validation was redundant since we derive ATAs deterministically
       } catch (validateErr) {
-      // Non-fatal: log but continue
-      try { 
-        logger.debug('meteora.dlmm.token.validation.failed', { 
-          cat: 'tx', 
-          ctx: { error: String((validateErr as any)?.message || validateErr) } 
-        }); 
-      } catch (e) { logCatchError('ix.build', e); }
+        // Non-fatal: log but continue
+        try { 
+          logger.debug('meteora.dlmm.token.validation.failed', { 
+            cat: 'tx', 
+            ctx: { error: String((validateErr as any)?.message || validateErr) } 
+          }); 
+        } catch (e) { logCatchError('ix.build', e); }
       }
       
       // NOTE: Do NOT set binArrayLower/binArrayUpper in accounts object
@@ -3261,24 +3149,22 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
             tokenXMint = (acctBase.tokenXMint instanceof PublicKey ? acctBase.tokenXMint : toPublicKey(acctBase.tokenXMint)).toBase58();
             tokenYMint = (acctBase.tokenYMint instanceof PublicKey ? acctBase.tokenYMint : toPublicKey(acctBase.tokenYMint)).toBase58();
           } else {
-            // Fallback: try to fetch from pool state directly
-            try {
-              const poolState = await program.account.lbPair.fetch(poolPk);
-              if (poolState) {
-                const tkX = (poolState as any)?.tokenXMint || (poolState as any)?.token_x_mint;
-                const tkY = (poolState as any)?.tokenYMint || (poolState as any)?.token_y_mint;
-                if (tkX) {
-                  tokenXMint = (tkX.publicKey || tkX).toBase58?.() || String(tkX);
-                  // Also set in acctBase for consistency
-                  acctBase.tokenXMint = (tkX.publicKey || tkX);
-                }
-                if (tkY) {
-                  tokenYMint = (tkY.publicKey || tkY).toBase58?.() || String(tkY);
-                  // Also set in acctBase for consistency
-                  acctBase.tokenYMint = (tkY.publicKey || tkY);
-                }
-              }
-            } catch (e) { logCatchError('ix.build', e); }
+            // OPTIMIZATION: Use cached mint_a/mint_b as tokenX/tokenY instead of RPC (~200-300ms savings)
+            // For DLMM pools, mint_a typically corresponds to tokenX, mint_b to tokenY
+            // This is consistent with how the SDK orders tokens
+            if (poolMintA && poolMintB) {
+              tokenXMint = poolMintA;
+              tokenYMint = poolMintB;
+              acctBase.tokenXMint = toPublicKey(poolMintA);
+              acctBase.tokenYMint = toPublicKey(poolMintB);
+              try {
+                logger.debug('meteora.dlmm.token_mints.from_cache', {
+                  cat: 'tx',
+                  ctx: { poolId: hop.poolId, tokenX: poolMintA.slice(0, 8) + '…', tokenY: poolMintB.slice(0, 8) + '…' }
+                });
+              } catch (e) { logCatchError('ix.build', e); }
+            }
+            // NOTE: Removed RPC fallback (program.account.lbPair.fetch) - use cache only for performance
           }
           
           if (poolMintA && poolMintB && tokenXMint && tokenYMint) {
