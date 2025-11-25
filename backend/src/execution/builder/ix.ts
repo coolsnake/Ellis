@@ -3820,16 +3820,20 @@ export async function buildMeteoraDlmmSwapIxReal(hop: DirectHop): Promise<any[]>
                 let direction: 'up' | 'down' | 'both';
                 
                 if (isXToY) {
-                  // X->Y: Price moves DOWN, expand LOWER range
-                  lowerArrayIdx = arrIdx.sub(new BN(binExpansion));
-                  upperArrayIdx = arrIdx.add(new BN(1)); // Include active + 1 above
-                  binArrayCount = binExpansion + 2;
+                  // X->Y: Price moves DOWN, need arrays in LOWER direction
+                  // Always include at least 1 below for swap execution, plus buffer above
+                  const expandLower = Math.max(1, binExpansion);
+                  lowerArrayIdx = arrIdx.sub(new BN(expandLower));
+                  upperArrayIdx = arrIdx.add(new BN(1)); // Buffer above
+                  binArrayCount = expandLower + 2;
                   direction = 'down';
                 } else if (isYToX) {
-                  // Y->X: Price moves UP, expand UPPER range
-                  lowerArrayIdx = arrIdx.sub(new BN(1)); // Include active + 1 below
-                  upperArrayIdx = arrIdx.add(new BN(binExpansion));
-                  binArrayCount = binExpansion + 2;
+                  // Y->X: Price moves UP, need arrays in UPPER direction
+                  // Always include at least 1 above for swap execution, plus buffer below
+                  const expandUpper = Math.max(1, binExpansion);
+                  lowerArrayIdx = arrIdx.sub(new BN(1)); // Buffer below
+                  upperArrayIdx = arrIdx.add(new BN(expandUpper));
+                  binArrayCount = expandUpper + 2;
                   direction = 'up';
                 } else {
                   // Unknown direction: expand both (conservative)
